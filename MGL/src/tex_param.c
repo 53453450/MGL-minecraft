@@ -19,6 +19,7 @@
  */
 
 #include "glm_context.h"
+#include "mgl_render.h"
 #include "mgl_trace_log.h"
 #include "mgl_env_flag.h"
 #include "pixel_utils.h"
@@ -205,7 +206,27 @@ static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pn
     }
     tex->dirty_bits |= DIRTY_TEXTURE_PARAM;
     if (mglTextureParameterAffectsTextureDescriptor(pname)) {
-        tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+        mglInvalidateTextureBaseLevelView(ctx, tex);
+        if (tex && !tex->is_render_target) {
+            if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+                    (uint32_t)tex->internalformat, 1) != 0 ||
+                mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+                    (uint32_t)tex->internalformat, 1) != 0 ||
+                mglRenderTextureUploadNeedsStencilSwizzleBake(
+                    (uint32_t)tex->internalformat, 1,
+                    (uint32_t)tex->params.depth_stencil_mode) != 0 ||
+                mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+                    (uint32_t)tex->internalformat, 1,
+                    (uint32_t)tex->params.depth_stencil_mode) != 0) {
+                /* Baked swizzles rewrite CPU texels; keep the Metal texture
+                 * and re-upload. DIRTY_TEXTURE_LEVEL would destroy storage
+                 * after upload and recreate it without baked data. */
+                tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+            } else if (mglRenderTextureUploadNeedsSingleChannelSwizzle(
+                           (uint32_t)tex->internalformat, 1) != 0) {
+                tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+            }
+        }
     }
     if (ctx) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX_PARAM);
@@ -1494,6 +1515,13 @@ void mglGetTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, GLfloat *
         *params = (GLfloat)tex->num_levels;
         return;
     }
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        /* Immutable (TexStorage*) → BY_CLASS; mutable (TexImage*) → BY_SIZE. */
+        *params = (GLfloat)(tex->immutable_storage
+            ? GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE);
+        return;
+    }
 
     GLint iparam;
     iparam = 0;
@@ -1522,6 +1550,12 @@ void mglGetTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *pa
     }
     if (pname == GL_TEXTURE_IMMUTABLE_LEVELS) {
         *params = (GLint)tex->num_levels;
+        return;
+    }
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        *params = tex->immutable_storage
+            ? (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
         return;
     }
 

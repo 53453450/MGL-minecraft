@@ -218,6 +218,13 @@ static inline double mglTraceNowSeconds(void)
      * derive MTLRenderPipelineDescriptor.inputPrimitiveTopology (required by
      * Metal when the VS writes [[render_target_array_index]]). */
     GLenum _lastDrawPrimitiveMode;
+    /* Emulated MS textures are texture2d_array sample planes. When drawing
+     * per-sample (SampleID / sample qualify / interpolateAtSample), these
+     * select the attached plane and force FS SampleID to match. Active only
+     * while _mglInMSSampleDrawLoop is YES. */
+    GLint _mglForcedMSSampleId;
+    GLint _mglMSSamplePlaneOffset;
+    BOOL _mglInMSSampleDrawLoop;
     MGLBatchingState _batching;
     /* Track whether the current command buffer has encoded work. The C++
      * CommandBufferOwner retains the most recent submission for glFinish. */
@@ -293,6 +300,21 @@ static inline double mglTraceNowSeconds(void)
 #define _pendingDrawableW _core.pendingDrawableW
 #define _pendingDrawableH _core.pendingDrawableH
 #define _drawableSizeDirty _core.drawableSizeDirty
+
+/* === Packed current-value vertex-attribute pool ===
+ * ALL current-value attribs (glVertexAttrib4f-style generics with no
+ * vertex buffer) share ONE Metal vertex-buffer slot.  The shared buffer
+ * is laid out [attrib][iteration]: attrib a's 16B block repeats
+ * kMGLCurrentAttribRepeatCount times starting at
+ * a * kMGLCurrentAttribPoolStride, so the vertex descriptor addresses
+ * attrib a at offset a*kMGLCurrentAttribPoolStride with stride 16.
+ * Without packing, a 16-element attrib array driven entirely by
+ * glVertexAttrib4f needs slots 16..31 and overflows the 31-slot Metal
+ * vertex-buffer budget at attribute 15. */
+#define kMGLCurrentAttribRepeatCount 4096u
+#define kMGLCurrentAttribValueBytes  16u
+#define kMGLCurrentAttribPoolStride \
+    ((uint32_t)kMGLCurrentAttribRepeatCount * kMGLCurrentAttribValueBytes)
 
 /* === Aggregate imports of per-category private headers ===
  * These headers declare ObjC methods and C helpers implemented in each

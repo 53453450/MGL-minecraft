@@ -32,8 +32,10 @@
 
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_lexer.h"
+#include "mgl_glsl_cpp.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,259 +44,6 @@
 #define MGL_MAX_TOKENS 131072
 #define MGL_MAX_DIMS 8
 
-typedef struct MGLObjectMacro {
-    char *name;
-    char *replacement;
-} MGLObjectMacro;
-
-static int is_ident_start_char(char c)
-{
-    return isalpha((unsigned char)c) || c == '_';
-}
-
-static int is_ident_char(char c)
-{
-    return isalnum((unsigned char)c) || c == '_';
-}
-
-static void macro_free_all(MGLObjectMacro *macros, size_t count)
-{
-    for (size_t i = 0; i < count; i++) {
-        free(macros[i].name);
-        free(macros[i].replacement);
-    }
-    free(macros);
-}
-
-/* The GLSL frontend intentionally has no general C preprocessor.  Desktop
- * GLSL nevertheless uses object-like #define constants pervasively (often
- * for gl_in[] indices and loop bounds).  Expand those definitions while
- * preserving every source newline so diagnostics and source locations remain
- * stable.  Function-like macros, token pasting, and stringification are not
- * GLSL language features and are left untouched. */
-static char *expand_object_macros(const char *src, size_t len)
-{
-    MGLObjectMacro *macros = NULL;
-    size_t macro_count = 0;
-    size_t macro_cap = 0;
-    size_t out_cap = len + 1;
-    size_t out_len = 0;
-    char *out = (char *)malloc(out_cap);
-    if (!out) return NULL;
-
-    /* Conditional-compilation state, mirroring preprocess_tokens(): a
-     * #define inside an inactive branch must not shadow one from the
-     * active branch, and expansion must use the macros visible at each
-     * point (single pass, current table). */
-    enum { PP_MAX_DEPTH = 32 };
-    int pp_active[PP_MAX_DEPTH];
-    int pp_parent[PP_MAX_DEPTH];
-    int pp_depth = 0;
-
-    size_t pos = 0;
-    while (pos < len) {
-        size_t line_start = pos;
-        while (pos < len && src[pos] != '\n') pos++;
-        size_t line_end = pos;
-        if (pos < len) pos++;
-
-        size_t p = line_start;
-        while (p < line_end && (src[p] == ' ' || src[p] == '\t' ||
-                                src[p] == '\r')) p++;
-        int is_directive = p < line_end && src[p] == '#';
-        int cur_active = (pp_depth == 0) ? 1 : pp_active[pp_depth - 1];
-        if (is_directive) {
-            const char *d = src + p;
-            size_t dn = line_end - p;
-            int is_ifdef = dn >= 6 && memcmp(d, "#ifdef", 6) == 0 &&
-                           (dn == 6 || d[6] == ' ' || d[6] == '\t');
-            int is_ifndef = dn >= 7 && memcmp(d, "#ifndef", 7) == 0 &&
-                            (dn == 7 || d[7] == ' ' || d[7] == '\t');
-            int is_else = dn >= 5 && memcmp(d, "#else", 5) == 0 &&
-                          (dn == 5 || d[5] == ' ' || d[5] == '\t');
-            int is_endif = dn >= 6 && memcmp(d, "#endif", 6) == 0 &&
-                           (dn == 6 || d[6] == ' ' || d[6] == '\t');
-            /* Conditional directives are fully resolved HERE and dropped
-             * from the output: expand_object_macros runs before lexing,
-             * so a later pass cannot re-evaluate them against the pruned
-             * stream.  Only the surviving branch's text (and its #define
-             * records) continue below. */
-            if (is_ifdef || is_ifndef) {
-                int cond = 0;
-                size_t kw = is_ifdef ? 6u : 7u;
-                const char *np = d + kw;
-                const char *nend = d + dn;
-                while (np < nend && (*np == ' ' || *np == '\t')) np++;
-                const char *nstart = np;
-                while (np < nend && *np != ' ' && *np != '\t')
-                    np++;
-                size_t nl = (size_t)(np - nstart);
-                for (size_t m = 0; m < macro_count; m++) {
-                    if (strlen(macros[m].name) == nl &&
-                        memcmp(macros[m].name, nstart, nl) == 0) {
-                        cond = 1;
-                        break;
-                    }
-                }
-                if (pp_depth < PP_MAX_DEPTH) {
-                    pp_parent[pp_depth] = cur_active;
-                    pp_active[pp_depth] =
-                        cur_active && (is_ifdef ? cond : !cond);
-                    pp_depth++;
-                }
-                continue;
-            }
-            if (is_else) {
-                if (pp_depth > 0)
-                    pp_active[pp_depth - 1] =
-                        pp_parent[pp_depth - 1] && !pp_active[pp_depth - 1];
-                continue;
-            }
-            if (is_endif) {
-                if (pp_depth > 0) pp_depth--;
-                continue;
-            }
-        }
-        if (!cur_active) continue;
-        int is_define = p + 7 <= line_end && src[p] == '#' &&
-                        memcmp(src + p + 1, "define", 6) == 0 &&
-                        (p + 7 == line_end || isspace((unsigned char)src[p + 7]));
-        /* Keep all other directives intact so preprocess_tokens() can apply
-         * conditional compilation after lexing. */
-        if (!is_define && p < line_end && src[p] == '#') {
-            size_t copy_len = pos - line_start;
-            while (out_len + copy_len + 1 >= out_cap) {
-                out_cap *= 2;
-                char *no = (char *)realloc(out, out_cap);
-                if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                out = no;
-            }
-            memcpy(out + out_len, src + line_start, copy_len);
-            out_len += copy_len;
-            continue;
-        }
-        if (is_define) {
-            p += 7;
-            while (p < line_end && isspace((unsigned char)src[p])) p++;
-            size_t name_start = p;
-            if (p < line_end && is_ident_start_char(src[p])) {
-                p++;
-                while (p < line_end && is_ident_char(src[p])) p++;
-                size_t name_len = p - name_start;
-                /* In C/GLSL preprocessing a function-like macro requires
-                 * '(' immediately after the name; whitespace means an
-                 * object-like replacement whose value may itself begin with
-                 * parentheses (the common `#define N (0)` form). */
-                const int function_like =
-                    p < line_end && src[p] == '(';
-                if (!function_like) {
-                    while (p < line_end && isspace((unsigned char)src[p])) p++;
-                    size_t repl_start = p;
-                    size_t repl_len = line_end - repl_start;
-                    char *name = (char *)malloc(name_len + 1);
-                    char *repl = (char *)malloc(repl_len + 1);
-                    if (!name || !repl) {
-                        free(name); free(repl); free(out);
-                        macro_free_all(macros, macro_count);
-                        return NULL;
-                    }
-                    memcpy(name, src + name_start, name_len); name[name_len] = '\0';
-                    memcpy(repl, src + repl_start, repl_len); repl[repl_len] = '\0';
-                    size_t found = macro_count;
-                    for (size_t i = 0; i < macro_count; i++) {
-                        if (strcmp(macros[i].name, name) == 0) { found = i; break; }
-                    }
-                    if (found == macro_count) {
-                        if (macro_count == macro_cap) {
-                            size_t nc = macro_cap ? macro_cap * 2 : 16;
-                            MGLObjectMacro *nm = (MGLObjectMacro *)realloc(
-                                macros, nc * sizeof(*macros));
-                            if (!nm) {
-                                free(name); free(repl); free(out);
-                                macro_free_all(macros, macro_count);
-                                return NULL;
-                            }
-                            macros = nm; macro_cap = nc;
-                        }
-                        macros[macro_count].name = name;
-                        macros[macro_count].replacement = repl;
-                        macro_count++;
-                    } else {
-                        free(macros[found].name);
-                        free(macros[found].replacement);
-                        macros[found].name = name;
-                        macros[found].replacement = repl;
-                    }
-                    /* Preserve the directive; preprocess_tokens() records
-                     * its name for #ifdef while the replacement is used by
-                     * ordinary source lines below. */
-                    size_t copy_len = pos - line_start;
-                    while (out_len + copy_len + 1 >= out_cap) {
-                        out_cap *= 2;
-                        char *no = (char *)realloc(out, out_cap);
-                        if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                        out = no;
-                    }
-                    memcpy(out + out_len, src + line_start, copy_len);
-                    out_len += copy_len;
-                    continue;
-                }
-            }
-        }
-
-        for (size_t i = line_start; i < line_end;) {
-            if (is_ident_start_char(src[i])) {
-                size_t j = i + 1;
-                while (j < line_end && is_ident_char(src[j])) j++;
-                size_t n = j - i;
-                const char *replacement = NULL;
-                size_t replacement_len = 0;
-                for (size_t m = 0; m < macro_count; m++) {
-                    if (strlen(macros[m].name) == n &&
-                        memcmp(macros[m].name, src + i, n) == 0) {
-                        replacement = macros[m].replacement;
-                        replacement_len = strlen(replacement);
-                        break;
-                    }
-                }
-                if (!replacement) { replacement = src + i; replacement_len = n; }
-                while (out_len + replacement_len + 1 >= out_cap) {
-                    out_cap *= 2;
-                    char *no = (char *)realloc(out, out_cap);
-                    if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                    out = no;
-                }
-                memcpy(out + out_len, replacement, replacement_len);
-                out_len += replacement_len;
-                i = j;
-            } else {
-                if (out_len + 2 >= out_cap) {
-                    out_cap *= 2;
-                    char *no = (char *)realloc(out, out_cap);
-                    if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                    out = no;
-                }
-                out[out_len++] = src[i++];
-            }
-        }
-        if (pos <= len) {
-            if (out_len + 2 >= out_cap) {
-                out_cap *= 2;
-                char *no = (char *)realloc(out, out_cap);
-                if (!no) { free(out); macro_free_all(macros, macro_count); return NULL; }
-                out = no;
-            }
-            out[out_len++] = '\n';
-        }
-    }
-    out[out_len] = '\0';
-    if (getenv("MGL_IB_DEBUG")) {
-        fprintf(stderr, "PP expand done out_len=%zu macros=%zu\n",
-                out_len, macro_count);
-    }
-    macro_free_all(macros, macro_count);
-    return out;
-}
 
 /* ----------------------------------------------------------------- */
 /* Token stream                                                       */
@@ -312,10 +61,12 @@ static int tokenize(MGLTokenStream *ts, const char *src, size_t len)
 {
     ts->cap = 4096;
     ts->tok = (MGLGLSLToken *)malloc((size_t)ts->cap * sizeof(MGLGLSLToken));
-    ts->src = expand_object_macros(src, len);
+    ts->src = (char *)malloc(len + 1);
     if (!ts->tok || !ts->src) {
         return -1;
     }
+    memcpy(ts->src, src, len);
+    ts->src[len] = '\0';
     ts->src_len = strlen(ts->src);
     ts->count = 0;
 
@@ -364,19 +115,44 @@ typedef struct MGLParser {
     MGLTranslationUnit *tu;
     char errbuf[256];
     uint32_t decl_precision;   /* pending precision qualifier */
+    /* Const-int / array-length tables for folding array extents while
+     * parsing (`float[a]`, `float[a+b]`, `float[arr.length()]`). */
+    char const_names[64][64];
+    int64_t const_vals[64];
+    uint32_t const_count;
+    char array_names[64][64];
+    uint32_t array_lens[64];
+    uint32_t array_count;
+    /* User struct type names (`struct S { ... };`) so local declarations
+     * like `S x = { ... };` are recognised as decl statements. */
+    char struct_names[64][64];
+    uint32_t struct_count;
+    /* Variable types for folding `.length()` on vectors/matrices and
+     * type-derived array extents such as `(matA * matB).length()`. */
+    struct {
+        char name[64];
+        int vec_size;
+        int mat_cols, mat_rows;
+        char struct_type[64];
+    } var_types[128];
+    uint32_t var_type_count;
+    char member_paths[128][96];
+    int member_vec[128];
+    int member_mat_cols[128];
+    int member_mat_rows[128];
+    uint32_t member_type_count;
 } MGLParser;
 
 static unsigned int tk_line(MGLParser *p);
 static const MGLGLSLToken *tk(MGLParser *p, int offset);
 
-/* Image formats are layout qualifiers, not declaration qualifiers.  The
- * AIR type carries the image's element scalar kind; Metal obtains the actual
- * pixel format from the bound texture, so no extra AST field is needed. */
-static int is_image_format_layout(const char *s, size_t n)
+/* Image formats are layout qualifiers.  Returns the static format string
+ * when `s` matches, otherwise NULL. */
+static const char *match_image_format_layout(const char *s, size_t n)
 {
     static const char *const formats[] = {
-        "r8", "r16", "r32f", "rg8", "rg16", "rg32f",
-        "rgba8", "rgba16", "rgba32f", "rgba8_snorm",
+        "r8", "r16", "r32f", "r16f", "rg8", "rg16", "rg32f", "rg16f",
+        "rgba8", "rgba16", "rgba32f", "rgba16f", "rgba8_snorm",
         "rgba16_snorm", "rg8_snorm", "rg16_snorm", "r8_snorm",
         "r16_snorm", "r11f_g11f_b10f", "rgb10_a2",
         "r8i", "r16i", "r32i", "rg8i", "rg16i", "rg32i",
@@ -386,10 +162,15 @@ static int is_image_format_layout(const char *s, size_t n)
     };
     for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
         if (strlen(formats[i]) == n && memcmp(s, formats[i], n) == 0) {
-            return 1;
+            return formats[i];
         }
     }
-    return 0;
+    return NULL;
+}
+
+static int is_image_format_layout(const char *s, size_t n)
+{
+    return match_image_format_layout(s, n) != NULL;
 }
 
 static void parse_error(MGLParser *p, const char *fmt, ...)
@@ -557,6 +338,7 @@ static double cur_double(MGLParser *p)
 
 static MGLExpr *parse_expression(MGLParser *p);
 static MGLExpr *parse_assignment(MGLParser *p);
+static MGLExpr *parse_initializer(MGLParser *p);
 static MGLStmt *parse_statement(MGLParser *p);
 static MGLDecl *parse_declaration(MGLParser *p);
 static int at_decl_start(MGLParser *p);
@@ -608,13 +390,13 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
     } else if (n >= 8 && memcmp(s, "usampler", 8) == 0) {
         ts->base = MGL_AST_TYPE_SAMPLER;
         ts->name = dup_token_text(p, t);
-    } else if (n >= 5 && memcmp(s, "image", 5) == 0) {
-        ts->base = MGL_AST_TYPE_IMAGE;
-        ts->name = dup_token_text(p, t);
     } else if (n >= 6 && memcmp(s, "iimage", 6) == 0) {
         ts->base = MGL_AST_TYPE_IMAGE;
         ts->name = dup_token_text(p, t);
     } else if (n >= 6 && memcmp(s, "uimage", 6) == 0) {
+        ts->base = MGL_AST_TYPE_IMAGE;
+        ts->name = dup_token_text(p, t);
+    } else if (n >= 5 && memcmp(s, "image", 5) == 0) {
         ts->base = MGL_AST_TYPE_IMAGE;
         ts->name = dup_token_text(p, t);
     } else if (n == 4 && s[0] == 'v' && s[1] == 'e' && s[2] == 'c' &&
@@ -664,6 +446,433 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
 /* Expressions                                                         */
 /* ------------------------------------------------------------------ */
 
+static int eval_const_int(MGLParser *p, const MGLExpr *e, int64_t *value);
+static int eval_type_length(MGLParser *p, const MGLExpr *e, uint32_t *len);
+static int lookup_array_len(const MGLParser *p, const char *name, uint32_t *len);
+static MGLExpr *parse_expression(MGLParser *p);
+
+static void record_const_int(MGLParser *p, const char *name, int64_t value)
+{
+    if (!p || !name || p->const_count >= 64) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->const_count; i++) {
+        if (strcmp(p->const_names[i], name) == 0) {
+            p->const_vals[i] = value;
+            return;
+        }
+    }
+    memcpy(p->const_names[p->const_count], name, n + 1);
+    p->const_vals[p->const_count++] = value;
+}
+
+static void record_var_type(MGLParser *p, const char *name,
+                            const MGLTypeSpec *t, const char *struct_type)
+{
+    if (!p || !name || !t || p->var_type_count >= 128) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->var_type_count; i++) {
+        if (strcmp(p->var_types[i].name, name) == 0) {
+            p->var_types[i].vec_size = t->vec_size;
+            p->var_types[i].mat_cols = t->mat_cols;
+            p->var_types[i].mat_rows = t->mat_rows;
+            if (struct_type) {
+                strncpy(p->var_types[i].struct_type, struct_type,
+                        sizeof(p->var_types[i].struct_type) - 1);
+            } else {
+                p->var_types[i].struct_type[0] = '\0';
+            }
+            return;
+        }
+    }
+    memcpy(p->var_types[p->var_type_count].name, name, n + 1);
+    p->var_types[p->var_type_count].vec_size = t->vec_size;
+    p->var_types[p->var_type_count].mat_cols = t->mat_cols;
+    p->var_types[p->var_type_count].mat_rows = t->mat_rows;
+    if (struct_type) {
+        strncpy(p->var_types[p->var_type_count].struct_type, struct_type,
+                sizeof(p->var_types[p->var_type_count].struct_type) - 1);
+    } else {
+        p->var_types[p->var_type_count].struct_type[0] = '\0';
+    }
+    p->var_type_count++;
+}
+
+static void record_member_type(MGLParser *p, const char *path,
+                               const MGLTypeSpec *t)
+{
+    if (!p || !path || !t || p->member_type_count >= 128) return;
+    size_t n = strlen(path);
+    if (n == 0 || n >= 96) return;
+    for (uint32_t i = 0; i < p->member_type_count; i++) {
+        if (strcmp(p->member_paths[i], path) == 0) {
+            p->member_vec[i] = t->vec_size;
+            p->member_mat_cols[i] = t->mat_cols;
+            p->member_mat_rows[i] = t->mat_rows;
+            return;
+        }
+    }
+    memcpy(p->member_paths[p->member_type_count], path, n + 1);
+    p->member_vec[p->member_type_count] = t->vec_size;
+    p->member_mat_cols[p->member_type_count] = t->mat_cols;
+    p->member_mat_rows[p->member_type_count] = t->mat_rows;
+    p->member_type_count++;
+}
+
+static int lookup_member_type(const MGLParser *p, const char *path,
+                              int *vec_size, int *mat_cols, int *mat_rows)
+{
+    if (!p || !path) return 0;
+    for (uint32_t i = 0; i < p->member_type_count; i++) {
+        if (strcmp(p->member_paths[i], path) == 0) {
+            if (vec_size) *vec_size = p->member_vec[i];
+            if (mat_cols) *mat_cols = p->member_mat_cols[i];
+            if (mat_rows) *mat_rows = p->member_mat_rows[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void record_struct_member_lens(MGLParser *p, const char *prefix,
+                                      MGLDecl **members, uint32_t count)
+{
+    if (!p || !prefix || !members) return;
+    for (uint32_t i = 0; i < count; i++) {
+        for (MGLDecl *m = members[i]; m; m = m->next_declarator) {
+            if (!m->name || !m->type) continue;
+            char path[96];
+            snprintf(path, sizeof(path), "%s.%s", prefix, m->name);
+            record_member_type(p, path, m->type);
+        }
+    }
+}
+
+static int lookup_var_type(const MGLParser *p, const char *name,
+                           int *vec_size, int *mat_cols, int *mat_rows,
+                           char struct_type[64])
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->var_type_count; i++) {
+        if (strcmp(p->var_types[i].name, name) == 0) {
+            if (vec_size) *vec_size = p->var_types[i].vec_size;
+            if (mat_cols) *mat_cols = p->var_types[i].mat_cols;
+            if (mat_rows) *mat_rows = p->var_types[i].mat_rows;
+            if (struct_type) {
+                strncpy(struct_type, p->var_types[i].struct_type, 63);
+                struct_type[63] = '\0';
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int lookup_member_len(const MGLParser *p, const char *path, uint32_t *len)
+{
+    int vc = 0, mc = 0, mr = 0;
+    if (!lookup_member_type(p, path, &vc, &mc, &mr) || !len) return 0;
+    if (mc > 0) { *len = (uint32_t)mc; return 1; }
+    if (vc > 0) { *len = (uint32_t)vc; return 1; }
+    return 0;
+}
+
+static uint32_t swizzle_component_count(const char *field)
+{
+    if (!field || !field[0]) return 0;
+    if (field[0] >= '0' && field[0] <= '3') {
+        uint32_t n = 0;
+        for (const char *c = field; *c >= '0' && *c <= '3'; c++) n++;
+        return n;
+    }
+    uint32_t n = 0;
+    for (const char *c = field; *c; c++) {
+        if (*c == 'x' || *c == 'y' || *c == 'z' || *c == 'w' ||
+            *c == 'r' || *c == 'g' || *c == 'b' || *c == 'a' ||
+            *c == 's' || *c == 't' || *c == 'p' || *c == 'q')
+            n++;
+        else
+            return 0;
+    }
+    return n;
+}
+
+static int expr_var_type(const MGLParser *p, const MGLExpr *e,
+                         int *vec_size, int *mat_cols, int *mat_rows)
+{
+    if (!p || !e) return 0;
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF: {
+        char st[64] = {0};
+        if (!lookup_var_type(p, e->u.var_ref.name, vec_size, mat_cols, mat_rows, st))
+            return 0;
+        if (mat_cols && *mat_cols > 0) return 1;
+        if (vec_size && *vec_size > 0) return 1;
+        return 0;
+    }
+    case MGL_EXPR_MEMBER: {
+        if (!e->u.member.field) return 0;
+        uint32_t swz = swizzle_component_count(e->u.member.field);
+        if (swz) {
+            if (vec_size) *vec_size = (int)swz;
+            if (mat_cols) *mat_cols = 0;
+            if (mat_rows) *mat_rows = 0;
+            return 1;
+        }
+        char path[96];
+        const MGLExpr *root = e->u.member.object;
+        if (root && root->kind == MGL_EXPR_INDEX &&
+            root->u.index.object &&
+            root->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            root = root->u.index.object;
+        }
+        if (root && root->kind == MGL_EXPR_VAR_REF) {
+            char st[64] = {0};
+            lookup_var_type(p, root->u.var_ref.name,
+                            NULL, NULL, NULL, st);
+            if (st[0]) {
+                snprintf(path, sizeof(path), "%s.%s", st, e->u.member.field);
+                if (lookup_member_type(p, path, vec_size, mat_cols, mat_rows))
+                    return 1;
+            }
+            snprintf(path, sizeof(path), "%s.%s",
+                     root->u.var_ref.name, e->u.member.field);
+            if (lookup_member_type(p, path, vec_size, mat_cols, mat_rows))
+                return 1;
+        }
+        return 0;
+    }
+    case MGL_EXPR_INDEX: {
+        int vc = 0, mc = 0, mr = 0;
+        if (!expr_var_type(p, e->u.index.object, &vc, &mc, &mr)) return 0;
+        if (mc > 0) {
+            if (vec_size) *vec_size = mr;
+            if (mat_cols) *mat_cols = 0;
+            if (mat_rows) *mat_rows = 0;
+            return 1;
+        }
+        if (vc > 0) {
+            if (vec_size) *vec_size = 1;
+            if (mat_cols) *mat_cols = 0;
+            if (mat_rows) *mat_rows = 0;
+            return 1;
+        }
+        return 0;
+    }
+    case MGL_EXPR_BINARY:
+        if (e->u.binary.op != MGL_OP_MUL) return 0;
+        {
+            int lvc = 0, lmc = 0, lmr = 0;
+            int rvc = 0, rmc = 0, rmr = 0;
+            if (!expr_var_type(p, e->u.binary.lhs, &lvc, &lmc, &lmr) ||
+                !expr_var_type(p, e->u.binary.rhs, &rvc, &rmc, &rmr))
+                return 0;
+            if (lmc > 0 && rmc > 0 && lmc == rmr) {
+                if (vec_size) *vec_size = 0;
+                if (mat_cols) *mat_cols = rmc;
+                if (mat_rows) *mat_rows = lmr;
+                return 1;
+            }
+            if (lvc > 0 && rvc > 0) {
+                if (vec_size) *vec_size = lvc;
+                if (mat_cols) *mat_cols = 0;
+                if (mat_rows) *mat_rows = 0;
+                return 1;
+            }
+            return 0;
+        }
+    case MGL_EXPR_CALL: {
+        if (!e->u.call.name) return 0;
+        if (strcmp(e->u.call.name, "outerProduct") == 0 &&
+            e->u.call.arg_count == 2) {
+            int lvc = 0, rvc = 0;
+            if (!expr_var_type(p, e->u.call.args[0], &lvc, NULL, NULL) ||
+                !expr_var_type(p, e->u.call.args[1], &rvc, NULL, NULL) ||
+                lvc <= 0 || rvc <= 0)
+                return 0;
+            if (vec_size) *vec_size = 0;
+            if (mat_cols) *mat_cols = lvc;
+            if (mat_rows) *mat_rows = rvc;
+            return 1;
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+static int eval_type_length(MGLParser *p, const MGLExpr *e, uint32_t *len)
+{
+    if (!p || !e || !len) return 0;
+    const MGLExpr *target = e;
+    if (e->kind == MGL_EXPR_CALL && e->u.call.name &&
+        strcmp(e->u.call.name, "__mgl_array_length") == 0 &&
+        e->u.call.arg_count == 1) {
+        target = e->u.call.args[0];
+    }
+    if (target->kind == MGL_EXPR_VAR_REF) {
+        uint32_t alen = 0;
+        if (lookup_array_len(p, target->u.var_ref.name, &alen)) {
+            *len = alen;
+            return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_Position") == 0 ||
+            strcmp(target->u.var_ref.name, "gl_ClipDistance") == 0 ||
+            strcmp(target->u.var_ref.name, "gl_CullDistance") == 0) {
+            *len = 4; return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_PointCoord") == 0) {
+            *len = 2; return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_TessCoord") == 0) {
+            *len = 3; return 1;
+        }
+        if (strcmp(target->u.var_ref.name, "gl_SamplePosition") == 0) {
+            *len = 2; return 1;
+        }
+    }
+    int vc = 0, mc = 0, mr = 0;
+    if (expr_var_type(p, target, &vc, &mc, &mr)) {
+        if (mc > 0) { *len = (uint32_t)mc; return 1; }
+        if (vc > 0) { *len = (uint32_t)vc; return 1; }
+    }
+    return 0;
+}
+
+static void record_array_len(MGLParser *p, const char *name, uint32_t len)
+{
+    if (!p || !name || len == 0 || p->array_count >= 64) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->array_count; i++) {
+        if (strcmp(p->array_names[i], name) == 0) {
+            p->array_lens[i] = len;
+            return;
+        }
+    }
+    memcpy(p->array_names[p->array_count], name, n + 1);
+    p->array_lens[p->array_count++] = len;
+}
+
+static void record_struct_name(MGLParser *p, const char *name)
+{
+    if (!p || !name || p->struct_count >= 64) return;
+    size_t n = strlen(name);
+    if (n == 0 || n >= 64) return;
+    for (uint32_t i = 0; i < p->struct_count; i++) {
+        if (strcmp(p->struct_names[i], name) == 0) {
+            return;
+        }
+    }
+    memcpy(p->struct_names[p->struct_count], name, n + 1);
+    p->struct_count++;
+}
+
+static int is_struct_type_name(MGLParser *p, const char *name)
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->struct_count; i++) {
+        if (strcmp(p->struct_names[i], name) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int lookup_builtin_const_int(const char *name, int64_t *value)
+{
+    /* GLSL §7.3 implementation-dependent constants used in array extents.
+     * Values must match glm_params / glGet / AIR builtin folding. */
+    static const struct {
+        const char *name;
+        int64_t value;
+    } builtins[] = {
+        { "gl_MaxImageUnits", 8 },
+        { "gl_MaxImageSamples", 8 },
+        { "gl_MaxVertexImageUniforms", 8 },
+        { "gl_MaxTessControlImageUniforms", 8 },
+        { "gl_MaxTessEvaluationImageUniforms", 8 },
+        { "gl_MaxGeometryImageUniforms", 8 },
+        { "gl_MaxFragmentImageUniforms", 8 },
+        { "gl_MaxComputeImageUniforms", 8 },
+        { "gl_MaxCombinedImageUniforms", 40 },
+        { "gl_MaxCombinedShaderOutputResources", 8 },
+        { "gl_MaxCombinedImageUnitsAndFragmentOutputs", 8 },
+    };
+    if (!name || !value) return 0;
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+        if (strcmp(name, builtins[i].name) == 0) {
+            *value = builtins[i].value;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int lookup_const_int(const MGLParser *p, const char *name, int64_t *value)
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->const_count; i++) {
+        if (strcmp(p->const_names[i], name) == 0) {
+            *value = p->const_vals[i];
+            return 1;
+        }
+    }
+    return lookup_builtin_const_int(name, value);
+}
+
+static int lookup_array_len(const MGLParser *p, const char *name, uint32_t *len)
+{
+    if (!p || !name) return 0;
+    for (uint32_t i = 0; i < p->array_count; i++) {
+        if (strcmp(p->array_names[i], name) == 0) {
+            *len = p->array_lens[i];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void record_decl_constants(MGLParser *p, const MGLDecl *d)
+{
+    for (; d; d = d->next_declarator) {
+        if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
+            d->type->name && d->struct_members) {
+            record_struct_member_lens(p, d->type->name,
+                                      d->struct_members,
+                                      d->struct_member_count);
+        }
+        if (!d->name) continue;
+        if (d->type) {
+            if (d->struct_members) {
+                record_struct_member_lens(p, d->name,
+                                          d->struct_members,
+                                          d->struct_member_count);
+            }
+            const char *st = (d->type->base == MGL_AST_TYPE_STRUCT &&
+                              d->type->name) ? d->type->name : NULL;
+            record_var_type(p, d->name, d->type, st);
+        }
+        if (d->array_count > 0 && d->array_dims) {
+            /* 1-D size used by `.length()`; multi-dim rejected elsewhere. */
+            uint32_t sz = d->array_dims[0];
+            if (sz > 0) record_array_len(p, d->name, sz);
+        }
+        if (!(d->qualifiers & MGL_AST_Q_CONST) || !d->type || !d->init)
+            continue;
+        if (d->type->vec_size || d->type->mat_cols) continue;
+        if (d->type->base != MGL_AST_TYPE_INT &&
+            d->type->base != MGL_AST_TYPE_UINT &&
+            d->type->base != MGL_AST_TYPE_BOOL)
+            continue;
+        int64_t v = 0;
+        if (eval_const_int(p, d->init, &v))
+            record_const_int(p, d->name, v);
+    }
+}
+
 static MGLExpr *expr_alloc(MGLParser *p, uint32_t kind, uint32_t line)
 {
     (void)p;
@@ -712,15 +921,52 @@ static MGLExpr *parse_primary(MGLParser *p)
             free(name);
             return e;
         }
-        if (ops_at(p, "(") ||
-            (at_peek_punct(p, 0, "[") && at_peek_punct(p, 1, "]"))) {
+        if (ops_at(p, "(") || ops_at(p, "[")) {
+            /* Distinguish `T[N](...)` array ctor from `arr[i]` indexing:
+             * only treat brackets as an array ctor when `(` follows `]`. */
+            int is_arr_ctor = 0;
+            uint32_t ctor_size = 0;
+            if (ops_at(p, "[")) {
+                int saved = p->pos;
+                advance(p); /* [ */
+                if (ops_at(p, "]")) {
+                    ctor_size = 0;
+                } else {
+                    /* Constant extent only; restore on failure so
+                     * postfix indexing can re-parse `arr[expr]`. */
+                    MGLExpr *ext = parse_expression(p);
+                    int64_t value = 0;
+                    int valid = eval_const_int(p, ext, &value);
+                    free_expr(ext);
+                    if (!valid || value < 0 ||
+                        (uint64_t)value > UINT32_MAX || !ops_at(p, "]")) {
+                        p->pos = saved;
+                        /* Fall through to VAR_REF; postfix handles `[`. */
+                        MGLExpr *e = expr_alloc(p, MGL_EXPR_VAR_REF, line);
+                        if (e) {
+                            e->u.var_ref.name = name;
+                        }
+                        return e;
+                    }
+                    ctor_size = (uint32_t)value;
+                }
+                advance(p); /* ] */
+                if (!ops_at(p, "(")) {
+                    p->pos = saved;
+                    MGLExpr *e = expr_alloc(p, MGL_EXPR_VAR_REF, line);
+                    if (e) {
+                        e->u.var_ref.name = name;
+                    }
+                    return e;
+                }
+                is_arr_ctor = 1;
+            }
             MGLExpr *e = expr_alloc(p, MGL_EXPR_CALL, line);
             if (e) {
                 e->u.call.name = name;
-                if (ops_at(p, "[")) {
+                if (is_arr_ctor) {
                     e->u.call.is_array_ctor = 1;
-                    advance(p);   /* [ */
-                    advance(p);   /* ] */
+                    e->u.call.array_ctor_size = ctor_size;
                 }
                 eat_punct(p, "(");
                 uint32_t argc = 0;
@@ -1048,6 +1294,51 @@ static MGLExpr *parse_assignment(MGLParser *p)
     return lhs;
 }
 
+/* GLSL 4.20 / ARB_shading_language_420pack curly-brace initializer list.
+ * Allowed as a declaration initializer (and nested inside another list). */
+static MGLExpr *parse_init_list(MGLParser *p)
+{
+    uint32_t line = tk_line(p);
+    eat_punct(p, "{");
+    MGLExpr *e = expr_alloc(p, MGL_EXPR_INIT_LIST, line);
+    if (!e) {
+        return NULL;
+    }
+    uint32_t argc = 0;
+    if (!ops_at(p, "}")) {
+        for (;;) {
+            MGLExpr *arg = parse_initializer(p);
+            if (!arg) {
+                break;
+            }
+            e->u.init_list.args = (MGLExpr **)realloc(
+                e->u.init_list.args, (argc + 1) * sizeof(MGLExpr *));
+            if (!e->u.init_list.args) {
+                free_expr(arg);
+                break;
+            }
+            e->u.init_list.args[argc++] = arg;
+            if (!eat_punct(p, ",")) {
+                break;
+            }
+            if (ops_at(p, "}")) {
+                break; /* trailing comma */
+            }
+        }
+    }
+    e->u.init_list.arg_count = argc;
+    expect_punct(p, "}");
+    return e;
+}
+
+static MGLExpr *parse_initializer(MGLParser *p)
+{
+    if (ops_at(p, "{")) {
+        return parse_init_list(p);
+    }
+    return parse_assignment(p);
+}
+
 static MGLExpr *parse_expression(MGLParser *p)
 {
     MGLExpr *lhs = parse_assignment(p);
@@ -1076,58 +1367,557 @@ static MGLExpr *parse_expression(MGLParser *p)
 /* Array extents are integral constant expressions in GLSL.  The AST stores
  * only the resulting extent, so evaluate the constant subset while parsing
  * declarations and reject expressions that depend on runtime values. */
-static int eval_const_int(const MGLExpr *e, int64_t *value)
+
+typedef struct MGLConstVal {
+    uint32_t base; /* MGL_AST_TYPE_INT/UINT/BOOL/FLOAT */
+    uint32_t size; /* 1 = scalar, 2-4 = vector */
+    double v[4];
+} MGLConstVal;
+
+static void const_val_scalar(MGLConstVal *cv, uint32_t base, double x)
 {
-    int64_t lhs, rhs;
-    if (!e || !value) return 0;
-    switch (e->kind) {
-    case MGL_EXPR_LITERAL:
-        if (e->u.literal.base != MGL_AST_TYPE_INT &&
-            e->u.literal.base != MGL_AST_TYPE_UINT &&
-            e->u.literal.base != MGL_AST_TYPE_BOOL) {
+    cv->base = base;
+    cv->size = 1;
+    cv->v[0] = x;
+    cv->v[1] = cv->v[2] = cv->v[3] = 0.0;
+}
+
+static void const_val_broadcast(MGLConstVal *cv, uint32_t base, uint32_t size, double x)
+{
+    cv->base = base;
+    cv->size = size;
+    for (uint32_t i = 0; i < 4; i++) {
+        cv->v[i] = (i < size) ? x : 0.0;
+    }
+}
+
+static int const_val_from_int(MGLConstVal *cv, uint32_t base, int64_t x)
+{
+    if (base == MGL_AST_TYPE_BOOL) {
+        const_val_scalar(cv, base, x ? 1.0 : 0.0);
+        return 1;
+    }
+    if (base == MGL_AST_TYPE_UINT) {
+        const_val_scalar(cv, base, (double)(uint32_t)x);
+        return 1;
+    }
+    const_val_scalar(cv, base, (double)x);
+    return 1;
+}
+
+static int64_t const_val_to_int(const MGLConstVal *cv)
+{
+    double x = cv->v[0];
+    if (cv->base == MGL_AST_TYPE_BOOL) {
+        return x != 0.0 ? 1 : 0;
+    }
+    if (cv->base == MGL_AST_TYPE_UINT) {
+        return (int64_t)(uint32_t)x;
+    }
+    return (int64_t)x; /* truncate toward zero */
+}
+
+static int const_type_name(const char *name, uint32_t *base, uint32_t *size)
+{
+    if (!name) {
+        return 0;
+    }
+    struct {
+        const char *n;
+        uint32_t base;
+        uint32_t size;
+    } table[] = {
+        {"bool", MGL_AST_TYPE_BOOL, 1}, {"bvec2", MGL_AST_TYPE_BOOL, 2},
+        {"bvec3", MGL_AST_TYPE_BOOL, 3}, {"bvec4", MGL_AST_TYPE_BOOL, 4},
+        {"int", MGL_AST_TYPE_INT, 1}, {"ivec2", MGL_AST_TYPE_INT, 2},
+        {"ivec3", MGL_AST_TYPE_INT, 3}, {"ivec4", MGL_AST_TYPE_INT, 4},
+        {"uint", MGL_AST_TYPE_UINT, 1}, {"uvec2", MGL_AST_TYPE_UINT, 2},
+        {"uvec3", MGL_AST_TYPE_UINT, 3}, {"uvec4", MGL_AST_TYPE_UINT, 4},
+        {"float", MGL_AST_TYPE_FLOAT, 1}, {"vec2", MGL_AST_TYPE_FLOAT, 2},
+        {"vec3", MGL_AST_TYPE_FLOAT, 3}, {"vec4", MGL_AST_TYPE_FLOAT, 4},
+    };
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        if (strcmp(name, table[i].n) == 0) {
+            *base = table[i].base;
+            *size = table[i].size;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int member_index(const char *field, uint32_t *idx)
+{
+    if (!field || !field[0] || field[1] != '\0') {
+        return 0;
+    }
+    switch (field[0]) {
+    case 'x':
+    case 'r':
+    case 's': *idx = 0; return 1;
+    case 'y':
+    case 'g':
+    case 't': *idx = 1; return 1;
+    case 'z':
+    case 'b':
+    case 'p': *idx = 2; return 1;
+    case 'w':
+    case 'a':
+    case 'q': *idx = 3; return 1;
+    default: return 0;
+    }
+}
+
+static int eval_const_val(MGLParser *p, const MGLExpr *e, MGLConstVal *out);
+
+static int eval_const_args(MGLParser *p, const MGLExpr *call, MGLConstVal *args, uint32_t max)
+{
+    if (!call || call->kind != MGL_EXPR_CALL || call->u.call.arg_count > max) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < call->u.call.arg_count; i++) {
+        if (!eval_const_val(p, call->u.call.args[i], &args[i])) {
             return 0;
         }
-        *value = (int64_t)e->u.literal.value;
+    }
+    return (int)call->u.call.arg_count;
+}
+
+static int eval_const_promote(MGLConstVal *a, MGLConstVal *b)
+{
+    if (a->size == b->size) {
         return 1;
-    case MGL_EXPR_UNARY:
-        if (!eval_const_int(e->u.unary.operand, &lhs)) return 0;
-        switch (e->u.unary.op) {
-        case MGL_OP_ADD: *value = lhs; return 1;
-        case MGL_OP_SUB: *value = -lhs; return 1;
-        case MGL_OP_NOT: *value = !lhs; return 1;
-        case MGL_OP_BNOT: *value = ~lhs; return 1;
+    }
+    if (a->size == 1 && b->size > 1) {
+        double x = a->v[0];
+        const_val_broadcast(a, a->base, b->size, x);
+        return 1;
+    }
+    if (b->size == 1 && a->size > 1) {
+        double x = b->v[0];
+        const_val_broadcast(b, b->base, a->size, x);
+        return 1;
+    }
+    return 0;
+}
+
+static int eval_const_binary_op(uint32_t op, const MGLConstVal *a,
+                              const MGLConstVal *b, MGLConstVal *out)
+{
+    MGLConstVal lhs = *a;
+    MGLConstVal rhs = *b;
+    if (!eval_const_promote(&lhs, &rhs)) {
+        return 0;
+    }
+    out->base = lhs.base;
+    out->size = lhs.size;
+    for (uint32_t i = 0; i < lhs.size; i++) {
+        double x = lhs.v[i];
+        double y = rhs.v[i];
+        double r = 0.0;
+        switch (op) {
+        case MGL_OP_ADD: r = x + y; break;
+        case MGL_OP_SUB: r = x - y; break;
+        case MGL_OP_MUL: r = x * y; break;
+        case MGL_OP_DIV: if (y == 0.0) return 0; r = x / y; break;
+        case MGL_OP_MOD:
+            if (y == 0.0) return 0;
+            /* GLSL `%` on int/uint/bool is truncated remainder (C `%`);
+             * float uses the floor form of `mod()`. */
+            if (lhs.base == MGL_AST_TYPE_FLOAT) {
+                r = x - y * floor(x / y);
+            } else {
+                r = (double)((int64_t)x % (int64_t)y);
+            }
+            break;
+        case MGL_OP_EQ: r = (x == y) ? 1.0 : 0.0; break;
+        case MGL_OP_NE: r = (x != y) ? 1.0 : 0.0; break;
+        case MGL_OP_LT: r = (x < y) ? 1.0 : 0.0; break;
+        case MGL_OP_LE: r = (x <= y) ? 1.0 : 0.0; break;
+        case MGL_OP_GT: r = (x > y) ? 1.0 : 0.0; break;
+        case MGL_OP_GE: r = (x >= y) ? 1.0 : 0.0; break;
+        case MGL_OP_AND: r = ((int64_t)x & (int64_t)y); break;
+        case MGL_OP_OR: r = ((int64_t)x | (int64_t)y); break;
+        case MGL_OP_XOR: r = ((int64_t)x ^ (int64_t)y); break;
+        case MGL_OP_SHL:
+            if (y < 0.0 || y >= 64.0) return 0;
+            r = (double)((int64_t)x << (int)y);
+            break;
+        case MGL_OP_SHR:
+            if (y < 0.0 || y >= 64.0) return 0;
+            r = (double)((int64_t)x >> (int)y);
+            break;
         default: return 0;
         }
-    case MGL_EXPR_BINARY:
-        if (!eval_const_int(e->u.binary.lhs, &lhs) ||
-            !eval_const_int(e->u.binary.rhs, &rhs)) return 0;
-        switch (e->u.binary.op) {
-        case MGL_OP_ADD: *value = lhs + rhs; return 1;
-        case MGL_OP_SUB: *value = lhs - rhs; return 1;
-        case MGL_OP_MUL: *value = lhs * rhs; return 1;
-        case MGL_OP_DIV: if (!rhs) return 0; *value = lhs / rhs; return 1;
-        case MGL_OP_MOD: if (!rhs) return 0; *value = lhs % rhs; return 1;
-        case MGL_OP_SHL: if (rhs < 0 || rhs >= 64) return 0; *value = lhs << rhs; return 1;
-        case MGL_OP_SHR: if (rhs < 0 || rhs >= 64) return 0; *value = lhs >> rhs; return 1;
-        case MGL_OP_AND: *value = lhs & rhs; return 1;
-        case MGL_OP_OR: *value = lhs | rhs; return 1;
-        case MGL_OP_XOR: *value = lhs ^ rhs; return 1;
-        case MGL_OP_LAND: *value = lhs && rhs; return 1;
-        case MGL_OP_LOR: *value = lhs || rhs; return 1;
-        case MGL_OP_EQ: *value = lhs == rhs; return 1;
-        case MGL_OP_NE: *value = lhs != rhs; return 1;
-        case MGL_OP_LT: *value = lhs < rhs; return 1;
-        case MGL_OP_LE: *value = lhs <= rhs; return 1;
-        case MGL_OP_GT: *value = lhs > rhs; return 1;
-        case MGL_OP_GE: *value = lhs >= rhs; return 1;
+        out->v[i] = r;
+    }
+    return 1;
+}
+
+static int eval_const_unary_op(uint32_t op, const MGLConstVal *in, MGLConstVal *out)
+{
+    *out = *in;
+    for (uint32_t i = 0; i < in->size; i++) {
+        double x = in->v[i];
+        switch (op) {
+        case MGL_OP_ADD: out->v[i] = x; break;
+        case MGL_OP_SUB: out->v[i] = -x; break;
+        case MGL_OP_NOT: out->v[i] = x ? 0.0 : 1.0; break;
+        case MGL_OP_BNOT: out->v[i] = (double)(~(int64_t)x); break;
         default: return 0;
         }
-    case MGL_EXPR_TERNARY:
-        if (!eval_const_int(e->u.ternary.cond, &lhs)) return 0;
-        return eval_const_int(lhs ? e->u.ternary.then : e->u.ternary.else_, value);
+    }
+    return 1;
+}
+
+static int eval_const_builtin(const char *name, uint32_t argc, MGLConstVal *args,
+                              MGLConstVal *out)
+{
+    if (!name) {
+        return 0;
+    }
+
+#define ARG(i) (args[i])
+#define SCAL(i) (ARG(i).v[0])
+
+    if (strcmp(name, "radians") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = ARG(0).v[i] * (M_PI / 180.0);
+        }
+        return 1;
+    }
+    if (strcmp(name, "degrees") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = ARG(0).v[i] * (180.0 / M_PI);
+        }
+        return 1;
+    }
+    if (strcmp(name, "sin") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = sin(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "cos") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = cos(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "asin") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = asin(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "acos") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = acos(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "pow") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = pow(args[0].v[i], args[1].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "exp") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = exp(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "log") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = log(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "exp2") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = pow(2.0, ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "log2") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = log2(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "sqrt") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = sqrt(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "inversesqrt") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = 1.0 / sqrt(ARG(0).v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "abs") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            double x = ARG(0).v[i];
+            if (ARG(0).base == MGL_AST_TYPE_FLOAT) {
+                out->v[i] = fabs(x);
+            } else {
+                int64_t iv = (int64_t)x;
+                out->v[i] = (double)(iv < 0 ? -iv : iv);
+            }
+        }
+        return 1;
+    }
+    if (strcmp(name, "sign") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            double x = ARG(0).v[i];
+            out->v[i] = (x > 0.0) ? 1.0 : ((x < 0.0) ? -1.0 : 0.0);
+        }
+        return 1;
+    }
+    if (strcmp(name, "floor") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = floor(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "trunc") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = trunc(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "round") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = round(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "ceil") == 0 && argc == 1) {
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) out->v[i] = ceil(ARG(0).v[i]);
+        return 1;
+    }
+    if (strcmp(name, "mod") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            double x = args[0].v[i];
+            double y = args[1].v[i];
+            if (y == 0.0) return 0;
+            out->v[i] = x - y * floor(x / y);
+        }
+        return 1;
+    }
+    if (strcmp(name, "min") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = fmin(args[0].v[i], args[1].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "max") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = fmax(args[0].v[i], args[1].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "clamp") == 0 && argc == 3) {
+        MGLConstVal tmp = args[0];
+        if (!eval_const_promote(&tmp, &args[1])) return 0;
+        args[0] = tmp;
+        if (!eval_const_promote(&args[0], &args[2])) return 0;
+        *out = args[0];
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] = fmin(fmax(args[0].v[i], args[1].v[i]), args[2].v[i]);
+        }
+        return 1;
+    }
+    if (strcmp(name, "length") == 0 && argc == 1) {
+        double sum = 0.0;
+        for (uint32_t i = 0; i < ARG(0).size; i++) {
+            sum += ARG(0).v[i] * ARG(0).v[i];
+        }
+        const_val_scalar(out, MGL_AST_TYPE_FLOAT, sqrt(sum));
+        return 1;
+    }
+    if (strcmp(name, "dot") == 0 && argc == 2) {
+        if (!eval_const_promote(&args[0], &args[1])) return 0;
+        double sum = 0.0;
+        for (uint32_t i = 0; i < args[0].size; i++) {
+            sum += args[0].v[i] * args[1].v[i];
+        }
+        const_val_scalar(out, MGL_AST_TYPE_FLOAT, sum);
+        return 1;
+    }
+    if (strcmp(name, "normalize") == 0 && argc == 1) {
+        double sum = 0.0;
+        for (uint32_t i = 0; i < ARG(0).size; i++) {
+            sum += ARG(0).v[i] * ARG(0).v[i];
+        }
+        if (sum == 0.0) {
+            return 0;
+        }
+        double inv = 1.0 / sqrt(sum);
+        *out = ARG(0);
+        for (uint32_t i = 0; i < out->size; i++) {
+            out->v[i] *= inv;
+        }
+        return 1;
+    }
+
+#undef ARG
+#undef SCAL
+    return 0;
+}
+
+static int eval_const_ctor(const char *name, uint32_t argc, MGLConstVal *args,
+                           MGLConstVal *out)
+{
+    uint32_t base = 0;
+    uint32_t size = 0;
+    if (!const_type_name(name, &base, &size)) {
+        return 0;
+    }
+    if (argc == 1 && args[0].size > 1 && size > 1) {
+        if (args[0].size != size) {
+            return 0;
+        }
+        *out = args[0];
+        out->base = base;
+        return 1;
+    }
+    if (argc == 1 && size >= 1) {
+        const_val_broadcast(out, base, size, args[0].v[0]);
+        return 1;
+    }
+    if ((int)argc == (int)size) {
+        out->base = base;
+        out->size = size;
+        for (uint32_t i = 0; i < size; i++) {
+            out->v[i] = args[i].v[0];
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static int eval_const_val(MGLParser *p, const MGLExpr *e, MGLConstVal *out)
+{
+    if (!e || !out) {
+        return 0;
+    }
+    switch (e->kind) {
+    case MGL_EXPR_LITERAL:
+        if (e->u.literal.base == MGL_AST_TYPE_FLOAT) {
+            const_val_scalar(out, MGL_AST_TYPE_FLOAT, e->u.literal.value);
+            return 1;
+        }
+        return const_val_from_int(out, e->u.literal.base, (int64_t)e->u.literal.value);
+    case MGL_EXPR_VAR_REF: {
+        int64_t v = 0;
+        if (!lookup_const_int(p, e->u.var_ref.name, &v)) {
+            return 0;
+        }
+        return const_val_from_int(out, MGL_AST_TYPE_INT, v);
+    }
+    case MGL_EXPR_MEMBER: {
+        MGLConstVal obj;
+        uint32_t idx = 0;
+        if (!eval_const_val(p, e->u.member.object, &obj) ||
+            !member_index(e->u.member.field, &idx) || idx >= obj.size) {
+            return 0;
+        }
+        const_val_scalar(out, obj.base, obj.v[idx]);
+        return 1;
+    }
+    case MGL_EXPR_CALL: {
+        MGLConstVal args[4];
+        int argc = eval_const_args(p, e, args, 4);
+        if (argc < 0) {
+            return 0;
+        }
+        if (e->u.call.name &&
+            strcmp(e->u.call.name, "__mgl_array_length") == 0 &&
+            argc == 1) {
+            uint32_t len = 0;
+            if (eval_type_length(p, e, &len)) {
+                return const_val_from_int(out, MGL_AST_TYPE_INT, (int64_t)len);
+            }
+            if (e->u.call.args[0] &&
+                e->u.call.args[0]->kind == MGL_EXPR_VAR_REF) {
+                uint32_t alen = 0;
+                if (lookup_array_len(p, e->u.call.args[0]->u.var_ref.name, &alen)) {
+                    return const_val_from_int(out, MGL_AST_TYPE_INT, (int64_t)alen);
+                }
+            }
+            return 0;
+        }
+        if (eval_const_ctor(e->u.call.name, (uint32_t)argc, args, out)) {
+            return 1;
+        }
+        return eval_const_builtin(e->u.call.name, (uint32_t)argc, args, out);
+    }
+    case MGL_EXPR_UNARY: {
+        MGLConstVal in;
+        if (!eval_const_val(p, e->u.unary.operand, &in)) {
+            return 0;
+        }
+        return eval_const_unary_op(e->u.unary.op, &in, out);
+    }
+    case MGL_EXPR_BINARY: {
+        MGLConstVal lhs, rhs;
+        if (!eval_const_val(p, e->u.binary.lhs, &lhs) ||
+            !eval_const_val(p, e->u.binary.rhs, &rhs)) {
+            return 0;
+        }
+        if (e->u.binary.op == MGL_OP_LAND || e->u.binary.op == MGL_OP_LOR) {
+            int64_t lv = const_val_to_int(&lhs);
+            if (e->u.binary.op == MGL_OP_LAND && !lv) {
+                return const_val_from_int(out, MGL_AST_TYPE_BOOL, 0);
+            }
+            if (e->u.binary.op == MGL_OP_LOR && lv) {
+                return const_val_from_int(out, MGL_AST_TYPE_BOOL, 1);
+            }
+            MGLConstVal rhs_val;
+            if (!eval_const_val(p, e->u.binary.rhs, &rhs_val)) {
+                return 0;
+            }
+            return const_val_from_int(out, MGL_AST_TYPE_BOOL,
+                                      const_val_to_int(&rhs_val));
+        }
+        return eval_const_binary_op(e->u.binary.op, &lhs, &rhs, out);
+    }
+    case MGL_EXPR_TERNARY: {
+        MGLConstVal cond;
+        if (!eval_const_val(p, e->u.ternary.cond, &cond)) {
+            return 0;
+        }
+        return eval_const_val(p, const_val_to_int(&cond) ? e->u.ternary.then
+                                                        : e->u.ternary.else_,
+                              out);
+    }
     default:
         return 0;
     }
+}
+
+static int eval_const_int(MGLParser *p, const MGLExpr *e, int64_t *value)
+{
+    MGLConstVal cv;
+    if (!eval_const_val(p, e, &cv) || cv.size != 1) {
+        return 0;
+    }
+    *value = const_val_to_int(&cv);
+    return 1;
 }
 
 static uint32_t parse_array_extent(MGLParser *p)
@@ -1137,7 +1927,14 @@ static uint32_t parse_array_extent(MGLParser *p)
     }
     MGLExpr *expr = parse_expression(p);
     int64_t value = 0;
-    int valid = eval_const_int(expr, &value);
+    int valid = eval_const_int(p, expr, &value);
+    if (!valid) {
+        uint32_t tlen = 0;
+        if (eval_type_length(p, expr, &tlen)) {
+            value = (int64_t)tlen;
+            valid = 1;
+        }
+    }
     free_expr(expr);
     if (!valid || value < 0 || (uint64_t)value > UINT32_MAX) {
         parse_error(p, "array extent must be a non-negative constant at line %u",
@@ -1145,6 +1942,39 @@ static uint32_t parse_array_extent(MGLParser *p)
         return 0;
     }
     return (uint32_t)value;
+}
+
+/* Append one array dimension to a declarator.  GLSL arrays-of-arrays require
+ * version >= 430 (or ES 3.10); earlier versions reject a second dimension. */
+static void append_array_dim(MGLParser *p, MGLDecl *d, uint32_t sz)
+{
+    if (d->array_count >= 1) {
+        uint32_t ver = p->tu ? p->tu->version : 0;
+        if (ver > 0 && ver < 430) {
+            parse_error(p,
+                        "arrays of arrays require GLSL 430+ at line %u",
+                        tk_line(p));
+            return;
+        }
+    }
+    d->array_dims = (uint32_t *)realloc(
+        d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
+    if (!d->array_dims) {
+        d->array_count = 0;
+        return;
+    }
+    d->array_dims[d->array_count++] = sz;
+}
+
+/* Parse zero or more `[N]` / `[]` array_specifier suffixes onto `d`. */
+static void parse_array_specifier_list(MGLParser *p, MGLDecl *d)
+{
+    while (ops_at(p, "[")) {
+        advance(p);
+        uint32_t sz = parse_array_extent(p);
+        expect_punct(p, "]");
+        append_array_dim(p, d, sz);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1186,6 +2016,7 @@ static MGLStmt *parse_decl_stmt(MGLParser *p, uint32_t line)
     if (!d) {
         return NULL;
     }
+    record_decl_constants(p, d);
     MGLStmt *s = stmt_alloc(p, MGL_STMT_DECL, line);
     if (s) {
         s->u.decl.decl = d;
@@ -1326,6 +2157,12 @@ static MGLStmt *parse_statement(MGLParser *p)
         return s;
     }
 
+    /* null / empty statement (GLSL expression_statement with omitted expr) */
+    if (ops_at(p, ";")) {
+        advance(p);
+        return stmt_alloc(p, MGL_STMT_EXPR, line);
+    }
+
     /* Is this a declaration (qualifier or type keyword first)? */
     if (at_decl_start(p)) {
         return parse_decl_stmt(p, line);
@@ -1364,6 +2201,15 @@ static int at_decl_start(MGLParser *p)
             return 1;
         }
     }
+    /* Previously defined user struct type name. */
+    if (at_any_ident(p)) {
+        char *name = dup_current(p);
+        int hit = name && is_struct_type_name(p, name);
+        free(name);
+        if (hit) {
+            return 1;
+        }
+    }
     return 0;
 }
 
@@ -1399,11 +2245,15 @@ static MGLDecl *parse_declaration(MGLParser *p)
      * overwrite an earlier explicit invocations value with this default. */
     d->layout_invocations = -1;
     d->layout_stream = -1;   /* GS output stream, -1 = unspecified (0) */
+    d->layout_local_size_x = -1;
+    d->layout_local_size_y = -1;
+    d->layout_local_size_z = -1;
     d->layout_primitive = MGL_AST_TES_DEFAULT;      /* TES mode / GS in topology */
     d->layout_primitive_out = MGL_AST_GS_OUT_DEFAULT;
     d->layout_spacing = MGL_AST_SPACING_DEFAULT;
     d->layout_winding = MGL_AST_WINDING_DEFAULT;
     d->layout_point_mode = 0;
+    d->layout_early_fragment_tests = 0;
 
     /* qualifiers and storage */
 more_qualifiers:
@@ -1438,13 +2288,14 @@ more_qualifiers:
             d->qualifiers |= MGL_AST_Q_INVARIANT;
         } else if (eat_ident(p, "precise")) {
             d->qualifiers |= MGL_AST_Q_PRECISE;
-        } else if (eat_ident(p, "readonly") ||
-                   eat_ident(p, "writeonly") ||
-                   eat_ident(p, "coherent") ||
+        } else if (eat_ident(p, "readonly")) {
+            d->qualifiers |= MGL_AST_Q_READONLY;
+        } else if (eat_ident(p, "writeonly")) {
+            d->qualifiers |= MGL_AST_Q_WRITEONLY;
+        } else if (eat_ident(p, "coherent") ||
                    eat_ident(p, "volatile") ||
                    eat_ident(p, "restrict")) {
-            /* Image memory qualifiers constrain legal shader access but do
-             * not change the declaration's storage or interface shape. */
+            /* Memory coherency qualifiers; access legality is unchanged. */
         } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
                    at_ident(p, "highp")) {
             /* precision qualifier consumed; recorded on the type later */
@@ -1484,6 +2335,7 @@ more_qualifiers:
                 (n == 8 && memcmp(s, "invariant", 8) == 0) ||
                 (n == 13 && memcmp(s, "push_constant", 13) == 0) ||
                 (n == 16 && memcmp(s, "origin_upper_left", 16) == 0) ||
+                (n == 20 && memcmp(s, "pixel_center_integer", 20) == 0) ||
                 (n == 15 && memcmp(s, "local_size_x_id", 15) == 0) ||
                 /* tessellation/geometry layout flags (M3) */
                 (n == 8 && memcmp(s, "isolines", 8) == 0) ||
@@ -1501,10 +2353,21 @@ more_qualifiers:
                 (n == 15 && memcmp(s, "lines_adjacency", 15) == 0) ||
                 (n == 14 && memcmp(s, "triangle_strip", 14) == 0) ||
                 (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0) ||
+                (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) ||
                 is_image_format_layout(s, n);
             int has_value = at_peek_punct(p, 1, "=");
 
             if (!is_flag && !has_value) {
+                /* `layout(binding)` without `=` is illegal (420pack binding
+                 * tests). Other bare idents (e.g. trailing `in`) are left
+                 * for the caller. */
+                if (n == 7 && memcmp(s, "binding", 7) == 0) {
+                    advance(p);
+                    parse_error(p,
+                        "layout(binding) requires an integer constant at line %u",
+                        tk_line(p));
+                    continue;
+                }
                 /* e.g. `in`, `out` after `)` — leave it for the caller */
                 break;
             }
@@ -1540,6 +2403,10 @@ more_qualifiers:
                 d->layout_winding = MGL_AST_WINDING_CCW;
             } else if (n == 10 && memcmp(s, "point_mode", 10) == 0) {
                 d->layout_point_mode = 1;
+            } else if (n == 20 && memcmp(s, "early_fragment_tests", 20) == 0) {
+                d->layout_early_fragment_tests = 1;
+            } else if (match_image_format_layout(s, n)) {
+                d->layout_image_format = match_image_format_layout(s, n);
             } else if (n == 6 && memcmp(s, "points", 6) == 0) {
                 d->layout_primitive = MGL_AST_GS_IN_POINTS;
             } else if (n == 5 && memcmp(s, "lines", 5) == 0) {
@@ -1561,6 +2428,11 @@ more_qualifiers:
                         d->layout_location = (int32_t)cur_double(p);
                     } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
                         d->layout_binding = (int32_t)cur_double(p);
+                        if (d->layout_binding < 0) {
+                            parse_error(p,
+                                "layout(binding) must be >= 0 at line %u",
+                                tk_line(p));
+                        }
                     } else if (n == 6 && memcmp(s, "offset", 6) == 0) {
                         /* GLSL 4.60 §4.4.2.3: explicit atomic-counter
                          * buffer offset. */
@@ -1585,9 +2457,33 @@ more_qualifiers:
                         }
                     } else if (n == 6 && memcmp(s, "stream", 6) == 0) {
                         d->layout_stream = (int32_t)cur_double(p);
+                    } else if (n == 12 && memcmp(s, "local_size_x", 12) == 0) {
+                        d->layout_local_size_x = (int32_t)cur_double(p);
+                    } else if (n == 12 && memcmp(s, "local_size_y", 12) == 0) {
+                        d->layout_local_size_y = (int32_t)cur_double(p);
+                    } else if (n == 12 && memcmp(s, "local_size_z", 12) == 0) {
+                        d->layout_local_size_z = (int32_t)cur_double(p);
                     }
                     advance(p);
+                } else if (n == 7 && memcmp(s, "binding", 7) == 0 &&
+                           ops_at(p, "-")) {
+                    /* `binding = -1` tokenizes as '-' + number. */
+                    parse_error(p,
+                        "layout(binding) must be >= 0 at line %u",
+                        tk_line(p));
+                    advance(p);
+                    if (at_num(p)) {
+                        advance(p);
+                    }
                 } else if (at_any_ident(p)) {
+                    /* 420pack: binding/location/offset require integer
+                     * constants — `binding = goku` / `binding = std140`
+                     * must fail compile. */
+                    if (n == 7 && memcmp(s, "binding", 7) == 0) {
+                        parse_error(p,
+                            "layout(binding) requires an integer constant at line %u",
+                            tk_line(p));
+                    }
                     advance(p);
                 } else {
                     parse_error(p, "expected value in layout() at line %u",
@@ -1610,6 +2506,14 @@ more_qualifiers:
      * layout is recorded on the translation unit for sema + backend. */
     if (ops_at(p, ";")) {
         MGLTranslationUnit *tu = p->tu;
+        /* GLSL §4.4.5: `layout(binding=N) buffer;` is illegal — binding
+         * applies to a block declaration, not a default layout qualifier. */
+        if ((d->qualifiers & MGL_AST_Q_BUFFER) && d->layout_binding >= 0) {
+            parse_error(p,
+                        "layout(binding) is not allowed on a default buffer "
+                        "layout qualifier at line %u",
+                        tk_line(p));
+        }
         /* `points` is valid on both sides of a geometry stage declaration.
          * The layout parser sees the token before it sees the trailing
          * storage qualifier, so classify it here once `in`/`out` is known. */
@@ -1652,6 +2556,29 @@ more_qualifiers:
         if (d->layout_winding != MGL_AST_WINDING_DEFAULT)
             tu->layout_winding = d->layout_winding;
         if (d->layout_point_mode)             tu->layout_point_mode = 1;
+        if (d->layout_early_fragment_tests)   tu->layout_early_fragment_tests = 1;
+        if (d->layout_local_size_x >= 0)
+            tu->layout_local_size_x = d->layout_local_size_x;
+        if (d->layout_local_size_y >= 0)
+            tu->layout_local_size_y = d->layout_local_size_y;
+        if (d->layout_local_size_z >= 0)
+            tu->layout_local_size_z = d->layout_local_size_z;
+        /* `layout(std430) buffer;` / `layout(std140) uniform;` set the
+         * default packing for subsequent blocks that omit an explicit
+         * packing qualifier.  Matrix major (row_major/column_major) is
+         * part of the same default (GL 4.6 §4.4.5). */
+        if (d->qualifiers & MGL_AST_Q_BUFFER) {
+            if (d->layout != MGL_AST_LAYOUT_DEFAULT)
+                tu->default_buffer_layout = d->layout;
+            if (d->matrix_major != MGL_AST_MATRIX_DEFAULT)
+                tu->default_buffer_matrix_major = d->matrix_major;
+        }
+        if (d->qualifiers & MGL_AST_Q_UNIFORM) {
+            if (d->layout != MGL_AST_LAYOUT_DEFAULT)
+                tu->default_uniform_layout = d->layout;
+            if (d->matrix_major != MGL_AST_MATRIX_DEFAULT)
+                tu->default_uniform_matrix_major = d->matrix_major;
+        }
         free(d);
         return NULL;
     }
@@ -1667,6 +2594,7 @@ more_qualifiers:
             }
             d->type->base = MGL_AST_TYPE_STRUCT;
             d->type->name = dup_current(p);
+            record_struct_name(p, d->type->name);
             advance(p);
         }
         if (ops_at(p, "{")) {
@@ -1685,77 +2613,84 @@ more_qualifiers:
             expect_punct(p, "}");
             d->struct_members = members;
             d->struct_member_count = mcount;
+            if (!d->type) {
+                /* Anonymous struct type used as a declarator type:
+                 * `out struct { int a; } name[];` */
+                d->type = (MGLTypeSpec *)calloc(1, sizeof(MGLTypeSpec));
+                if (!d->type) {
+                    free_decl(d);
+                    return NULL;
+                }
+                d->type->base = MGL_AST_TYPE_STRUCT;
+            }
+            /* Type-only definition: `struct S { … };` */
+            if (ops_at(p, ";")) {
+                expect_punct(p, ";");
+                return d;
+            }
+            /* Inline `struct { … } name` — continue to declarator below. */
+        } else if (!d->type) {
+            free(d);
+            return NULL;
+        } else {
             return d;
         }
+    } else {
+        /* ordinary type */
+        d->type = parse_type_spec(p);
         if (!d->type) {
             free(d);
             return NULL;
         }
-        return d;
-    }
-
-    /* ordinary type */
-    d->type = parse_type_spec(p);
-    if (!d->type) {
-        free(d);
-        return NULL;
-    }
-    if (p->decl_precision) {
-        d->type->precision = p->decl_precision;
-        p->decl_precision = 0;
-    }
-
-    /* block definition:  type { ... } instance;  (UBO/SSBO) */
-    if (ops_at(p, "{")) {
-        advance(p);
-        MGLDecl **members = NULL;
-        uint32_t mcount = 0;
-        while (!ops_at(p, "}") && tk(p, 0)->kind != MGLGLSL_TOK_END) {
-            MGLDecl *m = parse_declaration(p);
-            if (!m) {
-                break;
-            }
-            members = (MGLDecl **)realloc(
-                members, (mcount + 1) * sizeof(MGLDecl *));
-            members[mcount++] = m;
+        if (p->decl_precision) {
+            d->type->precision = p->decl_precision;
+            p->decl_precision = 0;
         }
-        expect_punct(p, "}");
-        d->struct_members = members;
-        d->struct_member_count = mcount;
-        /* instance name */
-        if (at_any_ident(p)) {
-            d->name = dup_current(p);
+
+        /* block definition:  type { ... } instance;  (UBO/SSBO) */
+        if (ops_at(p, "{")) {
             advance(p);
-        }
-        if (!ops_at(p, ";")) {
+            MGLDecl **members = NULL;
+            uint32_t mcount = 0;
+            while (!ops_at(p, "}") && tk(p, 0)->kind != MGLGLSL_TOK_END) {
+                MGLDecl *m = parse_declaration(p);
+                if (!m) {
+                    break;
+                }
+                members = (MGLDecl **)realloc(
+                    members, (mcount + 1) * sizeof(MGLDecl *));
+                members[mcount++] = m;
+            }
+            expect_punct(p, "}");
+            d->struct_members = members;
+            d->struct_member_count = mcount;
+            /* instance name */
             if (at_any_ident(p)) {
                 d->name = dup_current(p);
                 advance(p);
             }
+            if (!ops_at(p, ";")) {
+                if (at_any_ident(p)) {
+                    d->name = dup_current(p);
+                    advance(p);
+                }
+            }
+            while (ops_at(p, "[")) {
+                advance(p);
+                uint32_t sz = parse_array_extent(p);
+                expect_punct(p, "]");
+                append_array_dim(p, d, sz);
+            }
+            expect_punct(p, ";");
+            return d;
         }
-        while (ops_at(p, "[")) {
-            advance(p);
-            uint32_t sz = parse_array_extent(p);
-            expect_punct(p, "]");
-            d->array_dims = (uint32_t *)realloc(
-                d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
-            d->array_dims[d->array_count++] = sz;
-        }
-        expect_punct(p, ";");
-        return d;
     }
 
-    /* unsized array suffix on the type, e.g. `const vec3[] vertices`
-     * (array dims before the declarator name) */
-    while (ops_at(p, "[") && at_peek_punct(p, 1, "]")) {
-        advance(p);   /* [ */
-        advance(p);   /* ] */
-        d->array_dims = (uint32_t *)realloc(
-            d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
-        d->array_dims[d->array_count++] = 0;
-    }
+    /* Array specifier on the type before the declarator name, e.g.
+     * `float[3] x`, `float[] y`, `float[3] func(...)`. */
+    parse_array_specifier_list(p, d);
+    uint32_t type_prefix_dims = d->array_count;
 
-    /* declarator name */
     if (!at_any_ident(p)) {
         parse_error(p, "expected identifier at line %u", tk_line(p));
         free_decl(d);
@@ -1764,15 +2699,8 @@ more_qualifiers:
     d->name = dup_current(p);
     advance(p);
 
-    /* array dims */
-    while (ops_at(p, "[")) {
-        advance(p);
-        uint32_t sz = parse_array_extent(p);
-        expect_punct(p, "]");
-        d->array_dims = (uint32_t *)realloc(
-            d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
-        d->array_dims[d->array_count++] = sz;
-    }
+    /* declarator postfix array dims: `float x[3]` / `float[2] x[3]` */
+    parse_array_specifier_list(p, d);
 
     /* function? */
     if (ops_at(p, "(")) {
@@ -1782,16 +2710,22 @@ more_qualifiers:
             if (!param) {
                 break;
             }
-            /* parameter_qualifier + precision_qualifier in either order
-             * (GLSL 4.60 §6.1): `in highp float a` / `highp in float a`. */
+            /* Parameter type_qualifier in any order (GLSL 4.60 §4.3 /
+             * ARB_shading_language_420pack): storage, precision, const,
+             * and precise may appear interleaved, e.g.
+             * `const highp precise in float a`. */
             uint32_t param_prec = MGL_AST_PRECISION_NONE;
             for (;;) {
-                if (eat_ident(p, "in")) {
+                if (eat_ident(p, "const")) {
+                    param->qualifiers |= MGL_AST_Q_CONST;
+                } else if (eat_ident(p, "in")) {
                     param->qualifiers |= MGL_AST_Q_IN;
                 } else if (eat_ident(p, "out")) {
                     param->qualifiers |= MGL_AST_Q_OUT;
                 } else if (eat_ident(p, "inout")) {
                     param->qualifiers |= MGL_AST_Q_IN | MGL_AST_Q_OUT;
+                } else if (eat_ident(p, "precise")) {
+                    param->qualifiers |= MGL_AST_Q_PRECISE;
                 } else if (at_ident(p, "lowp") || at_ident(p, "mediump") ||
                            at_ident(p, "highp")) {
                     if (param_prec == MGL_AST_PRECISION_NONE) {
@@ -1811,18 +2745,14 @@ more_qualifiers:
             if (param_prec != MGL_AST_PRECISION_NONE) {
                 param->type->precision = param_prec;
             }
+            /* Type-prefix arrays: `float[3]` / `float[3] a`. */
+            parse_array_specifier_list(p, param);
             if (at_any_ident(p)) {
                 param->name = dup_current(p);
                 advance(p);
             }
-            while (ops_at(p, "[")) {
-                advance(p);
-                if (!ops_at(p, "]") && at_num(p)) {
-                    advance(p);
-                }
-                expect_punct(p, "]");
-                param->array_count++;
-            }
+            /* Declarator postfix: `float a[3]`. */
+            parse_array_specifier_list(p, param);
             d->params = (MGLDecl **)realloc(
                 d->params, (d->param_count + 1) * sizeof(MGLDecl *));
             d->params[d->param_count++] = param;
@@ -1831,6 +2761,15 @@ more_qualifiers:
             }
         }
         expect_punct(p, ")");
+        /* GLSL `f(void)` is an empty parameter list, not one void param. */
+        if (d->param_count == 1 && d->params[0] && d->params[0]->type &&
+            d->params[0]->type->base == MGL_AST_TYPE_VOID &&
+            !d->params[0]->name) {
+            free_decl(d->params[0]);
+            free(d->params);
+            d->params = NULL;
+            d->param_count = 0;
+        }
         if (ops_at(p, "{")) {
             MGLStmt *body = parse_block(p);
             if (!body) {
@@ -1841,6 +2780,9 @@ more_qualifiers:
         } else {
             expect_punct(p, ";");
         }
+        /* Mark as function even with zero parameters / no body so sema
+         * does not treat `float f();` as a variable. */
+        d->return_type = d->type;
         return d;
     }
 
@@ -1853,7 +2795,7 @@ more_qualifiers:
         MGLDecl *tail = d;
         for (;;) {
             if (eat_punct(p, "=")) {
-                tail->init = parse_expression(p);
+                tail->init = parse_initializer(p);
             }
             if (!eat_punct(p, ",")) {
                 break;
@@ -1883,15 +2825,12 @@ more_qualifiers:
             }
             nd->name = dup_current(p);
             advance(p);
-            while (ops_at(p, "[")) {
-                advance(p);
-                uint32_t sz = parse_array_extent(p);
-                expect_punct(p, "]");
-                nd->array_dims = (uint32_t *)realloc(
-                    nd->array_dims,
-                    (nd->array_count + 1) * sizeof(uint32_t));
-                nd->array_dims[nd->array_count++] = sz;
+            /* Inherit type-prefix dims (`float[3] a, b`) then allow
+             * per-declarator postfix dims. */
+            for (uint32_t i = 0; i < type_prefix_dims; i++) {
+                append_array_dim(p, nd, d->array_dims[i]);
             }
+            parse_array_specifier_list(p, nd);
             tail->next_declarator = nd;
             tail = nd;
         }
@@ -2187,13 +3126,30 @@ static __attribute__((unused)) char *preprocess_macros(const char *src, size_t l
 
 MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
 {
-    const char *esrc = src;
-    size_t elen = len;
+    char pperr[256];
+    char *ppsrc;
     MGLTokenStream ts;
     memset(&ts, 0, sizeof(ts));
-    if (tokenize(&ts, esrc, elen) != 0) {
+    pperr[0] = 0;
+    ppsrc = mglGLSLPreprocess(src, len, pperr, sizeof(pperr));
+    if (!ppsrc) {
+        MGLTranslationUnit *etu = (MGLTranslationUnit *)calloc(1, sizeof(*etu));
+        if (!etu) {
+            return NULL;
+        }
+        etu->layout_stream = -1;
+        etu->layout_max_vertices = -1;
+        etu->layout_local_size_x = -1;
+        etu->layout_local_size_y = -1;
+        etu->layout_local_size_z = -1;
+        etu->error = strdup(pperr[0] ? pperr : "preprocessor error");
+        return etu;
+    }
+    if (tokenize(&ts, ppsrc, strlen(ppsrc)) != 0) {
+        free(ppsrc);
         return NULL;
     }
+    free(ppsrc);
     preprocess_tokens(&ts);
 
     MGLTranslationUnit *tu = (MGLTranslationUnit *)calloc(1, sizeof(*tu));
@@ -2203,6 +3159,9 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     }
     tu->layout_stream = -1; /* GS default output stream unspecified (0) */
     tu->layout_max_vertices = -1; /* GS: unspecified until layout() */
+    tu->layout_local_size_x = -1;
+    tu->layout_local_size_y = -1;
+    tu->layout_local_size_z = -1;
 
     MGLParser p;
     memset(&p, 0, sizeof(p));
@@ -2245,7 +3204,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             advance(&p);
             continue;
         }
-        d->return_type = d->type != NULL && d->body != NULL ? d->type : NULL;
+        record_decl_constants(&p, d);
         tu->decls = (MGLDecl **)realloc(
             tu->decls, (tu->decl_count + 1) * sizeof(MGLDecl *));
         tu->decls[tu->decl_count++] = d;
@@ -2310,6 +3269,14 @@ static void free_expr(MGLExpr *e)
         }
         free(e->u.call.args);
         free(e->u.call.name);
+        break;
+    }
+    case MGL_EXPR_INIT_LIST: {
+        unsigned i;
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            free_expr(e->u.init_list.args[i]);
+        }
+        free(e->u.init_list.args);
         break;
     }
     case MGL_EXPR_UNARY:

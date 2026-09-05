@@ -22,6 +22,7 @@
 #include "mgl_render.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
+#include "mgl_air_tess_abi.h"
 #include "mgl_aux_assets.h"
 #include "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
@@ -2020,6 +2021,10 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
             buffer->data.dirty_bits &=
                 ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
             buffer->cpu_shadow_pending = GL_FALSE;
+            /* CPU range was absorbed into Metal; do not re-apply it on a
+             * later gpu_write_target CoW after shaders overwrite Metal. */
+            buffer->written_min = -1;
+            buffer->written_max = -1;
         }
         return MGL_RENDER_BUFFER_OPERATION_HANDLED;
     }
@@ -2089,6 +2094,9 @@ int mglRenderUpdateDirtyBuffer(Buffer* buffer,
         }
         buffer->data.dirty_bits = 0;
         buffer->cpu_shadow_pending = GL_FALSE;
+        /* Same as the <4096 path: CPU range absorbed; avoid stale overlay. */
+        buffer->written_min = -1;
+        buffer->written_max = -1;
     }
     return MGL_RENDER_BUFFER_OPERATION_HANDLED;
 }
@@ -3426,6 +3434,12 @@ int mglRenderCreateTextureView(void* texture,
     return 0;
 }
 
+void mglRenderReleaseMetalObject(void* object) {
+    if (object) {
+        static_cast<NS::Object*>(object)->release();
+    }
+}
+
 int mglRenderCreateTextureViewRange(
     void* texture,
     uint32_t pixel_format,
@@ -3490,36 +3504,61 @@ int mglRenderSampledTextureViewForBaseLevel(
     if (max_level >= texture_object->mipmap_levels) max_level = texture_object->mipmap_levels - 1u;
     if (max_level >= source->mipmapLevelCount()) max_level = source->mipmapLevelCount() - 1u;
     const uint64_t level_count = static_cast<uint64_t>(max_level - base + 1u);
-    if (level_count == 0u || (base == 0u && level_count >= source->mipmapLevelCount())) {
+    uint64_t slice_count = source->arrayLength();
+    const auto type = source->textureType();
+    if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
+        slice_count *= 6u;
+    }
+    const uint32_t components =
+        mglRenderStoredColorComponents(texture_object->internalformat);
+    uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_r, components);
+    uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_g, components);
+    uint32_t swizzle_blue = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_b, components);
+    uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
+        texture_object->params.swizzle_a, components);
+    /* Formats expanded/baked at upload must not get Metal view swizzle. */
+    const bool upload_swizzle_baked =
+        texture_object->params.swizzled &&
+        !texture_object->is_render_target &&
+        mglRenderTextureSwizzleUsesUploadBake(
+            texture_object->internalformat, 1,
+            static_cast<uint32_t>(source->pixelFormat())) != 0;
+    if (upload_swizzle_baked) {
+        swizzle_red = static_cast<uint32_t>(MTL::TextureSwizzleRed);
+        swizzle_green = static_cast<uint32_t>(MTL::TextureSwizzleGreen);
+        swizzle_blue = static_cast<uint32_t>(MTL::TextureSwizzleBlue);
+        swizzle_alpha = static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
+    }
+    const bool identity =
+        swizzle_red == static_cast<uint32_t>(MTL::TextureSwizzleRed) &&
+        swizzle_green == static_cast<uint32_t>(MTL::TextureSwizzleGreen) &&
+        swizzle_blue == static_cast<uint32_t>(MTL::TextureSwizzleBlue) &&
+        swizzle_alpha == static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
+    if (level_count == 0u ||
+        (base == 0u && level_count >= source->mipmapLevelCount() &&
+         identity)) {
         *view_out = source_texture;
         return 0;
     }
     if (texture_object->mtl_base_level_view &&
         texture_object->mtl_base_level_view_source == source_texture &&
         texture_object->mtl_base_level_view_base == base &&
-        texture_object->mtl_base_level_view_max == max_level) {
+        texture_object->mtl_base_level_view_max == max_level &&
+        texture_object->mtl_base_level_view_swizzle_r ==
+            (GLuint)texture_object->params.swizzle_r &&
+        texture_object->mtl_base_level_view_swizzle_g ==
+            (GLuint)texture_object->params.swizzle_g &&
+        texture_object->mtl_base_level_view_swizzle_b ==
+            (GLuint)texture_object->params.swizzle_b &&
+        texture_object->mtl_base_level_view_swizzle_a ==
+            (GLuint)texture_object->params.swizzle_a) {
         *view_out = texture_object->mtl_base_level_view;
         return 0;
     }
 
-    uint64_t slice_count = source->arrayLength();
-    const auto type = source->textureType();
-    if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
-        slice_count *= 6u;
-    }
-    const uint32_t components = mglRenderStoredColorComponents(texture_object->internalformat);
-    const uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_r, components);
-    const uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_g, components);
-    const uint32_t swizzle_blue = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_b, components);
-    const uint32_t swizzle_alpha = mglRenderMTLSwizzleForGLSwizzle(
-        texture_object->params.swizzle_a, components);
-    const bool identity = swizzle_red == static_cast<uint32_t>(MTL::TextureSwizzleRed) &&
-                          swizzle_green == static_cast<uint32_t>(MTL::TextureSwizzleGreen) &&
-                          swizzle_blue == static_cast<uint32_t>(MTL::TextureSwizzleBlue) &&
-                          swizzle_alpha == static_cast<uint32_t>(MTL::TextureSwizzleAlpha);
     void *view_handle = nullptr;
     if (mglRenderCreateTextureViewRange(
             source_texture, static_cast<uint32_t>(source->pixelFormat()),
@@ -3537,6 +3576,14 @@ int mglRenderSampledTextureViewForBaseLevel(
     texture_object->mtl_base_level_view_source = source_texture;
     texture_object->mtl_base_level_view_base = base;
     texture_object->mtl_base_level_view_max = max_level;
+    texture_object->mtl_base_level_view_swizzle_r =
+        (GLuint)texture_object->params.swizzle_r;
+    texture_object->mtl_base_level_view_swizzle_g =
+        (GLuint)texture_object->params.swizzle_g;
+    texture_object->mtl_base_level_view_swizzle_b =
+        (GLuint)texture_object->params.swizzle_b;
+    texture_object->mtl_base_level_view_swizzle_a =
+        (GLuint)texture_object->params.swizzle_a;
     static_cast<NS::Object *>(view_handle)->release();
     *view_out = texture_object->mtl_base_level_view;
     return 0;
@@ -3671,7 +3718,11 @@ int mglRenderTextureTargetPlan(
         case GL_TEXTURE_CUBE_MAP_ARRAY:
             plan_out->texture_type =
                 static_cast<uint32_t>(MTL::TextureTypeCubeArray);
-            plan_out->num_faces = 6u;
+            /* GL stores cube-array levels in faces[0] with depth=cubes*6.
+             * Iterating 6 faces during CPU upload marks the create incomplete
+             * (faces 1-5 empty) and leaves DIRTY_TEXTURE_DATA set — later
+             * binds can fight imageStore results. */
+            plan_out->num_faces = 1u;
             plan_out->is_array = 1u;
             return 0;
         case GL_TEXTURE_3D:
@@ -3776,13 +3827,19 @@ uint32_t mglRenderTextureTypeForShaderResource(
     if (!has_resource) return 0u;
     switch (image_dim) {
         case MGL_IMAGE_DIM_1D:
+            /* GL 1D/1D-array textures are backed by Metal 2D/2D-array storage
+             * (see mglRenderTextureTargetPlan); AIR lowers sampler1DArray the same way. */
             return static_cast<uint32_t>(
-                image_arrayed ? MTL::TextureType1DArray : MTL::TextureType1D);
+                image_arrayed ? MTL::TextureType2DArray : MTL::TextureType2D);
         case MGL_IMAGE_DIM_2D:
             if (image_multisampled) {
-                return static_cast<uint32_t>(
-                    image_arrayed ? MTL::TextureType2DMultisampleArray
-                                  : MTL::TextureType2DMultisample);
+                /* Metal cannot shader-write texture2d_ms. Non-RT MS images and
+                 * sampler2DMS* are backed as texture2d_array sample planes, and
+                 * AIR always declares texture2d_array for MS. Match that type
+                 * here so binding does not replace the real texture with a
+                 * Multisample fallback (CTS shader_image_load_store WriteMS). */
+                (void)image_arrayed;
+                return static_cast<uint32_t>(MTL::TextureType2DArray);
             }
             return static_cast<uint32_t>(
                 image_arrayed ? MTL::TextureType2DArray : MTL::TextureType2D);
@@ -3793,7 +3850,12 @@ uint32_t mglRenderTextureTypeForShaderResource(
                 image_arrayed ? MTL::TextureTypeCubeArray
                               : MTL::TextureTypeCube);
         case MGL_IMAGE_DIM_BUFFER:
-            return static_cast<uint32_t>(MTL::TextureTypeTextureBuffer);
+            /* TEXTURE_BUFFER / samplerBuffer / imageBuffer are packed as
+             * texture2d (createMTLTexelBufferTexture + AIR imageBuffer path).
+             * Advertising TextureBuffer here makes the binder reject the real
+             * texture2d and substitute the 64-texel fallback, so
+             * imageLoad != texelFetch (CTS advanced-sync-imageAccess). */
+            return static_cast<uint32_t>(MTL::TextureType2D);
         default:
             return 0u;
     }
@@ -5035,6 +5097,13 @@ static int mglReadbackFormatChannelMap(uint32_t format, int* slots,
     }
 }
 
+/* OpenGL GetTexImage / transfer: missing R/G/B → 0, missing A → 1.
+ * Do not replicate the last stored channel (that yields RG→(R,G,G,G)). */
+static float mglReadbackMissingChannelFloat(int src_channel_idx)
+{
+    return (src_channel_idx == 3) ? 1.0f : 0.0f;
+}
+
 
 static uint32_t mglSizeForType(uint32_t type) {
     switch (type) {
@@ -5276,9 +5345,12 @@ int mglRenderCopySnorm8TextureBytesToGL(
             uint8_t* dp = dst_row + (x * dst_pixel_bytes);
             for (int c = 0; c < slots; ++c) {
                 int idx = src_idx[c];
-                if (idx >= src_channels) idx = src_channels - 1;
-                int8_t sv = s[idx];
-                float fv = mglRenderSnorm8ToFloat(sv);
+                float fv;
+                if (idx >= src_channels) {
+                    fv = mglReadbackMissingChannelFloat(idx);
+                } else {
+                    fv = mglRenderSnorm8ToFloat(s[idx]);
+                }
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
                 if (type == GL_BYTE) {
                     int32_t iv = (int32_t)lroundf(fv * 127.0f);
@@ -5788,9 +5860,12 @@ int mglRenderCopy16or32TextureBytesToGL(
                 float fvals[4] = {0.0f, 0.0f, 0.0f, 0.0f};
                 for (int c = 0; c < slots; ++c) {
                     int idx = src_idx[c];
-                    if (idx >= src_channels) idx = src_channels - 1;
-                    fvals[c] = mglRead16or32SourceFloat(
-                        s, idx, is16u, is16s, is16f);
+                    if (idx >= src_channels) {
+                        fvals[c] = mglReadbackMissingChannelFloat(idx);
+                    } else {
+                        fvals[c] = mglRead16or32SourceFloat(
+                            s, idx, is16u, is16s, is16f);
+                    }
                 }
                 if (slots < 4) {
                     const int needs_alpha =
@@ -5935,9 +6010,13 @@ int mglRenderCopy16or32TextureBytesToGL(
 
             for (int c = 0; c < slots; ++c) {
                 int idx = src_idx[c];
-                if (idx >= src_channels) idx = src_channels - 1;
-                float fv = mglRead16or32SourceFloat(
-                    s, idx, is16u, is16s, is16f);
+                float fv;
+                if (idx >= src_channels) {
+                    fv = mglReadbackMissingChannelFloat(idx);
+                } else {
+                    fv = mglRead16or32SourceFloat(
+                        s, idx, is16u, is16s, is16f);
+                }
                 uint8_t* out = dp + (uint64_t)c * (uint64_t)comp_bytes;
                 if (type == GL_UNSIGNED_BYTE) {
                     float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
@@ -6712,6 +6791,8 @@ int mglRenderConvertIntegerReadback(
                     uint32_t val = 0u;
                     if (srcIdx >= 0 && (uint32_t)srcIdx < p->source_component_count) {
                         val = srcValues[srcIdx];
+                    } else if (c == 3u) {
+                        val = 1u; /* missing alpha → 1 */
                     }
                     /* Clamp to bit width (not mask). */
                     uint32_t maxVal = (p->packed_bit_widths[c] >= 32u) ? 0xFFFFFFFFu : ((1u << p->packed_bit_widths[c]) - 1u);
@@ -6733,6 +6814,8 @@ int mglRenderConvertIntegerReadback(
                     uint32_t value = 0u;
                     if (srcIdx >= 0 && (uint32_t)srcIdx < p->source_component_count) {
                         value = srcValues[srcIdx];
+                    } else if (c == 3u) {
+                        value = 1u; /* missing alpha → 1 */
                     }
                     if (p->output_component_bytes == 1u) {
                         if (p->packed_type == GL_BYTE) {
@@ -6804,6 +6887,10 @@ bool mglRenderTessFactorsDiscardPatch(uint32_t gen_mode,
     if (!edge || !inside) {
         return true;
     }
+    /* GL §11.2.3: only outer levels ≤ 0 discard the patch.  Inner levels
+     * are clamped (negative → min) and must not discard — CTS vertex_spacing
+     * intentionally passes inner=-1. */
+    (void)inside;
     switch (gen_mode) {
         case GL_ISOLINES:
             return edge[0] <= 0.0f || edge[1] <= 0.0f ||
@@ -6811,15 +6898,13 @@ bool mglRenderTessFactorsDiscardPatch(uint32_t gen_mode,
         case GL_QUADS:
             return edge[0] <= 0.0f || edge[1] <= 0.0f ||
                    edge[2] <= 0.0f || edge[3] <= 0.0f ||
-                   inside[0] <= 0.0f || inside[1] <= 0.0f ||
                    isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(edge[3]) ||
-                   isnan(inside[0]) || isnan(inside[1]);
+                   isnan(edge[2]) || isnan(edge[3]);
         default: /* GL_TRIANGLES */
             return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f || inside[0] <= 0.0f ||
+                   edge[2] <= 0.0f ||
                    isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(inside[0]);
+                   isnan(edge[2]);
     }
 }
 
@@ -6828,18 +6913,23 @@ int mglRenderFillDefaultTessFactorBuffer(
     void* dst, uint64_t dst_bytes,
     const float* outer_levels, const float* inner_levels,
     uint32_t patch_count) {
-    const uint64_t stride = 12u;
+    const uint64_t stride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     if (!dst || !outer_levels || !inner_levels || patch_count == 0u ||
         dst_bytes < (uint64_t)patch_count * stride) {
         return -1;
     }
-    __fp16* out = (__fp16*)dst;
+    uint8_t* base = (uint8_t*)dst;
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
+        __fp16* halfs = (__fp16*)(base + (uint64_t)patch * stride);
+        float* exact = (float*)(base + (uint64_t)patch * stride +
+                                MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET);
         for (uint32_t i = 0u; i < 4u; i++) {
-            out[patch * 6u + i] = (__fp16)outer_levels[i];
+            halfs[i] = (__fp16)outer_levels[i];
+            exact[i] = outer_levels[i];
         }
         for (uint32_t i = 0u; i < 2u; i++) {
-            out[patch * 6u + 4u + i] = (__fp16)inner_levels[i];
+            halfs[4u + i] = (__fp16)inner_levels[i];
+            exact[4u + i] = inner_levels[i];
         }
     }
     return 0;
@@ -6850,17 +6940,18 @@ int mglRenderRepackTessFactorTriangles(
     const void* src, uint64_t src_bytes,
     void* dst, uint64_t dst_bytes,
     uint32_t patch_count) {
-    const uint64_t canonical_stride = 12u;
-    const uint64_t triangle_stride = 8u;
+    const uint64_t canonical_stride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    const uint64_t triangle_stride = MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
     if (!src || !dst || patch_count == 0u ||
         src_bytes < (uint64_t)patch_count * canonical_stride ||
         dst_bytes < (uint64_t)patch_count * triangle_stride) {
         return -1;
     }
-    const uint16_t* in_all = (const uint16_t*)src;
+    const uint8_t* in_base = (const uint8_t*)src;
     uint16_t* out_all = (uint16_t*)dst;
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
-        const uint16_t* in = in_all + patch * 6u;
+        const uint16_t* in =
+            (const uint16_t*)(in_base + (uint64_t)patch * canonical_stride);
         uint16_t* out = out_all + patch * 4u;
         out[0] = in[0];
         out[1] = in[1];
@@ -6876,13 +6967,15 @@ uint64_t mglRenderTessPrimitiveCount(
     uint32_t patch_count, uint32_t tess_gen_mode,
     uint32_t instance_count) {
     if (!factors || patch_count == 0u ||
-        bytes < (uint64_t)patch_count * 12u) {
+        bytes < (uint64_t)patch_count * MGL_AIR_TESS_FACTOR_RECORD_BYTES) {
         return 0u;
     }
-    const uint16_t* recs = (const uint16_t*)factors;
+    const uint8_t* base = (const uint8_t*)factors;
     uint64_t total = 0u;
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
-        const uint16_t* record = recs + patch * 6u;
+        const uint16_t* record =
+            (const uint16_t*)(base +
+                              (uint64_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES);
         float edge[4], inside[2];
         for (int i = 0; i < 4; i++) {
             edge[i] = *(const __fp16*)&record[i];
@@ -8279,14 +8372,42 @@ int mglRenderBlitFramebufferPlan(
 extern "C"
 uint32_t mglRenderTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
+    /* GL_MAX_TESS_GEN_LEVEL is 64 (glm_params).  Fractional modes clamp
+     * before rounding per GL §11.2.2.2 / EXT_tessellation_shader. */
+    const uint32_t max_level = 64u;
     if (spacing == GL_FRACTIONAL_EVEN) {
+        if (ceil_level < 2u) ceil_level = 2u;
+        if (ceil_level > max_level) ceil_level = max_level;
         const uint32_t r = (ceil_level & 1u) ? ceil_level + 1u : ceil_level;
         return r > 2u ? r : 2u;
     }
     if (spacing == GL_FRACTIONAL_ODD) {
+        if (ceil_level < 1u) ceil_level = 1u;
+        if (ceil_level > max_level - 1u) ceil_level = max_level - 1u;
         return (ceil_level & 1u) ? ceil_level : ceil_level + 1u;
     }
+    if (ceil_level < 1u) ceil_level = 1u;
+    if (ceil_level > max_level) ceil_level = max_level;
     return ceil_level;
+}
+
+/* GL 4.6 §11.2.2.1 / Vulkan: if a clamped inner level is 1 but the patch
+ * is not the all-levels-1 degenerate case, treat that inner as 1+ε before
+ * spacing round (equal→2, FO→3).  CTS inner_tessellation_level_rounding. */
+static uint32_t mglRenderTessRoundInnerLevel(uint32_t spacing,
+                                             uint32_t ceil_inner,
+                                             int all_levels_one)
+{
+    if (ceil_inner == 1u && !all_levels_one)
+        ceil_inner = 2u;
+    return mglRenderTessRoundLevelForSpacing(spacing, ceil_inner);
+}
+
+static uint32_t mglRenderTessCeilLevel1(float v)
+{
+    if (v < 1.0f)
+        v = 1.0f;
+    return (uint32_t)ceilf(v);
 }
 
 /* TES XFB field byte size for a GL type (FLOAT/INT/UINT + vec2/3/4; 0 for
@@ -8312,6 +8433,27 @@ uint64_t mglRenderTESXFBFieldByteSize(uint64_t gl_type) {
         case GL_INT_VEC4:
         case GL_UNSIGNED_INT_VEC4:
             return 16u;
+        /* XFB packs matrix columns tightly (GL 4.6 §11.1.2.1): mat2 is
+         * 4 floats.  Without these sizes, TES XFB stride collapses to 0
+         * and gl_in / points capture stay zero (CTS TCTE.gl_in). */
+        case GL_FLOAT_MAT2:
+            return 16u;
+        case GL_FLOAT_MAT2x3:
+            return 24u;
+        case GL_FLOAT_MAT2x4:
+            return 32u;
+        case GL_FLOAT_MAT3x2:
+            return 24u;
+        case GL_FLOAT_MAT3:
+            return 36u;
+        case GL_FLOAT_MAT3x4:
+            return 48u;
+        case GL_FLOAT_MAT4x2:
+            return 32u;
+        case GL_FLOAT_MAT4x3:
+            return 48u;
+        case GL_FLOAT_MAT4:
+            return 64u;
         default:
             return 0u;
     }
@@ -8428,23 +8570,26 @@ uint64_t mglRenderTESXFBVertexStride(const void* program_v) {
     if (!program || program->transform_feedback_varying_count <= 0) {
         return 0u;
     }
-    const MGLShaderResourceList* outputs =
-        &program->shader_resources_list[_TESS_EVALUATION_SHADER]
-                                        [_STAGE_OUTPUT_RES];
     uint64_t stride = 0u;
     for (GLsizei varying = 0;
          varying < program->transform_feedback_varying_count;
          varying++) {
         const char* name = program->transform_feedback_varying_names[varying];
-        const MGLShaderResource* output = NULL;
-        for (GLuint i = 0; name && outputs->list && i < outputs->count; i++) {
-            if (outputs->list[i].name && strcmp(outputs->list[i].name, name) == 0) {
-                output = &outputs->list[i];
-                break;
-            }
+        uint64_t field_bytes = 0u;
+        /* Builtins are not in the reflected user-output list; they live at
+         * fixed offsets in the TES compute record (pos @0, point size @16). */
+        if (name && strcmp(name, "gl_Position") == 0) {
+            field_bytes = 16u;
+        } else if (name && strcmp(name, "gl_PointSize") == 0) {
+            field_bytes = 4u;
+        } else {
+            const MGLShaderResource* output =
+                mglProgramFindStageOutputForXFBName(
+                    const_cast<Program*>(program), _TESS_EVALUATION_SHADER,
+                    name);
+            field_bytes =
+                output ? mglRenderTESXFBFieldByteSize(output->gl_type) : 0u;
         }
-        const uint64_t field_bytes =
-            output ? mglRenderTESXFBFieldByteSize(output->gl_type) : 0u;
         if (field_bytes == 0u || stride > UINT64_MAX - field_bytes) {
             return 0u;
         }
@@ -8480,22 +8625,166 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         float e1 = *(const __fp16*)&tf->edge[1];
         if (e0 < 1.0f) e0 = 1.0f;
         if (e1 < 1.0f) e1 = 1.0f;
-        return (uint32_t)ceilf(e0) * (uint32_t)ceilf(e1) * 2u;
+        /* outer[0] always equal_spacing; outer[1] uses TES spacing. */
+        const uint32_t n = (uint32_t)ceilf(e0);
+        const uint32_t m =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
+        if (point_mode)
+            return n * (m + 1u);
+        return n * m * 2u;
     }
+    /* Quads/triangles compute expansion (point_mode and XFB-forced): must
+     * match mgl_air_backend.cpp isTESCompute TessCoord decomposition.
+     *
+     * Triangles point_mode with any outer > 1: outer-edge perimeter
+     * (n0+n1+n2 exclusive-end samples).  Otherwise inner-grid / n==1
+     * corners (GL single triangle → 3 vertices). */
     float i0 = *(const __fp16*)&tf->inside[0];
     if (i0 < 1.0f) i0 = 1.0f;
-    if (point_mode && gen_mode == GL_QUADS) {
+    if (gen_mode == GL_QUADS) {
+        if (point_mode) {
+            float e0 = *(const __fp16*)&tf->edge[0];
+            float e1 = *(const __fp16*)&tf->edge[1];
+            float e2 = *(const __fp16*)&tf->edge[2];
+            float e3 = *(const __fp16*)&tf->edge[3];
+            float i1 = *(const __fp16*)&tf->inside[1];
+            if (e0 < 1.0f) e0 = 1.0f;
+            if (e1 < 1.0f) e1 = 1.0f;
+            if (e2 < 1.0f) e2 = 1.0f;
+            if (e3 < 1.0f) e3 = 1.0f;
+            if (i1 < 1.0f) i1 = 1.0f;
+            const uint32_t n0 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
+            const uint32_t n1 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
+            const uint32_t n2 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e2));
+            const uint32_t n3 =
+                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e3));
+            /* CTS points_verification: perimeter sum(outer) +
+             * (inner0-1)*(inner1-1) interior samples. */
+            const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
+            const uint32_t cI1 = mglRenderTessCeilLevel1(i1);
+            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+            const uint32_t cO3 = mglRenderTessCeilLevel1(e3);
+            const int allOne =
+                (cI0 == 1u && cI1 == 1u && cO0 == 1u && cO1 == 1u &&
+                 cO2 == 1u && cO3 == 1u);
+            const uint32_t nx =
+                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
+            const uint32_t ny =
+                mglRenderTessRoundInnerLevel(spacing, cI1, allOne);
+            const uint32_t perim = n0 + n1 + n2 + n3;
+            const uint32_t innerPts =
+                (nx > 1u && ny > 1u) ? (nx - 1u) * (ny - 1u) : 0u;
+            return perim + innerPts;
+        }
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
-        return mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0)) *
-               mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i1));
+        {
+            float e0 = *(const __fp16*)&tf->edge[0];
+            float e1 = *(const __fp16*)&tf->edge[1];
+            float e2 = *(const __fp16*)&tf->edge[2];
+            float e3 = *(const __fp16*)&tf->edge[3];
+            const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
+            const uint32_t cI1 = mglRenderTessCeilLevel1(i1);
+            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+            const uint32_t cO3 = mglRenderTessCeilLevel1(e3);
+            const int allOne =
+                (cI0 == 1u && cI1 == 1u && cO0 == 1u && cO1 == 1u &&
+                 cO2 == 1u && cO3 == 1u);
+            const uint32_t nx =
+                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
+            const uint32_t ny =
+                mglRenderTessRoundInnerLevel(spacing, cI1, allOne);
+            /* Level-1 non-point: 2 triangles = 6 verts so items/3 != 0. */
+            if (!point_mode && nx == 1u && ny == 1u)
+                return 6u;
+            uint32_t items = nx * ny;
+            /* Non-point XFB/raster treat the stream as a triangle list.
+             * Drop a trailing incomplete primitive so multi-patch captures
+             * keep patch boundaries on 3-vertex edges (CTS PrimitiveID). */
+            if (!point_mode) {
+                items = (items / 3u) * 3u;
+                if (items == 0u)
+                    items = 3u;
+            }
+            return items;
+        }
     }
     if (point_mode) {
-        const uint32_t n =
-            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(i0));
-        return n * n;
+        float e0 = *(const __fp16*)&tf->edge[0];
+        float e1 = *(const __fp16*)&tf->edge[1];
+        float e2 = *(const __fp16*)&tf->edge[2];
+        if (e0 < 1.0f) e0 = 1.0f;
+        if (e1 < 1.0f) e1 = 1.0f;
+        if (e2 < 1.0f) e2 = 1.0f;
+        const uint32_t n0 =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
+        const uint32_t n1 =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
+        const uint32_t n2 =
+            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e2));
+        if (n0 > 1u || n1 > 1u || n2 > 1u) {
+            uint32_t n = n0 + n1 + n2;
+            float i0raw = *(const __fp16*)&tf->inside[0];
+            if (i0raw < 1.0f) i0raw = 1.0f;
+            const uint32_t cI0 = mglRenderTessCeilLevel1(i0raw);
+            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+            const int allOne =
+                (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
+            const uint32_t nIn =
+                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
+            /* Concentric inner rings (CTS points_verification triangles). */
+            for (int k = (int)nIn; k >= 0; k -= 2) {
+                if (k == 2) {
+                    n += 1u;
+                    break;
+                }
+                if (k == 3) {
+                    n += 3u;
+                    break;
+                }
+                if (k >= 2)
+                    n += (uint32_t)(k - 2) * 3u;
+                else {
+                    n += 1u;
+                    break;
+                }
+            }
+            return n;
+        }
     }
-    return 0u;
+    {
+        const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
+        float e0 = *(const __fp16*)&tf->edge[0];
+        float e1 = *(const __fp16*)&tf->edge[1];
+        float e2 = *(const __fp16*)&tf->edge[2];
+        const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+        const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+        const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+        const int allOne =
+            (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
+        const uint32_t n =
+            mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
+        /* Single triangle (inner==1): 3 corner TessCoords for both point and
+         * non-point; TES compute already expands n==1 to corners. */
+        if (n == 1u)
+            return 3u;
+        uint32_t items = n * n;
+        if (!point_mode) {
+            items = (items / 3u) * 3u;
+            if (items == 0u)
+                items = 3u;
+        }
+        return items;
+    }
 }
 
 extern "C"
@@ -8665,6 +8954,32 @@ int mglRenderTexturePrepareLevelUpload(
     return 0;
 }
 
+static uint32_t mglRenderDepthUint32ToFloatBits(uint32_t raw) {
+    const float depth = (float)((double)raw / 4294967295.0);
+    uint32_t bits = 0u;
+    memcpy(&bits, &depth, sizeof(bits));
+    return bits;
+}
+
+static uint32_t mglRenderDepth24ToFloatBits(const uint8_t* src) {
+    const uint32_t v = (uint32_t)src[0] |
+                       ((uint32_t)src[1] << 8u) |
+                       ((uint32_t)src[2] << 16u);
+    const float depth = (float)((double)v / 16777215.0);
+    uint32_t bits = 0u;
+    memcpy(&bits, &depth, sizeof(bits));
+    return bits;
+}
+
+static uint32_t mglRenderDepth24Stencil8ToFloatBits(const uint8_t* src) {
+    uint32_t packed = 0u;
+    memcpy(&packed, src, sizeof(uint32_t));
+    const float depth = (float)((double)(packed >> 8u) / 16777215.0);
+    uint32_t bits = 0u;
+    memcpy(&bits, &depth, sizeof(bits));
+    return bits;
+}
+
 extern "C"
 uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
     switch (swizzle) {
@@ -8676,6 +8991,621 @@ uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red) {
         case GL_ZERO:
         default:
             return 0x00u;
+    }
+}
+
+static uint8_t mglRenderResolveR8SnormSwizzledComponent(uint32_t swizzle,
+                                                        uint8_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 0x7fu;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0x00u;
+    }
+}
+
+static uint16_t mglRenderResolveR16UnormSwizzledComponent(uint32_t swizzle,
+                                                          uint16_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 65535u;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0u;
+    }
+}
+
+static uint16_t mglRenderResolveR16SnormSwizzledComponent(uint32_t swizzle,
+                                                          int16_t red) {
+    switch (swizzle) {
+        case GL_RED: return static_cast<uint16_t>(red);
+        case GL_ALPHA:
+        case GL_ONE: return 32767;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0;
+    }
+}
+
+static uint16_t mglRenderResolveR16FloatSwizzledComponent(uint32_t swizzle,
+                                                          uint16_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 0x3c00u; /* 1.0 in half float */
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0u;
+    }
+}
+
+static uint32_t mglRenderResolveR32FloatSwizzledComponent(uint32_t swizzle,
+                                                          uint32_t red) {
+    switch (swizzle) {
+        case GL_RED: return red;
+        case GL_ALPHA:
+        case GL_ONE: return 0x3f800000u;
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ZERO:
+        default:
+            return 0u;
+    }
+}
+
+static int64_t mglRenderResolveIntegerSwizzledComponent(
+    uint32_t swizzle, int64_t red, int64_t green, int64_t blue,
+    int64_t alpha, uint32_t components) {
+    switch (swizzle) {
+        case GL_RED:
+            return components >= 1u ? red : 0;
+        case GL_GREEN:
+            return components >= 2u ? green : 0;
+        case GL_BLUE:
+            return components >= 3u ? blue : 0;
+        case GL_ALPHA:
+            return components >= 4u ? alpha : 1;
+        case GL_ONE:
+            return 1;
+        case GL_ZERO:
+        default:
+            return 0;
+    }
+}
+
+static int32_t mglRenderResolveR8IntegerSwizzledComponent(
+    uint32_t swizzle, int32_t red, int is_signed) {
+    (void)is_signed;
+    return (int32_t)mglRenderResolveIntegerSwizzledComponent(
+        swizzle, red, 0, 0, 1, 1u);
+}
+
+extern "C"
+uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
+    uint32_t internal_format) {
+    switch (internal_format) {
+        case GL_R8I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
+        case GL_R16I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
+        case GL_R32I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
+        case GL_R8UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+        case GL_R16UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
+        case GL_R32UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
+        case GL_R8:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Unorm);
+        case GL_R8_SNORM:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Snorm);
+        case GL_R16:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Unorm);
+        case GL_R16_SNORM:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Snorm);
+        case GL_R16F:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Float);
+        case GL_R32F:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+        case GL_DEPTH_COMPONENT16:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Unorm);
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+        default:
+            return static_cast<uint32_t>(MTL::PixelFormatInvalid);
+    }
+}
+
+static int mglRenderIntegerFormatLayout(
+    uint32_t internal_format, uint32_t* out_components,
+    uint32_t* out_component_bytes, int* out_signed);
+
+extern "C"
+int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+    uint32_t internal_format, int swizzled) {
+    if (!swizzled) {
+        return 0;
+    }
+    uint32_t components = 0;
+    uint32_t component_bytes = 0;
+    int is_signed = 0;
+    if (mglRenderIntegerFormatLayout(
+            internal_format, &components, &component_bytes, &is_signed) != 0 ||
+        components <= 1u) {
+        return 0;
+    }
+    return 1;
+}
+
+extern "C"
+uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+    uint32_t internal_format) {
+    switch (internal_format) {
+        case GL_RG8I:
+        case GL_RGB8I:
+        case GL_RGBA8I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
+        case GL_RG16I:
+        case GL_RGB16I:
+        case GL_RGBA16I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
+        case GL_RG32I:
+        case GL_RGB32I:
+        case GL_RGBA32I:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
+        case GL_RG8UI:
+        case GL_RGB8UI:
+        case GL_RGBA8UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+        case GL_RG16UI:
+        case GL_RGB16UI:
+        case GL_RGBA16UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
+        case GL_RG32UI:
+        case GL_RGB32UI:
+        case GL_RGBA32UI:
+            return static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
+        default:
+            return static_cast<uint32_t>(MTL::PixelFormatInvalid);
+    }
+}
+
+static int mglRenderPixelFormatMatchesSwizzleBakeStorage(
+    uint32_t internal_format, uint32_t storage_pixel_format) {
+    const uint32_t expected =
+        mglRenderSingleChannelSwizzleStoragePixelFormat(internal_format);
+    if (expected != static_cast<uint32_t>(MTL::PixelFormatInvalid) &&
+        expected == storage_pixel_format) {
+        return 1;
+    }
+    if (mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+            internal_format, 1) != 0) {
+        /* Multi-channel integer bake keeps the native storage format. */
+        switch (internal_format) {
+            case GL_RG8I:
+            case GL_RGB8I:
+            case GL_RGBA8I:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA8Sint);
+            case GL_RG8UI:
+            case GL_RGB8UI:
+            case GL_RGBA8UI:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+            case GL_RG16I:
+            case GL_RGB16I:
+            case GL_RGBA16I:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA16Sint);
+            case GL_RG16UI:
+            case GL_RGB16UI:
+            case GL_RGBA16UI:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA16Uint);
+            case GL_RG32I:
+            case GL_RGB32I:
+            case GL_RGBA32I:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA32Sint);
+            case GL_RG32UI:
+            case GL_RGB32UI:
+            case GL_RGBA32UI:
+                return storage_pixel_format ==
+                    static_cast<uint32_t>(MTL::PixelFormatRGBA32Uint);
+            default:
+                break;
+        }
+    }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
+                   storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+        default:
+            break;
+    }
+    return 0;
+}
+
+extern "C"
+int mglRenderTextureSwizzleUsesUploadBake(
+    uint32_t internal_format, int swizzled, uint32_t storage_pixel_format) {
+    if (!swizzled) {
+        return 0;
+    }
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+            internal_format, swizzled) != 0) {
+        return mglRenderPixelFormatMatchesSwizzleBakeStorage(
+            internal_format, storage_pixel_format);
+    }
+    if (mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+            internal_format, swizzled) != 0) {
+        return mglRenderPixelFormatMatchesSwizzleBakeStorage(
+            internal_format, storage_pixel_format);
+    }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint) ||
+                   storage_pixel_format ==
+                       static_cast<uint32_t>(MTL::PixelFormatRGBA32Float);
+        default:
+            break;
+    }
+    return 0;
+}
+
+static int64_t mglRenderReadIntegerTexelComponent(
+    const uint8_t* texel, uint32_t component, uint32_t component_bytes,
+    int is_signed) {
+    const uint8_t* p = texel + component * component_bytes;
+    if (component_bytes == 1u) {
+        return is_signed ? (int64_t)(int8_t)p[0] : (int64_t)p[0];
+    }
+    if (component_bytes == 2u) {
+        if (is_signed) {
+            return (int64_t) * (const int16_t*)(const void*)p;
+        }
+        return (int64_t) * (const uint16_t*)(const void*)p;
+    }
+    if (is_signed) {
+        return (int64_t) * (const int32_t*)(const void*)p;
+    }
+    return (int64_t) * (const uint32_t*)(const void*)p;
+}
+
+static void mglRenderWriteIntegerTexelComponent(
+    uint8_t* texel, uint32_t component, uint32_t component_bytes,
+    int is_signed, int64_t value) {
+    uint8_t* p = texel + component * component_bytes;
+    if (component_bytes == 1u) {
+        if (is_signed) {
+            int32_t clamped = (int32_t)value;
+            if (clamped > 127) clamped = 127;
+            if (clamped < -128) clamped = -128;
+            p[0] = (uint8_t)(int8_t)clamped;
+        } else {
+            uint32_t clamped =
+                value < 0 ? 0u :
+                value > 255 ? 255u : (uint32_t)value;
+            p[0] = (uint8_t)clamped;
+        }
+        return;
+    }
+    if (component_bytes == 2u) {
+        if (is_signed) {
+            int32_t clamped = (int32_t)value;
+            if (clamped > 32767) clamped = 32767;
+            if (clamped < -32768) clamped = -32768;
+            *(int16_t*)(void*)p = (int16_t)clamped;
+        } else {
+            uint32_t clamped =
+                value < 0 ? 0u :
+                value > 65535 ? 65535u : (uint32_t)value;
+            *(uint16_t*)(void*)p = (uint16_t)clamped;
+        }
+        return;
+    }
+    if (is_signed) {
+        *(int32_t*)(void*)p = (int32_t)value;
+    } else {
+        uint64_t clamped =
+            value < 0 ? 0ull :
+            (uint64_t)value > 0xffffffffull ? 0xffffffffull :
+            (uint64_t)value;
+        *(uint32_t*)(void*)p = (uint32_t)clamped;
+    }
+}
+
+static int mglRenderIntegerFormatLayout(
+    uint32_t internal_format, uint32_t* out_components,
+    uint32_t* out_component_bytes, int* out_signed) {
+    if (!out_components || !out_component_bytes || !out_signed) {
+        return -1;
+    }
+    *out_components = 0;
+    *out_component_bytes = 0;
+    *out_signed = 0;
+    switch (internal_format) {
+        case GL_R8I:
+        case GL_RG8I:
+        case GL_RGB8I:
+        case GL_RGBA8I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 1u;
+            *out_signed = 1;
+            return 0;
+        case GL_R8UI:
+        case GL_RG8UI:
+        case GL_RGB8UI:
+        case GL_RGBA8UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 1u;
+            *out_signed = 0;
+            return 0;
+        case GL_R16I:
+        case GL_RG16I:
+        case GL_RGB16I:
+        case GL_RGBA16I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 2u;
+            *out_signed = 1;
+            return 0;
+        case GL_R16UI:
+        case GL_RG16UI:
+        case GL_RGB16UI:
+        case GL_RGBA16UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 2u;
+            *out_signed = 0;
+            return 0;
+        case GL_R32I:
+        case GL_RG32I:
+        case GL_RGB32I:
+        case GL_RGBA32I:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 4u;
+            *out_signed = 1;
+            return 0;
+        case GL_R32UI:
+        case GL_RG32UI:
+        case GL_RGB32UI:
+        case GL_RGBA32UI:
+            *out_components = mglRenderStoredColorComponents(internal_format);
+            *out_component_bytes = 4u;
+            *out_signed = 0;
+            return 0;
+        default:
+            return -1;
+    }
+}
+
+extern "C"
+uint8_t* mglRenderCreateIntegerMultiChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void* src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0;
+    if (out_bytes_per_image) *out_bytes_per_image = 0;
+    if (!src_data || width == 0 || height == 0 ||
+        !out_bytes_per_row || !out_bytes_per_image) {
+        return NULL;
+    }
+    uint32_t components = 0;
+    uint32_t component_bytes = 0;
+    int is_signed = 0;
+    if (mglRenderIntegerFormatLayout(
+            internal_format, &components, &component_bytes, &is_signed) != 0 ||
+        components < 2u) {
+        return NULL;
+    }
+    const size_t src_pixel_bytes = (size_t)components * component_bytes;
+    const size_t dst_pixel_bytes = 4u * component_bytes;
+    const size_t dst_bytes_per_row = width * dst_pixel_bytes;
+    const size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    if (dst_bytes_per_image == 0 ||
+        dst_bytes_per_image > (512u * 1024u * 1024u) ||
+        src_bytes_per_row < width * src_pixel_bytes) {
+        return NULL;
+    }
+    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    if (!dst) {
+        return NULL;
+    }
+    const uint8_t* src = static_cast<const uint8_t*>(src_data);
+    const int64_t default_alpha = 0; /* missing alpha in signed integer texels */
+    for (size_t row = 0; row < height; row++) {
+        const uint8_t* src_row = src + row * src_bytes_per_row;
+        uint8_t* dst_row = dst + row * dst_bytes_per_row;
+        for (size_t x = 0; x < width; x++) {
+            const uint8_t* in = src_row + x * src_pixel_bytes;
+            uint8_t* out = dst_row + x * dst_pixel_bytes;
+            const int64_t ch[4] = {
+                mglRenderReadIntegerTexelComponent(in, 0u, component_bytes, is_signed),
+                components >= 2u
+                    ? mglRenderReadIntegerTexelComponent(in, 1u, component_bytes, is_signed)
+                    : 0,
+                components >= 3u
+                    ? mglRenderReadIntegerTexelComponent(in, 2u, component_bytes, is_signed)
+                    : 0,
+                components >= 4u
+                    ? mglRenderReadIntegerTexelComponent(in, 3u, component_bytes, is_signed)
+                    : default_alpha,
+            };
+            const int64_t outv[4] = {
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_r, ch[0], ch[1], ch[2], ch[3], components),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_g, ch[0], ch[1], ch[2], ch[3], components),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_b, ch[0], ch[1], ch[2], ch[3], components),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_a, ch[0], ch[1], ch[2], ch[3], components),
+            };
+            for (uint32_t c = 0; c < 4u; c++) {
+                mglRenderWriteIntegerTexelComponent(
+                    out, c, component_bytes, is_signed, outv[c]);
+            }
+        }
+    }
+    *out_bytes_per_row = dst_bytes_per_row;
+    *out_bytes_per_image = dst_bytes_per_image;
+    return dst;
+}
+
+extern "C"
+int mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode) {
+    if (!swizzled || depth_stencil_mode != GL_DEPTH_COMPONENT) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+int mglRenderTextureUploadNeedsStencilSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode) {
+    if (!swizzled || depth_stencil_mode != GL_STENCIL_INDEX) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+extern "C"
+uint32_t mglRenderStencilSwizzleStoragePixelFormat(void) {
+    return static_cast<uint32_t>(MTL::PixelFormatRGBA8Uint);
+}
+
+extern "C"
+uint8_t* mglRenderCreateStencilSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void* src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t* out_bytes_per_row, size_t* out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0;
+    if (out_bytes_per_image) *out_bytes_per_image = 0;
+    if (!src_data || width == 0 || height == 0 ||
+        !out_bytes_per_row || !out_bytes_per_image) {
+        return NULL;
+    }
+    size_t src_pixel_bytes = 0u;
+    switch (internal_format) {
+        case GL_DEPTH24_STENCIL8:
+            src_pixel_bytes = 4u;
+            break;
+        case GL_DEPTH32F_STENCIL8:
+            src_pixel_bytes = 5u;
+            break;
+        default:
+            return NULL;
+    }
+    const size_t dst_pixel_bytes = 4u;
+    const size_t dst_bytes_per_row = width * dst_pixel_bytes;
+    const size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    if (dst_bytes_per_image == 0 ||
+        dst_bytes_per_image > (512u * 1024u * 1024u) ||
+        src_bytes_per_row < width * src_pixel_bytes) {
+        return NULL;
+    }
+    uint8_t* dst = (uint8_t*)malloc(dst_bytes_per_image);
+    if (!dst) {
+        return NULL;
+    }
+    const uint8_t* src = static_cast<const uint8_t*>(src_data);
+    for (size_t row = 0; row < height; row++) {
+        const uint8_t* src_row = src + row * src_bytes_per_row;
+        uint8_t* dst_row = dst + row * dst_bytes_per_row;
+        for (size_t x = 0; x < width; x++) {
+            const uint8_t* in = src_row + x * src_pixel_bytes;
+            uint8_t* out = dst_row + x * dst_pixel_bytes;
+            uint8_t stencil = 0u;
+            if (internal_format == GL_DEPTH24_STENCIL8) {
+                uint32_t packed = 0u;
+                memcpy(&packed, in, sizeof(uint32_t));
+                stencil = (uint8_t)(packed & 0xffu);
+            } else {
+                stencil = in[4u];
+            }
+            const int64_t red = (int64_t)stencil;
+            const int64_t outv[4] = {
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_r, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_g, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_b, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_a, red, 0, 0, 1, 1u),
+            };
+            for (uint32_t c = 0; c < 4u; c++) {
+                mglRenderWriteIntegerTexelComponent(
+                    out, c, 1u, 0, outv[c]);
+            }
+        }
+    }
+    *out_bytes_per_row = dst_bytes_per_row;
+    *out_bytes_per_image = dst_bytes_per_image;
+    return dst;
+}
+
+extern "C"
+int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+    uint32_t internal_format, int swizzled) {
+    if (!swizzled) {
+        return 0;
+    }
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R16UI:
+        case GL_R32UI:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+            return 1;
+        default:
+            return 0;
     }
 }
 
@@ -8698,6 +9628,10 @@ int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
         case GL_R16UI:
         case GL_R32I:
         case GL_R32UI:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
             return 1;
         default:
             return 0;
@@ -8756,14 +9690,93 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         !out_bytes_per_row || !out_bytes_per_image) {
         return NULL;
     }
-    if (internal_format != GL_R8) {
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzle(internal_format, 1) == 0 &&
+        mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+            internal_format, 1, GL_DEPTH_COMPONENT) == 0) {
+        return NULL;
+    }
+    if (mglRenderTextureUploadNeedsSingleChannelSwizzleBake(internal_format, 1) == 0 &&
+        mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+            internal_format, 1, GL_DEPTH_COMPONENT) == 0) {
         return NULL;
     }
 
-    size_t dst_bytes_per_row = width * 4u;
-    size_t dst_bytes_per_image = dst_bytes_per_row * height;
+    uint32_t dst_component_bytes = 1u;
+    int dst_signed = 0;
+    uint32_t src_component_bytes = 1u;
+    int src_signed = 0;
+    switch (internal_format) {
+        case GL_R8:
+        case GL_R8_SNORM:
+            dst_component_bytes = 1u;
+            src_component_bytes = 1u;
+            break;
+        case GL_R8I:
+            dst_component_bytes = 1u;
+            src_component_bytes = 1u;
+            dst_signed = 1;
+            src_signed = 1;
+            break;
+        case GL_R8UI:
+            dst_component_bytes = 1u;
+            src_component_bytes = 1u;
+            break;
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            break;
+        case GL_R16I:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            dst_signed = 1;
+            src_signed = 1;
+            break;
+        case GL_R16UI:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            break;
+        case GL_R32F:
+        case GL_R32I:
+            dst_component_bytes = 4u;
+            src_component_bytes = 4u;
+            dst_signed = (internal_format == GL_R32I);
+            src_signed = dst_signed;
+            break;
+        case GL_R32UI:
+            dst_component_bytes = 4u;
+            src_component_bytes = 4u;
+            break;
+        case GL_DEPTH_COMPONENT16:
+            dst_component_bytes = 2u;
+            src_component_bytes = 2u;
+            break;
+        case GL_DEPTH_COMPONENT24:
+            dst_component_bytes = 4u;
+            src_component_bytes = 3u;
+            break;
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+            dst_component_bytes = 4u;
+            src_component_bytes = 4u;
+            break;
+        case GL_DEPTH32F_STENCIL8:
+            dst_component_bytes = 4u;
+            src_component_bytes = 5u;
+            break;
+        default:
+            return NULL;
+    }
+
+    const size_t dst_pixel_bytes = 4u * dst_component_bytes;
+    const size_t src_pixel_bytes = src_component_bytes;
+    const size_t dst_bytes_per_row = width * dst_pixel_bytes;
+    const size_t dst_bytes_per_image = dst_bytes_per_row * height;
     if (dst_bytes_per_image == 0 ||
-        dst_bytes_per_image > (512u * 1024u * 1024u)) {
+        dst_bytes_per_image > (512u * 1024u * 1024u) ||
+        src_bytes_per_row < width * src_pixel_bytes) {
         return NULL;
     }
 
@@ -8777,12 +9790,159 @@ uint8_t* mglRenderCreateSingleChannelSwizzledUpload(
         uint8_t* dst_row = dst + row * dst_bytes_per_row;
         const uint8_t* src_row = src + row * src_bytes_per_row;
         for (size_t x = 0; x < width; x++) {
-            uint8_t red = src_row[x];
-            uint8_t* out = dst_row + (x * 4u);
-            out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
-            out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
-            out[2] = mglRenderResolveR8SwizzledComponent(swizzle_b, red);
-            out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
+            uint8_t* out = dst_row + x * dst_pixel_bytes;
+            if (internal_format == GL_R8) {
+                const uint8_t red = src_row[x * src_pixel_bytes];
+                out[0] = mglRenderResolveR8SwizzledComponent(swizzle_r, red);
+                out[1] = mglRenderResolveR8SwizzledComponent(swizzle_g, red);
+                out[2] = mglRenderResolveR8SwizzledComponent(swizzle_b, red);
+                out[3] = mglRenderResolveR8SwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R8_SNORM) {
+                const uint8_t red = src_row[x * src_pixel_bytes];
+                out[0] = mglRenderResolveR8SnormSwizzledComponent(swizzle_r, red);
+                out[1] = mglRenderResolveR8SnormSwizzledComponent(swizzle_g, red);
+                out[2] = mglRenderResolveR8SnormSwizzledComponent(swizzle_b, red);
+                out[3] = mglRenderResolveR8SnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R16) {
+                const uint16_t red =
+                    *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R16_SNORM) {
+                const int16_t red =
+                    *(const int16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16SnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R16F) {
+                const uint16_t red =
+                    *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_R32F ||
+                internal_format == GL_DEPTH_COMPONENT32F) {
+                const uint32_t red =
+                    *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH_COMPONENT16) {
+                const uint16_t red =
+                    *(const uint16_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint16_t*)(void*)(out + 0) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_r, red);
+                *(uint16_t*)(void*)(out + 2) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_g, red);
+                *(uint16_t*)(void*)(out + 4) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_b, red);
+                *(uint16_t*)(void*)(out + 6) =
+                    mglRenderResolveR16UnormSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH_COMPONENT24) {
+                const uint32_t red =
+                    mglRenderDepth24ToFloatBits(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH_COMPONENT32) {
+                const uint32_t red =
+                    mglRenderDepthUint32ToFloatBits(
+                        *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes));
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH24_STENCIL8) {
+                const uint32_t red =
+                    mglRenderDepth24Stencil8ToFloatBits(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            if (internal_format == GL_DEPTH32F_STENCIL8) {
+                const uint32_t red =
+                    *(const uint32_t*)(const void*)(src_row + x * src_pixel_bytes);
+                *(uint32_t*)(void*)(out + 0) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_r, red);
+                *(uint32_t*)(void*)(out + 4) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_g, red);
+                *(uint32_t*)(void*)(out + 8) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_b, red);
+                *(uint32_t*)(void*)(out + 12) =
+                    mglRenderResolveR32FloatSwizzledComponent(swizzle_a, red);
+                continue;
+            }
+            const int64_t red = mglRenderReadIntegerTexelComponent(
+                src_row + x * src_pixel_bytes, 0u, src_component_bytes,
+                src_signed);
+            const int64_t outv[4] = {
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_r, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_g, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_b, red, 0, 0, 1, 1u),
+                mglRenderResolveIntegerSwizzledComponent(
+                    swizzle_a, red, 0, 0, 1, 1u),
+            };
+            for (uint32_t c = 0; c < 4u; c++) {
+                mglRenderWriteIntegerTexelComponent(
+                    out, c, dst_component_bytes, dst_signed, outv[c]);
+            }
         }
     }
 
@@ -10461,7 +11621,13 @@ MTL::Library* loadAuxLibraryLocked(mgl::Renderer& renderer,
     auto found = renderer.auxLibraries.find(asset_hash);
     if (found != renderer.auxLibraries.end()) return found->second;
     const uint64_t computedHash = mglAuxAssetHash(bytes, size);
-    if (computedHash != asset_hash) {
+    if (asset_hash == 0) {
+        /* Runtime-compiled blob (no committed table row): key the library
+         * cache on the content hash instead of a table fingerprint. */
+        asset_hash = computedHash;
+        auto cached = renderer.auxLibraries.find(asset_hash);
+        if (cached != renderer.auxLibraries.end()) return cached->second;
+    } else if (computedHash != asset_hash) {
         if (err && errcap) {
             snprintf(err, errcap,
                      "aux shader asset hash mismatch (table 0x%016llx, computed 0x%016llx)",
@@ -10797,7 +11963,7 @@ int mglRenderCreateAuxFunctions(
     size_t errcap) {
     if (vertex_out) *vertex_out = nullptr;
     if (fragment_out) *fragment_out = nullptr;
-    if (!vertex_out || !vertex_entry) {
+    if (!vertex_out) {
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
@@ -10810,9 +11976,13 @@ int mglRenderCreateAuxFunctions(
     MTL::Library* library = loadAuxLibraryLocked(
         renderer, bytes, size, asset_hash, err, errcap);
     if (!library) return -1;
-    MTL::Function* vertexFunction =
-        newAuxEntryFunction(library, vertex_entry, err, errcap);
-    if (!vertexFunction) return -1;
+    /* vertex_entry may be NULL for fragment-only blobs (e.g. stub FS
+     * metallibs compiled at runtime). */
+    MTL::Function* vertexFunction = nullptr;
+    if (vertex_entry) {
+        vertexFunction = newAuxEntryFunction(library, vertex_entry, err, errcap);
+        if (!vertexFunction) return -1;
+    }
     MTL::Function* fragmentFunction =
         newAuxEntryFunction(library, fragment_entry, err, errcap);
     if (fragment_entry && !fragmentFunction) {
@@ -11019,6 +12189,15 @@ int mglRenderBindingClearFragmentBuffer(void* binding_state,
     mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
     return state ? clearBufferSlot(state->fragmentBuffers,
                                    state->fragmentBufferOffsets, index, 0) : -1;
+}
+
+int mglRenderBindingClearFragmentTexture(void* binding_state,
+                                            uint32_t index) {
+    mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
+    if (!state || index >= state->fragmentTextures.size()) return -1;
+    mgl::BindingState::replaceObject(
+        state->fragmentTextures[index], static_cast<MTL::Texture*>(nullptr));
+    return 0;
 }
 
 int mglRenderBindingGetBuffer(void* binding_state,

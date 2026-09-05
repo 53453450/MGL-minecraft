@@ -104,6 +104,112 @@ static MGLRendererBackendHandle *mglRenderPassBackend(GLMContext context)
         : NULL;
 }
 
+/* VS-only + GL_RASTERIZER_DISCARD cannot leave Metal rasterization disabled:
+ * AGX drops vertex texture/SSBO stores. A no-op fragment keeps rasterization
+ * on while color write masks stay cleared (see below). */
+
+typedef NS_ENUM(uint32_t, MGLStubFSValueClass) {
+    MGLStubFSFloat = 0,
+    MGLStubFSInt,
+    MGLStubFSUint,
+};
+
+static MGLStubFSValueClass mglPixelFormatValueClass(uint32_t fmt)
+{
+    switch (fmt) {
+        case MGLPixelFormatR8Sint:
+        case MGLPixelFormatR16Sint:
+        case MGLPixelFormatRG8Sint:
+        case MGLPixelFormatR32Sint:
+        case MGLPixelFormatRG16Sint:
+        case MGLPixelFormatRGBA8Sint:
+        case MGLPixelFormatRG32Sint:
+        case MGLPixelFormatRGBA16Sint:
+        case MGLPixelFormatRGBA32Sint:
+            return MGLStubFSInt;
+        case MGLPixelFormatR8Uint:
+        case MGLPixelFormatR16Uint:
+        case MGLPixelFormatRG8Uint:
+        case MGLPixelFormatR32Uint:
+        case MGLPixelFormatRG16Uint:
+        case MGLPixelFormatRGBA8Uint:
+        case MGLPixelFormatRGB10A2Uint:
+        case MGLPixelFormatRG32Uint:
+        case MGLPixelFormatRGBA16Uint:
+        case MGLPixelFormatRGBA32Uint:
+            return MGLStubFSUint;
+        default:
+            return MGLStubFSFloat;
+    }
+}
+
+static id mglRasterizerDiscardStubFragmentFunctionForClass(
+    MGLStubFSValueClass valueClass)
+{
+    static id s_fs[MGLStubFSUint + 1] = { nil, nil, nil };
+    static dispatch_once_t once[MGLStubFSUint + 1];
+
+    dispatch_once(&once[valueClass], ^{
+        void *fs = NULL;
+        char err[256] = {0};
+        if (valueClass == MGLStubFSFloat) {
+            /* Precompiled aux asset (no runtime source compile). */
+            const MGLAuxShaderAsset *safe =
+                mglAuxShaderAssetFind("safe_fallback");
+            void *vs = NULL;
+            if (!safe || !safe->data || safe->size == 0 ||
+                mglRenderCreateAuxFunctions(
+                    safe->data, safe->size, safe->hash,
+                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                    &vs, &fs, err, sizeof(err)) != 0 || !fs) {
+                NSLog(@"MGL ERROR: discard stub FS unavailable: %s",
+                      err[0] ? err : "asset missing");
+                if (vs) {
+                    (void)(__bridge_transfer id)vs;
+                }
+                return;
+            }
+            (void)(__bridge_transfer id)vs;
+        } else {
+            /* Integer-format targets reject a float4 output, and no
+             * precompiled integer stub asset ships in the aux table.
+             * Compile the integer zero stub at runtime through the
+             * self-hosted GLSL->AIR backend (the same path real programs
+             * take; its fragment output carries the correct
+             * air.render_target int/uint type). */
+            static const char *s_stubSource[MGLStubFSUint + 1] = {
+                NULL,
+                "#version 330\n"
+                "out ivec4 mgl_stub_color_int;\n"
+                "void main() { mgl_stub_color_int = ivec4(0); }\n",
+                "#version 330\n"
+                "out uvec4 mgl_stub_color_uint;\n"
+                "void main() { mgl_stub_color_uint = uvec4(0u); }\n",
+            };
+            unsigned char *bytes = NULL;
+            size_t size = 0;
+            if (mglShaderCompileGLSL(
+                    s_stubSource[valueClass], MGL_STAGE_FRAGMENT,
+                    &bytes, &size, err, sizeof(err)) != 0 || !bytes) {
+                NSLog(@"MGL ERROR: stub FS compile failed: %s",
+                      err[0] ? err : "unknown");
+                return;
+            }
+            if (mglRenderCreateAuxFunctions(
+                    bytes, size, 0u, NULL, "main",
+                    NULL, &fs, err, sizeof(err)) != 0 || !fs) {
+                NSLog(@"MGL ERROR: stub FS function load failed: %s",
+                      err[0] ? err : "unknown");
+                free(bytes);
+                return;
+            }
+            free(bytes);
+        }
+        s_fs[valueClass] = (__bridge_transfer id)fs;
+    });
+    return s_fs[valueClass];
+}
+
 static id mglRenderPassDefaultDrawBufferAttachment(
     MGLRendererBackendHandle *backend, GLuint drawBufferIndex,
     MGLRendererBackendDefaultDrawBufferAttachmentKind kind)
@@ -645,6 +751,15 @@ static const char *mglGeometryPassthroughType(GLenum type)
         case GL_FLOAT_VEC2: return "vec2";
         case GL_FLOAT_VEC3: return "vec3";
         case GL_FLOAT_VEC4: return "vec4";
+        case GL_FLOAT_MAT2: return "mat2";
+        case GL_FLOAT_MAT3: return "mat3";
+        case GL_FLOAT_MAT4: return "mat4";
+        case GL_FLOAT_MAT2x3: return "mat2x3";
+        case GL_FLOAT_MAT2x4: return "mat2x4";
+        case GL_FLOAT_MAT3x2: return "mat3x2";
+        case GL_FLOAT_MAT3x4: return "mat3x4";
+        case GL_FLOAT_MAT4x2: return "mat4x2";
+        case GL_FLOAT_MAT4x3: return "mat4x3";
         case GL_INT: return "int";
         case GL_INT_VEC2: return "ivec2";
         case GL_INT_VEC3: return "ivec3";
@@ -653,6 +768,61 @@ static const char *mglGeometryPassthroughType(GLenum type)
         case GL_UNSIGNED_INT_VEC2: return "uvec2";
         case GL_UNSIGNED_INT_VEC3: return "uvec3";
         case GL_UNSIGNED_INT_VEC4: return "uvec4";
+        default: return NULL;
+    }
+}
+
+/* Matrix column count / row count for stage-out record layout (GL 4.6
+ * §4.4.1: one location per column).  Returns 0 for non-matrix types. */
+static unsigned mglGeometryPassthroughMatrixCols(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT2x4: return 2u;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT3x4: return 3u;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT4x2:
+        case GL_FLOAT_MAT4x3: return 4u;
+        default: return 0u;
+    }
+}
+
+static unsigned mglGeometryPassthroughMatrixRows(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT4x2: return 2u;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT4x3: return 3u;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT2x4:
+        case GL_FLOAT_MAT3x4: return 4u;
+        default: return 0u;
+    }
+}
+
+static const char *mglGeometryPassthroughColumnSwizzle(unsigned rows)
+{
+    switch (rows) {
+        case 2u: return ".xy";
+        case 3u: return ".xyz";
+        case 4u: return "";
+        default: return NULL;
+    }
+}
+
+static const char *mglGeometryPassthroughColumnType(unsigned rows)
+{
+    switch (rows) {
+        case 1u: return "float";
+        case 2u: return "vec2";
+        case 3u: return "vec3";
+        case 4u: return "vec4";
         default: return NULL;
     }
 }
@@ -691,28 +861,26 @@ static const char *mglGeometryPassthroughFloatType(GLenum type)
     }
 }
 
-/* Read-back conversion for integer varyings: the stage-out record stores
- * raw bits, so integer components need floatBitsToInt/Uint; float varyings
- * need none.  GLSL also requires the `flat` qualifier on integer
- * varyings. */
-static const char *mglGeometryPassthroughConversion(GLenum type)
+/* Integer varyings are stored as SIToFP/UIToFP float carriers in the
+ * stage-out record (see air backend).  The passthrough VS therefore
+ * declares float attributes and forwards the float swizzle as-is; the
+ * fragment stage converts with fptosi/fptoui.  GLSL still requires the
+ * `flat` qualifier on integer varyings. */
+static bool mglGeometryPassthroughNeedsFlat(GLenum type)
 {
     switch (type) {
         case GL_INT:
         case GL_INT_VEC2:
         case GL_INT_VEC3:
-        case GL_INT_VEC4: return "floatBitsToInt";
+        case GL_INT_VEC4:
         case GL_UNSIGNED_INT:
         case GL_UNSIGNED_INT_VEC2:
         case GL_UNSIGNED_INT_VEC3:
-        case GL_UNSIGNED_INT_VEC4: return "floatBitsToUint";
-        default: return NULL;
+        case GL_UNSIGNED_INT_VEC4:
+            return true;
+        default:
+            return false;
     }
-}
-
-static bool mglGeometryPassthroughNeedsFlat(GLenum type)
-{
-    return mglGeometryPassthroughConversion(type) != NULL;
 }
 
 /* The stage-out record stores every varying as a full vec4 slot, so a GS
@@ -783,6 +951,8 @@ static GLenum mglPassthroughDeclType(
      * at the reserved location below. */
     BOOL hasPrimitiveId = mgl_gs_for_ps && mgl_gs_for_ps->src &&
                           strstr(mgl_gs_for_ps->src, "gl_PrimitiveID") != NULL;
+    BOOL hasClipDistance = mgl_gs_for_ps && mgl_gs_for_ps->src &&
+                           strstr(mgl_gs_for_ps->src, "gl_ClipDistance") != NULL;
     if (hasPrimitiveId) {
         /* Float carrier: the GS kernel stores sitofp(id) and a flat int
          * stage_input that is actually read crashes Apple's AGX compiler
@@ -790,6 +960,11 @@ static GLenum mglPassthroughDeclType(
         [source appendFormat:
             @"layout(location = %u) flat out float mgl_primitive_id;\n",
              (unsigned)MGL_AIR_PRIMITIVE_ID_LOCATION];
+    }
+    if (hasClipDistance) {
+        [source appendFormat:
+            @"out float gl_ClipDistance[%u];\n",
+             (unsigned)MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT];
     }    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
@@ -808,11 +983,30 @@ static GLenum mglPassthroughDeclType(
                     (unsigned)output->gl_type,
                     (unsigned)output->location);
         GLenum declType = mglPassthroughDeclType(fsInputs, output);
+        unsigned matCols = mglGeometryPassthroughMatrixCols(declType);
+        unsigned matRows = mglGeometryPassthroughMatrixRows(declType);
+        if (matCols > 0u) {
+            /* Metal rejects matrix stage-out attributes; emit one vector
+             * output per column at consecutive locations (GL 4.6 §4.4.1). */
+            const char *colType = mglGeometryPassthroughColumnType(matRows);
+            if (!colType || !output->name) {
+                NSLog(@"MGL GS ERROR: unsupported passthrough matrix type 0x%x",
+                      (unsigned)output->gl_type);
+                return NO;
+            }
+            for (unsigned c = 0; c < matCols; c++) {
+                [source appendFormat:
+                    @"layout(location = %u) out %s %s_c%u;\n",
+                    (unsigned)(output->location + c), colType,
+                    output->name, c];
+            }
+            continue;
+        }
         /* Integer varyings ride as float carriers (the AIR backend pairs
          * this with an fptosi at the fragment entry; raw int attributes do
          * not survive the GS-expansion pipeline plumbing). */
         const char *type =
-            mglGeometryPassthroughConversion(declType)
+            mglGeometryPassthroughNeedsFlat(declType)
                 ? mglGeometryPassthroughFloatType(declType)
                 : mglGeometryPassthroughType(declType);
         if (!type || !output->name) {
@@ -848,6 +1042,23 @@ static GLenum mglPassthroughDeclType(
         [source appendString:
             @"    vec4 mgl_prim_vec = mgl_gs_output.records[mgl_base + 3];\n"
              "    mgl_primitive_id = mgl_prim_vec.y;\n"];
+    }
+    if (hasClipDistance) {
+        /* Clip distances live at byte offset 64 (vec4 slots 4..5). */
+        unsigned clipSlot =
+            (unsigned)(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET / 16u);
+        [source appendFormat:
+            @"    vec4 mgl_clip0 = mgl_gs_output.records[mgl_base + %u];\n"
+             "    vec4 mgl_clip1 = mgl_gs_output.records[mgl_base + %u];\n"
+             "    gl_ClipDistance[0] = mgl_clip0.x;\n"
+             "    gl_ClipDistance[1] = mgl_clip0.y;\n"
+             "    gl_ClipDistance[2] = mgl_clip0.z;\n"
+             "    gl_ClipDistance[3] = mgl_clip0.w;\n"
+             "    gl_ClipDistance[4] = mgl_clip1.x;\n"
+             "    gl_ClipDistance[5] = mgl_clip1.y;\n"
+             "    gl_ClipDistance[6] = mgl_clip1.z;\n"
+             "    gl_ClipDistance[7] = mgl_clip1.w;\n",
+             clipSlot, clipSlot + 1u];
     }
     if (getenv("MGL_GS_PROBE")) {
         /* Pixel probe: R = vertex id, G = GPU-read position.y remapped,
@@ -923,30 +1134,39 @@ static GLenum mglPassthroughDeclType(
          if (output->is_per_patch) continue;
          if (output->stream > 0) continue;
          GLenum declType = mglPassthroughDeclType(fsInputs, output);
+         unsigned matCols = mglGeometryPassthroughMatrixCols(declType);
+         unsigned matRows = mglGeometryPassthroughMatrixRows(declType);
+         if (matCols > 0u) {
+             /* Stage-out stores one column per location slot (GL 4.6
+              * §4.4.1).  Forward each column as its own vector varying. */
+             const char *colSwizzle =
+                 mglGeometryPassthroughColumnSwizzle(matRows);
+             if (!colSwizzle || !output->name) return NO;
+             unsigned baseSlot =
+                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u +
+                            output->location);
+             for (unsigned c = 0; c < matCols; c++) {
+                 [source appendFormat:
+                     @"    vec4 mgl_slot_%u_%u = "
+                      "mgl_gs_output.records[mgl_base + %u];\n"
+                      "    %s_c%u = mgl_slot_%u_%u%s;\n",
+                     (unsigned)i, c, baseSlot + c,
+                     output->name, c, (unsigned)i, c, colSwizzle];
+             }
+             continue;
+         }
          const char *swizzle = mglGeometryPassthroughSwizzle(declType);
          if (!swizzle || !output->name) return NO;
-         const char *convert =
-             mglGeometryPassthroughConversion(output->gl_type);
-         if (convert) {
-             const char *carrierType =
-                 mglGeometryPassthroughFloatType(declType);
-             [source appendFormat:
-                 @"    vec4 mgl_slot_%u = "
-                  "mgl_gs_output.records[mgl_base + %u];\n"
-                  "    %s = %s(%s(mgl_slot_%u%s));\n",
-                 (unsigned)i,
-                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-                 output->name, carrierType, convert, (unsigned)i, swizzle];
-         } else {
-             [source appendFormat:
-                 @"    vec4 mgl_slot_%u = "
-                  "mgl_gs_output.records[mgl_base + %u];\n"
-                  "    %s = mgl_slot_%u%s;\n",
-                 (unsigned)i,
-                 (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-                 output->name, (unsigned)i,
-                 swizzle];
-         }
+         /* Integer records already hold SIToFP/UIToFP float carriers —
+          * forward the float swizzle; do not floatBitsTo*. */
+         [source appendFormat:
+             @"    vec4 mgl_slot_%u = "
+              "mgl_gs_output.records[mgl_base + %u];\n"
+              "    %s = mgl_slot_%u%s;\n",
+             (unsigned)i,
+             (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+             output->name, (unsigned)i,
+             swizzle];
     }
     [source appendString:@"}\n"];
     if (getenv("MGL_GS_DIAG")) {
@@ -1011,31 +1231,89 @@ static GLenum mglPassthroughDeclType(
         &program->shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
     NSUInteger recordStride = mglAIRPerVertexStrideForResources(outputs);
     NSUInteger vec4Stride = recordStride / 16u;
+    Shader *tesShader = program->shader_slots[_TESS_EVALUATION_SHADER];
+    BOOL hasClipDistance = tesShader && tesShader->src &&
+                           strstr(tesShader->src, "gl_ClipDistance") != NULL;
+    /* Isolines rasterize as lines; Metal rejects a vertex stage that writes
+     * point size on a non-point topology. */
+    BOOL writePointSize = program->tess_gen_point_mode != GL_FALSE;
     NSMutableString *source = [NSMutableString stringWithString:
         @"#version 460 core\n"
          "layout(std430, binding = 0) buffer MGLTESOutput {\n"
          "    vec4 records[];\n"
          "} mgl_tes_output;\n"];
+    if (hasClipDistance) {
+        [source appendFormat:
+            @"out float gl_ClipDistance[%u];\n",
+             (unsigned)MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT];
+    }
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
-        const char *type = mglGeometryPassthroughType(output->gl_type);
+        /* Integer varyings are stored as float carriers in the TES
+         * record (same ABI as GS expansion); declare float attributes and
+         * forward the swizzle — FS converts with fptosi/fptoui. */
+        unsigned matCols =
+            mglGeometryPassthroughMatrixCols(output->gl_type);
+        unsigned matRows =
+            mglGeometryPassthroughMatrixRows(output->gl_type);
+        if (matCols > 0u) {
+            const char *colType = mglGeometryPassthroughColumnType(matRows);
+            if (!colType || !output->name) {
+                NSLog(@"MGL TESS ERROR: unsupported passthrough matrix type 0x%x",
+                      (unsigned)output->gl_type);
+                return NO;
+            }
+            for (unsigned c = 0; c < matCols; c++) {
+                [source appendFormat:
+                    @"layout(location = %u) out %s %s_c%u;\n",
+                    (unsigned)(output->location + c), colType,
+                    output->name, c];
+            }
+            continue;
+        }
+        const char *type =
+            mglGeometryPassthroughNeedsFlat(output->gl_type)
+                ? mglGeometryPassthroughFloatType(output->gl_type)
+                : mglGeometryPassthroughType(output->gl_type);
         if (!type || !output->name) {
             NSLog(@"MGL TESS ERROR: unsupported passthrough varying type 0x%x",
                   (unsigned)output->gl_type);
             return NO;
         }
-        [source appendFormat:@"layout(location = %u) out %s %s;\n",
-                             (unsigned)output->location, type, output->name];
+        [source appendFormat:@"layout(location = %u) %sout %s %s;\n",
+                             (unsigned)output->location,
+                             mglGeometryPassthroughNeedsFlat(output->gl_type)
+                                 ? "flat " : "",
+                             type, output->name];
     }
     [source appendFormat:
         @"void main() {\n"
          "    int mgl_base = gl_VertexID * %lu;\n"
-         "    gl_Position = mgl_tes_output.records[mgl_base];\n"
-         "    vec4 mgl_point_size = "
-         "mgl_tes_output.records[mgl_base + 1];\n"
-         "    gl_PointSize = mgl_point_size.x;\n",
+         "    gl_Position = mgl_tes_output.records[mgl_base];\n",
          (unsigned long)vec4Stride];
+    if (writePointSize) {
+        [source appendString:
+            @"    vec4 mgl_point_size = "
+             "mgl_tes_output.records[mgl_base + 1];\n"
+             "    gl_PointSize = mgl_point_size.x;\n"];
+    }
+    if (hasClipDistance) {
+        unsigned clipSlot =
+            (unsigned)(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET / 16u);
+        [source appendFormat:
+            @"    vec4 mgl_clip0 = mgl_tes_output.records[mgl_base + %u];\n"
+             "    vec4 mgl_clip1 = mgl_tes_output.records[mgl_base + %u];\n"
+             "    gl_ClipDistance[0] = mgl_clip0.x;\n"
+             "    gl_ClipDistance[1] = mgl_clip0.y;\n"
+             "    gl_ClipDistance[2] = mgl_clip0.z;\n"
+             "    gl_ClipDistance[3] = mgl_clip0.w;\n"
+             "    gl_ClipDistance[4] = mgl_clip1.x;\n"
+             "    gl_ClipDistance[5] = mgl_clip1.y;\n"
+             "    gl_ClipDistance[6] = mgl_clip1.z;\n"
+             "    gl_ClipDistance[7] = mgl_clip1.w;\n",
+             clipSlot, clipSlot + 1u];
+    }
     if (program->tess_cull_distance_count > 0u) {
 
         if (program->tess_gen_mode == GL_ISOLINES) {
@@ -1078,6 +1356,27 @@ static GLenum mglPassthroughDeclType(
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
+        unsigned matCols =
+            mglGeometryPassthroughMatrixCols(output->gl_type);
+        unsigned matRows =
+            mglGeometryPassthroughMatrixRows(output->gl_type);
+        if (matCols > 0u) {
+            const char *colSwizzle =
+                mglGeometryPassthroughColumnSwizzle(matRows);
+            if (!colSwizzle || !output->name) return NO;
+            unsigned baseSlot =
+                (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u +
+                           output->location);
+            for (unsigned c = 0; c < matCols; c++) {
+                [source appendFormat:
+                    @"    vec4 mgl_slot_%u_%u = "
+                     "mgl_tes_output.records[mgl_base + %u];\n"
+                     "    %s_c%u = mgl_slot_%u_%u%s;\n",
+                    (unsigned)i, c, baseSlot + c,
+                    output->name, c, (unsigned)i, c, colSwizzle];
+            }
+            continue;
+        }
         const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
         if (!swizzle || !output->name) return NO;
         [source appendFormat:
@@ -1898,6 +2197,17 @@ static GLenum mglPassthroughDeclType(
             dsDesc.depth_write_enabled = state->var.depth_writemask ? 1u : 0u;
         }
 
+        /* GL_RASTERIZER_DISCARD / VS capture: no fragment is produced, so
+         * depth/stencil writes must not mutate attachments (color masks are
+         * cleared separately in the pipeline descriptor path). */
+        const BOOL suppressDepthStencilWrites =
+            state->caps.rasterizer_discard ||
+            _tessellation.tessVertexCaptureActive ||
+            _tessellation.cullDistanceCaptureActive;
+        if (suppressDepthStencilWrites) {
+            dsDesc.depth_write_enabled = 0u;
+        }
+
         if (useStencilState)
         {
             if (mglTraceLogIsEnabled()) {
@@ -1934,7 +2244,9 @@ static GLenum mglPassthroughDeclType(
                     [self mtlStencilOpForGLOp:state->var.stencil_pass_depth_fail];
                 dsDesc.front.depth_stencil_pass_operation =
                     [self mtlStencilOpForGLOp:state->var.stencil_pass_depth_pass];
-                dsDesc.front.write_mask = state->var.stencil_writemask;
+                dsDesc.front.write_mask =
+                    suppressDepthStencilWrites ? 0u
+                                               : state->var.stencil_writemask;
                 dsDesc.front.read_mask = state->var.stencil_value_mask;
             }
 
@@ -1959,7 +2271,10 @@ static GLenum mglPassthroughDeclType(
                     [self mtlStencilOpForGLOp:state->var.stencil_back_pass_depth_fail];
                 dsDesc.back.depth_stencil_pass_operation =
                     [self mtlStencilOpForGLOp:state->var.stencil_back_pass_depth_pass];
-                dsDesc.back.write_mask = state->var.stencil_back_writemask;
+                dsDesc.back.write_mask =
+                    suppressDepthStencilWrites
+                        ? 0u
+                        : state->var.stencil_back_writemask;
                 dsDesc.back.read_mask = state->var.stencil_back_value_mask;
             }
         }
@@ -2648,6 +2963,12 @@ static GLenum mglPassthroughDeclType(
 
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->color_attachments[attachmentIndex]);
+            if (_mglInMSSampleDrawLoop &&
+                (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+                _mglMSSamplePlaneOffset > 0) {
+                subresource.slice += (uint32_t)_mglMSSamplePlaneOffset;
+            }
             mglRenderPassSetPersistentAttachment(
                 &_commandState,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
@@ -3099,6 +3420,27 @@ static GLenum mglPassthroughDeclType(
                 &_commandState,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
                 MGLLoadActionClear, MGLStoreActionStore);
+
+            /* MS textures are texture2d_array sample planes; LoadActionClear
+             * only hits the attached base slice. Clear the other sample
+             * planes so imageLoad(sample) sees the same clear value. */
+            if (attachmentTextureForClear &&
+                attachmentTextureForClear->mtl_data &&
+                (attachmentTextureForClear->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 attachmentTextureForClear->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
+                MGLMetalAttachmentSubresource sub =
+                    mglMetalAttachmentSubresourceForAttachment(att);
+                NSUInteger samples =
+                    MAX((NSUInteger)attachmentTextureForClear->samples, 1u);
+                for (NSUInteger s = 1u; s < samples; s++) {
+                    (void)mglRenderEncodeColorClearForCommandBufferOwner(
+                        _commandState.currentCommandBufferOwner,
+                        attachmentTextureForClear->mtl_data,
+                        sub.level, sub.slice + s, sub.depthPlane,
+                        att->clear_color[0], att->clear_color[1],
+                        att->clear_color[2], att->clear_color[3]);
+                }
+            }
 
             att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
             mglMarkTextureLevelRenderTargetWritten(attachmentTextureForClear, att->level);
@@ -4372,6 +4714,46 @@ static GLenum mglPassthroughDeclType(
     id fragmentFunction = fragmentProgram
         ? (__bridge id)fragmentProgram->modules[_FRAGMENT_SHADER].mtl_function
         : nil;
+    /* Tess/cull VS capture also needs a real FS: AGX drops vertex device-
+     * buffer stores when Metal rasterization is off (same as
+     * GL_RASTERIZER_DISCARD). Stub FS + cleared color masks below. */
+    if (!fragmentFunction && rasterizerDiscard) {
+        /* Metal validates the stub FS output against color attachment 0's
+         * format: float4 stubs are rejected by integer-format targets.
+         * Resolve the format early (read-only; the FBO walk below re-binds
+         * the same textures) and pick the matching zero-return variant. */
+        uint32_t stubColor0 = MGLPixelFormatInvalid;
+        if (MGL_STATE(ctx)->framebuffer) {
+            Framebuffer *stubFbo = MGL_STATE(ctx)->framebuffer;
+            for (int i = 0; i < MGL_STATE(ctx)->max_color_attachments; i++) {
+                if (!stubFbo->color_attachments[i].texture) {
+                    if ((stubFbo->color_attachment_bitfield >> (i + 1)) == 0) {
+                        break;
+                    }
+                    continue;
+                }
+                Texture *stubTex = [self framebufferAttachmentTexture:
+                                            &stubFbo->color_attachments[i]];
+                if (stubTex && stubTex->mtl_data) {
+                    stubColor0 = mtlPixelFormatForGLTex(stubTex);
+                    if (stubColor0 != MGLPixelFormatInvalid) {
+                        break;
+                    }
+                }
+            }
+        } else if (mglRenderPassColorTextureFor(&_commandState, 0)) {
+            stubColor0 = mglRenderPassTextureInfo(
+                mglRenderPassColorTextureFor(&_commandState, 0))
+                .pixel_format;
+        } else if (_drawable && [self mglDrawableTexture]) {
+            stubColor0 = mglRenderPassTextureInfo([self mglDrawableTexture])
+                .pixel_format;
+        } else {
+            stubColor0 = ctx->pixel_format.mtl_pixel_format;
+        }
+        fragmentFunction = mglRasterizerDiscardStubFragmentFunctionForClass(
+            mglPixelFormatValueClass(stubColor0));
+    }
     if (kMGLVerbosePipelineLogs) {
         NSLog(@"MGL PIPELINE DESC vs=%p fs=%p",
               vertexFunction, fragmentFunction);
@@ -4396,7 +4778,7 @@ static GLenum mglPassthroughDeclType(
     state->fragment_program_generation = fragmentProgram
         ? fragmentProgram->pipeline_cache_generation : 0u;
     state->color_count = MAX_COLOR_ATTACHMENTS;
-    state->rasterization_enabled = rasterizerDiscard ? 0 : 1;
+    state->rasterization_enabled = 1;
 
     state->max_tessellation_factor = 64u;
 
@@ -4465,12 +4847,11 @@ static GLenum mglPassthroughDeclType(
     }
 
 
-    if (tessVertexCapture || cullDistanceCapture) {
-        state->rasterization_enabled = 0;
-    } else if (rasterizerDiscard) {
-        GLuint vsOutputCount = vertexProgram->shader_resources_list[vertexStage][_STAGE_OUTPUT_RES].count;
-        state->rasterization_enabled =
-            (nativeTES || vsOutputCount > 0) ? 1 : 0;
+    if (rasterizerDiscard) {
+        /* AGX drops vertex texture/SSBO stores when Metal rasterization is
+         * disabled — including tess/cull VS capture draws. Keep rasterization
+         * on (real FS or discard stub above); color write masks cleared below. */
+        state->rasterization_enabled = fragmentFunction ? 1 : 0;
     } else {
         state->rasterization_enabled = 1;
     }
@@ -4688,6 +5069,13 @@ static GLenum mglPassthroughDeclType(
         state->destination_alpha_blend_factor[i] = blend.destination_alpha_factor;
         state->rgb_blend_operation[i] = blend.rgb_operation;
         state->alpha_blend_operation[i] = blend.alpha_operation;
+    }
+
+    if (MGL_STATE(ctx)->caps.rasterizer_discard ||
+        tessVertexCapture || cullDistanceCapture) {
+        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+            state->color_write_mask[i] = 0u;
+        }
     }
 
 
@@ -5692,7 +6080,6 @@ stencil_format_ok:;
                     simpleState.alpha_to_one_enabled = 0;
                     simpleState.raster_sample_count = 0;
                     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-                        simpleState.color_write_mask[i] = 0;
                         simpleState.source_rgb_blend_factor[i] = 0;
                         simpleState.destination_rgb_blend_factor[i] = 0;
                         simpleState.source_alpha_blend_factor[i] = 0;
@@ -5700,6 +6087,7 @@ stencil_format_ok:;
                         simpleState.rgb_blend_operation[i] = 0;
                         simpleState.alpha_blend_operation[i] = 0;
                         if (i > 0) {
+                            simpleState.color_write_mask[i] = 0;
                             simpleState.color_format[i] = (uint32_t)MGLPixelFormatInvalid;
                         }
                     }
@@ -5766,31 +6154,44 @@ stencil_format_ok:;
             safeState.depth_format = finalState.depth_format;
             safeState.stencil_format = finalState.stencil_format;
 
-            // Precompiled safe shaders (mgl_aux_assets table).  No runtime
-            // source compilation; failures log the program/format context and
-            // never retry with the source compiler.
+            /* VS from the precompiled safe_fallback aux asset.  FS reuses the
+             * discard stub helper so int/uint color0 gets a matching zero
+             * output (aux table only ships float4 mgl_safe_fallback_fs). */
             const MGLAuxShaderAsset *safe =
                 mglAuxShaderAssetFind("safe_fallback");
             void *safeVS = NULL;
-            void *safeFS = NULL;
+            void *unusedFS = NULL;
             char libError[512] = {0};
+            MGLStubFSValueClass safeClass =
+                mglPixelFormatValueClass(safeColor0Format);
+            id safeFSFunction =
+                mglRasterizerDiscardStubFragmentFunctionForClass(safeClass);
             if (!safe || !safe->data || safe->size == 0 ||
                 mglRenderCreateAuxFunctions(
                     safe->data, safe->size, safe->hash,
                     "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
-                    &safeVS, &safeFS,
-                    libError, sizeof(libError)) != 0 || !safeVS) {
+                    &safeVS, &unusedFS,
+                    libError, sizeof(libError)) != 0 || !safeVS ||
+                !safeFSFunction) {
                 NSLog(@"MGL CRITICAL: safe fallback asset unavailable "
-                      @"program=%u color0=%lu hash=0x%016llx error=%s",
+                      @"program=%u color0=%lu class=%u hash=0x%016llx error=%s",
                       (unsigned)currentProgramName,
                       (unsigned long)safeColor0Format,
+                      (unsigned)safeClass,
                       safe ? (unsigned long long)safe->hash : 0ull,
-                      libError[0] ? libError : "asset missing");
+                      libError[0] ? libError : "asset or stub FS missing");
+                if (safeVS) {
+                    (void)(__bridge_transfer id)safeVS;
+                }
+                if (unusedFS) {
+                    (void)(__bridge_transfer id)unusedFS;
+                }
             } else {
+                if (unusedFS) {
+                    (void)(__bridge_transfer id)unusedFS;
+                }
                 id safeVSFunction =
                     (__bridge_transfer id)safeVS;
-                id safeFSFunction =
-                    safeFS ? (__bridge_transfer id)safeFS : nil;
                 psoPtr = NULL;
                 cppError[0] = '\0';
                 if (mglPipelineCacheCreateRenderPipelineFromState(
@@ -5798,7 +6199,7 @@ stencil_format_ok:;
                         (__bridge void *)_device,
                         _pipelineCacheBinaryArchiveRequested, &safeState,
                         (__bridge void *)safeVSFunction,
-                        safeFSFunction ? (__bridge void *)safeFSFunction : NULL,
+                        (__bridge void *)safeFSFunction,
                         &psoPtr, cppError, sizeof(cppError)) == 0 && psoPtr) {
                     compiledPSO = (__bridge_transfer id)psoPtr;
                 }

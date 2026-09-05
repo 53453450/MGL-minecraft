@@ -155,9 +155,7 @@ GLuint mglRuntimeArraySizeBufferIndexForProgram(const Program *program,
 {
     if (program &&
         (stage == _GEOMETRY_SHADER ||
-         (stage == _TESS_EVALUATION_SHADER &&
-          (program->tess_gen_mode == GL_ISOLINES ||
-           program->tess_gen_point_mode)))) {
+         (stage == _TESS_EVALUATION_SHADER && program->tess_eval_compute))) {
         return MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
     }
     return MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
@@ -203,10 +201,9 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
             break;
 
         case _TESS_EVALUATION_SHADER:
-            if (program->tess_gen_mode == GL_ISOLINES ||
-                program->tess_gen_point_mode) {
-                /* Isolines and point-mode TES execute as a compute kernel
-                 * whose fixed ABI occupies every slot in [24, 31]. */
+            if (program->tess_eval_compute) {
+                /* Compute TES (isolines / point_mode / XFB-forced) occupies
+                 * every slot in [24, 31]. */
                 if (slot >= 24u && slot <= 31u) {
                     return GL_TRUE;
                 }

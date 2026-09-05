@@ -64,6 +64,8 @@ typedef struct MGLAIRStageInfo {
     uint32_t tess_gen_spacing;
     uint32_t tess_gen_vertex_order;
     uint32_t tess_gen_point_mode;
+    /* 1 if TES source declared triangles/quads/isolines (link requires it). */
+    uint32_t tess_gen_mode_specified;
     uint32_t geometry_input_type;
     uint32_t geometry_output_type;
     uint32_t geometry_vertices_out;
@@ -79,6 +81,10 @@ typedef struct MGLAIRStageInfo {
     uint32_t gs_stream_count;            /* number of streams used (1..4) */
     uint32_t gs_stream_varying_count[4];
     uint32_t gs_stream_xfb_stride[4];
+    /* Compute: layout(local_size_*) — 0 means unspecified (dispatch uses 1). */
+    uint32_t compute_local_size_x;
+    uint32_t compute_local_size_y;
+    uint32_t compute_local_size_z;
 } MGLAIRStageInfo;
 
 /* Fixed inter-stage record shared by VS capture, TCS, TES and the GS compute
@@ -103,10 +109,15 @@ enum {
     /* GS-written gl_PrimitiveID at a dedicated offset; ferried to the
      * fragment stage through the reserved varying location below. */
     MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET = 52,
+    /* gl_ClipDistance array for GS/TCS/TES per-vertex records.  Plain VS
+     * still emits Metal clip_distance; these bytes ferry clip through the
+     * compute-expansion path into the passthrough vertex stage. */
+    MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET = 64,
+    MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT = MGL_MAX_CLIP_DISTANCES,
     /* Reserved varying location carrying gl_PrimitiveID from the geometry
      * passthrough vertex function to the fragment shader. */
     MGL_AIR_PRIMITIVE_ID_LOCATION = 31,
-    MGL_AIR_PER_VERTEX_STRIDE = 64,
+    MGL_AIR_PER_VERTEX_STRIDE = 96,
 };
 
 /* Byte layout of one per-vertex record.  The kernel and the renderer
@@ -116,7 +127,9 @@ enum {
  *
  * cull_distance[5]/[6]/[7] share bytes with layer / viewport_index /
  * stream when those built-ins are used; shaders that emit six or more
- * cull distances cannot also write the overlapping built-ins. */
+ * cull distances cannot also write the overlapping built-ins.
+ * clip_distance sits past the 64-byte legacy footprint so existing
+ * layer/viewport/stream aliasing is unchanged. */
 typedef struct MGLAIRPerVertexRecord {
     float position[4];          /* @0                                    */
     float point_size;           /* @16                                   */
@@ -125,6 +138,7 @@ typedef struct MGLAIRPerVertexRecord {
     int32_t viewport_index;     /* @44  aliases cull_distance[6]         */
     uint32_t stream;            /* @48  aliases cull_distance[7]         */
     float cull_distance_hi[3];  /* @52 .. @63                            */
+    float clip_distance[8];     /* @64 .. @95                            */
 } MGLAIRPerVertexRecord;
 
 #include <stddef.h>
@@ -151,8 +165,40 @@ MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, viewport_index) ==
 MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, stream) ==
                   MGL_AIR_PER_VERTEX_STREAM_OFFSET,
               "stream offset must match the kernel's stamp offset");
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, clip_distance) ==
+                  MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET,
+              "clip_distance offset drift");
 MGL_AIR_VA_STATIC_ASSERT(sizeof(MGLAIRPerVertexRecord) == MGL_AIR_PER_VERTEX_STRIDE,
               "record size drift");
+
+static inline uint32_t mglAIRVaryingLocationSpan(GLuint gl_type,
+                                                 GLint array_size)
+{
+    /* GL 4.6 §4.4.1: matrices consume one location per column. */
+    uint32_t cols = 1u;
+    switch (gl_type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT2x4:
+            cols = 2u;
+            break;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT3x4:
+            cols = 3u;
+            break;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT4x2:
+        case GL_FLOAT_MAT4x3:
+            cols = 4u;
+            break;
+        default:
+            cols = 1u;
+            break;
+    }
+    uint32_t elems = (array_size > 0) ? (uint32_t)array_size : 1u;
+    return cols * elems;
+}
 
 static inline uint32_t mglAIRPerVertexStrideForResources(
     const MGLShaderResourceList *resources)
@@ -163,8 +209,10 @@ static inline uint32_t mglAIRPerVertexStrideForResources(
         const MGLShaderResource *resource = &resources->list[i];
         if (resource->is_per_patch || resource->location >= 0x0fffffffu)
             continue;
+        uint32_t span = mglAIRVaryingLocationSpan(resource->gl_type,
+                                                  resource->gl_array_size);
         uint32_t end = MGL_AIR_PER_VERTEX_STRIDE +
-                       (resource->location + 1u) * 16u;
+                       (resource->location + span) * 16u;
         if (end > stride) stride = end;
     }
     return stride;
@@ -190,7 +238,13 @@ int mglShaderCompileGLSL(const char *src, int stage,
 /* XFB capture variant of a vertex shader: the full output record
  * (position + varyings) is written to a device buffer at Metal buffer
  * index 29 with rasterization disabled.  Returns 0 on success. */
-int mglShaderCompileGLSLCapture(const char *src, unsigned char **metallib_out,
+/* XFB / rasterization-disabled vertex capture.  Writes the VS output
+ * record to Metal buffer index 29.  attrib_names is an optional
+ * MAX_ATTRIBS-sized glBindAttribLocation map (same contract as
+ * mglAirCompileGLSLWithReflect); pass NULL for declaration-order locations. */
+int mglShaderCompileGLSLCapture(const char *src,
+                                const char *const *attrib_names,
+                                unsigned char **metallib_out,
                                 size_t *size_out, char *err_buf,
                                 size_t err_cap);
 
@@ -198,6 +252,7 @@ int mglShaderCompileGLSLCapture(const char *src, unsigned char **metallib_out,
  * rasterization-disabled vertex function and writes MGLAIRPerVertexRecord at
  * Metal buffer index 29. */
 int mglShaderCompileGLSLTessCapture(const char *src,
+                                    const char *const *attrib_names,
                                     unsigned char **metallib_out,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap);
@@ -206,7 +261,8 @@ int mglShaderCompileGLSLTessCapture(const char *src,
  * evaluation. The capture record contains the normal vertex outputs followed
  * by float[8] cull distances and is written to buffer index 29. */
 int mglShaderCompileGLSLCullDistanceCapture(
-    const char *src, unsigned char **metallib_out, size_t *size_out,
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap);
 
 /* Compile one stage through the self-hosted frontend + AIR backend and
@@ -230,15 +286,23 @@ int mglAirCompileGLSLWithReflectInfo(
 /* mglAirCompileGLSLWithReflectInfoEx flags */
 enum {
     MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER = 1u << 0,
+    /* Force TES to the isolines/point-mode compute expansion even for
+     * triangles/quads.  Used when the linked program captures TES outputs
+     * via transform feedback (native post-tessellation cannot feed XFB). */
+    MGL_AIR_COMPILE_FORCE_TES_COMPUTE = 1u << 1,
 };
 
 /* Same as above plus stage-composition flags (bit0: a geometry shader is
- * attached, which changes fragment-stage gl_PrimitiveID lowering). */
+ * attached, which changes fragment-stage gl_PrimitiveID lowering).
+ * iface_location_peers: optional producer-stage outputs (typically GS
+ * [_STAGE_OUTPUT_RES]); when has_gs, FS auto-assigned input locations are
+ * remapped by name to these so mgl_loc_N tags match the passthrough VS. */
 int mglAirCompileGLSLWithReflectInfoEx(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
-    uint32_t flags, char *err_buf, size_t err_cap);
+    uint32_t flags, const MGLShaderResourceList *iface_location_peers,
+    char *err_buf, size_t err_cap);
 
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
@@ -249,6 +313,10 @@ void mglShaderFree(void *bytes);
  * NUL-terminated message into err_buf (err_cap bytes) if non-NULL. */
 int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
                             char *err_buf, size_t err_cap);
+
+/* Compare TCS outputs with TES inputs (including patch varyings). */
+int mglShaderTessInterfaceCheck(const char *tcs_src, const char *tes_src,
+                                char *err_buf, size_t err_cap);
 
 #ifdef __cplusplus
 }

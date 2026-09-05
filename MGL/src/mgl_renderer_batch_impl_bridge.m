@@ -1340,7 +1340,8 @@ static void mglBatchExecuteIndirectCommands(
             MGL_PERF_INC(g_mglDeltaDomainVAOSinceSwap);
         }
         if (a->texture_hash != b->texture_hash) {
-            replayDirtyBits |= DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM | DIRTY_SAMPLER;
+            replayDirtyBits |= DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM |
+                               DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE;
             MGL_PERF_INC(g_mglDeltaDomainTextureSinceSwap);
         }
         if (a->render_state_hash != b->render_state_hash ||

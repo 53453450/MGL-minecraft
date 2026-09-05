@@ -111,7 +111,8 @@
 
             if (!is3DReupload) {
 
-                if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
 
                     NSUInteger expandedBytesPerRow = 0;
 
@@ -141,7 +142,8 @@
 
                     }
 
-                } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
 
                     NSUInteger expandedBytesPerRow = 0;
 
@@ -955,13 +957,28 @@
                     const void *layerSrcData = (const uint8_t *)tex->faces[face].levels[level].data + offset;
 
                     void *expandedUploadData = NULL;
+                    void *swizzledUploadData = NULL;
 
                     NSUInteger effectiveBytesPerRow = baseBytesPerRow;
 
                     NSUInteger effectiveBytesPerImage = logicalBytesPerImage;
 
+                    if (mglTextureUploadNeedsSwizzleBake(tex)) {
+                        NSUInteger swzBPR = 0;
+                        NSUInteger swzBPI = 0;
+                        swizzledUploadData = mglCreateSwizzledUpload(
+                            tex, (const uint8_t *)layerSrcData, lvlWidth,
+                            uploadSliceHeight, baseBytesPerRow, &swzBPR,
+                            &swzBPI);
+                        if (swizzledUploadData) {
+                            layerSrcData = swizzledUploadData;
+                            effectiveBytesPerRow = swzBPR;
+                            effectiveBytesPerImage = swzBPI;
+                        }
+                    }
 
-                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                    if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
 
                         NSUInteger expandedBPR = 0, expandedBPI = 0;
 
@@ -989,7 +1006,8 @@
 
                         }
 
-                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                    } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
 
                         NSUInteger expandedBPR = 0, expandedBPI = 0;
 
@@ -1149,6 +1167,7 @@
 
                     }
 
+                    free(swizzledUploadData);
                     free(expandedUploadData);
 
                 }
@@ -1270,8 +1289,56 @@
                     void *srcData = (void *)tex->faces[face].levels[level].data;
                     uintptr_t addr = (uintptr_t)srcData;
 
+                    uint8_t *swizzled3DUploadData = NULL;
+                    if (level == 0 && face == 0 &&
+                        mglTextureUploadNeedsSwizzleBake(tex)) {
+                        NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
+                        NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+                        NSUInteger swzBPR = 0;
+                        NSUInteger swzBPI = 0;
+                        uint8_t *firstSlice =
+                            mglCreateSwizzledUpload(
+                                tex, (const uint8_t *)srcData, width, texHeight,
+                                bytesPerRow, &swzBPR, &swzBPI);
+                        if (firstSlice) {
+                            NSUInteger totalSize = swzBPI * texDepth;
+                            if (totalSize > 0 &&
+                                totalSize <= (512 * 1024 * 1024)) {
+                                swizzled3DUploadData =
+                                    (uint8_t *)malloc(totalSize);
+                                if (swizzled3DUploadData) {
+                                    memcpy(swizzled3DUploadData, firstSlice,
+                                           swzBPI);
+                                    for (NSUInteger z = 1; z < texDepth; z++) {
+                                        const uint8_t *sliceSrc =
+                                            (const uint8_t *)srcData +
+                                            z * bytesPerImage;
+                                        uint8_t *sliceDst =
+                                            swizzled3DUploadData + z * swzBPI;
+                                        uint8_t *sliceSwz =
+                                            mglCreateSwizzledUpload(
+                                                tex, sliceSrc, width, texHeight,
+                                                bytesPerRow, &swzBPR, &swzBPI);
+                                        if (sliceSwz) {
+                                            memcpy(sliceDst, sliceSwz, swzBPI);
+                                            free(sliceSwz);
+                                        } else {
+                                            memset(sliceDst, 0, swzBPI);
+                                        }
+                                    }
+                                    srcData = swizzled3DUploadData;
+                                    bytesPerRow = swzBPR;
+                                    bytesPerImage = swzBPI;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+                            free(firstSlice);
+                        }
+                    }
+
                     uint8_t *expanded3DUploadData = NULL;
-                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                    if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
                         NSUInteger expandedBytesPerRow = 0;
                         NSUInteger expandedBytesPerImagePerSlice = 0;
                         NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
@@ -1316,7 +1383,8 @@
                             }
                             free(firstSlice);
                         }
-                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                    } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
                         NSUInteger expandedBytesPerRow = 0;
                         NSUInteger expandedBytesPerImagePerSlice = 0;
                         NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
@@ -1492,6 +1560,7 @@
                         }
                     }
                     free(expanded3DUploadData);
+                    free(swizzled3DUploadData);
                 } else {
                     NSLog(@"MGL WARNING: Skipping 3D texture upload due to invalid data or parameters");
                 }
@@ -1614,11 +1683,29 @@
                         if (tex_data && bytesPerRow > 0 && bytesPerImage > 0) {
                             void *srcData = (void *)tex_data;
                             void *expandedUploadData = NULL;
+                            void *swizzledUploadData = NULL;
                             uintptr_t addr = (uintptr_t)srcData;
 
                             NSUInteger effectiveBytesPerRow = bytesPerRow;
                             NSUInteger effectiveBytesPerImage = bytesPerImage;
-                            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                            if (mglTextureUploadNeedsSwizzleBake(tex)) {
+                                NSUInteger swzBPR = 0;
+                                NSUInteger swzBPI = 0;
+                                swizzledUploadData =
+                                    mglCreateSwizzledUpload(
+                                        tex, (const uint8_t *)srcData, width,
+                                        uploadSliceHeight, bytesPerRow, &swzBPR,
+                                        &swzBPI);
+                                if (swizzledUploadData) {
+                                    srcData = swizzledUploadData;
+                                    effectiveBytesPerRow = swzBPR;
+                                    effectiveBytesPerImage = swzBPI;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+
+                            if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
                                 NSUInteger expandedBytesPerRow = 0;
                                 NSUInteger expandedBytesPerImage = 0;
                                 expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
@@ -1634,7 +1721,8 @@
                                     effectiveBytesPerImage = expandedBytesPerImage;
                                     addr = (uintptr_t)srcData;
                                 }
-                            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                            } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
                                 NSUInteger expandedBytesPerRow = 0;
                                 NSUInteger expandedBytesPerImage = 0;
                                 expandedUploadData = mglCreateChannelExpandedUpload(tex,
@@ -1683,6 +1771,7 @@
                                           tex->name,
                                           level,
                                           layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
@@ -1691,6 +1780,7 @@
                                 if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
                                     NSLog(@"MGL WARNING: Rejecting aligned array upload staging size=%lu (tex=%d level=%d layer=%d)",
                                           (unsigned long)alignedSize, tex->name, level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
@@ -1752,16 +1842,19 @@
                             } else {
                                 if (!srcData) {
                                     NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
                                 if (effectiveBytesPerRow == 0) {
                                     NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
                                 if (effectiveBytesPerImage == 0) {
                                     NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(swizzledUploadData);
                                     free(expandedUploadData);
                                     continue;
                                 }
@@ -1784,6 +1877,7 @@
                                     NSLog(@"MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)", level, layer);
                                 }
                             }
+                            free(swizzledUploadData);
                             free(expandedUploadData);
                         } else {
                             NSLog(@"MGL WARNING: Skipping array texture upload due to invalid data or parameters");
@@ -1799,10 +1893,10 @@
                         void *swizzledUploadData = NULL;
                         void *expandedUploadData = NULL;
                         uintptr_t addr = (uintptr_t)srcData;
-                        if (level == 0 && face == 0 && mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                        if (level == 0 && face == 0 && mglTextureUploadNeedsSwizzleBake(tex)) {
                             NSUInteger swizzledBytesPerRow = 0;
                             NSUInteger swizzledBytesPerImage = 0;
-                            swizzledUploadData = mglCreateSingleChannelSwizzledUpload(tex,
+                            swizzledUploadData = mglCreateSwizzledUpload(tex,
                                                                                       (const uint8_t *)srcData,
                                                                                       width,
                                                                                       MAX((NSUInteger)height, 1UL),
@@ -1828,6 +1922,7 @@
                             }
                         }
                         if (!swizzledUploadData &&
+                            !mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
                             mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
                             NSUInteger expandedBytesPerRow = 0;
                             NSUInteger expandedBytesPerImage = 0;
@@ -1845,6 +1940,7 @@
                                 addr = (uintptr_t)srcData;
                             }
                         } else if (!swizzledUploadData &&
+                                   !mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
                                    mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
                             NSUInteger expandedBytesPerRow = 0;
                             NSUInteger expandedBytesPerImage = 0;
@@ -2089,8 +2185,32 @@
     // PROPER FIX: Get original texture format and validate for AGX compatibility
     pixelFormat = mtlPixelFormatForGLTex(tex);
     BOOL expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
+    BOOL usesUploadSwizzleBake = mglTextureUploadNeedsSwizzleBake(tex);
     if (expandsSingleChannelSwizzle) {
-        pixelFormat = MGLPixelFormatRGBA8Unorm;
+        uint32_t swizzleStorageFormat =
+            mglRenderSingleChannelSwizzleStoragePixelFormat(
+                (uint32_t)tex->internalformat);
+        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
+            pixelFormat = swizzleStorageFormat;
+        } else {
+            pixelFormat = MGLPixelFormatRGBA8Unorm;
+        }
+    } else if (mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex)) {
+        uint32_t swizzleStorageFormat =
+            mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+                (uint32_t)tex->internalformat);
+        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
+            pixelFormat = swizzleStorageFormat;
+        }
+    } else if (mglTextureUploadNeedsStencilSwizzleBake(tex)) {
+        pixelFormat = mglRenderStencilSwizzleStoragePixelFormat();
+    } else if (mglTextureUploadNeedsDepthStencilDepthSwizzleBake(tex)) {
+        uint32_t swizzleStorageFormat =
+            mglRenderSingleChannelSwizzleStoragePixelFormat(
+                (uint32_t)tex->internalformat);
+        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
+            pixelFormat = swizzleStorageFormat;
+        }
     }
 
     // Validate format compatibility with AGX, but preserve original intent
@@ -2181,12 +2301,32 @@
     tex_desc.width = width;
     tex_desc.height = (tex_type == MGLTextureType1D ||
                        tex_type == MGLTextureType1DArray) ? 1 : height;
+    bool msEmulatedAsArray = false;
     if (tex_type == MGLTextureType2DMultisample ||
         tex_type == MGLTextureType2DMultisampleArray) {
 
         NSUInteger samples = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
         samples = MGLCapabilityClampSampleCount(&_capability, samples);
-        tex_desc.sample_count = samples;
+        /* Metal cannot shader-write texture2d_ms, and AIR always lowers
+         * image2DMS / sampler2DMS* to texture2d_array. Emulate all MS
+         * textures (including FBO attachments) as array sample planes so
+         * ClearBuffer → imageLoad (CTS load-ms) shares one backing. */
+        const NSUInteger kMsPlaneStride = 8u;
+        msEmulatedAsArray = true;
+        if (tex_type == MGLTextureType2DMultisample) {
+            tex_type = MGLTextureType2DArray;
+            tex_desc.texture_type = tex_type;
+            tex_desc.sample_count = 1u;
+            tex_desc.array_length = MAX(samples, 1u);
+            tex_desc.depth = 1u;
+        } else {
+            tex_type = MGLTextureType2DArray;
+            tex_desc.texture_type = tex_type;
+            tex_desc.sample_count = 1u;
+            NSUInteger layers = MAX((NSUInteger)depth, 1u);
+            tex_desc.array_length = layers * kMsPlaneStride;
+            tex_desc.depth = 1u;
+        }
     }
 
     // CONSERVATIVE: Use only Metal API patterns that work reliably with AGX driver
@@ -2245,10 +2385,10 @@
     } else if (tex_type == MGLTextureType1DArray) {
         tex_desc.array_length = MAX((NSUInteger)1, height);
         tex_desc.depth = 1;
-    } else if (is_array) {
+    } else if (is_array && !msEmulatedAsArray) {
         tex_desc.array_length = MAX((NSUInteger)1, depth);
         tex_desc.depth = 1;
-    } else {
+    } else if (!msEmulatedAsArray) {
         /* For 3D and other non-array textures, arrayLength must be 1.
          * Some Metal drivers report getNumSlices()==0 when arrayLength
          * is left at its default, causing "slice OOB" assertions. */
@@ -2292,11 +2432,16 @@
      * only governs the image binding, NOT the texture's overall capabilities.
      * A texture bound as a write-only image may still be sampled from via
      * sampler2D in the same shader.  Metal requires MGL_TEXTURE_USAGE_SHADER_READ
-     * for sampling, so always include it alongside the image write flag. */
+     * for sampling, so always include it alongside the image write flag.
+     *
+     * AIR always declares storage images as access::read_write (see
+     * mgl_air_backend.cpp).  Binding a ShaderRead-only texture to that slot
+     * yields zeroed imageLoad results on AGX, so READ_ONLY also needs
+     * ShaderWrite even though GLSL/GL mark the binding readonly. */
     switch(tex->access)
     {
         case GL_READ_ONLY:
-            tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ; break;
+            tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE; break;
         case GL_WRITE_ONLY:
             tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE; break;
         case GL_READ_WRITE:
@@ -2306,6 +2451,12 @@
                   tex->access,
                   tex->name);
             return nil;
+    }
+
+    /* Metal 3.1 imageAtomic* requires ShaderAtomic on R32{U,S}int textures. */
+    if (pixelFormat == MGLPixelFormatR32Uint ||
+        pixelFormat == MGLPixelFormatR32Sint) {
+        tex_desc.usage |= MGL_TEXTURE_USAGE_SHADER_ATOMIC;
     }
 
     if (tex->is_render_target)
@@ -2335,7 +2486,8 @@
               (int)mipmapped);
     }
 
-    if (tex->params.swizzled && !expandsSingleChannelSwizzle)
+    if (tex->params.swizzled && !usesUploadSwizzleBake &&
+        !tex->is_render_target)
     {
         [self swizzleTexDesc:&tex_desc forTex:tex];
     }
@@ -2406,7 +2558,9 @@
         }
     }
 
-    if (cpuUploadRequired && tex->target == GL_TEXTURE_2D && mglTextureInfo(texture).texture_type == MGLTextureType2D) {
+    if (cpuUploadRequired && tex->target == GL_TEXTURE_2D &&
+        mglTextureInfo(texture).texture_type == MGLTextureType2D &&
+        !mglTextureUploadNeedsSwizzleBake(tex)) {
         BOOL fullCPUUploadVerified = [self uploadFullCPUTextureDataIntoTexture:tex
                                                                            metal:texture
                                                                           reason:"createMTLTexture.cpuData"];
@@ -2491,9 +2645,10 @@
         return nil;
     }
 
-    uint32_t bufferPixelFormat = (tex->internalformat == GL_RGBA8)
-        ? MGLPixelFormatRGBA8Uint
-        : mtlPixelFormatForGLTex(tex);
+    /* GL_RGBA8 is normalized (float-sampleable).  Forcing RGBA8Uint here made
+     * samplerBuffer + layout(binding) CTS reject the real texture as
+     * actualKind=uint vs expectedKind=float and substitute a 1x1 fallback. */
+    uint32_t bufferPixelFormat = mtlPixelFormatForGLTex(tex);
     if (bufferPixelFormat == MGLPixelFormatInvalid || bufferPixelFormat == 0) {
         NSLog(@"MGL TEXBUFFER ERROR: invalid Metal format for tex=%u internal=0x%x",
               tex->name,
@@ -2639,12 +2794,20 @@
     mglTraceFormatBytes(sourceBytes, (size_t)MIN((NSUInteger)tex->texture_buffer_size, (NSUInteger)64), sourceHead, sizeof(sourceHead));
     mglTraceFormatBytes(uploadBytes, (size_t)MIN(packedBytes, (NSUInteger)64), uploadHead, sizeof(uploadHead));
 
+    uint64_t bufferUsage =
+        MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE;
+    /* imageAtomic* on iimageBuffer needs ShaderAtomic (R32I/R32UI). */
+    if (bufferPixelFormat == MGLPixelFormatR32Uint ||
+        bufferPixelFormat == MGLPixelFormatR32Sint) {
+        bufferUsage |= MGL_TEXTURE_USAGE_SHADER_ATOMIC;
+    }
     MGLRenderTextureDescriptorState bufferDesc = {
         .texture_type = MGLTextureType2D,
         .pixel_format = bufferPixelFormat,
         .width = texWidth, .height = texHeight, .depth = 1u,
         .mipmap_level_count = 1u, .sample_count = 1u, .array_length = 1u,
-        .usage = MGL_TEXTURE_USAGE_SHADER_READ,
+        /* imageStore requires ShaderWrite; sampling still needs ShaderRead. */
+        .usage = bufferUsage,
     };
 
     id bufferTexture = nil;
@@ -2713,6 +2876,172 @@
 
     [self recordGPUSuccess];
     return bufferTexture;
+}
+
+- (void)flushImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
+{
+    if (!glm_ctx || unit >= glm_ctx->state.var.max_image_units ||
+        unit >= TEXTURE_UNITS) {
+        return;
+    }
+    ImageUnit *iu = &glm_ctx->state.image_units[unit];
+    if (!iu->tex || !iu->mtl_image_view || iu->layered ||
+        iu->tex->target != GL_TEXTURE_3D) {
+        return;
+    }
+    if (iu->access == GL_READ_ONLY) {
+        return;
+    }
+    if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {
+        return;
+    }
+    id dst3d = (__bridge id)iu->tex->mtl_data;
+    id staging = (__bridge id)iu->mtl_image_view;
+    MGLRenderTextureInfo info = mglTextureInfo(dst3d);
+    if (info.texture_type != MGLTextureType3D || info.width == 0u) {
+        return;
+    }
+    const NSUInteger level = (NSUInteger)iu->level;
+    const NSUInteger layer = (NSUInteger)iu->layer;
+    if (level >= info.mipmap_level_count || layer >= info.depth) {
+        return;
+    }
+
+    [self endRenderEncoding];
+    if (!_commandState.currentCommandBufferOwner &&
+        ![self newCommandBufferLocked]) {
+        return;
+    }
+    void *blit = mglRenderCreateBlitEncoderBorrowed(
+        _commandState.currentCommandBufferOwner);
+    if (!blit) {
+        return;
+    }
+    (void)mglRenderBlitCopyTexture(
+        blit, (__bridge void *)staging, 0u, 0u, 0u, 0u, 0u,
+        info.width, info.height, 1u,
+        (__bridge void *)dst3d, 0u, level, 0u, 0u, layer);
+    (void)mglRenderEndBlitEncoder(blit);
+    [self flushCommandBuffer:NO];
+}
+
+- (void)prepareImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
+{
+    if (!glm_ctx || unit >= glm_ctx->state.var.max_image_units ||
+        unit >= TEXTURE_UNITS) {
+        return;
+    }
+    ImageUnit *iu = &glm_ctx->state.image_units[unit];
+    if (!iu->tex || iu->layered || iu->tex->target != GL_TEXTURE_3D) {
+        return;
+    }
+    if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {
+        return;
+    }
+    id src3d = (__bridge id)iu->tex->mtl_data;
+    MGLRenderTextureInfo info = mglTextureInfo(src3d);
+    if (info.texture_type != MGLTextureType3D || info.width == 0u) {
+        return;
+    }
+    const NSUInteger level = (NSUInteger)iu->level;
+    const NSUInteger layer = (NSUInteger)iu->layer;
+    if (level >= info.mipmap_level_count || layer >= info.depth) {
+        return;
+    }
+
+    if (iu->mtl_image_view) {
+        [self flushImageUnitSlice:glm_ctx unit:unit];
+        mglRenderReleaseMetalObject(iu->mtl_image_view);
+        iu->mtl_image_view = NULL;
+    }
+
+    MGLRenderTextureDescriptorState desc = {
+        .texture_type = MGLTextureType2D,
+        .pixel_format = info.pixel_format,
+        .width = info.width,
+        .height = info.height,
+        .depth = 1u,
+        .mipmap_level_count = 1u,
+        .sample_count = 1u,
+        .array_length = 1u,
+        .usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE |
+                 MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW,
+        .storage_mode = info.storage_mode,
+    };
+    id staging = mglTextureCreateTexture(_device, &desc);
+    if (!staging) {
+        return;
+    }
+
+    [self endRenderEncoding];
+    if (!_commandState.currentCommandBufferOwner &&
+        ![self newCommandBufferLocked]) {
+        return;
+    }
+    void *blit = mglRenderCreateBlitEncoderBorrowed(
+        _commandState.currentCommandBufferOwner);
+    if (!blit) {
+        return;
+    }
+    (void)mglRenderBlitCopyTexture(
+        blit, (__bridge void *)src3d, 0u, level, 0u, 0u, layer,
+        info.width, info.height, 1u,
+        (__bridge void *)staging, 0u, 0u, 0u, 0u, 0u);
+    (void)mglRenderEndBlitEncoder(blit);
+    [self flushCommandBuffer:NO];
+
+    iu->mtl_image_view = (__bridge_retained void *)staging;
+}
+
+- (void)syncTextureBufferFromImage:(GLMContext)glm_ctx tex:(Texture *)tex
+{
+    if (!glm_ctx || !tex || tex->target != GL_TEXTURE_BUFFER ||
+        !tex->mtl_data || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
+        return;
+    }
+
+    Buffer *sourceBuffer = tex->texture_buffer;
+    id texture = (__bridge id)(tex->mtl_data);
+    MGLRenderTextureInfo info = mglTextureInfo(texture);
+    if (info.width == 0u || info.height == 0u) {
+        return;
+    }
+
+    NSUInteger bytesPerTexel = [self bytesPerPixelForFormat:tex->internalformat];
+    if (bytesPerTexel == 0u) {
+        bytesPerTexel = (NSUInteger)sizeForInternalFormat(tex->internalformat, 0, 0);
+    }
+    if (bytesPerTexel == 0u) {
+        return;
+    }
+
+    NSUInteger bytesPerRow = (NSUInteger)info.width * bytesPerTexel;
+    NSUInteger packedBytes = bytesPerRow * (NSUInteger)info.height;
+    if (packedBytes == 0u ||
+        (size_t)tex->texture_buffer_size > packedBytes) {
+        return;
+    }
+
+    NSMutableData *packedData = [NSMutableData dataWithLength:packedBytes];
+    if (!packedData.mutableBytes) {
+        return;
+    }
+
+    @try {
+        mglTextureGetBytes(
+            texture, packedData.mutableBytes, bytesPerRow, 0,
+            mglTextureRegion2D(0, 0, info.width, info.height), 0, 0, NO);
+    } @catch (NSException *exception) {
+        NSLog(@"MGL TEXBUFFER SYNC ERROR: getBytes failed tex=%u buffer=%u: %@",
+              tex->name, sourceBuffer->name, exception);
+        return;
+    }
+
+    mglRendererBufferSubData(
+        glm_ctx, sourceBuffer,
+        (size_t)tex->texture_buffer_offset,
+        (size_t)tex->texture_buffer_size,
+        packedData.bytes);
 }
 
 - (BOOL)checkTextureCompleteness:(Texture *)tex

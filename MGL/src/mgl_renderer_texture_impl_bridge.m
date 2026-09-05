@@ -351,6 +351,27 @@
         return uploaded;
     }
 
+    /* Shared 2D array uploads via replaceRegion: the blit path can leave array
+     * slices unpopulated on some AGX drivers when uploading CPU data during
+     * initial texture creation.  Shared storage is safe here because bind
+     * happens before the first draw that samples this texture. */
+    if (textureType == MGLTextureType2DArray &&
+        mglTextureInfo(texture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE) {
+        @try {
+            mglTextureReplaceRegion(
+                texture,
+                mglTextureRegion2D(0, 0, width, uploadPlan.normalized_height),
+                uploadPlan.destination_level, uploadPlan.destination_slice,
+                bytes, bytesPerRow, uploadPlan.normalized_bytes_per_image, YES);
+            return true;
+        } @catch (NSException *exception) {
+            NSLog(@"MGL WARNING: 2D array replaceRegion upload failed (tex=%u level=%lu slice=%lu): %@",
+                  (unsigned)texName, (unsigned long)level,
+                  (unsigned long)slice, exception.reason);
+            return false;
+        }
+    }
+
     /* 1D texture upload via replaceRegion branch:
      * - 1D textures are a low-frequency update path; replaceRegion is safe in this scenario;
      * - Before entering this function, the caller has already flushed CPU-side deferred
@@ -1683,25 +1704,24 @@
     }
 
     MGLRegionValue readRegion = region;
-    /* Render target textures are stored top-to-bottom in Metal, but OpenGL
-     * readPixels expects bottom-to-top order. Flip Y for render targets to
-     * match OpenGL semantics. This mirrors the Y flip already done in
-     * mglReadColorTextureAsBGRA8 (metalSrcY = levelHeight - glMaxY). */
-    BOOL flipRenderTargetRows = tex->is_render_target;
-    if (flipRenderTargetRows && region.size.height > 0u) {
-        NSUInteger levelHeight = MAX((NSUInteger)1u, mglTextureInfo(texture).height >> level);
-        if (region.origin.y > levelHeight ||
-            region.size.height > levelHeight - region.origin.y) {
-            NSLog(@"MGL ERROR: mtlGetTexImage invalid render-target read region tex=%u y=%lu h=%lu levelHeight=%lu",
-                  tex->name,
-                  (unsigned long)region.origin.y,
-                  (unsigned long)region.size.height,
-                  (unsigned long)levelHeight);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
-            return;
+    NSUInteger readSlice = slice;
+    /* TextureType3D uses origin.z for depth planes; arrayLength is always 1.
+     * Callers pass the depth index via `slice` (see mglGetTexImage's layer
+     * loop). Remap so blit uses slice=0 and origin.z = depth plane. */
+    if (mglTextureInfo(texture).texture_type == MGLTextureType3D) {
+        readRegion.origin.z = slice;
+        if (readRegion.size.depth < 1u) {
+            readRegion.size.depth = 1u;
         }
-        readRegion.origin.y = levelHeight - (region.origin.y + region.size.height);
+        readSlice = 0u;
     }
+    /* Single-sample pass-rendered RTs are stored top-row-first in Metal
+     * (NDC y=-1 at high row addresses) and need a CPU Y-flip for GL's
+     * bottom-up readPixels.  Multisample RTs already land in GL row order
+     * after resolve — flipping them re-inverts DSA MSAA float/unorm
+     * getTexImage (3a8cb5c). */
+    BOOL flipRenderTargetRows =
+        tex->is_render_target && tex->samples <= 1u;
 
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer
@@ -1721,13 +1741,13 @@
                                 pixelBytes:pixelBytes
                                bytesPerRow:bytesPerRow
                              bytesPerImage:bytesPerImage
-                                fromRegion:region
+                                fromRegion:readRegion
                           outputComponents:(NSUInteger)classify.output_components
                        outputComponentBytes:(NSUInteger)classify.output_component_bytes
                               componentMap:classify.component_map
                                packedType:type
                               mipmapLevel:level
-                                    slice:slice
+                                    slice:readSlice
                           isRenderTarget:(BOOL)tex->is_render_target];
         return;
     }
@@ -1790,7 +1810,7 @@
         }
 
         mglTextureCopyTextureToBuffer(
-            blitEncoder, texture, slice, level, readRegion.origin,
+            blitEncoder, texture, readSlice, level, readRegion.origin,
             readRegion.size, stagingBuffer, 0, rowBytes, imageBytes);
 
         mglTextureEndBlitEncoder(blitEncoder);
@@ -1890,7 +1910,7 @@
             }
             mglTextureGetBytes(
                 texture, readback.mutableBytes, rowBytes, bytesPerImage,
-                readRegion, level, slice, YES);
+                readRegion, level, readSlice, YES);
             if (useBGRA8Conversion) {
                 if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL((const uint8_t *)readback.bytes,
                                                                  rowBytes,
@@ -1920,7 +1940,7 @@
         } else {
             mglTextureGetBytes(
                 texture, pixelBytes, bytesPerRow, bytesPerImage,
-                readRegion, level, slice, YES);
+                readRegion, level, readSlice, YES);
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: mtlGetTexImage texture read failed for texture %u: %@",
@@ -2948,6 +2968,58 @@
         return MGL_STATE(ctx)->active_textures[textureUnit];
     }
 
+    /* AIR lowers sampler1D / samplerBuffer to texture2d, so expectedType is
+     * often MGLTextureType2D. Prefer the GL target slot that matches the
+     * reflected image_dim before trusting a leftover _TEXTURE_2D binding. */
+    if (sampledResource &&
+        sampledResource->image_dim == MGL_IMAGE_DIM_1D &&
+        !sampledResource->image_arrayed) {
+        Texture *tex1D =
+            MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_1D];
+        if (tex1D && tex1D->name != TEX_OBJ_RES_NAME) {
+            return tex1D;
+        }
+        Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+        if (activeTexture && activeTexture->target == GL_TEXTURE_1D &&
+            activeTexture->name != TEX_OBJ_RES_NAME) {
+            return activeTexture;
+        }
+    }
+    if (sampledResource &&
+        sampledResource->image_dim == MGL_IMAGE_DIM_BUFFER) {
+        Texture *bufferTexture =
+            MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER];
+        if (bufferTexture && bufferTexture->name != TEX_OBJ_RES_NAME) {
+            return bufferTexture;
+        }
+        Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+        if (activeTexture && activeTexture->target == GL_TEXTURE_BUFFER &&
+            activeTexture->name != TEX_OBJ_RES_NAME) {
+            return activeTexture;
+        }
+    }
+    /* AIR lowers sampler2DMS* to texture2d_array. Prefer the MS typed
+     * binding even if BindTextureUnit later pointed the unit's "active"
+     * texture at a non-MS object (CTS StorageMultisampleTest does
+     * bindTexture(MS) then bindTextureUnit(unit, nonMS)). */
+    if (sampledResource && sampledResource->image_multisampled) {
+        GLuint msIndex = sampledResource->image_arrayed
+            ? (GLuint)_TEXTURE_2D_MULTISAMPLE_ARRAY
+            : (GLuint)_TEXTURE_2D_MULTISAMPLE;
+        Texture *msTexture =
+            MGL_STATE(ctx)->texture_units[textureUnit].textures[msIndex];
+        if (msTexture && msTexture->name != TEX_OBJ_RES_NAME) {
+            return msTexture;
+        }
+        Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+        if (activeTexture &&
+            (activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE ||
+             activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+            activeTexture->name != TEX_OBJ_RES_NAME) {
+            return activeTexture;
+        }
+    }
+
     int textureIndex = [self textureIndexForExpectedMetalType:expectedType];
     if (textureIndex >= 0 && textureIndex < _MAX_TEXTURE_TYPES) {
         Texture *typedTexture = MGL_STATE(ctx)->texture_units[textureUnit].textures[textureIndex];
@@ -2971,6 +3043,35 @@
             Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
             if (activeTexture &&
                 activeTexture->target == GL_TEXTURE_1D) {
+                return activeTexture;
+            }
+            /* AIR packs samplerBuffer as texture2d; the GL binding lives in
+             * the TEXTURE_BUFFER slot. Prefer that over a missing 2D binding
+             * when the reflected resource is a buffer sampler/image. */
+            if (sampledResource &&
+                sampledResource->image_dim == MGL_IMAGE_DIM_BUFFER) {
+                Texture *bufferTexture =
+                    MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER];
+                if (bufferTexture &&
+                    bufferTexture->name != TEX_OBJ_RES_NAME) {
+                    return bufferTexture;
+                }
+                if (activeTexture &&
+                    activeTexture->target == GL_TEXTURE_BUFFER &&
+                    activeTexture->name != TEX_OBJ_RES_NAME) {
+                    return activeTexture;
+                }
+            }
+        }
+
+        /* AIR lowers sampler1DArray / sampler2DMS* to texture2d_array, while GL
+         * binds into _TEXTURE_1D_ARRAY / _TEXTURE_2D_MULTISAMPLE[_ARRAY]. */
+        if (expectedType == MGLTextureType2DArray) {
+            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
+            if (activeTexture &&
+                (activeTexture->target == GL_TEXTURE_1D_ARRAY ||
+                 activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
                 return activeTexture;
             }
         }

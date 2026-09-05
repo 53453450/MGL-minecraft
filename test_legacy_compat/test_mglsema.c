@@ -472,8 +472,10 @@ static void test_builtins(void)
             "    vec3 m2 = mix(pos, vec3(1.0), 0.5);\n"
             "    vec3 a = abs(pos);\n"
             "    float af = abs(-1.0);\n"
+            "    bool lte = all(lessThanEqual(pos, vec3(1.0)));\n"
             "    o = t + tl + vec4(n * d + len + dist, 1.0) +\n"
             "        c + c2 + m + m2 + a + vec4(ts, af, 0.0);\n"
+            "    if (lte) o.w = 1.0;\n"
             "}\n");
     CHECK(error_count == 0, "builtin calls clean");
     teardown();
@@ -544,6 +546,9 @@ static void test_constructors(void)
             "    vec3 d = vec3(iv3);\n"
             "    float e = float(1);\n"
             "    int f = int(1.5);\n"
+            "    float e2 = float(v3);\n"
+            "    int f2 = int(iv3);\n"
+            "    float e3 = float(mat2(1.0));\n"
             "    mat2 h = mat2(1.0);\n"
             "    mat3 i = mat3(vec3(1.0), vec3(2.0), vec3(3.0));\n"
             "    mat3 j = mat3(v3, v3, v3);\n"

@@ -21,3 +21,4 @@ scratch/
 TestResults.qpa
 # WorkBuddy project-local memory (not source)
 .workbuddy/
+tools/

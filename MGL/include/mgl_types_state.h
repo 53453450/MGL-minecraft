@@ -85,7 +85,7 @@ enum {
 /* State-key hash domains. Keep invalidation and recomputation on the same
  * masks so renderer-side dirty-bit consumption cannot silently stale a cache. */
 #define MGL_TEXTURE_HASH_DIRTY_BITS \
-    (DIRTY_TEX_BINDING | DIRTY_SAMPLER)
+    (DIRTY_TEX_BINDING | DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE)
 #define MGL_VERTEX_LAYOUT_HASH_DIRTY_BITS (DIRTY_VAO)
 #define MGL_RENDER_STATE_HASH_DIRTY_BITS \
     (DIRTY_RENDER_STATE | DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM)

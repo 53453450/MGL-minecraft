@@ -728,12 +728,12 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_shader_storage_buffer_bindings = MAX_BINDABLE_BUFFERS;
     }
     glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.shader_storage_buffer_offset_alignment);
+    /* Host Apple GL often reports 256, but Metal set*Buffer offsets only need
+     * 4-byte alignment.  Advertise 16 so CTS BindBufferRange strides such as
+     * advanced-switchBuffers (128-byte regions) are legal. */
     if (glm_ctx->state.var.shader_storage_buffer_offset_alignment == 0 ||
-        glm_ctx->state.var.shader_storage_buffer_offset_alignment > 4096) {
-        fprintf(stderr,
-                "MGL WARNING: init repaired GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT=%u -> 256\n",
-                glm_ctx->state.var.shader_storage_buffer_offset_alignment);
-        glm_ctx->state.var.shader_storage_buffer_offset_alignment = 256;
+        glm_ctx->state.var.shader_storage_buffer_offset_alignment > 16) {
+        glm_ctx->state.var.shader_storage_buffer_offset_alignment = 16;
     }
     glGetIntegerv(GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.texture_buffer_offset_alignment);
     if (glm_ctx->state.var.texture_buffer_offset_alignment == 0 ||

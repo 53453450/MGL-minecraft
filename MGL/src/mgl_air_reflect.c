@@ -40,37 +40,42 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
     switch (t->kind) {
     case MGLIR_TYPE_SCALAR:
         switch (t->scalar) {
-        case MGLIR_SCALAR_FLOAT: return GL_FLOAT;
-        case MGLIR_SCALAR_INT:   return GL_INT;
-        case MGLIR_SCALAR_UINT:  return GL_UNSIGNED_INT;
-        case MGLIR_SCALAR_BOOL:  return GL_BOOL;
-        default:                 return GL_FLOAT;
+        case MGLIR_SCALAR_FLOAT:  return GL_FLOAT;
+        case MGLIR_SCALAR_DOUBLE: return GL_DOUBLE;
+        case MGLIR_SCALAR_INT:    return GL_INT;
+        case MGLIR_SCALAR_UINT:   return GL_UNSIGNED_INT;
+        case MGLIR_SCALAR_BOOL:   return GL_BOOL;
+        default:                  return GL_FLOAT;
         }
     case MGLIR_TYPE_VECTOR: {
-        GLuint base = (t->scalar == MGLIR_SCALAR_INT)   ? GL_INT_VEC2
-                    : (t->scalar == MGLIR_SCALAR_UINT)  ? GL_UNSIGNED_INT_VEC2
-                    : (t->scalar == MGLIR_SCALAR_BOOL)  ? GL_BOOL_VEC2
+        GLuint base = (t->scalar == MGLIR_SCALAR_INT)    ? GL_INT_VEC2
+                    : (t->scalar == MGLIR_SCALAR_UINT)   ? GL_UNSIGNED_INT_VEC2
+                    : (t->scalar == MGLIR_SCALAR_BOOL)   ? GL_BOOL_VEC2
+                    : (t->scalar == MGLIR_SCALAR_DOUBLE) ? GL_DOUBLE_VEC2
                                                         : GL_FLOAT_VEC2;
         return (GLuint)(base + t->cols - 2);
     }
     case MGLIR_TYPE_MATRIX: {
         /* Square matrices enumerate contiguously; matCxR non-square types
          * have their own enum block (GL 4.6 §22.4 / Table 22.2). */
+        const GLboolean is_double = (t->scalar == MGLIR_SCALAR_DOUBLE);
         if (t->cols == t->rows) {
-            return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+            return (GLuint)((is_double ? GL_DOUBLE_MAT2 : GL_FLOAT_MAT2) +
+                            (t->cols - 2));
         }
         if (t->cols >= 2 && t->cols <= 4 && t->rows >= 2 && t->rows <= 4) {
             switch (t->cols * 10 + t->rows) {
-            case 23: return GL_FLOAT_MAT2x3;
-            case 24: return GL_FLOAT_MAT2x4;
-            case 32: return GL_FLOAT_MAT3x2;
-            case 34: return GL_FLOAT_MAT3x4;
-            case 42: return GL_FLOAT_MAT4x2;
-            case 43: return GL_FLOAT_MAT4x3;
+            case 23: return is_double ? GL_DOUBLE_MAT2x3 : GL_FLOAT_MAT2x3;
+            case 24: return is_double ? GL_DOUBLE_MAT2x4 : GL_FLOAT_MAT2x4;
+            case 32: return is_double ? GL_DOUBLE_MAT3x2 : GL_FLOAT_MAT3x2;
+            case 34: return is_double ? GL_DOUBLE_MAT3x4 : GL_FLOAT_MAT3x4;
+            case 42: return is_double ? GL_DOUBLE_MAT4x2 : GL_FLOAT_MAT4x2;
+            case 43: return is_double ? GL_DOUBLE_MAT4x3 : GL_FLOAT_MAT4x3;
             default: break;
             }
         }
-        return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
+        return (GLuint)((is_double ? GL_DOUBLE_MAT2 : GL_FLOAT_MAT2) +
+                        (t->cols - 2));
     }
     case MGLIR_TYPE_ATOMIC_COUNTER:
         return GL_UNSIGNED_INT_ATOMIC_COUNTER;
@@ -213,6 +218,13 @@ static const MGLIRType *air_uniform_block_type(const MGLIRType *type)
         ? type : NULL;
 }
 
+/* True interface blocks (`uniform Block { ... }`) — not named struct
+ * uniforms in the default block (`struct S{...}; uniform S s;`). */
+static int air_symbol_is_ubo(const MGLIRSymbol *s)
+{
+    return s && s->is_interface_block && air_uniform_block_type(s->type);
+}
+
 static GLuint air_uniform_block_element_count(const MGLIRType *type)
 {
     /* Length-1 instance arrays still need one Metal buffer slot and
@@ -271,6 +283,15 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
             }
             continue;
         }
+
+        /* Opaque members are separate sampler/image uniforms, not default-
+         * block buffer leaves (GL 4.6 §4.1.7 / §7.6). */
+        if (mt->kind == MGLIR_TYPE_SAMPLER || mt->kind == MGLIR_TYPE_IMAGE)
+            continue;
+        if (mt->kind == MGLIR_TYPE_ARRAY && mt->elem_type &&
+            (mt->elem_type->kind == MGLIR_TYPE_SAMPLER ||
+             mt->elem_type->kind == MGLIR_TYPE_IMAGE))
+            continue;
 
         /* Leaf: scalar/vector/matrix or an array of those.  Array leaves
          * are one entry named with a "[0]" postfix at every path level
@@ -362,9 +383,10 @@ static void apply_block_interface_name(MGLShaderResource *res,
     }
 }
 
-static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
-                          const MGLIRType *type, GLuint location,
-                          GLuint binding, int stage)
+/* Returns 1 on success, 0 on realloc failure (partial `r` is freed). */
+static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
+                         const MGLIRType *type, GLuint location,
+                         GLuint binding, int stage)
 {
     MGLShaderResource r;
     memset(&r, 0, sizeof(r));
@@ -468,10 +490,110 @@ static void push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
     MGLShaderResource *nl = (MGLShaderResource *)realloc(
         list->list, (list->count + 1) * sizeof(MGLShaderResource));
     if (!nl) {
-        return;
+        free((void *)r.name);
+        if (r.ubo_members) {
+            for (GLuint m = 0; m < r.ubo_member_count; m++) {
+                free((void *)r.ubo_members[m].name);
+                free(r.ubo_members[m].query_name);
+            }
+            free(r.ubo_members);
+        }
+        free(r.ubo_array_bindings);
+        return 0;
     }
     list->list = nl;
     list->list[list->count++] = r;
+    return 1;
+}
+
+/* Emit sampler/image leaves nested in a named struct uniform as standalone
+ * resources (`s.c`, `s[0].c`, `s.b.a`).  Opaque types are not default-block
+ * buffer members; CTS binds them via glUniform1i on the flattened path.
+ * Returns 0 on allocation failure. */
+static int air_push_opaque_leaves(MGLShaderResourceList *list,
+                                  const MGLIRSymbol *owner,
+                                  const MGLIRType *t, const char *prefix,
+                                  uint32_t *texture_binding,
+                                  uint32_t *sampler_binding, int stage,
+                                  int want_image)
+{
+    if (!list || !owner || !t || !prefix || !texture_binding)
+        return 1;
+    if (t->kind == MGLIR_TYPE_STRUCT) {
+        for (uint32_t i = 0; i < t->member_count; i++) {
+            const MGLIRType *mt = t->members[i];
+            const char *mn = t->member_names[i];
+            char path[208];
+            snprintf(path, sizeof(path), "%s.%s", prefix, mn ? mn : "?");
+            if (!air_push_opaque_leaves(list, owner, mt, path, texture_binding,
+                                        sampler_binding, stage, want_image))
+                return 0;
+        }
+        return 1;
+    }
+    if (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
+        t->elem_type->kind == MGLIR_TYPE_STRUCT) {
+        uint32_t n = t->array_size ? t->array_size : 1u;
+        for (uint32_t el = 0; el < n; el++) {
+            char epath[208];
+            snprintf(epath, sizeof(epath), "%s[%u]", prefix, el);
+            if (!air_push_opaque_leaves(list, owner, t->elem_type, epath,
+                                        texture_binding, sampler_binding, stage,
+                                        want_image))
+                return 0;
+        }
+        return 1;
+    }
+    const MGLIRType *base = t;
+    while (base && base->kind == MGLIR_TYPE_ARRAY)
+        base = base->elem_type;
+    if (!base)
+        return 1;
+    if (want_image) {
+        if (base->kind != MGLIR_TYPE_IMAGE)
+            return 1;
+    } else if (base->kind != MGLIR_TYPE_SAMPLER) {
+        return 1;
+    }
+    if (!push_resource(list, owner, t, UINT32_MAX, *texture_binding, stage))
+        return 0;
+    if (list->count == 0)
+        return 0;
+    MGLShaderResource *last = &list->list[list->count - 1];
+    free((void *)last->name);
+    last->name = strdup(prefix);
+    if (!want_image) {
+        last->resource_active = GL_TRUE;
+        last->has_combined_sampler = GL_TRUE;
+        last->combined_sampler_binding =
+            sampler_binding ? *sampler_binding : 0u;
+        last->uniform_location = mglSyntheticSamplerUniformLocation(
+            stage, _SAMPLED_IMAGE_RES,
+            sampler_binding ? *sampler_binding : 0u);
+        if (owner->binding != UINT32_MAX) {
+            last->gl_binding = owner->binding;
+            last->sampler_unit = (GLint)owner->binding;
+        }
+        GLuint elements = mglAirGLArraySizeFromIR(t);
+        if (elements < 1u)
+            elements = 1u;
+        *texture_binding += elements;
+        if (sampler_binding)
+            *sampler_binding += elements;
+    } else {
+        last->sampler_unit = -1;
+        if (owner->binding != UINT32_MAX) {
+            last->gl_binding = owner->binding;
+            last->sampler_unit = (GLint)owner->binding;
+        }
+        last->uniform_location = mglSyntheticSamplerUniformLocation(
+            stage, _STORAGE_IMAGE_RES, *texture_binding);
+        GLuint elements = mglAirGLArraySizeFromIR(t);
+        if (elements < 1u)
+            elements = 1u;
+        *texture_binding += elements;
+    }
+    return 1;
 }
 
 static void destroy_list(MGLShaderResourceList *list)
@@ -578,26 +700,41 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
             acCount++;
-        } else if (q & MGL_AST_Q_BUFFER) {
-            ssboCount++;
+        } else if ((q & MGL_AST_Q_BUFFER) && !s->block_name) {
+            /* Flattened anonymous SSBO members share the owning block's
+             * Metal slot; only the block itself advances ssboCount.
+             * Instance arrays (`buffer B {…} name[N]`) need N consecutive
+             * Metal slots — match air_uniform_block_element_count used when
+             * emitting the resources below (and AIR codegen). */
+            ssboCount += air_uniform_block_element_count(t);
         } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
-                   air_uniform_block_type(t)) {
+                   air_symbol_is_ubo(s)) {
             uboSlotCount += air_uniform_block_element_count(t);
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind != MGLIR_TYPE_SAMPLER &&
                    base_t && base_t->kind != MGLIR_TYPE_IMAGE &&
                    base_t->kind != MGLIR_TYPE_ATOMIC_COUNTER && !s->block_name &&
-                   !air_uniform_block_type(t)) {
+                   !air_symbol_is_ubo(s)) {
             hasPlain = 1;
         }
     }
+    /* Plain-uniform pack occupies one Metal buffer slot ahead of SSBOs
+     * on every stage that emits hasBuffer (VS/FS/CS/TCS/TES/GS).  Fragment
+     * used to start SSBOs at 0 while the pack also claimed slot 0, so
+     * FS SSBO stores silently hit the wrong buffer.  TCS is isKernel and
+     * also emits the pack (mgl_air_backend plainBufMetalSlots); omitting
+     * it here left CTS basic-atomic-case2 writing SSBO at reflected
+     * slot 0 while the metallib read/wrote slot 1. */
     uint32_t ssbo_binding = user_buffer_base +
         (isVS ? (hasPlain + attrCount)
               : ((stage == MGL_STAGE_COMPUTE ||
+                  stage == MGL_STAGE_TESS_CONTROL ||
                   stage == MGL_STAGE_TESS_EVALUATION ||
-                  stage == MGL_STAGE_GEOMETRY) ? hasPlain : 0));
+                  stage == MGL_STAGE_GEOMETRY ||
+                  stage == MGL_STAGE_FRAGMENT) ? hasPlain : 0));
     uint32_t ubo_binding = ssbo_binding + ssboCount;
     uint32_t gl_ubo_binding = 0;
+    uint32_t gl_ssbo_binding = 0;
     uint32_t ac_binding = ubo_binding + uboSlotCount;
     if (acCount > 0u && ac_binding + acCount > MAX_BINDABLE_BUFFERS) {
         if (err && errCap) {
@@ -608,13 +745,125 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         return -1;
     }
 
-    /* Sampler bindings increment per sampler, matching the AIR metadata
-     * texture location indices. */
+    /* Sampler / image Metal texture slots must match AIR metadata order
+     * (sampled textures first, then storage images) — not GLSL declaration
+     * order.  CTS shaders often declare `image2D` before `sampler2D`; a
+     * single declaration-order walk swapped those slots and left
+     * texelFetch reading the image texture (black). */
     uint32_t texture_binding = 0;
     uint32_t sampler_binding = 0;
+    for (uint32_t pass = 0; pass < 2; pass++) {
+        for (uint32_t i = 0; i < mod->symbol_count; i++) {
+            const MGLIRSymbol *s = mod->symbols[i];
+            if (!s || s->is_function || !(s->qualifiers & MGL_AST_Q_UNIFORM))
+                continue;
+            if (s->name && strncmp(s->name, "gl_", 3) == 0 &&
+                s->location == UINT32_MAX)
+                continue;
+            const MGLIRType *t = s->type;
+            const MGLIRType *base_t = t;
+            while (base_t && base_t->kind == MGLIR_TYPE_ARRAY)
+                base_t = base_t->elem_type;
+            if (pass == 0) {
+                if (base_t && base_t->kind == MGLIR_TYPE_SAMPLER) {
+                    GLuint location =
+                        s->location != UINT32_MAX ? s->location : UINT32_MAX;
+                    if (!push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
+                                       texture_binding, stage)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
+                    if (lists[_SAMPLED_IMAGE_RES].count == 0)
+                        continue;
+                    MGLShaderResource *last =
+                        &lists[_SAMPLED_IMAGE_RES]
+                             .list[lists[_SAMPLED_IMAGE_RES].count - 1];
+                    if (s->binding != UINT32_MAX) {
+                        last->gl_binding = s->binding;
+                        /* layout(binding=N) sets the sampler uniform's initial
+                         * texture-unit value (queried via GetUniformiv).  Array
+                         * elements take N, N+1, … from sampler_unit + ordinal. */
+                        last->sampler_unit = (GLint)s->binding;
+                    }
+                    last->resource_active = GL_TRUE;
+                    last->has_combined_sampler = GL_TRUE;
+                    last->combined_sampler_binding = sampler_binding;
+                    last->uniform_location =
+                        (s->location != UINT32_MAX)
+                            ? (GLint)s->location
+                            : mglSyntheticSamplerUniformLocation(
+                                  stage, _SAMPLED_IMAGE_RES, sampler_binding);
+                    GLuint elements = mglAirGLArraySizeFromIR(t);
+                    if (elements < 1u) elements = 1u;
+                    texture_binding += elements;
+                    sampler_binding += elements;
+                } else if (base_t && base_t->kind == MGLIR_TYPE_STRUCT &&
+                           !s->is_interface_block && !s->block_name) {
+                    if (!air_push_opaque_leaves(&lists[_SAMPLED_IMAGE_RES], s, t,
+                                                s->name, &texture_binding,
+                                                &sampler_binding, stage, 0)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
+                }
+            } else {
+                if (base_t && base_t->kind == MGLIR_TYPE_IMAGE) {
+                    GLuint location =
+                        s->location != UINT32_MAX ? s->location : UINT32_MAX;
+                    if (!push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
+                                       texture_binding, stage)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
+                    if (lists[_STORAGE_IMAGE_RES].count == 0)
+                        continue;
+                    MGLShaderResource *last =
+                        &lists[_STORAGE_IMAGE_RES]
+                             .list[lists[_STORAGE_IMAGE_RES].count - 1];
+                    last->sampler_unit = -1;
+                    if (s->binding != UINT32_MAX) {
+                        last->gl_binding = s->binding;
+                        /* Same as samplers: layout(binding=N) is the image-unit
+                         * initial value for GetUniformiv / array expansion. */
+                        last->sampler_unit = (GLint)s->binding;
+                    }
+                    last->uniform_location =
+                        (s->location != UINT32_MAX)
+                            ? (GLint)s->location
+                            : mglSyntheticSamplerUniformLocation(
+                                  stage, _STORAGE_IMAGE_RES, texture_binding);
+                    GLuint elements = mglAirGLArraySizeFromIR(t);
+                    if (elements < 1u) elements = 1u;
+                    texture_binding += elements;
+                } else if (base_t && base_t->kind == MGLIR_TYPE_STRUCT &&
+                           !s->is_interface_block && !s->block_name) {
+                    if (!air_push_opaque_leaves(&lists[_STORAGE_IMAGE_RES], s, t,
+                                                s->name, &texture_binding,
+                                                NULL, stage, 1)) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
+                }
+            }
+        }
+    }
     /* Extra auto-location stride consumed by interface-block array
      * members (one location per element, see the Q_IN branch below). */
     uint32_t gs_input_span_pad = 0;
+    /* TCS/TES: patch and per-vertex I/O use separate location spaces
+     * (matches mgl_air_backend.cpp).  Reflection used to share one counter,
+     * so TES←TCS name remapping picked the wrong slot when a TES omitted
+     * earlier per-vertex outs or when patch outs preceded them. */
+    uint32_t tess_next_vertex_out = 0;
+    uint32_t tess_next_patch_out = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         /* gl_-prefixed symbols are backend builtins (stage I/O like
@@ -654,53 +903,22 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
 
         if (q & MGL_AST_Q_UNIFORM) {
-            if (base_t && base_t->kind == MGLIR_TYPE_SAMPLER) {
-                push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
-                              texture_binding, stage);
-                MGLShaderResource *last =
-                    &lists[_SAMPLED_IMAGE_RES].list[
-                        lists[_SAMPLED_IMAGE_RES].count - 1];
-                if (s->binding != UINT32_MAX) {
-                    last->gl_binding = s->binding;
-                }
-                last->resource_active = GL_TRUE;
-                last->has_combined_sampler = GL_TRUE;
-                last->combined_sampler_binding = sampler_binding;
-                /* Sampler GL uniform locations live in the synthetic
-                 * namespace (mirrors the SPIRV-Cross-era path in
-                 * mglSamplerUniformLocationFromReflection) unless the GLSL
-                 * declares an explicit layout(location=N); otherwise MC's
-                 * glGetUniformLocation/glUniform1i sampler-unit setup
-                 * cannot target this resource. */
-                last->uniform_location =
-                    (s->location != UINT32_MAX)
-                        ? (GLint)s->location
-                        : mglSyntheticSamplerUniformLocation(
-                              stage, _SAMPLED_IMAGE_RES, sampler_binding);
-                GLuint elements = mglAirGLArraySizeFromIR(t);
-                if (elements < 1u) elements = 1u;
-                texture_binding += elements;
-                sampler_binding += elements;
+            /* Samplers / images already pushed above (AIR slot order). */
+            if (base_t && (base_t->kind == MGLIR_TYPE_SAMPLER ||
+                           base_t->kind == MGLIR_TYPE_IMAGE))
                 continue;
-            }
-            if (base_t && base_t->kind == MGLIR_TYPE_IMAGE) {
-                push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
-                              texture_binding, stage);
-                MGLShaderResource *last =
-                    &lists[_STORAGE_IMAGE_RES].list[
-                        lists[_STORAGE_IMAGE_RES].count - 1];
-                last->sampler_unit = -1;
-                if (s->binding != UINT32_MAX) {
-                    last->gl_binding = s->binding;
-                }
-                GLuint elements = mglAirGLArraySizeFromIR(t);
-                if (elements < 1u) elements = 1u;
-                texture_binding += elements;
-                continue;
-            }
             if (base_t && base_t->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
-                push_resource(&lists[_ATOMIC_COUNTER_RES], s, t, location,
-                              ac_binding++, stage);
+                if (!push_resource(&lists[_ATOMIC_COUNTER_RES], s, t, location,
+                                   ac_binding++, stage)) {
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    return -1;
+                }
+                if (lists[_ATOMIC_COUNTER_RES].count == 0)
+                    continue;
                 MGLShaderResource *last =
                     &lists[_ATOMIC_COUNTER_RES].list[
                         lists[_ATOMIC_COUNTER_RES].count - 1];
@@ -721,14 +939,23 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 continue;   /* block member: covered by the block resource */
             }
             const MGLIRType *block_type = air_uniform_block_type(t);
-            if (block_type) {
+            if (block_type && s->is_interface_block) {
                 /* A block instance array is one GL block per element, backed
                  * by consecutive Metal buffer arguments.  Keep one reflected
                  * resource with per-element binding metadata so the common
                  * buffer mapper expands it at draw time. */
                 GLuint block_count = air_uniform_block_element_count(t);
-                push_resource(&lists[_UNIFORM_BUFFER_RES], s, block_type,
-                              location, ubo_binding, stage);
+                if (!push_resource(&lists[_UNIFORM_BUFFER_RES], s, block_type,
+                                   location, ubo_binding, stage)) {
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    return -1;
+                }
+                if (lists[_UNIFORM_BUFFER_RES].count == 0)
+                    continue;
                 MGLShaderResource *last =
                     &lists[_UNIFORM_BUFFER_RES].list[
                         lists[_UNIFORM_BUFFER_RES].count - 1];
@@ -754,7 +981,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 ubo_binding += block_count;
                 continue;
             }
-            /* Plain uniform: collect into the packed aggregate. */
+            /* Plain uniform (including named struct uniforms): collect into
+             * the packed aggregate.  Struct/array-of-struct are expanded to
+             * GL leaf names (`s.a`, `s[0].b`) below when emitting agg. */
             MGLIRType **nt = (MGLIRType **)realloc(
                 agg_types, (agg_count + 1) * sizeof(MGLIRType *));
             const char **nn = (const char **)realloc(
@@ -771,16 +1000,52 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             agg_count++;
             continue;
         }
-        if (q & MGL_AST_Q_BUFFER) {
-            push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
-                          ssbo_binding++, stage);
+        if ((q & MGL_AST_Q_BUFFER) && !s->block_name) {
+            /* Mirror UBO instance arrays: one reflected resource with a
+             * per-element binding table so consecutive GL binding points
+             * expand to consecutive Metal buffer arguments. */
+            const MGLIRType *block_type = air_uniform_block_type(t);
+            GLuint block_count = air_uniform_block_element_count(t);
+            const MGLIRType *res_type = block_type ? block_type : t;
+            if (!push_resource(&lists[_STORAGE_BUFFER_RES], s, res_type,
+                               location, ssbo_binding, stage)) {
+                if (err && errCap)
+                    snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
+            if (lists[_STORAGE_BUFFER_RES].count == 0)
+                continue;
             MGLShaderResource *ssbo_last =
                 &lists[_STORAGE_BUFFER_RES].list[
                     lists[_STORAGE_BUFFER_RES].count - 1];
             apply_block_interface_name(ssbo_last, t, s->name);
-            if (s->binding != UINT32_MAX) {
-                ssbo_last->gl_binding = s->binding;
+            ssbo_last->ubo_array_size = block_count;
+            ssbo_last->ubo_is_array =
+                (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 0u)
+                    ? GL_TRUE : GL_FALSE;
+            if (ssbo_last->ubo_is_array) {
+                ssbo_last->ubo_array_bindings = (GLuint *)calloc(
+                    block_count, sizeof(*ssbo_last->ubo_array_bindings));
             }
+            GLuint gl_block_binding = s->binding != UINT32_MAX
+                ? s->binding : gl_ssbo_binding;
+            ssbo_last->gl_binding = gl_block_binding;
+            if (ssbo_last->ubo_array_bindings) {
+                for (GLuint element = 0; element < block_count; element++) {
+                    ssbo_last->ubo_array_bindings[element] =
+                        gl_block_binding + element;
+                }
+            }
+            /* Metal slot advances independently of the GL binding point.
+             * Defaulting gl_binding to the Metal slot (hasPlain+…) made
+             * anonymous `layout(std430) buffer B {…}` land on binding 1
+             * whenever plain uniforms packed slot 0, so BindBufferBase(0)
+             * missed the shader (CTS advanced-matrix-cs). */
+            gl_ssbo_binding += block_count;
+            ssbo_binding += block_count;
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
              * declaration order (CLI-style auto-mapped locations). */
@@ -792,67 +1057,182 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 location = lists[_STAGE_INPUT_RES].count +
                            gs_input_span_pad;
             }
-            push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
-                          stage);
-            /* Interface-block array members occupy one location per
-             * element; keep the auto sequence past the span so later
-             * members land beyond them (mirrors the AIR backend). */
-            if (stage == MGL_STAGE_GEOMETRY && s->block_name &&
-                t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
+            if (!push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
+                               stage)) {
+                if (err && errCap)
+                    snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
+            /* Array / matrix attributes occupy one location per element or
+             * column so glGetAttribLocation("a[i]") == base+i stays aligned
+             * with VAO binds and the AIR vertex_input location_index
+             * sequence (GL 4.6 §4.4.1). */
+            if (t->kind == MGLIR_TYPE_ARRAY && t->array_size > 1u) {
                 gs_input_span_pad += t->array_size - 1u;
+            } else if (t->kind == MGLIR_TYPE_MATRIX && t->cols > 1u) {
+                gs_input_span_pad += t->cols - 1u;
             }
         } else if (q & MGL_AST_Q_OUT) {
             if (location == UINT32_MAX) {
-                location = lists[_STAGE_OUTPUT_RES].count;
+                if (stage == MGL_STAGE_TESS_CONTROL ||
+                    stage == MGL_STAGE_TESS_EVALUATION) {
+                    const MGLIRType *span_t = t;
+                    /* Per-vertex TCS/TES arrays are sized by patch vertices;
+                     * codegen strips that dimension before assigning slots. */
+                    if (!(q & MGL_AST_Q_PATCH) &&
+                        span_t->kind == MGLIR_TYPE_ARRAY &&
+                        span_t->elem_type) {
+                        span_t = span_t->elem_type;
+                    }
+                    uint32_t span = 1u;
+                    if (span_t->kind == MGLIR_TYPE_MATRIX &&
+                        span_t->cols > 0u) {
+                        span = span_t->cols;
+                    } else if (span_t->kind == MGLIR_TYPE_ARRAY &&
+                               span_t->array_size > 0u) {
+                        uint32_t elem = 1u;
+                        if (span_t->elem_type &&
+                            span_t->elem_type->kind == MGLIR_TYPE_MATRIX &&
+                            span_t->elem_type->cols > 0u) {
+                            elem = span_t->elem_type->cols;
+                        }
+                        span = elem * span_t->array_size;
+                    }
+                    if (q & MGL_AST_Q_PATCH) {
+                        location = tess_next_patch_out;
+                        tess_next_patch_out += span;
+                    } else {
+                        location = tess_next_vertex_out;
+                        tess_next_vertex_out += span;
+                    }
+                } else {
+                    location = lists[_STAGE_OUTPUT_RES].count;
+                }
             }
-            push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
-                          stage);
+            if (!push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
+                               stage)) {
+                if (err && errCap)
+                    snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
         }
     }
 
     if (agg_count > 0) {
-        /* std140 layout, mirroring the AIR backend's collectUniforms. */
+        /* std140 layout, mirroring the AIR backend's collectUniforms.
+         * Named struct uniforms expand to leaf paths (`s.a`, `s[0].b`) so
+         * glGetUniformLocation / glUniform match the GL default-block
+         * contract; the AIR pack still stores one contiguous region per
+         * top-level symbol (codegen uses bufferOffsets[symbol]). */
+        SpirvUBOMember *leaves = NULL;
+        uint32_t leaf_count = 0, leaf_cap = 0;
         uint32_t off = 0;
-        agg.ubo_members = (SpirvUBOMember *)calloc(
-            agg_count, sizeof(SpirvUBOMember));
-        if (!agg.ubo_members) {
-            free(agg_types);
-            free(agg_names);
-            mglAirReflectDestroy(lists);
-            if (err && errCap) snprintf(err, errCap, "out of memory");
-            return -1;
-        }
-        agg.ubo_member_count = agg_count;
         for (uint32_t m = 0; m < agg_count; m++) {
+            MGLIRType *ty = agg_types[m];
+            const char *nm = agg_names[m];
             uint32_t size = 0;
-            if (mglIRComputeLayout(agg_types[m], MGLIR_LAYOUT_STD140, &size) != 0) {
+            if (mglIRComputeLayout(ty, MGLIR_LAYOUT_STD140, &size) != 0) {
                 size = 4;
             }
-            off = (off + agg_types[m]->layout.alignment - 1) &
-                  ~(agg_types[m]->layout.alignment - 1);
-            SpirvUBOMember *u = &agg.ubo_members[m];
-            u->name = strdup(agg_names[m]);
-            u->query_name = strdup(agg_names[m]);
-            u->gl_type = mglAirGLTypeFromIR(agg_types[m]);
-            u->offset = off;
-            u->array_stride = (agg_types[m]->kind == MGLIR_TYPE_ARRAY)
-                                  ? (GLint)agg_types[m]->layout.array_stride
-                                  : -1;
-            u->matrix_stride = (agg_types[m]->kind == MGLIR_TYPE_MATRIX)
-                                   ? (GLint)agg_types[m]->layout.matrix_stride
-                                   : -1;
-            u->is_row_major = GL_FALSE;
-            u->size = mglAirGLArraySizeFromIR(agg_types[m]);
-            u->location_offset = (GLint)m;
-            u->top_level_array_size = u->size;
-            u->top_level_array_stride = u->array_stride;
+            off = (off + ty->layout.alignment - 1) &
+                  ~(ty->layout.alignment - 1);
+            const MGLIRType *st = air_uniform_block_type(ty);
+            if (st) {
+                if (ty->kind == MGLIR_TYPE_ARRAY && ty->elem_type) {
+                    uint32_t n = ty->array_size ? ty->array_size : 1u;
+                    uint32_t stride = ty->layout.array_stride > 0
+                                          ? (uint32_t)ty->layout.array_stride
+                                          : size / (n ? n : 1u);
+                    for (uint32_t el = 0; el < n; el++) {
+                        char epath[192];
+                        snprintf(epath, sizeof(epath), "%s[%u]",
+                                 nm ? nm : "?", el);
+                        if (air_block_flatten(ty->elem_type,
+                                              off + el * stride, epath,
+                                              &leaves, &leaf_count,
+                                              &leaf_cap) != 0) {
+                            for (uint32_t i = 0; i < leaf_count; i++) {
+                                free((void *)leaves[i].name);
+                                free(leaves[i].query_name);
+                            }
+                            free(leaves);
+                            free(agg_types);
+                            free(agg_names);
+                            mglAirReflectDestroy(lists);
+                            if (err && errCap)
+                                snprintf(err, errCap, "out of memory");
+                            return -1;
+                        }
+                    }
+                } else if (air_block_flatten(st, off, nm ? nm : "?",
+                                             &leaves, &leaf_count,
+                                             &leaf_cap) != 0) {
+                    for (uint32_t i = 0; i < leaf_count; i++) {
+                        free((void *)leaves[i].name);
+                        free(leaves[i].query_name);
+                    }
+                    free(leaves);
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    return -1;
+                }
+            } else {
+                if (leaf_count == leaf_cap) {
+                    uint32_t ncap = leaf_cap ? leaf_cap * 2 : 8;
+                    SpirvUBOMember *nl = (SpirvUBOMember *)realloc(
+                        leaves, ncap * sizeof(SpirvUBOMember));
+                    if (!nl) {
+                        for (uint32_t i = 0; i < leaf_count; i++) {
+                            free((void *)leaves[i].name);
+                            free(leaves[i].query_name);
+                        }
+                        free(leaves);
+                        free(agg_types);
+                        free(agg_names);
+                        mglAirReflectDestroy(lists);
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        return -1;
+                    }
+                    leaves = nl;
+                    leaf_cap = ncap;
+                }
+                SpirvUBOMember *u = &leaves[leaf_count++];
+                memset(u, 0, sizeof(*u));
+                u->name = strdup(nm);
+                u->query_name = strdup(nm);
+                u->gl_type = mglAirGLTypeFromIR(ty);
+                u->offset = off;
+                u->array_stride = (ty->kind == MGLIR_TYPE_ARRAY)
+                                      ? (GLint)ty->layout.array_stride
+                                      : -1;
+                u->matrix_stride = (ty->kind == MGLIR_TYPE_MATRIX)
+                                       ? (GLint)ty->layout.matrix_stride
+                                       : -1;
+                u->is_row_major = GL_FALSE;
+                u->size = mglAirGLArraySizeFromIR(ty);
+                u->top_level_array_size = u->size;
+                u->top_level_array_stride = u->array_stride;
+            }
             off += size;
         }
+        for (uint32_t m = 0; m < leaf_count; m++)
+            leaves[m].location_offset = (GLint)m;
         agg_size = off;
         char agg_name[64];
         snprintf(agg_name, sizeof(agg_name), "air_uniforms_s%d", stage);
         agg.name = strdup(agg_name);
-        agg.ubo_member_count = agg_count;
+        agg.ubo_members = leaves;
+        agg.ubo_member_count = leaf_count;
         agg.required_size = agg_size;
         agg.uniform_location = -1;   /* assigned by the link pass per stage */
         agg.location = UINT32_MAX;   /* let the link pass assign locations */
@@ -864,6 +1244,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         if (nl) {
             l->list = nl;
             l->list[l->count++] = agg;
+        } else {
+            for (uint32_t i = 0; i < leaf_count; i++) {
+                free((void *)leaves[i].name);
+                free(leaves[i].query_name);
+            }
+            free(leaves);
         }
         free(agg_types);
         free(agg_names);

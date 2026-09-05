@@ -70,7 +70,7 @@ typedef struct MGLAIRTessDrawContract {
     uint32_t restart_index;    /* restart marker for index_type         */
 
     /* ---- tess factor layout ---- */
-    uint32_t tess_factor_bytes_per_patch; /* 12 = quad half factors     */
+    uint32_t tess_factor_bytes_per_patch; /* RECORD_BYTES (half+exact) */
     uint32_t tess_gen_mode;   /* GL_TRIANGLES / GL_QUADS / GL_ISOLINES  */
     uint32_t point_mode;      /* bool: layout(point_mode)               */
 
@@ -84,8 +84,19 @@ typedef struct MGLAIRTessDrawContract {
 /* ---- Tess factor buffer layouts (Metal) ----
  * The compute path (buffer 26) always allocates the quad layout because
  * MTLQuadTessellationFactorsHalf covers all three modes at the cost of two
- * unused half floats for triangles/isolines. */
+ * unused half floats for triangles/isolines.
+ *
+ * Each patch record is half factors (Metal / topology) followed by the
+ * exact float32 levels TCS wrote (or glPatchParameterfv defaults).  TES
+ * must expose the float32 copy as gl_TessLevel* — half round-trip fails
+ * CTS epsilon 1e-5 (e.g. 2.7 → 2.69922). */
 #define MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES 12u /* 4 edge + 2 inner halves */
+#define MGL_AIR_TESS_FACTOR_EXACT_FLOAT_BYTES 24u /* outer[4]+inner[2] f32 */
+#define MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET \
+    MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES
+#define MGL_AIR_TESS_FACTOR_RECORD_BYTES       \
+    (MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES +    \
+     MGL_AIR_TESS_FACTOR_EXACT_FLOAT_BYTES) /* 36 */
 #define MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES   8u /* 3 edge + 1 inner half   */
 
 /* =====================================================================
@@ -170,6 +181,8 @@ MGL_AIR_TESS_STATIC_ASSERT(kMGLMaxMetalComputeBufferCount ==
 
 MGL_AIR_TESS_STATIC_ASSERT(MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES == 12u,
                            "quad half tess factors are 12 bytes");
+MGL_AIR_TESS_STATIC_ASSERT(MGL_AIR_TESS_FACTOR_RECORD_BYTES == 36u,
+                           "tess factor record is half + exact floats");
 MGL_AIR_TESS_STATIC_ASSERT(offsetof(MGLAIRTessDrawContract, patch_vertices) == 0u,
                            "patch_vertices must lead the contract");
 MGL_AIR_TESS_STATIC_ASSERT(MGL_AIR_TESS_SLOT_TCS_STAGE_IN == MGL_AIR_TESS_SLOT_GL_IN - 6u,

@@ -296,6 +296,11 @@ typedef struct Program_t {
     GLenum tess_gen_spacing;     /* GL_EQUAL / GL_FRACTIONAL_EVEN / GL_FRACTIONAL_ODD */
     GLenum tess_gen_vertex_order;/* GL_CW / GL_CCW */
     GLboolean tess_gen_point_mode;/* GL_TRUE / GL_FALSE */
+    /* TES compiled as AIR compute expansion (isolines, point_mode, or
+     * forced for XFB).  Draw/bind paths must use the compute ABI. */
+    GLboolean tess_eval_compute;
+    /* 1 if the TES compilation unit declared an input primitive mode. */
+    GLboolean tess_gen_mode_specified;
     GLint sampler_units[TEXTURE_UNITS];
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean sampler_units_explicit[TEXTURE_UNITS];
@@ -404,6 +409,18 @@ typedef struct Program_t {
 GLint mglProgramActiveUniformCount(Program *program);
 GLint mglProgramActiveUniformMaxNameLength(Program *program);
 MGLShaderResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out);
+#ifdef __cplusplus
+extern "C" {
+#endif
+/* Resolve a glTransformFeedbackVaryings name against stage outputs.
+ * Accepts bare member names and BlockType.member for named interface
+ * blocks (GL 4.6 §11.1.2.1); reflection keeps bare Metal identifiers. */
+MGLShaderResource *mglProgramFindStageOutputForXFBName(Program *program,
+                                                       int stage,
+                                                       const char *xfb_name);
+#ifdef __cplusplus
+}
+#endif
 /* Build the deduplicated active-uniform cache.  Called at link end.
  * Frees any previous cache.  After this, mglProgramActiveUniformCount /
  * mglProgramActiveUniformAt / mglProgramActiveUniformIndexByName /

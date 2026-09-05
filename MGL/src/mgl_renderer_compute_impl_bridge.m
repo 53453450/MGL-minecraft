@@ -43,6 +43,9 @@ static id mglComputeCreateTextureLevelView(id texture, NSUInteger level)
     if (mglRenderGetTextureInfo((__bridge void *)texture, &info) != 0) {
         return nil;
     }
+    if (level >= info.mipmap_level_count) {
+        return nil;
+    }
     uint64_t sliceCount = info.array_length;
     if (info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE ||
         info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE_ARRAY) {
@@ -272,14 +275,26 @@ static void mglComputeEndEncoder(id encoder)
         }
         if (!ptr->data.mtl_data) {
             [self bindMTLBuffer:ptr];
-        } else if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
-            /* A plain uniform slot can first be materialized for a smaller
-             * stage (for example the vertex shader) and later grow when the
-             * geometry shader uploads a large array.  Refresh the Metal
-             * backing before checking its visible length; otherwise the
-             * undersized old buffer is isolated and the newly uploaded suffix
-             * is silently read as zero. */
-            [self bindMTLBuffer:ptr];
+        }
+        if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+            /* Push pending CPU shadow into Metal.  bindMTLBuffer alone does
+             * not clear dirty_bits; leaving them set lets a later VBO bind
+             * CoW-overlay the CPU shadow and wipe shader SSBO stores
+             * (CTS advanced-write-geometry). */
+            if (![self updateDirtyBuffer:ptr]) {
+                NSLog(@"MGL COMPUTE ERROR: dirty buffer update failed buffer=%u",
+                      (unsigned)ptr->name);
+                MGL_CBIND_FLUSH_SNAPSHOT();
+                return false;
+            }
+        }
+        /* After this encode, Metal is authoritative for writable SSBOs /
+         * atomics — drop CPU written_min/max so a later dirty CoW cannot
+         * re-apply stale BufferData zeros over GPU stores. */
+        if (map->resource_type == _STORAGE_BUFFER_RES ||
+            map->resource_type == _ATOMIC_COUNTER_RES) {
+            ptr->written_min = -1;
+            ptr->written_max = -1;
         }
         id buffer = ptr->data.mtl_data
             ? (__bridge id)(ptr->data.mtl_data)
@@ -558,7 +573,8 @@ static void mglComputeEndEncoder(id encoder)
                     i >= 0) {
                     MGLShaderResourceList *resourceList =
                         &computeProgram->shader_resources_list[stage][spvc_type];
-                    if (spvc_type == _SAMPLED_IMAGE_RES) {
+                    if (spvc_type == _SAMPLED_IMAGE_RES ||
+                        spvc_type == _STORAGE_IMAGE_RES) {
                         GLuint ordinal = (GLuint)i;
                         for (GLuint ri = 0; ri < resourceList->count; ri++) {
                             MGLShaderResource *candidate = &resourceList->list[ri];
@@ -602,8 +618,19 @@ static void mglComputeEndEncoder(id encoder)
                                                       ctx, stage, spvc_type, i)];
                         break;
                     case _IMAGE_TEXTURE:
-                        glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                          : mglRendererGetProgramGLBinding(ctx, stage, spvc_type, i);
+                        if (computeProgram && metalBinding < TEXTURE_UNITS &&
+                            computeProgram->sampler_units_explicit_by_stage[stage][metalBinding]) {
+                            glUnit = (GLuint)computeProgram
+                                         ->sampler_units_by_stage[stage][metalBinding];
+                        } else if (resource) {
+                            GLuint base = resource->sampler_unit >= 0
+                                ? (GLuint)resource->sampler_unit
+                                : resource->gl_binding;
+                            glUnit = base + resourceElement;
+                        } else {
+                            glUnit = (GLuint)mglRendererGetProgramGLBinding(
+                                ctx, stage, spvc_type, i);
+                        }
                         if (glUnit >= TEXTURE_UNITS) {
                             continue;
                         }
@@ -628,21 +655,12 @@ static void mglComputeEndEncoder(id encoder)
                         continue;
                     }
 
-                    /* For storage images bound to a non-zero mipmap level, create
-                     * a level-specific texture view so imageSize() returns the
-                     * dimensions at the bound level (matches the fragment-stage
-                     * path).  Sampled textures are not affected. */
+                    /* Storage images: BindImage <format>/level/slice views
+                     * (same helper as VS/FS). Cached on ImageUnit. */
                     if (gl_texture_type == _IMAGE_TEXTURE) {
-                        GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-                        if (imgLevel > 0u) {
-                            id levelView = mglComputeCreateTextureLevelView(
-                                texture, imgLevel);
-                            if (levelView) {
-                                texture = levelView;
-                                /* Keep the view alive until the end replay. */
-                                MGL_CTEX_RETAIN_TEMP(levelView);
-                            }
-                        }
+                        texture = (__bridge id)mglRendererStorageImageTexture(
+                            (__bridge void *)texture,
+                            &MGL_STATE(ctx)->image_units[glUnit]);
                     }
 
                     id sampler;
@@ -771,57 +789,6 @@ static void mglComputeEndEncoder(id encoder)
             }
         }
     }
-
-    /* Bind additional array elements for storage image arrays.
-     * The AIR backend emits `array<texture2d<T, access::read_write>, N> image [[texture(B)]]`
-     * which occupies consecutive Metal texture slots B..B+N-1.  The main
-     * loop above only binds element 0; bind elements 1..N-1 here. */
-    if (computeProgram) {
-        MGLShaderResourceList *storageArrayResources =
-            &computeProgram->shader_resources_list[stage][_STORAGE_IMAGE_RES];
-        for (GLuint resourceIndex = 0; storageArrayResources->list && resourceIndex < storageArrayResources->count; resourceIndex++) {
-            MGLShaderResource *resource = &storageArrayResources->list[resourceIndex];
-            if (resource->gl_array_size <= 1) {
-                continue;
-            }
-
-            for (GLint element = 1; element < resource->gl_array_size; element++) {
-                GLuint metalSlot = resource->binding + (GLuint)element;
-                if (metalSlot >= TEXTURE_UNITS) {
-                    break;
-                }
-
-                GLuint glUnit = (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding) + (GLuint)element;
-                if (glUnit >= TEXTURE_UNITS) {
-                    continue;
-                }
-
-                Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-                if (!ptr || ![self bindMTLTexture:ptr] || !ptr->mtl_data) {
-                    continue;
-                }
-
-                id texture = (__bridge id)(ptr->mtl_data);
-
-                /* For storage images bound to a non-zero mipmap level, create
-                 * a level-specific texture view (matches element 0 path). */
-                GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-                if (imgLevel > 0u) {
-                    id levelView = mglComputeCreateTextureLevelView(
-                        texture, imgLevel);
-                    if (levelView) {
-                        texture = levelView;
-                        /* Keep the view alive until the end replay. */
-                        MGL_CTEX_RETAIN_TEMP(levelView);
-                    }
-                }
-
-                MGL_CTEX_EMIT_TEXTURE(metalSlot,
-                                      (__bridge void *)texture);
-            }
-        }
-    }
-
 
     MGL_CTEX_FLUSH_SNAPSHOT();
 #undef MGL_CTEX_EMIT_TEXTURE

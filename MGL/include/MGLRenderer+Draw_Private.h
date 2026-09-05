@@ -324,6 +324,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                            alreadyDone:(const MGLResourceSyncWork *)done;
 - (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
+- (bool)bindStorageImagesForVertexProgram:(Program *)vertexProgram
+                          fragmentProgram:(Program *)fragmentProgram;
 - (bool)bindActiveTexturesToMTL;
 
 // === Dedup state management ===
@@ -517,6 +519,13 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                 stage:(int)stage
                         executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
                          temporaries:(NSMutableArray *)temporaries;
+
+/* Emulated MS (texture2d_array sample planes): per-sample redraw + broadcast. */
+- (Texture *)emulatedMSColor0TextureForContext:(GLMContext)glm_ctx;
+- (BOOL)fragmentNeedsPerSampleMSValuesForContext:(GLMContext)glm_ctx;
+- (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
+                                   drawOnce:(void (^)(void))drawOnce;
+- (void)broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:(GLMContext)glm_ctx;
 
 @end
 

@@ -53,9 +53,286 @@
 #include "mgl_buffer_plan.h"
 #include "mgl_shader_resource.h"
 #include "mgl_render.h"
+#include "mgl_glsl_parser.h"
+#include "mgl_glsl_ast.h"
 
 
 static _Atomic uint64_t mglNextMSLTextureCacheInstanceID = 1u;
+
+/* Evaluate a GLSL constant initializer into up to 16 x 32-bit words.
+ * Covers scalar / small-vector literals and constructors used as uniform
+ * defaults (CTS `uniform uint id = 2;`). Returns word count, or 0. */
+static uint32_t mglEvalConstUniformInit(const MGLExpr *e, uint32_t words[16],
+                                        uint32_t *out_base)
+{
+    if (!e || !words || !out_base) {
+        return 0u;
+    }
+    if (e->kind == MGL_EXPR_LITERAL) {
+        *out_base = e->u.literal.base;
+        switch (e->u.literal.base) {
+        case MGL_AST_TYPE_BOOL:
+        case MGL_AST_TYPE_INT: {
+            GLint v = (GLint)e->u.literal.value;
+            memcpy(words, &v, sizeof(v));
+            return 1u;
+        }
+        case MGL_AST_TYPE_UINT: {
+            GLuint v = (GLuint)e->u.literal.value;
+            memcpy(words, &v, sizeof(v));
+            return 1u;
+        }
+        case MGL_AST_TYPE_FLOAT: {
+            GLfloat v = (GLfloat)e->u.literal.value;
+            memcpy(words, &v, sizeof(v));
+            return 1u;
+        }
+        default:
+            return 0u;
+        }
+    }
+    if (e->kind == MGL_EXPR_UNARY && e->u.unary.op == MGL_OP_SUB &&
+        e->u.unary.operand) {
+        uint32_t base = 0u;
+        uint32_t n = mglEvalConstUniformInit(e->u.unary.operand, words, &base);
+        if (n != 1u) {
+            return 0u;
+        }
+        *out_base = base;
+        if (base == MGL_AST_TYPE_FLOAT) {
+            GLfloat v;
+            memcpy(&v, words, sizeof(v));
+            v = -v;
+            memcpy(words, &v, sizeof(v));
+            return 1u;
+        }
+        if (base == MGL_AST_TYPE_INT || base == MGL_AST_TYPE_BOOL) {
+            GLint v;
+            memcpy(&v, words, sizeof(v));
+            v = -v;
+            memcpy(words, &v, sizeof(v));
+            return 1u;
+        }
+        return 0u;
+    }
+    if (e->kind == MGL_EXPR_CALL && e->u.call.name && e->u.call.arg_count > 0u &&
+        e->u.call.arg_count <= 16u) {
+        /* Scalar/vector constructors and array ctors: int(x), uint[8](...),
+         * int[](...). */
+        const char *name = e->u.call.name;
+        uint32_t expect_base = 0u;
+        uint32_t expect_comps = 1u;
+        const int is_arr = e->u.call.is_array_ctor;
+        if (strcmp(name, "int") == 0) {
+            expect_base = MGL_AST_TYPE_INT;
+            expect_comps = is_arr ? e->u.call.arg_count : 1u;
+        } else if (strcmp(name, "uint") == 0) {
+            expect_base = MGL_AST_TYPE_UINT;
+            expect_comps = is_arr ? e->u.call.arg_count : 1u;
+        } else if (strcmp(name, "float") == 0) {
+            expect_base = MGL_AST_TYPE_FLOAT;
+            expect_comps = is_arr ? e->u.call.arg_count : 1u;
+        } else if (strcmp(name, "bool") == 0) {
+            expect_base = MGL_AST_TYPE_BOOL;
+            expect_comps = is_arr ? e->u.call.arg_count : 1u;
+        } else if (strcmp(name, "ivec2") == 0 || strcmp(name, "ivec3") == 0 ||
+                   strcmp(name, "ivec4") == 0) {
+            expect_base = MGL_AST_TYPE_INT;
+            expect_comps = (uint32_t)(name[4] - '0');
+        } else if (strcmp(name, "uvec2") == 0 || strcmp(name, "uvec3") == 0 ||
+                   strcmp(name, "uvec4") == 0) {
+            expect_base = MGL_AST_TYPE_UINT;
+            expect_comps = (uint32_t)(name[4] - '0');
+        } else if (strcmp(name, "vec2") == 0 || strcmp(name, "vec3") == 0 ||
+                   strcmp(name, "vec4") == 0) {
+            expect_base = MGL_AST_TYPE_FLOAT;
+            expect_comps = (uint32_t)(name[3] - '0');
+        } else {
+            return 0u;
+        }
+        if (!is_arr && e->u.call.arg_count != expect_comps &&
+            e->u.call.arg_count != 1u) {
+            return 0u;
+        }
+        if (is_arr) {
+            expect_comps = e->u.call.arg_count;
+        }
+        if (expect_comps == 0u || expect_comps > 16u) {
+            return 0u;
+        }
+        *out_base = expect_base;
+        for (uint32_t i = 0; i < expect_comps; i++) {
+            const MGLExpr *arg = e->u.call.args[
+                (!is_arr && e->u.call.arg_count == 1u) ? 0u : i];
+            uint32_t ab = 0u;
+            uint32_t tmp[16];
+            if (mglEvalConstUniformInit(arg, tmp, &ab) != 1u) {
+                return 0u;
+            }
+            /* GLSL allows int→float in vecN(10,20,30); store the target type. */
+            if (expect_base == MGL_AST_TYPE_FLOAT &&
+                ab != MGL_AST_TYPE_FLOAT) {
+                GLfloat fv = 0.0f;
+                if (ab == MGL_AST_TYPE_INT || ab == MGL_AST_TYPE_BOOL) {
+                    GLint iv;
+                    memcpy(&iv, tmp, sizeof(iv));
+                    fv = (GLfloat)iv;
+                } else if (ab == MGL_AST_TYPE_UINT) {
+                    GLuint uv;
+                    memcpy(&uv, tmp, sizeof(uv));
+                    fv = (GLfloat)uv;
+                } else {
+                    return 0u;
+                }
+                memcpy(&words[i], &fv, sizeof(fv));
+            } else if (expect_base != MGL_AST_TYPE_FLOAT &&
+                       ab == MGL_AST_TYPE_FLOAT) {
+                GLfloat fv;
+                memcpy(&fv, tmp, sizeof(fv));
+                if (expect_base == MGL_AST_TYPE_UINT) {
+                    GLuint uv = (GLuint)fv;
+                    memcpy(&words[i], &uv, sizeof(uv));
+                } else {
+                    GLint iv = (GLint)fv;
+                    memcpy(&words[i], &iv, sizeof(iv));
+                }
+            } else {
+                words[i] = tmp[0];
+            }
+            if (expect_base == MGL_AST_TYPE_BOOL) {
+                GLint bv;
+                memcpy(&bv, &words[i], sizeof(bv));
+                bv = bv ? 1 : 0;
+                memcpy(&words[i], &bv, sizeof(bv));
+            }
+        }
+        return expect_comps;
+    }
+    return 0u;
+}
+
+/* Seed plain-uniform CPU slots from GLSL default initializers so the first
+ * draw sees defaults without SSA-folding them (which would ignore glUniform*). */
+static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
+{
+    if (!ctx || !pptr) {
+        return;
+    }
+    Program *prev_prog = ctx->state.program;
+    GLuint prev_name = ctx->state.program_name;
+    ctx->state.program = pptr;
+    ctx->state.program_name = pptr->name;
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Shader *shader = pptr->shader_slots[stage];
+        if (!shader || !shader->src) {
+            continue;
+        }
+        MGLTranslationUnit *tu =
+            mglGLSLParse(shader->src, strlen(shader->src));
+        if (!tu) {
+            continue;
+        }
+        for (uint32_t di = 0; di < tu->decl_count; di++) {
+            for (MGLDecl *d = tu->decls[di]; d; d = d->next_declarator) {
+                if (!d->name || !d->init || d->body) {
+                    continue;
+                }
+                if (!(d->qualifiers & MGL_AST_Q_UNIFORM) ||
+                    (d->qualifiers & MGL_AST_Q_BUFFER) ||
+                    (d->qualifiers & MGL_AST_Q_CONST)) {
+                    continue;
+                }
+                /* Skip interface blocks / opaque types. */
+                if (d->struct_members ||
+                    (d->type && (d->type->base == MGL_AST_TYPE_SAMPLER ||
+                                 d->type->base == MGL_AST_TYPE_IMAGE ||
+                                 d->type->base == MGL_AST_TYPE_ATOMIC_UINT ||
+                                 d->type->base == MGL_AST_TYPE_STRUCT))) {
+                    continue;
+                }
+                uint32_t words[16];
+                uint32_t base = 0u;
+                uint32_t n = mglEvalConstUniformInit(d->init, words, &base);
+                if (n == 0u) {
+                    static int s_seedFailLogged;
+                    if (!s_seedFailLogged) {
+                        fprintf(stderr,
+                                "MGL WARNING: uniform initializer seeding "
+                                "failed (first: '%s' program=%u); defaults "
+                                "may be zero\n",
+                                d->name, (unsigned)pptr->name);
+                        s_seedFailLogged = 1;
+                    }
+                    continue;
+                }
+                GLint loc = mglGetUniformLocation(ctx, pptr->name, d->name);
+                if (loc < 0) {
+                    continue;
+                }
+                const int is_array = (d->array_count > 0u) ||
+                    (d->init && d->init->kind == MGL_EXPR_CALL &&
+                     d->init->u.call.is_array_ctor);
+                switch (base) {
+                case MGL_AST_TYPE_BOOL:
+                case MGL_AST_TYPE_INT:
+                    if (is_array || n > 4u) {
+                        mglUniform1iv(ctx, loc, (GLsizei)n, (const GLint *)words);
+                    } else if (n == 1u) {
+                        GLint v;
+                        memcpy(&v, words, sizeof(v));
+                        mglUniform1i(ctx, loc, v);
+                    } else if (n == 2u) {
+                        mglUniform2iv(ctx, loc, 1, (const GLint *)words);
+                    } else if (n == 3u) {
+                        mglUniform3iv(ctx, loc, 1, (const GLint *)words);
+                    } else if (n == 4u) {
+                        mglUniform4iv(ctx, loc, 1, (const GLint *)words);
+                    }
+                    break;
+                case MGL_AST_TYPE_UINT:
+                    if (is_array || n > 4u) {
+                        mglUniform1uiv(ctx, loc, (GLsizei)n,
+                                       (const GLuint *)words);
+                    } else if (n == 1u) {
+                        GLuint v;
+                        memcpy(&v, words, sizeof(v));
+                        mglUniform1ui(ctx, loc, v);
+                    } else if (n == 2u) {
+                        mglUniform2uiv(ctx, loc, 1, (const GLuint *)words);
+                    } else if (n == 3u) {
+                        mglUniform3uiv(ctx, loc, 1, (const GLuint *)words);
+                    } else if (n == 4u) {
+                        mglUniform4uiv(ctx, loc, 1, (const GLuint *)words);
+                    }
+                    break;
+                case MGL_AST_TYPE_FLOAT:
+                    if (is_array || n > 4u) {
+                        mglUniform1fv(ctx, loc, (GLsizei)n,
+                                      (const GLfloat *)words);
+                    } else if (n == 1u) {
+                        GLfloat v;
+                        memcpy(&v, words, sizeof(v));
+                        mglUniform1f(ctx, loc, v);
+                    } else if (n == 2u) {
+                        mglUniform2fv(ctx, loc, 1, (const GLfloat *)words);
+                    } else if (n == 3u) {
+                        mglUniform3fv(ctx, loc, 1, (const GLfloat *)words);
+                    } else if (n == 4u) {
+                        mglUniform4fv(ctx, loc, 1, (const GLfloat *)words);
+                    }
+                    break;
+                default:
+                    break;
+                }
+            }
+        }
+        mglGLSLTranslationUnitDestroy(tu);
+    }
+
+    ctx->state.program = prev_prog;
+    ctx->state.program_name = prev_name;
+}
 
 static GLboolean mglPointerLooksMallocOwned(const void *ptr)
 {
@@ -289,6 +566,11 @@ GLuint mglCreateProgram(GLMContext ctx)
     GLuint program;
 
     program = getNewName(&STATE(program_table));
+    /* GL §7.1: shader and program objects share one name space. */
+    while (program != 0 &&
+           searchHashTable(&STATE(shader_table), program) != NULL) {
+        program = getNewName(&STATE(program_table));
+    }
 
     if (!getProgram(ctx, program))
         return 0;
@@ -837,6 +1119,42 @@ static bool mglTransformFeedbackArrayElement(const char *name,
     return true;
 }
 
+MGLShaderResource *mglProgramFindStageOutputForXFBName(Program *program,
+                                                       int stage,
+                                                       const char *xfb_name)
+{
+    if (!program || !xfb_name || !xfb_name[0] ||
+        stage < 0 || stage >= _MAX_SHADER_TYPES)
+        return NULL;
+    char baseName[96];
+    if (!mglTransformFeedbackBaseName(xfb_name, baseName))
+        return NULL;
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[stage][_STAGE_OUTPUT_RES];
+    for (GLuint j = 0u; j < outputs->count; j++) {
+        if (outputs->list[j].name &&
+            strcmp(outputs->list[j].name, baseName) == 0)
+            return &outputs->list[j];
+    }
+    /* Named interface-block members: XFB name is BlockType.member while
+     * reflection stores the bare member for Metal identifiers. */
+    const char *dot = strrchr(baseName, '.');
+    if (!dot || dot == baseName || dot[1] == '\0' ||
+        strchr(dot + 1, '.') != NULL)
+        return NULL;
+    const char *member = dot + 1;
+    MGLShaderResource *match = NULL;
+    GLuint matches = 0u;
+    for (GLuint j = 0u; j < outputs->count; j++) {
+        MGLShaderResource *cand = &outputs->list[j];
+        if (!cand->name || strcmp(cand->name, member) != 0)
+            continue;
+        match = cand;
+        matches++;
+    }
+    return matches == 1u ? match : NULL;
+}
+
 /* Build the link-time XFB scatter plan and validate the ARB_transform_feedback3
  * control entries.  Execution still deliberately gates GS SEPARATE_ATTRIBS
  * elsewhere, but every accepted program now has one authoritative binding,
@@ -857,19 +1175,20 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
     }
 
     /* Determine the last active stage before fragment (the stage that
-     * provides transform feedback outputs). */
+     * provides transform feedback outputs).  GL desktop also allows
+     * capturing from a tessellation control–only separable program. */
     int feedback_stage = -1;
     if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT)
         feedback_stage = _GEOMETRY_SHADER;
     else if (pptr->attached_shader_mask & TESS_EVALUATION_SHADER_MASK_BIT)
         feedback_stage = _TESS_EVALUATION_SHADER;
+    else if (pptr->attached_shader_mask & TESS_CONTROL_SHADER_MASK_BIT)
+        feedback_stage = _TESS_CONTROL_SHADER;
     else if (pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT)
         feedback_stage = _VERTEX_SHADER;
     if (feedback_stage < 0)
         return false;
 
-    MGLShaderResourceList *outputs =
-        &pptr->shader_resources_list[feedback_stage][_STAGE_OUTPUT_RES];
     const GLuint maxInterleaved = ctx
         ? ctx->state.var.max_transform_feedback_interleaved_components : 64u;
     const GLuint maxSeparateComponents = ctx
@@ -983,14 +1302,8 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
             continue;
         }
 
-        MGLShaderResource *output = NULL;
-        for (GLuint j = 0u; j < outputs->count; j++) {
-            if (outputs->list[j].name &&
-                strcmp(outputs->list[j].name, baseName) == 0) {
-                output = &outputs->list[j];
-                break;
-            }
-        }
+        MGLShaderResource *output =
+            mglProgramFindStageOutputForXFBName(pptr, feedback_stage, name);
         if (!output)
             return false;
 
@@ -1115,47 +1428,60 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     uint32_t air_flags =
         pptr->shader_slots[_GEOMETRY_SHADER] ? MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER : 0u;
+    /* Native post-tessellation feeds FS directly: it cannot insert a GS
+     * between TES and FS, and cannot feed transform feedback.  Force the
+     * compute expansion path for triangles/quads (same as isolines /
+     * point_mode) whenever either follows. */
+    if (stage == _TESS_EVALUATION_SHADER &&
+        (pptr->transform_feedback_varying_count > 0 ||
+         pptr->shader_slots[_GEOMETRY_SHADER])) {
+        air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
+    }
+    /* TES-compute passthrough VS (isolines / point_mode) also tags outs as
+     * mgl_loc_N — same ABI as the GS passthrough.  Without this flag the FS
+     * keeps name tags and Metal rejects the pipeline
+     * (point_rendering: result_color).  Stages compile VS→…→TES→GS→FS, so
+     * tess_eval_compute is already known when the FS is compiled. */
+    if (stage == _FRAGMENT_SHADER &&
+        !pptr->shader_slots[_GEOMETRY_SHADER] &&
+        pptr->tess_eval_compute) {
+        air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
+    }
+    /* When a GS is present, FS mgl_loc_N tags must follow GS output
+     * locations (passthrough VS).  Remap by name at compile time.
+     * TES-compute (no GS) remaps FS inputs to TES outs the same way.
+     * Same for TES←TCS: declaration-order locations diverge when the TES
+     * omits some TCS per-vertex outs (barrier_guarded_read_calls). */
+    const MGLShaderResourceList *iface_peers = NULL;
+    if (stage == _FRAGMENT_SHADER && pptr->shader_slots[_GEOMETRY_SHADER]) {
+        iface_peers =
+            &pptr->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
+    } else if (stage == _FRAGMENT_SHADER && pptr->tess_eval_compute &&
+               pptr->shader_slots[_TESS_EVALUATION_SHADER]) {
+        iface_peers =
+            &pptr->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                       [_STAGE_OUTPUT_RES];
+    } else if (stage == _TESS_EVALUATION_SHADER &&
+               pptr->shader_slots[_TESS_CONTROL_SHADER]) {
+        iface_peers =
+            &pptr->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
+    }
     int air_rc = mglAirCompileGLSLWithReflectInfoEx(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
         pptr->shader_resources_list[stage], &stage_info, air_flags,
-        err, sizeof err);
-    for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
-        free((void *)attrib_snapshot[ai]);
-    }
+        iface_peers, err, sizeof err);
     if (air_rc != 0) {
+        for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
+            free((void *)attrib_snapshot[ai]);
+        }
         fprintf(stderr,
                 "MGL WARNING: AIR compile failed program %u stage %d: %s\n",
                 pptr->name, stage, err);
         return 0;
     }
-    pptr->modules[stage].metallib_bytes = bytes;
-    pptr->modules[stage].metallib_size = size;
-    if (getenv("MGL_DUMP_AIR") && stage == _GEOMETRY_SHADER) {
-        FILE *f = fopen("/tmp/poison_gs.air", "wb");
-        if (f) {
-            fwrite(bytes, 1, size, f);
-            fclose(f);
-            fprintf(stderr, "MGL DUMP: gs.air %zu bytes\n", size);
-        }
-    }
-    if (getenv("MGL_DUMP_AIR") && stage == _VERTEX_SHADER) {
-        FILE *f = fopen("/tmp/poison_vs.air", "wb");
-        if (f) {
-            fwrite(bytes, 1, size, f);
-            fclose(f);
-            fprintf(stderr, "MGL DUMP: vs.air %zu bytes\n", size);
-        }
-    }
-    if (getenv("MGL_DUMP_AIR") && stage == _FRAGMENT_SHADER) {
-        FILE *f = fopen("/tmp/poison_fs.air", "wb");
-        if (f) {
-            fwrite(bytes, 1, size, f);
-            fclose(f);
-            fprintf(stderr, "MGL DUMP: fs.air %zu bytes\n", size);
-        }
-    }
-    pptr->modules[stage].needs_runtime_array_size_buffer =
-        stage_info.needs_runtime_array_size_buffer ? GL_TRUE : GL_FALSE;
+    /* Capture variants must see the same bindAttribLocation map as the
+     * reflected VS, or sparse locations (CTS enable_disable) misalign
+     * [[attribute(N)]] with the vertex descriptor. */
     if (stage == _VERTEX_SHADER) {
         pptr->uses_cull_distance = stage_info.uses_cull_distance
             ? GL_TRUE : GL_FALSE;
@@ -1165,7 +1491,7 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         size_t capture_size = 0;
         char capture_err[512] = {0};
         if (mglShaderCompileGLSLTessCapture(
-                shader->src, &capture_bytes, &capture_size,
+                shader->src, attrib_snapshot, &capture_bytes, &capture_size,
                 capture_err, sizeof capture_err) == 0) {
             pptr->modules[stage].metallib_tess_capture_bytes = capture_bytes;
             pptr->modules[stage].metallib_tess_capture_size = capture_size;
@@ -1196,12 +1522,20 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             size_t cull_capture_size = 0;
             char cull_capture_err[512] = {0};
             if (mglShaderCompileGLSLCullDistanceCapture(
-                    shader->src, &cull_capture_bytes, &cull_capture_size,
-                    cull_capture_err, sizeof cull_capture_err) == 0) {
+                    shader->src, attrib_snapshot, &cull_capture_bytes,
+                    &cull_capture_size, cull_capture_err,
+                    sizeof cull_capture_err) == 0) {
                 pptr->modules[stage].metallib_cull_capture_bytes =
                     cull_capture_bytes;
                 pptr->modules[stage].metallib_cull_capture_size =
                     cull_capture_size;
+                if (getenv("MGL_DUMP_AIR")) {
+                    FILE *f = fopen("/tmp/cullcap.air", "wb");
+                    if (f) {
+                        fwrite(cull_capture_bytes, 1, cull_capture_size, f);
+                        fclose(f);
+                    }
+                }
             } else {
                 fprintf(stderr,
                         "MGL WARNING: AIR cull-distance capture compile failed "
@@ -1210,6 +1544,48 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             }
         }
     }
+    for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
+        free((void *)attrib_snapshot[ai]);
+    }
+    if (stage == _COMPUTE_SHADER) {
+        pptr->local_workgroup_size.x = stage_info.compute_local_size_x
+                                           ? stage_info.compute_local_size_x
+                                           : 1u;
+        pptr->local_workgroup_size.y = stage_info.compute_local_size_y
+                                           ? stage_info.compute_local_size_y
+                                           : 1u;
+        pptr->local_workgroup_size.z = stage_info.compute_local_size_z
+                                           ? stage_info.compute_local_size_z
+                                           : 1u;
+    }
+    pptr->modules[stage].metallib_bytes = bytes;
+    pptr->modules[stage].metallib_size = size;
+    if (getenv("MGL_DUMP_AIR") && stage == _GEOMETRY_SHADER) {
+        FILE *f = fopen("/tmp/poison_gs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: gs.air %zu bytes\n", size);
+        }
+    }
+    if (getenv("MGL_DUMP_AIR") && stage == _VERTEX_SHADER) {
+        FILE *f = fopen("/tmp/poison_vs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: vs.air %zu bytes\n", size);
+        }
+    }
+    if (getenv("MGL_DUMP_AIR") && stage == _FRAGMENT_SHADER) {
+        FILE *f = fopen("/tmp/poison_fs.air", "wb");
+        if (f) {
+            fwrite(bytes, 1, size, f);
+            fclose(f);
+            fprintf(stderr, "MGL DUMP: fs.air %zu bytes\n", size);
+        }
+    }
+    pptr->modules[stage].needs_runtime_array_size_buffer =
+        stage_info.needs_runtime_array_size_buffer ? GL_TRUE : GL_FALSE;
     if (pptr->modules[stage].entry_point) {
         free(pptr->modules[stage].entry_point);
     }
@@ -1223,6 +1599,14 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->tess_gen_vertex_order = stage_info.tess_gen_vertex_order;
         pptr->tess_gen_point_mode =
             stage_info.tess_gen_point_mode ? GL_TRUE : GL_FALSE;
+        pptr->tess_gen_mode_specified =
+            stage_info.tess_gen_mode_specified ? GL_TRUE : GL_FALSE;
+        pptr->tess_eval_compute =
+            (pptr->tess_gen_mode == GL_ISOLINES ||
+             pptr->tess_gen_point_mode ||
+             pptr->transform_feedback_varying_count > 0 ||
+             pptr->shader_slots[_GEOMETRY_SHADER])
+                ? GL_TRUE : GL_FALSE;
         pptr->tess_uses_cull_distance =
             stage_info.uses_cull_distance ? GL_TRUE : GL_FALSE;
         pptr->tess_cull_distance_count = stage_info.cull_distance_count;
@@ -1386,6 +1770,136 @@ static bool mglValidateAtomicCounterOffsetOverlap(Program *pptr)
     return true;
 }
 
+/* GLSL 4.60 §7.1 / ARB_cull_distance: sum of gl_ClipDistance and
+ * gl_CullDistance sizes across a linked program must not exceed
+ * MAX_COMBINED_CLIP_AND_CULL_DISTANCES.  Size is the declared array length
+ * when redeclared, else max(static_index+1, for-loop upper bound).
+ * Mentions only inside #define bodies (unused macros) are ignored. */
+static GLuint mglDistanceArraySizeFromSource(const char *src, const char *name)
+{
+    if (!src || !name) return 0u;
+    const size_t nameLen = strlen(name);
+    GLuint size = 0u;
+    const char *p = src;
+    while ((p = strstr(p, name)) != NULL) {
+        const char *nameStart = p;
+        /* Skip occurrences that sit on a #define line — CTS functional
+         * shaders keep unused ASSIGN_* macros that name both builtins. */
+        const char *line = nameStart;
+        while (line > src && line[-1] != '\n')
+            --line;
+        while (*line == ' ' || *line == '\t')
+            ++line;
+        if (*line == '#') {
+            p = nameStart + nameLen;
+            continue;
+        }
+
+        p += nameLen;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+        if (*p != '[') continue;
+        ++p;
+        while (*p == ' ' || *p == '\t') ++p;
+
+        /* Look back past whitespace for a preceding "float" → declaration. */
+        const char *q = nameStart;
+        while (q > src && (q[-1] == ' ' || q[-1] == '\t' ||
+                           q[-1] == '\r' || q[-1] == '\n'))
+            --q;
+        int isDecl = 0;
+        if (q >= src + 5) {
+            const char *f = q - 5;
+            if (strncmp(f, "float", 5) == 0 &&
+                (f == src ||
+                 f[-1] == ' ' || f[-1] == '\t' || f[-1] == '\n' ||
+                 f[-1] == '\r' || f[-1] == ';'))
+                isDecl = 1;
+        }
+
+        if (*p >= '0' && *p <= '9') {
+            char *end = NULL;
+            unsigned long n = strtoul(p, &end, 10);
+            GLuint need = isDecl ? (GLuint)n : (GLuint)(n + 1u);
+            if (need > size) size = need;
+            p = end ? end : p;
+            continue;
+        }
+
+        /* Dynamic index: IDENT.  Prefer a for-loop upper bound IDENT < N. */
+        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+            *p == '_') {
+            const char *idStart = p;
+            while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                   (*p >= '0' && *p <= '9') || *p == '_')
+                ++p;
+            size_t idLen = (size_t)(p - idStart);
+            if (idLen == 0u || idLen >= 64u) continue;
+            char id[64];
+            memcpy(id, idStart, idLen);
+            id[idLen] = '\0';
+            const char *scan = src;
+            while ((scan = strstr(scan, id)) != NULL) {
+                const char *after = scan + idLen;
+                while (*after == ' ' || *after == '\t') ++after;
+                if (*after == '<') {
+                    ++after;
+                    while (*after == ' ' || *after == '\t') ++after;
+                    if (*after >= '0' && *after <= '9') {
+                        unsigned long bound = strtoul(after, NULL, 10);
+                        if ((GLuint)bound > size) size = (GLuint)bound;
+                    }
+                }
+                scan += idLen;
+            }
+            continue;
+        }
+    }
+    return size;
+}
+
+static bool mglValidateCombinedClipAndCullDistances(GLMContext ctx,
+                                                    Program *pptr)
+{
+    GLuint maxCombined =
+        ctx && ctx->state.var.max_combined_clip_and_cull_distances
+            ? ctx->state.var.max_combined_clip_and_cull_distances
+            : 8u;
+    GLuint clipSize = 0u;
+    GLuint cullSize = 0u;
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (stage == _FRAGMENT_SHADER || stage == _COMPUTE_SHADER)
+            continue;
+        GLuint attached_count =
+            mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+        for (GLuint attached = 0u; attached < attached_count; attached++) {
+            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
+                ? pptr->attached_shader_slots[stage][attached]
+                : pptr->shader_slots[stage];
+            if (!shader || !shader->src) continue;
+            GLuint sClip =
+                mglDistanceArraySizeFromSource(shader->src,
+                                               "gl_ClipDistance");
+            GLuint sCull =
+                mglDistanceArraySizeFromSource(shader->src,
+                                               "gl_CullDistance");
+            if (sClip > clipSize) clipSize = sClip;
+            if (sCull > cullSize) cullSize = sCull;
+        }
+    }
+
+    /* Only sizes proven by declaration or indexed use participate. */
+    if (clipSize == 0u || cullSize == 0u) return true;
+    if (clipSize + cullSize <= maxCombined) return true;
+
+    fprintf(stderr,
+            "MGL WARNING: mglLinkProgram failed program %u: "
+            "gl_ClipDistance[%u] + gl_CullDistance[%u] exceeds "
+            "MAX_COMBINED_CLIP_AND_CULL_DISTANCES (%u)\n",
+            pptr->name, clipSize, cullSize, maxCombined);
+    return false;
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -1406,6 +1920,20 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->link_success = GL_FALSE;
 
     mglFlushPendingDraws(ctx);
+
+    /* Re-link must use only currently attached shaders.  A prior successful
+     * link leaves shader_slots populated after detach (GL executable
+     * retention); without this sync, a detached GS still compiles and
+     * bindAIRProgram sees GS + gs_route=NONE (xfb_captures / stage re-link). */
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (pptr->attached_shader_counts[stage] > 0u) {
+            pptr->shader_slots[stage] =
+                pptr->attached_shader_slots[stage][0];
+        } else {
+            pptr->shader_slots[stage] = NULL;
+            clearStageCompileState(pptr, stage);
+        }
+    }
 
     /* C++ compute PSOs retain functions from the previous link generation.
      * Drop them before stage objects and metallib libraries are replaced. */
@@ -1505,6 +2033,10 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    if (!mglValidateCombinedClipAndCullDistances(ctx, pptr)) {
+        return;
+    }
+
     /* GL 4.6 §11.4.3: a non-separable program that contains any of
      * TCS/TES/GS/FS must also contain a vertex shader to link. */
     {
@@ -1537,6 +2069,18 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: mglLinkProgram failed program %u: "
                 "geometry shader missing layout(max_vertices)\n",
+                pptr->name);
+        return;
+    }
+
+    /* GLSL 4.60 §4.4.1 / GL 4.6 §11.2.1.2: TES must declare an input
+     * primitive mode; missing mode is a link failure (compile may still
+     * succeed — CTS te_lacking_primitive_mode_declaration). */
+    if ((pptr->attached_shader_mask & (1u << _TESS_EVALUATION_SHADER)) &&
+        !pptr->tess_gen_mode_specified) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: "
+                "tessellation evaluation shader missing input primitive mode\n",
                 pptr->name);
         return;
     }
@@ -1748,6 +2292,48 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 }
             }
 
+            /* Active image uniforms per stage (GLSL §4.4.6.2 / ARB_shader_image_load_store). */
+            if (!binding_error) {
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_STORAGE_IMAGE_RES];
+                GLuint image_count = 0u;
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint elems = rl->list[i].gl_array_size > 0
+                        ? (GLuint)rl->list[i].gl_array_size : 1u;
+                    image_count += elems;
+                }
+                GLuint stage_max = 0u;
+                switch (stage) {
+                case _VERTEX_SHADER:
+                    stage_max = ctx->state.var.max_vertex_image_uniforms;
+                    break;
+                case _TESS_CONTROL_SHADER:
+                    stage_max = ctx->state.var.max_tess_control_image_uniforms;
+                    break;
+                case _TESS_EVALUATION_SHADER:
+                    stage_max = ctx->state.var.max_tess_evaluation_image_uniforms;
+                    break;
+                case _GEOMETRY_SHADER:
+                    stage_max = ctx->state.var.max_geometry_image_uniforms;
+                    break;
+                case _FRAGMENT_SHADER:
+                    stage_max = ctx->state.var.max_fragment_image_uniforms;
+                    break;
+                case _COMPUTE_SHADER:
+                    stage_max = ctx->state.var.max_compute_image_uniforms;
+                    break;
+                default:
+                    break;
+                }
+                if (stage_max > 0u && image_count > stage_max) {
+                    fprintf(stderr,
+                            "MGL LINK ERROR: program %u stage %d has %u active image "
+                            "uniforms; exceeds stage limit (%u)\n",
+                            pptr->name, stage, image_count, stage_max);
+                    binding_error = true;
+                }
+            }
+
             /* Atomic counters: GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS */
             if (!binding_error) {
                 MGLShaderResourceList *rl =
@@ -1766,6 +2352,30 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                         break;
                     }
                 }
+            }
+        }
+
+        if (!binding_error) {
+            GLuint combined_images = 0u;
+            for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+                if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
+                    continue;
+                }
+                MGLShaderResourceList *rl =
+                    &pptr->shader_resources_list[stage][_STORAGE_IMAGE_RES];
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint elems = rl->list[i].gl_array_size > 0
+                        ? (GLuint)rl->list[i].gl_array_size : 1u;
+                    combined_images += elems;
+                }
+            }
+            if (combined_images > ctx->state.var.max_combined_image_uniforms) {
+                fprintf(stderr,
+                        "MGL LINK ERROR: program %u has %u combined active image "
+                        "uniforms; exceeds GL_MAX_COMBINED_IMAGE_UNIFORMS (%u)\n",
+                        pptr->name, combined_images,
+                        ctx->state.var.max_combined_image_uniforms);
+                binding_error = true;
             }
         }
 
@@ -1892,6 +2502,24 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
     }
 
+    if ((pptr->attached_shader_mask & (1u << _TESS_CONTROL_SHADER)) &&
+        (pptr->attached_shader_mask & (1u << _TESS_EVALUATION_SHADER))) {
+        Shader *tcs = pptr->shader_slots[_TESS_CONTROL_SHADER];
+        Shader *tes = pptr->shader_slots[_TESS_EVALUATION_SHADER];
+        if (tcs && tes && tcs->src && tes->src) {
+            char iface_err[512] = {0};
+            if (mglShaderTessInterfaceCheck(tcs->src, tes->src, iface_err,
+                                            sizeof iface_err) != 0) {
+                fprintf(stderr,
+                        "MGL WARNING: mglLinkProgram failed program %u: %s\n",
+                        pptr->name,
+                        iface_err[0] ? iface_err
+                                     : "tessellation stage interface mismatch");
+                return;
+            }
+        }
+    }
+
     pptr->link_success = GL_TRUE;
     pptr->dirty_bits |= DIRTY_PROGRAM;
     /* Cache the legacy clip-plane uniform locations (the translator injects
@@ -1926,6 +2554,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
         pptr->vertexAttribUsageMask = attr_mask;
         pptr->usesFragCoordParams = GL_FALSE;
+        {
+            Shader *fs = pptr->shader_slots[_FRAGMENT_SHADER];
+            if (fs && fs->src && strstr(fs->src, "gl_FragCoord"))
+                pptr->usesFragCoordParams = GL_TRUE;
+        }
         pptr->uses_point_size_params = GL_FALSE;
         pptr->uses_lod_bias = GL_FALSE;
     }
@@ -1999,6 +2632,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * shader_resources_list.  Eliminates O(N^3) dedup-on-every-query in
      * mglProgramActiveUniformCount / At / IndexByName / MaxNameLength. */
     mglBuildActiveUniformCache(pptr);
+
+    /* Apply GLSL uniform default initializers into plain-uniform slots so
+     * the first draw matches the language defaults without baking them into
+     * shader SSA (which would ignore later glUniform* updates). */
+    mglSeedUniformInitializers(ctx, pptr);
 
     mglRendererBindProgram(ctx, pptr);
 

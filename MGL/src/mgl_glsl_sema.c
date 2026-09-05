@@ -31,6 +31,7 @@
 #include "mgl_glsl_sema.h"
 #include "mgl_glsl_ast.h"
 #include "mgl_shader_abi.h"
+#include "mgl_types_buffer.h" /* MAX_BINDABLE_BUFFERS */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -43,6 +44,35 @@
  * must enforce without a context handle, so the value is mirrored here.
  * Keep the two in sync. */
 #define MGL_SEMA_MAX_ATOMIC_COUNTER_BUFFER_SIZE 16384u
+#define MGL_SEMA_MAX_PATCH_VERTICES 32u
+
+/* Comma-separated declarators (`int a, b;`) share one AST node chain via
+ * next_declarator.  Struct / interface-block member lists store only the
+ * head of each declaration; expand the chain when building IR types so
+ * every name becomes a distinct member (CTS advanced-usage-sync). */
+static uint32_t count_expanded_members(MGLDecl *const *members, uint32_t count)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        for (const MGLDecl *m = members[i]; m; m = m->next_declarator)
+            n++;
+    }
+    return n;
+}
+
+static const MGLDecl *nth_expanded_member(MGLDecl *const *members,
+                                          uint32_t count, uint32_t idx)
+{
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        for (const MGLDecl *m = members[i]; m; m = m->next_declarator) {
+            if (n == idx)
+                return m;
+            n++;
+        }
+    }
+    return NULL;
+}
 
 /* ------------------------------------------------------------------ */
 /* Diagnostics                                                         */
@@ -68,6 +98,8 @@ typedef struct Sema {
      * enforced by the spec, so indices beyond this table keep the counter
      * at its explicit offset only). */
     uint32_t ac_default_offset[128];
+    /* Non-owning: active function return type while analyzing a body. */
+    MGLIRType *cur_ret_type;
 } Sema;
 
 static MGLIRType *scratch_type(Sema *s, MGLIRType *t)
@@ -110,7 +142,7 @@ static void scratch_destroy(Sema *s)
 }
 
 /* gl_PerVertex interface struct {vec4 gl_Position; float gl_PointSize;
- * float gl_CullDistance[8];}
+ * float gl_ClipDistance[8]; float gl_CullDistance[8];}
  * used by gl_in[]/gl_out[] in TCS/TES/GS.  Each caller receives a NEW
  * struct (never shared/cached): the array type created by gl_in_out_array
  * owns it, and multiple arrays must not share one struct or the scratch
@@ -119,14 +151,17 @@ static MGLIRType *per_vertex_type(Sema *s)
 {
     MGLIRType *pos = mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
     MGLIRType *psz = mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+    MGLIRType *clip = mglIRTypeArray(
+        mglIRTypeScalar(MGLIR_SCALAR_FLOAT),
+        MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
     MGLIRType *cull = mglIRTypeArray(
         mglIRTypeScalar(MGLIR_SCALAR_FLOAT),
         MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
-    MGLIRType *members[3] = { pos, psz, cull };
-    const char *names[3] = {
-        "gl_Position", "gl_PointSize", "gl_CullDistance"
+    MGLIRType *members[4] = { pos, psz, clip, cull };
+    const char *names[4] = {
+        "gl_Position", "gl_PointSize", "gl_ClipDistance", "gl_CullDistance"
     };
-    MGLIRType *st = mglIRTypeStruct(members, names, 3, "gl_PerVertex");
+    MGLIRType *st = mglIRTypeStruct(members, names, 4, "gl_PerVertex");
     s->per_vertex = st; /* informational only; ownership follows the array */
     return st;
 }
@@ -180,6 +215,7 @@ typedef struct Sym {
     uint32_t param_count;
     MGLIRType **param_types; /* owned copies */
     uint32_t qualifiers;     /* MGL_AST_Q_* */
+    const char *image_format; /* static; image layout format or NULL */
     struct Sym *next;        /* scope chain link */
     struct Sym *next_all;    /* global teardown chain link */
 } Sym;
@@ -390,11 +426,17 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
         return -1;
     }
     int dims = 0;
+    int is_rect = 0;
     /* Optional '2D'|'3D'|'Cube'|'1D' */
     if (len >= 2 && (p[0] == '2' && p[1] == 'D')) {
         dims = 2;
         p += 2;
         len -= 2;
+        if (len >= 4 && memcmp(p, "Rect", 4) == 0) {
+            is_rect = 1;
+            p += 4;
+            len -= 4;
+        }
     } else if (len >= 2 && (p[0] == '3' && p[1] == 'D')) {
         dims = 3;
         p += 2;
@@ -412,17 +454,17 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
         p += 6;
         len -= 6;
     }
-    int is_array = 0;
-    if (len >= 5 && memcmp(p, "Array", 5) == 0) {
-        is_array = 1;
-        p += 5;
-        len -= 5;
-    }
     int is_ms = 0;
     if (len >= 2 && memcmp(p, "MS", 2) == 0) {
         is_ms = 1;
         p += 2;
         len -= 2;
+    }
+    int is_array = 0;
+    if (len >= 5 && memcmp(p, "Array", 5) == 0) {
+        is_array = 1;
+        p += 5;
+        len -= 5;
     }
     if (len >= 6 && memcmp(p, "Shadow", 6) == 0) {
         is_shadow = 1;
@@ -431,8 +473,11 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
     }
     switch (dims) {
     case 1:  *kind = is_array ? MGLIR_TEX_1D_ARRAY : MGLIR_TEX_1D; break;
-    case 2:  *kind = is_array ? MGLIR_TEX_2D_ARRAY
-                               : (is_ms ? MGLIR_TEX_2D_MS : MGLIR_TEX_2D); break;
+    case 2:  *kind = is_rect ? MGLIR_TEX_2D_RECT
+                              : (is_ms && is_array ? MGLIR_TEX_2D_MS_ARRAY
+                                  : is_ms ? MGLIR_TEX_2D_MS
+                                  : is_array ? MGLIR_TEX_2D_ARRAY
+                                  : MGLIR_TEX_2D); break;
     case 3:  *kind = MGLIR_TEX_3D; break;
     case 4:  *kind = is_array ? MGLIR_TEX_CUBE_ARRAY : MGLIR_TEX_CUBE; break;
     case 5:  *kind = MGLIR_TEX_BUFFER; break;
@@ -534,6 +579,7 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
 }
 
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts);
+static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d);
 static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
 
 /* Apply block/member matrix major to every matrix in a (possibly nested)
@@ -569,9 +615,78 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
                                           const MGLDecl *d,
                                           uint32_t inherited_major)
 {
-    MGLIRType *t = resolve_type_spec(s, tab, d->type);
-    if (!t) {
-        return NULL;
+    MGLIRType *t = NULL;
+    /* Inline / interface-block struct body on the declarator:
+     * `out struct { … } name;`, `in Block { … } inst;`, or a second
+     * `out Block { … }` that reuses the block name with different
+     * members (GLSL allows in/out blocks to share a name). Prefer the
+     * declarator's members over a prior SYM_STRUCT of the same name. */
+    if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
+        !d->type->struct_def &&
+        d->struct_members && d->struct_member_count > 0) {
+        uint32_t n =
+            count_expanded_members(d->struct_members, d->struct_member_count);
+        MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
+        const char **names = (const char **)calloc(n, sizeof(char *));
+        if (!members || !names) {
+            free(members);
+            free(names);
+            return NULL;
+        }
+        /* Resolve the block's matrix major before members so
+         * layout(row_major) buffer; / block-level row_major reaches
+         * matrices inside the block (GL 4.6 §4.4.5). */
+        uint32_t block_major = d->matrix_major;
+        if (block_major == MGL_AST_MATRIX_DEFAULT)
+            block_major = inherited_major;
+        for (uint32_t i = 0; i < n; i++) {
+            const MGLDecl *m = nth_expanded_member(
+                d->struct_members, d->struct_member_count, i);
+            if (!m) {
+                for (uint32_t j = 0; j < i; j++)
+                    mglIRTypeDestroy(members[j]);
+                free(members);
+                free(names);
+                return NULL;
+            }
+            members[i] = resolve_decl_type_major(s, tab, m, block_major);
+            names[i] = m->name;
+            if (!members[i]) {
+                for (uint32_t j = 0; j < i; j++) {
+                    mglIRTypeDestroy(members[j]);
+                }
+                free(members);
+                free(names);
+                return NULL;
+            }
+        }
+        /* Keep the interface-block type name (`uniform GOKU {…} goku;`) so
+         * reflection can report GL block names via GetUniformBlockIndex. */
+        t = mglIRTypeStruct(members, names, n, d->type->name);
+        free(members);
+        free(names);
+        if (!t) {
+            return NULL;
+        }
+        /* Members already received block_major; still apply in case the
+         * block type itself is a matrix (should not happen) and keep
+         * nested clones consistent. */
+        apply_matrix_major(t, block_major);
+        for (uint32_t i = d->array_count; i > 0; i--) {
+            uint32_t sz = d->array_dims[i - 1];
+            MGLIRType *arr = mglIRTypeArray(t, sz);
+            if (!arr) {
+                mglIRTypeDestroy(t);
+                return NULL;
+            }
+            t = arr;
+        }
+        return t;
+    } else {
+        t = resolve_type_spec(s, tab, d->type);
+        if (!t) {
+            return NULL;
+        }
     }
     uint32_t major = d->matrix_major;
     if (major == MGL_AST_MATRIX_DEFAULT)
@@ -628,7 +743,9 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
     case MGL_AST_TYPE_STRUCT: {
         if (ts->struct_def) {
             /* inline struct definition */
-            uint32_t n = ts->struct_def->struct_member_count;
+            uint32_t n = count_expanded_members(
+                ts->struct_def->struct_members,
+                ts->struct_def->struct_member_count);
             MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
             const char **names = (const char **)calloc(n, sizeof(char *));
             if (!members || !names) {
@@ -637,7 +754,16 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
                 return NULL;
             }
             for (uint32_t i = 0; i < n; i++) {
-                MGLDecl *m = ts->struct_def->struct_members[i];
+                const MGLDecl *m = nth_expanded_member(
+                    ts->struct_def->struct_members,
+                    ts->struct_def->struct_member_count, i);
+                if (!m) {
+                    for (uint32_t j = 0; j < i; j++)
+                        mglIRTypeDestroy(members[j]);
+                    free(members);
+                    free(names);
+                    return NULL;
+                }
                 members[i] = resolve_decl_type(s, tab, m);
                 names[i] = m->name;
                 if (!members[i]) {
@@ -698,6 +824,213 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
 
 static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e);
 
+/* Constructor name for desugaring `{...}` initializer lists into T(...) /
+ * T[](...) calls that the existing sema/codegen paths already handle. */
+static char *ctor_name_for_type(const MGLIRType *t)
+{
+    char buf[64];
+    if (!t) {
+        return NULL;
+    }
+    switch (t->kind) {
+    case MGLIR_TYPE_SCALAR:
+        switch (t->scalar) {
+        case MGLIR_SCALAR_BOOL: return strdup("bool");
+        case MGLIR_SCALAR_INT: return strdup("int");
+        case MGLIR_SCALAR_UINT: return strdup("uint");
+        case MGLIR_SCALAR_FLOAT: return strdup("float");
+        case MGLIR_SCALAR_DOUBLE: return strdup("double");
+        default: return NULL;
+        }
+    case MGLIR_TYPE_VECTOR: {
+        const char *pfx = "vec";
+        if (t->scalar == MGLIR_SCALAR_INT) {
+            pfx = "ivec";
+        } else if (t->scalar == MGLIR_SCALAR_UINT) {
+            pfx = "uvec";
+        } else if (t->scalar == MGLIR_SCALAR_BOOL) {
+            pfx = "bvec";
+        } else if (t->scalar == MGLIR_SCALAR_DOUBLE) {
+            pfx = "dvec";
+        }
+        snprintf(buf, sizeof(buf), "%s%u", pfx, t->cols);
+        return strdup(buf);
+    }
+    case MGLIR_TYPE_MATRIX:
+        if (t->cols == t->rows) {
+            snprintf(buf, sizeof(buf), "mat%u", t->cols);
+        } else {
+            snprintf(buf, sizeof(buf), "mat%ux%u", t->cols, t->rows);
+        }
+        return strdup(buf);
+    case MGLIR_TYPE_STRUCT:
+        return t->name ? strdup(t->name) : NULL;
+    default:
+        return NULL;
+    }
+}
+
+/* Rewrite a curly-brace initializer list into a typed constructor call.
+ * Nested lists are rewritten against the expected element/column/member
+ * type.  Non-list expressions are returned unchanged. */
+static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
+                                    MGLIRType *expected)
+{
+    uint32_t i;
+    MGLExpr *call;
+    char *cname;
+    (void)tab;
+    if (!e || !expected) {
+        return e;
+    }
+    if (e->kind != MGL_EXPR_INIT_LIST) {
+        return e;
+    }
+
+    if (expected->kind == MGLIR_TYPE_ARRAY) {
+        MGLIRType *elem = expected->elem_type;
+        if (!elem) {
+            sema_error(s, e->line, "invalid array type for initializer list");
+            return e;
+        }
+        if (expected->array_size != 0 &&
+            expected->array_size != e->u.init_list.arg_count) {
+            sema_error(s, e->line,
+                       "initializer list has %u element(s), expected %u",
+                       e->u.init_list.arg_count, expected->array_size);
+            return e;
+        }
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            e->u.init_list.args[i] =
+                rewrite_initializer(s, tab, e->u.init_list.args[i], elem);
+        }
+        cname = ctor_name_for_type(elem);
+        if (!cname) {
+            sema_error(s, e->line,
+                       "cannot form constructor for array initializer list");
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.is_array_ctor = 1;
+        call->u.call.array_ctor_size = expected->array_size;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = e->u.init_list.arg_count;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    if (expected->kind == MGLIR_TYPE_MATRIX) {
+        uint32_t ncols = expected->cols;
+        uint32_t nrows = expected->rows;
+        uint32_t argc = e->u.init_list.arg_count;
+        if (argc == ncols) {
+            MGLIRType *col =
+                scratch_type(s, mglIRTypeVector(expected->scalar, nrows));
+            for (i = 0; i < argc; i++) {
+                e->u.init_list.args[i] = rewrite_initializer(
+                    s, tab, e->u.init_list.args[i], col);
+            }
+        } else if (argc != ncols * nrows) {
+            sema_error(s, e->line,
+                       "matrix initializer list has %u element(s), "
+                       "expected %u columns or %u scalars",
+                       argc, ncols, ncols * nrows);
+            return e;
+        }
+        /* argc == ncols * nrows: leave scalars for mat(C*R) constructor. */
+        cname = ctor_name_for_type(expected);
+        if (!cname) {
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = argc;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    if (expected->kind == MGLIR_TYPE_VECTOR ||
+        expected->kind == MGLIR_TYPE_SCALAR) {
+        /* Nested lists inside a vector/scalar fill are not rewritten
+         * further; constructors accept component streams. */
+        cname = ctor_name_for_type(expected);
+        if (!cname) {
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = e->u.init_list.arg_count;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    if (expected->kind == MGLIR_TYPE_STRUCT) {
+        if (expected->member_count != e->u.init_list.arg_count) {
+            sema_error(s, e->line,
+                       "struct initializer list has %u element(s), "
+                       "expected %u",
+                       e->u.init_list.arg_count, expected->member_count);
+            return e;
+        }
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            if (expected->members && expected->members[i]) {
+                e->u.init_list.args[i] = rewrite_initializer(
+                    s, tab, e->u.init_list.args[i], expected->members[i]);
+            }
+        }
+        cname = ctor_name_for_type(expected);
+        if (!cname) {
+            sema_error(s, e->line,
+                       "cannot form constructor for struct initializer list");
+            return e;
+        }
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        if (!call) {
+            free(cname);
+            return e;
+        }
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = e->u.init_list.arg_count;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
+    sema_error(s, e->line, "initializer list not applicable to this type");
+    return e;
+}
+
 /* Strict interface matching (GLSL 4.60 §4.3.9.5): structs compare
  * member names, types and order; arrays compare dimensions recursively. */
 static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
@@ -734,7 +1067,8 @@ static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
         return 1;
     case MGLIR_TYPE_SAMPLER:
     case MGLIR_TYPE_IMAGE:
-        return a->tex_kind == b->tex_kind && a->tex_depth == b->tex_depth;
+        return a->tex_kind == b->tex_kind && a->tex_depth == b->tex_depth &&
+               a->tex_storage == b->tex_storage;
     default:
         return 0;
     }
@@ -1015,24 +1349,43 @@ typedef enum {
     BI_ARG_MAT2,    /* mat2 */
     BI_ARG_MAT3,    /* mat3 */
     BI_ARG_MAT4,    /* mat4 */
+    BI_ARG_MATF,    /* any float matrix (incl. non-square) */
     BI_ARG_S2D,     /* sampler2D */
+    BI_ARG_S2DA,    /* sampler2DArray */
+    BI_ARG_S1D,     /* sampler1D */
+    BI_ARG_S1DA,    /* sampler1DArray */
+    BI_ARG_SRECT,   /* sampler2DRect */
     BI_ARG_S3D,     /* sampler3D */
     BI_ARG_SCUBE,   /* samplerCube */
+    BI_ARG_S2DMS,   /* sampler2DMS */
+    BI_ARG_S2DMSA,  /* sampler2DMSArray */
     BI_ARG_SBUF,      /* samplerBuffer */
-    BI_ARG_I2D,       /* image2D */
+    BI_ARG_I2D,       /* image2D (any storage) */
+    BI_ARG_I2D_INT,   /* iimage2D */
+    BI_ARG_I2D_UINT,  /* uimage2D */
     BI_ARG_I2DA_INT,  /* iimage2DArray */
     BI_ARG_I2DA_UINT, /* uimage2DArray */
+    BI_ARG_IMAGE,     /* any *image* with float storage */
+    BI_ARG_IMAGE_INT, /* any *iimage* */
+    BI_ARG_IMAGE_UINT,/* any *uimage* */
+    BI_ARG_IVEC2,     /* ivec2 */
     BI_ARG_IVEC3,     /* ivec3 */
     BI_ARG_IVEC4,     /* ivec4 */
     BI_ARG_UVEC4,     /* uvec4 */
     BI_ARG_ATOMIC,    /* atomic_uint */
+    BI_ARG_BVEC,      /* bool/bvec2/3/4 */
+    BI_ARG_OUT_GENI,  /* out int/uint genType (lvalue; same match as GENI) */
 } BiArgKind;
 
 typedef enum {
     BI_RET_FLOAT,   /* scalar float */
     BI_RET_UINT,    /* scalar uint */
+    BI_RET_INT,     /* scalar int */
+    BI_RET_BOOL,    /* scalar bool */
     BI_RET_GENF,    /* float genType matching the gen args */
     BI_RET_GENI,    /* int/uint genType matching the gen args */
+    BI_RET_SGENI,   /* always-signed int genType matching gen dim */
+    BI_RET_BVEC,    /* bvec matching the gen args */
     BI_RET_VEC2,    /* vec2 */
     BI_RET_VEC3,    /* vec3 */
     BI_RET_VEC4,    /* vec4 */
@@ -1041,13 +1394,15 @@ typedef enum {
     BI_RET_MAT2,    /* mat2 */
     BI_RET_MAT3,    /* mat3 */
     BI_RET_MAT4,    /* mat4 */
+    BI_RET_MATF,    /* float matrix matching arg0 */
+    BI_RET_TRANSPOSE, /* float matrix with rows/cols swapped from arg0 */
     BI_RET_VOID,    /* statement-only builtin (EmitVertex/EndPrimitive, M3) */
 } BiRetKind;
 
 typedef struct {
     const char *name;
     uint32_t argc;
-    const BiArgKind args[4];
+    const BiArgKind args[5];
     BiRetKind ret;
 } BiFn;
 
@@ -1057,23 +1412,142 @@ static const BiFn kBuiltins[] = {
     { "texture",    3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "texture",    3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_S2D,   BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S1D,   BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_S1D,   BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S1DA,  BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_S1DA,  BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S2DA,  BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_S2DA,  BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_SRECT, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S2DMS, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_S2DMSA, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_S3D,   BI_ARG_VEC3 }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "dFdx", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "dFdy", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    /* ARB_gpu_shader5 / GL 4.0 multisample interpolation. */
+    { "interpolateAtCentroid", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "interpolateAtSample", 2, { BI_ARG_GENF, BI_ARG_INT }, BI_RET_GENF },
+    { "interpolateAtOffset", 2, { BI_ARG_GENF, BI_ARG_VEC2 }, BI_RET_GENF },
     { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S1D,   BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S1DA,  BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S2DA,  BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureLod", 3, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureOffset", 3, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_FLOAT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGrad", 4, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S1D, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S1DA, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DMS, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureGradOffset", 5, { BI_ARG_S2DMSA, BI_ARG_VEC3, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProj", 2, { BI_ARG_S1D, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "textureProj", 2, { BI_ARG_S3D, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "textureProj", 2, { BI_ARG_SRECT, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjOffset", 3, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLod", 3, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjLodOffset", 4, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "textureProjGrad", 4, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S1D, BI_ARG_VEC4, BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_INT }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S2D, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_S3D, BI_ARG_VEC4, BI_ARG_VEC3, BI_ARG_VEC3, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "textureProjGradOffset", 5, { BI_ARG_SRECT, BI_ARG_VEC4, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S1D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S1DA, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 2, { BI_ARG_SRECT, BI_ARG_GENI }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S2DA, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S3D, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_SCUBE, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S2DMS, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_S2DMSA, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S1D, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S1DA, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S2DA, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_S3D, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "texelFetchOffset", 4, { BI_ARG_SRECT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
     { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_INT, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_INT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_INT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_UINT, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC2 }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC3 }, BI_RET_SAMP },
+    /* Multisample images take an explicit sample index. */
+    { "imageLoad", 3, { BI_ARG_IMAGE, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 3, { BI_ARG_IMAGE, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 3, { BI_ARG_IMAGE_INT, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 3, { BI_ARG_IMAGE_INT, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 3, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC2, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 3, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC3, BI_ARG_INT }, BI_RET_SAMP },
     { "imageStore", 3, { BI_ARG_I2D, BI_ARG_GENI, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_I2D_INT, BI_ARG_GENI, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_I2D_UINT, BI_ARG_GENI, BI_ARG_UVEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2DA_INT, BI_ARG_IVEC3, BI_ARG_IVEC4 }, BI_RET_VOID },
     { "imageStore", 3, { BI_ARG_I2DA_UINT, BI_ARG_IVEC3, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE, BI_ARG_INT, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE, BI_ARG_IVEC2, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE, BI_ARG_IVEC3, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_INT, BI_ARG_INT, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_INT, BI_ARG_IVEC2, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_INT, BI_ARG_IVEC3, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_UINT, BI_ARG_INT, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC2, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 3, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC3, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 4, { BI_ARG_IMAGE, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 4, { BI_ARG_IMAGE, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageStore", 4, { BI_ARG_IMAGE_INT, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 4, { BI_ARG_IMAGE_INT, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_IVEC4 }, BI_RET_VOID },
+    { "imageStore", 4, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC2, BI_ARG_INT, BI_ARG_UVEC4 }, BI_RET_VOID },
+    { "imageStore", 4, { BI_ARG_IMAGE_UINT, BI_ARG_IVEC3, BI_ARG_INT, BI_ARG_UVEC4 }, BI_RET_VOID },
     { "imageSize", 1, { BI_ARG_I2D }, BI_RET_IVEC2 },
+    { "imageSize", 1, { BI_ARG_IMAGE }, BI_RET_IVEC2 },
+    { "imageSize", 1, { BI_ARG_IMAGE_INT }, BI_RET_IVEC2 },
+    { "imageSize", 1, { BI_ARG_IMAGE_UINT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -1084,6 +1558,21 @@ static const BiFn kBuiltins[] = {
     { "floatBitsToUint", 1, { BI_ARG_GENF }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENI }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "lessThanEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "lessThanEqual", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "lessThan", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "lessThan", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "greaterThan", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "greaterThan", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "greaterThanEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "greaterThanEqual", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "equal", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "equal", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "notEqual", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_BVEC },
+    { "notEqual", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_BVEC },
+    { "all",       1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "any",       1, { BI_ARG_BVEC }, BI_RET_BOOL },
+    { "not",       1, { BI_ARG_BVEC }, BI_RET_BVEC },
     { "min",       2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "min",       2, { BI_ARG_GENI, BI_ARG_INT }, BI_RET_GENI },
     { "min",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
@@ -1135,9 +1624,11 @@ static const BiFn kBuiltins[] = {
     { "transpose", 1, { BI_ARG_MAT2 }, BI_RET_MAT2 },
     { "transpose", 1, { BI_ARG_MAT3 }, BI_RET_MAT3 },
     { "transpose", 1, { BI_ARG_MAT4 }, BI_RET_MAT4 },
+    { "transpose", 1, { BI_ARG_MATF }, BI_RET_TRANSPOSE },
     { "matrixCompMult", 2, { BI_ARG_MAT2, BI_ARG_MAT2 }, BI_RET_MAT2 },
     { "matrixCompMult", 2, { BI_ARG_MAT3, BI_ARG_MAT3 }, BI_RET_MAT3 },
     { "matrixCompMult", 2, { BI_ARG_MAT4, BI_ARG_MAT4 }, BI_RET_MAT4 },
+    { "matrixCompMult", 2, { BI_ARG_MATF, BI_ARG_MATF }, BI_RET_MATF },
     { "determinant", 1, { BI_ARG_MAT2 }, BI_RET_FLOAT },
     { "determinant", 1, { BI_ARG_MAT3 }, BI_RET_FLOAT },
     { "determinant", 1, { BI_ARG_MAT4 }, BI_RET_FLOAT },
@@ -1160,12 +1651,78 @@ static const BiFn kBuiltins[] = {
     { "packSnorm2x16",   1, { BI_ARG_VEC2 }, BI_RET_UINT },
     { "unpackSnorm2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
     { "packHalf2x16",    1, { BI_ARG_VEC2 }, BI_RET_UINT },
-    { "unpackHalf2x16",  1, { BI_ARG_INT }, BI_RET_VEC2 },
-    /* atomic (compute) */
+    { "unpackHalf2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
+    { "packUnorm4x8",    1, { BI_ARG_VEC4 }, BI_RET_UINT },
+    { "packSnorm4x8",    1, { BI_ARG_VEC4 }, BI_RET_UINT },
+    { "unpackUnorm4x8",  1, { BI_ARG_INT }, BI_RET_VEC4 },
+    { "unpackSnorm4x8",  1, { BI_ARG_INT }, BI_RET_VEC4 },
+    /* integer / bitfield (GLSL 4.60 §8.8 / §8.3) */
+    { "bitfieldExtract", 3, { BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_GENI },
+    { "bitfieldInsert", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_GENI },
+    { "bitfieldReverse", 1, { BI_ARG_GENI }, BI_RET_GENI },
+    { "bitCount", 1, { BI_ARG_GENI }, BI_RET_SGENI },
+    { "findLSB", 1, { BI_ARG_GENI }, BI_RET_SGENI },
+    { "findMSB", 1, { BI_ARG_GENI }, BI_RET_SGENI },
+    { "uaddCarry", 3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI }, BI_RET_GENI },
+    { "usubBorrow", 3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI }, BI_RET_GENI },
+    { "umulExtended", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI, BI_ARG_OUT_GENI }, BI_RET_VOID },
+    { "imulExtended", 4, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_OUT_GENI, BI_ARG_OUT_GENI }, BI_RET_VOID },
+    { "frexp", 2, { BI_ARG_GENF, BI_ARG_OUT_GENI }, BI_RET_GENF },
+    { "ldexp", 2, { BI_ARG_GENF, BI_ARG_GENI }, BI_RET_GENF },
+    /* atomic memory (GLSL 4.60 §8.11) — first arg is an lvalue int/uint */
     { "atomicAdd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicMin", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicMax", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicAnd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicOr", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicXor", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicExchange", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "atomicCompSwap", 3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
     { "atomicCounterIncrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounterDecrement", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
     { "atomicCounter", 1, { BI_ARG_ATOMIC }, BI_RET_UINT },
+    /* Shader memory barriers (GLSL 4.60 §8.15 / §8.16).
+     * barrier() is TCS + compute control-flow sync (not just a memory fence). */
+    { "barrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierAtomicCounter", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierBuffer", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierShared", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "memoryBarrierImage", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "groupMemoryBarrier", 0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    /* Image atomics (GLSL 4.60 §8.12). */
+    { "imageAtomicAdd", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAdd", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicAdd", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAdd", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicMin", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMin", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicMin", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMin", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicMax", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMax", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicMax", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicMax", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicAnd", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAnd", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicAnd", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicAnd", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicOr", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicOr", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicOr", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicOr", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicXor", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicXor", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicXor", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicXor", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicExchange", 3, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicExchange", 3, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicExchange", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicExchange", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicCompSwap", 4, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicCompSwap", 4, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
+    { "imageAtomicCompSwap", 5, { BI_ARG_IMAGE_INT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT, BI_ARG_INT }, BI_RET_INT },
+    { "imageAtomicCompSwap", 5, { BI_ARG_IMAGE_UINT, BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT, BI_ARG_INT }, BI_RET_UINT },
     /* geometry shader (M3): statement-only, void */
     { "EmitVertex",          0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
     { "EndPrimitive",        0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
@@ -1232,6 +1789,8 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
         return bif_gen_matches(t, gen_dim);
     case BI_ARG_GENI:
         return bif_geni_matches(t, gen_dim, &bif_geni_unsigned);
+    case BI_ARG_OUT_GENI:
+        return bif_geni_matches(t, gen_dim, &bif_geni_unsigned);
     case BI_ARG_FLOAT:
         return t->kind == MGLIR_TYPE_SCALAR &&
                (t->scalar == MGLIR_SCALAR_FLOAT || t->scalar == MGLIR_SCALAR_INT ||
@@ -1257,9 +1816,31 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_MAT4:
         return t->kind == MGLIR_TYPE_MATRIX && t->cols == 4 && t->rows == 4 &&
                t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_MATF:
+        return t->kind == MGLIR_TYPE_MATRIX &&
+               t->scalar == MGLIR_SCALAR_FLOAT &&
+               t->cols >= 2 && t->cols <= 4 && t->rows >= 2 && t->rows <= 4;
     case BI_ARG_S2D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_2D &&
                !t->tex_depth;
+    case BI_ARG_S1D:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_1D &&
+               !t->tex_depth;
+    case BI_ARG_S1DA:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_1D_ARRAY && !t->tex_depth;
+    case BI_ARG_SRECT:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_RECT && !t->tex_depth;
+    case BI_ARG_S2DA:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_ARRAY && !t->tex_depth;
+    case BI_ARG_S2DMS:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_MS && !t->tex_depth;
+    case BI_ARG_S2DMSA:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_MS_ARRAY && !t->tex_depth;
     case BI_ARG_S3D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_3D &&
                !t->tex_depth;
@@ -1271,6 +1852,12 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
                !t->tex_depth;
     case BI_ARG_I2D:
         return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D;
+    case BI_ARG_I2D_INT:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D &&
+               t->tex_storage == MGLIR_SCALAR_INT;
+    case BI_ARG_I2D_UINT:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D &&
+               t->tex_storage == MGLIR_SCALAR_UINT;
     case BI_ARG_I2DA_INT:
         return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_kind == MGLIR_TEX_2D_ARRAY &&
@@ -1279,6 +1866,18 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
         return t->kind == MGLIR_TYPE_IMAGE &&
                t->tex_kind == MGLIR_TEX_2D_ARRAY &&
                t->tex_storage == MGLIR_SCALAR_UINT;
+    case BI_ARG_IMAGE:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_storage == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_IMAGE_INT:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_storage == MGLIR_SCALAR_INT;
+    case BI_ARG_IMAGE_UINT:
+        return t->kind == MGLIR_TYPE_IMAGE &&
+               t->tex_storage == MGLIR_SCALAR_UINT;
+    case BI_ARG_IVEC2:
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == 2 &&
+               t->scalar == MGLIR_SCALAR_INT;
     case BI_ARG_IVEC3:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 3 &&
                t->scalar == MGLIR_SCALAR_INT;
@@ -1290,6 +1889,19 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
                t->scalar == MGLIR_SCALAR_UINT;
     case BI_ARG_ATOMIC:
         return t->kind == MGLIR_TYPE_ATOMIC_COUNTER;
+    case BI_ARG_BVEC:
+        if (t->scalar != MGLIR_SCALAR_BOOL) {
+            return 0;
+        }
+        if (t->kind == MGLIR_TYPE_VECTOR) {
+            *gen_dim = t->cols;
+            return 1;
+        }
+        if (t->kind == MGLIR_TYPE_SCALAR) {
+            *gen_dim = 1;
+            return 1;
+        }
+        return 0;
     default:
         return 0;
     }
@@ -1313,6 +1925,7 @@ static MGLIRType *builtin_call_type(const char *name,
             continue;
         }
         uint32_t gen_dim = 0;
+        uint32_t mat_cols = 0, mat_rows = 0;
         bif_geni_unsigned = 0;
         int ok = 1;
         for (uint32_t j = 0; j < argc; j++) {
@@ -1321,10 +1934,21 @@ static MGLIRType *builtin_call_type(const char *name,
                 ok = 0;
                 break;
             }
-            if (f->args[j] == BI_ARG_GENF || f->args[j] == BI_ARG_GENI) {
+            if (f->args[j] == BI_ARG_GENF || f->args[j] == BI_ARG_GENI ||
+                f->args[j] == BI_ARG_OUT_GENI) {
                 if (gen_dim == 0) {
                     gen_dim = d;
                 } else if (gen_dim != d) {
+                    ok = 0;
+                    break;
+                }
+            }
+            if (f->args[j] == BI_ARG_MATF && arg_types[j]) {
+                if (mat_cols == 0) {
+                    mat_cols = arg_types[j]->cols;
+                    mat_rows = arg_types[j]->rows;
+                } else if (mat_cols != arg_types[j]->cols ||
+                           mat_rows != arg_types[j]->rows) {
                     ok = 0;
                     break;
                 }
@@ -1344,10 +1968,20 @@ static MGLIRType *builtin_call_type(const char *name,
                                   gen_dim)
                 : mglIRTypeScalar(bif_geni_unsigned ? MGLIR_SCALAR_UINT
                                                     : MGLIR_SCALAR_INT);
+        case BI_RET_SGENI:
+            return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_INT, gen_dim)
+                               : mglIRTypeScalar(MGLIR_SCALAR_INT);
         case BI_RET_FLOAT:
             return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
         case BI_RET_UINT:
             return mglIRTypeScalar(MGLIR_SCALAR_UINT);
+        case BI_RET_INT:
+            return mglIRTypeScalar(MGLIR_SCALAR_INT);
+        case BI_RET_BOOL:
+            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+        case BI_RET_BVEC:
+            return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_BOOL, gen_dim)
+                               : mglIRTypeScalar(MGLIR_SCALAR_BOOL);
         case BI_RET_VEC2:
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 2);
         case BI_RET_VEC3:
@@ -1374,6 +2008,20 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 3, 3);
         case BI_RET_MAT4:
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 4, 4);
+        case BI_RET_MATF:
+            if (argc >= 1 && arg_types[0] &&
+                arg_types[0]->kind == MGLIR_TYPE_MATRIX)
+                return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT,
+                                       arg_types[0]->cols,
+                                       arg_types[0]->rows);
+            return NULL;
+        case BI_RET_TRANSPOSE:
+            if (argc >= 1 && arg_types[0] &&
+                arg_types[0]->kind == MGLIR_TYPE_MATRIX)
+                return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT,
+                                       arg_types[0]->rows,
+                                       arg_types[0]->cols);
+            return NULL;
         case BI_RET_VOID:
             return mglIRTypeScalar(MGLIR_SCALAR_VOID);
         }
@@ -1429,7 +2077,12 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
 {
     int ok = 1;
     if (t->kind == MGLIR_TYPE_SCALAR) {
-        if (argc != 1 || !ats[0] || ats[0]->kind != MGLIR_TYPE_SCALAR) {
+        /* GLSL 4.60 §5.4.2: a scalar constructor takes one argument; if that
+         * argument is a vector or matrix, the first component is used. */
+        if (argc != 1 || !ats[0] ||
+            (ats[0]->kind != MGLIR_TYPE_SCALAR &&
+             ats[0]->kind != MGLIR_TYPE_VECTOR &&
+             ats[0]->kind != MGLIR_TYPE_MATRIX)) {
             ok = 0;
         } else if (!constructor_scalar_convert(ats[0], t->scalar)) {
             ok = 0;
@@ -1544,6 +2197,10 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
     }
     char ta[64], tb[64];
     switch (e->kind) {
+    case MGL_EXPR_INIT_LIST:
+        sema_error(s, e->line,
+                   "initializer list requires a typed declaration context");
+        return NULL;
     case MGL_EXPR_LITERAL: {
         MGLIRScalar sc = ast_base_to_ir(e->u.literal.base);
         if (e->u.literal.base == MGL_AST_TYPE_FLOAT) {
@@ -1570,9 +2227,31 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
             }
+            if (strcmp(e->u.var_ref.name, "gl_LocalInvocationID") == 0) {
+                /* Compute built-in; AIR maps to
+                 * thread_position_in_threadgroup. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0) {
+                /* Flattened local id; derived from LocalInvocationID and
+                 * threads_per_threadgroup. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_UINT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0) {
+                /* Compute built-in constant uvec3 from layout(local_size_*). */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
             if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
                 /* Compute built-in; the AIR backend maps it to the
                  * threadgroup_position_in_grid kernel argument. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_NumWorkGroups") == 0) {
+                /* Compute built-in; the AIR backend maps it to the
+                 * threadgroups_per_grid kernel argument. */
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
             }
@@ -1611,6 +2290,23 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 /* Fragment built-in sample index; the AIR backend maps it
                  * to the sample_id fragment argument. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_NumSamples") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxSamples") == 0) {
+                /* GLSL 4.60 §7.1 / §7.3: fragment sample-count builtins. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_SamplePosition") == 0) {
+                /* Fragment built-in sample location in [0,1]^2. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_FLOAT, 2));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_SampleMask") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_SampleMaskIn") == 0) {
+                /* Coverage mask words: ceil(gl_MaxSamples/32) ints.
+                 * MGL advertises MAX_SAMPLES=4 so one word suffices. */
+                return scratch_type(s, mglIRTypeArray(
+                    mglIRTypeScalar(MGLIR_SCALAR_INT), 1));
             }
             if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
                 /* Vertex built-in point size; the AIR backend maps it to
@@ -1662,6 +2358,32 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 /* GS (or vertex) per-primitive output builtins; the AIR
                  * backend maps them to the per-vertex record layer /
                  * viewport-index words and the raster vertex outputs. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxCullDistances") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxCombinedClipAndCullDistances") == 0) {
+                /* GLSL 4.60 §7.3 / ARB_cull_distance: match glGet values
+                 * from glm_params (all floored at 8). */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            /* GLSL 4.60 §7.3 image limits — values from glm_params. */
+            if (strcmp(e->u.var_ref.name, "gl_MaxImageUnits") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxImageSamples") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxVertexImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxTessControlImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxTessEvaluationImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxGeometryImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxFragmentImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxCombinedImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_MaxComputeImageUniforms") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxCombinedShaderOutputResources") == 0 ||
+                strcmp(e->u.var_ref.name,
+                       "gl_MaxCombinedImageUnitsAndFragmentOutputs") == 0) {
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (strncmp(e->u.var_ref.name, "gl_MaxGeometry", 14) == 0) {
@@ -1771,6 +2493,29 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             sema_error(s, e->line, "array index must be an integer");
             return NULL;
         }
+        /* ESSL 3.10: indexing an *array of shader storage blocks* requires
+         * a constant expression.  Arrays that are members of a single block
+         * are not covered (CTS basic-atomic / length()). */
+        if (s->tu && s->tu->version_profile &&
+            strcmp(s->tu->version_profile, "es") == 0 &&
+            e->u.index.object &&
+            e->u.index.object->kind == MGL_EXPR_VAR_REF &&
+            e->u.index.object->u.var_ref.name) {
+            Sym *bs = symtab_lookup(tab, e->u.index.object->u.var_ref.name);
+            if (bs && (bs->qualifiers & MGL_AST_Q_BUFFER) &&
+                bs->type && bs->type->kind == MGLIR_TYPE_ARRAY &&
+                bs->type->elem_type &&
+                bs->type->elem_type->kind == MGLIR_TYPE_STRUCT) {
+                const MGLExpr *ix = e->u.index.index;
+                int is_const = ix && ix->kind == MGL_EXPR_LITERAL;
+                if (!is_const) {
+                    sema_error(s, e->line,
+                               "ESSL does not allow non-constant indexing of "
+                               "shader storage block arrays");
+                    return NULL;
+                }
+            }
+        }
         if (obj->kind == MGLIR_TYPE_ARRAY) {
             return obj->elem_type;
         }
@@ -1791,13 +2536,21 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line, "array length() takes no arguments");
                 return NULL;
             }
-            MGLIRType *array = check_expr(s, tab, e->u.call.args[0]);
-            if (!array || array->kind != MGLIR_TYPE_ARRAY) {
-                sema_error(s, e->line,
-                           "length() requires an array expression");
+            MGLIRType *obj = check_expr(s, tab, e->u.call.args[0]);
+            if (!obj) {
                 return NULL;
             }
-            if (array->array_size == 0) {
+            if (obj->kind == MGLIR_TYPE_VECTOR ||
+                obj->kind == MGLIR_TYPE_MATRIX) {
+                return scratch_type(s,
+                                    mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (obj->kind != MGLIR_TYPE_ARRAY) {
+                sema_error(s, e->line,
+                           "length() requires an array, vector, or matrix expression");
+                return NULL;
+            }
+            if (obj->array_size == 0) {
                 const MGLExpr *root = e->u.call.args[0];
                 while (root && (root->kind == MGL_EXPR_MEMBER ||
                                 root->kind == MGL_EXPR_INDEX)) {
@@ -1916,7 +2669,17 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                         ats[i] = check_expr(s, tab, e->u.call.args[i]);
                     }
                     if (e->u.call.is_array_ctor) {
-                        /* vecN[](a, b, ...): array constructor. */
+                        /* T[](a,b,...) / T[N](a,b,...): array constructor. */
+                        if (e->u.call.array_ctor_size != 0 &&
+                            e->u.call.array_ctor_size != e->u.call.arg_count) {
+                            sema_error(s, e->line,
+                                       "array constructor expects %u "
+                                       "element(s), got %u",
+                                       e->u.call.array_ctor_size,
+                                       e->u.call.arg_count);
+                            free(ats);
+                            return NULL;
+                        }
                         if (!is_struct_ctor && e->u.call.arg_count > 0) {
                             for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
                                 if (!ats[i] ||
@@ -1952,6 +2715,43 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             MGLIRType *bt = builtin_call_type(e->u.call.name,
                                               (const MGLIRType *const *)atb,
                                               e->u.call.arg_count, &bknown);
+            if (bknown && bt && e->u.call.arg_count > 0) {
+                /* Memory-qualifier and atomic-format checks for image ops. */
+                const char *bn = e->u.call.name;
+                int is_load = strcmp(bn, "imageLoad") == 0;
+                int is_store = strcmp(bn, "imageStore") == 0;
+                int is_atomic = strncmp(bn, "imageAtomic", 11) == 0;
+                if (is_load || is_store || is_atomic) {
+                    const MGLExpr *img_e = e->u.call.args[0];
+                    Sym *img = NULL;
+                    if (img_e && img_e->kind == MGL_EXPR_VAR_REF) {
+                        img = symtab_lookup(tab, img_e->u.var_ref.name);
+                    }
+                    if (img && img->kind == SYM_VARIABLE) {
+                        if (is_load &&
+                            (img->qualifiers & MGL_AST_Q_WRITEONLY)) {
+                            sema_error(s, e->line,
+                                       "imageLoad of writeonly image");
+                        }
+                        if ((is_store || is_atomic) &&
+                            (img->qualifiers & MGL_AST_Q_READONLY)) {
+                            sema_error(s, e->line,
+                                       "%s of readonly image", bn);
+                        }
+                        if (is_atomic) {
+                            const char *fmt = img->image_format;
+                            if (!fmt ||
+                                (strcmp(fmt, "r32i") != 0 &&
+                                 strcmp(fmt, "r32ui") != 0 &&
+                                 strcmp(fmt, "r32f") != 0)) {
+                                sema_error(s, e->line,
+                                           "image atomic requires r32i, r32ui, "
+                                           "or r32f format");
+                            }
+                        }
+                    }
+                }
+            }
             free(atb);
             if (bknown) {
                 if (bt) {
@@ -2031,11 +2831,27 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         case MGL_OP_EQ:
         case MGL_OP_NE:
             if (!ir_type_equal(l, r)) {
-                sema_error(s, e->line, "operands of '%s' must have identical types (%s vs %s)",
-                           op_name(e->u.binary.op),
-                           ir_type_str(l, ta, sizeof(ta)),
-                           ir_type_str(r, tb, sizeof(tb)));
-                return NULL;
+                /* GLSL 4.20+ / 420pack: allow implicit numeric conversions
+                 * before equality (e.g. uvec2 == vec2 from
+                 * gl_GlobalInvocationID.xy == vec2(0,0)). */
+                int convertible = 0;
+                if (l->kind == MGLIR_TYPE_SCALAR &&
+                    r->kind == MGLIR_TYPE_SCALAR) {
+                    convertible = implicit_convert(l, r) ||
+                                  implicit_convert(r, l);
+                } else if (l->kind == MGLIR_TYPE_VECTOR &&
+                           r->kind == MGLIR_TYPE_VECTOR &&
+                           l->cols == r->cols) {
+                    convertible = implicit_convert(l, r) ||
+                                  implicit_convert(r, l);
+                }
+                if (!convertible) {
+                    sema_error(s, e->line, "operands of '%s' must have identical types (%s vs %s)",
+                               op_name(e->u.binary.op),
+                               ir_type_str(l, ta, sizeof(ta)),
+                               ir_type_str(r, tb, sizeof(tb)));
+                    return NULL;
+                }
             }
             return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
         case MGL_OP_LT: case MGL_OP_LE: case MGL_OP_GT: case MGL_OP_GE:
@@ -2109,10 +2925,82 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         }
     }
     case MGL_EXPR_ASSIGN: {
+        /* GLSL 4.60 §11.2.1.2.3: TCS may only write per-vertex outputs at
+         * gl_InvocationID (CTS tc_invalid_write_operation…). */
+        if (s->stage == MGL_STAGE_TESS_CONTROL && e->u.assign.lhs) {
+            const MGLExpr *lhs = e->u.assign.lhs;
+            const MGLExpr *indexed = NULL;
+            if (lhs->kind == MGL_EXPR_MEMBER && lhs->u.member.object &&
+                lhs->u.member.object->kind == MGL_EXPR_INDEX) {
+                indexed = lhs->u.member.object;
+            } else if (lhs->kind == MGL_EXPR_INDEX) {
+                indexed = lhs;
+            }
+            if (indexed && indexed->u.index.object &&
+                indexed->u.index.object->kind == MGL_EXPR_VAR_REF) {
+                const char *base = indexed->u.index.object->u.var_ref.name;
+                const MGLExpr *ix = indexed->u.index.index;
+                /* Patch-wide builtins (tess levels) and inputs are exempt;
+                 * only gl_out / per-vertex user outputs are restricted. */
+                int per_vertex_out = 0;
+                if (base && strcmp(base, "gl_out") == 0) {
+                    per_vertex_out = 1;
+                } else if (base) {
+                    Sym *sym = symtab_lookup(tab, base);
+                    if (sym && sym->kind == SYM_VARIABLE && sym->type &&
+                        (sym->qualifiers & MGL_AST_Q_OUT) &&
+                        !(sym->qualifiers & MGL_AST_Q_PATCH) &&
+                        sym->type->kind == MGLIR_TYPE_ARRAY) {
+                        per_vertex_out = 1;
+                    }
+                }
+                if (per_vertex_out && ix &&
+                    !(ix->kind == MGL_EXPR_VAR_REF && ix->u.var_ref.name &&
+                      strcmp(ix->u.var_ref.name, "gl_InvocationID") == 0)) {
+                    sema_error(s, e->line,
+                               "tessellation control per-vertex outputs may "
+                               "only be written at gl_InvocationID");
+                }
+            }
+        }
         MGLIRType *l = check_expr(s, tab, e->u.assign.lhs);
         MGLIRType *r = check_expr(s, tab, e->u.assign.rhs);
         if (!l || !r) {
             return NULL;
+        }
+        /* Buffer/image memory quals: no write to readonly, no read of
+         * writeonly (GLSL §4.10). */
+        {
+            const MGLExpr *lhs = e->u.assign.lhs;
+            while (lhs && (lhs->kind == MGL_EXPR_MEMBER ||
+                           lhs->kind == MGL_EXPR_INDEX)) {
+                lhs = lhs->kind == MGL_EXPR_MEMBER ? lhs->u.member.object
+                                                   : lhs->u.index.object;
+            }
+            if (lhs && lhs->kind == MGL_EXPR_VAR_REF && lhs->u.var_ref.name) {
+                Sym *ls = symtab_lookup(tab, lhs->u.var_ref.name);
+                if (ls && (ls->qualifiers & MGL_AST_Q_READONLY)) {
+                    sema_error(s, e->line,
+                               "cannot write to readonly variable '%s'",
+                               lhs->u.var_ref.name);
+                    return NULL;
+                }
+            }
+            const MGLExpr *rhs = e->u.assign.rhs;
+            while (rhs && (rhs->kind == MGL_EXPR_MEMBER ||
+                           rhs->kind == MGL_EXPR_INDEX)) {
+                rhs = rhs->kind == MGL_EXPR_MEMBER ? rhs->u.member.object
+                                                   : rhs->u.index.object;
+            }
+            if (rhs && rhs->kind == MGL_EXPR_VAR_REF && rhs->u.var_ref.name) {
+                Sym *rs = symtab_lookup(tab, rhs->u.var_ref.name);
+                if (rs && (rs->qualifiers & MGL_AST_Q_WRITEONLY)) {
+                    sema_error(s, e->line,
+                               "cannot read writeonly variable '%s'",
+                               rhs->u.var_ref.name);
+                    return NULL;
+                }
+            }
         }
         if (!check_assign_op(l, r)) {
             sema_error(s, e->line, "cannot assign %s to %s",
@@ -2150,16 +3038,205 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
 /* Block layout computation                                            */
 /* ------------------------------------------------------------------ */
 
+/* CTS basic-syntax accepts non-final unsized SSBO members
+ * (e.g. `vec4 a[]; vec4 b;` / `vec4 a[]; vec4 b[];`).  Spec §4.3.9 only
+ * allows a trailing runtime array; size non-final unsized members from
+ * constant indices in the TU so subsequent members get correct offsets. */
+static void expr_gather_member_const_index(const MGLExpr *e,
+                                          const char *inst_name,
+                                          const char *member_name,
+                                          uint32_t *max_idx,
+                                          int *found)
+{
+    if (!e || !member_name || !max_idx || !found) return;
+    switch (e->kind) {
+    case MGL_EXPR_INDEX: {
+        const MGLExpr *obj = e->u.index.object;
+        const MGLExpr *ix = e->u.index.index;
+        int match = 0;
+        if (obj && obj->kind == MGL_EXPR_MEMBER && obj->u.member.field &&
+            strcmp(obj->u.member.field, member_name) == 0) {
+            /* Size from any `*.member[const]` — instance name may be the
+             * block type or the instance id depending on the declarator. */
+            (void)inst_name;
+            match = 1;
+        } else if (obj && obj->kind == MGL_EXPR_VAR_REF &&
+                   obj->u.var_ref.name &&
+                   strcmp(obj->u.var_ref.name, member_name) == 0) {
+            /* Anonymous block: member promoted to global name. */
+            match = 1;
+        }
+        if (match && ix && ix->kind == MGL_EXPR_LITERAL) {
+            double v = ix->u.literal.value;
+            if (v >= 0.0 && v < 65536.0) {
+                uint32_t idx = (uint32_t)v;
+                if (!*found || idx > *max_idx) *max_idx = idx;
+                *found = 1;
+            }
+        }
+        expr_gather_member_const_index(obj, inst_name, member_name,
+                                       max_idx, found);
+        expr_gather_member_const_index(ix, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    }
+    case MGL_EXPR_MEMBER:
+        expr_gather_member_const_index(e->u.member.object, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_UNARY:
+        expr_gather_member_const_index(e->u.unary.operand, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_BINARY:
+        expr_gather_member_const_index(e->u.binary.lhs, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.binary.rhs, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_ASSIGN:
+        expr_gather_member_const_index(e->u.assign.lhs, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.assign.rhs, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_TERNARY:
+        expr_gather_member_const_index(e->u.ternary.cond, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.ternary.then, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(e->u.ternary.else_, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_EXPR_CALL:
+        for (uint32_t i = 0; i < e->u.call.arg_count; i++)
+            expr_gather_member_const_index(e->u.call.args[i], inst_name,
+                                           member_name, max_idx, found);
+        break;
+    case MGL_EXPR_INIT_LIST:
+        for (uint32_t i = 0; i < e->u.init_list.arg_count; i++)
+            expr_gather_member_const_index(e->u.init_list.args[i], inst_name,
+                                           member_name, max_idx, found);
+        break;
+    default:
+        break;
+    }
+}
+
+static void stmt_gather_member_const_index(const MGLStmt *st,
+                                          const char *inst_name,
+                                          const char *member_name,
+                                          uint32_t *max_idx,
+                                          int *found)
+{
+    if (!st) return;
+    switch (st->kind) {
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++)
+            stmt_gather_member_const_index(st->u.compound.stmts[i], inst_name,
+                                           member_name, max_idx, found);
+        break;
+    case MGL_STMT_EXPR:
+        expr_gather_member_const_index(st->u.expr.expr, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    case MGL_STMT_IF:
+        expr_gather_member_const_index(st->u.ifs.cond, inst_name, member_name,
+                                       max_idx, found);
+        stmt_gather_member_const_index(st->u.ifs.then, inst_name, member_name,
+                                       max_idx, found);
+        stmt_gather_member_const_index(st->u.ifs.else_, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    case MGL_STMT_WHILE:
+        expr_gather_member_const_index(st->u.whilex.cond, inst_name,
+                                       member_name, max_idx, found);
+        stmt_gather_member_const_index(st->u.whilex.body, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_DO_WHILE:
+        stmt_gather_member_const_index(st->u.whilex.body, inst_name,
+                                       member_name, max_idx, found);
+        expr_gather_member_const_index(st->u.whilex.cond, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_FOR:
+        stmt_gather_member_const_index(st->u.loop.init, inst_name, member_name,
+                                       max_idx, found);
+        expr_gather_member_const_index(st->u.loop.cond, inst_name, member_name,
+                                       max_idx, found);
+        expr_gather_member_const_index(st->u.loop.incr, inst_name, member_name,
+                                       max_idx, found);
+        stmt_gather_member_const_index(st->u.loop.body, inst_name, member_name,
+                                       max_idx, found);
+        break;
+    case MGL_STMT_SWITCH:
+        expr_gather_member_const_index(st->u.switchx.cond, inst_name,
+                                       member_name, max_idx, found);
+        stmt_gather_member_const_index(st->u.switchx.body, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_CASE:
+        /* Case labels carry no index expr; body statements follow as
+         * siblings inside the switch compound (already walked). */
+        break;
+    case MGL_STMT_DEFAULT:
+        break;
+    case MGL_STMT_RETURN:
+        expr_gather_member_const_index(st->u.ret.value, inst_name,
+                                       member_name, max_idx, found);
+        break;
+    case MGL_STMT_DECL:
+        if (st->u.decl.decl && st->u.decl.decl->init)
+            expr_gather_member_const_index(st->u.decl.decl->init, inst_name,
+                                           member_name, max_idx, found);
+        break;
+    default:
+        break;
+    }
+}
+
+static uint32_t ssbo_unsized_member_size_from_ast(const Sema *s,
+                                                 const char *inst_name,
+                                                 const char *member_name)
+{
+    uint32_t max_idx = 0;
+    int found = 0;
+    if (!s || !s->tu || !member_name) return 1u;
+    for (uint32_t i = 0; i < s->tu->decl_count; i++) {
+        const MGLDecl *d = s->tu->decls[i];
+        if (!d || !d->body) continue;
+        stmt_gather_member_const_index(d->body, inst_name, member_name,
+                                       &max_idx, &found);
+    }
+    return found ? (max_idx + 1u) : 1u;
+}
+
 static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
 {
+    MGLIRType *root = block_type;
+    while (block_type && block_type->kind == MGLIR_TYPE_ARRAY &&
+           block_type->elem_type)
+        block_type = block_type->elem_type;
+    if (!block_type || block_type->kind != MGLIR_TYPE_STRUCT ||
+        block_type->member_count == 0)
+        return;
     MGLIRLayoutStd std = MGLIR_LAYOUT_NONE;
-    switch (d->layout) {
+    uint32_t layout_qual = d->layout;
+    if (layout_qual == MGL_AST_LAYOUT_DEFAULT && s && s->tu) {
+        if (d->qualifiers & MGL_AST_Q_BUFFER)
+            layout_qual = s->tu->default_buffer_layout;
+        else if (d->qualifiers & MGL_AST_Q_UNIFORM)
+            layout_qual = s->tu->default_uniform_layout;
+    }
+    switch (layout_qual) {
     case MGL_AST_LAYOUT_STD140: std = MGLIR_LAYOUT_STD140; break;
     case MGL_AST_LAYOUT_STD430: std = MGLIR_LAYOUT_STD430; break;
     case MGL_AST_LAYOUT_SHARED: std = MGLIR_LAYOUT_SHARED; break;
     case MGL_AST_LAYOUT_PACKED: std = MGLIR_LAYOUT_PACKED; break;
     default: std = MGLIR_LAYOUT_STD140; break;
     }
+    const int is_ssbo = (d->qualifiers & MGL_AST_Q_BUFFER) != 0;
     for (uint32_t i = 0; i < block_type->member_count; i++) {
         MGLIRType *member = block_type->members[i];
         /* GL 4.6 §7.7.2: atomic counters may only be declared at global
@@ -2174,16 +3251,24 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
                            ? block_type->member_names[i] : "?");
         }
         if (member && member->kind == MGLIR_TYPE_ARRAY &&
-            member->array_size == 0 &&
-            (!(d->qualifiers & MGL_AST_Q_BUFFER) ||
-             i + 1 != block_type->member_count)) {
-            sema_error(s, d->line,
-                       "runtime array '%s' must be the final member of a shader storage block",
-                       block_type->member_names[i]);
+            member->array_size == 0) {
+            const int is_last = (i + 1 == block_type->member_count);
+            if (is_ssbo && !is_last) {
+                /* Non-final unsized SSBO member (CTS basic-syntax): size from
+                 * constant indices so later members lay out correctly. */
+                member->array_size = ssbo_unsized_member_size_from_ast(
+                    s, d->name, block_type->member_names[i]);
+            } else if (!is_ssbo || !is_last) {
+                sema_error(s, d->line,
+                           "runtime array '%s' must be the final member of a shader storage block",
+                           block_type->member_names[i]);
+            }
         }
     }
     uint32_t size = 0;
-    if (mglIRComputeLayout(block_type, std, &size) != 0) {
+    /* Layout the declared type (array-of-block or bare block) so
+     * member_offsets and array_stride are both populated. */
+    if (mglIRComputeLayout(root, std, &size) != 0) {
         sema_error(s, d->line, "failed to compute layout for block '%s'",
                    d->name ? d->name : "?");
     }
@@ -2196,6 +3281,41 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
 
 static void analyze_decl(Sema *s, SymTab *tab, const MGLDecl *d, int global);
 static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st);
+
+static void check_image_decl(Sema *s, const MGLDecl *d, const MGLIRType *t)
+{
+    if (!t || t->kind != MGLIR_TYPE_IMAGE) {
+        return;
+    }
+    const int ro = (d->qualifiers & MGL_AST_Q_READONLY) != 0;
+    const int wo = (d->qualifiers & MGL_AST_Q_WRITEONLY) != 0;
+    if (ro && wo) {
+        sema_error(s, d->line,
+                   "image cannot be both readonly and writeonly");
+    }
+    if (!d->layout_image_format && !wo) {
+        sema_error(s, d->line,
+                   "image declaration requires a format layout qualifier");
+    }
+    if (d->layout_image_format) {
+        const char *fmt = d->layout_image_format;
+        size_t n = strlen(fmt);
+        int fmt_uint = (n >= 2 && fmt[n - 2] == 'u' && fmt[n - 1] == 'i');
+        int fmt_int = (!fmt_uint && n >= 1 && fmt[n - 1] == 'i');
+        if (fmt_uint && t->tex_storage != MGLIR_SCALAR_UINT) {
+            sema_error(s, d->line,
+                       "image format '%s' requires a uimage type", fmt);
+        } else if (fmt_int && t->tex_storage != MGLIR_SCALAR_INT) {
+            sema_error(s, d->line,
+                       "image format '%s' requires an iimage type", fmt);
+        } else if (!fmt_uint && !fmt_int &&
+                   t->tex_storage != MGLIR_SCALAR_FLOAT) {
+            sema_error(s, d->line,
+                       "image format '%s' requires a floating-point image type",
+                       fmt);
+        }
+    }
+}
 
 static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
 {
@@ -2213,7 +3333,9 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
             return;
         }
     }
-    sym->ret_type = resolve_type_spec(s, tab, d->return_type);
+    /* Return type includes array dims on the function declarator
+     * (`float[3] f()` → array(float, 3)). */
+    sym->ret_type = resolve_decl_type(s, tab, d);
     for (uint32_t i = 0; i < d->param_count; i++) {
         MGLDecl *pd = d->params[i];
         sym->param_types[i] = resolve_decl_type(s, tab, pd);
@@ -2221,14 +3343,51 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
             sym_free(sym);
             return;
         }
+        check_image_decl(s, pd, sym->param_types[i]);
     }
     if (symtab_lookup_local(tab, d->name) != NULL) {
-        /* Overloads (same name, different parameter count) are legal. */
+        /* Overloads (same name, different parameter count) are legal.
+         * A matching prototype may be followed by a definition. */
         Sym *prev = symtab_lookup_local(tab, d->name);
         int is_overload = 0;
-        if (prev && prev->kind == SYM_FUNCTION &&
-            prev->param_count != d->param_count) {
-            is_overload = 1;
+        int is_redef = 0;
+        if (prev && prev->kind == SYM_FUNCTION) {
+            if (prev->param_count != d->param_count) {
+                is_overload = 1;
+            } else {
+                int match = ir_type_equal(prev->ret_type, sym->ret_type);
+                for (uint32_t i = 0; match && i < d->param_count; i++) {
+                    if (!ir_type_equal(prev->param_types[i],
+                                      sym->param_types[i])) {
+                        match = 0;
+                    }
+                }
+                if (match) {
+                    is_redef = 1;
+                }
+            }
+        }
+        if (is_redef) {
+            /* Keep the first symbol; analyze the body if this is the
+             * defining declaration. */
+            sym_free(sym);
+            if (d->body) {
+                symtab_push(tab);
+                for (uint32_t i = 0; i < d->param_count; i++) {
+                    Sym *ps = sym_new(
+                        d->params[i]->name ? d->params[i]->name : "");
+                    if (ps) {
+                        ps->kind = SYM_VARIABLE;
+                        ps->type = prev->param_types[i];
+                        ps->qualifiers = d->params[i]->qualifiers;
+                        ps->image_format = d->params[i]->layout_image_format;
+                        symtab_insert(tab, ps);
+                    }
+                }
+                analyze_stmt(s, tab, d->body);
+                symtab_pop(tab);
+            }
+            return;
         }
         if (!is_overload) {
             sema_error(s, d->line, "redeclaration of '%s'", d->name);
@@ -2273,19 +3432,148 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
             if (ps) {
                 ps->kind = SYM_VARIABLE;
                 ps->type = sym->param_types[i];
+                ps->qualifiers = d->params[i]->qualifiers;
+                ps->image_format = d->params[i]->layout_image_format;
                 symtab_insert(tab, ps);
             }
         }
+        MGLIRType *saved_ret = s->cur_ret_type;
+        s->cur_ret_type = sym->ret_type;
         analyze_stmt(s, tab, d->body);
+        s->cur_ret_type = saved_ret;
         symtab_pop(tab);
     }
 }
 
 static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
 {
-    MGLIRType *t = resolve_decl_type(s, tab, d);
+    /* GLSL 4.60 §4.4.5: `layout(row_major) buffer;` / `uniform;` sets the
+     * default matrix major for subsequent buffer/uniform declarations. */
+    uint32_t inherited_major = MGL_AST_MATRIX_DEFAULT;
+    if (s && s->tu) {
+        if (d->qualifiers & MGL_AST_Q_BUFFER)
+            inherited_major = s->tu->default_buffer_matrix_major;
+        else if (d->qualifiers & MGL_AST_Q_UNIFORM)
+            inherited_major = s->tu->default_uniform_matrix_major;
+    }
+    /* GLSL §4.3.7 / §4.3.9: buffer variables must be interface-block
+     * members (or the block itself), never freestanding globals. */
+    if (global && (d->qualifiers & MGL_AST_Q_BUFFER) &&
+        !(d->struct_members && d->struct_member_count > 0)) {
+        sema_error(s, d->line,
+                   "buffer variable '%s' must be declared inside a shader "
+                   "storage block",
+                   d->name ? d->name : "?");
+        return;
+    }
+    /* std430 is only valid on buffer blocks, not uniform blocks. */
+    if ((d->qualifiers & MGL_AST_Q_UNIFORM) &&
+        d->struct_members && d->struct_member_count > 0 &&
+        d->layout == MGL_AST_LAYOUT_STD430) {
+        sema_error(s, d->line,
+                   "layout specifier 'std430' is incompatible with uniform "
+                   "blocks");
+    }
+    /* Memory qualifier conflicts on buffer declarations (images report
+     * this in check_image_decl). */
+    if ((d->qualifiers & MGL_AST_Q_BUFFER) &&
+        (d->qualifiers & MGL_AST_Q_READONLY) &&
+        (d->qualifiers & MGL_AST_Q_WRITEONLY)) {
+        sema_error(s, d->line,
+                   "cannot declare both readonly and writeonly");
+    }
+    /* Interface-block members: no initializers; packing/binding layouts
+     * are block-level only; member memory quals must not fight the block. */
+    if (d->struct_members && d->struct_member_count > 0 &&
+        (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+        uint32_t nexp = count_expanded_members(d->struct_members,
+                                               d->struct_member_count);
+        for (uint32_t mi = 0; mi < nexp; mi++) {
+            const MGLDecl *m = nth_expanded_member(
+                d->struct_members, d->struct_member_count, mi);
+            if (!m) continue;
+            if (m->init) {
+                sema_error(s, m->line,
+                           "initialization of buffer/uniform block member "
+                           "'%s' is not allowed",
+                           m->name ? m->name : "?");
+            }
+            if (m->layout != MGL_AST_LAYOUT_DEFAULT) {
+                sema_error(s, m->line,
+                           "unknown layout specifier on block member '%s'",
+                           m->name ? m->name : "?");
+            }
+            if (m->layout_binding >= 0) {
+                sema_error(s, m->line,
+                           "layout(binding) is not allowed on block member "
+                           "'%s'",
+                           m->name ? m->name : "?");
+            }
+            uint32_t mq = m->qualifiers;
+            /* Member may be `readonly writeonly` (length()-only).  A
+             * conflict with the enclosing block's memory quals is still
+             * illegal (CTS negative-glsl-compileTime). */
+            if ((d->qualifiers & MGL_AST_Q_READONLY) &&
+                (mq & MGL_AST_Q_WRITEONLY)) {
+                sema_error(s, m->line,
+                           "cannot declare both readonly and writeonly on "
+                           "'%s'",
+                           m->name ? m->name : "?");
+            }
+            if ((d->qualifiers & MGL_AST_Q_WRITEONLY) &&
+                (mq & MGL_AST_Q_READONLY)) {
+                sema_error(s, m->line,
+                           "cannot declare both readonly and writeonly on "
+                           "'%s'",
+                           m->name ? m->name : "?");
+            }
+        }
+    }
+    /* layout(binding) range for SSBOs (and SSBO instance arrays). */
+    if ((d->qualifiers & MGL_AST_Q_BUFFER) && d->layout_binding >= 0 &&
+        d->struct_members && d->struct_member_count > 0) {
+        uint32_t n = 1u;
+        if (d->array_count > 0 && d->array_dims && d->array_dims[0] > 0)
+            n = d->array_dims[0];
+        if ((uint32_t)d->layout_binding >= MAX_BINDABLE_BUFFERS ||
+            (uint64_t)(uint32_t)d->layout_binding + (uint64_t)n >
+                (uint64_t)MAX_BINDABLE_BUFFERS) {
+            sema_error(s, d->line,
+                       "invalid value %d for layout specifier 'binding'",
+                       d->layout_binding);
+        }
+    }
+    MGLIRType *t = resolve_decl_type_major(s, tab, d, inherited_major);
     if (!t) {
         return;
+    }
+    /* GLSL image uniforms: format layout required unless writeonly-only;
+     * readonly+writeonly is illegal; format scalar must match image* /
+     * iimage* / uimage*. */
+    check_image_decl(s, d, t);
+    /* GLSL 4.60 §4.4.5 / ARB_shading_language_420pack: layout(binding)
+     * applies only to opaque uniforms (sampler/image/atomic_uint) and to
+     * uniform / shader-storage blocks — not to plain uniforms. */
+    if (d->layout_binding >= 0) {
+        const MGLIRType *bt = t;
+        while (bt && bt->kind == MGLIR_TYPE_ARRAY)
+            bt = bt->elem_type;
+        int binding_ok = 0;
+        if (bt) {
+            if (bt->kind == MGLIR_TYPE_SAMPLER ||
+                bt->kind == MGLIR_TYPE_IMAGE ||
+                bt->kind == MGLIR_TYPE_ATOMIC_COUNTER) {
+                binding_ok = 1;
+            } else if (bt->kind == MGLIR_TYPE_STRUCT &&
+                       d->struct_members && d->struct_member_count > 0 &&
+                       (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+                binding_ok = 1;
+            }
+        }
+        if (!binding_ok) {
+            sema_error(s, d->line,
+                       "layout(binding) is not allowed on this declaration");
+        }
     }
     /* Anonymous blocks (uniform DrawColor { ... }; with no instance name)
      * take their interface name from the block type name; their members
@@ -2298,9 +3586,100 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         var_name = d->type->name;
         is_anon_block = 1;
     }
+    /* Local `struct S { … };` (and `struct S { … } v;`) must publish
+     * SYM_STRUCT so later `S(...)` / `S[N](...)` constructors resolve.
+     * Global type-only defs are registered in the TU pre-pass; locals
+     * only reach analyze_variable. */
+    if (d->type && d->type->base == MGL_AST_TYPE_STRUCT && d->type->name &&
+        d->struct_members && d->struct_member_count > 0 &&
+        !(d->qualifiers &
+          (MGL_AST_Q_IN | MGL_AST_Q_OUT | MGL_AST_Q_UNIFORM |
+           MGL_AST_Q_BUFFER))) {
+        Sym *existing = symtab_lookup(tab, d->type->name);
+        if (!existing || existing->kind != SYM_STRUCT) {
+            const MGLIRType *st = t;
+            while (st && st->kind == MGLIR_TYPE_ARRAY && st->elem_type)
+                st = st->elem_type;
+            if (st && st->kind == MGLIR_TYPE_STRUCT) {
+                Sym *ss = sym_new(d->type->name);
+                if (ss) {
+                    ss->kind = SYM_STRUCT;
+                    ss->type = ir_type_clone(st);
+                    ss->type_owned = ss->type ? 1 : 0;
+                    if (ss->type)
+                        symtab_insert(tab, ss);
+                    else {
+                        free(ss->name);
+                        free(ss);
+                    }
+                }
+            }
+        }
+        /* Type-only definition: no variable to declare. */
+        if (!d->name) {
+            mglIRTypeDestroy(t);
+            return;
+        }
+        is_anon_block = 0;
+        var_name = d->name;
+    }
     if (!var_name) {
         mglIRTypeDestroy(t);
         return;
+    }
+    /* GLSL 4.60 §4.3.8–§4.3.9: TCS/TES per-vertex in/out must be arrays;
+     * patch in is illegal in TCS; patch out is illegal in TES.  Explicitly
+     * sized input arrays must equal gl_MaxPatchVertices; sized TCS outputs
+     * must equal layout(vertices = N). */
+    if (global &&
+        (s->stage == MGL_STAGE_TESS_CONTROL ||
+         s->stage == MGL_STAGE_TESS_EVALUATION) &&
+        (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
+        !(d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+        const int is_patch = (d->qualifiers & MGL_AST_Q_PATCH) != 0;
+        if (is_patch) {
+            if (s->stage == MGL_STAGE_TESS_CONTROL &&
+                (d->qualifiers & MGL_AST_Q_IN)) {
+                sema_error(s, d->line,
+                           "patch inputs are not allowed in tessellation "
+                           "control shaders");
+            }
+            if (s->stage == MGL_STAGE_TESS_EVALUATION &&
+                (d->qualifiers & MGL_AST_Q_OUT)) {
+                sema_error(s, d->line,
+                           "patch outputs are not allowed in tessellation "
+                           "evaluation shaders");
+            }
+        } else if (d->array_count == 0) {
+            /* TES outputs are ordinary per-vertex varyings (like VS outs),
+             * not patch-vertex arrays. */
+            if (!(s->stage == MGL_STAGE_TESS_EVALUATION &&
+                  (d->qualifiers & MGL_AST_Q_OUT))) {
+                sema_error(s, d->line,
+                           "per-vertex tessellation %s '%s' must be declared "
+                           "as an array",
+                           (d->qualifiers & MGL_AST_Q_IN) ? "input" : "output",
+                           var_name);
+            }
+        } else if (d->array_dims && d->array_dims[0] > 0u) {
+            const uint32_t sz = d->array_dims[0];
+            if (d->qualifiers & MGL_AST_Q_IN) {
+                if (sz != MGL_SEMA_MAX_PATCH_VERTICES) {
+                    sema_error(s, d->line,
+                               "sized tessellation input array '%s' must "
+                               "match gl_MaxPatchVertices (%u)",
+                               var_name, MGL_SEMA_MAX_PATCH_VERTICES);
+                }
+            } else if (s->stage == MGL_STAGE_TESS_CONTROL &&
+                       (d->qualifiers & MGL_AST_Q_OUT) && s->tu &&
+                       s->tu->layout_vertices > 0 &&
+                       sz != (uint32_t)s->tu->layout_vertices) {
+                sema_error(s, d->line,
+                           "sized tessellation control output array '%s' "
+                           "must match layout(vertices = %d)",
+                           var_name, s->tu->layout_vertices);
+            }
+        }
     }
     /* GL 4.6 §7.7.2 / GLSL 4.60 §4.4.6: atomic counters live at global
      * scope only, cannot carry layout(location), and an explicit offset
@@ -2350,6 +3729,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     sym->type = t;
     sym->type_owned = 1;
     sym->qualifiers = d->qualifiers;
+    sym->image_format = d->layout_image_format;
     symtab_insert(tab, sym);
 
     if (global) {
@@ -2360,6 +3740,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             isym->qualifiers = d->qualifiers;
             isym->layout = d->layout;
             isym->matrix_major = d->matrix_major;
+            isym->image_format = d->layout_image_format;
             isym->offset = UINT32_MAX;
             isym->binding = (d->layout_binding >= 0)
                                 ? (uint32_t)d->layout_binding
@@ -2393,9 +3774,31 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                                  ? (uint32_t)d->layout_location
                                  : UINT32_MAX;
             isym->stream = d->layout_stream;
+            /* Interface blocks (`uniform Block { ... }`) vs named struct
+             * uniforms (`struct S{...}; uniform S s`) — only the former
+             * become Metal UBO arguments. */
+            if (d->struct_members && d->struct_member_count > 0 &&
+                (d->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
+                isym->is_interface_block = 1;
+            }
             /* layout block: compute offsets on the block type */
             if (d->struct_members && d->struct_member_count > 0) {
                 layout_block(s, d, t);
+            } else if ((d->qualifiers &
+                        (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER)) &&
+                       !(d->qualifiers &
+                         (MGL_AST_Q_IN | MGL_AST_Q_OUT))) {
+                /* Named struct uniforms (`struct S {...}; uniform S s;`)
+                 * are not interface-block decls, but Metal loads and
+                 * glUniform member writes still need std140 offsets. */
+                MGLIRType *gate = t;
+                while (gate && gate->kind == MGLIR_TYPE_ARRAY &&
+                       gate->elem_type)
+                    gate = gate->elem_type;
+                if (gate && gate->kind == MGLIR_TYPE_STRUCT &&
+                    gate->member_count > 0 && !t->layout_valid) {
+                    layout_block(s, d, t);
+                }
             }
             s->module->symbols = (MGLIRSymbol **)realloc(
                 s->module->symbols,
@@ -2425,6 +3828,9 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         int flatten_iface =
             is_interface_block &&
             (s->stage == MGL_STAGE_GEOMETRY ||
+             s->stage == MGL_STAGE_TESS_CONTROL ||
+             s->stage == MGL_STAGE_TESS_EVALUATION ||
+             s->stage == MGL_STAGE_FRAGMENT ||
              (s->stage == MGL_STAGE_VERTEX &&
               (d->qualifiers & MGL_AST_Q_OUT)));
         /* GL 4.6 §11.1.3.9: a geometry shader input interface-block
@@ -2453,15 +3859,40 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 if (!ms) break;
                 ms->name = strdup(bt->member_names[m]);
                 ms->type = ir_type_clone(bt->members[m]);
-                Sym *msym = sym_new(bt->member_names[m]);
-                if (msym) {
-                    msym->kind = SYM_VARIABLE;
-                    msym->type = ms->type;
-                    msym->type_owned = 0;
-                    msym->qualifiers = d->qualifiers;
-                    symtab_insert(tab, msym);
+                /* Anonymous blocks put members in the global namespace.
+                 * Named instances keep members under instance.field — do
+                 * not insert them into the global symbol table, or a later
+                 * freestanding in/out of the same name is a false
+                 * redeclaration (CTS data_pass_through). */
+                if (is_anon_block) {
+                    Sym *msym = sym_new(bt->member_names[m]);
+                    if (msym) {
+                        msym->kind = SYM_VARIABLE;
+                        msym->type = ms->type;
+                        msym->type_owned = 0;
+                        msym->qualifiers = d->qualifiers;
+                        /* Member-level memory quals (readonly/writeonly)
+                         * augment the block's. */
+                        const MGLDecl *mdecl = nth_expanded_member(
+                            d->struct_members, d->struct_member_count, m);
+                        if (mdecl) {
+                            msym->qualifiers |=
+                                mdecl->qualifiers &
+                                (MGL_AST_Q_READONLY | MGL_AST_Q_WRITEONLY);
+                        }
+                        symtab_insert(tab, msym);
+                    }
                 }
                 ms->qualifiers = d->qualifiers;
+                {
+                    const MGLDecl *mdecl = nth_expanded_member(
+                        d->struct_members, d->struct_member_count, m);
+                    if (mdecl) {
+                        ms->qualifiers |=
+                            mdecl->qualifiers &
+                            (MGL_AST_Q_READONLY | MGL_AST_Q_WRITEONLY);
+                    }
+                }
                 ms->layout = d->layout;
                 ms->binding = isym->binding;
                 ms->location = UINT32_MAX;
@@ -2484,6 +3915,10 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         }
     }
     if (d->init) {
+        /* GLSL 4.20 pack: desugar `{...}` into typed constructors so the
+         * existing check_expr / codegen paths apply. */
+        MGLDecl *mut = (MGLDecl *)d;
+        mut->init = rewrite_initializer(s, tab, mut->init, t);
         MGLIRType *it = check_expr(s, tab, d->init);
         if (it && !check_assign_op(t, it)) {
             sema_error(s, d->line, "initializer type mismatch in declaration of '%s'",
@@ -2497,6 +3932,10 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
         if (t->kind == MGLIR_TYPE_ARRAY && t->array_size == 0 &&
             it && it->kind == MGLIR_TYPE_ARRAY && it->array_size > 0) {
             t->array_size = it->array_size;
+            /* Keep AST array dims in sync for local STMT_DECL codegen. */
+            if (mut->array_count > 0 && mut->array_dims) {
+                mut->array_dims[0] = it->array_size;
+            }
         }
     }
 }
@@ -2506,7 +3945,7 @@ static void analyze_decl(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     if (!d) {
         return;
     }
-    if (d->body || d->params) {
+    if (d->body || d->params || d->return_type) {
         analyze_function(s, tab, d);
         return;
     }
@@ -2603,7 +4042,17 @@ static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st)
         break;
     case MGL_STMT_RETURN:
         if (st->u.ret.value) {
-            check_expr(s, tab, st->u.ret.value);
+            MGLIRType *rt = check_expr(s, tab, st->u.ret.value);
+            /* GLSL 4.60 §6.1.1: return expression must convert to the
+             * function's return type (rejects uint→int etc.). */
+            if (rt && s->cur_ret_type &&
+                !check_assign_op(s->cur_ret_type, rt)) {
+                char ta[64], tb[64];
+                sema_error(s, st->line,
+                           "cannot convert return value from %s to %s",
+                           ir_type_str(rt, ta, sizeof(ta)),
+                           ir_type_str(s->cur_ret_type, tb, sizeof(tb)));
+            }
         }
         break;
     default:
@@ -2637,28 +4086,51 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
         return -1;
     }
 
-    /* struct declarations first (they may be referenced by later decls) */
+    /* struct declarations first (they may be referenced by later decls).
+     * Only named type definitions (`struct S { … };`); anonymous inline
+     * types (`out struct { … } name;`) resolve via type->struct_def. */
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
-            d->struct_members && d->struct_member_count > 0) {
+            d->type->name && d->struct_members &&
+            d->struct_member_count > 0 &&
+            /* in/out interface blocks may reuse a block name with different
+             * members; do not publish them as a shared SYM_STRUCT. */
+            !(d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT))) {
             /* register struct name */
             Sym *sym = sym_new(d->type->name ? d->type->name : d->name);
             if (sym) {
                 sym->kind = SYM_STRUCT;
                 /* build IR struct type */
-                uint32_t n = d->struct_member_count;
+                uint32_t n = count_expanded_members(d->struct_members,
+                                                    d->struct_member_count);
                 MGLIRType **members = (MGLIRType **)calloc(n, sizeof(MGLIRType *));
                 const char **names = (const char **)calloc(n, sizeof(char *));
                 if (members && names) {
                     int ok = 1;
                     for (uint32_t j = 0; j < n; j++) {
-                        MGLDecl *m = d->struct_members[j];
+                        const MGLDecl *m = nth_expanded_member(
+                            d->struct_members, d->struct_member_count, j);
+                        if (!m) {
+                            ok = 0;
+                            break;
+                        }
                         /* Block-level layout(row_major) is the default for
                          * matrix members (GLSL 4.60 §4.4.5); an explicit
-                         * member layout overrides via resolve_decl_type_major. */
+                         * member layout overrides via resolve_decl_type_major.
+                         * `layout(std430, row_major) buffer;` also supplies
+                         * the default via the translation unit. */
+                        uint32_t block_major = d->matrix_major;
+                        if (block_major == MGL_AST_MATRIX_DEFAULT && s.tu) {
+                            if (d->qualifiers & MGL_AST_Q_BUFFER)
+                                block_major =
+                                    s.tu->default_buffer_matrix_major;
+                            else if (d->qualifiers & MGL_AST_Q_UNIFORM)
+                                block_major =
+                                    s.tu->default_uniform_matrix_major;
+                        }
                         members[j] = resolve_decl_type_major(
-                            &s, &tab, m, d->matrix_major);
+                            &s, &tab, m, block_major);
                         names[j] = m->name;
                         if (!members[j]) {
                             ok = 0;
@@ -2703,6 +4175,23 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
 
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         analyze_decl(&s, &tab, tu->decls[i], 1);
+    }
+
+    /* GLSL 4.60 §4.4.1.3: TCS must declare layout(vertices = N) with
+     * 1 ≤ N ≤ gl_MaxPatchVertices. */
+    if (stage == MGL_STAGE_TESS_CONTROL) {
+        if (tu->layout_vertices < 0) {
+            sema_error(&s, 0,
+                       "tessellation control shader must declare "
+                       "layout(vertices = N)");
+        } else if (tu->layout_vertices == 0 ||
+                   (uint32_t)tu->layout_vertices >
+                       MGL_SEMA_MAX_PATCH_VERTICES) {
+            sema_error(&s, 0,
+                       "layout(vertices = %d) is outside the valid range "
+                       "[1, %u]",
+                       tu->layout_vertices, MGL_SEMA_MAX_PATCH_VERTICES);
+        }
     }
 
     if (errors) {
@@ -2893,9 +4382,28 @@ static const MGLIRType *sym_uniform_block_type(const MGLIRSymbol *s)
                                                                       : NULL;
 }
 
+static const MGLIRType *sym_buffer_block_type(const MGLIRSymbol *s)
+{
+    if (!s || !(s->qualifiers & MGL_AST_Q_BUFFER)) {
+        return NULL;
+    }
+    const MGLIRType *t = s->type;
+    while (t && t->kind == MGLIR_TYPE_ARRAY) {
+        t = t->elem_type;
+    }
+    return (t && t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0) ? t
+                                                                      : NULL;
+}
+
 static int sym_is_anonymous_uniform_block(const MGLIRSymbol *s)
 {
     const MGLIRType *bt = sym_uniform_block_type(s);
+    return bt && s->name && bt->name && strcmp(s->name, bt->name) == 0;
+}
+
+static int sym_is_anonymous_buffer_block(const MGLIRSymbol *s)
+{
+    const MGLIRType *bt = sym_buffer_block_type(s);
     return bt && s->name && bt->name && strcmp(s->name, bt->name) == 0;
 }
 
@@ -3027,6 +4535,100 @@ static void uniform_block_instances_check(Sema *s, const MGLIRModule *a,
     }
 }
 
+/* GLSL §4.3.9: matching buffer blocks must agree on whether an instance
+ * name is present (instance names themselves may differ) and on member
+ * types / array sizes. */
+static void buffer_block_instances_check(Sema *s, const MGLIRModule *a,
+                                         const MGLIRModule *b)
+{
+    for (uint32_t i = 0; i < a->symbol_count; i++) {
+        MGLIRSymbol *sa = a->symbols[i];
+        const MGLIRType *bta = sym_buffer_block_type(sa);
+        if (!bta || !bta->name) {
+            continue;
+        }
+        for (uint32_t j = 0; j < b->symbol_count; j++) {
+            MGLIRSymbol *sb = b->symbols[j];
+            const MGLIRType *btb = sym_buffer_block_type(sb);
+            if (!btb || !btb->name || strcmp(bta->name, btb->name) != 0) {
+                continue;
+            }
+            if (sym_is_anonymous_buffer_block(sa) !=
+                sym_is_anonymous_buffer_block(sb)) {
+                sema_error(s, 0,
+                           "matched buffer block '%s' has inconsistent "
+                           "instance names across stages",
+                           bta->name);
+            }
+            /* Full type of the symbol (includes instance-array size). */
+            if (!ir_type_interface_equal(sa->type, sb->type)) {
+                sema_error(s, 0,
+                           "matched buffer block '%s' type mismatch across "
+                           "stages",
+                           bta->name);
+            }
+        }
+    }
+}
+
+/* GLSL 4.60 §4.3.5 / §4.4.6.2: the same uniform name in multiple stages
+ * must agree in type (and for images, layout format). */
+static void uniform_image_link_check(Sema *s, const MGLIRModule *a,
+                                     const MGLIRModule *b)
+{
+    if (!a || !b) {
+        return;
+    }
+    for (uint32_t i = 0; i < a->symbol_count; i++) {
+        MGLIRSymbol *sa = a->symbols[i];
+        if (!sa || sa->is_function || !sa->name || !sa->type ||
+            !(sa->qualifiers & MGL_AST_Q_UNIFORM) || sa->block_name) {
+            continue;
+        }
+        const MGLIRType *ta = sa->type;
+        while (ta && ta->kind == MGLIR_TYPE_ARRAY) {
+            ta = ta->elem_type;
+        }
+        if (!ta || ta->kind != MGLIR_TYPE_IMAGE) {
+            continue;
+        }
+        for (uint32_t j = 0; j < b->symbol_count; j++) {
+            MGLIRSymbol *sb = b->symbols[j];
+            if (!sb || sb->is_function || !sb->name || !sb->type ||
+                !(sb->qualifiers & MGL_AST_Q_UNIFORM) || sb->block_name ||
+                strcmp(sa->name, sb->name) != 0) {
+                continue;
+            }
+            const MGLIRType *tb = sb->type;
+            while (tb && tb->kind == MGLIR_TYPE_ARRAY) {
+                tb = tb->elem_type;
+            }
+            if (!tb || tb->kind != MGLIR_TYPE_IMAGE) {
+                sema_error(s, 0,
+                           "uniform '%s' has conflicting types across stages",
+                           sa->name);
+                continue;
+            }
+            if (!ir_type_interface_equal(sa->type, sb->type)) {
+                sema_error(s, 0,
+                           "image uniform '%s' type mismatch across stages",
+                           sa->name);
+                continue;
+            }
+            const char *fa = sa->image_format ? sa->image_format : "";
+            const char *fb = sb->image_format ? sb->image_format : "";
+            if (strcmp(fa, fb) != 0) {
+                sema_error(s, 0,
+                           "image uniform '%s' format mismatch across stages "
+                           "(%s vs %s)",
+                           sa->name,
+                           fa[0] ? fa : "(none)",
+                           fb[0] ? fb : "(none)");
+            }
+        }
+    }
+}
+
 int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
                             MGLSemaError **errors, uint32_t *error_count)
 {
@@ -3059,6 +4661,9 @@ int mglGLSLUniformLinkCheck(const MGLIRModule *a, const MGLIRModule *b,
     if (a && b) {
         uniform_block_instances_check(&s, a, b);
         uniform_block_instances_check(&s, b, a);
+        buffer_block_instances_check(&s, a, b);
+        buffer_block_instances_check(&s, b, a);
+        uniform_image_link_check(&s, a, b);
     }
     uniform_link_names_free(entries, count);
 

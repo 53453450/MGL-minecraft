@@ -136,7 +136,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     self->_lastDrawPrimitiveMode = mode;
 
     METAL_LOCK();
+    if ([self runEmulatedMSSampleDrawLoopIfNeeded:ctx drawOnce:^{
+            [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
+        }]) {
+        METAL_UNLOCK();
+        return;
+    }
     [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
+    [self broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:ctx];
     METAL_UNLOCK();
 }
 
@@ -713,7 +720,15 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     self->_lastDrawPrimitiveMode = mode;
 
     METAL_LOCK();
+    if ([self runEmulatedMSSampleDrawLoopIfNeeded:glm_ctx drawOnce:^{
+            [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type
+                                indices:indices];
+        }]) {
+        METAL_UNLOCK();
+        return;
+    }
     [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type indices:indices];
+    [self broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:glm_ctx];
     METAL_UNLOCK();
 }
 
@@ -2198,6 +2213,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                                  label:"drawArraysInstanced"]) {
         return;
     }
+    if ([self handleVertexTransformFeedbackDrawIfNeeded:glm_ctx
+                                                   mode:mode
+                                                  first:first
+                                                   count:count
+                                           instanceCount:instancecount
+                                            baseInstance:0u]) {
+        return;
+    }
 
     [self captureAIRCullDistancesForArrayDraw:glm_ctx
                                          first:first
@@ -3594,6 +3617,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                                  instanceCount:instancecount
                                                  baseInstance:baseinstance
                                                  label:"drawArraysInstancedBaseInstance"]) {
+        return;
+    }
+    if ([self handleVertexTransformFeedbackDrawIfNeeded:glm_ctx
+                                                   mode:mode
+                                                  first:first
+                                                   count:count
+                                           instanceCount:instancecount
+                                            baseInstance:baseinstance]) {
         return;
     }
 

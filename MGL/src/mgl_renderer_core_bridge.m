@@ -1808,6 +1808,42 @@ void mglLogSkippedGLSampledRenderTargetCopy(GLMContext glctx,
     }
 }
 
+/* CPU-converted vertex streams bind a fresh Metal buffer per attribute
+ * (DOUBLE→float, INT→float, FIXED/packed unpack, integer signedness fix).
+ * Those must keep distinct Metal slots when binding_offset differs; plain
+ * shared-VBO attributes can share one slot and encode offsets in the
+ * vertex descriptor instead (CTS enable_disable: 15 attrs on one VBO). */
+static BOOL mglVertexAttribNeedsConvertedMetalStream(Program *program,
+                                                     VertexArray *vao,
+                                                     GLuint attrib)
+{
+    if (!vao || attrib >= MAX_ATTRIBS) {
+        return NO;
+    }
+    VertexAttrib *a = &vao->attrib[attrib];
+    if (a->type == GL_DOUBLE) {
+        return YES;
+    }
+    if (a->integer == 0 &&
+        (a->type == GL_INT || a->type == GL_UNSIGNED_INT)) {
+        return YES;
+    }
+    if (a->type == GL_FIXED ||
+        a->type == GL_UNSIGNED_INT_10_10_10_2 ||
+        a->type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+        return YES;
+    }
+    if (a->integer == 1 && program) {
+        MGLShaderResource *attrRes =
+            mglRendererProgramVertexAttribResource(program, attrib);
+        GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
+        if (mglIntegerAttribNeedsConversion(a->type, shaderGlType, a->size, NULL)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  VertexArray *vao,
                                                  GLuint attribute,
@@ -1827,6 +1863,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
     GLuint seenStrides[MAX_ATTRIBS] = {0};
     GLuint seenDivisors[MAX_ATTRIBS] = {0};
     BOOL seenCurrentAttribs[MAX_ATTRIBS] = {NO};
+    BOOL seenNeedsConverted[MAX_ATTRIBS] = {NO};
     GLuint seenCount = 0;
     GLuint maxAttribs = MAX_ATTRIBS;
 
@@ -1839,8 +1876,15 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
         BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
         int slot = -1;
         if (usesCurrentValue) {
+            /* Packed current-value pool: ALL current-value attribs share
+             * ONE Metal slot.  Per-attrib data is addressed by the vertex
+             * descriptor offset (attrib index × pool stride), so N
+             * current-value attribs cost one slot instead of N — a
+             * 16-element attrib array driven entirely by glVertexAttrib4f
+             * would otherwise need slots 16..31 and overflow the 31-slot
+             * Metal vertex-buffer budget at attribute 15. */
             for (GLuint s = 0; s < seenCount; s++) {
-                if (seenCurrentAttribs[s] && seenOffsets[s] == (GLintptr)i) {
+                if (seenCurrentAttribs[s]) {
                     slot = (int)s;
                     break;
                 }
@@ -1852,9 +1896,10 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                     return -1;
                 }
                 seenCurrentAttribs[seenCount] = YES;
-                seenOffsets[seenCount] = (GLintptr)i;
-                seenStrides[seenCount] = 16u;
+                seenOffsets[seenCount] = (GLintptr)-1;
+                seenStrides[seenCount] = 0u;
                 seenDivisors[seenCount] = 0u;
+                seenNeedsConverted[seenCount] = NO;
                 slot = (int)seenCount;
                 seenCount++;
             }
@@ -1869,20 +1914,37 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             return -1;
         }
         Buffer *attribBuffer = resolved.buffer;
+        BOOL curNeedsConverted =
+            mglVertexAttribNeedsConvertedMetalStream(activeProgram, vao, i);
 
         for (GLuint s = 0; s < seenCount; s++) {
             if (seenCurrentAttribs[s]) {
                 continue;
             }
             Buffer *known = seenBuffers[s];
-            if (mglRendererSameVertexStream(known,
-                                            seenOffsets[s],
-                                            seenStrides[s],
-                                            seenDivisors[s],
-                                            attribBuffer,
-                                            resolved.binding_offset,
-                                            resolved.stride,
-                                            resolved.divisor)) {
+            BOOL sameStream = NO;
+            if (curNeedsConverted || seenNeedsConverted[s]) {
+                /* Converted clones start at each attrib's binding_offset;
+                 * sharing a Metal slot would overwrite the prior bind. */
+                sameStream = mglRendererSameVertexStream(known,
+                                                         seenOffsets[s],
+                                                         seenStrides[s],
+                                                         seenDivisors[s],
+                                                         attribBuffer,
+                                                         resolved.binding_offset,
+                                                         resolved.stride,
+                                                         resolved.divisor);
+            } else if (known && attribBuffer &&
+                       seenStrides[s] == resolved.stride &&
+                       seenDivisors[s] == resolved.divisor &&
+                       (known == attribBuffer ||
+                        (known->name == attribBuffer->name &&
+                         known->target == attribBuffer->target))) {
+                /* Plain shared VBO: one Metal slot; descriptor holds
+                 * binding_offset + relativeoffset per attribute. */
+                sameStream = YES;
+            }
+            if (sameStream) {
                 slot = (int)s;
                 break;
             }
@@ -1899,6 +1961,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             seenOffsets[seenCount] = resolved.binding_offset;
             seenStrides[seenCount] = resolved.stride;
             seenDivisors[seenCount] = resolved.divisor;
+            seenNeedsConverted[seenCount] = curNeedsConverted;
             slot = (int)seenCount;
             seenCount++;
         }
@@ -2741,8 +2804,10 @@ void logDirtyBits(GLMContext ctx)
     state.pixel_format = pixelFormat;
     state.width = (NSUInteger)MAX(1.0, drawableSize.width);
     state.height = (NSUInteger)MAX(1.0, drawableSize.height);
+    state.depth = 1u;
     state.mipmap_level_count = 1u;
     state.sample_count = 1u;
+    state.array_length = 1u;
     state.usage = MGL_RENDERER_TEXTURE_USAGE_RENDER_TARGET;
     state.storage_mode = depthStencil ? MGL_RENDERER_STORAGE_PRIVATE : 0u;
     id texture = mglRendererCreateTextureFromState(&state);
@@ -2764,8 +2829,10 @@ void logDirtyBits(GLMContext ctx)
     state.pixel_format = pixelFormat;
     state.width = (NSUInteger)MAX(1.0, size.width);
     state.height = (NSUInteger)MAX(1.0, size.height);
+    state.depth = 1u;
     state.mipmap_level_count = 1u;
     state.sample_count = 1u;
+    state.array_length = 1u;
     state.usage = MGL_RENDERER_TEXTURE_USAGE_RENDER_TARGET;
     state.storage_mode = depthStencil ? MGL_RENDERER_STORAGE_PRIVATE : 0u;
     id texture = mglRendererCreateTextureFromState(&state);
@@ -3255,6 +3322,10 @@ void logDirtyBits(GLMContext ctx)
             return;
         }
 
+        const int swapInterval = [self mglSwapInterval];
+        const BOOL skipPresent =
+            (swapInterval == 0) && [self mglShouldSkipPresentForUnlockedSwap];
+
         if (_drawable == NULL)
         {
             if (traceSwap) {
@@ -3299,9 +3370,11 @@ void logDirtyBits(GLMContext ctx)
             _commandState.renderPassStateOwner,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
         id drawableTexture = mglRendererCurrentDrawableTexture(self);
-        [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
+        if (!skipPresent) {
+            [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
 
-        [self scheduleSwapTextureSampleDiagnostics:rpColor0 drawableTexture:drawableTexture swapCall:swapCall];
+            [self scheduleSwapTextureSampleDiagnostics:rpColor0 drawableTexture:drawableTexture swapCall:swapCall];
+        }
 
         if (_layer == NULL) {
             NSLog(@"MGL ERROR: Metal layer is NULL, cannot present drawable");
@@ -3336,36 +3409,41 @@ void logDirtyBits(GLMContext ctx)
         }
 
         @try {
-            if (mglRendererCurrentDrawableTexture(self) == NULL) {
-                NSLog(@"MGL ERROR: Drawable texture is NULL, cannot present");
-                return;
-            }
+            if (!skipPresent) {
+                if (mglRendererCurrentDrawableTexture(self) == NULL) {
+                    NSLog(@"MGL ERROR: Drawable texture is NULL, cannot present");
+                    return;
+                }
 
-            id currentDrawableTexture = mglRendererCurrentDrawableTexture(self);
-            MGLRenderTextureInfo currentDrawableInfo = mglRendererTextureInfo(currentDrawableTexture);
-            if (currentDrawableInfo.width == 0 || currentDrawableInfo.height == 0) {
-                NSLog(@"MGL ERROR: Drawable has invalid dimensions: %dx%d",
-                      (int)currentDrawableInfo.width, (int)currentDrawableInfo.height);
-                return;
-            }
+                id currentDrawableTexture = mglRendererCurrentDrawableTexture(self);
+                MGLRenderTextureInfo currentDrawableInfo = mglRendererTextureInfo(currentDrawableTexture);
+                if (currentDrawableInfo.width == 0 || currentDrawableInfo.height == 0) {
+                    NSLog(@"MGL ERROR: Drawable has invalid dimensions: %dx%d",
+                          (int)currentDrawableInfo.width, (int)currentDrawableInfo.height);
+                    return;
+                }
 
-            if (kMGLVerboseFrameLoopLogs) {
-                NSLog(@"MGL INFO: Presenting drawable with texture: %dx%d, format: %lu",
-                      (int)currentDrawableInfo.width, (int)currentDrawableInfo.height,
-                      (unsigned long)currentDrawableInfo.pixel_format);
-            }
+                if (kMGLVerboseFrameLoopLogs) {
+                    NSLog(@"MGL INFO: Presenting drawable with texture: %dx%d, format: %lu",
+                          (int)currentDrawableInfo.width, (int)currentDrawableInfo.height,
+                          (unsigned long)currentDrawableInfo.pixel_format);
+                }
 
-            if (mglRenderPresentDrawableForCommandBufferOwner(
-                    _commandState.currentCommandBufferOwner,
-                    (__bridge void *)_drawable, NULL) != 0) {
-                NSLog(@"MGL ERROR: No command buffer available for drawable presentation");
-                return;
-            }
-            if (traceSwap) {
-                mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cbOwner=%p drawable=%p",
-                      (unsigned long long)swapCall,
-                      _commandState.currentCommandBufferOwner,
-                      _drawable);
+                if (mglRenderPresentDrawableForCommandBufferOwner(
+                        _commandState.currentCommandBufferOwner,
+                        (__bridge void *)_drawable, NULL) != 0) {
+                    NSLog(@"MGL ERROR: No command buffer available for drawable presentation");
+                    return;
+                }
+                if (traceSwap) {
+                    mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cbOwner=%p drawable=%p",
+                          (unsigned long long)swapCall,
+                          _commandState.currentCommandBufferOwner,
+                          _drawable);
+                }
+            } else if (traceSwap) {
+                mglTraceLogNSString(@"MGL TRACE swap.present.skipped call=%llu reason=unlocked_hidden",
+                      (unsigned long long)swapCall);
             }
 
         } @catch (NSException *exception) {
@@ -3434,21 +3512,36 @@ void logDirtyBits(GLMContext ctx)
         if (traceSwap) {
             mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit", (unsigned long long)swapCall);
         }
-        _drawable = [self mglNextDrawable];
-        if (traceSwap) {
-            id tex = mglRendererCurrentDrawableTexture(self);
-            mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
-                  (unsigned long long)swapCall,
-                  _drawable,
-                  tex,
-                  (unsigned long)(tex ? mglRendererTextureFieldWidth(tex) : 0),
-                  (unsigned long)(tex ? mglRendererTextureFieldHeight(tex) : 0));
+        if (skipPresent) {
+            /* Keep the current drawable: nothing was presented, so the surface
+             * remains a valid render target for the next frame. */
+            if (traceSwap) {
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.reuse call=%llu stage=post_commit",
+                      (unsigned long long)swapCall);
+            }
+        } else if (swapInterval == 0) {
+            /* Visible unlocked: defer acquisition off the critical path. */
+            _drawable = nil;
+            if (traceSwap) {
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.deferred call=%llu stage=post_commit",
+                      (unsigned long long)swapCall);
+            }
+        } else {
+            _drawable = [self mglNextDrawable];
+            if (traceSwap) {
+                id tex = mglRendererCurrentDrawableTexture(self);
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
+                      (unsigned long long)swapCall,
+                      _drawable,
+                      tex,
+                      (unsigned long)(tex ? mglRendererTextureFieldWidth(tex) : 0),
+                      (unsigned long)(tex ? mglRendererTextureFieldHeight(tex) : 0));
+            }
+            if (_drawable == NULL) {
+                NSLog(@"MGL WARNING: Failed to get next drawable in mtlSwapBuffers");
+                return;
+            }
         }
-        if (_drawable == NULL) {
-            NSLog(@"MGL WARNING: Failed to get next drawable in mtlSwapBuffers");
-            return;
-        }
-
         if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to create post-swap command buffer");
             return;

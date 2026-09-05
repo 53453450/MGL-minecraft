@@ -67,6 +67,22 @@ extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname,
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
+
+/* Spec default image-unit state: name=0, level=0, layered=FALSE, layer=0,
+ * access=GL_READ_ONLY, format=GL_R8. */
+static void mglResetImageUnit(ImageUnit *iu)
+{
+    if (!iu) {
+        return;
+    }
+    if (iu->mtl_image_view) {
+        mglRenderReleaseMetalObject(iu->mtl_image_view);
+        iu->mtl_image_view = NULL;
+    }
+    bzero(iu, sizeof(*iu));
+    iu->access = GL_READ_ONLY;
+    iu->internalformat = GL_R8;
+}
 extern GLint mglTexLevelComponentBits(GLint internalformat, GLenum pname);
 extern GLint mglTexLevelComponentType(GLint internalformat, GLenum pname);
 extern size_t mglPixelTypeDatumBytes(GLenum type);
@@ -849,6 +865,55 @@ static GLboolean mglTextureTargetUsesImageLayerParameter(GLenum target)
     }
 }
 
+/* GL 4.6 Table 8.26 — formats accepted by BindImageTexture <format>. */
+static GLboolean mglIsLegalImageUnitFormat(GLenum format)
+{
+    switch (format) {
+        case GL_RGBA32F:
+        case GL_RGBA16F:
+        case GL_RG32F:
+        case GL_RG16F:
+        case GL_R11F_G11F_B10F:
+        case GL_R32F:
+        case GL_R16F:
+        case GL_RGBA32UI:
+        case GL_RGBA16UI:
+        case GL_RGB10_A2UI:
+        case GL_RGBA8UI:
+        case GL_RG32UI:
+        case GL_RG16UI:
+        case GL_RG8UI:
+        case GL_R32UI:
+        case GL_R16UI:
+        case GL_R8UI:
+        case GL_RGBA32I:
+        case GL_RGBA16I:
+        case GL_RGBA8I:
+        case GL_RG32I:
+        case GL_RG16I:
+        case GL_RG8I:
+        case GL_R32I:
+        case GL_R16I:
+        case GL_R8I:
+        case GL_RGBA16:
+        case GL_RGB10_A2:
+        case GL_RGBA8:
+        case GL_RG16:
+        case GL_RG8:
+        case GL_R16:
+        case GL_R8:
+        case GL_RGBA16_SNORM:
+        case GL_RGBA8_SNORM:
+        case GL_RG16_SNORM:
+        case GL_RG8_SNORM:
+        case GL_R16_SNORM:
+        case GL_R8_SNORM:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum internalformat)
 {
     Texture *ptr;
@@ -862,8 +927,24 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         return;
     }
 
+    /* Format must be validated even when texture==0 (unbind): CTS
+     * negative-bind expects INVALID_VALUE for an illegal <format>. */
+    if (!mglIsLegalImageUnitFormat(internalformat)) {
+        fprintf(stderr, "MGL Error: mglBindImageTexture: illegal format 0x%x\n", internalformat);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
     if (texture == 0u) {
-        bzero(&ctx->state.image_units[unit], sizeof(ImageUnit));
+        ImageUnit *iu = &ctx->state.image_units[unit];
+        if (iu->texture != 0u || iu->tex != NULL) {
+            /* Image-unit rebinds are not covered by dynamic texture capture /
+             * MGL_BIND_NO_FLUSH batch merge; flush so pending draws keep the
+             * pre-rebind snapshot (non-layered layer switches). */
+            mglFlushPendingDraws(ctx);
+            mglRendererFlushImageUnitSlice(ctx, unit);
+        }
+        mglResetImageUnit(iu);
         mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
         return;
     }
@@ -901,17 +982,10 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             return;
     }
 
-    if (!checkInternalFormatForMetal(ctx, internalformat)) {
-        fprintf(stderr, "MGL Error: mglBindImageTexture: invalid internalformat 0x%x\n", internalformat);
-        ERROR_RETURN(GL_INVALID_ENUM);
-        return;
-    }
-
-    if (ptr->internalformat != internalformat) {
-        fprintf(stderr, "MGL Error: mglBindImageTexture: internalformat mismatch (tex=0x%x req=0x%x)\n", ptr->internalformat, internalformat);
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
+    /* Spec: an incompatible <format> vs texture internalformat makes image
+     * loads/stores undefined; it is not a BindImageTexture error. CTS
+     * basic-api-bind intentionally rebinds one R32F texture with RGBA8/RG16/
+     * R32I image formats. Keep the requested format on the image unit. */
 
     /* GL_TEXTURE_BUFFER has no mipmap faces/levels array; completeness is
      * tracked on tex->complete itself and only level==0 is valid per spec. */
@@ -927,23 +1001,44 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             return;
         }
     } else {
-        if (level >= (GLint)ptr->num_levels) {
-            fprintf(stderr, "MGL Error: mglBindImageTexture: level >= num_levels (%d >= %d)\n", level, ptr->num_levels);
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
-        }
-        if (!ptr->faces[0].levels || !ptr->faces[0].levels[level].complete) {
-            fprintf(stderr, "MGL Error: mglBindImageTexture: incomplete level %d for texture %u\n", level, texture);
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
+        /* Immutable textures reject level past allocated mip count (GL 4.6
+         * §8.26). Mutable textures may bind any level in [0, MAX_LEVEL] even
+         * when that mip was never defined — image loads return 0 and stores
+         * are ignored (CTS incomplete_textures). */
+        if (ptr->immutable_storage) {
+            if (level >= (GLint)ptr->num_levels) {
+                fprintf(stderr, "MGL Error: mglBindImageTexture: level >= num_levels (%d >= %d)\n", level, ptr->num_levels);
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+        } else {
+            GLint max_level = (GLint)ptr->params.max_level;
+            if (max_level < 0) {
+                max_level = 1000;
+            }
+            if (level > max_level) {
+                fprintf(stderr, "MGL Error: mglBindImageTexture: level %d > TEXTURE_MAX_LEVEL %d\n",
+                        level, max_level);
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
         }
         if (!layered &&
-            mglTextureTargetUsesImageLayerParameter(ptr->target)) {
-            /* GL_TEXTURE_1D_ARRAY stores its slice count in height (from
-             * glTexStorage2D), not depth.  All other array targets use depth. */
-            GLuint slice_count = (ptr->target == GL_TEXTURE_1D_ARRAY)
-                ? ptr->faces[0].levels[level].height
-                : ptr->faces[0].levels[level].depth;
+            mglTextureTargetUsesImageLayerParameter(ptr->target) &&
+            ptr->faces[0].levels &&
+            level < (GLint)ptr->num_levels &&
+            ptr->faces[0].levels[level].complete) {
+            /* GL_TEXTURE_1D_ARRAY stores slice count in height. Cube maps
+             * store each face as a separate 2D level (depth==1); layer still
+             * selects the face. Cube arrays / 2D arrays / 3D use depth. */
+            GLuint slice_count;
+            if (ptr->target == GL_TEXTURE_1D_ARRAY) {
+                slice_count = ptr->faces[0].levels[level].height;
+            } else if (ptr->target == GL_TEXTURE_CUBE_MAP) {
+                slice_count = 6u;
+            } else {
+                slice_count = ptr->faces[0].levels[level].depth;
+            }
             if (layer >= (GLint)slice_count) {
                 fprintf(stderr, "MGL Error: mglBindImageTexture: layer %d out of range (slices=%u)\n",
                         layer, slice_count);
@@ -956,11 +1051,10 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     
     ImageUnit unit_params;
 
-    if (ptr->access != access)
-    {
-        ptr->dirty_bits |= DIRTY_TEXTURE_ACCESS;
-        ptr->access = access;
-    }
+    /* Image-unit access is per-binding, not a texture-object property.
+     * Mutating tex->access here used to set DIRTY_TEXTURE_ACCESS and
+     * recreate the Metal texture (wiping prior imageStore contents) when
+     * CTS rebound WRITE_ONLY → READ_ONLY between store and load draws. */
 
     unit_params.texture = texture;
     unit_params.level = level;
@@ -969,10 +1063,34 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     unit_params.access = access;
     unit_params.internalformat = internalformat;
     unit_params.tex = ptr;
+    unit_params.mtl_image_view = NULL;
 
+    {
+        const ImageUnit *cur = &ctx->state.image_units[unit];
+        const bool binding_changed =
+            cur->texture != unit_params.texture ||
+            cur->level != unit_params.level ||
+            cur->layered != unit_params.layered ||
+            cur->layer != unit_params.layer ||
+            cur->access != unit_params.access ||
+            cur->internalformat != unit_params.internalformat ||
+            cur->tex != unit_params.tex;
+        if (binding_changed) {
+            /* No per-draw image-unit override in batch merge; always flush.
+             * MGL_BIND_NO_FLUSH dynamic texture capture ignores texture_hash. */
+            mglFlushPendingDraws(ctx);
+            mglRendererFlushImageUnitSlice(ctx, unit);
+        }
+    }
+
+    if (ctx->state.image_units[unit].mtl_image_view) {
+        mglRenderReleaseMetalObject(ctx->state.image_units[unit].mtl_image_view);
+        ctx->state.image_units[unit].mtl_image_view = NULL;
+    }
     ctx->state.image_units[unit] = unit_params;
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
+    mglRendererPrepareImageUnitSlice(ctx, unit);
 }
 
 /* Callback for mglHashTableForEach: detach a deleted texture from every FBO
@@ -1058,7 +1176,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
             {
                 if(ctx->state.image_units[i].texture == name)
                 {
-                    bzero(&ctx->state.image_units[i], sizeof(ImageUnit));
+                    mglResetImageUnit(&ctx->state.image_units[i]);
 
                     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
                 }
@@ -1174,7 +1292,7 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
     for (GLsizei i = 0; i < count; i++) {
         GLuint tex_name = textures ? textures[i] : 0u;
         if (tex_name == 0u) {
-            bzero(&ctx->state.image_units[first + i], sizeof(ImageUnit));
+            mglResetImageUnit(&ctx->state.image_units[first + i]);
             continue;
         }
 
@@ -1647,6 +1765,23 @@ void mglGenerateTextureMipmap(GLMContext ctx, GLuint texture)
     generateMipmaps(ctx, texture, 0);
 }
 
+void mglInvalidateTextureBaseLevelView(GLMContext ctx, Texture *tex)
+{
+    if (!tex || !tex->mtl_base_level_view)
+        return;
+
+    if (ctx)
+        mglRendererDeleteMetalObject(ctx, tex->mtl_base_level_view);
+    tex->mtl_base_level_view = NULL;
+    tex->mtl_base_level_view_source = NULL;
+    tex->mtl_base_level_view_base = 0u;
+    tex->mtl_base_level_view_max = 0u;
+    tex->mtl_base_level_view_swizzle_r = 0u;
+    tex->mtl_base_level_view_swizzle_g = 0u;
+    tex->mtl_base_level_view_swizzle_b = 0u;
+    tex->mtl_base_level_view_swizzle_a = 0u;
+}
+
 void invalidateTexture(GLMContext ctx, Texture *tex)
 {
     if (!ctx || !tex)
@@ -1703,6 +1838,10 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         tex->mtl_base_level_view_source = NULL;
         tex->mtl_base_level_view_base = 0u;
         tex->mtl_base_level_view_max = 0u;
+        tex->mtl_base_level_view_swizzle_r = 0u;
+        tex->mtl_base_level_view_swizzle_g = 0u;
+        tex->mtl_base_level_view_swizzle_b = 0u;
+        tex->mtl_base_level_view_swizzle_a = 0u;
     }
 
     for(int face=0; face<_CUBE_MAP_MAX_FACE; face++)
@@ -2768,9 +2907,11 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
             // uninitialized tex
             initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
         }
-        else if (width != tex->width || height != tex->height || internalformat != tex->internalformat)
+        else if (width != tex->width || height != tex->height ||
+                 depth != (GLsizei)tex->depth ||
+                 internalformat != tex->internalformat)
         {
-            // invalidate texture because the base level width / height / internal format are being changed...
+            // invalidate texture because the base level width / height / depth / internal format are being changed...
             invalidateTexture(ctx, tex);
 
             initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
@@ -5627,6 +5768,35 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         tex->metal_data_authoritative ||
         lvl->metal_data_authoritative;
 
+    /* FS imageStore updates Metal storage but leaves CPU lvl->data stale until
+     * MemoryBarrier. Several CTS cases (e.g. single-byte_data_alignment) omit
+     * the barrier and call GetTexImage while the texture is still bound to a
+     * writable image unit. Mirror the barrier's authoritative mark + finish so
+     * we observe GPU image writes instead of the stale CPU upload. */
+    if (!render_target_needs_readback) {
+        GLuint max_units = ctx->state.var.max_image_units;
+        for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
+            ImageUnit *iu = &ctx->state.image_units[i];
+            if (iu->tex != tex) {
+                continue;
+            }
+            if (iu->access != GL_WRITE_ONLY && iu->access != GL_READ_WRITE) {
+                continue;
+            }
+            mglFlushCommandBuffer(ctx);
+            mglRendererFlush(ctx, true);
+            tex->metal_data_authoritative = GL_TRUE;
+            if (tex->faces[0].levels &&
+                iu->level >= 0 &&
+                iu->level < (GLint)tex->num_levels) {
+                tex->faces[0].levels[iu->level].metal_data_authoritative = GL_TRUE;
+            }
+            mglRendererFlushImageUnitSlice(ctx, i);
+            render_target_needs_readback = true;
+            break;
+        }
+    }
+
     if (!render_target_needs_readback &&
         mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels, ctx->state.pack.swap_bytes == GL_TRUE)) {
         return;
@@ -5644,16 +5814,35 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
 
             mglFlushCommandBuffer(ctx);
             uint8_t *dst_base = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
-            for (GLsizei z = 0; z < depth; z++) {
+            /* GL_TEXTURE_1D_ARRAY stores layer count in height; each Metal
+             * slice is 1 texel tall (2D-array backing). */
+            GLsizei layer_count = (target == GL_TEXTURE_1D_ARRAY)
+                ? height
+                : depth;
+            GLsizei slice_height = (target == GL_TEXTURE_1D_ARRAY) ? 1 : height;
+            size_t slice_image_size = (target == GL_TEXTURE_1D_ARRAY)
+                ? ((size_t)width * pixel_size)
+                : pack_layout.dst_image_size;
+            if (target == GL_TEXTURE_1D_ARRAY) {
+                /* Recompute tightly-packed layer stride for 1D array. */
+                MGLTexturePackLayout layer_layout;
+                if (!mglComputeTexturePackLayout(ctx, width, 1, 1, pixel_size,
+                                                 "glGetTexImage",
+                                                 &layer_layout)) {
+                    return;
+                }
+                slice_image_size = layer_layout.dst_image_size;
+            }
+            for (GLsizei z = 0; z < layer_count; z++) {
                 mglRendererGetTexImage(ctx,
                                               tex,
-                                              dst_base + ((size_t)z * pack_layout.dst_image_size),
+                                              dst_base + ((size_t)z * slice_image_size),
                                               (GLuint)pack_layout.dst_pitch,
-                                              (GLuint)pack_layout.dst_image_size,
+                                              (GLuint)slice_image_size,
                                               0,
                                               0,
                                               width,
-                                              height,
+                                              slice_height,
                                               format,
                                               type,
                                               level,
@@ -6671,6 +6860,13 @@ void mglGetTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, GLint *p
     if (!tex)
         return;
 
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        *params = tex->immutable_storage
+            ? (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : (GLint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        return;
+    }
+
     if (mglTextureParameterGetIiv(&tex->params, pname, params))
         return;
 
@@ -6688,6 +6884,13 @@ void mglGetTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, GLuint 
     Texture *tex = getTex(ctx, 0, target);
     if (!tex)
         return;
+
+    if (pname == GL_IMAGE_FORMAT_COMPATIBILITY_TYPE) {
+        *params = tex->immutable_storage
+            ? (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_CLASS
+            : (GLuint)GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+        return;
+    }
 
     if (mglTextureParameterGetIuiv(&tex->params, pname, params))
         return;

@@ -23,12 +23,18 @@ typedef struct MGLPlatformRendererShellResult {
 typedef int (*MGLPlatformRendererShellOperation)(void *context);
 
 @interface MGLPlatformRendererShell : NSObject
+{
+    int _swapInterval;
+}
 
 @property(nonatomic, strong) NSView *view;
 @property(nonatomic, strong) CAMetalLayer *layer;
 @property(nonatomic, strong) id<CAMetalDrawable> drawable;
 
 - (instancetype)initWithView:(NSView *)view;
+- (void)mglSetSwapInterval:(int)interval;
+- (int)mglSwapInterval;
+- (BOOL)mglShouldSkipPresentForUnlockedSwap;
 - (id)mglCreateSystemDefaultDevice;
 - (BOOL)mglConfigureMetalLayerWithDevice:(id)device
                     requestedPixelFormat:(uint32_t)requestedPixelFormat

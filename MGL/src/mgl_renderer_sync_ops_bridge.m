@@ -35,6 +35,8 @@
 - (id)mglSyncOpsDevice;
 - (id)mglSyncOpsCommandQueue;
 - (id)mglSyncOpsDrawable;
+- (BOOL)mglSyncOpsInMSSampleDrawLoop;
+- (GLint)mglSyncOpsForcedMSSampleId;
 @end
 
 static MGLRenderTextureInfo mglSyncOpsBridgeTextureInfo(id texture)
@@ -482,7 +484,26 @@ bool mglProcessGLStateTailBridgeApplyPostBindDrawState(void *renderer,
     MGLRenderer *self = (__bridge MGLRenderer *)renderer;
     Program *fragmentProgram =
         mglResolveProgramForStageFromState(context, _FRAGMENT_SHADER);
-    if (fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE) {
+    BOOL useFragCoordParams =
+        fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE;
+    /* AIR FS slot 30: {num_samples, sample_buffers} for gl_NumSamples /
+     * gl_SampleMask (ignore mask when SAMPLE_BUFFERS==0). */
+    BOOL useSampleParams = NO;
+    if (fragmentProgram) {
+        Shader *fs = fragmentProgram->shader_slots[_FRAGMENT_SHADER];
+        if (fs && fs->src &&
+            (strstr(fs->src, "gl_NumSamples") ||
+             strstr(fs->src, "gl_SampleMask") ||
+             strstr(fs->src, "gl_SamplePosition") ||
+             strstr(fs->src, "gl_SampleID") ||
+             strstr(fs->src, "interpolateAtSample") ||
+             strstr(fs->src, "sample in")))
+            useSampleParams = YES;
+    }
+    const BOOL inMSSampleDrawLoop = [self mglSyncOpsInMSSampleDrawLoop];
+    if (inMSSampleDrawLoop)
+        useSampleParams = YES;
+    if (useFragCoordParams || useSampleParams) {
         NSUInteger passHeight =
             mglSyncOpsBridgeRenderTargetHeightFor([self mglSyncOpsCommandState]);
         if (passHeight == 0) {
@@ -502,12 +523,61 @@ bool mglProcessGLStateTailBridgeApplyPostBindDrawState(void *renderer,
                     mglSyncOpsBridgeStencilTextureFor([self mglSyncOpsCommandState])).height;
             }
         }
+
+        uint32_t numSamples = 1;
+        uint32_t sampleBuffers = 0;
+        Framebuffer *fbo = MGL_STATE(context)->framebuffer;
+        if (fbo && (fbo->color_attachment_bitfield & 1u)) {
+            FBOAttachment *att = &fbo->color_attachments[0];
+            Texture *tex = NULL;
+            if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
+                tex = att->buf.rbo->tex;
+            else
+                tex = att->buf.tex;
+            if (tex) {
+                if (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                    tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
+                    tex->target == GL_RENDERBUFFER) {
+                    /* Multisample storage (including samples==1) has a
+                     * sample buffer; plain TEXTURE_2D does not. */
+                    if (tex->samples > 0 ||
+                        tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                        tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+                        sampleBuffers = 1;
+                        numSamples = tex->samples > 0 ? (uint32_t)tex->samples : 1u;
+                    }
+                }
+            }
+        } else {
+            id rpColor0 =
+                mglSyncOpsBridgeColorTextureFor([self mglSyncOpsCommandState], 0);
+            if (rpColor0) {
+                NSUInteger sc = mglSyncOpsBridgeTextureInfo(rpColor0).sample_count;
+                if (sc > 1) {
+                    sampleBuffers = 1;
+                    numSamples = (uint32_t)sc;
+                }
+            }
+        }
+        uint32_t sbBits = sampleBuffers;
+        if (inMSSampleDrawLoop) {
+            sbBits = 1u | 0x80000000u |
+                     (((uint32_t)[self mglSyncOpsForcedMSSampleId] & 0xffu) << 8);
+        }
+        float zAsFloat, wAsFloat;
+        memcpy(&zAsFloat, &numSamples, sizeof(zAsFloat));
+        memcpy(&wAsFloat, &sbBits, sizeof(wAsFloat));
+        /* One float4 layout shares slot 30 in AIR:
+         * {height, lower_left, ns_bits, sb_bits}.  A sample-params-only draw
+         * leaves the gl_FragCoord fixup fields zeroed. */
         vector_float4 fragCoordParams = {
-            (float)passHeight,
-            MGL_STATE(context)->var.clip_origin == GL_LOWER_LEFT ? 1.0f
-                                                                 : 0.0f,
-            0.0f,
-            0.0f};
+            useFragCoordParams ? (float)passHeight : 0.0f,
+            useFragCoordParams &&
+                    MGL_STATE(context)->var.clip_origin == GL_LOWER_LEFT
+                ? 1.0f
+                : 0.0f,
+            useSampleParams ? zAsFloat : 0.0f,
+            useSampleParams ? wAsFloat : 0.0f};
         mglRenderSetRenderBytesForOwner(
             [self mglSyncOpsCommandState]->currentRenderEncoderOwner, &fragCoordParams,
             sizeof(fragCoordParams), MGL_RENDER_BINDING_STAGE_FRAGMENT,
@@ -812,6 +882,16 @@ bool mglProcessDirtyStateDomainsBridge(MGLRenderer *self, bool draw_command,
 - (id)mglSyncOpsDrawable
 {
     return _drawable;
+}
+
+- (BOOL)mglSyncOpsInMSSampleDrawLoop
+{
+    return _mglInMSSampleDrawLoop;
+}
+
+- (GLint)mglSyncOpsForcedMSSampleId
+{
+    return _mglForcedMSSampleId;
 }
 
 @end

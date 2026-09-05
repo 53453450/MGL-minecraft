@@ -1460,8 +1460,13 @@ static void benchmark_end_to_end(void)
     }
 
     double *frame_times = (double *)malloc((size_t)max_frames * sizeof(double));
-    if (!frame_times) {
+    double *submit_times = (double *)malloc((size_t)max_frames * sizeof(double));
+    double *swap_times = (double *)malloc((size_t)max_frames * sizeof(double));
+    if (!frame_times || !submit_times || !swap_times) {
         fprintf(stderr, "  [warning] alloc failed in end-to-end timing\n");
+        free(swap_times);
+        free(submit_times);
+        free(frame_times);
         free(tex_data);
         p_glDeleteTextures(num_tex, textures);
         p_glDeleteBuffers(1, &vbo_quad);
@@ -1556,9 +1561,11 @@ static void benchmark_end_to_end(void)
                               GL_RGBA, GL_UNSIGNED_BYTE, tex_data);
         }
 
+        uint64_t submit_end = now_ns();
         glfwSwapBuffers(g_window);
-
         uint64_t frame_end = now_ns();
+        submit_times[frames] = (double)(submit_end - frame_start) / 1e6;
+        swap_times[frames] = (double)(frame_end - submit_end) / 1e6;
         frame_times[frames] = (double)(frame_end - frame_start) / 1e6;
         frames++;
 
@@ -1567,8 +1574,14 @@ static void benchmark_end_to_end(void)
         }
     }
 
+    record_duration_statistics("End-to-End", "CPU Submit",
+                               submit_times, frames);
+    record_duration_statistics("End-to-End", "Swap",
+                               swap_times, frames);
     record_frame_statistics("End-to-End", frame_times, frames, 140);
 
+    free(swap_times);
+    free(submit_times);
     free(frame_times);
     free(tex_data);
     p_glDeleteTextures(num_tex, textures);

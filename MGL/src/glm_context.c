@@ -476,6 +476,12 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(var.polygon_offset_factor) = 0.0f;
     STATE(var.polygon_offset_units) = 0.0f;
 
+    /* Image units default to access=GL_READ_ONLY, format=GL_R8 (GL 4.6). */
+    for (int i = 0; i < TEXTURE_UNITS; i++) {
+        STATE(image_units[i].access) = GL_READ_ONLY;
+        STATE(image_units[i].internalformat) = GL_R8;
+    }
+
     // Viewport and scissor should match the drawable dimensions.
     // getMacOSDefaults() already queried GL_VIEWPORT/GL_SCISSOR_BOX from the
     // system GL; validate and use those values instead of hardcoding 1024x768.

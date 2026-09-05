@@ -75,7 +75,8 @@ typedef struct MGLBufferPlanStructMember {
     GLuint member_loc_off;           /* member->location_offset (absolute)  */
     GLuint member_offset_in_elem;    /* member->offset - elem_byte_start     */
     GLuint member_size;              /* member->size (array elem count, 1 scalar) */
-    GLuint member_array_stride;      /* member->array_stride or derived      */
+    GLuint member_array_stride;      /* dest stride in packed buffer         */
+    GLuint member_src_stride;        /* tightly-packed upload element size   */
     GLint  member_loc;              /* base_loc + member_loc_off            */
     GLboolean is_array_member;       /* member->size > 1                     */
 } MGLBufferPlanStructMember;

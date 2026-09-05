@@ -21,8 +21,62 @@
     self = [super init];
     if (self) {
         _view = view;
+        /* Match CAMetalLayer default (display sync on) until glfwSwapInterval. */
+        _swapInterval = 1;
     }
     return self;
+}
+
+- (void)mglSetSwapInterval:(int)interval
+{
+    if (interval < 0) {
+        interval = 0;
+    }
+    _swapInterval = interval;
+    if (self.layer) {
+        /* interval > 0 → vsync-like display sync; 0 → unlock present rate. */
+        self.layer.displaySyncEnabled = (interval > 0);
+    }
+}
+
+- (int)mglSwapInterval
+{
+    return _swapInterval;
+}
+
+- (BOOL)mglShouldSkipPresentForUnlockedSwap
+{
+    /* interval==0 + hidden/occluded window: skip CA present so the drawable
+     * pool is not paced by the display. Visible windows still present with
+     * displaySyncEnabled=NO. Override with MGL_UNLOCKED_SKIP_PRESENT=0/1. */
+    static int envMode = -2; /* -2 unset, -1 auto, 0 force off, 1 force on */
+    if (envMode == -2) {
+        const char *v = getenv("MGL_UNLOCKED_SKIP_PRESENT");
+        if (v && v[0] == '0' && v[1] == '\0') {
+            envMode = 0;
+        } else if (v && v[0] == '1' && v[1] == '\0') {
+            envMode = 1;
+        } else {
+            envMode = -1;
+        }
+    }
+    if (envMode == 0) {
+        return NO;
+    }
+    if (envMode == 1) {
+        return YES;
+    }
+    NSWindow *window = self.view.window;
+    if (!window) {
+        return YES;
+    }
+    if (!window.isVisible) {
+        return YES;
+    }
+    if ((window.occlusionState & NSWindowOcclusionStateVisible) == 0) {
+        return YES;
+    }
+    return NO;
 }
 
 - (id)mglCreateSystemDefaultDevice
@@ -56,6 +110,7 @@
     layer.allowsNextDrawableTimeout = YES;
     layer.magnificationFilter = kCAFilterNearest;
     layer.presentsWithTransaction = NO;
+    layer.displaySyncEnabled = (_swapInterval > 0);
     self.layer = layer;
 
     if (self.view.layer) {

@@ -1111,11 +1111,17 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
         if (!fbo)
             continue;
             
-        // Unbind if currently bound
-        if (ctx->state.framebuffer == fbo)
+        // Unbind if currently bound; restore default draw/read buffer state.
+        // Without Load*Buffer, read_buffer stays GL_COLOR_ATTACHMENT0 and
+        // subsequent default-framebuffer ReadPixels returns zeros (CTS load-ms).
+        if (ctx->state.framebuffer == fbo) {
             ctx->state.framebuffer = NULL;
-        if (ctx->state.readbuffer == fbo)
+            mglFramebufferLoadDrawBuffer(ctx, NULL);
+        }
+        if (ctx->state.readbuffer == fbo) {
             ctx->state.readbuffer = NULL;
+            mglFramebufferLoadReadBuffer(ctx, NULL);
+        }
         mglFramebufferSyncBindingNames(ctx);
             
         // Remove from hash table
@@ -1518,9 +1524,17 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         }
         /* Color attachments must use a color-renderable internal format.
          * Non-renderable formats (SNORM, RGB-only, compressed, luminance,
-         * etc.) cause the framebuffer to be incomplete per GL 4.6 spec. */
+         * etc.) cause the framebuffer to be incomplete per GL 4.6 spec.
+         * Multisample attachments with non-renderable formats return
+         * GL_FRAMEBUFFER_UNSUPPORTED so callers (e.g. CTS texture_swizzle
+         * fillMSTexture) can treat the format/target combo as unsupported
+         * rather than failing on incomplete. */
         GLint ifmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->color_attachments[i]);
         if (ifmt != 0 && !mglIsColorRenderableInternalFormat(ifmt)) {
+            Texture *tex = mglFramebufferAttachmentTextureObject(ctx, &fbo->color_attachments[i]);
+            if (tex && tex->samples > 1u) {
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_UNSUPPORTED, "color-not-renderable-ms", i, &fbo->color_attachments[i]);
+            }
             return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-not-renderable", i, &fbo->color_attachments[i]);
         }
     }

@@ -139,6 +139,17 @@ void *mglRendererBackendGetCurrentAttribBuffer(
 int mglRendererBackendSetCurrentAttribBuffer(
     MGLRendererBackendHandle *backend, uint32_t attrib,
     const void *bytes, uint32_t byte_count, uint64_t stride, void *buffer);
+/* Packed current-value attribute pool: ONE shared Metal buffer holding
+ * `repeat_count` copies of a MAX_ATTRIBS×16B value block, laid out as
+ * [attrib][iteration] so a vertex descriptor addresses attrib `a` at
+ * offset a*repeat_count*16 with stride 16.  Returns a borrowed buffer
+ * when every packed byte and the repeat count match the cached pool. */
+void *mglRendererBackendGetPackedCurrentAttribBuffer(
+    const MGLRendererBackendHandle *backend, const void *bytes,
+    uint32_t byte_count, uint32_t repeat_count);
+int mglRendererBackendSetPackedCurrentAttribBuffer(
+    MGLRendererBackendHandle *backend, const void *bytes,
+    uint32_t byte_count, uint32_t repeat_count, void *buffer);
 /* Size-constant cache getters return borrowed buffers owned by the backend. */
 void *mglRendererBackendGetSizeConstantsBuffer(
     const MGLRendererBackendHandle *backend,
@@ -272,6 +283,18 @@ void *mglRendererMapUnmapBuffer(GLMContext context, Buffer *buffer,
                                 uint32_t access, bool map);
 void mglRendererReadBackBuffer(GLMContext context, Buffer *buffer,
                                size_t offset, size_t size);
+/* imageStore on GL_TEXTURE_BUFFER writes a Metal texture2d fallback; copy
+ * those texels back into the attached Buffer (CPU + Metal) so subsequent
+ * glGetBufferSubData observes the shader writes. */
+void mglRendererSyncTextureBufferFromImage(GLMContext context, Texture *texture);
+/* Non-layered BindImage of GL_TEXTURE_3D: Metal cannot view a depth plane as
+ * Type2D. Prepare a staging 2D texture (and Flush writes it back). */
+void mglRendererPrepareImageUnitSlice(GLMContext context, uint32_t unit);
+void mglRendererFlushImageUnitSlice(GLMContext context, uint32_t unit);
+/* BindImageTexture <format>/level/slice → Metal texture (or cached view).
+ * Borrowed pointer; view lifetime is owned by iu->mtl_image_view. */
+typedef struct ImageUnit_t ImageUnit;
+void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu);
 void mglRendererFlushBufferRange(GLMContext context, Buffer *buffer,
                                  intptr_t offset, intptr_t length);
 void mglRendererReadDrawable(GLMContext context, void *pixel_bytes,

@@ -50,6 +50,28 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     }
 
+    if (tex->mtl_data &&
+        (tex->target == GL_TEXTURE_2D_ARRAY ||
+         tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
+         tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
+        MGLRenderTextureInfo existingInfo = {0};
+        if (mglRenderGetTextureInfo(tex->mtl_data, &existingInfo) == 0) {
+            /* Metal cube-array arrayLength is cube count; GL depth is usually
+             * face count (cubes * 6). Comparing raw depth forced a rebuild that
+             * wiped imageStore results on the next bind. */
+            uint64_t expectedLayers = MAX((uint64_t)tex->depth, 1u);
+            if (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY &&
+                expectedLayers >= 6u && (expectedLayers % 6u) == 0u) {
+                expectedLayers /= 6u;
+            }
+            if (existingInfo.array_length < expectedLayers ||
+                existingInfo.width != (uint64_t)tex->width ||
+                existingInfo.height != (uint64_t)tex->height) {
+                tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
+            }
+        }
+    }
+
     // If this texture is now used as a render target but was previously created
     // without render-target usage, force a recreate with proper usage flags.
     // When the old texture already has GPU-written data (e.g. from imageStore
@@ -128,8 +150,8 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                                                numFaces:1
                                        uploadLevelCount:levelCount
                                                 isArray:isArray
-                                     texture1DBackedBy2D:NO
-                               texture1DArrayBackedBy2DArray:NO
+                                     texture1DBackedBy2D:(tex->target == GL_TEXTURE_1D)
+                               texture1DArrayBackedBy2DArray:(tex->target == GL_TEXTURE_1D_ARRAY)
                                                 texType:(uint32_t)newInfo.texture_type
                                     outAllLevelsUploaded:&allLevelsUploaded] &&
                         allLevelsUploaded) {
@@ -164,24 +186,28 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
 
     if (tex->dirty_bits)
     {
-        bool textureNeedsRebuild =
-            (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS)) != 0;
-        bool samplerNeedsRebuild =
-            textureNeedsRebuild || ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) != 0);
-        bool storageShapeChanged =
+        /* LEVEL/ACCESS require a new Metal texture object. DATA-only dirty
+         * should upload in place; destroying an existing texture here wipes
+         * GPU imageStore results when cube-array CPU uploads stay incomplete. */
+        const bool storageShapeChanged =
             (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_ACCESS)) != 0;
+        bool textureNeedsRebuild = storageShapeChanged;
+        bool samplerNeedsRebuild =
+            storageShapeChanged ||
+            ((tex->dirty_bits & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
 
         if (tex->mtl_data &&
             !storageShapeChanged &&
             (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) {
             id existingTexture = (__bridge id)(tex->mtl_data);
             BOOL uploadedDirty = NO;
-            if (existingTexture) {
+            if (existingTexture && !tex->metal_data_authoritative) {
                 if (tex->target == GL_TEXTURE_2D) {
                     MGLRenderTextureInfo metalInfo = {0};
                     if (mglRenderGetTextureInfo((__bridge void *)existingTexture,
                                                    &metalInfo) == 0 &&
-                        metalInfo.texture_type == MGLTextureType2D) {
+                        metalInfo.texture_type == MGLTextureType2D &&
+                        !mglTextureUploadNeedsSwizzleBake(tex)) {
                         uploadedDirty =
                             [self uploadFullCPUTextureDataIntoTexture:tex
                                                                 metal:existingTexture
@@ -198,6 +224,10 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                             tex->target == GL_TEXTURE_1D_ARRAY ||
                             tex->target == GL_TEXTURE_CUBE_MAP ||
                             tex->target == GL_TEXTURE_3D;
+                        const BOOL texture1DBackedBy2D =
+                            tex->target == GL_TEXTURE_1D;
+                        const BOOL texture1DArrayBackedBy2DArray =
+                            tex->target == GL_TEXTURE_1D_ARRAY;
                         BOOL allLevelsUploaded = YES;
                         const GLuint levelCount = (GLuint)MIN(
                             metalInfo.mipmap_level_count,
@@ -209,21 +239,23 @@ bool mglRendererTextureBindLocked(MGLRenderer *self, Texture *tex)
                                                    numFaces:1
                                            uploadLevelCount:levelCount
                                                     isArray:isArray
-                                         texture1DBackedBy2D:NO
-                                   texture1DArrayBackedBy2DArray:NO
+                                         texture1DBackedBy2D:texture1DBackedBy2D
+                                   texture1DArrayBackedBy2DArray:texture1DArrayBackedBy2DArray
                                                     texType:(uint32_t)metalInfo.texture_type
                                         outAllLevelsUploaded:&allLevelsUploaded] &&
                             allLevelsUploaded;
                     }
                 }
             }
-            if (uploadedDirty) {
+            if (uploadedDirty || tex->metal_data_authoritative) {
+                /* Successful CPU upload, or GPU is source of truth after
+                 * imageStore / MemoryBarrier — drop DATA dirty without
+                 * releasing mtl_data. */
                 tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
-                textureNeedsRebuild =
-                    (tex->dirty_bits & (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS)) != 0;
-                samplerNeedsRebuild =
-                    textureNeedsRebuild || ((tex->dirty_bits & DIRTY_TEXTURE_PARAM) != 0);
             }
+            samplerNeedsRebuild =
+                storageShapeChanged ||
+                ((tex->dirty_bits & (DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM)) != 0);
         }
 
         // Texture parameter changes only affect the Metal sampler object. Do

@@ -69,7 +69,7 @@ CompileResult compileCapture(const char *src) {
     unsigned char *out = nullptr;
     size_t size = 0;
     char err[512] = {0};
-    int rc = mglShaderCompileGLSLCapture(src, &out, &size, err, sizeof(err));
+    int rc = mglShaderCompileGLSLCapture(src, nullptr, &out, &size, err, sizeof(err));
     CompileResult r;
     r.rc = rc;
     if (out) {
@@ -261,8 +261,7 @@ TEST(Metallib, TessVertexCaptureVariant) {
     unsigned char *bytes = nullptr;
     size_t size = 0;
     char err[512] = {0};
-    ASSERT_EQ(0, mglShaderCompileGLSLTessCapture(
-        kVSX, &bytes, &size, err, sizeof(err))) << err;
+    ASSERT_EQ(0, mglShaderCompileGLSLTessCapture(kVSX, nullptr, &bytes, &size, err, sizeof(err))) << err;
     ASSERT_NE(nullptr, bytes);
     ASSERT_GE(size, 4u);
     EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
@@ -405,8 +404,7 @@ TEST(Metallib, CullDistanceCaptureVariant) {
     unsigned char *bytes = nullptr;
     size_t size = 0;
     char err[512] = {0};
-    ASSERT_EQ(0, mglShaderCompileGLSLCullDistanceCapture(
-        kVSCullDistance, &bytes, &size, err, sizeof(err))) << err;
+    ASSERT_EQ(0, mglShaderCompileGLSLCullDistanceCapture(kVSCullDistance, nullptr, &bytes, &size, err, sizeof(err))) << err;
     ASSERT_NE(nullptr, bytes);
     ASSERT_GE(size, 4u);
     EXPECT_EQ(0, memcmp(bytes, "MTLB", 4));
@@ -756,6 +754,62 @@ TEST(Metallib, GeometryAirKernelPacksUserVaryings) {
     EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
 }
 
+TEST(Metallib, LoopIndexedWriteAccumulates) {
+    /* Uninitialized local updated via dynamic subscript in a loop must be
+     * SSA-phi'd across iterations (CTS shaders.indexing.*_loop_write_*). */
+    static const char *src =
+        "#version 450 core\n"
+        "layout(location = 0) in vec4 a_coords;\n"
+        "layout(location = 0) out vec4 o_color;\n"
+        "void main() {\n"
+        "  vec4 coords = a_coords;\n"
+        "  vec4 tmp;\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    tmp[i] = coords.x;\n"
+        "    coords = coords.yzwx * 0.5;\n"
+        "  }\n"
+        "  o_color = vec4(dot(tmp, vec4(1.0)));\n"
+        "  gl_Position = vec4(0.0);\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_VERTEX);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
+}
+
+TEST(Metallib, ScalarCtorFromVectorTakesFirst) {
+    static const char *src =
+        "#version 450 core\n"
+        "layout(location = 0) in vec4 a_coords;\n"
+        "layout(location = 0) out float o;\n"
+        "void main() {\n"
+        "  o = float(a_coords);\n"
+        "  gl_Position = vec4(o);\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_VERTEX);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+}
+
+TEST(Metallib, LoopAssignsFragOutput) {
+    /* Fragment output written each loop iteration must be phi'd so the
+     * post-loop return keeps the last write (CTS tmp_array.vertexid). */
+    static const char *src =
+        "#version 450 core\n"
+        "layout(location = 0) in float color[4];\n"
+        "layout(location = 0) out vec4 o_color;\n"
+        "void main() {\n"
+        "  float temp[4];\n"
+        "  for (int i = 0; i < 4; i++) {\n"
+        "    temp[i] = color[i];\n"
+        "    o_color = vec4(temp[0], temp[1], temp[2], temp[3]);\n"
+        "  }\n"
+        "}\n";
+    CompileResult r = compile(src, MGL_STAGE_FRAGMENT);
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+}
+
 TEST(Metallib, RejectsSyntaxError) {
     CompileResult r = compile(kBadSyntax, MGL_STAGE_VERTEX);
     EXPECT_NE(0, r.rc);
@@ -776,7 +830,7 @@ TEST(Metallib, RejectsUnsupportedStage) {
 
 TEST(Metallib, NullArgumentsRejected) {
     EXPECT_NE(0, mglShaderCompileGLSL(nullptr, MGL_STAGE_VERTEX, nullptr,
-                                      nullptr, nullptr, 0));
+                                      nullptr, 0));
 }
 
 TEST(Interface, MatchingStagesAccepted) {

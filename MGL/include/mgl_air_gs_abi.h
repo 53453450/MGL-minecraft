@@ -412,8 +412,10 @@ MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBScatterParams, fields) == 112u,
 /* =====================================================================
  * 6. Static layout invariants shared with the AIR backend
  * ===================================================================== */
-MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_STRIDE == 64u,
+MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_STRIDE == 96u,
                       "per-vertex record stride changed; update both sides");
+MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET == 64u,
+                      "clip distances must stay at record offset 64");
 MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_POSITION_OFFSET == 0u,
                       "position must stay at record offset 0");
 MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET == 16u,

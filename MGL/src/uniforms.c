@@ -117,6 +117,18 @@ static bool mglUniformIdentityGateEnabled(void)
     return cached == 1;
 }
 
+/* Debug-only uniform upload trace. Cached once — getenv on every glUniform*
+ * cost ~100ns and dominated the hot path in microbenchmarks. */
+static bool mglUniformUploadDiagEnabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("MGL_DIAG_UNIFORM_UPLOAD");
+        cached = (v && v[0] != '\0' && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 #define MGL_SAFE_CSTRING_MAX 4096u
 
 static size_t mglSafeCStringReadableChunkSize(const char *str, size_t remaining)
@@ -1099,8 +1111,10 @@ static GLint mglSamplerUniformGLType(const MGLShaderResource *res, int res_type)
     }
 
     if (res_type == _STORAGE_IMAGE_RES) {
-        return (res->image_dim == MGL_IMAGE_DIM_BUFFER)
-            ? GL_INT_IMAGE_BUFFER : GL_INT_IMAGE_2D;
+        /* Prefer reflected gl_type (image1D / image2DMS / iimage2D / ...).
+         * Returning 0 lets mglProgramActiveUniformGLType use res->gl_type.
+         * Hardcoding INT_IMAGE_2D broke CTS GetActiveUniform for float images. */
+        return 0;
     }
 
     if (res_type == _SEPARATE_SAMPLERS_RES) {
@@ -1561,8 +1575,16 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         return GL_FALSE;
     }
 
-    if (unit < 0 || unit >= TEXTURE_UNITS) {
-        ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
+    /* Samplers use TEXTURE_UNITS; storage images use MAX_IMAGE_UNITS.
+     * CTS negative-uniform expects INVALID_VALUE when unit >= MAX_IMAGE_UNITS. */
+    {
+        GLint max_units = TEXTURE_UNITS;
+        if (primaryResourceType == _STORAGE_IMAGE_RES) {
+            max_units = (GLint)ctx->state.var.max_image_units;
+        }
+        if (unit < 0 || unit >= max_units) {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
+        }
     }
 
     /* Pass 2: collect all resources matching mglSamplerResourceMatchesUniformWrite
@@ -1688,6 +1710,33 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                                  DIRTY_TEX_BINDING | DIRTY_SAMPLER);
     }
     return GL_TRUE;
+}
+
+/* True when <location> names a storage image uniform in the current program. */
+static GLboolean mglUniformLocationIsStorageImage(GLMContext ctx, GLint location)
+{
+    ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+    if (!ctx || location < 0) {
+        return GL_FALSE;
+    }
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    if (!program) {
+        return GL_FALSE;
+    }
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        MGLShaderResourceList *resources =
+            mglUniformSafeResourceList(program, stage, _STORAGE_IMAGE_RES, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            MGLShaderResource *res = &resources->list[i];
+            if (mglUniformLocationMatchesResource(res, _STORAGE_IMAGE_RES, location)) {
+                return GL_TRUE;
+            }
+        }
+    }
+    return GL_FALSE;
 }
 
 static size_t mglRoundUpUniformBlockSize(size_t value)
@@ -1899,7 +1948,8 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                         for (GLuint m = 0; m < list[i].ubo_member_count; m++) {
                             const SpirvUBOMember *member = &list[i].ubo_members[m];
                             const char *mqn = member->query_name ? member->query_name : member->name;
-                            if (mglSafeCStringEquals(mqn, name)) {
+                            if (mglSafeCStringEquals(mqn, name) ||
+                                mglActiveUniformNamesMatch(mqn, name)) {
                                 return base_location + member->location_offset;
                             }
                             /* Handle array-element queries like "u0[0].m1[1]"
@@ -1915,6 +1965,8 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                                     continue;
                                 }
                                 size_t q_len = query_name_len;
+                                /* Member reflected as "arr[0]" with size N;
+                                 * query "arr[k]". */
                                 if (mqn_len >= 3u &&
                                     mqn[mqn_len - 3u] == '[' &&
                                     mqn[mqn_len - 2u] == '0' &&
@@ -1923,8 +1975,24 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                                     strncmp(mqn, name, mqn_len - 3u) == 0 &&
                                     name[mqn_len - 3u] == '[' &&
                                     name[q_len - 1u] == ']') {
-                                    size_t sub_len = q_len - mqn_len + 3u - 2u; /* content between [ and ] */
-                                    long parsed = mglParseStrictArraySubscript(name + mqn_len - 2u, sub_len);
+                                    size_t sub_len = q_len - mqn_len + 3u - 2u;
+                                    long parsed = mglParseStrictArraySubscript(
+                                        name + mqn_len - 2u, sub_len);
+                                    if (parsed >= 0 && parsed < member->size) {
+                                        return base_location +
+                                               member->location_offset +
+                                               (GLint)parsed;
+                                    }
+                                }
+                                /* Member reflected as bare "arr" with size N;
+                                 * query "arr[k]" (GL 4.6 §7.6.1). */
+                                if (q_len > mqn_len + 2u &&
+                                    strncmp(mqn, name, mqn_len) == 0 &&
+                                    name[mqn_len] == '[' &&
+                                    name[q_len - 1u] == ']') {
+                                    size_t sub_len = q_len - mqn_len - 2u;
+                                    long parsed = mglParseStrictArraySubscript(
+                                        name + mqn_len + 1u, sub_len);
                                     if (parsed >= 0 && parsed < member->size) {
                                         return base_location +
                                                member->location_offset +
@@ -1939,7 +2007,7 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                 GLint array_element = 0;
                 GLboolean name_matches = mglSafeCStringEquals(str, name);
                 if (!name_matches && list[i].gl_array_size > 0 &&
-                    query_name_len > resource_name_len + 2u &&
+                    query_name_len >= resource_name_len + 3u &&
                     strncmp(str, name, resource_name_len) == 0 &&
                     name[resource_name_len] == '[' &&
                     name[query_name_len - 1u] == ']') {
@@ -1951,7 +2019,9 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                     }
                 }
                 /* Multi-dimensional array: query "a[2][1]" matches
-                 * resource "a[2][1][0]" (query omits trailing [0]). */
+                 * resource "a[2][1][0]" (query omits trailing [0]).
+                 * Also accepts "arr[0]" for resource "arr" (GL 4.6
+                 * §7.6.1: GetUniformLocation of the first element). */
                 if (!name_matches && mglActiveUniformNamesMatch(str, name)) {
                     name_matches = GL_TRUE;
                 }
@@ -2853,6 +2923,81 @@ static GLboolean mglPlainUniformNeedsMetalMat3Packing(GLMContext ctx, GLint loca
         ? GL_TRUE : GL_FALSE;
 }
 
+void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size);
+
+/* Plain uniforms live in an implicit std140 buffer: each matrix column is
+ * a 16-byte slot.  glUniformMatrix*fv supplies tightly packed columns
+ * (cols*rows floats); expand into cols*4 floats when rows < 4. */
+static void mglUploadPlainUniformMatrixStd140(GLMContext ctx,
+                                              GLint location,
+                                              GLsizei count,
+                                              GLboolean transpose,
+                                              GLuint cols,
+                                              GLuint rows,
+                                              const GLfloat *value)
+{
+    const GLuint srcWords = cols * rows;
+    const GLuint dstWords = cols * 4u;
+    GLsizeiptr sourceBytes = 0;
+    if (!checkUniformUploadParams(ctx, location, value, count,
+                                  (GLsizeiptr)(srcWords * sizeof(GLfloat)),
+                                  &sourceBytes)) {
+        return;
+    }
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+    /* rows==4: already matches std140 column size; optional transpose only. */
+    if (rows == 4u && !transpose) {
+        mglUniform(ctx, location, (void *)value, sourceBytes);
+        return;
+    }
+    if (rows == 4u && transpose) {
+        /* Fall through to pack loop (identity size, swap indices). */
+    } else if (rows >= 4u) {
+        mglUniform(ctx, location, (void *)value, sourceBytes);
+        return;
+    }
+
+    if ((size_t)count > SIZE_MAX / (dstWords * sizeof(GLfloat))) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    size_t packedFloats = (size_t)count * dstWords;
+    GLfloat stackValues[64];
+    GLfloat *packed =
+        (packedFloats <= (sizeof(stackValues) / sizeof(stackValues[0])))
+            ? stackValues
+            : (GLfloat *)malloc(packedFloats * sizeof(GLfloat));
+    if (!packed) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+    for (GLsizei m = 0; m < count; m++) {
+        const GLfloat *src = value + (size_t)m * srcWords;
+        GLfloat *dst = packed + (size_t)m * dstWords;
+        for (GLuint col = 0; col < cols; col++) {
+            for (GLuint row = 0; row < 4u; row++) {
+                if (row < rows) {
+                    dst[col * 4u + row] =
+                        transpose ? src[row * cols + col]
+                                  : src[col * rows + row];
+                } else {
+                    dst[col * 4u + row] = 0.0f;
+                }
+            }
+        }
+    }
+    mglUniform(ctx, location, packed,
+               (GLsizeiptr)(packedFloats * sizeof(GLfloat)));
+    if (packed != stackValues) {
+        free(packed);
+    }
+}
+
 static void mglUploadPlainUniformMat3fv(GLMContext ctx,
                                         GLint location,
                                         GLsizei count,
@@ -2900,7 +3045,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
      */
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
-    if (getenv("MGL_DIAG_UNIFORM_UPLOAD"))
+    if (mglUniformUploadDiagEnabled())
         fprintf(stderr, "MGL UNIFORM UPLOAD prog=%u loc=%d size=%lld w0=%u w1=%u\n",
                 (unsigned)program->name, location, (long long)size,
                 size >= 4 ? *(const uint32_t *)ptr : 0u,
@@ -3071,6 +3216,11 @@ void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *v
 
 void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 {
+    /* Spec / CTS negative-uniform: Uniform1ui on an image → INVALID_OPERATION. */
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     if (v0 <= (GLuint)INT_MAX && mglSetSamplerUniformUnit(ctx, location, (GLint)v0)) {
         return;
     }
@@ -3080,6 +3230,10 @@ void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     if (count > 0 && value &&
         (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         value[0] <= (GLuint)INT_MAX &&
@@ -3121,7 +3275,11 @@ void mglUniform2fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat 
 void mglUniform2i(GLMContext ctx, GLint location, GLint v0, GLint v1)
 {
     GLint data[] = {v0, v1};
-    
+
+    if (mglUniformLocationIsStorageImage(ctx, location)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     mglUniform(ctx, location, data, 2 * sizeof(GLint));
 }
 
@@ -3309,12 +3467,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 2, Mat2x2fv, Mat2x2fvTrans)
 
 void mglUniformMatrix2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat2x2fv,          // Source matrix type
-                            Mat2x2fvTrans,     // Destination matrix type
-                            Mat2x2fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 2u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat2x3dv)
@@ -3337,12 +3490,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 2, Mat2x3fv, Mat2x3fvTrans)
 
 void mglUniformMatrix2x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat2x3fv,          // Source matrix type
-                            Mat2x3fvTrans,     // Destination matrix type
-                            Mat2x3fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 3u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat2x4dv)
@@ -3365,12 +3513,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 2, Mat2x4fv, Mat2x4fvTrans)
 
 void mglUniformMatrix2x4fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat2x4fv,          // Source matrix type
-                            Mat2x4fvTrans,     // Destination matrix type
-                            Mat2x4fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 2u, 4u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 3, 3, Mat3x3dv)       // 3x3 matrix type
@@ -3535,12 +3678,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 3, Mat3x2fv, Mat3x2fvTrans)
 
 void mglUniformMatrix3x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat3x2fv,          // Source matrix type
-                            Mat3x2fvTrans,     // Destination matrix type
-                            Mat3x2fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 3u, 2u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat3x4dv)
@@ -3619,12 +3757,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 4, Mat4x2fv, Mat4x2fvTrans)
 
 void mglUniformMatrix4x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat4x2fv,          // Source matrix type
-                            Mat4x2fvTrans,     // Destination matrix type
-                            Mat4x2fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 4u, 2u, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat4x3dv)
@@ -3647,12 +3780,7 @@ DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 4, Mat4x3fv, Mat4x3fvTrans)
 
 void mglUniformMatrix4x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat4x3fv,          // Source matrix type
-                            Mat4x3fvTrans,     // Destination matrix type
-                            Mat4x3fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMatrixStd140(ctx, location, count, transpose, 4u, 3u, value);
 }
 
 /* Legacy fixed-function clip-plane derivation state (glClipPlane +

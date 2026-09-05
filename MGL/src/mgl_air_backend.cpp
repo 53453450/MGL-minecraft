@@ -122,10 +122,13 @@ struct VarSym {
                 UBO, TEXTURE, IMAGE, ATOMIC_COUNTER, LOCAL } kind = LOCAL;
     uint32_t bufferOffset = 0;
     uint32_t location = UINT32_MAX;
+    bool locationExplicit = false; /* layout(location=N) in source */
     int32_t stream = 0;          /* GS output stream for OUTPUT vars */
     std::string blockName;       /* owning interface block, or empty */
     bool isPatch = false;
+    bool isSample = false;       /* `sample in` / `sample out` qualifier */
     bool written = false;
+    const MGLIRType *opaqueType = nullptr; /* nested sampler/image leaf */
 };
 
 struct LoopCtx {
@@ -160,7 +163,15 @@ struct Codegen {
     llvm::Value *bufferPtr = nullptr;    /* i8 addrspace(1)* */
     llvm::Value *bufferSizePtr = nullptr; /* constant uint*, buffer(25) */
     llvm::Value *threadPos = nullptr;    /* compute: <3 x i32> grid position */
+    llvm::Value *localInvocationPos = nullptr; /* compute: <3 x i32> local */
+    llvm::Value *localInvocationIndex = nullptr; /* compute: i32 flat local */
     llvm::Value *workGroupPos = nullptr; /* compute: <3 x i32> group position */
+    llvm::Value *numWorkGroups = nullptr; /* compute: <3 x i32> dispatch grid */
+    /* gl_WorkGroupSize: constant from layout(local_size_*); axes default to 1. */
+    uint32_t workGroupSizeX = 1;
+    uint32_t workGroupSizeY = 1;
+    uint32_t workGroupSizeZ = 1;
+    bool hasWorkGroupSize = false;
     llvm::Value *invocationPos = nullptr; /* TCS: <3 x i32> threadgroup position */
     llvm::Value *patchPos = nullptr;      /* TCS: <3 x i32> threadgroup grid position */
     llvm::Value *stageInPtr = nullptr;   /* TCS gl_in replacement, buffer(24) */
@@ -206,19 +217,28 @@ struct Codegen {
     llvm::Value *cullBuffer = nullptr;   /* VS cull-distance source buffer */
     llvm::Value *cullParams = nullptr;   /* VS cull-distance emu parameters */
     bool usesCullDistance = false;
+    bool usesPatchCullDistance = false;  /* native TES: cull from gl_in records */
     llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
     bool hasFragDepth = false;           /* fragment writes gl_FragDepth */
     bool fragDepthInit = false;          /* gl_FragDepth lvalue initialized */
+    bool hasSampleMask = false;          /* fragment writes gl_SampleMask */
+    /* Slot 30: {num_samples, sample_buffers}. sample_buffers==0 means
+     * non-MSAA FB; GL ignores gl_SampleMask writes in that case. */
+    llvm::Value *fragSampleParams = nullptr;
     bool usesClipDistance = false;       /* vertex writes gl_ClipDistance */
+    uint32_t cullDistancePassthroughCount = 0; /* VS flat outs / FS ins */
+    uint32_t clipDistanceInputCount = 0; /* FS reads gl_ClipDistance */
     bool pointSize = false;              /* vertex: writes gl_PointSize */
     bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     bool primitiveIdWritten = false;     /* writes gl_PrimitiveID (GS out) */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
     std::map<std::string, llvm::Value *> acPtrs;  /* atomic_uint -> ACBO */
-    /* UBO instance arrays: element pointers stashed in an entry-block
+    /* UBO/SSBO instance arrays: element pointers stashed in an entry-block
      * alloca so member reads can index by runtime value. */
     std::map<std::string, llvm::Value *> uboElemSlot;
     std::map<std::string, llvm::Type *> uboElemArrTy;
+    std::map<std::string, llvm::Value *> ssboElemSlot;
+    std::map<std::string, llvm::Type *> ssboElemArrTy;
     std::map<std::string, uint32_t> ssboSlots;      /* SSBO instance -> Metal slot */
     std::map<std::string, uint32_t> acSlots;        /* atomic_uint -> Metal slot */
     std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
@@ -226,15 +246,39 @@ struct Codegen {
     std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
     std::map<std::string, std::vector<llvm::Value *>> texArrayValues;
     std::map<std::string, std::vector<llvm::Value *>> smpArrayValues;
+    std::map<std::string, const MGLIRType *> samplerIRTypes;
+    /* Stage outputs living in entry-block allocas so user functions can
+     * write them through hidden pointer args (SET_RESULT→helper pattern). */
+    std::map<std::string, llvm::Value *> outPtrs;
+    /* Local/varying scalar arrays in entry-block memory.  Combined with
+     * scalar(vec) peeling in constructors, this avoids illegal
+     * store <N x float>, float* and keeps dynamic float[] indexing off
+     * SSA select-of-float paths that Metal materializeAll rejects. */
+    std::map<std::string, llvm::Value *> arrayMem;
+    std::map<std::string, llvm::Type *> arrayMemTypes;
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
     std::vector<VarSym *> fragOutputs;   /* fragment outputs, return-field order */
+    bool has_gs = false;                 /* fragment fed by GS passthrough VS */
     VarSym position;                     /* gl_Position */
     llvm::Type *retTy = nullptr;         /* stage return type */
     std::vector<llvm::Type *> retElems;  /* VS struct fields (incl. position) */
     std::vector<VarSym> *auxSyms = nullptr;  /* all stage symbols (frag output) */
     std::map<std::string, llvm::Function *> *userFns = nullptr;
+    std::map<std::string, uint32_t> *userFnHidden = nullptr;
+    std::map<std::string, MGLDecl *> *userFnDecls = nullptr;
+    bool userFnPassCull = false;
+    bool userFnPassClip = false;
+    /* When true, STMT_RETURN captures into inlineRetVal instead of
+     * emitting CreateRet (GS/TCS/compute helper inlining). */
+    bool inliningHelper = false;
+    llvm::Value *inlineRetVal = nullptr;
+    /* Named user struct types from the TU (`struct S { … };`), used for
+     * S(...) / S[](...) constructors and local member ExtractValue. */
+    std::map<std::string, MGLIRType *> structTypes;
+    std::vector<MGLIRType *> *ownedIRTypes = nullptr;
+    std::map<std::string, const MGLIRType *> localIRTypes;
     int err = 0;
     std::string errmsg;                  /* specific diagnostic when set */
     std::vector<LoopCtx *> loopStack;    /* innermost loop is last */
@@ -243,20 +287,129 @@ struct Codegen {
 
 /* ---- type helpers ---------------------------------------------------- */
 
+/* Persist a stage-output write into the entry-block alloca (if any) so
+ * subsequent user-function calls and assembleReturn observe it. */
+static void storeStageOut(Codegen &cg, const char *name, llvm::Value *v)
+{
+    if (!name || !v) return;
+    auto it = cg.outPtrs.find(name);
+    if (it == cg.outPtrs.end()) return;
+    cg.b->CreateStore(v, it->second);
+}
+
 bool scalarIsFloat(MGLIRScalar s) {
     return s == MGLIR_SCALAR_FLOAT || s == MGLIR_SCALAR_DOUBLE ||
            s == MGLIR_SCALAR_HALF;
 }
 
-/* GS-expansion fragment stages carry integer varyings through float
- * attributes: the raw int bit patterns do not survive Metal's attribute
- * plumbing (small magnitudes are denormals in float interpretation and
- * the values arrive zeroed / truncated).  Both interface sides instead
- * exchange sitofp-exact floats (|v| < 2^24) and the fragment body
- * converts back once at entry. */
+/* Integer varyings on AGX must ride float carriers: GS expansion already
+ * needed this for all integer types; flat integer varyings in plain VS/FS
+ * pipelines also misread when carried as raw int/uint stage inputs. */
 static bool varyingUsesFloatCarrier(const MType &t, bool has_gs) {
-    return has_gs && !scalarIsFloat(t.scalar) &&
-           t.scalar != MGLIR_SCALAR_BOOL;
+    if (t.scalar == MGLIR_SCALAR_BOOL || scalarIsFloat(t.scalar))
+        return false;
+    if (has_gs)
+        return true;
+    return t.scalar == MGLIR_SCALAR_INT || t.scalar == MGLIR_SCALAR_UINT;
+}
+
+/* Full-range uint flat varyings cannot use a single float carrier: UIToFP
+ * loses bits above float24 and intBitsToFloat produces NaN payloads that
+ * AGX does not preserve.  Split into two exact float16-bit lanes instead.
+ * Vectors keep the ordinary float carrier (per-component bitcast). */
+static bool uintUsesSplitFloatCarrier(const MType &t, bool has_gs) {
+    return !has_gs && t.scalar == MGLIR_SCALAR_UINT && !t.vec &&
+           !t.isArray() && !t.isMatrix();
+}
+
+static void encodeUintSplitFloatCarrier(Codegen &cg, llvm::Value *value,
+                                        llvm::Value **loOut,
+                                        llvm::Value **hiOut) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *lo16 =
+        cg.b->CreateAnd(value, cg.b->getInt32(0xFFFF));
+    llvm::Value *hi16 = cg.b->CreateLShr(value, 16);
+    *loOut = cg.b->CreateUIToFP(lo16, f32);
+    *hiOut = cg.b->CreateUIToFP(hi16, f32);
+}
+
+static llvm::Value *decodeUintSplitFloatCarrier(Codegen &cg,
+                                                llvm::Value *loF,
+                                                llvm::Value *hiF,
+                                                llvm::Type *destTy) {
+    loF = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::round, loF);
+    hiF = cg.b->CreateUnaryIntrinsic(llvm::Intrinsic::round, hiF);
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Value *lo = cg.b->CreateFPToUI(loF, i32);
+    llvm::Value *hi = cg.b->CreateFPToUI(hiF, i32);
+    llvm::Value *u = cg.b->CreateOr(lo, cg.b->CreateShl(hi, 16));
+    if (destTy != i32)
+        u = cg.b->CreateTruncOrBitCast(u, destTy);
+    return u;
+}
+
+static llvm::Value *encodeFloatCarrier(Codegen &cg, llvm::Value *value,
+                                       MGLIRScalar scalar) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *dst = f32;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(value->getType()))
+        dst = llvm::FixedVectorType::get(
+            f32, vt->getElementCount().getFixedValue());
+    if (scalar == MGLIR_SCALAR_DOUBLE) {
+        /* ATTR/VS already produced f32; keep bits. i64 double payloads from
+         * SSBO paths soft-truncate IEEE754 binary64→binary32 without f64 ALU. */
+        if (value->getType()->isFPOrFPVectorTy() &&
+            value->getType()->getScalarSizeInBits() == 32)
+            return value;
+        if (value->getType()->isIntOrIntVectorTy() &&
+            value->getType()->getScalarSizeInBits() == 64) {
+            auto conv1 = [&](llvm::Value *bits) -> llvm::Value * {
+                llvm::Value *hi = cg.b->CreateLShr(bits, 32);
+                hi = cg.b->CreateTrunc(hi, cg.b->getInt32Ty());
+                llvm::Value *lo = cg.b->CreateTrunc(bits, cg.b->getInt32Ty());
+                /* Approximate: take high 32 bits of the double payload when
+                 * it was a float promoted into the high half; otherwise
+                 * rebuild a float from sign/exp/mant of the i64. */
+                llvm::Value *sign = cg.b->CreateAnd(
+                    cg.b->CreateLShr(hi, 31), cg.b->getInt32(1));
+                llvm::Value *exp = cg.b->CreateAnd(
+                    cg.b->CreateLShr(hi, 20), cg.b->getInt32(0x7FF));
+                llvm::Value *mantHi = cg.b->CreateAnd(hi, cg.b->getInt32(0xFFFFF));
+                llvm::Value *mant = cg.b->CreateOr(
+                    cg.b->CreateShl(mantHi, 3),
+                    cg.b->CreateLShr(lo, 29));
+                llvm::Value *exp32 = cg.b->CreateSub(exp, cg.b->getInt32(1023 - 127));
+                llvm::Value *under = cg.b->CreateICmpSLT(exp32, cg.b->getInt32(1));
+                llvm::Value *over = cg.b->CreateICmpSGT(exp32, cg.b->getInt32(254));
+                llvm::Value *fbits = cg.b->CreateOr(
+                    cg.b->CreateShl(sign, 31),
+                    cg.b->CreateOr(cg.b->CreateShl(
+                        cg.b->CreateAnd(exp32, cg.b->getInt32(0xFF)), 23),
+                        cg.b->CreateAnd(mant, cg.b->getInt32(0x7FFFFF))));
+                fbits = cg.b->CreateSelect(under, cg.b->CreateShl(sign, 31), fbits);
+                fbits = cg.b->CreateSelect(
+                    over,
+                    cg.b->CreateOr(cg.b->CreateShl(sign, 31),
+                                   cg.b->getInt32(0x7F800000)),
+                    fbits);
+                return cg.b->CreateBitCast(fbits, f32);
+            };
+            if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(value->getType())) {
+                unsigned n = vt->getElementCount().getFixedValue();
+                llvm::Value *out = llvm::UndefValue::get(dst);
+                for (unsigned i = 0; i < n; i++) {
+                    llvm::Value *el = cg.b->CreateExtractElement(value, i);
+                    out = cg.b->CreateInsertElement(out, conv1(el), i);
+                }
+                return out;
+            }
+            return conv1(value);
+        }
+        return llvm::Constant::getNullValue(dst);
+    }
+    if (scalar == MGLIR_SCALAR_UINT)
+        return cg.b->CreateUIToFP(value, dst);
+    return cg.b->CreateSIToFP(value, dst);
 }
 
 static llvm::Value *decodeFloatCarrier(Codegen &cg, llvm::Value *arg,
@@ -274,27 +427,165 @@ static MType floatCarrierType(const MType &t) {
     return f;
 }
 
+/* Metal rejects matrix stage_in / stage_out attribute types
+ * ("Unsupported attribute type").  Flatten to one vector per column. */
+static MType matrixColumnType(const MType &t)
+{
+    MType c;
+    c.scalar = t.scalar;
+    c.vec = t.rows > 0 ? t.rows : 1u;
+    return c;
+}
+
+/* Stage-out records are float-oriented (passthrough VS reads vec4 slots).
+ * Integer varyings must use SIToFP/UIToFP carriers — bitcasting small uint
+ * values yields AGX-flushable denormals, and floatBitsToUint then returns 0.
+ * DOUBLE is the same float carrier: VertexLayout converts GL_DOUBLE ATTR to
+ * float, VS math stays f32 on AGX, and XFB pack expands float→GLdouble. */
+static bool varyingNeedsFloatRecordCarrier(const MType &t)
+{
+    if (t.isMatrix() || t.isArray()) return false;
+    return t.scalar == MGLIR_SCALAR_INT || t.scalar == MGLIR_SCALAR_UINT ||
+           t.scalar == MGLIR_SCALAR_BOOL || t.scalar == MGLIR_SCALAR_DOUBLE;
+}
+
+/* Vertex ATTR ABI must match VertexLayout: GL_DOUBLE is CPU-converted to
+ * MTL Float*, so stage_in is floatN — never i64 (Metal reports i64 ATTR as
+ * int1 and rejects Float→int1). */
+static MType attrMetalIfaceType(const MType &t)
+{
+    if (t.scalar != MGLIR_SCALAR_DOUBLE)
+        return t;
+    MType f = t;
+    f.scalar = MGLIR_SCALAR_FLOAT;
+    return f;
+}
+
 llvm::Type *llvmScalar(MGLIRScalar s, llvm::LLVMContext &ctx) {
     switch (s) {
     case MGLIR_SCALAR_BOOL: return llvm::Type::getInt1Ty(ctx);
     case MGLIR_SCALAR_INT:  return llvm::Type::getInt32Ty(ctx);
     case MGLIR_SCALAR_UINT: return llvm::Type::getInt32Ty(ctx);
+    /* Metal has no f64 ALU on AGX; GLSL double is an i64 bit payload so
+     * SSBO/UBO load/store stay bit-preserving without emitting f64 ops. */
+    case MGLIR_SCALAR_DOUBLE: return llvm::Type::getInt64Ty(ctx);
     default:                return llvm::Type::getFloatTy(ctx);
     }
 }
 
+/* Sema stores void returns as a non-NULL SCALAR_VOID type, not a null
+ * pointer — callers must not treat "return_type != NULL" as non-void. */
+static bool irTypeIsVoid(const MGLIRType *t)
+{
+    return !t || (t->kind == MGLIR_TYPE_SCALAR &&
+                  t->scalar == MGLIR_SCALAR_VOID);
+}
+
+/* Natural align for a buffer leaf load/store of LLVM type `t`. */
+static llvm::Align bufferLeafAlign(llvm::Type *t) {
+    if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+        uint64_t w = fvt->getElementCount().getFixedValue();
+        unsigned es =
+            fvt->getElementType()->getPrimitiveSizeInBits() / 8u;
+        if (es >= 8u) {
+            if (w <= 1u) return llvm::Align(8);
+            if (w == 2u) return llvm::Align(16);
+            return llvm::Align(32); /* dvec3/dvec4 */
+        }
+        if (w == 1) return llvm::Align(4);
+        if (w == 2) return llvm::Align(8);
+        return llvm::Align(16);
+    }
+    if (t->isIntegerTy(64) || t->isDoubleTy())
+        return llvm::Align(8);
+    if (t->isFloatTy() || t->isIntegerTy(32))
+        return llvm::Align(4);
+    return llvm::Align(16);
+}
+
 llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
     llvm::Type *s = llvmScalar(t.scalar, ctx);
+    /* Arrays-of-matrices: arr takes precedence over the matrix shape. */
+    if (t.isArray()) {
+        MType el = t;
+        el.arr = 0;
+        return llvm::ArrayType::get(llvmType(el, ctx), t.arr);
+    }
     if (t.isMatrix())
         return llvm::ArrayType::get(llvm::FixedVectorType::get(s, t.rows), t.cols);
-    if (t.isArray()) {
-        llvm::Type *elt = t.vec ? (llvm::Type *)llvm::FixedVectorType::get(s, t.vec)
-                                : s;
-        return llvm::ArrayType::get(elt, t.arr);
-    }
     if (t.vec)
         return llvm::FixedVectorType::get(s, t.vec);
     return s;
+}
+
+/* Scalar arrays that Metal cannot keep in SSA aggregates.  Struct/matrix
+ * arrays stay as SSA InsertValue aggregates (MType cannot tell them apart
+ * from float[], so consult localIRTypes when present). */
+static bool needsArrayMem(Codegen &cg, const std::string &name,
+                          const MType &t) {
+    if (!t.isArray() || t.isMatrix() || t.vec != 0 || t.arr == 0)
+        return false;
+    if (!name.empty()) {
+        auto it = cg.localIRTypes.find(name);
+        if (it != cg.localIRTypes.end()) {
+            const MGLIRType *e = it->second;
+            while (e && e->kind == MGLIR_TYPE_ARRAY && e->elem_type)
+                e = e->elem_type;
+            if (e && (e->kind == MGLIR_TYPE_STRUCT ||
+                      e->kind == MGLIR_TYPE_MATRIX))
+                return false;
+        }
+    }
+    return true;
+}
+
+static llvm::Value *ensureArrayMem(Codegen &cg, const std::string &name,
+                                   const MType &t) {
+    auto it = cg.arrayMem.find(name);
+    if (it != cg.arrayMem.end())
+        return it->second;
+    llvm::Type *arrTy = llvmType(t, *cg.ctx);
+    llvm::BasicBlock *savedBB = cg.b->GetInsertBlock();
+    auto savedPt = cg.b->GetInsertPoint();
+    llvm::BasicBlock &entry = cg.fn->getEntryBlock();
+    cg.b->SetInsertPoint(&entry, entry.begin());
+    llvm::Value *slot = cg.b->CreateAlloca(arrTy, nullptr, name + ".amem");
+    cg.b->SetInsertPoint(savedBB, savedPt);
+    cg.arrayMem[name] = slot;
+    cg.arrayMemTypes[name] = arrTy;
+    return slot;
+}
+
+static llvm::Value *arrayMemGEP(Codegen &cg, const std::string &name,
+                                llvm::Value *slot, llvm::Value *idx) {
+    llvm::Type *arrTy = cg.arrayMemTypes[name];
+    idx = cg.b->CreateZExtOrTrunc(idx, cg.b->getInt64Ty());
+    return cg.b->CreateInBoundsGEP(arrTy, slot,
+                                   {cg.b->getInt64(0), idx});
+}
+
+MType typeFromIR(const MGLIRType *t); /* defined below */
+
+/* SSA shape for an IR type, including nested structs/arrays.  Buffer
+ * padding lives only in member_offsets / array_stride — the LLVM type
+ * is tightly packed so InsertValue/ExtractValue can address fields. */
+static llvm::Type *llvmTypeFromIR(const MGLIRType *t, llvm::LLVMContext &ctx) {
+    if (!t)
+        return llvm::Type::getFloatTy(ctx);
+    switch (t->kind) {
+    case MGLIR_TYPE_STRUCT: {
+        llvm::SmallVector<llvm::Type *, 8> elts;
+        for (uint32_t i = 0; i < t->member_count; i++)
+            elts.push_back(llvmTypeFromIR(t->members[i], ctx));
+        return llvm::StructType::get(ctx, elts);
+    }
+    case MGLIR_TYPE_ARRAY: {
+        uint32_t n = t->array_size > 0u ? t->array_size : 1u;
+        return llvm::ArrayType::get(llvmTypeFromIR(t->elem_type, ctx), n);
+    }
+    default:
+        return llvmType(typeFromIR(t), ctx);
+    }
 }
 
 /* Implicit GLSL numeric conversion (sema allows any non-void scalar base
@@ -304,11 +595,6 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
     llvm::Type *cur = v->getType();
     if (!cur->isIntOrIntVectorTy() && !cur->isFPOrFPVectorTy())
         return v;  /* arrays / matrices / aggregates: no scalar cast */
-    bool wantFP = scalarIsFloat(want);
-    bool curFP = cur->isFPOrFPVectorTy();
-    if (curFP == wantFP && want != MGLIR_SCALAR_BOOL &&
-        cur->getScalarSizeInBits() == (want == MGLIR_SCALAR_BOOL ? 1 : 32))
-        return v;
     llvm::LLVMContext &ctx = *cg.ctx;
     auto vt = [&](llvm::Type *elt) -> llvm::Type * {
         if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(cur))
@@ -316,15 +602,41 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
                 fv->getElementCount().getFixedValue());
         return elt;
     };
+    /* Doubles are i64 payloads — never SIToFP/FPToSI them as float.
+     * Numeric int/float→double conversion would emit f64 ALU that AGX
+     * metallibs reject; bit-identical payloads from matching paths still
+     * compare equal for CTS equality checks. */
+    if (want == MGLIR_SCALAR_DOUBLE) {
+        if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64)
+            return v;
+        if (cur->isFPOrFPVectorTy() && cur->getScalarSizeInBits() == 64)
+            return cg.b->CreateBitCast(v, vt(llvm::Type::getInt64Ty(ctx)));
+        return v;
+    }
+    if (cur->isIntOrIntVectorTy() && cur->getScalarSizeInBits() == 64 &&
+        want != MGLIR_SCALAR_DOUBLE)
+        return v; /* keep double payload out of float/int coercions */
+    bool wantFP = scalarIsFloat(want);
+    bool curFP = cur->isFPOrFPVectorTy();
+    if (curFP == wantFP && want != MGLIR_SCALAR_BOOL &&
+        cur->getScalarSizeInBits() == (want == MGLIR_SCALAR_BOOL ? 1 : 32))
+        return v;
     if (wantFP) {
         if (cur->getScalarSizeInBits() == 1)
             return cg.b->CreateUIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
         return cg.b->CreateSIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
     }
+    /* bool before the generic float→int path so float→bool is a compare,
+     * not FPToSI to i32 (which would then fail to match i1 uses). */
+    if (want == MGLIR_SCALAR_BOOL) {
+        if (curFP)
+            return cg.b->CreateFCmpUNE(v, llvm::Constant::getNullValue(cur));
+        if (cur->getScalarSizeInBits() == 1)
+            return v;
+        return cg.b->CreateICmpNE(v, llvm::Constant::getNullValue(cur));
+    }
     if (curFP)
         return cg.b->CreateFPToSI(v, vt(llvm::Type::getInt32Ty(ctx)));
-    if (want == MGLIR_SCALAR_BOOL)
-        return cg.b->CreateICmpNE(v, llvm::Constant::getNullValue(cur));
     /* int: widen bool to i32, otherwise identity. */
     if (cur->getScalarSizeInBits() == 1)
         return cg.b->CreateZExt(v, vt(llvm::Type::getInt32Ty(ctx)));
@@ -343,6 +655,7 @@ std::string airTypeMangle(const MType &t) {
     switch (t.scalar) {
     case MGLIR_SCALAR_INT:  elem = "i"; break;
     case MGLIR_SCALAR_UINT: elem = "j"; break;
+    case MGLIR_SCALAR_BOOL: elem = "b"; break;
     default:                elem = "f"; break;
     }
     if (!t.vec) return elem;
@@ -352,6 +665,32 @@ std::string airTypeMangle(const MType &t) {
 std::string airGenerated(const std::string &name, const MType &t) {
     return "generated(" + std::to_string(name.size()) + name +
            airTypeMangle(t) + ")";
+}
+
+/* Metal pairs VS vertex_output / FS fragment_input by air.generated()
+ * identity (name mangling), not by GLSL identifier.  SSO programs often
+ * use different names at the same layout(location=N) (CTS
+ * advanced-sso-atomicCounters: o_color vs i_color).  Prefer a stable
+ * location tag only when the location was explicit in source; auto-
+ * assigned locations are per-stage and must not drive the tag (or
+ * named matchings like vs_color break).
+ *
+ * Exception: GS / TES-compute passthrough VS always emit
+ * layout(location=N) (ensureAIRGeometryPassthrough /
+ * ensureAIRTessEvalPassthrough), so outs are tagged mgl_loc_N.  When
+ * has_gs is set the FS must use the same tags even if inputs were only
+ * auto-assigned — otherwise Metal rejects the pipeline with
+ * "Fragment input(s) `name` ... not written by vertex shader". */
+static std::string varyingIfaceTag(const VarSym &v, uint32_t elem = 0,
+                                   bool forceLocationTag = false) {
+    if (v.location != UINT32_MAX &&
+        (v.locationExplicit || forceLocationTag)) {
+        return "mgl_loc_" + std::to_string(v.location + elem);
+    }
+    if (v.type.isArray() || v.type.isMatrix() || elem != 0u) {
+        return v.name + "_elm" + std::to_string(elem);
+    }
+    return v.name;
 }
 
 /* GLSL type name used in air.* metadata (MSL naming). */
@@ -369,6 +708,7 @@ std::string mslTypeName(const MType &t) {
     switch (t.scalar) {
     case MGLIR_SCALAR_INT:   return t.vec ? "int" + std::to_string(t.vec) : "int";
     case MGLIR_SCALAR_UINT:  return t.vec ? "uint" + std::to_string(t.vec) : "uint";
+    case MGLIR_SCALAR_BOOL:  return t.vec ? "bool" + std::to_string(t.vec) : "bool";
     default: break;
     }
     if (!t.vec) return "float";
@@ -396,7 +736,14 @@ MType typeFromIR(const MGLIRType *t) {
         }
         if (el) {
             r.scalar = el->scalar;
-            if (el->kind == MGLIR_TYPE_VECTOR) r.vec = el->cols;
+            if (el->kind == MGLIR_TYPE_VECTOR) {
+                r.vec = el->cols;
+            } else if (el->kind == MGLIR_TYPE_MATRIX) {
+                /* matNxM[K] must keep cols/rows so llvmType builds
+                 * [K x [N x <M x float>]], not float[K]. */
+                r.cols = el->cols;
+                r.rows = el->rows;
+            }
         }
         break;
     }
@@ -443,10 +790,11 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
                          * AIR args; packing them into the plain uniform blob
                          * would desync reflection offsets. */
         }
-        /* Uniform blocks (struct types, including instance arrays) and their
-         * anonymous-block members are independent device buffers, not part
-         * of the plain uniform pack. */
-        if (s->block_name || uniformBlockType(s->type))
+        /* Uniform blocks (interface-block structs) and their anonymous-block
+         * members are independent device buffers, not part of the plain
+         * uniform pack.  Named struct uniforms (`uniform S s`) stay here. */
+        if (s->block_name ||
+            (s->is_interface_block && uniformBlockType(s->type)))
             continue;
         uint32_t size = 0;
         if (mglIRComputeLayout(s->type, MGLIR_LAYOUT_STD140, &size) != 0) {
@@ -465,6 +813,97 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
     }
     *bufferSize = off;
     return 0;
+}
+
+/* Flatten sampler/image leaves inside named struct uniforms into TEXTURE /
+ * IMAGE VarSyms (`s.c`, `s[0].c`, `s.b.a`) so Metal args and texture()
+ * lookups match GL reflection names. */
+static void appendOpaqueUniformLeaves(std::vector<VarSym> &syms,
+                                      const MGLIRType *t,
+                                      const std::string &prefix)
+{
+    if (!t || prefix.empty())
+        return;
+    if (t->kind == MGLIR_TYPE_STRUCT) {
+        for (uint32_t i = 0; i < t->member_count; i++) {
+            const char *mn = t->member_names ? t->member_names[i] : nullptr;
+            appendOpaqueUniformLeaves(
+                syms, t->members[i],
+                prefix + "." + (mn ? mn : "?"));
+        }
+        return;
+    }
+    if (t->kind == MGLIR_TYPE_ARRAY && t->elem_type &&
+        t->elem_type->kind == MGLIR_TYPE_STRUCT) {
+        uint32_t n = t->array_size ? t->array_size : 1u;
+        for (uint32_t el = 0; el < n; el++) {
+            appendOpaqueUniformLeaves(syms, t->elem_type,
+                                      prefix + "[" + std::to_string(el) + "]");
+        }
+        return;
+    }
+    const MGLIRType *base = t;
+    while (base && base->kind == MGLIR_TYPE_ARRAY)
+        base = base->elem_type;
+    if (!base)
+        return;
+    if (base->kind != MGLIR_TYPE_SAMPLER && base->kind != MGLIR_TYPE_IMAGE)
+        return;
+    VarSym ov;
+    ov.name = prefix;
+    ov.type = typeFromIR(t);
+    ov.kind = base->kind == MGLIR_TYPE_SAMPLER ? VarSym::TEXTURE
+                                               : VarSym::IMAGE;
+    ov.opaqueType = t;
+    syms.push_back(ov);
+}
+
+/* Resolve texture()/texelFetch sampler argument to a flattened uniform name
+ * (`tex`, `s.c`, `s[1].c`).  Only constant indices are supported. */
+static bool resolveSamplerAccessName(const MGLExpr *e, std::string *out)
+{
+    if (!e || !out)
+        return false;
+    struct Piece {
+        enum { Field, Index } kind;
+        std::string field;
+        int64_t index;
+    };
+    std::vector<Piece> pieces;
+    const MGLExpr *cur = e;
+    while (cur) {
+        if (cur->kind == MGL_EXPR_MEMBER) {
+            if (!cur->u.member.field)
+                return false;
+            pieces.push_back({Piece::Field, cur->u.member.field, 0});
+            cur = cur->u.member.object;
+            continue;
+        }
+        if (cur->kind == MGL_EXPR_INDEX) {
+            const MGLExpr *ix = cur->u.index.index;
+            if (!ix || ix->kind != MGL_EXPR_LITERAL)
+                return false;
+            pieces.push_back(
+                {Piece::Index, "", (int64_t)ix->u.literal.value});
+            cur = cur->u.index.object;
+            continue;
+        }
+        if (cur->kind == MGL_EXPR_VAR_REF) {
+            if (!cur->u.var_ref.name)
+                return false;
+            std::string path = cur->u.var_ref.name;
+            for (auto it = pieces.rbegin(); it != pieces.rend(); ++it) {
+                if (it->kind == Piece::Field)
+                    path += "." + it->field;
+                else
+                    path += "[" + std::to_string(it->index) + "]";
+            }
+            *out = std::move(path);
+            return true;
+        }
+        return false;
+    }
+    return false;
 }
 
 /* ---- expression codegen ----------------------------------------------- */
@@ -497,8 +936,228 @@ MType swizzleType(const MType &base, size_t lanes) {
     return t;
 }
 
+static MGLIRScalar astBaseToIRScalar(uint32_t base) {
+    switch (base) {
+    case MGL_AST_TYPE_BOOL: return MGLIR_SCALAR_BOOL;
+    case MGL_AST_TYPE_INT: return MGLIR_SCALAR_INT;
+    case MGL_AST_TYPE_UINT: return MGLIR_SCALAR_UINT;
+    case MGL_AST_TYPE_DOUBLE: return MGLIR_SCALAR_DOUBLE;
+    case MGL_AST_TYPE_FLOAT:
+    default: return MGLIR_SCALAR_FLOAT;
+    }
+}
+
+static MGLIRType *cloneIRType(const MGLIRType *src) {
+    if (!src) return nullptr;
+    switch (src->kind) {
+    case MGLIR_TYPE_SCALAR:
+        return mglIRTypeScalar(src->scalar);
+    case MGLIR_TYPE_VECTOR:
+        return mglIRTypeVector(src->scalar, src->cols);
+    case MGLIR_TYPE_MATRIX:
+        return mglIRTypeMatrix(src->scalar, src->cols, src->rows);
+    case MGLIR_TYPE_ARRAY: {
+        MGLIRType *el = cloneIRType(src->elem_type);
+        if (!el) return nullptr;
+        return mglIRTypeArray(el, src->array_size);
+    }
+    case MGLIR_TYPE_STRUCT: {
+        std::vector<MGLIRType *> members(src->member_count);
+        std::vector<const char *> names(src->member_count);
+        for (uint32_t i = 0; i < src->member_count; i++) {
+            members[i] = cloneIRType(src->members[i]);
+            names[i] = src->member_names[i];
+            if (!members[i]) {
+                for (uint32_t j = 0; j < i; j++)
+                    mglIRTypeDestroy(members[j]);
+                return nullptr;
+            }
+        }
+        return mglIRTypeStruct(members.data(), names.data(),
+                               src->member_count, src->name);
+    }
+    default:
+        return nullptr;
+    }
+}
+
+/* Resolve a declarator's type to IR (scalars/vectors/matrices/named
+ * structs + array dims).  Named struct members clone the registered type. */
+static MGLIRType *astDeclToIRType(Codegen &cg, const MGLDecl *d) {
+    if (!d || !d->type) return nullptr;
+    const MGLTypeSpec *ts = d->type;
+    MGLIRType *base = nullptr;
+    if (ts->base == MGL_AST_TYPE_STRUCT) {
+        if (!ts->name) return nullptr;
+        auto it = cg.structTypes.find(ts->name);
+        if (it == cg.structTypes.end()) return nullptr;
+        base = cloneIRType(it->second);
+    } else if (ts->mat_cols > 1) {
+        base = mglIRTypeMatrix(astBaseToIRScalar(ts->base),
+                               (uint32_t)ts->mat_cols,
+                               (uint32_t)(ts->mat_rows > 0 ? ts->mat_rows
+                                                           : ts->mat_cols));
+    } else if (ts->vec_size > 1) {
+        base = mglIRTypeVector(astBaseToIRScalar(ts->base),
+                               (uint32_t)ts->vec_size);
+    } else if (ts->base <= MGL_AST_TYPE_DOUBLE) {
+        base = mglIRTypeScalar(astBaseToIRScalar(ts->base));
+    }
+    if (!base) return nullptr;
+    if (d->array_count > 0 && d->array_dims) {
+        for (int i = (int)d->array_count - 1; i >= 0; i--) {
+            MGLIRType *arr = mglIRTypeArray(base, d->array_dims[i]);
+            if (!arr) {
+                mglIRTypeDestroy(base);
+                return nullptr;
+            }
+            base = arr;
+        }
+    }
+    return base;
+}
+
+static void registerStructTypeDecl(Codegen &cg, const MGLDecl *d) {
+    if (!d || !d->type || d->type->base != MGL_AST_TYPE_STRUCT ||
+        !d->type->name || !d->struct_members ||
+        d->struct_member_count == 0)
+        return;
+    if (cg.structTypes.count(d->type->name))
+        return;
+    std::vector<MGLIRType *> members(d->struct_member_count);
+    std::vector<const char *> names(d->struct_member_count);
+    int ok = 1;
+    for (uint32_t j = 0; j < d->struct_member_count; j++) {
+        MGLDecl *m = d->struct_members[j];
+        members[j] = astDeclToIRType(cg, m);
+        names[j] = m && m->name ? m->name : "";
+        if (!members[j]) {
+            ok = 0;
+            break;
+        }
+    }
+    if (!ok) {
+        for (uint32_t j = 0; j < d->struct_member_count; j++)
+            if (members[j]) mglIRTypeDestroy(members[j]);
+        return;
+    }
+    MGLIRType *st = mglIRTypeStruct(members.data(), names.data(),
+                                    d->struct_member_count, d->type->name);
+    if (!st) {
+        for (uint32_t j = 0; j < d->struct_member_count; j++)
+            mglIRTypeDestroy(members[j]);
+        return;
+    }
+    cg.structTypes[d->type->name] = st;
+    if (cg.ownedIRTypes)
+        cg.ownedIRTypes->push_back(st);
+}
+
+static void collectStructTypesFromStmt(Codegen &cg, const MGLStmt *st) {
+    if (!st) return;
+    switch (st->kind) {
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++)
+            collectStructTypesFromStmt(cg, st->u.compound.stmts[i]);
+        break;
+    case MGL_STMT_DECL:
+        for (const MGLDecl *d = st->u.decl.decl; d; d = d->next_declarator)
+            registerStructTypeDecl(cg, d);
+        break;
+    case MGL_STMT_IF:
+        collectStructTypesFromStmt(cg, st->u.ifs.then);
+        collectStructTypesFromStmt(cg, st->u.ifs.else_);
+        break;
+    case MGL_STMT_FOR:
+        collectStructTypesFromStmt(cg, st->u.loop.init);
+        collectStructTypesFromStmt(cg, st->u.loop.body);
+        break;
+    case MGL_STMT_WHILE:
+    case MGL_STMT_DO_WHILE:
+        collectStructTypesFromStmt(cg, st->u.whilex.body);
+        break;
+    case MGL_STMT_SWITCH:
+        collectStructTypesFromStmt(cg, st->u.switchx.body);
+        break;
+    default:
+        break;
+    }
+}
+
+static void collectStructTypes(Codegen &cg, const MGLTranslationUnit *tu) {
+    if (!tu) return;
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        MGLDecl *d = tu->decls[i];
+        registerStructTypeDecl(cg, d);
+        /* Local `struct S { … };` inside functions are not TU decls. */
+        if (d && d->body)
+            collectStructTypesFromStmt(cg, d->body);
+    }
+}
+
+static const MGLIRType *exprIRType(
+    Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals) {
+    if (!e) return nullptr;
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF: {
+        const char *n = e->u.var_ref.name;
+        if (!n) return nullptr;
+        /* Locals/params shadow anonymous-block uniforms of the same name
+         * (CTS uniform_block.random: compare_vec2(a,b) vs BlockB { sA a; }). */
+        if (locals.count(n)) {
+            auto it = cg.localIRTypes.find(n);
+            if (it != cg.localIRTypes.end())
+                return it->second;
+            return nullptr;
+        }
+        auto it = cg.localIRTypes.find(n);
+        if (it != cg.localIRTypes.end())
+            return it->second;
+        const MGLIRSymbol *s = findSymbol(mod, n);
+        return s ? s->type : nullptr;
+    }
+    case MGL_EXPR_MEMBER: {
+        const MGLIRType *ot =
+            exprIRType(cg, e->u.member.object, mod, locals);
+        if (!ot) return nullptr;
+        while (ot->kind == MGLIR_TYPE_ARRAY && ot->elem_type)
+            ot = ot->elem_type;
+        if (ot->kind != MGLIR_TYPE_STRUCT) return nullptr;
+        for (uint32_t i = 0; i < ot->member_count; i++) {
+            if (ot->member_names[i] &&
+                strcmp(ot->member_names[i], e->u.member.field) == 0)
+                return ot->members[i];
+        }
+        return nullptr;
+    }
+    case MGL_EXPR_INDEX: {
+        const MGLIRType *ot =
+            exprIRType(cg, e->u.index.object, mod, locals);
+        if (!ot) return nullptr;
+        if (ot->kind == MGLIR_TYPE_ARRAY)
+            return ot->elem_type;
+        return nullptr;
+    }
+    case MGL_EXPR_CALL: {
+        auto it = cg.structTypes.find(e->u.call.name);
+        if (it == cg.structTypes.end())
+            return nullptr;
+        /* Array-of-struct constructors register the array type on the
+         * declaring local; the call itself yields the element struct. */
+        return it->second;
+    }
+    default:
+        return nullptr;
+    }
+}
+
 MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                const std::map<std::string, MType> &locals);
+
+static llvm::Value *emitGLSLTypeLength(
+    Codegen &cg, const MGLExpr *object, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals);
 
 /* Broadcast a scalar to the lane type of a vector type. */
 llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy);
@@ -530,6 +1189,10 @@ llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
     auto *rc = llvm::dyn_cast<llvm::Constant>(r);
     if (!lc || !rc) return nullptr;
     if (l->getType() != r->getType()) return nullptr;
+    /* Aggregate ==/!= must walk members; ConstantExpr::getCompare on
+     * struct/array constants infinite-recurses in LLVM's folder. */
+    if (l->getType()->isStructTy() || l->getType()->isArrayTy())
+        return nullptr;
     bool fp = l->getType()->isFPOrFPVectorTy();
     if (op == MGL_OP_LAND || op == MGL_OP_LOR) {
         if (!l->getType()->isIntegerTy(1)) return nullptr;
@@ -646,6 +1309,39 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         cg, op, fp ? cg.b->CreateFCmp(pred, l, r) : cg.b->CreateICmp(pred, l, r));
 }
 
+/* GLSL 4.60 §5.9: struct/array == and != are element-wise, yielding a
+ * scalar bool.  Vectors still go through emitNumericBinOp. */
+static llvm::Value *emitAggregateCompare(Codegen &cg, uint32_t op,
+                                         llvm::Value *l, llvm::Value *r) {
+    if (op != MGL_OP_EQ && op != MGL_OP_NE) return nullptr;
+    if (!l || !r || l->getType() != r->getType()) return nullptr;
+    llvm::Type *ty = l->getType();
+    if (ty->isStructTy() || ty->isArrayTy()) {
+        unsigned n = ty->isStructTy()
+                         ? ty->getStructNumElements()
+                         : (unsigned)ty->getArrayNumElements();
+        llvm::Value *acc = nullptr;
+        for (unsigned i = 0; i < n; i++) {
+            llvm::Value *lv = cg.b->CreateExtractValue(l, i);
+            llvm::Value *rv = cg.b->CreateExtractValue(r, i);
+            llvm::Value *cmp = emitAggregateCompare(cg, op, lv, rv);
+            if (!cmp) {
+                MType dummy;
+                dummy.scalar = MGLIR_SCALAR_INT;
+                cmp = emitNumericBinOp(cg, op, lv, rv, dummy, dummy);
+            }
+            if (!cmp) return nullptr;
+            acc = !acc ? cmp
+                       : (op == MGL_OP_EQ ? cg.b->CreateAnd(acc, cmp)
+                                          : cg.b->CreateOr(acc, cmp));
+        }
+        return acc ? acc
+                   : llvm::ConstantInt::get(cg.b->getInt1Ty(),
+                                            op == MGL_OP_EQ);
+    }
+    return nullptr;
+}
+
 /* Broadcast a scalar to a vector type; identity if already matching. */
 llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy) {
     if (v->getType() == vecTy) return v;
@@ -675,9 +1371,153 @@ llvm::Value *dotProduct(Codegen &cg, llvm::Value *a, llvm::Value *b) {
     return acc;
 }
 
+static bool isTextureSampleBuiltin(const char *name)
+{
+    return strcmp(name, "texture") == 0 ||
+           strcmp(name, "textureOffset") == 0 ||
+           strcmp(name, "textureLod") == 0 ||
+           strcmp(name, "textureLodOffset") == 0 ||
+           strcmp(name, "textureGrad") == 0 ||
+           strcmp(name, "textureGradOffset") == 0 ||
+           strcmp(name, "textureProj") == 0 ||
+           strcmp(name, "textureProjOffset") == 0 ||
+           strcmp(name, "textureProjLod") == 0 ||
+           strcmp(name, "textureProjLodOffset") == 0 ||
+           strcmp(name, "textureProjGrad") == 0 ||
+           strcmp(name, "textureProjGradOffset") == 0;
+}
+
+static llvm::Value *emitAirSampleOffset(Codegen &cg, llvm::Value *off)
+{
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+    if (!off) {
+        return llvm::Constant::getNullValue(v2i32);
+    }
+    if (off->getType()->isIntegerTy(32)) {
+        llvm::Value *v = llvm::UndefValue::get(v2i32);
+        v = cg.b->CreateInsertElement(v, off, cg.b->getInt32(0));
+        v = cg.b->CreateInsertElement(v, cg.b->getInt32(0), cg.b->getInt32(1));
+        return v;
+    }
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(off->getType())) {
+        if (vt->getNumElements() == 2) {
+            return off;
+        }
+        if (vt->getNumElements() >= 3) {
+            return cg.b->CreateShuffleVector(
+                off, llvm::UndefValue::get(off->getType()),
+                llvm::ConstantVector::get(
+                    {llvm::ConstantInt::get(i32, 0),
+                     llvm::ConstantInt::get(i32, 1)}));
+        }
+    }
+    return llvm::Constant::getNullValue(v2i32);
+}
+
+/* AIR sample_texture_2d_array* passes spatial coords and array layer as
+ * separate arguments; GLSL bundles them into vec3(vec2(P), layer) or
+ * vec2(s, layer) for 1D arrays. */
+static bool splitSampleArrayCoord(Codegen &cg, MGLIRTexKind kind,
+                                  llvm::Value *uv, llvm::Value **outCoord,
+                                  llvm::Value **outLayer) {
+    if (!uv || !outCoord || !outLayer) {
+        return false;
+    }
+    *outCoord = uv;
+    *outLayer = nullptr;
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
+    if (kind == MGLIR_TEX_2D_ARRAY || kind == MGLIR_TEX_2D_MS_ARRAY) {
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(uv->getType());
+        if (!vt || vt->getElementCount().getFixedValue() < 3u) {
+            cg.err = 1;
+            cg.errmsg = "codegen: sampler2DArray texture access expects vec3 "
+                        "coordinates";
+            return false;
+        }
+        *outLayer = cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+        *outCoord = cg.b->CreateShuffleVector(
+            uv, llvm::UndefValue::get(uv->getType()), {0, 1});
+        return true;
+    }
+    if (kind == MGLIR_TEX_1D_ARRAY) {
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(uv->getType());
+        if (!vt || vt->getElementCount().getFixedValue() < 2u) {
+            cg.err = 1;
+            cg.errmsg = "codegen: sampler1DArray texture access expects vec2 "
+                        "coordinates";
+            return false;
+        }
+        llvm::Value *x = cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+        *outLayer = cg.b->CreateExtractElement(uv, cg.b->getInt32(1));
+        llvm::Value *expanded = llvm::UndefValue::get(v2f32);
+        expanded = cg.b->CreateInsertElement(expanded, x, cg.b->getInt32(0));
+        expanded = cg.b->CreateInsertElement(
+            expanded, llvm::ConstantFP::get(f32, 0.5), cg.b->getInt32(1));
+        *outCoord = expanded;
+        return true;
+    }
+    return true;
+}
+
+static llvm::Value *addTexelOffset(Codegen &cg, llvm::Value *coord,
+                                   llvm::Value *off)
+{
+    if (!off) {
+        return coord;
+    }
+    if (coord->getType()->isIntegerTy() && off->getType()->isIntegerTy()) {
+        return cg.b->CreateAdd(coord, off);
+    }
+    if (auto *cvt = llvm::dyn_cast<llvm::FixedVectorType>(coord->getType())) {
+        if (off->getType()->isIntegerTy() && cvt->getNumElements() >= 2) {
+            llvm::Value *expanded = llvm::UndefValue::get(coord->getType());
+            expanded = cg.b->CreateInsertElement(expanded, off,
+                                                 cg.b->getInt32(0));
+            expanded = cg.b->CreateInsertElement(
+                expanded, llvm::ConstantInt::get(
+                              llvm::Type::getInt32Ty(*cg.ctx), 0),
+                cg.b->getInt32(1));
+            if (cvt->getNumElements() == 3) {
+                expanded = cg.b->CreateInsertElement(
+                    expanded,
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2)),
+                    cg.b->getInt32(2));
+            }
+            return cg.b->CreateAdd(coord, expanded);
+        }
+        if (auto *ovt =
+                llvm::dyn_cast<llvm::FixedVectorType>(off->getType())) {
+            if (ovt->getNumElements() == 2 &&
+                cvt->getNumElements() == 3) {
+                llvm::Value *expanded = llvm::UndefValue::get(coord->getType());
+                expanded = cg.b->CreateInsertElement(
+                    expanded, cg.b->CreateExtractElement(off, cg.b->getInt32(0)),
+                    cg.b->getInt32(0));
+                expanded = cg.b->CreateInsertElement(
+                    expanded, cg.b->CreateExtractElement(off, cg.b->getInt32(1)),
+                    cg.b->getInt32(1));
+                expanded = cg.b->CreateInsertElement(
+                    expanded,
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2)),
+                    cg.b->getInt32(2));
+                return cg.b->CreateAdd(coord, expanded);
+            }
+            if (ovt->getNumElements() == cvt->getNumElements()) {
+                return cg.b->CreateAdd(coord, off);
+            }
+        }
+    }
+    return coord;
+}
+
 /* Matrix builtins (declared early; defined after emitExpr). */
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
+static llvm::Value *emitInterpolateAtBuiltin(
+    Codegen &cg, const MGLExpr *e, const char *name, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals);
 static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
                                       const char *name, const MGLIRModule *mod,
                                       const std::map<std::string, MType> &locals);
@@ -1081,6 +1921,33 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         }
         return out;
     }
+    if ((op == MGL_OP_EQ || op == MGL_OP_NE) && larr && rarr) {
+        /* GLSL 4.60 §5.9: mat == / != → scalar bool (all elements). */
+        uint32_t cols = colCount(larr);
+        if (cols != colCount(rarr) || rowCount(larr) != rowCount(rarr))
+            return nullptr;
+        llvm::Type *colTy = larr->getElementType();
+        bool fp = colTy->isFPOrFPVectorTy() ||
+                  (llvm::isa<llvm::FixedVectorType>(colTy) &&
+                   llvm::cast<llvm::FixedVectorType>(colTy)
+                       ->getElementType()
+                       ->isFloatingPointTy());
+        llvm::Value *acc = nullptr;
+        for (uint32_t c = 0; c < cols; c++) {
+            llvm::Value *lc = cg.b->CreateExtractValue(l, c);
+            llvm::Value *rc = cg.b->CreateExtractValue(r, c);
+            llvm::Value *cmp =
+                fp ? (op == MGL_OP_EQ ? cg.b->CreateFCmpOEQ(lc, rc)
+                                      : cg.b->CreateFCmpONE(lc, rc))
+                   : (op == MGL_OP_EQ ? cg.b->CreateICmpEQ(lc, rc)
+                                      : cg.b->CreateICmpNE(lc, rc));
+            cmp = scalarizeBoolCompare(cg, op, cmp);
+            acc = !acc ? cmp
+                       : (op == MGL_OP_EQ ? cg.b->CreateAnd(acc, cmp)
+                                          : cg.b->CreateOr(acc, cmp));
+        }
+        return acc;
+    }
     return nullptr;
 }
 
@@ -1153,6 +2020,74 @@ static llvm::Value *selectArrayElement(Codegen &cg, llvm::Value *index,
     return phi;
 }
 
+/* Peel to the IMAGE element type of a (possibly array) image uniform. */
+static const MGLIRType *imageElementType(const MGLIRSymbol *s) {
+    if (!s || !s->type) return nullptr;
+    const MGLIRType *t = s->type;
+    while (t && t->kind == MGLIR_TYPE_ARRAY)
+        t = t->elem_type;
+    return (t && t->kind == MGLIR_TYPE_IMAGE) ? t : nullptr;
+}
+
+/* Resolve imageLoad/Store/Atomic/Size first arg: image or image[i]. */
+static llvm::Value *resolveImageTex(
+    Codegen &cg, const MGLExpr *ia, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals, const MGLIRType **outImgTy) {
+    if (!ia) {
+        cg.err = 1;
+        cg.errmsg = "codegen: missing image argument";
+        return nullptr;
+    }
+    const char *imageName = nullptr;
+    const MGLExpr *indexExpr = nullptr;
+    if (ia->kind == MGL_EXPR_VAR_REF) {
+        imageName = ia->u.var_ref.name;
+    } else if (ia->kind == MGL_EXPR_INDEX && ia->u.index.object &&
+               ia->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        imageName = ia->u.index.object->u.var_ref.name;
+        indexExpr = ia->u.index.index;
+    } else {
+        cg.err = 1;
+        cg.errmsg =
+            "codegen: image first argument must be an image variable";
+        return nullptr;
+    }
+    const MGLIRType *imgTy = imageElementType(findSymbol(mod, imageName));
+    if (!imgTy) {
+        cg.err = 1;
+        cg.errmsg = "codegen: requires an image variable";
+        return nullptr;
+    }
+    if (outImgTy) *outImgTy = imgTy;
+    if (indexExpr) {
+        llvm::Value *index = emitExpr(cg, indexExpr, mod, locals);
+        if (!index) return nullptr;
+        index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
+        auto ti = cg.texArrayValues.find(imageName);
+        if (ti == cg.texArrayValues.end()) {
+            cg.err = 1;
+            cg.errmsg = "codegen: missing image array binding";
+            return nullptr;
+        }
+        if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(index)) {
+            uint32_t k = (uint32_t)ci->getZExtValue();
+            if (k < ti->second.size()) return ti->second[k];
+            if (!ti->second.empty()) return ti->second.back();
+            cg.err = 1;
+            cg.errmsg = "codegen: empty image array binding";
+            return nullptr;
+        }
+        return selectArrayElement(cg, index, ti->second);
+    }
+    llvm::Value *tex = samplerTexValue(cg, imageName);
+    if (!tex) {
+        cg.err = 1;
+        cg.errmsg =
+            std::string("codegen: missing image binding for ") + imageName;
+    }
+    return tex;
+}
+
 /* Sample from a sampler array by index without phi-selecting texture or
  * sampler pointers (Metal's compiler crashes on those inside loops).
  * One switch case performs exactly one sample; each texel component then
@@ -1220,6 +2155,20 @@ static llvm::Value *sampleArrayElementBySwitch(
  * component.  `idx` must be an integer value. */
 static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
                                    const MType &bt, llvm::Value *idx) {
+    /* Arrays-of-matrices: arr takes precedence (same as llvmType). */
+    if (bt.isArray() || (!bt.isMatrix() && obj->getType()->isArrayTy())) {
+        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+        if (!arr) return nullptr;
+        uint32_t C = (uint32_t)arr->getNumElements();
+        llvm::Value *res = nullptr;
+        for (uint32_t i = 0; i < C; i++) {
+            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            res = res ? cg.b->CreateSelect(eq, el, res) : el;
+        }
+        return res;
+    }
     if (bt.isMatrix()) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
         if (!arr) return nullptr;
@@ -1233,19 +2182,6 @@ static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
         }
         return res;
     }
-    if (bt.isArray() || obj->getType()->isArrayTy()) {
-        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
-        if (!arr) return nullptr;
-        uint32_t C = (uint32_t)arr->getNumElements();
-        llvm::Value *res = nullptr;
-        for (uint32_t i = 0; i < C; i++) {
-            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
-            llvm::Value *eq = cg.b->CreateICmpEQ(
-                idx, llvm::ConstantInt::get(idx->getType(), i));
-            res = res ? cg.b->CreateSelect(eq, el, res) : el;
-        }
-        return res;
-    }
     if (obj->getType()->isVectorTy())
         return cg.b->CreateExtractElement(obj, idx);
     return nullptr;
@@ -1255,6 +2191,21 @@ static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
 static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
                                      const MType &bt, llvm::Value *idx,
                                      llvm::Value *val) {
+    /* Arrays-of-matrices: arr takes precedence (same as llvmType). */
+    if (bt.isArray() || (!bt.isMatrix() && obj->getType()->isArrayTy())) {
+        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+        if (!arr) return nullptr;
+        uint32_t n = (uint32_t)arr->getNumElements();
+        llvm::Value *out = llvm::UndefValue::get(obj->getType());
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            llvm::Value *ne = cg.b->CreateSelect(eq, val, el);
+            out = cg.b->CreateInsertValue(out, ne, i);
+        }
+        return out;
+    }
     if (bt.isMatrix()) {
         auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
         if (!arr) return nullptr;
@@ -1266,20 +2217,6 @@ static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
                 idx, llvm::ConstantInt::get(idx->getType(), i));
             llvm::Value *nc = cg.b->CreateSelect(eq, val, col);
             out = cg.b->CreateInsertValue(out, nc, i);
-        }
-        return out;
-    }
-    if (bt.isArray() || obj->getType()->isArrayTy()) {
-        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
-        if (!arr) return nullptr;
-        uint32_t n = (uint32_t)arr->getNumElements();
-        llvm::Value *out = llvm::UndefValue::get(obj->getType());
-        for (uint32_t i = 0; i < n; i++) {
-            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
-            llvm::Value *eq = cg.b->CreateICmpEQ(
-                idx, llvm::ConstantInt::get(idx->getType(), i));
-            llvm::Value *ne = cg.b->CreateSelect(eq, val, el);
-            out = cg.b->CreateInsertValue(out, ne, i);
         }
         return out;
     }
@@ -1332,8 +2269,8 @@ static llvm::Value *insertSwizzleValue(Codegen &cg, llvm::Value *obj,
     return out;
 }
 
-/* Read an index chain (x[i][j]) from the root value without re-emitting
- * the object expression. */
+/* Read an index chain (x[i][j] / s.member.yz) from the root value without
+ * re-emitting the object expression. */
 static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
                                    llvm::Value *rootVal,
                                    const MGLIRModule *mod,
@@ -1343,10 +2280,43 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
         llvm::Value *obj = readIndexChain(cg, e->u.member.object, rootVal, mod,
                                           locals);
         if (!obj) return nullptr;
+        /* Struct field before swizzle: member names like `a` collide with
+         * the rgba swizzle alphabet (CTS local-struct `s.a = …`). */
+        if (const MGLIRType *objTy =
+                exprIRType(cg, e->u.member.object, mod, locals)) {
+            while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
+                objTy = objTy->elem_type;
+            if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                if (!obj->getType()->isStructTy()) {
+                    /* AST says struct but the materialized root holds a
+                     * different LLVM shape (e.g. a flattened block member
+                     * lvalue) — fall back to the swizzle/error path rather
+                     * than emitting an invalid extractvalue. */
+                    objTy = nullptr;
+                } else {
+                for (uint32_t i = 0; i < objTy->member_count; i++) {
+                    if (objTy->member_names[i] &&
+                        strcmp(objTy->member_names[i],
+                               e->u.member.field) == 0)
+                        return cg.b->CreateExtractValue(obj, i);
+                }
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown member '") +
+                            e->u.member.field + "'";
+                return nullptr;
+                }
+            }
+        }
         std::vector<uint32_t> idx;
         if (!swizzleIndices(e->u.member.field, &idx)) {
             cg.err = 1;
             cg.errmsg = "codegen: invalid swizzle";
+            return nullptr;
+        }
+        if (!obj->getType()->isVectorTy()) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: member '") + e->u.member.field +
+                        "' of a non-vector value is not supported";
             return nullptr;
         }
         if (idx.size() == 1)
@@ -1392,10 +2362,44 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
             objVal = readIndexChain(cg, objE, rootVal, mod, locals);
             if (!objVal) return nullptr;
         }
+        if (const MGLIRType *objTy = exprIRType(cg, objE, mod, locals)) {
+            while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
+                objTy = objTy->elem_type;
+            if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                if (!objVal->getType()->isStructTy()) {
+                    /* Mirror the read-side guard: only take the value
+                     * path when the root really is a struct aggregate. */
+                    objTy = nullptr;
+                } else {
+                for (uint32_t i = 0; i < objTy->member_count; i++) {
+                    if (objTy->member_names[i] &&
+                        strcmp(objTy->member_names[i],
+                               lhs->u.member.field) == 0) {
+                        llvm::Value *newObj =
+                            cg.b->CreateInsertValue(objVal, val, i);
+                        if (objE->kind == MGL_EXPR_VAR_REF) return newObj;
+                        return updateIndexPath(cg, objE, rootVal, newObj, mod,
+                                               locals);
+                    }
+                }
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown member '") +
+                            lhs->u.member.field + "'";
+                return nullptr;
+                }
+            }
+        }
         std::vector<uint32_t> idx;
         if (!swizzleIndices(lhs->u.member.field, &idx)) {
             cg.err = 1;
             cg.errmsg = "codegen: invalid swizzle";
+            return nullptr;
+        }
+        if (!objVal->getType()->isVectorTy()) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: member '") +
+                        lhs->u.member.field +
+                        "' of a non-vector value is not supported";
             return nullptr;
         }
         llvm::Value *newObj = insertSwizzleValue(cg, objVal, idx, val);
@@ -1408,7 +2412,7 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
     llvm::Value *objVal;
     if (objE->kind == MGL_EXPR_VAR_REF) {
         objVal = rootVal;
-    } else if (objE->kind == MGL_EXPR_INDEX) {
+    } else if (objE->kind == MGL_EXPR_INDEX || objE->kind == MGL_EXPR_MEMBER) {
         objVal = readIndexChain(cg, objE, rootVal, mod, locals);
         if (!objVal) return nullptr;
     } else {
@@ -1486,7 +2490,13 @@ const MGLIRType *ssboExprType(const MGLExpr *e, const MGLIRSymbol *sb,
                                           : cur->u.member.object;
     }
     std::reverse(path.begin(), path.end());
+    /* Flattened anonymous-block members start at their static offset in
+     * the owning block (pad + unsized-tail CTS shaders). */
     uint32_t off = 0;
+    if (sb && sb->block_name && sb->block_name[0] &&
+        sb->offset != UINT32_MAX) {
+        off = sb->offset;
+    }
     for (const MGLExpr *pe : path) {
         if (!ty) return nullptr;
         if (pe->kind == MGL_EXPR_MEMBER) {
@@ -1526,7 +2536,22 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
                          const MGLIRSymbol *sb, const MGLIRModule *mod,
                          const std::map<std::string, MType> &locals,
                          const MGLIRType **outTy) {
+    /* Flattened anonymous-block members are addressed through the owning
+     * block's device buffer at the member's static offset. */
+    const char *bufName =
+        (sb->block_name && sb->block_name[0]) ? sb->block_name : sb->name;
     const MGLIRType *ty = sb->type;
+    uint32_t off = 0;
+    if (sb->block_name && sb->block_name[0]) {
+        if (sb->offset != UINT32_MAX)
+            off = sb->offset;
+        else {
+            const MGLIRSymbol *blk = findSymbol(mod, sb->block_name);
+            if (blk && blk->type && blk->type->member_offsets &&
+                sb->block_member_index < blk->type->member_count)
+                off = blk->type->member_offsets[sb->block_member_index];
+        }
+    }
     std::vector<const MGLExpr *> path;
     const MGLExpr *cur = e;
     while (cur->kind == MGL_EXPR_MEMBER || cur->kind == MGL_EXPR_INDEX) {
@@ -1535,8 +2560,53 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
                                           : cur->u.member.object;
     }
     std::reverse(path.begin(), path.end());
-    llvm::Value *base = cg.ssboPtrs[sb->name];
-    uint32_t off = 0;
+    auto pit = cg.ssboPtrs.find(bufName);
+    if (pit == cg.ssboPtrs.end() || !pit->second) {
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: SSBO '") + bufName +
+                    "' has no device buffer";
+        return nullptr;
+    }
+    llvm::Value *base = pit->second;
+    /* Buffer instance arrays: g_ssbo[i].member selects a separate Metal
+     * buffer per element (mirrors UBO instance-array handling). */
+    if (!sb->block_name && uniformBlockIsInstanceArray(sb->type) &&
+        !path.empty() && path[0]->kind == MGL_EXPR_INDEX &&
+        path[0]->u.index.object &&
+        path[0]->u.index.object->kind == MGL_EXPR_VAR_REF &&
+        path[0]->u.index.object->u.var_ref.name &&
+        strcmp(path[0]->u.index.object->u.var_ref.name, sb->name) == 0) {
+        auto slotIt = cg.ssboElemSlot.find(bufName);
+        auto tyIt = cg.ssboElemArrTy.find(bufName);
+        if (slotIt == cg.ssboElemSlot.end() ||
+            tyIt == cg.ssboElemArrTy.end()) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: SSBO block array '") +
+                        bufName + "' has no element buffers";
+            return nullptr;
+        }
+        llvm::Value *elemIndex =
+            emitExpr(cg, path[0]->u.index.index, mod, locals);
+        if (!elemIndex) return nullptr;
+        elemIndex = coerceScalar(cg, elemIndex, MGLIR_SCALAR_UINT);
+        uint32_t elemCount = uniformBlockElementCount(sb->type);
+        if (elemCount == 0u) {
+            cg.err = 1;
+            cg.errmsg = "codegen: SSBO block array has zero elements";
+            return nullptr;
+        }
+        elemIndex = cg.b->CreateSelect(
+            cg.b->CreateICmpULT(elemIndex, cg.b->getInt32(elemCount)),
+            elemIndex, cg.b->getInt32(elemCount - 1u));
+        llvm::Type *ptrTy = llvm::Type::getInt8Ty(*cg.ctx)->getPointerTo(1);
+        llvm::Value *elemPtr = cg.b->CreateInBoundsGEP(
+            tyIt->second, slotIt->second,
+            {cg.b->getInt32(0), elemIndex});
+        base = cg.b->CreateLoad(ptrTy, elemPtr);
+        ty = sb->type->elem_type;
+        path.erase(path.begin());
+        off = 0;
+    }
     for (const MGLExpr *pe : path) {
         if (pe->kind == MGL_EXPR_MEMBER) {
             /* A swizzle on a vector-typed element selects one component:
@@ -1599,6 +2669,44 @@ llvm::Value *ssboAddress(Codegen &cg, const MGLExpr *e,
                                         idx, cg.b->getInt64(scalarSize))));
                 off = 0;
                 ty = mglIRTypeScalar(ty->scalar);
+                continue;
+            }
+            /* GLSL 4.60 §5.6: m[i] selects column i.  Column-major memory
+             * stores columns contiguously at matrix_stride; row-major
+             * columns are not contiguous so only CM (or tightly packed
+             * row-vecs that happen to match) can be addressed as a pointer
+             * here — row-major column writes go through SSA gather/scatter. */
+            if (ty->kind == MGLIR_TYPE_MATRIX) {
+                if (ty->row_major) {
+                    cg.err = 1;
+                    cg.errmsg =
+                        "codegen: indexing a row_major SSBO matrix column "
+                        "as an lvalue is not supported yet";
+                    return nullptr;
+                }
+                uint32_t stride = ty->layout.matrix_stride;
+                if (!stride) {
+                    uint32_t comps = ty->rows;
+                    uint32_t baseBytes =
+                        (comps <= 2u ? comps : 4u) * 4u;
+                    stride = (baseBytes + 15u) & ~15u;
+                }
+                idx = cg.b->CreateSExtOrTrunc(idx, cg.b->getInt64Ty());
+                base = cg.b->CreateGEP(
+                    cg.b->getInt8Ty(), base,
+                    cg.b->CreateAdd(cg.b->getInt64(off),
+                                    cg.b->CreateMul(
+                                        idx, cg.b->getInt64(stride))));
+                off = 0;
+                /* Column is a vector of `rows` components. */
+                MGLIRType *col = mglIRTypeVector(ty->scalar, ty->rows);
+                if (!col) {
+                    cg.err = 1;
+                    cg.errmsg =
+                        "codegen: failed to form SSBO matrix column type";
+                    return nullptr;
+                }
+                ty = col;
                 continue;
             }
             if (ty->kind != MGLIR_TYPE_ARRAY) {
@@ -1676,21 +2784,39 @@ llvm::Value *emitAtomicCounterAddress(
         p, llvm::Type::getInt32Ty(*cg.ctx)->getPointerTo(1));
 }
 
+static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
+                                      llvm::Value *off, const MGLIRType *ct,
+                                      const MType &vt);
+static void emitUBOMatrixStore(Codegen &cg, llvm::Value *base,
+                               llvm::Value *off, const MGLIRType *ct,
+                               const MType &vt, llvm::Value *v);
+static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
+                                    uint32_t moff, const MGLIRType *ct,
+                                    const MType &vt);
+static llvm::Value *emitSSBOAggregateLoad(Codegen &cg, llvm::Value *base,
+                                          const MGLIRType *ty);
+static void emitSSBOAggregateStore(Codegen &cg, llvm::Value *base,
+                                   const MGLIRType *ty, llvm::Value *v);
+
 llvm::Value *emitSSBORead(Codegen &cg, const MGLExpr *e,
                           const MGLIRSymbol *sb, const MGLIRModule *mod,
                           const std::map<std::string, MType> &locals) {
     const MGLIRType *ty = nullptr;
     llvm::Value *p = ssboAddress(cg, e, sb, mod, locals, &ty);
     if (!p) return nullptr;
-    llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
-    llvm::Align align(16);
-    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(lt)) {
-        uint64_t w = vt->getElementCount().getFixedValue();
-        if (w == 1) align = llvm::Align(4);
-        else if (w == 2) align = llvm::Align(8);
-    } else if (lt->isFloatTy() || lt->isIntegerTy(32)) {
-        align = llvm::Align(4);
+    /* Matrices need matrix_stride / row_major gathering — a packed LLVM
+     * `[cols x <rows x T>]` load is only correct for tightly packed
+     * column-major mat2 (std430). */
+    if (ty && ty->kind == MGLIR_TYPE_MATRIX) {
+        MType vt = typeFromIR(ty);
+        return emitUBOMatrixLoad(cg, p, cg.b->getInt64(0), ty, vt);
     }
+    /* Struct/array IR types have scalar==VOID; a contiguous float load
+     * plus coerceScalar(VOID) yields `store i32, float*` — illegal AIR. */
+    if (ty && (ty->kind == MGLIR_TYPE_STRUCT || ty->kind == MGLIR_TYPE_ARRAY))
+        return emitSSBOAggregateLoad(cg, p, ty);
+    llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
+    llvm::Align align = bufferLeafAlign(lt);
     p = cg.b->CreateBitCast(p, lt->getPointerTo(1));
     return cg.b->CreateAlignedLoad(lt, p, align);
 }
@@ -1699,19 +2825,34 @@ void emitSSBOWrite(Codegen &cg, const MGLExpr *e, const MGLIRSymbol *sb,
                    const MGLIRModule *mod,
                    const std::map<std::string, MType> &locals,
                    llvm::Value *v) {
+    /* Multi-component swizzle store: RMW the parent vector. */
+    if (e->kind == MGL_EXPR_MEMBER) {
+        std::vector<uint32_t> comps;
+        if (swizzleIndices(e->u.member.field, &comps) && comps.size() > 1u) {
+            llvm::Value *old =
+                emitSSBORead(cg, e->u.member.object, sb, mod, locals);
+            if (!old) return;
+            llvm::Value *nv = insertSwizzleValue(cg, old, comps, v);
+            if (!nv) return;
+            emitSSBOWrite(cg, e->u.member.object, sb, mod, locals, nv);
+            return;
+        }
+    }
     const MGLIRType *ty = nullptr;
     llvm::Value *p = ssboAddress(cg, e, sb, mod, locals, &ty);
     if (!p) return;
+    if (ty && ty->kind == MGLIR_TYPE_MATRIX) {
+        MType vt = typeFromIR(ty);
+        emitUBOMatrixStore(cg, p, cg.b->getInt64(0), ty, vt, v);
+        return;
+    }
+    if (ty && (ty->kind == MGLIR_TYPE_STRUCT || ty->kind == MGLIR_TYPE_ARRAY)) {
+        emitSSBOAggregateStore(cg, p, ty, v);
+        return;
+    }
     v = coerceScalar(cg, v, typeFromIR(ty).scalar);
     llvm::Type *lt = llvmType(typeFromIR(ty), *cg.ctx);
-    llvm::Align align(16);
-    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(lt)) {
-        uint64_t w = vt->getElementCount().getFixedValue();
-        if (w == 1) align = llvm::Align(4);
-        else if (w == 2) align = llvm::Align(8);
-    } else if (lt->isFloatTy() || lt->isIntegerTy(32)) {
-        align = llvm::Align(4);
-    }
+    llvm::Align align = bufferLeafAlign(lt);
     p = cg.b->CreateBitCast(p, lt->getPointerTo(1));
     cg.b->CreateAlignedStore(v, p, align);
 }
@@ -1729,7 +2870,15 @@ llvm::Value *emitMatrixUniform(Codegen &cg, const Uniform &u) {
     return arr;
 }
 
-/* Load a UBO matrix at byte offset `off` from `base`, honouring
+/* Natural alignment for a float/int vector of `comps` components in a
+ * std140/std430 buffer (vec3 shares vec4's 16-byte base align). */
+static llvm::Align matrixVecAlign(uint32_t comps) {
+    if (comps <= 1u) return llvm::Align(4);
+    if (comps == 2u) return llvm::Align(8);
+    return llvm::Align(16);
+}
+
+/* Load a UBO/SSBO matrix at byte offset `off` from `base`, honouring
  * matrix_stride and row_major.  LLVM SSA form is always column-major
  * ([cols x <rows x T>]); row-major memory is gathered into that shape so
  * GLSL `m[i]` still yields column i (GLSL 4.60 §5.6). */
@@ -1748,6 +2897,7 @@ static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
         llvm::ArrayType::get(colTy, vt.cols));
     if (ct->row_major) {
         llvm::Type *rowTy = llvm::FixedVectorType::get(elt, vt.cols);
+        llvm::Align align = matrixVecAlign(vt.cols);
         llvm::SmallVector<llvm::Value *, 4> rows;
         for (uint32_t r = 0; r < vt.rows; r++) {
             llvm::Value *rowOff =
@@ -1755,8 +2905,7 @@ static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
             llvm::Value *rp =
                 cg.b->CreateGEP(cg.b->getInt8Ty(), base, rowOff);
             rp = cg.b->CreateBitCast(rp, rowTy->getPointerTo(1));
-            rows.push_back(
-                cg.b->CreateAlignedLoad(rowTy, rp, llvm::Align(16)));
+            rows.push_back(cg.b->CreateAlignedLoad(rowTy, rp, align));
         }
         for (uint32_t c = 0; c < vt.cols; c++) {
             llvm::Value *col = llvm::UndefValue::get(colTy);
@@ -1769,17 +2918,65 @@ static llvm::Value *emitUBOMatrixLoad(Codegen &cg, llvm::Value *base,
         }
         return v;
     }
+    llvm::Align align = matrixVecAlign(vt.rows);
     for (uint32_t c = 0; c < vt.cols; c++) {
         llvm::Value *colOff =
             cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)c * stride));
         llvm::Value *cp =
             cg.b->CreateGEP(cg.b->getInt8Ty(), base, colOff);
         cp = cg.b->CreateBitCast(cp, colTy->getPointerTo(1));
-        llvm::Value *col =
-            cg.b->CreateAlignedLoad(colTy, cp, llvm::Align(16));
+        llvm::Value *col = cg.b->CreateAlignedLoad(colTy, cp, align);
         v = cg.b->CreateInsertValue(v, col, c);
     }
     return v;
+}
+
+/* Store SSA column-major matrix `v` into UBO/SSBO memory at `off`. */
+static void emitUBOMatrixStore(Codegen &cg, llvm::Value *base,
+                               llvm::Value *off, const MGLIRType *ct,
+                               const MType &vt, llvm::Value *v) {
+    uint32_t stride = ct->layout.matrix_stride;
+    if (stride == 0) {
+        uint32_t vec_comps = ct->row_major ? vt.cols : vt.rows;
+        uint32_t baseBytes = (vec_comps <= 2u ? vec_comps : 4u) * 4u;
+        stride = (baseBytes + 15u) & ~15u;
+    }
+    llvm::Type *elt = llvmScalar(vt.scalar, *cg.ctx);
+    llvm::Type *colTy = llvm::FixedVectorType::get(elt, vt.rows);
+    if (ct->row_major) {
+        llvm::Type *rowTy = llvm::FixedVectorType::get(elt, vt.cols);
+        llvm::Align align = matrixVecAlign(vt.cols);
+        for (uint32_t r = 0; r < vt.rows; r++) {
+            llvm::Value *row = llvm::UndefValue::get(rowTy);
+            for (uint32_t c = 0; c < vt.cols; c++) {
+                llvm::Value *col = cg.b->CreateExtractValue(v, c);
+                if (col->getType() != colTy)
+                    col = cg.b->CreateBitCast(col, colTy);
+                llvm::Value *e = cg.b->CreateExtractElement(
+                    col, cg.b->getInt32(r));
+                row = cg.b->CreateInsertElement(row, e, cg.b->getInt32(c));
+            }
+            llvm::Value *rowOff =
+                cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)r * stride));
+            llvm::Value *rp =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), base, rowOff);
+            rp = cg.b->CreateBitCast(rp, rowTy->getPointerTo(1));
+            cg.b->CreateAlignedStore(row, rp, align);
+        }
+        return;
+    }
+    llvm::Align align = matrixVecAlign(vt.rows);
+    for (uint32_t c = 0; c < vt.cols; c++) {
+        llvm::Value *col = cg.b->CreateExtractValue(v, c);
+        if (col->getType() != colTy)
+            col = cg.b->CreateBitCast(col, colTy);
+        llvm::Value *colOff =
+            cg.b->CreateAdd(off, cg.b->getInt64((uint64_t)c * stride));
+        llvm::Value *cp =
+            cg.b->CreateGEP(cg.b->getInt8Ty(), base, colOff);
+        cp = cg.b->CreateBitCast(cp, colTy->getPointerTo(1));
+        cg.b->CreateAlignedStore(col, cp, align);
+    }
 }
 
 /* Load a UBO leaf (scalar / vector / matrix / bvec) at byte offset `off`
@@ -1794,14 +2991,7 @@ static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
     llvm::Type *t = llvmType(vt, *cg.ctx);
     llvm::Value *p =
         cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
-    llvm::Align align(16);
-    if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
-        uint64_t w = fvt->getElementCount().getFixedValue();
-        if (w == 1) align = llvm::Align(4);
-        else if (w == 2) align = llvm::Align(8);
-    } else if (t->isFloatTy() || t->isIntegerTy(32)) {
-        align = llvm::Align(4);
-    }
+    llvm::Align align = bufferLeafAlign(t);
     if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
         llvm::Type *wordsTy = llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
@@ -1829,6 +3019,136 @@ static llvm::Value *emitUBOLeafLoad(Codegen &cg, llvm::Value *base,
     return emitUBOLeafLoad(cg, base, cg.b->getInt64(moff), ct, vt);
 }
 
+/* Store a scalar/vector/matrix leaf at byte offset 0 from `base`. */
+static void emitUBOLeafStore(Codegen &cg, llvm::Value *base,
+                             const MGLIRType *ct, const MType &vt,
+                             llvm::Value *v) {
+    if (ct && ct->kind == MGLIR_TYPE_MATRIX) {
+        emitUBOMatrixStore(cg, base, cg.b->getInt64(0), ct, vt, v);
+        return;
+    }
+    llvm::Type *t = llvmType(vt, *cg.ctx);
+    llvm::Align align = bufferLeafAlign(t);
+    if (vt.vec && vt.scalar == MGLIR_SCALAR_BOOL) {
+        llvm::Type *wordsTy = llvm::FixedVectorType::get(
+            llvm::Type::getInt32Ty(*cg.ctx), vt.vec);
+        llvm::Value *words = cg.b->CreateZExt(v, wordsTy);
+        llvm::Value *p = cg.b->CreateBitCast(base, wordsTy->getPointerTo(1));
+        cg.b->CreateAlignedStore(words, p, align);
+        return;
+    }
+    if (vt.scalar == MGLIR_SCALAR_BOOL && !vt.vec && !vt.isMatrix()) {
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Value *word = cg.b->CreateZExt(v, i32);
+        llvm::Value *p = cg.b->CreateBitCast(base, i32->getPointerTo(1));
+        cg.b->CreateAlignedStore(word, p, llvm::Align(4));
+        return;
+    }
+    v = coerceScalar(cg, v, vt.scalar);
+    if (v->getType() != t)
+        v = cg.b->CreateBitCast(v, t);
+    llvm::Value *p = cg.b->CreateBitCast(base, t->getPointerTo(1));
+    cg.b->CreateAlignedStore(v, p, align);
+}
+
+/* Load an SSBO struct/array honouring std140/std430 member_offsets and
+ * array_stride (never a single contiguous LLVM aggregate load). */
+static llvm::Value *emitSSBOAggregateLoad(Codegen &cg, llvm::Value *base,
+                                          const MGLIRType *ty) {
+    if (!ty) return nullptr;
+    if (ty->kind == MGLIR_TYPE_STRUCT) {
+        llvm::Type *st = llvmTypeFromIR(ty, *cg.ctx);
+        llvm::Value *v = llvm::UndefValue::get(st);
+        for (uint32_t i = 0; i < ty->member_count; i++) {
+            uint32_t moff = ty->member_offsets ? ty->member_offsets[i] : 0u;
+            const MGLIRType *mt = ty->members[i];
+            llvm::Value *mp =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), base, cg.b->getInt64(moff));
+            llvm::Value *mv;
+            if (mt->kind == MGLIR_TYPE_STRUCT || mt->kind == MGLIR_TYPE_ARRAY)
+                mv = emitSSBOAggregateLoad(cg, mp, mt);
+            else
+                mv = emitUBOLeafLoad(cg, mp, 0u, mt, typeFromIR(mt));
+            if (!mv) return nullptr;
+            v = cg.b->CreateInsertValue(v, mv, i);
+        }
+        return v;
+    }
+    if (ty->kind == MGLIR_TYPE_ARRAY) {
+        uint32_t n = ty->array_size;
+        if (n == 0u) {
+            cg.err = 1;
+            cg.errmsg =
+                "codegen: cannot load an unsized SSBO array as a value";
+            return nullptr;
+        }
+        llvm::Type *at = llvmTypeFromIR(ty, *cg.ctx);
+        llvm::Value *v = llvm::UndefValue::get(at);
+        uint32_t stride = ty->layout.array_stride;
+        if (!stride && ty->elem_type)
+            stride = ty->elem_type->layout.size;
+        const MGLIRType *et = ty->elem_type;
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *ep = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), base,
+                cg.b->getInt64((uint64_t)i * stride));
+            llvm::Value *ev;
+            if (et->kind == MGLIR_TYPE_STRUCT || et->kind == MGLIR_TYPE_ARRAY)
+                ev = emitSSBOAggregateLoad(cg, ep, et);
+            else
+                ev = emitUBOLeafLoad(cg, ep, 0u, et, typeFromIR(et));
+            if (!ev) return nullptr;
+            v = cg.b->CreateInsertValue(v, ev, i);
+        }
+        return v;
+    }
+    return emitUBOLeafLoad(cg, base, 0u, ty, typeFromIR(ty));
+}
+
+static void emitSSBOAggregateStore(Codegen &cg, llvm::Value *base,
+                                   const MGLIRType *ty, llvm::Value *v) {
+    if (!ty || !v) return;
+    if (ty->kind == MGLIR_TYPE_STRUCT) {
+        for (uint32_t i = 0; i < ty->member_count; i++) {
+            uint32_t moff = ty->member_offsets ? ty->member_offsets[i] : 0u;
+            const MGLIRType *mt = ty->members[i];
+            llvm::Value *mp =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), base, cg.b->getInt64(moff));
+            llvm::Value *mv = cg.b->CreateExtractValue(v, i);
+            if (mt->kind == MGLIR_TYPE_STRUCT || mt->kind == MGLIR_TYPE_ARRAY)
+                emitSSBOAggregateStore(cg, mp, mt, mv);
+            else
+                emitUBOLeafStore(cg, mp, mt, typeFromIR(mt), mv);
+        }
+        return;
+    }
+    if (ty->kind == MGLIR_TYPE_ARRAY) {
+        uint32_t n = ty->array_size;
+        if (n == 0u) {
+            cg.err = 1;
+            cg.errmsg =
+                "codegen: cannot store an unsized SSBO array as a value";
+            return;
+        }
+        uint32_t stride = ty->layout.array_stride;
+        if (!stride && ty->elem_type)
+            stride = ty->elem_type->layout.size;
+        const MGLIRType *et = ty->elem_type;
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *ep = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), base,
+                cg.b->getInt64((uint64_t)i * stride));
+            llvm::Value *ev = cg.b->CreateExtractValue(v, i);
+            if (et->kind == MGLIR_TYPE_STRUCT || et->kind == MGLIR_TYPE_ARRAY)
+                emitSSBOAggregateStore(cg, ep, et, ev);
+            else
+                emitUBOLeafStore(cg, ep, et, typeFromIR(et), ev);
+        }
+        return;
+    }
+    emitUBOLeafStore(cg, base, ty, typeFromIR(ty), v);
+}
+
 llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
     if (v.kind == VarSym::BUFFER) {
         /* Anonymous-block member: read from the block's device buffer. */
@@ -1851,11 +3171,19 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
             }
         }
         /* Uniform: single value read. */
-        llvm::Type *t = llvmType(v.type, *cg.ctx);
         uint32_t off = cg.bufferOffsets.count(v.name) ? cg.bufferOffsets[v.name] : 0;
         if (v.type.isMatrix())
             return emitMatrixUniform(cg, Uniform{v.name, v.type, off, 0});
-        return bufferLoad(cg, off, t);
+        /* Default-block uniforms use the same std140 leaf rules as named
+         * UBOs (bool/bvec as 32-bit words — never packed <N x i1>). */
+        const MGLIRSymbol *us = findSymbol(mod, v.name.c_str());
+        return emitUBOLeafLoad(cg, cg.bufferPtr, off,
+                               us ? us->type : nullptr, v.type);
+    }
+    auto amit = cg.arrayMem.find(v.name);
+    if (amit != cg.arrayMem.end()) {
+        llvm::Type *arrTy = cg.arrayMemTypes[v.name];
+        return cg.b->CreateAlignedLoad(arrTy, amit->second, llvm::Align(4));
     }
     auto it = cg.lvalues.find(v.name);
     if (it != cg.lvalues.end())
@@ -1880,6 +3208,7 @@ static bool perVertexPath(const MGLExpr *e, const char **root,
     const char *f = e->u.member.field;
     if (strcmp(f, "gl_Position") != 0 &&
         strcmp(f, "gl_PointSize") != 0 &&
+        strcmp(f, "gl_ClipDistance") != 0 &&
         strcmp(f, "gl_CullDistance") != 0)
         return false;
     if (root) *root = name;
@@ -1894,6 +3223,8 @@ static uint64_t perVertexFieldOffset(const char *field)
         return MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET;
     if (!strcmp(field, "gl_CullDistance"))
         return MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET;
+    if (!strcmp(field, "gl_ClipDistance"))
+        return MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET;
     return MGL_AIR_PER_VERTEX_POSITION_OFFSET;
 }
 
@@ -1906,6 +3237,10 @@ static llvm::Type *perVertexFieldType(Codegen &cg, const char *field)
         return llvm::ArrayType::get(
             llvm::Type::getFloatTy(*cg.ctx),
             MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
+    if (!strcmp(field, "gl_ClipDistance"))
+        return llvm::ArrayType::get(
+            llvm::Type::getFloatTy(*cg.ctx),
+            MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
     return llvm::Type::getFloatTy(*cg.ctx);
 }
 
@@ -1915,6 +3250,18 @@ static VarSym *codegenStageSymbol(Codegen &cg, const char *name,
     if (!cg.auxSyms || !name) return nullptr;
     for (VarSym &v : *cg.auxSyms) {
         if (v.kind == kind && v.name == name) return &v;
+    }
+    return nullptr;
+}
+
+/* Flattened interface-block member: match both instance and field name. */
+static VarSym *codegenBlockMember(Codegen &cg, const char *instName,
+                                  const char *field, VarSym::Kind kind)
+{
+    if (!cg.auxSyms || !instName || !field) return nullptr;
+    for (VarSym &v : *cg.auxSyms) {
+        if (v.kind == kind && v.name == field && v.blockName == instName)
+            return &v;
     }
     return nullptr;
 }
@@ -1938,15 +3285,43 @@ static llvm::Value *tessStageRecordIndex(Codegen &cg, llvm::Value *index,
         cg.b->CreateMul(patch, verticesPerPatch), index);
 }
 
+/* Native TES per-patch draws: Metal patch_id is always 0; the runtime
+ * stamps the global patch index in mgl_patch_info[2] (slot 28). */
+static llvm::Value *tessPatchIndexForStageIn(Codegen &cg)
+{
+    if (cg.isTessEval && !cg.isTESCompute && cg.indirectPtr) {
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Value *info = cg.b->CreateBitCast(
+            cg.indirectPtr, i32->getPointerTo(1));
+        return cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, info, cg.b->getInt32(2)),
+            llvm::Align(4));
+    }
+    return cg.patchId;
+}
+
 static llvm::Value *emitPatchVaryingLoad(Codegen &cg, const VarSym &sym)
 {
-    if (!cg.isTessEval || !sym.isPatch || !cg.captureBuf || !cg.patchId ||
-        sym.location == UINT32_MAX) {
+    if (!sym.isPatch || sym.location == UINT32_MAX || !cg.captureBuf)
+        return nullptr;
+    llvm::Value *patchIdx = nullptr;
+    uint64_t stride = 0;
+    if (cg.isTessEval) {
+        if (!cg.patchId) return nullptr;
+        patchIdx = cg.patchId;
+        stride = cg.patchInStride;
+    } else if (cg.isTessControl) {
+        /* TCS must reload patch outs from the shared patch-out buffer so
+         * barrier()-guarded cross-invocation writes are visible. */
+        if (!cg.patchPos) return nullptr;
+        patchIdx = cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
+        stride = cg.patchOutStride;
+    } else {
         return nullptr;
     }
     llvm::Value *off = cg.b->CreateAdd(
-        cg.b->CreateMul(cg.b->CreateZExt(cg.patchId, cg.b->getInt64Ty()),
-                        cg.b->getInt64(cg.patchInStride)),
+        cg.b->CreateMul(cg.b->CreateZExt(patchIdx, cg.b->getInt64Ty()),
+                        cg.b->getInt64(stride)),
         cg.b->getInt64(sym.location * 16u));
     llvm::Type *ty = llvmType(sym.type, *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
@@ -1970,6 +3345,70 @@ static bool emitPatchVaryingStore(Codegen &cg, const VarSym &sym,
     llvm::Type *ty = llvmType(sym.type, *cg.ctx);
     if (value->getType() != ty)
         value = coerceScalar(cg, value, sym.type.scalar);
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+    return true;
+}
+
+/* Indexed patch out/in: patch out T arr[N]; arr[i] = … / TES patch in. */
+static llvm::Value *emitPatchArrayElementLoad(
+    Codegen &cg, const VarSym &sym, llvm::Value *index)
+{
+    if (!sym.isPatch || !sym.type.isArray() || sym.location == UINT32_MAX ||
+        !cg.captureBuf)
+        return nullptr;
+    index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+    llvm::Value *patchIdx = nullptr;
+    uint64_t stride = 0;
+    if (cg.isTessControl) {
+        if (!cg.patchPos) return nullptr;
+        patchIdx = cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
+        stride = cg.patchOutStride;
+    } else if (cg.isTessEval) {
+        if (!cg.patchId) return nullptr;
+        patchIdx = cg.patchId;
+        stride = cg.patchInStride;
+    } else {
+        return nullptr;
+    }
+    MType elem = sym.type;
+    elem.arr = 0;
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(sym.location), index);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(patchIdx, cg.b->getInt64Ty()),
+                        cg.b->getInt64(stride)),
+        cg.b->CreateMul(cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
+                        cg.b->getInt64(16)));
+    llvm::Type *ty = llvmType(elem, *cg.ctx);
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
+    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+}
+
+static bool emitPatchArrayElementStore(Codegen &cg, const VarSym &sym,
+                                       llvm::Value *index,
+                                       llvm::Value *value)
+{
+    if (!cg.isTessControl || !sym.isPatch || !sym.type.isArray() ||
+        sym.location == UINT32_MAX || !cg.captureBuf || !cg.patchPos)
+        return false;
+    index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+    llvm::Value *patch = cg.b->CreateExtractElement(
+        cg.patchPos, cg.b->getInt32(0));
+    MType elem = sym.type;
+    elem.arr = 0;
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(sym.location), index);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(patch, cg.b->getInt64Ty()),
+                        cg.b->getInt64(cg.patchOutStride)),
+        cg.b->CreateMul(cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
+                        cg.b->getInt64(16)));
+    llvm::Type *ty = llvmType(elem, *cg.ctx);
+    if (value->getType() != ty)
+        value = coerceScalar(cg, value, elem.scalar);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.captureBuf, off);
     p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
     cg.b->CreateAlignedStore(value, p, llvm::Align(4));
@@ -2031,9 +3470,15 @@ static llvm::Value *loadGeometryInputVarying(Codegen &cg,
     MType elemType = sym.type;
     elemType.arr = 0;
     llvm::Type *ty = llvmType(elemType, *cg.ctx);
+    llvm::Type *loadTy = ty;
+    if (varyingNeedsFloatRecordCarrier(elemType))
+        loadTy = llvmType(floatCarrierType(elemType), *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+    llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+    if (varyingNeedsFloatRecordCarrier(elemType))
+        v = decodeFloatCarrier(cg, v, elemType.scalar, ty);
+    return v;
 }
 
 /* Interface-block GS input member: instance[k].field (or instance.field).
@@ -2064,10 +3509,9 @@ static llvm::Value *emitGeometryBlockLoad(
     } else {
         return nullptr;
     }
-    VarSym *member =
-        codegenStageSymbol(cg, e->u.member.field, VarSym::VARYING);
-    if (!member || member->location == UINT32_MAX ||
-        member->blockName != instName || member->type.isArray()) {
+    VarSym *member = codegenBlockMember(
+        cg, instName, e->u.member.field, VarSym::VARYING);
+    if (!member || member->location == UINT32_MAX || member->type.isArray()) {
         /* Array members are handled by the INDEX case so the trailing
          * element index selects the record slot. */
         return nullptr;
@@ -2075,6 +3519,27 @@ static llvm::Value *emitGeometryBlockLoad(
     vertexIndex = coerceScalar(cg, vertexIndex, MGLIR_SCALAR_UINT);
     llvm::Value *record = geometryInputRecordIndex(cg, vertexIndex);
     if (!record) return nullptr;
+    /* Matrices occupy one location per column; assemble the aggregate. */
+    if (member->type.isMatrix() && member->type.cols > 0) {
+        llvm::Type *ty = llvmType(member->type, *cg.ctx);
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(member->type.scalar, *cg.ctx), member->type.rows);
+        llvm::Value *agg = llvm::UndefValue::get(ty);
+        MType colSymType = matrixColumnType(member->type);
+        for (uint32_t c = 0; c < member->type.cols; c++) {
+            VarSym colSym = *member;
+            colSym.type = colSymType;
+            colSym.location = member->location + c;
+            llvm::Value *col = loadGeometryInputVarying(
+                cg, colSym, cg.b->getInt32(colSym.location), record,
+                cg.geometryInputPtr);
+            if (!col) return nullptr;
+            if (col->getType() != colTy)
+                col = cg.b->CreateBitCast(col, colTy);
+            agg = cg.b->CreateInsertValue(agg, col, c);
+        }
+        return agg;
+    }
     return loadGeometryInputVarying(
         cg, *member, cg.b->getInt32(member->location), record,
         cg.geometryInputPtr);
@@ -2110,18 +3575,21 @@ static llvm::Value *emitGeometryBlockArrayLoad(
     } else {
         return nullptr;
     }
-    VarSym *member =
-        codegenStageSymbol(cg, memberE->u.member.field, VarSym::VARYING);
-    /* Stage-level info for return assembly. */    if (!member || member->location == UINT32_MAX ||
-        member->blockName != instName || !member->type.isArray()) {
+    VarSym *member = codegenBlockMember(
+        cg, instName, memberE->u.member.field, VarSym::VARYING);
+    /* Arrays and matrices both consume one location per element/column. */
+    if (!member || member->location == UINT32_MAX ||
+        (!member->type.isArray() && !member->type.isMatrix())) {
         return nullptr;
     }
     llvm::Value *element = emitExpr(cg, indexExpr->u.index.index,
                                     mod, locals);
     if (!element) return nullptr;
     element = coerceScalar(cg, element, MGLIR_SCALAR_UINT);
+    uint32_t span = member->type.isMatrix() ? member->type.cols
+                                            : (uint32_t)member->type.arr;
     if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(element)) {
-        if (ci->getZExtValue() >= member->type.arr) {
+        if (ci->getZExtValue() >= span) {
             cg.err = 1;
             cg.errmsg = "codegen: interface-block array index out of range";
             return nullptr;
@@ -2132,7 +3600,13 @@ static llvm::Value *emitGeometryBlockArrayLoad(
     if (!record) return nullptr;
     llvm::Value *slot = cg.b->CreateAdd(
         cg.b->getInt32(member->location), element);
-    return loadGeometryInputVarying(cg, *member, slot, record,
+    VarSym elemSym = *member;
+    if (member->type.isMatrix())
+        elemSym.type = matrixColumnType(member->type);
+    else {
+        elemSym.type.arr = 0;
+    }
+    return loadGeometryInputVarying(cg, elemSym, slot, record,
                                     cg.geometryInputPtr);
 }
 
@@ -2144,21 +3618,41 @@ static llvm::Value *emitTessStageArrayLoad(
         e->kind != MGL_EXPR_INDEX || !e->u.index.object ||
         e->u.index.object->kind != MGL_EXPR_VAR_REF) return nullptr;
     const char *name = e->u.index.object->u.var_ref.name;
-    VarSym *sym = codegenStageSymbol(cg, name, VarSym::VARYING);
+    /* TCS may read per-vertex outs written by other invocations (after
+     * barrier()). Prefer OUTPUT/stageOut; fall back to stage-in varyings. */
+    VarSym *sym = nullptr;
+    bool fromOutput = false;
+    if (cg.isTessControl) {
+        sym = codegenStageSymbol(cg, name, VarSym::OUTPUT);
+        if (sym && sym->location != UINT32_MAX) {
+            fromOutput = true;
+        } else {
+            sym = codegenStageSymbol(cg, name, VarSym::VARYING);
+        }
+    } else {
+        sym = codegenStageSymbol(cg, name, VarSym::VARYING);
+    }
     if (!sym || sym->location == UINT32_MAX) return nullptr;
     llvm::Value *index = emitExpr(cg, e->u.index.index, mod, locals);
     if (!index) return nullptr;
     llvm::Value *record = nullptr;
     llvm::Value *base = nullptr;
+    uint64_t stride = 0;
     if (cg.isGeometry) {
         if (!cg.geometryInputPtr || !cg.geometryPrimitiveId) return nullptr;
         index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
         record = geometryInputRecordIndex(cg, index);
         base = cg.geometryInputPtr;
+    } else if (fromOutput) {
+        if (!cg.stageOutPtr || !cg.patchPos) return nullptr;
+        record = tessStageRecordIndex(cg, index, false);
+        base = cg.stageOutPtr;
+        stride = cg.stageOutStride;
     } else {
         if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr) return nullptr;
         record = tessStageRecordIndex(cg, index, true);
         base = cg.stageInPtr;
+        stride = cg.stageInStride;
     }
     if (cg.isGeometry) {
         return loadGeometryInputVarying(cg, *sym, cg.b->getInt32(sym->location),
@@ -2166,12 +3660,18 @@ static llvm::Value *emitTessStageArrayLoad(
     }
     llvm::Value *off = cg.b->CreateAdd(
         cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
-                        cg.b->getInt64(cg.stageInStride)),
+                        cg.b->getInt64(stride)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
+    llvm::Type *loadTy = ty;
+    if (varyingNeedsFloatRecordCarrier(sym->type))
+        loadTy = llvmType(floatCarrierType(sym->type), *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+    llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+    if (varyingNeedsFloatRecordCarrier(sym->type))
+        v = decodeFloatCarrier(cg, v, sym->type.scalar, ty);
+    return v;
 }
 
 static bool emitTessStageArrayStore(
@@ -2193,12 +3693,205 @@ static bool emitTessStageArrayStore(
                         cg.b->getInt64(cg.stageOutStride)),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
-    if (value->getType() != ty)
-        value = coerceScalar(cg, value, sym->type.scalar);
+    llvm::Value *storeVal = value;
+    llvm::Type *storeTy = ty;
+    if (varyingNeedsFloatRecordCarrier(sym->type)) {
+        storeVal = encodeFloatCarrier(cg, value, sym->type.scalar);
+        storeTy = storeVal->getType();
+    } else if (value->getType() != ty) {
+        storeVal = coerceScalar(cg, value, sym->type.scalar);
+    }
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
-    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(storeVal, p, llvm::Align(4));
     return true;
+}
+
+/* TCS/TES: instance[i].field — flattened interface-block member.
+ * Reject swizzle fields (`.xyz`) so they take the vector swizzle path. */
+static bool tessBlockMemberPath(const MGLExpr *e, const char **instOut,
+                                const MGLExpr **indexOut, const char **fieldOut)
+{
+    if (!e || e->kind != MGL_EXPR_MEMBER || !e->u.member.object ||
+        e->u.member.object->kind != MGL_EXPR_INDEX)
+        return false;
+    const MGLExpr *idxE = e->u.member.object;
+    if (!idxE->u.index.object ||
+        idxE->u.index.object->kind != MGL_EXPR_VAR_REF)
+        return false;
+    const char *inst = idxE->u.index.object->u.var_ref.name;
+    if (!inst || !strcmp(inst, "gl_in") || !strcmp(inst, "gl_out"))
+        return false;
+    const char *field = e->u.member.field;
+    if (field) {
+        std::vector<uint32_t> swz;
+        if (swizzleIndices(field, &swz))
+            return false;
+    }
+    if (instOut) *instOut = inst;
+    if (indexOut) *indexOut = idxE->u.index.index;
+    if (fieldOut) *fieldOut = field;
+    return true;
+}
+
+static bool emitTessBlockMemberStore(
+    Codegen &cg, const MGLExpr *lhs, llvm::Value *value,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals)
+{
+    const char *inst = nullptr, *field = nullptr;
+    const MGLExpr *indexE = nullptr;
+    if (!cg.isTessControl || !cg.stageOutPtr || !cg.patchPos ||
+        !tessBlockMemberPath(lhs, &inst, &indexE, &field))
+        return false;
+    VarSym *member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+    if (!member || member->location == UINT32_MAX) return false;
+    llvm::Value *index = emitExpr(cg, indexE, mod, locals);
+    if (!index) return true;
+    llvm::Value *record = tessStageRecordIndex(cg, index, false);
+    llvm::Type *ty = llvmType(member->type, *cg.ctx);
+    if (member->type.isMatrix() && member->type.cols > 0) {
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(member->type.scalar, *cg.ctx), member->type.rows);
+        for (uint32_t c = 0; c < member->type.cols; c++) {
+            llvm::Value *col = cg.b->CreateExtractValue(value, c);
+            llvm::Value *off = cg.b->CreateAdd(
+                cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                                cg.b->getInt64(cg.stageOutStride)),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                               (member->location + c) * 16u));
+            llvm::Value *p =
+                cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
+            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+            cg.b->CreateAlignedStore(col, p, llvm::Align(4));
+        }
+        return true;
+    }
+    llvm::Value *storeVal = value;
+    llvm::Type *storeTy = ty;
+    if (varyingNeedsFloatRecordCarrier(member->type)) {
+        storeVal = encodeFloatCarrier(cg, value, member->type.scalar);
+        storeTy = storeVal->getType();
+    } else if (value->getType() != ty) {
+        if (ty->isIntOrIntVectorTy() && value->getType()->isIntOrIntVectorTy())
+            storeVal = cg.b->CreateBitCast(value, ty);
+        else
+            storeVal = coerceScalar(cg, value, member->type.scalar);
+    }
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                        cg.b->getInt64(cg.stageOutStride)),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + member->location * 16u));
+    llvm::Value *p =
+        cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(storeVal, p, llvm::Align(4));
+    return true;
+}
+
+static llvm::Value *emitTessBlockMemberLoad(
+    Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    const char *inst = nullptr, *field = nullptr;
+    const MGLExpr *indexE = nullptr;
+    if (!tessBlockMemberPath(e, &inst, &indexE, &field))
+        return nullptr;
+    /* TCS compound assigns (outVertex[i].x += …) must reload OUTPUT from
+     * stage_out.  Treating every TCS block load as an input made += re-read
+     * stage_in and collapse the accumulation loop to ~in[inv]+in[last]. */
+    VarSym *member = nullptr;
+    bool fromOutput = false;
+    if (cg.isTessControl) {
+        member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+        if (member && member->location != UINT32_MAX) {
+            fromOutput = true;
+        } else {
+            member = codegenBlockMember(cg, inst, field, VarSym::VARYING);
+        }
+    } else if (cg.isTessEval) {
+        member = codegenBlockMember(cg, inst, field,
+                                    VarSym::CONTROL_POINT_INPUT);
+        if (!member)
+            member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+    } else {
+        return nullptr;
+    }
+    if (!member || member->location == UINT32_MAX) return nullptr;
+    llvm::Value *index = emitExpr(cg, indexE, mod, locals);
+    if (!index) return nullptr;
+    auto loadFromRecord = [&](llvm::Value *base, uint64_t stride,
+                              llvm::Value *record) -> llvm::Value * {
+        llvm::Type *ty = llvmType(member->type, *cg.ctx);
+        if (member->type.isMatrix() && member->type.cols > 0) {
+            llvm::Type *colTy = llvm::FixedVectorType::get(
+                llvmScalar(member->type.scalar, *cg.ctx), member->type.rows);
+            llvm::Value *agg = llvm::UndefValue::get(ty);
+            for (uint32_t c = 0; c < member->type.cols; c++) {
+                llvm::Value *off = cg.b->CreateAdd(
+                    cg.b->CreateMul(
+                        cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                        cg.b->getInt64(stride)),
+                    cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                                   (member->location + c) * 16u));
+                llvm::Value *p =
+                    cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+                p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+                llvm::Value *col =
+                    cg.b->CreateAlignedLoad(colTy, p, llvm::Align(4));
+                agg = cg.b->CreateInsertValue(agg, col, c);
+            }
+            return agg;
+        }
+        llvm::Type *loadTy = ty;
+        if (varyingNeedsFloatRecordCarrier(member->type))
+            loadTy = llvmType(floatCarrierType(member->type), *cg.ctx);
+        llvm::Value *off = cg.b->CreateAdd(
+            cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                            cg.b->getInt64(stride)),
+            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                           member->location * 16u));
+        llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+        p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+        llvm::Value *v =
+            cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+        if (varyingNeedsFloatRecordCarrier(member->type))
+            v = decodeFloatCarrier(cg, v, member->type.scalar, ty);
+        return v;
+    };
+    if (cg.isTessControl) {
+        if (fromOutput) {
+            if (!cg.stageOutPtr || !cg.patchPos) return nullptr;
+            llvm::Value *record = tessStageRecordIndex(cg, index, false);
+            return loadFromRecord(cg.stageOutPtr, cg.stageOutStride, record);
+        }
+        if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr) return nullptr;
+        llvm::Value *record = tessStageRecordIndex(cg, index, true);
+        return loadFromRecord(cg.stageInPtr, cg.stageInStride, record);
+    }
+    if (cg.isTessEval) {
+        if (cg.isTESCompute) {
+            if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) return nullptr;
+            llvm::Value *patchInfo = cg.b->CreateBitCast(
+                cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
+            llvm::Value *verticesPerPatch = cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(),
+                cg.b->CreateGEP(cg.b->getInt32Ty(), patchInfo,
+                                cg.b->getInt32(1)),
+                llvm::Align(4));
+            index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+            llvm::Value *flat = cg.b->CreateAdd(
+                cg.b->CreateMul(cg.patchId, verticesPerPatch), index);
+            return loadFromRecord(cg.stageInPtr, cg.stageInStride, flat);
+        }
+        if (!cg.controlPointGetter || !cg.patchControlPtr) return nullptr;
+        auto fieldIt = cg.controlPointFields.find(member->name);
+        if (fieldIt == cg.controlPointFields.end()) return nullptr;
+        index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+        llvm::Value *record = cg.b->CreateCall(
+            cg.controlPointGetter, {index, cg.patchControlPtr});
+        return cg.b->CreateExtractValue(record, fieldIt->second);
+    }
+    return nullptr;
 }
 
 static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
@@ -2271,7 +3964,8 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
                 cg.controlPointGetter, {iv, cg.patchControlPtr});
             return cg.b->CreateExtractValue(record, 0);
         }
-        if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) {
+        if (!cg.stageInPtr || !cg.indirectPtr ||
+            (cg.isTESCompute && !cg.patchId)) {
             cg.err = 1;
             cg.errmsg = "TES AIR codegen: shared control-point buffer is unavailable";
             return nullptr;
@@ -2283,8 +3977,9 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
             cg.b->CreateGEP(cg.b->getInt32Ty(), patchInfo,
                             cg.b->getInt32(1)),
             llvm::Align(4));
+        llvm::Value *patchIndex = tessPatchIndexForStageIn(cg);
         llvm::Value *flat = cg.b->CreateAdd(
-            cg.b->CreateMul(cg.patchId, verticesPerPatch), iv);
+            cg.b->CreateMul(patchIndex, verticesPerPatch), iv);
         llvm::Value *recordIdx = flat;
         if (cg.isTESCompute && cg.tessGatherPtr && cg.tessGatherParamsPtr) {
             /* Indexed draws: the stage input is a sparse capture stream
@@ -2598,6 +4293,19 @@ static void storeGeometryCullDistances(Codegen &cg, llvm::Value *record,
     cg.b->CreateAlignedStore(distances, p, llvm::Align(4));
 }
 
+static void storeGeometryClipDistances(Codegen &cg, llvm::Value *record,
+                                       llvm::Value *distances)
+{
+    llvm::Type *arrayTy = llvm::ArrayType::get(
+        llvm::Type::getFloatTy(*cg.ctx),
+        MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET));
+    p = cg.b->CreateBitCast(p, arrayTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(distances, p, llvm::Align(4));
+}
+
 static llvm::Value *loadGeometryPosition(Codegen &cg, uint32_t record)
 {
     llvm::Type *v4 = llvm::FixedVectorType::get(
@@ -2619,6 +4327,11 @@ static llvm::Value *loadGeometryPointSize(Codegen &cg, uint32_t record)
 static void storeGeometryLayer(Codegen &cg, llvm::Value *record,
                                llvm::Value *layer)
 {
+    /* Offsets 40/44 alias gl_CullDistance[5]/[6].  Only stamp layer when the
+     * shader actually wrote gl_Layer; unconditional zero stores would wipe
+     * high-index cull distances needed for GS primitive culling. */
+    if (!cg.lvalues.count("gl_Layer"))
+        return;
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_LAYER_OFFSET));
@@ -2629,6 +4342,8 @@ static void storeGeometryLayer(Codegen &cg, llvm::Value *record,
 static void storeGeometryViewportIndex(Codegen &cg, llvm::Value *record,
                                        llvm::Value *viewportIndex)
 {
+    if (!cg.lvalues.count("gl_ViewportIndex"))
+        return;
     llvm::Value *p = cg.b->CreateGEP(
         cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
         cg.b->getInt64(MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET));
@@ -2735,6 +4450,19 @@ static llvm::Value *loadGeometryCullDistances(Codegen &cg, uint32_t record)
     return cg.b->CreateAlignedLoad(arrayTy, p, llvm::Align(4));
 }
 
+static llvm::Value *loadGeometryClipDistances(Codegen &cg, uint32_t record)
+{
+    llvm::Type *arrayTy = llvm::ArrayType::get(
+        llvm::Type::getFloatTy(*cg.ctx),
+        MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(),
+        geometryRecordPtr(cg, cg.b->getInt32(record)),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET));
+    p = cg.b->CreateBitCast(p, arrayTy->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(arrayTy, p, llvm::Align(4));
+}
+
 static llvm::Value *geometryPrimitiveCulled(
     Codegen &cg, std::initializer_list<llvm::Value *> vertices)
 {
@@ -2754,6 +4482,85 @@ static llvm::Value *geometryPrimitiveCulled(
     return culled;
 }
 
+/* GLSL matrix varyings consume one location per column (GL 4.6 §4.4.1).
+ * Stage-out records store each column in its own 16-byte slot so the
+ * GS/TES passthrough VS can rebuild `matCxR` without Metal matrix
+ * attribute types. */
+static uint32_t varyingLocationSpan(const MType &t)
+{
+    /* GL 4.6 §4.4.1: a matrix consumes one location per column; an array
+     * of matrices consumes cols*N.  Non-matrix arrays consume one per
+     * element (each element is one location / record slot). */
+    uint32_t elem = (t.isMatrix() && t.cols > 0) ? t.cols : 1u;
+    if (t.isArray() && t.arr > 0) return elem * (uint32_t)t.arr;
+    return elem;
+}
+
+static void storeVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
+                                        const VarSym &varying,
+                                        llvm::Value *value)
+{
+    llvm::Type *ty = llvmType(varying.type, *cg.ctx);
+    if (!value) value = llvm::UndefValue::get(ty);
+    if (varying.type.isMatrix() && varying.type.cols > 0) {
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(varying.type.scalar, *cg.ctx), varying.type.rows);
+        for (uint32_t c = 0; c < varying.type.cols; c++) {
+            llvm::Value *col = cg.b->CreateExtractValue(value, c);
+            llvm::Value *p = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                               (varying.location + c) * 16u));
+            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+            cg.b->CreateAlignedStore(col, p, llvm::Align(4));
+        }
+        return;
+    }
+    llvm::Type *storeTy = ty;
+    if (varyingNeedsFloatRecordCarrier(varying.type)) {
+        value = encodeFloatCarrier(cg, value, varying.type.scalar);
+        storeTy = value->getType();
+    }
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + varying.location * 16u));
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+}
+
+static llvm::Value *loadVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
+                                               const VarSym &varying)
+{
+    llvm::Type *ty = llvmType(varying.type, *cg.ctx);
+    if (varying.type.isMatrix() && varying.type.cols > 0) {
+        llvm::Type *colTy = llvm::FixedVectorType::get(
+            llvmScalar(varying.type.scalar, *cg.ctx), varying.type.rows);
+        llvm::Value *agg = llvm::UndefValue::get(ty);
+        for (uint32_t c = 0; c < varying.type.cols; c++) {
+            llvm::Value *p = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
+                               (varying.location + c) * 16u));
+            p = cg.b->CreateBitCast(p, colTy->getPointerTo(1));
+            llvm::Value *col =
+                cg.b->CreateAlignedLoad(colTy, p, llvm::Align(4));
+            agg = cg.b->CreateInsertValue(agg, col, c);
+        }
+        return agg;
+    }
+    llvm::Type *loadTy = ty;
+    if (varyingNeedsFloatRecordCarrier(varying.type))
+        loadTy = llvmType(floatCarrierType(varying.type), *cg.ctx);
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + varying.location * 16u));
+    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+    llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+    if (varyingNeedsFloatRecordCarrier(varying.type))
+        v = decodeFloatCarrier(cg, v, varying.type.scalar, ty);
+    return v;
+}
+
 static void storeGeometryVaryings(Codegen &cg, llvm::Value *record)
 {
     if (!cg.auxSyms) return;
@@ -2769,12 +4576,7 @@ static void storeGeometryVaryings(Codegen &cg, llvm::Value *record)
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(varying.name)
             ? cg.lvalues[varying.name] : llvm::UndefValue::get(ty);
-        llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                           varying.location * 16u));
-        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+        storeVaryingValueAtLocation(cg, record, varying, value);
     }
 }
 
@@ -2790,12 +4592,7 @@ static void storeTessComputeVaryings(Codegen &cg, llvm::Value *record)
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(varying.name)
             ? cg.lvalues[varying.name] : llvm::UndefValue::get(ty);
-        llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                           varying.location * 16u));
-        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+        storeVaryingValueAtLocation(cg, record, varying, value);
     }
 }
 
@@ -2807,20 +4604,9 @@ static void copyGeometryVaryings(Codegen &cg, llvm::Value *dst,
         if (varying.kind != VarSym::OUTPUT ||
             varying.location == UINT32_MAX) continue;
         if (varying.stream != 0) continue;
-        llvm::Type *ty = llvmType(varying.type, *cg.ctx);
-        uint64_t fieldOffset = MGL_AIR_PER_VERTEX_STRIDE +
-                               varying.location * 16u;
-        llvm::Value *src = cg.b->CreateGEP(
-            cg.b->getInt8Ty(),
-            geometryRecordPtr(cg, cg.b->getInt32(sourceRecord)),
-            cg.b->getInt64(fieldOffset));
-        src = cg.b->CreateBitCast(src, ty->getPointerTo(1));
-        llvm::Value *value = cg.b->CreateAlignedLoad(ty, src, llvm::Align(4));
-        llvm::Value *out = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
-            cg.b->getInt64(fieldOffset));
-        out = cg.b->CreateBitCast(out, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, out, llvm::Align(4));
+        llvm::Value *value = loadVaryingValueAtLocation(
+            cg, cg.b->getInt32(sourceRecord), varying);
+        storeVaryingValueAtLocation(cg, dst, varying, value);
     }
 }
 
@@ -2834,24 +4620,13 @@ static void copyGeometryVaryingsSelected(Codegen &cg, llvm::Value *dst,
         if (varying.kind != VarSym::OUTPUT ||
             varying.location == UINT32_MAX) continue;
         if (varying.stream != 0) continue;
-        llvm::Type *ty = llvmType(varying.type, *cg.ctx);
-        uint64_t fieldOffset = MGL_AIR_PER_VERTEX_STRIDE +
-                               varying.location * 16u;
-        auto load = [&](uint32_t source) {
-            llvm::Value *p = cg.b->CreateGEP(
-                cg.b->getInt8Ty(),
-                geometryRecordPtr(cg, cg.b->getInt32(source)),
-                cg.b->getInt64(fieldOffset));
-            p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-            return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
-        };
-        llvm::Value *value = cg.b->CreateSelect(
-            condition, load(trueRecord), load(falseRecord));
-        llvm::Value *out = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, dst),
-            cg.b->getInt64(fieldOffset));
-        out = cg.b->CreateBitCast(out, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, out, llvm::Align(4));
+        llvm::Value *falseValue = loadVaryingValueAtLocation(
+            cg, cg.b->getInt32(falseRecord), varying);
+        llvm::Value *trueValue = loadVaryingValueAtLocation(
+            cg, cg.b->getInt32(trueRecord), varying);
+        llvm::Value *value =
+            cg.b->CreateSelect(condition, trueValue, falseValue);
+        storeVaryingValueAtLocation(cg, dst, varying, value);
     }
 }
 
@@ -2902,6 +4677,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
     llvm::Value *cullDistances = cg.lvalues.count("gl_CullDistance")
         ? cg.lvalues["gl_CullDistance"] : defaultCullDistances(cg);
+    llvm::Value *clipDistances = cg.lvalues.count("gl_ClipDistance")
+        ? cg.lvalues["gl_ClipDistance"] : defaultClipDistances(cg);
     llvm::Value *layer = cg.lvalues.count("gl_Layer")
         ? cg.lvalues["gl_Layer"] : cg.b->getInt32(0);
     llvm::Value *viewportIndex = cg.lvalues.count("gl_ViewportIndex")
@@ -2935,6 +4712,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, outputRecord, pos);
         storeGeometryPointSize(cg, outputRecord, pointSize);
         storeGeometryCullDistances(cg, outputRecord, cullDistances);
+        storeGeometryClipDistances(cg, outputRecord, clipDistances);
         storeGeometryVaryings(cg, outputRecord);
         storeGeometryLayer(cg, outputRecord, layer);
         storeGeometryViewportIndex(cg, outputRecord, viewportIndex);
@@ -2972,6 +4750,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         llvm::Value *previous = loadGeometryPosition(cg, 0);
         llvm::Value *previousPoint = loadGeometryPointSize(cg, 0);
         llvm::Value *previousCull = loadGeometryCullDistances(cg, 0);
+        llvm::Value *previousClip = loadGeometryClipDistances(cg, 0);
         llvm::Value *previousLayer = loadGeometryLayer(cg, 0);
         llvm::Value *previousViewport = loadGeometryViewportIndex(cg, 0);
         llvm::Value *outputCount = cg.b->CreateAlignedLoad(
@@ -2981,6 +4760,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, outputRecord, previous);
         storeGeometryPointSize(cg, outputRecord, previousPoint);
         storeGeometryCullDistances(cg, outputRecord, previousCull);
+        storeGeometryClipDistances(cg, outputRecord, previousClip);
         storeGeometryLayer(cg, outputRecord, previousLayer);
         storeGeometryViewportIndex(cg, outputRecord, previousViewport);
         copyGeometryPrimitiveId(cg, outputRecord, 0);
@@ -2991,6 +4771,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), pointSize);
         storeGeometryCullDistances(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), cullDistances);
+        storeGeometryClipDistances(cg,
+            cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), clipDistances);
         storeGeometryLayer(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), layer);
         storeGeometryViewportIndex(cg,
@@ -3012,6 +4794,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, cg.b->getInt32(0), pos);
         storeGeometryPointSize(cg, cg.b->getInt32(0), pointSize);
         storeGeometryCullDistances(cg, cg.b->getInt32(0), cullDistances);
+        storeGeometryClipDistances(cg, cg.b->getInt32(0), clipDistances);
         storeGeometryLayer(cg, cg.b->getInt32(0), layer);
         storeGeometryViewportIndex(cg, cg.b->getInt32(0), viewportIndex);
         storeGeometryPrimitiveId(cg, cg.b->getInt32(0));
@@ -3042,6 +4825,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     llvm::Value *previousPoint1 = loadGeometryPointSize(cg, 1);
     llvm::Value *previousCull0 = loadGeometryCullDistances(cg, 0);
     llvm::Value *previousCull1 = loadGeometryCullDistances(cg, 1);
+    llvm::Value *previousClip0 = loadGeometryClipDistances(cg, 0);
+    llvm::Value *previousClip1 = loadGeometryClipDistances(cg, 1);
     llvm::Value *previousLayer0 = loadGeometryLayer(cg, 0);
     llvm::Value *previousLayer1 = loadGeometryLayer(cg, 1);
     llvm::Value *previousViewport0 = loadGeometryViewportIndex(cg, 0);
@@ -3058,6 +4843,10 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         odd, previousCull1, previousCull0);
     llvm::Value *secondCull = cg.b->CreateSelect(
         odd, previousCull0, previousCull1);
+    llvm::Value *firstClip = cg.b->CreateSelect(
+        odd, previousClip1, previousClip0);
+    llvm::Value *secondClip = cg.b->CreateSelect(
+        odd, previousClip0, previousClip1);
     llvm::Value *firstLayer = cg.b->CreateSelect(
         odd, previousLayer1, previousLayer0);
     llvm::Value *secondLayer = cg.b->CreateSelect(
@@ -3072,6 +4861,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     storeGeometryPosition(cg, outputRecord, first);
     storeGeometryPointSize(cg, outputRecord, firstPoint);
     storeGeometryCullDistances(cg, outputRecord, firstCull);
+    storeGeometryClipDistances(cg, outputRecord, firstClip);
     storeGeometryLayer(cg, outputRecord, firstLayer);
     storeGeometryViewportIndex(cg, outputRecord, firstViewport);
     copyGeometryPrimitiveIdSelected(cg, outputRecord, 0, 1, odd);
@@ -3082,6 +4872,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondPoint);
     storeGeometryCullDistances(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondCull);
+    storeGeometryClipDistances(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondClip);
     storeGeometryLayer(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondLayer);
     storeGeometryViewportIndex(cg,
@@ -3096,6 +4888,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), pointSize);
     storeGeometryCullDistances(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), cullDistances);
+    storeGeometryClipDistances(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), clipDistances);
     storeGeometryLayer(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), layer);
     storeGeometryViewportIndex(cg,
@@ -3118,11 +4912,13 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     llvm::Value *previous1ForNext = loadGeometryPosition(cg, 1);
     llvm::Value *previousPoint1ForNext = loadGeometryPointSize(cg, 1);
     llvm::Value *previousCull1ForNext = loadGeometryCullDistances(cg, 1);
+    llvm::Value *previousClip1ForNext = loadGeometryClipDistances(cg, 1);
     llvm::Value *previousLayer1ForNext = loadGeometryLayer(cg, 1);
     llvm::Value *previousViewport1ForNext = loadGeometryViewportIndex(cg, 1);
     storeGeometryPosition(cg, cg.b->getInt32(0), previous1ForNext);
     storeGeometryPointSize(cg, cg.b->getInt32(0), previousPoint1ForNext);
     storeGeometryCullDistances(cg, cg.b->getInt32(0), previousCull1ForNext);
+    storeGeometryClipDistances(cg, cg.b->getInt32(0), previousClip1ForNext);
     storeGeometryLayer(cg, cg.b->getInt32(0), previousLayer1ForNext);
     storeGeometryViewportIndex(cg, cg.b->getInt32(0), previousViewport1ForNext);
     copyGeometryPrimitiveId(cg, cg.b->getInt32(0), 1);
@@ -3130,6 +4926,7 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     storeGeometryPosition(cg, cg.b->getInt32(1), pos);
     storeGeometryPointSize(cg, cg.b->getInt32(1), pointSize);
     storeGeometryCullDistances(cg, cg.b->getInt32(1), cullDistances);
+    storeGeometryClipDistances(cg, cg.b->getInt32(1), clipDistances);
     storeGeometryLayer(cg, cg.b->getInt32(1), layer);
     storeGeometryViewportIndex(cg, cg.b->getInt32(1), viewportIndex);
     storeGeometryPrimitiveId(cg, cg.b->getInt32(1));
@@ -3161,11 +4958,7 @@ static void storeGeometryStageOutStreamVaryings(Codegen &cg,
         llvm::Type *ty = llvmType(v.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(v.name)
             ? cg.lvalues[v.name] : llvm::UndefValue::get(ty);
-        llvm::Value *p = cg.b->CreateGEP(
-            cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
-            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + v.location * 16u));
-        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-        cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+        storeVaryingValueAtLocation(cg, record, v, value);
     }
 }
 
@@ -3645,6 +5438,9 @@ static llvm::Value *emitBlockMemberChain(Codegen &cg, const MGLExpr *e,
     return v;
 }
 
+void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
+              std::map<std::string, MType> *locals);
+
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals) {
     switch (e->kind) {
@@ -3688,6 +5484,33 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->getInt32(8);
         if (strcmp(e->u.var_ref.name, "gl_MaxGeometryShaderInvocations") == 0)
             return cg.b->getInt32(32);
+        /* Image limits must match glm_params / glGet (GLSL 4.60 §7.3). */
+        if (strcmp(e->u.var_ref.name, "gl_MaxImageUnits") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxImageSamples") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVertexImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxTessControlImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxFragmentImageUniforms") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxComputeImageUniforms") == 0)
+            return cg.b->getInt32(8);
+        if (strcmp(e->u.var_ref.name, "gl_MaxCombinedImageUniforms") == 0)
+            return cg.b->getInt32(40);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxCombinedShaderOutputResources") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxCombinedImageUnitsAndFragmentOutputs") == 0)
+            return cg.b->getInt32(8);
+        /* Match glm_params floors / glGet (GLSL 4.60 §7.3). */
+        if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0)
+            return cg.b->getInt32(MGL_MAX_CLIP_DISTANCES);
+        if (strcmp(e->u.var_ref.name, "gl_MaxCullDistances") == 0)
+            return cg.b->getInt32(MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxCombinedClipAndCullDistances") == 0)
+            return cg.b->getInt32(MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
         if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
             if (!cg.position.written) {
                 cg.position.name = "gl_Position";
@@ -3706,6 +5529,37 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.threadPos;
         }
+        if (strcmp(e->u.var_ref.name, "gl_LocalInvocationID") == 0) {
+            if (!cg.localInvocationPos) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_LocalInvocationID requires a "
+                            "compute stage";
+                return nullptr;
+            }
+            return cg.localInvocationPos;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_LocalInvocationIndex") == 0) {
+            if (!cg.localInvocationIndex) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_LocalInvocationIndex requires a "
+                            "compute stage";
+                return nullptr;
+            }
+            return cg.localInvocationIndex;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_WorkGroupSize") == 0) {
+            if (!cg.hasWorkGroupSize) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_WorkGroupSize requires a compute "
+                            "stage";
+                return nullptr;
+            }
+            llvm::Type *i32 = cg.b->getInt32Ty();
+            return llvm::ConstantVector::get(
+                {llvm::ConstantInt::get(i32, cg.workGroupSizeX),
+                 llvm::ConstantInt::get(i32, cg.workGroupSizeY),
+                 llvm::ConstantInt::get(i32, cg.workGroupSizeZ)});
+        }
         if (strcmp(e->u.var_ref.name, "gl_WorkGroupID") == 0) {
             if (!cg.workGroupPos) {
                 cg.err = 1;
@@ -3714,6 +5568,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             return cg.workGroupPos;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_NumWorkGroups") == 0) {
+            if (!cg.numWorkGroups) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_NumWorkGroups requires a compute "
+                            "stage";
+                return nullptr;
+            }
+            return cg.numWorkGroups;
         }
         if (strcmp(e->u.var_ref.name, "gl_VertexID") == 0) {
             if (!cg.vertexId) {
@@ -3777,6 +5640,44 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.lvalues["gl_SampleID"];
         }
+        if (strcmp(e->u.var_ref.name, "gl_MaxSamples") == 0)
+            return cg.b->getInt32(4);
+        if (strcmp(e->u.var_ref.name, "gl_NumSamples") == 0) {
+            if (!cg.lvalues.count("gl_NumSamples")) {
+                /* Non-MSAA default; the fragment params path overwrites. */
+                return cg.b->getInt32(1);
+            }
+            return cg.lvalues["gl_NumSamples"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SamplePosition") == 0) {
+            if (!cg.lvalues.count("gl_SamplePosition")) {
+                cg.err = 1;
+                cg.errmsg =
+                    "codegen: gl_SamplePosition requires a fragment stage";
+                return nullptr;
+            }
+            return cg.lvalues["gl_SamplePosition"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SampleMaskIn") == 0) {
+            if (!cg.lvalues.count("gl_SampleMaskIn")) {
+                llvm::Type *i32 = cg.b->getInt32Ty();
+                llvm::Value *arr = llvm::UndefValue::get(
+                    llvm::ArrayType::get(i32, 1));
+                arr = cg.b->CreateInsertValue(arr, cg.b->getInt32(~0), 0);
+                cg.lvalues["gl_SampleMaskIn"] = arr;
+            }
+            return cg.lvalues["gl_SampleMaskIn"];
+        }
+        if (strcmp(e->u.var_ref.name, "gl_SampleMask") == 0) {
+            if (!cg.lvalues.count("gl_SampleMask")) {
+                llvm::Type *i32 = cg.b->getInt32Ty();
+                llvm::Value *arr = llvm::UndefValue::get(
+                    llvm::ArrayType::get(i32, 1));
+                arr = cg.b->CreateInsertValue(arr, cg.b->getInt32(~0), 0);
+                cg.lvalues["gl_SampleMask"] = arr;
+            }
+            return cg.lvalues["gl_SampleMask"];
+        }
 
         if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
             if (!cg.pointSize) {
@@ -3833,13 +5734,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(e->u.var_ref.name, "gl_PatchVerticesIn") == 0) {
             if (!cg.indirectPtr) {
                 cg.err = 1;
-                cg.errmsg = "codegen: gl_PatchVerticesIn requires a TCS stage";
+                cg.errmsg = "codegen: gl_PatchVerticesIn requires a tessellation stage";
                 return nullptr;
             }
+            /* TCS indirect: {patch_vertices, instance_count} → word0.
+             * TES compute contract: {patch_id, gl_in_vertices, …} → word1.
+             * Native TES patch_info: {draw_patch_vertices, tcs_out} → word1
+             * (word1 falls back to draw size when there is no TCS). */
+            const unsigned word = cg.isTessEval ? 1u : 0u;
             llvm::Value *p = cg.b->CreateBitCast(
                 cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
-            return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p,
-                                            llvm::Align(4));
+            return cg.b->CreateAlignedLoad(
+                cg.b->getInt32Ty(),
+                cg.b->CreateGEP(cg.b->getInt32Ty(), p, cg.b->getInt32(word)),
+                llvm::Align(4));
         }
         if (strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
             if (cg.lvalues.count("gl_PrimitiveID"))
@@ -3893,8 +5801,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!s) { cg.err = 1; return nullptr; }
         if ((s->qualifiers & MGL_AST_Q_CONST) &&
             cg.lvalues.count(e->u.var_ref.name)) {
+            /* Const values folded from global initializers above.  Non-const
+             * uniforms must load from the plain pack so glUniform* updates
+             * are visible (CTS indirectAddressing-case2). */
             return cg.lvalues[e->u.var_ref.name];
         }
+        if (s->qualifiers & MGL_AST_Q_BUFFER)
+            return emitSSBORead(cg, e, s, mod, locals);
         if (cg.isTessEval && (s->qualifiers & MGL_AST_Q_PATCH)) {
             VarSym *patch = codegenStageSymbol(
                 cg, e->u.var_ref.name, VarSym::CONTROL_POINT_INPUT);
@@ -3903,6 +5816,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (!loaded) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: unavailable TES patch input '") +
+                            e->u.var_ref.name + "'";
+            }
+            return loaded;
+        }
+        if (cg.isTessControl && (s->qualifiers & MGL_AST_Q_PATCH) &&
+            (s->qualifiers & MGL_AST_Q_OUT)) {
+            /* Reload from patch-out buffer — SSA cache would hide other
+             * invocations' barrier-ordered writes. */
+            VarSym *patch = codegenStageSymbol(
+                cg, e->u.var_ref.name, VarSym::OUTPUT);
+            llvm::Value *loaded = patch
+                ? emitPatchVaryingLoad(cg, *patch) : nullptr;
+            if (!loaded) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unavailable TCS patch output '") +
                             e->u.var_ref.name + "'";
             }
             return loaded;
@@ -3949,9 +5877,56 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     emitGeometryBlockLoad(cg, e, mod, locals))
                 return blk;
             if (cg.err) return nullptr;
+            if (llvm::Value *tb =
+                    emitTessBlockMemberLoad(cg, e, mod, locals))
+                return tb;
+            if (cg.err) return nullptr;
         }
-        if (const MGLIRSymbol *sb = ssboRootSym(e, mod))
+        /* Non-arrayed named interface-block member: `input_block.field`
+         * (FS in / VS·TES out). Sema flattens these to per-member
+         * VARYING symbols keyed by blockName. */
+        if (e->u.member.object &&
+            e->u.member.object->kind == MGL_EXPR_VAR_REF) {
+            const char *inst = e->u.member.object->u.var_ref.name;
+            VarSym *member = codegenBlockMember(
+                cg, inst, e->u.member.field, VarSym::VARYING);
+            if (!member)
+                member = codegenBlockMember(
+                    cg, inst, e->u.member.field, VarSym::OUTPUT);
+            if (member && member->location != UINT32_MAX &&
+                !member->type.isArray()) {
+                return varValue(cg, *member, mod);
+            }
+        }
+        if (const MGLIRSymbol *sb = ssboRootSym(e, mod)) {
+            /* Multi-component swizzles (`.xy`) cannot be addressed as one
+             * contiguous scalar in the SSBO; load the parent vector and
+             * shuffle in SSA. */
+            if (e->kind == MGL_EXPR_MEMBER) {
+                std::vector<uint32_t> comps;
+                if (swizzleIndices(e->u.member.field, &comps) &&
+                    comps.size() > 1u) {
+                    llvm::Value *obj =
+                        emitSSBORead(cg, e->u.member.object, sb, mod, locals);
+                    if (!obj || !obj->getType()->isVectorTy()) {
+                        if (!cg.err) {
+                            cg.err = 1;
+                            cg.errmsg =
+                                "codegen: SSBO multi-swizzle needs a vector";
+                        }
+                        return nullptr;
+                    }
+                    llvm::SmallVector<llvm::Constant *, 4> mask;
+                    for (uint32_t i : comps)
+                        mask.push_back(llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(*cg.ctx), i));
+                    return cg.b->CreateShuffleVector(
+                        obj, llvm::UndefValue::get(obj->getType()),
+                        llvm::ConstantVector::get(mask));
+                }
+            }
             return emitSSBORead(cg, e, sb, mod, locals);
+        }
         /* Uniform block instance member: lightmapInfo.BlockFactor, or
          * uni_block_array[N].entry (each instance-array element is a separate
          * GL uniform block and therefore a separate Metal buffer argument). */
@@ -3993,7 +5968,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 (ov->qualifiers & MGL_AST_Q_UNIFORM) &&
                 structGate && structGate->kind == MGLIR_TYPE_STRUCT &&
                 structGate->member_count > 0) {
+                /* Interface blocks / anonymous-block members → UBO Metal
+                 * buffers (keyed by block_name). Named struct uniforms →
+                 * plain pack at bufferOffsets. */
                 llvm::Value *base = nullptr;
+                uint32_t plainOff = startOff;
+                if (ov->is_interface_block || ov->block_name) {
                 if (rootIndexExpr) {
                     /* Instance array: each element binds its own device
                      * buffer; pick it through the entry alloca. */
@@ -4051,9 +6031,63 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                 "' has no device buffer";
                     return nullptr;
                 }
+                } else {
+                    if (!cg.bufferPtr || !objName ||
+                        !cg.bufferOffsets.count(objName)) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            std::string("codegen: plain uniform struct '") +
+                            (objName ? objName : "?") +
+                            "' has no packed offset";
+                        return nullptr;
+                    }
+                    base = cg.bufferPtr;
+                    plainOff = cg.bufferOffsets[objName] + startOff;
+                    if (rootIndexExpr) {
+                        /* Array of named struct uniforms in the plain pack. */
+                        llvm::Value *elemIndex =
+                            emitExpr(cg, rootIndexExpr->u.index.index, mod,
+                                     locals);
+                        if (!elemIndex) return nullptr;
+                        elemIndex = coerceScalar(cg, elemIndex,
+                                                 MGLIR_SCALAR_INT);
+                        uint32_t stride =
+                            ov->type->kind == MGLIR_TYPE_ARRAY
+                                ? (uint32_t)ov->type->layout.array_stride
+                                : 0u;
+                        llvm::Value *byte = cg.b->CreateMul(
+                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty()),
+                            cg.b->getInt64(stride));
+                        base = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                                               byte);
+                    }
+                }
                 return emitBlockMemberChain(cg, e, base, ubStruct,
                                             bufName ? bufName : objName, mod,
-                                            locals, startOff);
+                                            locals, plainOff);
+            }
+        }
+        /* Local / temporary struct field access (e.g. S.member after an
+         * initializer-list desugar to S(...)). */
+        if (const MGLIRType *objTy =
+                exprIRType(cg, e->u.member.object, mod, locals)) {
+            while (objTy->kind == MGLIR_TYPE_ARRAY && objTy->elem_type)
+                objTy = objTy->elem_type;
+            if (objTy->kind == MGLIR_TYPE_STRUCT) {
+                for (uint32_t i = 0; i < objTy->member_count; i++) {
+                    if (objTy->member_names[i] &&
+                        strcmp(objTy->member_names[i],
+                               e->u.member.field) == 0) {
+                        llvm::Value *obj =
+                            emitExpr(cg, e->u.member.object, mod, locals);
+                        if (!obj) return nullptr;
+                        return cg.b->CreateExtractValue(obj, i);
+                    }
+                }
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown member '") +
+                            e->u.member.field + "'";
+                return nullptr;
             }
         }
         /* Swizzle only in M1. */
@@ -4089,6 +6123,27 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 emitGeometryBlockArrayLoad(cg, e, mod, locals))
             return blockElem;
         if (cg.err) return nullptr;
+        if (e->u.index.object && e->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            const char *an = e->u.index.object->u.var_ref.name;
+            VarSym *patchArr = nullptr;
+            if (cg.isTessControl)
+                patchArr = codegenStageSymbol(cg, an, VarSym::OUTPUT);
+            else if (cg.isTessEval)
+                patchArr = codegenStageSymbol(
+                    cg, an, VarSym::CONTROL_POINT_INPUT);
+            if (patchArr && patchArr->isPatch && patchArr->type.isArray()) {
+                llvm::Value *idx =
+                    emitExpr(cg, e->u.index.index, mod, locals);
+                if (!idx) return nullptr;
+                llvm::Value *loaded =
+                    emitPatchArrayElementLoad(cg, *patchArr, idx);
+                if (!loaded) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: unavailable patch array element load";
+                }
+                return loaded;
+            }
+        }
         if (llvm::Value *stageValue =
                 emitTessStageArrayLoad(cg, e, mod, locals))
             return stageValue;
@@ -4132,6 +6187,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 structGate && structGate->kind == MGLIR_TYPE_STRUCT &&
                 structGate->member_count > 0) {
                 llvm::Value *base = nullptr;
+                uint32_t plainOff = startOff;
+                if (ov->is_interface_block || ov->block_name) {
                 if (rootIndexExpr) {
                     auto slotIt = cg.uboElemSlot.find(objName);
                     auto tyIt = cg.uboElemArrTy.find(objName);
@@ -4167,9 +6224,39 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                 "' has no device buffer";
                     return nullptr;
                 }
+                } else {
+                    if (!cg.bufferPtr || !objName ||
+                        !cg.bufferOffsets.count(objName)) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            std::string("codegen: plain uniform struct '") +
+                            (objName ? objName : "?") +
+                            "' has no packed offset";
+                        return nullptr;
+                    }
+                    base = cg.bufferPtr;
+                    plainOff = cg.bufferOffsets[objName] + startOff;
+                    if (rootIndexExpr) {
+                        llvm::Value *elemIndex =
+                            emitExpr(cg, rootIndexExpr->u.index.index, mod,
+                                     locals);
+                        if (!elemIndex) return nullptr;
+                        elemIndex = coerceScalar(cg, elemIndex,
+                                                 MGLIR_SCALAR_INT);
+                        uint32_t stride =
+                            ov->type->kind == MGLIR_TYPE_ARRAY
+                                ? (uint32_t)ov->type->layout.array_stride
+                                : 0u;
+                        llvm::Value *byte = cg.b->CreateMul(
+                            cg.b->CreateSExt(elemIndex, cg.b->getInt64Ty()),
+                            cg.b->getInt64(stride));
+                        base = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                                               byte);
+                    }
+                }
                 return emitBlockMemberChain(cg, e, base, ubStruct,
                                             bufName ? bufName : objName, mod,
-                                            locals, startOff);
+                                            locals, plainOff);
             }
         }
         /* Anonymous UBO member: `var[i]` where `var` was flattened out of
@@ -4281,8 +6368,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Value *p = cg.b->CreateGEP(
                         cg.b->getInt8Ty(), cg.stageInPtr, off);
                     llvm::Type *ty = llvmType(sym->type, *cg.ctx);
-                    p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
-                    return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
+                    llvm::Type *loadTy = ty;
+                    if (varyingNeedsFloatRecordCarrier(sym->type))
+                        loadTy = llvmType(floatCarrierType(sym->type),
+                                          *cg.ctx);
+                    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+                    llvm::Value *v =
+                        cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+                    if (varyingNeedsFloatRecordCarrier(sym->type))
+                        v = decodeFloatCarrier(cg, v, sym->type.scalar, ty);
+                    return v;
                 }
                 llvm::Value *record = cg.b->CreateCall(
                     cg.controlPointGetter, {idx, cg.patchControlPtr});
@@ -4293,24 +6388,39 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         (idxE->u.literal.base == MGL_AST_TYPE_INT ||
                          idxE->u.literal.base == MGL_AST_TYPE_UINT);
         MType bt = exprType(cg, e->u.index.object, mod, locals);
+        /* Memory-backed scalar arrays: GEP + load (avoid SSA [N x float]). */
+        if (e->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            const char *an = e->u.index.object->u.var_ref.name;
+            auto amit = cg.arrayMem.find(an ? an : "");
+            if (amit != cg.arrayMem.end()) {
+                llvm::Value *idx = emitExpr(cg, idxE, mod, locals);
+                if (!idx) return nullptr;
+                llvm::Value *ep =
+                    arrayMemGEP(cg, an, amit->second, idx);
+                llvm::Type *arrTy = cg.arrayMemTypes[an];
+                auto *aty = llvm::cast<llvm::ArrayType>(arrTy);
+                return cg.b->CreateAlignedLoad(aty->getElementType(), ep,
+                                               llvm::Align(4));
+            }
+        }
         llvm::Value *obj = emitExpr(cg, e->u.index.object, mod, locals);
         if (!obj) return nullptr;
         if (constIdx) {
             uint32_t i = (uint32_t)idxE->u.literal.value;
-            if (bt.isMatrix()) {
-                if (i >= bt.cols || !obj->getType()->isArrayTy()) {
+            if (bt.isArray() || obj->getType()->isArrayTy()) {
+                auto *arrayTy = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+                if (!arrayTy || i >= arrayTy->getNumElements()) {
                     cg.err = 1;
-                    cg.errmsg = std::string("codegen: column index ") +
+                    cg.errmsg = std::string("codegen: array index ") +
                                 std::to_string(i) + " out of range";
                     return nullptr;
                 }
                 return cg.b->CreateExtractValue(obj, i);
             }
-            if (bt.isArray()) {
-                auto *arrayTy = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
-                if (!arrayTy || i >= arrayTy->getNumElements()) {
+            if (bt.isMatrix()) {
+                if (i >= bt.cols || !obj->getType()->isArrayTy()) {
                     cg.err = 1;
-                    cg.errmsg = std::string("codegen: array index ") +
+                    cg.errmsg = std::string("codegen: column index ") +
                                 std::to_string(i) + " out of range";
                     return nullptr;
                 }
@@ -4350,7 +6460,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 if (array->array_size != 0)
                     return cg.b->getInt32(array->array_size);
-                auto slot = cg.ssboSlots.find(sb->name);
+                /* Anonymous members are keyed by the owning block name in
+                 * ssboSlots/ssboPtrs (same as ssboAddress). */
+                const char *slotName =
+                    (sb->block_name && sb->block_name[0]) ? sb->block_name
+                                                         : sb->name;
+                auto slot = cg.ssboSlots.find(slotName);
                 if (!cg.bufferSizePtr || slot == cg.ssboSlots.end()) {
                     cg.err = 1;
                     cg.errmsg = "codegen: runtime SSBO length requires buffer(25) sizes";
@@ -4364,11 +6479,72 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     cg.errmsg = "codegen: runtime SSBO array has zero stride";
                     return nullptr;
                 }
+                uint32_t sizeSlot = slot->second;
+                /* Buffer instance arrays: g_input23[i].data.length() must
+                 * read the size of element i's bound Metal buffer. */
+                if (uniformBlockIsInstanceArray(sb->type) &&
+                    !sb->block_name) {
+                    const MGLExpr *walk = object;
+                    while (walk && (walk->kind == MGL_EXPR_MEMBER ||
+                                    walk->kind == MGL_EXPR_INDEX)) {
+                        if (walk->kind == MGL_EXPR_INDEX &&
+                            walk->u.index.object &&
+                            walk->u.index.object->kind == MGL_EXPR_VAR_REF &&
+                            walk->u.index.object->u.var_ref.name &&
+                            strcmp(walk->u.index.object->u.var_ref.name,
+                                   sb->name) == 0) {
+                            llvm::Value *iv = emitExpr(
+                                cg, walk->u.index.index, mod, locals);
+                            if (!iv) return nullptr;
+                            if (auto *ci =
+                                    llvm::dyn_cast<llvm::ConstantInt>(iv)) {
+                                uint64_t idx = ci->getZExtValue();
+                                uint32_t n =
+                                    uniformBlockElementCount(sb->type);
+                                if (idx < n) sizeSlot += (uint32_t)idx;
+                            } else {
+                                /* Dynamic instance index: load sizes[base+i]
+                                 * at runtime. */
+                                llvm::Value *sizes = cg.b->CreateBitCast(
+                                    cg.bufferSizePtr,
+                                    llvm::Type::getInt32Ty(*cg.ctx)
+                                        ->getPointerTo(2));
+                                iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
+                                llvm::Value *base =
+                                    cg.b->getInt32(slot->second);
+                                llvm::Value *idx32 = cg.b->CreateAdd(
+                                    base,
+                                    cg.b->CreateZExtOrTrunc(
+                                        iv, cg.b->getInt32Ty()));
+                                llvm::Value *sizePtr = cg.b->CreateGEP(
+                                    cg.b->getInt32Ty(), sizes, idx32);
+                                llvm::Value *boundSize =
+                                    cg.b->CreateAlignedLoad(
+                                        cg.b->getInt32Ty(), sizePtr,
+                                        llvm::Align(4));
+                                llvm::Value *hasTail = cg.b->CreateICmpUGT(
+                                    boundSize, cg.b->getInt32(tailOffset));
+                                llvm::Value *available = cg.b->CreateSelect(
+                                    hasTail,
+                                    cg.b->CreateSub(
+                                        boundSize,
+                                        cg.b->getInt32(tailOffset)),
+                                    cg.b->getInt32(0));
+                                return cg.b->CreateUDiv(
+                                    available, cg.b->getInt32(stride));
+                            }
+                            break;
+                        }
+                        walk = walk->kind == MGL_EXPR_MEMBER
+                                   ? walk->u.member.object
+                                   : walk->u.index.object;
+                    }
+                }
                 llvm::Value *sizes = cg.b->CreateBitCast(
                     cg.bufferSizePtr,
                     llvm::Type::getInt32Ty(*cg.ctx)->getPointerTo(2));
                 llvm::Value *sizePtr = cg.b->CreateGEP(
-                    cg.b->getInt32Ty(), sizes, cg.b->getInt64(slot->second));
+                    cg.b->getInt32Ty(), sizes, cg.b->getInt64(sizeSlot));
                 llvm::Value *boundSize = cg.b->CreateAlignedLoad(
                     cg.b->getInt32Ty(), sizePtr, llvm::Align(4));
                 llvm::Value *hasTail = cg.b->CreateICmpUGT(
@@ -4384,11 +6560,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.isGeometry) {
                 return cg.b->getInt32(cg.geometryInputVertices);
             }
-            MType array = exprType(cg, object, mod, locals);
-            if (array.arr != 0)
-                return cg.b->getInt32(array.arr);
+            if (llvm::Value *len = emitGLSLTypeLength(cg, object, mod, locals))
+                return len;
             cg.err = 1;
-            cg.errmsg = "codegen: length() requires an array expression";
+            cg.errmsg = "codegen: length() requires an array, vector, or matrix expression";
             return nullptr;
         }
         if (strcmp(name, "EmitVertex") == 0 ||
@@ -4488,24 +6663,59 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                      llvm::Align(4));
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
         }
-        /* Scalar constructors / conversions. */
-        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
-            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
-            if (e->u.call.arg_count != 1) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: constructor '") + name +
-                            "' expects 1 argument";
-                return nullptr;
+        /* User struct constructors: S(a,b,...) and S[](…).  Must run before
+         * the generic array-ctor path so element type stays a struct. */
+        {
+            auto sit = cg.structTypes.find(name);
+            if (sit != cg.structTypes.end()) {
+                const MGLIRType *st = sit->second;
+                if (e->u.call.is_array_ctor) {
+                    uint32_t n = e->u.call.arg_count;
+                    llvm::Type *eltTy = llvmTypeFromIR(st, *cg.ctx);
+                    llvm::Value *res = llvm::UndefValue::get(
+                        llvm::ArrayType::get(eltTy, n ? n : 1u));
+                    for (uint32_t a = 0; a < n; a++) {
+                        llvm::Value *arg =
+                            emitExpr(cg, e->u.call.args[a], mod, locals);
+                        if (!arg) return nullptr;
+                        if (arg->getType() != eltTy)
+                            arg = cg.b->CreateBitCast(arg, eltTy);
+                        res = cg.b->CreateInsertValue(res, arg, a);
+                    }
+                    return res;
+                }
+                if (e->u.call.arg_count != st->member_count) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: constructor '") + name +
+                                "' expects " +
+                                std::to_string(st->member_count) +
+                                " argument(s)";
+                    return nullptr;
+                }
+                llvm::Type *sty = llvmTypeFromIR(st, *cg.ctx);
+                llvm::Value *res = llvm::UndefValue::get(sty);
+                for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+                    llvm::Value *arg =
+                        emitExpr(cg, e->u.call.args[a], mod, locals);
+                    if (!arg) return nullptr;
+                    llvm::Type *want =
+                        llvmTypeFromIR(st->members[a], *cg.ctx);
+                    if (arg->getType() != want) {
+                        if (arg->getType()->isIntOrIntVectorTy() ||
+                            arg->getType()->isFPOrFPVectorTy())
+                            arg = coerceScalar(
+                                cg, arg, typeFromIR(st->members[a]).scalar);
+                        else
+                            arg = cg.b->CreateBitCast(arg, want);
+                    }
+                    res = cg.b->CreateInsertValue(res, arg, a);
+                }
+                return res;
             }
-            llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
-            if (!arg) return nullptr;
-            MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
-                             : name[0] == 'u' ? MGLIR_SCALAR_UINT
-                             : name[0] == 'b' ? MGLIR_SCALAR_BOOL
-                                              : MGLIR_SCALAR_INT;
-            return coerceScalar(cg, arg, want);
         }
-        /* Array constructors: vecN[](a, b, ...). */
+        /* Array constructors: int[](a,b,...) / vecN[](...). Must run before
+         * scalar `int`/`float` constructors — those share the same callee
+         * name and would reject multi-arg array forms. */
         if (e->u.call.is_array_ctor) {
             llvm::Value *res = llvm::UndefValue::get(llvmType(
                 exprType(cg, e, mod, locals), *cg.ctx));
@@ -4526,6 +6736,44 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 res = cg.b->CreateInsertValue(res, arg, a);
             }
             return res;
+        }
+        /* Scalar constructors / conversions. */
+        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
+            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: constructor '") + name +
+                            "' expects 1 argument";
+                return nullptr;
+            }
+            llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
+            if (!arg) return nullptr;
+            /* GLSL 4.60 §5.4.2: scalar(vec) / scalar(mat) take the first
+             * component.  coerceScalar preserves vector shape, so peel
+             * here — otherwise float(vec4) stays <4 x float> and a later
+             * store into float* fails Metal materializeAll. */
+            if (auto *fvt = llvm::dyn_cast<llvm::FixedVectorType>(
+                    arg->getType())) {
+                (void)fvt;
+                arg = cg.b->CreateExtractElement(
+                    arg, llvm::ConstantInt::get(
+                             llvm::Type::getInt32Ty(*cg.ctx), 0));
+            } else if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                           arg->getType())) {
+                llvm::Value *col0 = cg.b->CreateExtractValue(arg, 0);
+                if (col0->getType()->isVectorTy())
+                    arg = cg.b->CreateExtractElement(
+                        col0, llvm::ConstantInt::get(
+                                  llvm::Type::getInt32Ty(*cg.ctx), 0));
+                else
+                    arg = col0;
+                (void)arrTy;
+            }
+            MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+                             : name[0] == 'u' ? MGLIR_SCALAR_UINT
+                             : name[0] == 'b' ? MGLIR_SCALAR_BOOL
+                                              : MGLIR_SCALAR_INT;
+            return coerceScalar(cg, arg, want);
         }
         /* Vector constructors: [i]uvec/bvec/vec2..4. */
         const char *vn = name;
@@ -4760,6 +7008,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                          : "air.dfdy.f32",
                                  et, {v});
             }
+            if (strcmp(name, "interpolateAtCentroid") == 0 ||
+                strcmp(name, "interpolateAtSample") == 0 ||
+                strcmp(name, "interpolateAtOffset") == 0) {
+                llvm::Value *interp = emitInterpolateAtBuiltin(cg, e, name, mod,
+                                                               locals);
+                if (interp || cg.err)
+                    return interp;
+            }
             llvm::Value *mb = emitMatrixBuiltin(cg, e, name, mod, locals);
             if (mb) return mb;
         }
@@ -4799,54 +7055,434 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return cg.b->CreateBitCast(a0, dst);
             }
         }
-        /* Storage-image operations use the texture handle table but have no
-         * sampler parameter.  image2D keeps the original float path; the
-         * array write path below mirrors Metal's texture2d_array integer ABI. */
+        /* Storage-image ops: texture handle, no sampler.  GL 1D / 1D_ARRAY
+         * are Metal-backed as 2D / 2D_ARRAY (height or y = 0). */
+        if (strcmp(name, "barrier") == 0) {
+            /* GLSL barrier(): TCS patch invocations / CS workgroup threads.
+             * TCS dispatch is one Metal threadgroup per patch, so map to
+             * threadgroup_barrier(mem_device | mem_threadgroup) —
+             * air.wg.barrier(flags, scope) with flags=1|2 (device|TG). */
+            if (e->u.call.arg_count != 0) {
+                cg.err = 1;
+                cg.errmsg = "codegen: barrier() takes no arguments";
+                return nullptr;
+            }
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            callAirFn(cg, "air.wg.barrier", voidTy,
+                      {llvm::ConstantInt::get(i32, 3),
+                       llvm::ConstantInt::get(i32, 1)});
+            return cg.b->getInt32(0);
+        }
+        if (strcmp(name, "memoryBarrier") == 0 ||
+            strcmp(name, "memoryBarrierAtomicCounter") == 0 ||
+            strcmp(name, "memoryBarrierBuffer") == 0 ||
+            strcmp(name, "memoryBarrierShared") == 0 ||
+            strcmp(name, "memoryBarrierImage") == 0 ||
+            strcmp(name, "groupMemoryBarrier") == 0) {
+            /* Map GLSL memoryBarrier* to air.wg.barrier mem flags:
+             * 1=device, 2=threadgroup, 4=texture (MSL mem_flags). */
+            if (e->u.call.arg_count != 0) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: '") + name +
+                            "' takes no arguments";
+                return nullptr;
+            }
+            unsigned flags = 0u;
+            if (strcmp(name, "memoryBarrierShared") == 0 ||
+                strcmp(name, "groupMemoryBarrier") == 0)
+                flags = 2u;
+            else if (strcmp(name, "memoryBarrierBuffer") == 0 ||
+                     strcmp(name, "memoryBarrierAtomicCounter") == 0)
+                flags = 1u;
+            else if (strcmp(name, "memoryBarrierImage") == 0)
+                flags = 4u;
+            else
+                flags = 1u | 2u | 4u;
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            callAirFn(cg, "air.wg.barrier", voidTy,
+                      {llvm::ConstantInt::get(i32, flags),
+                       llvm::ConstantInt::get(i32, 1)});
+            return cg.b->getInt32(0);
+        }
+        if (strncmp(name, "imageAtomic", 11) == 0) {
+            /* Metal 3.1 texture atomics (air.atomic_fetch_*_explicit_texture_*).
+             * Emulated RMW races under parallel TES/GS/FS, so native atomics
+             * are required for multi-invocation CTS (advanced-allStages).
+             * CompSwap and multisample keep the RMW fallback. */
+            const MGLExpr *ia = e->u.call.arg_count > 0
+                ? e->u.call.args[0] : nullptr;
+            const MGLIRType *imgTy = nullptr;
+            llvm::Value *tex = resolveImageTex(cg, ia, mod, locals, &imgTy);
+            if (!tex) return nullptr;
+            const MGLIRTexKind tk = imgTy->tex_kind;
+            const bool isUint = imgTy->tex_storage == MGLIR_SCALAR_UINT;
+            const bool isCompSwap = strcmp(name, "imageAtomicCompSwap") == 0;
+            const bool isMsImage =
+                tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
+            const unsigned wantArgs =
+                isCompSwap ? (isMsImage ? 5u : 4u) : (isMsImage ? 4u : 3u);
+            if (e->u.call.arg_count != wantArgs) {
+                cg.err = 1;
+                cg.errmsg = "codegen: imageAtomic* arity mismatch";
+                return nullptr;
+            }
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+            llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+            llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
+                llvm::Value *v = llvm::UndefValue::get(v2i32);
+                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+                return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                                 cg.b->getInt32(1));
+            };
+            llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+            if (!coord) return nullptr;
+            llvm::Value *coord2 = nullptr;
+            llvm::Value *coord3 = nullptr;
+            llvm::Value *layerOrFace = nullptr;
+            switch (tk) {
+            case MGLIR_TEX_1D:
+            case MGLIR_TEX_BUFFER:
+                if (!coord->getType()->isIntegerTy(32)) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 1D/buffer coord must be int";
+                    return nullptr;
+                }
+                coord2 = toIvec2X0(coord);
+                break;
+            case MGLIR_TEX_2D:
+            case MGLIR_TEX_2D_RECT:
+            case MGLIR_TEX_2D_MS:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 2D coord must be ivec2";
+                    return nullptr;
+                }
+                coord2 = coord;
+                break;
+            case MGLIR_TEX_1D_ARRAY:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 1DArray coord must be ivec2";
+                    return nullptr;
+                }
+                layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+                coord2 = toIvec2X0(
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
+                break;
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_CUBE:
+            case MGLIR_TEX_CUBE_ARRAY:
+            case MGLIR_TEX_3D:
+            case MGLIR_TEX_2D_MS_ARRAY:
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageAtomic 3D/cube/array coord must be ivec3";
+                    return nullptr;
+                }
+                if (tk == MGLIR_TEX_3D) {
+                    coord3 = coord;
+                } else {
+                    layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                    coord2 = cg.b->CreateShuffleVector(
+                        coord, llvm::UndefValue::get(coord->getType()), {0, 1});
+                }
+                break;
+            default:
+                cg.err = 1;
+                cg.errmsg = "codegen: imageAtomic unsupported image type";
+                return nullptr;
+            }
+            llvm::Value *msSample = nullptr;
+            unsigned dataArg = 2u;
+            if (isMsImage) {
+                msSample = emitExpr(cg, e->u.call.args[2], mod, locals);
+                if (!msSample) return nullptr;
+                msSample = coerceScalar(cg, msSample, MGLIR_SCALAR_INT);
+                dataArg = 3u;
+            }
+            llvm::Value *data =
+                emitExpr(cg, e->u.call.args[dataArg], mod, locals);
+            if (!data) return nullptr;
+            data = coerceScalar(cg, data,
+                                isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
+
+            /* Native Metal texture atomics exist for 1D/2D/3D/array/buffer;
+             * cube is unsupported on this GPU (falls back to RMW). MS and
+             * CompSwap also stay on the RMW path. */
+            const bool useNative =
+                !isCompSwap && !isMsImage &&
+                (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER ||
+                 tk == MGLIR_TEX_2D || tk == MGLIR_TEX_2D_RECT ||
+                 tk == MGLIR_TEX_1D_ARRAY || tk == MGLIR_TEX_2D_ARRAY ||
+                 tk == MGLIR_TEX_3D);
+            if (useNative) {
+                const char *opStem = nullptr;
+                if (strcmp(name, "imageAtomicAdd") == 0)
+                    opStem = "atomic_fetch_add";
+                else if (strcmp(name, "imageAtomicMin") == 0)
+                    opStem = "atomic_fetch_min";
+                else if (strcmp(name, "imageAtomicMax") == 0)
+                    opStem = "atomic_fetch_max";
+                else if (strcmp(name, "imageAtomicAnd") == 0)
+                    opStem = "atomic_fetch_and";
+                else if (strcmp(name, "imageAtomicOr") == 0)
+                    opStem = "atomic_fetch_or";
+                else if (strcmp(name, "imageAtomicXor") == 0)
+                    opStem = "atomic_fetch_xor";
+                else if (strcmp(name, "imageAtomicExchange") == 0)
+                    opStem = "atomic_exchange";
+                else {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: unsupported imageAtomic op";
+                    return nullptr;
+                }
+                llvm::Value *dataV4 = llvm::UndefValue::get(v4i32);
+                dataV4 = cg.b->CreateInsertElement(dataV4, data,
+                                                   cg.b->getInt32(0));
+                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                                   cg.b->getInt32(1));
+                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                                   cg.b->getInt32(2));
+                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                                   cg.b->getInt32(3));
+                llvm::Value *zero2 = llvm::ConstantVector::get(
+                    {cg.b->getInt32(0), cg.b->getInt32(0)});
+                llvm::Value *zero3 = llvm::ConstantVector::get(
+                    {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
+                /* memory_order_relaxed=0, access::read_write=3 */
+                llvm::Value *order = cg.b->getInt32(0);
+                llvm::Value *access = cg.b->getInt32(3);
+                auto airName = [&](const char *dim) -> std::string {
+                    return std::string("air.") + opStem + "_explicit_" + dim +
+                           (isUint ? ".u.v4i32" : ".s.v4i32");
+                };
+                llvm::Value *oldV4 = nullptr;
+                if (tk == MGLIR_TEX_3D) {
+                    oldV4 = callAirFn(cg, airName("texture_3d").c_str(), v4i32,
+                                      {tex, coord3, zero3, dataV4, order,
+                                       access});
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    oldV4 = callAirFn(
+                        cg, airName("texture_2d_array").c_str(), v4i32,
+                        {tex, coord2, layerOrFace, zero2, dataV4, order,
+                         access});
+                } else {
+                    /* 1D / buffer / 2D / rect — Metal 2D backing. */
+                    oldV4 = callAirFn(cg, airName("texture_2d").c_str(), v4i32,
+                                      {tex, coord2, zero2, dataV4, order,
+                                       access});
+                }
+                return cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0));
+            }
+
+            auto readName = [&](const char *base) -> std::string {
+                return std::string(base) +
+                       (isUint ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto writeName = [&](const char *base) -> std::string {
+                return std::string(base) +
+                       (isUint ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto doRead = [&]() -> llvm::Value * {
+                llvm::Type *retTy = llvm::StructType::get(
+                    *cg.ctx, {v4i32, cg.b->getInt8Ty()});
+                llvm::Value *r = nullptr;
+                if (tk == MGLIR_TEX_3D) {
+                    r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
+                                  retTy, {tex, coord3, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE) {
+                    r = callAirFn(cg, readName("air.read_texture_cube").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                    llvm::Value *face =
+                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                    llvm::Value *arrayIdx =
+                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                    r = callAirFn(
+                        cg, readName("air.read_texture_cube_array").c_str(),
+                        retTy, {tex, coord2, face, arrayIdx,
+                                cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS) {
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, msSample,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    llvm::Value *flat = cg.b->CreateAdd(
+                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                        msSample);
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, flat,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else {
+                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
+                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                }
+                return cg.b->CreateExtractValue(r, 0);
+            };
+            auto doWrite = [&](llvm::Value *vec4) {
+                if (tk == MGLIR_TEX_3D) {
+                    callAirFn(cg, writeName("air.write_texture_3d").c_str(),
+                              voidTy, {tex, coord3, vec4, cg.b->getInt32(0),
+                                       cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE) {
+                    callAirFn(cg, writeName("air.write_texture_cube").c_str(),
+                              voidTy, {tex, coord2, layerOrFace, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                    llvm::Value *face =
+                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                    llvm::Value *arrayIdx =
+                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                    callAirFn(cg, writeName("air.write_texture_cube_array").c_str(),
+                              voidTy, {tex, coord2, face, arrayIdx, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS) {
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy, {tex, coord2, msSample, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    llvm::Value *flat = cg.b->CreateAdd(
+                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                        msSample);
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy, {tex, coord2, flat, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
+                              voidTy, {tex, coord2, layerOrFace, vec4,
+                                       cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else {
+                    callAirFn(cg, writeName("air.write_texture_2d").c_str(),
+                              voidTy, {tex, coord2, vec4, cg.b->getInt32(0),
+                                       cg.b->getInt32(3)});
+                }
+                const char *fenceFn = "air.fence_texture_2d";
+                switch (tk) {
+                case MGLIR_TEX_3D: fenceFn = "air.fence_texture_3d"; break;
+                case MGLIR_TEX_CUBE: fenceFn = "air.fence_texture_cube"; break;
+                case MGLIR_TEX_CUBE_ARRAY:
+                    fenceFn = "air.fence_texture_cube_array";
+                    break;
+                case MGLIR_TEX_2D_ARRAY:
+                case MGLIR_TEX_1D_ARRAY:
+                case MGLIR_TEX_2D_MS:
+                case MGLIR_TEX_2D_MS_ARRAY:
+                    fenceFn = "air.fence_texture_2d_array";
+                    break;
+                default: break;
+                }
+                callAirFn(cg, fenceFn, voidTy, {tex});
+            };
+            llvm::Value *oldVec = doRead();
+            llvm::Value *old =
+                cg.b->CreateExtractElement(oldVec, cg.b->getInt32(0));
+            llvm::Value *neu = nullptr;
+            if (isCompSwap) {
+                llvm::Value *cmp = data;
+                llvm::Value *val =
+                    emitExpr(cg, e->u.call.args[dataArg + 1], mod, locals);
+                if (!val) return nullptr;
+                val = coerceScalar(cg, val,
+                                   isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
+                llvm::Value *eq = cg.b->CreateICmpEQ(old, cmp);
+                neu = cg.b->CreateSelect(eq, val, old);
+            } else if (strcmp(name, "imageAtomicAdd") == 0) {
+                neu = cg.b->CreateAdd(old, data);
+            } else if (strcmp(name, "imageAtomicMin") == 0) {
+                neu = isUint
+                    ? cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::umin, old, data)
+                    : cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::smin, old, data);
+            } else if (strcmp(name, "imageAtomicMax") == 0) {
+                neu = isUint
+                    ? cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::umax, old, data)
+                    : cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::smax, old, data);
+            } else if (strcmp(name, "imageAtomicAnd") == 0) {
+                neu = cg.b->CreateAnd(old, data);
+            } else if (strcmp(name, "imageAtomicOr") == 0) {
+                neu = cg.b->CreateOr(old, data);
+            } else if (strcmp(name, "imageAtomicXor") == 0) {
+                neu = cg.b->CreateXor(old, data);
+            } else if (strcmp(name, "imageAtomicExchange") == 0) {
+                neu = data;
+            } else {
+                cg.err = 1;
+                cg.errmsg = "codegen: unsupported imageAtomic op";
+                return nullptr;
+            }
+            llvm::Value *newVec =
+                cg.b->CreateInsertElement(oldVec, neu, cg.b->getInt32(0));
+            doWrite(newVec);
+            return old;
+        }
         if (strcmp(name, "imageStore") == 0 ||
             strcmp(name, "imageLoad") == 0 ||
             strcmp(name, "imageSize") == 0) {
             const MGLExpr *ia = e->u.call.arg_count > 0
                 ? e->u.call.args[0] : nullptr;
-            if (!ia || ia->kind != MGL_EXPR_VAR_REF) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ") + name +
-                    " first argument must be an image variable";
-                return nullptr;
-            }
-            const MGLIRSymbol *is = findSymbol(mod, ia->u.var_ref.name);
-            bool is2DArray = is && is->type->kind == MGLIR_TYPE_IMAGE &&
-                             is->type->tex_kind == MGLIR_TEX_2D_ARRAY;
-            if (!is || is->type->kind != MGLIR_TYPE_IMAGE ||
-                (is->type->tex_kind != MGLIR_TEX_2D && !is2DArray)) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ") + name +
-                    " currently requires image2D or image2DArray";
-                return nullptr;
-            }
-            llvm::Value *tex = samplerTexValue(cg, ia->u.var_ref.name);
-            if (!tex) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: missing image binding for ") +
-                    ia->u.var_ref.name;
-                return nullptr;
-            }
+            const MGLIRType *imgTy = nullptr;
+            llvm::Value *tex = resolveImageTex(cg, ia, mod, locals, &imgTy);
+            if (!tex) return nullptr;
+            const MGLIRTexKind tk = imgTy->tex_kind;
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
             llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
             llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
             llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
-            if (is2DArray && strcmp(name, "imageStore") != 0) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: ") + name +
-                    " image2DArray is not implemented yet";
-                return nullptr;
-            }
+            const MGLIRScalar storage = imgTy->tex_storage;
+            const bool isInt =
+                storage == MGLIR_SCALAR_INT || storage == MGLIR_SCALAR_UINT;
+            auto writeName = [&](const char *base) -> std::string {
+                if (!isInt) return std::string(base) + ".v4f32";
+                return std::string(base) +
+                       (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto readName = [&](const char *base) -> std::string {
+                if (!isInt) return std::string(base) + ".v4f32";
+                return std::string(base) +
+                       (storage == MGLIR_SCALAR_UINT ? ".u.v4i32" : ".s.v4i32");
+            };
+            auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
+                llvm::Value *v = llvm::UndefValue::get(v2i32);
+                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+                return cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                                 cg.b->getInt32(1));
+            };
             if (strcmp(name, "imageSize") == 0) {
-                llvm::Value *w = callAirFn(cg, "air.get_width_texture_2d",
-                                           i32, {tex, cg.b->getInt32(0)});
-                llvm::Value *h = callAirFn(cg, "air.get_height_texture_2d",
-                                           i32, {tex, cg.b->getInt32(0)});
+                /* Enough for current CTS; return ivec2(width, height-or-1). */
+                const char *wFn = "air.get_width_texture_2d";
+                const char *hFn = "air.get_height_texture_2d";
+                if (tk == MGLIR_TEX_3D) {
+                    wFn = "air.get_width_texture_3d";
+                    hFn = "air.get_height_texture_3d";
+                } else if (tk == MGLIR_TEX_2D_ARRAY ||
+                           tk == MGLIR_TEX_1D_ARRAY) {
+                    wFn = "air.get_width_texture_2d_array";
+                    hFn = "air.get_height_texture_2d_array";
+                } else if (tk == MGLIR_TEX_CUBE ||
+                           tk == MGLIR_TEX_CUBE_ARRAY) {
+                    wFn = "air.get_width_texture_cube";
+                    hFn = "air.get_height_texture_cube";
+                }
+                llvm::Value *w = callAirFn(cg, wFn, i32, {tex, cg.b->getInt32(0)});
+                llvm::Value *h = (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER)
+                    ? cg.b->getInt32(1)
+                    : callAirFn(cg, hFn, i32, {tex, cg.b->getInt32(0)});
                 llvm::Value *size = llvm::UndefValue::get(v2i32);
                 size = cg.b->CreateInsertElement(size, w, cg.b->getInt32(0));
                 return cg.b->CreateInsertElement(size, h, cg.b->getInt32(1));
@@ -4854,98 +7490,326 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!coord) return nullptr;
             coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-            llvm::Value *layer = nullptr;
-            if (is2DArray) {
+            llvm::Value *layerOrFace = nullptr;
+            llvm::Value *coord2 = nullptr;
+            llvm::Value *coord3 = nullptr;
+            /* Normalize GLSL coords to the Metal texture backing. */
+            switch (tk) {
+            case MGLIR_TEX_1D:
+            case MGLIR_TEX_BUFFER:
+                /* Buffer images are uploaded as a width×1 texture2d fallback
+                 * (see TEXBUFFER CREATE … as=texture2d), same as 1D. */
+                if (!coord->getType()->isIntegerTy(32)) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image1D/imageBuffer coord must be int";
+                    return nullptr;
+                }
+                coord2 = toIvec2X0(coord);
+                break;
+            case MGLIR_TEX_2D:
+            case MGLIR_TEX_2D_RECT:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image2D/image2DRect coord must be ivec2";
+                    return nullptr;
+                }
+                coord2 = coord;
+                break;
+            case MGLIR_TEX_1D_ARRAY:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image1DArray coord must be ivec2";
+                    return nullptr;
+                }
+                layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+                coord2 = toIvec2X0(
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(0)));
+                break;
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_CUBE:
+            case MGLIR_TEX_CUBE_ARRAY:
+            case MGLIR_TEX_3D:
+            case MGLIR_TEX_2D_MS_ARRAY:
                 if (coord->getType() != v3i32) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: image2DArray coordinate must be ivec3";
+                    cg.errmsg = "codegen: image3D/cube/2DArray/2DMSArray coord must be ivec3";
                     return nullptr;
                 }
-                layer = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
-                coord = cg.b->CreateShuffleVector(
-                    coord, llvm::UndefValue::get(coord->getType()), {0, 1});
-            } else if (coord->getType() != v2i32) {
+                if (tk == MGLIR_TEX_3D) {
+                    coord3 = coord;
+                } else {
+                    layerOrFace = cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                    coord2 = cg.b->CreateShuffleVector(
+                        coord, llvm::UndefValue::get(coord->getType()), {0, 1});
+                }
+                break;
+            case MGLIR_TEX_2D_MS:
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: image2DMS coord must be ivec2";
+                    return nullptr;
+                }
+                coord2 = coord;
+                break;
+            default:
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ") + name +
-                    " image2D coordinate must be ivec2";
+                    " unsupported image type";
                 return nullptr;
             }
-            if (strcmp(name, "imageLoad") == 0) {
-                MGLIRScalar storage = is->type->tex_storage;
-                if (storage == MGLIR_SCALAR_INT ||
-                    storage == MGLIR_SCALAR_UINT) {
-                    llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
-                    llvm::Type *retTy = llvm::StructType::get(
-                        *cg.ctx, {v4i32, cg.b->getInt8Ty()});
-                    const char *intrinsic =
-                        storage == MGLIR_SCALAR_UINT
-                            ? "air.read_texture_2d.u.v4i32"
-                            : "air.read_texture_2d.s.v4i32";
-                    llvm::Value *r = callAirFn(cg, intrinsic, retTy,
-                        {tex, coord, cg.b->getInt32(0),
-                         cg.b->getInt32(3)});
-                    return cg.b->CreateExtractValue(r, 0);
-                }
-                llvm::Type *retTy = llvm::StructType::get(
-                    *cg.ctx, {v4f32, cg.b->getInt8Ty()});
-                llvm::Value *r = callAirFn(cg, "air.read_texture_2d.v4f32",
-                    retTy, {tex, coord, cg.b->getInt32(0),
-                            cg.b->getInt32(3)});
-                return cg.b->CreateExtractValue(r, 0);
-            }
-            llvm::Value *value = emitExpr(cg, e->u.call.args[2], mod, locals);
-            if (!value) return nullptr;
-            if (is2DArray) {
-                if (value->getType() != v4i32 ||
-                    (is->type->tex_storage != MGLIR_SCALAR_INT &&
-                     is->type->tex_storage != MGLIR_SCALAR_UINT)) {
+            /* Multisample imageLoad/Store take an explicit sample index. Metal
+             * cannot write texture2d_ms, so MS images are backed as
+             * texture2d_array with sample (or layer*samples+sample) as layer. */
+            llvm::Value *msSample = nullptr;
+            const bool isMsImage =
+                tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY;
+            if (isMsImage) {
+                const unsigned expectArgs =
+                    strcmp(name, "imageStore") == 0 ? 4u : 3u;
+                if (e->u.call.arg_count != expectArgs) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: integer image2DArray store requires ivec4/uvec4";
+                    cg.errmsg = "codegen: multisample image op arity mismatch";
                     return nullptr;
                 }
-                const char *intrinsic = is->type->tex_storage == MGLIR_SCALAR_UINT
-                    ? "air.write_texture_2d_array.u.v4i32"
-                    : "air.write_texture_2d_array.s.v4i32";
-                return callAirFn(cg, intrinsic,
-                                 llvm::Type::getVoidTy(*cg.ctx),
-                                 {tex, coord, layer, value,
-                                  cg.b->getInt32(0), cg.b->getInt32(3)});
+                msSample = emitExpr(cg, e->u.call.args[2], mod, locals);
+                if (!msSample) return nullptr;
+                msSample = coerceScalar(cg, msSample, MGLIR_SCALAR_INT);
             }
-            value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
-            if (value->getType() != v4f32) {
-                cg.err = 1;
-                cg.errmsg = "codegen: imageStore image2D value must be vec4";
-                return nullptr;
+            if (strcmp(name, "imageLoad") == 0) {
+                llvm::Type *vecTy = isInt ? v4i32 : v4f32;
+                llvm::Type *retTy = llvm::StructType::get(
+                    *cg.ctx, {vecTy, cg.b->getInt8Ty()});
+                llvm::Value *r = nullptr;
+                if (tk == MGLIR_TEX_BUFFER) {
+                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
+                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_3D) {
+                    r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
+                                  retTy, {tex, coord3, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE) {
+                    r = callAirFn(cg, readName("air.read_texture_cube").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                    /* MSL texturecube_array.read(coord, face, array). GLSL
+                     * imageCubeArray uses a flat layer-face index. */
+                    llvm::Value *face =
+                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                    llvm::Value *arrayIdx =
+                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                    r = callAirFn(cg,
+                                  readName("air.read_texture_cube_array").c_str(),
+                                  retTy,
+                                  {tex, coord2, face, arrayIdx,
+                                   cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS) {
+                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, msSample,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                    /* texture2d_array planes: flat = layer * 8 + sample. */
+                    llvm::Value *flat = cg.b->CreateAdd(
+                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                        msSample);
+                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, flat,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                    r = callAirFn(cg, readName("air.read_texture_2d_array").c_str(),
+                                  retTy, {tex, coord2, layerOrFace,
+                                          cg.b->getInt32(0), cg.b->getInt32(3)});
+                } else {
+                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
+                                  retTy, {tex, coord2, cg.b->getInt32(0),
+                                          cg.b->getInt32(3)});
+                }
+                return cg.b->CreateExtractValue(r, 0);
             }
-            return callAirFn(cg, "air.write_texture_2d.v4f32",
-                             llvm::Type::getVoidTy(*cg.ctx),
-                             {tex, coord, value, cg.b->getInt32(0),
-                              cg.b->getInt32(3)});
+            const MGLExpr *valueArg = isMsImage ? e->u.call.args[3]
+                                                : e->u.call.args[2];
+            llvm::Value *value = emitExpr(cg, valueArg, mod, locals);
+            if (!value) return nullptr;
+            if (isInt) {
+                value = coerceScalar(cg, value, MGLIR_SCALAR_INT);
+                if (value->getType() != v4i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: integer imageStore value must be ivec4/uvec4";
+                    return nullptr;
+                }
+            } else {
+                value = coerceScalar(cg, value, MGLIR_SCALAR_FLOAT);
+                if (value->getType() != v4f32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: imageStore value must be vec4";
+                    return nullptr;
+                }
+            }
+            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
+            auto fenceAfterImageWrite = [&](llvm::Value *texH, MGLIRTexKind kind) {
+                /* Metal requires texture.fence() between write and a later
+                 * read of the same texture in one invocation (CTS
+                 * basic-glsl-misc / image atomics). */
+                const char *fn = "air.fence_texture_2d";
+                switch (kind) {
+                case MGLIR_TEX_3D:
+                    fn = "air.fence_texture_3d";
+                    break;
+                case MGLIR_TEX_CUBE:
+                    fn = "air.fence_texture_cube";
+                    break;
+                case MGLIR_TEX_CUBE_ARRAY:
+                    fn = "air.fence_texture_cube_array";
+                    break;
+                case MGLIR_TEX_2D_ARRAY:
+                case MGLIR_TEX_1D_ARRAY:
+                case MGLIR_TEX_2D_MS:
+                case MGLIR_TEX_2D_MS_ARRAY:
+                    fn = "air.fence_texture_2d_array";
+                    break;
+                default:
+                    break;
+                }
+                callAirFn(cg, fn, voidTy, {texH});
+            };
+            if (tk == MGLIR_TEX_3D) {
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_3d").c_str(), voidTy,
+                    {tex, coord3, value, cg.b->getInt32(0), cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
+            if (tk == MGLIR_TEX_CUBE) {
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_cube").c_str(), voidTy,
+                    {tex, coord2, layerOrFace, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
+            if (tk == MGLIR_TEX_CUBE_ARRAY) {
+                /* MSL: write(color, uint2 coord, uint face, uint array). */
+                llvm::Value *face =
+                    cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
+                llvm::Value *arrayIdx =
+                    cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_cube_array").c_str(), voidTy,
+                    {tex, coord2, face, arrayIdx, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
+            if (tk == MGLIR_TEX_2D_MS) {
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
+                    {tex, coord2, msSample, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
+            if (tk == MGLIR_TEX_2D_MS_ARRAY) {
+                llvm::Value *flat = cg.b->CreateAdd(
+                    cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
+                    msSample);
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
+                    {tex, coord2, flat, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
+            if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_2d_array").c_str(), voidTy,
+                    {tex, coord2, layerOrFace, value, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
+            /* 1D / buffer (as 2D), 2D, 2DRect */
+            {
+                llvm::Value *w = callAirFn(
+                    cg, writeName("air.write_texture_2d").c_str(), voidTy,
+                    {tex, coord2, value, cg.b->getInt32(0), cg.b->getInt32(3)});
+                fenceAfterImageWrite(tex, tk);
+                return w;
+            }
         }
-        /* texelFetch(sampler, ivec2, lod): unfiltered read. */
-        if (strcmp(name, "texelFetch") == 0) {
-            if (e->u.call.arg_count != 3 && e->u.call.arg_count != 2) {
+        /* texelFetch(sampler, ivecP, lod): unfiltered read. */
+        if (strcmp(name, "texelFetch") == 0 ||
+            strcmp(name, "texelFetchOffset") == 0) {
+            const bool hasFetchOffset = strcmp(name, "texelFetchOffset") == 0;
+            if ((!hasFetchOffset &&
+                 e->u.call.arg_count != 3 && e->u.call.arg_count != 2) ||
+                (hasFetchOffset && e->u.call.arg_count != 4)) {
                 cg.err = 1;
-                cg.errmsg = "codegen: texelFetch expects 2 or 3 arguments";
+                cg.errmsg = hasFetchOffset
+                                ? "codegen: texelFetchOffset expects 4 arguments"
+                                : "codegen: texelFetch expects 2 or 3 arguments";
                 return nullptr;
             }
             const MGLExpr *sa = e->u.call.args[0];
-            if (sa->kind != MGL_EXPR_VAR_REF) {
+            std::string samplerPath;
+            if (!resolveSamplerAccessName(sa, &samplerPath)) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texelFetch first argument must be a "
                             "sampler variable";
                 return nullptr;
             }
-            llvm::Value *tex = samplerTexValue(cg, sa->u.var_ref.name);
+            const char *samplerName = samplerPath.c_str();
+            llvm::Value *tex = samplerTexValue(cg, samplerName);
             if (!tex) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texelFetch first argument must be a "
                             "sampler variable";
                 return nullptr;
             }
-            const MGLIRSymbol *ts = findSymbol(mod, sa->u.var_ref.name);
-            bool isBuf = ts && ts->type->kind == MGLIR_TYPE_SAMPLER &&
-                         ts->type->tex_kind == MGLIR_TEX_BUFFER;
+            const MGLIRType *sampleType = nullptr;
+            auto sti = cg.samplerIRTypes.find(samplerName);
+            if (sti != cg.samplerIRTypes.end())
+                sampleType = sti->second;
+            else {
+                const MGLIRSymbol *ts = findSymbol(mod, samplerName);
+                sampleType = ts ? ts->type : nullptr;
+            }
+            if (sampleType && sampleType->kind == MGLIR_TYPE_ARRAY &&
+                sampleType->elem_type)
+                sampleType = sampleType->elem_type;
+            MGLIRTexKind texKind = sampleType &&
+                                           sampleType->kind == MGLIR_TYPE_SAMPLER
+                                       ? sampleType->tex_kind
+                                       : MGLIR_TEX_2D;
+            MGLIRScalar texel =
+                sampleType && sampleType->kind == MGLIR_TYPE_SAMPLER
+                    ? sampleType->tex_storage
+                    : MGLIR_SCALAR_FLOAT;
+            bool isBuf = texKind == MGLIR_TEX_BUFFER;
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+            llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+            llvm::Type *vecTy =
+                texel == MGLIR_SCALAR_FLOAT
+                    ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
+                    : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
+            llvm::Type *retTy =
+                llvm::StructType::get(*cg.ctx, {vecTy, cg.b->getInt8Ty()});
+            auto readIntrinsic = [&](const char *floatName) -> std::string {
+                if (texel == MGLIR_SCALAR_FLOAT) {
+                    return floatName;
+                }
+                std::string n(floatName);
+                const char *from = ".v4f32";
+                const char *to = texel == MGLIR_SCALAR_INT ? ".s.v4i32"
+                                                           : ".u.v4i32";
+                size_t pos = n.find(from);
+                if (pos != std::string::npos) {
+                    n.replace(pos, strlen(from), to);
+                }
+                return n;
+            };
             if (isBuf) {
                 if (e->u.call.arg_count != 2) {
                     cg.err = 1;
@@ -4957,80 +7821,213 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                               locals);
                 if (!coord) return nullptr;
                 coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-                llvm::Type *smp = llvm::StructType::get(
-                    *cg.ctx, "struct._sampler_t");
-                llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
-                                            smp->getPointerTo(2), {});
-                llvm::Type *v4f32 = llvm::FixedVectorType::get(
-                    llvm::Type::getFloatTy(*cg.ctx), 4);
-                llvm::Type *retTy = llvm::StructType::get(
-                    *cg.ctx, {v4f32, cg.b->getInt8Ty()});
+                /* TEXTURE_BUFFER is backed as texture2d (same packing as
+                 * imageBuffer imageStore/Load).  Keep texelFetch on that
+                 * path so imageLoad == texelFetch after COMMAND/FETCH
+                 * barriers (CTS advanced-sync-imageAccess).  Integer
+                 * usamplerBuffer/isamplerBuffer must use .u/.s reads —
+                 * always-float was returning 0 for integer formats. */
+                llvm::Value *xy = llvm::UndefValue::get(v2i32);
+                xy = cg.b->CreateInsertElement(xy, coord, cg.b->getInt32(0));
+                xy = cg.b->CreateInsertElement(xy, cg.b->getInt32(0),
+                                               cg.b->getInt32(1));
                 llvm::Value *r = callAirFn(
-                    cg, "air.read_texture_buffer_1d.v4f32", retTy,
-                    {tex, rs, coord, cg.b->getInt32(1)});
+                    cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
+                    retTy,
+                    {tex, xy, cg.b->getInt32(0), cg.b->getInt32(3)});
                 return cg.b->CreateExtractValue(r, 0);
             }
-            if (e->u.call.arg_count != 3) {
+            auto toIvec2XY0 = [&](llvm::Value *x) -> llvm::Value * {
+                llvm::Value *v = llvm::UndefValue::get(v2i32);
+                v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
+                v = cg.b->CreateInsertElement(v, cg.b->getInt32(0),
+                                              cg.b->getInt32(1));
+                return v;
+            };
+            auto unsampledRead2d = [&](llvm::Value *xy,
+                                       llvm::Value *level) -> llvm::Value * {
+                return callAirFn(
+                    cg, readIntrinsic("air.read_texture_2d.v4f32").c_str(),
+                    retTy, {tex, xy, level, cg.b->getInt32(3)});
+            };
+            bool isRect = texKind == MGLIR_TEX_2D_RECT;
+            if (!hasFetchOffset && e->u.call.arg_count == 2 && !isRect) {
                 cg.err = 1;
-                cg.errmsg = "codegen: texelFetch on a sampler2D expects 3 "
+                cg.errmsg = "codegen: texelFetch on a sampler expects 2 or 3 "
                             "arguments";
                 return nullptr;
             }
             llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
-            llvm::Value *lod = emitExpr(cg, e->u.call.args[2], mod, locals);
-            if (!coord || !lod) return nullptr;
+            if (!coord) return nullptr;
             coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
-            lod = coerceScalar(cg, lod, MGLIR_SCALAR_INT);
-            llvm::Type *smp = llvm::StructType::get(
-                *cg.ctx, "struct._sampler_t");
-            llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
-                                        smp->getPointerTo(2), {});
-            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
-            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
-            llvm::Type *v4f32 = llvm::FixedVectorType::get(
-                llvm::Type::getFloatTy(*cg.ctx), 4);
-            llvm::Type *retTy =
-                llvm::StructType::get(*cg.ctx, {v4f32, cg.b->getInt8Ty()});
-            llvm::Value *r = callAirFn(
-                cg, "air.read_texture_2d.v4f32", retTy,
-                {tex, rs, coord, llvm::Constant::getNullValue(v2i32),
-                 lod, cg.b->getInt32(0)});
+            llvm::Value *lodOrSample = cg.b->getInt32(0);
+            uint32_t lodArg = 2;
+            if (hasFetchOffset) {
+                lodArg = 2;
+            }
+            if (e->u.call.arg_count >= 3 && (!hasFetchOffset || e->u.call.arg_count == 4)) {
+                lodOrSample = emitExpr(cg, e->u.call.args[lodArg], mod, locals);
+                if (!lodOrSample) return nullptr;
+                lodOrSample = coerceScalar(cg, lodOrSample, MGLIR_SCALAR_INT);
+            }
+            if (hasFetchOffset) {
+                llvm::Value *off =
+                    emitExpr(cg, e->u.call.args[3], mod, locals);
+                if (!off) return nullptr;
+                off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                coord = addTexelOffset(cg, coord, off);
+            }
+            llvm::Value *r = nullptr;
+            if (texKind == MGLIR_TEX_2D_ARRAY) {
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler2DArray "
+                                "expects ivec3 coordinates";
+                    return nullptr;
+                }
+                llvm::Value *layer =
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                coord = cg.b->CreateShuffleVector(
+                    coord, llvm::UndefValue::get(coord->getType()),
+                    {0, 1});
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
+                    retTy,
+                    {tex, coord, layer, lodOrSample, cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_1D_ARRAY) {
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler1DArray "
+                                "expects ivec2 coordinates";
+                    return nullptr;
+                }
+                llvm::Value *layer =
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(1));
+                coord = cg.b->CreateExtractElement(coord, cg.b->getInt32(0));
+                coord = toIvec2XY0(coord);
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
+                    retTy,
+                    {tex, coord, layer, lodOrSample, cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_1D) {
+                if (!coord->getType()->isIntegerTy()) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler1D expects "
+                                "int coordinates";
+                    return nullptr;
+                }
+                r = unsampledRead2d(toIvec2XY0(coord), lodOrSample);
+            } else if (texKind == MGLIR_TEX_2D_RECT) {
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler2DRect "
+                                "expects ivec2 coordinates";
+                    return nullptr;
+                }
+                r = unsampledRead2d(coord, cg.b->getInt32(0));
+            } else if (texKind == MGLIR_TEX_2D_MS) {
+                if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler2DMS "
+                                "expects ivec2 coordinates";
+                    return nullptr;
+                }
+                /* Non-RT MS textures are texture2d_array sample planes. */
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
+                    retTy,
+                    {tex, coord, lodOrSample, cg.b->getInt32(0),
+                     cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_2D_MS_ARRAY) {
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler2DMSArray "
+                                "expects ivec3 coordinates";
+                    return nullptr;
+                }
+                llvm::Value *layer =
+                    cg.b->CreateExtractElement(coord, cg.b->getInt32(2));
+                coord = cg.b->CreateShuffleVector(
+                    coord, llvm::UndefValue::get(coord->getType()),
+                    {0, 1});
+                llvm::Value *flat = cg.b->CreateAdd(
+                    cg.b->CreateMul(layer, cg.b->getInt32(8)), lodOrSample);
+                r = callAirFn(
+                    cg,
+                    readIntrinsic("air.read_texture_2d_array.v4f32").c_str(),
+                    retTy,
+                    {tex, coord, flat, cg.b->getInt32(0), cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_3D) {
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler3D expects "
+                                "ivec3 coordinates";
+                    return nullptr;
+                }
+                r = callAirFn(
+                    cg, readIntrinsic("air.read_texture_3d.v4f32").c_str(),
+                    retTy,
+                    {tex, coord, lodOrSample, cg.b->getInt32(3)});
+            } else if (texKind == MGLIR_TEX_CUBE) {
+                if (coord->getType() != v3i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a samplerCube expects "
+                                "ivec3 coordinates";
+                    return nullptr;
+                }
+                r = callAirFn(
+                    cg, readIntrinsic("air.read_texture_cube.v4f32").c_str(),
+                    retTy,
+                    {tex, coord, lodOrSample, cg.b->getInt32(3)});
+            } else {
+                if (coord->getType()->isIntegerTy()) {
+                    coord = toIvec2XY0(coord);
+                } else if (coord->getType() != v2i32) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a sampler2D expects "
+                                "ivec2 coordinates";
+                    return nullptr;
+                }
+                r = unsampledRead2d(coord, lodOrSample);
+            }
             return cg.b->CreateExtractValue(r, 0);
         }
         /* texture / textureLod / textureSize: the sampler argument maps
          * to paired AIR texture + sampler parameters. */
-        if (strcmp(name, "texture") == 0 || strcmp(name, "textureLod") == 0 ||
-            strcmp(name, "textureSize") == 0 ||
-            strcmp(name, "textureGrad") == 0 ||
-            strcmp(name, "textureProj") == 0) {
-            if (e->u.call.arg_count < 2 || e->u.call.arg_count > 4) {
+        if (isTextureSampleBuiltin(name) || strcmp(name, "textureSize") == 0) {
+            const bool isProj = strstr(name, "Proj") != nullptr;
+            const bool isLod = strstr(name, "Lod") != nullptr;
+            const bool isGrad = strstr(name, "Grad") != nullptr;
+            const bool hasOffset = strstr(name, "Offset") != nullptr;
+            if (strcmp(name, "textureSize") == 0) {
+                if (e->u.call.arg_count != 2) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: textureSize expects 2 arguments";
+                    return nullptr;
+                }
+            } else if (e->u.call.arg_count < 2 || e->u.call.arg_count > 5) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: '") + name +
-                            "' expects 2 to 4 arguments";
+                            "' expects 2 to 5 arguments";
                 return nullptr;
             }
             const MGLExpr *sa = e->u.call.args[0];
+            std::string samplerPath;
             const char *samplerName = nullptr;
-            if (sa->kind == MGL_EXPR_VAR_REF) {
-                samplerName = sa->u.var_ref.name;
-            } else if (sa->kind == MGL_EXPR_INDEX &&
-                       sa->u.index.object &&
-                       sa->u.index.object->kind == MGL_EXPR_VAR_REF) {
-                samplerName = sa->u.index.object->u.var_ref.name;
-            }
-            if (!samplerName) {
-                cg.err = 1;
-                cg.errmsg = "codegen: texture argument must be a sampler2D "
-                            "variable";
-                return nullptr;
-            }
             llvm::Value *tex = nullptr;
             llvm::Value *smp = nullptr;
             bool dynamicSamplerArray = false;
             llvm::Value *arrayIndex = nullptr;
             const std::vector<llvm::Value *> *texArray = nullptr;
             const std::vector<llvm::Value *> *smpArray = nullptr;
-            if (sa->kind == MGL_EXPR_INDEX) {
+            const bool topLevelSamplerArray =
+                sa->kind == MGL_EXPR_INDEX && sa->u.index.object &&
+                sa->u.index.object->kind == MGL_EXPR_VAR_REF;
+            if (topLevelSamplerArray) {
+                samplerName = sa->u.index.object->u.var_ref.name;
                 llvm::Value *index = emitExpr(cg, sa->u.index.index, mod, locals);
                 if (!index) return nullptr;
                 index = coerceScalar(cg, index, MGLIR_SCALAR_INT);
@@ -5062,10 +8059,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     if (si != cg.smpArrayValues.end())
                         smpArray = &si->second;
                 }
-            } else {
+            } else if (resolveSamplerAccessName(sa, &samplerPath)) {
+                samplerName = samplerPath.c_str();
                 tex = samplerTexValue(cg, samplerName);
                 auto si = cg.smpValues.find(samplerName);
                 if (si != cg.smpValues.end()) smp = si->second;
+            } else {
+                cg.err = 1;
+                cg.errmsg = "codegen: texture argument must be a sampler2D "
+                            "variable";
+                return nullptr;
             }
             if (!dynamicSamplerArray && !tex) {
                 cg.err = 1;
@@ -5081,14 +8084,26 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 smp = callAirFn(cg, "air.get_read_sampler",
                                 smpT->getPointerTo(2), {});
             }
-            const MGLIRSymbol *tss = findSymbol(mod, samplerName);
-            const MGLIRType *sampleTypeForDim = tss ? tss->type : nullptr;
+            const MGLIRType *sampleTypeForDim = nullptr;
+            {
+                auto sti = cg.samplerIRTypes.find(samplerName);
+                if (sti != cg.samplerIRTypes.end())
+                    sampleTypeForDim = sti->second;
+                else {
+                    const MGLIRSymbol *tss = findSymbol(mod, samplerName);
+                    sampleTypeForDim = tss ? tss->type : nullptr;
+                }
+            }
             if (sampleTypeForDim && sampleTypeForDim->kind == MGLIR_TYPE_ARRAY &&
                 sampleTypeForDim->elem_type)
                 sampleTypeForDim = sampleTypeForDim->elem_type;
             bool is3d = sampleTypeForDim &&
                         sampleTypeForDim->kind == MGLIR_TYPE_SAMPLER &&
                         sampleTypeForDim->tex_kind == MGLIR_TEX_3D;
+            MGLIRTexKind sampleKind = sampleTypeForDim &&
+                        sampleTypeForDim->kind == MGLIR_TYPE_SAMPLER
+                    ? sampleTypeForDim->tex_kind
+                    : MGLIR_TEX_2D;
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
             if (strcmp(name, "textureSize") == 0) {
@@ -5124,7 +8139,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *uv = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!uv) return nullptr;
-            if (strcmp(name, "textureProj") == 0) {
+            if (isProj) {
                 /* textureProj(sampler, vec4): sample at uv.xy / uv.w. */
                 if (auto *uvt = llvm::dyn_cast<llvm::FixedVectorType>(
                         uv->getType());
@@ -5180,17 +8195,41 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 return n;
             };
-            if (strcmp(name, "textureGrad") == 0) {
+            if (isGrad) {
                 llvm::Value *dPdx = emitExpr(cg, e->u.call.args[2], mod,
                                              locals);
                 llvm::Value *dPdy = emitExpr(cg, e->u.call.args[3], mod,
                                              locals);
                 if (!dPdx || !dPdy) return nullptr;
+                llvm::Value *gradOffset = llvm::Constant::getNullValue(
+                    llvm::FixedVectorType::get(i32, 2));
+                if (hasOffset) {
+                    llvm::Value *off =
+                        emitExpr(cg, e->u.call.args[4], mod, locals);
+                    if (!off) return nullptr;
+                    off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                    gradOffset = emitAirSampleOffset(cg, off);
+                }
                 llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
                 llvm::Type *vecTy =
                     texel == MGLIR_SCALAR_FLOAT
                         ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
                         : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
+                const char *gradName = "air.sample_texture_2d_grad.v4f32";
+                if (sampleKind == MGLIR_TEX_3D) {
+                    gradName = "air.sample_texture_3d_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                           sampleKind == MGLIR_TEX_2D_MS_ARRAY ||
+                           sampleKind == MGLIR_TEX_1D_ARRAY) {
+                    gradName = "air.sample_texture_2d_array_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_CUBE ||
+                           sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                    gradName = "air.sample_texture_cube_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_2D_MS) {
+                    gradName = "air.sample_texture_2d_ms_grad.v4f32";
+                } else if (sampleKind == MGLIR_TEX_2D_MS_ARRAY) {
+                    gradName = "air.sample_texture_2d_ms_array_grad.v4f32";
+                }
                 auto doGradSampleVec =
                     [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
                     llvm::Value *sp = s;
@@ -5200,17 +8239,26 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         sp = callAirFn(cg, "air.get_read_sampler",
                                         smpT->getPointerTo(2), {});
                     }
+                    llvm::Value *sampleCoord = uv;
+                    llvm::Value *arrayLayer = nullptr;
+                    if (!splitSampleArrayCoord(cg, sampleKind, uv, &sampleCoord,
+                                               &arrayLayer)) {
+                        return nullptr;
+                    }
+                    std::vector<llvm::Value *> gradArgs = {
+                        t, sp, sampleCoord, dPdx, dPdy,
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt1(false),
+                        gradOffset,
+                        cg.b->getInt32(0)};
+                    if (arrayLayer) {
+                        gradArgs.insert(gradArgs.begin() + 3, arrayLayer);
+                    }
                     llvm::Value *r = callAirFn(
                         cg,
-                        sampledIntrinsic(
-                            "air.sample_texture_2d_grad.v4f32")
-                            .c_str(),
+                        sampledIntrinsic(gradName).c_str(),
                         sampledRetType(vecTy),
-                        {t, sp, uv, dPdx, dPdy,
-                         llvm::ConstantFP::get(f32, 0.0),
-                         cg.b->getInt1(false),
-                         llvm::Constant::getNullValue(v2i32),
-                         cg.b->getInt32(0)});
+                        gradArgs);
                     return cg.b->CreateExtractValue(r, 0);
                 };
                 if (dynamicSamplerArray) {
@@ -5225,7 +8273,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *lod = nullptr;
             bool explicitLod = false;
-            if (e->u.call.arg_count == 3) {
+            llvm::Value *sampleOffset = llvm::Constant::getNullValue(
+                llvm::FixedVectorType::get(i32, 2));
+            uint32_t argIdx = 2;
+            if (isLod) {
+                lod = emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                if (!lod) return nullptr;
+                lod = coerceScalar(cg, lod, MGLIR_SCALAR_FLOAT);
+                explicitLod = true;
+                if (hasOffset) {
+                    llvm::Value *off =
+                        emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                    if (!off) return nullptr;
+                    off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                    sampleOffset = emitAirSampleOffset(cg, off);
+                }
+            } else if (hasOffset) {
+                llvm::Value *off =
+                    emitExpr(cg, e->u.call.args[argIdx++], mod, locals);
+                if (!off) return nullptr;
+                off = coerceScalar(cg, off, MGLIR_SCALAR_INT);
+                sampleOffset = emitAirSampleOffset(cg, off);
+            } else if (e->u.call.arg_count == 3) {
                 lod = emitExpr(cg, e->u.call.args[2], mod, locals);
                 if (!lod) return nullptr;
                 lod = coerceScalar(cg, lod, MGLIR_SCALAR_FLOAT);
@@ -5236,8 +8305,63 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 ? (llvm::Type *)llvm::FixedVectorType::get(f32, 4)
                 : (llvm::Type *)llvm::FixedVectorType::get(i32, 4);
             llvm::Type *retTy = sampledRetType(vecTy);
-            const char *baseName = is3d ? "air.sample_texture_3d.v4f32"
-                                        : "air.sample_texture_2d.v4f32";
+            const char *baseName = "air.sample_texture_2d.v4f32";
+            if (sampleKind == MGLIR_TEX_3D) {
+                baseName = "air.sample_texture_3d.v4f32";
+            } else if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                       sampleKind == MGLIR_TEX_2D_MS_ARRAY ||
+                       sampleKind == MGLIR_TEX_1D_ARRAY) {
+                baseName = "air.sample_texture_2d_array.v4f32";
+            } else if (sampleKind == MGLIR_TEX_CUBE) {
+                baseName = "air.sample_texture_cube.v4f32";
+            } else if (sampleKind == MGLIR_TEX_CUBE_ARRAY) {
+                baseName = "air.sample_texture_cube_array.v4f32";
+            } else if (sampleKind == MGLIR_TEX_2D_MS) {
+                baseName = "air.sample_texture_2d_ms.v4f32";
+            } else if (sampleKind == MGLIR_TEX_1D) {
+                baseName = "air.sample_texture_2d.v4f32";
+                if (uv->getType()->isFloatingPointTy()) {
+                    llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
+                    llvm::Value *expanded = llvm::UndefValue::get(v2f32);
+                    expanded = cg.b->CreateInsertElement(
+                        expanded, uv, cg.b->getInt32(0));
+                    expanded = cg.b->CreateInsertElement(
+                        expanded, llvm::ConstantFP::get(f32, 0.5),
+                        cg.b->getInt32(1));
+                    uv = expanded;
+                }
+            }
+            /* CTS (and some apps) pass vec3(0) into texture(samplerCube).
+             * Metal's cube sample of a zero direction returns black; pick +X. */
+            if ((sampleKind == MGLIR_TEX_CUBE ||
+                 sampleKind == MGLIR_TEX_CUBE_ARRAY) &&
+                uv->getType()->isVectorTy() &&
+                llvm::cast<llvm::FixedVectorType>(uv->getType())
+                        ->getNumElements() >= 3) {
+                llvm::Value *x =
+                    cg.b->CreateExtractElement(uv, cg.b->getInt32(0));
+                llvm::Value *y =
+                    cg.b->CreateExtractElement(uv, cg.b->getInt32(1));
+                llvm::Value *z =
+                    cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+                llvm::Value *len2 = cg.b->CreateFAdd(
+                    cg.b->CreateFMul(x, x),
+                    cg.b->CreateFAdd(cg.b->CreateFMul(y, y),
+                                     cg.b->CreateFMul(z, z)));
+                llvm::Value *isZero = cg.b->CreateFCmpOEQ(
+                    len2, llvm::ConstantFP::get(f32, 0.0));
+                llvm::Value *fallback = llvm::UndefValue::get(uv->getType());
+                fallback = cg.b->CreateInsertElement(
+                    fallback, llvm::ConstantFP::get(f32, 1.0),
+                    cg.b->getInt32(0));
+                fallback = cg.b->CreateInsertElement(
+                    fallback, llvm::ConstantFP::get(f32, 0.0),
+                    cg.b->getInt32(1));
+                fallback = cg.b->CreateInsertElement(
+                    fallback, llvm::ConstantFP::get(f32, 0.0),
+                    cg.b->getInt32(2));
+                uv = cg.b->CreateSelect(isZero, fallback, uv);
+            }
             auto doSampleVec =
                 [&](llvm::Value *t, llvm::Value *s) -> llvm::Value * {
                 llvm::Value *sp = s;
@@ -5247,14 +8371,41 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     sp = callAirFn(cg, "air.get_read_sampler",
                                     smpT->getPointerTo(2), {});
                 }
+                llvm::Value *sampleCoord = uv;
+                llvm::Value *arrayLayer = nullptr;
+                if (!splitSampleArrayCoord(cg, sampleKind, uv, &sampleCoord,
+                                           &arrayLayer)) {
+                    return nullptr;
+                }
+                /* Cube sample has no offset in AIR/MSL (texturecube.sample
+                 * takes coord + lod/bias only). Passing the 2D offset pair
+                 * makes Metal's PSO compiler abort. */
+                const bool cubeSample =
+                    sampleKind == MGLIR_TEX_CUBE ||
+                    sampleKind == MGLIR_TEX_CUBE_ARRAY;
+                std::vector<llvm::Value *> sampleArgs;
+                if (cubeSample) {
+                    sampleArgs = {
+                        t, sp, sampleCoord,
+                        cg.b->getInt1(explicitLod),
+                        lod ? lod : llvm::ConstantFP::get(f32, 0.0),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt32(0)};
+                } else {
+                    sampleArgs = {
+                        t, sp, sampleCoord, cg.b->getInt1(true),
+                        sampleOffset,
+                        cg.b->getInt1(explicitLod),
+                        lod ? lod : llvm::ConstantFP::get(f32, 0.0),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt32(0)};
+                }
+                if (arrayLayer) {
+                    sampleArgs.insert(sampleArgs.begin() + 3, arrayLayer);
+                }
                 llvm::Value *r = callAirFn(
                     cg, sampledIntrinsic(baseName).c_str(), retTy,
-                    {t, sp, uv, cg.b->getInt1(true),
-                     llvm::Constant::getNullValue(v2i32),
-                     cg.b->getInt1(explicitLod),
-                     lod ? lod : llvm::ConstantFP::get(f32, 0.0),
-                     llvm::ConstantFP::get(f32, 0.0),
-                     cg.b->getInt32(0)});
+                    sampleArgs);
                 return cg.b->CreateExtractValue(r, 0);
             };
             if (dynamicSamplerArray) {
@@ -5315,43 +8466,253 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             load->setAtomic(llvm::AtomicOrdering::Monotonic);
             return load;
         }
-        /* atomicAdd(ssbo_lvalue, value): monotonic RMW on device memory. */
-        if (strcmp(name, "atomicAdd") == 0) {
-            if (e->u.call.arg_count != 2) {
-                cg.err = 1;
-                cg.errmsg = "codegen: atomicAdd expects 2 arguments";
-                return nullptr;
+        /* SSBO atomic* (GLSL 4.60 §8.11): RMW on device memory; every
+         * op returns the original contents of mem before the update. */
+        {
+            llvm::AtomicRMWInst::BinOp rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
+            int isCompSwap = 0;
+            if (strcmp(name, "atomicAdd") == 0)
+                rmwOp = llvm::AtomicRMWInst::Add;
+            else if (strcmp(name, "atomicMin") == 0)
+                rmwOp = llvm::AtomicRMWInst::BAD_BINOP; /* signedness below */
+            else if (strcmp(name, "atomicMax") == 0)
+                rmwOp = llvm::AtomicRMWInst::BAD_BINOP;
+            else if (strcmp(name, "atomicAnd") == 0)
+                rmwOp = llvm::AtomicRMWInst::And;
+            else if (strcmp(name, "atomicOr") == 0)
+                rmwOp = llvm::AtomicRMWInst::Or;
+            else if (strcmp(name, "atomicXor") == 0)
+                rmwOp = llvm::AtomicRMWInst::Xor;
+            else if (strcmp(name, "atomicExchange") == 0)
+                rmwOp = llvm::AtomicRMWInst::Xchg;
+            else if (strcmp(name, "atomicCompSwap") == 0)
+                isCompSwap = 1;
+
+            int isAtomicFamily =
+                isCompSwap || strcmp(name, "atomicAdd") == 0 ||
+                strcmp(name, "atomicMin") == 0 ||
+                strcmp(name, "atomicMax") == 0 ||
+                strcmp(name, "atomicAnd") == 0 ||
+                strcmp(name, "atomicOr") == 0 ||
+                strcmp(name, "atomicXor") == 0 ||
+                strcmp(name, "atomicExchange") == 0;
+
+            if (isAtomicFamily) {
+                uint32_t wantArgs = isCompSwap ? 3u : 2u;
+                if (e->u.call.arg_count != wantArgs) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: ") + name +
+                                " argument count mismatch";
+                    return nullptr;
+                }
+                const MGLIRSymbol *sb = ssboRootSym(e->u.call.args[0], mod);
+                if (!sb) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: ") + name +
+                                " target must be an SSBO member";
+                    return nullptr;
+                }
+                const MGLIRType *ty = nullptr;
+                llvm::Value *p = ssboAddress(cg, e->u.call.args[0], sb, mod,
+                                             locals, &ty);
+                if (!p) return nullptr;
+                llvm::Value *data = emitExpr(cg, e->u.call.args[1], mod, locals);
+                if (!data) return nullptr;
+                data = coerceScalar(cg, data,
+                                    ty && ty->scalar == MGLIR_SCALAR_UINT
+                                        ? MGLIR_SCALAR_UINT
+                                        : MGLIR_SCALAR_INT);
+                p = cg.b->CreateBitCast(p, data->getType()->getPointerTo(1));
+                if (isCompSwap) {
+                    llvm::Value *cmp = data;
+                    llvm::Value *neu =
+                        emitExpr(cg, e->u.call.args[2], mod, locals);
+                    if (!neu) return nullptr;
+                    neu = coerceScalar(cg, neu,
+                                       ty && ty->scalar == MGLIR_SCALAR_UINT
+                                           ? MGLIR_SCALAR_UINT
+                                           : MGLIR_SCALAR_INT);
+                    auto *cx = cg.b->CreateAtomicCmpXchg(
+                        p, cmp, neu, llvm::MaybeAlign(),
+                        llvm::AtomicOrdering::Monotonic,
+                        llvm::AtomicOrdering::Monotonic);
+                    /* CmpXchg returns { old, success }; GLSL wants old. */
+                    return cg.b->CreateExtractValue(cx, 0);
+                }
+                if (strcmp(name, "atomicMin") == 0) {
+                    rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
+                                ? llvm::AtomicRMWInst::UMin
+                                : llvm::AtomicRMWInst::Min;
+                } else if (strcmp(name, "atomicMax") == 0) {
+                    rmwOp = (ty && ty->scalar == MGLIR_SCALAR_UINT)
+                                ? llvm::AtomicRMWInst::UMax
+                                : llvm::AtomicRMWInst::Max;
+                }
+                return cg.b->CreateAtomicRMW(rmwOp, p, data,
+                                             llvm::MaybeAlign(),
+                                             llvm::AtomicOrdering::Monotonic);
             }
-            const MGLIRSymbol *sb = ssboRootSym(e->u.call.args[0], mod);
-            if (!sb) {
-                cg.err = 1;
-                cg.errmsg = "codegen: atomicAdd target must be an SSBO member";
-                return nullptr;
-            }
-            llvm::Value *val = emitExpr(cg, e->u.call.args[1], mod, locals);
-            if (!val) return nullptr;
-            const MGLIRType *ty = nullptr;
-            llvm::Value *p = ssboAddress(cg, e->u.call.args[0], sb, mod,
-                                         locals, &ty);
-            if (!p) return nullptr;
-            p = cg.b->CreateBitCast(p, val->getType()->getPointerTo(1));
-            llvm::Value *old =
-                cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, p, val,
-                                      llvm::MaybeAlign(),
-                                      llvm::AtomicOrdering::Monotonic);
-            /* GLSL 4.60 8.11: atomicAdd returns the new value. */
-            return cg.b->CreateAdd(old, val);
         }
         /* User-defined function call. */
-        if (cg.userFns) {
+        if (cg.userFns || cg.userFnDecls) {
             std::string key = std::string(name) + "#" +
                               std::to_string(e->u.call.arg_count);
+            /* Prefer inlining when a decl is registered in userFnDecls
+             * (GS/TCS/compute always; any stage when a param is out/inout
+             * so by-value LLVM calls cannot lose write-back). */
+            if (cg.userFnDecls) {
+                auto dit = cg.userFnDecls->find(key);
+                if (dit != cg.userFnDecls->end() && dit->second &&
+                    dit->second->body) {
+                    MGLDecl *fd = dit->second;
+                    std::map<std::string, MType> ilocals = locals;
+                    std::map<std::string, llvm::Value *> saved;
+                    std::map<std::string, const MGLIRType *> savedIR;
+                    for (uint32_t a = 0; a < fd->param_count &&
+                                        a < e->u.call.arg_count; a++) {
+                        MGLDecl *pd = fd->params[a];
+                        if (!pd || !pd->name) continue;
+                        llvm::Value *av =
+                            emitExpr(cg, e->u.call.args[a], mod, locals);
+                        if (!av) return nullptr;
+                        MType pt;
+                        pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
+                                                           : MGL_AST_TYPE_FLOAT);
+                        if (pd->type && pd->type->vec_size)
+                            pt.vec = pd->type->vec_size;
+                        if (pd->type && pd->type->mat_cols > 1) {
+                            pt.cols = pd->type->mat_cols;
+                            pt.rows = pd->type->mat_rows;
+                        }
+                        if (pd->type &&
+                            pd->type->base != MGL_AST_TYPE_STRUCT)
+                            av = coerceScalar(cg, av, pt.scalar);
+                        if (cg.lvalues.count(pd->name))
+                            saved[pd->name] = cg.lvalues[pd->name];
+                        cg.lvalues[pd->name] = av;
+                        ilocals[pd->name] = pt;
+                        if (pd->type &&
+                            pd->type->base == MGL_AST_TYPE_STRUCT &&
+                            pd->type->name) {
+                            auto sit =
+                                cg.structTypes.find(pd->type->name);
+                            if (sit != cg.structTypes.end()) {
+                                auto irit =
+                                    cg.localIRTypes.find(pd->name);
+                                if (irit != cg.localIRTypes.end())
+                                    savedIR[pd->name] = irit->second;
+                                cg.localIRTypes[pd->name] = sit->second;
+                            }
+                        }
+                    }
+                    int savedErr = cg.err;
+                    bool savedInline = cg.inliningHelper;
+                    llvm::Value *savedRet = cg.inlineRetVal;
+                    cg.inliningHelper = true;
+                    cg.inlineRetVal = nullptr;
+                    cg.err = 0;
+                    emitStmt(cg, fd->body, mod, &ilocals);
+                    llvm::Value *ret = cg.inlineRetVal;
+                    cg.inliningHelper = savedInline;
+                    cg.inlineRetVal = savedRet;
+                    /* GLSL out/inout: write the final param value back to
+                     * the caller's lvalue argument before unshadowing. */
+                    for (uint32_t a = 0; a < fd->param_count &&
+                                        a < e->u.call.arg_count; a++) {
+                        MGLDecl *pd = fd->params[a];
+                        if (!pd || !pd->name) continue;
+                        if (!(pd->qualifiers & MGL_AST_Q_OUT)) continue;
+                        const MGLExpr *arg = e->u.call.args[a];
+                        if (!arg) continue;
+                        auto pit = cg.lvalues.find(pd->name);
+                        if (pit == cg.lvalues.end()) continue;
+                        if (arg->kind == MGL_EXPR_VAR_REF &&
+                            arg->u.var_ref.name) {
+                            cg.lvalues[arg->u.var_ref.name] = pit->second;
+                            continue;
+                        }
+                        const MGLExpr *rootE = arg;
+                        while (rootE &&
+                               (rootE->kind == MGL_EXPR_INDEX ||
+                                rootE->kind == MGL_EXPR_MEMBER)) {
+                            rootE = (rootE->kind == MGL_EXPR_INDEX)
+                                ? rootE->u.index.object
+                                : rootE->u.member.object;
+                        }
+                        if (!rootE || rootE->kind != MGL_EXPR_VAR_REF ||
+                            !rootE->u.var_ref.name ||
+                            !cg.lvalues.count(rootE->u.var_ref.name)) {
+                            cg.err = 1;
+                            cg.errmsg =
+                                "codegen: out/inout argument writeback "
+                                "unsupported for this lvalue";
+                            break;
+                        }
+                        llvm::Value *nv = updateIndexPath(
+                            cg, arg, cg.lvalues[rootE->u.var_ref.name],
+                            pit->second, mod, locals);
+                        if (!nv) {
+                            cg.err = 1;
+                            if (cg.errmsg.empty())
+                                cg.errmsg =
+                                    "codegen: out/inout argument "
+                                    "writeback failed";
+                            break;
+                        }
+                        cg.lvalues[rootE->u.var_ref.name] = nv;
+                    }
+                    for (uint32_t a = 0; a < fd->param_count; a++) {
+                        MGLDecl *pd = fd->params[a];
+                        if (!pd || !pd->name) continue;
+                        auto sit = saved.find(pd->name);
+                        if (sit != saved.end())
+                            cg.lvalues[pd->name] = sit->second;
+                        else
+                            cg.lvalues.erase(pd->name);
+                        auto iit = savedIR.find(pd->name);
+                        if (iit != savedIR.end())
+                            cg.localIRTypes[pd->name] = iit->second;
+                        else if (pd->type &&
+                                 pd->type->base == MGL_AST_TYPE_STRUCT)
+                            cg.localIRTypes.erase(pd->name);
+                    }
+                    if (cg.err == 1) return nullptr;
+                    /* Helper return ends the inlined body, not the caller. */
+                    if (cg.err == 2) cg.err = savedErr;
+                    MType rt;
+                    rt.scalar = (MGLIRScalar)(fd->type ? fd->type->base
+                                                       : MGL_AST_TYPE_FLOAT);
+                    if (fd->type && fd->type->vec_size)
+                        rt.vec = fd->type->vec_size;
+                    if (fd->type && fd->type->mat_cols > 1) {
+                        rt.cols = fd->type->mat_cols;
+                        rt.rows = fd->type->mat_rows;
+                    }
+                    if (ret) {
+                        if (!rt.isMatrix() && !rt.isArray() &&
+                            !(fd->type &&
+                              fd->type->base == MGL_AST_TYPE_STRUCT))
+                            ret = coerceScalar(cg, ret, rt.scalar);
+                        return ret;
+                    }
+                    return llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(*cg.ctx), 0);
+                }
+            }
+            if (!cg.userFns) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: call to '") + name +
+                            "' not implemented in M1";
+                return nullptr;
+            }
             auto fit = cg.userFns->find(key);
             if (fit != cg.userFns->end()) {
-                uint64_t hidden = cg.uboPtrs.size() + cg.ssboPtrs.size() +
-                                  cg.acPtrs.size() +
-                                  (cg.bufferSizePtr ? 1u : 0u) +
-                                  (cg.isGeometry ? 8u : 0u);
+                uint64_t hidden = 0;
+                if (cg.userFnHidden) {
+                    auto hit = cg.userFnHidden->find(key);
+                    if (hit != cg.userFnHidden->end())
+                        hidden = hit->second;
+                }
                 if (e->u.call.arg_count + hidden !=
                     fit->second->arg_size()) {
                     cg.err = 1;
@@ -5392,6 +8753,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     args.push_back(kv.second);
                 if (cg.bufferSizePtr)
                     args.push_back(cg.bufferSizePtr);
+                if (cg.userFnPassCull)
+                    args.push_back(cg.lvalues["gl_CullDistance"]);
+                if (cg.userFnPassClip)
+                    args.push_back(cg.lvalues["gl_ClipDistance"]);
                 if (cg.isGeometry) {
                     args.push_back(cg.geometryInputPtr);
                     args.push_back(cg.geometryOutputPtr);
@@ -5402,7 +8767,58 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     args.push_back(cg.geometryPrimitiveId);
                     args.push_back(cg.geometryInvocationId);
                 }
-                return cg.b->CreateCall(fit->second, args);
+                if (cg.isTessControl) {
+                    args.push_back(cg.stageInPtr);
+                    args.push_back(cg.tessFactorPtr);
+                    args.push_back(cg.stageOutPtr);
+                    args.push_back(cg.indirectPtr);
+                    args.push_back(cg.invocationPos);
+                    args.push_back(cg.patchPos);
+                }
+                if (cg.isCompute && cg.threadPos)
+                    args.push_back(cg.threadPos);
+                if (!cg.isGeometry && !cg.isTessControl) {
+                    for (const auto &kv : cg.texValues)
+                        args.push_back(kv.second);
+                    for (const auto &kv : cg.smpValues)
+                        args.push_back(kv.second);
+                    for (const auto &kv : cg.texArrayValues)
+                        for (llvm::Value *tv : kv.second)
+                            args.push_back(tv);
+                    for (const auto &kv : cg.smpArrayValues)
+                        for (llvm::Value *sv : kv.second)
+                            args.push_back(sv);
+                }
+                if (cg.bufferPtr)
+                    args.push_back(cg.bufferPtr);
+                for (const auto &kv : cg.outPtrs)
+                    args.push_back(kv.second);
+                llvm::Value *call = cg.b->CreateCall(fit->second, args);
+                /* Pull stage outputs written by the callee back into the
+                 * caller's SSA map. */
+                for (const auto &kv : cg.outPtrs) {
+                    auto *ai = llvm::dyn_cast<llvm::AllocaInst>(kv.second);
+                    if (!ai) continue;
+                    cg.lvalues[kv.first] =
+                        cg.b->CreateLoad(ai->getAllocatedType(), kv.second);
+                }
+                return call;
+            }
+        }
+        /* Declaration-only call with no inlined/local body: emitting a
+         * zero stub would silently run with wrong results. Fail codegen
+         * until true cross-TU linking exists. */
+        if (mod) {
+            for (uint32_t si = 0; si < mod->symbol_count; si++) {
+                const MGLIRSymbol *fs = mod->symbols[si];
+                if (!fs || !fs->is_function || !fs->name ||
+                    strcmp(fs->name, name) != 0 ||
+                    fs->param_count != e->u.call.arg_count)
+                    continue;
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: call to '") + name +
+                            "' has no definition in this compilation unit";
+                return nullptr;
             }
         }
         cg.err = 1;
@@ -5460,6 +8876,40 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const char *name = e->u.unary.operand->u.var_ref.name;
             auto it = cg.lvalues.find(name);
             if (it == cg.lvalues.end()) {
+                /* Flattened anonymous SSBO members (`buffer B { int g_o0; };`
+                 * → global `g_o0`) are VAR_REFs with BUFFER quals, not SSA
+                 * locals.  RMW through the device pointer like member ++. */
+                if (const MGLIRSymbol *sb =
+                        ssboRootSym(e->u.unary.operand, mod)) {
+                    const MGLIRType *sty = nullptr;
+                    llvm::Value *sp = ssboAddress(cg, e->u.unary.operand, sb,
+                                                  mod, locals, &sty);
+                    if (!sp) return nullptr;
+                    llvm::Type *slt = llvmType(typeFromIR(sty), *cg.ctx);
+                    llvm::Align salign(16);
+                    if (auto *vt =
+                            llvm::dyn_cast<llvm::FixedVectorType>(slt)) {
+                        uint64_t w = vt->getElementCount().getFixedValue();
+                        if (w == 1) salign = llvm::Align(4);
+                        else if (w == 2) salign = llvm::Align(8);
+                    } else if (slt->isFloatTy() || slt->isIntegerTy(32)) {
+                        salign = llvm::Align(4);
+                    }
+                    sp = cg.b->CreateBitCast(sp, slt->getPointerTo(1));
+                    llvm::Value *cur =
+                        cg.b->CreateAlignedLoad(slt, sp, salign);
+                    bool sfp = slt->isFPOrFPVectorTy();
+                    llvm::Constant *sone = sfp
+                        ? llvm::ConstantFP::get(slt, 1.0)
+                        : llvm::ConstantInt::get(slt, 1);
+                    llvm::Value *nv = (e->u.unary.op == MGL_OP_INC)
+                        ? (sfp ? cg.b->CreateFAdd(cur, sone)
+                               : cg.b->CreateAdd(cur, sone))
+                        : (sfp ? cg.b->CreateFSub(cur, sone)
+                               : cg.b->CreateSub(cur, sone));
+                    cg.b->CreateAlignedStore(nv, sp, salign);
+                    return e->u.unary.prefix ? nv : cur;
+                }
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: ++/-- on unknown variable '") +
                             name + "'";
@@ -5513,6 +8963,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!l || !r) return nullptr;
         llvm::Value *mres = emitMatrixBinOp(cg, e->u.binary.op, l, r);
         if (mres) return mres;
+        if (llvm::Value *agg =
+                emitAggregateCompare(cg, e->u.binary.op, l, r))
+            return agg;
         MType lt = exprType(cg, e->u.binary.lhs, mod, locals);
         MType rt = exprType(cg, e->u.binary.rhs, mod, locals);
         llvm::Value *folded =
@@ -5564,17 +9017,60 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 
         if (cg.isTessControl && lhs && lhs->kind == MGL_EXPR_INDEX &&
             lhs->u.index.object &&
-            lhs->u.index.object->kind == MGL_EXPR_VAR_REF &&
-            codegenStageSymbol(
-                cg, lhs->u.index.object->u.var_ref.name, VarSym::OUTPUT)) {
-            if (e->u.assign.op != MGL_OP_ASSIGN) {
-                cg.err = 1;
-                cg.errmsg = "codegen: compound TCS stage output assignment "
-                            "is not implemented";
-                return nullptr;
+            lhs->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            VarSym *outSym = codegenStageSymbol(
+                cg, lhs->u.index.object->u.var_ref.name, VarSym::OUTPUT);
+            if (outSym) {
+                auto compoundInto = [&](llvm::Value *old) -> llvm::Value * {
+                    if (!old) return nullptr;
+                    uint32_t binop = 0;
+                    switch (e->u.assign.op) {
+                    case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                    case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                    case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                    case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    default: break;
+                    }
+                    if (!binop) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: compound TCS stage output "
+                                    "assignment is not implemented";
+                        return nullptr;
+                    }
+                    return emitNumericBinOp(
+                        cg, binop, old, rhsV,
+                        exprType(cg, lhs, mod, locals),
+                        exprType(cg, e->u.assign.rhs, mod, locals));
+                };
+                if (outSym->isPatch && outSym->type.isArray()) {
+                    llvm::Value *idx =
+                        emitExpr(cg, lhs->u.index.index, mod, locals);
+                    if (!idx) return nullptr;
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        llvm::Value *old =
+                            emitPatchArrayElementLoad(cg, *outSym, idx);
+                        v = compoundInto(old);
+                        if (!v) return nullptr;
+                    }
+                    if (!emitPatchArrayElementStore(cg, *outSym, idx, v)) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: unavailable TCS patch array "
+                                    "output store";
+                        return nullptr;
+                    }
+                    return v;
+                }
+                if (!outSym->isPatch) {
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        llvm::Value *old =
+                            emitTessStageArrayLoad(cg, lhs, mod, locals);
+                        v = compoundInto(old);
+                        if (!v) return nullptr;
+                    }
+                    emitTessStageArrayStore(cg, lhs, v, mod, locals);
+                    return v;
+                }
             }
-            emitTessStageArrayStore(cg, lhs, v, mod, locals);
-            return v;
         }
 
         if (cg.isTessControl && lhs && lhs->kind == MGL_EXPR_INDEX &&
@@ -5584,7 +9080,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             const char *pvRoot = nullptr, *pvField = nullptr;
             const MGLExpr *pvVertexIndex = nullptr;
             if (perVertexPath(member, &pvRoot, &pvVertexIndex, &pvField) &&
-                !strcmp(pvField, "gl_CullDistance")) {
+                (!strcmp(pvField, "gl_CullDistance") ||
+                 !strcmp(pvField, "gl_ClipDistance"))) {
+                const uint32_t distanceCount =
+                    !strcmp(pvField, "gl_ClipDistance")
+                        ? MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT
+                        : MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
                 llvm::Value *array = emitPerVertexLoad(
                     cg, member, mod, locals);
                 llvm::Value *component = emitExpr(
@@ -5594,7 +9095,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 if (e->u.assign.op != MGL_OP_ASSIGN) {
                     MType arrayType;
                     arrayType.scalar = MGLIR_SCALAR_FLOAT;
-                    arrayType.arr = MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
+                    arrayType.arr = distanceCount;
                     llvm::Value *old = emitIndexValue(
                         cg, array, arrayType, component);
                     uint32_t binop = e->u.assign.op == MGL_OP_ADD_ASSIGN
@@ -5604,7 +9105,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         ? MGL_OP_DIV : 0u;
                     if (!old || !binop) {
                         cg.err = 1;
-                        cg.errmsg = "codegen: compound gl_out CullDistance "
+                        cg.errmsg = "codegen: compound gl_out distance "
                                     "assignment unsupported";
                         return nullptr;
                     }
@@ -5616,13 +9117,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 MType arrayType;
                 arrayType.scalar = MGLIR_SCALAR_FLOAT;
-                arrayType.arr = MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
+                arrayType.arr = distanceCount;
                 llvm::Value *updated = insertIndexValue(
                     cg, array, arrayType, component,
                     coerceScalar(cg, v, MGLIR_SCALAR_FLOAT));
                 if (!updated) {
                     cg.err = 1;
-                    cg.errmsg = "codegen: failed to update gl_out CullDistance";
+                    cg.errmsg = "codegen: failed to update gl_out distance";
                     return nullptr;
                 }
                 emitPerVertexStore(cg, member, updated, mod, locals);
@@ -5659,20 +9160,57 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 emitPerVertexStore(cg, lhs, v, mod, locals);
                 return v;
             }
+            /* Named interface-block member: outVertex[i].field (=|+=|…) */
+            {
+                const char *inst = nullptr, *field = nullptr;
+                const MGLExpr *indexE = nullptr;
+                if (tessBlockMemberPath(lhs, &inst, &indexE, &field)) {
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        llvm::Value *old =
+                            emitTessBlockMemberLoad(cg, lhs, mod, locals);
+                        if (!old) return nullptr;
+                        uint32_t binop = 0;
+                        switch (e->u.assign.op) {
+                        case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                        case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                        case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                        case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                        default: break;
+                        }
+                        if (!binop) {
+                            cg.err = 1;
+                            cg.errmsg =
+                                "codegen: compound TCS interface-block "
+                                "member assignment is not implemented";
+                            return nullptr;
+                        }
+                        v = emitNumericBinOp(
+                            cg, binop, old, rhsV,
+                            exprType(cg, lhs, mod, locals),
+                            exprType(cg, e->u.assign.rhs, mod, locals));
+                        if (!v) return nullptr;
+                    }
+                    if (emitTessBlockMemberStore(cg, lhs, v, mod, locals))
+                        return v;
+                }
+            }
         }
 
-        /* Interface-block member write: instance.field = v (VS/TES out
+        /* Interface-block member write: instance.field = v (VS/TES/GS out
          * blocks flatten to per-member VARYING symbols, so this is an
-         * ordinary varying lvalue store keyed by the member name). */
+         * ordinary varying lvalue store keyed by the member name).  TCS
+         * arrayed outs use emitTessBlockMemberStore above. */
         if (lhs->kind == MGL_EXPR_MEMBER &&
             lhs->u.member.object &&
             lhs->u.member.object->kind == MGL_EXPR_VAR_REF) {
             const char *instName = lhs->u.member.object->u.var_ref.name;
-            VarSym *member = codegenStageSymbol(
-                cg, lhs->u.member.field, VarSym::VARYING);
-            if (member && !cg.isGeometry && !cg.isTessControl &&
-                member->location != UINT32_MAX &&
-                member->blockName == instName) {
+            VarSym *member = codegenBlockMember(
+                cg, instName, lhs->u.member.field, VarSym::OUTPUT);
+            if (!member)
+                member = codegenBlockMember(
+                    cg, instName, lhs->u.member.field, VarSym::VARYING);
+            if (member && !cg.isTessControl &&
+                member->location != UINT32_MAX) {
                 if (e->u.assign.op != MGL_OP_ASSIGN) {
                     cg.err = 1;
                     cg.errmsg = "codegen: compound interface-block member "
@@ -5699,6 +9237,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
                     case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
                     case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    case MGL_OP_MOD_ASSIGN: binop = MGL_OP_MOD; break;
+                    case MGL_OP_SHL_ASSIGN: binop = MGL_OP_SHL; break;
+                    case MGL_OP_SHR_ASSIGN: binop = MGL_OP_SHR; break;
+                    case MGL_OP_AND_ASSIGN: binop = MGL_OP_AND; break;
+                    case MGL_OP_OR_ASSIGN:  binop = MGL_OP_OR; break;
+                    case MGL_OP_XOR_ASSIGN: binop = MGL_OP_XOR; break;
                     default: break;
                     }
                     if (!binop) {
@@ -5729,6 +9273,100 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 return nullptr;
             }
             const char *name = rootE->u.var_ref.name;
+            /* Interface-block array member: `B.member[i] = v`.  The member
+             * VarSym is flattened under its own field name (blockName=B)
+             * and arrayMem-backed, so the store must go through
+             * arrayMemGEP under the member key — the block instance name
+             * has no storage of its own (extractvalue on the lazily
+             * materialized instance lvalue asserted in LLVM). */
+            if (lhs->kind == MGL_EXPR_INDEX &&
+                lhs->u.index.object->kind == MGL_EXPR_MEMBER &&
+                lhs->u.index.object->u.member.object &&
+                lhs->u.index.object->u.member.object->kind ==
+                    MGL_EXPR_VAR_REF) {
+                const char *inst =
+                    lhs->u.index.object->u.member.object->u.var_ref.name;
+                const char *field = lhs->u.index.object->u.member.field;
+                VarSym *bmem = codegenBlockMember(cg, inst, field,
+                                                  VarSym::VARYING);
+                if (!bmem)
+                    bmem = codegenBlockMember(cg, inst, field,
+                                              VarSym::OUTPUT);
+                if (bmem && bmem->type.isArray()) {
+                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: compound assign into block "
+                                    "array member not supported";
+                        return nullptr;
+                    }
+                    llvm::Value *idx =
+                        emitExpr(cg, lhs->u.index.index, mod, locals);
+                    if (!idx) return nullptr;
+                    if (cg.arrayMem.count(bmem->name)) {
+                        llvm::Value *ep = arrayMemGEP(cg, bmem->name,
+                                                      cg.arrayMem[bmem->name],
+                                                      idx);
+                        cg.b->CreateAlignedStore(v, ep, llvm::Align(4));
+                        return v;
+                    }
+                    /* Value-semantics fallback: member aggregate lives in
+                     * lvalues (assembled into the stage-out record at
+                     * return). */
+                    if (!cg.lvalues.count(bmem->name))
+                        cg.lvalues[bmem->name] = llvm::UndefValue::get(
+                            llvmType(bmem->type, *cg.ctx));
+                    llvm::Value *agg = cg.lvalues[bmem->name];
+                    llvm::Value *nv = insertIndexValue(cg, agg, bmem->type,
+                                                       idx, v);
+                    if (!nv) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: cannot index block array "
+                                    "member lvalue";
+                        return nullptr;
+                    }
+                    cg.lvalues[bmem->name] = nv;
+                    return v;
+                }
+            }
+            /* Memory-backed scalar array: store through GEP. */
+            if (name && cg.arrayMem.count(name)) {
+                if (lhs->kind != MGL_EXPR_INDEX ||
+                    lhs->u.index.object->kind != MGL_EXPR_VAR_REF) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: nested store into arrayMem not "
+                                "supported";
+                    return nullptr;
+                }
+                if (e->u.assign.op != MGL_OP_ASSIGN) {
+                    llvm::Value *old = emitExpr(cg, lhs, mod, locals);
+                    if (!old) return nullptr;
+                    uint32_t binop = 0;
+                    switch (e->u.assign.op) {
+                    case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                    case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                    case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                    case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    default: break;
+                    }
+                    if (!binop) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: compound arrayMem assign not "
+                                    "implemented";
+                        return nullptr;
+                    }
+                    v = emitNumericBinOp(cg, binop, old, rhsV,
+                        exprType(cg, lhs, mod, locals),
+                        exprType(cg, e->u.assign.rhs, mod, locals));
+                    if (!v) return nullptr;
+                }
+                llvm::Value *idx =
+                    emitExpr(cg, lhs->u.index.index, mod, locals);
+                if (!idx) return nullptr;
+                llvm::Value *ep =
+                    arrayMemGEP(cg, name, cg.arrayMem[name], idx);
+                cg.b->CreateAlignedStore(v, ep, llvm::Align(4));
+                return v;
+            }
             if (!cg.lvalues.count(name)) {
                 /* First write through a member/index path to a name that
                  * has not been materialized yet (e.g. "out vec4 result;"
@@ -5852,12 +9490,18 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                         "implemented in M1");
                 return nullptr;
             }
-            llvm::Value *cur = cg.lvalues.count(name)
-                ? cg.lvalues[name]
-                : ((sym->qualifiers & MGL_AST_Q_UNIFORM)
-                       ? bufferLoad(cg, cg.bufferOffsets[name],
-                                    llvmType(t, *cg.ctx))
-                       : llvm::UndefValue::get(llvmType(t, *cg.ctx)));
+            llvm::Value *cur = nullptr;
+            if (cg.lvalues.count(name)) {
+                cur = cg.lvalues[name];
+            } else if (sym && (sym->qualifiers & MGL_AST_Q_BUFFER)) {
+                cur = emitSSBORead(cg, lhs, sym, mod, locals);
+                if (!cur) return nullptr;
+            } else if (sym && (sym->qualifiers & MGL_AST_Q_UNIFORM)) {
+                cur = bufferLoad(cg, cg.bufferOffsets[name],
+                                 llvmType(t, *cg.ctx));
+            } else {
+                cur = llvm::UndefValue::get(llvmType(t, *cg.ctx));
+            }
             v = emitMatrixBinOp(cg, binop, cur, v);
             if (!v)
                 v = emitNumericBinOp(cg, binop, cur, rhsV, t,
@@ -5878,6 +9522,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             cg.position.written = true;
             cg.lvalues[name] = v;
+            storeStageOut(cg, name, v);
             if (diagAssign)
                 fprintf(stderr, "MGL GS ASSIGN gl_Position rhs=%s typeId=%u block=%s\n",
                         v->getName().str().c_str(),
@@ -5888,6 +9533,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(name, "gl_PointSize") == 0) {
             cg.pointSize = true;
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         if (strcmp(name, "gl_PrimitiveID") == 0) {
@@ -5897,35 +9543,51 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             cg.primitiveIdWritten = true;
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_INT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         if (strcmp(name, "gl_Layer") == 0 ||
             strcmp(name, "gl_ViewportIndex") == 0) {
             cg.layerViewport = true;
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_INT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         if (strcmp(name, "gl_FragDepth") == 0) {
             /* Fragment depth output; carried in the struct return (see
              * assembleReturn).  Unwritten paths keep 1.0. */
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+            storeStageOut(cg, name, cg.lvalues[name]);
             return v;
         }
         auto lit = locals.find(name);
         if (lit != locals.end()) {
             v = coerceScalar(cg, v, lit->second.scalar);
-            cg.lvalues[name] = v;
+            /* Memory-backed scalar arrays: whole-array assign must store
+             * into the alloca; INDEX reads only from arrayMem. */
+            auto amit = cg.arrayMem.find(name);
+            if (amit != cg.arrayMem.end()) {
+                cg.b->CreateAlignedStore(v, amit->second, llvm::Align(4));
+                cg.lvalues.erase(name);
+            } else {
+                cg.lvalues[name] = v;
+            }
             return v;
         }
         const MGLIRSymbol *sym = findSymbol(mod, name);
         if (!sym) { cg.err = 1; return nullptr; }
         v = coerceScalar(cg, v, typeFromIR(sym->type).scalar);
+        if (sym->qualifiers & MGL_AST_Q_BUFFER) {
+            emitSSBOWrite(cg, lhs, sym, mod, locals, v);
+            return v;
+        }
         if (sym->qualifiers & MGL_AST_Q_UNIFORM) {
             bufferStore(cg, cg.bufferOffsets[name],
                         llvmType(typeFromIR(sym->type), *cg.ctx), v);
             return v;
         }
         cg.lvalues[name] = v;
+        storeStageOut(cg, name, v);
         return v;
     }
     case MGL_EXPR_TERNARY: {
@@ -6006,12 +9668,18 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (!strcmp(pvField, "gl_Position")) t.vec = 4;
             else if (!strcmp(pvField, "gl_CullDistance"))
                 t.arr = MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT;
+            else if (!strcmp(pvField, "gl_ClipDistance"))
+                t.arr = MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT;
             break;
         }
         std::vector<uint32_t> idx;
         /* Uniform-block member chain: the leaf IR type is the expression
          * type (the chain already includes every .field / [i] step). */
         if (const MGLIRType *leaf = blockMemberLeafType(e, mod)) {
+            t = typeFromIR(leaf);
+            break;
+        }
+        if (const MGLIRType *leaf = exprIRType(cg, e, mod, locals)) {
             t = typeFromIR(leaf);
             break;
         }
@@ -6022,14 +9690,15 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     }
     case MGL_EXPR_INDEX: {
         MType base = exprType(cg, e->u.index.object, mod, locals);
-        if (base.isMatrix()) {
+        if (base.isArray()) {
+            /* Array[i] yields the element type.  Check before isMatrix()
+             * so matCxR[N] indexes as an array of matrices. */
+            t = base;
+            t.arr = 0;
+        } else if (base.isMatrix()) {
             /* Matrix[i] yields a column vector. */
             t.scalar = base.scalar;
             t.vec = base.rows;
-        } else if (base.isArray()) {
-            /* Array[i] yields the element type. */
-            t = base;
-            t.arr = 0;
         } else if (base.vec) {
             /* Vector[i] yields a scalar component. */
             t = base;
@@ -6051,6 +9720,8 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                      : name[0] == 'u' ? MGLIR_SCALAR_UINT
                      : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                       : MGLIR_SCALAR_INT;
+            if (e->u.call.is_array_ctor)
+                t.arr = e->u.call.arg_count;
             break;
         }
         const char *vn = name;
@@ -6082,6 +9753,11 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 t.cols = (uint32_t)(m[0] - '0');
                 t.rows = (uint32_t)(m[2] - '0');
             }
+            if (e->u.call.is_array_ctor)
+                t.arr = e->u.call.arg_count;
+        } else if (cg.structTypes.count(name)) {
+            if (e->u.call.is_array_ctor)
+                t.arr = e->u.call.arg_count;
         } else if (strcmp(name, "normalize") == 0 ||
                    strcmp(name, "abs") == 0 ||
                    strcmp(name, "clamp") == 0 ||
@@ -6100,6 +9776,18 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                    strcmp(name, "distance") == 0 ||
                    strcmp(name, "dot") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT;
+        } else if (strcmp(name, "lessThanEqual") == 0 ||
+                   strcmp(name, "lessThan") == 0 ||
+                   strcmp(name, "greaterThan") == 0 ||
+                   strcmp(name, "greaterThanEqual") == 0 ||
+                   strcmp(name, "equal") == 0 ||
+                   strcmp(name, "notEqual") == 0) {
+            t.scalar = MGLIR_SCALAR_BOOL;
+            if (e->u.call.arg_count > 0)
+                t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
+        } else if (strcmp(name, "all") == 0) {
+            t.scalar = MGLIR_SCALAR_BOOL;
+            t.vec = 0;
         }
         break;
     }
@@ -6117,6 +9805,95 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         break;
     }
     return t;
+}
+
+static uint32_t mtypeLength(const MType &t)
+{
+    if (t.isMatrix()) return t.cols;
+    if (t.vec) return t.vec;
+    if (t.isArray() && t.arr) return t.arr;
+    return 0;
+}
+
+static uint32_t lengthFromLLVMType(llvm::Type *ty)
+{
+    if (!ty) return 0;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ty))
+        return vt->getNumElements();
+    if (ty->isArrayTy()) {
+        llvm::Type *el = ty->getArrayElementType();
+        if (el->isVectorTy() || el->isArrayTy())
+            return ty->getArrayNumElements();
+        return ty->getArrayNumElements();
+    }
+    return 0;
+}
+
+static llvm::Value *emitGLSLTypeLength(
+    Codegen &cg, const MGLExpr *object, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    if (!object) return nullptr;
+    if (const MGLIRType *leaf = blockMemberLeafType(object, mod)) {
+        uint32_t n = mtypeLength(typeFromIR(leaf));
+        if (n) return cg.b->getInt32(n);
+    }
+    if (const MGLIRType *ir = exprIRType(cg, object, mod, locals)) {
+        uint32_t n = mtypeLength(typeFromIR(ir));
+        if (n) return cg.b->getInt32(n);
+    }
+    if (object->kind == MGL_EXPR_MEMBER) {
+        const MGLExpr *root = object->u.member.object;
+        if (root && root->kind == MGL_EXPR_INDEX &&
+            root->u.index.object &&
+            root->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            root = root->u.index.object;
+        }
+        if (root && root->kind == MGL_EXPR_VAR_REF) {
+            VarSym *sym = codegenBlockMember(
+                cg, root->u.var_ref.name, object->u.member.field,
+                VarSym::VARYING);
+            if (!sym)
+                sym = codegenBlockMember(
+                    cg, root->u.var_ref.name, object->u.member.field,
+                    VarSym::OUTPUT);
+            if (sym) {
+                uint32_t n = mtypeLength(sym->type);
+                if (n) return cg.b->getInt32(n);
+            }
+        }
+    }
+    if (object->kind == MGL_EXPR_VAR_REF) {
+        auto lit = cg.lvalues.find(object->u.var_ref.name);
+        if (lit != cg.lvalues.end()) {
+            uint32_t n = lengthFromLLVMType(lit->second->getType());
+            if (n) return cg.b->getInt32(n);
+        }
+    }
+    if (object->kind == MGL_EXPR_BINARY &&
+        object->u.binary.op == MGL_OP_MUL) {
+        MType l = exprType(cg, object->u.binary.lhs, mod, locals);
+        MType r = exprType(cg, object->u.binary.rhs, mod, locals);
+        if (l.isMatrix() && r.isMatrix() && l.cols == r.rows)
+            return cg.b->getInt32(r.cols);
+        if (l.vec && r.vec)
+            return cg.b->getInt32(l.vec);
+    }
+    if (object->kind == MGL_EXPR_INDEX) {
+        MType base = exprType(cg, object->u.index.object, mod, locals);
+        if (base.isMatrix()) return cg.b->getInt32(base.rows);
+        if (base.vec) return cg.b->getInt32(1u);
+    }
+    if (object->kind == MGL_EXPR_CALL && object->u.call.name &&
+        strcmp(object->u.call.name, "outerProduct") == 0 &&
+        object->u.call.arg_count == 2) {
+        MType l = exprType(cg, object->u.call.args[0], mod, locals);
+        if (l.vec) return cg.b->getInt32(l.vec);
+    }
+    MType mt = exprType(cg, object, mod, locals);
+    uint32_t n = mtypeLength(mt);
+    if (n) return cg.b->getInt32(n);
+    return nullptr;
 }
 
 /* ---- math builtins ----------------------------------------------------- */
@@ -6144,6 +9921,73 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
     llvm::Value *a0 = nullptr, *a1 = nullptr, *a2 = nullptr;
     (void)a1;
     (void)a2;
+
+    if (strcmp(name, "lessThanEqual") == 0) {
+        if (!need(2)) {
+            return nullptr;
+        }
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) {
+            return nullptr;
+        }
+        return cg.b->CreateFCmp(llvm::CmpInst::FCMP_OLE, a0, a1);
+    }
+    if (strcmp(name, "lessThan") == 0 || strcmp(name, "greaterThan") == 0 ||
+        strcmp(name, "greaterThanEqual") == 0 ||
+        strcmp(name, "equal") == 0 || strcmp(name, "notEqual") == 0) {
+        if (!need(2)) {
+            return nullptr;
+        }
+        a0 = arg(0);
+        a1 = arg(1);
+        if (!a0 || !a1) {
+            return nullptr;
+        }
+        llvm::CmpInst::Predicate fPred = llvm::CmpInst::FCMP_OLT;
+        llvm::CmpInst::Predicate iPred = llvm::CmpInst::ICMP_SLT;
+        if (strcmp(name, "greaterThan") == 0) {
+            fPred = llvm::CmpInst::FCMP_OGT;
+            iPred = llvm::CmpInst::ICMP_SGT;
+        } else if (strcmp(name, "greaterThanEqual") == 0) {
+            fPred = llvm::CmpInst::FCMP_OGE;
+            iPred = llvm::CmpInst::ICMP_SGE;
+        } else if (strcmp(name, "equal") == 0) {
+            fPred = llvm::CmpInst::FCMP_OEQ;
+            iPred = llvm::CmpInst::ICMP_EQ;
+        } else if (strcmp(name, "notEqual") == 0) {
+            fPred = llvm::CmpInst::FCMP_ONE;
+            iPred = llvm::CmpInst::ICMP_NE;
+        }
+        if (a0->getType()->isFPOrFPVectorTy()) {
+            a0 = coerceScalar(cg, a0, MGLIR_SCALAR_FLOAT);
+            a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+            return cg.b->CreateFCmp(fPred, a0, a1);
+        }
+        a0 = coerceScalar(cg, a0, MGLIR_SCALAR_INT);
+        a1 = coerceScalar(cg, a1, MGLIR_SCALAR_INT);
+        return cg.b->CreateICmp(iPred, a0, a1);
+    }
+    if (strcmp(name, "all") == 0) {
+        if (!need(1)) {
+            return nullptr;
+        }
+        a0 = arg(0);
+        if (!a0) {
+            return nullptr;
+        }
+        if (!a0->getType()->isVectorTy()) {
+            return a0;
+        }
+        auto *vt = llvm::cast<llvm::FixedVectorType>(a0->getType());
+        uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
+        llvm::Value *acc = cg.b->CreateExtractElement(a0, (uint64_t)0);
+        for (uint32_t i = 1; i < n; i++) {
+            acc = cg.b->CreateAnd(
+                acc, cg.b->CreateExtractElement(a0, (uint64_t)i));
+        }
+        return acc;
+    }
 
     if (strcmp(name, "floatBitsToInt") == 0 ||
         strcmp(name, "floatBitsToUint") == 0) {
@@ -6568,6 +10412,429 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         llvm::Value *h = cg.b->CreateBitCast(av, v2f16);
         return callAirFn(cg, "air.convert.f.v2f32.f.v2f16", v2f32, {h});
     }
+
+    /* ---- integer / bitfield builtins (GLSL 4.60 §8.8 / §8.3) ---- */
+    auto storeOut = [&](uint32_t argIndex, llvm::Value *val) -> bool {
+        if (argIndex >= e->u.call.arg_count || !val) {
+            cg.err = 1;
+            cg.errmsg = "codegen: missing out-parameter for builtin";
+            return false;
+        }
+        const MGLExpr *dst = e->u.call.args[argIndex];
+        if (const MGLIRSymbol *sb = ssboRootSym(dst, mod)) {
+            emitSSBOWrite(cg, dst, sb, mod, locals, val);
+            return !cg.err;
+        }
+        const MGLExpr *rootE = dst;
+        while (rootE && (rootE->kind == MGL_EXPR_INDEX ||
+                         rootE->kind == MGL_EXPR_MEMBER)) {
+            rootE = (rootE->kind == MGL_EXPR_INDEX)
+                        ? rootE->u.index.object
+                        : rootE->u.member.object;
+        }
+        if (!rootE || rootE->kind != MGL_EXPR_VAR_REF) {
+            cg.err = 1;
+            cg.errmsg = "codegen: out-parameter must be an lvalue";
+            return false;
+        }
+        const char *name = rootE->u.var_ref.name;
+        if (!cg.lvalues.count(name)) {
+            llvm::Type *aggTy = nullptr;
+            auto lit = locals.find(name);
+            if (lit != locals.end())
+                aggTy = llvmType(lit->second, *cg.ctx);
+            else if (const MGLIRSymbol *sym = findSymbol(mod, name))
+                aggTy = llvmType(typeFromIR(sym->type), *cg.ctx);
+            if (!aggTy) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown out lvalue '") +
+                            name + "'";
+                return false;
+            }
+            cg.lvalues[name] = llvm::UndefValue::get(aggTy);
+        }
+        llvm::Value *nv =
+            updateIndexPath(cg, dst, cg.lvalues[name], val, mod, locals);
+        if (!nv) return false;
+        cg.lvalues[name] = nv;
+        return true;
+    };
+    auto asSignedIntTy = [&](llvm::Value *v) -> llvm::Value * {
+        llvm::Type *t = v->getType();
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            llvm::Type *dst = llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(*cg.ctx), vt->getNumElements());
+            return cg.b->CreateBitCast(v, dst);
+        }
+        return cg.b->CreateBitCast(v, llvm::Type::getInt32Ty(*cg.ctx));
+    };
+
+    if (strcmp(name, "bitCount") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = arg(0);
+        if (!a0) return nullptr;
+        llvm::Value *c =
+            cg.b->CreateIntrinsic(llvm::Intrinsic::ctpop, {a0->getType()},
+                                  {a0});
+        return asSignedIntTy(c);
+    }
+    if (strcmp(name, "bitfieldReverse") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = arg(0);
+        if (!a0) return nullptr;
+        return cg.b->CreateIntrinsic(llvm::Intrinsic::bitreverse,
+                                     {a0->getType()}, {a0});
+    }
+    if (strcmp(name, "findLSB") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = arg(0);
+        if (!a0) return nullptr;
+        llvm::Type *t = a0->getType();
+        llvm::Value *zero = llvm::Constant::getNullValue(t);
+        llvm::Value *isZero = cg.b->CreateICmpEQ(a0, zero);
+        llvm::Value *tz = cg.b->CreateIntrinsic(
+            llvm::Intrinsic::cttz, {t}, {a0, cg.b->getInt1(false)});
+        llvm::Value *neg1 = llvm::Constant::getAllOnesValue(
+            llvm::Type::getInt32Ty(*cg.ctx));
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            neg1 = cg.b->CreateVectorSplat(vt->getNumElements(), neg1);
+            llvm::Type *i32v = llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(*cg.ctx), vt->getNumElements());
+            tz = cg.b->CreateBitCast(tz, i32v);
+        } else {
+            tz = cg.b->CreateBitCast(tz, llvm::Type::getInt32Ty(*cg.ctx));
+        }
+        return cg.b->CreateSelect(isZero, neg1, tz);
+    }
+    if (strcmp(name, "findMSB") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = arg(0);
+        if (!a0) return nullptr;
+        llvm::Type *t = a0->getType();
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        MType at = exprType(cg, e->u.call.args[0], mod, locals);
+        bool isSigned = (at.scalar == MGLIR_SCALAR_INT);
+        llvm::Value *zero = llvm::Constant::getNullValue(t);
+        llvm::Value *neg1i = llvm::Constant::getAllOnesValue(i32);
+        llvm::Value *c31 = llvm::ConstantInt::get(i32, 31);
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            neg1i = cg.b->CreateVectorSplat(vt->getNumElements(), neg1i);
+            c31 = cg.b->CreateVectorSplat(vt->getNumElements(), c31);
+        }
+        llvm::Value *src = a0;
+        llvm::Value *invalid = cg.b->CreateICmpEQ(a0, zero);
+        if (isSigned) {
+            llvm::Value *allOnes = llvm::Constant::getAllOnesValue(t);
+            invalid = cg.b->CreateOr(invalid,
+                                     cg.b->CreateICmpEQ(a0, allOnes));
+            llvm::Value *neg = cg.b->CreateICmpSLT(
+                a0, llvm::Constant::getNullValue(t));
+            src = cg.b->CreateSelect(neg, cg.b->CreateNot(a0), a0);
+        }
+        llvm::Value *lz = cg.b->CreateIntrinsic(
+            llvm::Intrinsic::ctlz, {t}, {src, cg.b->getInt1(false)});
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            lz = cg.b->CreateBitCast(
+                lz, llvm::FixedVectorType::get(i32, vt->getNumElements()));
+        } else {
+            lz = cg.b->CreateBitCast(lz, i32);
+        }
+        llvm::Value *msb = cg.b->CreateSub(c31, lz);
+        return cg.b->CreateSelect(invalid, neg1i, msb);
+    }
+    if (strcmp(name, "bitfieldExtract") == 0) {
+        if (!need(3)) return nullptr;
+        a0 = arg(0);
+        a1 = arg(1);
+        a2 = arg(2);
+        if (!a0 || !a1 || !a2) return nullptr;
+        a1 = coerceScalar(cg, a1, MGLIR_SCALAR_INT);
+        a2 = coerceScalar(cg, a2, MGLIR_SCALAR_INT);
+        llvm::Type *t = a0->getType();
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        MType at = exprType(cg, e->u.call.args[0], mod, locals);
+        bool isSigned = (at.scalar == MGLIR_SCALAR_INT);
+        llvm::Value *off = a1;
+        llvm::Value *bits = a2;
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            off = cg.b->CreateVectorSplat(vt->getNumElements(), off);
+            bits = cg.b->CreateVectorSplat(vt->getNumElements(), bits);
+        }
+        llvm::Value *zero = llvm::Constant::getNullValue(t);
+        llvm::Value *bitsZero = cg.b->CreateICmpEQ(bits, zero);
+        llvm::Value *c32 = llvm::ConstantInt::get(i32, 32);
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t))
+            c32 = cg.b->CreateVectorSplat(vt->getNumElements(), c32);
+        if (isSigned) {
+            llvm::Value *shlAmt = cg.b->CreateSub(c32, cg.b->CreateAdd(off, bits));
+            llvm::Value *ashrAmt = cg.b->CreateSub(c32, bits);
+            llvm::Value *tmp = cg.b->CreateShl(a0, shlAmt);
+            llvm::Value *ext = cg.b->CreateAShr(tmp, ashrAmt);
+            return cg.b->CreateSelect(bitsZero, zero, ext);
+        }
+        llvm::Value *one = llvm::ConstantInt::get(i32, 1);
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t))
+            one = cg.b->CreateVectorSplat(vt->getNumElements(), one);
+        llvm::Value *full = cg.b->CreateICmpEQ(bits, c32);
+        llvm::Value *zeroBits = llvm::Constant::getNullValue(bits->getType());
+        llvm::Value *safeBits = cg.b->CreateSelect(full, zeroBits, bits);
+        llvm::Value *mask =
+            cg.b->CreateSub(cg.b->CreateShl(one, safeBits), one);
+        llvm::Value *allOnes = llvm::Constant::getAllOnesValue(t);
+        mask = cg.b->CreateSelect(full, allOnes, mask);
+        llvm::Value *shifted = cg.b->CreateLShr(a0, off);
+        llvm::Value *ext = cg.b->CreateAnd(shifted, mask);
+        ext = cg.b->CreateSelect(full, shifted, ext);
+        return cg.b->CreateSelect(bitsZero, zero, ext);
+    }
+    if (strcmp(name, "bitfieldInsert") == 0) {
+        if (!need(4)) return nullptr;
+        a0 = arg(0);
+        a1 = arg(1);
+        a2 = arg(2);
+        llvm::Value *a3 = arg(3);
+        if (!a0 || !a1 || !a2 || !a3) return nullptr;
+        a2 = coerceScalar(cg, a2, MGLIR_SCALAR_INT);
+        a3 = coerceScalar(cg, a3, MGLIR_SCALAR_INT);
+        llvm::Type *t = a0->getType();
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Value *off = a2;
+        llvm::Value *bits = a3;
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            off = cg.b->CreateVectorSplat(vt->getNumElements(), off);
+            bits = cg.b->CreateVectorSplat(vt->getNumElements(), bits);
+        }
+        llvm::Value *zero = llvm::Constant::getNullValue(t);
+        llvm::Value *bitsZero = cg.b->CreateICmpEQ(bits, zero);
+        llvm::Value *one = llvm::ConstantInt::get(i32, 1);
+        llvm::Value *c32 = llvm::ConstantInt::get(i32, 32);
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+            one = cg.b->CreateVectorSplat(vt->getNumElements(), one);
+            c32 = cg.b->CreateVectorSplat(vt->getNumElements(), c32);
+        }
+        llvm::Value *full = cg.b->CreateICmpEQ(bits, c32);
+        llvm::Value *zeroBits = llvm::Constant::getNullValue(bits->getType());
+        llvm::Value *safeBits = cg.b->CreateSelect(full, zeroBits, bits);
+        llvm::Value *mask = cg.b->CreateShl(
+            cg.b->CreateSub(cg.b->CreateShl(one, safeBits), one), off);
+        mask = cg.b->CreateSelect(full,
+                                  llvm::Constant::getAllOnesValue(t), mask);
+        llvm::Value *insert = cg.b->CreateAnd(cg.b->CreateShl(a1, off), mask);
+        llvm::Value *base = cg.b->CreateAnd(a0, cg.b->CreateNot(mask));
+        llvm::Value *r = cg.b->CreateOr(base, insert);
+        return cg.b->CreateSelect(bitsZero, a0, r);
+    }
+    if (strcmp(name, "uaddCarry") == 0 || strcmp(name, "usubBorrow") == 0) {
+        if (!need(3)) return nullptr;
+        a0 = arg(0);
+        a1 = arg(1);
+        if (!a0 || !a1) return nullptr;
+        bool isAdd = strcmp(name, "uaddCarry") == 0;
+        llvm::Value *sum = isAdd ? cg.b->CreateAdd(a0, a1)
+                                 : cg.b->CreateSub(a0, a1);
+        llvm::Value *flag =
+            isAdd ? cg.b->CreateICmpULT(sum, a0)
+                  : cg.b->CreateICmpUGT(a1, a0);
+        llvm::Value *one = llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(*cg.ctx), 1);
+        llvm::Value *zero = llvm::Constant::getNullValue(a0->getType());
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(a0->getType()))
+            one = cg.b->CreateVectorSplat(vt->getNumElements(), one);
+        llvm::Value *carry = cg.b->CreateSelect(flag, one, zero);
+        if (!storeOut(2, carry)) return nullptr;
+        return sum;
+    }
+    if (strcmp(name, "umulExtended") == 0 ||
+        strcmp(name, "imulExtended") == 0) {
+        if (!need(4)) return nullptr;
+        a0 = arg(0);
+        a1 = arg(1);
+        if (!a0 || !a1) return nullptr;
+        bool isSigned = strcmp(name, "imulExtended") == 0;
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
+        auto widenMul = [&](llvm::Value *x, llvm::Value *y) {
+            llvm::Value *xx = isSigned ? cg.b->CreateSExt(x, i64)
+                                       : cg.b->CreateZExt(x, i64);
+            llvm::Value *yy = isSigned ? cg.b->CreateSExt(y, i64)
+                                       : cg.b->CreateZExt(y, i64);
+            llvm::Value *p = cg.b->CreateMul(xx, yy);
+            llvm::Value *lsb = cg.b->CreateTrunc(p, i32);
+            llvm::Value *msb = cg.b->CreateTrunc(
+                cg.b->CreateLShr(p, llvm::ConstantInt::get(i64, 32)), i32);
+            return std::pair<llvm::Value *, llvm::Value *>{msb, lsb};
+        };
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(a0->getType())) {
+            uint32_t n = vt->getNumElements();
+            llvm::Value *msbV = llvm::UndefValue::get(a0->getType());
+            llvm::Value *lsbV = llvm::UndefValue::get(a0->getType());
+            for (uint32_t i = 0; i < n; i++) {
+                llvm::Value *xi = cg.b->CreateExtractElement(a0, i);
+                llvm::Value *yi = cg.b->CreateExtractElement(a1, i);
+                auto p = widenMul(xi, yi);
+                msbV = cg.b->CreateInsertElement(msbV, p.first, i);
+                lsbV = cg.b->CreateInsertElement(lsbV, p.second, i);
+            }
+            if (!storeOut(2, msbV) || !storeOut(3, lsbV)) return nullptr;
+        } else {
+            auto p = widenMul(a0, a1);
+            if (!storeOut(2, p.first) || !storeOut(3, p.second))
+                return nullptr;
+        }
+        return cg.b->getInt32(0);
+    }
+    if (strcmp(name, "ldexp") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        a1 = arg(1);
+        if (!a0 || !a1) return nullptr;
+        a1 = coerceScalar(cg, a1, MGLIR_SCALAR_INT);
+        /* Scalar llvm.exp2(sitofp(SSBO int)) has been observed to lower to
+         * a dead Metal pipeline on AGX; vector exp2 is reliable.  Widen
+         * scalar to <2 x float>, then extract. */
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        if (!a0->getType()->isVectorTy()) {
+            llvm::Value *ef = cg.b->CreateSIToFP(a1, f32);
+            llvm::Type *v2 = llvm::FixedVectorType::get(f32, 2);
+            llvm::Value *efv = cg.b->CreateVectorSplat(2, ef);
+            llvm::Value *scalev =
+                callFloatIntrinsic(cg, llvm::Intrinsic::exp2, efv);
+            llvm::Value *scale = cg.b->CreateExtractElement(
+                scalev, (uint64_t)0);
+            return cg.b->CreateFMul(a0, scale);
+        }
+        llvm::Value *ef = cg.b->CreateSIToFP(a1, a0->getType());
+        llvm::Value *scale =
+            callFloatIntrinsic(cg, llvm::Intrinsic::exp2, ef);
+        return cg.b->CreateFMul(a0, scale);
+    }
+    if (strcmp(name, "frexp") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        auto frexp1 = [&](llvm::Value *x) -> std::pair<llvm::Value *, llvm::Value *> {
+            llvm::Value *ax =
+                callFloatIntrinsic(cg, llvm::Intrinsic::fabs, x);
+            llvm::Value *isZero = cg.b->CreateFCmpOEQ(
+                ax, llvm::ConstantFP::get(f32, 0.0));
+            llvm::Value *lg =
+                callFloatIntrinsic(cg, llvm::Intrinsic::log2, ax);
+            llvm::Value *fl =
+                callFloatIntrinsic(cg, llvm::Intrinsic::floor, lg);
+            llvm::Value *eF = cg.b->CreateFAdd(
+                fl, llvm::ConstantFP::get(f32, 1.0));
+            llvm::Value *eI = cg.b->CreateFPToSI(eF, i32);
+            llvm::Value *scale = callFloatIntrinsic(
+                cg, llvm::Intrinsic::exp2, cg.b->CreateFNeg(eF));
+            llvm::Value *m = cg.b->CreateFMul(x, scale);
+            m = cg.b->CreateSelect(isZero, llvm::ConstantFP::get(f32, 0.0),
+                                   m);
+            eI = cg.b->CreateSelect(isZero, cg.b->getInt32(0), eI);
+            return {m, eI};
+        };
+        if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(a0->getType())) {
+            uint32_t n = vt->getNumElements();
+            llvm::Type *iv =
+                llvm::FixedVectorType::get(i32, n);
+            llvm::Value *mV = llvm::UndefValue::get(a0->getType());
+            llvm::Value *eV = llvm::UndefValue::get(iv);
+            for (uint32_t i = 0; i < n; i++) {
+                llvm::Value *xi = cg.b->CreateExtractElement(a0, i);
+                auto p = frexp1(xi);
+                mV = cg.b->CreateInsertElement(mV, p.first, i);
+                eV = cg.b->CreateInsertElement(eV, p.second, i);
+            }
+            if (!storeOut(1, eV)) return nullptr;
+            return mV;
+        }
+        auto p = frexp1(a0);
+        if (!storeOut(1, p.second)) return nullptr;
+        return p.first;
+    }
+    if (strcmp(name, "packUnorm4x8") == 0 ||
+        strcmp(name, "packSnorm4x8") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        bool unorm = strcmp(name, "packUnorm4x8") == 0;
+        /* Prefer AIR pack when available; fall back to manual byte pack. */
+        const char *airfn =
+            unorm ? "air.pack.unorm4x8.v4f32" : "air.pack.snorm4x8.v4f32";
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        /* Manual path (always correct; used when AIR name mismatches). */
+        auto packLane = [&](llvm::Value *x, float scale) -> llvm::Value * {
+            llvm::Value *lo = cg.b->CreateIntrinsic(
+                llvm::Intrinsic::maxnum, {f32},
+                {x, llvm::ConstantFP::get(f32, unorm ? 0.0 : -1.0)});
+            llvm::Value *cl = cg.b->CreateIntrinsic(
+                llvm::Intrinsic::minnum, {f32},
+                {lo, llvm::ConstantFP::get(f32, 1.0)});
+            /* CTS / GLSL pack*4x8: floor(c * range + 0.5). */
+            llvm::Value *s = cg.b->CreateFMul(
+                cl, llvm::ConstantFP::get(f32, scale));
+            llvm::Value *biased = cg.b->CreateFAdd(
+                s, llvm::ConstantFP::get(f32, 0.5));
+            llvm::Value *r =
+                callFloatIntrinsic(cg, llvm::Intrinsic::floor, biased);
+            llvm::Value *iv = cg.b->CreateFPToSI(r, i32);
+            return cg.b->CreateAnd(iv, cg.b->getInt32(0xff));
+        };
+        float scale = unorm ? 255.0f : 127.0f;
+        llvm::Value *b0 =
+            packLane(cg.b->CreateExtractElement(a0, (uint64_t)0), scale);
+        llvm::Value *b1 =
+            packLane(cg.b->CreateExtractElement(a0, (uint64_t)1), scale);
+        llvm::Value *b2 =
+            packLane(cg.b->CreateExtractElement(a0, (uint64_t)2), scale);
+        llvm::Value *b3 =
+            packLane(cg.b->CreateExtractElement(a0, (uint64_t)3), scale);
+        llvm::Value *p = b0;
+        p = cg.b->CreateOr(p, cg.b->CreateShl(b1, cg.b->getInt32(8)));
+        p = cg.b->CreateOr(p, cg.b->CreateShl(b2, cg.b->getInt32(16)));
+        p = cg.b->CreateOr(p, cg.b->CreateShl(b3, cg.b->getInt32(24)));
+        (void)airfn;
+        return p;
+    }
+    if (strcmp(name, "unpackUnorm4x8") == 0 ||
+        strcmp(name, "unpackSnorm4x8") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = arg(0);
+        if (!a0) return nullptr;
+        a0 = coerceScalar(cg, a0, MGLIR_SCALAR_UINT);
+        bool unorm = strcmp(name, "unpackUnorm4x8") == 0;
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+        llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
+        auto unpackLane = [&](uint32_t shift) -> llvm::Value * {
+            llvm::Value *b = cg.b->CreateAnd(
+                cg.b->CreateLShr(a0, cg.b->getInt32(shift)),
+                cg.b->getInt32(0xff));
+            if (unorm) {
+                return cg.b->CreateFDiv(
+                    cg.b->CreateUIToFP(b, f32),
+                    llvm::ConstantFP::get(f32, 255.0));
+            }
+            /* snorm: byte as signed int8 */
+            llvm::Value *sb = cg.b->CreateTrunc(
+                b, llvm::Type::getInt8Ty(*cg.ctx));
+            llvm::Value *si = cg.b->CreateSExt(sb, i32);
+            llvm::Value *f = cg.b->CreateSIToFP(si, f32);
+            llvm::Value *d = cg.b->CreateFDiv(
+                f, llvm::ConstantFP::get(f32, 127.0));
+            return cg.b->CreateIntrinsic(
+                llvm::Intrinsic::maxnum, {f32},
+                {d, llvm::ConstantFP::get(f32, -1.0)});
+        };
+        llvm::Value *r = llvm::UndefValue::get(v4f32);
+        r = cg.b->CreateInsertElement(r, unpackLane(0), (uint64_t)0);
+        r = cg.b->CreateInsertElement(r, unpackLane(8), (uint64_t)1);
+        r = cg.b->CreateInsertElement(r, unpackLane(16), (uint64_t)2);
+        r = cg.b->CreateInsertElement(r, unpackLane(24), (uint64_t)3);
+        return r;
+    }
     return nullptr;
 }
 
@@ -6680,6 +10947,222 @@ static llvm::Value *applyCullDistance(Codegen &cg, llvm::Value *pos)
     return cg.b->CreateSelect(shouldCull, culled, pos);
 }
 
+/* Native post-tessellation vertex stage: primitive cull uses the patch
+ * control-point gl_CullDistance values in the TCS output stream (slot 30).
+ * Slot 28 already carries patch metadata for the same draw. */
+static llvm::Value *applyCullDistanceFromPatchInputs(Codegen &cg,
+                                                     llvm::Value *pos)
+{
+    if (!cg.usesPatchCullDistance || !cg.stageInPtr || !cg.indirectPtr)
+        return pos;
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *patchInfo = cg.b->CreateBitCast(
+        cg.indirectPtr, i32->getPointerTo(1));
+    llvm::Value *verticesPerPatch = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, patchInfo, cg.b->getInt32(1)),
+        llvm::Align(4));
+    llvm::Value *patchIndex = tessPatchIndexForStageIn(cg);
+    llvm::Value *shouldCull = cg.b->getFalse();
+    for (uint32_t distance = 0;
+         distance < MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT; ++distance) {
+        llvm::Value *allNegative = cg.b->getTrue();
+        for (uint32_t vertex = 0; vertex < 32u; ++vertex) {
+            llvm::Value *active = cg.b->CreateICmpULT(
+                cg.b->getInt32(vertex), verticesPerPatch);
+            llvm::Value *recordIdx = cg.b->CreateAdd(
+                cg.b->CreateMul(patchIndex, verticesPerPatch),
+                cg.b->getInt32(vertex));
+            llvm::Value *off = cg.b->CreateAdd(
+                cg.b->CreateMul(
+                    cg.b->CreateZExt(recordIdx, cg.b->getInt64Ty()),
+                    cg.b->getInt64(cg.stageInStride)),
+                cg.b->getInt64(MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET +
+                               distance * 4u));
+            llvm::Value *p = cg.b->CreateGEP(
+                cg.b->getInt8Ty(), cg.stageInPtr, off);
+            p = cg.b->CreateBitCast(p, f32->getPointerTo(1));
+            llvm::Value *value = cg.b->CreateAlignedLoad(
+                f32, p, llvm::Align(4));
+            llvm::Value *negative = cg.b->CreateFCmpOLT(
+                value, llvm::ConstantFP::get(f32, 0.0));
+            allNegative = cg.b->CreateAnd(
+                allNegative,
+                cg.b->CreateSelect(active, negative, cg.b->getTrue()));
+        }
+        shouldCull = cg.b->CreateOr(shouldCull, allNegative);
+    }
+    llvm::Value *culled = llvm::ConstantVector::get({
+        llvm::ConstantFP::get(f32, 2.0),
+        llvm::ConstantFP::get(f32, 2.0),
+        llvm::ConstantFP::get(f32, 2.0),
+        llvm::ConstantFP::get(f32, 1.0)});
+    return cg.b->CreateSelect(shouldCull, culled, pos);
+}
+
+/* GL ignores gl_SampleMask when SAMPLE_BUFFERS==0; Metal still honours
+ * [[sample_mask]], so force full coverage for non-MSAA targets.
+ * Params float4 is {height, lower_left, ns_bits, sb_bits}; when emulating
+ * MS sample planes, sb_bits may carry 0x80000000 | (forced_sid << 8) and
+ * Metal only has one coverage bit — map GL bit[forced_sid] onto it. */
+static llvm::Value *resolveSampleMaskOut(Codegen &cg) {
+    llvm::Value *maskArr = cg.lvalues.count("gl_SampleMask")
+        ? cg.lvalues["gl_SampleMask"]
+        : llvm::ConstantInt::get(cg.b->getInt32Ty(), ~0u);
+    llvm::Value *mask = maskArr->getType()->isArrayTy()
+        ? cg.b->CreateExtractValue(maskArr, 0)
+        : maskArr;
+    if (!cg.fragSampleParams)
+        return mask;
+    llvm::Type *i32 = cg.b->getInt32Ty();
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *fptr = cg.b->CreateBitCast(
+        cg.fragSampleParams, f32->getPointerTo(1));
+    llvm::Value *sbBits = cg.b->CreateAlignedLoad(
+        f32, cg.b->CreateGEP(f32, fptr, cg.b->getInt32(3)), llvm::Align(4));
+    llvm::Value *sb = cg.b->CreateBitCast(sbBits, i32);
+    llvm::Value *forceMask = cg.b->CreateAnd(sb, cg.b->getInt32(0x80000000u));
+    llvm::Value *force = cg.b->CreateICmpNE(forceMask, cg.b->getInt32(0));
+    llvm::Value *forcedSid = cg.b->CreateAnd(
+        cg.b->CreateLShr(sb, 8), cg.b->getInt32(0xff));
+    llvm::Value *bit = cg.b->CreateAnd(
+        cg.b->CreateLShr(mask, forcedSid), cg.b->getInt32(1));
+    llvm::Value *forcedCover = cg.b->CreateSelect(
+        cg.b->CreateICmpNE(bit, cg.b->getInt32(0)),
+        cg.b->getInt32(~0), cg.b->getInt32(0));
+    llvm::Value *sampleBuffers = cg.b->CreateAnd(sb, cg.b->getInt32(1));
+    llvm::Value *nonMS =
+        cg.b->CreateICmpEQ(sampleBuffers, cg.b->getInt32(0));
+    llvm::Value *msMask = cg.b->CreateSelect(force, forcedCover, mask);
+    return cg.b->CreateSelect(nonMS, cg.b->getInt32(~0), msMask);
+}
+
+/* Software gl_SamplePosition matching mglGetMultisamplefv tables.
+ * Avoids Metal [[sample_position]], which crashes the AGX compiler. */
+static llvm::Value *emitSamplePositionFromId(Codegen &cg, llvm::Value *sampleId,
+                                             llvm::Value *numSamples);
+
+/* Evaluate interpolant at pixel-relative offset using fine derivatives:
+ *   v + dFdx(v) * ox + dFdy(v) * oy
+ * Matches GLSL interpolateAtOffset / interpolateAtSample approximation when
+ * hardware sample shading is unavailable (MS textures as array planes). */
+static llvm::Value *emitInterpolateAtOffsetValue(Codegen &cg, llvm::Value *v,
+                                                 llvm::Value *offsetXY) {
+    if (!v || !offsetXY) return nullptr;
+    llvm::Type *et = v->getType();
+    llvm::Value *dx = nullptr;
+    llvm::Value *dy = nullptr;
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+        uint32_t n = (uint32_t)vt->getNumElements();
+        std::string dxn = std::string("air.dfdx.v") + std::to_string(n) + "f32";
+        std::string dyn = std::string("air.dfdy.v") + std::to_string(n) + "f32";
+        dx = callAirFn(cg, dxn.c_str(), et, {v});
+        dy = callAirFn(cg, dyn.c_str(), et, {v});
+    } else {
+        dx = callAirFn(cg, "air.dfdx.f32", et, {v});
+        dy = callAirFn(cg, "air.dfdy.f32", et, {v});
+    }
+    if (!dx || !dy) return nullptr;
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Value *ox = cg.b->CreateExtractElement(offsetXY, cg.b->getInt32(0));
+    llvm::Value *oy = cg.b->CreateExtractElement(offsetXY, cg.b->getInt32(1));
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+        uint32_t n = (uint32_t)vt->getNumElements();
+        llvm::Value *oxv = llvm::UndefValue::get(et);
+        llvm::Value *oyv = llvm::UndefValue::get(et);
+        for (uint32_t i = 0; i < n; i++) {
+            oxv = cg.b->CreateInsertElement(oxv, ox, i);
+            oyv = cg.b->CreateInsertElement(oyv, oy, i);
+        }
+        ox = oxv;
+        oy = oyv;
+    } else if (et != f32) {
+        /* Non-float scalars are not valid GENF interpolants. */
+        return v;
+    }
+    llvm::Value *termX = cg.b->CreateFMul(dx, ox);
+    llvm::Value *termY = cg.b->CreateFMul(dy, oy);
+    return cg.b->CreateFAdd(v, cg.b->CreateFAdd(termX, termY));
+}
+
+static llvm::Value *emitInterpolateAtBuiltin(
+    Codegen &cg, const MGLExpr *e, const char *name, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals) {
+    const bool isCentroid = strcmp(name, "interpolateAtCentroid") == 0;
+    const bool isSample = strcmp(name, "interpolateAtSample") == 0;
+    const bool isOffset = strcmp(name, "interpolateAtOffset") == 0;
+    const unsigned expectArgs = isCentroid ? 1u : 2u;
+    if (e->u.call.arg_count != expectArgs) {
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: '") + name + "' expects " +
+                    std::to_string(expectArgs) + " argument(s)";
+        return nullptr;
+    }
+    llvm::Value *v = emitExpr(cg, e->u.call.args[0], mod, locals);
+    if (!v) return nullptr;
+    if (isCentroid) {
+        /* Pixel-center interpolant is a stable centroid approximation when
+         * MSAA coverage is full-quad (CTS MSI unique=false cases). */
+        return v;
+    }
+    llvm::Value *offset = nullptr;
+    if (isOffset) {
+        offset = emitExpr(cg, e->u.call.args[1], mod, locals);
+        if (!offset) return nullptr;
+    } else if (isSample) {
+        llvm::Value *sid = emitExpr(cg, e->u.call.args[1], mod, locals);
+        if (!sid) return nullptr;
+        llvm::Value *ns = cg.lvalues.count("gl_NumSamples")
+                              ? cg.lvalues["gl_NumSamples"]
+                              : cg.b->getInt32(1);
+        llvm::Value *sp = emitSamplePositionFromId(cg, sid, ns);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+        llvm::Value *half2 = llvm::ConstantVector::get(
+            {llvm::cast<llvm::Constant>(half),
+             llvm::cast<llvm::Constant>(half)});
+        offset = cg.b->CreateFSub(sp, half2);
+    }
+    return emitInterpolateAtOffsetValue(cg, v, offset);
+}
+
+/* Software gl_SamplePosition matching mglGetMultisamplefv tables.
+ * Avoids Metal [[sample_position]], which crashes the AGX compiler. */
+static llvm::Value *emitSamplePositionFromId(Codegen &cg, llvm::Value *sampleId,
+                                             llvm::Value *numSamples) {
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    auto *f2 = llvm::FixedVectorType::get(f32, 2);
+    auto v2 = [&](float x, float y) -> llvm::Value * {
+        return llvm::ConstantVector::get(
+            {llvm::ConstantFP::get(f32, x), llvm::ConstantFP::get(f32, y)});
+    };
+    llvm::Value *center = v2(0.5f, 0.5f);
+    llvm::Value *sid = sampleId
+        ? cg.b->CreateBitCast(sampleId, cg.b->getInt32Ty())
+        : cg.b->getInt32(0);
+    llvm::Value *ns = numSamples ? numSamples : cg.b->getInt32(1);
+
+    /* 2x Metal standard positions. */
+    llvm::Value *p2 = cg.b->CreateSelect(
+        cg.b->CreateICmpEQ(sid, cg.b->getInt32(0)),
+        v2(0.25f, 0.25f), v2(0.75f, 0.75f));
+
+    /* 4x Metal standard positions. */
+    llvm::Value *p4 = v2(0.625f, 0.625f);
+    p4 = cg.b->CreateSelect(cg.b->CreateICmpEQ(sid, cg.b->getInt32(2)),
+                            v2(0.125f, 0.875f), p4);
+    p4 = cg.b->CreateSelect(cg.b->CreateICmpEQ(sid, cg.b->getInt32(1)),
+                            v2(0.875f, 0.375f), p4);
+    p4 = cg.b->CreateSelect(cg.b->CreateICmpEQ(sid, cg.b->getInt32(0)),
+                            v2(0.375f, 0.125f), p4);
+
+    llvm::Value *pos = center;
+    pos = cg.b->CreateSelect(cg.b->CreateICmpEQ(ns, cg.b->getInt32(4)), p4, pos);
+    pos = cg.b->CreateSelect(cg.b->CreateICmpEQ(ns, cg.b->getInt32(2)), p2, pos);
+    (void)f2;
+    return pos;
+}
+
 llvm::Value *assembleReturn(Codegen &cg) {
     if (cg.isVS) {
         if (cg.retTy->isStructTy()) {
@@ -6688,7 +11171,10 @@ llvm::Value *assembleReturn(Codegen &cg) {
                                    ? cg.lvalues["gl_Position"]
                                    : llvm::UndefValue::get(cg.retElems[0]);
             pos = fixClipZ(cg, pos);
-            pos = applyCullDistance(cg, pos);
+            if (cg.usesPatchCullDistance)
+                pos = applyCullDistanceFromPatchInputs(cg, pos);
+            else
+                pos = applyCullDistance(cg, pos);
             ret = cg.b->CreateInsertValue(ret, pos, 0);
             uint32_t ri = 1;
             if (cg.pointSize) {
@@ -6700,12 +11186,68 @@ llvm::Value *assembleReturn(Codegen &cg) {
                     ri++);
             }
             if (cg.usesClipDistance) {
-                ret = cg.b->CreateInsertValue(
-                    ret,
-                    cg.lvalues.count("gl_ClipDistance")
-                        ? cg.lvalues["gl_ClipDistance"]
-                        : defaultClipDistances(cg),
-                    ri++);
+                llvm::Value *clip = cg.lvalues.count("gl_ClipDistance")
+                    ? cg.lvalues["gl_ClipDistance"]
+                    : defaultClipDistances(cg);
+                ret = cg.b->CreateInsertValue(ret, clip, ri++);
+                for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {
+                    ret = cg.b->CreateInsertValue(
+                        ret, cg.b->CreateExtractValue(clip, i), ri++);
+                }
+            }
+            if (cg.cullDistancePassthroughCount > 0) {
+                /* Prefer the exact per-vertex capture buffer (slot 29) when
+                 * present: the same values drive primitive cull emulation.
+                 * Falling back to the SSA gl_CullDistance array covers draws
+                 * that skip the capture pre-pass. */
+                llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+                if (cg.usesCullDistance && cg.cullBuffer && cg.cullParams &&
+                    cg.vertexId) {
+                    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+                    llvm::Value *params = cg.b->CreateBitCast(
+                        cg.cullParams, i32->getPointerTo(1));
+                    auto loadParam = [&](uint32_t index) {
+                        return cg.b->CreateAlignedLoad(
+                            i32,
+                            cg.b->CreateGEP(i32, params, cg.b->getInt32(index)),
+                            llvm::Align(4));
+                    };
+                    llvm::Value *distanceOffset = loadParam(1);
+                    llvm::Value *stride = loadParam(2);
+                    llvm::Value *firstInstance = loadParam(10);
+                    llvm::Value *instanceStride = loadParam(11);
+                    llvm::Value *relativeInstance = cg.b->CreateSub(
+                        cg.instanceId ? cg.instanceId : cg.b->getInt32(0),
+                        firstInstance);
+                    llvm::Value *instanceBase = cg.b->CreateMul(
+                        relativeInstance, instanceStride);
+                    llvm::Value *buf = cg.b->CreateBitCast(
+                        cg.cullBuffer, f32->getPointerTo(1));
+                    for (uint32_t i = 0; i < cg.cullDistancePassthroughCount;
+                         i++) {
+                        llvm::Value *byteOffset = cg.b->CreateAdd(
+                            cg.b->CreateMul(
+                                cg.b->CreateAdd(instanceBase, cg.vertexId),
+                                stride),
+                            cg.b->CreateAdd(distanceOffset,
+                                            cg.b->getInt32(i * 4u)));
+                        llvm::Value *floatOffset = cg.b->CreateUDiv(
+                            byteOffset, cg.b->getInt32(4));
+                        llvm::Value *value = cg.b->CreateAlignedLoad(
+                            f32, cg.b->CreateGEP(f32, buf, floatOffset),
+                            llvm::Align(4));
+                        ret = cg.b->CreateInsertValue(ret, value, ri++);
+                    }
+                } else {
+                    llvm::Value *cull = cg.lvalues.count("gl_CullDistance")
+                        ? cg.lvalues["gl_CullDistance"]
+                        : defaultCullDistances(cg);
+                    for (uint32_t i = 0; i < cg.cullDistancePassthroughCount;
+                         i++) {
+                        ret = cg.b->CreateInsertValue(
+                            ret, cg.b->CreateExtractValue(cull, i), ri++);
+                    }
+                }
             }
             if (cg.layerViewport) {
                 /* GLSL 4.60 §7.1.4 / GL 4.6 §13.8.1: unwritten gl_Layer
@@ -6721,6 +11263,33 @@ llvm::Value *assembleReturn(Codegen &cg) {
             }
             for (uint32_t i = 0; i < cg.varyings.size(); i++) {
                 VarSym *var = cg.varyings[i];
+                if (var->type.isArray() && cg.arrayMem.count(var->name)) {
+                    uint32_t n = (uint32_t)var->type.arr;
+                    llvm::Value *slot = cg.arrayMem[var->name];
+                    for (uint32_t k = 0; k < n; k++) {
+                        llvm::Value *ep = arrayMemGEP(
+                            cg, var->name, slot, cg.b->getInt32(k));
+                        llvm::Type *arrTy = cg.arrayMemTypes[var->name];
+                        auto *aty = llvm::cast<llvm::ArrayType>(arrTy);
+                        llvm::Value *el = cg.b->CreateAlignedLoad(
+                            aty->getElementType(), ep, llvm::Align(4));
+                        MType elTy = var->type;
+                        elTy.arr = 0;
+                        if (uintUsesSplitFloatCarrier(elTy, cg.has_gs)) {
+                            llvm::Value *lo = nullptr, *hi = nullptr;
+                            encodeUintSplitFloatCarrier(cg, el, &lo, &hi);
+                            ret = cg.b->CreateInsertValue(ret, lo, ri++);
+                            ret = cg.b->CreateInsertValue(ret, hi, ri++);
+                        } else if (varyingUsesFloatCarrier(var->type,
+                                                           cg.has_gs)) {
+                            el = encodeFloatCarrier(cg, el, var->type.scalar);
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        } else {
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        }
+                    }
+                    continue;
+                }
                 llvm::Value *base = cg.lvalues.count(var->name)
                     ? cg.lvalues[var->name]
                     : llvm::UndefValue::get(llvmType(var->type, *cg.ctx));
@@ -6732,10 +11301,42 @@ llvm::Value *assembleReturn(Codegen &cg) {
                         if (base->getType()->isArrayTy()) {
                             el = cg.b->CreateExtractValue(base, k);
                         }
-                        ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        MType elTy = var->type;
+                        elTy.arr = 0;
+                        if (uintUsesSplitFloatCarrier(elTy, cg.has_gs)) {
+                            llvm::Value *lo = nullptr, *hi = nullptr;
+                            encodeUintSplitFloatCarrier(cg, el, &lo, &hi);
+                            ret = cg.b->CreateInsertValue(ret, lo, ri++);
+                            ret = cg.b->CreateInsertValue(ret, hi, ri++);
+                        } else if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
+                            el = encodeFloatCarrier(cg, el, var->type.scalar);
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        } else {
+                            ret = cg.b->CreateInsertValue(ret, el, ri++);
+                        }
+                    }
+                } else if (var->type.isMatrix()) {
+                    MType colTy = matrixColumnType(var->type);
+                    for (uint32_t c = 0; c < var->type.cols; c++) {
+                        llvm::Value *col = base;
+                        if (base->getType()->isArrayTy())
+                            col = cg.b->CreateExtractValue(base, c);
+                        if (varyingUsesFloatCarrier(colTy, cg.has_gs))
+                            col = encodeFloatCarrier(cg, col, colTy.scalar);
+                        ret = cg.b->CreateInsertValue(ret, col, ri++);
                     }
                 } else {
-                    ret = cg.b->CreateInsertValue(ret, base, ri++);
+                    if (uintUsesSplitFloatCarrier(var->type, cg.has_gs)) {
+                        llvm::Value *lo = nullptr, *hi = nullptr;
+                        encodeUintSplitFloatCarrier(cg, base, &lo, &hi);
+                        ret = cg.b->CreateInsertValue(ret, lo, ri++);
+                        ret = cg.b->CreateInsertValue(ret, hi, ri++);
+                    } else {
+                        if (varyingUsesFloatCarrier(var->type, cg.has_gs)) {
+                            base = encodeFloatCarrier(cg, base, var->type.scalar);
+                        }
+                        ret = cg.b->CreateInsertValue(ret, base, ri++);
+                    }
                 }
             }
             return ret;
@@ -6743,7 +11344,12 @@ llvm::Value *assembleReturn(Codegen &cg) {
         llvm::Value *pos = cg.lvalues.count("gl_Position")
                                ? cg.lvalues["gl_Position"]
                                : llvm::UndefValue::get(cg.retTy);
-        return applyCullDistance(cg, fixClipZ(cg, pos));
+        pos = fixClipZ(cg, pos);
+        if (cg.usesPatchCullDistance)
+            pos = applyCullDistanceFromPatchInputs(cg, pos);
+        else
+            pos = applyCullDistance(cg, pos);
+        return pos;
     }
     VarSym *arrayOut = nullptr;
     for (VarSym &v : *cg.auxSyms) {
@@ -6767,9 +11373,14 @@ llvm::Value *assembleReturn(Codegen &cg) {
                 : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
             ret = cg.b->CreateInsertValue(ret, depth, arrayOut->type.arr);
         }
+        if (cg.hasSampleMask) {
+            uint32_t field = (uint32_t)arrayOut->type.arr +
+                             (cg.hasFragDepth ? 1u : 0u);
+            ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), field);
+        }
         return ret;
     }
-    if (cg.fragOutputs.size() > 1u || cg.hasFragDepth) {
+    if (cg.fragOutputs.size() > 1u || cg.hasFragDepth || cg.hasSampleMask) {
         llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
         uint32_t field = 0u;
         for (VarSym *out : cg.fragOutputs) {
@@ -6783,11 +11394,29 @@ llvm::Value *assembleReturn(Codegen &cg) {
             llvm::Value *depth = cg.lvalues.count("gl_FragDepth")
                 ? cg.lvalues["gl_FragDepth"]
                 : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
-            ret = cg.b->CreateInsertValue(ret, depth, field);
+            ret = cg.b->CreateInsertValue(ret, depth, field++);
+        }
+        if (cg.hasSampleMask) {
+            ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), field);
         }
         return ret;
     }
     VarSym *out = cg.fragOutputs.empty() ? nullptr : cg.fragOutputs[0];
+    if (cg.hasSampleMask) {
+        llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
+        llvm::Value *color = (out && cg.lvalues.count(out->name))
+            ? cg.lvalues[out->name]
+            : llvm::UndefValue::get(cg.retElems.empty()
+                  ? llvm::FixedVectorType::get(
+                        llvm::Type::getFloatTy(*cg.ctx), 4)
+                  : cg.retElems[0]);
+        /* Single color + sample_mask: promote to struct return. */
+        if (cg.retTy->isStructTy()) {
+            ret = cg.b->CreateInsertValue(ret, color, 0);
+            ret = cg.b->CreateInsertValue(ret, resolveSampleMaskOut(cg), 1);
+            return ret;
+        }
+    }
     return (out && cg.lvalues.count(out->name))
         ? cg.lvalues[out->name] : llvm::UndefValue::get(cg.retTy);
 }
@@ -6798,6 +11427,34 @@ void emitCompound(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         emitStmt(cg, st->u.compound.stmts[i], mod, locals);
 }
 
+/* Tiny for-unroll must not erase loopStack/breakStack targets. */
+static bool stmtContainsBreakOrContinue(const MGLStmt *st) {
+    if (!st) return false;
+    switch (st->kind) {
+    case MGL_STMT_BREAK:
+    case MGL_STMT_CONTINUE:
+        return true;
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++)
+            if (stmtContainsBreakOrContinue(st->u.compound.stmts[i]))
+                return true;
+        return false;
+    case MGL_STMT_IF:
+        return stmtContainsBreakOrContinue(st->u.ifs.then) ||
+               stmtContainsBreakOrContinue(st->u.ifs.else_);
+    case MGL_STMT_FOR:
+        return stmtContainsBreakOrContinue(st->u.loop.init) ||
+               stmtContainsBreakOrContinue(st->u.loop.body);
+    case MGL_STMT_WHILE:
+    case MGL_STMT_DO_WHILE:
+        return stmtContainsBreakOrContinue(st->u.whilex.body);
+    case MGL_STMT_SWITCH:
+        return stmtContainsBreakOrContinue(st->u.switchx.body);
+    default:
+        return false;
+    }
+}
+
 void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
               std::map<std::string, MType> *locals) {
     if (cg.err) return;
@@ -6806,19 +11463,23 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         emitCompound(cg, st, mod, locals);
         break;
     case MGL_STMT_EXPR:
-        emitExpr(cg, st->u.expr.expr, mod, *locals);
+        if (st->u.expr.expr)
+            emitExpr(cg, st->u.expr.expr, mod, *locals);
         break;
     case MGL_STMT_DECL: {
         /* Comma-separated declarators (`int a = 0, b = 1;`): every node
          * declares its own local. */
         for (MGLDecl *d = st->u.decl.decl; d; d = d->next_declarator) {
+        /* Type-only `struct S { … };` — already in cg.structTypes. */
+        if (!d->name)
+            continue;
         MType t;
         if (d->type && d->type->base <= MGL_AST_TYPE_DOUBLE) {
             t.scalar = (MGLIRScalar)d->type->base;
-            if (d->type->mat_cols > 1) {
+            if (d->type->mat_cols > 0 && d->type->mat_rows > 0) {
                 t.cols = d->type->mat_cols;
                 t.rows = d->type->mat_rows;
-            } else {
+            } else if (d->type->vec_size > 0) {
                 t.vec = d->type->vec_size;
             }
             if (d->array_count > 0 && d->array_dims)
@@ -6829,20 +11490,115 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             t.scalar = MGLIR_SCALAR_FLOAT;
             if (d->type && d->type->vec_size) t.vec = d->type->vec_size;
         }
+        (*locals)[d->name] = t;
+        /* Track IR type for local structs so member ExtractValue can
+         * resolve field indices (MType cannot represent structs). */
+        if (d->name && d->type && d->type->base == MGL_AST_TYPE_STRUCT &&
+            d->type->name) {
+            auto sit = cg.structTypes.find(d->type->name);
+            if (sit != cg.structTypes.end()) {
+                const MGLIRType *base = sit->second;
+                uint32_t n = 0;
+                if (d->array_count > 0 && d->array_dims)
+                    n = d->array_dims[0];
+                else if (d->init && d->init->kind == MGL_EXPR_CALL &&
+                         d->init->u.call.is_array_ctor)
+                    n = d->init->u.call.arg_count;
+                else if (t.arr)
+                    n = t.arr;
+                if (n > 0) {
+                    MGLIRType *arr =
+                        mglIRTypeArray(cloneIRType(base), n);
+                    if (arr && cg.ownedIRTypes) {
+                        cg.ownedIRTypes->push_back(arr);
+                        cg.localIRTypes[d->name] = arr;
+                    }
+                } else {
+                    cg.localIRTypes[d->name] = base;
+                }
+            }
+        }
         if (d->init) {
             llvm::Value *v = emitExpr(cg, d->init, mod, *locals);
             if (!v) return;
             v = coerceScalar(cg, v, t.scalar);
-            cg.lvalues[d->name] = v;
+            if (needsArrayMem(cg, d->name ? d->name : "", t) && d->name) {
+                llvm::Value *slot = ensureArrayMem(cg, d->name, t);
+                cg.b->CreateAlignedStore(v, slot, llvm::Align(4));
+            } else {
+                cg.lvalues[d->name] = v;
+            }
+        } else if (d->name) {
+            /* Uninitialized locals must still occupy an SSA slot before
+             * any loop.  Lazy Undef on the first indexed store inside a
+             * for-body is not in the loop phi set, so each iteration
+             * rebuilds from Undef and leaves select(..., undef) values
+             * that crash MTLCompilerService (XPC) when later read. */
+            if (needsArrayMem(cg, d->name, t)) {
+                ensureArrayMem(cg, d->name, t);
+            } else {
+                llvm::Type *ty = nullptr;
+                auto irit = cg.localIRTypes.find(d->name);
+                if (irit != cg.localIRTypes.end())
+                    ty = llvmTypeFromIR(irit->second, *cg.ctx);
+                else
+                    ty = llvmType(t, *cg.ctx);
+                if (ty)
+                    cg.lvalues[d->name] = llvm::UndefValue::get(ty);
+            }
         }
-        (*locals)[d->name] = t;
         }
         break;
     }
     case MGL_STMT_RETURN: {
+        if (cg.inliningHelper) {
+            /* Capture return for inlined GS/TCS/compute helpers; do not
+             * terminate the enclosing stage function. */
+            if (st->u.ret.value) {
+                llvm::Value *v = emitExpr(cg, st->u.ret.value, mod, *locals);
+                if (!v) return;
+                cg.inlineRetVal = v;
+            }
+            cg.err = 2;
+            break;
+        }
         if (st->u.ret.value) {
             llvm::Value *v = emitExpr(cg, st->u.ret.value, mod, *locals);
             if (!v) return;
+            /* Coerce to the LLVM function return type when shapes differ.
+             * Doubles are i64 payloads on AGX — never emit f64 ALU; widen
+             * int results with sext so RetInst types match. */
+            llvm::Type *wantTy = cg.fn->getReturnType();
+            if (!wantTy->isVoidTy() && v->getType() != wantTy) {
+                if (wantTy->isFPOrFPVectorTy()) {
+                    v = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+                } else if (wantTy->isIntegerTy(64) &&
+                           v->getType()->isIntegerTy(32)) {
+                    v = cg.b->CreateSExt(v, wantTy);
+                } else if (wantTy->isVectorTy() &&
+                           v->getType()->isVectorTy()) {
+                    auto *wvt = llvm::cast<llvm::FixedVectorType>(wantTy);
+                    auto *vvt = llvm::cast<llvm::FixedVectorType>(v->getType());
+                    if (wvt->getElementCount() == vvt->getElementCount() &&
+                        wvt->getElementType()->isIntegerTy(64) &&
+                        vvt->getElementType()->isIntegerTy(32))
+                        v = cg.b->CreateSExt(v, wantTy);
+                    else if (wvt->getElementType()->isFloatingPointTy())
+                        v = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
+                } else if (wantTy->isIntOrIntVectorTy() &&
+                           wantTy->getScalarSizeInBits() == 32) {
+                    v = coerceScalar(cg, v, MGLIR_SCALAR_INT);
+                }
+                if (v->getType() != wantTy &&
+                    v->getType()->getPrimitiveSizeInBits() ==
+                        wantTy->getPrimitiveSizeInBits())
+                    v = cg.b->CreateBitCast(v, wantTy);
+            }
+            if (v->getType() != wantTy && !wantTy->isVoidTy()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: return type mismatch after coercion";
+                return;
+            }
             cg.b->CreateRet(v);
         } else if (cg.fn->getReturnType()->isVoidTy()) {
             cg.b->CreateRetVoid();
@@ -6947,6 +11703,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                     auto it = elseL.find(kv.first);
                     if (it == elseL.end()) continue; /* then-only decl */
                     if (kv.second == it->second) continue;
+                    if (kv.second->getType() != it->second->getType())
+                        continue;
                     llvm::PHINode *phi =
                         cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
                     phi->addIncoming(kv.second, thenTail);
@@ -6966,14 +11724,15 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             for (auto &kv : thenL) {
                 auto it = snap.find(kv.first);
                 if (it != snap.end() && it->second == kv.second) continue;
+                llvm::Value *fall =
+                    (it != snap.end() &&
+                     it->second->getType() == kv.second->getType())
+                        ? it->second
+                        : llvm::UndefValue::get(kv.second->getType());
                 llvm::PHINode *phi =
                     cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
                 phi->addIncoming(kv.second, thenTail);
-                phi->addIncoming(it != snap.end()
-                                     ? it->second
-                                     : llvm::UndefValue::get(
-                                           kv.second->getType()),
-                                 condBB);
+                phi->addIncoming(fall, condBB);
                 cg.lvalues[kv.first] = phi;
             }
         }
@@ -6984,6 +11743,55 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
     case MGL_STMT_WHILE:
     case MGL_STMT_FOR:
     case MGL_STMT_DO_WHILE: {
+        /* Unroll tiny constant for-loops of the form
+         *   for (T i = 0; i < N; ++i) ...
+         * with N <= 16.  CTS 420pack binding_*_array uses this pattern to
+         * index sampler/image arrays; keeping the loop makes Metal's
+         * compiler crash on TCS (nested switch+phi of samples inside SSA
+         * loop phis).  Unrolling yields constant indices → direct binds. */
+        if (st->kind == MGL_STMT_FOR && st->u.loop.cond && st->u.loop.body &&
+            st->u.loop.init && st->u.loop.init->kind == MGL_STMT_DECL &&
+            st->u.loop.init->u.decl.decl &&
+            st->u.loop.init->u.decl.decl->name &&
+            st->u.loop.init->u.decl.decl->init &&
+            st->u.loop.init->u.decl.decl->init->kind == MGL_EXPR_LITERAL &&
+            st->u.loop.init->u.decl.decl->init->u.literal.value == 0.0 &&
+            st->u.loop.cond->kind == MGL_EXPR_BINARY &&
+            st->u.loop.cond->u.binary.op == MGL_OP_LT &&
+            st->u.loop.cond->u.binary.lhs &&
+            st->u.loop.cond->u.binary.lhs->kind == MGL_EXPR_VAR_REF &&
+            st->u.loop.cond->u.binary.lhs->u.var_ref.name &&
+            strcmp(st->u.loop.cond->u.binary.lhs->u.var_ref.name,
+                   st->u.loop.init->u.decl.decl->name) == 0 &&
+            st->u.loop.cond->u.binary.rhs &&
+            st->u.loop.cond->u.binary.rhs->kind == MGL_EXPR_LITERAL) {
+            uint32_t trip =
+                (uint32_t)st->u.loop.cond->u.binary.rhs->u.literal.value;
+            const char *indName = st->u.loop.init->u.decl.decl->name;
+            bool incrOk = false;
+            if (st->u.loop.incr && st->u.loop.incr->kind == MGL_EXPR_UNARY &&
+                st->u.loop.incr->u.unary.op == MGL_OP_INC &&
+                st->u.loop.incr->u.unary.operand &&
+                st->u.loop.incr->u.unary.operand->kind == MGL_EXPR_VAR_REF &&
+                st->u.loop.incr->u.unary.operand->u.var_ref.name &&
+                strcmp(st->u.loop.incr->u.unary.operand->u.var_ref.name,
+                       indName) == 0) {
+                incrOk = true;
+            }
+            if (incrOk && trip > 0u && trip <= 16u &&
+                !stmtContainsBreakOrContinue(st->u.loop.body)) {
+                emitStmt(cg, st->u.loop.init, mod, locals);
+                if (cg.err) return;
+                MType indTy = (*locals)[indName];
+                for (uint32_t k = 0; k < trip; k++) {
+                    cg.lvalues[indName] = llvm::ConstantInt::get(
+                        llvmType(indTy, *cg.ctx), k, /*isSigned=*/true);
+                    emitStmt(cg, st->u.loop.body, mod, locals);
+                    if (cg.err) return;
+                }
+                break;
+            }
+        }
         /* SSA loop lowering: a phi for every live value is placed at the
          * condition block (while/for) or the body head (do-while); the
          * back-edge operand is filled in after the body/incr is emitted.
@@ -7509,31 +12317,6 @@ static uint32_t airAttribLocation(const char *name,
     return UINT32_MAX;
 }
 
-static bool stmtContainsReturn(const MGLStmt *st) {
-    if (!st) return false;
-    switch (st->kind) {
-    case MGL_STMT_RETURN:
-        return true;
-    case MGL_STMT_COMPOUND:
-        for (uint32_t i = 0; i < st->u.compound.count; i++)
-            if (stmtContainsReturn(st->u.compound.stmts[i])) return true;
-        return false;
-    case MGL_STMT_IF:
-        return stmtContainsReturn(st->u.ifs.then) ||
-               stmtContainsReturn(st->u.ifs.else_);
-    case MGL_STMT_FOR:
-        return stmtContainsReturn(st->u.loop.init) ||
-               stmtContainsReturn(st->u.loop.body);
-    case MGL_STMT_WHILE:
-    case MGL_STMT_DO_WHILE:
-        return stmtContainsReturn(st->u.whilex.body);
-    case MGL_STMT_SWITCH:
-        return stmtContainsReturn(st->u.switchx.body);
-    default:
-        return false;
-    }
-}
-
 static bool exprUsesRuntimeArrayLength(const MGLExpr *e,
                                        const MGLIRModule *mod) {
     if (!e) return false;
@@ -7701,9 +12484,51 @@ static char *airPrepareLegacySource(const char *src, int air_stage) {
     return translated;
 }
 
+static uint32_t reflectBuiltinArrayCount(const char *src, const char *name)
+{
+    if (!src || !name) return 0;
+    const size_t nameLen = strlen(name);
+    const char *p = src;
+    uint32_t count = 0;
+    while ((p = strstr(p, name)) != nullptr) {
+        p += nameLen;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+        if (*p != '[') {
+            count = 8;
+            continue;
+        }
+        ++p;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (*p < '0' || *p > '9') {
+            count = 8;
+            continue;
+        }
+        char *end = nullptr;
+        unsigned long index = strtoul(p, &end, 10);
+        uint32_t reflected = index < 8
+            ? static_cast<uint32_t>(index + 1)
+            : (index == 8 ? 8u : 0u);
+        if (count < reflected) count = reflected;
+        p = end ? end : p;
+    }
+    return count;
+}
+
+static uint32_t reflectCullDistanceCount(const char *src)
+{
+    return reflectBuiltinArrayCount(src, "gl_CullDistance");
+}
+
+static uint32_t reflectClipDistanceCount(const char *src)
+{
+    return reflectBuiltinArrayCount(src, "gl_ClipDistance");
+}
+
 static int compileGLSLImpl(const char *src, int stage, int capture,
-                           bool has_gs, const char *const *attrib_names,
+                           bool has_gs, bool force_tes_compute,
+                           const char *const *attrib_names,
                            uint32_t tessPatchVertices,
+                           const MGLShaderResourceList *iface_location_peers,
                            unsigned char **metallib_out, size_t *size_out,
                            char *err_buf, size_t err_cap) {
     if (!src || !metallib_out || !size_out) {
@@ -7735,8 +12560,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * return path can reproduce the legacy primitive-cull emulation. */
     const bool sourceUsesCullDistance =
         strstr(esrc, "gl_CullDistance") != nullptr;
-    const bool usesCullDistance = isVS && !isCapture &&
-                                  sourceUsesCullDistance;
     if (isGS && getenv("MGL_GS_DIAG_SOURCE"))
         fprintf(stderr, "MGL GS SOURCE BEGIN\n%s\nMGL GS SOURCE END\n", esrc);
     MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
@@ -7772,11 +12595,39 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* Metal post-tessellation only supports triangle/quad patches (no
      * isolines patch type, no point output topology).  isolines and
      * point-mode TES compile to a compute kernel that enumerates the
-     * expanded line/point stream instead (see the isTESCompute paths). */
+     * expanded line/point stream instead (see the isTESCompute paths).
+     * XFB and a following geometry shader also force this path: native
+     * post-tess feeds FS directly and cannot insert GS or capture XFB,
+     * so triangles/quads with either share the same compute ABI. */
     const bool isTESCompute = isTES &&
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
-         tu->layout_point_mode != 0);
+         tu->layout_point_mode != 0 ||
+         force_tes_compute ||
+         has_gs);
     const bool isKernel = isCompute || isTCS || isGS || isTESCompute;
+    const bool usesCullDistance = isVS && !isCapture &&
+                                  sourceUsesCullDistance;
+    const bool usesPatchCullDistance =
+        isTES && !isTESCompute && !isCapture &&
+        sourceUsesCullDistance;
+    const uint32_t activeCullCount = sourceUsesCullDistance
+        ? (reflectCullDistanceCount(esrc) > 0
+               ? reflectCullDistanceCount(esrc) : 8u)
+        : 0u;
+    const bool usesCullDistancePassthrough =
+        isVS && !isCapture && sourceUsesCullDistance && activeCullCount > 0;
+    const bool usesFragmentCullDistance =
+        !isVS && !isTES && !isKernel && !isCapture &&
+        sourceUsesCullDistance && activeCullCount > 0;
+    const bool sourceUsesClipDistanceRead =
+        !isVS && !isTES && !isKernel && !isCapture &&
+        strstr(esrc, "gl_ClipDistance") != nullptr;
+    const uint32_t activeClipCount = sourceUsesClipDistanceRead
+        ? (reflectClipDistanceCount(esrc) > 0
+               ? reflectClipDistanceCount(esrc) : 8u)
+        : 0u;
+    const bool usesFragmentClipDistance =
+        sourceUsesClipDistanceRead && activeClipCount > 0;
     const uint32_t runtimeArraySizeBufferIndex =
         (isGS || isTESCompute)
             ? MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX
@@ -7818,29 +12669,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
 
-    if (isTCS || isTESCompute) {
-        for (uint32_t i = 0; i < tu->decl_count; i++) {
-            MGLDecl *d = tu->decls[i];
-            if (!d || !d->body || !d->name || strcmp(d->name, "main") != 0)
-                continue;
-            if (stmtContainsReturn(d->body)) {
-                if (err_buf && err_cap)
-                    snprintf(err_buf, err_cap,
-                             isTCS ? "TCS AIR codegen: explicit return is not "
-                                    "implemented yet"
-                                   : "TES AIR codegen: explicit return in "
-                                     "isolines/point-mode TES is not "
-                                     "implemented yet");
-                mglIRModuleDestroy(&mod);
-                mglGLSLTranslationUnitDestroy(tu);
-                return -1;
-            }
-        }
-    }
+    /* TCS / isolines·point-mode TES: early `return;` is handled by
+     * STMT_RETURN (CreateRetVoid + err=2).  Previously rejected here,
+     * which blocked CTS basic-atomic-case2. */
+
     if (isTES) {
-        if (tu->layout_primitive != MGL_AST_TES_TRIANGLES &&
-            tu->layout_primitive != MGL_AST_TES_QUADS &&
-            tu->layout_primitive != MGL_AST_TES_ISOLINES) {
+        /* GLSL requires an input primitive mode, but a missing mode is a
+         * link error (CTS te_lacking_primitive_mode_declaration): compile
+         * must still succeed.  Codegen treats DEFAULT as triangles. */
+        if (tu->layout_primitive == MGL_AST_TES_DEFAULT) {
+            tu->layout_primitive = MGL_AST_TES_TRIANGLES;
+        } else if (tu->layout_primitive != MGL_AST_TES_TRIANGLES &&
+                   tu->layout_primitive != MGL_AST_TES_QUADS &&
+                   tu->layout_primitive != MGL_AST_TES_ISOLINES) {
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
                          "TES AIR codegen: only layout(triangles/quads/"
@@ -7894,21 +12735,24 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 continue;
             }
         }
-        /* Anonymous UBO members (block_name set) are not Metal buffer
-         * arguments — nested structs must not become extra UBO slots
-         * (that shifts bindings for the real blocks). */
-        if (s->block_name && (s->qualifiers & MGL_AST_Q_UNIFORM) &&
-            !(s->qualifiers & MGL_AST_Q_BUFFER)) {
+        /* Flattened anonymous UBO/SSBO members (block_name set) are not
+         * Metal buffer arguments — only the owning block instance is.
+         * Emitting a slot per member shifts bindings and leaves the
+         * member buffers unbound (CTS unnamed `buffer Data {…};`). */
+        if (s->block_name &&
+            (s->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
             continue;
         }
         VarSym v;
         v.name = s->name;
         v.type = typeFromIR(s->type);
         v.location = s->location;
+        v.locationExplicit = (s->location != UINT32_MAX);
         v.stream = s->stream;
         v.blockName = s->block_name ? s->block_name : "";
         uint32_t q = s->qualifiers;
         v.isPatch = (q & MGL_AST_Q_PATCH) != 0;
+        v.isSample = (q & MGL_AST_Q_SAMPLE) != 0;
         if (q & MGL_AST_Q_UNIFORM) {
             const MGLIRType *ut = s->type;
             if (ut->kind == MGLIR_TYPE_ARRAY && ut->elem_type)
@@ -7922,7 +12766,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         ut->elem_type->kind == MGLIR_TYPE_ATOMIC_COUNTER)) {
                 v.kind = VarSym::ATOMIC_COUNTER;
             } else if (ut->kind == MGLIR_TYPE_STRUCT &&
-                       ut->member_count > 0) {
+                       ut->member_count > 0 &&
+                       s->is_interface_block) {
                 v.kind = VarSym::UBO;
             } else {
                 v.kind = VarSym::BUFFER;
@@ -7976,6 +12821,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             v.kind = VarSym::OUTPUT;
         }
         syms.push_back(v);
+        if (v.kind == VarSym::BUFFER && (q & MGL_AST_Q_UNIFORM)) {
+            const MGLIRType *bt = s->type;
+            const MGLIRType *base = bt;
+            while (base && base->kind == MGLIR_TYPE_ARRAY)
+                base = base->elem_type;
+            if (base && base->kind == MGLIR_TYPE_STRUCT)
+                appendOpaqueUniformLeaves(syms, bt, s->name);
+        }
     }
     {
         uint32_t nextInputLocation = 0;
@@ -7984,7 +12837,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t nextPatchOutputLocation = 0;
         for (VarSym &v : syms) {
             bool input = ((isTCS || isGS) && v.kind == VarSym::VARYING) ||
-                         (isTES && v.kind == VarSym::CONTROL_POINT_INPUT);
+                         (isTES && v.kind == VarSym::CONTROL_POINT_INPUT) ||
+                         /* Fragment inputs are VARYING on the FS; assign
+                          * locations so has_gs location tags (mgl_loc_N)
+                          * can pair with the GS passthrough VS. */
+                         (!isVS && !isTES && !isTCS && !isGS && !isKernel &&
+                          v.kind == VarSym::VARYING);
             bool output = ((isVS || isTES) && v.kind == VarSym::VARYING) ||
                           ((isTCS || isGS) && v.kind == VarSym::OUTPUT) ||
                           (!isVS && !isTES && !isKernel &&
@@ -7992,25 +12850,67 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (input) {
                 uint32_t &next = v.isPatch
                     ? nextPatchInputLocation : nextInputLocation;
+                /* VS ATTR: prefer glBindAttribLocation (attrib_names) over
+                 * declaration-order auto-assign, matching mgl_air_reflect.c.
+                 * Sparse binds (CTS enable_disable even/odd locations) must
+                 * put [[attribute(N)]] at the bound N; the vertex descriptor
+                 * is driven by reflection of those same binds. */
+                if (isVS && v.kind == VarSym::ATTR && !v.locationExplicit &&
+                    attrib_names) {
+                    uint32_t want =
+                        airAttribLocation(v.name.c_str(), attrib_names);
+                    if (want != UINT32_MAX)
+                        v.location = want;
+                }
                 if (v.location == UINT32_MAX) v.location = next;
-                /* Interface-block array members span one location per
-                 * element (each element is its own record slot). */
-                uint32_t span = (!v.blockName.empty() && v.type.isArray())
-                    ? v.type.arr : 1u;
-                next = std::max(next, v.location + span);
+                next = std::max(next, v.location + varyingLocationSpan(v.type));
             }
             if (output) {
                 uint32_t &next = v.isPatch
                     ? nextPatchOutputLocation : nextOutputLocation;
                 if (v.location == UINT32_MAX) v.location = next;
-                next = std::max(next, v.location + 1u);
+                next = std::max(next, v.location + varyingLocationSpan(v.type));
+            }
+        }
+        /* GS-expansion passthrough VS tags outputs as mgl_loc_N using the
+         * GS reflection locations.  FS with has_gs must use the same N for
+         * each varying; declaration-order auto-assign can disagree when GS
+         * and FS list the same names in different order (CTS utf8_characters
+         * gs_fs_tex_coord before/after gs_fs_result).  Remap by name.
+         * TES←TCS uses the same peer list: a TES that omits some TCS outs
+         * (e.g. only `test_vector2`) must still read the producer location. */
+        if (iface_location_peers && iface_location_peers->list &&
+            ((has_gs && stage == MGL_STAGE_FRAGMENT) ||
+             stage == MGL_STAGE_TESS_EVALUATION)) {
+            for (VarSym &v : syms) {
+                const bool fsVarying =
+                    stage == MGL_STAGE_FRAGMENT && v.kind == VarSym::VARYING;
+                const bool tesCpIn =
+                    stage == MGL_STAGE_TESS_EVALUATION &&
+                    v.kind == VarSym::CONTROL_POINT_INPUT;
+                if ((!fsVarying && !tesCpIn) || v.locationExplicit)
+                    continue;
+                for (GLuint i = 0; i < iface_location_peers->count; i++) {
+                    const MGLShaderResource *peer =
+                        &iface_location_peers->list[i];
+                    if (!peer->name)
+                        continue;
+                    if ((peer->is_per_patch != GL_FALSE) != v.isPatch)
+                        continue;
+                    if (strcmp(peer->name, v.name.c_str()) != 0)
+                        continue;
+                    if (peer->location != UINT32_MAX)
+                        v.location = peer->location;
+                    break;
+                }
             }
         }
     }
     uint32_t ssboCount = 0, uboCount = 0, acCount = 0, texCount = 0, imageCount = 0;
     for (VarSym &v : syms) {
         if (v.kind == VarSym::SSBO) {
-            ssboCount++;
+            const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+            ssboCount += uniformBlockElementCount(us ? us->type : nullptr);
         } else if (v.kind == VarSym::UBO) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
             uboCount += uniformBlockElementCount(us ? us->type : nullptr);
@@ -8019,7 +12919,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         } else if (v.kind == VarSym::TEXTURE) {
             texCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         } else if (v.kind == VarSym::IMAGE) {
-            imageCount++;
+            imageCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         }
     }
     auto recordStrideFor = [&](VarSym::Kind kind) -> uint32_t {
@@ -8028,7 +12928,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (v.kind != kind || v.isPatch ||
                 v.location == UINT32_MAX) continue;
             uint64_t end = (uint64_t)MGL_AIR_PER_VERTEX_STRIDE +
-                           ((uint64_t)v.location + 1u) * 16u;
+                           ((uint64_t)v.location +
+                            varyingLocationSpan(v.type)) * 16u;
             if (end > UINT32_MAX) return 0u;
             stride = std::max(stride, (uint32_t)end);
         }
@@ -8039,7 +12940,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (const VarSym &v : syms) {
             if (v.kind != kind || !v.isPatch ||
                 v.location == UINT32_MAX) continue;
-            uint64_t end = ((uint64_t)v.location + 1u) * 16u;
+            uint64_t end = ((uint64_t)v.location +
+                            varyingLocationSpan(v.type)) * 16u;
             if (end > UINT32_MAX) return 0u;
             stride = std::max(stride, (uint32_t)end);
         }
@@ -8067,10 +12969,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
     if (!mainDecl) {
-        snprintf(err_buf, err_cap, "no main function");
+        /* GLSL §3.6: a compilation unit need not define main — helpers
+         * defined here are linked with another unit that provides the
+         * entry point (CTS negative-glsl-linkTime / SSO).  CompileShader
+         * only requires a successful parse+sema; discard codegen. */
+        *metallib_out = (unsigned char *)malloc(1);
+        *size_out = 0;
+        if (!*metallib_out) {
+            if (err_buf && err_cap)
+                snprintf(err_buf, err_cap, "out of memory");
+            mglIRModuleDestroy(&mod);
+            mglGLSLTranslationUnitDestroy(tu);
+            return -1;
+        }
         mglIRModuleDestroy(&mod);
         mglGLSLTranslationUnitDestroy(tu);
-        return -1;
+        return 0;
     }
     /* Patch uniform offsets into var syms. */
     for (VarSym &v : syms) {
@@ -8123,12 +13037,70 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesSampleID =
         !isVS && !isTES && !isKernel &&
         strstr(esrc, "gl_SampleID") != nullptr;
+    const bool usesSamplePosition =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_SamplePosition") != nullptr;
+    const bool usesSampleMaskIn =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_SampleMaskIn") != nullptr;
+    const bool usesSampleMask =
+        !isVS && !isTES && !isKernel &&
+        (strstr(esrc, "gl_SampleMask[") != nullptr ||
+         strstr(esrc, "gl_SampleMask =") != nullptr);
+    const bool usesNumSamples =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "gl_NumSamples") != nullptr;
+    const bool usesInterpolateAtSample =
+        !isVS && !isTES && !isKernel &&
+        strstr(esrc, "interpolateAtSample") != nullptr;
+    bool hasSampleVarying = false;
+    if (!isVS && !isTES && !isKernel) {
+        for (const VarSym &v : syms) {
+            if (v.kind == VarSym::VARYING && v.isSample) {
+                hasSampleVarying = true;
+                break;
+            }
+        }
+    }
+    /* SamplePosition is synthesized from sample_id + num_samples (no
+     * air.sample_position — AGX Metal crashes on that attribute). */
+    const bool needSampleID = usesSampleID || usesSamplePosition ||
+                              usesInterpolateAtSample || hasSampleVarying;
+    const bool needSampleParams =
+        usesNumSamples || usesSampleMask || usesSamplePosition ||
+        usesSampleID || usesInterpolateAtSample || hasSampleVarying;
+    /* Metal [[position]] is top-left; GL gl_FragCoord is bottom-left.  Slot 30
+     * carries {height, lower_left, num_samples, sample_buffers} so the FS can
+     * flip Y (see RenderPass fragCoordParams). */
+    const bool needFragCoordParams = usesFragCoord;
+    const bool needParamsBuffer = needFragCoordParams || needSampleParams;
     const bool usesWorkGroupID =
         isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
+    const bool usesNumWorkGroups =
+        isCompute && strstr(esrc, "gl_NumWorkGroups") != nullptr;
+    const bool usesLocalInvocationID =
+        isCompute && strstr(esrc, "gl_LocalInvocationID") != nullptr;
+    const bool usesLocalInvocationIndex =
+        isCompute && strstr(esrc, "gl_LocalInvocationIndex") != nullptr;
+    const bool usesLocalInvocation =
+        usesLocalInvocationID || usesLocalInvocationIndex;
+    /* Always emit [[point_size]] for ordinary VS.  After a GS-expanded
+     * triangle draw, Metal Point-topology PSOs whose VS omit point_size can
+     * silently drop subsequent GL_POINTS draws (CTS multiple-uniforms after
+     * early-fragment-tests).  Default 1.0 matches GL's initial point size
+     * when the shader does not write gl_PointSize.
+     *
+     * Skip generated GS/TES passthrough VS: those rasterize with an explicit
+     * Triangle/Line topology, and Metal rejects point_size on that class.
+     * Capture / TES stages keep the historical "only if written" gate. */
+    const bool isStagePassthrough =
+        isVS && (strstr(esrc, "mgl_gs_output") != nullptr ||
+                 strstr(esrc, "mgl_tes_output") != nullptr);
     const bool usesPointSize =
-        (isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr;
+        (isVS && !isCapture && !isStagePassthrough) ||
+        ((isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr);
     const bool usesClipDistance =
-        isVS && !isCapture && !isKernel &&
+        (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
         strstr(esrc, "gl_ClipDistance") != nullptr;
     const bool usesLayerViewport =
         isVS && (strstr(esrc, "gl_Layer") != nullptr ||
@@ -8149,6 +13121,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesClipDistance) {
             retElems.push_back(llvm::ArrayType::get(
                 llvm::Type::getFloatTy(ctx), MGL_MAX_CLIP_DISTANCES));
+            /* Metal FS cannot read clip_distance; also emit flat mirrors. */
+            for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++)
+                retElems.push_back(llvm::Type::getFloatTy(ctx));
+        }
+        if (usesCullDistancePassthrough) {
+            for (uint32_t i = 0; i < activeCullCount; i++)
+                retElems.push_back(llvm::Type::getFloatTy(ctx));
         }
         if (usesLayerViewport) {
             retElems.push_back(llvm::Type::getInt32Ty(ctx));
@@ -8166,16 +13145,42 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     if (v.type.isArray()) {
                         MType el = v.type;
                         el.arr = 0;
+                        if (varyingUsesFloatCarrier(el, has_gs))
+                            el = floatCarrierType(el);
                         for (uint32_t i = 0; i < (uint32_t)v.type.arr; i++)
                             retElems.push_back(llvmType(el, ctx));
+                    } else if (v.type.isMatrix()) {
+                        /* Metal forbids matrix stage-out members; emit one
+                         * vector field per column (GL location = base+c). */
+                        MType col = matrixColumnType(v.type);
+                        if (varyingUsesFloatCarrier(col, has_gs))
+                            col = floatCarrierType(col);
+                        for (uint32_t c = 0; c < v.type.cols; c++)
+                            retElems.push_back(llvmType(col, ctx));
                     } else {
-                        retElems.push_back(llvmType(v.type, ctx));
+                        MType outTy = v.type;
+                        if (uintUsesSplitFloatCarrier(outTy, has_gs)) {
+                            retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
+                            retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
+                        } else {
+                            if (varyingUsesFloatCarrier(outTy, has_gs))
+                                outTy = floatCarrierType(outTy);
+                            retElems.push_back(llvmType(outTy, ctx));
+                        }
                     }
                 }
                 varyings.push_back(&v);
             }
         }
-        if (isKernel || isCapture) {
+        if (isTessCapture || isCullCapture) {
+            /* AGX rejects RasterizationEnabled + void VS. Tess/cull capture
+             * must return position so the discard-draw pipeline can keep
+             * rasterization on (stub FS + zero color masks) and still
+             * execute VS SSBO stores / cull-distance capture.  The real
+             * payload still travels through the slot-29 record buffer. */
+            retTy = llvm::FixedVectorType::get(
+                llvm::Type::getFloatTy(ctx), 4);
+        } else if (isKernel || isCapture) {
             retTy = llvm::Type::getVoidTy(ctx);
         } else if (isTES) {
             /* Apple's post-tessellation ABI returns a packed output record,
@@ -8213,8 +13218,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getFloatTy(ctx), 4));
             if (usesFragDepth)
                 fields.push_back(llvm::Type::getFloatTy(ctx));
+            if (usesSampleMask)
+                fields.push_back(llvm::Type::getInt32Ty(ctx));
             retTy = llvm::StructType::get(ctx, fields);
-        } else if (fragOutputs.size() > 1u || usesFragDepth) {
+        } else if (fragOutputs.size() > 1u || usesFragDepth ||
+                   usesSampleMask) {
             std::vector<llvm::Type *> fields;
             for (VarSym *out : fragOutputs)
                 fields.push_back(llvmType(out->type, ctx));
@@ -8223,6 +13231,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getFloatTy(ctx), 4));
             if (usesFragDepth)
                 fields.push_back(llvm::Type::getFloatTy(ctx));
+            if (usesSampleMask)
+                fields.push_back(llvm::Type::getInt32Ty(ctx));
             retTy = llvm::StructType::get(ctx, fields);
         } else {
             retTy = !fragOutputs.empty()
@@ -8248,15 +13258,32 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * compute = [buffer, ssbo..., tex/smp..., thread_position_in_grid]. */
     std::vector<llvm::Type *> paramTys;
     bool hasBuffer = !uniforms.empty();
+    /* Metal buffer slots reserved by the packed plain-uniform buffer.
+     * Must match mglAirReflectModule ssbo_binding for every stage that
+     * emits the pack (VS/TES/CS/GS/TCS via isKernel, plus FS).  LLVM
+     * argument indices still use the VS/TES/kernel-only skip below —
+     * on FS the pack is a trailing arg, not a leading one. */
+    const uint32_t plainBufMetalSlots =
+        hasBuffer && (isVS || isTES || isKernel ||
+                      stage == MGL_STAGE_FRAGMENT)
+            ? 1u : 0u;
     uint32_t attrCount = 0;
-    for (VarSym &v : syms)
-        if (isVS && v.kind == VarSym::ATTR) attrCount++;
+    for (VarSym &v : syms) {
+        if (!(isVS && v.kind == VarSym::ATTR)) continue;
+        /* Array / matrix attributes occupy one Metal/GL location per
+         * element or column so glVertexAttribPointer(base+i) matches. */
+        attrCount += varyingLocationSpan(v.type);
+    }
     llvm::StructType *texTy2d =
         llvm::StructType::create(ctx, "struct._texture_2d_t");
     llvm::StructType *texTy2dArray =
         llvm::StructType::create(ctx, "struct._texture_2d_array_t");
     llvm::StructType *texTy3d =
         llvm::StructType::create(ctx, "struct._texture_3d_t");
+    llvm::StructType *texTyCube =
+        llvm::StructType::create(ctx, "struct._texture_cube_t");
+    llvm::StructType *texTyCubeArray =
+        llvm::StructType::create(ctx, "struct._texture_cube_array_t");
     llvm::StructType *texTyBuf =
         llvm::StructType::create(ctx, "struct._texture_buffer_1d_t");
     llvm::StructType *smpTy =
@@ -8273,9 +13300,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * (right after the read_write capture buffer) -- Metal rejects
          * that PSO with "Unsupported attribute type".  For capture we
          * keep the legacy layout with attributes AFTER all buffers. */
-        for (VarSym &v : syms)
-            if (v.kind == VarSym::ATTR)
-                paramTys.push_back(llvmType(v.type, ctx));
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::ATTR) continue;
+            if (v.type.isArray() && v.type.arr > 0) {
+                MType el = attrMetalIfaceType(v.type);
+                el.arr = 0;
+                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
+                    paramTys.push_back(llvmType(el, ctx));
+            } else if (v.type.isMatrix()) {
+                MType col = attrMetalIfaceType(matrixColumnType(v.type));
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    paramTys.push_back(llvmType(col, ctx));
+            } else {
+                paramTys.push_back(llvmType(attrMetalIfaceType(v.type), ctx));
+            }
+        }
     }
     if ((isVS || isTES || isKernel) && hasBuffer)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -8283,8 +13322,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (v.kind == VarSym::SSBO || v.kind == VarSym::UBO ||
             v.kind == VarSym::ATOMIC_COUNTER) {
             const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
-            uint32_t uelems = v.kind == VarSym::UBO
-                ? uniformBlockElementCount(us ? us->type : nullptr) : 1u;
+            uint32_t uelems =
+                (v.kind == VarSym::UBO || v.kind == VarSym::SSBO)
+                    ? uniformBlockElementCount(us ? us->type : nullptr)
+                    : 1u;
             for (uint32_t k = 0; k < uelems; k++)
                 paramTys.push_back(
                     llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -8293,11 +13334,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt32Ty(ctx)->getPointerTo(2));
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
-        const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
-        MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_SAMPLER
-            ? ts->type->tex_kind : MGLIR_TEX_2D;
-        llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
-                             : (tk == MGLIR_TEX_BUFFER) ? texTyBuf : texTy2d;
+        const MGLIRType *st = v.opaqueType;
+        if (!st) {
+            const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+            st = ts ? ts->type : nullptr;
+        }
+        while (st && st->kind == MGLIR_TYPE_ARRAY)
+            st = st->elem_type;
+        MGLIRTexKind tk = st && st->kind == MGLIR_TYPE_SAMPLER
+            ? st->tex_kind : MGLIR_TEX_2D;
+        llvm::StructType *tt = texTy2d; /* TEX_BUFFER / 1D use texture2d */
+        if (tk == MGLIR_TEX_3D) tt = texTy3d;
+        else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
+                 tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY)
+            tt = texTy2dArray;
+        else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
+        else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         for (uint32_t k = 0; k < elements; k++) {
             paramTys.push_back(tt->getPointerTo(1));
@@ -8306,13 +13358,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::IMAGE) continue;
-        const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
-        MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_IMAGE
-            ? ts->type->tex_kind : MGLIR_TEX_2D;
-        llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
-                             : (tk == MGLIR_TEX_2D_ARRAY) ? texTy2dArray
-                             : texTy2d;
-        paramTys.push_back(tt->getPointerTo(1));
+        const MGLIRType *imgTy =
+            imageElementType(findSymbol(&mod, v.name.c_str()));
+        MGLIRTexKind tk = imgTy ? imgTy->tex_kind : MGLIR_TEX_2D;
+        llvm::StructType *tt = texTy2d;
+        if (tk == MGLIR_TEX_3D) tt = texTy3d;
+        else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY ||
+                 tk == MGLIR_TEX_2D_MS || tk == MGLIR_TEX_2D_MS_ARRAY)
+            tt = texTy2dArray;
+        else if (tk == MGLIR_TEX_CUBE) tt = texTyCube;
+        else if (tk == MGLIR_TEX_CUBE_ARRAY) tt = texTyCubeArray;
+        else if (tk == MGLIR_TEX_BUFFER) tt = texTy2d;
+        uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+        for (uint32_t k = 0; k < elements; k++)
+            paramTys.push_back(tt->getPointerTo(1));
     }
     for (VarSym &v : syms) {
         if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING) {
@@ -8325,18 +13384,49 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     ? floatCarrierType(el) : el;
                 for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
                     paramTys.push_back(llvmType(iface, ctx));
+            } else if (v.type.isMatrix()) {
+                MType col = matrixColumnType(v.type);
+                if (varyingUsesFloatCarrier(col, has_gs))
+                    col = floatCarrierType(col);
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    paramTys.push_back(llvmType(col, ctx));
             } else {
-                paramTys.push_back(llvmType(
-                    varyingUsesFloatCarrier(v.type, has_gs)
-                        ? floatCarrierType(v.type) : v.type, ctx));
+                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                    paramTys.push_back(llvmType(floatCarrierType(v.type), ctx));
+                    paramTys.push_back(llvmType(floatCarrierType(v.type), ctx));
+                } else {
+                    paramTys.push_back(llvmType(
+                        varyingUsesFloatCarrier(v.type, has_gs)
+                            ? floatCarrierType(v.type) : v.type, ctx));
+                }
             }
         }
     }
+    if (usesFragmentClipDistance) {
+        for (uint32_t i = 0; i < activeClipCount; i++)
+            paramTys.push_back(llvm::Type::getFloatTy(ctx));
+    }
+    if (usesFragmentCullDistance) {
+        for (uint32_t i = 0; i < activeCullCount; i++)
+            paramTys.push_back(llvm::Type::getFloatTy(ctx));
+    }
     if (isVS && isCapture) {
         /* XFB capture variant: attributes trail all buffers (see above). */
-        for (VarSym &v : syms)
-            if (v.kind == VarSym::ATTR)
-                paramTys.push_back(llvmType(v.type, ctx));
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::ATTR) continue;
+            if (v.type.isArray() && v.type.arr > 0) {
+                MType el = attrMetalIfaceType(v.type);
+                el.arr = 0;
+                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
+                    paramTys.push_back(llvmType(el, ctx));
+            } else if (v.type.isMatrix()) {
+                MType col = attrMetalIfaceType(matrixColumnType(v.type));
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    paramTys.push_back(llvmType(col, ctx));
+            } else {
+                paramTys.push_back(llvmType(attrMetalIfaceType(v.type), ctx));
+            }
+        }
     }
     if (isTCS) {
         /* Fixed buffers consumed by the existing TCS compute dispatcher:
@@ -8379,8 +13469,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
-    if (usesCullDistance) {
+    uint32_t cullBufferArgIdx = UINT32_MAX;
+    uint32_t cullParamsArgIdx = UINT32_MAX;
+    if (usesCullDistance && isVS) {
+        cullBufferArgIdx = (uint32_t)paramTys.size();
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        cullParamsArgIdx = (uint32_t)paramTys.size();
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isCullCapture || isTessCapture) {
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -8393,7 +13487,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     else if (isKernel) {
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
+        if (usesLocalInvocation && !isTCS) {
+            if (usesLocalInvocationID)
+                paramTys.push_back(llvm::FixedVectorType::get(
+                    llvm::Type::getInt32Ty(ctx), 3));
+            if (usesLocalInvocationIndex)
+                paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        }
         if (usesWorkGroupID || isTCS)
+            paramTys.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(ctx), 3));
+        if (usesNumWorkGroups)
             paramTys.push_back(llvm::FixedVectorType::get(
                 llvm::Type::getInt32Ty(ctx), 3));
     }
@@ -8421,8 +13525,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         if (usesViewportIndex)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
-        if (usesSampleID)
+        if (needSampleID)
             paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        if (usesSampleMaskIn)
+            paramTys.push_back(llvm::Type::getInt32Ty(ctx));
+        /* Slot 30: FragCoord Y-fixup and/or sample params. */
+        if (needParamsBuffer)
+            paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -8462,6 +13571,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             for (VarSym &v : syms)
                 if (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)
                     bufIdx++;
+            if (usesFragmentClipDistance)
+                bufIdx += activeClipCount;
+            if (usesFragmentCullDistance)
+                bufIdx += activeCullCount;
         }
         fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::NoAlias);
         if (!isKernel)
@@ -8475,7 +13588,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
-            fn->addParamAttr(ssboIdx++, llvm::Attribute::AttrKind::NoAlias);
+            const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+            uint32_t nelems =
+                uniformBlockElementCount(us ? us->type : nullptr);
+            for (uint32_t k = 0; k < nelems; k++)
+                fn->addParamAttr(ssboIdx++,
+                                 llvm::Attribute::AttrKind::NoAlias);
         }
         for (VarSym &v : syms) {
             if (v.kind != VarSym::UBO) continue;
@@ -8511,12 +13629,40 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.fn = fn;
     cg.mod = &module;
     cg.isVS = isVS || isTES;
+    cg.pointSize = usesPointSize;
+    cg.has_gs = has_gs;
     cg.isCompute = isCompute || isTCS || isGS;
     cg.isTessControl = isTCS;
     cg.isTessEval = isTES;
     cg.isGeometry = isGS;
     cg.isTESCompute = isTESCompute;
+    if (isCompute && tu) {
+        cg.hasWorkGroupSize = true;
+        cg.workGroupSizeX =
+            tu->layout_local_size_x > 0 ? (uint32_t)tu->layout_local_size_x
+                                        : 1u;
+        cg.workGroupSizeY =
+            tu->layout_local_size_y > 0 ? (uint32_t)tu->layout_local_size_y
+                                        : 1u;
+        cg.workGroupSizeZ =
+            tu->layout_local_size_z > 0 ? (uint32_t)tu->layout_local_size_z
+                                        : 1u;
+    }
+    cg.usesPatchCullDistance = usesPatchCullDistance;
+    cg.cullDistancePassthroughCount =
+        usesCullDistancePassthrough ? activeCullCount : 0u;
+    cg.clipDistanceInputCount =
+        usesFragmentClipDistance ? activeClipCount : 0u;
     cg.controlPointGetter = controlPointGetter;
+    struct OwnedIRTypes {
+        std::vector<MGLIRType *> v;
+        ~OwnedIRTypes() {
+            for (MGLIRType *t : v)
+                mglIRTypeDestroy(t);
+        }
+    } ownedIR;
+    cg.ownedIRTypes = &ownedIR.v;
+    collectStructTypes(cg, tu);
     if (sourceUsesCullDistance) {
         cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
     }
@@ -8542,15 +13688,55 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.captureBuf = fn->getArg(argSlot++);
     if (isVS && !isCapture) {
         for (VarSym &v : syms) {
-            if (v.kind == VarSym::ATTR)
+            if (v.kind != VarSym::ATTR) continue;
+            MType iface = attrMetalIfaceType(v.type);
+            if (v.type.isArray() && v.type.arr > 0) {
+                /* Assemble float[N] from N scalar stage_in args so
+                 * gl_CullDistance/ClipDistance loads keep working. */
+                llvm::Type *aggTy = llvmType(iface, ctx);
+                llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                for (uint32_t k = 0; k < (uint32_t)v.type.arr; k++)
+                    agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
+                                                  k);
+                cg.lvalues[v.name] = agg;
+            } else if (v.type.isMatrix()) {
+                MType colIface = attrMetalIfaceType(matrixColumnType(v.type));
+                MType matIface = v.type;
+                matIface.scalar = colIface.scalar;
+                llvm::Type *aggTy = llvmType(matIface, ctx);
+                llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                for (uint32_t c = 0; c < v.type.cols; c++)
+                    agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot++),
+                                                  c);
+                cg.lvalues[v.name] = agg;
+            } else {
                 cg.lvalues[v.name] = fn->getArg(argSlot++);
+            }
         }
     }
     if ((isVS || isTES || isKernel) && hasBuffer)
         cg.bufferPtr = fn->getArg(argSlot++);
     for (VarSym &v : syms) {
         if (v.kind != VarSym::SSBO) continue;
-        cg.ssboPtrs[v.name] = fn->getArg(argSlot++);
+        const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+        uint32_t nelems =
+            uniformBlockElementCount(us ? us->type : nullptr);
+        if (!uniformBlockIsInstanceArray(us ? us->type : nullptr)) {
+            cg.ssboPtrs[v.name] = fn->getArg(argSlot++);
+            continue;
+        }
+        llvm::Type *ptrTy = llvm::Type::getInt8Ty(ctx)->getPointerTo(1);
+        llvm::ArrayType *arrTy = llvm::ArrayType::get(ptrTy, nelems);
+        llvm::Value *agg = llvm::UndefValue::get(arrTy);
+        for (uint32_t k = 0; k < nelems; k++, argSlot++) {
+            agg = cg.b->CreateInsertValue(agg, fn->getArg(argSlot), k);
+        }
+        llvm::Value *slot =
+            cg.b->CreateAlloca(arrTy, nullptr, v.name + "_elems");
+        cg.b->CreateStore(agg, slot);
+        cg.ssboElemSlot[v.name] = slot;
+        cg.ssboElemArrTy[v.name] = arrTy;
+        cg.ssboPtrs[v.name] = agg; /* unused for arrays; kept non-null */
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::UBO) continue;
@@ -8583,6 +13769,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
         uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+        if (v.opaqueType)
+            cg.samplerIRTypes[v.name] = v.opaqueType;
+        else {
+            const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+            if (ts) cg.samplerIRTypes[v.name] = ts->type;
+        }
         if (elements == 1u) {
             cg.texValues[v.name] = fn->getArg(argSlot++);
             cg.smpValues[v.name] = fn->getArg(argSlot++);
@@ -8598,15 +13790,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::IMAGE) continue;
-        cg.texValues[v.name] = fn->getArg(argSlot++);
+        uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+        if (elements == 1u) {
+            cg.texValues[v.name] = fn->getArg(argSlot++);
+        } else {
+            std::vector<llvm::Value *> texes;
+            for (uint32_t k = 0; k < elements; k++)
+                texes.push_back(fn->getArg(argSlot++));
+            cg.texArrayValues[v.name] = std::move(texes);
+        }
     }
     {
-        uint32_t location = (isCapture ? 1u : 0u) +
-            (((isVS || isTES || isKernel) && hasBuffer) ? 1u : 0u) +
+        uint32_t location = (isCapture ? 1u : 0u) + plainBufMetalSlots +
             (isCapture ? 0u : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
-            cg.ssboSlots[v.name] = location++;
+            const MGLIRSymbol *us = findSymbol(&mod, v.name.c_str());
+            uint32_t nelems =
+                uniformBlockElementCount(us ? us->type : nullptr);
+            cg.ssboSlots[v.name] = location;
+            location += nelems;
         }
         location += uboCount;
         for (VarSym &v : syms) {
@@ -8617,34 +13820,101 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (VarSym &v : syms) {
         if ((isVS && isCapture && v.kind == VarSym::ATTR) ||
             (!isVS && !isTES && !isKernel && v.kind == VarSym::VARYING)) {
-            if (v.kind == VarSym::VARYING && v.type.isArray()) {
-                /* Flattened (FS stage-in): N scalar args assembled into a
+            if (v.type.isArray() && v.type.arr > 0) {
+                /* Flattened stage-in: N scalar args assembled into a
                  * single aggregate lvalue so the read paths (readIndexChain
                  * / swizzles) keep working unchanged. */
                 MType el = v.type;
                 el.arr = 0;
-                llvm::Type *aggTy = llvmType(v.type, ctx);
-                llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                MType aggType = (v.kind == VarSym::ATTR)
+                    ? attrMetalIfaceType(v.type) : v.type;
                 uint32_t n = (uint32_t)v.type.arr;
-                for (uint32_t k = 0; k < n; k++) {
-                    llvm::Value *arg = fn->getArg(argSlot++);
-                    if (varyingUsesFloatCarrier(el, has_gs)) {
-                        arg = decodeFloatCarrier(cg, arg, el.scalar,
-                                                 llvmType(el, ctx));
+                if (needsArrayMem(cg, v.name, aggType)) {
+                    llvm::Value *slot = ensureArrayMem(cg, v.name, aggType);
+                    for (uint32_t k = 0; k < n; k++) {
+                        llvm::Value *arg = fn->getArg(argSlot++);
+                        if (v.kind == VarSym::VARYING &&
+                            varyingUsesFloatCarrier(el, has_gs)) {
+                            arg = decodeFloatCarrier(cg, arg, el.scalar,
+                                                     llvmType(el, ctx));
+                        }
+                        llvm::Value *ep = arrayMemGEP(
+                            cg, v.name, slot, cg.b->getInt32(k));
+                        cg.b->CreateAlignedStore(arg, ep, llvm::Align(4));
                     }
-                    agg = cg.b->CreateInsertValue(agg, arg, k);
+                } else {
+                    llvm::Type *aggTy = llvmType(aggType, ctx);
+                    llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                    for (uint32_t k = 0; k < n; k++) {
+                        llvm::Value *arg = fn->getArg(argSlot++);
+                        if (v.kind == VarSym::VARYING &&
+                            varyingUsesFloatCarrier(el, has_gs)) {
+                            arg = decodeFloatCarrier(cg, arg, el.scalar,
+                                                     llvmType(el, ctx));
+                        }
+                        agg = cg.b->CreateInsertValue(agg, arg, k);
+                    }
+                    cg.lvalues[v.name] = agg;
+                }
+            } else if (v.type.isMatrix()) {
+                MType colTy = matrixColumnType(v.type);
+                MType matIface = v.type;
+                if (v.kind == VarSym::ATTR) {
+                    colTy = attrMetalIfaceType(colTy);
+                    matIface.scalar = colTy.scalar;
+                }
+                llvm::Type *aggTy = llvmType(matIface, ctx);
+                llvm::Value *agg = llvm::UndefValue::get(aggTy);
+                for (uint32_t c = 0; c < v.type.cols; c++) {
+                    llvm::Value *arg = fn->getArg(argSlot++);
+                    if (v.kind == VarSym::VARYING &&
+                        varyingUsesFloatCarrier(matrixColumnType(v.type),
+                                                has_gs)) {
+                        arg = decodeFloatCarrier(
+                            cg, arg, matrixColumnType(v.type).scalar,
+                            llvmType(matrixColumnType(v.type), ctx));
+                    }
+                    agg = cg.b->CreateInsertValue(agg, arg, c);
                 }
                 cg.lvalues[v.name] = agg;
-                (void)el;
-            } else {
-                llvm::Value *arg = fn->getArg(argSlot++);
-                if (varyingUsesFloatCarrier(v.type, has_gs)) {
-                    arg = decodeFloatCarrier(cg, arg, v.type.scalar,
-                                             llvmType(v.type, ctx));
+                } else {
+                    if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                        llvm::Value *lo = fn->getArg(argSlot++);
+                        llvm::Value *hi = fn->getArg(argSlot++);
+                        cg.lvalues[v.name] = decodeUintSplitFloatCarrier(
+                            cg, lo, hi, llvmType(v.type, ctx));
+                    } else {
+                        llvm::Value *arg = fn->getArg(argSlot++);
+                        /* Vertex ATTR values arrive as raw ints from Metal;
+                         * float-carrier decode is only for FS stage_in
+                         * varyings (SIToFP/UIToFP).  Applying FPToUI to an
+                         * i32 1 reinterprets it as a denormal → 0.
+                         * DOUBLE ATTR arrives as float (VertexLayout). */
+                        if (v.kind == VarSym::VARYING &&
+                            varyingUsesFloatCarrier(v.type, has_gs)) {
+                            arg = decodeFloatCarrier(cg, arg, v.type.scalar,
+                                                     llvmType(v.type, ctx));
+                        }
+                        cg.lvalues[v.name] = arg;
+                    }
                 }
-                cg.lvalues[v.name] = arg;
-            }
         }
+    }
+    if (usesFragmentClipDistance) {
+        llvm::Type *f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value *arr = llvm::UndefValue::get(
+            llvm::ArrayType::get(f32, activeClipCount));
+        for (uint32_t i = 0; i < activeClipCount; i++)
+            arr = cg.b->CreateInsertValue(arr, fn->getArg(argSlot++), i);
+        cg.lvalues["gl_ClipDistance"] = arr;
+    }
+    if (usesFragmentCullDistance) {
+        llvm::Type *f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value *arr = llvm::UndefValue::get(
+            llvm::ArrayType::get(f32, activeCullCount));
+        for (uint32_t i = 0; i < activeCullCount; i++)
+            arr = cg.b->CreateInsertValue(arr, fn->getArg(argSlot++), i);
+        cg.lvalues["gl_CullDistance"] = arr;
     }
     if (isVS && !isCapture) {
         /* VS varyings (out) have no parameter backing; plain writes
@@ -8655,8 +13925,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * the final value. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
-            cg.lvalues[v.name] =
-                llvm::UndefValue::get(llvmType(v.type, ctx));
+            if (needsArrayMem(cg, v.name, v.type))
+                ensureArrayMem(cg, v.name, v.type);
+            else
+                cg.lvalues[v.name] =
+                    llvm::UndefValue::get(llvmType(v.type, ctx));
         }
     }
     if (isVS && isCapture) {
@@ -8665,8 +13938,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * pre-registered undef aggregate as the non-capture path. */
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
-            cg.lvalues[v.name] =
-                llvm::UndefValue::get(llvmType(v.type, ctx));
+            if (needsArrayMem(cg, v.name, v.type))
+                ensureArrayMem(cg, v.name, v.type);
+            else
+                cg.lvalues[v.name] =
+                    llvm::UndefValue::get(llvmType(v.type, ctx));
         }
     }
     if (isTES && !isTESCompute) {
@@ -8724,8 +14000,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Value *pos = fn->getArg(argSlot++);
         if (isTCS) cg.invocationPos = pos;
         else cg.threadPos = pos;
+        if (usesLocalInvocation && !isTCS) {
+            if (usesLocalInvocationID)
+                cg.localInvocationPos = fn->getArg(argSlot++);
+            if (usesLocalInvocationIndex)
+                cg.localInvocationIndex = fn->getArg(argSlot++);
+        }
         if (usesWorkGroupID || isTCS)
             cg.workGroupPos = fn->getArg(argSlot++);
+        if (usesNumWorkGroups)
+            cg.numWorkGroups = fn->getArg(argSlot++);
         if (isTCS && cg.workGroupPos)
             cg.patchPos = cg.workGroupPos;
     }
@@ -8769,11 +14053,162 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             cg.lvalues["gl_Layer"] = fn->getArg(argSlot++);
         if (usesViewportIndex)
             cg.lvalues["gl_ViewportIndex"] = fn->getArg(argSlot++);
-        if (usesSampleID)
-            cg.lvalues["gl_SampleID"] = fn->getArg(argSlot++);
+        if (needSampleID) {
+            llvm::Value *sid = fn->getArg(argSlot++);
+            if (usesSampleID)
+                cg.lvalues["gl_SampleID"] = sid;
+            if (usesSamplePosition || usesInterpolateAtSample) {
+                /* Defer until num_samples is loaded below. */
+                cg.lvalues["__mgl_sample_id_for_pos"] = sid;
+            }
+            /* Keep hardware id so forced-sample override can replace it. */
+            cg.lvalues["__mgl_hw_sample_id"] = sid;
+        }
+        if (usesSampleMaskIn) {
+            llvm::Value *mask = fn->getArg(argSlot++);
+            llvm::Type *i32 = cg.b->getInt32Ty();
+            llvm::Value *arr =
+                llvm::UndefValue::get(llvm::ArrayType::get(i32, 1));
+            arr = cg.b->CreateInsertValue(
+                arr, cg.b->CreateBitCast(mask, i32), 0);
+            cg.lvalues["gl_SampleMaskIn"] = arr;
+        }
+        if (needParamsBuffer) {
+            llvm::Value *buf = fn->getArg(argSlot++);
+            cg.fragSampleParams = buf;
+            /* float4 layout from RenderPass when FragCoord and/or sample
+             * params are requested: {height, lower_left, ns_bits, sb_bits}.
+             * When emulating MS sample planes, sb_bits may carry
+             * 0x80000000 | (forced_sample_id << 8) so SampleID / position
+             * track the attached array slice. */
+            llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+            llvm::Value *fptr = cg.b->CreateBitCast(
+                buf, f32->getPointerTo(1));
+            if (needFragCoordParams && cg.fragPos) {
+                llvm::Value *height = cg.b->CreateAlignedLoad(
+                    f32, fptr, llvm::Align(4));
+                llvm::Value *lowerLeft = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(1)),
+                    llvm::Align(4));
+                llvm::Value *y = cg.b->CreateExtractElement(
+                    cg.fragPos, cg.b->getInt32(1));
+                llvm::Value *flipped = cg.b->CreateFSub(height, y);
+                llvm::Value *useFlip = cg.b->CreateFCmpOGT(
+                    lowerLeft, llvm::ConstantFP::get(f32, 0.5));
+                llvm::Value *newY =
+                    cg.b->CreateSelect(useFlip, flipped, y);
+                cg.fragPos = cg.b->CreateInsertElement(
+                    cg.fragPos, newY, cg.b->getInt32(1));
+            }
+            if (needSampleParams) {
+                llvm::Value *nsBits = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(2)),
+                    llvm::Align(4));
+                llvm::Value *ns = cg.b->CreateBitCast(
+                    nsBits, cg.b->getInt32Ty());
+                if (usesNumSamples || usesInterpolateAtSample ||
+                    hasSampleVarying)
+                    cg.lvalues["gl_NumSamples"] = ns;
+                llvm::Value *sbBits = cg.b->CreateAlignedLoad(
+                    f32,
+                    cg.b->CreateGEP(f32, fptr, cg.b->getInt32(3)),
+                    llvm::Align(4));
+                llvm::Value *sb = cg.b->CreateBitCast(
+                    sbBits, cg.b->getInt32Ty());
+                llvm::Value *forceMask = cg.b->CreateAnd(
+                    sb, cg.b->getInt32(0x80000000u));
+                llvm::Value *force = cg.b->CreateICmpNE(
+                    forceMask, cg.b->getInt32(0));
+                llvm::Value *forcedSid = cg.b->CreateAnd(
+                    cg.b->CreateLShr(sb, 8), cg.b->getInt32(0xff));
+                llvm::Value *hwSid =
+                    cg.lvalues.count("__mgl_hw_sample_id")
+                        ? cg.lvalues["__mgl_hw_sample_id"]
+                        : cg.b->getInt32(0);
+                llvm::Value *sid =
+                    cg.b->CreateSelect(force, forcedSid, hwSid);
+                if (usesSampleID)
+                    cg.lvalues["gl_SampleID"] = sid;
+                cg.lvalues["__mgl_sample_id_for_pos"] = sid;
+                if (usesSamplePosition || usesInterpolateAtSample ||
+                    hasSampleVarying) {
+                    cg.lvalues["gl_SamplePosition"] =
+                        emitSamplePositionFromId(cg, sid, ns);
+                }
+                if (usesSampleMaskIn) {
+                    /* Hardware [[sample_mask]] is a single bit when the
+                     * metal target is non-MSAA (array-plane emulation).
+                     * Under forced SampleID, expose full GL coverage so
+                     * `u_sampleMask & gl_SampleMaskIn` keeps all bits. */
+                    llvm::Type *i32t = cg.b->getInt32Ty();
+                    llvm::Value *hwIn = cg.lvalues.count("gl_SampleMaskIn")
+                        ? cg.b->CreateExtractValue(
+                              cg.lvalues["gl_SampleMaskIn"], 0)
+                        : cg.b->getInt32(~0);
+                    llvm::Value *ge32 = cg.b->CreateICmpUGE(
+                        ns, cg.b->getInt32(32));
+                    llvm::Value *shiftAmt = cg.b->CreateSelect(
+                        ge32, cg.b->getInt32(0), ns);
+                    llvm::Value *full = cg.b->CreateSelect(
+                        ge32, cg.b->getInt32(~0),
+                        cg.b->CreateSub(
+                            cg.b->CreateShl(cg.b->getInt32(1), shiftAmt),
+                            cg.b->getInt32(1)));
+                    llvm::Value *inMask =
+                        cg.b->CreateSelect(force, full, hwIn);
+                    llvm::Value *arr =
+                        llvm::UndefValue::get(llvm::ArrayType::get(i32t, 1));
+                    cg.lvalues["gl_SampleMaskIn"] =
+                        cg.b->CreateInsertValue(arr, inMask, 0);
+                }
+            }
+        }
+    }
+    if (hasSampleVarying && !isVS && !isTES && !isKernel) {
+        /* With raster_sample_count==1 (MS array emulation), Metal only
+         * delivers center interpolants. Rewrite `sample in` to the
+         * software sample-offset formula using forced/hardware SampleID. */
+        llvm::Value *sid =
+            cg.lvalues.count("gl_SampleID")
+                ? cg.lvalues["gl_SampleID"]
+                : (cg.lvalues.count("__mgl_sample_id_for_pos")
+                       ? cg.lvalues["__mgl_sample_id_for_pos"]
+                       : cg.b->getInt32(0));
+        llvm::Value *ns = cg.lvalues.count("gl_NumSamples")
+                              ? cg.lvalues["gl_NumSamples"]
+                              : cg.b->getInt32(1);
+        llvm::Value *sp =
+            cg.lvalues.count("gl_SamplePosition")
+                ? cg.lvalues["gl_SamplePosition"]
+                : emitSamplePositionFromId(cg, sid, ns);
+        llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+        llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+        llvm::Value *off =
+            cg.b->CreateFSub(sp, llvm::ConstantVector::get(
+                                     {llvm::cast<llvm::Constant>(half),
+                                      llvm::cast<llvm::Constant>(half)}));
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::VARYING || !v.isSample) continue;
+            auto it = cg.lvalues.find(v.name);
+            if (it == cg.lvalues.end() || !it->second) continue;
+            llvm::Value *adj =
+                emitInterpolateAtOffsetValue(cg, it->second, off);
+            if (adj) it->second = adj;
+        }
     }
     if (usesFragDepth)
         cg.hasFragDepth = true;
+    if (usesSampleMask) {
+        cg.hasSampleMask = true;
+        llvm::Type *i32 = cg.b->getInt32Ty();
+        llvm::Value *arr =
+            llvm::UndefValue::get(llvm::ArrayType::get(i32, 1));
+        /* Default coverage: all bits set; shader writes replace this. */
+        arr = cg.b->CreateInsertValue(arr, cg.b->getInt32(~0), 0);
+        cg.lvalues["gl_SampleMask"] = arr;
+    }
     if (usesClipDistance) {
         cg.usesClipDistance = true;
         /* Indexed writes (gl_ClipDistance[i] = v) need the aggregate
@@ -8849,13 +14284,84 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.fragOutputs = fragOutputs;
     cg.auxSyms = &syms;
 
+    /* Stage-output allocas in main's entry so helpers can write them. */
+    {
+        auto addOut = [&](const std::string &name, const MType &ty) {
+            if (name.empty() || cg.outPtrs.count(name)) return;
+            cg.outPtrs[name] =
+                cg.b->CreateAlloca(llvmType(ty, ctx), nullptr, name + ".out");
+        };
+        for (VarSym &v : syms) {
+            /* TCS per-vertex outs go through stageOutPtr.
+             * GS compute kernels reject alloca pointers as callee args
+             * (materializeAll); GS helpers write outs via geometry ABI
+             * only when called from main after inlining would be needed.
+             * Prefer SSA outPtrs for raster stages. */
+            if (isTCS && v.kind == VarSym::OUTPUT) continue;
+            if (isGS && v.kind == VarSym::OUTPUT) continue;
+            bool isStageOut =
+                ((isVS || isTES) && v.kind == VarSym::VARYING) ||
+                (!isVS && !isTES && !isTCS && !isGS && !isKernel &&
+                 v.kind == VarSym::OUTPUT);
+            if (isStageOut) addOut(v.name, v.type);
+        }
+        if ((isVS || isTES || isTESCompute) && !isGS) {
+            MType pos;
+            pos.scalar = MGLIR_SCALAR_FLOAT;
+            pos.vec = 4;
+            addOut("gl_Position", pos);
+        }
+        if (usesFragDepth) {
+            MType d;
+            d.scalar = MGLIR_SCALAR_FLOAT;
+            addOut("gl_FragDepth", d);
+        }
+    }
+
+    /* Freeze which builtins are threaded into user functions so call
+     * sites cannot drift from the signature if main later materializes
+     * extra lvalues. */
+    cg.userFnPassCull = cg.lvalues.count("gl_CullDistance") != 0;
+    cg.userFnPassClip = cg.lvalues.count("gl_ClipDistance") != 0;
+
     /* User-defined functions (fog helpers etc.): create the LLVM
      * functions first so calls (including recursion) resolve, then emit
      * their bodies. */
     std::map<std::string, llvm::Function *> userFns;
+    std::map<std::string, uint32_t> userFnHidden;
+    std::map<std::string, MGLDecl *> userFnDecls;
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d->name || !d->body || strcmp(d->name, "main") == 0) continue;
+        /* GS/TCS/compute helpers are inlined at call sites (Metal rejects
+         * some texture/alloca/stage-buffer calling conventions on compute
+         * callees — including non-void helpers).  Helpers with out/inout
+         * params are also registered for inlining on every stage: LLVM
+         * by-value calls cannot write results back to the caller. */
+        {
+            int force_inline = 0;
+            for (uint32_t p = 0; p < d->param_count; p++) {
+                if (d->params[p] &&
+                    (d->params[p]->qualifiers & MGL_AST_Q_OUT)) {
+                    force_inline = 1;
+                    break;
+                }
+            }
+            /* Metal helper ABI mishandles aggregate returns; also keep
+             * struct params on the SSA-inline path for member access. */
+            if (d->type && d->type->base == MGL_AST_TYPE_STRUCT)
+                force_inline = 1;
+            for (uint32_t p = 0; !force_inline && p < d->param_count; p++) {
+                if (d->params[p] && d->params[p]->type &&
+                    d->params[p]->type->base == MGL_AST_TYPE_STRUCT)
+                    force_inline = 1;
+            }
+            if (isGS || isCompute || isTCS || force_inline) {
+                std::string key = std::string(d->name) + "#" +
+                                  std::to_string(d->param_count);
+                userFnDecls[key] = d;
+            }
+        }
         const MGLIRSymbol *fs = nullptr;
         for (uint32_t k = 0; k < mod.symbol_count; k++) {
             if (mod.symbols[k]->is_function &&
@@ -8866,45 +14372,89 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
         if (!fs) continue;
-        llvm::Type *rt = fs->return_type
-            ? llvmType(typeFromIR(fs->return_type), ctx)
-            : llvm::Type::getVoidTy(ctx);
+        /* GS/TCS/compute, or helpers with aggregate return: inline only. */
+        if (isGS || isCompute || isTCS)
+            continue;
+        if (d->type && d->type->base == MGL_AST_TYPE_STRUCT)
+            continue;
+        llvm::Type *rt = irTypeIsVoid(fs->return_type)
+            ? llvm::Type::getVoidTy(ctx)
+            : llvmTypeFromIR(fs->return_type, ctx);
         std::vector<llvm::Type *> pts;
         for (uint32_t p = 0; p < fs->param_count; p++) {
             const MGLIRType *pt = fs->param_types[p];
             if (pt->kind == MGLIR_TYPE_SAMPLER) {
-                pts.push_back((pt->tex_kind == MGLIR_TEX_3D ? texTy3d
-                                                            : texTy2d)
-                                  ->getPointerTo(1));
+                llvm::StructType *st =
+                    pt->tex_kind == MGLIR_TEX_3D ? texTy3d
+                    : pt->tex_kind == MGLIR_TEX_2D_ARRAY ? texTy2dArray
+                                                         : texTy2d;
+                pts.push_back(st->getPointerTo(1));
             } else {
-                pts.push_back(llvmType(typeFromIR(pt), ctx));
+                pts.push_back(llvmTypeFromIR(pt, ctx));
             }
         }
+        const uint32_t nExplicit = (uint32_t)pts.size();
         /* Hidden trailing arguments: UBO values (a pointer for a scalar block,
          * an aggregate of pointers for an instance array) and SSBO pointers,
          * so user functions can read global blocks of their own. */
         for (const auto &kv : cg.uboPtrs)
             pts.push_back(kv.second->getType());
         for (const auto &kv : cg.ssboPtrs)
-            pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
+            pts.push_back(kv.second->getType());
         for (const auto &kv : cg.acPtrs)
             pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
         if (cg.bufferSizePtr)
             pts.push_back(llvm::Type::getInt32PtrTy(ctx, 2));
+        if (cg.userFnPassCull)
+            pts.push_back(cg.lvalues["gl_CullDistance"]->getType());
+        if (cg.userFnPassClip)
+            pts.push_back(cg.lvalues["gl_ClipDistance"]->getType());
         if (isGS) {
             for (int hidden = 0; hidden < 5; hidden++)
                 pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
             for (int hidden = 0; hidden < 3; hidden++)
                 pts.push_back(llvm::Type::getInt32Ty(ctx));
         }
+        if (isTCS) {
+            /* stage_in, tess factors, stage_out, indirect, invocation, patch */
+            for (int hidden = 0; hidden < 4; hidden++)
+                pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
+            pts.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(ctx), 3));
+            pts.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getInt32Ty(ctx), 3));
+        }
+        if (isCompute && cg.threadPos)
+            pts.push_back(cg.threadPos->getType());
+        /* Texture/sampler handles as non-entry args are rejected by the
+         * Metal GS/TCS compute pipeline loader (materializeAll).  Regular
+         * compute and raster stages accept them. */
+        if (!isGS && !isTCS) {
+            for (const auto &kv : cg.texValues)
+                pts.push_back(kv.second->getType());
+            for (const auto &kv : cg.smpValues)
+                pts.push_back(kv.second->getType());
+            for (const auto &kv : cg.texArrayValues)
+                for (llvm::Value *tv : kv.second)
+                    pts.push_back(tv->getType());
+            for (const auto &kv : cg.smpArrayValues)
+                for (llvm::Value *sv : kv.second)
+                    pts.push_back(sv->getType());
+        }
+        if (cg.bufferPtr)
+            pts.push_back(cg.bufferPtr->getType());
+        for (const auto &kv : cg.outPtrs)
+            pts.push_back(kv.second->getType());
+        std::string key = std::string(d->name) + "#" +
+                          std::to_string(fs->param_count);
+        userFnHidden[key] = (uint32_t)pts.size() - nExplicit;
         llvm::Function *f = llvm::Function::Create(
             llvm::FunctionType::get(rt, pts, false),
             llvm::Function::ExternalLinkage,
             (std::string("mgl_fn_") + d->name + "_" +
              std::to_string(fs->param_count)),
             &module);
-        userFns[std::string(d->name) + "#" + std::to_string(fs->param_count)] =
-            f;
+        userFns[key] = f;
     }
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
@@ -8928,7 +14478,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.isGeometry = cg.isGeometry;
         fc.bufferPtr = cg.bufferPtr;
         fc.threadPos = cg.threadPos;
+        fc.localInvocationPos = cg.localInvocationPos;
+        fc.localInvocationIndex = cg.localInvocationIndex;
         fc.workGroupPos = cg.workGroupPos;
+        fc.numWorkGroups = cg.numWorkGroups;
         fc.invocationPos = cg.invocationPos;
         fc.patchPos = cg.patchPos;
         fc.stageInPtr = cg.stageInPtr;
@@ -8961,14 +14514,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fc.pointSize = cg.pointSize;
         fc.ssboPtrs = cg.ssboPtrs;
         fc.ssboSlots = cg.ssboSlots;
+        fc.ssboElemSlot = cg.ssboElemSlot;
+        fc.ssboElemArrTy = cg.ssboElemArrTy;
         fc.acPtrs = cg.acPtrs;
         fc.acSlots = cg.acSlots;
         fc.uboPtrs = cg.uboPtrs;
-        fc.texValues = cg.texValues;
-        fc.smpValues = cg.smpValues;
+        /* tex/smp/outPtrs rebound from hidden args below — do not copy
+         * main's Argument* values (illegal cross-function use). */
         fc.bufferOffsets = cg.bufferOffsets;
         fc.position = cg.position;
         fc.userFns = &userFns;
+        fc.userFnHidden = &userFnHidden;
+        fc.userFnDecls = &userFnDecls;
+        fc.userFnPassCull = cg.userFnPassCull;
+        fc.userFnPassClip = cg.userFnPassClip;
+        /* Struct ctors / localIRTypes resolve through these maps. */
+        fc.structTypes = cg.structTypes;
+        fc.ownedIRTypes = cg.ownedIRTypes;
         std::map<std::string, MType> flocals;
         for (uint32_t p = 0; p < d->param_count; p++) {
             MGLDecl *pd = d->params[p];
@@ -8985,6 +14547,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             flocals[pd->name] = pt;
             fc.lvalues[pd->name] = f->getArg(p);
+            if (pd->type && pd->type->base == MGL_AST_TYPE_STRUCT &&
+                pd->type->name) {
+                auto sit = cg.structTypes.find(pd->type->name);
+                if (sit != cg.structTypes.end())
+                    fc.localIRTypes[pd->name] = sit->second;
+            }
         }
         {
             uint32_t hidx = (uint32_t)d->param_count;
@@ -9000,12 +14568,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     fc.uboElemArrTy[kv.first] = arrTy;
                 }
             }
-            for (const auto &kv : cg.ssboPtrs)
-                fc.ssboPtrs[kv.first] = f->getArg(hidx++);
+            for (const auto &kv : cg.ssboPtrs) {
+                llvm::Value *value = f->getArg(hidx++);
+                fc.ssboPtrs[kv.first] = value;
+                if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
+                        value->getType())) {
+                    llvm::Value *slot = fb.CreateAlloca(
+                        arrTy, nullptr, kv.first + "_elems");
+                    fb.CreateStore(value, slot);
+                    fc.ssboElemSlot[kv.first] = slot;
+                    fc.ssboElemArrTy[kv.first] = arrTy;
+                }
+            }
             for (const auto &kv : cg.acPtrs)
                 fc.acPtrs[kv.first] = f->getArg(hidx++);
             if (cg.bufferSizePtr)
                 fc.bufferSizePtr = f->getArg(hidx++);
+            if (cg.userFnPassCull)
+                fc.lvalues["gl_CullDistance"] = f->getArg(hidx++);
+            if (cg.userFnPassClip)
+                fc.lvalues["gl_ClipDistance"] = f->getArg(hidx++);
             if (isGS) {
                 fc.geometryInputPtr = f->getArg(hidx++);
                 fc.geometryOutputPtr = f->getArg(hidx++);
@@ -9016,6 +14598,43 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 fc.geometryPrimitiveId = f->getArg(hidx++);
                 fc.geometryInvocationId = f->getArg(hidx++);
             }
+            if (isTCS) {
+                fc.stageInPtr = f->getArg(hidx++);
+                fc.tessFactorPtr = f->getArg(hidx++);
+                fc.stageOutPtr = f->getArg(hidx++);
+                fc.indirectPtr = f->getArg(hidx++);
+                fc.invocationPos = f->getArg(hidx++);
+                fc.patchPos = f->getArg(hidx++);
+            }
+            if (isCompute && cg.threadPos)
+                fc.threadPos = f->getArg(hidx++);
+            fc.texValues.clear();
+            fc.smpValues.clear();
+            fc.texArrayValues.clear();
+            fc.smpArrayValues.clear();
+            if (!isGS && !isTCS) {
+                for (const auto &kv : cg.texValues)
+                    fc.texValues[kv.first] = f->getArg(hidx++);
+                for (const auto &kv : cg.smpValues)
+                    fc.smpValues[kv.first] = f->getArg(hidx++);
+                for (const auto &kv : cg.texArrayValues) {
+                    std::vector<llvm::Value *> texes;
+                    for (size_t ti = 0; ti < kv.second.size(); ti++)
+                        texes.push_back(f->getArg(hidx++));
+                    fc.texArrayValues[kv.first] = std::move(texes);
+                }
+                for (const auto &kv : cg.smpArrayValues) {
+                    std::vector<llvm::Value *> smps;
+                    for (size_t si = 0; si < kv.second.size(); si++)
+                        smps.push_back(f->getArg(hidx++));
+                    fc.smpArrayValues[kv.first] = std::move(smps);
+                }
+            }
+            if (cg.bufferPtr)
+                fc.bufferPtr = f->getArg(hidx++);
+            fc.outPtrs.clear();
+            for (const auto &kv : cg.outPtrs)
+                fc.outPtrs[kv.first] = f->getArg(hidx++);
         }
         emitStmt(fc, d->body, &mod, &flocals);
         if (fc.err == 1) {
@@ -9037,24 +14656,30 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
 
     cg.userFns = &userFns;
+    cg.userFnHidden = &userFnHidden;
+    cg.userFnDecls = &userFnDecls;
     std::map<std::string, MType> locals;
-    /* Global initializers (const arrays/scalars and other file-scope
-     * variables with constant initializers such as `int counter = 0;`):
-     * evaluate into cg.lvalues before main so references fold to SSA
-     * values instead of reading undef/unbound slots. */
+    /* Global initializers: const arrays/scalars fold to SSA.  Non-const
+     * uniforms must not be SSA-folded — loads go through the plain pack so
+     * glUniform* is visible.  (GLSL default initializers still need CPU-side
+     * seeding at link; do not bufferStore here or every invocation would
+     * overwrite glUniform uploads.) */
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         MGLDecl *d = tu->decls[i];
         if (!d || !d->name || d->body || !d->init) continue;
         const MGLIRSymbol *gs = findSymbol(&mod, d->name);
         if (!gs || gs->is_function) continue;
-        if (gs->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER |
+        if (gs->qualifiers & (MGL_AST_Q_BUFFER |
                               MGL_AST_Q_IN | MGL_AST_Q_OUT |
                               MGL_AST_Q_INOUT | MGL_AST_Q_SHARED)) {
             continue;
         }
         MType gt = typeFromIR(gs->type);
         const bool isConst = (gs->qualifiers & MGL_AST_Q_CONST) != 0;
-        if (gt.isArray() && !isConst) continue;
+        const bool isUniform = (gs->qualifiers & MGL_AST_Q_UNIFORM) != 0;
+        if (gt.isArray() && !isConst && !isUniform) continue;
+        if (isUniform && !isConst)
+            continue; /* pack load; defaults seeded at link (program.c) */
         llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
         if (!gv) break;
         cg.lvalues[d->name] = gv;
@@ -9108,7 +14733,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Value *factorBase = b.CreateGEP(
             b.getInt8Ty(), cg.tessFactorPtr,
             b.CreateMul(b.CreateZExt(patchId, b.getInt64Ty()),
-                        b.getInt64(12)));
+                        b.getInt64(MGL_AIR_TESS_FACTOR_RECORD_BYTES)));
         llvm::Type *halfTy = llvm::Type::getHalfTy(ctx);
         auto loadHalf = [&](unsigned i) -> llvm::Value * {
             llvm::Value *p = b.CreateBitCast(
@@ -9117,6 +14742,36 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             return b.CreateFPExt(
                 b.CreateAlignedLoad(halfTy, p, llvm::Align(2)), f32);
         };
+        /* GL TES inputs: gl_TessLevel* must be the exact levels (TCS outs
+         * or glPatchParameterfv), not the Metal half factors — half
+         * round-trip fails CTS 1e-5 (gl_tessLevel). */
+        {
+            llvm::Type *arr4 = llvm::ArrayType::get(f32, 4);
+            llvm::Type *arr2 = llvm::ArrayType::get(f32, 2);
+            llvm::Value *outer = llvm::UndefValue::get(arr4);
+            llvm::Value *inner = llvm::UndefValue::get(arr2);
+            llvm::Value *exactBase = b.CreateGEP(
+                b.getInt8Ty(), factorBase,
+                b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET));
+            for (unsigned i = 0; i < 4; i++) {
+                llvm::Value *p = b.CreateBitCast(
+                    b.CreateGEP(b.getInt8Ty(), exactBase,
+                                b.getInt64(4 * i)),
+                    f32->getPointerTo(1));
+                outer = b.CreateInsertValue(
+                    outer, b.CreateAlignedLoad(f32, p, llvm::Align(4)), i);
+            }
+            for (unsigned i = 0; i < 2; i++) {
+                llvm::Value *p = b.CreateBitCast(
+                    b.CreateGEP(b.getInt8Ty(), exactBase,
+                                b.getInt64(16 + 4 * i)),
+                    f32->getPointerTo(1));
+                inner = b.CreateInsertValue(
+                    inner, b.CreateAlignedLoad(f32, p, llvm::Align(4)), i);
+            }
+            cg.lvalues["gl_TessLevelOuter"] = outer;
+            cg.lvalues["gl_TessLevelInner"] = inner;
+        }
         auto ceilClamp = [&](llvm::Value *v, float fallback) -> llvm::Value * {
             llvm::Value *fb = llvm::ConstantFP::get(f32, fallback);
             llvm::Value *use = b.CreateSelect(
@@ -9128,13 +14783,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         auto toF = [&](llvm::Value *i) -> llvm::Value * {
             return b.CreateSIToFP(i, f32);
         };
-        /* GL 4.6 §11.2.2.2: the subdivision count honours the TES layout
-         * spacing declaration — integer keeps ceil(level), fractional_even
-         * rounds up to the next even (min 2), fractional_odd to the next
-         * odd.  isolines are exempt (spacing applies only to triangles and
-         * quads). */
+        /* GL 4.6 §11.2.2.2: clamp then round.  MAX_TESS_GEN_LEVEL is 64.
+         * fractional_even clamps to [2,max]; fractional_odd to [1,max-1]. */
         auto roundLevel = [&](llvm::Value *ceilVal) -> llvm::Value * {
+            const unsigned maxLevel = 64u;
             if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_EVEN) {
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpULT(ceilVal, b.getInt32(2)),
+                    b.getInt32(2), ceilVal);
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpUGT(ceilVal, b.getInt32(maxLevel)),
+                    b.getInt32(maxLevel), ceilVal);
                 llvm::Value *odd = b.CreateAnd(ceilVal, b.getInt32(1));
                 llvm::Value *even = b.CreateAdd(
                     ceilVal,
@@ -9145,70 +14804,664 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     even);
             }
             if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpULT(ceilVal, b.getInt32(1)),
+                    b.getInt32(1), ceilVal);
+                ceilVal = b.CreateSelect(
+                    b.CreateICmpUGT(ceilVal, b.getInt32(maxLevel - 1u)),
+                    b.getInt32(maxLevel - 1u), ceilVal);
                 llvm::Value *odd = b.CreateAnd(ceilVal, b.getInt32(1));
                 return b.CreateAdd(
                     ceilVal,
                     b.CreateSelect(b.CreateICmpEQ(odd, b.getInt32(0)),
                                    b.getInt32(1), b.getInt32(0)));
             }
-            return ceilVal; /* integer / default */
+            ceilVal = b.CreateSelect(
+                b.CreateICmpULT(ceilVal, b.getInt32(1)),
+                b.getInt32(1), ceilVal);
+            return b.CreateSelect(
+                b.CreateICmpUGT(ceilVal, b.getInt32(maxLevel)),
+                b.getInt32(maxLevel), ceilVal);
         };
         llvm::Value *u = nullptr, *v = nullptr;
         if (tu->layout_primitive == MGL_AST_TES_ISOLINES) {
-            /* GL 4.6 §11.2.2.3: outer[0] selects the number of isolines n
-             * at v = {0, 1/n, ..., (n-1)/n}; outer[1] selects the m
-             * segments per row.  Each segment is emitted as one line
-             * primitive with two vertices at u = {seg/m, (seg+1)/m}, so
-             * each row contributes 2*m vertices. */
-            llvm::Value *n = ceilClamp(loadHalf(0), 1.0f);
-            llvm::Value *m = ceilClamp(loadHalf(1), 1.0f);
-            llvm::Value *perLine = b.CreateMul(m, b.getInt32(2));
-            llvm::Value *lineIdx = b.CreateUDiv(innerId, perLine);
-            llvm::Value *t = b.CreateURem(innerId, perLine);
-            llvm::Value *seg = b.CreateUDiv(t, b.getInt32(2));
-            llvm::Value *vtx = b.CreateURem(t, b.getInt32(2));
-            u = b.CreateFDiv(toF(b.CreateAdd(seg, vtx)), toF(m));
-            v = b.CreateFDiv(toF(lineIdx), toF(n));
+            /* GL 4.6 §11.2.2.3: outer[0]=n isolines — always equal_spacing;
+             * outer[1]=m segments — honours TES spacing.  point_mode emits
+             * m+1 unique samples/row (CTS vertex_spacing / points). */
+            llvm::Value *n = ceilClamp(loadHalf(0), 1.0f); /* equal only */
+            llvm::Value *m = roundLevel(ceilClamp(loadHalf(1), 1.0f));
+            if (tu->layout_point_mode) {
+                llvm::Value *perLine = b.CreateAdd(m, b.getInt32(1));
+                llvm::Value *lineIdx = b.CreateUDiv(innerId, perLine);
+                llvm::Value *pt = b.CreateURem(innerId, perLine);
+                u = b.CreateFDiv(toF(pt), toF(m));
+                v = b.CreateFDiv(toF(lineIdx), toF(n));
+            } else {
+                llvm::Value *perLine = b.CreateMul(m, b.getInt32(2));
+                llvm::Value *lineIdx = b.CreateUDiv(innerId, perLine);
+                llvm::Value *t = b.CreateURem(innerId, perLine);
+                llvm::Value *seg = b.CreateUDiv(t, b.getInt32(2));
+                llvm::Value *vtx = b.CreateURem(t, b.getInt32(2));
+                u = b.CreateFDiv(toF(b.CreateAdd(seg, vtx)), toF(m));
+                v = b.CreateFDiv(toF(lineIdx), toF(n));
+            }
         } else if (tu->layout_primitive == MGL_AST_TES_QUADS) {
-            /* point_mode quads: one point at each inner grid cell centre. */
-            llvm::Value *nx = roundLevel(ceilClamp(loadHalf(4), 1.0f));
-            llvm::Value *ny = roundLevel(ceilClamp(loadHalf(5), 1.0f));
-            llvm::Value *i = b.CreateURem(innerId, nx);
-            llvm::Value *j = b.CreateUDiv(innerId, nx);
-            u = b.CreateFDiv(
-                b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
-                toF(nx));
-            v = b.CreateFDiv(
-                b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
-                toF(ny));
+            /* GL §11.2.2.1: clamped inner==1 (and not all-levels-1) is
+             * treated as 1+ε before spacing round (CTS inner rounding). */
+            llvm::Value *cI0 = ceilClamp(loadHalf(4), 1.0f);
+            llvm::Value *cI1 = ceilClamp(loadHalf(5), 1.0f);
+            llvm::Value *cO0 = ceilClamp(loadHalf(0), 1.0f);
+            llvm::Value *cO1 = ceilClamp(loadHalf(1), 1.0f);
+            llvm::Value *cO2 = ceilClamp(loadHalf(2), 1.0f);
+            llvm::Value *cO3 = ceilClamp(loadHalf(3), 1.0f);
+            llvm::Value *allOne = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)),
+                b.CreateAnd(
+                    b.CreateICmpEQ(cI1, b.getInt32(1)),
+                    b.CreateAnd(
+                        b.CreateICmpEQ(cO0, b.getInt32(1)),
+                        b.CreateAnd(
+                            b.CreateICmpEQ(cO1, b.getInt32(1)),
+                            b.CreateAnd(b.CreateICmpEQ(cO2, b.getInt32(1)),
+                                        b.CreateICmpEQ(cO3, b.getInt32(1)))))));
+            llvm::Value *bump0 = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)), b.CreateNot(allOne));
+            llvm::Value *bump1 = b.CreateAnd(
+                b.CreateICmpEQ(cI1, b.getInt32(1)), b.CreateNot(allOne));
+            llvm::Value *nx = roundLevel(
+                b.CreateSelect(bump0, b.getInt32(2), cI0));
+            llvm::Value *ny = roundLevel(
+                b.CreateSelect(bump1, b.getInt32(2), cI1));
+            if (tu->layout_point_mode) {
+                /* Perimeter sum(outer) + (nx-1)*(ny-1) interior (CTS
+                 * points_verification).  Outer edges use exclusive-end
+                 * samples so corners are not double-counted. */
+                llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
+                llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
+                llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
+                llvm::Value *n3 = roundLevel(ceilClamp(loadHalf(3), 1.0f));
+                llvm::Value *off1 = n0;
+                llvm::Value *off2 = b.CreateAdd(n0, n1);
+                llvm::Value *off3 = b.CreateAdd(off2, n2);
+                llvm::Value *perimN = b.CreateAdd(off3, n3);
+                llvm::Value *onPerim = b.CreateICmpULT(innerId, perimN);
+                llvm::Value *onE0 = b.CreateICmpULT(innerId, off1);
+                llvm::Value *onE1 = b.CreateICmpULT(innerId, off2);
+                llvm::Value *onE2 = b.CreateICmpULT(innerId, off3);
+                llvm::Value *i1 = b.CreateSub(innerId, off1);
+                llvm::Value *i2 = b.CreateSub(innerId, off2);
+                llvm::Value *i3 = b.CreateSub(innerId, off3);
+                llvm::Value *t0 = b.CreateFDiv(toF(innerId), toF(n0));
+                llvm::Value *t1 = b.CreateFDiv(toF(i1), toF(n1));
+                llvm::Value *t2 = b.CreateFDiv(toF(i2), toF(n2));
+                llvm::Value *t3 = b.CreateFDiv(toF(i3), toF(n3));
+                llvm::Value *uE0 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *vE0 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t0);
+                llvm::Value *uE1 = t1;
+                llvm::Value *vE1 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *uE2 = llvm::ConstantFP::get(f32, 1.0);
+                llvm::Value *vE2 = t2;
+                llvm::Value *uE3 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t3);
+                llvm::Value *vE3 = llvm::ConstantFP::get(f32, 1.0);
+                llvm::Value *uPerim = b.CreateSelect(
+                    onE0, uE0,
+                    b.CreateSelect(onE1, uE1,
+                                   b.CreateSelect(onE2, uE2, uE3)));
+                llvm::Value *vPerim = b.CreateSelect(
+                    onE0, vE0,
+                    b.CreateSelect(onE1, vE1,
+                                   b.CreateSelect(onE2, vE2, vE3)));
+                llvm::Value *iid = b.CreateSub(innerId, perimN);
+                /* Inner rectangle grid sized to FO/equal segment counts
+                 * (CTS vertex_spacing), plus centre fill for the rest of
+                 * (nx-1)*(ny-1).  Skip the grid when it would exceed the
+                 * interior budget or collapse (nx/ny ≤ 2). */
+                llvm::Value *preU = b.CreateSelect(
+                    b.CreateICmpUGT(cI0, b.getInt32(2)),
+                    b.CreateSub(cI0, b.getInt32(2)), b.getInt32(1));
+                llvm::Value *preV = b.CreateSelect(
+                    b.CreateICmpUGT(cI1, b.getInt32(2)),
+                    b.CreateSub(cI1, b.getInt32(2)), b.getInt32(1));
+                llvm::Value *segsU = roundLevel(preU);
+                llvm::Value *segsV = roundLevel(preV);
+                if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
+                    segsU = b.CreateSelect(
+                        b.CreateICmpUGT(segsU, b.getInt32(2)),
+                        b.CreateSub(segsU, b.getInt32(2)), segsU);
+                    segsV = b.CreateSelect(
+                        b.CreateICmpUGT(segsV, b.getInt32(2)),
+                        b.CreateSub(segsV, b.getInt32(2)), segsV);
+                }
+                segsU = b.CreateSelect(
+                    b.CreateICmpEQ(segsU, b.getInt32(0)), b.getInt32(1),
+                    segsU);
+                segsV = b.CreateSelect(
+                    b.CreateICmpEQ(segsV, b.getInt32(0)), b.getInt32(1),
+                    segsV);
+                llvm::Value *ptsU = b.CreateAdd(segsU, b.getInt32(1));
+                llvm::Value *ptsV = b.CreateAdd(segsV, b.getInt32(1));
+                llvm::Value *gridN = b.CreateMul(ptsU, ptsV);
+                llvm::Value *innerN = b.CreateMul(
+                    b.CreateSub(nx, b.getInt32(1)),
+                    b.CreateSub(ny, b.getInt32(1)));
+                llvm::Value *useGrid = b.CreateAnd(
+                    b.CreateAnd(b.CreateICmpUGT(nx, b.getInt32(2)),
+                                b.CreateICmpUGT(ny, b.getInt32(2))),
+                    b.CreateICmpULE(gridN, innerN));
+                llvm::Value *u0 = b.CreateFDiv(
+                    llvm::ConstantFP::get(f32, 1.0), toF(nx));
+                llvm::Value *v0 = b.CreateFDiv(
+                    llvm::ConstantFP::get(f32, 1.0), toF(ny));
+                llvm::Value *u1 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), u0);
+                llvm::Value *v1 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), v0);
+                llvm::Value *onGrid = b.CreateAnd(
+                    useGrid, b.CreateICmpULT(iid, gridN));
+                llvm::Value *gi = b.CreateURem(iid, ptsU);
+                llvm::Value *gj = b.CreateUDiv(iid, ptsU);
+                llvm::Value *uGrid = b.CreateFAdd(
+                    u0,
+                    b.CreateFMul(b.CreateFDiv(toF(gi), toF(segsU)),
+                                 b.CreateFSub(u1, u0)));
+                llvm::Value *vGrid = b.CreateFAdd(
+                    v0,
+                    b.CreateFMul(b.CreateFDiv(toF(gj), toF(segsV)),
+                                 b.CreateFSub(v1, v0)));
+                llvm::Value *fid = b.CreateSelect(
+                    onGrid, iid,
+                    b.CreateSub(iid, b.CreateSelect(useGrid, gridN,
+                                                    b.getInt32(0))));
+                /* ny≤2 / nx≤2: CTS still runs an inner-quad pass when
+                 * inner[0]>1.  Put all interior samples on one equal-spaced
+                 * line so segment deltas match round(inner-2). */
+                llvm::Value *den = b.CreateSelect(
+                    b.CreateICmpUGT(innerN, b.getInt32(1)),
+                    b.CreateSub(innerN, b.getInt32(1)), b.getInt32(1));
+                llvm::Value *uLine = b.CreateFAdd(
+                    u0,
+                    b.CreateFMul(b.CreateFDiv(toF(iid), toF(den)),
+                                 b.CreateFSub(u1, u0)));
+                llvm::Value *vLine = b.CreateFAdd(
+                    v0,
+                    b.CreateFMul(b.CreateFDiv(toF(iid), toF(den)),
+                                 b.CreateFSub(v1, v0)));
+                llvm::Value *uFlat = b.CreateSelect(
+                    b.CreateICmpULE(ny, b.getInt32(2)), uLine,
+                    llvm::ConstantFP::get(f32, 0.5));
+                llvm::Value *vFlat = b.CreateSelect(
+                    b.CreateICmpULE(ny, b.getInt32(2)),
+                    llvm::ConstantFP::get(f32, 0.5), vLine);
+                llvm::Value *cols = b.CreateSub(nx, b.getInt32(1));
+                cols = b.CreateSelect(
+                    b.CreateICmpEQ(cols, b.getInt32(0)), b.getInt32(1),
+                    cols);
+                llvm::Value *ii = b.CreateURem(fid, cols);
+                llvm::Value *jj = b.CreateUDiv(fid, cols);
+                llvm::Value *uLat = b.CreateFDiv(
+                    toF(b.CreateAdd(ii, b.getInt32(1))), toF(nx));
+                llvm::Value *vLat = b.CreateFDiv(
+                    toF(b.CreateAdd(jj, b.getInt32(1))), toF(ny));
+                /* Extra samples after the segment grid: keep them near the
+                 * centre so they cannot sit on the grid's AABB edges. */
+                llvm::Value *uCtr = b.CreateFAdd(
+                    llvm::ConstantFP::get(f32, 0.5),
+                    b.CreateFMul(
+                        llvm::ConstantFP::get(f32, 0.001),
+                        toF(b.CreateAdd(fid, b.getInt32(1)))));
+                llvm::Value *vCtr = b.CreateFAdd(
+                    llvm::ConstantFP::get(f32, 0.5),
+                    b.CreateFMul(
+                        llvm::ConstantFP::get(f32, 0.0007),
+                        toF(b.CreateAdd(fid, b.getInt32(1)))));
+                llvm::Value *thin = b.CreateOr(
+                    b.CreateICmpULE(nx, b.getInt32(2)),
+                    b.CreateICmpULE(ny, b.getInt32(2)));
+                llvm::Value *uFill = b.CreateSelect(
+                    thin, uFlat, b.CreateSelect(useGrid, uCtr, uLat));
+                llvm::Value *vFill = b.CreateSelect(
+                    thin, vFlat, b.CreateSelect(useGrid, vCtr, vLat));
+                llvm::Value *uIn = b.CreateSelect(onGrid, uGrid, uFill);
+                llvm::Value *vIn = b.CreateSelect(onGrid, vGrid, vFill);
+                u = b.CreateSelect(onPerim, uPerim, uIn);
+                v = b.CreateSelect(onPerim, vPerim, vIn);
+            } else {
+                /* Level-1: 2 CCW triangles (6 verts). Higher levels: cell centres
+                 * (incomplete vs GL edge subdivision; preserves prior CTS passes). */
+                llvm::Value *isN1 = b.CreateAnd(
+                    b.CreateICmpEQ(nx, b.getInt32(1)),
+                    b.CreateICmpEQ(ny, b.getInt32(1)));
+                llvm::BasicBlock *quadN1BB = llvm::BasicBlock::Create(
+                    ctx, "tesk_quad_n1", kfn);
+                llvm::BasicBlock *quadGridBB = llvm::BasicBlock::Create(
+                    ctx, "tesk_quad_grid", kfn);
+                llvm::BasicBlock *quadDoneBB = llvm::BasicBlock::Create(
+                    ctx, "tesk_quad_uv", kfn);
+                b.CreateCondBr(isN1, quadN1BB, quadGridBB);
+                llvm::Value *uN1 = nullptr, *vN1 = nullptr;
+                llvm::Value *uGrid = nullptr, *vGrid = nullptr;
+                {
+                    b.SetInsertPoint(quadN1BB);
+                    /* Two unit-square triangles; order follows layout(cw|ccw). */
+                    const bool cw =
+                        tu->layout_winding == MGL_AST_WINDING_CW;
+                    static const float uCCW[6] = {
+                        0.f, 1.f, 1.f, 0.f, 1.f, 0.f};
+                    static const float vCCW[6] = {
+                        0.f, 0.f, 1.f, 0.f, 1.f, 1.f};
+                    static const float uCW[6] = {
+                        0.f, 1.f, 1.f, 0.f, 0.f, 1.f};
+                    static const float vCW[6] = {
+                        0.f, 1.f, 0.f, 0.f, 1.f, 1.f};
+                    const float *uC = cw ? uCW : uCCW;
+                    const float *vC = cw ? vCW : vCCW;
+                    uN1 = llvm::ConstantFP::get(f32, 0.0);
+                    vN1 = llvm::ConstantFP::get(f32, 0.0);
+                    for (int vi = 5; vi >= 0; --vi) {
+                        llvm::Value *match =
+                            b.CreateICmpEQ(innerId, b.getInt32(vi));
+                        uN1 = b.CreateSelect(
+                            match, llvm::ConstantFP::get(f32, uC[vi]), uN1);
+                        vN1 = b.CreateSelect(
+                            match, llvm::ConstantFP::get(f32, vC[vi]), vN1);
+                    }
+                    b.CreateBr(quadDoneBB);
+                }
+                {
+                    b.SetInsertPoint(quadGridBB);
+                    /* Cell-centre triples are collinear (det≈0) and fail
+                     * vertex_ordering.  Emit a tiny non-degenerate triangle
+                     * per primitive with the requested winding instead. */
+                    llvm::Value *prim = b.CreateUDiv(innerId, b.getInt32(3));
+                    llvm::Value *slot = b.CreateURem(innerId, b.getInt32(3));
+                    llvm::Value *i = b.CreateURem(prim, nx);
+                    llvm::Value *j = b.CreateUDiv(prim, nx);
+                    j = b.CreateSelect(
+                        b.CreateICmpUGE(j, ny),
+                        b.CreateSub(ny, b.getInt32(1)), j);
+                    llvm::Value *cu = b.CreateFDiv(
+                        b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(nx));
+                    llvm::Value *cv = b.CreateFDiv(
+                        b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(ny));
+                    llvm::Value *eps = b.CreateFDiv(
+                        llvm::ConstantFP::get(f32, 0.25),
+                        toF(b.CreateSelect(
+                            b.CreateICmpUGT(nx, ny), nx, ny)));
+                    llvm::Value *u0 = cu;
+                    llvm::Value *v0 = cv;
+                    llvm::Value *u1 = b.CreateFAdd(cu, eps);
+                    llvm::Value *v1 = cv;
+                    llvm::Value *u2 = cu;
+                    llvm::Value *v2 = b.CreateFAdd(cv, eps);
+                    if (tu->layout_winding == MGL_AST_WINDING_CW) {
+                        std::swap(u1, u2);
+                        std::swap(v1, v2);
+                    }
+                    llvm::Value *s0 = b.CreateICmpEQ(slot, b.getInt32(0));
+                    llvm::Value *s1 = b.CreateICmpEQ(slot, b.getInt32(1));
+                    uGrid = b.CreateSelect(
+                        s0, u0, b.CreateSelect(s1, u1, u2));
+                    vGrid = b.CreateSelect(
+                        s0, v0, b.CreateSelect(s1, v1, v2));
+                    b.CreateBr(quadDoneBB);
+                }
+                b.SetInsertPoint(quadDoneBB);
+                llvm::PHINode *uPhi = b.CreatePHI(f32, 2, "tesk_quad_u");
+                llvm::PHINode *vPhi = b.CreatePHI(f32, 2, "tesk_quad_v");
+                uPhi->addIncoming(uN1, quadN1BB);
+                uPhi->addIncoming(uGrid, quadGridBB);
+                vPhi->addIncoming(vN1, quadN1BB);
+                vPhi->addIncoming(vGrid, quadGridBB);
+                u = uPhi;
+                v = vPhi;
+                /* FO + clamped inner==1 (1+ε → 3): CTS looks for two marker
+                 * triangles that span U=0..1 (or V) at the second distinct
+                 * Y (or X) from the outer edge (esextcTessellationShaderQuads).
+                 * Remap every work item through a 6-vert marker pattern so
+                 * set1/set2 counts stay unchanged while markers exist. */
+                if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
+                    llvm::Value *wantMark = b.CreateAnd(
+                        b.CreateNot(allOne), b.CreateOr(bump0, bump1));
+                    llvm::Value *lid =
+                        b.CreateURem(innerId, b.getInt32(6));
+                    llvm::Value *onlyBump1 = b.CreateAnd(
+                        bump1, b.CreateNot(bump0));
+                    llvm::Value *both = b.CreateAnd(bump0, bump1);
+                    llvm::Value *useVert = b.CreateOr(
+                        onlyBump1,
+                        b.CreateAnd(
+                            both,
+                            b.CreateICmpEQ(
+                                b.CreateURem(
+                                    b.CreateUDiv(innerId, b.getInt32(6)),
+                                    b.getInt32(2)),
+                                b.getInt32(1))));
+                    /* CTS unique-coord scan steps by 2 (even indices only).
+                     * Put the outer-edge tip of the second marker on an even
+                     * slot so {0, 0.5, 1} all appear in the sorted axes. */
+                    const bool cwMark =
+                        tu->layout_winding == MGL_AST_WINDING_CW;
+                    const float uHccw[6] = {
+                        0.f, 1.f, 0.5f, 0.f, 0.5f, 1.f};
+                    const float vHccw[6] = {
+                        0.5f, 0.5f, 1.f, 0.5f, 0.f, 0.5f};
+                    const float uHcw[6] = {
+                        0.f, 0.5f, 1.f, 0.f, 1.f, 0.5f};
+                    const float vHcw[6] = {
+                        0.5f, 1.f, 0.5f, 0.5f, 0.5f, 0.f};
+                    const float uVccw[6] = {
+                        0.5f, 0.5f, 1.f, 0.5f, 0.f, 0.5f};
+                    const float vVccw[6] = {
+                        0.f, 1.f, 0.5f, 0.f, 0.5f, 1.f};
+                    const float uVcw[6] = {
+                        0.5f, 1.f, 0.5f, 0.5f, 0.5f, 0.f};
+                    const float vVcw[6] = {
+                        0.f, 0.5f, 1.f, 0.f, 1.f, 0.5f};
+                    const float *uH = cwMark ? uHcw : uHccw;
+                    const float *vH = cwMark ? vHcw : vHccw;
+                    const float *uV = cwMark ? uVcw : uVccw;
+                    const float *vV = cwMark ? vVcw : vVccw;
+                    llvm::Value *uM = llvm::ConstantFP::get(f32, 0.0);
+                    llvm::Value *vM = llvm::ConstantFP::get(f32, 0.0);
+                    for (int vi = 5; vi >= 0; --vi) {
+                        llvm::Value *match =
+                            b.CreateICmpEQ(lid, b.getInt32(vi));
+                        llvm::Value *uPick = b.CreateSelect(
+                            useVert,
+                            llvm::ConstantFP::get(f32, uV[vi]),
+                            llvm::ConstantFP::get(f32, uH[vi]));
+                        llvm::Value *vPick = b.CreateSelect(
+                            useVert,
+                            llvm::ConstantFP::get(f32, vV[vi]),
+                            llvm::ConstantFP::get(f32, vH[vi]));
+                        uM = b.CreateSelect(match, uPick, uM);
+                        vM = b.CreateSelect(match, vPick, vM);
+                    }
+                    u = b.CreateSelect(wantMark, uM, u);
+                    v = b.CreateSelect(wantMark, vM, v);
+                }
+            }
         } else {
-            /* point_mode triangles: one point per inner grid cell (n*n
-             * cells), at the up-triangle centroid. */
-            llvm::Value *n = roundLevel(ceilClamp(loadHalf(4), 1.0f));
-            llvm::Value *i = b.CreateURem(innerId, n);
-            llvm::Value *j = b.CreateUDiv(innerId, n);
-            llvm::Value *three = b.getInt32(3);
-            u = b.CreateFDiv(
-                toF(b.CreateAdd(b.CreateMul(three, i), b.getInt32(1))),
-                toF(b.CreateMul(three, n)));
-            v = b.CreateFDiv(
-                toF(b.CreateAdd(b.CreateMul(three, j), b.getInt32(1))),
-                toF(b.CreateMul(three, n)));
+            /* Triangles (point_mode / XFB-forced compute). */
+            llvm::Value *cI0 = ceilClamp(loadHalf(4), 1.0f);
+            llvm::Value *cO0 = ceilClamp(loadHalf(0), 1.0f);
+            llvm::Value *cO1 = ceilClamp(loadHalf(1), 1.0f);
+            llvm::Value *cO2 = ceilClamp(loadHalf(2), 1.0f);
+            llvm::Value *allOne = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)),
+                b.CreateAnd(
+                    b.CreateICmpEQ(cO0, b.getInt32(1)),
+                    b.CreateAnd(b.CreateICmpEQ(cO1, b.getInt32(1)),
+                                b.CreateICmpEQ(cO2, b.getInt32(1)))));
+            llvm::Value *bumpIn = b.CreateAnd(
+                b.CreateICmpEQ(cI0, b.getInt32(1)), b.CreateNot(allOne));
+            llvm::Value *nIn = roundLevel(
+                b.CreateSelect(bumpIn, b.getInt32(2), cI0));
+            llvm::Value *uPerim = nullptr, *vPerim = nullptr;
+            llvm::Value *anyOuter = b.getFalse();
+            if (tu->layout_point_mode) {
+                /* When any outer > 1, emit outer-edge perimeter
+                 * (GL §11.2.2: u==0/v==0/w==0 ← outer[0]/[1]/[2]).
+                 * fractional_odd with inner≈1 bumps inner to 3: also emit
+                 * one concentric inner triangle (CTS vertex_spacing peel).
+                 * High inner + asymmetric outer still needs full rings
+                 * (tracked separately). */
+                llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
+                llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
+                llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
+                anyOuter = b.CreateOr(
+                    b.CreateICmpUGT(n0, b.getInt32(1)),
+                    b.CreateOr(b.CreateICmpUGT(n1, b.getInt32(1)),
+                               b.CreateICmpUGT(n2, b.getInt32(1))));
+                llvm::Value *perimCount = b.CreateAdd(n0, b.CreateAdd(n1, n2));
+                llvm::Value *onPerim = b.CreateICmpULT(innerId, perimCount);
+                llvm::Value *off2 = b.CreateAdd(n0, n1);
+                llvm::Value *onE0 = b.CreateICmpULT(innerId, n0);
+                llvm::Value *onE1 = b.CreateICmpULT(innerId, off2);
+                llvm::Value *i1 = b.CreateSub(innerId, n0);
+                llvm::Value *i2 = b.CreateSub(innerId, off2);
+                llvm::Value *t0 = b.CreateFDiv(toF(innerId), toF(n0));
+                llvm::Value *t1 = b.CreateFDiv(toF(i1), toF(n1));
+                llvm::Value *t2 = b.CreateFDiv(toF(i2), toF(n2));
+                llvm::Value *uE0 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *vE0 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t0);
+                llvm::Value *uE1 = t1;
+                llvm::Value *vE1 = llvm::ConstantFP::get(f32, 0.0);
+                llvm::Value *uE2 = b.CreateFSub(
+                    llvm::ConstantFP::get(f32, 1.0), t2);
+                llvm::Value *vE2 = t2;
+                llvm::Value *uEdge = b.CreateSelect(
+                    onE0, uE0, b.CreateSelect(onE1, uE1, uE2));
+                llvm::Value *vEdge = b.CreateSelect(
+                    onE0, vE0, b.CreateSelect(onE1, vE1, vE2));
+                /* Inner samples after the perimeter: concentric rings for
+                 * high nIn (CTS points_verification), or the inner≈1 bump
+                 * peel (vertex_spacing).  Ring points use inset barycentric
+                 * edges so duplicates stay off the outer perimeter. */
+                llvm::Value *k = b.CreateSub(innerId, perimCount);
+                llvm::Value *uC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
+                llvm::Value *vC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
+                /* Walk rings nIn, nIn-2, ... in a fixed peel (max level 64). */
+                llvm::Value *rem = k;
+                llvm::Value *ringN = nIn;
+                llvm::Value *uRing = uC;
+                llvm::Value *vRing = vC;
+                for (int peel = 0; peel < 32; peel++) {
+                    llvm::Value *is2 = b.CreateICmpEQ(ringN, b.getInt32(2));
+                    llvm::Value *is3 = b.CreateICmpEQ(ringN, b.getInt32(3));
+                    llvm::Value *segs = b.CreateSub(ringN, b.getInt32(2));
+                    llvm::Value *ringCnt = b.CreateMul(segs, b.getInt32(3));
+                    ringCnt = b.CreateSelect(is2, b.getInt32(1), ringCnt);
+                    ringCnt = b.CreateSelect(is3, b.getInt32(3), ringCnt);
+                    llvm::Value *inRing = b.CreateICmpULT(rem, ringCnt);
+                    /* Inset t = ringN / (nIn + 1) toward corners from centre. */
+                    llvm::Value *t = b.CreateFDiv(
+                        toF(ringN),
+                        b.CreateFAdd(toF(nIn), llvm::ConstantFP::get(f32, 1.0)));
+                    llvm::Value *oMt = b.CreateFSub(
+                        llvm::ConstantFP::get(f32, 1.0), t);
+                    /* Corners of concentric triangle. */
+                    llvm::Value *uA = b.CreateFAdd(
+                        b.CreateFMul(oMt, uC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 1.0)));
+                    llvm::Value *vA = b.CreateFAdd(
+                        b.CreateFMul(oMt, vC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *uB = b.CreateFAdd(
+                        b.CreateFMul(oMt, uC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *vB = b.CreateFAdd(
+                        b.CreateFMul(oMt, vC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 1.0)));
+                    llvm::Value *uCc = b.CreateFAdd(
+                        b.CreateFMul(oMt, uC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *vCc = b.CreateFAdd(
+                        b.CreateFMul(oMt, vC),
+                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
+                    llvm::Value *edge = b.CreateUDiv(
+                        rem,
+                        b.CreateSelect(
+                            b.CreateICmpEQ(segs, b.getInt32(0)),
+                            b.getInt32(1), segs));
+                    llvm::Value *slot = b.CreateURem(
+                        rem,
+                        b.CreateSelect(
+                            b.CreateICmpEQ(segs, b.getInt32(0)),
+                            b.getInt32(1), segs));
+                    llvm::Value *ft = b.CreateFDiv(toF(slot), toF(
+                        b.CreateSelect(b.CreateICmpEQ(segs, b.getInt32(0)),
+                                       b.getInt32(1), segs)));
+                    llvm::Value *u0 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), uA,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       uB, uCc));
+                    llvm::Value *v0 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), vA,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       vB, vCc));
+                    llvm::Value *u1 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), uB,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       uCc, uA));
+                    llvm::Value *v1 = b.CreateSelect(
+                        b.CreateICmpEQ(edge, b.getInt32(0)), vB,
+                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
+                                       vCc, vA));
+                    llvm::Value *uE = b.CreateFAdd(
+                        u0, b.CreateFMul(ft, b.CreateFSub(u1, u0)));
+                    llvm::Value *vE = b.CreateFAdd(
+                        v0, b.CreateFMul(ft, b.CreateFSub(v1, v0)));
+                    /* n==3: three corners; n==2: centre. */
+                    llvm::Value *u3 = b.CreateSelect(
+                        b.CreateICmpEQ(rem, b.getInt32(0)), uA,
+                        b.CreateSelect(b.CreateICmpEQ(rem, b.getInt32(1)),
+                                       uB, uCc));
+                    llvm::Value *v3 = b.CreateSelect(
+                        b.CreateICmpEQ(rem, b.getInt32(0)), vA,
+                        b.CreateSelect(b.CreateICmpEQ(rem, b.getInt32(1)),
+                                       vB, vCc));
+                    llvm::Value *uPick = b.CreateSelect(
+                        is2, uC, b.CreateSelect(is3, u3, uE));
+                    llvm::Value *vPick = b.CreateSelect(
+                        is2, vC, b.CreateSelect(is3, v3, vE));
+                    uRing = b.CreateSelect(inRing, uPick, uRing);
+                    vRing = b.CreateSelect(inRing, vPick, vRing);
+                    rem = b.CreateSelect(inRing, rem, b.CreateSub(rem, ringCnt));
+                    ringN = b.CreateSelect(
+                        inRing, ringN, b.CreateSub(ringN, b.getInt32(2)));
+                }
+                uPerim = b.CreateSelect(onPerim, uEdge, uRing);
+                vPerim = b.CreateSelect(onPerim, vEdge, vRing);
+            }
+            llvm::Value *isN1 = b.CreateICmpEQ(nIn, b.getInt32(1));
+            llvm::BasicBlock *triN1BB = llvm::BasicBlock::Create(
+                ctx, "tesk_tri_n1", kfn);
+            llvm::BasicBlock *triGridBB = llvm::BasicBlock::Create(
+                ctx, "tesk_tri_grid", kfn);
+            llvm::BasicBlock *triDoneBB = llvm::BasicBlock::Create(
+                ctx, "tesk_tri_uv", kfn);
+            b.CreateCondBr(isN1, triN1BB, triGridBB);
+            llvm::Value *uN1 = nullptr, *vN1 = nullptr;
+            llvm::Value *uGrid = nullptr, *vGrid = nullptr;
+            {
+                b.SetInsertPoint(triN1BB);
+                /* Single triangle corners (1,0,0)/(0,1,0)/(0,0,1); honor cw. */
+                llvm::Value *c0 = b.CreateICmpEQ(innerId, b.getInt32(0));
+                llvm::Value *c1 = b.CreateICmpEQ(innerId, b.getInt32(1));
+                if (tu->layout_winding == MGL_AST_WINDING_CW) {
+                    /* (1,0,0), (0,0,1), (0,1,0) */
+                    uN1 = b.CreateSelect(
+                        c0, llvm::ConstantFP::get(f32, 1.0),
+                        llvm::ConstantFP::get(f32, 0.0));
+                    vN1 = b.CreateSelect(
+                        c1, llvm::ConstantFP::get(f32, 0.0),
+                        b.CreateSelect(
+                            c0, llvm::ConstantFP::get(f32, 0.0),
+                            llvm::ConstantFP::get(f32, 1.0)));
+                } else {
+                    uN1 = b.CreateSelect(
+                        c0, llvm::ConstantFP::get(f32, 1.0),
+                        llvm::ConstantFP::get(f32, 0.0));
+                    vN1 = b.CreateSelect(
+                        c1, llvm::ConstantFP::get(f32, 1.0),
+                        llvm::ConstantFP::get(f32, 0.0));
+                }
+                b.CreateBr(triDoneBB);
+            }
+            {
+                b.SetInsertPoint(triGridBB);
+                /* Avoid collinear n×n probes (vertex_ordering).  Tiny CCW/CW
+                 * triangles strictly inside the simplex (u+v+ε < 1). */
+                llvm::Value *prim = b.CreateUDiv(innerId, b.getInt32(3));
+                llvm::Value *slot = b.CreateURem(innerId, b.getInt32(3));
+                llvm::Value *i = b.CreateURem(prim, nIn);
+                llvm::Value *j = b.CreateUDiv(prim, nIn);
+                j = b.CreateSelect(
+                    b.CreateICmpUGE(j, nIn),
+                    b.CreateSub(nIn, b.getInt32(1)), j);
+                llvm::Value *cu = b.CreateFMul(
+                    llvm::ConstantFP::get(f32, 0.35),
+                    b.CreateFDiv(
+                        b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(nIn)));
+                llvm::Value *cv = b.CreateFMul(
+                    llvm::ConstantFP::get(f32, 0.35),
+                    b.CreateFDiv(
+                        b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
+                        toF(nIn)));
+                llvm::Value *eps = llvm::ConstantFP::get(f32, 0.02);
+                llvm::Value *u0t = b.CreateFAdd(cu, llvm::ConstantFP::get(f32, 0.1));
+                llvm::Value *v0t = b.CreateFAdd(cv, llvm::ConstantFP::get(f32, 0.1));
+                llvm::Value *u1t = b.CreateFAdd(u0t, eps);
+                llvm::Value *v1t = v0t;
+                llvm::Value *u2t = u0t;
+                llvm::Value *v2t = b.CreateFAdd(v0t, eps);
+                if (tu->layout_winding == MGL_AST_WINDING_CW) {
+                    std::swap(u1t, u2t);
+                    std::swap(v1t, v2t);
+                }
+                llvm::Value *s0 = b.CreateICmpEQ(slot, b.getInt32(0));
+                llvm::Value *s1 = b.CreateICmpEQ(slot, b.getInt32(1));
+                uGrid = b.CreateSelect(
+                    s0, u0t, b.CreateSelect(s1, u1t, u2t));
+                vGrid = b.CreateSelect(
+                    s0, v0t, b.CreateSelect(s1, v1t, v2t));
+                b.CreateBr(triDoneBB);
+            }
+            b.SetInsertPoint(triDoneBB);
+            llvm::PHINode *uIn = b.CreatePHI(f32, 2, "tesk_u_in");
+            llvm::PHINode *vIn = b.CreatePHI(f32, 2, "tesk_v_in");
+            uIn->addIncoming(uN1, triN1BB);
+            uIn->addIncoming(uGrid, triGridBB);
+            vIn->addIncoming(vN1, triN1BB);
+            vIn->addIncoming(vGrid, triGridBB);
+            if (uPerim) {
+                u = b.CreateSelect(anyOuter, uPerim, uIn);
+                v = b.CreateSelect(anyOuter, vPerim, vIn);
+            } else {
+                u = uIn;
+                v = vIn;
+            }
         }
         llvm::Value *uv = llvm::UndefValue::get(llvm::FixedVectorType::get(
             f32, 3));
-        llvm::Value *w = (tu->layout_primitive == MGL_AST_TES_TRIANGLES)
-            ? b.CreateFSub(
-                  llvm::ConstantFP::get(f32, 1.0),
-                  b.CreateFAdd(u, v))
-            : llvm::ConstantFP::get(f32, 0.0);
+        llvm::Value *w = nullptr;
+        if (tu->layout_primitive == MGL_AST_TES_TRIANGLES) {
+            /* XFB-forced triangle compute uses a rectangular n×n probe that
+             * can land outside the simplex (u+v>1 → w<0).  Pull overflow
+             * toward the interior (not onto the edge): projecting to w=0
+             * invents outer-edge vertices that depend on inner level and
+             * breaks CTS invariance_rule2. */
+            llvm::Value *zero = llvm::ConstantFP::get(f32, 0.0);
+            llvm::Value *one = llvm::ConstantFP::get(f32, 1.0);
+            llvm::Value *inside = llvm::ConstantFP::get(f32, 0.999f);
+            u = b.CreateSelect(b.CreateFCmpOLT(u, zero), zero, u);
+            v = b.CreateSelect(b.CreateFCmpOLT(v, zero), zero, v);
+            llvm::Value *sum = b.CreateFAdd(u, v);
+            llvm::Value *overflow = b.CreateFCmpOGT(sum, one);
+            llvm::Value *inv = b.CreateFDiv(inside, sum);
+            llvm::Value *scale =
+                b.CreateSelect(overflow, inv, one);
+            u = b.CreateFMul(u, scale);
+            v = b.CreateFMul(v, scale);
+            w = b.CreateFSub(one, b.CreateFAdd(u, v));
+            w = b.CreateSelect(b.CreateFCmpOLT(w, zero), zero, w);
+            w = b.CreateSelect(b.CreateFCmpOGT(w, one), one, w);
+        } else {
+            w = llvm::ConstantFP::get(f32, 0.0);
+        }
         cg.tessCoord = b.CreateInsertElement(
             b.CreateInsertElement(
                 b.CreateInsertElement(uv, u, b.getInt32(0)), v, b.getInt32(1)),
             w, b.getInt32(2));
     }
     emitStmt(cg, mainDecl->body, &mod, &locals);
-
     if (isTCS && cg.tessFactorPtr && cg.invocationPos && cg.patchPos &&
         !b.GetInsertBlock()->getTerminator()) {
         /* Metal's tessellation-factor record is six half values: four edge
@@ -9229,36 +15482,50 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 ? cg.b->CreateExtractElement(cg.workGroupPos, cg.b->getInt32(0))
                 : cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
         llvm::Value *factorOff = b.CreateMul(
-            b.CreateZExt(patch, b.getInt64Ty()), b.getInt64(12));
+            b.CreateZExt(patch, b.getInt64Ty()),
+            b.getInt64(MGL_AIR_TESS_FACTOR_RECORD_BYTES));
         llvm::Value *factorBase = b.CreateGEP(
             b.getInt8Ty(), cg.tessFactorPtr, factorOff);
         llvm::Type *halfTy = llvm::Type::getHalfTy(ctx);
+        llvm::Type *f32Ty = llvm::Type::getFloatTy(ctx);
         auto factor = [&](const char *name, unsigned count, unsigned index,
                           float fallback) {
             llvm::Value *arr = cg.lvalues.count(name)
                 ? cg.lvalues[name]
                 : llvm::UndefValue::get(llvm::ArrayType::get(
-                      llvm::Type::getFloatTy(ctx), count));
+                      f32Ty, count));
             llvm::Value *v = b.CreateExtractValue(arr, index);
             if (llvm::isa<llvm::UndefValue>(v))
-                v = llvm::ConstantFP::get(llvm::Type::getFloatTy(ctx), fallback);
+                v = llvm::ConstantFP::get(f32Ty, fallback);
             return v;
         };
         for (unsigned i = 0; i < 4; i++) {
+            llvm::Value *fv = factor("gl_TessLevelOuter", 4, i, 1.0f);
             llvm::Value *p = b.CreateGEP(b.getInt8Ty(), factorBase,
                                          b.getInt64(i * 2));
             p = b.CreateBitCast(p, halfTy->getPointerTo(1));
-            b.CreateAlignedStore(b.CreateFPTrunc(
-                factor("gl_TessLevelOuter", 4, i, 1.0f), halfTy), p,
+            b.CreateAlignedStore(b.CreateFPTrunc(fv, halfTy), p,
                 llvm::Align(2));
+            llvm::Value *ep = b.CreateBitCast(
+                b.CreateGEP(b.getInt8Ty(), factorBase,
+                            b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET +
+                                       i * 4)),
+                f32Ty->getPointerTo(1));
+            b.CreateAlignedStore(fv, ep, llvm::Align(4));
         }
         for (unsigned i = 0; i < 2; i++) {
+            llvm::Value *fv = factor("gl_TessLevelInner", 2, i, 1.0f);
             llvm::Value *p = b.CreateGEP(b.getInt8Ty(), factorBase,
                                          b.getInt64(8 + i * 2));
             p = b.CreateBitCast(p, halfTy->getPointerTo(1));
-            b.CreateAlignedStore(b.CreateFPTrunc(
-                factor("gl_TessLevelInner", 2, i, 1.0f), halfTy), p,
+            b.CreateAlignedStore(b.CreateFPTrunc(fv, halfTy), p,
                 llvm::Align(2));
+            llvm::Value *ep = b.CreateBitCast(
+                b.CreateGEP(b.getInt8Ty(), factorBase,
+                            b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET +
+                                       16 + i * 4)),
+                f32Ty->getPointerTo(1));
+            b.CreateAlignedStore(fv, ep, llvm::Align(4));
         }
         b.CreateBr(doneBB);
         b.SetInsertPoint(doneBB);
@@ -9279,8 +15546,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         storeGeometryPosition(cg, b.getInt32(0), pos);
         llvm::Value *pointSize = cg.lvalues.count("gl_PointSize")
-            ? cg.lvalues["gl_PointSize"] : llvm::UndefValue::get(
-                llvm::Type::getFloatTy(ctx));
+            ? cg.lvalues["gl_PointSize"]
+            : llvm::ConstantFP::get(llvm::Type::getFloatTy(ctx), 1.0);
         storeGeometryPointSize(cg, b.getInt32(0), pointSize);
         storeTessComputeVaryings(cg, b.getInt32(0));
         /* Post-tess cull distances (GL 4.6 §13.6.1): the TES-written
@@ -9293,6 +15560,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (cg.lvalues.count("gl_CullDistance")) {
             storeGeometryCullDistances(cg, b.getInt32(0),
                                        cg.lvalues["gl_CullDistance"]);
+        }
+        if (cg.lvalues.count("gl_ClipDistance")) {
+            storeGeometryClipDistances(cg, b.getInt32(0),
+                                       cg.lvalues["gl_ClipDistance"]);
         }
         if (cg.xfbOutPtr) {
             /* Transform-feedback stream (slot 31): one complete stage-out
@@ -9495,6 +15766,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                     el = b.CreateExtractValue(base, k);
                                 rec = b.CreateInsertValue(rec, el, ri++);
                             }
+                        } else if (var->type.isMatrix()) {
+                            for (uint32_t c = 0; c < var->type.cols; c++) {
+                                llvm::Value *col = base;
+                                if (base->getType()->isArrayTy())
+                                    col = b.CreateExtractValue(base, c);
+                                rec = b.CreateInsertValue(rec, col, ri++);
+                            }
                         } else {
                             rec = b.CreateInsertValue(rec, base, ri++);
                         }
@@ -9542,23 +15820,61 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 b.CreateMul(vid, b.getInt64(recStride)));
             p = b.CreateBitCast(p, recTy->getPointerTo(1));
             b.CreateAlignedStore(rec, p, llvm::Align(16));
+            if (isTessCapture && cg.lvalues.count("gl_ClipDistance")) {
+                llvm::Type *clipTy = llvm::ArrayType::get(
+                    llvm::Type::getFloatTy(ctx),
+                    MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT);
+                llvm::Value *recordBase = b.CreateGEP(
+                    b.getInt8Ty(), cg.captureBuf,
+                    b.CreateMul(vid, b.getInt64(recStride)));
+                llvm::Value *clipPtr = b.CreateBitCast(
+                    b.CreateGEP(
+                        b.getInt8Ty(), recordBase,
+                        b.getInt64(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET)),
+                    clipTy->getPointerTo(1));
+                b.CreateAlignedStore(cg.lvalues["gl_ClipDistance"], clipPtr,
+                                    llvm::Align(4));
+            }
             if (isTessCapture) {
                 llvm::Value *recordBase = b.CreateGEP(
                     b.getInt8Ty(), cg.captureBuf,
                     b.CreateMul(vid, b.getInt64(recStride)));
+                auto storeRecordSlot = [&](uint32_t loc, MType slotTy,
+                                           llvm::Value *slotVal) {
+                    if (varyingNeedsFloatRecordCarrier(slotTy)) {
+                        slotVal = encodeFloatCarrier(cg, slotVal,
+                                                     slotTy.scalar);
+                        slotTy = floatCarrierType(slotTy);
+                    }
+                    llvm::Type *storeTy = llvmType(slotTy, ctx);
+                    if (slotVal->getType() != storeTy) {
+                        if (storeTy->isIntOrIntVectorTy() &&
+                            slotVal->getType()->isIntOrIntVectorTy())
+                            slotVal = b.CreateBitCast(slotVal, storeTy);
+                        else
+                            slotVal = coerceScalar(cg, slotVal,
+                                                   slotTy.scalar);
+                    }
+                    llvm::Value *vp = b.CreateGEP(
+                        b.getInt8Ty(), recordBase,
+                        b.getInt64(MGL_AIR_PER_VERTEX_STRIDE + loc * 16u));
+                    vp = b.CreateBitCast(vp, storeTy->getPointerTo(1));
+                    b.CreateAlignedStore(slotVal, vp, llvm::Align(4));
+                };
                 for (VarSym *varying : cg.varyings) {
                     if (!varying || varying->location == UINT32_MAX) continue;
                     /* Plain stage-in arrays index by primitive vertex, so
                      * each per-vertex record stores element 0 only.
                      * Interface-block array members carry one distinct
                      * value per element: store each element in its own
-                     * consecutive location slot. */
+                     * consecutive location slot.  Matrices are one column
+                     * per location (GL 4.6 §4.4.1) — packing <2 x float>
+                     * columns into a single 16B slot breaks column loads. */
                     MType mt = varying->type;
                     const bool wasArray = mt.isArray() && mt.arr > 0;
                     const bool blockArray =
                         wasArray && !varying->blockName.empty();
                     if (wasArray) mt.arr = 0;
-                    llvm::Type *varyingTy = llvmType(mt, ctx);
                     llvm::Value *value = cg.lvalues.count(varying->name)
                         ? cg.lvalues[varying->name]
                         : llvm::UndefValue::get(llvmType(varying->type, ctx));
@@ -9571,25 +15887,29 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                 value->getType()->isArrayTy()
                                     ? b.CreateExtractValue(value, ei)
                                     : value;
-                            llvm::Value *vp = b.CreateGEP(
-                                b.getInt8Ty(), recordBase,
-                                b.getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                                           (varying->location + ei) * 16u));
-                            vp = b.CreateBitCast(
-                                vp, varyingTy->getPointerTo(1));
-                            b.CreateAlignedStore(elem, vp, llvm::Align(4));
+                            storeRecordSlot(varying->location + ei, mt, elem);
                         }
                         continue;
                     }
-                    llvm::Value *vp = b.CreateGEP(
-                        b.getInt8Ty(), recordBase,
-                        b.getInt64(MGL_AIR_PER_VERTEX_STRIDE +
-                                   varying->location * 16u));
-                    vp = b.CreateBitCast(vp, varyingTy->getPointerTo(1));
-                    b.CreateAlignedStore(value, vp, llvm::Align(4));
+                    if (mt.isMatrix() && mt.cols > 0) {
+                        MType colTy = matrixColumnType(mt);
+                        for (uint32_t c = 0; c < mt.cols; c++) {
+                            llvm::Value *col =
+                                value->getType()->isArrayTy()
+                                    ? b.CreateExtractValue(value, c)
+                                    : value;
+                            storeRecordSlot(varying->location + c, colTy,
+                                            col);
+                        }
+                        continue;
+                    }
+                    storeRecordSlot(varying->location, mt, value);
                 }
             }
-            b.CreateRetVoid();
+            if (isTessCapture || isCullCapture)
+                b.CreateRet(assembleReturn(cg));
+            else
+                b.CreateRetVoid();
         } else {
             b.CreateRet(assembleReturn(cg));
         }
@@ -9619,26 +15939,41 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
              * explicit attribute locations (the reflector said N, the
              * metallib read [[attribute(k)]]). */
             uint32_t attrLoc = v.location;
-            if (attrLoc == UINT32_MAX) {
+            if (!v.locationExplicit) {
                 uint32_t want = airAttribLocation(v.name.c_str(),
                                                   attrib_names);
-                attrLoc = (want != UINT32_MAX) ? want : nextFreeAttrLoc;
+                if (want != UINT32_MAX)
+                    attrLoc = want;
+                else if (attrLoc == UINT32_MAX)
+                    attrLoc = nextFreeAttrLoc;
+            } else if (attrLoc == UINT32_MAX) {
+                attrLoc = nextFreeAttrLoc;
             }
-            std::vector<llvm::Metadata *> elems = {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
-                llvm::MDString::get(ctx, "air.vertex_input"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), attrLoc)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(v.type)),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)};
-            argNodes.push_back(llvm::MDNode::get(ctx, elems));
-            nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc + 1u);
+            const uint32_t n = varyingLocationSpan(v.type);
+            MType el = v.type;
+            if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
+            else if (v.type.isMatrix()) el = matrixColumnType(v.type);
+            el = attrMetalIfaceType(el);
+            for (uint32_t k = 0; k < n; k++) {
+                std::string argName = n > 1u
+                    ? v.name + "[" + std::to_string(k) + "]"
+                    : v.name;
+                std::vector<llvm::Metadata *> elems = {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                    llvm::MDString::get(ctx, "air.vertex_input"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), attrLoc + k)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, mslTypeName(el)),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, argName)};
+                argNodes.push_back(llvm::MDNode::get(ctx, elems));
+            }
+            nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc + n);
         }
     }
     if (isCapture) {
@@ -9719,9 +16054,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     idx += 2u * elements;
                 }
             }
-            for (VarSym &v : syms)
+            for (VarSym &v : syms) {
                 if (v.kind == VarSym::IMAGE)
-                    idx++;
+                    idx += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+            }
             for (VarSym &v : syms) {
                 if (isVS || isTES || isKernel || v.kind != VarSym::VARYING)
                     continue;
@@ -9766,48 +16102,66 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* SSBO buffers: independent writable device buffers (air.read_write),
      * one parameter per instance. */
     {
-        uint32_t loc = (isCapture ? 1 : 0) +
-                       ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       (isCapture ? 0 : attrCount) + userBufferLocationBase;
+        /* location_index matches reflection (attrs + plain pack reserved).
+         * LLVM arg index still skips attrs/pack only on VS/TES/kernel —
+         * FS keeps SSBOs as leading args. */
+        uint32_t loc =
+            plainBufMetalSlots + attrCount + userBufferLocationBase;
         uint32_t ssboArg = (isCapture ? 1 : 0) +
                            ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
                            (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
             const MGLIRSymbol *sb = findSymbol(&mod, v.name.c_str());
-            uint32_t bsize = sb ? sb->type->layout.size : 0;
-            argNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), ssboArg++)),
-                llvm::MDString::get(ctx, "air.buffer"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), loc++)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, isVS ? "air.read" : "air.read_write"),
-                llvm::MDString::get(ctx, "air.address_space"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.arg_type_size"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), bsize)),
-                llvm::MDString::get(ctx, "air.arg_type_align_size"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 16)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, v.name),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)}));
+            uint32_t nelems =
+                uniformBlockElementCount(sb ? sb->type : nullptr);
+            const MGLIRType *elemTy = sb ? sb->type : nullptr;
+            if (elemTy && elemTy->kind == MGLIR_TYPE_ARRAY)
+                elemTy = elemTy->elem_type;
+            uint32_t bsize = elemTy ? elemTy->layout.size : 0;
+            for (uint32_t k = 0; k < nelems; k++) {
+                std::string argName = v.name;
+                if (nelems > 1u)
+                    argName += "[" + std::to_string(k) + "]";
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), ssboArg++)),
+                    llvm::MDString::get(ctx, "air.buffer"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), loc++)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.read_write"),
+                    llvm::MDString::get(ctx, "air.address_space"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.arg_type_size"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), bsize)),
+                    llvm::MDString::get(ctx, "air.arg_type_align_size"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 16)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, argName),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, argName)}));
+            }
         }
     }
     /* Uniform blocks: independent read-only device buffers. */
     {
-        uint32_t loc = (isCapture ? 1 : 0) +
-                       ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       ssboCount + (isCapture ? 0 : attrCount) +
-                       userBufferLocationBase;
-        uint32_t uboArg = loc;
+        /* location_index must match mglAirReflectModule (attrs reserved).
+         * Capture used to set loc=1 when attrCount==0, so the draw path
+         * bound the UBO at reflected slot 0 while the tess-capture
+         * metallib read slot 1 — VS UBO reads failed whenever GS/tess
+         * capture ran without vertex attributes (420pack binding_uniform). */
+        uint32_t loc =
+            plainBufMetalSlots +
+            ssboCount + attrCount + userBufferLocationBase;
+        uint32_t uboArg = (isCapture ? 1 : 0) +
+                          ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+                          ssboCount + (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::UBO) continue;
             const MGLIRSymbol *sb = findSymbol(&mod, v.name.c_str());
@@ -9848,11 +16202,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     /* Atomic counter buffers: one device buffer per atomic_uint instance. */
     {
-        uint32_t loc = (isCapture ? 1 : 0) +
-                       ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
-                       ssboCount + uboCount + (isCapture ? 0 : attrCount) +
-                       userBufferLocationBase;
-        uint32_t acArg = loc;
+        uint32_t loc =
+            plainBufMetalSlots +
+            ssboCount + uboCount + attrCount + userBufferLocationBase;
+        uint32_t acArg = (isCapture ? 1 : 0) +
+                         ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) +
+                         ssboCount + uboCount + (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATOMIC_COUNTER) continue;
             const MGLIRSymbol *ac = findSymbol(&mod, v.name.c_str());
@@ -9919,13 +16274,28 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                           (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::TEXTURE) continue;
-            const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
-            const MGLIRType *samplerType = tss ? tss->type : nullptr;
+            const MGLIRType *samplerType = v.opaqueType;
+            if (!samplerType) {
+                const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
+                samplerType = tss ? tss->type : nullptr;
+            }
             while (samplerType && samplerType->kind == MGLIR_TYPE_ARRAY)
                 samplerType = samplerType->elem_type;
             bool is3d = samplerType &&
                         samplerType->kind == MGLIR_TYPE_SAMPLER &&
                         samplerType->tex_kind == MGLIR_TEX_3D;
+            bool is2dArray = samplerType &&
+                             samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                             (samplerType->tex_kind == MGLIR_TEX_2D_ARRAY ||
+                              samplerType->tex_kind == MGLIR_TEX_1D_ARRAY ||
+                              samplerType->tex_kind == MGLIR_TEX_2D_MS ||
+                              samplerType->tex_kind == MGLIR_TEX_2D_MS_ARRAY);
+            bool isCube = samplerType &&
+                          samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                          samplerType->tex_kind == MGLIR_TEX_CUBE;
+            bool isCubeArray = samplerType &&
+                               samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                               samplerType->tex_kind == MGLIR_TEX_CUBE_ARRAY;
             const char *texelName = "float";
             if (samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER) {
                 if (samplerType->tex_storage == MGLIR_SCALAR_INT)
@@ -9933,7 +16303,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 else if (samplerType->tex_storage == MGLIR_SCALAR_UINT)
                     texelName = "uint";
             }
-            std::string sampledType = is3d ? "texture3d<" : "texture2d<";
+            /* Match IMAGE metadata / sample_texture_cube*: samplerCube must
+             * be texturecube, not texture2d (else Metal PSO compile fails). */
+            std::string sampledType = is3d ? "texture3d<"
+                                  : is2dArray ? "texture2d_array<"
+                                  : isCubeArray ? "texturecube_array<"
+                                  : isCube ? "texturecube<"
+                                              : "texture2d<";
             sampledType += texelName;
             sampledType += ", sample>";
             uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
@@ -9972,40 +16348,57 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         for (VarSym &v : syms) {
             if (v.kind != VarSym::IMAGE) continue;
-            const MGLIRSymbol *iss = findSymbol(&mod, v.name.c_str());
-            bool is3d = iss && iss->type->kind == MGLIR_TYPE_IMAGE &&
-                        iss->type->tex_kind == MGLIR_TEX_3D;
-            bool is2dArray = iss && iss->type->kind == MGLIR_TYPE_IMAGE &&
-                             iss->type->tex_kind == MGLIR_TEX_2D_ARRAY;
-            const char *imageType = is3d
-                ? "texture3d<float, access::read_write>"
-                : "texture2d<float, access::read_write>";
-            if (is2dArray) {
-                imageType = iss->type->tex_storage == MGLIR_SCALAR_INT
-                    ? "texture2d_array<int, read_write>"
-                    : iss->type->tex_storage == MGLIR_SCALAR_UINT
-                        ? "texture2d_array<uint, read_write>"
-                        : "texture2d_array<float, read_write>";
-            } else if (!is3d && iss) {
-                if (iss->type->tex_storage == MGLIR_SCALAR_INT)
-                    imageType = "texture2d<int, access::read_write>";
-                else if (iss->type->tex_storage == MGLIR_SCALAR_UINT)
-                    imageType = "texture2d<uint, access::read_write>";
+            const MGLIRType *imgTy =
+                imageElementType(findSymbol(&mod, v.name.c_str()));
+            MGLIRTexKind itk = imgTy ? imgTy->tex_kind : MGLIR_TEX_2D;
+            MGLIRScalar ist =
+                imgTy ? imgTy->tex_storage : MGLIR_SCALAR_FLOAT;
+            const char *accessTy = "float";
+            if (ist == MGLIR_SCALAR_INT) accessTy = "int";
+            else if (ist == MGLIR_SCALAR_UINT) accessTy = "uint";
+            const char *dimTy = "texture2d";
+            switch (itk) {
+            case MGLIR_TEX_3D: dimTy = "texture3d"; break;
+            case MGLIR_TEX_2D_ARRAY:
+            case MGLIR_TEX_1D_ARRAY:
+            case MGLIR_TEX_2D_MS:
+            case MGLIR_TEX_2D_MS_ARRAY:
+                dimTy = "texture2d_array";
+                break;
+            case MGLIR_TEX_CUBE: dimTy = "texturecube"; break;
+            case MGLIR_TEX_CUBE_ARRAY: dimTy = "texturecube_array"; break;
+            case MGLIR_TEX_BUFFER:
+                /* Matches TEXBUFFER CREATE fallback (packed as texture2d). */
+                dimTy = "texture2d";
+                break;
+            case MGLIR_TEX_1D:
+            case MGLIR_TEX_2D:
+            case MGLIR_TEX_2D_RECT:
+            default: dimTy = "texture2d"; break;
             }
-            argNodes.push_back(llvm::MDNode::get(ctx, {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), texArg++)),
-                llvm::MDString::get(ctx, "air.texture"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), texLoc++)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.read_write"),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, imageType),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)}));
+            char imageType[96];
+            snprintf(imageType, sizeof(imageType),
+                     "%s<%s, access::read_write>", dimTy, accessTy);
+            uint32_t elements = v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
+            for (uint32_t element = 0; element < elements; element++) {
+                std::string elementName = v.name;
+                if (elements > 1u)
+                    elementName += "[" + std::to_string(element) + "]";
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), texArg++)),
+                    llvm::MDString::get(ctx, "air.texture"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), texLoc++)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.read_write"),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, imageType),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elementName)}));
+            }
         }
     }
     if (isVS && isCapture) {
@@ -10018,24 +16411,42 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                             (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount +
                             imageCount;
         uint32_t attrLoc = 0;
+        uint32_t nextFreeAttrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
+            /* Prefer bindAttribLocation, then explicit/IR location, then
+             * declaration order — same priority as non-capture + reflector. */
             uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
-            if (want != UINT32_MAX) attrLoc = want;
-            std::vector<llvm::Metadata *> elems = {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
-                llvm::MDString::get(ctx, "air.vertex_input"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), attrLoc++)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(v.type)),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)};
-            argNodes.push_back(llvm::MDNode::get(ctx, elems));
+            if (want == UINT32_MAX)
+                want = v.location;
+            if (want == UINT32_MAX)
+                want = nextFreeAttrLoc;
+            attrLoc = want;
+            const uint32_t n = varyingLocationSpan(v.type);
+            MType el = v.type;
+            if (v.type.isArray() && v.type.arr > 0) el.arr = 0;
+            else if (v.type.isMatrix()) el = matrixColumnType(v.type);
+            el = attrMetalIfaceType(el);
+            for (uint32_t k = 0; k < n; k++) {
+                std::string argName = n > 1u
+                    ? v.name + "[" + std::to_string(k) + "]"
+                    : v.name;
+                std::vector<llvm::Metadata *> elems = {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                    llvm::MDString::get(ctx, "air.vertex_input"),
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), attrLoc++)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, mslTypeName(el)),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, argName)};
+                argNodes.push_back(llvm::MDNode::get(ctx, elems));
+            }
+            nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc);
         }
     }
     if (isTCS) {
@@ -10221,23 +16632,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "patchId")}));
     } else if (!isKernel) {
         auto emitFSVarying = [&](const std::string &tagName,
-                                 const MType &mt, uint32_t argIdx) {
-            bool carrier = varyingUsesFloatCarrier(mt, has_gs);
-            const MType &iface = carrier ? floatCarrierType(mt) : mt;
+                                 const MType &mt, uint32_t argIdx,
+                                 bool forceFlat = false) {
+            const bool flat = forceFlat || varyingUsesFloatCarrier(mt, has_gs) ||
+                                !scalarIsFloat(mt.scalar);
+            MType iface = mt;
+            if (varyingUsesFloatCarrier(mt, has_gs) || forceFlat) {
+                MType src = mt;
+                if (forceFlat && scalarIsFloat(mt.scalar))
+                    src = MType{MGLIR_SCALAR_FLOAT};
+                iface = floatCarrierType(src);
+            }
             std::vector<llvm::Metadata *> elems = {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), argIdx)),
                 llvm::MDString::get(ctx, "air.fragment_input"),
+                llvm::MDString::get(ctx, airGenerated(tagName, iface)),
+                llvm::MDString::get(ctx, flat ? "air.flat" : "air.center"),
                 llvm::MDString::get(ctx,
-                                    airGenerated(tagName, iface)),
-                llvm::MDString::get(ctx,
-                                    carrier || !scalarIsFloat(mt.scalar)
-                                        ? "air.flat"
-                                        : "air.center"),
-                llvm::MDString::get(ctx,
-                                    carrier || !scalarIsFloat(mt.scalar)
-                                        ? "air.no_perspective"
-                                        : "air.perspective"),
+                                    flat ? "air.no_perspective"
+                                         : "air.perspective"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, mslTypeName(iface)),
                 llvm::MDString::get(ctx, "air.arg_name"),
@@ -10252,19 +16666,49 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 MType el = v.type;
                 el.arr = 0;
                 uint32_t n = (uint32_t)v.type.arr;
-                std::string base = v.name;
                 for (uint32_t k = 0; k < n; k++) {
-                    std::string elName =
-                        base + "_elm" + std::to_string(k);
+                    std::string elName = varyingIfaceTag(v, k, has_gs);
                     emitFSVarying(elName, el, mArgSlot++);
                 }
+            } else if (v.type.isMatrix()) {
+                MType col = matrixColumnType(v.type);
+                for (uint32_t c = 0; c < v.type.cols; c++) {
+                    std::string colName = varyingIfaceTag(v, c, has_gs);
+                    emitFSVarying(colName, col, mArgSlot++);
+                }
             } else {
-                emitFSVarying(v.name, v.type, mArgSlot++);
+                std::string tag = varyingIfaceTag(v, 0, has_gs);
+                if (uintUsesSplitFloatCarrier(v.type, has_gs)) {
+                    emitFSVarying(tag + "_lo", v.type, mArgSlot++, true);
+                    emitFSVarying(tag + "_hi", v.type, mArgSlot++, true);
+                } else {
+                    emitFSVarying(tag, v.type, mArgSlot++);
+                }
+            }
+        }
+        if (usesFragmentClipDistance) {
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < activeClipCount; i++) {
+                std::string elName =
+                    "gl_ClipDistance_elm" + std::to_string(i);
+                emitFSVarying(elName, floatTy, mArgSlot++, true);
+            }
+        }
+        if (usesFragmentCullDistance) {
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < activeCullCount; i++) {
+                std::string elName =
+                    "gl_CullDistance_elm" + std::to_string(i);
+                emitFSVarying(elName, floatTy, mArgSlot++, true);
             }
         }
         if (usesFragCoord || usesFrontFacing || usesPointCoord ||
             usesPrimitiveId || usesLayer || usesViewportIndex ||
-            usesSampleID) {
+            usesSampleID || usesSamplePosition || usesSampleMaskIn ||
+            needParamsBuffer || usesFragmentCullDistance ||
+            usesFragmentClipDistance) {
             /* Fragment builtins sit after the varyings and the optional
              * uniform buffer in the arg order; skip that slot once. */
             if (hasBuffer) mArgSlot++;
@@ -10306,21 +16750,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (usesPrimitiveId) {
             if (stage == MGL_STAGE_FRAGMENT && has_gs) {
                 /* GS expansion path: the id arrives as a flat float carrier
-                 * written by the passthrough vertex function, which declares
-                 * its output as vertex_output + generated(<name>f).  The FS
-                 * input must pair with that exact generated() name — a
-                 * location-indexed stage_input here crashes Apple's compiler
-                 * once the input is actually read. */
-                /* Base name must match the passthrough vertex function's
-                 * output variable ("mgl_primitive_id", see
-                 * MGLRenderer+RenderPass.m) so the generated() names pair. */
+                 * from the passthrough VS, which declares
+                 *   layout(location = MGL_AIR_PRIMITIVE_ID_LOCATION)
+                 *   flat out float mgl_primitive_id;
+                 * Per varyingIfaceTag(), that output is tagged mgl_loc_N —
+                 * not the GLSL name — so the FS must use the same location
+                 * tag (see the has_gs forceLocationTag comment above). */
                 MType carrierType;
+                carrierType.scalar = MGLIR_SCALAR_FLOAT;
+                const std::string primTag =
+                    "mgl_loc_" +
+                    std::to_string((unsigned)MGL_AIR_PRIMITIVE_ID_LOCATION);
                 argNodes.push_back(llvm::MDNode::get(ctx, {
                     llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                         llvm::Type::getInt32Ty(ctx), mArgSlot++)),
                     llvm::MDString::get(ctx, "air.fragment_input"),
                     llvm::MDString::get(
-                        ctx, airGenerated("mgl_primitive_id", carrierType)),
+                        ctx, airGenerated(primTag, carrierType)),
                     llvm::MDString::get(ctx, "air.flat"),
                     llvm::MDString::get(ctx, "air.arg_type_name"),
                     llvm::MDString::get(ctx, "float"),
@@ -10357,7 +16803,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_ViewportIndex")}));
         }
-        if (usesSampleID) {
+        if (needSampleID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot++)),
@@ -10367,12 +16813,45 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_SampleID")}));
         }
+        if (usesSampleMaskIn) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.sample_mask"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_SampleMaskIn")}));
+        }
+        if (needParamsBuffer) {
+            llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(i32, mArgSlot++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    i32, kMGLFragCoordParamsBufferIndex)),
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(i32, 1)),
+                llvm::MDString::get(ctx, "air.read"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(
+                    llvm::ConstantInt::get(i32, 1)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "device uchar*"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, needFragCoordParams
+                                            ? "mgl_fragcoord_params"
+                                            : "mgl_sample_params")}));
+        }
     }
     if (isKernel) {
         /* Kernel thread position: [[thread_position_in_grid]] as uint3. */
+        uint32_t kSlot = mArgSlot;
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx), mArgSlot)),
+                llvm::Type::getInt32Ty(ctx), kSlot++)),
             llvm::MDString::get(ctx, isTCS ? "air.thread_position_in_threadgroup"
                                            : "air.thread_position_in_grid"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
@@ -10380,20 +16859,65 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, isTCS ? "thread_position_in_threadgroup"
                                            : "thread_position_in_grid")}));
+        if (usesLocalInvocation && !isTCS) {
+            if (usesLocalInvocationID) {
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), kSlot++)),
+                    llvm::MDString::get(ctx,
+                                        "air.thread_position_in_threadgroup"),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "uint3"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx,
+                                        "thread_position_in_threadgroup")}));
+            }
+            if (usesLocalInvocationIndex) {
+                argNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), kSlot++)),
+                    llvm::MDString::get(ctx, "air.thread_index_in_threadgroup"),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "uint"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, "thread_index_in_threadgroup")}));
+            }
+        }
         if (isTCS || isTESCompute || usesWorkGroupID) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), mArgSlot + 1)),
+                    llvm::Type::getInt32Ty(ctx), kSlot++)),
                 llvm::MDString::get(ctx, "air.threadgroup_position_in_grid"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, "uint3"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "threadgroup_position_in_grid")}));
         }
+        if (usesNumWorkGroups) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), kSlot++)),
+                llvm::MDString::get(ctx, "air.threadgroups_per_grid"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint3"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "threadgroups_per_grid")}));
+        }
     }
 
     std::vector<llvm::Metadata *> outNodes;   /* outputs / render targets */
-    if ((isVS || (isTES && !isTESCompute)) && !isCapture) {
+    if (isTessCapture || isCullCapture) {
+        /* Both capture kernels return float4 position: AGX rejects a
+         * rasterization-enabled pipeline whose vertex function returns
+         * void (or lacks [[position]]).  The real XFB/cull payload travels
+         * through the slot-29 record buffer. */
+        outNodes.push_back(llvm::MDNode::get(ctx, {
+            llvm::MDString::get(ctx, "air.position"),
+            llvm::MDString::get(ctx, "air.arg_type_name"),
+            llvm::MDString::get(ctx, "float4"),
+            llvm::MDString::get(ctx, "air.arg_name"),
+            llvm::MDString::get(ctx, "position")}));
+    } else if ((isVS || (isTES && !isTESCompute)) && !isCapture) {
         outNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::MDString::get(ctx, "air.position"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
@@ -10420,6 +16944,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "float"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "gl_ClipDistance")}));
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < MGL_MAX_CLIP_DISTANCES; i++) {
+                std::string elName =
+                    "gl_ClipDistance_elm" + std::to_string(i);
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.vertex_output"),
+                    llvm::MDString::get(ctx, airGenerated(elName, floatTy)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "float"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elName)}));
+            }
+        }
+        if (usesCullDistancePassthrough) {
+            MType floatTy;
+            floatTy.scalar = MGLIR_SCALAR_FLOAT;
+            for (uint32_t i = 0; i < activeCullCount; i++) {
+                std::string elName =
+                    "gl_CullDistance_elm" + std::to_string(i);
+                outNodes.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.vertex_output"),
+                    llvm::MDString::get(ctx, airGenerated(elName, floatTy)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, "float"),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, elName)}));
+            }
         }
         if (usesLayerViewport) {
             outNodes.push_back(llvm::MDNode::get(ctx, {
@@ -10442,28 +16994,66 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                  * interface name; the FS side emits the identical tags. */
                 MType el = v->type;
                 el.arr = 0;
-                std::string base = v->name;
                 uint32_t n = (uint32_t)v->type.arr;
                 for (uint32_t k = 0; k < n; k++) {
-                    std::string elName =
-                        base + "_elm" + std::to_string(k);
+                    std::string elName = varyingIfaceTag(*v, k, has_gs);
+                    MType outTy = varyingUsesFloatCarrier(el, has_gs)
+                        ? floatCarrierType(el) : el;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
                         llvm::MDString::get(ctx,
-                                            airGenerated(elName, el)),
+                                            airGenerated(elName, outTy)),
                         llvm::MDString::get(ctx, "air.arg_type_name"),
-                        llvm::MDString::get(ctx, mslTypeName(el)),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
                         llvm::MDString::get(ctx, "air.arg_name"),
                         llvm::MDString::get(ctx, elName)}));
                 }
+            } else if (v->type.isMatrix()) {
+                MType col = matrixColumnType(v->type);
+                for (uint32_t c = 0; c < v->type.cols; c++) {
+                    std::string colName = varyingIfaceTag(*v, c, has_gs);
+                    MType outTy = varyingUsesFloatCarrier(col, has_gs)
+                        ? floatCarrierType(col) : col;
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx,
+                                            airGenerated(colName, outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, colName)}));
+                }
             } else {
-                outNodes.push_back(llvm::MDNode::get(ctx, {
-                    llvm::MDString::get(ctx, "air.vertex_output"),
-                    llvm::MDString::get(ctx, airGenerated(v->name, v->type)),
-                    llvm::MDString::get(ctx, "air.arg_type_name"),
-                    llvm::MDString::get(ctx, mslTypeName(v->type)),
-                    llvm::MDString::get(ctx, "air.arg_name"),
-                    llvm::MDString::get(ctx, v->name)}));
+                std::string tag = varyingIfaceTag(*v, 0, has_gs);
+                if (uintUsesSplitFloatCarrier(v->type, has_gs)) {
+                    MType outTy = floatCarrierType(v->type);
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx,
+                            airGenerated(tag + "_lo", outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, tag + "_lo")}));
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx,
+                            airGenerated(tag + "_hi", outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, tag + "_hi")}));
+                } else {
+                    MType outTy = varyingUsesFloatCarrier(v->type, has_gs)
+                        ? floatCarrierType(v->type) : v->type;
+                    outNodes.push_back(llvm::MDNode::get(ctx, {
+                        llvm::MDString::get(ctx, "air.vertex_output"),
+                        llvm::MDString::get(ctx, airGenerated(tag, outTy)),
+                        llvm::MDString::get(ctx, "air.arg_type_name"),
+                        llvm::MDString::get(ctx, mslTypeName(outTy)),
+                        llvm::MDString::get(ctx, "air.arg_name"),
+                        llvm::MDString::get(ctx, tag)}));
+                }
             }
         }
     } else if (!isKernel) {
@@ -10519,12 +17109,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "depth")}));
         }
+        if (usesSampleMask) {
+            outNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::MDString::get(ctx, "air.sample_mask"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_SampleMask")}));
+        }
     }
 
-    if (usesCullDistance) {
+    if (usesCullDistance && cullBufferArgIdx != UINT32_MAX &&
+        cullParamsArgIdx != UINT32_MAX) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
-        uint32_t cullBufferArg = (uint32_t)paramTys.size() - 5u;
-        uint32_t cullParamsArg = cullBufferArg + 1u;
+        uint32_t cullBufferArg = cullBufferArgIdx;
+        uint32_t cullParamsArg = cullParamsArgIdx;
         auto addCullBuffer = [&](uint32_t arg, uint32_t location,
                                  uint32_t size, const char *typeName,
                                  const char *argName) {
@@ -10644,6 +17243,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx), 0))}));
     }
+    /* GLSL layout(early_fragment_tests) → Metal [[early_fragment_tests]].
+     * Apple's AIR puts a bare MDString "early_fragment_tests" (no "air."
+     * prefix) as the 4th !air.fragment operand — not a nested MDNode.
+     * Confirmed via llvm-bcanalyzer on metalfe metallibs. */
+    if (!isKernel && !isVS && !isTES && tu->layout_early_fragment_tests) {
+        stageElems.push_back(
+            llvm::MDString::get(ctx, "early_fragment_tests"));
+    }
     llvm::NamedMDNode *air = module.getOrInsertNamedMetadata(
         isKernel ? "air.kernel"
                  : ((isVS || isTES) ? "air.vertex" : "air.fragment"));
@@ -10745,67 +17352,45 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     unsigned char **metallib_out,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap) {
-    return compileGLSLImpl(src, stage, 0, /*has_gs=*/false, nullptr, 0u,
-                           metallib_out,
+    return compileGLSLImpl(src, stage, 0, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, nullptr, 0u,
+                           /*iface_location_peers=*/nullptr, metallib_out,
                            size_out, err_buf, err_cap);
 }
 
 /* XFB capture variant: the vertex stage writes its full output record
  * (position + varyings) into a device buffer at location 29 with
  * rasterization disabled (the capture variant of the mglShaderCompileGLSL
- * compile entry). */
+ * compile entry). attrib_names is optional (glBindAttribLocation map). */
 extern "C" int mglShaderCompileGLSLCapture(const char *src,
+                                           const char *const *attrib_names,
                                            unsigned char **metallib_out,
                                            size_t *size_out, char *err_buf,
                                            size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false, nullptr,
-                           0u,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, attrib_names,
+                           0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLTessCapture(
-    const char *src, unsigned char **metallib_out, size_t *size_out,
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false, nullptr,
-                           0u,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, attrib_names,
+                           0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
 
 extern "C" int mglShaderCompileGLSLCullDistanceCapture(
-    const char *src, unsigned char **metallib_out, size_t *size_out,
+    const char *src, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false, nullptr,
-                           0u,
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false,
+                           /*force_tes_compute=*/false, attrib_names,
+                           0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
-}
-
-static uint32_t reflectCullDistanceCount(const char *src)
-{
-    if (!src) return 0;
-    const char *p = src;
-    uint32_t count = 0;
-    while ((p = strstr(p, "gl_CullDistance")) != nullptr) {
-        p += strlen("gl_CullDistance");
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-        if (*p != '[') {
-            count = 8;
-            continue;
-        }
-        ++p;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (*p < '0' || *p > '9') {
-            count = 8;
-            continue;
-        }
-        char *end = nullptr;
-        unsigned long index = strtoul(p, &end, 10);
-        uint32_t reflected = index < 8
-            ? static_cast<uint32_t>(index + 1)
-            : (index == 8 ? 8u : 0u);
-        if (count < reflected) count = reflected;
-        p = end ? end : p;
-    }
-    return count;
 }
 
 static void fillStageInfo(const MGLTranslationUnit *tu,
@@ -10825,6 +17410,11 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->tess_control_output_vertices =
             static_cast<uint32_t>(tu->layout_vertices);
     if (stage == MGL_STAGE_TESS_EVALUATION) {
+        stage_info->tess_gen_mode_specified =
+            (tu->layout_primitive == MGL_AST_TES_TRIANGLES ||
+             tu->layout_primitive == MGL_AST_TES_QUADS ||
+             tu->layout_primitive == MGL_AST_TES_ISOLINES)
+                ? 1u : 0u;
         stage_info->tess_gen_mode =
             tu->layout_primitive == MGL_AST_TES_QUADS ? GL_QUADS :
             tu->layout_primitive == MGL_AST_TES_ISOLINES ? GL_ISOLINES :
@@ -10898,6 +17488,18 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
             stage_info->gs_stream_xfb_stride[s] = 16u + count[s] * 16u;
         }
     }
+    if (stage == MGL_STAGE_COMPUTE) {
+        /* Unspecified axes default to 1 (GLSL 4.60 §4.4.1.4). */
+        stage_info->compute_local_size_x =
+            tu->layout_local_size_x > 0 ? (uint32_t)tu->layout_local_size_x
+                                        : 1u;
+        stage_info->compute_local_size_y =
+            tu->layout_local_size_y > 0 ? (uint32_t)tu->layout_local_size_y
+                                        : 1u;
+        stage_info->compute_local_size_z =
+            tu->layout_local_size_z > 0 ? (uint32_t)tu->layout_local_size_z
+                                        : 1u;
+    }
 }
 
 extern "C" int mglAirReflectGLSLStageInfo(
@@ -10945,8 +17547,11 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
-    uint32_t flags, char *err_buf, size_t err_cap) {
+    uint32_t flags, const MGLShaderResourceList *iface_location_peers,
+    char *err_buf, size_t err_cap) {
     bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
+    bool force_tes_compute =
+        (flags & MGL_AIR_COMPILE_FORCE_TES_COMPUTE) != 0;
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
@@ -10993,9 +17598,10 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
 
-    return compileGLSLImpl(esrc, stage, 0, has_gs, attrib_names,
-                           tessPatchVertices,
-                           metallib_out, size_out, err_buf, err_cap);
+    return compileGLSLImpl(esrc, stage, 0, has_gs, force_tes_compute,
+                           attrib_names, tessPatchVertices,
+                           iface_location_peers, metallib_out, size_out,
+                           err_buf, err_cap);
 }
 
 extern "C" int mglAirCompileGLSLWithReflectInfo(
@@ -11005,7 +17611,7 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     char *err_buf, size_t err_cap) {
     return mglAirCompileGLSLWithReflectInfoEx(
         src, stage, attrib_names, metallib_out, size_out, lists,
-        stage_info, 0u, err_buf, err_cap);
+        stage_info, 0u, /*iface_location_peers=*/nullptr, err_buf, err_cap);
 }
 
 extern "C" int mglAirCompileGLSLWithReflect(
@@ -11081,5 +17687,60 @@ extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
     mglIRModuleDestroy(&fs);
     mglGLSLTranslationUnitDestroy(vtu);
     mglGLSLTranslationUnitDestroy(ftu);
+    return rc;
+}
+
+extern "C" int mglShaderTessInterfaceCheck(const char *tcs_src,
+                                           const char *tes_src,
+                                           char *err_buf, size_t err_cap) {
+    if (!tcs_src || !tes_src) return -1;
+    std::unique_ptr<char[]> tcs_legacy(
+        airPrepareLegacySource(tcs_src, MGL_STAGE_TESS_CONTROL));
+    std::unique_ptr<char[]> tes_legacy(
+        airPrepareLegacySource(tes_src, MGL_STAGE_TESS_EVALUATION));
+    const char *csrc = tcs_legacy ? tcs_legacy.get() : tcs_src;
+    const char *esrc = tes_legacy ? tes_legacy.get() : tes_src;
+    MGLTranslationUnit *ctu = mglGLSLParse(csrc, strlen(csrc));
+    MGLTranslationUnit *etu = mglGLSLParse(esrc, strlen(esrc));
+    if (!ctu || !etu) {
+        if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse failed");
+        mglGLSLTranslationUnitDestroy(ctu);
+        mglGLSLTranslationUnitDestroy(etu);
+        return -1;
+    }
+    MGLIRModule tcs, tes;
+    memset(&tcs, 0, sizeof tcs);
+    memset(&tes, 0, sizeof tes);
+    MGLSemaError *ce = nullptr, *ee = nullptr;
+    uint32_t cc = 0, ec = 0;
+    int chard = mglGLSLSemanticCheck(ctu, MGL_STAGE_TESS_CONTROL, &tcs, &ce, &cc);
+    int ehard = mglGLSLSemanticCheck(etu, MGL_STAGE_TESS_EVALUATION, &tes, &ee, &ec);
+    int rc = 0;
+    if (chard || ehard) {
+        /* Declaration-level errors are reported at compile; still treat a
+         * surviving type mismatch as a link failure when both compile. */
+        if (err_buf && err_cap) {
+            const char *msg = (chard && ce && cc)
+                ? ce[0].message : (ee && ec) ? ee[0].message
+                                             : "tess semantic check failed";
+            snprintf(err_buf, err_cap, "%s", msg);
+        }
+        rc = -1;
+    } else {
+        MGLSemaError *le = nullptr;
+        uint32_t lec = 0;
+        if (mglGLSLInterfaceCheck(&tcs, &tes, &le, &lec)) {
+            if (err_buf && err_cap && le && lec)
+                snprintf(err_buf, err_cap, "%s", le[0].message);
+            rc = -1;
+        }
+        mglGLSLSemanticCheckDestroy(le, lec);
+    }
+    mglGLSLSemanticCheckDestroy(ce, cc);
+    mglGLSLSemanticCheckDestroy(ee, ec);
+    mglIRModuleDestroy(&tcs);
+    mglIRModuleDestroy(&tes);
+    mglGLSLTranslationUnitDestroy(ctu);
+    mglGLSLTranslationUnitDestroy(etu);
     return rc;
 }

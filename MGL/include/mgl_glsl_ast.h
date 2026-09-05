@@ -54,6 +54,8 @@ enum {
     MGL_AST_Q_FLAT          = 0x1000,
     MGL_AST_Q_SMOOTH        = 0x2000,
     MGL_AST_Q_NOPERSPECTIVE = 0x4000,
+    MGL_AST_Q_READONLY      = 0x8000,  /* image/buffer memory qualifier */
+    MGL_AST_Q_WRITEONLY     = 0x10000, /* image/buffer memory qualifier */
 };
 
 /* Block layout qualifiers (GLSL 4.60 §4.3.9). */
@@ -150,6 +152,7 @@ typedef enum MGLExprKind {
     MGL_EXPR_BINARY,        /* x op y */
     MGL_EXPR_ASSIGN,        /* x = y, x += y, ... */
     MGL_EXPR_TERNARY,       /* c ? a : b */
+    MGL_EXPR_INIT_LIST,     /* { a, b, ... } (GLSL 4.20 / ARB_shading_language_420pack) */
 } MGLExprKind;
 
 typedef enum MGLExprOp {
@@ -190,7 +193,8 @@ struct MGLExpr {
             char *name;      /* owned */
             MGLExpr **args;
             uint32_t arg_count;
-            int is_array_ctor;   /* 1 = vecN[](...) array constructor */
+            int is_array_ctor;   /* 1 = T[](...) / T[N](...) array constructor */
+            uint32_t array_ctor_size; /* N in T[N](...); 0 = unsized T[](...) */
         } call;
         struct {
             uint32_t op;     /* MGLExprOp */
@@ -208,6 +212,10 @@ struct MGLExpr {
         struct {
             MGLExpr *cond, *then, *else_;
         } ternary;
+        struct {
+            MGLExpr **args;
+            uint32_t arg_count;
+        } init_list;
     } u;
 };
 
@@ -307,9 +315,16 @@ struct MGLDecl {
     int32_t  layout_max_vertices;   /* GS: layout(max_vertices=N) */
     int32_t  layout_invocations;    /* GS: layout(invocations=N), 1 if absent */
     int32_t  layout_stream;         /* GS output stream, -1 if unspecified (0) */
+    int32_t  layout_local_size_x;   /* CS: layout(local_size_x=N), -1 absent */
+    int32_t  layout_local_size_y;
+    int32_t  layout_local_size_z;
     uint32_t layout_spacing;        /* TES: MGL_AST_SPACING_* */
     uint32_t layout_winding;        /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;     /* TES: point_mode flag */
+    uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
+    /* Image format layout qualifier (e.g. "rgba32f"); NULL if absent.
+     * Points at a static string from the parser format table. */
+    const char *layout_image_format;
     uint32_t *array_dims;  /* element counts; NULL = not an array */
     uint32_t array_count;
     MGLExpr *init;         /* initializer or NULL */
@@ -341,11 +356,22 @@ typedef struct MGLTranslationUnit {
     int32_t  layout_max_vertices;  /* GS: max emitted vertices */
     int32_t  layout_invocations;   /* GS: invocation count (1 default) */
     int32_t  layout_stream;        /* GS default output stream (-1 = 0) */
+    int32_t  layout_local_size_x;  /* CS: local workgroup size (-1 absent) */
+    int32_t  layout_local_size_y;
+    int32_t  layout_local_size_z;
     uint32_t layout_primitive;     /* TES: MGL_AST_TES_* ; GS in: MGL_AST_GS_IN_* */
     uint32_t layout_primitive_out; /* GS out: MGL_AST_GS_OUT_* */
     uint32_t layout_spacing;       /* TES: MGL_AST_SPACING_* */
     uint32_t layout_winding;       /* TES: MGL_AST_WINDING_* */
     uint32_t layout_point_mode;    /* TES: point_mode flag */
+    uint32_t layout_early_fragment_tests; /* FS: early_fragment_tests */
+    /* Default block packing from `layout(std430) buffer;` /
+     * `layout(std140) uniform;` — applied when a later block omits an
+     * explicit packing qualifier (GL 4.6 §4.4.5). */
+    uint32_t default_buffer_layout;  /* MGL_AST_LAYOUT_* */
+    uint32_t default_uniform_layout; /* MGL_AST_LAYOUT_* */
+    uint32_t default_buffer_matrix_major;  /* MGL_AST_MATRIX_* */
+    uint32_t default_uniform_matrix_major; /* MGL_AST_MATRIX_* */
 } MGLTranslationUnit;
 
 #ifdef __cplusplus

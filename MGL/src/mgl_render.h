@@ -361,6 +361,7 @@ int mglRenderCreateBufferTextureFromDescriptor(
 int mglRenderCreateTextureView(void *texture,
                                   uint32_t pixel_format,
                                   void **texture_view_out);
+void mglRenderReleaseMetalObject(void *object);
 int mglRenderCreateTextureViewRange(
     void *texture,
     uint32_t pixel_format,
@@ -798,10 +799,10 @@ int mglRenderConvertIntegerReadback(
     const MGLRenderIntegerReadbackConvertParams *params);
 
 /* tess-factor buffer CPU transforms — the default
- * canonical factor fill (12B/patch: 4x outer + 2x inner __fp16), the
- * canonical->triangle repack (12B -> 8B/patch) and the native primitive
- * count (GL 4.6 11.2.2.2 ceil rules).  Pure data transforms shared by both
- * gates.
+ * canonical factor fill (RECORD_BYTES/patch: 12B half + 24B exact f32),
+ * the canonical->triangle repack (RECORD -> 8B/patch halves) and the
+ * native primitive count (GL 4.6 11.2.2.2 ceil rules).  Pure data
+ * transforms shared by both gates.
  * Return 0 on success, -1 on bad args (count entry returns 0). */
 int mglRenderFillDefaultTessFactorBuffer(
     void *dst,
@@ -1493,6 +1494,27 @@ uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
  * otherwise the GL_R* internal-format table.  Returns 1/0. */
 int mglRenderTextureUploadNeedsSingleChannelSwizzle(uint32_t internal_format,
                                                        int swizzled);
+int mglRenderTextureUploadNeedsSingleChannelSwizzleBake(
+    uint32_t internal_format, int swizzled);
+/* Metal pixel format for single-channel swizzle upload expansion.
+ * Returns MTLPixelFormatInvalid when the format is not handled. */
+uint32_t mglRenderSingleChannelSwizzleStoragePixelFormat(
+    uint32_t internal_format);
+/* Multi-channel integer formats bake swizzle into CPU texels instead of
+ * relying on Metal view swizzle (unreliable for Sint on some paths). */
+int mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake(
+    uint32_t internal_format, int swizzled);
+uint32_t mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+    uint32_t internal_format);
+int mglRenderTextureUploadNeedsStencilSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode);
+int mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake(
+    uint32_t internal_format, int swizzled, uint32_t depth_stencil_mode);
+uint32_t mglRenderStencilSwizzleStoragePixelFormat(void);
+/* Returns 1 when swizzle was baked at upload for this storage format. */
+int mglRenderTextureSwizzleUsesUploadBake(
+    uint32_t internal_format, int swizzled,
+    uint32_t storage_pixel_format);
 /* stored color-component count for an internal format.
  * Mirrors mglStoredColorComponentsForTexture after the null-tex check
  * (null stays in ObjC and returns 4).  Unknown formats → 4. */
@@ -1502,6 +1524,20 @@ uint32_t mglRenderStoredColorComponents(uint32_t internal_format);
 uint32_t mglRenderMTLSwizzleForGLSwizzle(uint32_t gl_swizzle,
                                             uint32_t components);
 uint8_t *mglRenderCreateSingleChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void *src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t *out_bytes_per_row, size_t *out_bytes_per_image);
+uint8_t *mglRenderCreateIntegerMultiChannelSwizzledUpload(
+    uint32_t internal_format,
+    uint32_t swizzle_r, uint32_t swizzle_g,
+    uint32_t swizzle_b, uint32_t swizzle_a,
+    const void *src_data, size_t width, size_t height,
+    size_t src_bytes_per_row,
+    size_t *out_bytes_per_row, size_t *out_bytes_per_image);
+uint8_t *mglRenderCreateStencilSwizzledUpload(
     uint32_t internal_format,
     uint32_t swizzle_r, uint32_t swizzle_g,
     uint32_t swizzle_b, uint32_t swizzle_a,
@@ -1903,6 +1939,8 @@ int mglRenderBindingClearVertexBuffer(void *binding_state,
                                          uint32_t index);
 int mglRenderBindingClearFragmentBuffer(void *binding_state,
                                            uint32_t index);
+int mglRenderBindingClearFragmentTexture(void *binding_state,
+                                            uint32_t index);
 int mglRenderBindingGetBuffer(void *binding_state,
                                  uint32_t stage,
                                  uint32_t index,
@@ -2136,8 +2174,13 @@ int mglRenderDispatchComputePlan(
 /*  compute execution plan: ObjC collects the ordered binding operations
  * and keeps temporary Metal objects alive until this call returns. C++ owns
  * encoder creation, pipeline/binding replay, dispatch, and endEncoding. */
-#define MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS 512u
-#define MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES 128u
+/* Per-patch TES compute expansion emits one dispatch (+ contract bytes
+ * binding) per input patch. Cull-distance isoline grids reach ~144 patches;
+ * barrier CTS uses 1024 patches (2048 result verts). Keep headroom above
+ * the old 128/512 caps that returned GL_INVALID_OPERATION once patchCount
+ * exceeded them. */
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS 4096u
+#define MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES 2048u
 
 typedef struct MGLRenderComputeDispatchEntry_t {
     /* Replay this dispatch after exactly binding_op_count binding operations. */

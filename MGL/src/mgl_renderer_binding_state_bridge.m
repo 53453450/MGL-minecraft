@@ -9,14 +9,22 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "pixel_utils.h"
 
 
 enum {
     MGL_BINDING_RESOURCE_STORAGE_SHARED = 0u,
     MGL_BINDING_VERTEX_FORMAT_INVALID = 0u,
     MGL_BINDING_PIXEL_FORMAT_INVALID = 0u,
-    MGL_BINDING_TEXTURE_TYPE_CUBE = 5u,
-    MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY = 6u,
+    /* Match MGLTextureType / MTLTextureType values from mgl_render_values.h.
+     * (A prior local enum used 3D=4, which is actually 2DMultisample.) */
+    MGL_BINDING_TEXTURE_TYPE_1D = MGLTextureType1D,
+    MGL_BINDING_TEXTURE_TYPE_1D_ARRAY = MGLTextureType1DArray,
+    MGL_BINDING_TEXTURE_TYPE_2D = MGLTextureType2D,
+    MGL_BINDING_TEXTURE_TYPE_2D_ARRAY = MGLTextureType2DArray,
+    MGL_BINDING_TEXTURE_TYPE_3D = MGLTextureType3D,
+    MGL_BINDING_TEXTURE_TYPE_CUBE = MGLTextureTypeCube,
+    MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY = MGLTextureTypeCubeArray,
 };
 
 static uint64_t mglBindingStateBufferLength(id buffer)
@@ -154,6 +162,127 @@ static id mglBindingStateCreateTextureLevelView(
         return (__bridge_transfer id)view;
     }
     return nil;
+}
+
+static id mglBindingStateCacheImageUnitView(ImageUnit *iu, id fallback, void *view)
+{
+    if (!view) {
+        return fallback;
+    }
+    if (iu->mtl_image_view) {
+        mglRenderReleaseMetalObject(iu->mtl_image_view);
+        iu->mtl_image_view = NULL;
+    }
+    iu->mtl_image_view = view; /* +1 from newTextureView */
+    return (__bridge id)iu->mtl_image_view;
+}
+
+/* Metal pixel format for BindImageTexture <format>.  Same-size reinterprets
+ * (e.g. RGBA8 storage bound as R32I/R32UI) require a PixelFormatView so AIR
+ * integer atomics/load/store hit the intended layout (CTS advanced-cast). */
+static uint32_t mglBindingStateImageBindPixelFormat(const ImageUnit *iu,
+                                                    uint32_t native_format)
+{
+    if (!iu || iu->internalformat == 0u) {
+        return native_format;
+    }
+    const uint32_t bind_format =
+        mtlFormatForGLInternalFormat(iu->internalformat);
+    if (bind_format == MGLPixelFormatInvalid || bind_format == 0u) {
+        return native_format;
+    }
+    return bind_format;
+}
+
+/* For non-layered BindImageTexture on array/3D/cube textures, GLSL image2D
+ * (etc.) expects a single 2D (or 1D) slice.  Create a Type2D/Type1D view of
+ * that layer so AIR write/read_texture_2d matches the bound Metal type.
+ * Multisample images are intentionally backed as Type2DArray (sample→layer)
+ * and must keep that type.  Views are cached on ImageUnit so they outlive
+ * the bind call until the unit is rebound/reset.
+ *
+ * Also applies BindImageTexture <format> via PixelFormatView so float and
+ * integer imageLoad/Store pack/unpack match the bound internalformat (CTS
+ * multiple-uniforms / advanced-cast). Shared by VS/FS, GS, and TCS/TES. */
+void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
+{
+    id texture = (__bridge id)base_texture;
+    if (!texture || !iu) {
+        return base_texture;
+    }
+    if (iu->mtl_image_view) {
+        return iu->mtl_image_view;
+    }
+    const MGLRenderTextureInfo info = mglBindingStateTextureInfo(texture);
+    if (info.width == 0u) {
+        return base_texture;
+    }
+    const NSUInteger level = (NSUInteger)iu->level;
+    /* Mutable textures may BindImage a mip that was never defined. Metal
+     * rejects views past mipmapLevelCount — leave unbound so loads read 0
+     * and stores are ignored (CTS incomplete_textures). */
+    if (level >= info.mipmap_level_count) {
+        return NULL;
+    }
+    const uint32_t srcType = info.texture_type;
+    const uint32_t bindFormat =
+        mglBindingStateImageBindPixelFormat(iu, info.pixel_format);
+    const GLenum glTarget = iu->tex ? iu->tex->target : (GLenum)0;
+    const GLboolean isMsTarget =
+        (glTarget == GL_TEXTURE_2D_MULTISAMPLE ||
+         glTarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) ? GL_TRUE : GL_FALSE;
+
+    if (!iu->layered && !isMsTarget) {
+        uint32_t dstType = 0u;
+        GLboolean needsSlice = GL_FALSE;
+        if (srcType == MGL_BINDING_TEXTURE_TYPE_2D_ARRAY ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_3D ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
+            dstType = MGL_BINDING_TEXTURE_TYPE_2D;
+            needsSlice = GL_TRUE;
+        } else if (srcType == MGL_BINDING_TEXTURE_TYPE_1D_ARRAY) {
+            dstType = MGL_BINDING_TEXTURE_TYPE_1D;
+            needsSlice = GL_TRUE;
+        }
+        if (needsSlice) {
+            void *view = NULL;
+            int rc = mglRenderCreateTextureViewRange(
+                    base_texture, bindFormat, dstType,
+                    level, 1u, (uint64_t)iu->layer, 1u,
+                    0, 0, 0, 0, 0, &view);
+            if (rc == 0 && view) {
+                return (__bridge void *)mglBindingStateCacheImageUnitView(
+                    iu, texture, view);
+            }
+        }
+    }
+
+    if (level > 0u || bindFormat != info.pixel_format) {
+        NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
+        if (srcType == MGL_BINDING_TEXTURE_TYPE_CUBE ||
+            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
+            sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
+        }
+        if (sliceCount < 1u) {
+            sliceCount = 1u;
+        }
+        void *view = NULL;
+        if (mglRenderCreateTextureViewRange(
+                base_texture, bindFormat,
+                info.texture_type, level, 1u, 0u, sliceCount,
+                0, 0, 0, 0, 0, &view) == 0 && view) {
+            return (__bridge void *)mglBindingStateCacheImageUnitView(
+                iu, texture, view);
+        }
+    }
+    return base_texture;
+}
+
+static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
+{
+    return (__bridge id)mglRendererStorageImageTexture(
+        (__bridge void *)texture, iu);
 }
 
 static void mglBindingStateSetVertexBuffer(
@@ -902,9 +1031,8 @@ static bool mglBindingStateFlushResourceBindings(
                                                                       attrib,
                                                                       __FUNCTION__,
                                                                       &resolved);
-        // When enabled_attribs tracking is empty but the program uses this attribute,
-        // fall through and bind if a valid buffer exists (Sodium DSA path compatibility).
-        if (!attribsEnabledByApp && !hasAttribBinding) {
+        /* Disabled (or never-enabled) attribs use the current generic value. */
+        if (!usesCurrentValue && !hasAttribBinding) {
             continue;
         }
 
@@ -916,47 +1044,65 @@ static bool mglBindingStateFlushResourceBindings(
 
         bindingIndex = (NSUInteger)mappedIndex;
         if (usesCurrentValue) {
-            uint8_t attribBytes[16];
-            NSUInteger attribStride = mglRendererBuildCurrentVertexAttribBytes(ctx,
-                                                                               attrib,
-                                                                               &vao->attrib[attrib],
-                                                                               attribBytes);
-            if (attribStride == 0u) {
-                NSLog(@"MGL VBIND skip attrib=%u: failed to build current vertex attrib bytes", attrib);
-                continue;
+            /* Packed current-value pool: ALL current-value attribs share
+             * one Metal buffer + one slot (see kMGLCurrentAttribPoolStride
+             * in MGLRenderer_Private.h).  Attrib i's 16B generic value
+             * repeats at pool offset i*kMGLCurrentAttribPoolStride; the
+             * vertex descriptor supplies the per-attrib offset. */
+            uint8_t poolValues[MAX_ATTRIBS][16];
+            memset(poolValues, 0, sizeof(poolValues));
+            for (GLuint a = 0; a < (GLuint)MAX_ATTRIBS; a++) {
+                uint8_t tmp[16] = {0};
+                NSUInteger built = mglRendererBuildCurrentVertexAttribBytes(
+                    ctx, a, &vao->attrib[a], tmp);
+                if (built == 0u || built > 16u) {
+                    /* Unusable combination: keep the zero-filled block so
+                     * one bad attrib does not poison the shared pool. */
+                    continue;
+                }
+                memcpy(poolValues[a], tmp, 16u);
             }
-            static const NSUInteger kMGLCurrentAttribRepeatCount = 4096u;
-            NSUInteger totalByteCount = kMGLCurrentAttribRepeatCount * attribStride;
-
 
             id currentAttribBuffer = (__bridge id)
-                mglRendererBackendGetCurrentAttribBuffer(
-                    _backend, attrib, attribBytes, (uint32_t)attribStride,
-                    (uint64_t)attribStride);
+                mglRendererBackendGetPackedCurrentAttribBuffer(
+                    _backend, poolValues, (uint32_t)sizeof(poolValues),
+                    kMGLCurrentAttribRepeatCount);
 
             if (currentAttribBuffer == nil) {
-
-                NSMutableData *repeated = [NSMutableData dataWithLength:totalByteCount];
-                if (!repeated) {
-                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib stream", attrib);
+                NSUInteger poolBytes = (NSUInteger)MAX_ATTRIBS *
+                                       kMGLCurrentAttribPoolStride;
+                NSMutableData *pool = [NSMutableData dataWithLength:poolBytes];
+                if (!pool) {
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate packed "
+                          @"current vertex attrib pool", attrib);
                     continue;
                 }
-                uint8_t *dst = (uint8_t *)repeated.mutableBytes;
-                for (NSUInteger v = 0; v < kMGLCurrentAttribRepeatCount; v++) {
-                    memcpy(dst + v * attribStride, attribBytes, MIN((NSUInteger)16u, attribStride));
+                uint8_t *dst = (uint8_t *)pool.mutableBytes;
+                for (GLuint a = 0; a < (GLuint)MAX_ATTRIBS; a++) {
+                    uint8_t *seg = dst + (NSUInteger)a *
+                                           kMGLCurrentAttribPoolStride;
+                    for (NSUInteger vI = 0;
+                         vI < kMGLCurrentAttribRepeatCount; vI++) {
+                        memcpy(seg + vI * kMGLCurrentAttribValueBytes,
+                               poolValues[a],
+                               MIN((NSUInteger)16u,
+                                   kMGLCurrentAttribValueBytes));
+                    }
                 }
                 currentAttribBuffer = mglBindingStateCreateBufferWithBytes(
-                    _device, repeated.bytes, repeated.length,
+                    _device, pool.bytes, pool.length,
                     MGL_BINDING_RESOURCE_STORAGE_SHARED);
                 if (!currentAttribBuffer) {
-                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate packed "
+                          @"current vertex attrib Metal buffer", attrib);
                     continue;
                 }
-                if (mglRendererBackendSetCurrentAttribBuffer(
-                        _backend, attrib, attribBytes, (uint32_t)attribStride,
-                        (uint64_t)attribStride,
+                if (mglRendererBackendSetPackedCurrentAttribBuffer(
+                        _backend, poolValues, (uint32_t)sizeof(poolValues),
+                        kMGLCurrentAttribRepeatCount,
                         (__bridge void *)currentAttribBuffer) != 0) {
-                    NSLog(@"MGL VBIND skip attrib=%u: failed to retain current vertex attrib cache buffer", attrib);
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to retain packed "
+                          @"current vertex attrib cache buffer", attrib);
                     continue;
                 }
             }
@@ -978,19 +1124,14 @@ static bool mglBindingStateFlushResourceBindings(
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileCurrentAttribBindLogs)) {
                 MGLShaderResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
-                mglTraceLog("VATTR_BIND_CURRENT program=%u attrib=%u resource=%s loc=%u metalSlot=%lu stride=%lu size=%u type=0x%x valueI=(%d,%d,%d,%d) valueF=(%.6f,%.6f,%.6f,%.6f)",
+                mglTraceLog("VATTR_BIND_CURRENT_PACKED program=%u attrib=%u resource=%s loc=%u metalSlot=%lu poolOffset=%lu valueF=(%.6f,%.6f,%.6f,%.6f)",
                             activeProgram ? (unsigned)activeProgram->name : 0u,
                             (unsigned)attrib,
                             resource && resource->name ? resource->name : "(unknown)",
                             resource ? (unsigned)resource->location : 0xffffffffu,
                             (unsigned long)bindingIndex,
-                            (unsigned long)attribStride,
-                            (unsigned)vao->attrib[attrib].size,
-                            (unsigned)vao->attrib[attrib].type,
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[0],
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[1],
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[2],
-                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[3],
+                            (unsigned long)((NSUInteger)attrib *
+                                            kMGLCurrentAttribPoolStride),
                             MGL_STATE(ctx)->current_vertex_attrib[attrib].f[0],
                             MGL_STATE(ctx)->current_vertex_attrib[attrib].f[1],
                             MGL_STATE(ctx)->current_vertex_attrib[attrib].f[2],
@@ -4219,9 +4360,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
     {
         MGLShaderResource *resource = NULL;
-        if (vertexProgram &&
-            i < vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
-            resource = &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
+        GLuint element = 0u;
+        if (vertexProgram) {
+            MGLShaderResourceList *list =
+                &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES];
+            GLuint ordinal = i;
+            for (GLuint ri = 0; ri < list->count; ri++) {
+                GLuint elements = list->list[ri].gl_array_size > 1
+                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                if (ordinal < elements) {
+                    resource = &list->list[ri];
+                    element = ordinal;
+                    break;
+                }
+                ordinal -= elements;
+            }
         }
         if (mglShouldSkipStageTextureResource(vertexProgram,
                                               vertexStage,
@@ -4229,8 +4382,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                               resource)) {
             continue;
         }
-        GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : mglRendererGetProgramGLBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = resource
+            ? resource->binding + element
+            : (GLuint)mglRendererGetProgramBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit;
+        if (vertexProgram && metalSlot < TEXTURE_UNITS &&
+            vertexProgram->sampler_units_explicit_by_stage[vertexStage][metalSlot]) {
+            glUnit = (GLuint)vertexProgram->sampler_units_by_stage[vertexStage][metalSlot];
+        } else if (resource) {
+            GLuint base = resource->sampler_unit >= 0
+                ? (GLuint)resource->sampler_unit : resource->gl_binding;
+            glUnit = base + element;
+        } else {
+            glUnit = (GLuint)mglRendererGetProgramGLBinding(
+                ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        }
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4246,9 +4412,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
     {
         MGLShaderResource *resource = NULL;
-        if (vertexProgram &&
-            i < vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
-            resource = &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
+        GLuint element = 0u;
+        if (vertexProgram) {
+            MGLShaderResourceList *list =
+                &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES];
+            GLuint ordinal = i;
+            for (GLuint ri = 0; ri < list->count; ri++) {
+                GLuint elements = list->list[ri].gl_array_size > 1
+                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                if (ordinal < elements) {
+                    resource = &list->list[ri];
+                    element = ordinal;
+                    break;
+                }
+                ordinal -= elements;
+            }
         }
         if (mglShouldSkipStageTextureResource(vertexProgram,
                                               vertexStage,
@@ -4256,10 +4434,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                               resource)) {
             continue;
         }
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : mglRendererGetProgramGLBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = resource
+            ? resource->binding + element
+            : (GLuint)mglRendererGetProgramBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit;
+        if (vertexProgram && metalSlot < TEXTURE_UNITS &&
+            vertexProgram->sampler_units_explicit_by_stage[vertexStage][metalSlot]) {
+            glUnit = (GLuint)vertexProgram->sampler_units_by_stage[vertexStage][metalSlot];
+        } else if (resource) {
+            GLuint base = resource->sampler_unit >= 0
+                ? (GLuint)resource->sampler_unit : resource->gl_binding;
+            glUnit = base + element;
+        } else {
+            glUnit = (GLuint)mglRendererGetProgramGLBinding(
+                ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        }
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4268,20 +4457,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (ptr) {
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             texture = (__bridge id)(ptr->mtl_data);
-            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-            if (imgLevel > 0u && texture) {
-                NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
-                if (mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE ||
-                    mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
-                    sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
-                }
-                id levelView =
-                    mglBindingStateCreateTextureLevelView(
-                        texture, imgLevel, sliceCount);
-                if (levelView) {
-                    texture = levelView;
-                }
-            }
+            texture = mglBindingStateCreateStorageImageView(
+                texture, &MGL_STATE(ctx)->image_units[glUnit]);
         }
         if (!mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
@@ -4298,9 +4475,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     for (GLuint i = 0; i < fragmentStorageImageCount; i++)
     {
         MGLShaderResource *resource = NULL;
-        if (fragmentProgram &&
-            i < fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
+        GLuint element = 0u;
+        if (fragmentProgram) {
+            MGLShaderResourceList *list =
+                &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES];
+            GLuint ordinal = i;
+            for (GLuint ri = 0; ri < list->count; ri++) {
+                GLuint elements = list->list[ri].gl_array_size > 1
+                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                if (ordinal < elements) {
+                    resource = &list->list[ri];
+                    element = ordinal;
+                    break;
+                }
+                ordinal -= elements;
+            }
         }
         if (mglShouldSkipStageTextureResource(fragmentProgram,
                                               _FRAGMENT_SHADER,
@@ -4309,8 +4498,23 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
 
-        GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = resource
+            ? resource->binding + element
+            : (GLuint)mglRendererGetProgramBinding(
+                  ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit;
+        if (fragmentProgram && metalSlot < TEXTURE_UNITS &&
+            fragmentProgram->sampler_units_explicit_by_stage[_FRAGMENT_SHADER][metalSlot]) {
+            glUnit = (GLuint)fragmentProgram
+                         ->sampler_units_by_stage[_FRAGMENT_SHADER][metalSlot];
+        } else if (resource) {
+            GLuint base = resource->sampler_unit >= 0
+                ? (GLuint)resource->sampler_unit : resource->gl_binding;
+            glUnit = base + element;
+        } else {
+            glUnit = (GLuint)mglRendererGetProgramGLBinding(
+                ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        }
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4330,9 +4534,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     for (GLuint i = 0; i < fragmentStorageImageCount; i++)
     {
         MGLShaderResource *resource = NULL;
-        if (fragmentProgram &&
-            i < fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
+        GLuint element = 0u;
+        if (fragmentProgram) {
+            MGLShaderResourceList *list =
+                &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES];
+            GLuint ordinal = i;
+            for (GLuint ri = 0; ri < list->count; ri++) {
+                GLuint elements = list->list[ri].gl_array_size > 1
+                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                if (ordinal < elements) {
+                    resource = &list->list[ri];
+                    element = ordinal;
+                    break;
+                }
+                ordinal -= elements;
+            }
         }
         if (mglShouldSkipStageTextureResource(fragmentProgram,
                                               _FRAGMENT_SHADER,
@@ -4341,10 +4557,23 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
 
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : mglRendererGetProgramGLBinding(ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = resource
+            ? resource->binding + element
+            : (GLuint)mglRendererGetProgramBinding(
+                  ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint glUnit;
+        if (fragmentProgram && metalSlot < TEXTURE_UNITS &&
+            fragmentProgram->sampler_units_explicit_by_stage[_FRAGMENT_SHADER][metalSlot]) {
+            glUnit = (GLuint)fragmentProgram
+                         ->sampler_units_by_stage[_FRAGMENT_SHADER][metalSlot];
+        } else if (resource) {
+            GLuint base = resource->sampler_unit >= 0
+                ? (GLuint)resource->sampler_unit : resource->gl_binding;
+            glUnit = base + element;
+        } else {
+            glUnit = (GLuint)mglRendererGetProgramGLBinding(
+                ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        }
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
@@ -4355,30 +4584,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             texture = (__bridge id)(ptr->mtl_data);
 
-            /* Create a mipmap-level-specific texture view so that imageSize()
-             * in the shader returns the dimensions at the bound level, not
-             * level 0.  Metal's get_width()/get_height() on a view created
-             * with levels={N,1} returns the size at level N (the view's
-             * level 0 maps to the original's level N).  Without this view,
-             * glBindImageTexture's <level> parameter is silently ignored
-             * and all imageSize queries return level-0 dimensions. */
-            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
-            if (imgLevel > 0u && texture) {
-                /* Cube and cube-array textures pack 6 face-slices per cube;
-                 * the view's slice count must be a multiple of 6 for these
-                 * types.  Other types use arrayLength directly. */
-                NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
-                if (mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE ||
-                    mglBindingStateTextureType(texture) == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
-                    sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
-                }
-                id levelView =
-                    mglBindingStateCreateTextureLevelView(
-                        texture, imgLevel, sliceCount);
-                if (levelView) {
-                    texture = levelView;
-                }
-            }
+            /* Non-layered array/3D/cube bindings and mip levels become
+             * Metal texture views so AIR image2D load/store type-matches. */
+            texture = mglBindingStateCreateStorageImageView(
+                texture, &MGL_STATE(ctx)->image_units[glUnit]);
         }
 
         if (!mglBindingStateQueueResourceBinding(

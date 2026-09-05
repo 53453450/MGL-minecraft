@@ -77,6 +77,27 @@ void mglRendererObjCGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
     [renderer mtlGenerateMipmaps:glm_ctx forTexture:texture];
 }
 
+void mglRendererSyncTextureBufferFromImage(GLMContext glm_ctx, Texture *texture)
+{
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (!renderer || !glm_ctx || !texture) return;
+    [renderer syncTextureBufferFromImage:glm_ctx tex:texture];
+}
+
+void mglRendererPrepareImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
+{
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (!renderer || !glm_ctx) return;
+    [renderer prepareImageUnitSlice:glm_ctx unit:unit];
+}
+
+void mglRendererFlushImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
+{
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (!renderer || !glm_ctx) return;
+    [renderer flushImageUnitSlice:glm_ctx unit:unit];
+}
+
 void mglRendererObjCTexSubImage(GLMContext glm_ctx, Texture *texture,
                                 Buffer *buffer, size_t source_offset,
                                 size_t source_pitch, size_t source_image_size,

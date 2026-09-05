@@ -984,13 +984,11 @@ static bool mglCPUFeedbackIsPassthroughProgram(Program *program)
             return false;
         }
 
-        /* The captured output must trace to a VS input at the same location
-         * and with the same GL type. Try location first, then name. */
+        /* True passthrough only: an input with the same name as the captured
+         * output.  Matching by location is wrong — VS in/out location spaces
+         * are independent, so out "result" @0 must not bind to in "a_0" @0. */
         MGLShaderResource *input =
-            mglCPUFeedbackFindVertexInputAtLocation(program, output->location);
-        if (!input) {
-            input = mglCPUFeedbackFindVertexInputByName(program, base_name);
-        }
+            mglCPUFeedbackFindVertexInputByName(program, base_name);
         if (!input || input->gl_type != output->gl_type) {
             return false;
         }
@@ -1059,6 +1057,7 @@ static void mglCPUFeedbackFlushAndCount(GLMContext ctx,
                                  (size_t)dstOffset,
                                  (size_t)writeSize,
                                  (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffset);
+        xfb->cpu_shadow_pending = GL_TRUE;
         xfb->data.dirty_bits |= DIRTY_BUFFER_DATA;
         xfb->ever_written = GL_TRUE;
         xfb->has_initialized_data = GL_TRUE;
@@ -1191,10 +1190,7 @@ static void mglCPUFeedbackCaptureVertex(GLMContext ctx,
 
         MGLShaderResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
         MGLShaderResource *input =
-            output ? mglCPUFeedbackFindVertexInputAtLocation(program, output->location) : NULL;
-        if (!input && output) {
-            input = mglCPUFeedbackFindVertexInputByName(program, base_name);
-        }
+            output ? mglCPUFeedbackFindVertexInputByName(program, base_name) : NULL;
         if (!input) {
             continue;
         }
@@ -1783,7 +1779,30 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
                        vs_prog->transform_feedback_layout_valid &&
                        vs_prog->transform_feedback_varying_count > 0;
     }
-    if (ctx->draw_defer_enabled && !xfbImmediate) {
+    /* Emulated MS color targets (texture2d_array sample planes) need the
+     * immediate draw path so the renderer can broadcast planes or redraw
+     * per-sample. Batch replay encodes draws without those hooks. */
+    bool msImmediate = false;
+    {
+        Framebuffer *fbo = ctx->state.framebuffer;
+        if (fbo && (fbo->color_attachment_bitfield & 1u)) {
+            FBOAttachment *att = &fbo->color_attachments[0];
+            Texture *tex = NULL;
+            if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
+                tex = att->buf.rbo->tex;
+            else
+                tex = att->buf.tex;
+            if (tex &&
+                (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                 tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
+                tex->samples > 1) {
+                msImmediate = true;
+                if (ctx->draw_command_buffer.batch_count > 0u)
+                    mglFlushCommandBuffer(ctx);
+            }
+        }
+    }
+    if (ctx->draw_defer_enabled && !xfbImmediate && !msImmediate) {
         mglTraceLogExternal("DRAW_DISPATCH_FRONTEND type=%u mode=0x%x first=%d count=%d "
                             "inst=%d bv=%d bi=%u program=%u defer=1",
                             (unsigned)cmd->type, (unsigned)cmd->mode, (int)cmd->first,

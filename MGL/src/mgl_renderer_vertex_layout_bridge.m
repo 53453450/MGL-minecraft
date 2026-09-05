@@ -88,7 +88,6 @@ static uint32_t mglTessControlPointFormat(GLenum type)
 
 
     NSUInteger layoutStride[31] = {0};
-    bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     for (GLuint i = 0; i < maxAttribs; i++)
     {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
@@ -101,7 +100,7 @@ static uint32_t mglTessControlPointFormat(GLenum type)
                                                                       i,
                                                                       __FUNCTION__,
                                                                       &resolved);
-        if (!attribsEnabledByApp && !hasAttribBinding) {
+        if (!usesCurrentValue && !hasAttribBinding) {
             continue;
         }
 
@@ -195,7 +194,14 @@ static uint32_t mglTessControlPointFormat(GLenum type)
 
             uint32_t attribOffset;
             if (usesCurrentValue) {
-                attribOffset = 0u;
+                /* Packed current-value pool (shared Metal slot): attrib i
+                 * reads its 16B value block at the base of its own pool
+                 * segment; the buffer stride is 16 so vertex v lands at
+                 * i*(repeat*16) + v*16 inside the shared buffer.  This
+                 * keeps N current-value attribs on ONE Metal slot instead
+                 * of N (a 16-element attrib array driven by
+                 * glVertexAttrib4f would otherwise overflow slot 30). */
+                attribOffset = (uint32_t)i * kMGLCurrentAttribPoolStride;
             } else if (needsConversion || _batching.absoluteVertexBindingOffsets) {
                 attribOffset = (uint32_t)resolved.relativeoffset;
             } else {
