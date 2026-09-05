@@ -41,7 +41,9 @@ jobs:
         run: make test-mgl-state-dirty-gtest HOST_GTEST_CXX=g++
 
   macos-metal:
-    name: macOS metalcpp + regression
+    # Golden test-regression (depth_test etc.) is Paravirtual-flaky and is
+    # not a PR gate. Full GLCTS stays local (VK-GL-CTS-build-mgl-target).
+    name: macOS metalcpp
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -74,8 +76,3 @@ jobs:
         run: |
           export LLVM_ROOT="$(brew --prefix llvm@15)"
           make test-metalcpp
-      - name: build libmgl + test-regression
-        run: |
-          export LLVM_ROOT="$(brew --prefix llvm@15)"
-          make lib
-          make test-regression
