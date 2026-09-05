@@ -72,33 +72,107 @@ static MGLRendererBackendHandle *mglRenderPassBackend(GLMContext context)
 /* VS-only + GL_RASTERIZER_DISCARD cannot leave Metal rasterization disabled:
  * AGX drops vertex texture/SSBO stores. A no-op fragment keeps rasterization
  * on while color write masks stay cleared (see below). */
-static id mglRasterizerDiscardStubFragmentFunction(void)
+
+typedef NS_ENUM(uint32_t, MGLStubFSValueClass) {
+    MGLStubFSFloat = 0,
+    MGLStubFSInt,
+    MGLStubFSUint,
+};
+
+static MGLStubFSValueClass mglPixelFormatValueClass(uint32_t fmt)
 {
-    static id s_fs = nil;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        const MGLAuxShaderAsset *safe = mglAuxShaderAssetFind("safe_fallback");
-        void *vs = NULL;
+    switch (fmt) {
+        case MGLPixelFormatR8Sint:
+        case MGLPixelFormatR16Sint:
+        case MGLPixelFormatRG8Sint:
+        case MGLPixelFormatR32Sint:
+        case MGLPixelFormatRG16Sint:
+        case MGLPixelFormatRGBA8Sint:
+        case MGLPixelFormatRG32Sint:
+        case MGLPixelFormatRGBA16Sint:
+        case MGLPixelFormatRGBA32Sint:
+            return MGLStubFSInt;
+        case MGLPixelFormatR8Uint:
+        case MGLPixelFormatR16Uint:
+        case MGLPixelFormatRG8Uint:
+        case MGLPixelFormatR32Uint:
+        case MGLPixelFormatRG16Uint:
+        case MGLPixelFormatRGBA8Uint:
+        case MGLPixelFormatRGB10A2Uint:
+        case MGLPixelFormatRG32Uint:
+        case MGLPixelFormatRGBA16Uint:
+        case MGLPixelFormatRGBA32Uint:
+            return MGLStubFSUint;
+        default:
+            return MGLStubFSFloat;
+    }
+}
+
+static id mglRasterizerDiscardStubFragmentFunctionForClass(
+    MGLStubFSValueClass valueClass)
+{
+    static id s_fs[MGLStubFSUint + 1] = { nil, nil, nil };
+    static dispatch_once_t once[MGLStubFSUint + 1];
+
+    dispatch_once(&once[valueClass], ^{
         void *fs = NULL;
         char err[256] = {0};
-        if (!safe || !safe->data || safe->size == 0 ||
-            mglRenderCreateAuxFunctions(
-                safe->data, safe->size, safe->hash,
-                "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
-                &vs, &fs, err, sizeof(err)) != 0 || !fs) {
-            NSLog(@"MGL ERROR: discard stub FS unavailable: %s",
-                  err[0] ? err : "asset missing");
-            if (vs) {
-                (void)(__bridge_transfer id)vs;
+        if (valueClass == MGLStubFSFloat) {
+            /* Precompiled aux asset (no runtime source compile). */
+            const MGLAuxShaderAsset *safe =
+                mglAuxShaderAssetFind("safe_fallback");
+            void *vs = NULL;
+            if (!safe || !safe->data || safe->size == 0 ||
+                mglRenderCreateAuxFunctions(
+                    safe->data, safe->size, safe->hash,
+                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                    &vs, &fs, err, sizeof(err)) != 0 || !fs) {
+                NSLog(@"MGL ERROR: discard stub FS unavailable: %s",
+                      err[0] ? err : "asset missing");
+                if (vs) {
+                    (void)(__bridge_transfer id)vs;
+                }
+                return;
             }
-            return;
-        }
-        if (vs) {
             (void)(__bridge_transfer id)vs;
+        } else {
+            /* Integer-format targets reject a float4 output, and no
+             * precompiled integer stub asset ships in the aux table.
+             * Compile the integer zero stub at runtime through the
+             * self-hosted GLSL->AIR backend (the same path real programs
+             * take; its fragment output carries the correct
+             * air.render_target int/uint type). */
+            static const char *s_stubSource[MGLStubFSUint + 1] = {
+                NULL,
+                "#version 330\n"
+                "out ivec4 mgl_stub_color_int;\n"
+                "void main() { mgl_stub_color_int = ivec4(0); }\n",
+                "#version 330\n"
+                "out uvec4 mgl_stub_color_uint;\n"
+                "void main() { mgl_stub_color_uint = uvec4(0u); }\n",
+            };
+            unsigned char *bytes = NULL;
+            size_t size = 0;
+            if (mglShaderCompileGLSL(
+                    s_stubSource[valueClass], MGL_STAGE_FRAGMENT,
+                    &bytes, &size, err, sizeof(err)) != 0 || !bytes) {
+                NSLog(@"MGL ERROR: stub FS compile failed: %s",
+                      err[0] ? err : "unknown");
+                return;
+            }
+            if (mglRenderCreateAuxFunctions(
+                    bytes, size, 0u, NULL, "main",
+                    NULL, &fs, err, sizeof(err)) != 0 || !fs) {
+                NSLog(@"MGL ERROR: stub FS function load failed: %s",
+                      err[0] ? err : "unknown");
+                free(bytes);
+                return;
+            }
+            free(bytes);
         }
-        s_fs = (__bridge_transfer id)fs;
+        s_fs[valueClass] = (__bridge_transfer id)fs;
     });
-    return s_fs;
+    return s_fs[valueClass];
 }
 
 static id mglRenderPassDefaultDrawBufferAttachment(
@@ -4568,7 +4642,42 @@ static GLenum mglPassthroughDeclType(
      * buffer stores when Metal rasterization is off (same as
      * GL_RASTERIZER_DISCARD). Stub FS + cleared color masks below. */
     if (!fragmentFunction && rasterizerDiscard) {
-        fragmentFunction = mglRasterizerDiscardStubFragmentFunction();
+        /* Metal validates the stub FS output against color attachment 0's
+         * format: float4 stubs are rejected by integer-format targets.
+         * Resolve the format early (read-only; the FBO walk below re-binds
+         * the same textures) and pick the matching zero-return variant. */
+        uint32_t stubColor0 = MGLPixelFormatInvalid;
+        if (MGL_STATE(ctx)->framebuffer) {
+            Framebuffer *stubFbo = MGL_STATE(ctx)->framebuffer;
+            for (int i = 0; i < MGL_STATE(ctx)->max_color_attachments; i++) {
+                if (!stubFbo->color_attachments[i].texture) {
+                    if ((stubFbo->color_attachment_bitfield >> (i + 1)) == 0) {
+                        break;
+                    }
+                    continue;
+                }
+                Texture *stubTex = [self framebufferAttachmentTexture:
+                                            &stubFbo->color_attachments[i]];
+                if (stubTex && stubTex->mtl_data) {
+                    stubColor0 = mtlPixelFormatForGLTex(stubTex);
+                    if (stubColor0 != MGLPixelFormatInvalid) {
+                        break;
+                    }
+                }
+            }
+        } else if (_renderPassManager.state &&
+                   mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+            stubColor0 = mglRenderPassTextureInfo(
+                mglRenderPassColorTextureFor(_renderPassManager.state, 0))
+                .pixel_format;
+        } else if (_drawable && [self mglDrawableTexture]) {
+            stubColor0 = mglRenderPassTextureInfo([self mglDrawableTexture])
+                .pixel_format;
+        } else {
+            stubColor0 = ctx->pixel_format.mtl_pixel_format;
+        }
+        fragmentFunction = mglRasterizerDiscardStubFragmentFunctionForClass(
+            mglPixelFormatValueClass(stubColor0));
     }
     if (kMGLVerbosePipelineLogs) {
         NSLog(@"MGL PIPELINE DESC vs=%p fs=%p",
@@ -6661,10 +6770,20 @@ stencil_format_ok:;
             void *safeVS = NULL;
             void *safeFS = NULL;
             char libError[512] = {0};
+            /* Match the stub FS output class to color0's format so integer
+             * attachments don't reject the float4 fallback FS. */
+            const char *safeFSName = "mgl_safe_fallback_fs";
+            MGLStubFSValueClass safeClass =
+                mglPixelFormatValueClass(safeColor0Format);
+            if (safeClass == MGLStubFSInt) {
+                safeFSName = "mgl_safe_fallback_fs_int";
+            } else if (safeClass == MGLStubFSUint) {
+                safeFSName = "mgl_safe_fallback_fs_uint";
+            }
             if (!safe || !safe->data || safe->size == 0 ||
                 mglRenderCreateAuxFunctions(
                     safe->data, safe->size, safe->hash,
-                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                    "mgl_safe_fallback_vs", safeFSName,
                     &safeVS, &safeFS,
                     libError, sizeof(libError)) != 0 || !safeVS) {
                 NSLog(@"MGL CRITICAL: safe fallback asset unavailable "

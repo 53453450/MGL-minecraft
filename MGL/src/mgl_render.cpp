@@ -11612,7 +11612,13 @@ MTL::Library* loadAuxLibraryLocked(mgl::Renderer& renderer,
     auto found = renderer.auxLibraries.find(asset_hash);
     if (found != renderer.auxLibraries.end()) return found->second;
     const uint64_t computedHash = mglAuxAssetHash(bytes, size);
-    if (computedHash != asset_hash) {
+    if (asset_hash == 0) {
+        /* Runtime-compiled blob (no committed table row): key the library
+         * cache on the content hash instead of a table fingerprint. */
+        asset_hash = computedHash;
+        auto cached = renderer.auxLibraries.find(asset_hash);
+        if (cached != renderer.auxLibraries.end()) return cached->second;
+    } else if (computedHash != asset_hash) {
         if (err && errcap) {
             snprintf(err, errcap,
                      "aux shader asset hash mismatch (table 0x%016llx, computed 0x%016llx)",
@@ -11948,7 +11954,7 @@ int mglRenderCreateAuxFunctions(
     size_t errcap) {
     if (vertex_out) *vertex_out = nullptr;
     if (fragment_out) *fragment_out = nullptr;
-    if (!vertex_out || !vertex_entry) {
+    if (!vertex_out) {
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
@@ -11961,9 +11967,13 @@ int mglRenderCreateAuxFunctions(
     MTL::Library* library = loadAuxLibraryLocked(
         renderer, bytes, size, asset_hash, err, errcap);
     if (!library) return -1;
-    MTL::Function* vertexFunction =
-        newAuxEntryFunction(library, vertex_entry, err, errcap);
-    if (!vertexFunction) return -1;
+    /* vertex_entry may be NULL for fragment-only blobs (e.g. stub FS
+     * metallibs compiled at runtime). */
+    MTL::Function* vertexFunction = nullptr;
+    if (vertex_entry) {
+        vertexFunction = newAuxEntryFunction(library, vertex_entry, err, errcap);
+        if (!vertexFunction) return -1;
+    }
     MTL::Function* fragmentFunction =
         newAuxEntryFunction(library, fragment_entry, err, errcap);
     if (fragment_entry && !fragmentFunction) {
