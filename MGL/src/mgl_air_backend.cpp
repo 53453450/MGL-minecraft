@@ -13122,13 +13122,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 varyings.push_back(&v);
             }
         }
-        if (isTessCapture) {
-            /* AGX rejects RasterizationEnabled + void VS. Tess capture must
-             * return position so GS/tess pre-pass can keep rasterization on
-             * (stub FS + zero color masks) and still execute VS SSBO stores. */
+        if (isTessCapture || isCullCapture) {
+            if (getenv("MGL_XFB_DBG")) {
+                fprintf(stderr, "[XFBDBG] retTy=float4 capture=%d isVS=%d\n",
+                        capture, (int)isVS);
+            }
+            /* AGX rejects RasterizationEnabled + void VS. Tess/cull capture
+             * must return position so the discard-draw pipeline can keep
+             * rasterization on (stub FS + zero color masks) and still
+             * execute VS SSBO stores / cull-distance capture.  The real
+             * payload still travels through the slot-29 record buffer. */
             retTy = llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 4);
         } else if (isKernel || isCapture) {
+            if (getenv("MGL_XFB_DBG")) {
+                fprintf(stderr, "[XFBDBG] retTy=VOID capture=%d isVS=%d isTES=%d isKernel=%d\n",
+                        capture, (int)isVS, (int)isTES, (int)isKernel);
+            }
             retTy = llvm::Type::getVoidTy(ctx);
         } else if (isTES) {
             /* Apple's post-tessellation ABI returns a packed output record,
@@ -15854,7 +15864,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     storeRecordSlot(varying->location, mt, value);
                 }
             }
-            if (isTessCapture)
+            if (isTessCapture || isCullCapture)
                 b.CreateRet(assembleReturn(cg));
             else
                 b.CreateRetVoid();
@@ -16854,7 +16864,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
 
     std::vector<llvm::Metadata *> outNodes;   /* outputs / render targets */
-    if (isTessCapture) {
+    if (isTessCapture || isCullCapture) {
+        /* Both capture kernels return float4 position: AGX rejects a
+         * rasterization-enabled pipeline whose vertex function returns
+         * void (or lacks [[position]]).  The real XFB/cull payload travels
+         * through the slot-29 record buffer. */
         outNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::MDString::get(ctx, "air.position"),
             llvm::MDString::get(ctx, "air.arg_type_name"),

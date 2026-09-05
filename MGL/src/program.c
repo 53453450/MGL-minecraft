@@ -1514,6 +1514,13 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                     cull_capture_bytes;
                 pptr->modules[stage].metallib_cull_capture_size =
                     cull_capture_size;
+                if (getenv("MGL_DUMP_AIR")) {
+                    FILE *f = fopen("/tmp/cullcap.air", "wb");
+                    if (f) {
+                        fwrite(cull_capture_bytes, 1, cull_capture_size, f);
+                        fclose(f);
+                    }
+                }
             } else {
                 fprintf(stderr,
                         "MGL WARNING: AIR cull-distance capture compile failed "
