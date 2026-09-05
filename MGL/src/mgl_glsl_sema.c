@@ -1357,6 +1357,14 @@ typedef enum {
     BI_ARG_SRECT,   /* sampler2DRect */
     BI_ARG_S3D,     /* sampler3D */
     BI_ARG_SCUBE,   /* samplerCube */
+    BI_ARG_SCUBEA,  /* samplerCubeArray */
+    BI_ARG_S1D_SHADOW,   /* sampler1DShadow */
+    BI_ARG_S2D_SHADOW,   /* sampler2DShadow */
+    BI_ARG_SCUBE_SHADOW, /* samplerCubeShadow */
+    BI_ARG_SRECT_SHADOW, /* sampler2DRectShadow */
+    BI_ARG_S1DA_SHADOW,  /* sampler1DArrayShadow */
+    BI_ARG_S2DA_SHADOW,  /* sampler2DArrayShadow */
+    BI_ARG_SCUBEA_SHADOW,/* samplerCubeArrayShadow */
     BI_ARG_S2DMS,   /* sampler2DMS */
     BI_ARG_S2DMSA,  /* sampler2DMSArray */
     BI_ARG_SBUF,      /* samplerBuffer */
@@ -1423,6 +1431,21 @@ static const BiFn kBuiltins[] = {
     { "texture",    2, { BI_ARG_S2DMSA, BI_ARG_VEC3 }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_S3D,   BI_ARG_VEC3 }, BI_RET_SAMP },
     { "texture",    2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_SAMP },
+    { "texture",    2, { BI_ARG_SCUBEA, BI_ARG_VEC4 }, BI_RET_SAMP },
+    { "texture",    3, { BI_ARG_SCUBEA, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_SAMP },
+    /* Shadow samplers return float (GLSL 4.60 §8.9). */
+    { "texture",    2, { BI_ARG_S1D_SHADOW, BI_ARG_VEC3 }, BI_RET_FLOAT },
+    { "texture",    3, { BI_ARG_S1D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_FLOAT },
+    { "texture",    2, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3 }, BI_RET_FLOAT },
+    { "texture",    3, { BI_ARG_S2D_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_FLOAT },
+    { "texture",    2, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4 }, BI_RET_FLOAT },
+    { "texture",    3, { BI_ARG_SCUBE_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_FLOAT },
+    { "texture",    2, { BI_ARG_SRECT_SHADOW, BI_ARG_VEC3 }, BI_RET_FLOAT },
+    { "texture",    2, { BI_ARG_S1DA_SHADOW, BI_ARG_VEC3 }, BI_RET_FLOAT },
+    { "texture",    3, { BI_ARG_S1DA_SHADOW, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_FLOAT },
+    { "texture",    2, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4 }, BI_RET_FLOAT },
+    { "texture",    3, { BI_ARG_S2DA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_FLOAT },
+    { "texture",    3, { BI_ARG_SCUBEA_SHADOW, BI_ARG_VEC4, BI_ARG_FLOAT }, BI_RET_FLOAT },
     { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_SAMP },
     { "textureGrad", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_SAMP },
     { "dFdx", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -1847,6 +1870,30 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_SCUBE:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_CUBE &&
                !t->tex_depth;
+    case BI_ARG_SCUBEA:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_CUBE_ARRAY && !t->tex_depth;
+    case BI_ARG_S1D_SHADOW:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_1D &&
+               t->tex_depth;
+    case BI_ARG_S2D_SHADOW:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_2D &&
+               t->tex_depth;
+    case BI_ARG_SCUBE_SHADOW:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_CUBE &&
+               t->tex_depth;
+    case BI_ARG_SRECT_SHADOW:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_RECT && t->tex_depth;
+    case BI_ARG_S1DA_SHADOW:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_1D_ARRAY && t->tex_depth;
+    case BI_ARG_S2DA_SHADOW:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_2D_ARRAY && t->tex_depth;
+    case BI_ARG_SCUBEA_SHADOW:
+        return t->kind == MGLIR_TYPE_SAMPLER &&
+               t->tex_kind == MGLIR_TEX_CUBE_ARRAY && t->tex_depth;
     case BI_ARG_SBUF:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_BUFFER &&
                !t->tex_depth;

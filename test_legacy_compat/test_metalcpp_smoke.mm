@@ -29,6 +29,11 @@ extern "C" int mglAirLoadLibrary(const void *, const unsigned char *, size_t,
 extern "C" int mglAirCreateRenderPipelineWithArchive(
     const void *, void *, void *, const MGLRenderPipelineDescriptorState *,
     void *, void **, char *, size_t) { return -1; }
+extern "C" MGLShaderResource *mglProgramFindStageOutputForXFBName(
+    Program *, int, const char *)
+{
+    return NULL;
+}
 static uint64_t s_metalReleaseCount = 0;
 static uint64_t s_metalCreateCount = 0;
 extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
@@ -1391,7 +1396,7 @@ static int verifyAuxShaderAssets(void) {
         size_t expectedEntries;
     } kAssets[] = {
         {"scaled_blit", "mgl_scaled_blit_vs", 2},
-        {"scaled_blit_cs", "mgl_scaled_blit_cs", 1},
+        {"scaled_blit_cs", "mgl_scaled_blit_cs", 3},
         {"scaled_depth_blit", "mgl_scaled_depth_blit_vs", 2},
         {"msaa_integer_resolve", "mgl_msaa_resolve_uint", 2},
         {"clear_rect", "mgl_clear_rect_vs", 2},
@@ -6667,6 +6672,7 @@ static int verifyBufferSlotRegistry(void) {
     }
 
     program.tess_gen_mode = GL_ISOLINES;
+    program.tess_eval_compute = GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 24u,
                                           _TESS_EVALUATION_SHADER) ||
         !mglBufferSlotConflictsForProgram(&program, 31u,
@@ -6710,6 +6716,7 @@ static int verifyBufferSlotRegistry(void) {
 
     program = {};
     program.tess_gen_mode = GL_ISOLINES;
+    program.tess_eval_compute = GL_TRUE;
     program.modules[_TESS_EVALUATION_SHADER].needs_runtime_array_size_buffer =
         GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 23u,

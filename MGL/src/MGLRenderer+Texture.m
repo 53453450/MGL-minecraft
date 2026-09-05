@@ -1090,6 +1090,9 @@ static void mglTextureCopyTextureToBuffer(
         }
         if (uploaded) {
             uploadedAny = true;
+            /* CPU refreshed Metal mip while a Y-flip sampled copy may still
+             * hold the previous RT contents for that level. */
+            mglMarkGLSampledCopyLevelDirty(tex, op->level);
         } else {
             failedAny = true;
         }
@@ -1758,6 +1761,9 @@ static void mglTextureCopyTextureToBuffer(
         .packed_bit_widths = packedBitWidths,
         .packed_shifts = packedShifts,
         .packed_output_bytes = (uint32_t)packedOutputBytes,
+        /* Integer RTs retain GL row order after CPU upload + FragCoord remap;
+         * flipping here Y-mirrors glGetTexImage. */
+        .flip_y = 0,
     };
     if (mglRenderConvertIntegerReadback(&convert) != 0) {
         [self newCommandBuffer];
@@ -3091,6 +3097,22 @@ static void mglTextureCopyTextureToBuffer(
                                                   yorigin:yoffset];
     }
     free(dsMetalUpload);
+    if (uploaded && tex->is_render_target) {
+        /* Direct CPU→Metal refresh of an FBO-attached texture must invalidate
+         * the Y-flip sampled copy.  textures.c also releases the copy, but
+         * bumping write_version keeps any concurrent/lazy refresh coherent
+         * with the post-upload Metal contents (KHR-GL46.texture_barrier).
+         * Rebuild immediately so every MRT attachment has a fresh Y-flip
+         * copy before the first feedback draw (color1+ previously rebuilt
+         * only as a side-effect of color0's sample-gate repair). */
+        mglMarkTextureLevelMetalFilled(tex, level, packedBytes);
+        id source = (__bridge id)(tex->mtl_data);
+        if (source) {
+            [self updateGLSampledRenderTargetCopyForTexture:tex
+                                                     source:source
+                                                     reason:"texSubImage_metal_fill"];
+        }
+    }
     return uploaded;
 }
 
@@ -3927,6 +3949,8 @@ static void mglTextureCopyTextureToBuffer(
 
             if (levelSkipped)
                 anyLevelSkipped = YES;
+            else
+                mglMarkGLSampledCopyLevelDirty(tex, (GLuint)level);
         }
     }
 
@@ -6135,7 +6159,12 @@ static void mglTextureCopyTextureToBuffer(
             effective_mipmap_levels = tex->num_levels;
         }
 
-        if (!tex->is_render_target && tex->num_levels < effective_mipmap_levels)
+        /* Cap Metal storage to populated GL levels for both sampled and RT
+         * textures. Skipping this for is_render_target left capacity-sized
+         * chains (e.g. mipmap_levels=11 with num_levels=2) uninitialized above
+         * the upload window; sampled-copy only Y-flips num_levels, so a wrong
+         * MAX_LEVEL/view would sample empty high mips (MC blocks atlas). */
+        if (tex->num_levels > 0u && tex->num_levels < effective_mipmap_levels)
         {
             static uint64_t s_mipmap_count_mismatch_logs = 0;
             if (++s_mipmap_count_mismatch_logs <= 8 || (s_mipmap_count_mismatch_logs % 2048) == 0) {

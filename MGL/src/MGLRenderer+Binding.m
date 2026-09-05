@@ -107,14 +107,23 @@ static id mglBindingCreateDefaultSampler(void)
             return false;
         }
         const uint64_t requiredRenderTargetUsage = (1ull << 2) | (1ull << 0);
+        /* Prefer populated num_levels over allocation capacity (mipmap_levels).
+         * Capacity-only sizing recreated MC atlases as 11-level Metal textures
+         * when only 2 GL levels were uploaded. */
         NSUInteger requiredMipLevels =
             (tex->target == GL_RENDERBUFFER || tex->samples > 1u)
                 ? 1u
-                : ((tex->mipmap_levels > 1u) ? (NSUInteger)tex->mipmap_levels : 1u);
+                : (tex->num_levels > 1u
+                       ? (NSUInteger)tex->num_levels
+                       : ((tex->mipmap_levels > 1u) ? (NSUInteger)tex->mipmap_levels : 1u));
         BOOL usageMismatch = hasExistingInfo &&
             ((existingInfo.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
+        /* Grow when RT needs more mips; also shrink when populated num_levels
+         * is known and smaller than an over-allocated Metal chain (atlas case). */
         BOOL mipCountMismatch = hasExistingInfo &&
-            requiredMipLevels > existingInfo.mipmap_level_count;
+            (requiredMipLevels > existingInfo.mipmap_level_count ||
+             (tex->num_levels > 1u &&
+              requiredMipLevels < existingInfo.mipmap_level_count));
         if (existingTexture && (usageMismatch || mipCountMismatch)) {
             NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)",
                   tex->name,

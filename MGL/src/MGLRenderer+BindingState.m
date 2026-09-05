@@ -2835,7 +2835,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             if (yflip == MGL_YFLIP_USE_SAMPLED_COPY) {
                 BOOL boundSampledCopy = NO;
                 if (ptr->mtl_gl_sampled_data &&
-                    ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
+                    mglGLSampledCopyContentFresh(ptr) &&
                     mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
                     id sampledCopy = (__bridge id)(ptr->mtl_gl_sampled_data);
                     if (sampledCopy &&
@@ -2876,7 +2876,15 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                             expectedType:expectedType
                                                             expectedKind:expectedKind];
                     if (repairedCopy) {
-                        return false;
+                        /* Stale pre-pass copy kept for FB feedback: bind now.
+                         * Fresh rebuild ended/restored the encoder: retry bind. */
+                        if (!mglGLSampledCopyContentFresh(ptr)) {
+                            texture = (__bridge id)mglSampledTextureViewForBaseLevel(
+                                ptr, (__bridge void *)repairedCopy);
+                            boundSampledCopy = YES;
+                        } else {
+                            return false;
+                        }
                     }
                 }
                 if (!boundSampledCopy && ptr->mtl_gl_sampled_data &&
@@ -3642,7 +3650,14 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
     if (ptr->mtl_data) {
         texture = (__bridge id)(ptr->mtl_data);
-        texture = (__bridge id)mglSampledTextureViewForBaseLevel(ptr, (__bridge void *)texture);
+        /* Defer base-level views for render targets until after the Y-flip
+         * decision.  Creating a live-RT view here pollutes
+         * mtl_base_level_view; a later sampled-copy bind can then race the
+         * cache across MRT slots (texture_barrier color1+). */
+        if (!ptr->is_render_target) {
+            texture = (__bridge id)mglSampledTextureViewForBaseLevel(
+                ptr, (__bridge void *)texture);
+        }
     }
     BOOL sampledNameIsInSampler =
         sampledName && strcmp(sampledName, "InSampler") == 0;
@@ -4093,7 +4108,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (yflip == MGL_YFLIP_USE_SAMPLED_COPY) {
             BOOL boundSampledCopy = NO;
             if (ptr->mtl_gl_sampled_data &&
-                ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
+                mglGLSampledCopyContentFresh(ptr) &&
                 mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
                 directTextureForTrace = texture;
                 id sampledCopy = (__bridge id)(ptr->mtl_gl_sampled_data);
@@ -4149,7 +4164,17 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                         expectedType:expectedType
                                                         expectedKind:expectedKind];
                 if (repairedCopy) {
-                    return false;
+                    /* Stale pre-pass copy kept for FB feedback: bind now.
+                     * Fresh rebuild ended/restored the encoder: retry bind. */
+                    if (!mglGLSampledCopyContentFresh(ptr)) {
+                        sampledCopyForTrace = repairedCopy;
+                        texture = (__bridge id)mglSampledTextureViewForBaseLevel(
+                            ptr, (__bridge void *)repairedCopy);
+                        usedSampledCopyForTrace = YES;
+                        boundSampledCopy = YES;
+                    } else {
+                        return false;
+                    }
                 }
             }
             if (!boundSampledCopy && ptr->mtl_gl_sampled_data &&
@@ -4184,7 +4209,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
         } else {
             /* MGL_YFLIP_USE_ORIGINAL or MGL_YFLIP_USE_ORIGINAL_AND_INJECT:
-             * keep the original texture; no copy needed. */
+             * keep the original texture; no copy needed.  recover deferred
+             * the base-level view for RTs — apply it here. */
+            if (texture && ptr->is_render_target) {
+                texture = (__bridge id)mglSampledTextureViewForBaseLevel(
+                    ptr, (__bridge void *)texture);
+            }
             static uint64_t s_rtSampleCopySkipExistingFlipLogCount = 0;
             uint64_t hit = ++s_rtSampleCopySkipExistingFlipLogCount;
             if (mglTraceLogIsEnabled() && (hit <= 32ull || (hit % 512ull) == 0ull)) {
@@ -4320,7 +4350,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglMipDiagStateChanged(&s_fragSamplerState[textureUnit], signature)) {
             NSLog(@"MGL MIP_DIAG frag unit=%u binding=%u program=%u glTex=%u "
                   @"source=%s minFilter=0x%x magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f "
-                  @"base=%u max=%u glLevels=%u mtlLevels=%lu mtlTex=%p "
+                  @"base=%u max=%u glLevels=%u mtlLevels=%lu mtlW=%lu mtlH=%lu mtlTex=%p "
                   @"renderTarget=%d viaCopy=%d copyLevels=%u dirtyMips=0x%x rtVer=%u copyVer=%u",
                   (unsigned)textureUnit,
                   (unsigned)spirvBinding,
@@ -4336,6 +4366,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   (unsigned)ptr->params.max_level,
                   (unsigned)ptr->num_levels,
                   (unsigned long)(texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u),
+                  (unsigned long)(texture ? mglBindingStateTextureWidth(texture) : 0u),
+                  (unsigned long)(texture ? mglBindingStateTextureHeight(texture) : 0u),
                   texture,
                   ptr->is_render_target ? 1 : 0,
                   usedSampledCopyForTrace ? 1 : 0,

@@ -4256,7 +4256,13 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     } else {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     }
-    mglReleaseGLSampledTextureCopy(ctx, tex, resolved_unpack_buf ? "texSubImage-PBO" : "texSubImage-CPU");
+    /* Direct Metal upload to an RT already rebuilt the Y-flip sampled copy
+     * inside mtlTexSubImageBytes.  Releasing it here forced color1+ to wait
+     * for a later sample-gate repair and left feedback sampling racing the
+     * live attachment (texture_barrier). */
+    if (!(uploaded_direct && tex->is_render_target && tex->mtl_gl_sampled_data)) {
+        mglReleaseGLSampledTextureCopy(ctx, tex, resolved_unpack_buf ? "texSubImage-PBO" : "texSubImage-CPU");
+    }
     mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
     if (trace_upload) {

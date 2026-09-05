@@ -2,7 +2,7 @@
 # Format: asset_name|<metal source>|<comma-separated entry names>
 # The entries must match the functions declared in the .metal source.
 scaled_blit|scaled_blit.metal|mgl_scaled_blit_vs,mgl_scaled_blit_fs
-scaled_blit_cs|scaled_blit_cs.metal|mgl_scaled_blit_cs
+scaled_blit_cs|scaled_blit_cs.metal|mgl_scaled_blit_cs,mgl_scaled_blit_cs_uint,mgl_scaled_blit_cs_int
 scaled_depth_blit|scaled_depth_blit.metal|mgl_scaled_depth_blit_vs,mgl_scaled_depth_blit_fs
 msaa_integer_resolve|msaa_integer_resolve.metal|mgl_msaa_resolve_uint,mgl_msaa_resolve_int
 clear_rect|clear_rect.metal|mgl_clear_rect_vs,mgl_clear_rect_fs

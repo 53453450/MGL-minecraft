@@ -789,6 +789,8 @@ typedef struct MGLRenderIntegerReadbackConvertParams_t {
     const uint32_t *packed_bit_widths;
     const uint32_t *packed_shifts;
     uint32_t packed_output_bytes;
+    /* Single-sample RT Metal storage is top-row-first; flip to GL bottom-up. */
+    int flip_y;
 } MGLRenderIntegerReadbackConvertParams;
 
 /* integer texture readback CPU conversion — the

@@ -6754,7 +6754,8 @@ int mglRenderConvertIntegerReadback(
         p->source_component_count * p->source_component_bytes;
     for (uint32_t y = 0; y < p->copy_h; y++) {
         const uint8_t* srcRow = p->src + (uint64_t)y * p->src_bytes_per_row;
-        uint64_t outputY = p->dst_y + y;
+        uint64_t outputY = p->flip_y ? (p->dst_y + (p->copy_h - 1u - y))
+                                    : (p->dst_y + y);
         uint8_t* dstRow = (uint8_t *)p->dst + outputY * p->dst_bytes_per_row;
         for (uint32_t x = 0; x < p->copy_w; x++) {
             const uint8_t* s = srcRow + x * src_pixel_bytes;

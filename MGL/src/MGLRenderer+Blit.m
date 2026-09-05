@@ -15,6 +15,7 @@
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_aux_assets.h"
+#include <stdio.h>
 
 /* Shared state for mtlBlitFramebuffer color blit helpers.
  * Filled after attachment resolution and clip computation, then
@@ -618,26 +619,44 @@ static id mglLookupAuxRenderPipeline(
         pixelFormat = MGLPixelFormatBGRA8Unorm;
     }
 
+    MGLTextureDataKind dataKind =
+        mglTextureDataKindForPixelFormat(pixelFormat);
+    const char *entryName = "mgl_scaled_blit_cs";
+    if (dataKind == MGLTextureDataKindUint) {
+        entryName = "mgl_scaled_blit_cs_uint";
+    } else if (dataKind == MGLTextureDataKindSint) {
+        entryName = "mgl_scaled_blit_cs_int";
+    } else if (dataKind == MGLTextureDataKindDepth) {
+        return nil;
+    }
+    /* Encode data kind so uint/int/float caches do not collide. */
+    uint64_t variant =
+        ((uint64_t)(uint32_t)dataKind << 32) | (uint64_t)pixelFormat;
+
     id cached =
         mglLookupAuxComputePipeline(
-            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT,
-            (uint64_t)pixelFormat);
+            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, variant);
     if (cached) return cached;
 
     NSError *error = nil;
     id pipeline =
         mglCreateAuxComputePipelineFromAsset(
-            "scaled_blit_cs", "mgl_scaled_blit_cs",
+            "scaled_blit_cs", entryName,
             MGL_RENDER_AUX_COMPUTE_SCALED_BLIT,
-            (uint64_t)pixelFormat, &error);
+            variant, &error);
     if (!pipeline) {
-        NSLog(@"MGL ERROR: scaled blit asset compute pipeline create failed pixelFormat=%lu error=%@",
-              (unsigned long)pixelFormat, error);
+        NSLog(@"MGL ERROR: scaled blit asset compute pipeline create failed pixelFormat=%lu kind=%s entry=%s error=%@",
+              (unsigned long)pixelFormat,
+              mglTextureDataKindName(dataKind),
+              entryName,
+              error);
         if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return nil;
     }
-    NSLog(@"MGL INFO: created scaled blit compute pipeline pixelFormat=%lu (Metal-cpp asset)",
-          (unsigned long)pixelFormat);
+    NSLog(@"MGL INFO: created scaled blit compute pipeline pixelFormat=%lu kind=%s entry=%s (Metal-cpp asset)",
+          (unsigned long)pixelFormat,
+          mglTextureDataKindName(dataKind),
+          entryName);
     return pipeline;
 }
 
@@ -933,8 +952,17 @@ static id mglLookupAuxRenderPipeline(
         mglBlitTextureInfo(source).mipmap_level_count == 0u ||
         mglBlitTextureInfo(source).width == 0u ||
         mglBlitTextureInfo(source).height == 0u ||
-        mglMetalPixelFormatIsDepthOrStencil(mglBlitTextureInfo(source).pixel_format) ||
-        mglTextureDataKindForPixelFormat(mglBlitTextureInfo(source).pixel_format) != MGLTextureDataKindFloat) {
+        mglMetalPixelFormatIsDepthOrStencil(mglBlitTextureInfo(source).pixel_format)) {
+        return NO;
+    }
+
+    /* Float + integer color RTs need a GL-sampled copy for FBO feedback
+     * (same texture as attachment and sampler).  Depth/stencil stay out. */
+    MGLTextureDataKind kind =
+        mglTextureDataKindForPixelFormat(mglBlitTextureInfo(source).pixel_format);
+    if (kind != MGLTextureDataKindFloat &&
+        kind != MGLTextureDataKindUint &&
+        kind != MGLTextureDataKindSint) {
         return NO;
     }
 
@@ -983,8 +1011,7 @@ static id mglLookupAuxRenderPipeline(
         return NO;
     }
 
-    if (tex->mtl_gl_sampled_data &&
-        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version) {
+    if (mglGLSampledCopyContentFresh(tex)) {
         return YES;
     }
     /* Stale (or no copy yet): safe to refresh only if the texture is not an
@@ -1018,8 +1045,7 @@ static id mglLookupAuxRenderPipeline(
                     (unsigned)tex->mtl_gl_sampled_write_version,
                     (unsigned)tex->mtl_render_target_write_version);
     }
-    return ok && tex->mtl_gl_sampled_data &&
-                tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version;
+    return ok && mglGLSampledCopyContentFresh(tex);
 }
 
 - (id)freshGLSampledRenderTargetCopyForSampling:(Texture *)tex
@@ -1041,14 +1067,36 @@ static id mglLookupAuxRenderPipeline(
     id sampledCopy = tex->mtl_gl_sampled_data
         ? (__bridge id)(tex->mtl_gl_sampled_data)
         : nil;
-    if (sampledCopy &&
-        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version &&
+    BOOL copyTypeOk =
+        sampledCopy &&
         (expectedType == 0 || mglBlitTextureInfo(sampledCopy).texture_type == expectedType) &&
-        mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBlitTextureInfo(sampledCopy).pixel_format, expectedKind)) {
+        mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBlitTextureInfo(sampledCopy).pixel_format, expectedKind);
+    if (sampledCopy && mglGLSampledCopyContentFresh(tex) && copyTypeOk) {
         return sampledCopy;
     }
 
     BOOL isFbAttachment = mglTextureIsAttachmentOfFramebuffer(_renderPassManager.state->renderPassFramebuffer, tex);
+
+    /* Feedback sampling of a color attachment mid-pass must keep the
+     * pre-pass Y-flip copy.  Rebuilding from the live RT between drawArrays
+     * (version miss after MarkRenderTargetWritten) feeds already-written
+     * texels back into later draws and breaks KHR-GL46.texture_barrier
+     * same-texel-rw (cover-once across multiple draws, no barrier).
+     * glTextureBarrier / end_render_pass refresh the copy instead. */
+    if (isFbAttachment && copyTypeOk) {
+        if (mglTraceLogIsEnabled()) {
+            mglTraceLog("RT_SAMPLE_COPY_REPAIR_KEEP stage=%s program=%u binding=%u unit=%u tex=%u label=\"%s\" reason=fb-attachment-prepass-copy writeVer=%u rtVer=%u",
+                        stage ? stage : "",
+                        (unsigned)programName,
+                        (unsigned)binding,
+                        (unsigned)unit,
+                        (unsigned)tex->name,
+                        mglTraceTextureLabel(tex),
+                        (unsigned)tex->mtl_gl_sampled_write_version,
+                        (unsigned)tex->mtl_render_target_write_version);
+        }
+        return sampledCopy;
+    }
 
     if ([self currentRenderPassUsesTexture:source] && !isFbAttachment) {
         /* The texture is used by the current render pass in a non-attachment
@@ -1091,11 +1139,36 @@ static id mglLookupAuxRenderPipeline(
         [self endRenderEncodingLocked];
     }
 
+    /* texSubImage may leave DIRTY_TEXTURE_DATA after releasing the sampled
+     * copy (direct MTL upload skipped/failed).  Rebuild the Y-flip copy from
+     * Metal only after flushing CPU backing, otherwise feedback sampling sees
+     * the previous clear/RT contents (KHR-GL46.texture_barrier). */
+    if ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0 &&
+        tex->mtl_data &&
+        !tex->metal_data_authoritative) {
+        id dirtyMetal = (__bridge id)(tex->mtl_data);
+        BOOL flushed = NO;
+        if (tex->target == GL_TEXTURE_2D &&
+            mglBlitTextureInfo(dirtyMetal).texture_type == MGLTextureType2D &&
+            !mglTextureUploadNeedsSwizzleBake(tex)) {
+            flushed = [self uploadFullCPUTextureDataIntoTexture:tex
+                                                          metal:dirtyMetal
+                                                         reason:"sample_gate_miss_repair.dirty"];
+        }
+        if (flushed) {
+            tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+            if (tex->is_render_target) {
+                tex->mtl_render_target_write_version++;
+                mglMarkGLSampledCopyLevelDirty(tex, 0u);
+            }
+        }
+    }
+
     sampledCopy = tex->mtl_gl_sampled_data
         ? (__bridge id)(tex->mtl_gl_sampled_data)
         : nil;
     if (!(sampledCopy &&
-          tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version &&
+          mglGLSampledCopyContentFresh(tex) &&
           (expectedType == 0 || mglBlitTextureInfo(sampledCopy).texture_type == expectedType) &&
           mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBlitTextureInfo(sampledCopy).pixel_format, expectedKind))) {
         source = tex->mtl_data ? (__bridge id)(tex->mtl_data) : nil;
@@ -1119,7 +1192,7 @@ static id mglLookupAuxRenderPipeline(
 
     BOOL fresh =
         sampledCopy &&
-        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version &&
+        mglGLSampledCopyContentFresh(tex) &&
         (expectedType == 0 || mglBlitTextureInfo(sampledCopy).texture_type == expectedType) &&
         mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBlitTextureInfo(sampledCopy).pixel_format, expectedKind);
     if (mglTraceLogIsEnabled()) {
@@ -1272,6 +1345,7 @@ static id mglLookupAuxRenderPipeline(
     // full Metal-vs-GL Y-origin rationale.
     BOOL yFlipCopy = YES;
 
+    uint32_t dirtyBefore = tex->mtl_gl_sampled_dirty_mip_mask;
     uint32_t copiedMask = 0u;
 
     /* Prefer compute path: single MTLComputeCommandEncoder dispatches all dirty
@@ -1341,6 +1415,24 @@ static id mglLookupAuxRenderPipeline(
     }
 
     if (!useComputePath) {
+        /* Render-path scaled blit is float-only; integer RTs must use
+         * the uint/int compute kernels. */
+        MGLTextureDataKind copyKind =
+            mglTextureDataKindForPixelFormat(
+                mglBlitTextureInfo(destination).pixel_format);
+        if (copyKind == MGLTextureDataKindUint ||
+            copyKind == MGLTextureDataKindSint) {
+            static uint64_t s_intCopyFailCount = 0;
+            uint64_t hit = ++s_intCopyFailCount;
+            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                NSLog(@"MGL RT-SAMPLE-COPY integer compute path unavailable tex=%u kind=%s reason=%s hit=%llu",
+                      (unsigned)tex->name,
+                      mglTextureDataKindName(copyKind),
+                      reason ? reason : "(null)",
+                      (unsigned long long)hit);
+            }
+            return NO;
+        }
 
         id pipeline = [self scaledBlitPipelineForPixelFormat:mglBlitTextureInfo(destination).pixel_format];
         if (!pipeline) {
@@ -1450,7 +1542,24 @@ static id mglLookupAuxRenderPipeline(
     }
 
     if (mglTraceLogIsEnabled()) {
-        mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu srcLevels=%lu dstLevels=%lu glLevels=%u mips=%u base=%u max=%u writeVersion=%u reason=%s compute=%d",
+        char levelSizes[160];
+        size_t levelSizesLen = 0;
+        levelSizes[0] = '\0';
+        for (NSUInteger lvl = 0u; lvl < mipLevels && lvl < 8u; lvl++) {
+            NSUInteger mipW = MAX(1u, mglBlitTextureInfo(source).width >> lvl);
+            NSUInteger mipH = MAX(1u, mglBlitTextureInfo(source).height >> lvl);
+            int n = snprintf(levelSizes + levelSizesLen,
+                             sizeof(levelSizes) - levelSizesLen,
+                             "%s%lux%lu",
+                             levelSizesLen ? "," : "",
+                             (unsigned long)mipW,
+                             (unsigned long)mipH);
+            if (n < 0 || (size_t)n >= sizeof(levelSizes) - levelSizesLen) {
+                break;
+            }
+            levelSizesLen += (size_t)n;
+        }
+        mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu srcLevels=%lu dstLevels=%lu glLevels=%u mips=%u base=%u max=%u writeVersion=%u dirtyBefore=0x%x copyMask=0x%x copiedMask=0x%x dirtyAfter=0x%x levelSizes=%s reason=%s compute=%d",
                     (unsigned)tex->name,
                     mglTraceTextureLabel(tex),
                     0,
@@ -1467,6 +1576,11 @@ static id mglLookupAuxRenderPipeline(
                     (unsigned)tex->params.base_level,
                     (unsigned)tex->params.max_level,
                     (unsigned)tex->mtl_gl_sampled_write_version,
+                    (unsigned)dirtyBefore,
+                    (unsigned)copyMask,
+                    (unsigned)copiedMask,
+                    (unsigned)tex->mtl_gl_sampled_dirty_mip_mask,
+                    levelSizes,
                     reason ? reason : "(null)",
                     useComputePath ? 1 : 0);
     }

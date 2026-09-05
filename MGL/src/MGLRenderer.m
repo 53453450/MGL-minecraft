@@ -912,6 +912,18 @@ Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx, FBOAttachment *a
     return NULL;
 }
 
+void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level)
+{
+    if (!tex || !tex->mtl_gl_sampled_data) {
+        return;
+    }
+    if (level < 32u) {
+        tex->mtl_gl_sampled_dirty_mip_mask |= (uint32_t)1u << level;
+    } else {
+        tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
+    }
+}
+
 void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
                                                  GLuint level,
                                                  const char *caller,
@@ -933,11 +945,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
     texLevel->last_src_hash = 0ull;
 
     tex->mtl_render_target_write_version++;
-    if (level < 32u) {
-        tex->mtl_gl_sampled_dirty_mip_mask |= (uint32_t)1u << level;
-    } else {
-        tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
-    }
+    mglMarkGLSampledCopyLevelDirty(tex, level);
 
 
     tex->mtl_render_yflip_authority = (tex->mtl_render_target_write_version << 1);
@@ -1077,6 +1085,10 @@ BOOL mglRendererGLSampledCopyLooksUsable(Texture *tex,
     if (tex->mtl_gl_sampled_width != (GLuint)mglRendererTextureFieldWidth(sampledCopy) ||
         tex->mtl_gl_sampled_height != (GLuint)mglRendererTextureFieldHeight(sampledCopy) ||
         tex->mtl_gl_sampled_format != (GLuint)mglRendererTextureFieldFormat(sampledCopy)) {
+        return NO;
+    }
+
+    if (tex->mtl_gl_sampled_dirty_mip_mask != 0u) {
         return NO;
     }
 
