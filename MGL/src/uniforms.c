@@ -117,6 +117,18 @@ static bool mglUniformIdentityGateEnabled(void)
     return cached == 1;
 }
 
+/* Debug-only uniform upload trace. Cached once — getenv on every glUniform*
+ * cost ~100ns and dominated the hot path in microbenchmarks. */
+static bool mglUniformUploadDiagEnabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *v = getenv("MGL_DIAG_UNIFORM_UPLOAD");
+        cached = (v && v[0] != '\0' && strcmp(v, "0") != 0) ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 #define MGL_SAFE_CSTRING_MAX 4096u
 
 static size_t mglSafeCStringReadableChunkSize(const char *str, size_t remaining)
@@ -3033,7 +3045,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
      */
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
-    if (getenv("MGL_DIAG_UNIFORM_UPLOAD"))
+    if (mglUniformUploadDiagEnabled())
         fprintf(stderr, "MGL UNIFORM UPLOAD prog=%u loc=%d size=%lld w0=%u w1=%u\n",
                 (unsigned)program->name, location, (long long)size,
                 size >= 4 ? *(const uint32_t *)ptr : 0u,
