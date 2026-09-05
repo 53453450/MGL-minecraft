@@ -13123,10 +13123,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
         }
         if (isTessCapture || isCullCapture) {
-            if (getenv("MGL_XFB_DBG")) {
-                fprintf(stderr, "[XFBDBG] retTy=float4 capture=%d isVS=%d\n",
-                        capture, (int)isVS);
-            }
             /* AGX rejects RasterizationEnabled + void VS. Tess/cull capture
              * must return position so the discard-draw pipeline can keep
              * rasterization on (stub FS + zero color masks) and still
@@ -13135,10 +13131,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             retTy = llvm::FixedVectorType::get(
                 llvm::Type::getFloatTy(ctx), 4);
         } else if (isKernel || isCapture) {
-            if (getenv("MGL_XFB_DBG")) {
-                fprintf(stderr, "[XFBDBG] retTy=VOID capture=%d isVS=%d isTES=%d isKernel=%d\n",
-                        capture, (int)isVS, (int)isTES, (int)isKernel);
-            }
             retTy = llvm::Type::getVoidTy(ctx);
         } else if (isTES) {
             /* Apple's post-tessellation ABI returns a packed output record,
