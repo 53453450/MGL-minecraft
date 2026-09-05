@@ -132,10 +132,14 @@ AUX_ASSET_STAMP := $(AUX_BUILD_DIR)/aux_assets.stamp
 
 $(AUX_BUILD_DIR)/%.air: MGL/aux_shaders/%.metal
 	@mkdir -p $(dir $@)
+	@test -n "$(MGL_METAL)" || { echo "ERROR: metal compiler not found (xcrun --find metal); refusing to emit an empty $@"; exit 1; }
 	$(MGL_METAL) -c $< -o $@
+	@test -s $@ && test $$(stat -f%z $@) -gt 1024 || { echo "ERROR: $@ is empty or truncated (metal toolchain broken?)"; exit 1; }
 
 $(AUX_BUILD_DIR)/%.metallib: $(AUX_BUILD_DIR)/%.air
+	@test -n "$(MGL_METALLIB)" || { echo "ERROR: metallib tool not found (xcrun --find metallib); refusing to emit an empty $@"; exit 1; }
 	$(MGL_METALLIB) $< -o $@
+	@test -s $@ && test $$(stat -f%z $@) -gt 1024 || { echo "ERROR: $@ is empty or truncated"; exit 1; }
 
 $(AUX_ASSET_STAMP): MGL/aux_shaders/MANIFEST $(AUX_METALLIBS) scripts/gen_aux_assets.py
 	@mkdir -p $(dir $@)
