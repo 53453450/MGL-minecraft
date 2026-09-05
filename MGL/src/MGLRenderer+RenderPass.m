@@ -6762,48 +6762,50 @@ stencil_format_ok:;
             safeState.depth_format = finalState.depth_format;
             safeState.stencil_format = finalState.stencil_format;
 
-            // Precompiled safe shaders (mgl_aux_assets table).  No runtime
-            // source compilation; failures log the program/format context and
-            // never retry with the source compiler.
+            /* VS from the precompiled safe_fallback aux asset.  FS reuses the
+             * discard stub helper so int/uint color0 gets a matching zero
+             * output (aux table only ships float4 mgl_safe_fallback_fs). */
             const MGLAuxShaderAsset *safe =
                 mglAuxShaderAssetFind("safe_fallback");
             void *safeVS = NULL;
-            void *safeFS = NULL;
+            void *unusedFS = NULL;
             char libError[512] = {0};
-            /* Match the stub FS output class to color0's format so integer
-             * attachments don't reject the float4 fallback FS. */
-            const char *safeFSName = "mgl_safe_fallback_fs";
             MGLStubFSValueClass safeClass =
                 mglPixelFormatValueClass(safeColor0Format);
-            if (safeClass == MGLStubFSInt) {
-                safeFSName = "mgl_safe_fallback_fs_int";
-            } else if (safeClass == MGLStubFSUint) {
-                safeFSName = "mgl_safe_fallback_fs_uint";
-            }
+            id safeFSFunction =
+                mglRasterizerDiscardStubFragmentFunctionForClass(safeClass);
             if (!safe || !safe->data || safe->size == 0 ||
                 mglRenderCreateAuxFunctions(
                     safe->data, safe->size, safe->hash,
-                    "mgl_safe_fallback_vs", safeFSName,
-                    &safeVS, &safeFS,
-                    libError, sizeof(libError)) != 0 || !safeVS) {
+                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                    &safeVS, &unusedFS,
+                    libError, sizeof(libError)) != 0 || !safeVS ||
+                !safeFSFunction) {
                 NSLog(@"MGL CRITICAL: safe fallback asset unavailable "
-                      @"program=%u color0=%lu hash=0x%016llx error=%s",
+                      @"program=%u color0=%lu class=%u hash=0x%016llx error=%s",
                       (unsigned)currentProgramName,
                       (unsigned long)safeColor0Format,
+                      (unsigned)safeClass,
                       safe ? (unsigned long long)safe->hash : 0ull,
-                      libError[0] ? libError : "asset missing");
+                      libError[0] ? libError : "asset or stub FS missing");
+                if (safeVS) {
+                    (void)(__bridge_transfer id)safeVS;
+                }
+                if (unusedFS) {
+                    (void)(__bridge_transfer id)unusedFS;
+                }
             } else {
+                if (unusedFS) {
+                    (void)(__bridge_transfer id)unusedFS;
+                }
                 id safeVSFunction =
                     (__bridge_transfer id)safeVS;
-                id safeFSFunction =
-                    safeFS ? (__bridge_transfer id)safeFS : nil;
                 psoPtr = NULL;
                 cppError[0] = '\0';
                 if ([_pipelineCache
                         createRenderPipelineFromState:&safeState
                         vertexFunction:(__bridge void *)safeVSFunction
-                        fragmentFunction:safeFSFunction
-                            ? (__bridge void *)safeFSFunction : NULL
+                        fragmentFunction:(__bridge void *)safeFSFunction
                         pipelineOut:&psoPtr
                         errorMessage:cppError
                         errorCapacity:sizeof(cppError)] == 0 && psoPtr) {

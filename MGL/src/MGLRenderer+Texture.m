@@ -2210,15 +2210,13 @@ static void mglTextureCopyTextureToBuffer(
         }
         readSlice = 0u;
     }
-    /* MGL render targets rendered by a Metal render pass are stored
-     * top-row-first (Metal NDC y=-1 lands at the high row addresses), so
-     * readPixels/getTexImage must flip rows to satisfy GL's bottom-up
-     * order.  Reverted 3a8cb5c: turning the flip off un-mirrored DSA
-     * multisample float/unorm readbacks (whose data path differs) but
-     * Y-mirrored every pass-rendered render target, breaking
-     * cull_distance / constant_expressions checkpoint comparisons
-     * (504-pixel pattern verified identical, bottom rows -> top rows). */
-    BOOL flipRenderTargetRows = tex->is_render_target;
+    /* Single-sample pass-rendered RTs are stored top-row-first in Metal
+     * (NDC y=-1 at high row addresses) and need a CPU Y-flip for GL's
+     * bottom-up readPixels.  Multisample RTs already land in GL row order
+     * after resolve — flipping them re-inverts DSA MSAA float/unorm
+     * getTexImage (3a8cb5c). */
+    BOOL flipRenderTargetRows =
+        tex->is_render_target && tex->samples <= 1u;
 
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer
