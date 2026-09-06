@@ -73,6 +73,7 @@ typedef struct MGLAIRStageInfo {
     uint32_t geometry_invocations;
     uint32_t uses_cull_distance;
     uint32_t cull_distance_count;
+    uint32_t clip_distance_count;
     uint32_t needs_runtime_array_size_buffer;
     /* GS multi-stream (GL 4.6 §11.1.3.4): stream 0 is rasterized; streams
      * 1..3 feed transform feedback only and require points output.  The
@@ -312,6 +313,10 @@ enum {
      * triangles/quads.  Used when the linked program captures TES outputs
      * via transform feedback (native post-tessellation cannot feed XFB). */
     MGL_AIR_COMPILE_FORCE_TES_COMPUTE = 1u << 1,
+    /* Vertex capture variants (rasterization disabled, buffer index 29). */
+    MGL_AIR_COMPILE_VS_CAPTURE = 1u << 2,
+    MGL_AIR_COMPILE_TESS_CAPTURE = 1u << 3,
+    MGL_AIR_COMPILE_CULL_CAPTURE = 1u << 4,
 };
 
 /* Same as above plus stage-composition flags (bit0: a geometry shader is

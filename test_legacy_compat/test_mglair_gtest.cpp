@@ -994,4 +994,25 @@ TEST(Reflect, ComputeResources) {
     mglGLSLTranslationUnitDestroy(tu);
 }
 
+TEST(FrontendSession, CompileReflectIsSingleParse) {
+    uint32_t before = mglFrontendParseCount();
+    unsigned char *out = nullptr;
+    size_t size = 0;
+    char err[256] = {0};
+    MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES] = {{0}};
+    MGLAIRStageInfo info;
+    memset(&info, 0, sizeof(info));
+    ASSERT_EQ(0, mglAirCompileGLSLWithReflectInfo(
+                     kVS, MGL_STAGE_VERTEX, nullptr, &out, &size, lists, &info,
+                     err, sizeof(err)))
+        << err;
+    ASSERT_NE(nullptr, out);
+    EXPECT_EQ(0, memcmp(out, "MTLB", 4));
+    EXPECT_EQ(before + 1u, mglFrontendParseCount());
+    EXPECT_GE(lists[_STAGE_INPUT_RES].count, 1u);
+    EXPECT_GE(lists[_UNIFORM_CONSTANT_RES].count, 1u);
+    mglShaderFree(out);
+    mglAirReflectDestroy(lists);
+}
+
 }  // namespace

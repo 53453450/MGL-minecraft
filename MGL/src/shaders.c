@@ -309,6 +309,12 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
         }
     }
 
+    if (len > (size_t)8 * 1024u * 1024u) {
+        free(src);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
     ptr->src_len = len;
     ptr->src = src;
     ptr->dirty_bits |= DIRTY_SHADER;

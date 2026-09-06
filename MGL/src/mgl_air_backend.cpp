@@ -77,6 +77,7 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
 #include "mgl_legacy_compat.h"
+#include "mgl_frontend_session.h"
 
 namespace {
 
@@ -12364,105 +12365,19 @@ static bool translationUnitUsesRuntimeArrayLength(
  * pass, the MSL compile pass and the interface check all observe the same
  * translated source.  A no-op when the source needs no translation. */
 
-static GLuint airStageToGLShaderType(int air_stage) {
-    switch (air_stage) {
-        case MGL_STAGE_VERTEX: return GL_VERTEX_SHADER;
-        case MGL_STAGE_FRAGMENT: return GL_FRAGMENT_SHADER;
-        case MGL_STAGE_TESS_CONTROL: return GL_TESS_CONTROL_SHADER;
-        case MGL_STAGE_TESS_EVALUATION: return GL_TESS_EVALUATION_SHADER;
-        case MGL_STAGE_GEOMETRY: return GL_GEOMETRY_SHADER;
-        case MGL_STAGE_COMPUTE: return GL_COMPUTE_SHADER;
-        default: return 0;
-    }
-}
-
-/* GLSL version number from the #version directive; legacy default 110. */
-static int airGLSLVersionOf(const char *src) {
-    if (!src) return 110;
-    const char *v = strstr(src, "#version");
-    if (!v) return 110;
-    int ver = 0;
-    char prof[32] = {0};
-    if (sscanf(v + 8, "%d %31s", &ver, prof) >= 1 && ver > 0) {
-        return ver;
-    }
-    return 110;
-}
-
 /* Detect + translate legacy GLSL.  Returns a malloc'd translated copy (caller
  * frees via free()) or NULL when the source needs no translation.  The caller
  * falls back to the original source on NULL. */
 static char *airPrepareLegacySource(const char *src, int air_stage) {
-    if (!src) return NULL;
-    /* The compile entry re-parses the translated source produced by the
-     * reflect entry (and vice versa).  Matrix uniforms and gl_Vertex keep
-     * their ORIGINAL names after translation (the AIR frontend accepts gl_
-     * prefixed user declarations), so detecting them again would double-
-     * inject the declarations.  The preamble marker identifies an
-     * already-translated source. */
-    if (strstr(src, "/* MGL legacy GLSL translation: renamed builtins declared as")) {
-        return NULL;
-    }
-    mgl_legacy_features_t features;
-    memset(&features, 0, sizeof(features));
-    mgl_legacy_detect(src, &features);
-    if (!features.needs_translation) return NULL;
-    const GLuint shader_type = airStageToGLShaderType(air_stage);
-    const int version = airGLSLVersionOf(src);
-    const size_t len = strlen(src);
-    /* The translator needs +2048 growth headroom (same convention the
-     * standalone test harness uses). */
-    char *translated = (char *)malloc(len + 2048);
-    if (!translated) return NULL;
-    memcpy(translated, src, len + 1);
-    const int ret = mgl_translate_legacy_glsl(
-        translated, len + 2048, shader_type, version, &features);
-    if (ret != 1) {
-        /* Not modified (or error): keep the original source. */
-        free(translated);
+    char *translated = NULL;
+    char err[256] = {0};
+    int rc = mglFrontendRewriteLegacy(src, air_stage, &translated, err,
+                                      sizeof(err));
+    if (rc < 0) {
+        fprintf(stderr, "MGL WARNING: %s\n", err[0] ? err : "legacy rewrite failed");
         return NULL;
     }
     return translated;
-}
-
-static uint32_t reflectBuiltinArrayCount(const char *src, const char *name)
-{
-    if (!src || !name) return 0;
-    const size_t nameLen = strlen(name);
-    const char *p = src;
-    uint32_t count = 0;
-    while ((p = strstr(p, name)) != nullptr) {
-        p += nameLen;
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-        if (*p != '[') {
-            count = 8;
-            continue;
-        }
-        ++p;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (*p < '0' || *p > '9') {
-            count = 8;
-            continue;
-        }
-        char *end = nullptr;
-        unsigned long index = strtoul(p, &end, 10);
-        uint32_t reflected = index < 8
-            ? static_cast<uint32_t>(index + 1)
-            : (index == 8 ? 8u : 0u);
-        if (count < reflected) count = reflected;
-        p = end ? end : p;
-    }
-    return count;
-}
-
-static uint32_t reflectCullDistanceCount(const char *src)
-{
-    return reflectBuiltinArrayCount(src, "gl_CullDistance");
-}
-
-static uint32_t reflectClipDistanceCount(const char *src)
-{
-    return reflectBuiltinArrayCount(src, "gl_ClipDistance");
 }
 
 static int compileGLSLImpl(const char *src, int stage, int capture,
@@ -12471,7 +12386,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                            uint32_t tessPatchVertices,
                            const MGLShaderResourceList *iface_location_peers,
                            unsigned char **metallib_out, size_t *size_out,
-                           char *err_buf, size_t err_cap) {
+                           char *err_buf, size_t err_cap,
+                           MGLFrontendSession *session_in = nullptr) {
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
@@ -12484,10 +12400,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "unsupported stage");
         return -1;
     }
-    /* Legacy GLSL frontend wiring: translate pre-3.30 constructs before
-     * parsing so the reflect + MSL passes see core-profile source. */
-    std::unique_ptr<char[]> legacy_holder(airPrepareLegacySource(src, stage));
-    const char *esrc = legacy_holder ? legacy_holder.get() : src;
+    /* FrontendSession: one legacy rewrite + parse + sema for codegen. */
+    MGLFrontendSession local_session;
+    mglFrontendSessionInit(&local_session);
+    MGLFrontendSession *sess = session_in;
+    bool own_session = false;
+    if (!sess) {
+        if (mglFrontendSessionBuild(&local_session, src, stage, err_buf,
+                                    err_cap) != 0)
+            return -1;
+        sess = &local_session;
+        own_session = true;
+    } else if (!sess->ready || !sess->tu || !sess->src) {
+        if (err_buf && err_cap)
+            snprintf(err_buf, err_cap, "FrontendSession not ready");
+        return -1;
+    }
+    const char *esrc = sess->src;
     const bool isVS = (stage == MGL_STAGE_VERTEX);
     const bool isCompute = (stage == MGL_STAGE_COMPUTE);
     const bool isTCS = (stage == MGL_STAGE_TESS_CONTROL);
@@ -12496,41 +12425,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool isCapture = capture != 0 && isVS;
     const bool isTessCapture = capture == 2 && isVS;
     const bool isCullCapture = capture == 3 && isVS;
-    /* AIR has no primitive-level cull-distance output.  Keep the GLSL
-     * builtin as an SSA array and append two hidden vertex arguments so the
-     * return path can reproduce the legacy primitive-cull emulation. */
-    const bool sourceUsesCullDistance =
-        strstr(esrc, "gl_CullDistance") != nullptr;
     if (isGS && getenv("MGL_GS_DIAG_SOURCE"))
         fprintf(stderr, "MGL GS SOURCE BEGIN\n%s\nMGL GS SOURCE END\n", esrc);
-    MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
-    if (!tu) {
-        if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse: out of memory");
-        return -1;
-    }
-    if (tu->error) {
-        if (err_buf && err_cap)
-            snprintf(err_buf, err_cap, "parse line %u: %s",
-                     tu->error_line, tu->error);
-        mglGLSLTranslationUnitDestroy(tu);
-        return -1;
-    }
-
-    MGLIRModule mod;
-    memset(&mod, 0, sizeof mod);
-    MGLSemaError *errors = nullptr;
-    uint32_t error_count = 0;
-    int hard = mglGLSLSemanticCheck(tu, stage, &mod, &errors, &error_count);
-    if (hard) {
-        if (err_buf && err_cap && errors && error_count)
-            snprintf(err_buf, err_cap, "line %u: %s",
-                     errors[0].line, errors[0].message);
-        mglGLSLSemanticCheckDestroy(errors, error_count);
-        mglIRModuleDestroy(&mod);
-        mglGLSLTranslationUnitDestroy(tu);
-        return -1;
-    }
-    mglGLSLSemanticCheckDestroy(errors, error_count);
+    MGLTranslationUnit *tu = sess->tu;
+    MGLIRModule &mod = sess->mod;
+    const uint32_t irCullCount =
+        mglFrontendBuiltinArrayCount(&mod, tu, "gl_CullDistance");
+    const uint32_t irClipCount =
+        mglFrontendBuiltinArrayCount(&mod, tu, "gl_ClipDistance");
+    const bool sourceUsesCullDistance = irCullCount > 0;
     const bool needsBufferSizeBuffer =
         translationUnitUsesRuntimeArrayLength(tu, &mod);
     /* Metal post-tessellation only supports triangle/quad patches (no
@@ -12552,8 +12455,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         isTES && !isTESCompute && !isCapture &&
         sourceUsesCullDistance;
     const uint32_t activeCullCount = sourceUsesCullDistance
-        ? (reflectCullDistanceCount(esrc) > 0
-               ? reflectCullDistanceCount(esrc) : 8u)
+        ? irCullCount
         : 0u;
     const bool usesCullDistancePassthrough =
         isVS && !isCapture && sourceUsesCullDistance && activeCullCount > 0;
@@ -12562,10 +12464,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         sourceUsesCullDistance && activeCullCount > 0;
     const bool sourceUsesClipDistanceRead =
         !isVS && !isTES && !isKernel && !isCapture &&
-        strstr(esrc, "gl_ClipDistance") != nullptr;
+        irClipCount > 0;
     const uint32_t activeClipCount = sourceUsesClipDistanceRead
-        ? (reflectClipDistanceCount(esrc) > 0
-               ? reflectClipDistanceCount(esrc) : 8u)
+        ? irClipCount
         : 0u;
     const bool usesFragmentClipDistance =
         sourceUsesClipDistanceRead && activeClipCount > 0;
@@ -12586,8 +12487,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
                          "GS AIR codegen: invalid input topology");
-            mglIRModuleDestroy(&mod);
-            mglGLSLTranslationUnitDestroy(tu);
+            if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
         if (tu->layout_primitive_out != MGL_AST_GS_OUT_POINTS &&
@@ -12596,16 +12496,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
                          "GS AIR codegen: invalid output topology");
-            mglIRModuleDestroy(&mod);
-            mglGLSLTranslationUnitDestroy(tu);
+            if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
         if (tu->layout_max_vertices > 1024) {
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap,
                          "GS AIR codegen: max_vertices must be in the range 0..1024");
-            mglIRModuleDestroy(&mod);
-            mglGLSLTranslationUnitDestroy(tu);
+            if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
     }
@@ -12627,8 +12525,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 snprintf(err_buf, err_cap,
                          "TES AIR codegen: only layout(triangles/quads/"
                          "isolines) is implemented yet");
-            mglIRModuleDestroy(&mod);
-            mglGLSLTranslationUnitDestroy(tu);
+            if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
     }
@@ -12636,8 +12533,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     std::vector<Uniform> uniforms;
     uint32_t bufferSize = 0;
     if (collectUniforms(&mod, &uniforms, &bufferSize, err_buf, err_cap)) {
-        mglIRModuleDestroy(&mod);
-        mglGLSLTranslationUnitDestroy(tu);
+        if (own_session) mglFrontendSessionDestroy(sess);
         return -1;
     }
 
@@ -12919,12 +12815,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (!*metallib_out) {
             if (err_buf && err_cap)
                 snprintf(err_buf, err_cap, "out of memory");
-            mglIRModuleDestroy(&mod);
-            mglGLSLTranslationUnitDestroy(tu);
+            if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
-        mglIRModuleDestroy(&mod);
-        mglGLSLTranslationUnitDestroy(tu);
+        if (own_session) mglFrontendSessionDestroy(sess);
         return 0;
     }
     /* Patch uniform offsets into var syms. */
@@ -13042,7 +12936,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         ((isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr);
     const bool usesClipDistance =
         (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
-        strstr(esrc, "gl_ClipDistance") != nullptr;
+        irClipCount > 0;
     const bool usesLayerViewport =
         isVS && (strstr(esrc, "gl_Layer") != nullptr ||
                  strstr(esrc, "gl_ViewportIndex") != nullptr);
@@ -14582,8 +14476,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             cg.errmsg = std::string("codegen: in function '") + d->name +
                         "': " + fc.errmsg;
             snprintf(err_buf, err_cap, "%s", cg.errmsg.c_str());
-            mglIRModuleDestroy(&mod);
-            mglGLSLTranslationUnitDestroy(tu);
+            if (own_session) mglFrontendSessionDestroy(sess);
             return -1;
         }
         if (fc.err != 2) {
@@ -15265,8 +15158,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         snprintf(err_buf, err_cap, "%s",
                  cg.errmsg.empty() ? "codegen: unsupported construct"
                                    : cg.errmsg.c_str());
-        mglIRModuleDestroy(&mod);
-        mglGLSLTranslationUnitDestroy(tu);
+        if (own_session) mglFrontendSessionDestroy(sess);
         return -1;
     }
     /* Terminate if the body's last statement was a return. */
@@ -17017,16 +16909,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     unsigned char *out = (unsigned char *)malloc(mlib.size());
     if (!out) {
         snprintf(err_buf, err_cap, "out of memory");
-        mglIRModuleDestroy(&mod);
-        mglGLSLTranslationUnitDestroy(tu);
+        if (own_session) mglFrontendSessionDestroy(sess);
         return -1;
     }
     memcpy(out, mlib.data(), mlib.size());
     *metallib_out = out;
     *size_out = mlib.size();
 
-    mglIRModuleDestroy(&mod);
-    mglGLSLTranslationUnitDestroy(tu);
+    if (own_session)
+        mglFrontendSessionDestroy(sess);
     return 0;
 }
 
@@ -17078,15 +16969,17 @@ extern "C" int mglShaderCompileGLSLCullDistanceCapture(
 static void fillStageInfo(const MGLTranslationUnit *tu,
                           const MGLIRModule *mod, int stage,
                           const char *src, MGLAIRStageInfo *stage_info) {
+    (void)src;
     memset(stage_info, 0, sizeof(*stage_info));
     stage_info->needs_runtime_array_size_buffer =
         translationUnitUsesRuntimeArrayLength(tu, mod) ? 1u : 0u;
-    if (stage != MGL_STAGE_FRAGMENT && stage != MGL_STAGE_COMPUTE && src &&
-        strstr(src, "gl_CullDistance") != nullptr) {
-        stage_info->uses_cull_distance = 1u;
-        stage_info->cull_distance_count = reflectCullDistanceCount(src);
-        if (stage_info->cull_distance_count == 0)
-            stage_info->cull_distance_count = 8u;
+    if (stage != MGL_STAGE_FRAGMENT && stage != MGL_STAGE_COMPUTE && mod) {
+        stage_info->cull_distance_count =
+            mglFrontendBuiltinArrayCount(mod, tu, "gl_CullDistance");
+        stage_info->clip_distance_count =
+            mglFrontendBuiltinArrayCount(mod, tu, "gl_ClipDistance");
+        stage_info->uses_cull_distance =
+            stage_info->cull_distance_count > 0 ? 1u : 0u;
     }
     if (stage == MGL_STAGE_TESS_CONTROL && tu->layout_vertices > 0)
         stage_info->tess_control_output_vertices =
@@ -17238,61 +17131,44 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
     }
-    /* Legacy GLSL frontend wiring: translate pre-3.30 constructs before
-     * parsing (compileGLSLImpl re-parses the same translated source). */
-    std::unique_ptr<char[]> legacy_holder(airPrepareLegacySource(src, stage));
-    const char *esrc = legacy_holder ? legacy_holder.get() : src;
-    MGLTranslationUnit *tu = mglGLSLParse(esrc, strlen(esrc));
-    if (!tu || tu->error) {
-        if (err_buf && err_cap) {
-            snprintf(err_buf, err_cap, "%s",
-                     (tu && tu->error) ? tu->error : "parse: out of memory");
-        }
-        mglGLSLTranslationUnitDestroy(tu);
+    MGLFrontendSession sess;
+    mglFrontendSessionInit(&sess);
+    if (mglFrontendSessionBuild(&sess, src, stage, err_buf, err_cap) != 0)
         return -1;
-    }
-    MGLIRModule mod;
-    memset(&mod, 0, sizeof mod);
-    MGLSemaError *errors = nullptr;
-    uint32_t error_count = 0;
-    int hard = mglGLSLSemanticCheck(tu, stage, &mod, &errors, &error_count);
-    if (hard) {
-        if (err_buf && err_cap && errors && error_count) {
-            snprintf(err_buf, err_cap, "line %u: %s",
-                     errors[0].line, errors[0].message);
-        }
-        mglGLSLSemanticCheckDestroy(errors, error_count);
-        mglGLSLTranslationUnitDestroy(tu);
-        return -1;
-    }
-    mglGLSLSemanticCheckDestroy(errors, error_count);
 
     uint32_t tessPatchVertices = 0u;
     if (stage_info) {
         tessPatchVertices = stage_info->tess_patch_vertices;
-        fillStageInfo(tu, &mod, stage, esrc, stage_info);
+        fillStageInfo(sess.tu, &sess.mod, stage, sess.src, stage_info);
         stage_info->tess_patch_vertices = tessPatchVertices;
     }
 
     if (lists) {
-        int reflect_rc = mglAirReflectModule(&mod, stage, attrib_names, lists,
+        int reflect_rc = mglAirReflectModule(&sess.mod, stage, attrib_names, lists,
                                              err_buf, err_cap);
         if (reflect_rc != 0) {
-            mglIRModuleDestroy(&mod);
-            mglGLSLTranslationUnitDestroy(tu);
+            mglFrontendSessionDestroy(&sess);
             if (err_buf && err_cap && err_buf[0] == '\0') {
                 snprintf(err_buf, err_cap, "reflection failed");
             }
             return -1;
         }
     }
-    mglIRModuleDestroy(&mod);
-    mglGLSLTranslationUnitDestroy(tu);
 
-    return compileGLSLImpl(esrc, stage, 0, has_gs, force_tes_compute,
-                           attrib_names, tessPatchVertices,
-                           iface_location_peers, metallib_out, size_out,
-                           err_buf, err_cap);
+    int capture = 0;
+    if (flags & MGL_AIR_COMPILE_CULL_CAPTURE)
+        capture = 3;
+    else if (flags & MGL_AIR_COMPILE_TESS_CAPTURE)
+        capture = 2;
+    else if (flags & MGL_AIR_COMPILE_VS_CAPTURE)
+        capture = 1;
+
+    int rc = compileGLSLImpl(sess.src, stage, capture, has_gs, force_tes_compute,
+                             attrib_names, tessPatchVertices,
+                             iface_location_peers, metallib_out, size_out,
+                             err_buf, err_cap, &sess);
+    mglFrontendSessionDestroy(&sess);
+    return rc;
 }
 
 extern "C" int mglAirCompileGLSLWithReflectInfo(

@@ -353,6 +353,7 @@ typedef struct Program_t {
     GLboolean uses_point_size_params;
     GLboolean uses_cull_distance;
     uint32_t cull_distance_count;
+    uint32_t clip_distance_count;
     /* TES-stage cull distance usage (the TES-written gl_CullDistance drives
      * post-tess culling of isolines/point-mode expansions; the VS-side
      * fields above drive the pre-tess capture path). */

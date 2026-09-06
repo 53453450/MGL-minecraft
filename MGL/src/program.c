@@ -70,6 +70,7 @@ typedef struct MGLSavedLinkExecutable {
     GLboolean uses_point_size_params;
     GLboolean uses_cull_distance;
     uint32_t cull_distance_count;
+    uint32_t clip_distance_count;
     GLboolean tess_uses_cull_distance;
     uint32_t tess_cull_distance_count;
     GLboolean uses_lod_bias;
@@ -113,6 +114,7 @@ static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
     out->uses_point_size_params = pptr->uses_point_size_params;
     out->uses_cull_distance = pptr->uses_cull_distance;
     out->cull_distance_count = pptr->cull_distance_count;
+    out->clip_distance_count = pptr->clip_distance_count;
     out->tess_uses_cull_distance = pptr->tess_uses_cull_distance;
     out->tess_cull_distance_count = pptr->tess_cull_distance_count;
     out->uses_lod_bias = pptr->uses_lod_bias;
@@ -181,6 +183,7 @@ static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable 
     pptr->uses_point_size_params = saved->uses_point_size_params;
     pptr->uses_cull_distance = saved->uses_cull_distance;
     pptr->cull_distance_count = saved->cull_distance_count;
+    pptr->clip_distance_count = saved->clip_distance_count;
     pptr->tess_uses_cull_distance = saved->tess_uses_cull_distance;
     pptr->tess_cull_distance_count = saved->tess_cull_distance_count;
     pptr->uses_lod_bias = saved->uses_lod_bias;
@@ -1560,6 +1563,28 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
     return true;
 }
 
+static int mglCompileCaptureVariant(const char *src,
+                                    const char *const *attrib_names,
+                                    uint32_t flags,
+                                    unsigned char **bytes, size_t *size,
+                                    char *err, size_t err_cap)
+{
+    MGLCompileArtifact art;
+    mglCompileArtifactInit(&art);
+    int rc = mglCompileArtifactFromGLSLEx(src, MGL_STAGE_VERTEX, attrib_names,
+                                          flags, NULL, &art, err, err_cap);
+    if (rc == 0 && art.complete && art.metallib_bytes && art.metallib_size) {
+        *bytes = art.metallib_bytes;
+        *size = art.metallib_size;
+        art.metallib_bytes = NULL;
+        art.metallib_size = 0;
+        mglCompileArtifactDestroy(&art);
+        return 0;
+    }
+    mglCompileArtifactDestroy(&art);
+    return -1;
+}
+
 /* AIR path stage compiler: self-hosted frontend + LLVM -> metallib, plus
  * resource reflection.  Returns 1 on success; a failed stage is
  * non-fatal at link time (the stage is simply not renderable), matching
@@ -1683,14 +1708,15 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         shader->cached_artifact = NULL;
         mglFrontendNoteReuse();
         air_rc = 0;
-    } else if (air_flags == 0u && iface_peers == NULL) {
-        /* R2: stages without variant flags/peers compile through a temporary
-         * CompileArtifact so metallib + reflection publish together. */
+    } else {
+        /* Every stage, including variant flags/peers, publishes through
+         * CompileArtifact.complete so link never binds a half-built executable. */
         MGLCompileArtifact art;
         mglCompileArtifactInit(&art);
-        air_rc = mglCompileArtifactFromGLSL(shader->src, air_stage,
-                                            attrib_snapshot, &art, err,
-                                            sizeof err);
+        air_rc = mglCompileArtifactFromGLSLEx(shader->src, air_stage,
+                                              attrib_snapshot, air_flags,
+                                              iface_peers, &art, err,
+                                              sizeof err);
         if (air_rc == 0 && art.complete) {
             bytes = art.metallib_bytes;
             size = art.metallib_size;
@@ -1702,18 +1728,14 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             stage_info = art.stage_info;
             mglCompileArtifactDestroy(&art);
             if (shader->frontend_valid &&
-                shader->frontend_stage == air_stage) {
+                shader->frontend_stage == air_stage &&
+                air_flags == 0u && iface_peers == NULL) {
                 mglFrontendNoteReuse();
             }
         } else {
             mglCompileArtifactDestroy(&art);
             air_rc = -1;
         }
-    } else {
-        air_rc = mglAirCompileGLSLWithReflectInfoEx(
-            shader->src, air_stage, attrib_snapshot, &bytes, &size,
-            pptr->shader_resources_list[stage], &stage_info, air_flags,
-            iface_peers, err, sizeof err);
     }
     if (air_rc != 0) {
         for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
@@ -1731,13 +1753,16 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->uses_cull_distance = stage_info.uses_cull_distance
             ? GL_TRUE : GL_FALSE;
         pptr->cull_distance_count = stage_info.cull_distance_count;
+        if (stage_info.clip_distance_count > pptr->clip_distance_count)
+            pptr->clip_distance_count = stage_info.clip_distance_count;
         pptr->ir_uses_cull_distance = pptr->uses_cull_distance;
         unsigned char *capture_bytes = NULL;
         size_t capture_size = 0;
         char capture_err[512] = {0};
-        if (mglShaderCompileGLSLTessCapture(
-                shader->src, attrib_snapshot, &capture_bytes, &capture_size,
-                capture_err, sizeof capture_err) == 0) {
+        if (mglCompileCaptureVariant(
+                shader->src, attrib_snapshot, MGL_AIR_COMPILE_TESS_CAPTURE,
+                &capture_bytes, &capture_size, capture_err,
+                sizeof capture_err) == 0) {
             pptr->modules[stage].metallib_tess_capture_bytes = capture_bytes;
             pptr->modules[stage].metallib_tess_capture_size = capture_size;
             if (getenv("MGL_DUMP_AIR")) {
@@ -1766,9 +1791,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             unsigned char *cull_capture_bytes = NULL;
             size_t cull_capture_size = 0;
             char cull_capture_err[512] = {0};
-            if (mglShaderCompileGLSLCullDistanceCapture(
-                    shader->src, attrib_snapshot, &cull_capture_bytes,
-                    &cull_capture_size, cull_capture_err,
+            if (mglCompileCaptureVariant(
+                    shader->src, attrib_snapshot, MGL_AIR_COMPILE_CULL_CAPTURE,
+                    &cull_capture_bytes, &cull_capture_size, cull_capture_err,
                     sizeof cull_capture_err) == 0) {
                 pptr->modules[stage].metallib_cull_capture_bytes =
                     cull_capture_bytes;
@@ -2015,93 +2040,6 @@ static bool mglValidateAtomicCounterOffsetOverlap(Program *pptr)
     return true;
 }
 
-/* GLSL 4.60 §7.1 / ARB_cull_distance: sum of gl_ClipDistance and
- * gl_CullDistance sizes across a linked program must not exceed
- * MAX_COMBINED_CLIP_AND_CULL_DISTANCES.  Size is the declared array length
- * when redeclared, else max(static_index+1, for-loop upper bound).
- * Mentions only inside #define bodies (unused macros) are ignored. */
-static GLuint mglDistanceArraySizeFromSource(const char *src, const char *name)
-{
-    if (!src || !name) return 0u;
-    const size_t nameLen = strlen(name);
-    GLuint size = 0u;
-    const char *p = src;
-    while ((p = strstr(p, name)) != NULL) {
-        const char *nameStart = p;
-        /* Skip occurrences that sit on a #define line — CTS functional
-         * shaders keep unused ASSIGN_* macros that name both builtins. */
-        const char *line = nameStart;
-        while (line > src && line[-1] != '\n')
-            --line;
-        while (*line == ' ' || *line == '\t')
-            ++line;
-        if (*line == '#') {
-            p = nameStart + nameLen;
-            continue;
-        }
-
-        p += nameLen;
-        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-        if (*p != '[') continue;
-        ++p;
-        while (*p == ' ' || *p == '\t') ++p;
-
-        /* Look back past whitespace for a preceding "float" → declaration. */
-        const char *q = nameStart;
-        while (q > src && (q[-1] == ' ' || q[-1] == '\t' ||
-                           q[-1] == '\r' || q[-1] == '\n'))
-            --q;
-        int isDecl = 0;
-        if (q >= src + 5) {
-            const char *f = q - 5;
-            if (strncmp(f, "float", 5) == 0 &&
-                (f == src ||
-                 f[-1] == ' ' || f[-1] == '\t' || f[-1] == '\n' ||
-                 f[-1] == '\r' || f[-1] == ';'))
-                isDecl = 1;
-        }
-
-        if (*p >= '0' && *p <= '9') {
-            char *end = NULL;
-            unsigned long n = strtoul(p, &end, 10);
-            GLuint need = isDecl ? (GLuint)n : (GLuint)(n + 1u);
-            if (need > size) size = need;
-            p = end ? end : p;
-            continue;
-        }
-
-        /* Dynamic index: IDENT.  Prefer a for-loop upper bound IDENT < N. */
-        if ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-            *p == '_') {
-            const char *idStart = p;
-            while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-                   (*p >= '0' && *p <= '9') || *p == '_')
-                ++p;
-            size_t idLen = (size_t)(p - idStart);
-            if (idLen == 0u || idLen >= 64u) continue;
-            char id[64];
-            memcpy(id, idStart, idLen);
-            id[idLen] = '\0';
-            const char *scan = src;
-            while ((scan = strstr(scan, id)) != NULL) {
-                const char *after = scan + idLen;
-                while (*after == ' ' || *after == '\t') ++after;
-                if (*after == '<') {
-                    ++after;
-                    while (*after == ' ' || *after == '\t') ++after;
-                    if (*after >= '0' && *after <= '9') {
-                        unsigned long bound = strtoul(after, NULL, 10);
-                        if ((GLuint)bound > size) size = (GLuint)bound;
-                    }
-                }
-                scan += idLen;
-            }
-            continue;
-        }
-    }
-    return size;
-}
-
 static bool mglValidateCombinedClipAndCullDistances(GLMContext ctx,
                                                     Program *pptr)
 {
@@ -2109,31 +2047,12 @@ static bool mglValidateCombinedClipAndCullDistances(GLMContext ctx,
         ctx && STATE(var).max_combined_clip_and_cull_distances
             ? STATE(var).max_combined_clip_and_cull_distances
             : 8u;
-    GLuint clipSize = 0u;
-    GLuint cullSize = 0u;
+    GLuint clipSize = pptr->clip_distance_count;
+    GLuint cullSize = pptr->cull_distance_count;
+    if (pptr->tess_cull_distance_count > cullSize)
+        cullSize = pptr->tess_cull_distance_count;
 
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        if (stage == _FRAGMENT_SHADER || stage == _COMPUTE_SHADER)
-            continue;
-        GLuint attached_count =
-            mglProgramAttachedShaderCount(pptr, (GLuint)stage);
-        for (GLuint attached = 0u; attached < attached_count; attached++) {
-            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
-                ? pptr->attached_shader_slots[stage][attached]
-                : pptr->shader_slots[stage];
-            if (!shader || !shader->src) continue;
-            GLuint sClip =
-                mglDistanceArraySizeFromSource(shader->src,
-                                               "gl_ClipDistance");
-            GLuint sCull =
-                mglDistanceArraySizeFromSource(shader->src,
-                                               "gl_CullDistance");
-            if (sClip > clipSize) clipSize = sClip;
-            if (sCull > cullSize) cullSize = sCull;
-        }
-    }
-
-    /* Only sizes proven by declaration or indexed use participate. */
+    /* Only sizes proven by IR symbols participate. */
     if (clipSize == 0u || cullSize == 0u) return true;
     if (clipSize + cullSize <= maxCombined) return true;
 
@@ -2232,6 +2151,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->uses_point_size_params = GL_FALSE;
     pptr->uses_cull_distance = GL_FALSE;
     pptr->cull_distance_count = 0u;
+    pptr->clip_distance_count = 0u;
     pptr->tess_uses_cull_distance = GL_FALSE;
     pptr->tess_cull_distance_count = 0u;
     memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));

@@ -82,8 +82,13 @@ void mglCompileArtifactFree(MGLCompileArtifact *art);
 
 /* Compile one GLSL stage into a temporary artifact. Returns 0 on full
  * success (complete!=0); on failure *art is cleaned and complete==0.
- * Variant compiles that need air_flags / iface_peers stay on the direct
- * mglAirCompileGLSLWithReflectInfoEx path in program.c. */
+ * Variant flags/peers still go through CompileArtifact so link stays atomic. */
+int mglCompileArtifactFromGLSLEx(const char *src, int stage,
+                                 const char *const *attrib_names,
+                                 uint32_t air_flags,
+                                 const void *iface_peers,
+                                 MGLCompileArtifact *art_out,
+                                 char *err_buf, size_t err_cap);
 int mglCompileArtifactFromGLSL(const char *src, int stage,
                                const char *const *attrib_names,
                                MGLCompileArtifact *art_out,

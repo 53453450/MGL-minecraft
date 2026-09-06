@@ -81,8 +81,16 @@ static int tokenize(MGLTokenStream *ts, const char *src, size_t len)
         if (mglGLSLexerNext(&lx, &t) != 0) {
             break;
         }
+        if (ts->count >= MGL_MAX_TOKENS) {
+            return -1;
+        }
         if (ts->count >= ts->cap) {
             int nc = ts->cap * 2;
+            if (nc > MGL_MAX_TOKENS)
+                nc = MGL_MAX_TOKENS;
+            if (nc <= ts->count) {
+                return -1;
+            }
             MGLGLSLToken *nt = (MGLGLSLToken *)realloc(
                 ts->tok, (size_t)nc * sizeof(MGLGLSLToken));
             if (!nt) {

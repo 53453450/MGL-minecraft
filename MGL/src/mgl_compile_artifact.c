@@ -78,10 +78,12 @@ int mglCompileArtifactCanReuseAtLink(const MGLCompileArtifact *art,
     return 1;
 }
 
-int mglCompileArtifactFromGLSL(const char *src, int stage,
-                               const char *const *attrib_names,
-                               MGLCompileArtifact *art_out,
-                               char *err_buf, size_t err_cap)
+int mglCompileArtifactFromGLSLEx(const char *src, int stage,
+                                 const char *const *attrib_names,
+                                 uint32_t air_flags,
+                                 const void *iface_peers,
+                                 MGLCompileArtifact *art_out,
+                                 char *err_buf, size_t err_cap)
 {
     if (!art_out) {
         return -1;
@@ -111,10 +113,10 @@ int mglCompileArtifactFromGLSL(const char *src, int stage,
 
     /* One compile path produces metallib + reflection + stage_info together.
      * Failure leaves art_out incomplete and destroys any partial lists. */
-    if (mglAirCompileGLSLWithReflectInfo(src, stage, attrib_names, &bytes,
-                                         &size, art_out->resources,
-                                         &art_out->stage_info, err,
-                                         cap) != 0) {
+    if (mglAirCompileGLSLWithReflectInfoEx(
+            src, stage, attrib_names, &bytes, &size, art_out->resources,
+            &art_out->stage_info, air_flags,
+            (const MGLShaderResourceList *)iface_peers, err, cap) != 0) {
         free(bytes);
         mglCompileArtifactDestroy(art_out);
         if (err[0] && !art_out->frontend.diagnostics) {
@@ -127,4 +129,13 @@ int mglCompileArtifactFromGLSL(const char *src, int stage,
     art_out->metallib_size = size;
     art_out->complete = 1;
     return 0;
+}
+
+int mglCompileArtifactFromGLSL(const char *src, int stage,
+                               const char *const *attrib_names,
+                               MGLCompileArtifact *art_out,
+                               char *err_buf, size_t err_cap)
+{
+    return mglCompileArtifactFromGLSLEx(src, stage, attrib_names, 0u, NULL,
+                                        art_out, err_buf, err_cap);
 }
