@@ -1132,6 +1132,10 @@ void init_dispatch(GLMContext ctx)
     ctx->dispatch.clear_bufferfv = mglClearBufferfv;
     ctx->dispatch.clear_bufferfi = mglClearBufferfi;
     ctx->dispatch.get_stringi = mglGetStringi;
+    ctx->dispatch.get_string = mglGetString;
+    ctx->dispatch.get_error = mglGetError;
+    ctx->dispatch.get_integerv = mglGetIntegerv;
+    ctx->dispatch.draw_arrays = mglDrawArrays;
     ctx->dispatch.copy_buffer_sub_data = mglCopyBufferSubData;
     ctx->dispatch.get_uniform_indices = mglGetUniformIndices;
     ctx->dispatch.get_active_uniformsiv = mglGetActiveUniformsiv;

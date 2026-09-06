@@ -445,6 +445,34 @@ GLubyte const  *glGetStringi(GLenum name, GLuint index)
 	return ctx->dispatch.get_stringi(ctx, name, index);
 }
 
+GLubyte const *glGetString(GLenum name)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	return ctx->dispatch.get_string(ctx, name);
+}
+
+GLenum glGetError(void)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	return ctx->dispatch.get_error(ctx);
+}
+
+void glGetIntegerv(GLenum pname, GLint *data)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.get_integerv(ctx, pname, data);
+}
+
+void glDrawArrays(GLenum mode, GLint first, GLsizei count)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.draw_arrays(ctx, mode, first, count);
+}
+
 void glCopyBufferSubData(GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size)
 {
 	GLMContext ctx = GET_CONTEXT();

@@ -548,6 +548,20 @@ $(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c $
 		-framework Metal -framework OpenGL \
 		-o $@
 
+$(build_dir)/test_es_smoke: test_legacy_compat/test_es_smoke.c $(build_dir)/libmgl_es.dylib
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS_GL_ES) \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_es_smoke.c \
+		-L$(build_dir) -lmgl_es \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $@
+
+test-es-smoke: $(build_dir)/test_es_smoke
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_es_smoke
+
 verify-gl-api:
 	bash scripts/fetch_opengl_registry.sh
 	python3 scripts/verify_gl_api.py
@@ -727,7 +741,8 @@ $(build_dir)/test_mglsema \
 $(build_dir)/test_mglair \
 $(build_dir)/test_mcrepro \
 $(build_dir)/test_metalcpp_smoke \
-$(build_dir)/test_mglair_gtest: | $(build_dir)
+$(build_dir)/test_mglair_gtest \
+$(build_dir)/test_es_smoke: | $(build_dir)
 
 $(build_dir):
 	@mkdir -p $@
@@ -753,12 +768,13 @@ test-all:
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
 	$(MAKE) test-arch-correctness
+	$(MAKE) test-es-smoke
 	$(MAKE) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
-	test-air test-all gtest test-regression-update verify-gl-api
+	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke
 
 -include $(deps)

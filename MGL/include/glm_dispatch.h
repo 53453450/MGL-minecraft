@@ -1130,6 +1130,10 @@ struct GLM_ES_DispatchTable {
         void  (*clear_bufferfv)(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value);
         void  (*clear_bufferfi)(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
         const GLubyte *(*get_stringi)(GLMContext ctx, GLenum name, GLuint index);
+        const GLubyte *(*get_string)(GLMContext ctx, GLenum name);
+        GLenum (*get_error)(GLMContext ctx);
+        void  (*get_integerv)(GLMContext ctx, GLenum pname, GLint *data);
+        void  (*draw_arrays)(GLMContext ctx, GLenum mode, GLint first, GLsizei count);
         void  (*copy_buffer_sub_data)(GLMContext ctx, GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size);
         void  (*get_uniform_indices)(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLchar *const*uniformNames, GLuint *uniformIndices);
         void  (*get_active_uniformsiv)(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLuint *uniformIndices, GLenum pname, GLint *params);
