@@ -39,33 +39,49 @@ void mglRendererPlatformBackendWillDestroy(
 
 - (id) initMGLRendererFromContext: (void *)glm_ctx andBindToWindow: (NSWindow *)window;
 {
-    assert (window);
-    assert (glm_ctx);
+    if (!window || !glm_ctx) {
+        NSLog(@"MGL ERROR: renderer initialization requires a window and GLMContext");
+        return nil;
+    }
     
     MGLRenderer *renderer = [[MGLRenderer alloc] init];
-    assert (renderer);
+    if (!renderer) {
+        NSLog(@"MGL ERROR: failed to allocate renderer");
+        return nil;
+    }
 
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(100, 100, 100, 100)];
-    assert (view);
+    if (!view) {
+        NSLog(@"MGL ERROR: failed to allocate renderer view");
+        return nil;
+    }
 
     [view setWantsLayer:YES];
     [window setContentView:view];
     
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];
     
-    return self;
+    return renderer;
 }
 
 - (id) createMGLRendererFromContext: (void *)glm_ctx andBindToWindow: (NSWindow *)window;
 {
-    assert (window);
-    assert (glm_ctx);
+    if (!window || !glm_ctx) {
+        NSLog(@"MGL ERROR: renderer creation requires a window and GLMContext");
+        return nil;
+    }
     
     MGLRenderer *renderer = [[MGLRenderer alloc] init];
-    assert (renderer);
+    if (!renderer) {
+        NSLog(@"MGL ERROR: failed to allocate renderer");
+        return nil;
+    }
 
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(100, 100, 100, 100)];
-    assert (view);
+    if (!view) {
+        NSLog(@"MGL ERROR: failed to allocate renderer view");
+        return nil;
+    }
 
     [view setWantsLayer:YES];
     [window setContentView:view];
@@ -78,14 +94,25 @@ void mglRendererPlatformBackendWillDestroy(
 
 void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *window)
 {
-    assert (window);
-    assert (glm_ctx);
+    if (!window || !glm_ctx) {
+        NSLog(@"MGL ERROR: renderer creation requires a window and GLMContext");
+        return NULL;
+    }
     MGLRenderer *renderer = [[MGLRenderer alloc] init];
-    assert (renderer);
+    if (!renderer) {
+        NSLog(@"MGL ERROR: failed to allocate renderer");
+        return NULL;
+    }
     NSWindow * w = (__bridge NSWindow *)(window); // just a plain bridge as the autorelease pool will try to release this and crash on exit
-    assert (w);
+    if (!w) {
+        NSLog(@"MGL ERROR: invalid window handle");
+        return NULL;
+    }
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(100, 100, 100, 100)];
-    assert (view);
+    if (!view) {
+        NSLog(@"MGL ERROR: failed to allocate renderer view");
+        return NULL;
+    }
     [view setWantsLayer:YES];
     //assert(w.contentView);
     //[w.contentView addSubview:view];
@@ -104,13 +131,22 @@ void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *windo
 
 void* CppCreateMGLRendererHeadless (void *glm_ctx)
 {
-    assert (glm_ctx);
+    if (!glm_ctx) {
+        NSLog(@"MGL ERROR: headless renderer creation requires a GLMContext");
+        return NULL;
+    }
     MGLRenderer *renderer = [[MGLRenderer alloc] init];
-    assert (renderer);
+    if (!renderer) {
+        NSLog(@"MGL ERROR: failed to allocate headless renderer");
+        return NULL;
+    }
 
     // Create a dummy NSView for headless rendering
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(100, 100, 100, 100)];
-    assert (view);
+    if (!view) {
+        NSLog(@"MGL ERROR: failed to allocate headless renderer view");
+        return NULL;
+    }
     [view setWantsLayer:YES];
 
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];

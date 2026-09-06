@@ -17,6 +17,7 @@
 #include "mgl_aux_assets.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_env_flag.h"
+#include "mgl_byte_hash.h"
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
 
@@ -160,13 +161,25 @@ static id mglRasterizerDiscardStubFragmentFunctionForClass(
                       err[0] ? err : "unknown");
                 return;
             }
+            /* mglRenderCreateAuxFunctions supports fragment-only blobs by
+             * accepting a NULL vertex entry, but the vertex output argument
+             * itself is still required so the API can publish both results.
+             * Passing NULL here made every integer render target fail with
+             * "bad args" before the stub function was even looked up. */
+            void *unusedVertex = NULL;
             if (mglRenderCreateAuxFunctions(
                     bytes, size, 0u, NULL, "main",
-                    NULL, &fs, err, sizeof(err)) != 0 || !fs) {
+                    &unusedVertex, &fs, err, sizeof(err)) != 0 || !fs) {
                 NSLog(@"MGL ERROR: stub FS function load failed: %s",
                       err[0] ? err : "unknown");
+                if (unusedVertex) {
+                    (void)(__bridge_transfer id)unusedVertex;
+                }
                 free(bytes);
                 return;
+            }
+            if (unusedVertex) {
+                (void)(__bridge_transfer id)unusedVertex;
             }
             free(bytes);
         }
@@ -849,6 +862,68 @@ static bool mglGeometryPassthroughNeedsFlat(GLenum type)
     }
 }
 
+/* MSAA array textures are represented by a 2D array whose physical slices
+ * are laid out as [gl_layer][sample] with a fixed eight-slice stride.  A
+ * layered render pass therefore needs to translate the logical GL layer
+ * before Metal consumes [[render_target_array_index]].  Keep this decision
+ * in the render-pass domain: ordinary 2D arrays remain a one-to-one map and
+ * non-layered framebufferTextureLayer attachments keep their fixed slice. */
+static uint32_t mglGeometryPassthroughLayerStride(GLMContext context)
+{
+    if (!context || !context->active_state ||
+        !context->active_state->framebuffer) {
+        return 1u;
+    }
+    Framebuffer *fbo = context->active_state->framebuffer;
+    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
+        const FBOAttachment *attachment = &fbo->color_attachments[i];
+        if (attachment->layered &&
+            attachment->textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+            return 8u;
+        }
+    }
+    if (fbo->depth.layered &&
+        fbo->depth.textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        return 8u;
+    }
+    if (fbo->stencil.layered &&
+        fbo->stencil.textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        return 8u;
+    }
+    return 1u;
+}
+
+/* The backend keeps one passthrough function per kind.  Include the render
+ * target layer convention in the key so switching between ordinary and
+ * emulated-MSAA layered FBOs cannot reuse a function compiled for the other
+ * convention. */
+static uint64_t mglGeometryPassthroughCacheKey(
+    const Program *program, uint32_t layerStride)
+{
+    uint64_t hash = 1469598103934665603ull;
+    hash = mglHashStepU64(hash,
+                          program ? program->pipeline_cache_instance_id : 0u);
+    hash = mglHashStepU64(hash,
+                          program ? program->pipeline_cache_generation : 0u);
+    return mglHashStepU64(hash, layerStride);
+}
+
+static uint64_t mglGeometryPipelineFunctionKey(
+    const Program *vertexProgram, const Program *geometryProgram,
+    uint32_t layerStride)
+{
+    uint64_t hash = 1469598103934665603ull;
+    hash = mglHashStepU64(hash,
+                          vertexProgram ? vertexProgram->pipeline_cache_instance_id : 0u);
+    hash = mglHashStepU64(hash,
+                          vertexProgram ? vertexProgram->pipeline_cache_generation : 0u);
+    hash = mglHashStepU64(hash,
+                          geometryProgram ? geometryProgram->pipeline_cache_instance_id : 0u);
+    hash = mglHashStepU64(hash,
+                          geometryProgram ? geometryProgram->pipeline_cache_generation : 0u);
+    return mglHashStepU64(hash, layerStride);
+}
+
 /* The stage-out record stores every varying as a full vec4 slot, so a GS
  * output's reflected gl_type is promoted to the record width.  When the
  * fragment shader consumes the varying with a narrower declared type
@@ -875,10 +950,14 @@ static GLenum mglPassthroughDeclType(
                                        outputPrimitive:(uint32_t)outputPrimitive
 {
     if (!program) return NO;
+    const uint32_t layerStride =
+        mglGeometryPassthroughLayerStride(ctx);
+    const uint64_t passthroughKey =
+        mglGeometryPassthroughCacheKey(program, layerStride);
     void *cachedFunction = NULL;
     if (mglRendererBackendGetPassthroughFunction(
             _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
-            program->pipeline_cache_instance_id, &cachedFunction) == 1) {
+            passthroughKey, &cachedFunction) == 1) {
         return YES;
     }
     (void)mglRendererBackendSetPassthroughFunction(
@@ -1099,9 +1178,9 @@ static GLenum mglPassthroughDeclType(
         [source appendFormat:
             @"    vec4 mgl_layer_vp = "
              "mgl_gs_output.records[mgl_base + %u];\n"
-             "    gl_Layer = floatBitsToInt(mgl_layer_vp.y);\n"
+             "    gl_Layer = floatBitsToInt(mgl_layer_vp.y) * %u;\n"
              "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.z);\n",
-             layerSlot];
+             layerSlot, (unsigned)layerStride];
      }
      for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
          MGLShaderResource *output = &outputs->list[i];
@@ -1179,7 +1258,7 @@ static GLenum mglPassthroughDeclType(
     return mglRendererBackendSetPassthroughFunction(
         _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
         (__bridge void *)library, (__bridge void *)function,
-        program->pipeline_cache_instance_id) == 0;
+        passthroughKey) == 0;
 }
 
 /* TES-compute twin of ensureAIRGeometryPassthroughFunctionForProgram: the
@@ -4635,9 +4714,13 @@ static GLenum mglPassthroughDeclType(
 
     void *geometryPassthroughFunction = NULL;
     if (geometryExpansion && _geometry.program) {
+        const uint32_t layerStride =
+            mglGeometryPassthroughLayerStride(ctx);
+        const uint64_t passthroughKey =
+            mglGeometryPassthroughCacheKey(_geometry.program, layerStride);
         (void)mglRendererBackendGetPassthroughFunction(
             _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_GEOMETRY,
-            _geometry.program->pipeline_cache_instance_id,
+            passthroughKey,
             &geometryPassthroughFunction);
     }
     void *tessPassthroughFunction = NULL;
@@ -6351,6 +6434,16 @@ stencil_format_ok:;
                                      | (_tessellation.tessComputeActive ? (1ull << 19) : 0ull));
                 uint64_t vertexInstance = currentVertexProgram
                     ? currentVertexProgram->pipeline_cache_instance_id : 0u;
+                if (_geometry.expansionActive && _geometry.program) {
+                    /* The raster vertex function is generated from both the
+                     * real VS/FS interface and the GS output record.  Fold
+                     * both program identities plus the emulated-MS layer
+                     * convention into the key so an old PTVS/PSO cannot be
+                     * reused after a GS or framebuffer change. */
+                    vertexInstance = mglGeometryPipelineFunctionKey(
+                        currentVertexProgram, _geometry.program,
+                        mglGeometryPassthroughLayerStride(ctx));
+                }
                 uint64_t vertexGeneration = currentVertexProgram
                     ? currentVertexProgram->pipeline_cache_generation : 0u;
                 uint64_t fragmentInstance = currentFragmentProgram

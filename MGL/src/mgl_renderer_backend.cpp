@@ -546,7 +546,11 @@ extern "C" int mglRendererBackendIsReady(
 extern "C" void *mglRendererBackendGetDevice(
     const MGLRendererBackendHandle *backend)
 {
-    return backend ? backend->device : nullptr;
+    if (!backend) return nullptr;
+    std::lock_guard<std::mutex> lock(
+        const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (backend->destroying || backend->shutdown_started) return nullptr;
+    return backend->device;
 }
 
 extern "C" int mglRendererBackendResetCommandQueue(
@@ -577,6 +581,7 @@ extern "C" void *mglRendererBackendGetCommandQueue(
     if (!backend) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (backend->destroying || backend->shutdown_started) return nullptr;
     return backend->command_queue;
 }
 
@@ -981,6 +986,7 @@ extern "C" void *mglRendererBackendGetBlitCachedObject(
     if (!backend) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
+    if (backend->destroying || backend->shutdown_started) return nullptr;
     switch (kind) {
         case MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER:
             return backend->scaled_blit_nearest_sampler;

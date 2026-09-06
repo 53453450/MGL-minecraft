@@ -197,6 +197,18 @@ bool mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(GLMContext ctx,
                                                          GLenum mode,
                                                          const char *label);
 
+typedef void (*MGLCullDistanceBindFn)(
+    void *renderer, const void *encode_context, GLenum mode,
+    GLuint first_vertex, const uint32_t *explicit_vertices,
+    uint32_t explicit_vertex_count);
+
+/* true = split issued or empty-handled. false = not a split mode. */
+bool mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
+    void *renderEncoderOwner, MGLDrawMetalHandle device, GLenum mode,
+    GLint first, GLsizei count, size_t instanceCount, size_t baseInstance,
+    void *bind_renderer, const void *bind_encode_context,
+    MGLCullDistanceBindFn bind);
+
 #ifdef __cplusplus
 }
 #endif

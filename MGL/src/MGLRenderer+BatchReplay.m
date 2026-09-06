@@ -18,6 +18,7 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_draw_encode.h"
 
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
@@ -60,52 +61,6 @@ static bool mglBatchReplayCollectResourceBinding(
         .resource = resource,
     };
     return true;
-}
-
-static void mglBatchReplayDrawPrimitives(
-    void *renderEncoderOwner,
-    uint32_t primitiveType,
-    NSUInteger vertexStart,
-    NSUInteger vertexCount,
-    NSUInteger instanceCount,
-    NSUInteger baseInstance)
-{
-    const MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_ARRAY,
-            .primitive_type = (uint32_t)primitiveType,
-            .vertex_start = vertexStart,
-            .vertex_count = vertexCount,
-            .instance_count = instanceCount,
-            .base_instance = baseInstance,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
-}
-
-static void mglBatchReplayDrawIndexedPrimitives(
-    void *renderEncoderOwner,
-    uint32_t primitiveType,
-    NSUInteger indexCount,
-    uint64_t indexType,
-    id indexBuffer,
-    NSUInteger indexBufferOffset,
-    NSUInteger instanceCount,
-    NSInteger baseVertex,
-    NSUInteger baseInstance)
-{
-    const MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_INDEXED,
-            .primitive_type = (uint32_t)primitiveType,
-            .index_count = indexCount,
-            .index_type = (uint32_t)indexType,
-            .index_buffer = (__bridge void *)indexBuffer,
-            .index_buffer_offset = indexBufferOffset,
-            .instance_count = instanceCount,
-            .base_vertex = baseVertex,
-            .base_instance = baseInstance,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
 }
 
 static void mglBatchReplayDrawPrimitivesIndirect(
@@ -1368,115 +1323,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         !mglBatchReplayHasActiveEncoder(encCtx)) {
         return NO;
     }
-
-    if (mode == GL_TRIANGLE_STRIP && count >= 3) {
-        NSUInteger stripIndexCount = 0u;
-        id stripIndexBuffer =
-            mglNewTriangleStripArrayIndexBuffer(
-                _device, (NSUInteger)count, &stripIndexCount);
-        if (!stripIndexBuffer || stripIndexCount == 0u) {
-            return YES;
-        }
-        for (NSUInteger primitive = 0u;
-             primitive * 3u < stripIndexCount; primitive++) {
-            const GLuint vertices[3] = {
-                (GLuint)first + (GLuint)primitive,
-                (GLuint)first + (GLuint)primitive + 1u,
-                (GLuint)first + (GLuint)primitive + 2u,
-            };
-            [self bindCullDistanceEmulationBuffers:mode
-                                        firstVertex:(GLuint)first
-                                   explicitVertices:vertices
-                                 explicitVertexCount:3u
-                                      encodeContext:encCtx];
-            mglBatchReplayDrawIndexedPrimitives(
-                encCtx->render_encoder_owner,
-                MGL_DRAW_PRIMITIVE_TRIANGLE, 3u,
-                MGL_DRAW_INDEX_UINT32, stripIndexBuffer,
-                primitive * 3u * sizeof(uint32_t), instanceCount, first,
-                baseInstance);
-        }
-        return YES;
-    }
-
-    if (mode == GL_TRIANGLE_FAN && count >= 3) {
-        NSUInteger fanIndexCount = 0u;
-        id fanIndexBuffer =
-            mglNewTriangleFanArrayIndexBuffer(
-                _device, (NSUInteger)count, &fanIndexCount);
-        if (!fanIndexBuffer || fanIndexCount == 0u) {
-            return YES;
-        }
-        const NSUInteger primitiveCount = fanIndexCount / 3u;
-        for (NSUInteger primitive = 0u;
-             primitive < primitiveCount; primitive++) {
-            const GLuint vertices[3] = {
-                (GLuint)first,
-                (GLuint)first + (GLuint)primitive + 1u,
-                (GLuint)first + (GLuint)primitive + 2u,
-            };
-            [self bindCullDistanceEmulationBuffers:mode
-                                        firstVertex:(GLuint)first
-                                   explicitVertices:vertices
-                                 explicitVertexCount:3u
-                                      encodeContext:encCtx];
-            mglBatchReplayDrawIndexedPrimitives(
-                encCtx->render_encoder_owner,
-                MGL_DRAW_PRIMITIVE_TRIANGLE, 3u,
-                MGL_DRAW_INDEX_UINT32, fanIndexBuffer,
-                primitive * 3u * sizeof(uint32_t), instanceCount, first,
-                baseInstance);
-        }
-        return YES;
-    }
-
-    if (mode == GL_LINE_STRIP && count >= 2) {
-        for (GLsizei primitive = 0; primitive + 1 < count; primitive++) {
-            [self bindCullDistanceEmulationBuffers:mode
-                                        firstVertex:(GLuint)(first + primitive)
-                                   explicitVertices:NULL
-                                 explicitVertexCount:0u
-                                      encodeContext:encCtx];
-            mglBatchReplayDrawPrimitives(
-                encCtx->render_encoder_owner,
-                MGL_DRAW_PRIMITIVE_LINE, first + primitive, 2u,
-                instanceCount, baseInstance);
-        }
-        return YES;
-    }
-
-    if (mode == GL_LINE_LOOP && count >= 2) {
-        NSUInteger loopIndexCount = 0u;
-        id loopIndexBuffer =
-            mglNewLineLoopArrayIndexBuffer(
-                _device, (NSUInteger)first, (NSUInteger)count,
-                &loopIndexCount);
-        if (!loopIndexBuffer || loopIndexCount == 0u) {
-            return YES;
-        }
-        for (NSUInteger primitive = 0u;
-             primitive + 1u < loopIndexCount; primitive++) {
-            const GLuint vertices[2] = {
-                (GLuint)first + (GLuint)primitive,
-                (GLuint)first +
-                    (GLuint)((primitive + 1u) % (NSUInteger)count),
-            };
-            [self bindCullDistanceEmulationBuffers:mode
-                                        firstVertex:(GLuint)first
-                                   explicitVertices:vertices
-                                 explicitVertexCount:2u
-                                      encodeContext:encCtx];
-            mglBatchReplayDrawIndexedPrimitives(
-                encCtx->render_encoder_owner,
-                MGL_DRAW_PRIMITIVE_LINE, 2u,
-                MGL_DRAW_INDEX_UINT32, loopIndexBuffer,
-                primitive * sizeof(uint32_t), instanceCount, 0,
-                baseInstance);
-        }
-        return YES;
-    }
-
-    return NO;
+    return mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
+        encCtx->render_encoder_owner, _device, mode, first, count,
+        (size_t)instanceCount, (size_t)baseInstance, (__bridge void *)self,
+        encCtx, mglRendererBindCullDistanceEmu);
 }
 
 - (void)submitDirectBatchArrayEncode:(MGLDrawBatch *)batch

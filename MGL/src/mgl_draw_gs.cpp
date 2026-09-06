@@ -13,6 +13,7 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_draw_encode.h"
 #include "mgl_render.h"
+#include "mgl_shader_abi.h"
 
 #include <cstdlib>
 #include <cstdint>
@@ -255,4 +256,344 @@ extern "C" void mglDrawGsEncodePassthrough(const MGLGsPassthroughEncodeState *st
         (void)mglRenderEncodeDrawForRenderEncoderOwner(
             state->encoder_owner, &plan, NULL, 0);
     }
+}
+
+static bool mglDrawGsPlanAppendBuffer(MGLRenderComputeExecutionPlan *plan,
+                                      void *buffer, uint64_t offset,
+                                      uint32_t index)
+{
+    if (!plan || !buffer) {
+        return false;
+    }
+    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        return false;
+    }
+    plan->binding_ops[plan->binding_op_count++] = {
+        .kind = 0u,
+        .index = index,
+        .offset = offset,
+        .buffer = buffer,
+        .bytes = NULL,
+        .length = 0u,
+    };
+    return true;
+}
+
+extern "C" void mglDrawGsFillLocationMap(Program *gs, Program *vs, Program *tes,
+                                         uint32_t loc_map[32])
+{
+    if (!loc_map) {
+        return;
+    }
+    memset(loc_map, 0, sizeof(uint32_t) * 32u);
+    if (!gs) {
+        return;
+    }
+    const MGLShaderResourceList *gsInputs =
+        &gs->shader_resources_list[_GEOMETRY_SHADER][_STAGE_INPUT_RES];
+    const MGLShaderResourceList *vsOutputs = NULL;
+    if (tes) {
+        vsOutputs = &tes->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                               [_STAGE_OUTPUT_RES];
+    } else if (vs) {
+        vsOutputs = &vs->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
+    }
+    if (!gsInputs || !vsOutputs || !gsInputs->list || !vsOutputs->list) {
+        return;
+    }
+    for (GLuint gi = 0u; gi < gsInputs->count; gi++) {
+        const MGLShaderResource *in = &gsInputs->list[gi];
+        if (in->is_per_patch || !in->name || in->location >= 32u) {
+            continue;
+        }
+        GLuint nameLen = (GLuint)strlen(in->name);
+        const char *bracket = strchr(in->name, '[');
+        if (bracket) {
+            nameLen = (GLuint)(bracket - in->name);
+        }
+        for (GLuint vi = 0u; vi < vsOutputs->count; vi++) {
+            const MGLShaderResource *out = &vsOutputs->list[vi];
+            if (out->is_per_patch || !out->name) {
+                continue;
+            }
+            GLuint outLen = (GLuint)strlen(out->name);
+            const char *ob = strchr(out->name, '[');
+            if (ob) {
+                outLen = (GLuint)(ob - out->name);
+            }
+            if (nameLen == outLen && strncmp(in->name, out->name, nameLen) == 0) {
+                loc_map[in->location] = out->location + 1u;
+                break;
+            }
+        }
+    }
+}
+
+extern "C" void mglDrawGsPresetCounts(void *counts, uint32_t work_item_count)
+{
+    if (!counts || work_item_count == 0u) {
+        return;
+    }
+    uint32_t *countsWords = (uint32_t *)counts;
+    for (uint32_t w = 0u; w < work_item_count; w++) {
+        countsWords[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 1u] = 1u;
+    }
+}
+
+extern "C" uint32_t mglDrawGsFillXFBScatterParams(Program *gs,
+                                                 MGLAIRGSXFBScatterParams *out)
+{
+    if (!out) {
+        return 0u;
+    }
+    memset(out, 0, sizeof(*out));
+    for (uint32_t b = 0u; b < MGL_AIR_GS_MAX_STREAMS; b++) {
+        out->buffer_stream[b] = MGL_AIR_GS_XFB_NO_STREAM;
+    }
+    if (!gs) {
+        return 0u;
+    }
+    uint32_t fieldCount = 0u;
+    uint32_t xfbBufferCount = 0u;
+    for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
+        for (GLsizei vi = 0;
+             vi < gs->transform_feedback_varying_count &&
+             fieldCount < MGL_AIR_GS_XFB_MAX_FIELDS;
+             vi++) {
+            const MGLTransformFeedbackVaryingPlan *plan =
+                &gs->transform_feedback_layout[vi];
+            if (plan->component_count == 0u) {
+                continue;
+            }
+            if ((uint32_t)plan->stream != s) {
+                continue;
+            }
+            if (plan->buffer_index >= MGL_AIR_GS_MAX_STREAMS) {
+                continue;
+            }
+            const char *name = gs->transform_feedback_varying_names[vi];
+            if (!name || !name[0]) {
+                continue;
+            }
+            char baseName[96];
+            strncpy(baseName, name, sizeof(baseName) - 1u);
+            baseName[sizeof(baseName) - 1u] = '\0';
+            char *bracket = strchr(baseName, '[');
+            if (bracket) {
+                *bracket = '\0';
+            }
+            GLuint location = UINT32_MAX;
+            MGLShaderResource *gsOut = mglProgramFindStageOutputForXFBName(
+                gs, _GEOMETRY_SHADER, name);
+            if (gsOut) {
+                location = gsOut->location;
+            }
+            uint32_t srcOffset;
+            if (strcmp(baseName, "gl_Position") == 0 && plan->builtin) {
+                srcOffset = MGL_AIR_PER_VERTEX_POSITION_OFFSET;
+            } else if (strcmp(baseName, "gl_PointSize") == 0 && plan->builtin) {
+                srcOffset = MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET;
+            } else {
+                if (location == UINT32_MAX) {
+                    continue;
+                }
+                srcOffset = MGL_AIR_PER_VERTEX_STRIDE + location * 16u;
+            }
+            MGLAIRGSXFBFieldDesc *fd = &out->fields[fieldCount++];
+            fd->buffer_index = plan->buffer_index;
+            fd->src_offset = srcOffset;
+            fd->dst_offset = plan->component_offset * 4u;
+            fd->byte_count = plan->component_count * 4u;
+            out->buffer_stream[plan->buffer_index] = s;
+            if (plan->buffer_index + 1u > xfbBufferCount) {
+                xfbBufferCount = plan->buffer_index + 1u;
+            }
+        }
+    }
+    out->field_count = fieldCount;
+    for (uint32_t f = 0u; f < fieldCount; f++) {
+        const MGLAIRGSXFBFieldDesc *fd = &out->fields[f];
+        const uint32_t end = fd->dst_offset + fd->byte_count;
+        if (end > out->buffers[fd->buffer_index].stride) {
+            out->buffers[fd->buffer_index].stride = end;
+        }
+    }
+    return xfbBufferCount;
+}
+
+extern "C" bool mglDrawGsAppendCoreBindings(
+    MGLRenderComputeExecutionPlan *plan, void *input, uint64_t input_offset,
+    void *output, void *counts, void *gather_or_counts, void *xfb_capture,
+    void *xfb_meta, void *xfb_vis_or_counts, const void *gparams,
+    uint32_t gparams_bytes)
+{
+    if (!plan || !input || !output || !counts || !gather_or_counts ||
+        !xfb_meta || !xfb_vis_or_counts || !gparams || gparams_bytes == 0u) {
+        return false;
+    }
+    if (!mglDrawGsPlanAppendBuffer(plan, input, input_offset,
+                                   MGL_AIR_GS_SLOT_INPUT) ||
+        !mglDrawGsPlanAppendBuffer(plan, output, 0u, MGL_AIR_GS_SLOT_OUTPUT) ||
+        !mglDrawGsPlanAppendBuffer(plan, counts, 0u, MGL_AIR_GS_SLOT_COUNTS) ||
+        !mglDrawGsPlanAppendBuffer(plan, gather_or_counts, 0u,
+                                   MGL_AIR_GS_SLOT_GATHER)) {
+        return false;
+    }
+    if (xfb_capture &&
+        !mglDrawGsPlanAppendBuffer(plan, xfb_capture, 0u, MGL_AIR_GS_SLOT_XFB)) {
+        return false;
+    }
+    if (!mglDrawGsPlanAppendBuffer(plan, xfb_meta, 0u, MGL_AIR_GS_SLOT_XFB_META) ||
+        !mglDrawGsPlanAppendBuffer(plan, xfb_vis_or_counts, 0u,
+                                   MGL_AIR_GS_SLOT_XFB_VIS)) {
+        return false;
+    }
+    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        return false;
+    }
+    plan->binding_ops[plan->binding_op_count++] = {
+        .kind = 1u,
+        .index = MGL_AIR_GS_SLOT_GATHER_PARAMS,
+        .offset = 0u,
+        .buffer = NULL,
+        .bytes = gparams,
+        .length = gparams_bytes,
+    };
+    return true;
+}
+
+static bool mglDrawGsPlanAppendBytes(MGLRenderComputeExecutionPlan *plan,
+                                     const void *bytes, uint32_t length,
+                                     uint32_t index)
+{
+    if (!plan || !bytes || length == 0u) {
+        return false;
+    }
+    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        return false;
+    }
+    plan->binding_ops[plan->binding_op_count++] = {
+        .kind = 1u,
+        .index = index,
+        .offset = 0u,
+        .buffer = NULL,
+        .bytes = bytes,
+        .length = length,
+    };
+    return true;
+}
+
+extern "C" bool mglDrawGsComputeLayout(Program *gs, uint32_t primitive_count,
+                                       uint32_t instance_count,
+                                       GLenum output_mode,
+                                       MGLGsComputeLayout *out)
+{
+    if (!gs || !out || primitive_count == 0u || instance_count == 0u) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    const uint32_t invocations =
+        gs->geometry_invocations > 0u ? gs->geometry_invocations : 1u;
+    if (instance_count > UINT32_MAX / primitive_count) {
+        return false;
+    }
+    const uint32_t draw_primitives = primitive_count * instance_count;
+    if (draw_primitives > UINT32_MAX / invocations) {
+        return false;
+    }
+    const uint32_t work_items = draw_primitives * invocations;
+    const uint32_t output_stride = mglAIRPerVertexStrideForResources(
+        &gs->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES]);
+    if (output_stride == 0u) {
+        return false;
+    }
+    const uint32_t max_vertices =
+        gs->geometry_vertices_out > 0u ? gs->geometry_vertices_out : 1u;
+    const MGLAIRGSOutputPrimitive air_out =
+        output_mode == GL_POINTS
+            ? MGL_AIR_GS_OUT_POINTS
+            : output_mode == GL_LINE_STRIP ? MGL_AIR_GS_OUT_LINE_STRIP
+                                           : MGL_AIR_GS_OUT_TRIANGLE_STRIP;
+    const uint32_t expanded = mglAIRGSExpandedVertices(air_out, max_vertices);
+    const uint32_t records = mglAIRGSRecordsPerPrimitive(air_out, max_vertices);
+    uint64_t per_item = 0u;
+    if (__builtin_mul_overflow((uint64_t)records, (uint64_t)output_stride,
+                               &per_item) || per_item == 0u) {
+        return false;
+    }
+    uint64_t output_bytes = 0u;
+    uint64_t counts_bytes = 0u;
+    if (__builtin_mul_overflow((uint64_t)work_items, per_item,
+                               &output_bytes) ||
+        __builtin_mul_overflow((uint64_t)work_items,
+                               (uint64_t)MGL_AIR_GS_COUNTS_RECORD_BYTES,
+                               &counts_bytes)) {
+        return false;
+    }
+    out->work_item_count = work_items;
+    out->records_per_primitive = records;
+    out->expanded_vertices = expanded;
+    out->output_stride = output_stride;
+    out->output_bytes = output_bytes;
+    out->counts_bytes = counts_bytes;
+    return true;
+}
+
+extern "C" void mglDrawGsExclusivePrefixSum(const uint32_t *vis,
+                                            uint32_t *offsets,
+                                            uint32_t work_item_count,
+                                            uint32_t buffer_count)
+{
+    if (!vis || !offsets || work_item_count == 0u || buffer_count == 0u) {
+        return;
+    }
+    if (buffer_count > MGL_AIR_GS_MAX_STREAMS) {
+        buffer_count = MGL_AIR_GS_MAX_STREAMS;
+    }
+    for (uint32_t b = 0u; b < buffer_count; b++) {
+        uint32_t running = 0u;
+        for (uint32_t w = 0u; w < work_item_count; w++) {
+            const uint32_t idx = w * MGL_AIR_GS_MAX_STREAMS + b;
+            offsets[idx] = running;
+            running += vis[idx];
+        }
+    }
+}
+
+extern "C" bool mglDrawGsFillXFBScatterPlan(
+    MGLRenderComputeExecutionPlan *plan, void *pipeline,
+    const void *scatter_params, uint32_t params_bytes, void *vis, void *offsets,
+    void *stage_out, void *xfb, void *written, uint32_t work_item_count)
+{
+    if (!plan || !pipeline || !scatter_params || params_bytes == 0u || !vis ||
+        !offsets || !stage_out || !xfb || !written || work_item_count == 0u) {
+        return false;
+    }
+    memset(plan, 0, sizeof(*plan));
+    plan->pipeline = pipeline;
+    if (!mglDrawGsPlanAppendBytes(plan, scatter_params, params_bytes,
+                                  MGL_AIR_GS_XFB_SCATTER_PARAMS_SLOT) ||
+        !mglDrawGsPlanAppendBuffer(plan, vis, 0u,
+                                   MGL_AIR_GS_XFB_SCATTER_VIS_SLOT) ||
+        !mglDrawGsPlanAppendBuffer(plan, offsets, 0u,
+                                   MGL_AIR_GS_XFB_SCATTER_OFFSET_SLOT) ||
+        !mglDrawGsPlanAppendBuffer(plan, stage_out, 0u,
+                                   MGL_AIR_GS_XFB_SCATTER_STAGE_OUT_SLOT) ||
+        !mglDrawGsPlanAppendBuffer(plan, xfb, 0u,
+                                   MGL_AIR_GS_XFB_SCATTER_XFB_SLOT) ||
+        !mglDrawGsPlanAppendBuffer(plan, written, 0u,
+                                   MGL_AIR_GS_XFB_SCATTER_WRITTEN_SLOT)) {
+        return false;
+    }
+    plan->dispatch = {
+        .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
+        .groups_x = work_item_count,
+        .groups_y = 1u,
+        .groups_z = 1u,
+        .local_x = 1u,
+        .local_y = 1u,
+        .local_z = 1u,
+    };
+    plan->barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
+    return true;
 }

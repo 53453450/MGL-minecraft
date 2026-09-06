@@ -35,6 +35,9 @@
 #include "glm_context.h"
 #include "mgl_capability.h"
 #include "mgl_sync.h"
+#include "glm_limits.h"
+#include "mgl_shader_abi.h"
+#include "mgl_buffer_slots.h"
 
 #include <algorithm>
 #include <array>
@@ -16022,6 +16025,385 @@ void mglRenderDestroyCullDistanceIndexPlan(void** owner) {
     if (!owner || !*owner) return;
     delete static_cast<mgl::CullDistanceIndexPlan*>(*owner);
     *owner = nullptr;
+}
+
+static int mglCullDistanceArraySplitCount(uint32_t draw_mode, uint64_t count,
+                                          uint32_t* out_n) {
+    if (!out_n) {
+        return -1;
+    }
+    *out_n = 0u;
+    if (count > UINT32_MAX) {
+        return -1;
+    }
+    switch (draw_mode) {
+    case GL_TRIANGLE_STRIP:
+    case GL_TRIANGLE_FAN:
+        if (count < 3u) {
+            return 1;
+        }
+        *out_n = (uint32_t)(count - 2u);
+        return 0;
+    case GL_LINE_STRIP:
+        if (count < 2u) {
+            return 1;
+        }
+        *out_n = (uint32_t)(count - 1u);
+        return 0;
+    case GL_LINE_LOOP:
+        if (count < 2u) {
+            return 1;
+        }
+        *out_n = (uint32_t)count;
+        return 0;
+    default:
+        return 1;
+    }
+}
+
+int mglRenderFillCullDistanceArrayPrimitives(
+    uint32_t draw_mode, int32_t first, uint64_t count,
+    MGLRenderCullDistancePrimitive* out, uint32_t cap, uint32_t* out_count) {
+    if (!out_count) {
+        return -1;
+    }
+    uint32_t n = 0u;
+    const int kind = mglCullDistanceArraySplitCount(draw_mode, count, &n);
+    *out_count = 0u;
+    if (kind != 0) {
+        return kind;
+    }
+    if (!out) {
+        *out_count = n;
+        return 0;
+    }
+    if (n > cap) {
+        return -1;
+    }
+    const uint32_t base = (uint32_t)first;
+    for (uint32_t p = 0u; p < n; p++) {
+        MGLRenderCullDistancePrimitive prim = {};
+        if (draw_mode == GL_TRIANGLE_STRIP) {
+            prim.vertices[0] = base + p;
+            prim.vertices[1] = base + p + 1u;
+            prim.vertices[2] = base + p + 2u;
+            prim.vertex_count = 3u;
+            prim.primitive_type = 3u; /* MGL_DRAW_PRIMITIVE_TRIANGLE */
+            prim.index_count = 3u;
+            prim.index_buffer_offset = (uint64_t)p * 3u * sizeof(uint32_t);
+        } else if (draw_mode == GL_TRIANGLE_FAN) {
+            prim.vertices[0] = base;
+            prim.vertices[1] = base + p + 1u;
+            prim.vertices[2] = base + p + 2u;
+            prim.vertex_count = 3u;
+            prim.primitive_type = 3u;
+            prim.index_count = 3u;
+            prim.index_buffer_offset = (uint64_t)p * 3u * sizeof(uint32_t);
+        } else if (draw_mode == GL_LINE_STRIP) {
+            prim.vertices[0] = base + p;
+            prim.vertex_count = 0u;
+            prim.primitive_type = 1u; /* MGL_DRAW_PRIMITIVE_LINE */
+            prim.index_count = 0u;
+            prim.index_buffer_offset = 0u;
+        } else {
+            prim.vertices[0] = base + p;
+            prim.vertices[1] = base + ((p + 1u) % (uint32_t)count);
+            prim.vertex_count = 2u;
+            prim.primitive_type = 1u;
+            prim.index_count = 2u;
+            prim.index_buffer_offset = (uint64_t)p * sizeof(uint32_t);
+        }
+        out[p] = prim;
+    }
+    *out_count = n;
+    return 0;
+}
+
+static MTL::Buffer* mglCullDistanceNewIndexBuffer(void* device,
+                                                 const uint32_t* data,
+                                                 size_t count) {
+    if (!data || count == 0u) {
+        return nullptr;
+    }
+    MTL::Device* metalDevice = static_cast<MTL::Device*>(device);
+    if (!metalDevice) {
+        mgl::Renderer& renderer = mgl::renderer();
+        std::lock_guard<std::mutex> lock(renderer.mutex);
+        metalDevice = renderer.device;
+        if (!metalDevice) {
+            return nullptr;
+        }
+        MTL::Buffer* buffer = metalDevice->newBuffer(
+            data, count * sizeof(uint32_t), MTL::ResourceStorageModeShared);
+        if (buffer) {
+            buffer->setLabel(NS::String::string(
+                "MGL CullDistance expanded indices", NS::UTF8StringEncoding));
+        }
+        return buffer;
+    }
+    MTL::Buffer* buffer = metalDevice->newBuffer(
+        data, count * sizeof(uint32_t), MTL::ResourceStorageModeShared);
+    if (buffer) {
+        buffer->setLabel(NS::String::string(
+            "MGL CullDistance expanded indices", NS::UTF8StringEncoding));
+    }
+    return buffer;
+}
+
+int mglRenderCreateCullDistanceArrayPlan(
+    void* device, uint32_t draw_mode, int32_t first, uint64_t count,
+    void** owner_out, void** index_buffer_out, uint64_t* primitive_count_out) {
+    if (owner_out) *owner_out = nullptr;
+    if (index_buffer_out) *index_buffer_out = nullptr;
+    if (primitive_count_out) *primitive_count_out = 0;
+    if (!owner_out || !index_buffer_out || !primitive_count_out) {
+        return -1;
+    }
+    uint32_t n = 0u;
+    const int kind =
+        mglRenderFillCullDistanceArrayPrimitives(draw_mode, first, count,
+                                                 nullptr, 0u, &n);
+    if (kind != 0) {
+        return kind;
+    }
+    std::unique_ptr<mgl::CullDistanceIndexPlan> plan(
+        new (std::nothrow) mgl::CullDistanceIndexPlan());
+    if (!plan) {
+        return -1;
+    }
+    try {
+        plan->primitives.resize(n);
+    } catch (...) {
+        return -1;
+    }
+    uint32_t filled = 0u;
+    if (mglRenderFillCullDistanceArrayPrimitives(
+            draw_mode, first, count, plan->primitives.data(), n, &filled) !=
+            0 ||
+        filled != n) {
+        return -1;
+    }
+    std::vector<uint32_t> expanded;
+    if (draw_mode == GL_TRIANGLE_STRIP || draw_mode == GL_TRIANGLE_FAN) {
+        uint32_t* raw = nullptr;
+        uint64_t raw_count = 0u;
+        const int expand =
+            draw_mode == GL_TRIANGLE_STRIP
+                ? mglRenderExpandTriangleStripArrayIndices((uint32_t)count,
+                                                           &raw, &raw_count)
+                : mglRenderExpandTriangleFanArrayIndices((uint32_t)count, &raw,
+                                                         &raw_count);
+        if (expand != 0 || !raw || raw_count == 0u) {
+            std::free(raw);
+            return -1;
+        }
+        const uint32_t base = (uint32_t)first;
+        try {
+            expanded.resize(static_cast<size_t>(raw_count));
+            for (uint64_t i = 0u; i < raw_count; i++) {
+                expanded[static_cast<size_t>(i)] = raw[i] + base;
+            }
+        } catch (...) {
+            std::free(raw);
+            return -1;
+        }
+        std::free(raw);
+    } else if (draw_mode == GL_LINE_LOOP) {
+        uint32_t* raw = nullptr;
+        uint64_t raw_count = 0u;
+        if (mglRenderExpandLineLoopArrayIndices((uint32_t)first, (uint32_t)count,
+                                                &raw, &raw_count) != 0 ||
+            !raw) {
+            std::free(raw);
+            return -1;
+        }
+        try {
+            expanded.assign(raw, raw + static_cast<size_t>(raw_count));
+        } catch (...) {
+            std::free(raw);
+            return -1;
+        }
+        std::free(raw);
+    }
+    if (!expanded.empty()) {
+        if (expanded.size() > SIZE_MAX / sizeof(uint32_t)) {
+            return -1;
+        }
+        plan->indexBuffer = mglCullDistanceNewIndexBuffer(
+            device, expanded.data(), expanded.size());
+        if (!plan->indexBuffer) {
+            return -1;
+        }
+    }
+    *index_buffer_out = plan->indexBuffer;
+    *primitive_count_out = plan->primitives.size();
+    *owner_out = plan.release();
+    return 0;
+}
+
+extern "C" bool mglRenderIsCullDistanceAttribName(const char* name) {
+    return name && std::strncmp(name, "culldistance_data", 17) == 0;
+}
+
+static bool mglRenderProgramUsesVertexAttrib(const Program* program,
+                                            uint32_t attrib) {
+    if (!program || attrib >= MAX_ATTRIBS) {
+        return false;
+    }
+    const MGLShaderResourceList* inputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    if (!inputs->list || inputs->count == 0) {
+        return false;
+    }
+    for (GLuint i = 0; i < inputs->count; i++) {
+        const GLuint location = inputs->list[i].location;
+        if (location == attrib) {
+            return true;
+        }
+        const GLuint span =
+            mglAIRVaryingLocationSpan(inputs->list[i].gl_type,
+                                      inputs->list[i].gl_array_size);
+        if (span > 1u && attrib >= location && attrib < location + span) {
+            return true;
+        }
+        if (location == 0xffffffffu && i == attrib) {
+            return true;
+        }
+    }
+    return false;
+}
+
+extern "C" const char* mglRenderVertexAttribName(const Program* program,
+                                                 uint32_t attrib) {
+    if (!program || attrib >= MAX_ATTRIBS) {
+        return NULL;
+    }
+    const MGLShaderResourceList* vsInputs =
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
+    if (vsInputs && vsInputs->list) {
+        for (GLuint r = 0; r < vsInputs->count; r++) {
+            const MGLShaderResource* res = &vsInputs->list[r];
+            if (res->location == attrib) {
+                return res->name ? res->name
+                                 : program->attrib_location_names[attrib];
+            }
+            const GLuint span =
+                mglAIRVaryingLocationSpan(res->gl_type, res->gl_array_size);
+            if (span > 1u && attrib >= res->location &&
+                attrib < res->location + span) {
+                return res->name ? res->name
+                                 : program->attrib_location_names[attrib];
+            }
+        }
+    }
+    return program->attrib_location_names[attrib];
+}
+
+extern "C" uint32_t mglRenderCollectCullDistanceAttribs(const Program* program,
+                                                       uint32_t* out,
+                                                       uint32_t cap) {
+    uint32_t n = 0u;
+    if (!program) {
+        return 0u;
+    }
+    for (uint32_t attrib = 0u; attrib < MAX_ATTRIBS; attrib++) {
+        if (!mglRenderProgramUsesVertexAttrib(program, attrib)) {
+            continue;
+        }
+        if (!mglRenderIsCullDistanceAttribName(
+                mglRenderVertexAttribName(program, attrib))) {
+            continue;
+        }
+        if (out && n < cap) {
+            out[n] = attrib;
+        }
+        n++;
+    }
+    return n;
+}
+
+extern "C" void mglRenderAccumulateCullDistanceAttrib(
+    MGLRenderCullDistanceLayout* layout, void* mtl_buffer,
+    int64_t binding_offset, uint32_t stride, int64_t relativeoffset) {
+    if (!layout || !mtl_buffer) {
+        return;
+    }
+    if (layout->culldist_size == 0u) {
+        layout->mtl_buffer = mtl_buffer;
+        layout->binding_offset = binding_offset;
+        layout->stride = stride;
+        layout->first_relative_offset = relativeoffset;
+    }
+    layout->culldist_size++;
+}
+
+extern "C" uint32_t mglRenderCullDistanceLayoutOffset(
+    const MGLRenderCullDistanceLayout* layout) {
+    if (!layout) {
+        return 0u;
+    }
+    const int64_t rel = layout->first_relative_offset >= 0
+                            ? layout->first_relative_offset
+                            : 0;
+    return (uint32_t)(layout->binding_offset + rel);
+}
+
+extern "C" void mglRenderFillCullDistanceEmuParams(
+    uint32_t prim_vertex_count, uint32_t first_vertex,
+    const uint32_t* explicit_vertices, uint32_t explicit_vertex_count,
+    uint32_t culldist_offset, uint32_t vertex_stride, uint32_t culldist_size,
+    uint32_t first_instance, uint32_t instance_stride,
+    MGLCullDistanceEmuParams* out) {
+    if (!out) {
+        return;
+    }
+    std::memset(out, 0, sizeof(*out));
+    if (explicit_vertex_count > 4u) {
+        explicit_vertex_count = 4u;
+    }
+    out->prim_vertex_count = prim_vertex_count;
+    out->culldist_offset = culldist_offset;
+    out->vertex_stride = vertex_stride;
+    out->culldist_size = culldist_size;
+    out->first_vertex = first_vertex;
+    out->explicit_vertex_count = explicit_vertex_count;
+    if (explicit_vertices && explicit_vertex_count > 0u) {
+        std::memcpy(out->explicit_vertices, explicit_vertices,
+                    explicit_vertex_count * sizeof(uint32_t));
+    }
+    out->first_instance = first_instance;
+    out->instance_stride = instance_stride;
+}
+
+extern "C" int mglRenderCullDistanceCaptureBytes(uint32_t first, uint32_t count,
+                                                uint32_t instance_count,
+                                                uint64_t* out_bytes) {
+    if (!out_bytes || count == 0u || instance_count == 0u) {
+        return -1;
+    }
+    const uint64_t endVertex = (uint64_t)first + (uint64_t)count;
+    const uint64_t lastCaptureIndex =
+        (uint64_t)(instance_count - 1u) * (uint64_t)count + endVertex;
+    if (endVertex == 0u || lastCaptureIndex == 0u ||
+        lastCaptureIndex > SIZE_MAX / 32u) {
+        return -1;
+    }
+    *out_bytes = lastCaptureIndex * 32u;
+    return 0;
+}
+
+extern "C" void mglRenderBindCullDistanceEmuSlots(
+    void* encoder_owner, void* vertex_buffer,
+    const MGLCullDistanceEmuParams* params) {
+    if (!encoder_owner || !params) {
+        return;
+    }
+    (void)mglRenderSetRenderBufferForOwner(
+        encoder_owner, vertex_buffer, 0u, MGL_RENDER_BINDING_STAGE_VERTEX,
+        kMGLCullDistanceVertexBufferIndex);
+    (void)mglRenderSetRenderBytesForOwner(
+        encoder_owner, params, sizeof(*params),
+        MGL_RENDER_BINDING_STAGE_VERTEX, kMGLCullDistanceParamsBufferIndex);
 }
 
 int mglRenderSetRenderBuffer(void* render_encoder,

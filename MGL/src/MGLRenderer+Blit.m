@@ -2166,11 +2166,13 @@ static id mglLookupAuxRenderPipeline(
             return NO;
         }
         drawTextureObject->is_render_target = true;
-        if (!drawTextureObject->mtl_data || drawTextureObject->dirty_bits) {
-            if (![self bindMTLTexture:drawTextureObject]) {
-                NSLog(@"MGL WARN: mtlBlitFramebuffer failed to bind draw texture to Metal");
-                return NO;
-            }
+        /* The texture may already have a sampled-only Metal backing from
+         * glTexStorage.  Setting is_render_target above changes the required
+         * Metal usage even when mtl_data is otherwise clean, so always run the
+         * binding transition before creating the blit encoder. */
+        if (![self bindMTLTexture:drawTextureObject]) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer failed to bind draw texture to Metal");
+            return NO;
         }
         drawtexid = (__bridge id)(drawTextureObject->mtl_data);
         if (!drawtexid) {
@@ -2259,10 +2261,11 @@ static id mglLookupAuxRenderPipeline(
             if (copyBlit) {
                 if (readTextureObject->is_render_target) {
                     mglBlitSynchronizeTexture(copyBlit, readtexid,
-                                              /*slice*/0u, readSubresource.level);
+                                              readSubresource.slice,
+                                              readSubresource.level);
                 }
                 mglBlitCopyTexture(
-                    copyBlit, readtexid, /*sourceSlice*/0u,
+                    copyBlit, readtexid, readSubresource.slice,
                     readSubresource.level,
                     mglBlitOrigin(0u, 0u, 0u),
                     mglBlitSize(srcTexW, srcTexH, 1u),
@@ -2483,16 +2486,56 @@ static id mglLookupAuxRenderPipeline(
             NSLog(@"MGL WARN: mtlBlitFramebuffer scaled self-blit unsupported texture=%p, skipping", readtexid);
             return YES;
         }
-        if (readSubresource.level != 0u ||
-            readSubresource.slice != 0u ||
-            readSubresource.depthPlane != 0u ||
-            mglBlitTextureInfo(readtexid).texture_type != MGLTextureType2D) {
+        const MGLRenderTextureInfo readInfo = mglBlitTextureInfo(readtexid);
+        if (readSubresource.depthPlane != 0u) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer scaled source subresource/type unsupported level=%lu slice=%lu depth=%lu type=%lu, skipping",
                   (unsigned long)readSubresource.level,
                   (unsigned long)readSubresource.slice,
                   (unsigned long)readSubresource.depthPlane,
-                  (unsigned long)mglBlitTextureInfo(readtexid).texture_type);
+                  (unsigned long)readInfo.texture_type);
             return YES;
+        }
+
+        /* The scaled-blit fragment shader consumes texture2d<float>.  A
+         * layered/cube framebuffer attachment is backed by an array or cube
+         * Metal texture, so expose the selected GL subresource as a single
+         * 2D view.  Keep readtexid unchanged for render-target bookkeeping;
+         * the local view is retained by the encoder until the command is
+         * complete and released automatically at scope end. */
+        id scaledReadTexture = readtexid;
+        if (readSubresource.level != 0u ||
+            readSubresource.slice != 0u ||
+            readInfo.texture_type != MGLTextureType2D) {
+            const BOOL viewableArraySource =
+                readInfo.texture_type == MGLTextureType2DArray ||
+                readInfo.texture_type == MGLTextureTypeCube ||
+                readInfo.texture_type == MGLTextureTypeCubeArray;
+            NSUInteger sliceCount = (NSUInteger)readInfo.array_length;
+            if (readInfo.texture_type == MGLTextureTypeCube ||
+                readInfo.texture_type == MGLTextureTypeCubeArray) {
+                sliceCount *= 6u;
+            }
+            if (!viewableArraySource ||
+                readSubresource.slice >= sliceCount) {
+                NSLog(@"MGL WARN: mtlBlitFramebuffer scaled source subresource/type unsupported level=%lu slice=%lu depth=%lu type=%lu slices=%lu, skipping",
+                      (unsigned long)readSubresource.level,
+                      (unsigned long)readSubresource.slice,
+                      (unsigned long)readSubresource.depthPlane,
+                      (unsigned long)readInfo.texture_type,
+                      (unsigned long)sliceCount);
+                return YES;
+            }
+            scaledReadTexture = mglBlitCreateTextureView(
+                readtexid, readInfo.pixel_format, MGLTextureType2D,
+                NSMakeRange((NSUInteger)readSubresource.level, 1u),
+                NSMakeRange((NSUInteger)readSubresource.slice, 1u));
+            if (!scaledReadTexture) {
+                NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create scaled source 2D view level=%lu slice=%lu type=%lu",
+                      (unsigned long)readSubresource.level,
+                      (unsigned long)readSubresource.slice,
+                      (unsigned long)readInfo.texture_type);
+                return YES;
+            }
         }
 
         id pipeline = [self scaledBlitPipelineForPixelFormat:mglBlitTextureInfo(drawtexid).pixel_format];
@@ -2539,7 +2582,7 @@ static id mglLookupAuxRenderPipeline(
                               MGL_RENDER_BINDING_STAGE_VERTEX, 0);
         mglBlitSetRenderBytes(encoder, &params, sizeof(params),
                               MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
-        mglBlitSetRenderTexture(encoder, readtexid,
+        mglBlitSetRenderTexture(encoder, scaledReadTexture,
                                 MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
         mglBlitSetRenderSampler(encoder, sampler,
                                 MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);

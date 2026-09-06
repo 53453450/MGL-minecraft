@@ -11,16 +11,26 @@
 #include "mgl_draw_tess.h"
 
 #include "error.h"
+#include "glm_limits.h"
 #include "mgl_draw_encode.h"
 #include "mgl_index_buffer.h"
+#include "mgl_program_resource.h"
 #include "mgl_render.h"
+#include "mgl_renderer_backend.h"
 #include "mgl_shader_abi.h"
+#include "mgl_shader_resource.h"
+#include "mgl_buffer_slots.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <cstddef>
 
 #ifndef MAX
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif
 
 extern "C" MGLTessDrawClass mglTessClassifyDraw(GLMContext ctx, GLenum mode,
@@ -395,4 +405,530 @@ extern "C" bool mglTessFillEvalPatchItemBases(Program *tes,
     }
     bases_out[patch_count] = base;
     return true;
+}
+
+static bool mglTessKeepAppend(uint8_t *keep, size_t *used, size_t cap,
+                              const void *src, size_t len, const void **out_ptr)
+{
+    if (!keep || !used || !src || !out_ptr || len == 0u) {
+        return false;
+    }
+    const size_t aligned = (*used + 3u) & ~size_t{3};
+    if (aligned > cap || cap - aligned < len) {
+        return false;
+    }
+    memcpy(keep + aligned, src, len);
+    *out_ptr = keep + aligned;
+    *used = aligned + len;
+    return true;
+}
+
+static bool mglTessPlanAppendBytes(MGLRenderComputeExecutionPlan *plan,
+                                   uint8_t *keep, size_t *used, size_t cap,
+                                   const void *src, uint32_t len, uint32_t index)
+{
+    const void *stored = NULL;
+    if (!plan || !mglTessKeepAppend(keep, used, cap, src, len, &stored)) {
+        return false;
+    }
+    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        return false;
+    }
+    plan->binding_ops[plan->binding_op_count++] = {
+        .kind = 1u,
+        .index = index,
+        .offset = 0u,
+        .buffer = NULL,
+        .bytes = stored,
+        .length = len,
+    };
+    return true;
+}
+
+static bool mglTessPlanAppendDirectDispatch(MGLRenderComputeExecutionPlan *plan,
+                                            uint32_t groups_x, uint32_t local_x)
+{
+    MGLRenderComputePlan dispatch = {};
+    dispatch.dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT;
+    dispatch.groups_x = groups_x;
+    dispatch.groups_y = 1u;
+    dispatch.groups_z = 1u;
+    dispatch.local_x = local_x;
+    dispatch.local_y = 1u;
+    dispatch.local_z = 1u;
+    return mglRenderAppendComputeDispatchToPlan(plan, &dispatch, NULL, 0) == 0;
+}
+
+extern "C" bool mglTessAppendEvalPerPatchDispatches(
+    MGLRenderComputeExecutionPlan *plan, Program *tes, const void *factor_bytes,
+    const MGLTessEvalPerPatchDispatchSpec *spec, void **out_keep_alive)
+{
+    if (out_keep_alive) {
+        *out_keep_alive = NULL;
+    }
+    if (!plan || !tes || !factor_bytes || !spec || !out_keep_alive ||
+        !spec->gl_in_buffer || spec->patch_count == 0u ||
+        spec->instance_count == 0u || spec->items_per_instance == 0u) {
+        return false;
+    }
+    if (spec->indexed && !spec->gather_buffer) {
+        return false;
+    }
+
+    uint32_t *patchBases =
+        (uint32_t *)malloc((size_t)(spec->patch_count + 1u) * sizeof(uint32_t));
+    if (!patchBases) {
+        return false;
+    }
+    if (!mglTessFillEvalPatchItemBases(tes, factor_bytes, spec->patch_count,
+                                       patchBases)) {
+        free(patchBases);
+        return false;
+    }
+
+    const uint64_t cap64 =
+        (uint64_t)spec->instance_count *
+        (32u + (uint64_t)spec->patch_count * 16u);
+    if (cap64 == 0u || cap64 > SIZE_MAX) {
+        free(patchBases);
+        return false;
+    }
+    uint8_t *keep = (uint8_t *)malloc((size_t)cap64);
+    if (!keep) {
+        free(patchBases);
+        return false;
+    }
+    size_t used = 0u;
+
+    const uint8_t *factors = (const uint8_t *)factor_bytes;
+    for (uint32_t inst = 0u; inst < spec->instance_count; inst++) {
+        const uint64_t instGlInOffset =
+            spec->indexed
+                ? 0u
+                : spec->gl_in_offset +
+                      (uint64_t)inst * spec->gl_in_instance_stride;
+        if (!mglTessPlanAppendBuffer(plan, spec->gl_in_buffer, instGlInOffset,
+                                     MGL_AIR_TESS_SLOT_TCS_STAGE_IN)) {
+            free(patchBases);
+            free(keep);
+            return false;
+        }
+        if (spec->gather_buffer &&
+            !mglTessPlanAppendBuffer(plan, spec->gather_buffer, 0u,
+                                     MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
+            free(patchBases);
+            free(keep);
+            return false;
+        }
+        const uint32_t gatherParams[5] = {
+            spec->gather_verts_per_instance, spec->gather_prims_per_instance,
+            spec->gather_first_vertex, spec->indexed ? 1u : 0u, inst,
+        };
+        if (!mglTessPlanAppendBytes(plan, keep, &used, (size_t)cap64,
+                                    gatherParams, sizeof(gatherParams),
+                                    MGL_AIR_TESS_SLOT_GATHER_PARAMS)) {
+            free(patchBases);
+            free(keep);
+            return false;
+        }
+        for (uint32_t p = 0u; p < spec->patch_count; p++) {
+            const void *record =
+                factors + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+            const uint32_t items = mglTessEvalItemsPerPatch(tes, record);
+            if (items == 0u) {
+                continue;
+            }
+            const uint32_t contractWords[4] = {
+                p,
+                spec->gl_in_vertices,
+                items,
+                inst * spec->items_per_instance + patchBases[p],
+            };
+            if (!mglTessPlanAppendBytes(plan, keep, &used, (size_t)cap64,
+                                        contractWords, sizeof(contractWords),
+                                        MGL_AIR_TESS_SLOT_INDIRECT) ||
+                !mglTessPlanAppendDirectDispatch(plan, (items + 63u) / 64u,
+                                                 64u)) {
+                free(patchBases);
+                free(keep);
+                return false;
+            }
+        }
+    }
+    free(patchBases);
+    *out_keep_alive = keep;
+    return true;
+}
+
+static uint32_t mglTessGLUnitForResource(const MGLShaderResource *resource,
+                                         uint32_t fallback)
+{
+    if (!resource) {
+        return fallback;
+    }
+    if (resource->sampler_unit >= 0) {
+        return (uint32_t)resource->sampler_unit;
+    }
+    return resource->gl_binding;
+}
+
+static uint32_t mglTessCollectTextureBindsOfType(
+    GLMContext ctx, Program *program, int stage, int resource_type,
+    uint32_t kind, MGLTessTextureBind *out, uint32_t cap, uint32_t filled)
+{
+    const int32_t count =
+        ctx ? mglRendererGetProgramBindingCount(ctx, stage, resource_type)
+            : (program && stage >= 0 && stage < _MAX_SHADER_TYPES &&
+                       resource_type >= 0 &&
+                       resource_type < MGL_MAX_SHADER_RESOURCES
+                   ? (int32_t)program->shader_resources_list[stage][resource_type]
+                         .count
+                   : 0);
+    for (int32_t i = 0; i < count; i++) {
+        const MGLShaderResource *resource = NULL;
+        if (program && stage >= 0 && stage < _MAX_SHADER_TYPES &&
+            resource_type >= 0 && resource_type < MGL_MAX_SHADER_RESOURCES &&
+            (uint32_t)i <
+                program->shader_resources_list[stage][resource_type].count) {
+            resource =
+                &program->shader_resources_list[stage][resource_type].list[i];
+        }
+        if (mglShouldSkipStageTextureResource(program, stage, resource_type,
+                                              resource)) {
+            continue;
+        }
+        const uint32_t fallback_gl =
+            ctx ? (uint32_t)mglRendererGetProgramGLBinding(ctx, stage,
+                                                           resource_type, i)
+                : 0u;
+        const uint32_t metal_slot =
+            resource ? mglMetalResourceSlot(resource)
+                     : (ctx ? (uint32_t)mglRendererGetProgramBinding(
+                                  ctx, stage, resource_type, i)
+                            : 0u);
+        const uint32_t gl_unit = mglTessGLUnitForResource(resource, fallback_gl);
+        if (metal_slot >= TEXTURE_UNITS || gl_unit >= TEXTURE_UNITS) {
+            continue;
+        }
+        if (filled >= cap) {
+            return filled;
+        }
+        out[filled].kind = kind;
+        out[filled].metal_slot = metal_slot;
+        out[filled].gl_unit = gl_unit;
+        out[filled].combined_sampler_slot = UINT32_MAX;
+        if (kind == MGL_TESS_BIND_SAMPLED_IMAGE && resource &&
+            resource->has_combined_sampler) {
+            out[filled].combined_sampler_slot =
+                mglMetalCombinedSamplerSlot(resource);
+        }
+        filled++;
+    }
+    return filled;
+}
+
+extern "C" uint32_t mglTessCollectTextureBinds(GLMContext ctx, Program *program,
+                                               int stage, MGLTessTextureBind *out,
+                                               uint32_t cap)
+{
+    if (!program || !out || cap == 0u) {
+        return 0u;
+    }
+    uint32_t filled = mglTessCollectTextureBindsOfType(
+        ctx, program, stage, _STORAGE_IMAGE_RES, MGL_TESS_BIND_STORAGE_IMAGE,
+        out, cap, 0u);
+    return mglTessCollectTextureBindsOfType(
+        ctx, program, stage, _SAMPLED_IMAGE_RES, MGL_TESS_BIND_SAMPLED_IMAGE,
+        out, cap, filled);
+}
+
+extern "C" bool mglTessInitStageInDefaults(void *dst, uint64_t vertices,
+                                           uint64_t stride)
+{
+    if (!dst || vertices == 0u || stride < MGL_AIR_PER_VERTEX_STRIDE ||
+        vertices > SIZE_MAX / stride) {
+        return false;
+    }
+    memset(dst, 0, (size_t)(vertices * stride));
+    const float one = 1.0f;
+    uint8_t *base = (uint8_t *)dst;
+    for (uint64_t v = 0u; v < vertices; v++) {
+        uint8_t *record = base + v * stride;
+        memcpy(record + MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET, &one, sizeof(one));
+        for (uint32_t d = 0u; d < MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT; d++) {
+            memcpy(record + MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET +
+                       (uint64_t)d * sizeof(float),
+                   &one, sizeof(one));
+        }
+    }
+    return true;
+}
+
+extern "C" bool mglTessCompactSparseCapture(
+    const void *sparse, uint64_t sparse_offset, uint32_t sparse_records,
+    uint32_t stride, const uint32_t *gather, uint32_t gather_count,
+    uint32_t instance_count, void *continuous, uint64_t continuous_bytes)
+{
+    if (!sparse || !gather || !continuous || stride == 0u ||
+        gather_count == 0u || instance_count == 0u || sparse_records == 0u) {
+        return false;
+    }
+    if ((uint64_t)gather_count > UINT64_MAX / stride ||
+        (uint64_t)instance_count > UINT64_MAX / ((uint64_t)gather_count * stride)) {
+        return false;
+    }
+    const uint64_t need =
+        (uint64_t)instance_count * (uint64_t)gather_count * stride;
+    if (need != continuous_bytes) {
+        return false;
+    }
+    memset(continuous, 0, (size_t)continuous_bytes);
+    const uint8_t *src = (const uint8_t *)sparse;
+    uint8_t *dst = (uint8_t *)continuous;
+    for (uint32_t inst = 0u; inst < instance_count; inst++) {
+        const uint64_t sparseInstBase =
+            sparse_offset + (uint64_t)inst * sparse_records * stride;
+        const uint64_t contInstBase =
+            (uint64_t)inst * gather_count * stride;
+        for (uint32_t gi = 0u; gi < gather_count; gi++) {
+            const uint32_t vid = gather[gi];
+            if (vid >= sparse_records) {
+                continue;
+            }
+            memcpy(dst + contInstBase + (uint64_t)gi * stride,
+                   src + sparseInstBase + (uint64_t)vid * stride, stride);
+        }
+    }
+    return true;
+}
+
+extern "C" double mglDecodeVertexAttribComponent(const uint8_t *src,
+                                                 GLenum type,
+                                                 GLboolean normalized,
+                                                 unsigned long component);
+
+static void mglTessWriteStageInComponent(uint8_t *destination,
+                                         const MGLTessStageInMember *member,
+                                         uint32_t component, double value)
+{
+    if (!destination || !member || component >= member->components ||
+        member->component_bytes == 0u) {
+        return;
+    }
+    uint8_t *component_destination =
+        destination + member->offset +
+        (uint64_t)component * member->component_bytes;
+    const size_t copy_bytes = MIN(member->component_bytes, sizeof(int32_t));
+    if (member->base_type == MGL_TESS_STAGE_IN_INT) {
+        int32_t converted = (int32_t)value;
+        memcpy(component_destination, &converted, copy_bytes);
+    } else if (member->base_type == MGL_TESS_STAGE_IN_UINT) {
+        uint32_t converted = value < 0.0 ? 0u : (uint32_t)value;
+        memcpy(component_destination, &converted, copy_bytes);
+    } else {
+        float converted = (float)value;
+        memcpy(component_destination, &converted, copy_bytes);
+    }
+}
+
+extern "C" bool mglTessPackStageInRecords(
+    void *dst, uint64_t vertices, uint64_t stride, GLint first, GLsizei count,
+    const uint8_t *index_bytes, GLenum index_type, bool restart_enabled,
+    uint32_t restart_index, GLint base_vertex, GLuint base_instance,
+    const MGLTessStageInMember *members, uint32_t member_count,
+    const MGLTessStageInAttribSrc *srcs)
+{
+    if (!dst || !members || !srcs || vertices == 0u || stride == 0u ||
+        member_count == 0u || count <= 0) {
+        return false;
+    }
+    if (vertices > SIZE_MAX / stride) {
+        return false;
+    }
+    const uint32_t index_width =
+        index_bytes ? mglRenderGLIndexElementSize((uint64_t)index_type) : 0u;
+    if (index_bytes && index_width == 0u) {
+        return false;
+    }
+    uint8_t *base = (uint8_t *)dst;
+    const uint64_t live = MIN(vertices, (uint64_t)count);
+    for (uint64_t v = 0u; v < live; v++) {
+        int64_t vertexIndex64 = (int64_t)first + (int64_t)v;
+        if (index_bytes) {
+            const uint32_t rawIndex =
+                mglRenderReadGLIndexValue(index_bytes, index_width, v);
+            if (restart_enabled && rawIndex == restart_index) {
+                continue;
+            }
+            vertexIndex64 = (int64_t)rawIndex + (int64_t)base_vertex;
+        }
+        if (vertexIndex64 < 0) {
+            continue;
+        }
+        uint8_t *dstVertex = base + v * stride;
+        for (uint32_t m = 0u; m < member_count; m++) {
+            const MGLTessStageInMember *member = &members[m];
+            const MGLTessStageInAttribSrc *src = &srcs[m];
+            if (member->offset >= stride ||
+                member->size > stride - member->offset) {
+                continue;
+            }
+            double values[4] = {0.0, 0.0, 0.0, 1.0};
+            if (src->use_current) {
+                if (src->current_valid) {
+                    const uint32_t comps = MIN(src->attrib_size, 4u);
+                    for (uint32_t c = 0u; c < comps; c++) {
+                        values[c] = mglDecodeVertexAttribComponent(
+                            src->current, (GLenum)src->type,
+                            (GLboolean)src->normalized, (unsigned long)c);
+                    }
+                }
+            } else if (src->bytes) {
+                const uint64_t element_bytes = mglRenderVertexAttribElementBytes(
+                    (uint64_t)src->type, src->attrib_size);
+                uint32_t stride_bytes = src->stride;
+                if (stride_bytes == 0u) {
+                    stride_bytes = (uint32_t)element_bytes;
+                }
+                uint64_t attribIndex = (uint64_t)vertexIndex64;
+                if (src->divisor > 0u) {
+                    attribIndex = (uint64_t)(base_instance / src->divisor);
+                }
+                if (element_bytes > 0u && stride_bytes > 0u &&
+                    src->binding_offset >= 0 && src->relativeoffset >= 0) {
+                    const uint64_t baseOffset =
+                        (uint64_t)src->binding_offset +
+                        (uint64_t)src->relativeoffset;
+                    if (attribIndex <= (UINT64_MAX - baseOffset) / stride_bytes) {
+                        const uint64_t vertexOffset =
+                            baseOffset + attribIndex * stride_bytes;
+                        if (vertexOffset <= src->buffer_size &&
+                            (src->buffer_size - vertexOffset) >= element_bytes) {
+                            const uint8_t *elem = src->bytes + vertexOffset;
+                            const uint32_t comps = MIN(src->attrib_size, 4u);
+                            for (uint32_t c = 0u; c < comps; c++) {
+                                values[c] = mglDecodeVertexAttribComponent(
+                                    elem, (GLenum)src->type,
+                                    (GLboolean)src->normalized,
+                                    (unsigned long)c);
+                            }
+                        }
+                    }
+                }
+            }
+            for (uint32_t c = 0u; c < member->components && c < 4u; c++) {
+                mglTessWriteStageInComponent(dstVertex, member, c, values[c]);
+            }
+        }
+    }
+    return true;
+}
+
+extern "C" bool mglTessSanitizeRestartIndices(void *dst, const void *src,
+                                              uint32_t count, GLenum index_type,
+                                              uint32_t restart_index)
+{
+    if (!dst || !src || count == 0u) {
+        return false;
+    }
+    const uint32_t width = mglRenderGLIndexElementSize((uint64_t)index_type);
+    if (width == 0u) {
+        return false;
+    }
+    if (dst != src) {
+        memcpy(dst, src, (size_t)count * width);
+    }
+    if (width == 1u) {
+        uint8_t *bytes = (uint8_t *)dst;
+        const uint8_t marker = (uint8_t)restart_index;
+        for (uint32_t i = 0u; i < count; i++) {
+            if (bytes[i] == marker) {
+                bytes[i] = 0u;
+            }
+        }
+    } else if (width == 2u) {
+        uint16_t *words = (uint16_t *)dst;
+        const uint16_t marker = (uint16_t)restart_index;
+        for (uint32_t i = 0u; i < count; i++) {
+            if (words[i] == marker) {
+                words[i] = 0u;
+            }
+        }
+    } else {
+        uint32_t *words = (uint32_t *)dst;
+        for (uint32_t i = 0u; i < count; i++) {
+            if (words[i] == restart_index) {
+                words[i] = 0u;
+            }
+        }
+    }
+    return true;
+}
+
+extern "C" void mglTessFillCaptureParams(uint32_t first,
+                                         uint32_t records_per_instance,
+                                         uint32_t base_instance,
+                                         uint32_t out[3]) {
+    if (!out) {
+        return;
+    }
+    out[0] = first;
+    out[1] = records_per_instance;
+    out[2] = base_instance;
+}
+
+extern "C" void mglTessBindCaptureSlots(void* encoder_owner,
+                                        void* capture_buffer,
+                                        const uint32_t params[3]) {
+    if (!encoder_owner || !capture_buffer || !params) {
+        return;
+    }
+    (void)mglRenderSetRenderBufferForOwner(
+        encoder_owner, capture_buffer, 0u, MGL_RENDER_BINDING_STAGE_VERTEX,
+        kMGLCullDistanceVertexBufferIndex);
+    (void)mglRenderSetRenderBytesForOwner(
+        encoder_owner, params, 3u * sizeof(uint32_t),
+        MGL_RENDER_BINDING_STAGE_VERTEX, kMGLCullDistanceParamsBufferIndex);
+}
+
+extern "C" void mglTessEncodeCaptureArray(void *encoder_owner, uint32_t first,
+                                          uint32_t count,
+                                          uint32_t instance_count,
+                                          uint32_t base_instance)
+{
+    if (!encoder_owner || count == 0u || instance_count == 0u) {
+        return;
+    }
+    MGLRenderDrawPlan plan = {};
+    plan.kind = MGL_RENDER_DRAW_ARRAY;
+    plan.primitive_type = MGL_DRAW_PRIMITIVE_POINT;
+    plan.vertex_start = first;
+    plan.vertex_count = count;
+    plan.instance_count = instance_count;
+    plan.base_instance = base_instance;
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(encoder_owner, &plan, NULL,
+                                                   0);
+}
+
+extern "C" void mglTessEncodeCaptureIndexed(
+    void *encoder_owner, void *index_buffer, uint32_t index_type,
+    uint64_t index_offset, uint32_t count, int32_t base_vertex,
+    uint32_t instance_count, uint32_t base_instance)
+{
+    if (!encoder_owner || !index_buffer || count == 0u ||
+        instance_count == 0u) {
+        return;
+    }
+    MGLRenderDrawPlan plan = {};
+    plan.kind = MGL_RENDER_DRAW_INDEXED;
+    plan.primitive_type = MGL_DRAW_PRIMITIVE_POINT;
+    plan.index_count = count;
+    plan.index_type = index_type;
+    plan.index_buffer = index_buffer;
+    plan.index_buffer_offset = index_offset;
+    plan.instance_count = instance_count;
+    plan.base_vertex = base_vertex;
+    plan.base_instance = base_instance;
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(encoder_owner, &plan, NULL,
+                                                   0);
 }

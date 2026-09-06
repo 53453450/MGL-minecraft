@@ -37,6 +37,7 @@
 #import "MGLRenderer.h"
 #include "mgl_air_tess_abi.h"
 #include "mgl_air_gs_abi.h"
+#include "mgl_render.h"
 
 /* Encode target passed explicitly to issue and bind methods. */
 typedef struct {
@@ -81,18 +82,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  GLuint attribute,
                                                  const char *where);
 
-/* Cull distance emulation params. */
-typedef struct {
-    uint32_t prim_vertex_count;
-    uint32_t culldist_offset;
-    uint32_t vertex_stride;
-    uint32_t culldist_size;
-    uint32_t first_vertex;
-    uint32_t explicit_vertex_count;
-    uint32_t explicit_vertices[4];
-    uint32_t first_instance;
-    uint32_t instance_stride;
-} MGLCullDistanceEmuParams;
+/* Cull distance emulation params live in mgl_render.h. */
 
 /* === Diagnostic constants === */
 static const BOOL kMGLDiagnosticStateLogs = NO;
@@ -422,6 +412,11 @@ typedef struct {
                         explicitVertices:(const GLuint *)explicitVertices
                       explicitVertexCount:(GLuint)explicitVertexCount
                            encodeContext:(const MGLEncodeContext *)encCtx;
+
+void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
+                                    GLenum mode, GLuint first_vertex,
+                                    const uint32_t *explicit_vertices,
+                                    uint32_t explicit_vertex_count);
 - (BOOL)captureAIRCullDistancesForArrayDraw:(GLMContext)drawCtx
                                       first:(GLint)first
                                       count:(GLsizei)count

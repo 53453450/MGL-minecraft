@@ -1190,3 +1190,55 @@ bool mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(GLMContext ctx,
     }
     return true;
 }
+
+bool mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
+    void *renderEncoderOwner, MGLDrawMetalHandle device, GLenum mode,
+    GLint first, GLsizei count, size_t instanceCount, size_t baseInstance,
+    void *bind_renderer, const void *bind_encode_context,
+    MGLCullDistanceBindFn bind)
+{
+    if (!renderEncoderOwner || count <= 0 || instanceCount == 0u) {
+        return false;
+    }
+    void *planOwner = NULL;
+    void *indexBufferHandle = NULL;
+    uint64_t primitiveCount = 0u;
+    const int rc = mglRenderCreateCullDistanceArrayPlan(
+        (__bridge void *)device, (uint32_t)mode, first, (uint64_t)count,
+        &planOwner, &indexBufferHandle, &primitiveCount);
+    if (rc == 1) {
+        return false;
+    }
+    if (rc != 0 || !planOwner) {
+        return true;
+    }
+    MGLDrawMetalHandle indexBuffer = (__bridge id)indexBufferHandle;
+    for (uint64_t i = 0u; i < primitiveCount; i++) {
+        MGLRenderCullDistancePrimitive prim = {0};
+        if (mglRenderGetCullDistanceIndexPrimitive(planOwner, i, &prim) != 0) {
+            break;
+        }
+        if (bind) {
+            if (prim.index_count == 0u) {
+                bind(bind_renderer, bind_encode_context, mode,
+                     prim.vertices[0], NULL, 0u);
+            } else {
+                bind(bind_renderer, bind_encode_context, mode, (GLuint)first,
+                     prim.vertices, prim.vertex_count);
+            }
+        }
+        if (prim.index_count == 0u) {
+            mglDrawEncodePrimitives(renderEncoderOwner, prim.primitive_type,
+                                    (size_t)prim.vertices[0], 2u, instanceCount,
+                                    baseInstance);
+        } else if (indexBuffer) {
+            mglDrawEncodeIndexed(renderEncoderOwner, prim.primitive_type,
+                                 (size_t)prim.index_count,
+                                 MGL_DRAW_INDEX_UINT32, indexBuffer,
+                                 (size_t)prim.index_buffer_offset,
+                                 instanceCount, 0, baseInstance);
+        }
+    }
+    mglRenderDestroyCullDistanceIndexPlan(&planOwner);
+    return true;
+}

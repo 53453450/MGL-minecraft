@@ -26,27 +26,6 @@
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
 
-/* glUniform1i for samplers/images writes sampler_unit; gl_binding is only the
- * layout(binding=N) default. Match the VS/FS bind path so TCS/TES compute
- * kernels see the units CTS set via Uniform1i. */
-static GLuint mglTessResourceGLUnit(const MGLShaderResource *resource,
-                                    GLuint fallback)
-{
-    if (!resource) {
-        return fallback;
-    }
-    if (resource->sampler_unit >= 0) {
-        return (GLuint)resource->sampler_unit;
-    }
-    return resource->gl_binding;
-}
-
-typedef enum MGLTCSStageInBaseType {
-    MGLTCSStageInBaseFloat = 0,
-    MGLTCSStageInBaseInt,
-    MGLTCSStageInBaseUInt
-} MGLTCSStageInBaseType;
-
 enum {
     MGL_TESS_RESOURCE_STORAGE_SHARED = 0u,
     MGL_TESS_COMMAND_STATUS_NOT_ENQUEUED = 0u,
@@ -56,40 +35,6 @@ enum {
     MGL_TESS_PRIMITIVE_POINT = 0u,
     MGL_TESS_PRIMITIVE_LINE = 1u,
 };
-
-typedef struct MGLTCSStageInMember {
-    GLuint attribute;
-    size_t offset;
-    size_t size;
-    size_t componentBytes;
-    GLuint components;
-    MGLTCSStageInBaseType baseType;
-} MGLTCSStageInMember;
-
-static void mglWriteTCSStageInComponent(
-    uint8_t *destination,
-    const MGLTCSStageInMember *member,
-    size_t component,
-    double value)
-{
-    if (!destination || !member || component >= member->components) {
-        return;
-    }
-
-    uint8_t *component_destination = destination + member->offset +
-        component * member->componentBytes;
-    size_t copy_bytes = MIN(member->componentBytes, sizeof(int32_t));
-    if (member->baseType == MGLTCSStageInBaseInt) {
-        int32_t converted = (int32_t)value;
-        memcpy(component_destination, &converted, copy_bytes);
-    } else if (member->baseType == MGLTCSStageInBaseUInt) {
-        uint32_t converted = value < 0.0 ? 0u : (uint32_t)value;
-        memcpy(component_destination, &converted, copy_bytes);
-    } else {
-        float converted = (float)value;
-        memcpy(component_destination, &converted, copy_bytes);
-    }
-}
 
 static id mglTessCreateBuffer(id device,
                               NSUInteger length,
@@ -730,6 +675,87 @@ typedef struct {
         sizeof(pointSizeParams), kMGLPointSizeParamBufferIndex);
 }
 
+- (BOOL)ensureTessTextureMetalData:(const MGLTessTextureBind *)binds
+                             count:(uint32_t)count
+                               ctx:(GLMContext)drawCtx
+{
+    if (!binds || !drawCtx || !drawCtx->active_state) {
+        return YES;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const GLuint unit = binds[i].gl_unit;
+        Texture *ptr = (binds[i].kind == MGL_TESS_BIND_STORAGE_IMAGE)
+            ? MGL_STATE(drawCtx)->image_units[unit].tex
+            : MGL_STATE(drawCtx)->active_textures[unit];
+        if (ptr && !ptr->mtl_data) {
+            [self bindMTLTexture:ptr];
+        }
+    }
+    return YES;
+}
+
+- (BOOL)planTessTextureBinds:(const MGLTessTextureBind *)binds
+                       count:(uint32_t)count
+                         ctx:(GLMContext)drawCtx
+                        plan:(MGLRenderComputeExecutionPlan *)plan
+                 temporaries:(NSMutableArray *)temporaries
+{
+    if (!binds || !plan || !drawCtx || !drawCtx->active_state) {
+        return binds == NULL || count == 0u;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const MGLTessTextureBind *bind = &binds[i];
+        id texture = nil;
+        Texture *ptr = NULL;
+        if (bind->kind == MGL_TESS_BIND_STORAGE_IMAGE) {
+            ptr = MGL_STATE(drawCtx)->image_units[bind->gl_unit].tex;
+            if (ptr) {
+                texture = (__bridge id)(ptr->mtl_data);
+                texture = (__bridge id)mglRendererStorageImageTexture(
+                    (__bridge void *)texture,
+                    &MGL_STATE(drawCtx)->image_units[bind->gl_unit]);
+            }
+        } else {
+            ptr = MGL_STATE(drawCtx)->active_textures[bind->gl_unit];
+            texture = ptr ? (__bridge id)(ptr->mtl_data) : nil;
+        }
+        if (!mglTessPlanTextureOrBind(plan, temporaries, nil, texture,
+                                      bind->metal_slot)) {
+            return NO;
+        }
+        if (bind->kind != MGL_TESS_BIND_SAMPLED_IMAGE ||
+            bind->combined_sampler_slot == UINT32_MAX) {
+            continue;
+        }
+        id sampler = nil;
+        if (MGL_STATE(drawCtx)->texture_samplers[bind->gl_unit]) {
+            Sampler *glSampler =
+                MGL_STATE(drawCtx)->texture_samplers[bind->gl_unit];
+            if (glSampler->dirty_bits && glSampler->mtl_data) {
+                mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
+            }
+            if (!glSampler->mtl_data && ptr) {
+                glSampler->mtl_data = (void *)CFBridgingRetain(
+                    [self createMTLSamplerForTexParam:&glSampler->params
+                                               target:ptr->target]);
+                glSampler->dirty_bits = 0;
+            }
+            sampler = (__bridge id)(glSampler->mtl_data);
+        } else if (ptr && ptr->params.mtl_data) {
+            sampler = (__bridge id)(ptr->params.mtl_data);
+        }
+        if (!sampler) {
+            sampler = mglTessCreateSampler(_device);
+        }
+        if (sampler &&
+            !mglTessPlanSamplerOrBind(plan, temporaries, nil, sampler,
+                                      bind->combined_sampler_slot)) {
+            return NO;
+        }
+    }
+    return YES;
+}
+
 - (id)newTCSStageInBufferForContext:(GLMContext)drawCtx
                                        program:(Program *)tcsProgram
                                          first:(GLint)first
@@ -754,7 +780,7 @@ typedef struct {
         return nil;
     }
 
-    MGLTCSStageInMember members[MAX_ATTRIBS];
+    MGLTessStageInMember members[MAX_ATTRIBS];
     memset(members, 0, sizeof(members));
     NSUInteger tcsInStride = 0u;
     NSUInteger memberCount = 0u;
@@ -764,9 +790,9 @@ typedef struct {
     members[0].attribute = 0u;
     members[0].offset = 0u;
     members[0].size = 16u;
-    members[0].componentBytes = 4u;
+    members[0].component_bytes = 4u;
     members[0].components = 4u;
-    members[0].baseType = MGLTCSStageInBaseFloat;
+    members[0].base_type = MGL_TESS_STAGE_IN_FLOAT;
     memberCount = 1u;
     if (tcsInStride == 0u) {
         NSLog(@"MGL TESS WARNING: unable to compute TCS stage_in stride for program %u",
@@ -822,18 +848,9 @@ typedef struct {
     if (!stageInContents) {
         return nil;
     }
-    memset(stageInContents, 0, tcsInSize);
-    for (NSUInteger v = 0; v < tcsInVertices; v++) {
-        float one = 1.0f;
-        uint8_t *record = (uint8_t *)stageInContents + v * tcsInStride;
-        memcpy(record + MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET,
-               &one, sizeof(one));
-        for (NSUInteger distance = 0;
-             distance < MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT; distance++) {
-            memcpy(record + MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET +
-                       distance * sizeof(float),
-                   &one, sizeof(one));
-        }
+    if (!mglTessInitStageInDefaults(stageInContents, tcsInVertices,
+                                    tcsInStride)) {
+        return nil;
     }
 
     if (memberCount == 0u) {
@@ -843,92 +860,46 @@ typedef struct {
         return stageInBuffer;
     }
 
-    for (NSUInteger v = 0; v < tcsInVertices; v++) {
-        if (v >= (NSUInteger)count) {
+    MGLTessStageInAttribSrc srcs[MAX_ATTRIBS];
+    memset(srcs, 0, sizeof(srcs));
+    for (NSUInteger m = 0; m < memberCount; m++) {
+        const MGLTessStageInMember *member = &members[m];
+        if (member->attribute >= MAX_ATTRIBS) {
             continue;
         }
-
-        int64_t vertexIndex64 = (int64_t)first + (int64_t)v;
-        if (indexBytes) {
-            uint32_t rawIndex = mglReadGLIndexValue(indexBytes, indexType, v);
-            if (primitiveRestart && rawIndex == restartIndex) {
-                continue;
+        const VertexAttrib *attrib = &vao->attrib[member->attribute];
+        MGLResolvedVertexAttribBinding resolved = {0};
+        bool hasBinding = mglRendererResolveVertexAttribBinding(
+            drawCtx, vao, member->attribute, "tcs.stage_in", &resolved);
+        bool useCurrentValue =
+            ((vao->enabled_attribs & (0x1u << member->attribute)) == 0u) &&
+            !(vao->enabled_attribs == 0u && hasBinding);
+        srcs[m].type = attrib->type;
+        srcs[m].attrib_size = attrib->size;
+        srcs[m].normalized = attrib->normalized;
+        if (useCurrentValue) {
+            srcs[m].use_current = 1u;
+            if (mglRendererBuildCurrentVertexAttribBytes(
+                    drawCtx, member->attribute, attrib, srcs[m].current) > 0u) {
+                srcs[m].current_valid = 1u;
             }
-            vertexIndex64 = (int64_t)rawIndex + (int64_t)baseVertex;
-        }
-        if (vertexIndex64 < 0) {
-            continue;
-        }
-
-        uint8_t *dstVertex = (uint8_t *)stageInContents + (v * tcsInStride);
-        for (NSUInteger m = 0; m < memberCount; m++) {
-            const MGLTCSStageInMember *member = &members[m];
-            if (member->attribute >= MAX_ATTRIBS ||
-                member->offset >= tcsInStride ||
-                member->size > tcsInStride - member->offset) {
-                continue;
-            }
-
-            double values[4] = {0.0, 0.0, 0.0, 1.0};
-            const VertexAttrib *attrib = &vao->attrib[member->attribute];
-            MGLResolvedVertexAttribBinding resolved = {0};
-            bool hasBinding = mglRendererResolveVertexAttribBinding(drawCtx,
-                                                                    vao,
-                                                                    member->attribute,
-                                                                    "tcs.stage_in",
-                                                                    &resolved);
-            bool useCurrentValue =
-                ((vao->enabled_attribs & (0x1u << member->attribute)) == 0u) &&
-                !(vao->enabled_attribs == 0u && hasBinding);
-
-            if (useCurrentValue) {
-                uint8_t currentBytes[16];
-                if (mglRendererBuildCurrentVertexAttribBytes(drawCtx,
-                                                             member->attribute,
-                                                             attrib,
-                                                             currentBytes) > 0u) {
-                    for (GLuint c = 0; c < MIN(attrib->size, 4u); c++) {
-                        values[c] = mglDecodeVertexAttribComponent(currentBytes,
-                                                                   attrib->type,
-                                                                   attrib->normalized,
-                                                                   c);
-                    }
-                }
-            } else if (hasBinding) {
-                Buffer *vbo = resolved.buffer;
-                if (vbo && [self processBuffer:vbo]) {
-                    const uint8_t *vboBytes = mglRendererReadableBufferBytes(vbo);
-                    NSUInteger elementBytes = mglVertexAttribElementBytes(attrib->type, attrib->size);
-                    NSUInteger stride = resolved.stride > 0u ? (NSUInteger)resolved.stride : elementBytes;
-                    NSUInteger attribIndex = (NSUInteger)vertexIndex64;
-                    if (resolved.divisor > 0u) {
-                        attribIndex = (NSUInteger)(baseInstance / resolved.divisor);
-                    }
-                    if (vboBytes && elementBytes > 0u && stride > 0u &&
-                        resolved.binding_offset >= 0 && resolved.relativeoffset >= 0) {
-                        NSUInteger baseOffset = (NSUInteger)resolved.binding_offset + (NSUInteger)resolved.relativeoffset;
-                        if (attribIndex <= (NSUIntegerMax - baseOffset) / stride) {
-                            NSUInteger vertexOffset = baseOffset + attribIndex * stride;
-                            if (vertexOffset <= (NSUInteger)vbo->size &&
-                                ((NSUInteger)vbo->size - vertexOffset) >= elementBytes) {
-                                GLboolean effectiveNormalized = attrib->normalized;
-                                const uint8_t *src = vboBytes + vertexOffset;
-                                for (GLuint c = 0; c < MIN(attrib->size, 4u); c++) {
-                                    values[c] = mglDecodeVertexAttribComponent(src,
-                                                                               attrib->type,
-                                                                               effectiveNormalized,
-                                                                               c);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            for (GLuint c = 0; c < member->components && c < 4u; c++) {
-                mglWriteTCSStageInComponent(dstVertex, member, c, values[c]);
+        } else if (hasBinding) {
+            Buffer *vbo = resolved.buffer;
+            if (vbo && [self processBuffer:vbo]) {
+                srcs[m].bytes = mglRendererReadableBufferBytes(vbo);
+                srcs[m].stride = resolved.stride;
+                srcs[m].divisor = resolved.divisor;
+                srcs[m].binding_offset = resolved.binding_offset;
+                srcs[m].relativeoffset = resolved.relativeoffset;
+                srcs[m].buffer_size = vbo->size >= 0 ? (uint64_t)vbo->size : 0u;
             }
         }
+    }
+    if (!mglTessPackStageInRecords(
+            stageInContents, tcsInVertices, tcsInStride, first, count,
+            indexBytes, indexType, primitiveRestart, restartIndex, baseVertex,
+            baseInstance, members, (uint32_t)memberCount, srcs)) {
+        return nil;
     }
 
     if (outStride) {
@@ -994,29 +965,14 @@ typedef struct {
         }
     }
 
-    GLuint tcsImgCount = mglRendererGetProgramBindingCount(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES);
-    for (GLuint i = 0; i < tcsImgCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (tcsProgram &&
-            i < tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tcsProgram,
-                                              _TESS_CONTROL_SHADER,
-                                              _STORAGE_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i));
-        if (glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
+    MGLTessTextureBind tcsTextureBinds[TEXTURE_UNITS * 2u];
+    const uint32_t tcsTextureBindCount = mglTessCollectTextureBinds(
+        glm_ctx, tcsProgram, _TESS_CONTROL_SHADER, tcsTextureBinds,
+        (uint32_t)(sizeof(tcsTextureBinds) / sizeof(tcsTextureBinds[0])));
+    if (![self ensureTessTextureMetalData:tcsTextureBinds
+                                    count:tcsTextureBindCount
+                                      ctx:glm_ctx]) {
+        return false;
     }
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
@@ -1033,106 +989,13 @@ typedef struct {
     id computeEncoder = nil;
     executionPlan.pipeline = (__bridge void *)tcsPipeline;
 
-    /* PASS 2: Bind storage images for TCS stage. */
-    for (GLuint i = 0; i < tcsImgCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (tcsProgram &&
-            i < tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tcsProgram,
-                                              _TESS_CONTROL_SHADER,
-                                              _STORAGE_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _STORAGE_IMAGE_RES, (int)i));
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-        id texture = nil;
-        if (ptr) {
-            texture = (__bridge id)(ptr->mtl_data);
-            texture = (__bridge id)mglRendererStorageImageTexture(
-                (__bridge void *)texture,
-                &MGL_STATE(ctx)->image_units[glUnit]);
-        }
-        if (!mglTessPlanTextureOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder, texture, metalSlot)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-    }
-
-    /* Also bind sampled (read-only) images for TCS stage. */
-    GLuint tcsSampledCount = mglRendererGetProgramBindingCount(ctx, _TESS_CONTROL_SHADER, _SAMPLED_IMAGE_RES);
-    for (GLuint i = 0; i < tcsSampledCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (tcsProgram &&
-            i < tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_SAMPLED_IMAGE_RES].count) {
-            resource = &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_SAMPLED_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tcsProgram,
-                                              _TESS_CONTROL_SHADER,
-                                              _SAMPLED_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, _TESS_CONTROL_SHADER, _SAMPLED_IMAGE_RES, (int)i);
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_CONTROL_SHADER, _SAMPLED_IMAGE_RES, (int)i));
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(ctx)->active_textures[glUnit];
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
-        id texture = ptr ? (__bridge id)(ptr->mtl_data) : nil;
-        if (!mglTessPlanTextureOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder, texture, metalSlot)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-        if (resource && resource->has_combined_sampler) {
-            id sampler = nil;
-            if (MGL_STATE(ctx)->texture_samplers[glUnit]) {
-                Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[glUnit];
-                if (glSampler->dirty_bits && glSampler->mtl_data) {
-                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
-                }
-                if (!glSampler->mtl_data && ptr) {
-                    glSampler->mtl_data = (void *)CFBridgingRetain(
-                        [self createMTLSamplerForTexParam:&glSampler->params
-                                                  target:ptr->target]);
-                    glSampler->dirty_bits = 0;
-                }
-                sampler = (__bridge id)(glSampler->mtl_data);
-            } else if (ptr && ptr->params.mtl_data) {
-                sampler = (__bridge id)(ptr->params.mtl_data);
-            }
-            if (!sampler) {
-                sampler = mglTessCreateSampler(_device);
-            }
-            if (sampler) {
-                if (!mglTessPlanSamplerOrBind(
-                        &executionPlan,
-                        executionTemporaries, computeEncoder, sampler,
-                        mglMetalCombinedSamplerSlot(resource))) {
-                    [self clearStageBindingCopyBacks:&stageCopyBacks];
-                    return false;
-                }
-            }
-        }
+    if (![self planTessTextureBinds:tcsTextureBinds
+                              count:tcsTextureBindCount
+                                ctx:glm_ctx
+                               plan:&executionPlan
+                        temporaries:executionTemporaries]) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
     }
 
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TCS. */
@@ -1320,22 +1183,11 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 }
 
 
-/* Per-patch expanded item count for the isolines/point-mode TES kernel.
- * Must stay in lockstep with the u/v decomposition injected by
- * mgl_air_backend.cpp (isTESCompute pre-main block).  Returns 0 when the
- * factor record is missing (caller falls back to 1). */
-
-
+/* GL 4.6 §11.2.2.2 subdivision-count rounding (C++ source of truth). */
 static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
 {
     return (GLuint)mglRenderTessRoundLevelForSpacing(
         (uint32_t)spacing, (uint32_t)ceilLevel);
-}
-
-static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
-                                          const void *factorRecord)
-{
-    return mglTessEvalItemsPerPatch((Program *)tesProgram, factorRecord);
 }
 
 /* Isolines / point-mode TES: expand one vertex record per work item with
@@ -1515,30 +1367,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
     }
 
-    GLuint tesImgCount = mglRendererGetProgramBindingCount(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES);
-    for (GLuint i = 0; i < tesImgCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (i <
-            tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource =
-                &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tesProgram,
-                                              _TESS_EVALUATION_SHADER,
-                                              _STORAGE_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
-        if (glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(glm_ctx)->image_units[glUnit].tex;
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
+    MGLTessTextureBind tesTextureBinds[TEXTURE_UNITS * 2u];
+    const uint32_t tesTextureBindCount = mglTessCollectTextureBinds(
+        glm_ctx, tesProgram, _TESS_EVALUATION_SHADER, tesTextureBinds,
+        (uint32_t)(sizeof(tesTextureBinds) / sizeof(tesTextureBinds[0])));
+    if (![self ensureTessTextureMetalData:tesTextureBinds
+                                    count:tesTextureBindCount
+                                      ctx:glm_ctx]) {
+        return false;
     }
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
@@ -1574,111 +1410,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
 
-    /* PASS 2: bind storage images for the TES stage. */
-    for (GLuint i = 0; i < tesImgCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (i <
-            tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource =
-                &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tesProgram,
-                                              _TESS_EVALUATION_SHADER,
-                                              _STORAGE_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(glm_ctx)->image_units[glUnit].tex;
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
-        id texture = ptr ? (__bridge id)(ptr->mtl_data) : nil;
-        if (texture) {
-            texture = (__bridge id)mglRendererStorageImageTexture(
-                (__bridge void *)texture,
-                &MGL_STATE(glm_ctx)->image_units[glUnit]);
-        }
-        if (!mglTessPlanTextureOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder, texture, metalSlot)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-    }
-
-    /* Bind sampled textures + combined samplers for the TES stage. */
-    GLuint tesSampledCount = mglRendererGetProgramBindingCount(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES);
-    for (GLuint i = 0; i < tesSampledCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (i <
-            tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
-            resource =
-                &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tesProgram,
-                                              _TESS_EVALUATION_SHADER,
-                                              _SAMPLED_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i);
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i));
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(glm_ctx)->active_textures[glUnit];
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
-        id texture = ptr ? (__bridge id)(ptr->mtl_data) : nil;
-        if (!mglTessPlanTextureOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder, texture, metalSlot)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-        if (resource && resource->has_combined_sampler) {
-            id sampler = nil;
-            if (MGL_STATE(glm_ctx)->texture_samplers[glUnit]) {
-                Sampler *glSampler =
-                    MGL_STATE(glm_ctx)->texture_samplers[glUnit];
-                if (glSampler->dirty_bits && glSampler->mtl_data) {
-                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
-                }
-                if (!glSampler->mtl_data && ptr) {
-                    glSampler->mtl_data = (void *)CFBridgingRetain(
-                        [self createMTLSamplerForTexParam:&glSampler->params
-                                                  target:ptr->target]);
-                    glSampler->dirty_bits = 0;
-                }
-                sampler = (__bridge id)(glSampler->mtl_data);
-            } else if (ptr && ptr->params.mtl_data) {
-                sampler = (__bridge id)(ptr->params.mtl_data);
-            }
-            if (!sampler) {
-                sampler = mglTessCreateSampler(_device);
-            }
-            if (sampler) {
-                if (!mglTessPlanSamplerOrBind(
-                        &executionPlan,
-                        executionTemporaries, computeEncoder, sampler,
-                        mglMetalCombinedSamplerSlot(resource))) {
-                    [self clearStageBindingCopyBacks:&stageCopyBacks];
-                    return false;
-                }
-            }
-        }
+    if (![self planTessTextureBinds:tesTextureBinds
+                              count:tesTextureBindCount
+                                ctx:glm_ctx
+                               plan:&executionPlan
+                        temporaries:executionTemporaries]) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
     }
 
     if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
@@ -1850,96 +1588,47 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
     }
 
-    /* Dispatch per patch.  The contract
-     * {patch_id, gl_in_vertices, items, output_item_base} is written for
-     * each dispatch; output_item_base spans instances first so each
-     * instance owns a contiguous [instance*itemsPerInstance] span. */
-    uint32_t *patchBases = (uint32_t *)malloc(
-        (size_t)(patchCount + 1u) * sizeof(uint32_t));
-    if (!patchBases) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-    if (!mglTessFillEvalPatchItemBases(tesProgram, factorBytes, patchCount,
-                                       patchBases)) {
-        free(patchBases);
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-    uint32_t contractWords[4];
-    contractWords[1] = glInVertices;
     const BOOL indexed = _tessellation.tessIndexedDraw;
-    id gatherBuffer = indexed
-        ? controlPointIndexBuffer : nil;
-    const GLuint gatherFirstVertex = 0u;
-    const GLuint gatherVertsPerInstance =
-        indexed ? (GLuint)_tessellation.tessInstanceRecords
+    MGLTessEvalPerPatchDispatchSpec patchSpec;
+    memset(&patchSpec, 0, sizeof(patchSpec));
+    patchSpec.gl_in_buffer = (__bridge void *)glInBuffer;
+    patchSpec.gl_in_offset = (uint64_t)glInOffset;
+    patchSpec.gl_in_instance_stride = (uint64_t)glInInstanceStride;
+    patchSpec.gather_buffer =
+        indexed ? (__bridge void *)controlPointIndexBuffer : NULL;
+    patchSpec.gather_verts_per_instance =
+        indexed ? (uint32_t)_tessellation.tessInstanceRecords
                 : MAX(1u, contract->patch_vertices);
-    const GLuint gatherPrimsPerInstance =
-        indexed ? patchCount : 0u;
-    for (GLuint inst = 0u; inst < instanceCountU; inst++) {
-        const NSUInteger instGlInOffset =
-            indexed ? 0u
-                    : glInOffset + (NSUInteger)inst * glInInstanceStride;
-        if (!mglTessPlanBufferOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder,
-                glInBuffer, instGlInOffset,
-                MGL_AIR_TESS_SLOT_TCS_STAGE_IN)) {
-            free(patchBases);
+    patchSpec.gather_prims_per_instance = indexed ? patchCount : 0u;
+    patchSpec.gather_first_vertex = 0u;
+    patchSpec.indexed = indexed ? 1u : 0u;
+    patchSpec.gl_in_vertices = (uint32_t)glInVertices;
+    patchSpec.patch_count = patchCount;
+    patchSpec.instance_count = instanceCountU;
+    patchSpec.items_per_instance = itemsPerInstanceU;
+    void *patchKeepAlive = NULL;
+    if (!mglTessAppendEvalPerPatchDispatches(&executionPlan, tesProgram,
+                                             factorBytes, &patchSpec,
+                                             &patchKeepAlive)) {
+        free(patchKeepAlive);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+    if (patchKeepAlive) {
+        NSData *keep = [[NSData alloc] initWithBytesNoCopy:patchKeepAlive
+                                                    length:1
+                                               deallocator:^(void *bytes,
+                                                             NSUInteger length) {
+            (void)length;
+            free(bytes);
+        }];
+        if (!keep) {
+            free(patchKeepAlive);
             [self clearStageBindingCopyBacks:&stageCopyBacks];
             return false;
         }
-        if (gatherBuffer) {
-            if (!mglTessPlanBufferOrBind(
-                    &executionPlan,
-                    executionTemporaries, computeEncoder, gatherBuffer, 0u,
-                    MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
-
-                free(patchBases);
-                [self clearStageBindingCopyBacks:&stageCopyBacks];
-                return false;
-            }
-        }
-        {
-            const GLuint gatherParams[5] = {
-                gatherVertsPerInstance, gatherPrimsPerInstance,
-                gatherFirstVertex, indexed ? 1u : 0u, inst,
-            };
-            if (!mglTessPlanBytesOrBind(
-                    &executionPlan,
-                    executionTemporaries, computeEncoder, gatherParams,
-                    sizeof(gatherParams), MGL_AIR_TESS_SLOT_GATHER_PARAMS)) {
-                free(patchBases);
-                [self clearStageBindingCopyBacks:&stageCopyBacks];
-                return false;
-            }
-        }
-        for (GLuint p = 0u; p < patchCount; p++) {
-            const void *record =
-                (const void *)((const uint8_t *)factorBytes +
-                               (NSUInteger)p *
-                                   MGL_AIR_TESS_FACTOR_RECORD_BYTES);
-            GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
-            if (items == 0u)
-                continue; /* discarded patch: no TES / XFB output */
-            contractWords[0] = p;
-            contractWords[2] = items;
-            contractWords[3] = inst * itemsPerInstanceU + patchBases[p];
-            if (!mglTessPlanBytesOrBind(
-                    &executionPlan,
-                    executionTemporaries, computeEncoder, contractWords,
-                    sizeof(contractWords), MGL_AIR_TESS_SLOT_INDIRECT) ||
-                !mglTessPlanDispatchOrBind(
-                    &executionPlan, computeEncoder,
-                    (items + 63u) / 64u, 1u, 1u, 64u, 1u, 1u)) {
-                free(patchBases);
-                [self clearStageBindingCopyBacks:&stageCopyBacks];
-                return false;
-            }
-        }
+        [executionTemporaries addObject:keep];
     }
-    free(patchBases);
     {
         MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
         uint32_t copyBackEntryCount = 0u;
@@ -2378,29 +2067,14 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         }
     }
 
-    GLuint tesImgCount = mglRendererGetProgramBindingCount(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES);
-    for (GLuint i = 0; i < tesImgCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (tesProgram &&
-            i < tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tesProgram,
-                                              _TESS_EVALUATION_SHADER,
-                                              _STORAGE_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
-        if (glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
+    MGLTessTextureBind tesTextureBinds[TEXTURE_UNITS * 2u];
+    const uint32_t tesTextureBindCount = mglTessCollectTextureBinds(
+        glm_ctx, tesProgram, _TESS_EVALUATION_SHADER, tesTextureBinds,
+        (uint32_t)(sizeof(tesTextureBinds) / sizeof(tesTextureBinds[0])));
+    if (![self ensureTessTextureMetalData:tesTextureBinds
+                                    count:tesTextureBindCount
+                                      ctx:glm_ctx]) {
+        return false;
     }
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
@@ -2417,106 +2091,13 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     id computeEncoder = nil;
     executionPlan.pipeline = (__bridge void *)tesPipeline;
 
-    /* PASS 2: Bind storage images for TES stage. */
-    for (GLuint i = 0; i < tesImgCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (tesProgram &&
-            i < tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tesProgram,
-                                              _TESS_EVALUATION_SHADER,
-                                              _STORAGE_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i);
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _STORAGE_IMAGE_RES, (int)i));
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-        id texture = nil;
-        if (ptr) {
-            texture = (__bridge id)(ptr->mtl_data);
-            texture = (__bridge id)mglRendererStorageImageTexture(
-                (__bridge void *)texture,
-                &MGL_STATE(ctx)->image_units[glUnit]);
-        }
-        if (!mglTessPlanTextureOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder, texture, metalSlot)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-    }
-
-    /* Also bind sampled (read-only) images for TES stage. */
-    GLuint tesSampledCount = mglRendererGetProgramBindingCount(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES);
-    for (GLuint i = 0; i < tesSampledCount; i++) {
-        MGLShaderResource *resource = NULL;
-        if (tesProgram &&
-            i < tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
-            resource = &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].list[i];
-        }
-        if (mglShouldSkipStageTextureResource(tesProgram,
-                                              _TESS_EVALUATION_SHADER,
-                                              _SAMPLED_IMAGE_RES,
-                                              resource)) {
-            continue;
-        }
-        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : mglRendererGetProgramBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i);
-        GLuint glUnit = mglTessResourceGLUnit(
-            resource,
-            mglRendererGetProgramGLBinding(ctx, _TESS_EVALUATION_SHADER, _SAMPLED_IMAGE_RES, (int)i));
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
-            continue;
-        }
-        Texture *ptr = MGL_STATE(ctx)->active_textures[glUnit];
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
-        id texture = ptr ? (__bridge id)(ptr->mtl_data) : nil;
-        if (!mglTessPlanTextureOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder, texture, metalSlot)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-        if (resource && resource->has_combined_sampler) {
-            id sampler = nil;
-            if (MGL_STATE(ctx)->texture_samplers[glUnit]) {
-                Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[glUnit];
-                if (glSampler->dirty_bits && glSampler->mtl_data) {
-                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
-                }
-                if (!glSampler->mtl_data && ptr) {
-                    glSampler->mtl_data = (void *)CFBridgingRetain(
-                        [self createMTLSamplerForTexParam:&glSampler->params
-                                                  target:ptr->target]);
-                    glSampler->dirty_bits = 0;
-                }
-                sampler = (__bridge id)(glSampler->mtl_data);
-            } else if (ptr && ptr->params.mtl_data) {
-                sampler = (__bridge id)(ptr->params.mtl_data);
-            }
-            if (!sampler) {
-                sampler = mglTessCreateSampler(_device);
-            }
-            if (sampler) {
-                if (!mglTessPlanSamplerOrBind(
-                        &executionPlan,
-                        executionTemporaries, computeEncoder, sampler,
-                        mglMetalCombinedSamplerSlot(resource))) {
-                    [self clearStageBindingCopyBacks:&stageCopyBacks];
-                    return false;
-                }
-            }
-        }
+    if (![self planTessTextureBinds:tesTextureBinds
+                              count:tesTextureBindCount
+                                ctx:glm_ctx
+                               plan:&executionPlan
+                        temporaries:executionTemporaries]) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
     }
 
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TES. */

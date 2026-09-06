@@ -3266,6 +3266,60 @@ int mglRenderGetCullDistanceIndexPrimitive(
     MGLRenderCullDistancePrimitive *primitive_out);
 void mglRenderDestroyCullDistanceIndexPlan(void **owner);
 
+/* 1 = mode is not a per-primitive array split. 0 = filled. -1 = overflow. */
+int mglRenderFillCullDistanceArrayPrimitives(
+    uint32_t draw_mode, int32_t first, uint64_t count,
+    MGLRenderCullDistancePrimitive *out, uint32_t cap, uint32_t *out_count);
+
+/* Same owner as the indexed plan. 1 = not a split mode. 0 = plan ready
+ * (index buffer may be NULL for LINE_STRIP). -1 = allocation failure. */
+int mglRenderCreateCullDistanceArrayPlan(
+    void *device, uint32_t draw_mode, int32_t first, uint64_t count,
+    void **owner_out, void **index_buffer_out, uint64_t *primitive_count_out);
+
+typedef struct MGLCullDistanceEmuParams_t {
+    uint32_t prim_vertex_count;
+    uint32_t culldist_offset;
+    uint32_t vertex_stride;
+    uint32_t culldist_size;
+    uint32_t first_vertex;
+    uint32_t explicit_vertex_count;
+    uint32_t explicit_vertices[4];
+    uint32_t first_instance;
+    uint32_t instance_stride;
+} MGLCullDistanceEmuParams;
+
+typedef struct MGLRenderCullDistanceLayout_t {
+    void *mtl_buffer;
+    int64_t binding_offset;
+    uint32_t stride;
+    int64_t first_relative_offset;
+    uint32_t culldist_size;
+} MGLRenderCullDistanceLayout;
+
+bool mglRenderIsCullDistanceAttribName(const char *name);
+const char *mglRenderVertexAttribName(const Program *program, uint32_t attrib);
+uint32_t mglRenderCollectCullDistanceAttribs(const Program *program,
+                                             uint32_t *out, uint32_t cap);
+void mglRenderAccumulateCullDistanceAttrib(MGLRenderCullDistanceLayout *layout,
+                                           void *mtl_buffer,
+                                           int64_t binding_offset,
+                                           uint32_t stride,
+                                           int64_t relativeoffset);
+uint32_t mglRenderCullDistanceLayoutOffset(
+    const MGLRenderCullDistanceLayout *layout);
+void mglRenderFillCullDistanceEmuParams(
+    uint32_t prim_vertex_count, uint32_t first_vertex,
+    const uint32_t *explicit_vertices, uint32_t explicit_vertex_count,
+    uint32_t culldist_offset, uint32_t vertex_stride, uint32_t culldist_size,
+    uint32_t first_instance, uint32_t instance_stride,
+    MGLCullDistanceEmuParams *out);
+int mglRenderCullDistanceCaptureBytes(uint32_t first, uint32_t count,
+                                      uint32_t instance_count,
+                                      uint64_t *out_bytes);
+void mglRenderBindCullDistanceEmuSlots(void *encoder_owner, void *vertex_buffer,
+                                       const MGLCullDistanceEmuParams *params);
+
 int mglRenderSetRenderBuffer(void *render_encoder,
                                 void *buffer,
                                 uint64_t offset,

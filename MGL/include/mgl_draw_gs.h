@@ -12,6 +12,7 @@
 #define MGL_DRAW_GS_H
 
 #include "glcorearb.h"
+#include "glm_context.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -41,6 +42,47 @@ typedef struct MGLGsPassthroughEncodeState {
 } MGLGsPassthroughEncodeState;
 
 void mglDrawGsEncodePassthrough(const MGLGsPassthroughEncodeState *state);
+
+typedef struct MGLRenderComputeExecutionPlan_t MGLRenderComputeExecutionPlan;
+typedef struct MGLAIRGSXFBScatterParams MGLAIRGSXFBScatterParams;
+
+void mglDrawGsFillLocationMap(Program *gs, Program *vs, Program *tes,
+                              uint32_t loc_map[32]);
+
+void mglDrawGsPresetCounts(void *counts, uint32_t work_item_count);
+
+uint32_t mglDrawGsFillXFBScatterParams(Program *gs,
+                                       MGLAIRGSXFBScatterParams *out);
+
+bool mglDrawGsAppendCoreBindings(MGLRenderComputeExecutionPlan *plan,
+                                 void *input, uint64_t input_offset,
+                                 void *output, void *counts,
+                                 void *gather_or_counts, void *xfb_capture,
+                                 void *xfb_meta, void *xfb_vis_or_counts,
+                                 const void *gparams, uint32_t gparams_bytes);
+
+typedef struct MGLGsComputeLayout {
+    uint32_t work_item_count;
+    uint32_t records_per_primitive;
+    uint32_t expanded_vertices;
+    uint32_t output_stride;
+    uint64_t output_bytes;
+    uint64_t counts_bytes;
+} MGLGsComputeLayout;
+
+bool mglDrawGsComputeLayout(Program *gs, uint32_t primitive_count,
+                            uint32_t instance_count, GLenum output_mode,
+                            MGLGsComputeLayout *out);
+
+void mglDrawGsExclusivePrefixSum(const uint32_t *vis, uint32_t *offsets,
+                                 uint32_t work_item_count,
+                                 uint32_t buffer_count);
+
+bool mglDrawGsFillXFBScatterPlan(MGLRenderComputeExecutionPlan *plan,
+                                 void *pipeline, const void *scatter_params,
+                                 uint32_t params_bytes, void *vis, void *offsets,
+                                 void *stage_out, void *xfb, void *written,
+                                 uint32_t work_item_count);
 
 #ifdef __cplusplus
 }
