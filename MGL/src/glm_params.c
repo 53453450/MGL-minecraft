@@ -774,6 +774,17 @@ apply_gl46_defaults:
      * ------------------------------------------------------------------ */
 
     /* Texture / renderbuffer / element limits. */
+    /* Texture image-unit caps: on the desktop (non-GL_ES) build these are
+     * seeded ONLY by the CGL probe (lines ~329/333/336) or by the ES-only
+     * mglApplyES32Limits.  On headless CI the probe is skipped and ES code is
+     * not compiled, so they stay 0 and every mglActiveTexture() call returns
+     * GL_INVALID_ENUM, which fails init_minecraft_scene() on the benchmark. */
+    if (glm_ctx->active_state->var.max_texture_image_units < 16u)
+        glm_ctx->active_state->var.max_texture_image_units = 16u;
+    if (glm_ctx->active_state->var.max_vertex_texture_image_units < 16u)
+        glm_ctx->active_state->var.max_vertex_texture_image_units = 16u;
+    if (glm_ctx->active_state->var.max_combined_texture_image_units < 80u)
+        glm_ctx->active_state->var.max_combined_texture_image_units = 80u;
     if (glm_ctx->active_state->var.max_texture_size < 16384u)
         glm_ctx->active_state->var.max_texture_size = 16384u;
     if (glm_ctx->active_state->var.max_3d_texture_size < 2048u)
