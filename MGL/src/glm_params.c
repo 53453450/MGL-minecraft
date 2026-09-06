@@ -37,9 +37,83 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <OpenGL/OpenGL.h>
+#include "mgl_types_buffer.h"
 
 typedef struct GLMContextRec_t *GLMContext;
 
+#ifdef MGL_GL_ES
+/* GLES 3.2 implementation-dependent values. Independent of the macOS
+ * desktop CGL query used to seed Core; numbers are this Metal backend's
+ * caps, never below the GLES 3.2 Table 20.40 minima. */
+static void mglApplyES32Limits(GLMContext glm_ctx)
+{
+    GLMParams *v = &glm_ctx->active_state->var;
+
+    v->major_version = 3;
+    v->minor_version = 2;
+    v->context_profile_mask = 0;
+
+    v->max_vertex_attribs = MAX_ATTRIBS;
+    glm_ctx->active_state->max_vertex_attribs = MAX_ATTRIBS;
+    v->max_vertex_uniform_components = 4096;
+    v->max_vertex_uniform_vectors = 1024;
+    v->max_fragment_uniform_components = 4096;
+    v->max_fragment_uniform_vectors = 1024;
+    v->max_varying_floats = 64;
+    v->max_varying_components = 64;
+    v->max_varying_vectors = 16;
+    v->max_vertex_output_components = 64;
+    v->max_fragment_input_components = 64;
+    v->max_texture_image_units = 16;
+    v->max_vertex_texture_image_units = 16;
+    v->max_combined_texture_image_units =
+        TEXTURE_UNITS < 80 ? TEXTURE_UNITS : 80;
+    v->max_texture_size = 16384;
+    v->max_cube_map_texture_size = 16384;
+    v->max_3d_texture_size = 2048;
+    v->max_array_texture_layers = 2048;
+    v->max_renderbuffer_size = 16384;
+    v->max_draw_buffers = MAX_COLOR_ATTACHMENTS;
+    v->max_color_attachments = MAX_COLOR_ATTACHMENTS;
+    glm_ctx->active_state->max_color_attachments = MAX_COLOR_ATTACHMENTS;
+    v->max_samples = 4;
+    v->max_image_samples = 4;
+    v->max_color_texture_samples = 4;
+    v->max_depth_texture_samples = 4;
+    v->max_integer_samples = 4;
+    v->max_sample_mask_words = 1;
+    v->max_framebuffer_samples = 4;
+    v->max_uniform_buffer_bindings = MAX_BINDABLE_BUFFERS;
+    v->max_uniform_block_size = 16384;
+    v->max_vertex_uniform_blocks = 14;
+    v->max_fragment_uniform_blocks = 14;
+    v->max_geometry_uniform_blocks = 14;
+    v->max_combined_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    v->max_uniform_locations = 1024;
+    v->shader_compiler = GL_TRUE;
+    v->max_element_index = 0xFFFFFFFFu;
+    v->max_framebuffer_width = 16384;
+    v->max_framebuffer_height = 16384;
+    v->max_geometry_output_vertices = 1024;
+    v->max_geometry_total_output_components = 1024;
+    v->max_geometry_shader_invocations = 32;
+    v->max_geometry_texture_image_units = 16;
+    v->max_geometry_uniform_components = 1024;
+    v->max_tess_gen_level = 64;
+    v->max_patch_vertices = 32;
+    v->max_compute_work_group_invocations = 1024;
+    v->max_compute_work_group_count[0] = 65535;
+    v->max_compute_work_group_count[1] = 65535;
+    v->max_compute_work_group_count[2] = 65535;
+    v->max_compute_work_group_size[0] = 1024;
+    v->max_compute_work_group_size[1] = 1024;
+    v->max_compute_work_group_size[2] = 64;
+    v->max_compute_uniform_blocks = 14;
+    v->max_compute_texture_image_units = 16;
+    v->max_compute_uniform_components = 1024;
+    v->max_dual_source_draw_buffers = 0;
+}
+#endif
 
 void getMacOSDefaults(GLMContext glm_ctx)
 {
@@ -327,6 +401,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_FRAGMENT_INPUT_COMPONENTS,&glm_ctx->active_state->var.max_fragment_input_components);
     glGetIntegerv(GL_CONTEXT_PROFILE_MASK,&glm_ctx->active_state->var.context_profile_mask);
     glm_ctx->active_state->var.context_profile_mask = GL_CONTEXT_CORE_PROFILE_BIT;
+#ifdef MGL_GL_ES
+    /* Overwritten by mglApplyES32Limits after CGL seed. */
+    glm_ctx->active_state->var.context_profile_mask = 0;
+#endif
     glGetIntegerv(GL_PROVOKING_VERTEX,&glm_ctx->active_state->var.provoking_vertex);
     glGetIntegerv(GL_MAX_SERVER_WAIT_TIMEOUT,&glm_ctx->active_state->var.max_server_wait_timeout);
     glGetIntegerv(GL_MAX_SAMPLE_MASK_WORDS,&glm_ctx->active_state->var.max_sample_mask_words);
@@ -662,6 +740,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     if (glm_ctx->active_state->var.max_uniform_buffer_bindings < 84) {
         glm_ctx->active_state->var.max_uniform_buffer_bindings = 84;
     }
+
+#ifdef MGL_GL_ES
+    mglApplyES32Limits(glm_ctx);
+#endif
 
     CGLSetCurrentContext( NULL );
     CGLDestroyContext( ctx );

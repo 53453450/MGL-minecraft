@@ -856,6 +856,125 @@ GLint  glGetProgramResourceLocation(GLuint program, GLenum programInterface, con
 	return ctx->dispatch.get_program_resource_location(ctx, program, programInterface, name);
 }
 
+void glCompileShader(GLuint shader)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.compile_shader(ctx, shader);
+}
+
+GLuint glCreateProgram(void)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	return ctx->dispatch.create_program(ctx);
+}
+
+GLuint glCreateShader(GLenum type)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	return ctx->dispatch.create_shader(ctx, type);
+}
+
+void glDeleteProgram(GLuint program)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.delete_program(ctx, program);
+}
+
+void glDeleteShader(GLuint shader)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.delete_shader(ctx, shader);
+}
+
+void glAttachShader(GLuint program, GLuint shader)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.attach_shader(ctx, program, shader);
+}
+
+void glDetachShader(GLuint program, GLuint shader)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.detach_shader(ctx, program, shader);
+}
+
+void glGetProgramiv(GLuint program, GLenum pname, GLint *params)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.get_programiv(ctx, program, pname, params);
+}
+
+void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.get_program_info_log(ctx, program, bufSize, length, infoLog);
+}
+
+void glGetShaderiv(GLuint shader, GLenum pname, GLint *params)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.get_shaderiv(ctx, shader, pname, params);
+}
+
+void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.get_shader_info_log(ctx, shader, bufSize, length, infoLog);
+}
+
+void glGetShaderSource(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *source)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.get_shader_source(ctx, shader, bufSize, length, source);
+}
+
+GLboolean glIsProgram(GLuint program)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	return ctx->dispatch.is_program(ctx, program);
+}
+
+GLboolean glIsShader(GLuint shader)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	return ctx->dispatch.is_shader(ctx, shader);
+}
+
+void glLinkProgram(GLuint program)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.link_program(ctx, program);
+}
+
+void glShaderSource(GLuint shader, GLsizei count, const GLchar *const *string, const GLint *length)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.shader_source(ctx, shader, count, string, length);
+}
+
+void glUseProgram(GLuint program)
+{
+	GLMContext ctx = GET_CONTEXT();
+
+	ctx->dispatch.use_program(ctx, program);
+}
+
 void glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program)
 {
 	GLMContext ctx = GET_CONTEXT();

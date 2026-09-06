@@ -782,7 +782,13 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x9125: RET_TYPE_VAR(type, max_fragment_input_components); break; // GL_MAX_FRAGMENT_INPUT_COMPONENTS
         case 0x8E5A: RET_TYPE_VAR(type, max_geometry_shader_invocations); break; // GL_MAX_GEOMETRY_SHADER_INVOCATIONS
         case 0x8E71: RET_TYPE_VAR(type, max_vertex_streams); break; // GL_MAX_VERTEX_STREAMS
+#ifdef MGL_GL_ES
+        case 0x9126: /* GL_CONTEXT_PROFILE_MASK is desktop-only. */
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+#else
         case 0x9126: RET_TYPE_VAR(type, context_profile_mask); break; // GL_CONTEXT_PROFILE_MASK
+#endif
         case 0x8E4F: RET_TYPE_VAR(type, provoking_vertex); break; // GL_PROVOKING_VERTEX
         case 0x9111: RET_TYPE_VAR(type, max_server_wait_timeout); break; // GL_MAX_SERVER_WAIT_TIMEOUT
         case 0x8D57: RET_TYPE_VAR(type, max_samples); break; // GL_MAX_SAMPLES
