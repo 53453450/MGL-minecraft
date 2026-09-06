@@ -263,12 +263,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
     glm_ctx->renderer_backend = _backend;
     glm_ctx->platform_renderer_shell = (void *)CFBridgingRetain(self);
-    _bindingStateOwner = mglRendererBackendGetOwner(
-        _backend, MGL_RENDERER_BACKEND_OWNER_BINDING);
-    _queryStateOwner = mglRendererBackendGetOwner(
-        _backend, MGL_RENDERER_BACKEND_OWNER_QUERY);
-    _gpuRecovery.commandRecoveryOwner = mglRendererBackendGetOwner(
-        _backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
+    MGLRendererBackendLease initLease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &initLease) != 0) {
+        NSLog(@"MGL ERROR: failed to acquire backend lease during init");
+        return;
+    }
+    _bindingStateOwner = mglRendererBackendLeaseGetOwner(
+        &initLease, MGL_RENDERER_BACKEND_OWNER_BINDING);
+    _queryStateOwner = mglRendererBackendLeaseGetOwner(
+        &initLease, MGL_RENDERER_BACKEND_OWNER_QUERY);
+    _gpuRecovery.commandRecoveryOwner = mglRendererBackendLeaseGetOwner(
+        &initLease, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
     NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
     mglRenderAttachRuntimeOwners(
         glm_ctx,
@@ -318,6 +323,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         //   NIL: _commandQueue, _view.
         // Continuing is pointless without a command queue — no encoding or
         // submission is possible.
+        mglRendererBackendEnd(&initLease);
         return;
     }
 
@@ -347,6 +353,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
                           requestedPixelFormat:requestedPixelFormat
                            actualPixelFormat:&pf]) {
         NSLog(@"MGL ERROR: Failed to create Metal layer");
+        mglRendererBackendEnd(&initLease);
         return;
     }
 
@@ -406,20 +413,30 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     [self createProactiveTextures];
 
     // GPU capture setup is exposed by MGLPlatformRendererShell when needed.
+    mglRendererBackendEnd(&initLease);
 }
 
 - (BOOL)mglRendererIsReady
 {
-    if (!ctx || !_device || !_backend ||
-        mglRendererBackendIsReady(_backend) != 1 ||
-        !_commandQueueOwner || !_commandQueue || !_layer || !_renderPassManager) {
+    if (!ctx) {
         return NO;
     }
-
-    MGLRenderCommandBufferState commandState = {0};
-    return mglRenderCommandBufferOwnerHasState(
-        _renderPassManager.state->currentCommandBufferOwner,
-        &commandState);
+    MGLRendererBackendLease lease = {};
+    if (mglRendererBackendBeginContext(ctx, &lease) != 0) {
+        return NO;
+    }
+    BOOL ready =
+        _backend && _device &&
+        mglRendererBackendIsReady(_backend) == 1 &&
+        _commandQueueOwner && _commandQueue && _layer && _renderPassManager;
+    if (ready) {
+        MGLRenderCommandBufferState commandState = {0};
+        ready = mglRenderCommandBufferOwnerHasState(
+            _renderPassManager.state->currentCommandBufferOwner,
+            &commandState);
+    }
+    mglRendererBackendEnd(&lease);
+    return ready;
 }
 
 - (void)mglBackendWillDestroy:(MGLRendererBackendHandle *)backend

@@ -249,8 +249,19 @@ GLMContext createGLMContext(GLenum format, GLenum type,
         return NULL;
     }
     ctx->sync_lock_initialized = GL_TRUE;
+    if (pthread_mutex_init(&ctx->renderer_backend_lock, NULL) != 0) {
+        mglTraceLogExternal("MGL: failed to initialize renderer backend lock");
+        (void)pthread_mutex_destroy(&ctx->sync_lock);
+        ctx->sync_lock_initialized = GL_FALSE;
+        free(ctx);
+        _ctx = save;
+        return NULL;
+    }
+    ctx->renderer_backend_lock_initialized = GL_TRUE;
     if (pthread_cond_init(&ctx->sync_cond, NULL) != 0) {
         mglTraceLogExternal("MGL: failed to initialize sync condition variable");
+        (void)pthread_mutex_destroy(&ctx->renderer_backend_lock);
+        ctx->renderer_backend_lock_initialized = GL_FALSE;
         (void)pthread_mutex_destroy(&ctx->sync_lock);
         ctx->sync_lock_initialized = GL_FALSE;
         free(ctx);
@@ -1015,6 +1026,10 @@ void destroyGLMContext(GLMContext ctx)
     if (ctx->sync_lock_initialized) {
         (void)pthread_mutex_destroy(&ctx->sync_lock);
         ctx->sync_lock_initialized = GL_FALSE;
+    }
+    if (ctx->renderer_backend_lock_initialized) {
+        (void)pthread_mutex_destroy(&ctx->renderer_backend_lock);
+        ctx->renderer_backend_lock_initialized = GL_FALSE;
     }
 
     printf("MGL INFO: Context cleanup completed successfully\n");

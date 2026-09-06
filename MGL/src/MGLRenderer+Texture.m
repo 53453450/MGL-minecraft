@@ -89,11 +89,15 @@ void mglRendererReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlReadDrawable:glm_ctx pixelBytes:pixel_bytes
-                  bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                   fromRegion:mglRendererCompatRegion(x, y, width, height)];
+    if (renderer && glm_ctx) {
+        [renderer mtlReadDrawable:glm_ctx pixelBytes:pixel_bytes
+                      bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                       fromRegion:mglRendererCompatRegion(x, y, width, height)];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
@@ -101,23 +105,31 @@ void mglRendererReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlReadIntegerPixels:glm_ctx pixelBytes:pixel_bytes
-                       bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                        fromRegion:mglRendererCompatRegion(x, y, width, height)
-                            format:format type:type];
+    if (renderer && glm_ctx) {
+        [renderer mtlReadIntegerPixels:glm_ctx pixelBytes:pixel_bytes
+                           bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                            fromRegion:mglRendererCompatRegion(x, y, width, height)
+                                format:format type:type];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlReadDepthPixels:glm_ctx pixelBytes:pixel_bytes
-                     bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                      fromRegion:mglRendererCompatRegion(x, y, width, height)];
+    if (renderer && glm_ctx) {
+        [renderer mtlReadDepthPixels:glm_ctx pixelBytes:pixel_bytes
+                         bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                          fromRegion:mglRendererCompatRegion(x, y, width, height)];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererGetTexImage(GLMContext glm_ctx, Texture *texture,
@@ -125,40 +137,60 @@ void mglRendererGetTexImage(GLMContext glm_ctx, Texture *texture,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlGetTexImage:glm_ctx tex:texture pixelBytes:pixel_bytes
-                 bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                  fromRegion:mglRendererCompatRegion(x, y, width, height)
-                      format:format type:type mipmapLevel:level slice:slice];
+    if (renderer && glm_ctx) {
+        [renderer mtlGetTexImage:glm_ctx tex:texture pixelBytes:pixel_bytes
+                     bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
+                      fromRegion:mglRendererCompatRegion(x, y, width, height)
+                          format:format type:type mipmapLevel:level slice:slice];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlGenerateMipmaps:glm_ctx forTexture:texture];
+    if (renderer && glm_ctx) {
+        [renderer mtlGenerateMipmaps:glm_ctx forTexture:texture];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererSyncTextureBufferFromImage(GLMContext glm_ctx, Texture *texture)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx || !texture) return;
-    [renderer syncTextureBufferFromImage:glm_ctx tex:texture];
+    if (renderer && glm_ctx && texture) {
+        [renderer syncTextureBufferFromImage:glm_ctx tex:texture];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererPrepareImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer prepareImageUnitSlice:glm_ctx unit:unit];
+    if (renderer && glm_ctx) {
+        [renderer prepareImageUnitSlice:glm_ctx unit:unit];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererFlushImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer flushImageUnitSlice:glm_ctx unit:unit];
+    if (renderer && glm_ctx) {
+        [renderer flushImageUnitSlice:glm_ctx unit:unit];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
@@ -167,14 +199,18 @@ void mglRendererTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlTexSubImage:glm_ctx tex:texture buf:buffer
-                  src_offset:source_offset src_pitch:source_pitch
-              src_image_size:source_image_size src_size:source_size
-                       slice:slice level:level width:width height:height
-                       depth:depth xoffset:x_offset yoffset:y_offset
-                     zoffset:z_offset];
+    if (renderer && glm_ctx) {
+        [renderer mtlTexSubImage:glm_ctx tex:texture buf:buffer
+                      src_offset:source_offset src_pitch:source_pitch
+                  src_image_size:source_image_size src_size:source_size
+                           slice:slice level:level width:width height:height
+                           depth:depth xoffset:x_offset yoffset:y_offset
+                         zoffset:z_offset];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 bool mglRendererTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
@@ -184,9 +220,12 @@ bool mglRendererTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return false;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return false;
-    return [renderer mtlTexSubImageBytes:glm_ctx tex:texture
+    bool result = false;
+    if (renderer && glm_ctx) {
+        result = [renderer mtlTexSubImageBytes:glm_ctx tex:texture
                                     bytes:bytes bytesSize:bytes_size
                                src_offset:source_offset src_pitch:source_pitch
                            src_image_size:source_image_size
@@ -194,17 +233,24 @@ bool mglRendererTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
                                     width:width height:height depth:depth
                                   xoffset:x_offset yoffset:y_offset
                                   zoffset:z_offset];
+    }
+    mglRendererBackendEnd(&_backend_lease);
+    return result;
 }
 
 void mglRendererCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
     uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlCopyTexSubImage:glm_ctx tex:texture slice:slice
-                    mipmapLevel:level xoffset:x_offset yoffset:y_offset
-                              x:x y:y width:width height:height];
+    if (renderer && glm_ctx) {
+        [renderer mtlCopyTexSubImage:glm_ctx tex:texture slice:slice
+                        mipmapLevel:level xoffset:x_offset yoffset:y_offset
+                                  x:x y:y width:width height:height];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
@@ -213,14 +259,18 @@ void mglRendererCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
     int32_t destination_x, int32_t destination_y, int32_t destination_z,
     int32_t width, int32_t height, int32_t depth)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlCopyImageSubData:glm_ctx srcTexture:source_texture
-                         srcLevel:source_level srcX:source_x srcY:source_y
-                             srcZ:source_z dstTexture:destination_texture
-                         dstLevel:destination_level dstX:destination_x
-                             dstY:destination_y dstZ:destination_z
-                            width:width height:height depth:depth];
+    if (renderer && glm_ctx) {
+        [renderer mtlCopyImageSubData:glm_ctx srcTexture:source_texture
+                             srcLevel:source_level srcX:source_x srcY:source_y
+                                 srcZ:source_z dstTexture:destination_texture
+                             dstLevel:destination_level dstX:destination_x
+                                 dstY:destination_y dstZ:destination_z
+                                width:width height:height depth:depth];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 static id mglTextureCreateBuffer(id device,

@@ -18,9 +18,13 @@
 void mglRendererBindTexture(GLMContext glm_ctx,
                                   Texture *texture)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx || !texture) return;
-    (void)[renderer bindMTLTexture:texture];
+    if (renderer && glm_ctx && texture) {
+        (void)[renderer bindMTLTexture:texture];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 static id mglBindingCreateDefaultSampler(void)

@@ -1034,15 +1034,19 @@ static void mglBatchExecuteIndirectCommands(
 
 void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    @autoreleasepool {
-        @try {
-            [renderer flushDrawBuffer:glm_ctx];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: callback flushDrawBuffer exception: %@", exception);
+    if (renderer && glm_ctx) {
+        @autoreleasepool {
+            @try {
+                [renderer flushDrawBuffer:glm_ctx];
+            } @catch (NSException *exception) {
+                NSLog(@"MGL ERROR: callback flushDrawBuffer exception: %@", exception);
+            }
         }
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx

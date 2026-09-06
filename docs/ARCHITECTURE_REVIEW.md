@@ -378,7 +378,7 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 | P1 | `MGL/src/mgl_glsl_parser.c:64-100,982-984,3232-3234,466-533` | tokenize 失败泄漏 token/source；多个 `realloc` 未检查；固定常量/类型表超限时静默丢语义。 | 统一失败传播和清理，动态表或显式上限错误。 |
 | P1 | `MGL/src/mgl_glsl_sema.c:4350-4407` | 跨阶段接口主要按名称和类型比较，未把 explicit location、component/index、patch/sample、插值和 matrix-major 纳入 ABI 检查。 | 生成版本化 `StageInterfaceRecord`，link 前完成完整契约校验。 |
 | P1 | `MGL/src/mgl_air_loader.cpp:45-52,243-328` | PSO key 不含 device，且按 descriptor 原始字节（含 padding）序列化；全局 mutex 覆盖 PSO 编译和 archive IO。 | 按 device 分区、字段级 canonical key；锁外编译，成功后 double-check 插入。 |
-| P1 | `MGL/src/mgl_renderer_backend.cpp:546-550,574-581,608-718,1483-1507` | getter 解锁后返回未 retain 的 Metal 裸指针，destroy 随后释放；`GetDevice` 甚至无锁，teardown 竞态可形成 UAF。 | 引入 lease/shared ownership 或返回 owned retain，并建立统一 teardown barrier。 |
+| P1 | `MGL/src/mgl_renderer_backend.cpp` lease Begin/End + getter TLS | getter 解锁后返回未 retain 的 Metal 裸指针，destroy 随后释放；`GetDevice` 甚至无锁，teardown 竞态可形成 UAF。 | **已落地**：thread-local lease + destroy drain；borrowed Get* 要求本线程持有 lease。 |
 | P2 | `test_regression/main.c:16400-16402,16494-16498`、`scripts/apitrace_capture.sh:73-81,150-159` | 测试和 capture 工具用 `system()`/未转义 `source` 处理路径，存在注入和截断风险。 | **已部分落地**：回归路径改为 checked libc mkdir/copy，capture state 改为受限 tab-separated 解析；仍需审查其余脚本外部命令边界。 |
 | P2 | `test_mgl/main.cpp:211-223`、`test_regression/main.c:177-202` | 3D 纹理尺寸乘法无边界检查且 VM 内存未释放；TGA writer 忽略 I/O 错误。 | **已部分落地**：checked byte-size、`vm_deallocate`、逐次 TGA I/O 检查已加入；其他生成纹理调用仍需 RAII/ownership wrapper。 |
 
@@ -409,7 +409,7 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 - **MGLIR layout：已落地。** std140/std430 结果按 layout standard 独立缓存；checked `uint64_t` 运算拒绝数组、结构体和嵌套偏移溢出；布局节点完整成功后才发布成员偏移；`ir_type_clone` 不复制旧 metadata；析构释放全部缓存。`test_mglir` 覆盖双标准缓存切换和 `UINT32_MAX` 数组溢出。
 - **AIR reflection：已部分落地。** block flatten 的资源/成员扩容、slot 计数、纹理 binding、动态名称和分配失败传播已收口；失败不会发布不完整 block metadata。多维数组仍被压缩为单一 `gl_array_size`/`num_array_dims=1`，需要后续把维度数组同时接入 reflection、uniform 查询和 codegen。
 - **GLSL parser：仍是 P1 partial。** token 上限和动态缓冲已有；tokenize 资源限制失败路径会清理 token/source，固定大小的常量、类型、数组和成员记录表在超限时返回显式 parse error，成员路径也拒绝 `snprintf` 截断。条件编译深度和宏定义数量超限的统一错误传播仍需补齐。
-- **Renderer backend getter：仍是 P1 open。** getter 在锁内取出裸 Metal 指针，调用者在解锁后使用；teardown 可并发释放同一对象。需要 lease/shared ownership 或统一 backend operation barrier，不能只扩大 getter 的 mutex 临界区。
+- **Renderer backend getter：已落地。** `mglRendererBackendBegin`/`End` 建立 thread-local lease；borrowed `Get*` 仅在调用线程持有匹配 lease 时返回对象；`Destroy` 在 `ReleaseOwnedState` 前 drain `active_leases`。ObjC `_device`/`_commandQueue` 宏与 `mglRenderer*` 入口、Lifecycle init owner 缓存纳入同一协议；`LeaseGetDevice`/`LeaseGetCommandQueue`/`LeaseGetOwner` 提供显式 lease 作用域 API。metalcpp smoke 覆盖无 lease 拒绝、lease 下借用，以及 getter 与 destroy 交错 barrier。
 - **Sync teardown：已落地。** fence API 有 context-level active-operation barrier；destroy gate 先拒绝新进入、等待 active operation 归零，再释放 Sync/backend/context。`Sync.delete_status` 使用真正的原子字段。
 - **Test/capture tooling：已部分落地。** 回归程序的输出目录创建、golden 更新和 TGA writer 已移除 shell 拼接，改为 checked libc 文件操作；apitrace capture 状态文件改为受限的 tab-separated 读取，不再 `source` 外部内容。`test_mgl` 的 3D 纹理生成加入 checked size arithmetic、VM 释放，并修正整数格式 helper 中把异或误写成幂运算的确定性错误。测试工具仍有若干长期持有的临时纹理分配，后续可用 RAII/ownership wrapper 继续收口。
 
@@ -500,7 +500,7 @@ delete backend handle
 
 #### 当前状态与接手边界
 
-此项仍为 **P1 open**。当前代码只有 backend mutex 和 `destroying` 标志，没有统一 lease/shared ownership；已验证的 sync teardown barrier 不能替代它。后续实现的最小完成条件是：所有 getter/use 路径有可证明的 lease 或 owned 引用，destroy 在释放对象前完成 lease drain，`GetOwner` 和 ObjC 缓存也纳入同一协议，并有并发销毁测试证明 handle 与对象两层生命周期都安全。
+此项已为 **P1 landed**。backend 提供 `Begin`/`End` lease、generation 与 `active_leases` drain；borrowed `Get*` 与 `LeaseGet*` 要求调用线程持有匹配 lease；`Destroy` 在释放 owned state 前等待 lease 归零。ObjC 入口与 Lifecycle init 已纳入协议。跨 lease 的长期缓存仍应避免保存未说明的 borrowed 指针；后续可将剩余内部调用点继续收口到显式 `LeaseGet*` / RAII。
 
 ### 当前证据
 

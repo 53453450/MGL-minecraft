@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <mach/mach.h>
 #include <atomic>
+#include <chrono>
+#include <thread>
 
 #include "mgl_render.h"
 #include "mgl_renderer_backend.h"
@@ -303,33 +305,42 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
     void *commandOwner = reinterpret_cast<void *>(0x1110u);
     void *encoderOwner = reinterpret_cast<void *>(0x2220u);
     void *passOwner = reinterpret_cast<void *>(0x3330u);
+    MGLRendererBackendLease ownerLease = {};
+    if (mglRendererBackendBegin(backend, &ownerLease) != 0) {
+        fprintf(stderr, "FAIL: runtime owner lease\n");
+        mglRendererBackendDestroy(&backend);
+        return 1;
+    }
     if (mglRenderAttachRuntimeOwners(
             &context, commandOwner, encoderOwner, passOwner) != 0 ||
-        mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) != commandOwner ||
-        mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER) != encoderOwner ||
-        mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS) != passOwner ||
-        !mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_QUERY) ||
-        !mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_RECOVERY)) {
+        mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) != commandOwner ||
+        mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER) != encoderOwner ||
+        mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS) != passOwner ||
+        !mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_QUERY) ||
+        !mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_RECOVERY)) {
         fprintf(stderr, "FAIL: runtime owner attach\n");
+        mglRendererBackendEnd(&ownerLease);
         mglRendererBackendDestroy(&backend);
         return 1;
     }
     mglRenderDetachRuntimeOwners(&context);
-    if (mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) ||
-        mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER) ||
-        mglRendererBackendGetOwner(
-            backend, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS)) {
+    if (mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER) ||
+        mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER) ||
+        mglRendererBackendLeaseGetOwner(
+            &ownerLease, MGL_RENDERER_BACKEND_OWNER_RENDER_PASS)) {
         fprintf(stderr, "FAIL: runtime owner detach\n");
+        mglRendererBackendEnd(&ownerLease);
         mglRendererBackendDestroy(&backend);
         return 1;
     }
+    mglRendererBackendEnd(&ownerLease);
     mglRendererBackendDestroy(&backend);
     if (context.renderer_backend != nullptr) {
         fprintf(stderr, "FAIL: backend destroy did not clear context\n");
@@ -8935,8 +8946,24 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         fprintf(stderr, "FAIL: renderer backend create\n");
         return 1;
     }
-    if (mglRendererBackendGetDevice(backend) != (__bridge void *)device) {
+    if (mglRendererBackendGetDevice(backend) != NULL ||
+        mglRendererBackendThreadHoldsLease(backend) != 0) {
+        fprintf(stderr, "FAIL: renderer backend getter requires lease\n");
+        mglRendererBackendDestroy(&backend);
+        return 1;
+    }
+    MGLRendererBackendLease backendLease = {};
+    if (mglRendererBackendBegin(backend, &backendLease) != 0) {
+        fprintf(stderr, "FAIL: renderer backend begin lease\n");
+        mglRendererBackendDestroy(&backend);
+        mglRendererBackendEnd(&backendLease);
+        return 1;
+    }
+    if (mglRendererBackendLeaseGetDevice(&backendLease) != (__bridge void *)device ||
+        mglRendererBackendGetDevice(backend) != (__bridge void *)device) {
         fprintf(stderr, "FAIL: renderer backend device ownership\n");
+        mglRendererBackendEnd(&backendLease);
+        mglRendererBackendDestroy(&backend);
         return 1;
     }
     if (mglRendererBackendIsReady(backend) != 0) {
@@ -9376,9 +9403,9 @@ static int verifyRendererBackend(id<MTLDevice> device) {
         return 1;
     }
     printf("RENDERER_BACKEND_PROACTIVE_TEXTURE_OK\n");
+    mglRendererBackendEnd(&backendLease);
     MGLRendererBackendShutdownResult shutdown = {};
-    if (mglRendererBackendShutdown(backend, &shutdown) != 0 ||
-        mglRendererBackendGetDevice(backend) != (__bridge void *)device) {
+    if (mglRendererBackendShutdown(backend, &shutdown) != 0) {
         fprintf(stderr, "FAIL: renderer backend shutdown\n");
         return 1;
     }
@@ -9427,6 +9454,90 @@ static int verifyPlatformRendererShell(void) {
         return 1;
     }
     printf("PLATFORM_SHELL_OK\n");
+    return 0;
+}
+
+static int verifyBackendLeaseDestroyBarrier(id<MTLDevice> device)
+{
+    MGLRendererBackendCreateInfo info = {
+        .objc_device = (__bridge void *)device,
+        .context = NULL,
+        .binding_slot_count = 8u,
+        .query_capacity = 4u,
+    };
+    MGLRendererBackendHandle *backend = NULL;
+    if (mglRendererBackendCreate(&info, &backend) != 0 || !backend) {
+        fprintf(stderr, "FAIL: lease barrier backend create\n");
+        return 1;
+    }
+
+    std::atomic<int> holder_ready{0};
+    std::atomic<int> holder_done{0};
+    std::atomic<int> destroy_finished{0};
+    std::atomic<int> saw_device{0};
+
+    std::thread holder([&]() {
+        MGLRendererBackendLease lease = {};
+        if (mglRendererBackendBegin(backend, &lease) != 0) {
+            holder_ready.store( -1);
+            return;
+        }
+        void *dev = mglRendererBackendLeaseGetDevice(&lease);
+        saw_device.store(dev == (__bridge void *)device ? 1 : 0);
+        holder_ready.store(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        mglRendererBackendEnd(&lease);
+        holder_done.store(1);
+    });
+
+    while (holder_ready.load() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (holder_ready.load() < 0 || saw_device.load() != 1) {
+        fprintf(stderr, "FAIL: lease barrier holder setup\n");
+        holder.join();
+        mglRendererBackendDestroy(&backend);
+        return 1;
+    }
+
+    const auto destroy_started = std::chrono::steady_clock::now();
+    std::thread destroyer([&]() {
+        mglRendererBackendDestroy(&backend);
+        destroy_finished.store(1);
+    });
+
+    /* Destroy must wait until the holder ends its lease. */
+    while (destroy_finished.load() == 0 &&
+           holder_done.load() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (destroy_finished.load() != 0 && holder_done.load() == 0) {
+        fprintf(stderr, "FAIL: destroy finished while lease still held\n");
+        holder.join();
+        destroyer.join();
+        return 1;
+    }
+    holder.join();
+    destroyer.join();
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - destroy_started)
+            .count();
+    if (destroy_finished.load() != 1 || backend != NULL || elapsed_ms < 40) {
+        fprintf(stderr,
+                "FAIL: lease barrier destroy timing finished=%d backend=%p elapsed=%lld\n",
+                destroy_finished.load(), (void *)backend,
+                (long long)elapsed_ms);
+        return 1;
+    }
+
+    MGLRendererBackendLease late = {};
+    if (mglRendererBackendBegin(backend, &late) == 0) {
+        fprintf(stderr, "FAIL: begin after destroy should fail\n");
+        mglRendererBackendEnd(&late);
+        return 1;
+    }
+    printf("RENDERER_BACKEND_LEASE_BARRIER_OK\n");
     return 0;
 }
 
@@ -9538,6 +9649,7 @@ int main(void) {
         if (verifyQueryUtilities(device) != 0) return 1;
         if (verifyRawRenderAndBlitFacade(device) != 0) return 1;
         if (verifyRendererBackend(device) != 0) return 1;
+        if (verifyBackendLeaseDestroyBarrier(device) != 0) return 1;
         if (verifyPlatformRendererShell() != 0) return 1;
 
         // 多 context 引用同一 device：重复 init 增加一个 renderer user。

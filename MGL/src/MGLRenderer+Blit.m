@@ -3171,14 +3171,18 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                       unsigned int mask,
                                       unsigned int filter)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlBlitFramebuffer:glm_ctx
-                           srcX0:src_x0 srcY0:src_y0
-                           srcX1:src_x1 srcY1:src_y1
-                           dstX0:dst_x0 dstY0:dst_y0
-                           dstX1:dst_x1 dstY1:dst_y1
-                            mask:mask filter:filter];
+    if (renderer && glm_ctx) {
+        [renderer mtlBlitFramebuffer:glm_ctx
+                               srcX0:src_x0 srcY0:src_y0
+                               srcX1:src_x1 srcY1:src_y1
+                               dstX0:dst_x0 dstY0:dst_y0
+                               dstX1:dst_x1 dstY1:dst_y1
+                                mask:mask filter:filter];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 /* Texture-to-texture blit path for glCopyTexImage2D / glCopyTexSubImage when

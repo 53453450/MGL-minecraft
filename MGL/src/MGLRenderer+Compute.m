@@ -146,24 +146,32 @@ void mglRendererDispatchCompute(GLMContext glm_ctx,
                                       unsigned int groups_y,
                                       unsigned int groups_z)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    METAL_LOCK();
-    [renderer mtlDispatchComputeLocked:glm_ctx
-                               groupsX:groups_x
-                               groupsY:groups_y
-                               groupsZ:groups_z];
-    METAL_UNLOCK();
+    if (renderer && glm_ctx) {
+        METAL_LOCK();
+        [renderer mtlDispatchComputeLocked:glm_ctx
+                                   groupsX:groups_x
+                                   groupsY:groups_y
+                                   groupsZ:groups_z];
+        METAL_UNLOCK();
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                                               intptr_t indirect)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    METAL_LOCK();
-    [renderer mtlDispatchComputeIndirectLocked:glm_ctx indirect:indirect];
-    METAL_UNLOCK();
+    if (renderer && glm_ctx) {
+        METAL_LOCK();
+        [renderer mtlDispatchComputeIndirectLocked:glm_ctx indirect:indirect];
+        METAL_UNLOCK();
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 @implementation MGLRenderer (Compute)

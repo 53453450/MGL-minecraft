@@ -2898,6 +2898,26 @@ MGLRendererBackendHandle* rendererBackend(GLMContext context) {
         : nullptr;
 }
 
+struct BackendLeaseScope {
+    MGLRendererBackendLease lease{};
+    bool held = false;
+
+    explicit BackendLeaseScope(GLMContext context)
+    {
+        /* Nested Begin on the same thread is allowed; BeginContext serializes
+         * handle load against Destroy. */
+        held = mglRendererBackendBeginContext(context, &lease) == 0;
+    }
+
+    ~BackendLeaseScope()
+    {
+        if (held) mglRendererBackendEnd(&lease);
+    }
+
+    BackendLeaseScope(const BackendLeaseScope&) = delete;
+    BackendLeaseScope& operator=(const BackendLeaseScope&) = delete;
+};
+
 void* rendererOwner(GLMContext context, MGLRendererBackendOwnerKind kind) {
     return mglRendererBackendGetOwner(rendererBackend(context), kind);
 }
@@ -2906,6 +2926,7 @@ void* rendererOwner(GLMContext context, MGLRendererBackendOwnerKind kind) {
 
 void mglRenderGetSync(GLMContext glm_ctx, Sync* sync) {
     if (!sync) return;
+    BackendLeaseScope lease(glm_ctx);
 
     mgl::releaseBridgedObject(&sync->mtl_command_buffer);
     mgl::releaseBridgedObject(&sync->mtl_event);
@@ -2988,6 +3009,7 @@ void mglRenderReleaseSync(GLMContext glm_ctx, Sync* sync) {
 }
 
 void mglRenderFlush(GLMContext glm_ctx, bool finish) {
+    BackendLeaseScope lease(glm_ctx);
     void* command_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_COMMAND_BUFFER);
     if (!command_owner) return;
@@ -3008,6 +3030,7 @@ void mglRenderFlush(GLMContext glm_ctx, bool finish) {
 }
 
 void mglRenderInvalidateRenderPass(GLMContext glm_ctx) {
+    BackendLeaseScope lease(glm_ctx);
     void* render_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_RENDER_ENCODER);
     if (!render_owner) return;
@@ -3051,6 +3074,7 @@ uint64_t mglRenderGetGPUTimestamp(GLMContext glm_ctx) {
 
 void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
                                           unsigned int target) {
+    BackendLeaseScope lease(glm_ctx);
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     if (!query_owner) return;
@@ -3095,6 +3119,7 @@ void mglRenderBeginSampleQueryCallback(GLMContext glm_ctx,
 }
 
 uint64_t mglRenderEndSampleQueryCallback(GLMContext glm_ctx) {
+    BackendLeaseScope lease(glm_ctx);
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     if (!query_owner) return 0;
@@ -3123,6 +3148,7 @@ uint64_t mglRenderEndSampleQueryCallback(GLMContext glm_ctx) {
 }
 
 void mglRenderBeginTimerQueryCallback(GLMContext glm_ctx) {
+    BackendLeaseScope lease(glm_ctx);
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     if (!query_owner || mglRenderBeginTimerQuery(query_owner) != 0) {
@@ -3131,6 +3157,7 @@ void mglRenderBeginTimerQueryCallback(GLMContext glm_ctx) {
 }
 
 uint64_t mglRenderEndTimerQueryCallback(GLMContext glm_ctx) {
+    BackendLeaseScope lease(glm_ctx);
     void* query_owner = rendererOwner(
         glm_ctx, MGL_RENDERER_BACKEND_OWNER_QUERY);
     uint64_t elapsed = 0;

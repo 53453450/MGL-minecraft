@@ -103,6 +103,13 @@ static inline MGLRenderer *mglRendererForContext(GLMContext context)
         : nil;
 }
 
+/* Pair with mglRendererBackendEnd. Required before borrowed Get* / `_device`. */
+static inline int mglRendererEnterBackendLease(
+    GLMContext context, MGLRendererBackendLease *lease)
+{
+    return mglRendererBackendBeginContext(context, lease);
+}
+
 static inline BOOL mglBindingStateIsValid(void *owner)
 {
     uint32_t valid = 0;

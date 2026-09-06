@@ -3351,15 +3351,19 @@ void logDirtyBits(GLMContext ctx)
 #pragma mark C interface to mtlSwapBuffers
 void mglRendererSwapBuffers(GLMContext glm_ctx)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    @autoreleasepool {
-        @try {
-            [renderer mtlSwapBuffers:glm_ctx];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL CRITICAL: callback swap exception: %@", exception);
+    if (renderer && glm_ctx) {
+        @autoreleasepool {
+            @try {
+                [renderer mtlSwapBuffers:glm_ctx];
+            } @catch (NSException *exception) {
+                NSLog(@"MGL CRITICAL: callback swap exception: %@", exception);
+            }
         }
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 -(void) mtlSwapBuffers:(GLMContext) glm_ctx
@@ -3831,9 +3835,13 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
                                   unsigned int type,
                                   unsigned int mask)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
-    if (!renderer || !glm_ctx) return;
-    [renderer mtlClearBuffer:glm_ctx type:type mask:mask];
+    if (renderer && glm_ctx) {
+        [renderer mtlClearBuffer:glm_ctx type:type mask:mask];
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 -(void) mtlClearBuffer:(GLMContext) glm_ctx type:(GLuint) type mask:(GLbitfield) mask

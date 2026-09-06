@@ -178,7 +178,12 @@ typedef struct GLMContextRec_t {
     } debug_log[MGL_DEBUG_LOG_CAP];
 
     /* Renderer roots. The backend owns Metal state; the context retains the
-     * platform renderer shell until backend teardown is complete. */
+     * platform renderer shell until backend teardown is complete.
+     * renderer_backend_lock covers publish/detach of renderer_backend so
+     * BeginContext can load the handle and increment active_leases without
+     * racing Destroy's delete. */
+    pthread_mutex_t renderer_backend_lock;
+    GLboolean       renderer_backend_lock_initialized;
     void *renderer_backend;
     void *platform_renderer_shell;
 

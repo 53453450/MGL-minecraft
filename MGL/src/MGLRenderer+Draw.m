@@ -53,92 +53,147 @@ static MGLRenderer *mglRendererDrawTarget(GLMContext glm_ctx)
 void mglRendererDrawArrays(GLMContext glm_ctx,
                                  uint32_t mode, int32_t first, int32_t count)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawArrays:glm_ctx mode:mode first:first count:count];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawElements(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawElements:glm_ctx mode:mode count:count
                              type:type indices:indices];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawRangeElements(GLMContext glm_ctx, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawRangeElements:glm_ctx mode:mode start:start end:end
                                    count:count type:type indices:indices];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawArraysInstanced(GLMContext glm_ctx, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawArraysInstanced:glm_ctx mode:mode first:first
                                    count:count instancecount:instance_count];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawElementsInstanced(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawElementsInstanced:glm_ctx mode:mode count:count
                                      type:type indices:indices
                             instancecount:instance_count];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices, int32_t base_vertex)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawElementsBaseVertex:glm_ctx mode:mode count:count
                                       type:type indices:indices
                                 basevertex:base_vertex];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawRangeElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices, int32_t base_vertex)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawRangeElementsBaseVertex:glm_ctx mode:mode
                                            start:start end:end count:count
                                             type:type indices:indices
                                       basevertex:base_vertex];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawElementsInstancedBaseVertex(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawElementsInstancedBaseVertex:glm_ctx mode:mode
                                                count:count type:type
@@ -146,49 +201,77 @@ void mglRendererDrawElementsInstancedBaseVertex(GLMContext glm_ctx, uint32_t mod
                                        instancecount:instance_count
                                           basevertex:base_vertex];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawArraysIndirect(GLMContext glm_ctx,
     uint32_t mode, const void *indirect)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawArraysIndirect:glm_ctx mode:mode indirect:indirect];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawElementsIndirect(GLMContext glm_ctx,
     uint32_t mode, uint32_t type, const void *indirect)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawElementsIndirect:glm_ctx mode:mode type:type
                                  indirect:indirect];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawArraysInstancedBaseInstance(GLMContext glm_ctx, uint32_t mode,
     int32_t first, int32_t count, int32_t instance_count,
     uint32_t base_instance)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawArraysInstancedBaseInstance:glm_ctx mode:mode
                                                first:first count:count
                                        instancecount:instance_count
                                         baseinstance:base_instance];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawElementsInstancedBaseInstance(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, uint32_t base_instance)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawElementsInstancedBaseInstance:glm_ctx mode:mode
                                                  count:count type:type
@@ -196,14 +279,21 @@ void mglRendererDrawElementsInstancedBaseInstance(GLMContext glm_ctx, uint32_t m
                                          instancecount:instance_count
                                           baseinstance:base_instance];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices,
     int32_t instance_count, int32_t base_vertex, uint32_t base_instance)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
                                                            mode:mode count:count
@@ -213,40 +303,61 @@ void mglRendererDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, 
                                                      basevertex:base_vertex
                                                    baseinstance:base_instance];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererMultiDrawArrays(GLMContext glm_ctx, uint32_t mode,
     const int32_t *firsts, const int32_t *counts, int32_t draw_count)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlMultiDrawArrays:glm_ctx mode:mode
                                first:(const GLint *)firsts
                                count:(const GLsizei *)counts
                            drawcount:draw_count];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererMultiDrawElements(GLMContext glm_ctx, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlMultiDrawElements:glm_ctx mode:mode
                                 count:(const GLsizei *)counts type:type
                               indices:indices drawcount:draw_count];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererMultiDrawElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     const int32_t *counts, uint32_t type, const void *const *indices,
     int32_t draw_count, const int32_t *base_vertices)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlMultiDrawElementsBaseVertex:glm_ctx mode:mode
                                           count:(const GLsizei *)counts
@@ -254,30 +365,45 @@ void mglRendererMultiDrawElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
                                       drawcount:draw_count
                                      basevertex:(const GLint *)base_vertices];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererMultiDrawArraysIndirect(GLMContext glm_ctx, uint32_t mode,
     const void *indirect, int32_t draw_count, int32_t stride)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlMultiDrawArraysIndirect:glm_ctx mode:mode
                                     indirect:indirect drawcount:draw_count
                                        stride:stride];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uint32_t type,
     const void *indirect, int32_t draw_count, int32_t stride)
 {
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
-    if (!renderer) return;
+    if (!renderer) {
+        mglRendererBackendEnd(&_backend_lease);
+        return;
+    }
     @autoreleasepool {
         [renderer mtlMultiDrawElementsIndirect:glm_ctx mode:mode type:type
                                       indirect:indirect drawcount:draw_count
                                          stride:stride];
     }
+    mglRendererBackendEnd(&_backend_lease);
 }
 
 

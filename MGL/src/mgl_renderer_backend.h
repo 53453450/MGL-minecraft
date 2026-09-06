@@ -79,10 +79,34 @@ typedef struct MGLRendererBackendShutdownResult {
     int64_t last_submission_error_code;
 } MGLRendererBackendShutdownResult;
 
+/* Thread-local operation lease. Borrowed Metal/owner pointers from Get* are
+ * only valid while the calling thread holds a matching lease; destroy waits
+ * for active leases to drain before releasing owned state. */
+typedef struct MGLRendererBackendLease {
+    MGLRendererBackendHandle *backend;
+    uint64_t generation;
+} MGLRendererBackendLease;
+
 int mglRendererBackendCreate(const MGLRendererBackendCreateInfo *info,
                              MGLRendererBackendHandle **backend_out);
 int mglRendererBackendIsReady(const MGLRendererBackendHandle *backend);
-/* Immutable after create; returns the borrowed device retained by the backend. */
+/* Acquire/release a backend operation lease. Begin fails when destroying or
+ * shutting down. Nested Begin on the same backend is allowed; End must pair. */
+int mglRendererBackendBegin(MGLRendererBackendHandle *backend,
+                            MGLRendererBackendLease *lease_out);
+int mglRendererBackendBeginContext(GLMContext context,
+                                   MGLRendererBackendLease *lease_out);
+void mglRendererBackendEnd(MGLRendererBackendLease *lease);
+int mglRendererBackendThreadHoldsLease(
+    const MGLRendererBackendHandle *backend);
+/* Lease-scoped getters: validate lease generation, then return borrowed
+ * pointers owned by the backend for the lease duration. */
+void *mglRendererBackendLeaseGetDevice(const MGLRendererBackendLease *lease);
+void *mglRendererBackendLeaseGetCommandQueue(
+    const MGLRendererBackendLease *lease);
+void *mglRendererBackendLeaseGetOwner(const MGLRendererBackendLease *lease,
+                                      MGLRendererBackendOwnerKind kind);
+/* Borrowed getters require an active lease on the calling thread. */
 void *mglRendererBackendGetDevice(
     const MGLRendererBackendHandle *backend);
 int mglRendererBackendResetCommandQueue(MGLRendererBackendHandle *backend,

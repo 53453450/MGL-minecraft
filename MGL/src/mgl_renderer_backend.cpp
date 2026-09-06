@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -183,15 +185,79 @@ struct MGLRendererBackendHandle {
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
+    uint64_t lease_generation = 1;
+    uint64_t active_leases = 0;
+    std::condition_variable lease_cv;
+    /* Metal objects retired while leases still borrow them. Flushed when
+     * active_leases reaches 0 so Set/Put/growth cannot UAF a borrower. */
+    std::vector<NS::Object *> deferred_releases;
     /* Fake DrawExecutor is test-only; production never installs a vtable. */
     void *draw_executor = nullptr;
     const MGLDrawExecutorVTable *draw_executor_vt = nullptr;
 };
 
+struct MGLRendererBackendTLSLease {
+    MGLRendererBackendHandle *backend = nullptr;
+    uint64_t generation = 0;
+    uint32_t depth = 0;
+};
+
+static thread_local MGLRendererBackendTLSLease g_backend_tls_lease;
+
+static bool mglRendererBackendTLSHolds(
+    const MGLRendererBackendHandle *backend)
+{
+    return backend &&
+           g_backend_tls_lease.backend == backend &&
+           g_backend_tls_lease.depth > 0 &&
+           g_backend_tls_lease.generation != 0;
+}
+
+static bool mglRendererBackendLeaseMatches(
+    const MGLRendererBackendLease *lease)
+{
+    return lease && lease->backend &&
+           mglRendererBackendTLSHolds(lease->backend) &&
+           g_backend_tls_lease.generation == lease->generation;
+}
+
+static void mglRendererBackendFlushDeferredReleases(
+    MGLRendererBackendHandle *backend)
+{
+    if (!backend) return;
+    for (NS::Object *object : backend->deferred_releases) {
+        if (object) object->release();
+    }
+    backend->deferred_releases.clear();
+}
+
+static void mglRendererBackendDeferOrRelease(
+    MGLRendererBackendHandle *backend, NS::Object *object)
+{
+    if (!backend || !object) return;
+    if (backend->active_leases > 0u) {
+        backend->deferred_releases.push_back(object);
+        return;
+    }
+    object->release();
+}
+
+template <typename T>
+static void mglRendererBackendReplaceObject(
+    MGLRendererBackendHandle *backend, T *&slot, void *object)
+{
+    T *replacement = static_cast<T *>(object);
+    if (replacement == slot) return;
+    if (replacement) replacement->retain();
+    if (slot) mglRendererBackendDeferOrRelease(backend, slot);
+    slot = replacement;
+}
+
 static void mglRendererBackendReleaseOwnedState(
     MGLRendererBackendHandle *backend)
 {
     if (!backend) return;
+    mglRendererBackendFlushDeferredReleases(backend);
     if (backend->fallback_render_target_texture) {
         backend->fallback_render_target_texture->release();
         backend->fallback_render_target_texture = nullptr;
@@ -365,16 +431,6 @@ static void mglRendererBackendReleaseOwnedState(
     backend->draw_executor_vt = nullptr;
 }
 
-template <typename T>
-static void mglRendererBackendReplaceObject(T *&slot, void *object)
-{
-    T *replacement = static_cast<T *>(object);
-    if (replacement == slot) return;
-    if (replacement) replacement->retain();
-    if (slot) slot->release();
-    slot = replacement;
-}
-
 static bool mglRendererBackendStageCopyBackListEmpty(
     const MGLRendererBackendStageCopyBackList &list)
 {
@@ -400,16 +456,21 @@ mglRendererBackendPassthroughCacheForKind(
 }
 
 static void mglRendererBackendReplacePassthroughCache(
+    MGLRendererBackendHandle *backend,
     MGLRendererBackendPassthroughCache *cache,
     void *library, void *function, uint64_t program_instance_id)
 {
-    if (!cache) return;
+    if (!backend || !cache) return;
     MTL::Library *new_library = static_cast<MTL::Library *>(library);
     MTL::Function *new_function = static_cast<MTL::Function *>(function);
     if (new_library) new_library->retain();
     if (new_function) new_function->retain();
-    if (cache->function) cache->function->release();
-    if (cache->library) cache->library->release();
+    if (cache->function) {
+        mglRendererBackendDeferOrRelease(backend, cache->function);
+    }
+    if (cache->library) {
+        mglRendererBackendDeferOrRelease(backend, cache->library);
+    }
     cache->library = new_library;
     cache->function = new_function;
     cache->program_instance_id = new_library && new_function
@@ -543,13 +604,150 @@ extern "C" int mglRendererBackendIsReady(
            backend->query_owner && backend->recovery_owner;
 }
 
+extern "C" int mglRendererBackendBegin(
+    MGLRendererBackendHandle *backend,
+    MGLRendererBackendLease *lease_out)
+{
+    if (lease_out) {
+        lease_out->backend = nullptr;
+        lease_out->generation = 0;
+    }
+    if (!backend || !lease_out) return -1;
+
+    uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(backend->mutex);
+        if (backend->destroying || backend->shutdown_started) return -1;
+        generation = backend->lease_generation;
+        backend->active_leases++;
+    }
+
+    if (g_backend_tls_lease.backend == backend &&
+        g_backend_tls_lease.generation == generation &&
+        g_backend_tls_lease.depth > 0u) {
+        g_backend_tls_lease.depth++;
+    } else if (g_backend_tls_lease.depth == 0u) {
+        g_backend_tls_lease.backend = backend;
+        g_backend_tls_lease.generation = generation;
+        g_backend_tls_lease.depth = 1u;
+    } else {
+        std::lock_guard<std::mutex> lock(backend->mutex);
+        if (backend->active_leases > 0u) backend->active_leases--;
+        if (backend->active_leases == 0u) {
+            mglRendererBackendFlushDeferredReleases(backend);
+            if (backend->destroying) backend->lease_cv.notify_all();
+        }
+        return -1;
+    }
+
+    lease_out->backend = backend;
+    lease_out->generation = generation;
+    return 0;
+}
+
+extern "C" int mglRendererBackendBeginContext(
+    GLMContext context, MGLRendererBackendLease *lease_out)
+{
+    if (lease_out) {
+        lease_out->backend = nullptr;
+        lease_out->generation = 0;
+    }
+    if (!context) return -1;
+
+    /* Attach lock covers load of renderer_backend through active_leases++
+     * inside Begin, so Destroy cannot delete the handle in between. */
+    if (context->renderer_backend_lock_initialized) {
+        if (pthread_mutex_lock(&context->renderer_backend_lock) != 0) {
+            return -1;
+        }
+    }
+    MGLRendererBackendHandle *backend =
+        static_cast<MGLRendererBackendHandle *>(context->renderer_backend);
+    int result = backend ? mglRendererBackendBegin(backend, lease_out) : -1;
+    if (context->renderer_backend_lock_initialized) {
+        (void)pthread_mutex_unlock(&context->renderer_backend_lock);
+    }
+    return result;
+}
+
+extern "C" void mglRendererBackendEnd(MGLRendererBackendLease *lease)
+{
+    if (!lease || !lease->backend) return;
+    MGLRendererBackendHandle *backend = lease->backend;
+    const uint64_t generation = lease->generation;
+    /* Clear the caller token first so a second End is a no-op. */
+    lease->backend = nullptr;
+    lease->generation = 0;
+
+    const bool tls_match =
+        g_backend_tls_lease.backend == backend &&
+        g_backend_tls_lease.generation == generation &&
+        g_backend_tls_lease.depth > 0u;
+
+    if (tls_match) {
+        g_backend_tls_lease.depth--;
+        if (g_backend_tls_lease.depth == 0u) {
+            g_backend_tls_lease.backend = nullptr;
+            g_backend_tls_lease.generation = 0;
+        }
+    } else {
+        /* Wrong thread/token: still drop the active_leases accounting so
+         * Destroy cannot hang, and invalidate TLS borrows for this backend. */
+        if (g_backend_tls_lease.backend == backend) {
+            g_backend_tls_lease.backend = nullptr;
+            g_backend_tls_lease.generation = 0;
+            g_backend_tls_lease.depth = 0;
+        }
+        fprintf(stderr,
+                "MGL WARNING: mglRendererBackendEnd TLS/token mismatch "
+                "(backend=%p gen=%llu)\n",
+                (void *)backend,
+                (unsigned long long)generation);
+    }
+
+    std::lock_guard<std::mutex> lock(backend->mutex);
+    if (backend->active_leases > 0u) backend->active_leases--;
+    if (backend->active_leases == 0u) {
+        mglRendererBackendFlushDeferredReleases(backend);
+        if (backend->destroying) backend->lease_cv.notify_all();
+    }
+}
+
+extern "C" int mglRendererBackendThreadHoldsLease(
+    const MGLRendererBackendHandle *backend)
+{
+    return mglRendererBackendTLSHolds(backend) ? 1 : 0;
+}
+
+extern "C" void *mglRendererBackendLeaseGetDevice(
+    const MGLRendererBackendLease *lease)
+{
+    if (!mglRendererBackendLeaseMatches(lease)) return nullptr;
+    return mglRendererBackendGetDevice(lease->backend);
+}
+
+extern "C" void *mglRendererBackendLeaseGetCommandQueue(
+    const MGLRendererBackendLease *lease)
+{
+    if (!mglRendererBackendLeaseMatches(lease)) return nullptr;
+    return mglRendererBackendGetCommandQueue(lease->backend);
+}
+
+extern "C" void *mglRendererBackendLeaseGetOwner(
+    const MGLRendererBackendLease *lease,
+    MGLRendererBackendOwnerKind kind)
+{
+    if (!mglRendererBackendLeaseMatches(lease)) return nullptr;
+    return mglRendererBackendGetOwner(lease->backend, kind);
+}
+
 extern "C" void *mglRendererBackendGetDevice(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    if (backend->destroying || backend->shutdown_started) return nullptr;
+    /* Lease holders may observe pointers while destroy drains active leases. */
     return backend->device;
 }
 
@@ -562,6 +760,10 @@ extern "C" int mglRendererBackendResetCommandQueue(
     if (!backend || !command_queue_out) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (!backend->renderer_initialized || backend->shutdown_started) return -1;
+    if (backend->command_queue && backend->active_leases > 0u) {
+        backend->command_queue->retain();
+        backend->deferred_releases.push_back(backend->command_queue);
+    }
     backend->command_queue = nullptr;
     void *queue = nullptr;
     int result = backend->command_queue_owner
@@ -578,10 +780,9 @@ extern "C" int mglRendererBackendResetCommandQueue(
 extern "C" void *mglRendererBackendGetCommandQueue(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    if (backend->destroying || backend->shutdown_started) return nullptr;
     return backend->command_queue;
 }
 
@@ -605,7 +806,7 @@ extern "C" int mglRendererBackendSetFallbackRenderTargetTexture(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->fallback_render_target_texture, texture);
     return 0;
 }
@@ -613,7 +814,7 @@ extern "C" int mglRendererBackendSetFallbackRenderTargetTexture(
 extern "C" void *mglRendererBackendGetFallbackRenderTargetTexture(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->fallback_render_target_texture;
@@ -622,9 +823,16 @@ extern "C" void *mglRendererBackendGetFallbackRenderTargetTexture(
 extern "C" void *mglRendererBackendGetFallbackBindingBuffer(
     MGLRendererBackendHandle *backend, uint64_t minimum_length)
 {
-    if (!backend || minimum_length == 0u) return nullptr;
+    if (!backend || minimum_length == 0u ||
+        !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(backend->mutex);
-    if (backend->destroying || !backend->device) return nullptr;
+    if (!backend->device) return nullptr;
+    if (backend->destroying) {
+        return (backend->fallback_binding_buffer &&
+                backend->fallback_binding_buffer_length >= minimum_length)
+            ? backend->fallback_binding_buffer
+            : nullptr;
+    }
     if (!backend->fallback_binding_buffer ||
         backend->fallback_binding_buffer_length < minimum_length) {
         MTL::Buffer *replacement = backend->device->newBuffer(
@@ -632,7 +840,8 @@ extern "C" void *mglRendererBackendGetFallbackBindingBuffer(
             MTL::ResourceStorageModeShared);
         if (!replacement) return nullptr;
         if (backend->fallback_binding_buffer) {
-            backend->fallback_binding_buffer->release();
+            mglRendererBackendDeferOrRelease(
+                backend, backend->fallback_binding_buffer);
         }
         backend->fallback_binding_buffer = replacement;
         backend->fallback_binding_buffer_length = minimum_length;
@@ -643,9 +852,10 @@ extern "C" void *mglRendererBackendGetFallbackBindingBuffer(
 extern "C" void *mglRendererBackendGetCullDistanceDummyBuffer(
     MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(backend->mutex);
-    if (backend->destroying || !backend->device) return nullptr;
+    if (!backend->device) return nullptr;
+    if (backend->destroying) return backend->cull_distance_dummy_buffer;
     if (!backend->cull_distance_dummy_buffer) {
         const float dummy[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         backend->cull_distance_dummy_buffer = backend->device->newBuffer(
@@ -661,7 +871,7 @@ extern "C" int mglRendererBackendSetTransientDepthTexture(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(backend->transient_depth_texture, texture);
+    mglRendererBackendReplaceObject(backend, backend->transient_depth_texture, texture);
     backend->transient_depth_texture_width = texture ? width : 0;
     backend->transient_depth_texture_height = texture ? height : 0;
     return 0;
@@ -673,7 +883,7 @@ extern "C" void *mglRendererBackendGetTransientDepthTexture(
 {
     if (width_out) *width_out = 0;
     if (height_out) *height_out = 0;
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     if (width_out) *width_out = backend->transient_depth_texture_width;
@@ -690,15 +900,15 @@ extern "C" int mglRendererBackendSetDefaultDrawBufferAttachment(
     if (backend->destroying) return -1;
     switch (kind) {
         case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->default_draw_buffer_colors[draw_buffer_index], texture);
             return 0;
         case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->default_draw_buffer_depths[draw_buffer_index], texture);
             return 0;
         case MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->default_draw_buffer_stencils[draw_buffer_index], texture);
             return 0;
     }
@@ -709,7 +919,8 @@ extern "C" void *mglRendererBackendGetDefaultDrawBufferAttachment(
     const MGLRendererBackendHandle *backend, uint32_t draw_buffer_index,
     MGLRendererBackendDefaultDrawBufferAttachmentKind kind)
 {
-    if (!backend || draw_buffer_index >= 6u) return nullptr;
+    if (!backend || draw_buffer_index >= 6u ||
+        !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     switch (kind) {
@@ -729,11 +940,11 @@ extern "C" int mglRendererBackendClearDefaultDrawBuffer(
     if (!backend || draw_buffer_index >= 6u) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->default_draw_buffer_colors[draw_buffer_index], nullptr);
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->default_draw_buffer_depths[draw_buffer_index], nullptr);
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->default_draw_buffer_stencils[draw_buffer_index], nullptr);
     return 0;
 }
@@ -759,8 +970,8 @@ extern "C" int mglRendererBackendSetStageCopyBackResources(
         list_it = backend->stage_copy_back_lists.end() - 1;
         list_it->key = copy_back_list_key;
     }
-    mglRendererBackendReplaceObject(list_it->slots[slot].temporary, temporary);
-    mglRendererBackendReplaceObject(list_it->slots[slot].destination, destination);
+    mglRendererBackendReplaceObject(backend, list_it->slots[slot].temporary, temporary);
+    mglRendererBackendReplaceObject(backend, list_it->slots[slot].destination, destination);
     return 0;
 }
 
@@ -770,7 +981,8 @@ extern "C" int mglRendererBackendGetStageCopyBackResources(
 {
     if (temporary_out) *temporary_out = nullptr;
     if (destination_out) *destination_out = nullptr;
-    if (!backend || !copy_back_list_key || slot >= 31u ||
+    if (!backend || !mglRendererBackendTLSHolds(backend) ||
+        !copy_back_list_key || slot >= 31u ||
         !temporary_out || !destination_out) {
         return -1;
     }
@@ -802,8 +1014,8 @@ extern "C" int mglRendererBackendClearStageCopyBackSlot(
             return list.key == copy_back_list_key;
         });
     if (list_it == backend->stage_copy_back_lists.end()) return 0;
-    mglRendererBackendReplaceObject(list_it->slots[slot].temporary, nullptr);
-    mglRendererBackendReplaceObject(list_it->slots[slot].destination, nullptr);
+    mglRendererBackendReplaceObject(backend, list_it->slots[slot].temporary, nullptr);
+    mglRendererBackendReplaceObject(backend, list_it->slots[slot].destination, nullptr);
     if (mglRendererBackendStageCopyBackListEmpty(*list_it)) {
         backend->stage_copy_back_lists.erase(list_it);
     }
@@ -835,13 +1047,13 @@ extern "C" void *mglRendererBackendGetCurrentAttribBuffer(
     const MGLRendererBackendHandle *backend, uint32_t attrib,
     const void *bytes, uint32_t byte_count, uint64_t stride)
 {
-    if (!backend || attrib >= MAX_ATTRIBS || !bytes ||
+    if (!backend || !mglRendererBackendTLSHolds(backend) ||
+        attrib >= MAX_ATTRIBS || !bytes ||
         byte_count == 0u || byte_count > 16u || stride == 0u) {
         return nullptr;
     }
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    if (backend->destroying) return nullptr;
     const MGLRendererBackendCurrentAttribCacheEntry &entry =
         backend->current_attrib_cache[attrib];
     if (!entry.buffer || entry.byte_count != byte_count ||
@@ -864,7 +1076,7 @@ extern "C" int mglRendererBackendSetCurrentAttribBuffer(
     if (backend->destroying) return -1;
     MGLRendererBackendCurrentAttribCacheEntry &entry =
         backend->current_attrib_cache[attrib];
-    mglRendererBackendReplaceObject(entry.buffer, buffer);
+    mglRendererBackendReplaceObject(backend, entry.buffer, buffer);
     entry.bytes = {};
     std::memcpy(entry.bytes.data(), bytes, byte_count);
     entry.byte_count = byte_count;
@@ -876,12 +1088,12 @@ extern "C" void *mglRendererBackendGetPackedCurrentAttribBuffer(
     const MGLRendererBackendHandle *backend, const void *bytes,
     uint32_t byte_count, uint32_t repeat_count)
 {
-    if (!backend || !bytes || byte_count == 0u || repeat_count == 0u) {
+    if (!backend || !mglRendererBackendTLSHolds(backend) || !bytes ||
+        byte_count == 0u || repeat_count == 0u) {
         return nullptr;
     }
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    if (backend->destroying) return nullptr;
     const MGLRendererBackendPackedCurrentAttribCacheEntry &entry =
         backend->packed_current_attrib_cache;
     if (!entry.valid || !entry.buffer || entry.repeat_count != repeat_count ||
@@ -904,7 +1116,7 @@ extern "C" int mglRendererBackendSetPackedCurrentAttribBuffer(
     if (backend->destroying) return -1;
     MGLRendererBackendPackedCurrentAttribCacheEntry &entry =
         backend->packed_current_attrib_cache;
-    mglRendererBackendReplaceObject(entry.buffer, buffer);
+    mglRendererBackendReplaceObject(backend, entry.buffer, buffer);
     entry.values.assign(static_cast<const uint8_t *>(bytes),
                         static_cast<const uint8_t *>(bytes) + byte_count);
     entry.repeat_count = repeat_count;
@@ -917,14 +1129,14 @@ extern "C" void *mglRendererBackendGetSizeConstantsBuffer(
     MGLRendererBackendSizeConstantsStage stage,
     const uint32_t *constants, uint32_t count)
 {
-    if (!backend || stage < MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX ||
+    if (!backend || !mglRendererBackendTLSHolds(backend) ||
+        stage < MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX ||
         stage > MGL_RENDERER_BACKEND_SIZE_CONSTANTS_FRAGMENT ||
         !constants || count != 31u) {
         return nullptr;
     }
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    if (backend->destroying) return nullptr;
     const MGLRendererBackendSizeConstantsCacheEntry &entry =
         backend->size_constants_cache[(size_t)stage];
     if (!entry.valid || !entry.buffer ||
@@ -949,7 +1161,7 @@ extern "C" int mglRendererBackendSetSizeConstantsBuffer(
     if (backend->destroying) return -1;
     MGLRendererBackendSizeConstantsCacheEntry &entry =
         backend->size_constants_cache[(size_t)stage];
-    mglRendererBackendReplaceObject(entry.buffer, buffer);
+    mglRendererBackendReplaceObject(backend, entry.buffer, buffer);
     std::memcpy(entry.constants.data(), constants, sizeof(entry.constants));
     entry.valid = true;
     return 0;
@@ -964,15 +1176,15 @@ extern "C" int mglRendererBackendSetBlitCachedObject(
     if (backend->destroying) return -1;
     switch (kind) {
         case MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->scaled_blit_nearest_sampler, object);
             return 0;
         case MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->scaled_blit_linear_sampler, object);
             return 0;
         case MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->clear_rect_depth_state, object);
             return 0;
     }
@@ -983,10 +1195,9 @@ extern "C" void *mglRendererBackendGetBlitCachedObject(
     const MGLRendererBackendHandle *backend,
     MGLRendererBackendBlitCacheKind kind)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
-    if (backend->destroying || backend->shutdown_started) return nullptr;
     switch (kind) {
         case MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER:
             return backend->scaled_blit_nearest_sampler;
@@ -1010,7 +1221,7 @@ extern "C" int mglRendererBackendSetPassthroughFunction(
         mglRendererBackendPassthroughCacheForKind(backend, kind);
     if (!cache) return -1;
     mglRendererBackendReplacePassthroughCache(
-        cache, library, function, program_instance_id);
+        backend, cache, library, function, program_instance_id);
     return 0;
 }
 
@@ -1020,7 +1231,7 @@ extern "C" int mglRendererBackendGetPassthroughFunction(
     uint64_t program_instance_id, void **function_out)
 {
     if (function_out) *function_out = nullptr;
-    if (!backend || !function_out) return -1;
+    if (!backend || !mglRendererBackendTLSHolds(backend) || !function_out) return -1;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     MGLRendererBackendPassthroughCache *cache =
@@ -1040,7 +1251,7 @@ extern "C" int mglRendererBackendGetSamplerSnapshotState(
     const MGLSamplerSnapshotKey *key, void **state_out)
 {
     if (state_out) *state_out = nullptr;
-    if (!backend || !key || !state_out) return -1;
+    if (!backend || !mglRendererBackendTLSHolds(backend) || !key || !state_out) return -1;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     int slot = mglRendererBackendFindSamplerSnapshotSlot(
@@ -1060,7 +1271,7 @@ extern "C" int mglRendererBackendPutSamplerSnapshotState(
     MGLRendererBackendSamplerSnapshotCache &cache = backend->sampler_snapshots;
     int existing_slot = mglRendererBackendFindSamplerSnapshotSlot(cache, key);
     if (existing_slot >= 0) {
-        mglRendererBackendReplaceObject(
+        mglRendererBackendReplaceObject(backend, 
             cache.states[existing_slot], state);
         return 0;
     }
@@ -1075,11 +1286,13 @@ extern "C" int mglRendererBackendPutSamplerSnapshotState(
 
     MTL::SamplerState *replacement = static_cast<MTL::SamplerState *>(state);
     replacement->retain();
-    if (cache.states[slot]) cache.states[slot]->release();
+    if (cache.states[slot]) {
+        mglRendererBackendDeferOrRelease(backend, cache.states[slot]);
+    }
     cache.keys[slot] = *key;
     cache.states[slot] = replacement;
     if (mglRendererBackendInsertSamplerSnapshotIndex(cache, key, slot) != 0) {
-        replacement->release();
+        mglRendererBackendDeferOrRelease(backend, replacement);
         cache.states[slot] = nullptr;
         return -1;
     }
@@ -1091,7 +1304,8 @@ extern "C" int mglRendererBackendGetTessFactorBuffer(
     const float levels[6], void **buffer_out)
 {
     if (buffer_out) *buffer_out = nullptr;
-    if (!backend || patch_count == 0u || !levels || !buffer_out) return -1;
+    if (!backend || !mglRendererBackendTLSHolds(backend) ||
+        patch_count == 0u || !levels || !buffer_out) return -1;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     if (!backend->tess_factor_buffer ||
@@ -1112,7 +1326,7 @@ extern "C" int mglRendererBackendPutTessFactorBuffer(
     if (!backend || patch_count == 0u || !levels || !buffer) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(backend->tess_factor_buffer, buffer);
+    mglRendererBackendReplaceObject(backend, backend->tess_factor_buffer, buffer);
     backend->tess_factor_patch_count = patch_count;
     std::copy_n(levels, backend->tess_factor_levels.size(),
                 backend->tess_factor_levels.begin());
@@ -1125,7 +1339,7 @@ extern "C" int mglRendererBackendSetCurrentTessFactorBuffer(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->current_tess_factor_buffer, buffer);
     return 0;
 }
@@ -1133,7 +1347,7 @@ extern "C" int mglRendererBackendSetCurrentTessFactorBuffer(
 extern "C" void *mglRendererBackendGetCurrentTessFactorBuffer(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->current_tess_factor_buffer;
@@ -1144,7 +1358,8 @@ extern "C" int mglRendererBackendGetTessXfbDummyBuffer(
     void **buffer_out)
 {
     if (buffer_out) *buffer_out = nullptr;
-    if (!backend || minimum_length == 0u || !buffer_out) return -1;
+    if (!backend || !mglRendererBackendTLSHolds(backend) ||
+        minimum_length == 0u || !buffer_out) return -1;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     if (!backend->tess_xfb_dummy_buffer ||
@@ -1161,7 +1376,7 @@ extern "C" int mglRendererBackendPutTessXfbDummyBuffer(
     if (!backend || !buffer) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(backend->tess_xfb_dummy_buffer, buffer);
+    mglRendererBackendReplaceObject(backend, backend->tess_xfb_dummy_buffer, buffer);
     return 0;
 }
 
@@ -1171,7 +1386,7 @@ extern "C" int mglRendererBackendSetCullDistanceCaptureBuffer(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->cull_distance_capture_buffer, buffer);
     return 0;
 }
@@ -1179,7 +1394,7 @@ extern "C" int mglRendererBackendSetCullDistanceCaptureBuffer(
 extern "C" void *mglRendererBackendGetCullDistanceCaptureBuffer(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->cull_distance_capture_buffer;
@@ -1191,7 +1406,7 @@ extern "C" int mglRendererBackendSetTessControlPointIndexBuffer(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->tess_control_point_index_buffer, buffer);
     return 0;
 }
@@ -1199,7 +1414,7 @@ extern "C" int mglRendererBackendSetTessControlPointIndexBuffer(
 extern "C" void *mglRendererBackendGetTessControlPointIndexBuffer(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->tess_control_point_index_buffer;
@@ -1211,7 +1426,7 @@ extern "C" int mglRendererBackendSetTessVertexCaptureBuffer(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(
+    mglRendererBackendReplaceObject(backend,
         backend->tess_vertex_capture_buffer, buffer);
     return 0;
 }
@@ -1219,7 +1434,7 @@ extern "C" int mglRendererBackendSetTessVertexCaptureBuffer(
 extern "C" void *mglRendererBackendGetTessVertexCaptureBuffer(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->tess_vertex_capture_buffer;
@@ -1231,14 +1446,14 @@ extern "C" int mglRendererBackendSetTcsPatchOutBuffer(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(backend->tcs_patch_out_buffer, buffer);
+    mglRendererBackendReplaceObject(backend, backend->tcs_patch_out_buffer, buffer);
     return 0;
 }
 
 extern "C" void *mglRendererBackendGetTcsPatchOutBuffer(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->tcs_patch_out_buffer;
@@ -1250,14 +1465,14 @@ extern "C" int mglRendererBackendSetTcsOutputBuffer(
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
     if (backend->destroying) return -1;
-    mglRendererBackendReplaceObject(backend->tcs_output_buffer, buffer);
+    mglRendererBackendReplaceObject(backend, backend->tcs_output_buffer, buffer);
     return 0;
 }
 
 extern "C" void *mglRendererBackendGetTcsOutputBuffer(
     const MGLRendererBackendHandle *backend)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     return backend->tcs_output_buffer;
@@ -1272,23 +1487,23 @@ extern "C" int mglRendererBackendSetFallbackResource(
     if (backend->destroying) return -1;
     switch (kind) {
         case MGL_RENDERER_BACKEND_FALLBACK_SAMPLED_TEXTURE:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->fallback_sampled_texture, resource);
             return 0;
         case MGL_RENDERER_BACKEND_FALLBACK_CUBE_SAMPLED_TEXTURE:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->fallback_cube_sampled_texture, resource);
             return 0;
         case MGL_RENDERER_BACKEND_FALLBACK_TEXTURE_BUFFER_STORAGE:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->fallback_texture_buffer_storage, resource);
             return 0;
         case MGL_RENDERER_BACKEND_FALLBACK_SINT_TEXTURE_BUFFER:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->fallback_sint_texture_buffer, resource);
             return 0;
         case MGL_RENDERER_BACKEND_FALLBACK_SAMPLER:
-            mglRendererBackendReplaceObject(
+            mglRendererBackendReplaceObject(backend,
                 backend->fallback_sampler, resource);
             return 0;
     }
@@ -1299,7 +1514,7 @@ extern "C" void *mglRendererBackendGetFallbackResource(
     const MGLRendererBackendHandle *backend,
     MGLRendererBackendFallbackResourceKind kind)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     switch (kind) {
@@ -1322,7 +1537,7 @@ extern "C" int mglRendererBackendGetFallbackSampledTexture(
     uint64_t key, void **texture_out)
 {
     if (texture_out) *texture_out = nullptr;
-    if (!backend || !texture_out) return -1;
+    if (!backend || !mglRendererBackendTLSHolds(backend) || !texture_out) return -1;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     for (const MGLRendererBackendFallbackTextureEntry &entry :
@@ -1345,7 +1560,7 @@ extern "C" int mglRendererBackendPutFallbackSampledTexture(
     for (MGLRendererBackendFallbackTextureEntry &entry :
          backend->fallback_sampled_textures) {
         if (entry.key == key) {
-            mglRendererBackendReplaceObject(entry.texture, texture);
+            mglRendererBackendReplaceObject(backend, entry.texture, texture);
             return 0;
         }
     }
@@ -1433,7 +1648,7 @@ extern "C" void *mglRendererBackendGetOwner(
     const MGLRendererBackendHandle *backend,
     MGLRendererBackendOwnerKind kind)
 {
-    if (!backend) return nullptr;
+    if (!backend || !mglRendererBackendTLSHolds(backend)) return nullptr;
     std::lock_guard<std::mutex> lock(
         const_cast<MGLRendererBackendHandle *>(backend)->mutex);
     switch (kind) {
@@ -1493,16 +1708,33 @@ extern "C" void mglRendererBackendDestroy(
     MGLRendererBackendHandle *backend = *backend_ptr;
     *backend_ptr = nullptr;
     void *platform_shell = nullptr;
+    GLMContext context = backend->context;
+
+    /* Detach from context under the attach lock before waiting/deleting so
+     * BeginContext cannot observe this handle after teardown starts. */
+    if (context && context->renderer_backend_lock_initialized) {
+        if (pthread_mutex_lock(&context->renderer_backend_lock) == 0) {
+            if (context->renderer_backend == backend) {
+                context->renderer_backend = nullptr;
+            }
+            platform_shell = context->platform_renderer_shell;
+            (void)pthread_mutex_unlock(&context->renderer_backend_lock);
+        }
+    } else if (context) {
+        platform_shell = context->platform_renderer_shell;
+        if (context->renderer_backend == backend) {
+            context->renderer_backend = nullptr;
+        }
+    }
+
     {
-        std::lock_guard<std::mutex> lock(backend->mutex);
+        std::unique_lock<std::mutex> lock(backend->mutex);
         if (backend->destroying) return;
         backend->destroying = true;
-        if (backend->context) {
-            platform_shell = backend->context->platform_renderer_shell;
-        }
-        if (backend->context && backend->context->renderer_backend == backend) {
-            backend->context->renderer_backend = nullptr;
-        }
+        backend->lease_generation++;
+        backend->lease_cv.wait(lock, [backend] {
+            return backend->active_leases == 0u;
+        });
     }
     if (platform_shell) {
         mglRendererPlatformBackendWillDestroy(platform_shell, backend);
@@ -1512,55 +1744,112 @@ extern "C" void mglRendererBackendDestroy(
     delete backend;
 }
 
+namespace {
+
+struct MGLBackendLeaseScope {
+    MGLRendererBackendLease lease{};
+    bool held = false;
+    bool allowed_without_backend = false;
+
+    explicit MGLBackendLeaseScope(GLMContext context)
+    {
+        if (!context) {
+            allowed_without_backend = true;
+            return;
+        }
+        held = mglRendererBackendBeginContext(context, &lease) == 0;
+        if (held) return;
+        if (context->renderer_backend_lock_initialized &&
+            pthread_mutex_lock(&context->renderer_backend_lock) == 0) {
+            allowed_without_backend = context->renderer_backend == nullptr;
+            (void)pthread_mutex_unlock(&context->renderer_backend_lock);
+        } else {
+            allowed_without_backend = context->renderer_backend == nullptr;
+        }
+    }
+
+    bool ok() const { return held || allowed_without_backend; }
+
+    ~MGLBackendLeaseScope()
+    {
+        if (held) mglRendererBackendEnd(&lease);
+    }
+
+    MGLBackendLeaseScope(const MGLBackendLeaseScope &) = delete;
+    MGLBackendLeaseScope &operator=(const MGLBackendLeaseScope &) = delete;
+};
+
+}  // namespace
+
 extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderBindBuffer(context, buffer);
 }
 
 extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderBindProgram(context, program);
 }
 
 extern "C" void mglRendererDeleteMetalObject(GLMContext context, void *object)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderDeleteMTLObj(context, object);
 }
 
 extern "C" void mglRendererReleaseBufferMetalData(
     GLMContext context, Buffer *buffer)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderReleaseBufferMetalData(context, buffer);
 }
 
 extern "C" void mglRendererGetSync(GLMContext context, Sync *sync)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderGetSync(context, sync);
 }
 
 extern "C" void mglRendererWaitForSync(GLMContext context, Sync *sync)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderWaitForSync(context, sync);
 }
 
 extern "C" uint32_t mglRendererGetSyncStatus(
     GLMContext context, Sync *sync)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return 0;
     return mglRenderGetSyncStatus(context, sync);
 }
 
 extern "C" void mglRendererReleaseSync(GLMContext context, Sync *sync)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderReleaseSync(context, sync);
 }
 
 extern "C" void mglRendererFlush(GLMContext context, bool finish)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderFlush(context, finish);
 }
 
 extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderInvalidateRenderPass(context);
 }
 
@@ -1568,6 +1857,8 @@ extern "C" void mglRendererBufferSubData(
     GLMContext context, Buffer *buffer,
     size_t offset, size_t size, const void *bytes)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderBufferSubData(context, buffer, offset, size, bytes);
 }
 
@@ -1575,6 +1866,8 @@ extern "C" void *mglRendererMapUnmapBuffer(
     GLMContext context, Buffer *buffer, size_t offset, size_t size,
     uint32_t access, bool map)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return nullptr;
     return mglRenderMapUnmapBuffer(
         context, buffer, offset, size, access, map);
 }
@@ -1582,38 +1875,52 @@ extern "C" void *mglRendererMapUnmapBuffer(
 extern "C" void mglRendererReadBackBuffer(
     GLMContext context, Buffer *buffer, size_t offset, size_t size)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderReadBackBuffer(context, buffer, offset, size);
 }
 
 extern "C" void mglRendererFlushBufferRange(
     GLMContext context, Buffer *buffer, intptr_t offset, intptr_t length)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderFlushBufferRange(context, buffer, offset, length);
 }
 
 extern "C" void mglRendererBeginSampleQuery(
     GLMContext context, uint32_t target)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderBeginSampleQueryCallback(context, target);
 }
 
 extern "C" uint64_t mglRendererEndSampleQuery(GLMContext context)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return 0;
     return mglRenderEndSampleQueryCallback(context);
 }
 
 extern "C" void mglRendererBeginTimerQuery(GLMContext context)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return;
     mglRenderBeginTimerQueryCallback(context);
 }
 
 extern "C" uint64_t mglRendererEndTimerQuery(GLMContext context)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return 0;
     return mglRenderEndTimerQueryCallback(context);
 }
 
 extern "C" uint64_t mglRendererGetGPUTimestamp(GLMContext context)
 {
+    MGLBackendLeaseScope lease(context);
+    if (!lease.ok()) return 0;
     return mglRenderGetGPUTimestamp(context);
 }
 
