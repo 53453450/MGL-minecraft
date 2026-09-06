@@ -1,10 +1,12 @@
-# MGL 架构审查（落地对照）
+# MGL 全量架构审查（落地对照）
 
-对照落地系列 `98f5ea2`..`42658c8`（代码）+ `938d6eb`（文档初稿）· 1,024 个 git 跟踪文件。
+对照落地系列 `98f5ea2`..`42658c8`（代码）+ `938d6eb`/`70bd0aa`（文档）· 1,024 个 git 跟踪文件 · 第一方核心约 209k LOC。
 
 规范基线：OpenGL 4.6 Core + GLSL 4.60。OpenGL ES 3.2 为第二阶段。Minecraft + Sodium/Iris 类路径是产品基线，与规范冲突时以 Khronos 为准。
 
-本文件对照审查稿落地后的仓库（`71a1db9` 起的分片 commit）。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入；批次 4 只做了生产安全子集（不删 Compat、不补完 DrawExecutor）；批次 5 只有 ES 3.2 smoke，不是 ES 验收。
+本文件由审查画布整理，并按落地后仓库更新。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入；批次 4 只做了生产安全子集（不删 Compat、不补完 DrawExecutor）；批次 5 只有 ES 3.2 smoke，不是 ES 验收。
+
+每条发现保留审查时的域 / 置信 / 规范 / 动作，证据改为当前路径，并加落地状态。
 
 ## 结论
 
@@ -14,10 +16,10 @@
 
 | 指标 | 审查稿 | 落地后 |
 |------|--------|--------|
-| P0 阻断项仍开放 | 3 | 0（F01 已 fail-closed；F02 为误报；F03 已进 CI） |
+| P0 阻断项仍开放 | 3 | 0（F01 fail-closed；F02 误报；F03 已进 CI） |
 | P1 仍开放 | 16 | F04、F05（部分）、F10（seed）、F16（主体） |
 | P2 仍开放 | 5 | F20、F21 |
-| 已落地 / 校准 | — | 见下方 F 状态表 |
+| 已证实发现 | 22/24 | 不变；F23/F24 仍为 not-a-bug |
 
 **保留**：前后端分离、自研 GLSL→MGLIR→AIR、`CompileArtifact` 原子发布、C 状态机、Metal-cpp 作为唯一 GPU 实现、薄平台壳。
 
@@ -25,111 +27,239 @@
 
 信任链只保留三件事：`CompileArtifact` 原子发布、CommandIR 与 live 状态隔离、C ABI 不泄漏 `MTL`。其它内部协议、env 开关、binaryarchive 格式都可以重做。
 
-## 落地状态（按 F）
+## 仓库构成
 
-状态：`landed` 有代码与门禁；`partial` 做了审查要求的一部分；`open` 未做；`not-a-bug` / `misreported` 不需要改产品行为。
+跟踪文件分类。源：`git ls-files` @ 当前落地系列。
+
+| 类别 | 文件数 | 说明 |
+|------|--------|------|
+| 第一方 MGL | 214 | 改写面（不含 GLM / Khronos 头） |
+| GLM + Khronos 头 | 432 | vendored |
+| GLFW fork | 164 | 只审 MGL 集成与 fork diff |
+| metal-cpp | 139 | 第三方，只审集成边界 |
+| 测试 / 脚本 | 28 | `test_*`、`scripts/`、`spec_parser/`、`benchmark/` |
+| 其它 | 47 | 根目录、golden、CI、本文件等 |
+| **合计** | **1024** | 审查稿 1028；净删空壳 / enum_parser / stale spec 输出后为 1024 |
+
+## 第一方源码规模
+
+`wc -l` 等价格，不含 GLM/Khronos 头。单位：约千行。分层按文件名（`.m` → ObjC；`mgl_air*`/`mgl_glsl*`/`mgl_frontend*` → AIR；`gl_core`/`gl_es`/`dispatch` → ABI；其余 `.cpp` → Metal-cpp；其余 C → 状态机）。与审查稿分层不完全相同，总数仍约 209k。
+
+| 层 | kLOC |
+|----|------|
+| C GL state | 78.9 |
+| ObjC renderer | 58.5 |
+| AIR + frontend | 35.3 |
+| Metal-cpp | 24.2 |
+| GL ABI | 10.4 |
+| 其它第一方 | 2.1 |
+| **合计** | **209.4** |
+
+复杂度仍集中在 ObjC 编排和 AIR/Metal TU。目标是把 ObjC 压到平台壳，把编译器和 encoder 按域拆开，而不是继续横向加 category。
+
+## 发现清单
+
+置信度：`confirmed` 有路径与调用链；`hypothesis` 需运行复现；`not-a-bug` 为先前误报或产品选择。
+
+落地：`landed` 有代码与门禁；`partial` 做了审查要求的一部分；`open` 未做；`misreported` 审查计数与仓库不符。
 
 ### P0
 
 #### F01 DrawTransformFeedback* 静默 no-op — landed
 
-未实现路径报 `INVALID_OPERATION`（`test-arch-correctness` F01）。Metal 捕获后的真实 Draw 仍未接通，禁止改回静默成功。
+- 域：GL ABI · 置信：confirmed
+- 证据：`mgl_gl_extensions.c:2950–2983` 四个入口 `ERROR_RETURN(GL_INVALID_OPERATION)`。`test-arch-correctness` F01。
+- 规范：GL 4.6 Core §13.2.3：`DrawTransformFeedback*` 等价于按捕获顶点数 `DrawArrays*`。
+- 动作：未实现前应对非法/未实现路径报 `INVALID_OPERATION`；实现 Metal 捕获后再接通。禁止静默成功。
+- 落地：fail-closed 已做。Metal 捕获后的真实 Draw 仍未接通。
 
 #### F02 24 项 golden 中缺 17 个 TGA — misreported
 
-`test_regression/main.c` 现有 23 个 `GOLDEN_TEST`；`MGL_Golden_Images/` 有 23 个对应 `Reg_*.tga`（git 已跟踪）。审查稿的 24/7 计数与仓库不符。compare 模式不缺文件。
+- 域：Tests · 置信：confirmed（审查时计数错误）
+- 证据：`test_regression/main.c` 23 个 `GOLDEN_TEST`；`MGL_Golden_Images/` 23 个对应 `Reg_*.tga`（git 已跟踪）。审查稿的 24/7 与仓库不符。
+- 规范：非规范条款；这是大规模改造的像素门禁。
+- 动作：补齐 golden，或把无基准项改为 self-check。CI 在 compare 模式下必须全绿。
+- 落地：无需补文件。compare 模式不缺 TGA。
 
 #### F03 CI 未安装 llvm@15 / googletest — landed
 
-`.github/workflows/ci.yml` 安装 `llvm@15`、跑 `make gtest` 与 `make verify-gl-api`。README / `install-pkgdeps` 与之对齐。
+- 域：Build/CI · 置信：confirmed
+- 证据：`.github/workflows/ci.yml` 安装 `llvm@15`、跑 `make gtest` 与 `make verify-gl-api`。`Makefile` `install-pkgdeps` / `LLVM_ROOT` 与 README 对齐。
+- 规范：非规范条款；干净 runner 上构建/gtest 不可复现。
+- 动作：CI 显式安装并 pin 版本；README 与 `install-pkgdeps` 对齐。
+- 落地：已做。
 
 ### P1
 
-#### F04 MSAA 以 2D array 仿真 — open
+#### F04 MSAA 以 2D array 仿真，sample_count=1 — open
 
-`max_image_samples=8` 与 `max_samples` 仍不一致；MS 纹理仍按 array 仿真。未改。
+- 域：State · 置信：confirmed
+- 证据：`MGLRenderer+Texture.m:5398–5414` 将 MS 纹理建成 `Texture2DArray`，`sample_count=1`，`array_length=GL samples`。`glm_params.c` `max_image_samples=8`、`max_samples=4`。`MGLRenderer+Blit.m:2213–2215` 承认 emulation。
+- 规范：GL 4.6 Core §8.8 Multisample Textures；§9.4.2 完整性与 sample 数。
+- 动作：query 与真实能力对齐，或明确 emulation 并让 CTS/光影走可验证路径。`max_image_samples` 与 `max_samples` 必须统一。
+- 落地：未改。
 
-#### F05 错误双轨 — partial
+#### F05 错误双轨：队列 vs STATE(error) 直写 — partial
 
-`ERROR_RETURN` / `ERROR_CHECK_*` 已走 `mglDispatchError`。`mgl_unimplemented` 入队 `INVALID_OPERATION`。注释改为 §2.3.1。直接 `STATE(error)=` 仍散落（`mgl_gl_extensions.c` 等）。队列仍是 16 槽 FIFO，不是「只保留首错误」。
+- 域：GL ABI · 置信：confirmed
+- 证据：`ERROR_RETURN` / `ERROR_CHECK_*`（`glm_context.h:79–82`）走 `mglDispatchError`。`mgl_unimplemented` 入队 `INVALID_OPERATION`。`error.c` 注释为 §2.3.1。直接 `STATE(error)=` 仍在：`mgl_gl_extensions.c` 约 100 处、`textures.c` 26、`program.c` 15 等。队列仍 16 槽 FIFO。
+- 规范：GL 4.6 Core §2.3.1：记录第一个错误，后续错误不覆盖。16 槽 FIFO 是 QoI，不是规范下限。
+- 动作：全部走 `mglDispatchError`。队列策略改成「首错误保留 + 可选额外 pair」。
+- 落地：宏与 unimplemented 已收口；直写与 FIFO 策略未改。
 
 #### F06 4.6 Core 的 Getn* 全 stub — landed（Core 范围）
 
-`GetnUniform*` 与 `GetnTexImage` 接到现有 Get 并检查 `bufSize`。`GetnMap*` / `GetnPixelMap*` 仍 unimplemented（Compatibility 命令，不是 Core 4.6 义务）。
+- 域：GL ABI · 置信：confirmed
+- 证据：`mglGetnUniform*` / `mglGetnTexImage` 接到现有 Get 并检查 `bufSize`（`mgl_gl_extensions.c:5707+`）。`GetnMap*` / `GetnPixelMap*` 仍 `mgl_unimplemented`。
+- 规范：GL 4.6 Core §7.6 / §8.11：`GetnUniform*` 与 `GetnTexImage` 是核心命令。Map/PixelMap 属 Compatibility。
+- 动作：接到现有 `GetUniform`/`GetTexImage` 并加上 `bufSize` 检查，不要留 unimplemented。
+- 落地：Core 入口已接。Compatibility Getn* 保持 unimplemented → `INVALID_OPERATION`。
 
-#### F07 Shader subroutine 广告不可用能力 — landed
+#### F07 Shader subroutine API 全 stub，但 limits 仍广告 — landed
 
-`max_subroutines` / `max_subroutine_uniform_locations` = 0；入口保持 unimplemented → `INVALID_OPERATION`。
+- 域：GL ABI · 置信：confirmed
+- 证据：`glm_params.c:554–555` `max_subroutines=0`、`max_subroutine_uniform_locations=0`。入口仍 unimplemented。
+- 规范：GL 4.6 Core §7.9 Shader Subroutines。
+- 动作：要么实现，要么 limits=0 且入口 `INVALID_OPERATION`，禁止广告不可用能力。
+- 落地：选 limits=0 + `INVALID_OPERATION`。
 
-#### F08 GLFW 扩展探测只认 11 条 — landed
+#### F08 GLFW 扩展探测只认 11 条，glGetStringi 认 33 条 — landed
 
-`external/glfw/src/mgl_context.m` 的 `extensionSupportedMGL` 委托 `glGetStringi` + `GL_NUM_EXTENSIONS`。
+- 域：Platform · 置信：confirmed
+- 证据：`external/glfw/src/mgl_context.m` `extensionSupportedMGL` 委托 `glGetStringi` + `GL_NUM_EXTENSIONS`。
+- 规范：GLFW 契约，不是 Khronos 条款；会影响 `glfwExtensionSupported`。
+- 动作：委托 `glGetStringi`，删除硬编码表。
+- 落地：已做。
 
 #### F09 variant 编译绕过 CompileArtifact — landed
 
-`mglCompileArtifactFromGLSLEx` 携带 `air_flags` / `iface_peers`。tess/cull/VS capture 经 `mglCompileCaptureVariant` → artifact `complete` 才发布。
+- 域：Compiler · 置信：confirmed
+- 证据：`mglCompileArtifactFromGLSLEx`（`mgl_compile_artifact.c`）携带 `air_flags` / `iface_peers`。`program.c:1566` `mglCompileCaptureVariant` 经 artifact `complete` 才发布 tess/cull/VS capture。
+- 规范：内部信任链 R2，不是 Khronos 条款。失败半发布会破坏 link 原子性。
+- 动作：所有 stage（含 tess/cull capture）只经 `CompileArtifact.complete` 发布。
+- 落地：已做。
 
-#### F10 link 路径重复 parse — partial
+#### F10 link 路径重复 parse：reflect + codegen + uniform seed — partial
 
-`FrontendSession` 让 reflect + AIR codegen 共用一次 parse（gtest `FrontendSession.CompileReflectIsSingleParse`）。`mglSeedUniformInitializers` 仍对 `shader->src` 再 `mglGLSLParse`。
+- 域：Compiler · 置信：confirmed
+- 证据：`FrontendSession` 让 reflect + AIR codegen 共用一次 parse（gtest `FrontendSession.CompileReflectIsSingleParse`）。`program.c:416–432` `mglSeedUniformInitializers` 仍对 `shader->src` 再 `mglGLSLParse`。
+- 规范：非正确性条款。MC/光影首次 link 延迟与峰值内存。
+- 动作：`FrontendSession` 持有 TU+IR，reflect/codegen/seed 共用。
+- 落地：reflect/codegen 已共用；seed 仍旁路。
 
-#### F11 gl_ClipDistance/gl_CullDistance 源码 strstr — landed
+#### F11 gl_ClipDistance/gl_CullDistance 用源码 strstr 推断宽度 — landed
 
-`mglFrontendBuiltinArrayCount`：IR 符号优先，否则 AST 常量子下标。源码启发式已删。
+- 域：Compiler · 置信：confirmed
+- 证据：`mglFrontendBuiltinArrayCount`（`mgl_frontend_session.c:308`）：IR 符号优先，否则 AST 常量子下标。`mgl_air_backend.cpp` 调用该入口。源码启发式已删。
+- 规范：GLSL 4.60 §7.1 / GL 4.6 §11.1.3：数组大小来自声明，注释/宏会误报或漏报。
+- 动作：从 sema/IR 符号表取 compile-time size，删除字符串启发式。
+- 落地：已做。
 
-#### F12 legacy 翻译固定缓冲溢出 — landed
+#### F12 legacy 翻译固定 len+2048，溢出静默跳过 — landed
 
-`mglFrontendRewriteLegacy` 动态缓冲；失败返回 compile log，不再静默跳过。
+- 域：Compiler · 置信：confirmed
+- 证据：`mglFrontendRewriteLegacy`（`mgl_frontend_session.c:53`）动态缓冲；失败返回 compile log。`mglFrontendSessionBuild` 失败则编译失败。
+- 规范：GLSL 1.x→4.60 兼容层。失败应变成 `COMPILE_STATUS=FALSE`。
+- 动作：动态缓冲；失败返回明确 compile log。
+- 落地：已做。
 
-#### F13 MGL_MAX_TOKENS 未强制 — landed
+#### F13 MGL_MAX_TOKENS 未强制，ShaderSource 无长度上限 — landed
 
-lexer 超 `131072` token fail compile。`ShaderSource` 超过 8MiB → `INVALID_VALUE`。
+- 域：Compiler · 置信：confirmed
+- 证据：`mgl_glsl_parser.c:48,84–90` 超 131072 token fail compile。`shaders.c:312–316` `ShaderSource` 超过 8MiB → `INVALID_VALUE`。
+- 规范：实现定义资源上限。恶意/巨型 shader 可 OOM。
+- 动作：超限 fail compile；与实现定义 MAX 对齐。
+- 落地：已做。
 
 #### F14 libmgl_es.dylib 零测试 — partial
 
-`make test-es-smoke` 覆盖 context + `GL_VERSION` ES 3.2 + `DrawArrays`。`test-all` 包含该门。CI 的 `macos-gate` 经 `test-all` 间接触达。独立 ES limits 表与 GLES CTS 子集未做。`gl_es.c` 仍缺大量 3.2 入口。
+- 域：Tests · 置信：confirmed
+- 证据：`test_legacy_compat/test_es_smoke.c`；`make test-es-smoke`；`test-all` 含该门。CI `macos-gate` 经 `test-all` 间接触达。`gl_es.c` 仍缺大量 3.2 入口。无独立 ES limits 表、无 GLES CTS 子集。
+- 规范：第二阶段 OpenGL ES 3.2。当前 Core/ES 同源双编译无完整回归网。
+- 动作：ES 阶段前先加最小 context+`DrawArrays` smoke；现阶段不要假装 ES 已验收。
+- 落地：smoke 已加。不要用 smoke 绿声称 ES 3.2 已验收。
 
-#### F15 gl.xml codegen 已断开 — landed（验证层）
+#### F15 gl.xml codegen 已断开，API 层手工维护 — landed（验证层）
 
-pin `MGL/generated/registry.lock` → OpenGL-Registry `9cb90ca`。`make verify-gl-api` 生成命令清单并对照 `gl_core.c` + overlay。overlay extra=361、missing=0。不自动生成 `mgl*` 实现体。`spec_parser/spec_parser.c` 仍保留；已删过期 `spec_parser/mgl.h` / `mgl_funcs.c`。
+- 域：Build/CI · 置信：confirmed
+- 证据：`MGL/generated/registry.lock` pin OpenGL-Registry `9cb90ca`。`make verify-gl-api` 对照 `gl_core.c` + overlay。overlay extra=361、missing=0。不生成 `mgl*` 实现体。`spec_parser/spec_parser.c` 保留；已删过期 `spec_parser/mgl.h` / `mgl_funcs.c`。
+- 规范：覆盖度相对 OpenGL-Registry。漂移只能靠人工。
+- 动作：pin `gl.xml` → 生成薄 ABI → overlay 实现；CI `verify-codegen` diff。不要全自动生成 `mgl*` 实现。
+- 落地：验证层已做。手写实现仍 overlay。
 
-#### F16 生产 draw 仍是 Compat 桥 — partial（有意停在这里）
+#### F16 生产 draw 仍是四跳 Compat 桥，DrawExecutor 未完工 — partial（有意停在这里）
 
-生产 `mglRendererBackendCreate` **不**安装 `MetalDrawExecutor`（vtable 空，走 ObjC Compat）。PSO miss 不再复用 previous PSO。不要补完 DrawExecutor 而不删 Compat。encode 下沉与删 Compat 仍开放。
+- 域：Metal · 置信：confirmed
+- 证据：`mgl_renderer_backend.cpp:658–659` 生产不安装 `MetalDrawExecutor`（vtable 空，走 ObjC Compat）。PSO miss 不再复用 previous PSO（`MGLRenderer+RenderPass.m`）。
+- 规范：内部架构。R4 名义边界未成为真相。
+- 动作：删除生产 Compat 回退。ObjC 只留 pass 决策与平台壳；encode 下沉 C++。Fake executor 仅测试。不要补完 DrawExecutor 而不删 Compat。
+- 落地：只做了生产不装 executor、PSO miss 不回退。encode 下沉与删 Compat 仍开放。
 
 #### F17 广告 GL_KHR_debug 但无消息存储 — landed
 
-context 拥有 16 槽 debug ring；`DebugMessageInsert` / `GetDebugMessageLog` 可往返（arch F17）。
+- 域：GL ABI · 置信：confirmed
+- 证据：`glm_context.h:147–161` 16 槽 debug ring。`DebugMessageInsert` / `GetDebugMessageLog` 可往返（`test-arch-correctness` F17）。
+- 规范：GL 4.6 Core 第 20 章 Debug Output。
+- 动作：实现最小 ring buffer，或从扩展串移除。
+- 落地：ring buffer 已做。
 
-#### F18 VertexAttrib1/2/3* 为 no-op — landed
+#### F18 VertexAttrib1/2/3* 为 no-op，4 分量路径正常 — landed
 
-1/2/3 分量接到 current-attrib，缺省补 `(x,0,0,1)` 等。`GetVertexAttrib* CURRENT_VERTEX_ATTRIB` 不要求绑定 VAO（§10.2）。
+- 域：GL ABI · 置信：confirmed
+- 证据：1/2/3 分量接到 current-attrib，缺省补 `(x,0,0,1)` 等（arch F18）。`vertex_arrays.c`：`GetVertexAttrib* CURRENT_VERTEX_ATTRIB` 不要求绑定 VAO（§10.2）。
+- 规范：GL 4.6 Core §10.2 Current Vertex Attributes。
+- 动作：接到现有 current-attrib 路径，补默认分量。
+- 落地：已做。
 
 #### F19 program pipeline 的 GS/tess/compute 未被 batch retain — landed
 
-`MGLDrawBatch` retain 几何 / tess control / tess eval / compute，与 VS/FS 同一套 `mglRetainBatchProgram`。
+- 域：Metal · 置信：confirmed
+- 证据：`draw_command.h` 增加 `retained_geometry_program` / tess control / tess eval / compute。`draw_command.c` 与 VS/FS 同一套 `mglRetainBatchProgram`。
+- 规范：内部生命周期。当前默认 replay 面未触发则为 latent。
+- 动作：retain 集合与 replay 消费面用同一张表生成，禁止手写注释契约。
+- 落地：retain 面已齐。
 
 ### P2
 
-#### F20 无 share group — open
+#### F20 无 share group / 共享上下文 — open
 
-`createGLMContext` 仍无 share 参数。GLFW 收到 share 时仍未显式失败。
+- 域：State · 置信：confirmed
+- 证据：`createGLMContext`（`glm_context.c:219`）无 share 参数；每 context 独立 HashTable。GLFW MGL 路径未对 `ctxconfig.share` 显式失败。
+- 规范：GL 4.6 Core §5.1.3 Shared Objects。单 context MC 主路径可延后。
+- 动作：GLFW 收到 share 时显式失败；需要时再做 share group 表。不要静默建独立命名空间。
+- 落地：未改。
 
 #### F21 air_loader PSO cache 无锁 — open
 
-`mgl_air_loader.cpp` 静态 `std::map` 仍无 mutex。
+- 域：Compiler · 置信：confirmed
+- 证据：`mgl_air_loader.cpp:31–36` 静态 `std::map` 无 mutex。GL 线程 + `parallel_shader_compile` 为 no-op，今天难并发触发。
+- 规范：内部并发。启用异步编译后升 P0。
+- 动作：合并进 `PipelineCacheOwner`，删第二套 cache。
+- 落地：未改。
 
-#### F22 空壳 TU 仍被 wildcard 链入 — landed
+#### F22 空壳 TU 仍被 wildcard 链入 dylib — landed
 
-已删空壳 TU：`msl_patch_pipeline`、`mgl_toolchain`、`mgl_ir_postprocess`、`mgl_msl_compat.m`、`mgl_compute_pipeline_cache.m`，以及 `enum_parser/`。`mglGetOrCreateProgramComputePipeline` 仍由 `mgl_render.cpp` 实现，头文件保留。Makefile 仍 `wildcard MGL/src/*.c`（空壳不在后无害）。未改为显式源列表。
+- 域：Build/CI · 置信：confirmed
+- 证据：已删空壳实现：`msl_patch_pipeline`、`mgl_toolchain`、`mgl_ir_postprocess`、`mgl_msl_compat.m`、`mgl_compute_pipeline_cache.m`，以及 `enum_parser/`。`mglGetOrCreateProgramComputePipeline` 仍由 `mgl_render.cpp` 实现，头文件保留。`Makefile:127` 仍 `wildcard MGL/src/*.c`。
+- 规范：无。误导「还存在 MSL/SPIRV 路径」。
+- 动作：删除空文件，Makefile 改为显式源列表。
+- 落地：空壳 TU 已删。Makefile 未改为显式列表（空壳不在后无害）。
 
 #### F23 DeleteShader(未知名) 报 INVALID_VALUE — not-a-bug
 
-保持现状。不要改成 silent ignore。
+- 域：GL ABI · 置信：not-a-bug
+- 证据：`shaders.c:190` `ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE)`。先前审查误判为应静默忽略。
+- 规范：GL 4.6 Core §7.1：零静默忽略；非 shader/program 名应 `INVALID_VALUE`。
+- 动作：保持现状。不要改成 silent ignore。
+- 落地：保持现状。
 
 #### F24 Release 下 GL 线程断言为空 — not-a-bug
 
-documented 设计。可选 `MGL_ENABLE_THREAD_CHECKS` 进 CI；不要当 P0。
+- 域：Metal · 置信：not-a-bug
+- 证据：`mgl_thread_affinity.h` Release 下检查编译掉。这是 documented 设计，不是实现漏检。
+- 规范：GL 不要求实现 abort 跨线程调用。
+- 动作：可选 `MGL_ENABLE_THREAD_CHECKS` 进 CI；不要当 P0 规范违规。
+- 落地：保持现状。
 
 ## 当前架构 vs 目标
 
@@ -156,27 +286,28 @@ gl* → dispatch → mgl* 状态
       → CompileArtifact.complete 才发布
 ```
 
-## 模块处置（仍有效）
+## 模块处置
 
-| 模块 | 处置 | 落地备注 |
-|------|------|----------|
-| `gl_core` / `gl_es` / dispatch | 局部重写 | 薄 ABI 由 pin 的 `gl.xml` 验证 + overlay。ES 只补了 smoke 入口。 |
-| GLMContext / 资源状态 | 保留并收口 | debug ring 进 context。share group 未做。 |
-| GLSL frontend + MGLIR | 保留并收口 | `FrontendSession` 已存在；seed 仍旁路。 |
-| `mgl_air_backend.cpp` | 局部重写 | clip/cull 改 IR/AST；TU 仍未按域拆开。 |
-| CompileArtifact / reflect | 保留并收口 | variant/capture 已进同一门闩。 |
-| `draw_command` 批处理 | 保留并收口 | GS/tess/compute retain 已齐。快照仍非全句柄 ID。 |
-| `MGLRenderer+*.m` | 替换边界 | PSO miss 不再复用旧 PSO。encode 仍在 ObjC。 |
-| `mgl_render.cpp` + backend | 局部重写 | 生产不装 DrawExecutor。Compat 仍在。 |
-| Platform shell + GLFW fork | 保留并收口 | 扩展探测已委托 `glGetStringi`。 |
-| `enum_parser` / stale spec_parser 输出 | 删除 | 已删。`spec_parser/spec_parser.c` 留下给 verify。 |
-| 空壳 MSL/SPIRV TU | 删除 | 已删空壳实现 TU。compute pipeline cache 的 C++ 实现仍在。 |
-| OpenGL ES 3.2 路径 | 保留并收口 | smoke only。不要扩 ES 语义假装验收。 |
+| 模块 | 规模 | 处置 | 落地备注 |
+|------|------|------|----------|
+| `gl_core` / `gl_es` / dispatch | ~10k | 局部重写 | 薄 ABI 由 pin 的 `gl.xml` 验证 + overlay。ES 只补了 smoke 入口。 |
+| GLMContext / 资源状态 | ~79k | 保留并收口 | debug ring 进 context。share group 未做。 |
+| GLSL frontend + MGLIR | ~35k | 保留并收口 | `FrontendSession` 已存在；seed 仍旁路。 |
+| `mgl_air_backend.cpp` | 含在 AIR | 局部重写 | clip/cull 改 IR/AST；TU 仍未按域拆开。 |
+| CompileArtifact / reflect | 含在 AIR | 保留并收口 | variant/capture 已进同一门闩。 |
+| `draw_command` 批处理 | 含在状态机 | 保留并收口 | GS/tess/compute retain 已齐。快照仍非全句柄 ID。 |
+| `MGLRenderer+*.m` | ~59k | 替换边界 | PSO miss 不再复用旧 PSO。encode 仍在 ObjC。 |
+| `mgl_render.cpp` + backend | ~24k | 局部重写 | 生产不装 DrawExecutor。Compat 仍在。 |
+| Platform shell + GLFW fork | 薄 | 保留并收口 | 扩展探测已委托 `glGetStringi`。 |
+| `enum_parser` / stale spec_parser 输出 | — | 删除 | 已删。`spec_parser/spec_parser.c` 留下给 verify。 |
+| 空壳 MSL/SPIRV TU | — | 删除 | 已删空壳实现 TU。compute pipeline cache 的 C++ 实现仍在。 |
+| OpenGL ES 3.2 路径 | `gl_es.c` | 保留并收口 | smoke only。不要扩 ES 语义假装验收。 |
 
 ## 不要做的事
 
-- 不要把 DrawExecutor VTable 再补完一层而不删除 Compat。
+- 不要把 DrawExecutor VTable 再补完一层而不删除 Compat。indexed stub 不影响生产正确性（已反证）。
 - 不要为「完整 4.6」去实现 display list / immediate mode。Core profile 应停止导出或保持 `INVALID_OPERATION`。
+- 不要在未补 golden/CI 依赖前拆 AIR/Metal 大 TU。没有门禁的重构不可逆（golden/CI 现已齐）。
 - 不要把 Minecraft compat 做成默认吞错误。MC 走显式 profile 对象，CTS 保持 strict。
 - 不要把 TES 含 SSBO 一律强制 `tess_eval_compute`（会破坏 `air_tessellation_resources` 像素）。
 
@@ -197,9 +328,9 @@ gl* → dispatch → mgl* 状态
 
 改造期间最低门禁。下列结果来自落地后本机跑通（macOS，Apple M4）：
 
-| 门 | 命令 | 通过标准 | 本次证据 |
-|----|------|----------|----------|
-| A 构建 | CI brew llvm@15 + gtest；`make lib` | 干净 macOS 14 runner 成功 | workflow 已写；本机 `make -j8 lib` 成功 |
+| 门 | 命令 / 动作 | 通过标准 | 本次证据 |
+|----|-------------|----------|----------|
+| A 构建 | CI brew llvm@15 + gtest；`make lib` | 干净 macOS 14 runner 成功 | workflow 已写；本机 `make lib` 成功 |
 | B 状态 | `test-arch-correctness` + `test-dirty-hash` | 与已落地的 §2.3.1 / attrib / debug 探针一致 | arch all probes passed；dirty-hash PASS（默认 AIR tess） |
 | C 编译 | `test-mglair-gtest`；`verify-gl-api` | 单次 parse（seed 除外）；reflection 槽位 assert | 51/51；`verify-gl-api: ok`（698 core，overlay extra=361 missing=0） |
 | D 像素 | `test-regression` | 全 PASS 或 SKIP；golden 文件齐全 | **91 PASS / 0 FAIL / 2 SKIP / 93** |
@@ -229,5 +360,6 @@ gl* → dispatch → mgl* 状态
 5. `98964f1` fix(rt): retain pipeline stages and stop reusing a mismatched PSO
 6. `42658c8` test(es): add a 3.2 context smoke against libmgl_es
 7. `938d6eb` docs: record architecture-review landing status
+8. `70bd0aa` docs: correct review landing status against HEAD
 
 未 push。`build-audit/` 不入库。
