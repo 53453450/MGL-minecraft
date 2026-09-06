@@ -90,6 +90,14 @@ static void mgl_auto_init(void) {
         GLMContext ctx = createGLMContext(GL_RGBA, GL_UNSIGNED_BYTE,
                                           GL_DEPTH_COMPONENT24, GL_UNSIGNED_INT,
                                           GL_STENCIL_INDEX8, GL_UNSIGNED_BYTE);
+        if (ctx == NULL) {
+            /* createGLMContext reports allocation failure through the trace
+             * layer.  Do not pass a NULL context across the Objective-C
+             * renderer boundary: that entry point must be safe for callers
+             * running with assertions enabled as well as release builds. */
+            fprintf(stderr, "MGL ERROR: Failed to allocate auto-init context\n");
+            return;
+        }
         _ctx = ctx;
         if (!CppCreateMGLRendererHeadless(ctx)) {
             fprintf(stderr, "MGL: Failed to initialize headless Metal renderer\n");
@@ -233,6 +241,23 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     }
 
     bzero((void *)ctx, sizeof(GLMContextRec));
+
+    if (pthread_mutex_init(&ctx->sync_lock, NULL) != 0) {
+        mglTraceLogExternal("MGL: failed to initialize sync lock");
+        free(ctx);
+        _ctx = save;
+        return NULL;
+    }
+    ctx->sync_lock_initialized = GL_TRUE;
+    if (pthread_cond_init(&ctx->sync_cond, NULL) != 0) {
+        mglTraceLogExternal("MGL: failed to initialize sync condition variable");
+        (void)pthread_mutex_destroy(&ctx->sync_lock);
+        ctx->sync_lock_initialized = GL_FALSE;
+        free(ctx);
+        _ctx = save;
+        return NULL;
+    }
+    ctx->sync_cond_initialized = GL_TRUE;
 
     /* active_state defaults to the embedded live state; batch flush
      * redirects to replay_state so deferred encoding does not overwrite
@@ -879,6 +904,8 @@ static void mglDestroyContextSync(GLuint name, void *data, void *user)
         return;
     }
 
+    atomic_store_explicit(&sync->delete_status, GL_TRUE, memory_order_release);
+
     if (ctx) {
         mglRendererReleaseSync(ctx, sync);
     }
@@ -900,6 +927,18 @@ void destroyGLMContext(GLMContext ctx)
 
     mglFlushPendingDraws(ctx);
     mglResetCommandBufferForContext(ctx, &ctx->draw_command_buffer);
+
+    /* Block new sync operations and wait for all operations which already
+     * acquired a Sync reference to leave.  Without this barrier a waiter can
+     * dereference a Sync (or the renderer backend) after this function frees
+     * it.  The lock is context-owned and is never copied into replay state. */
+    if (ctx->sync_lock_initialized) {
+        (void)pthread_mutex_lock(&ctx->sync_lock);
+        ctx->sync_destroying = GL_TRUE;
+        while (ctx->sync_active_ops != 0 && ctx->sync_cond_initialized) {
+            (void)pthread_cond_wait(&ctx->sync_cond, &ctx->sync_lock);
+        }
+    }
 
     mglHashTableForEach(&ctx->state.program_table, mglDestroyContextProgram, ctx);
     mglHashTableForEach(&ctx->state.shader_table, mglDestroyContextShader, ctx);
@@ -925,6 +964,10 @@ void destroyGLMContext(GLMContext ctx)
     mglHashTableClearEntries(&ctx->state.program_pipeline_table);
     mglHashTableClearEntries(&ctx->state.transform_feedback_table);
     mglHashTableClearEntries(&ctx->state.sync_table);
+
+    if (ctx->sync_lock_initialized) {
+        (void)pthread_mutex_unlock(&ctx->sync_lock);
+    }
 
     // CRITICAL FIX: Use hash-table owned cleanup to avoid freeing non-owned/corrupted pointers.
     #define MGL_FREE_HASH_TABLE(_tbl_) destroyHashTable(&(_tbl_))
@@ -963,6 +1006,15 @@ void destroyGLMContext(GLMContext ctx)
     } else {
         _ctx = save;
         _ctx_explicitly_unbound = (save == NULL) ? GL_TRUE : GL_FALSE;
+    }
+
+    if (ctx->sync_cond_initialized) {
+        (void)pthread_cond_destroy(&ctx->sync_cond);
+        ctx->sync_cond_initialized = GL_FALSE;
+    }
+    if (ctx->sync_lock_initialized) {
+        (void)pthread_mutex_destroy(&ctx->sync_lock);
+        ctx->sync_lock_initialized = GL_FALSE;
     }
 
     printf("MGL INFO: Context cleanup completed successfully\n");

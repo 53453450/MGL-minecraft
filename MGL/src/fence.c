@@ -31,6 +31,7 @@
 #include <strings.h>
 #include <stdlib.h>
 #include <time.h>
+#include <pthread.h>
 
 #include "glm_context.h"
 #include "draw_command.h"
@@ -48,21 +49,17 @@ Sync *newSync(GLMContext ctx)
 
     bzero(ptr, sizeof(Sync));
 
-    ptr->name = STATE(sync_name)++;
+    /* Fence calls can run concurrently on one context.  Reserve the name
+     * under sync_lock when the object is published, rather than racing on the
+     * context-local counter during allocation. */
+    (void)ctx;
+    ptr->name = 0;
 
     /* initial reference owned by the caller's GLsync handle. */
     atomic_store_explicit(&ptr->refcount, 1, memory_order_relaxed);
-    ptr->delete_status = GL_FALSE;
+    atomic_store_explicit(&ptr->delete_status, GL_FALSE, memory_order_relaxed);
 
     return ptr;
-}
-
-/* Sync reference counting.  Prevents use-after-free when glDeleteSync
- * races with an in-progress mglClientWaitSync/mglWaitSync on another thread. */
-static void mglRetainSyncReference(Sync *sync)
-{
-    if (!sync) return;
-    atomic_fetch_add_explicit(&sync->refcount, 1, memory_order_relaxed);
 }
 
 /* Release a reference.  When refcount hits zero and delete_status is set,
@@ -75,8 +72,8 @@ static void mglReleaseSyncReference(GLMContext ctx, Sync *sync)
     if (prev == 1) {
         /* Last reference dropped. Check delete_status with acquire semantics to
          * synchronize with the store in glDeleteSync. */
-        bool should_delete = atomic_load_explicit((_Atomic bool *)&sync->delete_status,
-                                                   memory_order_acquire);
+        GLboolean should_delete = atomic_load_explicit(&sync->delete_status,
+                                                        memory_order_acquire);
         if (should_delete) {
             /* glDeleteSync was called: release Metal resources and free. */
             if (ctx) {
@@ -87,26 +84,142 @@ static void mglReleaseSyncReference(GLMContext ctx, Sync *sync)
     }
 }
 
-int isSync(GLMContext ctx, GLsync sync)
+typedef struct {
+    const void *needle;
+    Sync *found;
+} MGLSyncLookup;
+
+static void mglFindSyncByPointer(GLuint name, void *data, void *user)
 {
-    /* NULL and non-members must not dereference into UAF/crash paths
-     * (ARCHITECTURE_AUDIT A13). Membership is context-local via sync_table. */
-    if (!ctx || !sync) {
-        return 0;
+    (void)name;
+    MGLSyncLookup *lookup = (MGLSyncLookup *)user;
+    if (lookup && data == lookup->needle) {
+        lookup->found = (Sync *)data;
+    }
+}
+
+/* Find by pointer identity without dereferencing the caller's handle.  A
+ * stale GLsync may already have been freed, so reading sync->name before the
+ * membership check is itself unsafe. */
+static Sync *mglFindSyncLocked(GLMContext ctx, GLsync handle)
+{
+    if (!ctx || !handle) {
+        return NULL;
     }
 
-    Sync *found = (Sync *)searchHashTable(&STATE(sync_table), sync->name);
-    return found == sync ? 1 : 0;
+    MGLSyncLookup lookup = { handle, NULL };
+    mglHashTableForEach(&STATE(sync_table), mglFindSyncByPointer, &lookup);
+    return lookup.found;
+}
+
+/* Atomically acquire a sync handle with respect to glDeleteSync.  The table
+ * lock covers both pointer lookup and the refcount increment; after this
+ * function returns the caller owns one reference and may touch Metal state. */
+static Sync *mglAcquireSync(GLMContext ctx, GLsync handle)
+{
+    if (!ctx || !handle || !ctx->sync_lock_initialized ||
+        pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        return NULL;
+    }
+
+    Sync *sync = mglFindSyncLocked(ctx, handle);
+    if (sync && atomic_load_explicit(&sync->refcount, memory_order_acquire) > 0 &&
+        !atomic_load_explicit(&sync->delete_status, memory_order_acquire)) {
+        atomic_fetch_add_explicit(&sync->refcount, 1, memory_order_relaxed);
+    } else {
+        sync = NULL;
+    }
+
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
+    return sync;
+}
+
+/* Remove a sync from the name table and mark it deleted while holding the
+ * same lock used by mglAcquireSync.  The returned pointer still owns its GL
+ * handle reference, which the caller must release. */
+static Sync *mglDetachSyncForDelete(GLMContext ctx, GLsync handle)
+{
+    if (!ctx || !handle || !ctx->sync_lock_initialized ||
+        pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        return NULL;
+    }
+
+    Sync *sync = mglFindSyncLocked(ctx, handle);
+    if (sync) {
+        deleteHashElement(&STATE(sync_table), sync->name);
+        atomic_store_explicit(&sync->delete_status, GL_TRUE,
+                              memory_order_release);
+    }
+
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
+    return sync;
+}
+
+/* Register a fence API operation before touching the context or backend.
+ * destroyGLMContext closes this gate and waits for the count to reach zero
+ * before freeing either object. */
+static GLboolean mglSyncOperationEnter(GLMContext ctx)
+{
+    if (!ctx || !ctx->sync_lock_initialized ||
+        pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        return GL_FALSE;
+    }
+
+    if (ctx->sync_destroying) {
+        (void)pthread_mutex_unlock(&ctx->sync_lock);
+        return GL_FALSE;
+    }
+
+    ctx->sync_active_ops++;
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
+    return GL_TRUE;
+}
+
+static void mglSyncOperationLeave(GLMContext ctx)
+{
+    if (!ctx || !ctx->sync_lock_initialized ||
+        pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        return;
+    }
+
+    if (ctx->sync_active_ops != 0) {
+        ctx->sync_active_ops--;
+    }
+    if (ctx->sync_destroying && ctx->sync_active_ops == 0 &&
+        ctx->sync_cond_initialized) {
+        (void)pthread_cond_signal(&ctx->sync_cond);
+    }
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
+}
+
+int isSync(GLMContext ctx, GLsync sync)
+{
+    /* Membership is checked by pointer identity under the same lock used by
+     * mglAcquireSync/mglDetachSyncForDelete.  This is a validity probe only;
+     * callers that dereference the handle must use mglAcquireSync instead. */
+    if (!ctx || !sync || !ctx->sync_lock_initialized ||
+        pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        return 0;
+    }
+    Sync *found = mglFindSyncLocked(ctx, sync);
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
+    return found != NULL ? 1 : 0;
 }
 
 GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
 {
     Sync *ptr;
 
+    if (!mglSyncOperationEnter(ctx)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return NULL;
+    }
+
     /* GL 4.6 §5.3: condition must be GL_SYNC_GPU_COMMANDS_COMPLETE */
     if (condition != GL_SYNC_GPU_COMMANDS_COMPLETE)
     {
         ERROR_RETURN(GL_INVALID_ENUM);
+        mglSyncOperationLeave(ctx);
         return NULL;
     }
 
@@ -114,11 +227,13 @@ GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
     if (flags != 0)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
+        mglSyncOperationLeave(ctx);
         return NULL;
     }
 
     ptr = newSync(ctx);
     if (!ptr) {
+        mglSyncOperationLeave(ctx);
         return NULL;
     }
 
@@ -128,10 +243,21 @@ GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
     mglFlushPendingDraws(ctx);
     mglRendererGetSync(ctx, ptr);
 
-    /* register in sync_table so destroyGLMContext can release
-     * Metal resources. mglDeleteSync removes the entry on explicit free. */
+    /* Register in sync_table so destroyGLMContext can release Metal resources.
+     * Publication is locked so a concurrent wait cannot observe a half-built
+     * entry. */
+    if (!ctx->sync_lock_initialized || pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        mglRendererReleaseSync(ctx, ptr);
+        free(ptr);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        mglSyncOperationLeave(ctx);
+        return NULL;
+    }
+    ptr->name = STATE(sync_name)++;
     insertHashElement(&STATE(sync_table), ptr->name, ptr);
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
 
+    mglSyncOperationLeave(ctx);
     return ptr;
 }
 
@@ -143,19 +269,27 @@ GLboolean mglIsSync(GLMContext ctx, GLsync sync)
         return false;
     }
 
-    return isSync(ctx, sync);
+    if (!mglSyncOperationEnter(ctx)) {
+        return GL_FALSE;
+    }
+    GLboolean result = isSync(ctx, sync);
+    mglSyncOperationLeave(ctx);
+    return result;
 }
 
 void mglDeleteSync(GLMContext ctx, GLsync sync)
 {
-    if (isSync(ctx, sync) == GL_FALSE)
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
+    if (!mglSyncOperationEnter(ctx)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-
-    /* remove from sync_table before releasing resources. */
-    deleteHashElement(&STATE(sync_table), sync->name);
+    Sync *owned = mglDetachSyncForDelete(ctx, sync);
+    if (!owned)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        mglSyncOperationLeave(ctx);
+        return;
+    }
 
     /* mark for deletion and release the caller's reference. If a
      * concurrent mglClientWaitSync/mglWaitSync holds a reference, the shell
@@ -163,36 +297,39 @@ void mglDeleteSync(GLMContext ctx, GLsync sync)
      * mglReleaseSyncReference (or mglDestroyContextSync for never-deleted
      * syncs at context destroy time). Use release semantics to synchronize
      * with the acquire load in mglReleaseSyncReference. */
-    atomic_store_explicit((_Atomic bool *)&sync->delete_status, GL_TRUE,
-                          memory_order_release);
-    mglReleaseSyncReference(ctx, sync);
+    mglReleaseSyncReference(ctx, owned);
+    mglSyncOperationLeave(ctx);
 }
 
 GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout)
 {
     GLenum result = GL_INVALID_VALUE;
 
+    if (!mglSyncOperationEnter(ctx)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return GL_WAIT_FAILED;
+    }
+
     if (flags & ~GL_SYNC_FLUSH_COMMANDS_BIT)
     {
         // CRITICAL FIX: Handle invalid flags gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Invalid sync flags 0x%x, only GL_SYNC_FLUSH_COMMANDS_BIT allowed\n", flags);
+        mglSyncOperationLeave(ctx);
         return GL_INVALID_VALUE;
     }
 
-    if (isSync(ctx, sync) == GL_FALSE)
+    Sync *owned = mglAcquireSync(ctx, sync);
+    if (!owned)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
+        mglSyncOperationLeave(ctx);
         return GL_WAIT_FAILED;
     }
-
-    /* retain so a concurrent glDeleteSync cannot free the sync while
-     * we access its mtl_command_buffer/mtl_event below. */
-    mglRetainSyncReference(sync);
 
     /* GL_ALREADY_SIGNALED: the fence had already completed at call time, so no
      * wait is performed. The backend status query reports GL_SIGNALED when the retained
      * command buffer has completed or when there is no CB to wait on. */
-    if (mglRendererGetSyncStatus(ctx, sync) == GL_SIGNALED)
+    if (mglRendererGetSyncStatus(ctx, owned) == GL_SIGNALED)
     {
         result = GL_ALREADY_SIGNALED;
         goto cleanup;
@@ -214,7 +351,7 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
 
     while (elapsed_ns < timeout)
     {
-        if (mglRendererGetSyncStatus(ctx, sync) == GL_SIGNALED)
+        if (mglRendererGetSyncStatus(ctx, owned) == GL_SIGNALED)
         {
             result = GL_CONDITION_SATISFIED;
             goto cleanup;
@@ -228,7 +365,7 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
         elapsed_ns += poll_interval_ns;
     }
 
-    if (mglRendererGetSyncStatus(ctx, sync) == GL_SIGNALED)
+    if (mglRendererGetSyncStatus(ctx, owned) == GL_SIGNALED)
     {
         result = GL_CONDITION_SATISFIED;
         goto cleanup;
@@ -237,32 +374,37 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
     result = GL_TIMEOUT_EXPIRED;
 
 cleanup:
-    mglReleaseSyncReference(ctx, sync);
+    mglReleaseSyncReference(ctx, owned);
+    mglSyncOperationLeave(ctx);
     return result;
 }
 
 void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout)
 {
-    if (isSync(ctx, sync) == GL_FALSE)
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
+    if (!mglSyncOperationEnter(ctx)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-
     /* GL 4.6 §5.3: flags must be zero. */
     if (flags != 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        mglSyncOperationLeave(ctx);
         return;
     }
 
     if (timeout != GL_TIMEOUT_IGNORED) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        mglSyncOperationLeave(ctx);
         return;
     }
 
-    /* retain so a concurrent glDeleteSync cannot free the sync while
-     * the backend waits on sync->mtl_command_buffer. */
-    mglRetainSyncReference(sync);
+    Sync *owned = mglAcquireSync(ctx, sync);
+    if (!owned)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        mglSyncOperationLeave(ctx);
+        return;
+    }
 
     /* The backend blocks on the retained command
      * buffer, satisfying the GL spec requirement that glWaitSync block until the
@@ -270,36 +412,42 @@ void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout
      *
      * MGL_SYNC_STRICT: fence wait already performs conservative sync via
      * the same completion wait; no extra strict branch is needed. */
-    mglRendererWaitForSync(ctx, sync);
+    mglRendererWaitForSync(ctx, owned);
 
-    mglReleaseSyncReference(ctx, sync);
+    mglReleaseSyncReference(ctx, owned);
+    mglSyncOperationLeave(ctx);
 }
 
 void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsizei *length, GLint *values)
 {
-    if (isSync(ctx, sync) == GL_FALSE)
-    {
-        ERROR_RETURN(GL_INVALID_VALUE);
+    if (!mglSyncOperationEnter(ctx)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
         if (length) *length = 0;
         return;
     }
-
     // CRITICAL FIX: count is the number of elements the caller allocated in values.
     // Per OpenGL spec, only one value is returned per pname. length is an OUTPUT parameter.
     if (!count || count < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         if (length) *length = 0;
+        mglSyncOperationLeave(ctx);
         return;
     }
     if (!values) {
         ERROR_RETURN(GL_INVALID_VALUE);
         if (length) *length = 0;
+        mglSyncOperationLeave(ctx);
         return;
     }
 
-    /* retain so a concurrent glDeleteSync cannot free the sync while
-     * we read its mtl_command_buffer/mtl_event below. */
-    mglRetainSyncReference(sync);
+    Sync *owned = mglAcquireSync(ctx, sync);
+    if (!owned)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        if (length) *length = 0;
+        mglSyncOperationLeave(ctx);
+        return;
+    }
 
     // Only write one value per pname per the OpenGL spec
     switch(pname)
@@ -309,7 +457,7 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
             break;
 
         case GL_SYNC_STATUS:
-            *values = mglRendererGetSyncStatus(ctx, sync);
+            *values = mglRendererGetSyncStatus(ctx, owned);
             break;
 
         case GL_SYNC_CONDITION:
@@ -323,13 +471,15 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             if (length) *length = 0;
-            mglReleaseSyncReference(ctx, sync);
+            mglReleaseSyncReference(ctx, owned);
+            mglSyncOperationLeave(ctx);
             return;
     }
 
     if (length) *length = 1;
 
-    mglReleaseSyncReference(ctx, sync);
+    mglReleaseSyncReference(ctx, owned);
+    mglSyncOperationLeave(ctx);
 }
 
 void mglTextureBarrier(GLMContext ctx)

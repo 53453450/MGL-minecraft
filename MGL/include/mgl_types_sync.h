@@ -50,7 +50,10 @@ typedef struct __GLsync {
      * - mglDeleteSync sets delete_status and releases; if refcount>0 (wait in
      *   progress), the shell survives until the last release frees it */
     _Atomic int refcount;
-    GLboolean delete_status;
+    /* This flag participates in the lookup/delete protocol and must be
+     * atomic.  Casting the old plain GLboolean to _Atomic bool was undefined
+     * (and can have a different size/alignment on some targets). */
+    _Atomic GLboolean delete_status;
 #ifdef __cplusplus
 } Sync;
 #else

@@ -34,6 +34,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #include <mach/vm_types.h>
 #include "glm_dispatch.h"
@@ -135,6 +136,19 @@ typedef struct GLMContextRec_t {
     MGLCommandBuffer draw_command_buffer;
     bool            draw_defer_enabled;
     bool            sync_strict;
+
+    /* Sync handles may be queried/deleted from different client threads.
+     * Protect the context-local sync table and lookup-to-retain/delete
+     * protocol; GPU waits happen after this lock is released. */
+    pthread_mutex_t sync_lock;
+    GLboolean       sync_lock_initialized;
+    pthread_cond_t  sync_cond;
+    GLboolean       sync_cond_initialized;
+    /* Number of fence API calls that may still dereference this context or
+     * one of its Sync objects.  Context teardown blocks new entries and waits
+     * for this count to reach zero before destroying the backend/context. */
+    GLuint          sync_active_ops;
+    GLboolean       sync_destroying;
 
     /* Bump-allocator arena for batch snapshot allocations (Task 4).
      * NULL when MGL_ARENA_SNAPSHOT is not enabled; otherwise points to the
