@@ -1,8 +1,10 @@
 # MGL 架构审查（落地对照）
 
+对照落地系列 `98f5ea2`..`42658c8`（代码）+ `938d6eb`（文档初稿）· 1,024 个 git 跟踪文件。
+
 规范基线：OpenGL 4.6 Core + GLSL 4.60。OpenGL ES 3.2 为第二阶段。Minecraft + Sodium/Iris 类路径是产品基线，与规范冲突时以 Khronos 为准。
 
-本文件对照审查稿落地后的工作树。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入；批次 4 只做了生产安全子集（不删 Compat、不补完 DrawExecutor）；批次 5 只有 ES 3.2 smoke，不是 ES 验收。
+本文件对照审查稿落地后的仓库（`71a1db9` 起的分片 commit）。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入；批次 4 只做了生产安全子集（不删 Compat、不补完 DrawExecutor）；批次 5 只有 ES 3.2 smoke，不是 ES 验收。
 
 ## 结论
 
@@ -13,7 +15,8 @@
 | 指标 | 审查稿 | 落地后 |
 |------|--------|--------|
 | P0 阻断项仍开放 | 3 | 0（F01 已 fail-closed；F02 为误报；F03 已进 CI） |
-| P1 仍开放 | 16 | F04、F05（部分）、F10（seed）、F16（主体）、F20、F21 |
+| P1 仍开放 | 16 | F04、F05（部分）、F10（seed）、F16（主体） |
+| P2 仍开放 | 5 | F20、F21 |
 | 已落地 / 校准 | — | 见下方 F 状态表 |
 
 **保留**：前后端分离、自研 GLSL→MGLIR→AIR、`CompileArtifact` 原子发布、C 状态机、Metal-cpp 作为唯一 GPU 实现、薄平台壳。
@@ -118,7 +121,7 @@ context 拥有 16 槽 debug ring；`DebugMessageInsert` / `GetDebugMessageLog` �
 
 #### F22 空壳 TU 仍被 wildcard 链入 — landed
 
-已删 `msl_patch_pipeline`、`mgl_toolchain`、`mgl_ir_postprocess`、`mgl_msl_compat`、`mgl_compute_pipeline_cache` 及 `enum_parser/`。Makefile 仍 `wildcard MGL/src/*.c`（空壳不在后无害）。未改为显式源列表。
+已删空壳 TU：`msl_patch_pipeline`、`mgl_toolchain`、`mgl_ir_postprocess`、`mgl_msl_compat.m`、`mgl_compute_pipeline_cache.m`，以及 `enum_parser/`。`mglGetOrCreateProgramComputePipeline` 仍由 `mgl_render.cpp` 实现，头文件保留。Makefile 仍 `wildcard MGL/src/*.c`（空壳不在后无害）。未改为显式源列表。
 
 #### F23 DeleteShader(未知名) 报 INVALID_VALUE — not-a-bug
 
@@ -166,8 +169,8 @@ gl* → dispatch → mgl* 状态
 | `MGLRenderer+*.m` | 替换边界 | PSO miss 不再复用旧 PSO。encode 仍在 ObjC。 |
 | `mgl_render.cpp` + backend | 局部重写 | 生产不装 DrawExecutor。Compat 仍在。 |
 | Platform shell + GLFW fork | 保留并收口 | 扩展探测已委托 `glGetStringi`。 |
-| `enum_parser` / stale spec_parser 输出 | 删除 | 已删。`spec_parser.c` 留下给 verify。 |
-| 空壳 MSL/SPIRV TU | 删除 | 已删。 |
+| `enum_parser` / stale spec_parser 输出 | 删除 | 已删。`spec_parser/spec_parser.c` 留下给 verify。 |
+| 空壳 MSL/SPIRV TU | 删除 | 已删空壳实现 TU。compute pipeline cache 的 C++ 实现仍在。 |
 | OpenGL ES 3.2 路径 | 保留并收口 | smoke only。不要扩 ES 语义假装验收。 |
 
 ## 不要做的事
@@ -214,3 +217,17 @@ gl* → dispatch → mgl* 状态
 - [GLSL ES 3.20.8](https://registry.khronos.org/OpenGL/specs/es/3.2/GLSL_ES_Specification_3.20.pdf)
 
 章节号以 PDF 为准。代码注释里的 §2.5 已过时，现行错误模型在 §2.3.1。
+
+## 落地 commits
+
+相对 `71a1db9`：
+
+1. `98f5ea2` chore: drop unused MSL/SPIRV stubs and dead parsers
+2. `396cb55` build: pin gl.xml and install llvm@15/gtest in CI
+3. `9fc1616` fix(gl): fail closed XFB and align advertised 4.6 APIs
+4. `590cc29` fix(glsl): share one FrontendSession and publish capture via CompileArtifact
+5. `98964f1` fix(rt): retain pipeline stages and stop reusing a mismatched PSO
+6. `42658c8` test(es): add a 3.2 context smoke against libmgl_es
+7. `938d6eb` docs: record architecture-review landing status
+
+未 push。`build-audit/` 不入库。
