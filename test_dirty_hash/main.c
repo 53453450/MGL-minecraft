@@ -1697,7 +1697,8 @@ int main(void)
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(program);
-    if (getenv("MGL_USE_AIR")) {
+    /* Production TES/GS is AIR. MSL-era tess isolation probes are opt-in. */
+    if (!getenv("MGL_TEST_MSL_TESS")) {
         if (verify_air_aux_render_pipelines() != 0) {
             return 1;
         }
@@ -1766,7 +1767,7 @@ int main(void)
     if (verify_compute_finish_visibility() != 0) {
         return 1;
     }
-    if (!getenv("MGL_USE_AIR")) {
+    if (getenv("MGL_TEST_MSL_TESS")) {
         if (verify_tcs_to_tes_short_range_visibility() != 0) {
             return 1;
         }

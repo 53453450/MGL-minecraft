@@ -305,6 +305,22 @@ static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
         mglReleaseProgramReference(ctx, (Program *)batch->retained_fragment_program);
         batch->retained_fragment_program = NULL;
     }
+    if (batch->retained_geometry_program) {
+        mglReleaseProgramReference(ctx, (Program *)batch->retained_geometry_program);
+        batch->retained_geometry_program = NULL;
+    }
+    if (batch->retained_tess_control_program) {
+        mglReleaseProgramReference(ctx, (Program *)batch->retained_tess_control_program);
+        batch->retained_tess_control_program = NULL;
+    }
+    if (batch->retained_tess_eval_program) {
+        mglReleaseProgramReference(ctx, (Program *)batch->retained_tess_eval_program);
+        batch->retained_tess_eval_program = NULL;
+    }
+    if (batch->retained_compute_program) {
+        mglReleaseProgramReference(ctx, (Program *)batch->retained_compute_program);
+        batch->retained_compute_program = NULL;
+    }
     if (batch->stream_vertex_buffer) {
         mglDestroyTransientBuffer(ctx, (Buffer *)batch->stream_vertex_buffer);
         batch->stream_vertex_buffer = NULL;
@@ -340,13 +356,9 @@ static Program *mglRetainBatchProgram(GLMContext ctx, MGLDrawBatch *batch, Progr
     return program;
 }
 
-/* Retain the programs batch replay will dereference: the monolithic program
- * (a glUseProgram binding covers all stages), or — when a program pipeline is
- * bound instead — its vertex and fragment stage programs.  These three slots
- * are the COMPLETE set replay consumes; replay only resolves _VERTEX_SHADER
- * and _FRAGMENT_SHADER.  If replay is ever extended to dereference a pipeline's
- * geometry/tess/compute stage program, that stage MUST be retained here too, or
- * replay will touch a possibly-freed program (use-after-free). */
+/* Retain every pipeline stage program replay may dereference.  The set of
+ * retained slots is generated from ProgramPipeline.stage_programs so adding
+ * a replay consumer cannot silently skip retain. */
 static void mglRetainBatchProgramReferences(GLMContext ctx, MGLDrawBatch *batch)
 {
     if (!ctx || !batch) {
@@ -383,6 +395,34 @@ static void mglRetainBatchProgramReferences(GLMContext ctx, MGLDrawBatch *batch)
                                     ? pipeline->stage_programs[_FRAGMENT_SHADER]->name
                                     : 0u,
                                 &batch->retained_fragment_program);
+    (void)mglRetainBatchProgram(ctx,
+                                batch,
+                                pipeline->stage_programs[_GEOMETRY_SHADER],
+                                pipeline->stage_programs[_GEOMETRY_SHADER]
+                                    ? pipeline->stage_programs[_GEOMETRY_SHADER]->name
+                                    : 0u,
+                                &batch->retained_geometry_program);
+    (void)mglRetainBatchProgram(ctx,
+                                batch,
+                                pipeline->stage_programs[_TESS_CONTROL_SHADER],
+                                pipeline->stage_programs[_TESS_CONTROL_SHADER]
+                                    ? pipeline->stage_programs[_TESS_CONTROL_SHADER]->name
+                                    : 0u,
+                                &batch->retained_tess_control_program);
+    (void)mglRetainBatchProgram(ctx,
+                                batch,
+                                pipeline->stage_programs[_TESS_EVALUATION_SHADER],
+                                pipeline->stage_programs[_TESS_EVALUATION_SHADER]
+                                    ? pipeline->stage_programs[_TESS_EVALUATION_SHADER]->name
+                                    : 0u,
+                                &batch->retained_tess_eval_program);
+    (void)mglRetainBatchProgram(ctx,
+                                batch,
+                                pipeline->stage_programs[_COMPUTE_SHADER],
+                                pipeline->stage_programs[_COMPUTE_SHADER]
+                                    ? pipeline->stage_programs[_COMPUTE_SHADER]->name
+                                    : 0u,
+                                &batch->retained_compute_program);
 }
 
 static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)

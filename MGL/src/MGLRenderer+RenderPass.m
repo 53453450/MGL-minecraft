@@ -6601,10 +6601,10 @@ stencil_format_ok:;
                 (uint32_t)_pipelineCache.state->pipelineStencilFormat == builtStencilFormat);
 
                 if (previousPipelineState && sameProgram && colorCompatible && depthCompatible && stencilCompatible) {
-                    NSLog(@"MGL WARNING: Interface mismatch for program %u; reusing previous compatible pipeline once",
+                    NSLog(@"MGL WARNING: Interface mismatch for program %u; not reusing previous PSO",
                     (unsigned)currentProgramName);
-                    compiledPSO = previousPipelineState;
-                    pipelineReusedPrevious = true;
+                    compiledPSO = nil;
+                    pipelineReusedPrevious = false;
                     _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
                     _gpuRecovery.interfaceMismatchColor0Format = builtColor0Format;
                     _gpuRecovery.interfaceMismatchDepthFormat = builtDepthFormat;

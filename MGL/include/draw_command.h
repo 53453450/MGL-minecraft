@@ -233,6 +233,10 @@ typedef struct {
     void           *retained_program;
     void           *retained_vertex_program;
     void           *retained_fragment_program;
+    void           *retained_geometry_program;
+    void           *retained_tess_control_program;
+    void           *retained_tess_eval_program;
+    void           *retained_compute_program;
     void           *stream_vertex_buffer;
     void           *stream_index_buffer;
     size_t          stream_vertex_bytes;

@@ -655,14 +655,8 @@ extern "C" int mglRendererBackendCreate(
         delete backend;
         return -1;
     }
-    backend->draw_executor = mglMetalDrawExecutorCreate();
-    backend->draw_executor_vt =
-        mglMetalDrawExecutorVTable(backend->draw_executor);
-    if (!backend->draw_executor || !backend->draw_executor_vt) {
-        mglRendererBackendReleaseOwnedState(backend);
-        delete backend;
-        return -1;
-    }
+    backend->draw_executor = nullptr;
+    backend->draw_executor_vt = nullptr;
     *backend_out = backend;
     return 0;
 }
