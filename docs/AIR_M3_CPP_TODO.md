@@ -101,6 +101,18 @@ M3 完成必须同时满足以下四项，不能只以 smoke 或单个 draw case
   cull-distance capture 后批次 context 持有已释放 render-encoder owner 问题，
   已在 `MGLRenderer+BatchReplay.m` 刷新恢复后的 owner 句柄并重新验证通过。
 
+### AIR 诊断开关
+
+AIR backend 的诊断开关统一通过 `mgl_env_flag_enabled` 解析；未设置、空值、
+`0`、`false`、`no` 和 `off` 都表示关闭。开关只改变 stderr/IR 诊断，不改变
+正常编译结果：
+
+- `MGL_VAR_DBG`：打印匿名 block 变量解析到的 block 名称和符号类型。
+- `MGL_GS_DIAG_CONST`：将 GS position 暂时替换为固定常量，用于隔离输出记录问题。
+- `MGL_GS_DIAG_ASSIGN`：打印 GS assignment 的 AST 左右值和 lvalue 表。
+- `MGL_GS_DIAG_SOURCE`：打印进入 AIR backend 的 GS 源码。
+- `MGL_DUMP_IR`：把优化后的 LLVM IR 输出到 stderr。
+
 ### 2.4 P0 完成记录（2026-08-10）
 
 P0「固定 M3 runtime contract」已交付并全绿验证：

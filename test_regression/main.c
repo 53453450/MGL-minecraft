@@ -23,6 +23,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <mach/mach.h>
 #include <mach/task_info.h>
 
@@ -176,6 +180,15 @@ static int verify_soak_memory_growth(
 
 static int write_tga(const char *path, int w, int h, const unsigned char *rgba)
 {
+    if (!path || !rgba || w <= 0 || h <= 0 || w > 65535 || h > 65535) {
+        return -1;
+    }
+    size_t pixel_count = (size_t)w;
+    if ((size_t)h > SIZE_MAX / pixel_count) {
+        return -1;
+    }
+    pixel_count *= (size_t)h;
+
     FILE *fp = fopen(path, "wb");
     if (!fp) return -1;
 
@@ -187,19 +200,80 @@ static int write_tga(const char *path, int w, int h, const unsigned char *rgba)
     header[15] = (h >> 8) & 0xFF;
     header[16] = 24;         /* 24 bpp (BGR) */
     header[17] = 0x20;       /* top-left origin */
-    fwrite(header, 1, 18, fp);
+    if (fwrite(header, 1, sizeof(header), fp) != sizeof(header)) {
+        fclose(fp);
+        return -1;
+    }
 
     /* RGBA -> BGR */
-    for (int i = 0; i < w * h; i++) {
+    for (size_t i = 0; i < pixel_count; i++) {
         unsigned char bgr[3] = {
             rgba[i * 4 + 2],  /* B */
             rgba[i * 4 + 1],  /* G */
             rgba[i * 4 + 0],  /* R */
         };
-        fwrite(bgr, 1, 3, fp);
+        if (fwrite(bgr, 1, sizeof(bgr), fp) != sizeof(bgr)) {
+            fclose(fp);
+            return -1;
+        }
     }
-    fclose(fp);
+    return fclose(fp) == 0 ? 0 : -1;
+}
+
+/* Create a directory tree without invoking a shell.  Regression paths are
+ * command-line inputs, so they must never be interpolated into `system()`. */
+static int mkdir_p(const char *path)
+{
+    if (!path || !path[0]) return -1;
+    size_t len = strlen(path);
+    if (len == 0 || len >= PATH_MAX) return -1;
+
+    char *mutable_path = (char *)malloc(len + 1u);
+    if (!mutable_path) return -1;
+    memcpy(mutable_path, path, len + 1u);
+
+    for (size_t i = 1; i <= len; i++) {
+        if (mutable_path[i] != '/' && mutable_path[i] != '\0') continue;
+        char saved = mutable_path[i];
+        mutable_path[i] = '\0';
+        if (mutable_path[0] != '\0' &&
+            mkdir(mutable_path, 0777) != 0 && errno != EEXIST) {
+            free(mutable_path);
+            return -1;
+        }
+        mutable_path[i] = saved;
+    }
+    free(mutable_path);
     return 0;
+}
+
+static int copy_file(const char *src_path, const char *dst_path)
+{
+    if (!src_path || !dst_path) return -1;
+    FILE *src = fopen(src_path, "rb");
+    if (!src) return -1;
+    FILE *dst = fopen(dst_path, "wb");
+    if (!dst) {
+        fclose(src);
+        return -1;
+    }
+
+    unsigned char buffer[16 * 1024];
+    int result = 0;
+    while (1) {
+        size_t count = fread(buffer, 1, sizeof(buffer), src);
+        if (count != 0 && fwrite(buffer, 1, count, dst) != count) {
+            result = -1;
+            break;
+        }
+        if (count < sizeof(buffer)) {
+            if (ferror(src)) result = -1;
+            break;
+        }
+    }
+    if (fclose(dst) != 0) result = -1;
+    if (fclose(src) != 0) result = -1;
+    return result;
 }
 
 /* ------------------------------------------------------------------ */
@@ -16396,10 +16470,11 @@ int main(int argc, char **argv)
         }
     }
 
-    /* Ensure output dir exists */
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "mkdir -p '%s'", out_dir);
-    system(cmd);
+    /* Ensure output dir exists without invoking a shell on user-provided paths. */
+    if (mkdir_p(out_dir) != 0) {
+        fprintf(stderr, "FATAL: cannot create output directory: %s\n", out_dir);
+        return 1;
+    }
 
     /* Create headless MGL context */
     GLMContext glm_ctx = createGLMContext(
@@ -16436,7 +16511,13 @@ int main(int argc, char **argv)
         }
 
         char out_path[1024];
-        snprintf(out_path, sizeof(out_path), "%s/Reg_%s.tga", out_dir, t->name);
+        int out_len = snprintf(out_path, sizeof(out_path),
+                               "%s/Reg_%s.tga", out_dir, t->name);
+        if (out_len < 0 || (size_t)out_len >= sizeof(out_path)) {
+            fprintf(stderr, "PATH TOO LONG\n");
+            n_fail++;
+            continue;
+        }
 
         fprintf(stderr, "[%02d/%02d] %-24s ... ", i + 1, NUM_TESTS, t->name);
         fflush(stderr);
@@ -16492,10 +16573,12 @@ int main(int argc, char **argv)
 
         if (update) {
             char gpath[1100];
-            snprintf(gpath, sizeof(gpath), "%s/Reg_%s.tga", golden_dir, t->name);
-            char cp[2200];
-            snprintf(cp, sizeof(cp), "cp '%s' '%s'", out_path, gpath);
-            if (system(cp) == 0) {
+            int golden_len = snprintf(gpath, sizeof(gpath),
+                                      "%s/Reg_%s.tga", golden_dir, t->name);
+            if (golden_len < 0 || (size_t)golden_len >= sizeof(gpath)) {
+                fprintf(stderr, "GOLDEN PATH TOO LONG\n");
+                n_fail++;
+            } else if (copy_file(out_path, gpath) == 0) {
                 fprintf(stderr, "GOLDEN UPDATED\n");
                 n_pass++;
             } else {
@@ -16504,8 +16587,10 @@ int main(int argc, char **argv)
             }
         } else {
             char gpath[1100];
-            snprintf(gpath, sizeof(gpath), "%s/Reg_%s.tga", golden_dir, t->name);
-            if (files_equal(out_path, gpath)) {
+            int golden_len = snprintf(gpath, sizeof(gpath),
+                                      "%s/Reg_%s.tga", golden_dir, t->name);
+            if (golden_len >= 0 && (size_t)golden_len < sizeof(gpath) &&
+                files_equal(out_path, gpath)) {
                 fprintf(stderr, "PASS\n");
                 n_pass++;
             } else {

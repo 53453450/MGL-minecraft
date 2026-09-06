@@ -4,20 +4,20 @@
 
 规范基线：OpenGL 4.6 Core + GLSL 4.60。OpenGL ES 3.2 为第二阶段。Minecraft + Sodium/Iris 类路径是产品基线，与规范冲突时以 Khronos 为准。
 
-本文件由审查画布整理，并按落地后仓库更新。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入。批次 4：CommandIR 动态绑定为对象名；已删生产 Compat 符号与 MetalDrawExecutor；DrawArrays/DrawElements/MultiDraw*/Indirect 的 tess/GS/XFB→state→encode 由 C++ `mglIssueDraw*` 编排，公共 primitive encode 走 `mglEncodeDraw*ForRenderEncoderOwner`。GS 拓扑 gather / tess PATCHES 判定与 contract、native TES patch encode、GS passthrough rasterize、TCS ABI 槽位与 dispatch、TES patch item 计算在 C++（`mgl_draw_gs` / `mgl_draw_tess`）；TCS/TES texture bind、stage-in capture 与 AIR TES per-patch plan 仍是 ObjC host。批次 5：独立 ES 3.2 limits 表 + smoke/CTS 子集（limits、GLSL ES 3.20 link）；不是 Khronos GLES CTS。
+本文件由审查画布整理，并按落地后仓库更新。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入。批次 4：CommandIR 动态绑定为对象名；已删生产 Compat 符号与 MetalDrawExecutor；DrawArrays/DrawElements/MultiDraw*/Indirect 的 tess/GS/XFB→state→encode 由 C++ `mglIssueDraw*` 编排，公共 primitive encode 走 `mglEncodeDraw*ForRenderEncoderOwner`。GS 拓扑 gather / tess PATCHES 判定与 contract、native TES patch encode、GS passthrough rasterize、TCS ABI 槽位与 dispatch、TES patch item 计算、AIR TES per-patch dispatch plan、TCS/TES texture 槽位映射、TCS stage-in 默认值与顶点 pack、indexed TCS sparse compact、GS loc_map / XFB scatter 字段 / counts preset / 核心 compute bindings / compute layout / XFB prefix-sum 与 scatter plan、cull-distance array split plan/encode、VS capture POINT encode 与 restart sanitize、cull-distance attrib 扫描 / emu params / 槽 28/29 bind、VS capture 槽 28/29 bind 在 C++（`mgl_draw_gs` / `mgl_draw_tess` / `mgl_draw_encode`）；ObjC 仍物化 Metal texture/sampler 与 TCS attrib 源指针、VAO cull attrib resolve，并做 VS GPU capture host（processGLState / capture buffer 分配）。批次 5：独立 ES 3.2 limits 表 + smoke/CTS 子集（limits、GLSL ES 3.20 link）；不是 Khronos GLES CTS。
 
 每条发现保留审查时的域 / 置信 / 规范 / 动作，证据改为当前路径，并加落地状态。
 
 ## 结论
 
-当前设计已经选对了方向（自研 GLSL→AIR、C 状态机、Metal-cpp 单一实现 TU、CompileArtifact）。`FrontendSession` 一次 parse 已覆盖 reflect/codegen/uniform seed；错误入队走 `mglDispatchError`（proxy 清错走 `mglClearCurrentError`）。生产 C 入口直接进 ObjC 薄 wrapper / C++ issue，Compat 符号已删除；`mglIssueDraw*` 拥有 tess/GS/XFB 与 Indirect 编排，公共 primitive encode 在 `mgl_draw_encode`。GS 拓扑、tess 判定/contract、native TES patch encode、GS passthrough、TCS ABI 槽位/dispatch、TES item 计算在 C++；TCS/TES texture bind 与 capture 仍在 ObjC。
+当前设计已经选对了方向（自研 GLSL→AIR、C 状态机、Metal-cpp 单一实现 TU、CompileArtifact）。`FrontendSession` 一次 parse 已覆盖 reflect/codegen/uniform seed；错误入队走 `mglDispatchError`（proxy 清错走 `mglClearCurrentError`）。生产 C 入口直接进 ObjC 薄 wrapper / C++ issue，Compat 符号已删除；`mglIssueDraw*` 拥有 tess/GS/XFB 与 Indirect 编排，公共 primitive encode 在 `mgl_draw_encode`。GS 拓扑、tess 判定/contract、native TES patch encode、GS passthrough、TCS ABI 槽位/dispatch、TES item 计算、AIR TES per-patch plan、TCS/TES texture 槽位映射、TCS stage-in 默认值与顶点 pack、indexed TCS sparse compact、GS loc_map / XFB scatter 字段 / counts preset / 核心 compute bindings / compute layout / XFB prefix-sum 与 scatter plan、cull-distance array split、VS capture POINT encode、cull-distance attrib 扫描 / emu params / 槽 bind、VS capture 槽 28/29 bind 在 C++；Metal texture/sampler 物化、TCS attrib 源指针、VAO cull resolve、VS GPU capture host（processGLState / capture buffer 分配）仍在 ObjC。
 
 不要把 Release 无线程 abort、缺 share context、PSO 无锁当成当前 P0——那些仍是 latent 或产品选择。
 
 | 指标 | 审查稿 | 落地后 |
 |------|--------|--------|
 | P0 阻断项仍开放 | 3 | 0（F01 fail-closed；F02 误报；F03 已进 CI） |
-| P1 仍开放 | 16 | F16（TCS/TES texture bind、stage-in capture 与 AIR TES per-patch plan 仍在 ObjC，尚未压到 layer/drawable/swap） |
+| P1 仍开放 | 16 | 历史 F16（VS GPU capture 与 ObjC renderer 尚未压到 layer/drawable/swap）；续审新增 B01-B07 |
 | P2 仍开放 | 5 | 0（F20 share 显式失败；F21 PSO cache 加锁） |
 | 已证实发现 | 22/24 | 不变；F23/F24 仍为 not-a-bug |
 
@@ -190,10 +190,10 @@
 #### F16 生产 draw 仍是四跳 Compat 桥，DrawExecutor 未完工 — partial
 
 - 域：Metal · 置信：confirmed
-- 证据：生产 `mglRendererDraw*` / `SwapBuffers` / `FlushDrawBuffer` / `ClearBuffer` / `BlitFramebuffer` / `DispatchCompute*` / texture transfer 直接进 ObjC。已删 `mgl_metal_draw_executor.c` 与 `mgl_renderer_compat_bridge.h` / `mglRendererCompat*`。Fake executor 仅 `test-arch-correctness` R4。CommandIR 动态 VB/纹理/EBO 存 `GLuint` 名。`mglIssueDraw*`（`mgl_draw_issue.cpp`）编排 tess/GS/XFB 与 Indirect CPU-expand/native → `mglEncodeDraw*`。ObjC `mtlDraw*` 是 issue 的一行端口。GS 输入拓扑与 gather 在 `mglDrawGs*`；tess PATCHES 判定 / GL 4.6 §10.5 TCS-without-TES / contract 填充在 `mglTessClassifyDraw` / `mglTessFillDrawContract`。native TES patch encode 在 `mglTessEncodeNativePatches`；GS passthrough rasterize 在 `mglDrawGsEncodePassthrough`。TCS ABI 槽位/dispatch 在 `mglTessAppendTCSCoreBindings`；TES patch item 在 `mglTessEvalItemsPer*`。Texture bind、stage-in capture 与 AIR TES per-patch plan 仍是 `MGLRenderer+Tessellation.m`。CommandIR replay 的 array 公共 encode 走 `mglEncodeDrawArraysForRenderEncoderOwner`（cull-distance split 仍在 ObjC）。
+- 证据：生产 `mglRendererDraw*` / `SwapBuffers` / `FlushDrawBuffer` / `ClearBuffer` / `BlitFramebuffer` / `DispatchCompute*` / texture transfer 直接进 ObjC。已删 `mgl_metal_draw_executor.c` 与 `mgl_renderer_compat_bridge.h` / `mglRendererCompat*`。Fake executor 仅 `test-arch-correctness` R4。CommandIR 动态 VB/纹理/EBO 存 `GLuint` 名。`mglIssueDraw*`（`mgl_draw_issue.cpp`）编排 tess/GS/XFB 与 Indirect CPU-expand/native → `mglEncodeDraw*`。ObjC `mtlDraw*` 是 issue 的一行端口。GS 输入拓扑与 gather 在 `mglDrawGs*`；tess PATCHES 判定 / GL 4.6 §10.5 TCS-without-TES / contract 填充在 `mglTessClassifyDraw` / `mglTessFillDrawContract`。native TES patch encode 在 `mglTessEncodeNativePatches`；GS passthrough rasterize 在 `mglDrawGsEncodePassthrough`。TCS ABI 槽位/dispatch 在 `mglTessAppendTCSCoreBindings`；TES patch item 在 `mglTessEvalItemsPer*`；AIR TES per-patch dispatch 在 `mglTessAppendEvalPerPatchDispatches`；TCS/TES image/sampler 槽位在 `mglTessCollectTextureBinds`（ObjC 只物化 `mtl_data`）。TCS stage-in 默认值在 `mglTessInitStageInDefaults`；indexed TCS sparse→continuous 在 `mglTessCompactSparseCapture`；TCS stage-in 顶点 pack 在 `mglTessPackStageInRecords`（ObjC 只填 attrib 源指针）。GS loc_map / XFB scatter 字段 / counts preset / 核心 compute bindings / compute layout / XFB prefix-sum / scatter plan 在 `mglDrawGsFillLocationMap` / `mglDrawGsFillXFBScatterParams` / `mglDrawGsPresetCounts` / `mglDrawGsAppendCoreBindings` / `mglDrawGsComputeLayout` / `mglDrawGsExclusivePrefixSum` / `mglDrawGsFillXFBScatterPlan`。cull-distance array split 在 `mglRenderFillCullDistanceArrayPrimitives` / `mglRenderCreateCullDistanceArrayPlan` / `mglEncodeCullDistanceArraySplitForRenderEncoderOwner`。cull-distance attrib 扫描 / layout / emu params / 槽 28/29 bind 在 `mglRenderCollectCullDistanceAttribs` / `mglRenderFillCullDistanceEmuParams` / `mglRenderBindCullDistanceEmuSlots`（ObjC 只做 VAO resolve 与 last-bound 记账）。VS capture POINT encode 与 restart sanitize 在 `mglTessEncodeCapture*` / `mglTessSanitizeRestartIndices`；槽 28/29 bind 在 `mglTessBindCaptureSlots`。host（processGLState、capture buffer 分配）仍是 `MGLRenderer+DrawSupport.m`。CommandIR replay 的 array 公共 encode 走 `mglEncodeDrawArraysForRenderEncoderOwner`。
 - 规范：内部架构。R4 名义边界未成为真相。
 - 动作：删除生产 Compat 回退。ObjC 只留 pass 决策与平台壳；encode 下沉 C++。Fake executor 仅测试。不要补完 DrawExecutor 而不删 Compat。
-- 落地：Compat 生产符号已删。DrawArrays/DrawElements/MultiDraw/Indirect 编排与公共 encode 已下沉。GS 拓扑 / tess 判定 / native TES patch encode / GS passthrough / TCS ABI dispatch / TES item 计算已在 C++。Texture bind、capture 与其余 ObjC category 仍未压到 layer/drawable/swap。
+- 落地：Compat 生产符号已删。DrawArrays/DrawElements/MultiDraw/Indirect 编排与公共 encode 已下沉。GS 拓扑 / tess 判定 / native TES patch encode / GS passthrough / TCS ABI dispatch / TES item 计算 / AIR TES per-patch plan / TCS/TES texture 槽位映射 / TCS stage-in 默认值与 pack / indexed TCS sparse compact / GS loc_map / XFB scatter 字段 / counts preset / 核心 compute bindings / compute layout / XFB prefix-sum 与 scatter plan / cull-distance array split / VS capture POINT encode / cull attrib 扫描与 emu 槽 bind / capture 槽 bind 已在 C++。VS GPU capture host（processGLState / buffer 分配）与 VAO cull resolve 仍在 ObjC，renderer 尚未压到 layer/drawable/swap。
 
 #### F17 广告 GL_KHR_debug 但无消息存储 — landed
 
@@ -270,8 +270,8 @@ gl* → dispatch → mgl* 状态
   → CommandIR（动态绑定为对象名）+ live/replay
     → C 入口（Draw/Swap/Flush/Clear/Blit/Compute/texture）
       → C++ mglIssueDraw*（tess/GS/XFB/Indirect 编排）
-        → C++ mglDrawGs* / mglTess*（拓扑 gather、PATCHES 判定、contract、native patch encode、GS passthrough、TCS ABI dispatch）
-        → ObjC host 端口（texture bind、capture、AIR TES per-patch plan、encoder recover）
+        → C++ mglDrawGs* / mglTess*（拓扑 gather、PATCHES 判定、contract、native patch encode、GS passthrough、TCS ABI dispatch、TES per-patch plan、texture 槽位映射、stage-in 默认值与 pack、sparse compact、GS loc_map / XFB scatter / counts / 核心 bindings / compute layout / XFB prefix-sum、cull-distance array split、VS capture POINT encode、cull attrib 扫描与 emu 槽 bind、capture 槽 28/29 bind）
+        → ObjC host 端口（texture/sampler 物化、TCS attrib 源指针、VAO cull resolve、VS capture processGLState / buffer 分配、encoder recover）
         → mgl_draw_encode / mgl_render.cpp Metal-cpp encode
 Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不在 `mtlDraw*` 内联。
 ```
@@ -299,7 +299,7 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 | `mgl_air_backend.cpp` | 含在 AIR | 局部重写 | clip/cull 改 IR/AST；TU 仍未按域拆开。PSO cache 已加锁。 |
 | CompileArtifact / reflect | 含在 AIR | 保留并收口 | variant/capture 已进同一门闩。 |
 | `draw_command` 批处理 | 含在状态机 | 保留并收口 | GS/tess/compute retain 已齐。动态 VB/纹理/EBO 改为对象名。 |
-| `MGLRenderer+*.m` | ~59k | 替换边界 | PSO miss 不再复用旧 PSO。Compat 符号已删。Draw*/MultiDraw*/Indirect 编排在 C++ `mglIssueDraw*`。GS 拓扑 / tess 判定 / native TES encode / GS passthrough 在 C++；TCS/TES compute 仍在 ObjC。 |
+| `MGLRenderer+*.m` | ~59k | 替换边界 | PSO miss 不再复用旧 PSO。Compat 符号已删。Draw*/MultiDraw*/Indirect 编排在 C++ `mglIssueDraw*`。GS 拓扑 / tess 判定 / native TES encode / GS passthrough / TCS ABI / TES per-patch / texture 槽位 / stage-in 默认值与 pack / sparse compact / GS loc_map / XFB scatter / counts / 核心 bindings / compute layout / XFB prefix-sum / cull-distance array split / VS capture POINT encode / cull attrib 扫描与 emu 槽 bind / capture 槽 bind 在 C++；VS capture processGLState 与 VAO cull resolve 仍在 ObjC。 |
 | `mgl_render.cpp` + backend | ~24k | 局部重写 | 已删 MetalDrawExecutor 与 Compat 桥。 |
 | Platform shell + GLFW fork | 薄 | 保留并收口 | 扩展探测已委托 `glGetStringi`。share 显式失败。 |
 | OpenGL ES 3.2 路径 | `gl_es.c` | 保留并收口 | 独立 limits 表 + smoke/CTS 子集。不要扩 ES 语义假装验收。 |
@@ -322,10 +322,10 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 | 1 codegen | pin `gl.xml`，CI diff；删空壳 TU | 完成（验证层 + 删空壳）。手写 `mgl*` 实现仍 overlay。Makefile 仍 wildcard。 |
 | 2 GL 语义 | XFB 失败关闭；Getn*/Attrib1-3/debug 与广告一致；错误统一入队；GLFW 委托 | 完成。F05 直写已收口。 |
 | 3 编译链 | FrontendSession；clip/cull 改 IR；legacy 动态缓冲；variant 走 CompileArtifact | 完成。seed 共用 TU。 |
-| 4 backend | CommandIR 深句柄；encode 下沉；删 Compat | **部分完成**。对象名句柄；已删 Compat 与 MetalDrawExecutor；Draw*/MultiDraw*/Indirect 编排与公共 encode 下沉。GS 拓扑 / tess 判定 / native TES encode / GS passthrough 在 C++。TCS/TES compute 仍在 ObjC。 |
+| 4 backend | CommandIR 深句柄；encode 下沉；删 Compat | **部分完成**。对象名句柄；已删 Compat 与 MetalDrawExecutor；Draw*/MultiDraw*/Indirect 编排与公共 encode 下沉。GS 拓扑 / tess 判定 / native TES encode / GS passthrough / TCS ABI / TES per-patch / texture 槽位 / stage-in 默认值与 pack / sparse compact / GS loc_map / XFB scatter / counts / 核心 bindings / compute layout / XFB prefix-sum / cull-distance array split / VS capture POINT encode / cull attrib 扫描与 emu 槽 bind / capture 槽 bind 在 C++。VS capture processGLState 与 VAO cull resolve 仍在 ObjC。 |
 | 5 ES 3.2 | 独立 profile 表 + 最小 GLES CTS 子集 | **部分完成**。`mglApplyES32Limits` + smoke（limits / GLSL ES 3.20 / DrawArrays）。不是 Khronos GLES CTS。 |
 
-下一批应把 TCS/TES compute（`MGLRenderer+Tessellation.m`）与 tess/GS capture 移出巨型 ObjC category，压到 C++ backend + 薄 layer/drawable/swap 端口，而不是扩 ES。
+下一批应把 VS GPU capture 的 processGLState / buffer 分配与 VAO cull resolve 移出巨型 ObjC category，压到薄 layer/drawable/swap 端口，而不是扩 ES。array split、capture POINT encode、cull attrib 扫描与槽 bind 已下沉。
 
 ## 验证矩阵
 
@@ -336,7 +336,7 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 | A 构建 | CI brew llvm@15 + gtest；`make lib` | 干净 macOS 14 runner 成功 | workflow 已写；本机 `make lib` 成功 |
 | B 状态 | `test-arch-correctness` + `test-dirty-hash` | 与已落地的 §2.3.1 / attrib / debug 探针一致 | arch all probes passed；dirty-hash PASS |
 | C 编译 | `test-mglair-gtest`；`verify-gl-api` | 单次 parse（含 seed TU）；reflection 槽位 assert | 51/51；`verify-gl-api: ok` |
-| D 像素 | `test-regression` | 全 PASS 或 SKIP；golden 文件齐全 | **91 PASS / 0 FAIL / 2 SKIP / 93** |
+| D 像素 | `test-regression` | 全 PASS 或 SKIP；golden 文件齐全 | **91 PASS / 0 FAIL / 2 SKIP / 93**（本轮完整复跑；`compute_dispatch_ssbo` 已恢复） |
 | E 性能 | `test-benchmark` | P95 回退 ≤10% | 未在本次重跑；CI 仍有该 step |
 | F 产品 | MC 1.21 + Sodium/Iris | 启动、世界、GUI、光影不花屏 | 未在本次验证 |
 | ES | `test-es-smoke` | context + 3.2 字符串 + profile mask 拒绝 + GLES 3.2 limits 下限 + GLSL ES 3.20 link + DrawArrays 不崩 | `es-smoke: ok` |
@@ -366,3 +366,61 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 8. `70bd0aa` docs: correct review landing status against HEAD
 
 未 push。`build-audit/` 不入库。
+
+## 续审补充（2026-09-06）
+
+对当前工作树继续审查后，仍需优先处理以下问题。它们不应被上表中已经落地的 A 项掩盖：
+
+| 优先级 | 文件与位置 | 问题 | 处理方向 |
+|---|---|---|---|
+| P1 | `MGL/src/mgl_ir.c:54-60,131,163,183-189` | std140/std430 的对齐、stride、数组大小和结构体偏移使用未检查的 `uint32_t` 运算；大数组或深层嵌套可回绕，导致欠分配和错误 GPU ABI。单一 `type->layout` 也会被不同 layout standard 互相覆盖。 | 使用 checked 64 位/`size_t` layout engine；按 layout standard 保存不可变结果，溢出即拒绝编译。 |
+| P1 | `MGL/src/mgl_air_reflect.c:260-320,527-565,987-997,1140-1144` | uniform/block 路径固定 192/208 字节并忽略 `snprintf` 截断；多维数组被压成一维；多处 `strdup/realloc/calloc` 失败后仍可能返回部分 metadata；非法 layout 被 fallback 为 size=4。 | 动态递归名称与维度元数据；reflection 与 codegen 通过 `CompileArtifact` 原子发布，任何分配/layout 失败都返回错误。 |
+| P1 | `MGL/src/mgl_glsl_parser.c:64-100,982-984,3232-3234,466-533` | tokenize 失败泄漏 token/source；多个 `realloc` 未检查；固定常量/类型表超限时静默丢语义。 | 统一失败传播和清理，动态表或显式上限错误。 |
+| P1 | `MGL/src/mgl_glsl_sema.c:4350-4407` | 跨阶段接口主要按名称和类型比较，未把 explicit location、component/index、patch/sample、插值和 matrix-major 纳入 ABI 检查。 | 生成版本化 `StageInterfaceRecord`，link 前完成完整契约校验。 |
+| P1 | `MGL/src/mgl_air_loader.cpp:45-52,243-328` | PSO key 不含 device，且按 descriptor 原始字节（含 padding）序列化；全局 mutex 覆盖 PSO 编译和 archive IO。 | 按 device 分区、字段级 canonical key；锁外编译，成功后 double-check 插入。 |
+| P1 | `MGL/src/mgl_renderer_backend.cpp:546-550,574-581,608-718,1483-1507` | getter 解锁后返回未 retain 的 Metal 裸指针，destroy 随后释放；`GetDevice` 甚至无锁，teardown 竞态可形成 UAF。 | 引入 lease/shared ownership 或返回 owned retain，并建立统一 teardown barrier。 |
+| P2 | `test_regression/main.c:16400-16402,16494-16498`、`scripts/apitrace_capture.sh:73-81,150-159` | 测试和 capture 工具用 `system()`/未转义 `source` 处理路径，存在注入和截断风险。 | **已部分落地**：回归路径改为 checked libc mkdir/copy，capture state 改为受限 tab-separated 解析；仍需审查其余脚本外部命令边界。 |
+| P2 | `test_mgl/main.cpp:211-223`、`test_regression/main.c:177-202` | 3D 纹理尺寸乘法无边界检查且 VM 内存未释放；TGA writer 忽略 I/O 错误。 | **已部分落地**：checked byte-size、`vm_deallocate`、逐次 TGA I/O 检查已加入；其他生成纹理调用仍需 RAII/ownership wrapper。 |
+
+本次复跑中，`test-arch-correctness` 已通过。期间修复了 `mglRenderVertexAttribName` 缺少 `attrib_location_names` 回退的确定性回归，并删除了 `mgl_draw_gs.cpp:526` 的无意义溢出检查。`make lib` 成功但仍有 enum/static_assert 和 linker warning；已在本地 pinned registry 上直接运行 `python3 scripts/verify_gl_api.py` 并通过。网络同步脚本本身仍可能因 GitHub 不可用而阻断 `make test-all`，这不改变已验证的本地 API 对照结果。
+
+## 续审补充（2026-09-06，compute 与 render-target）
+
+### 已确认并修复：匿名 SSBO 成员的布局缓存断层
+
+`layout(std430) buffer Out { int data[8]; };` 的匿名成员会被语义阶段 flatten 成独立 `MGLIRSymbol`。原先 `ir_type_clone()` 为避免跨标准污染而清空布局缓存，但发布成员符号前没有重新计算布局；AIR 地址生成读取到 `array_stride == 0`，所有 `data[gl_GlobalInvocationID.x]` 写入同一地址，表现为 `compute_dispatch_ssbo` 中 `data[1] == 0`。
+
+现在由 `layout_standard_for_decl()` 统一解析块标准，flatten 成员克隆后立即调用 `mglIRComputeLayout()`；克隆仍保持清缓存语义，`std140/std430` 结果不会互相覆盖。`test_mglsema` 增加了 flattened SSBO stride 断言，`compute_dispatch_ssbo` 隔离复跑已通过。
+
+### 已落地的 render-target 语义修复
+
+- MSAA array backing 的物理切片按 `physical_slice = gl_layer * 8 + sample` 映射；普通 2D array 仍保持一对一层映射，pipeline cache key 包含该 stride。
+- scaled blit 对 array/cube attachment 创建选定 level/slice 的 2D texture view，再交给 `texture2d` fragment path，避免把 array/cube 原纹理误绑定成 2D。
+- blit 目标 attachment 即使已有 sampled-only Metal backing，也强制执行 RenderTarget usage transition 后再创建 blit encoder。
+
+### Sync 生命周期：teardown barrier 已落地
+
+`mglAcquireSync()` 与 `mglDeleteSync()` 使用 context-owned `sync_lock` 覆盖 pointer lookup、refcount 增加和 table detach；wait/status 在解锁后持有引用，避免常规 delete/wait 竞态。现在所有 fence API 先登记 context-level active operation，`destroyGLMContext()` 先设置 destroying gate、拒绝新进入，再等待 active operation 归零后释放 Sync、backend 和 context，覆盖 teardown 期间 waiter 使用已释放对象的 UAF 路径。`Sync.delete_status` 也已改为真正的 `_Atomic GLboolean`，不再把普通字段强转为原子类型。
+
+这条从 **P1 open** 移为已落地。context 指针本身仍要求调用方不要在 `destroyGLMContext()` 返回后继续调用；进入 barrier 之后的新 fence API 会收到 `GL_INVALID_OPERATION`。
+
+### 本轮续审状态（2026-09-06）
+
+- **MGLIR layout：已落地。** std140/std430 结果按 layout standard 独立缓存；checked `uint64_t` 运算拒绝数组、结构体和嵌套偏移溢出；布局节点完整成功后才发布成员偏移；`ir_type_clone` 不复制旧 metadata；析构释放全部缓存。`test_mglir` 覆盖双标准缓存切换和 `UINT32_MAX` 数组溢出。
+- **AIR reflection：已部分落地。** block flatten 的资源/成员扩容、slot 计数、纹理 binding、动态名称和分配失败传播已收口；失败不会发布不完整 block metadata。多维数组仍被压缩为单一 `gl_array_size`/`num_array_dims=1`，需要后续把维度数组同时接入 reflection、uniform 查询和 codegen。
+- **GLSL parser：仍是 P1 partial。** token 上限和动态缓冲已有；tokenize 资源限制失败路径会清理 token/source，固定大小的常量、类型、数组和成员记录表在超限时返回显式 parse error，成员路径也拒绝 `snprintf` 截断。条件编译深度和宏定义数量超限的统一错误传播仍需补齐。
+- **Renderer backend getter：仍是 P1 open。** getter 在锁内取出裸 Metal 指针，调用者在解锁后使用；teardown 可并发释放同一对象。需要 lease/shared ownership 或统一 backend operation barrier，不能只扩大 getter 的 mutex 临界区。
+- **Sync teardown：已落地。** fence API 有 context-level active-operation barrier；destroy gate 先拒绝新进入、等待 active operation 归零，再释放 Sync/backend/context。`Sync.delete_status` 使用真正的原子字段。
+- **Test/capture tooling：已部分落地。** 回归程序的输出目录创建、golden 更新和 TGA writer 已移除 shell 拼接，改为 checked libc 文件操作；apitrace capture 状态文件改为受限的 tab-separated 读取，不再 `source` 外部内容。`test_mgl` 的 3D 纹理生成加入 checked size arithmetic、VM 释放，并修正整数格式 helper 中把异或误写成幂运算的确定性错误。测试工具仍有若干长期持有的临时纹理分配，后续可用 RAII/ownership wrapper 继续收口。
+
+### 当前证据
+
+- `make -j4 lib`：通过。
+- `make test-mglsema`：67/67 通过（含 flattened SSBO stride 门禁）。
+- `compute_dispatch_ssbo`：隔离运行 1/1 通过；完整套件同步为 91 PASS / 0 FAIL / 2 SKIP。
+- `test_regression`：完整运行 91 PASS / 0 FAIL / 2 SKIP / 93。
+- `test-es-smoke`：`es-smoke: ok`。
+- `test-dirty-hash`：`dirty-hash batch regression: PASS`。
+- `test-arch-correctness`：本轮此前已通过。
+- KHR-GL46 `geometry_shader.layered_rendering.layered_rendering`：按指定 CTS modules 工作目录复跑 **1/1 Pass**。完整 GL46 CTS 尚未在本轮重跑。
+- 本轮收口后的复验：`make -j4 lib`、`make test-mglparse`（74/74）、`make test-mglsema`（67/67）、`make test-arch-correctness`、`make test-es-smoke`、`make test-dirty-hash` 均通过；同一 KHR-GL46 case 再跑 **1/1 Pass**。

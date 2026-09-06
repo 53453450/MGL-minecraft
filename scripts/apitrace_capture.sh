@@ -72,13 +72,33 @@ PY
 
 write_state() {
   local trace="$1" apittrace="$2" mgl_dir="$3" internal="$4"
+  [[ "$trace" != *$'\n'* && "$trace" != *$'\t'* ]] || die "trace path contains a newline or tab"
+  [[ "$apittrace" != *$'\n'* && "$apittrace" != *$'\t'* ]] || die "apitrace path contains a newline or tab"
+  [[ "$mgl_dir" != *$'\n'* && "$mgl_dir" != *$'\t'* ]] || die "mgl path contains a newline or tab"
   mkdir -p "$(dirname "$STATE_FILE")"
+  local tmp_state="${STATE_FILE}.tmp.$$"
   {
-    echo "TRACE_FILE='$trace'"
-    echo "APITRACE='$apittrace'"
-    echo "MGL_DIR='$mgl_dir'"
-    echo "TRACE_INTERNAL='$internal'"
-  } > "$STATE_FILE"
+    printf 'TRACE_FILE\t%s\n' "$trace"
+    printf 'APITRACE\t%s\n' "$apittrace"
+    printf 'MGL_DIR\t%s\n' "$mgl_dir"
+    printf 'TRACE_INTERNAL\t%s\n' "$internal"
+  } > "$tmp_state"
+  mv -f "$tmp_state" "$STATE_FILE"
+}
+
+load_state() {
+  [[ -f "$STATE_FILE" ]] || return 0
+  local key value
+  while IFS=$'\t' read -r key value; do
+    case "$key" in
+      TRACE_FILE)     TRACE_FILE="$value";;
+      APITRACE)       APITRACE="$value";;
+      MGL_DIR)        MGL_DIR="$value";;
+      TRACE_INTERNAL) TRACE_INTERNAL="$value";;
+      "")             ;;
+      *)              die "invalid capture state key: $key";;
+    esac
+  done < "$STATE_FILE"
 }
 
 cmd_enable() {
@@ -149,11 +169,10 @@ cmd_capture() {
 
   # Fill in from state file (set by `enable`) for anything not passed explicitly.
   if [[ -f "$STATE_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$STATE_FILE"
-    [[ -z "$trace" ]]     && trace="$TRACE_FILE"
+    load_state
+    [[ -z "$trace" && -n "${TRACE_FILE:-}" ]] && trace="$TRACE_FILE"
     [[ -z "$apittrace" ]] && : # APITRACE default already set
-    [[ -z "$mgl_dir" ]]   && mgl_dir="$MGL_DIR"
+    [[ -z "$mgl_dir" && -n "${MGL_DIR:-}" ]] && mgl_dir="$MGL_DIR"
     [[ $internal -eq 0 && -n "${TRACE_INTERNAL:-}" ]] && internal="$TRACE_INTERNAL"
     [[ -n "${APITRACE:-}" ]] && apittrace="$APITRACE"
   fi

@@ -136,25 +136,28 @@ void write_pixel(GLenum format, GLenum type, void *ptr, float r, float g, float 
 
         case GL_UNSIGNED_SHORT:
         {
-            WR_NORM_PIXEL_FORMAT(format, uint16_t, (float)(2^16-1));
+            WR_NORM_PIXEL_FORMAT(format, uint16_t, 65535.0f);
             break;
         }
 
         case GL_SHORT:
         {
-            WR_NORM_PIXEL_FORMAT(format, int16_t, (float)(2^15-1));
+            WR_NORM_PIXEL_FORMAT(format, int16_t, 32767.0f);
             break;
         }
 
         case GL_UNSIGNED_INT:
         {
-            WR_NORM_PIXEL_FORMAT(format, uint32_t, (float)(2^32-1));
+            /* 2^32-1 is not exactly representable as float; conversion to
+             * uint32_t is implementation-defined at the endpoint, so clamp
+             * through the largest exactly representable float below it. */
+            WR_NORM_PIXEL_FORMAT(format, uint32_t, 4294967040.0f);
             break;
         }
 
         case GL_INT:
         {
-            WR_NORM_PIXEL_FORMAT(format, int32_t, (float)(2^31-1));
+            WR_NORM_PIXEL_FORMAT(format, int32_t, 2147483520.0f);
             break;
         }
 
@@ -198,19 +201,30 @@ typedef struct RGBA_Pixel_t {
 
 void *gen3DTexturePixels(GLenum format, GLenum type, GLuint repeat, GLuint width, GLuint height, GLint depth)
 {
+    (void)repeat;
     GLuint  pixel_size;
     size_t  buffer_size;
     void    *buffer;
     RGBA_Pixel *ptr;
 
-    assert(format == GL_RGBA);
-    assert(type == GL_UNSIGNED_BYTE);
+    if (format != GL_RGBA || type != GL_UNSIGNED_BYTE || width == 0 ||
+        height == 0 || depth <= 0) {
+        return nullptr;
+    }
 
     pixel_size = sizeForFormatType(format, type);//, 0);
-
-    buffer_size = pixel_size * width;
-    buffer_size *= height;
-    buffer_size *= depth;
+    if (pixel_size == 0 || (size_t)width > SIZE_MAX / pixel_size) {
+        return nullptr;
+    }
+    buffer_size = (size_t)pixel_size * width;
+    if ((size_t)height > SIZE_MAX / buffer_size) {
+        return nullptr;
+    }
+    buffer_size *= (size_t)height;
+    if ((size_t)depth > SIZE_MAX / buffer_size) {
+        return nullptr;
+    }
+    buffer_size *= (size_t)depth;
 
     // Allocate directly from VM because... 3d textures can be big
     kern_return_t err;
@@ -219,8 +233,9 @@ void *gen3DTexturePixels(GLenum format, GLenum type, GLuint repeat, GLuint width
                       (vm_address_t*) &buffer_data,
                       buffer_size,
                       VM_FLAGS_ANYWHERE);
-    assert(err == 0);
-    assert(buffer_data);
+    if (err != 0 || !buffer_data) {
+        return nullptr;
+    }
 
     buffer = (void *)buffer_data;
 
@@ -323,16 +338,26 @@ void *genTexturePixels(GLenum format, GLenum type, GLuint repeat, GLuint width, 
     uint8_t *ptr;
 
     pixel_size = sizeForFormatType(format, type);//, 0);
-
-    buffer_size = pixel_size * width;
-
-    buffer_size *= height;
-
-    if (depth)
-        buffer_size *= depth;
+    if (pixel_size == 0 || width == 0 || height == 0 || depth < 0 ||
+        (size_t)width > SIZE_MAX / pixel_size) {
+        return nullptr;
+    }
+    buffer_size = (size_t)pixel_size * width;
+    if ((size_t)height > SIZE_MAX / buffer_size) {
+        return nullptr;
+    }
+    buffer_size *= (size_t)height;
+    if (depth > 0) {
+        if ((size_t)depth > SIZE_MAX / buffer_size) {
+            return nullptr;
+        }
+        buffer_size *= (size_t)depth;
+    }
 
     buffer = malloc(buffer_size);
-    assert(buffer);
+    if (!buffer) {
+        return nullptr;
+    }
 
     ptr = (uint8_t *)buffer;
 
@@ -2600,8 +2625,17 @@ int test_3D_textures(GLFWwindow* window, int width, int height)
     GLuint tex;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_3D, tex);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, _3d_size, _3d_size, _3d_size, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                 gen3DTexturePixels(GL_RGBA, GL_UNSIGNED_BYTE, 0x10, _3d_size, _3d_size, _3d_size));
+    size_t texture_bytes = (size_t)_3d_size * (size_t)_3d_size *
+                           (size_t)_3d_size * sizeof(RGBA_Pixel);
+    void *texture_pixels = gen3DTexturePixels(
+        GL_RGBA, GL_UNSIGNED_BYTE, 0x10, _3d_size, _3d_size, _3d_size);
+    assert(texture_pixels != nullptr);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, _3d_size, _3d_size, _3d_size,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, texture_pixels);
+    kern_return_t texture_free_result = vm_deallocate(
+        (vm_map_t)mach_task_self(), (vm_address_t)texture_pixels,
+        (vm_size_t)texture_bytes);
+    assert(texture_free_result == KERN_SUCCESS);
 
     glTexParameteri(GL_TEXTURE_3D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
     glTexParameteri(GL_TEXTURE_3D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
