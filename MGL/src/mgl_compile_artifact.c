@@ -12,6 +12,7 @@
 
 #include "mgl_air_reflect.h"
 #include "mgl_shader_abi.h"
+#include "mgl_glsl_parser.h"
 #include "glm_limits.h"
 
 void mglCompileArtifactInit(MGLCompileArtifact *art)
@@ -33,6 +34,8 @@ void mglCompileArtifactDestroy(MGLCompileArtifact *art)
     free(art->metallib_bytes);
     art->metallib_bytes = NULL;
     art->metallib_size = 0;
+    mglGLSLTranslationUnitDestroy(art->tu);
+    art->tu = NULL;
     mglAirReflectDestroy(art->resources);
     memset(art->resources, 0, sizeof(art->resources));
     art->complete = 0;
@@ -116,7 +119,8 @@ int mglCompileArtifactFromGLSLEx(const char *src, int stage,
     if (mglAirCompileGLSLWithReflectInfoEx(
             src, stage, attrib_names, &bytes, &size, art_out->resources,
             &art_out->stage_info, air_flags,
-            (const MGLShaderResourceList *)iface_peers, err, cap) != 0) {
+            (const MGLShaderResourceList *)iface_peers, err, cap,
+            &art_out->tu) != 0) {
         free(bytes);
         mglCompileArtifactDestroy(art_out);
         if (err[0] && !art_out->frontend.diagnostics) {

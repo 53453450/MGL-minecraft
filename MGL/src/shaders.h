@@ -26,5 +26,6 @@
 
 Shader *findShader(GLMContext ctx, GLuint shader);
 void mglFreeShader(GLMContext ctx, Shader *ptr);
+void mglShaderReplaceFrontendTU(Shader *ptr, struct MGLTranslationUnit *tu);
 
 #endif /* shaders_h */

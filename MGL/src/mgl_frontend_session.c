@@ -138,6 +138,16 @@ void mglFrontendSessionDestroy(MGLFrontendSession *s)
     s->stage = 0;
 }
 
+MGLTranslationUnit *mglFrontendSessionStealTU(MGLFrontendSession *s)
+{
+    MGLTranslationUnit *tu;
+    if (!s)
+        return NULL;
+    tu = s->tu;
+    s->tu = NULL;
+    return tu;
+}
+
 uint32_t mglFrontendIRBuiltinArrayCount(const MGLIRModule *mod,
                                         const char *name)
 {

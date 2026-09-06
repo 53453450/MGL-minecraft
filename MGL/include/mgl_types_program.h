@@ -143,6 +143,8 @@ typedef struct Shader_t {
     /* Owned stage CompileArtifact from glCompileShader; link may adopt it
      * when no variant air_flags / iface_peers / attrib remap are required. */
     struct MGLCompileArtifact *cached_artifact;
+    /* TU from the compile FrontendSession; SeedUniformInitializers reuses it. */
+    struct MGLTranslationUnit *frontend_tu;
 } Shader;
 
 /* Per-shader backend module state: AIR serialized metallib bytes + the

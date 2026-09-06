@@ -17123,10 +17123,12 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     uint32_t flags, const MGLShaderResourceList *iface_location_peers,
-    char *err_buf, size_t err_cap) {
+    char *err_buf, size_t err_cap, MGLTranslationUnit **tu_out) {
     bool has_gs = (flags & MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) != 0;
     bool force_tes_compute =
         (flags & MGL_AIR_COMPILE_FORCE_TES_COMPUTE) != 0;
+    if (tu_out)
+        *tu_out = nullptr;
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
@@ -17167,6 +17169,10 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
                              attrib_names, tessPatchVertices,
                              iface_location_peers, metallib_out, size_out,
                              err_buf, err_cap, &sess);
+    if (rc == 0 && tu_out)
+        *tu_out = mglFrontendSessionStealTU(&sess);
+    else if (tu_out)
+        *tu_out = nullptr;
     mglFrontendSessionDestroy(&sess);
     return rc;
 }
@@ -17178,7 +17184,8 @@ extern "C" int mglAirCompileGLSLWithReflectInfo(
     char *err_buf, size_t err_cap) {
     return mglAirCompileGLSLWithReflectInfoEx(
         src, stage, attrib_names, metallib_out, size_out, lists,
-        stage_info, 0u, /*iface_location_peers=*/nullptr, err_buf, err_cap);
+        stage_info, 0u, /*iface_location_peers=*/nullptr, err_buf, err_cap,
+        /*tu_out=*/nullptr);
 }
 
 extern "C" int mglAirCompileGLSLWithReflect(

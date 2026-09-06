@@ -15,6 +15,8 @@
 #include "mgl_shader_abi.h"
 #include "mgl_types_program.h"
 
+struct MGLTranslationUnit;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -49,6 +51,7 @@ typedef struct MGLCompileArtifact {
     MGLResourceLayoutPlan layout;
     unsigned char *metallib_bytes; /* owned */
     size_t metallib_size;
+    struct MGLTranslationUnit *tu; /* owned; stolen from FrontendSession */
     MGLShaderResourceList resources[MGL_MAX_SHADER_RESOURCES]; /* owned lists */
     MGLAIRStageInfo stage_info;
     int complete; /* non-zero only when code and reflection both succeeded */

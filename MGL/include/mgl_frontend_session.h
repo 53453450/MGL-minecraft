@@ -29,6 +29,7 @@ void mglFrontendSessionInit(MGLFrontendSession *s);
 void mglFrontendSessionDestroy(MGLFrontendSession *s);
 int mglFrontendSessionBuild(MGLFrontendSession *s, const char *src, int stage,
                             char *err, size_t err_cap);
+MGLTranslationUnit *mglFrontendSessionStealTU(MGLFrontendSession *s);
 int mglFrontendRewriteLegacy(const char *src, int stage, char **out,
                              char *err, size_t err_cap);
 uint32_t mglFrontendIRBuiltinArrayCount(const MGLIRModule *mod,

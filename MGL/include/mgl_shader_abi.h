@@ -324,12 +324,14 @@ enum {
  * iface_location_peers: optional producer-stage outputs (typically GS
  * [_STAGE_OUTPUT_RES]); when has_gs, FS auto-assigned input locations are
  * remapped by name to these so mgl_loc_N tags match the passthrough VS. */
+struct MGLTranslationUnit;
+
 int mglAirCompileGLSLWithReflectInfoEx(
     const char *src, int stage, const char *const *attrib_names,
     unsigned char **metallib_out, size_t *size_out,
     MGLShaderResourceList lists[MGL_MAX_SHADER_RESOURCES], MGLAIRStageInfo *stage_info,
     uint32_t flags, const MGLShaderResourceList *iface_location_peers,
-    char *err_buf, size_t err_cap);
+    char *err_buf, size_t err_cap, struct MGLTranslationUnit **tu_out);
 
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);

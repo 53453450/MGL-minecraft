@@ -39,6 +39,7 @@
 #include "mgl_compile_artifact.h"
 #include "mgl_metal_ref.h"
 #include "mgl_shader_abi.h"
+#include "mgl_glsl_ast.h"
 
  const char *getShaderTypeStr(GLuint type)
 {
@@ -162,6 +163,17 @@ GLuint mglCreateShader(GLMContext ctx, GLenum type)
     return shader;
 }
 
+void mglShaderReplaceFrontendTU(Shader *ptr, struct MGLTranslationUnit *tu)
+{
+    if (!ptr) {
+        mglGLSLTranslationUnitDestroy(tu);
+        return;
+    }
+    if (ptr->frontend_tu && ptr->frontend_tu != tu)
+        mglGLSLTranslationUnitDestroy(ptr->frontend_tu);
+    ptr->frontend_tu = tu;
+}
+
 void mglFreeShader(GLMContext ctx, Shader *ptr)
 {
     free((void *)ptr->mtl_shader_type_name);
@@ -172,6 +184,8 @@ void mglFreeShader(GLMContext ctx, Shader *ptr)
     ptr->frontend_valid = GL_FALSE;
     mglCompileArtifactFree(ptr->cached_artifact);
     ptr->cached_artifact = NULL;
+    mglGLSLTranslationUnitDestroy(ptr->frontend_tu);
+    ptr->frontend_tu = NULL;
 
     free(ptr);
 }
@@ -322,6 +336,7 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
     ptr->frontend_valid = GL_FALSE;
     mglCompileArtifactFree(ptr->cached_artifact);
     ptr->cached_artifact = NULL;
+    mglShaderReplaceFrontendTU(ptr, NULL);
 }
 
 void mglCompileShader(GLMContext ctx, GLuint shader)
@@ -337,6 +352,7 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     ptr->frontend_diagnostics = NULL;
     mglCompileArtifactFree(ptr->cached_artifact);
     ptr->cached_artifact = NULL;
+    mglShaderReplaceFrontendTU(ptr, NULL);
     if (ptr->log) {
         free(ptr->log);
         ptr->log = NULL;
@@ -387,6 +403,8 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     ptr->frontend_parse_generation = mglFrontendParseCount();
     ptr->frontend_valid = GL_TRUE;
     ptr->cached_artifact = art;
+    mglShaderReplaceFrontendTU(ptr, art->tu);
+    art->tu = NULL;
     ptr->dirty_bits |= DIRTY_SHADER;
 }
 
@@ -453,27 +471,24 @@ void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)
 
 void mglGetShaderInfoLog(GLMContext ctx, GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
 {
-    Shader *ptr;
-
-    ptr = findShader(ctx, shader);
-
+    Shader *ptr = findShader(ctx, shader);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
-    if (ptr->log)
-    {
-        if (length)
-        {
-            *length = (GLsizei)strlen(ptr->log);
-        }
-
-        if (infoLog)
-        {
-            if (bufSize >= strlen(ptr->log))
-            {
-                memcpy(infoLog, ptr->log, strlen(ptr->log));
-            }
-        }
+    const char *src = ptr->log ? ptr->log : "";
+    size_t n = strlen(src);
+    if (length) {
+        *length = (GLsizei)n;
     }
+    if (!infoLog || bufSize <= 0) {
+        return;
+    }
+    if (n >= (size_t)bufSize) {
+        n = (size_t)bufSize - 1u;
+    }
+    if (n > 0u) {
+        memcpy(infoLog, src, n);
+    }
+    infoLog[n] = '\0';
 }
 
 void mglGetShaderSource(GLMContext ctx, GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *source)

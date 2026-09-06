@@ -428,8 +428,7 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
         if (!shader || !shader->src) {
             continue;
         }
-        MGLTranslationUnit *tu =
-            mglGLSLParse(shader->src, strlen(shader->src));
+        MGLTranslationUnit *tu = shader->frontend_tu;
         if (!tu) {
             continue;
         }
@@ -527,7 +526,6 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
                 }
             }
         }
-        mglGLSLTranslationUnitDestroy(tu);
     }
 
     STATE(program) = prev_prog;
@@ -1726,6 +1724,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                    sizeof(art.resources));
             memset(art.resources, 0, sizeof(art.resources));
             stage_info = art.stage_info;
+            mglShaderReplaceFrontendTU(shader, art.tu);
+            art.tu = NULL;
             mglCompileArtifactDestroy(&art);
             if (shader->frontend_valid &&
                 shader->frontend_stage == air_stage &&
