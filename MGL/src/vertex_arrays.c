@@ -311,6 +311,17 @@ void mglGetVertexAttribdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *
     VertexArray *vao;
     Buffer *buf;
 
+    /* GL 4.6 Core §10.2: CURRENT_VERTEX_ATTRIB is context state, not VAO
+     * array state.  §10.3 VAO requirement does not apply. */
+    if (pname == GL_CURRENT_VERTEX_ATTRIB) {
+        ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
+        if (!params)
+            return;
+        for (int i = 0; i < 4; i++)
+            params[i] = STATE(current_vertex_attrib)[index].d[i];
+        return;
+    }
+
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
     ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
     (void)vao;

@@ -143,6 +143,23 @@ typedef struct GLMContextRec_t {
     GLuint      active_query_by_target[MGL_QUERY_TARGET_SLOT_COUNT][MGL_QUERY_MAX_INDEX];
     GLuint64    query_timestamp_counter;
 
+    /* GL 4.6 Core chapter 20 Debug Output — context-owned ring, not snapshot. */
+#define MGL_DEBUG_LOG_CAP 16
+#define MGL_DEBUG_MSG_MAX 1024
+    GLDEBUGPROC debug_callback;
+    const void *debug_callback_user;
+    GLboolean   debug_output;
+    GLuint      debug_log_count;
+    GLuint      debug_log_head;
+    struct {
+        GLenum source;
+        GLenum type;
+        GLenum severity;
+        GLuint id;
+        GLsizei length;
+        char msg[MGL_DEBUG_MSG_MAX];
+    } debug_log[MGL_DEBUG_LOG_CAP];
+
     /* Renderer roots. The backend owns Metal state; the context retains the
      * platform renderer shell until backend teardown is complete. */
     void *renderer_backend;

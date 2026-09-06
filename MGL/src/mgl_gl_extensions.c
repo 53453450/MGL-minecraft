@@ -41,7 +41,7 @@ static void mgl_unimplemented(GLMContext ctx, const char *func)
         warn_count++;
     }
     if (ctx) {
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, func ? func : __FUNCTION__, GL_INVALID_OPERATION);
     }
 }
 
@@ -2770,34 +2770,67 @@ void mglCreateTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 
 void mglDebugMessageCallback(GLMContext ctx, GLDEBUGPROC callback, const void *userParam)
 {
-	// Debug callback - no-op if debug infrastructure not available
-	(void)ctx;
-	(void)callback;
-	(void)userParam;
+	if (!ctx)
+		return;
+	ctx->debug_callback = callback;
+	ctx->debug_callback_user = userParam;
 }
 
 void mglDebugMessageControl(GLMContext ctx, GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled)
 {
-	// Debug message control - no-op
-	(void)ctx;
 	(void)source;
 	(void)type;
 	(void)severity;
-	(void)count;
 	(void)ids;
-	(void)enabled;
+	if (!ctx)
+		return;
+	if (count < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	ctx->debug_output = enabled;
+}
+
+static void mglDebugLogPush(GLMContext ctx, GLenum source, GLenum type, GLuint id,
+                            GLenum severity, GLsizei length, const GLchar *buf)
+{
+	if (!ctx)
+		return;
+	GLsizei n = length;
+	if (n < 0)
+		n = buf ? (GLsizei)strlen(buf) : 0;
+	if (n >= MGL_DEBUG_MSG_MAX)
+		n = MGL_DEBUG_MSG_MAX - 1;
+	if (ctx->debug_log_count == MGL_DEBUG_LOG_CAP) {
+		ctx->debug_log_head = (ctx->debug_log_head + 1u) % MGL_DEBUG_LOG_CAP;
+		ctx->debug_log_count--;
+	}
+	GLuint slot = (ctx->debug_log_head + ctx->debug_log_count) % MGL_DEBUG_LOG_CAP;
+	ctx->debug_log[slot].source = source;
+	ctx->debug_log[slot].type = type;
+	ctx->debug_log[slot].severity = severity;
+	ctx->debug_log[slot].id = id;
+	ctx->debug_log[slot].length = n;
+	if (buf && n > 0)
+		memcpy(ctx->debug_log[slot].msg, buf, (size_t)n);
+	ctx->debug_log[slot].msg[n] = '\0';
+	ctx->debug_log_count++;
+	if (ctx->debug_callback) {
+		ctx->debug_callback(source, type, id, severity, n,
+		                      ctx->debug_log[slot].msg,
+		                      ctx->debug_callback_user);
+	}
 }
 
 void mglDebugMessageInsert(GLMContext ctx, GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf)
 {
-	// Insert debug message - no-op
-	(void)ctx;
-	(void)source;
-	(void)type;
-	(void)id;
-	(void)severity;
-	(void)length;
-	(void)buf;
+	if (!ctx)
+		return;
+	if (!buf && length != 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	mglDebugLogPush(ctx, source, type, id, severity, length, buf);
 }
 
 void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
@@ -2916,38 +2949,37 @@ void mglDepthRangef(GLMContext ctx, GLfloat n, GLfloat f)
 
 void mglDrawTransformFeedback(GLMContext ctx, GLenum mode, GLuint id)
 {
-	// Draw from transform feedback - no-op for now
-	(void)ctx;
 	(void)mode;
 	(void)id;
+	/* GL 4.6 Core §13.2.3: DrawTransformFeedback* is equivalent to
+	 * DrawArrays* with the captured vertex count. Metal capture is not
+	 * wired yet; fail closed instead of silently succeeding. */
+	ERROR_RETURN(GL_INVALID_OPERATION);
 }
 
 void mglDrawTransformFeedbackInstanced(GLMContext ctx, GLenum mode, GLuint id, GLsizei instancecount)
 {
-	// Draw from transform feedback instanced - no-op for now
-	(void)ctx;
 	(void)mode;
 	(void)id;
 	(void)instancecount;
+	ERROR_RETURN(GL_INVALID_OPERATION);
 }
 
 void mglDrawTransformFeedbackStream(GLMContext ctx, GLenum mode, GLuint id, GLuint stream)
 {
-	// Draw from transform feedback stream - no-op for now
-	(void)ctx;
 	(void)mode;
 	(void)id;
 	(void)stream;
+	ERROR_RETURN(GL_INVALID_OPERATION);
 }
 
 void mglDrawTransformFeedbackStreamInstanced(GLMContext ctx, GLenum mode, GLuint id, GLuint stream, GLsizei instancecount)
 {
-	// Draw from transform feedback stream instanced - no-op for now
-	(void)ctx;
 	(void)mode;
 	(void)id;
 	(void)stream;
 	(void)instancecount;
+	ERROR_RETURN(GL_INVALID_OPERATION);
 }
 
 void mglEndConditionalRender(GLMContext ctx)
@@ -3467,17 +3499,40 @@ void mglGetBufferParameteri64v(GLMContext ctx, GLenum target, GLenum pname, GLin
 
 GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLenum *sources, GLenum *types, GLuint *ids, GLenum *severities, GLsizei *lengths, GLchar *messageLog)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// No debug messages stored
-	(void)count;
-	(void)bufSize;
-	(void)sources;
-	(void)types;
-	(void)ids;
-	(void)severities;
-	(void)lengths;
-	(void)messageLog;
-	return 0;
+	if (!ctx)
+		return 0;
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return 0;
+	}
+	GLuint copied = 0;
+	GLsizei used = 0;
+	while (copied < count && ctx->debug_log_count > 0) {
+		GLuint slot = ctx->debug_log_head;
+		GLsizei n = ctx->debug_log[slot].length;
+		GLsizei need = n + 1;
+		if (messageLog && bufSize > 0 && used + need > bufSize)
+			break;
+		if (sources)
+			sources[copied] = ctx->debug_log[slot].source;
+		if (types)
+			types[copied] = ctx->debug_log[slot].type;
+		if (ids)
+			ids[copied] = ctx->debug_log[slot].id;
+		if (severities)
+			severities[copied] = ctx->debug_log[slot].severity;
+		if (lengths)
+			lengths[copied] = n;
+		if (messageLog && bufSize > 0) {
+			memcpy(messageLog + used, ctx->debug_log[slot].msg, (size_t)n);
+			messageLog[used + n] = '\0';
+			used += need;
+		}
+		ctx->debug_log_head = (ctx->debug_log_head + 1u) % MGL_DEBUG_LOG_CAP;
+		ctx->debug_log_count--;
+		copied++;
+	}
+	return copied;
 }
 
 void mglGetDoublei_v(GLMContext ctx, GLenum target, GLuint index, GLdouble *data)
@@ -5651,32 +5706,104 @@ void mglGetnPixelMapusv(GLMContext ctx, GLenum map, GLsizei bufSize, GLushort *v
 
 void mglGetnTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	mglGetTexImage(ctx, target, level, format, type, pixels);
 }
 
 void mglGetnUniformdv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLdouble *params)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	GLfloat tmp[16];
+	GLsizei i;
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (!params)
+		return;
+	if ((GLsizei)sizeof(tmp) > bufSize && bufSize < (GLsizei)sizeof(GLdouble)) {
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return;
+	}
+	mglGetUniformfv(ctx, program, location, tmp);
+	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
+		return;
+	for (i = 0; i < 16 && (GLsizei)((i + 1) * (GLint)sizeof(GLdouble)) <= bufSize; i++)
+		params[i] = (GLdouble)tmp[i];
 }
 
 void mglGetnUniformfv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLfloat *params)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	GLfloat tmp[16];
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (!params)
+		return;
+	if (bufSize < (GLsizei)sizeof(GLfloat)) {
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return;
+	}
+	mglGetUniformfv(ctx, program, location, tmp);
+	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
+		return;
+	{
+		GLsizei n = bufSize / (GLsizei)sizeof(GLfloat);
+		if (n > 16)
+			n = 16;
+		memcpy(params, tmp, (size_t)n * sizeof(GLfloat));
+	}
 }
 
 void mglGetnUniformiv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLint *params)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	GLint tmp[16];
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (!params)
+		return;
+	if (bufSize < (GLsizei)sizeof(GLint)) {
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return;
+	}
+	mglGetUniformiv(ctx, program, location, tmp);
+	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
+		return;
+	{
+		GLsizei n = bufSize / (GLsizei)sizeof(GLint);
+		if (n > 16)
+			n = 16;
+		memcpy(params, tmp, (size_t)n * sizeof(GLint));
+	}
 }
 
 void mglGetnUniformuiv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLuint *params)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	GLuint tmp[16];
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (!params)
+		return;
+	if (bufSize < (GLsizei)sizeof(GLuint)) {
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return;
+	}
+	mglGetUniformuiv(ctx, program, location, tmp);
+	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
+		return;
+	{
+		GLsizei n = bufSize / (GLsizei)sizeof(GLuint);
+		if (n > 16)
+			n = 16;
+		memcpy(params, tmp, (size_t)n * sizeof(GLuint));
+	}
 }
 
 GLboolean mglIsQuery(GLMContext ctx, GLuint id)
@@ -6676,92 +6803,101 @@ void mglValidateProgramPipeline(GLMContext ctx, GLuint pipeline)
 
 void mglVertexAttrib1d(GLMContext ctx, GLuint index, GLdouble x)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribDouble(ctx, index, x, 0.0, 0.0, 1.0);
 }
 
 void mglVertexAttrib1dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribDouble(ctx, index, v[0], 0.0, 0.0, 1.0);
 }
 
 void mglVertexAttrib1f(GLMContext ctx, GLuint index, GLfloat x)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribFloat(ctx, index, x, 0.0f, 0.0f, 1.0f);
 }
 
 void mglVertexAttrib1fv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribFloat(ctx, index, v[0], 0.0f, 0.0f, 1.0f);
 }
 
 void mglVertexAttrib1s(GLMContext ctx, GLuint index, GLshort x)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribFloat(ctx, index, (GLfloat)x, 0.0f, 0.0f, 1.0f);
 }
 
 void mglVertexAttrib1sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribFloat(ctx, index, (GLfloat)v[0], 0.0f, 0.0f, 1.0f);
 }
 
 void mglVertexAttrib2d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribDouble(ctx, index, x, y, 0.0, 1.0);
 }
 
 void mglVertexAttrib2dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribDouble(ctx, index, v[0], v[1], 0.0, 1.0);
 }
 
 void mglVertexAttrib2f(GLMContext ctx, GLuint index, GLfloat x, GLfloat y)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribFloat(ctx, index, x, y, 0.0f, 1.0f);
 }
 
 void mglVertexAttrib2fv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribFloat(ctx, index, v[0], v[1], 0.0f, 1.0f);
 }
 
 void mglVertexAttrib2s(GLMContext ctx, GLuint index, GLshort x, GLshort y)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribFloat(ctx, index, (GLfloat)x, (GLfloat)y, 0.0f, 1.0f);
 }
 
 void mglVertexAttrib2sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribFloat(ctx, index, (GLfloat)v[0], (GLfloat)v[1], 0.0f, 1.0f);
 }
 
 void mglVertexAttrib3d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y, GLdouble z)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribDouble(ctx, index, x, y, z, 1.0);
 }
 
 void mglVertexAttrib3dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribDouble(ctx, index, v[0], v[1], v[2], 1.0);
 }
 
 void mglVertexAttrib3f(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLfloat z)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribFloat(ctx, index, x, y, z, 1.0f);
 }
 
 void mglVertexAttrib3fv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribFloat(ctx, index, v[0], v[1], v[2], 1.0f);
 }
 
 void mglVertexAttrib3s(GLMContext ctx, GLuint index, GLshort x, GLshort y, GLshort z)
 {
-	(void)ctx;
+	mglSetCurrentVertexAttribFloat(ctx, index, (GLfloat)x, (GLfloat)y, (GLfloat)z, 1.0f);
 }
 
 void mglVertexAttrib3sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglSetCurrentVertexAttribFloat(ctx, index, (GLfloat)v[0], (GLfloat)v[1], (GLfloat)v[2], 1.0f);
 }
 
 void mglVertexAttrib4Nbv(GLMContext ctx, GLuint index, const GLbyte *v)

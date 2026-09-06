@@ -267,10 +267,13 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_CLIP_DISTANCES,&glm_ctx->active_state->var.max_clip_distances);
 
     //glGetIntegerv(GL_MAJOR_VERSION,&glm_ctx->active_state->var.major_version);
+#ifdef MGL_GL_ES
+    glm_ctx->active_state->var.major_version = 3;
+    glm_ctx->active_state->var.minor_version = 2;
+#else
     glm_ctx->active_state->var.major_version = 4;
-
-    //glGetIntegerv(GL_MINOR_VERSION,&glm_ctx->active_state->var.minor_version);
     glm_ctx->active_state->var.minor_version = 6;
+#endif
 
     glm_ctx->active_state->var.num_extensions = MGL_NUM_EXTENSIONS;
 
@@ -548,8 +551,8 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->active_state->var.max_compute_shared_memory_size = 32768;
     glm_ctx->active_state->var.max_debug_message_length = 1024;
     glm_ctx->active_state->var.max_debug_logged_messages = 1024;
-    glm_ctx->active_state->var.max_subroutines = 256;
-    glm_ctx->active_state->var.max_subroutine_uniform_locations = 1024;
+    glm_ctx->active_state->var.max_subroutines = 0;
+    glm_ctx->active_state->var.max_subroutine_uniform_locations = 0;
     glm_ctx->active_state->var.max_vertex_streams = 4;
     glm_ctx->active_state->var.max_combined_shader_output_resources = 8;
     glm_ctx->active_state->var.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;

@@ -449,6 +449,60 @@ static void test_r4_fake_executor(void)
     vt->destroy(ex);
 }
 
+static void test_xfb_draw_fail_closed(void)
+{
+    GLMContext ctx = make_ctx();
+    expect(ctx != NULL, "F01 createGLMContext");
+    if (!ctx)
+        return;
+    MGLsetCurrentContext(ctx);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    glDrawTransformFeedback(GL_TRIANGLES, 1);
+    expect(glGetError() == GL_INVALID_OPERATION,
+           "F01 DrawTransformFeedback -> INVALID_OPERATION");
+    destroyGLMContext(ctx);
+}
+
+static void test_vertex_attrib_defaults(void)
+{
+    GLMContext ctx = make_ctx();
+    expect(ctx != NULL, "F18 createGLMContext");
+    if (!ctx)
+        return;
+    MGLsetCurrentContext(ctx);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    glVertexAttrib1f(0, 3.0f);
+    GLfloat v[4] = {0, 0, 0, 0};
+    glGetVertexAttribfv(0, GL_CURRENT_VERTEX_ATTRIB, v);
+    expect(v[0] == 3.0f && v[1] == 0.0f && v[2] == 0.0f && v[3] == 1.0f,
+           "F18 VertexAttrib1f defaults (x,0,0,1)");
+    destroyGLMContext(ctx);
+}
+
+static void test_debug_message_log(void)
+{
+    GLMContext ctx = make_ctx();
+    expect(ctx != NULL, "F17 createGLMContext");
+    if (!ctx)
+        return;
+    MGLsetCurrentContext(ctx);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_OTHER, 7,
+                         GL_DEBUG_SEVERITY_NOTIFICATION, -1, "hello-mgl");
+    GLenum src = 0, type = 0, sev = 0;
+    GLuint id = 0;
+    GLsizei len = 0;
+    char buf[64];
+    GLuint n = glGetDebugMessageLog(1, (GLsizei)sizeof(buf), &src, &type, &id,
+                                    &sev, &len, buf);
+    expect(n == 1 && id == 7 && strcmp(buf, "hello-mgl") == 0,
+           "F17 DebugMessageInsert/GetDebugMessageLog round-trip");
+    destroyGLMContext(ctx);
+}
+
 int main(void)
 {
     fail_count = 0;
@@ -462,6 +516,9 @@ int main(void)
     test_r2_frontend_parse_count();
     test_r3_draw_state();
     test_r4_fake_executor();
+    test_xfb_draw_fail_closed();
+    test_vertex_attrib_defaults();
+    test_debug_message_log();
     if (fail_count) {
         fprintf(stderr, "arch-correctness: %d failure(s)\n", fail_count);
         return 1;

@@ -168,10 +168,9 @@ void error_func(GLMContext ctx, const char *func, GLenum error)
 
     fprintf(stderr, "MGL GL Error in %s: 0x%x (%d)\n", func, error, error);
 
-    /* Push the error into the queue.  Per GL 4.6 spec §2.5, the queue must
+    /* Push the error into the queue.  Per GL 4.6 spec §2.3.1, the queue must
      * hold at least 16 errors; when full, the new error is dropped (the
-     * oldest 16 are retained).  This replaces the previous depth-1 behavior
-     * that silently discarded every error after the first. */
+     * oldest 16 are retained). */
     if (STATE(error_count) < MGL_ERROR_QUEUE_SIZE)
     {
         GLuint tail = (STATE(error_head) + STATE(error_count)) % MGL_ERROR_QUEUE_SIZE;

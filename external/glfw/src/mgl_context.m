@@ -71,30 +71,28 @@ static void swapIntervalMGL(int interval)
 
 static int extensionSupportedMGL(const char* extension)
 {
-    if (!extension) {
+    if (!extension || !_glfw.mgl.handle) {
         return GLFW_FALSE;
     }
 
-    static const char* supportedExtensions[] = {
-        "GL_ARB_vertex_array_object",
-        "GL_ARB_framebuffer_object",
-        "GL_ARB_texture_storage",
-        "GL_ARB_sampler_objects",
-        "GL_ARB_uniform_buffer_object",
-        "GL_ARB_draw_buffers",
-        "GL_ARB_debug_output",
-        "GL_ARB_texture_buffer_object",
-        "GL_ARB_texture_buffer_range",
-        "GL_ARB_buffer_storage",
-        "GL_ARB_direct_state_access"
-    };
+    typedef const unsigned char* (*PFNGLGETSTRINGIPROC)(unsigned int, unsigned int);
+    typedef void (*PFNGLGETINTEGERVPROC)(unsigned int, int*);
+    PFNGLGETSTRINGIPROC getStringi =
+        (PFNGLGETSTRINGIPROC)_glfwPlatformGetModuleSymbol(_glfw.mgl.handle, "glGetStringi");
+    PFNGLGETINTEGERVPROC getIntegerv =
+        (PFNGLGETINTEGERVPROC)_glfwPlatformGetModuleSymbol(_glfw.mgl.handle, "glGetIntegerv");
+    if (!getStringi || !getIntegerv) {
+        return GLFW_FALSE;
+    }
 
-    for (size_t i = 0; i < sizeof(supportedExtensions) / sizeof(supportedExtensions[0]); i++) {
-        if (strcmp(extension, supportedExtensions[i]) == 0) {
+    int n = 0;
+    getIntegerv(0x821D /* GL_NUM_EXTENSIONS */, &n);
+    for (int i = 0; i < n; i++) {
+        const unsigned char* ext = getStringi(0x1F03 /* GL_EXTENSIONS */, (unsigned int)i);
+        if (ext && strcmp((const char*)ext, extension) == 0) {
             return GLFW_TRUE;
         }
     }
-
     return GLFW_FALSE;
 }
 
