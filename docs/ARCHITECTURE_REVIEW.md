@@ -413,6 +413,95 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 - **Sync teardown：已落地。** fence API 有 context-level active-operation barrier；destroy gate 先拒绝新进入、等待 active operation 归零，再释放 Sync/backend/context。`Sync.delete_status` 使用真正的原子字段。
 - **Test/capture tooling：已部分落地。** 回归程序的输出目录创建、golden 更新和 TGA writer 已移除 shell 拼接，改为 checked libc 文件操作；apitrace capture 状态文件改为受限的 tab-separated 读取，不再 `source` 外部内容。`test_mgl` 的 3D 纹理生成加入 checked size arithmetic、VM 释放，并修正整数格式 helper 中把异或误写成幂运算的确定性错误。测试工具仍有若干长期持有的临时纹理分配，后续可用 RAII/ownership wrapper 继续收口。
 
+### Renderer backend ownership / lease handoff（P1 open）
+
+#### 问题模型
+
+`mgl_renderer_backend.h` 的 `Get*` 约定目前是“backend 持有、调用方借用”。实现只在 `backend->mutex` 内读取指针，随后解锁并把裸 `void *` 返回给 ObjC/C++ 调用方。这个锁只保护读取动作，不覆盖调用方真正使用 Metal 对象或 opaque owner 的时间区间。
+
+销毁路径 `mglRendererBackendDestroy()`（`MGL/src/mgl_renderer_backend.cpp:1483-1507`）先设置 `destroying`，调用 platform 回调和 `mglRendererBackendShutdown()`，再由 `mglRendererBackendReleaseOwnedState()` 释放 device、queue、纹理、buffer、sampler、cache 和 owner，最后 `delete backend`。因此下面的交错是合法的竞态：
+
+```text
+T1: GetDevice/Get* 在 mutex 内读出 p，解锁
+T2: Destroy 设置 destroying，等待最后 submission，release(p)
+T1: 调用 p->... 或把 p 传入后续 encoder/ObjC API
+```
+
+`GetDevice`、`GetCommandQueue` 和资源 getter 即使都加了 mutex，也不能阻止 T1 在解锁后使用已释放对象；`GetDevice` 目前也没有调用方持有的稳定引用。已落地的 sync teardown barrier 只覆盖 fence API 的 context-level active operation，不覆盖这些 backend getter、renderer category 方法或 backend handle 本身。
+
+#### 影响范围
+
+需要按三类 API 一起处理，不能只修 `GetDevice`：
+
+1. **核心身份与队列**：`mglRendererBackendGetDevice()`、`mglRendererBackendGetCommandQueue()`，以及 `MGL/include/MGLRenderer_Private.h` 中 `_device`、`_commandQueue`、`_commandQueueOwner` 宏。它们在多个 ObjC category 中被隐式重复求值。
+2. **backend-owned Metal 资源与缓存**：fallback/transient/default draw-buffer texture，fallback/cull/current-attrib/packed-attrib/size-constant buffer，blit sampler/depth state，passthrough function，sampler snapshot，tessellation/capture/XFB/TCS buffer，以及 fallback resource/sampled-texture cache。对应调用主要在 `MGLRenderer+RenderPass.m`、`+Blit.m`、`+BindingState.m`、`+Tessellation.m`、`+DrawSupport.m`、`+Texture.m`、`+BatchReplay.m`。
+3. **opaque runtime owner**：`mglRendererBackendGetOwner()` 返回 command queue/buffer、render encoder/pass、query、recovery、binding owner 的 C++ 裸指针。`MGLRenderer+Lifecycle.m` 会把 binding/query/recovery owner 缓存到 ObjC 状态，`mgl_render.cpp` 还会转发 `GetOwner`；这些指针也必须受同一生命周期协议保护。
+
+另外，`GetStageCopyBackResources()`、`GetFallbackSampledTexture()`、`GetTessFactorBuffer()` 和 `GetTessXfbDummyBuffer()` 通过 out 参数返回的对象仍是 borrowed；“返回命中状态”不改变对象的生命周期语义。任何把 getter 结果写入 ObjC ivar、C++ command structure、异步回调或跨线程队列的代码，都已经超出当前借用约定的安全范围。
+
+#### 推荐的两层生命周期模型
+
+推荐先建立统一的 **backend operation lease**，再决定少数跨 scope 对象是否需要额外 retain/shared ownership：
+
+- lease 获取是 backend handle 的一次可失败操作。获取时检查 `destroying`/关闭 gate，并递增 active lease；销毁设置 gate 后拒绝新 lease，等待 active lease 归零，再释放 owned state 和 backend handle。
+- 一个 lease 必须覆盖从 getter 取值到最后一次使用的完整区间，包括调用到 Metal-cpp、ObjC bridge、encoder 提交和 owner helper 的过程。getter 不再单独声称“锁内读安全”。
+- 需要跨越 lease、存入长期状态或交给异步 command 的对象，使用显式 owned 返回：Metal-cpp 对象通过 `retain`/`release` 配对，或封装成项目内的 shared handle；C++ owner 使用引用计数/shared ownership，而不是把 `GetOwner` 裸指针缓存到 teardown 之后。
+- 不建议只延长每个 getter 的 mutex 临界区。调用者的使用发生在 getter 返回之后，且长时间持锁会把资源创建、编码和销毁耦合在一把锁上。
+
+可以先以 C ABI 形态落地，后续在 C++/ObjC 层包 RAII：
+
+```c
+typedef struct MGLRendererBackendLease {
+    MGLRendererBackendHandle *backend;
+    uint64_t generation;
+} MGLRendererBackendLease;
+
+int mglRendererBackendBegin(MGLRendererBackendHandle *,
+                            MGLRendererBackendLease *);
+void mglRendererBackendEnd(MGLRendererBackendLease *);
+void *mglRendererBackendLeaseGetDevice(
+    const MGLRendererBackendLease *);
+```
+
+实现时必须保证 lease 获取本身发生在 handle 仍然稳定可访问的 owner/context 保护下；否则调用方可能在读取 `backend` 指针前就遇到 `delete backend`。lease 生命周期之外不得保存其中的 borrowed pointer；跨 scope 必须调用明确的 `Retain`/`Release` 或 owned getter。还要检查 platform destroy 回调是否反向请求 lease，避免关闭 gate 后的回调死锁。
+
+#### 建议的迁移顺序
+
+1. 在 backend 内增加 active-lease 计数、关闭 gate、条件变量和 generation/debug 断言；保留旧 getter 以便分阶段迁移。
+2. 先迁移 `_device`、`_commandQueue`、`_commandQueueOwner` 以及 `MGLRenderer+Lifecycle.m` 的 owner 缓存，建立 ObjC scope helper/C++ RAII lease。
+3. 迁移 RenderPass、Blit、BindingState、Tessellation、DrawSupport、Texture、BatchReplay 中的 cache/fallback/tess getter；同一方法内的多次 getter 应共享一个 lease。
+4. 最后迁移 `GetOwner`、stage-copy-back 和所有 cache out 参数；禁止新代码直接缓存 borrowed 返回值。
+5. 过渡期把旧入口改名为内部 `*_BorrowedUnsafe` 或加静态检查标记；全部调用点迁移后删除旧 borrowed API，避免再次引入无保护调用。
+
+#### 销毁协议
+
+销毁顺序应固定为：
+
+```text
+close gate
+detach backend from context/platform
+reject new leases
+wait active backend leases == 0
+stop/wait command submission
+destroy render-pass/runtime owners
+release Metal-owned cache objects
+delete backend handle
+```
+
+具体实现可把“阻止新 lease”和“等待 GPU 最后提交”分开，但不能在 active lease 仍存在时执行 `mglRendererBackendReleaseOwnedState()`。platform callback 必须只做 detach/通知，不能在 gate 关闭后同步取得新 lease；若确实需要访问 backend，应改成由 destroy 持有的内部 shutdown token。
+
+#### 验收门禁
+
+- 多线程 getter/use 与 destroy 交错 stress test；覆盖 device、queue、texture、buffer、cache out 参数和 owner 全类别。
+- 重复 create/use/destroy loop，并加入 cache replacement、command-queue reset、platform callback 和 renderer `dealloc` 的交错。
+- ASan/TSan（或 macOS 等价工具）运行上述测试；Metal retain/release 计数须无 UAF、double release 和泄漏。
+- 静态审计所有 `mglRendererBackendGet*` 调用：每个调用必须位于 lease scope，或明确使用 owned getter；ObjC ivar、C++ command structure 和异步任务不得保存未说明的 borrowed 指针。
+- 重新运行现有 regression、arch-correctness、指定 KHR-GL46 case，并在实现完成后用用户给出的逐 case runner 重跑相关 GL46 分组；CTS 的工作目录必须保持为 `.../external/openglcts/modules`。
+
+#### 当前状态与接手边界
+
+此项仍为 **P1 open**。当前代码只有 backend mutex 和 `destroying` 标志，没有统一 lease/shared ownership；已验证的 sync teardown barrier 不能替代它。后续实现的最小完成条件是：所有 getter/use 路径有可证明的 lease 或 owned 引用，destroy 在释放对象前完成 lease drain，`GetOwner` 和 ObjC 缓存也纳入同一协议，并有并发销毁测试证明 handle 与对象两层生命周期都安全。
+
 ### 当前证据
 
 - `make -j4 lib`：通过。
