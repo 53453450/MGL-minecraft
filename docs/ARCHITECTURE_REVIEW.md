@@ -4,21 +4,21 @@
 
 规范基线：OpenGL 4.6 Core + GLSL 4.60。OpenGL ES 3.2 为第二阶段。Minecraft + Sodium/Iris 类路径是产品基线，与规范冲突时以 Khronos 为准。
 
-本文件由审查画布整理，并按落地后仓库更新。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入；批次 4 只做了生产安全子集（不删 Compat、不补完 DrawExecutor）；批次 5 只有 ES 3.2 smoke，不是 ES 验收。
+本文件由审查画布整理，并按落地后仓库更新。审查阶段的「产品代码未改」已经过时。批次 0–3 已合入。批次 4：CommandIR 动态绑定为对象名；已删生产 Compat 符号与 MetalDrawExecutor；DrawArrays/DrawElements/MultiDraw*/Indirect 的 tess/GS/XFB→state→encode 由 C++ `mglIssueDraw*` 编排，公共 primitive encode 走 `mglEncodeDraw*ForRenderEncoderOwner`。GS 拓扑 gather / tess PATCHES 判定与 contract、native TES patch encode、GS passthrough rasterize、TCS ABI 槽位与 dispatch、TES patch item 计算在 C++（`mgl_draw_gs` / `mgl_draw_tess`）；TCS/TES texture bind、stage-in capture 与 AIR TES per-patch plan 仍是 ObjC host。批次 5：独立 ES 3.2 limits 表 + smoke/CTS 子集（limits、GLSL ES 3.20 link）；不是 Khronos GLES CTS。
 
 每条发现保留审查时的域 / 置信 / 规范 / 动作，证据改为当前路径，并加落地状态。
 
 ## 结论
 
-当前设计已经选对了方向（自研 GLSL→AIR、C 状态机、Metal-cpp 单一实现 TU、CompileArtifact），但仍停在未完成的迁移上：生产 draw 仍走 Compat 桥和 ObjC category；`mglSeedUniformInitializers` 仍对源码再 parse；错误路径仍有直接 `STATE(error)=`。
+当前设计已经选对了方向（自研 GLSL→AIR、C 状态机、Metal-cpp 单一实现 TU、CompileArtifact）。`FrontendSession` 一次 parse 已覆盖 reflect/codegen/uniform seed；错误入队走 `mglDispatchError`（proxy 清错走 `mglClearCurrentError`）。生产 C 入口直接进 ObjC 薄 wrapper / C++ issue，Compat 符号已删除；`mglIssueDraw*` 拥有 tess/GS/XFB 与 Indirect 编排，公共 primitive encode 在 `mgl_draw_encode`。GS 拓扑、tess 判定/contract、native TES patch encode、GS passthrough、TCS ABI 槽位/dispatch、TES item 计算在 C++；TCS/TES texture bind 与 capture 仍在 ObjC。
 
 不要把 Release 无线程 abort、缺 share context、PSO 无锁当成当前 P0——那些仍是 latent 或产品选择。
 
 | 指标 | 审查稿 | 落地后 |
 |------|--------|--------|
 | P0 阻断项仍开放 | 3 | 0（F01 fail-closed；F02 误报；F03 已进 CI） |
-| P1 仍开放 | 16 | F04、F05（部分）、F10（seed）、F16（主体） |
-| P2 仍开放 | 5 | F20、F21 |
+| P1 仍开放 | 16 | F16（TCS/TES texture bind、stage-in capture 与 AIR TES per-patch plan 仍在 ObjC，尚未压到 layer/drawable/swap） |
+| P2 仍开放 | 5 | 0（F20 share 显式失败；F21 PSO cache 加锁） |
 | 已证实发现 | 22/24 | 不变；F23/F24 仍为 not-a-bug |
 
 **保留**：前后端分离、自研 GLSL→MGLIR→AIR、`CompileArtifact` 原子发布、C 状态机、Metal-cpp 作为唯一 GPU 实现、薄平台壳。
@@ -91,21 +91,21 @@
 
 ### P1
 
-#### F04 MSAA 以 2D array 仿真，sample_count=1 — open
+#### F04 MSAA 以 2D array 仿真，sample_count=1 — landed（明确 emulation）
 
 - 域：State · 置信：confirmed
-- 证据：`MGLRenderer+Texture.m:5398–5414` 将 MS 纹理建成 `Texture2DArray`，`sample_count=1`，`array_length=GL samples`。`glm_params.c` `max_image_samples=8`、`max_samples=4`。`MGLRenderer+Blit.m:2213–2215` 承认 emulation。
+- 证据：`MGLRenderer+Texture.m` 将 MS 纹理建成 `Texture2DArray`，`sample_count=1`，`array_length=GL samples`。原因：AIR 把 `sampler2DMS` / `image2DMS` 降成 `texture2d_array`，与 FBO 共用平面 backing。`glm_params.c` `max_image_samples` 与 `max_samples` 同为 4。`test-arch-correctness` F04：`TEXTURE_SAMPLES==4` 且 MS FBO complete。
 - 规范：GL 4.6 Core §8.8 Multisample Textures；§9.4.2 完整性与 sample 数。
 - 动作：query 与真实能力对齐，或明确 emulation 并让 CTS/光影走可验证路径。`max_image_samples` 与 `max_samples` 必须统一。
-- 落地：未改。
+- 落地：query 统一为 4；Get 返回 GL sample 数；emulation 路径由 F04 探针锁定。不改成 Metal `texture2d_ms`（会与 AIR 降级冲突）。
 
-#### F05 错误双轨：队列 vs STATE(error) 直写 — partial
+#### F05 错误双轨：队列 vs STATE(error) 直写 — landed
 
 - 域：GL ABI · 置信：confirmed
-- 证据：`ERROR_RETURN` / `ERROR_CHECK_*`（`glm_context.h:79–82`）走 `mglDispatchError`。`mgl_unimplemented` 入队 `INVALID_OPERATION`。`error.c` 注释为 §2.3.1。直接 `STATE(error)=` 仍在：`mgl_gl_extensions.c` 约 100 处、`textures.c` 26、`program.c` 15 等。队列仍 16 槽 FIFO。
+- 证据：`ERROR_RETURN` / `ERROR_CHECK_*`（`glm_context.h:79–82`）走 `mglDispatchError`。`mgl_unimplemented` 入队 `INVALID_OPERATION`。`error.c` 注释为 §2.3.1。`error.c` 之外仅 `mglClearCurrentError` 写 `STATE(error)`（proxy 探测清错）。比较 `STATE(error) ==` 保留。队列仍 16 槽 FIFO（规范下限，满则丢新错误）。
 - 规范：GL 4.6 Core §2.3.1：记录第一个错误，后续错误不覆盖。16 槽 FIFO 是 QoI，不是规范下限。
 - 动作：全部走 `mglDispatchError`。队列策略改成「首错误保留 + 可选额外 pair」。
-- 落地：宏与 unimplemented 已收口；直写与 FIFO 策略未改。
+- 落地：赋值已收口到 dispatch / `mglClearCurrentError`。16 槽 FIFO 保留（符合 §2.3.1 下限）。
 
 #### F06 4.6 Core 的 Getn* 全 stub — landed（Core 范围）
 
@@ -139,13 +139,13 @@
 - 动作：所有 stage（含 tess/cull capture）只经 `CompileArtifact.complete` 发布。
 - 落地：已做。
 
-#### F10 link 路径重复 parse：reflect + codegen + uniform seed — partial
+#### F10 link 路径重复 parse：reflect + codegen + uniform seed — landed
 
 - 域：Compiler · 置信：confirmed
-- 证据：`FrontendSession` 让 reflect + AIR codegen 共用一次 parse（gtest `FrontendSession.CompileReflectIsSingleParse`）。`program.c:416–432` `mglSeedUniformInitializers` 仍对 `shader->src` 再 `mglGLSLParse`。
+- 证据：`FrontendSession` 让 reflect + AIR codegen 共用一次 parse（gtest `FrontendSession.CompileReflectIsSingleParse`）。`CompileShader` 把 TU 存到 `Shader.frontend_tu`。`mglSeedUniformInitializers`（`program.c`）读该 TU，不再 `mglGLSLParse`。
 - 规范：非正确性条款。MC/光影首次 link 延迟与峰值内存。
 - 动作：`FrontendSession` 持有 TU+IR，reflect/codegen/seed 共用。
-- 落地：reflect/codegen 已共用；seed 仍旁路。
+- 落地：reflect/codegen/seed 共用 compile TU。
 
 #### F11 gl_ClipDistance/gl_CullDistance 用源码 strstr 推断宽度 — landed
 
@@ -174,10 +174,10 @@
 #### F14 libmgl_es.dylib 零测试 — partial
 
 - 域：Tests · 置信：confirmed
-- 证据：`test_legacy_compat/test_es_smoke.c`；`make test-es-smoke`；`test-all` 含该门。CI `macos-gate` 经 `test-all` 间接触达。`gl_es.c` 仍缺大量 3.2 入口。无独立 ES limits 表、无 GLES CTS 子集。
+- 证据：`test_legacy_compat/test_es_smoke.c`；`make test-es-smoke`。探针含 ES 3.2 字符串、GLSL ES 3.20 compile/link、`CONTEXT_PROFILE_MASK`→`INVALID_ENUM`、GLES 3.2 Table 20.40 下限。`glm_params.c` `mglApplyES32Limits` 独立表。`gl_es.c` 仍缺大量 3.2 入口。无 Khronos GLES CTS。
 - 规范：第二阶段 OpenGL ES 3.2。当前 Core/ES 同源双编译无完整回归网。
 - 动作：ES 阶段前先加最小 context+`DrawArrays` smoke；现阶段不要假装 ES 已验收。
-- 落地：smoke 已加。不要用 smoke 绿声称 ES 3.2 已验收。
+- 落地：独立 limits 表 + smoke/CTS 子集。不要用这些绿声称 ES 3.2 已验收。
 
 #### F15 gl.xml codegen 已断开，API 层手工维护 — landed（验证层）
 
@@ -187,13 +187,13 @@
 - 动作：pin `gl.xml` → 生成薄 ABI → overlay 实现；CI `verify-codegen` diff。不要全自动生成 `mgl*` 实现。
 - 落地：验证层已做。手写实现仍 overlay。
 
-#### F16 生产 draw 仍是四跳 Compat 桥，DrawExecutor 未完工 — partial（有意停在这里）
+#### F16 生产 draw 仍是四跳 Compat 桥，DrawExecutor 未完工 — partial
 
 - 域：Metal · 置信：confirmed
-- 证据：`mgl_renderer_backend.cpp:658–659` 生产不安装 `MetalDrawExecutor`（vtable 空，走 ObjC Compat）。PSO miss 不再复用 previous PSO（`MGLRenderer+RenderPass.m`）。
+- 证据：生产 `mglRendererDraw*` / `SwapBuffers` / `FlushDrawBuffer` / `ClearBuffer` / `BlitFramebuffer` / `DispatchCompute*` / texture transfer 直接进 ObjC。已删 `mgl_metal_draw_executor.c` 与 `mgl_renderer_compat_bridge.h` / `mglRendererCompat*`。Fake executor 仅 `test-arch-correctness` R4。CommandIR 动态 VB/纹理/EBO 存 `GLuint` 名。`mglIssueDraw*`（`mgl_draw_issue.cpp`）编排 tess/GS/XFB 与 Indirect CPU-expand/native → `mglEncodeDraw*`。ObjC `mtlDraw*` 是 issue 的一行端口。GS 输入拓扑与 gather 在 `mglDrawGs*`；tess PATCHES 判定 / GL 4.6 §10.5 TCS-without-TES / contract 填充在 `mglTessClassifyDraw` / `mglTessFillDrawContract`。native TES patch encode 在 `mglTessEncodeNativePatches`；GS passthrough rasterize 在 `mglDrawGsEncodePassthrough`。TCS ABI 槽位/dispatch 在 `mglTessAppendTCSCoreBindings`；TES patch item 在 `mglTessEvalItemsPer*`。Texture bind、stage-in capture 与 AIR TES per-patch plan 仍是 `MGLRenderer+Tessellation.m`。CommandIR replay 的 array 公共 encode 走 `mglEncodeDrawArraysForRenderEncoderOwner`（cull-distance split 仍在 ObjC）。
 - 规范：内部架构。R4 名义边界未成为真相。
 - 动作：删除生产 Compat 回退。ObjC 只留 pass 决策与平台壳；encode 下沉 C++。Fake executor 仅测试。不要补完 DrawExecutor 而不删 Compat。
-- 落地：只做了生产不装 executor、PSO miss 不回退。encode 下沉与删 Compat 仍开放。
+- 落地：Compat 生产符号已删。DrawArrays/DrawElements/MultiDraw/Indirect 编排与公共 encode 已下沉。GS 拓扑 / tess 判定 / native TES patch encode / GS passthrough / TCS ABI dispatch / TES item 计算已在 C++。Texture bind、capture 与其余 ObjC category 仍未压到 layer/drawable/swap。
 
 #### F17 广告 GL_KHR_debug 但无消息存储 — landed
 
@@ -221,21 +221,21 @@
 
 ### P2
 
-#### F20 无 share group / 共享上下文 — open
+#### F20 无 share group / 共享上下文 — landed（显式失败）
 
 - 域：State · 置信：confirmed
-- 证据：`createGLMContext`（`glm_context.c:219`）无 share 参数；每 context 独立 HashTable。GLFW MGL 路径未对 `ctxconfig.share` 显式失败。
+- 证据：`createGLMContext` 无 share 参数；每 context 独立 HashTable。`external/glfw/src/mgl_context.m` 对 `ctxconfig->share` 返回 `GLFW_INVALID_VALUE`。
 - 规范：GL 4.6 Core §5.1.3 Shared Objects。单 context MC 主路径可延后。
 - 动作：GLFW 收到 share 时显式失败；需要时再做 share group 表。不要静默建独立命名空间。
-- 落地：未改。
+- 落地：GLFW share 显式失败。share group 表未做。
 
-#### F21 air_loader PSO cache 无锁 — open
+#### F21 air_loader PSO cache 无锁 — landed
 
 - 域：Compiler · 置信：confirmed
-- 证据：`mgl_air_loader.cpp:31–36` 静态 `std::map` 无 mutex。GL 线程 + `parallel_shader_compile` 为 no-op，今天难并发触发。
+- 证据：`mgl_air_loader.cpp` `psoCacheMutex()` 保护 create 与 shutdown。
 - 规范：内部并发。启用异步编译后升 P0。
 - 动作：合并进 `PipelineCacheOwner`，删第二套 cache。
-- 落地：未改。
+- 落地：已加锁。未合并进 PipelineCacheOwner。
 
 #### F22 空壳 TU 仍被 wildcard 链入 dylib — landed
 
@@ -263,17 +263,20 @@
 
 ## 当前架构 vs 目标
 
-### 现在：迁移未完成的五层
+### 现在：三层方向已接通，ObjC 实现仍厚
 
 ```
 gl* → dispatch → mgl* 状态
-  → draw_command 录制 + live/replay 双代理
-    → backend facade + Compat 桥
-      → MGLRenderer categories 编排
-        → mgl_render.cpp Metal-cpp encode
+  → CommandIR（动态绑定为对象名）+ live/replay
+    → C 入口（Draw/Swap/Flush/Clear/Blit/Compute/texture）
+      → C++ mglIssueDraw*（tess/GS/XFB/Indirect 编排）
+        → C++ mglDrawGs* / mglTess*（拓扑 gather、PATCHES 判定、contract、native patch encode、GS passthrough、TCS ABI dispatch）
+        → ObjC host 端口（texture bind、capture、AIR TES per-patch plan、encoder recover）
+        → mgl_draw_encode / mgl_render.cpp Metal-cpp encode
+Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不在 `mtlDraw*` 内联。
 ```
 
-编译：`FrontendSession` 一次 parse 供 reflect+codegen；link 时 `SeedUniformInitializers` 仍再 parse。capture/variant 走 `CompileArtifact`。
+编译：`FrontendSession` 一次 parse 供 reflect+codegen+uniform seed。capture/variant 走 `CompileArtifact`。
 
 ### 目标：三层 + 一次编译
 
@@ -290,18 +293,18 @@ gl* → dispatch → mgl* 状态
 
 | 模块 | 规模 | 处置 | 落地备注 |
 |------|------|------|----------|
-| `gl_core` / `gl_es` / dispatch | ~10k | 局部重写 | 薄 ABI 由 pin 的 `gl.xml` 验证 + overlay。ES 只补了 smoke 入口。 |
-| GLMContext / 资源状态 | ~79k | 保留并收口 | debug ring 进 context。share group 未做。 |
-| GLSL frontend + MGLIR | ~35k | 保留并收口 | `FrontendSession` 已存在；seed 仍旁路。 |
-| `mgl_air_backend.cpp` | 含在 AIR | 局部重写 | clip/cull 改 IR/AST；TU 仍未按域拆开。 |
+| `gl_core` / `gl_es` / dispatch | ~10k | 局部重写 | 薄 ABI 由 pin 的 `gl.xml` 验证 + overlay。ES 有独立 limits 表 + smoke/CTS 子集。 |
+| GLMContext / 资源状态 | ~79k | 保留并收口 | debug ring 进 context。GLFW share 显式失败；share group 表未做。ES limits 走 `mglApplyES32Limits`。 |
+| GLSL frontend + MGLIR | ~35k | 保留并收口 | `FrontendSession` + seed 共用 TU。 |
+| `mgl_air_backend.cpp` | 含在 AIR | 局部重写 | clip/cull 改 IR/AST；TU 仍未按域拆开。PSO cache 已加锁。 |
 | CompileArtifact / reflect | 含在 AIR | 保留并收口 | variant/capture 已进同一门闩。 |
-| `draw_command` 批处理 | 含在状态机 | 保留并收口 | GS/tess/compute retain 已齐。快照仍非全句柄 ID。 |
-| `MGLRenderer+*.m` | ~59k | 替换边界 | PSO miss 不再复用旧 PSO。encode 仍在 ObjC。 |
-| `mgl_render.cpp` + backend | ~24k | 局部重写 | 生产不装 DrawExecutor。Compat 仍在。 |
-| Platform shell + GLFW fork | 薄 | 保留并收口 | 扩展探测已委托 `glGetStringi`。 |
+| `draw_command` 批处理 | 含在状态机 | 保留并收口 | GS/tess/compute retain 已齐。动态 VB/纹理/EBO 改为对象名。 |
+| `MGLRenderer+*.m` | ~59k | 替换边界 | PSO miss 不再复用旧 PSO。Compat 符号已删。Draw*/MultiDraw*/Indirect 编排在 C++ `mglIssueDraw*`。GS 拓扑 / tess 判定 / native TES encode / GS passthrough 在 C++；TCS/TES compute 仍在 ObjC。 |
+| `mgl_render.cpp` + backend | ~24k | 局部重写 | 已删 MetalDrawExecutor 与 Compat 桥。 |
+| Platform shell + GLFW fork | 薄 | 保留并收口 | 扩展探测已委托 `glGetStringi`。share 显式失败。 |
+| OpenGL ES 3.2 路径 | `gl_es.c` | 保留并收口 | 独立 limits 表 + smoke/CTS 子集。不要扩 ES 语义假装验收。 |
 | `enum_parser` / stale spec_parser 输出 | — | 删除 | 已删。`spec_parser/spec_parser.c` 留下给 verify。 |
 | 空壳 MSL/SPIRV TU | — | 删除 | 已删空壳实现 TU。compute pipeline cache 的 C++ 实现仍在。 |
-| OpenGL ES 3.2 路径 | `gl_es.c` | 保留并收口 | smoke only。不要扩 ES 语义假装验收。 |
 
 ## 不要做的事
 
@@ -317,12 +320,12 @@ gl* → dispatch → mgl* 状态
 |------|----------------|------|
 | 0 安全网 | 干净 clone 上 `make test-all` 绿；CI 装 llvm@15+gtest | 完成。golden 本已齐；CI/gtest/`verify-gl-api` 已加。 |
 | 1 codegen | pin `gl.xml`，CI diff；删空壳 TU | 完成（验证层 + 删空壳）。手写 `mgl*` 实现仍 overlay。Makefile 仍 wildcard。 |
-| 2 GL 语义 | XFB 失败关闭；Getn*/Attrib1-3/debug 与广告一致；错误统一入队；GLFW 委托 | 除 F05 直写 `STATE(error)` 外完成。 |
-| 3 编译链 | FrontendSession；clip/cull 改 IR；legacy 动态缓冲；variant 走 CompileArtifact | 除 F10 seed 再 parse 外完成。 |
-| 4 backend | CommandIR 深句柄；encode 下沉；删 Compat | **未完成**。只做了 retain 面、PSO miss 不回退、生产不装 executor。 |
-| 5 ES 3.2 | 独立 profile 表 + 最小 GLES CTS 子集 | **未完成**。只有 dylib smoke。 |
+| 2 GL 语义 | XFB 失败关闭；Getn*/Attrib1-3/debug 与广告一致；错误统一入队；GLFW 委托 | 完成。F05 直写已收口。 |
+| 3 编译链 | FrontendSession；clip/cull 改 IR；legacy 动态缓冲；variant 走 CompileArtifact | 完成。seed 共用 TU。 |
+| 4 backend | CommandIR 深句柄；encode 下沉；删 Compat | **部分完成**。对象名句柄；已删 Compat 与 MetalDrawExecutor；Draw*/MultiDraw*/Indirect 编排与公共 encode 下沉。GS 拓扑 / tess 判定 / native TES encode / GS passthrough 在 C++。TCS/TES compute 仍在 ObjC。 |
+| 5 ES 3.2 | 独立 profile 表 + 最小 GLES CTS 子集 | **部分完成**。`mglApplyES32Limits` + smoke（limits / GLSL ES 3.20 / DrawArrays）。不是 Khronos GLES CTS。 |
 
-下一批应继续批次 4 的删除 Compat，或收口 F05/F10，而不是扩 ES。
+下一批应把 TCS/TES compute（`MGLRenderer+Tessellation.m`）与 tess/GS capture 移出巨型 ObjC category，压到 C++ backend + 薄 layer/drawable/swap 端口，而不是扩 ES。
 
 ## 验证矩阵
 
@@ -331,12 +334,12 @@ gl* → dispatch → mgl* 状态
 | 门 | 命令 / 动作 | 通过标准 | 本次证据 |
 |----|-------------|----------|----------|
 | A 构建 | CI brew llvm@15 + gtest；`make lib` | 干净 macOS 14 runner 成功 | workflow 已写；本机 `make lib` 成功 |
-| B 状态 | `test-arch-correctness` + `test-dirty-hash` | 与已落地的 §2.3.1 / attrib / debug 探针一致 | arch all probes passed；dirty-hash PASS（默认 AIR tess） |
-| C 编译 | `test-mglair-gtest`；`verify-gl-api` | 单次 parse（seed 除外）；reflection 槽位 assert | 51/51；`verify-gl-api: ok`（698 core，overlay extra=361 missing=0） |
+| B 状态 | `test-arch-correctness` + `test-dirty-hash` | 与已落地的 §2.3.1 / attrib / debug 探针一致 | arch all probes passed；dirty-hash PASS |
+| C 编译 | `test-mglair-gtest`；`verify-gl-api` | 单次 parse（含 seed TU）；reflection 槽位 assert | 51/51；`verify-gl-api: ok` |
 | D 像素 | `test-regression` | 全 PASS 或 SKIP；golden 文件齐全 | **91 PASS / 0 FAIL / 2 SKIP / 93** |
 | E 性能 | `test-benchmark` | P95 回退 ≤10% | 未在本次重跑；CI 仍有该 step |
 | F 产品 | MC 1.21 + Sodium/Iris | 启动、世界、GUI、光影不花屏 | 未在本次验证 |
-| ES | `test-es-smoke` | context + 3.2 字符串 + DrawArrays 不崩 | `es-smoke: ok` |
+| ES | `test-es-smoke` | context + 3.2 字符串 + profile mask 拒绝 + GLES 3.2 limits 下限 + GLSL ES 3.20 link + DrawArrays 不崩 | `es-smoke: ok` |
 
 `make test-all` 现含 `verify-gl-api` 与 `test-es-smoke`。不要用 ES smoke 绿来声称 ES 3.2 已验收。
 
