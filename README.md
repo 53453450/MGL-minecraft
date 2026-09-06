@@ -128,7 +128,7 @@ MGL-minecraft/
 ├── benchmark/                   # 性能测试工具
 ├── spec_parser/                 # 规范解析辅助（verify-codegen）
 ├── scripts/                     # 资产生成、回归、trace 和 benchmark 脚本
-├── docs/                        # AIR/Metal-cpp 设计与验收记录
+├── docs/                        # 架构审查与设计记录（见 ARCHITECTURE_REVIEW.md）
 ├── MGL_Golden_Images/           # 图像回归基准
 ├── TestImages/                  # 测试纹理素材
 ├── config.mk.example            # 本地 SDK/toolchain 配置模板

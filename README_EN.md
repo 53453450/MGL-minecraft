@@ -146,7 +146,7 @@ MGL-minecraft/
 ├── benchmark/                   # Performance test tools
 ├── spec_parser/                 # Specification parsing helper (verify-codegen)
 ├── scripts/                     # Asset, regression, trace, and benchmark scripts
-├── docs/                        # AIR/Metal-cpp design and acceptance records
+├── docs/                        # Architecture review (ARCHITECTURE_REVIEW.md)
 ├── MGL_Golden_Images/           # Image regression baselines
 ├── TestImages/                  # Test texture assets
 ├── config.mk.example            # Local SDK/toolchain configuration template

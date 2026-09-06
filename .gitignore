@@ -11,7 +11,8 @@ external/ezxml/
 /Info.plist
 *.dylib
 /.claude
-/docs
+/docs/*
+!/docs/ARCHITECTURE_REVIEW.md
 /.work-buddy
 /mgl-ssbo-20260805b/
 build_asan/
