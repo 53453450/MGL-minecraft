@@ -3428,14 +3428,14 @@ void _name_##Transpose (const _name_ *matrix, _transposed_name_ *result) { \
         /* CRITICAL SECURITY FIX: Prevent integer overflow in uniform matrix allocation */ \
         if (count > SIZE_MAX / sizeof(_dst_type_)) { \
             fprintf(stderr, "MGL SECURITY ERROR: Uniform matrix count %d would cause allocation overflow\n", count); \
-            STATE(error) = GL_OUT_OF_MEMORY; \
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY); \
             return; \
         } \
         size_t alloc_size = count * sizeof(_dst_type_); \
         _dst_type_ *dst = (_dst_type_ *)malloc(alloc_size); \
         if (!dst) { \
             fprintf(stderr, "MGL SECURITY ERROR: Failed to allocate %zu bytes for uniform matrix\n", alloc_size); \
-            STATE(error) = GL_OUT_OF_MEMORY; \
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY); \
             return; \
         } \
         for (int i = 0; i < count; i++) { \

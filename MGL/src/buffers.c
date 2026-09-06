@@ -340,7 +340,7 @@ Buffer *newBuffer(GLMContext ctx, GLenum target, GLuint name)
     ptr = (Buffer *)malloc(sizeof(Buffer));
     if (!ptr) {
         if (ctx)
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         fprintf(stderr, "MGL ERROR: failed to allocate buffer %u target=0x%x\n", name, target);
         return NULL;
     }

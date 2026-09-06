@@ -24,9 +24,18 @@
 
 #include "glm_context.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void error_func(GLMContext ctx, const char *func, GLenum error);
 void mglDispatchError(GLMContext ctx, const char *func, GLenum error);
+void mglClearCurrentError(GLMContext ctx);
 
 GLenum  mglGetError(GLMContext ctx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* error_h */

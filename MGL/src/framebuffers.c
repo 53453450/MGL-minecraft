@@ -410,7 +410,7 @@ static Renderbuffer *newRenderbuffer(GLMContext ctx, GLuint renderbuffer)
     ptr = (Renderbuffer *)malloc(sizeof(Renderbuffer));
     if (!ptr) {
         if (ctx)
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         fprintf(stderr, "MGL ERROR: failed to allocate renderbuffer %u\n", renderbuffer);
         return NULL;
     }
@@ -487,7 +487,7 @@ static Framebuffer *newFramebuffer(GLMContext ctx, GLuint framebuffer)
     ptr = (Framebuffer *)malloc(sizeof(Framebuffer));
     if (!ptr) {
         if (ctx)
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         fprintf(stderr, "MGL ERROR: failed to allocate framebuffer %u\n", framebuffer);
         return NULL;
     }
@@ -2168,14 +2168,14 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
              * existing texture object when texture is nonzero (GL 4.6
              * 9.2).  The 1D/2D/3D entry points keep their legacy
              * by-name placeholder behaviour above. */
-            STATE(error) = GL_INVALID_VALUE;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
             return;
         }
 
         if (effective_textarget == GL_TEXTURE_BUFFER ||
             (tex && tex->target == GL_TEXTURE_BUFFER))
         {
-            STATE(error) = GL_INVALID_OPERATION;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
 
@@ -2208,7 +2208,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                     }
                 }
 
-                STATE(error) = GL_INVALID_OPERATION;
+                mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
                 return;
 
                 break;
@@ -2216,7 +2216,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
 
         if (level < 0)
         {
-            STATE(error) = GL_INVALID_VALUE;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
             return;
         }
 
@@ -2224,7 +2224,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
         // make the FBO incomplete, not raise GL_INVALID_VALUE.
         if (tex && tex->mipmap_levels != 0 && level >= (GLint)tex->mipmap_levels)
         {
-            STATE(error) = GL_INVALID_VALUE;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
             return;
         }
 
@@ -2236,7 +2236,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                 case GL_TEXTURE_RECTANGLE:
                 case GL_TEXTURE_2D_MULTISAMPLE:
                 case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-                    STATE(error) = GL_INVALID_VALUE;
+                    mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
                     return;
 
                 // if textarget is GL_TEXTURE_3D, then level must be greater than or equal to zero and less than or equal to $log_2$ of the value of GL_MAX_3D_TEXTURE_SIZE.
@@ -2252,7 +2252,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                                 attachment,
                                 texture,
                                 effective_textarget);
-                        STATE(error) = GL_INVALID_VALUE;
+                        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
                         return;
                     }
                     break;
@@ -2279,7 +2279,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                                     attachment,
                                     texture,
                                     effective_textarget);
-                            STATE(error) = GL_INVALID_VALUE;
+                            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
                             return;
                         }
                     }
@@ -2300,7 +2300,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                                 effective_textarget,
                                 tex ? tex->target : 0u,
                                 tex ? tex->mipmap_levels : 0u);
-                        STATE(error) = GL_INVALID_VALUE;
+                        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
                         return;
                     }
                     break;

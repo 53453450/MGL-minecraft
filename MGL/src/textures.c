@@ -215,7 +215,7 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     index = textureIndexFromTarget(ctx, object_target);
     if (index == _MAX_TEXTURE_TYPES)
     {
-        STATE(error) = GL_INVALID_ENUM;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
         return NULL;
     }
 
@@ -223,7 +223,7 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     // CRITICAL SECURITY FIX: Check malloc result instead of using assert()
     if (!ptr) {
         fprintf(stderr, "MGL SECURITY ERROR: Failed to allocate memory for texture\n");
-        STATE(error) = GL_OUT_OF_MEMORY;
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         return NULL;
     }
 
@@ -272,7 +272,7 @@ Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture)
     if (!ctx || texture == 0)
     {
         if (ctx) {
-            STATE(error) = GL_INVALID_VALUE;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
         }
         fprintf(stderr,
                 "MGL ERROR: newTexture refused invalid name=%u target=0x%x ctx=%p\n",
@@ -285,7 +285,7 @@ Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture)
     index = textureIndexFromTarget(ctx, target);
     if (index == _MAX_TEXTURE_TYPES)
     {
-        STATE(error) = GL_INVALID_ENUM;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
         return NULL;
     }
 
@@ -322,7 +322,7 @@ static Texture *getTexture(GLMContext ctx, GLenum target, GLuint texture)
                 texture,
                 ptr->target,
                 target);
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return NULL;
     }
 
@@ -584,7 +584,7 @@ Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
         index = textureIndexFromTarget(ctx, target);
         if (index == _MAX_TEXTURE_TYPES)
         {
-            STATE(error) = GL_INVALID_ENUM;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
             return NULL;
         }
 
@@ -615,7 +615,7 @@ Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
                     "MGL ERROR: getTex failed to resolve texture name=%u target=0x%x\n",
                     name,
                     target);
-            STATE(error) = GL_INVALID_OPERATION;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return NULL;
         }
         
@@ -624,7 +624,7 @@ Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
         index = textureIndexFromTarget(ctx, target);
         if (index == _MAX_TEXTURE_TYPES)
         {
-            STATE(error) = GL_INVALID_ENUM;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
             return NULL;
         }
     }
@@ -757,7 +757,7 @@ void mglCreateTextures(GLMContext ctx, GLenum target, GLsizei n, GLuint *texture
         {
             fprintf(stderr, "MGL Error: mglCreateTextures: failed to create texture %u for target 0x%x\n",
                     (unsigned)name, (unsigned)target);
-            STATE(error) = GL_INVALID_ENUM;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
             return;
         }
     }
@@ -1648,7 +1648,7 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
         GLuint cube_width = ptr->faces[0].levels[0].width;
         GLuint cube_height = ptr->faces[0].levels[0].height;
         if (cube_width != cube_height) {
-            STATE(error) = GL_INVALID_OPERATION;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
         for (GLuint face = 0; face < _CUBE_MAP_MAX_FACE; face++) {
@@ -1656,14 +1656,14 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
                 !ptr->faces[face].levels[0].complete ||
                 ptr->faces[face].levels[0].width != cube_width ||
                 ptr->faces[face].levels[0].height != cube_height) {
-                STATE(error) = GL_INVALID_OPERATION;
+                mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
                 return;
             }
         }
     } else if (ptr->target == GL_TEXTURE_CUBE_MAP_ARRAY) {
         TextureLevel *base = &ptr->faces[0].levels[0];
         if (base->width != base->height || base->depth == 0u || (base->depth % 6u) != 0u) {
-            STATE(error) = GL_INVALID_OPERATION;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
     }
@@ -1957,7 +1957,7 @@ void initBaseTexLevel(GLMContext ctx, Texture *tex, GLint internalformat, GLsize
         if ((size_t)tex->mipmap_levels > SIZE_MAX / sizeof(TextureLevel)) {
             fprintf(stderr, "MGL SECURITY ERROR: Mipmap levels %d would cause allocation overflow\n", tex->mipmap_levels);
             // CRITICAL FIX: Handle gracefully instead of crashing
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             return;
         }
 
@@ -1965,7 +1965,7 @@ void initBaseTexLevel(GLMContext ctx, Texture *tex, GLint internalformat, GLsize
         if (!tex->faces[face].levels) {
             fprintf(stderr, "MGL SECURITY ERROR: calloc failed for face %d with %d levels\n", face, tex->mipmap_levels);
             // CRITICAL FIX: Handle gracefully instead of crashing
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             return;
         }
     }
@@ -2016,7 +2016,7 @@ bool ensureTextureLevelCapacity(GLMContext ctx, Texture *tex, GLuint required_le
                 tex->name,
                 new_capacity,
                 tex->mipmap_levels);
-        STATE(error) = GL_OUT_OF_MEMORY;
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         return false;
     }
 
@@ -2026,7 +2026,7 @@ bool ensureTextureLevelCapacity(GLMContext ctx, Texture *tex, GLuint required_le
             for (int i = 0; i < face; i++) {
                 free(new_levels[i]);
             }
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             return false;
         }
 
@@ -3459,7 +3459,7 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     if (proxy)
     {
         if (border != 0) {
-            STATE(error) = GL_INVALID_VALUE;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
             mglHandleProxyTexImageQuery(ctx, target, level, internalformat, 0, 0, 0, border);
             return;
         }
@@ -5057,7 +5057,7 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
         // CRITICAL SECURITY FIX: Prevent integer overflow in texture clear allocation
         if (width > SIZE_MAX / height / pixel_size) {
             fprintf(stderr, "MGL SECURITY ERROR: Texture clear allocation would overflow: %dx%dx%zu\n", width, height, pixel_size);
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             return;
         }
 
@@ -5074,7 +5074,7 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
         // CRITICAL SECURITY FIX: Prevent integer overflow in texture fill allocation
         if (width > SIZE_MAX / height / pixel_size) {
             fprintf(stderr, "MGL SECURITY ERROR: Texture fill allocation would overflow: %dx%dx%zu\n", width, height, pixel_size);
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             return;
         }
 
@@ -5155,7 +5155,7 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
     // CRITICAL SECURITY FIX: Prevent integer overflow in texture subimage allocation
     if (width > SIZE_MAX / height / depth / pixel_size) {
         fprintf(stderr, "MGL SECURITY ERROR: Texture subimage allocation would overflow: %dx%dx%dx%zu\n", width, height, depth, pixel_size);
-        STATE(error) = GL_OUT_OF_MEMORY;
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         return;
     }
 

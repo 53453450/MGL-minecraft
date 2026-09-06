@@ -77,7 +77,7 @@ Shader *newShader(GLMContext ctx, GLenum type, GLuint shader)
     // CRITICAL SECURITY FIX: Check malloc result instead of using assert()
     if (!ptr) {
         fprintf(stderr, "MGL SECURITY ERROR: Failed to allocate memory for shader\n");
-        STATE(error) = GL_OUT_OF_MEMORY;
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         return NULL;
     }
 

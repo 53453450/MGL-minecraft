@@ -1635,7 +1635,7 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 	MGLShaderResource *res = mglProgramActiveUniformAt(pptr, index, &stage, &res_type);
 	if (!res)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return GL_FALSE;
 	}
 
@@ -1748,7 +1748,7 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 				params[i] = (mgl_program_uniform_resource_location(ctx, program, res) >= 0) ? 0 : -1;
 				break;
 			default:
-				STATE(error) = GL_INVALID_ENUM;
+				mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 				return GL_FALSE;
 		}
 	}
@@ -1773,19 +1773,19 @@ void mglBeginConditionalRender(GLMContext ctx, GLuint id, GLenum mode)
 
 	if (!mgl_query_mode_is_valid(mode))
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (STATE(conditional_render_active))
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
 	q = mgl_find_query(ctx, id);
 	if (!q || q->active || !q->available)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -1808,31 +1808,31 @@ static void mglBeginQueryAtIndex(GLMContext ctx, GLenum target,
 	slot = mgl_query_target_slot(target);
 	if (slot < 0)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!mgl_query_index_is_valid(target, index))
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (id == 0)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
 	q = mgl_get_query(ctx, id);
 	if (!q)
 	{
-		STATE(error) = GL_OUT_OF_MEMORY;
+		mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 		return;
 	}
 
 	if (q->active || (q->target != 0 && q->target != target) ||
 		ctx->active_query_by_target[slot][index] != 0)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -1885,14 +1885,14 @@ void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
 		STATE(transform_feedback) = getTransformFeedback(ctx, 0);
 		if (!STATE(transform_feedback))
 		{
-			STATE(error) = GL_OUT_OF_MEMORY;
+			mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 			return;
 		}
 	}
 
 	if (STATE(transform_feedback)->active)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -1916,19 +1916,19 @@ void mglBindFragDataLocationIndexed(GLMContext ctx, GLuint program, GLuint color
 {
 	if (!name)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (index > 1)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
 	Program *ptr = findProgram(ctx, program);
 	if (!ptr)
 	{
-		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
 		return;
 	}
 
@@ -1946,14 +1946,14 @@ void mglBindFragDataLocationIndexed(GLMContext ctx, GLuint program, GLuint color
 
 	if (slot >= MAX_ATTRIBS)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
 	char *name_copy = strdup(name);
 	if (!name_copy)
 	{
-		STATE(error) = GL_OUT_OF_MEMORY;
+		mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 		return;
 	}
 
@@ -1973,7 +1973,7 @@ void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
 {
     if (target != GL_TRANSFORM_FEEDBACK)
     {
-        STATE(error) = GL_INVALID_ENUM;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
         return;
     }
 
@@ -1982,7 +1982,7 @@ void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
         STATE(transform_feedback)->active && 
         !STATE(transform_feedback)->paused)
     {
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
@@ -1991,7 +1991,7 @@ void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
         STATE(transform_feedback) = getTransformFeedback(ctx, 0);
         if (!STATE(transform_feedback))
         {
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             return;
         }
     }
@@ -2169,7 +2169,7 @@ void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboo
 	}
 
 	if (index >= MAX_COLOR_ATTACHMENTS) {
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
@@ -2688,12 +2688,12 @@ void mglCreateQueries(GLMContext ctx, GLenum target, GLsizei n, GLuint *ids)
 {
 	if (!mgl_is_query_create_target(target))
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (n < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (!ids)
@@ -2707,7 +2707,7 @@ void mglCreateQueries(GLMContext ctx, GLenum target, GLsizei n, GLuint *ids)
 		q = mgl_get_query(ctx, ids[i]);
 		if (!q)
 		{
-			STATE(error) = GL_OUT_OF_MEMORY;
+			mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 			return;
 		}
 		q->target = target;
@@ -2744,7 +2744,7 @@ void mglCreateTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 {
 	if (n < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (!ids)
@@ -2755,13 +2755,13 @@ void mglCreateTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 		ids[i] = getNewName(&STATE(transform_feedback_table));
 		if (ids[i] == 0)
 		{
-			STATE(error) = GL_OUT_OF_MEMORY;
+			mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 			return;
 		}
 		TransformFeedback *ptr = getTransformFeedback(ctx, ids[i]);
 		if (!ptr)
 		{
-			STATE(error) = GL_OUT_OF_MEMORY;
+			mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 			return;
 		}
 		ptr->created = GL_TRUE;
@@ -2837,7 +2837,7 @@ void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 {
 	if (n < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (!ids)
@@ -2854,7 +2854,7 @@ void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 			continue;
 		if (q->active)
 		{
-			STATE(error) = GL_INVALID_OPERATION;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 			continue;
 		}
 		slot = mgl_query_target_slot(q->target);
@@ -2873,7 +2873,7 @@ void mglDeleteTransformFeedbacks(GLMContext ctx, GLsizei n, const GLuint *ids)
 {
 	if (n < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (!ids)
@@ -2891,7 +2891,7 @@ void mglDeleteTransformFeedbacks(GLMContext ctx, GLsizei n, const GLuint *ids)
         // Can't delete if active
         if (ptr->active)
         {
-            STATE(error) = GL_INVALID_OPERATION;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
             continue;
         }
             
@@ -2986,7 +2986,7 @@ void mglEndConditionalRender(GLMContext ctx)
 {
 	if (!STATE(conditional_render_active))
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -3005,24 +3005,24 @@ static void mglEndQueryAtIndex(GLMContext ctx, GLenum target, GLuint index)
 	slot = mgl_query_target_slot(target);
 	if (slot < 0)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!mgl_query_index_is_valid(target, index))
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	id = ctx->active_query_by_target[slot][index];
 	if (id == 0)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	q = mgl_find_query(ctx, id);
 	if (!q)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -3071,7 +3071,7 @@ void mglEndTransformFeedback(GLMContext ctx)
 {
 	if (!STATE(transform_feedback) || !STATE(transform_feedback)->active)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -3083,7 +3083,7 @@ void mglGenQueries(GLMContext ctx, GLsizei n, GLuint *ids)
 {
 	if (n < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (!ids)
@@ -3100,7 +3100,7 @@ void mglGenTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 {
 	if (n < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (!ids)
@@ -3111,13 +3111,13 @@ void mglGenTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
         ids[i] = getNewName(&STATE(transform_feedback_table));
 		if (ids[i] == 0)
 		{
-			STATE(error) = GL_OUT_OF_MEMORY;
+			mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 			return;
 		}
         TransformFeedback *ptr = getTransformFeedback(ctx, ids[i]);
 		if (!ptr)
 		{
-			STATE(error) = GL_OUT_OF_MEMORY;
+			mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 			return;
 		}
 		ptr->created = GL_FALSE;
@@ -3618,12 +3618,12 @@ GLint  mglGetFragDataLocation(GLMContext ctx, GLuint program, const GLchar *name
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return -1;
 	}
 	if (!pptr->link_success)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return -1;
 	}
 
@@ -3644,7 +3644,7 @@ void mglGetMultisamplefv(GLMContext ctx, GLenum pname, GLuint index, GLfloat *va
 {
 	// Get sample positions for multisample rendering
 	if (pname != GL_SAMPLE_POSITION) {
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!val)
@@ -3690,7 +3690,7 @@ void mglGetMultisamplefv(GLMContext ctx, GLenum pname, GLuint index, GLfloat *va
 		val[0] = 0.5f;
 		val[1] = 0.5f;
 	} else {
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 	}
 }
 
@@ -3733,7 +3733,7 @@ void mglGetProgramBinary(GLMContext ctx, GLuint program, GLsizei bufSize, GLsize
 {
 	// Program binary not supported
 	(void)program; (void)bufSize; (void)binary;
-	STATE(error) = GL_INVALID_OPERATION;
+	mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 	if (length) *length = 0;
 	if (binaryFormat) *binaryFormat = 0;
 }
@@ -3883,7 +3883,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
 		return;
 	}
 
@@ -3892,7 +3892,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	 * all valid pnames without generating an error. */
 	if (!mgl_program_interface_is_valid(programInterface))
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 
@@ -3924,7 +3924,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 				*params = max_len;
 				return;
 			}
-			STATE(error) = GL_INVALID_ENUM;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			return;
 		}
 		/* Valid interface (subroutine) with no shader resource backing —
@@ -3937,7 +3937,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 			*params = 0;
 			return;
 		}
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 
@@ -3947,7 +3947,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	    (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
 	     programInterface == GL_TRANSFORM_FEEDBACK_BUFFER))
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	/* GL_MAX_NUM_ACTIVE_VARIABLES is only valid for block-like interfaces. */
@@ -3957,7 +3957,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	    programInterface != GL_ATOMIC_COUNTER_BUFFER &&
 	    programInterface != GL_TRANSFORM_FEEDBACK_BUFFER)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -4128,7 +4128,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 			break;
 		}
 		default:
-			STATE(error) = GL_INVALID_ENUM;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			break;
 	}
 }
@@ -4138,12 +4138,12 @@ void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSi
 	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
 	if (!pp)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (bufSize < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
@@ -4156,12 +4156,12 @@ void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLin
 	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
 	if (!params)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (!pp)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -4195,7 +4195,7 @@ void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLin
 			*params = 0;
 			break;
 		default:
-			STATE(error) = GL_INVALID_ENUM;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			break;
 	}
 }
@@ -4215,7 +4215,7 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
 		return GL_INVALID_INDEX;
 	}
 
@@ -4224,7 +4224,7 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 	if (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
 	    programInterface == GL_TRANSFORM_FEEDBACK_BUFFER)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return GL_INVALID_INDEX;
 	}
 
@@ -4250,7 +4250,7 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 		 * return GL_INVALID_INDEX without error. */
 		if (mgl_program_interface_is_valid(programInterface))
 			return GL_INVALID_INDEX;
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return GL_INVALID_INDEX;
 	}
 
@@ -4288,7 +4288,7 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
 		return -1;
 	}
 
@@ -4296,7 +4296,7 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	 * to have been linked. */
 	if (!pptr->link_success)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return -1;
 	}
 
@@ -4307,14 +4307,14 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	    programInterface == GL_TRANSFORM_FEEDBACK_VARYING ||
 	    programInterface == GL_TRANSFORM_FEEDBACK_BUFFER)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return -1;
 	}
 
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return -1;
 	}
 
@@ -4347,13 +4347,13 @@ GLint  mglGetProgramResourceLocationIndex(GLMContext ctx, GLuint program, GLenum
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
 		return -1;
 	}
 
 	if (!pptr->link_success)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return -1;
 	}
 
@@ -4361,14 +4361,14 @@ GLint  mglGetProgramResourceLocationIndex(GLMContext ctx, GLuint program, GLenum
 	 * GL_PROGRAM_OUTPUT. */
 	if (programInterface != GL_PROGRAM_OUTPUT)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return -1;
 	}
 
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return -1;
 	}
 
@@ -4394,14 +4394,14 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		name[0] = '\0';
 	if (bufSize < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
 		return;
 	}
 
@@ -4410,7 +4410,7 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 	if (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
 	    programInterface == GL_TRANSFORM_FEEDBACK_BUFFER)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 
@@ -4422,7 +4422,7 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		{
 			if (index >= (GLuint)pptr->transform_feedback_varying_count)
 			{
-				STATE(error) = GL_INVALID_VALUE;
+				mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 				return;
 			}
 			src = pptr->transform_feedback_varying_names[index];
@@ -4441,7 +4441,7 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 			}
 			return;
 		}
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 
@@ -4450,7 +4450,7 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		res = mglProgramActiveUniformAt(pptr, index, NULL, NULL);
 		if (!res)
 		{
-			STATE(error) = GL_INVALID_VALUE;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 			return;
 		}
 
@@ -4464,13 +4464,13 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		MGLShaderResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
 		if (!block || !block->ubo_members || member_idx >= block->ubo_member_count)
 		{
-			STATE(error) = GL_INVALID_VALUE;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 			return;
 		}
 		src = block->ubo_members[member_idx].query_name;
 		if (!src)
 		{
-			STATE(error) = GL_INVALID_VALUE;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 			return;
 		}
 		src_len = (GLsizei)strlen(src);
@@ -4490,7 +4490,7 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, NULL, NULL);
 	if (!res)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
@@ -4607,17 +4607,17 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		*length = 0;
 	if (propCount <= 0 || count < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (propCount > 0 && !props)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (count > 0 && !params)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (count == 0 || !params)
@@ -4628,7 +4628,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
 		return;
 	}
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
@@ -4642,7 +4642,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		{
 			if (index >= (GLuint)pptr->transform_feedback_varying_count)
 			{
-				STATE(error) = GL_INVALID_VALUE;
+				mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 				return;
 			}
 			const char *vname = pptr->transform_feedback_varying_names[index];
@@ -4653,7 +4653,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 				GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
 				if (err != GL_NO_ERROR)
 				{
-					STATE(error) = err;
+					mglDispatchError(ctx, __FUNCTION__, err);
 					return;
 				}
 			}
@@ -4724,7 +4724,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 				*length = out_idx;
 			return;
 		}
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 
@@ -4750,7 +4750,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 			GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
 			if (err != GL_NO_ERROR)
 			{
-				STATE(error) = err;
+				mglDispatchError(ctx, __FUNCTION__, err);
 				return;
 			}
 		}
@@ -4759,7 +4759,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		GLuint buf_count = mgl_program_atomic_counter_buffer_bindings(pptr, bindings, MAX_BINDABLE_BUFFERS);
 		if (index >= buf_count)
 		{
-			STATE(error) = GL_INVALID_VALUE;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 			return;
 		}
 		GLuint target_binding = bindings[index];
@@ -4871,7 +4871,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 					break;
 				}
 				default:
-					STATE(error) = GL_INVALID_ENUM;
+					mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 					return;
 			}
 		}
@@ -4888,7 +4888,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 			GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
 			if (err != GL_NO_ERROR)
 			{
-				STATE(error) = err;
+				mglDispatchError(ctx, __FUNCTION__, err);
 				return;
 			}
 		}
@@ -4897,7 +4897,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		MGLShaderResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
 		if (!block || !block->ubo_members || member_idx >= block->ubo_member_count)
 		{
-			STATE(error) = GL_INVALID_VALUE;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 			return;
 		}
 		const SpirvUBOMember *bv = &block->ubo_members[member_idx];
@@ -4998,7 +4998,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 					break;
 				}
 				default:
-					STATE(error) = GL_INVALID_ENUM;
+					mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 					return;
 			}
 		}
@@ -5010,7 +5010,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, &stage, &res_type);
 	if (!res)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
@@ -5020,7 +5020,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
 		if (err != GL_NO_ERROR)
 		{
-			STATE(error) = err;
+			mglDispatchError(ctx, __FUNCTION__, err);
 			return;
 		}
 	}
@@ -5151,7 +5151,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 				if (res_type != _UNIFORM_BUFFER_RES &&
 				    res_type != _STORAGE_BUFFER_RES)
 				{
-					STATE(error) = GL_INVALID_ENUM;
+					mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 					return;
 				}
 				GLsizei written;
@@ -5175,7 +5175,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 				break;
 			}
 			default:
-				STATE(error) = GL_INVALID_ENUM;
+				mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 				return;
 		}
 	}
@@ -5198,27 +5198,27 @@ void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenu
 
 	if (!q || q->active)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (!mgl_query_value(q, pname, &value))
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (offset < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (offset > buf->size || (GLsizeiptr)sizeof(GLint64) > buf->size - offset)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -5238,27 +5238,27 @@ void mglGetQueryBufferObjectiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum 
 
 	if (!q || q->active)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (!mgl_query_value(q, pname, &value))
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (offset < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (offset > buf->size || (GLsizeiptr)sizeof(GLint) > buf->size - offset)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -5277,27 +5277,27 @@ void mglGetQueryBufferObjectui64v(GLMContext ctx, GLuint id, GLuint buffer, GLen
 
 	if (!q || q->active)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (!mgl_query_value(q, pname, &stored))
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (offset < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (offset > buf->size || (GLsizeiptr)sizeof(GLuint64) > buf->size - offset)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -5316,27 +5316,27 @@ void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum
 
 	if (!q || q->active)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (!mgl_query_value(q, pname, &value))
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!buf || !buf->data.buffer_data)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (offset < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (offset > buf->size || (GLsizeiptr)sizeof(GLuint) > buf->size - offset)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -5354,12 +5354,12 @@ void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pn
 		return;
 	if (slot < 0)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (!mgl_query_index_is_valid(target, index))
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (pname == GL_CURRENT_QUERY) {
@@ -5370,7 +5370,7 @@ void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pn
 		*params = (target == GL_TIME_ELAPSED) ? 64 : 32;
 		return;
 	}
-	STATE(error) = GL_INVALID_ENUM;
+	mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 }
 
 void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *params)
@@ -5380,14 +5380,14 @@ void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *par
 		return;
 	if (!q)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	GLuint64 value = 0;
 	if (mgl_query_value(q, pname, &value))
 		*params = (GLint64)value;
 	else
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 }
 
 void mglGetQueryObjectiv(GLMContext ctx, GLuint id, GLenum pname, GLint *params)
@@ -5406,14 +5406,14 @@ void mglGetQueryObjectui64v(GLMContext ctx, GLuint id, GLenum pname, GLuint64 *p
 		return;
 	if (!q)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	GLuint64 value = 0;
 	if (mgl_query_value(q, pname, &value))
 		*params = value;
 	else
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 }
 
 void mglGetQueryObjectuiv(GLMContext ctx, GLuint id, GLenum pname, GLuint *params)
@@ -5432,7 +5432,7 @@ void mglGetQueryiv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 		return;
 	if (slot < 0)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 
@@ -5445,7 +5445,7 @@ void mglGetQueryiv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 			*params = (target == GL_TIME_ELAPSED) ? 64 : 32;
 			break;
 		default:
-			STATE(error) = GL_INVALID_ENUM;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			break;
 	}
 }
@@ -5543,18 +5543,18 @@ void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLui
 {
 	if (!param)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
 	if (!ptr || !ptr->created)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (index >= MAX_BINDABLE_BUFFERS)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	BufferBaseTarget *slot = &ptr->buffers[index];
@@ -5570,7 +5570,7 @@ void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLui
 			*param = (GLint64)slot->buffer;
 			break;
 		default:
-			STATE(error) = GL_INVALID_ENUM;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			break;
 	}
 }
@@ -5579,7 +5579,7 @@ void mglGetTransformFeedbacki_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint
 {
 	if (!param)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	GLint64 value = 0;
@@ -5592,13 +5592,13 @@ void mglGetTransformFeedbackiv(GLMContext ctx, GLuint xfb, GLenum pname, GLint *
 {
 	if (!param)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
 	if (!ptr || !ptr->created)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	switch (pname)
@@ -5610,7 +5610,7 @@ void mglGetTransformFeedbackiv(GLMContext ctx, GLuint xfb, GLenum pname, GLint *
 			*param = ptr->paused ? GL_TRUE : GL_FALSE;
 			break;
 		default:
-			STATE(error) = GL_INVALID_ENUM;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			break;
 	}
 }
@@ -6047,13 +6047,13 @@ void mglObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei leng
 	}
 
 	if (name == 0) {
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
 	Texture *tex = findTexture(ctx, name);
 	if (!tex) {
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
@@ -6137,7 +6137,7 @@ void mglPauseTransformFeedback(GLMContext ctx)
 {
 	if (!STATE(transform_feedback) || !STATE(transform_feedback)->active || STATE(transform_feedback)->paused)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -6173,7 +6173,7 @@ void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index)
 void mglProgramBinary(GLMContext ctx, GLuint program, GLenum binaryFormat, const void *binary, GLsizei length)
 {
 	(void)program; (void)binaryFormat; (void)binary; (void)length;
-	STATE(error) = GL_INVALID_OPERATION;
+	mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 }
 
 void mglProgramParameteri(GLMContext ctx, GLuint program, GLenum pname, GLint value)
@@ -6181,7 +6181,7 @@ void mglProgramParameteri(GLMContext ctx, GLuint program, GLenum pname, GLint va
 	Program *pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 
@@ -6193,7 +6193,7 @@ void mglProgramParameteri(GLMContext ctx, GLuint program, GLenum pname, GLint va
 		case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
 			break;
 		default:
-			STATE(error) = GL_INVALID_ENUM;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 			break;
 	}
 }
@@ -6208,12 +6208,12 @@ static GLboolean mgl_program_uniform_begin(GLMContext ctx, GLuint program, Progr
 	target = findProgram(ctx, program);
 	if (!target)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return GL_FALSE;
 	}
 	if (!target->link_success)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return GL_FALSE;
 	}
 
@@ -6302,7 +6302,7 @@ DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4x3fv, (GLMContext ctx, GLuint program, GLi
 void mglProvokingVertex(GLMContext ctx, GLenum mode)
 {
 	if (mode != GL_FIRST_VERTEX_CONVENTION && mode != GL_LAST_VERTEX_CONVENTION) {
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	STATE(var.provoking_vertex) = mode;
@@ -6324,23 +6324,23 @@ void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)
 	QueryObject *q;
 	if (target != GL_TIMESTAMP)
 	{
-		STATE(error) = GL_INVALID_ENUM;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
 		return;
 	}
 	if (id == 0)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	q = mgl_get_query(ctx, id);
 	if (!q)
 	{
-		STATE(error) = GL_OUT_OF_MEMORY;
+		mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 		return;
 	}
 	if (q->active)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	q->target = GL_TIMESTAMP;
@@ -6356,14 +6356,14 @@ void mglReadnPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei hei
 	size_t needed;
 	if (!data || bufSize < 0)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	bytes_per_pixel = sizeForFormatType(format, type);
 	needed = (size_t)width * (size_t)height * bytes_per_pixel;
 	if ((GLsizei)needed > bufSize)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	mglReadPixels(ctx, x, y, width, height, format, type, data);
@@ -6379,7 +6379,7 @@ void mglResumeTransformFeedback(GLMContext ctx)
 {
 	if (!STATE(transform_feedback) || !STATE(transform_feedback)->active || !STATE(transform_feedback)->paused)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 
@@ -6651,12 +6651,12 @@ void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GL
 	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
 	if (!ptr || !ptr->created)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (index >= MAX_BINDABLE_BUFFERS)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	BufferBaseTarget *slot = &ptr->buffers[index];
@@ -6668,7 +6668,7 @@ void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GL
 	Buffer *buf = getBuffer(ctx, GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
 	if (!buf)
 	{
-		STATE(error) = GL_OUT_OF_MEMORY;
+		mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 		return;
 	}
 	slot->buffer = buffer;
@@ -6684,12 +6684,12 @@ void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, G
 	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
 	if (!ptr || !ptr->created)
 	{
-		STATE(error) = GL_INVALID_OPERATION;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 		return;
 	}
 	if (index >= MAX_BINDABLE_BUFFERS)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	if (buffer == 0)
@@ -6699,13 +6699,13 @@ void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, G
 	}
 	if (offset < 0 || size <= 0 || ((GLuint64)offset % 4u) != 0u || ((GLuint64)size % 4u) != 0u)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	Buffer *buf = getBuffer(ctx, GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
 	if (!buf)
 	{
-		STATE(error) = GL_OUT_OF_MEMORY;
+		mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 		return;
 	}
 	BufferBaseTarget *slot = &ptr->buffers[index];
@@ -6727,25 +6727,25 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 	ERROR_CHECK_RETURN(pptr, GL_INVALID_VALUE);
 	if (bufferMode == GL_SEPARATE_ATTRIBS &&
 	    (GLuint)count > STATE(var).max_transform_feedback_separate_attribs) {
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	GLuint nextBufferCount = 0u;
 	for (GLsizei i = 0; i < count; i++) {
 		if (!varyings || !varyings[i]) {
-			STATE(error) = GL_INVALID_VALUE;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 			return;
 		}
 		if (!mgl_tf_is_builtin_name(varyings[i]))
 			continue;
 		if (bufferMode != GL_INTERLEAVED_ATTRIBS) {
-			STATE(error) = GL_INVALID_OPERATION;
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 			return;
 		}
 		if (strcmp(varyings[i], "gl_NextBuffer") == 0) {
 			nextBufferCount++;
 			if (nextBufferCount >= STATE(var).max_transform_feedback_buffers) {
-				STATE(error) = GL_INVALID_OPERATION;
+				mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 				return;
 			}
 		}
@@ -6785,7 +6785,7 @@ void mglValidateProgram(GLMContext ctx, GLuint program)
 	Program *pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 }
@@ -6795,7 +6795,7 @@ void mglValidateProgramPipeline(GLMContext ctx, GLuint pipeline)
 	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
 	if (!pp)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
 	pp->validated = mglProgramPipelinePerVertexCompatible(pp->stage_programs);

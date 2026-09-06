@@ -157,7 +157,7 @@ VertexArray *newVAO(GLMContext ctx, GLuint vao)
     ptr = (VertexArray *)malloc(sizeof(VertexArray));
     if (!ptr) {
         if (ctx)
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         fprintf(stderr, "MGL ERROR: failed to allocate vertex array %u\n", vao);
         return NULL;
     }

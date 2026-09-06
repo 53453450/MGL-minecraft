@@ -35,6 +35,7 @@
 #include "mgl_texture_debug.h"
 #include "pixel_utils.h"
 #include "utils.h"
+#include "error.h"
 
 /* mglTexLevelInternalFormatCompressed is defined in tex_param.c but not
  * declared in any public header.  mgl_pixel_format.c has the same extern. */
@@ -1491,7 +1492,7 @@ void mglHandleProxyTexImageQuery(GLMContext ctx,
     }
 
     // Proxy probe should not leave a GL error behind.
-    STATE(error) = GL_NO_ERROR;
+    mglClearCurrentError(ctx);
 }
 
 bool mglResolveTexSubImageSource(GLMContext ctx,

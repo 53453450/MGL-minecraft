@@ -48,9 +48,9 @@ GLenum  mglGetError(GLMContext ctx)
      * When errors are queued, pop the oldest one and return it. */
     if (STATE(error_count) == 0)
     {
-        /* Backwards compatibility: some call sites set STATE(error)
-         * directly instead of going through mglDispatchError.  Surface that
-         * single error so it is not silently lost. */
+        /* Backwards compatibility: mglClearCurrentError is the only remaining
+         * writer of STATE(error) outside this file.  Surface that single
+         * error so it is not silently lost. */
         GLenum legacy = STATE(error);
         STATE(error) = GL_NO_ERROR;
         return legacy;
@@ -147,6 +147,13 @@ void mglDispatchError(GLMContext ctx, const char *func, GLenum error)
             func ? func : "(null)",
             error);
     error_func(ctx, func, error);
+}
+
+void mglClearCurrentError(GLMContext ctx)
+{
+    if (!ctx)
+        return;
+    STATE(error) = GL_NO_ERROR;
 }
 
 void error_func(GLMContext ctx, const char *func, GLenum error)

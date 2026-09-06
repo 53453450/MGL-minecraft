@@ -74,6 +74,9 @@
 #define VAO_STATE(_val_)   ctx->active_state->vao->_val_
 #define VAO_ATTRIB_STATE(_index_) ctx->active_state->vao->attrib[_index_]
 
+#ifdef __cplusplus
+extern "C"
+#endif
 void mglDispatchError(GLMContext ctx, const char *func, GLenum type);
 
 #define ERROR_RETURN(_type_) do { mglDispatchError(ctx, __FUNCTION__, (_type_)); } while(0)

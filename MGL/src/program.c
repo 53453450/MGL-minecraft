@@ -599,7 +599,7 @@ ProgramPipeline *newProgramPipeline(GLMContext ctx, GLuint pipeline)
     ptr = (ProgramPipeline *)malloc(sizeof(ProgramPipeline));
     if (!ptr) {
         if (ctx)
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         fprintf(stderr, "MGL ERROR: failed to allocate program pipeline %u\n", pipeline);
         return NULL;
     }
@@ -638,7 +638,7 @@ TransformFeedback *newTransformFeedback(GLMContext ctx, GLuint name)
     ptr = (TransformFeedback *)malloc(sizeof(TransformFeedback));
     if (!ptr) {
         if (ctx)
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         fprintf(stderr, "MGL ERROR: failed to allocate transform feedback %u\n", name);
         return NULL;
     }
@@ -681,7 +681,7 @@ Program *newProgram(GLMContext ctx, GLuint program)
     ptr = (Program *)malloc(sizeof(Program));
     if (!ptr) {
         if (ctx)
-            STATE(error) = GL_OUT_OF_MEMORY;
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         fprintf(stderr, "MGL ERROR: failed to allocate program %u\n", program);
         return NULL;
     }
@@ -1073,7 +1073,7 @@ void mglAttachShader(GLMContext ctx, GLuint program, GLuint shader)
     {
         // CRITICAL FIX: Handle missing shader gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Shader %u not found in attach shader\n", shader);
-        STATE(error) = GL_INVALID_VALUE;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
         return;
     }
 
@@ -1083,7 +1083,7 @@ void mglAttachShader(GLMContext ctx, GLuint program, GLuint shader)
     {
         // CRITICAL FIX: Handle error gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 
         return;
     }
@@ -1093,12 +1093,12 @@ void mglAttachShader(GLMContext ctx, GLuint program, GLuint shader)
     mglFlushPendingDraws(ctx);
 
     if (mglProgramHasAttachedShader(pptr, index, sptr)) {
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
     if (pptr->attached_shader_counts[index] >= MAX_ATTACHED_SHADERS_PER_STAGE) {
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
@@ -1123,7 +1123,7 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
     {
         // CRITICAL FIX: Handle error gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
@@ -1157,7 +1157,7 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
     {
         // CRITICAL FIX: Handle error gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
@@ -1177,7 +1177,7 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
     if (detach_index == MAX_ATTACHED_SHADERS_PER_STAGE ||
         (pptr->attached_shader_mask & (1u << index)) == 0u)
     {
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
@@ -2076,7 +2076,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     {
         // CRITICAL FIX: Handle error gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 
         return;
     }
@@ -2925,7 +2925,7 @@ void mglUseProgram(GLMContext ctx, GLuint program)
             fprintf(stderr, "MGL Error: mglUseProgram program %u not found or invalid\n", program);
             // CRITICAL FIX: Handle error gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
 
             return;
         }
@@ -2941,7 +2941,7 @@ void mglUseProgram(GLMContext ctx, GLuint program)
                 compat_program = (env && atoi(env) > 0) ? 1 : 0;
             }
             if (!compat_program) {
-                STATE(error) = GL_INVALID_OPERATION;
+                mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
                 return;
             }
             s_unlinked_program_hits++;
@@ -3498,7 +3498,7 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
     ProgramPipeline *pipe_ptr = findProgramPipeline(ctx, pipeline);
     if (!pipe_ptr)
     {
-        STATE(error) = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
@@ -3510,7 +3510,7 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
         prog_ptr = findProgram(ctx, program);
         if (!prog_ptr)
         {
-            STATE(error) = GL_INVALID_VALUE;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
             return;
         }
     }
