@@ -61,12 +61,18 @@ typedef struct MGLTokenStream {
     size_t src_len;
 } MGLTokenStream;
 
+static void token_stream_free(MGLTokenStream *ts);
+
 static int tokenize(MGLTokenStream *ts, const char *src, size_t len)
 {
     ts->cap = 4096;
     ts->tok = (MGLGLSLToken *)malloc((size_t)ts->cap * sizeof(MGLGLSLToken));
     ts->src = (char *)malloc(len + 1);
     if (!ts->tok || !ts->src) {
+        free(ts->tok);
+        free(ts->src);
+        ts->tok = NULL;
+        ts->src = NULL;
         return -1;
     }
     memcpy(ts->src, src, len);
@@ -82,6 +88,10 @@ static int tokenize(MGLTokenStream *ts, const char *src, size_t len)
             break;
         }
         if (ts->count >= MGL_MAX_TOKENS) {
+            /* Keep the failure path ownership-neutral.  Callers may retry
+             * parsing after a resource-limit error, so do not leave the
+             * partially built token/source buffers attached to the stream. */
+            token_stream_free(ts);
             return -1;
         }
         if (ts->count >= ts->cap) {
@@ -89,11 +99,13 @@ static int tokenize(MGLTokenStream *ts, const char *src, size_t len)
             if (nc > MGL_MAX_TOKENS)
                 nc = MGL_MAX_TOKENS;
             if (nc <= ts->count) {
+                token_stream_free(ts);
                 return -1;
             }
             MGLGLSLToken *nt = (MGLGLSLToken *)realloc(
                 ts->tok, (size_t)nc * sizeof(MGLGLSLToken));
             if (!nt) {
+                token_stream_free(ts);
                 return -1;
             }
             ts->tok = nt;
@@ -465,14 +477,21 @@ static MGLExpr *parse_expression(MGLParser *p);
 
 static void record_const_int(MGLParser *p, const char *name, int64_t value)
 {
-    if (!p || !name || p->const_count >= 64) return;
+    if (!p || !name) return;
     size_t n = strlen(name);
-    if (n == 0 || n >= 64) return;
+    if (n == 0 || n >= 64) {
+        parse_error(p, "compile-time constant name is too long");
+        return;
+    }
     for (uint32_t i = 0; i < p->const_count; i++) {
         if (strcmp(p->const_names[i], name) == 0) {
             p->const_vals[i] = value;
             return;
         }
+    }
+    if (p->const_count >= 64) {
+        parse_error(p, "too many compile-time constants (limit 64)");
+        return;
     }
     memcpy(p->const_names[p->const_count], name, n + 1);
     p->const_vals[p->const_count++] = value;
@@ -481,9 +500,12 @@ static void record_const_int(MGLParser *p, const char *name, int64_t value)
 static void record_var_type(MGLParser *p, const char *name,
                             const MGLTypeSpec *t, const char *struct_type)
 {
-    if (!p || !name || !t || p->var_type_count >= 128) return;
+    if (!p || !name || !t) return;
     size_t n = strlen(name);
-    if (n == 0 || n >= 64) return;
+    if (n == 0 || n >= 64) {
+        parse_error(p, "variable name is too long");
+        return;
+    }
     for (uint32_t i = 0; i < p->var_type_count; i++) {
         if (strcmp(p->var_types[i].name, name) == 0) {
             p->var_types[i].vec_size = t->vec_size;
@@ -497,6 +519,10 @@ static void record_var_type(MGLParser *p, const char *name,
             }
             return;
         }
+    }
+    if (p->var_type_count >= 128) {
+        parse_error(p, "too many tracked variable types (limit 128)");
+        return;
     }
     memcpy(p->var_types[p->var_type_count].name, name, n + 1);
     p->var_types[p->var_type_count].vec_size = t->vec_size;
@@ -514,9 +540,12 @@ static void record_var_type(MGLParser *p, const char *name,
 static void record_member_type(MGLParser *p, const char *path,
                                const MGLTypeSpec *t)
 {
-    if (!p || !path || !t || p->member_type_count >= 128) return;
+    if (!p || !path || !t) return;
     size_t n = strlen(path);
-    if (n == 0 || n >= 96) return;
+    if (n == 0 || n >= 96) {
+        parse_error(p, "member path is too long");
+        return;
+    }
     for (uint32_t i = 0; i < p->member_type_count; i++) {
         if (strcmp(p->member_paths[i], path) == 0) {
             p->member_vec[i] = t->vec_size;
@@ -524,6 +553,10 @@ static void record_member_type(MGLParser *p, const char *path,
             p->member_mat_rows[i] = t->mat_rows;
             return;
         }
+    }
+    if (p->member_type_count >= 128) {
+        parse_error(p, "too many tracked member types (limit 128)");
+        return;
     }
     memcpy(p->member_paths[p->member_type_count], path, n + 1);
     p->member_vec[p->member_type_count] = t->vec_size;
@@ -555,7 +588,12 @@ static void record_struct_member_lens(MGLParser *p, const char *prefix,
         for (MGLDecl *m = members[i]; m; m = m->next_declarator) {
             if (!m->name || !m->type) continue;
             char path[96];
-            snprintf(path, sizeof(path), "%s.%s", prefix, m->name);
+            int written = snprintf(path, sizeof(path), "%s.%s", prefix,
+                                   m->name);
+            if (written < 0 || (size_t)written >= sizeof(path)) {
+                parse_error(p, "member path is too long");
+                continue;
+            }
             record_member_type(p, path, m->type);
         }
     }
@@ -746,14 +784,21 @@ static int eval_type_length(MGLParser *p, const MGLExpr *e, uint32_t *len)
 
 static void record_array_len(MGLParser *p, const char *name, uint32_t len)
 {
-    if (!p || !name || len == 0 || p->array_count >= 64) return;
+    if (!p || !name || len == 0) return;
     size_t n = strlen(name);
-    if (n == 0 || n >= 64) return;
+    if (n == 0 || n >= 64) {
+        parse_error(p, "array name is too long");
+        return;
+    }
     for (uint32_t i = 0; i < p->array_count; i++) {
         if (strcmp(p->array_names[i], name) == 0) {
             p->array_lens[i] = len;
             return;
         }
+    }
+    if (p->array_count >= 64) {
+        parse_error(p, "too many tracked arrays (limit 64)");
+        return;
     }
     memcpy(p->array_names[p->array_count], name, n + 1);
     p->array_lens[p->array_count++] = len;
@@ -761,13 +806,20 @@ static void record_array_len(MGLParser *p, const char *name, uint32_t len)
 
 static void record_struct_name(MGLParser *p, const char *name)
 {
-    if (!p || !name || p->struct_count >= 64) return;
+    if (!p || !name) return;
     size_t n = strlen(name);
-    if (n == 0 || n >= 64) return;
+    if (n == 0 || n >= 64) {
+        parse_error(p, "struct type name is too long");
+        return;
+    }
     for (uint32_t i = 0; i < p->struct_count; i++) {
         if (strcmp(p->struct_names[i], name) == 0) {
             return;
         }
+    }
+    if (p->struct_count >= 64) {
+        parse_error(p, "too many struct type names (limit 64)");
+        return;
     }
     memcpy(p->struct_names[p->struct_count], name, n + 1);
     p->struct_count++;
@@ -979,8 +1031,15 @@ static MGLExpr *parse_primary(MGLParser *p)
                         if (!arg) {
                             break;
                         }
-                        e->u.call.args = (MGLExpr **)realloc(
+                        MGLExpr **args = (MGLExpr **)realloc(
                             e->u.call.args, (argc + 1) * sizeof(MGLExpr *));
+                        if (!args) {
+                            free_expr(arg);
+                            free_expr(e);
+                            parse_error(p, "out of memory");
+                            return NULL;
+                        }
+                        e->u.call.args = args;
                         e->u.call.args[argc++] = arg;
                         if (!eat_punct(p, ",")) {
                             break;
@@ -1314,12 +1373,15 @@ static MGLExpr *parse_init_list(MGLParser *p)
             if (!arg) {
                 break;
             }
-            e->u.init_list.args = (MGLExpr **)realloc(
+            MGLExpr **args = (MGLExpr **)realloc(
                 e->u.init_list.args, (argc + 1) * sizeof(MGLExpr *));
-            if (!e->u.init_list.args) {
+            if (!args) {
                 free_expr(arg);
-                break;
+                free_expr(e);
+                parse_error(p, "out of memory");
+                return NULL;
             }
+            e->u.init_list.args = args;
             e->u.init_list.args[argc++] = arg;
             if (!eat_punct(p, ",")) {
                 break;
@@ -1960,12 +2022,13 @@ static void append_array_dim(MGLParser *p, MGLDecl *d, uint32_t sz)
             return;
         }
     }
-    d->array_dims = (uint32_t *)realloc(
+    uint32_t *dims = (uint32_t *)realloc(
         d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
-    if (!d->array_dims) {
-        d->array_count = 0;
+    if (!dims) {
+        parse_error(p, "out of memory");
         return;
     }
+    d->array_dims = dims;
     d->array_dims[d->array_count++] = sz;
 }
 
@@ -2005,8 +2068,14 @@ static MGLStmt *parse_block(MGLParser *p)
         if (!sub) {
             break;
         }
-        s->u.compound.stmts = (MGLStmt **)realloc(
+        MGLStmt **stmts = (MGLStmt **)realloc(
             s->u.compound.stmts, (s->u.compound.count + 1) * sizeof(MGLStmt *));
+        if (!stmts) {
+            free_stmt(sub);
+            parse_error(p, "out of memory");
+            break;
+        }
+        s->u.compound.stmts = stmts;
         s->u.compound.stmts[s->u.compound.count++] = sub;
     }
     expect_punct(p, "}");
@@ -2609,8 +2678,14 @@ more_qualifiers:
                 if (!m) {
                     break;
                 }
-                members = (MGLDecl **)realloc(
+                MGLDecl **new_members = (MGLDecl **)realloc(
                     members, (mcount + 1) * sizeof(MGLDecl *));
+                if (!new_members) {
+                    free_decl(m);
+                    parse_error(p, "out of memory");
+                    break;
+                }
+                members = new_members;
                 members[mcount++] = m;
             }
             expect_punct(p, "}");
@@ -2660,8 +2735,14 @@ more_qualifiers:
                 if (!m) {
                     break;
                 }
-                members = (MGLDecl **)realloc(
+                MGLDecl **new_members = (MGLDecl **)realloc(
                     members, (mcount + 1) * sizeof(MGLDecl *));
+                if (!new_members) {
+                    free_decl(m);
+                    parse_error(p, "out of memory");
+                    break;
+                }
+                members = new_members;
                 members[mcount++] = m;
             }
             expect_punct(p, "}");
@@ -2756,8 +2837,14 @@ more_qualifiers:
             }
             /* Declarator postfix: `float a[3]`. */
             parse_array_specifier_list(p, param);
-            d->params = (MGLDecl **)realloc(
+            MGLDecl **params = (MGLDecl **)realloc(
                 d->params, (d->param_count + 1) * sizeof(MGLDecl *));
+            if (!params) {
+                free_decl(param);
+                parse_error(p, "out of memory");
+                break;
+            }
+            d->params = params;
             d->params[d->param_count++] = param;
             if (!eat_punct(p, ",")) {
                 break;
@@ -3171,6 +3258,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     }
     if (tokenize(&ts, ppsrc, strlen(ppsrc)) != 0) {
         free(ppsrc);
+        token_stream_free(&ts);
         return NULL;
     }
     free(ppsrc);
@@ -3229,8 +3317,14 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
             continue;
         }
         record_decl_constants(&p, d);
-        tu->decls = (MGLDecl **)realloc(
+        MGLDecl **decls = (MGLDecl **)realloc(
             tu->decls, (tu->decl_count + 1) * sizeof(MGLDecl *));
+        if (!decls) {
+            free_decl(d);
+            parse_error(&p, "out of memory");
+            break;
+        }
+        tu->decls = decls;
         tu->decls[tu->decl_count++] = d;
     }
 

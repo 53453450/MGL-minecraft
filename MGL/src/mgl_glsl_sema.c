@@ -508,6 +508,13 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
     t->members = NULL;
     t->member_names = NULL;
     t->member_offsets = NULL;
+    /* Layout metadata is derived from the cloned tree.  Carrying the source
+     * cache across a clone marks offsets as valid before the clone has been
+     * laid out and can also mix std140/std430 results. */
+    memset(&t->layout, 0, sizeof(t->layout));
+    t->layout_valid = 0;
+    t->layout_standard = MGLIR_LAYOUT_NONE;
+    memset(t->layout_cache, 0, sizeof(t->layout_cache));
     t->name = src->name ? strdup(src->name) : NULL;
     if (src->name && !t->name) {
         free(t);
@@ -553,22 +560,6 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
                 free(t);
                 return NULL;
             }
-        }
-        if (src->member_offsets && src->member_count > 0) {
-            t->member_offsets =
-                (uint32_t *)calloc(src->member_count, sizeof(uint32_t));
-            if (!t->member_offsets) {
-                for (uint32_t j = 0; j < src->member_count; j++) {
-                    mglIRTypeDestroy(t->members[j]);
-                    free(t->member_names[j]);
-                }
-                free(t->member_names);
-                free(t->members);
-                free(t);
-                return NULL;
-            }
-            memcpy(t->member_offsets, src->member_offsets,
-                   src->member_count * sizeof(uint32_t));
         }
         break;
     }
@@ -3259,6 +3250,30 @@ static uint32_t ssbo_unsized_member_size_from_ast(const Sema *s,
     return found ? (max_idx + 1u) : 1u;
 }
 
+static MGLIRLayoutStd layout_standard_for_decl(const Sema *s,
+                                               const MGLDecl *d)
+{
+    if (!d) {
+        return MGLIR_LAYOUT_STD140;
+    }
+
+    uint32_t layout_qual = d->layout;
+    if (layout_qual == MGL_AST_LAYOUT_DEFAULT && s && s->tu) {
+        if (d->qualifiers & MGL_AST_Q_BUFFER)
+            layout_qual = s->tu->default_buffer_layout;
+        else if (d->qualifiers & MGL_AST_Q_UNIFORM)
+            layout_qual = s->tu->default_uniform_layout;
+    }
+
+    switch (layout_qual) {
+    case MGL_AST_LAYOUT_STD140: return MGLIR_LAYOUT_STD140;
+    case MGL_AST_LAYOUT_STD430: return MGLIR_LAYOUT_STD430;
+    case MGL_AST_LAYOUT_SHARED: return MGLIR_LAYOUT_SHARED;
+    case MGL_AST_LAYOUT_PACKED: return MGLIR_LAYOUT_PACKED;
+    default: return MGLIR_LAYOUT_STD140;
+    }
+}
+
 static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
 {
     MGLIRType *root = block_type;
@@ -3268,21 +3283,7 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
     if (!block_type || block_type->kind != MGLIR_TYPE_STRUCT ||
         block_type->member_count == 0)
         return;
-    MGLIRLayoutStd std = MGLIR_LAYOUT_NONE;
-    uint32_t layout_qual = d->layout;
-    if (layout_qual == MGL_AST_LAYOUT_DEFAULT && s && s->tu) {
-        if (d->qualifiers & MGL_AST_Q_BUFFER)
-            layout_qual = s->tu->default_buffer_layout;
-        else if (d->qualifiers & MGL_AST_Q_UNIFORM)
-            layout_qual = s->tu->default_uniform_layout;
-    }
-    switch (layout_qual) {
-    case MGL_AST_LAYOUT_STD140: std = MGLIR_LAYOUT_STD140; break;
-    case MGL_AST_LAYOUT_STD430: std = MGLIR_LAYOUT_STD430; break;
-    case MGL_AST_LAYOUT_SHARED: std = MGLIR_LAYOUT_SHARED; break;
-    case MGL_AST_LAYOUT_PACKED: std = MGLIR_LAYOUT_PACKED; break;
-    default: std = MGLIR_LAYOUT_STD140; break;
-    }
+    MGLIRLayoutStd std = layout_standard_for_decl(s, d);
     const int is_ssbo = (d->qualifiers & MGL_AST_Q_BUFFER) != 0;
     for (uint32_t i = 0; i < block_type->member_count; i++) {
         MGLIRType *member = block_type->members[i];
@@ -3906,6 +3907,29 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 if (!ms) break;
                 ms->name = strdup(bt->member_names[m]);
                 ms->type = ir_type_clone(bt->members[m]);
+                /* `ir_type_clone` deliberately clears derived layout caches
+                 * so a type can be reused under another packing standard.
+                 * Flattened interface members are standalone AIR symbols,
+                 * however, and their address generation consumes the member
+                 * layout directly.  Recompute it under the owning block's
+                 * standard before publishing the symbol. */
+                if (ms->type) {
+                    uint32_t member_size = 0;
+                    if (mglIRComputeLayout(ms->type,
+                                           layout_standard_for_decl(s, d),
+                                           &member_size) != 0) {
+                        mglIRTypeDestroy(ms->type);
+                        ms->type = NULL;
+                    }
+                }
+                if (!ms->type) {
+                    sema_error(s, d->line,
+                               "failed to compute layout for interface block member '%s'",
+                               bt->member_names[m] ? bt->member_names[m] : "?");
+                    free(ms->name);
+                    free(ms);
+                    break;
+                }
                 /* Anonymous blocks put members in the global namespace.
                  * Named instances keep members under instance.field — do
                  * not insert them into the global symbol table, or a later
@@ -4262,6 +4286,24 @@ static int sym_is_interface_block(const MGLIRSymbol *is)
            is->layout != MGL_AST_LAYOUT_DEFAULT;
 }
 
+/* Effective interpolation state for a user-defined interface variable.
+ * GLSL's omitted interpolation qualifier means smooth; comparing the raw
+ * bitset would reject an explicit `smooth` on one side unnecessarily. */
+static uint32_t interface_qualifier_signature(const MGLIRSymbol *sym)
+{
+    if (!sym) {
+        return 0;
+    }
+    uint32_t q = sym->qualifiers;
+    uint32_t interpolation = q &
+        (MGL_AST_Q_FLAT | MGL_AST_Q_SMOOTH | MGL_AST_Q_NOPERSPECTIVE);
+    if (interpolation == 0) {
+        interpolation = MGL_AST_Q_SMOOTH;
+    }
+    return interpolation |
+           (q & (MGL_AST_Q_CENTROID | MGL_AST_Q_SAMPLE | MGL_AST_Q_PATCH));
+}
+
 /* Decode a builtin type name into a MGLTypeSpec, mirroring the parser's
  * parse_type_spec keyword decoding.  Returns 0 on success, -1 if `name`
  * is not a builtin type name (callers then fall back to struct lookup). */
@@ -4374,6 +4416,7 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                     continue;
                 }
                 if (sa->layout != sb->layout ||
+                    sa->matrix_major != sb->matrix_major ||
                     !ir_type_interface_equal(sa->type, sb->type)) {
                     sema_error(&s, 0,
                                "interface block '%s' does not match across stages",
@@ -4403,6 +4446,25 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                            "(%s vs %s)",
                            sa->name, ir_type_str(sa->type, ta, sizeof(ta)),
                            ir_type_str(sb->type, tb, sizeof(tb)));
+                continue;
+            }
+            /* Explicit locations are part of the cross-stage ABI.  An
+             * omitted location is resolved by the linker, but two explicit
+             * locations for the same named varying must agree. */
+            if (sa->location != UINT32_MAX && sb->location != UINT32_MAX &&
+                sa->location != sb->location) {
+                sema_error(&s, 0,
+                           "interface variable '%s' location mismatch "
+                           "across stages (%u vs %u)",
+                           sa->name, sa->location, sb->location);
+                continue;
+            }
+            if (interface_qualifier_signature(sa) !=
+                interface_qualifier_signature(sb)) {
+                sema_error(&s, 0,
+                           "interface variable '%s' interpolation or "
+                           "patch qualifier mismatch across stages",
+                           sa->name);
             }
         }
     }

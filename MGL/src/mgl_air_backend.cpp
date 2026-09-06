@@ -78,6 +78,7 @@
 #include "mgl_air_tess_abi.h"
 #include "mgl_legacy_compat.h"
 #include "mgl_frontend_session.h"
+#include "mgl_env_flag.h"
 
 namespace {
 
@@ -3154,7 +3155,7 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
     if (v.kind == VarSym::BUFFER) {
         /* Anonymous-block member: read from the block's device buffer. */
         const MGLIRSymbol *bs = findSymbol(mod, v.name.c_str());
-        if (getenv("MGL_VAR_DBG"))
+        if (mgl_env_flag_enabled("MGL_VAR_DBG"))
             fprintf(stderr, "VAR %s kind=%d block=%s\n", v.name.c_str(),
                     (int)v.kind, bs ? (bs->block_name ? bs->block_name : "-") : "-");
         if (bs && bs->block_name) {
@@ -4234,7 +4235,7 @@ static llvm::Value *geometryRecordPtr(Codegen &cg, llvm::Value *record)
 static void storeGeometryPosition(Codegen &cg, llvm::Value *record,
                                   llvm::Value *position)
 {
-    if (getenv("MGL_GS_DIAG_CONST")) {
+    if (mgl_env_flag_enabled("MGL_GS_DIAG_CONST")) {
         position = llvm::ConstantVector::get({
             llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.25),
             llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.5),
@@ -8910,7 +8911,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         return res;
     }
     case MGL_EXPR_ASSIGN: {
-        const bool diagAssign = getenv("MGL_GS_DIAG_ASSIGN") && cg.isGeometry;
+        const bool diagAssign = mgl_env_flag_enabled("MGL_GS_DIAG_ASSIGN") &&
+                                cg.isGeometry;
         if (diagAssign) {
             fprintf(stderr, "MGL GS ASSIGN begin lhsKind=%d rhsKind=%d block=%s lvalues=",
                     e->u.assign.lhs ? (int)e->u.assign.lhs->kind : -1,
@@ -12425,7 +12427,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool isCapture = capture != 0 && isVS;
     const bool isTessCapture = capture == 2 && isVS;
     const bool isCullCapture = capture == 3 && isVS;
-    if (isGS && getenv("MGL_GS_DIAG_SOURCE"))
+    if (isGS && mgl_env_flag_enabled("MGL_GS_DIAG_SOURCE"))
         fprintf(stderr, "MGL GS SOURCE BEGIN\n%s\nMGL GS SOURCE END\n", esrc);
     MGLTranslationUnit *tu = sess->tu;
     MGLIRModule &mod = sess->mod;
@@ -16873,7 +16875,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         MPM.run(module, MAM);
     }
 
-    if (getenv("MGL_DUMP_IR"))
+    if (mgl_env_flag_enabled("MGL_DUMP_IR"))
         module.print(llvm::errs(), nullptr);
 
     /* Serialize: bitcode blob + MTLB container. */

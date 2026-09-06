@@ -51,18 +51,45 @@ static uint32_t scalar_bytes(MGLIRScalar s)
     }
 }
 
-static uint32_t align_up(uint32_t v, uint32_t a)
+/* Layout arithmetic is part of the shader ABI.  Do it in 64 bits and fail
+ * closed when a user supplied array or nested struct cannot be represented by
+ * the 32-bit offsets consumed by the AIR backend. */
+static int align_up_checked(uint32_t v, uint32_t a, uint32_t *out)
 {
-    if (a <= 1) {
-        return v;
+    if (!out || a == 0) {
+        return -1;
     }
-    return (v + a - 1) & ~(a - 1);
+    if (a <= 1) {
+        *out = v;
+        return 0;
+    }
+    uint64_t aligned = ((uint64_t)v + (uint64_t)a - 1u) &
+                       ~((uint64_t)a - 1u);
+    if (aligned > UINT32_MAX) {
+        return -1;
+    }
+    *out = (uint32_t)aligned;
+    return 0;
 }
 
-/* Round an alignment up to a multiple of 16 (std140 array/struct rule). */
-static uint32_t round_align16(uint32_t a)
+static int add_checked(uint32_t a, uint32_t b, uint32_t *out)
 {
-    return align_up(a, 16);
+    uint64_t value = (uint64_t)a + (uint64_t)b;
+    if (!out || value > UINT32_MAX) {
+        return -1;
+    }
+    *out = (uint32_t)value;
+    return 0;
+}
+
+static int mul_checked(uint32_t a, uint32_t b, uint32_t *out)
+{
+    uint64_t value = (uint64_t)a * (uint64_t)b;
+    if (!out || value > UINT32_MAX) {
+        return -1;
+    }
+    *out = (uint32_t)value;
+    return 0;
 }
 
 /* Base alignment of an N-component vector of scalar size `s`.
@@ -83,15 +110,51 @@ static int is_std140(MGLIRLayoutStd l)
     return l == MGLIR_LAYOUT_STD140 || l == MGLIR_LAYOUT_SHARED;
 }
 
+static MGLIRLayoutCache *layout_cache_for(MGLIRType *type,
+                                          MGLIRLayoutStd layout)
+{
+    if (!type || layout < MGLIR_LAYOUT_NONE ||
+        layout >= MGLIR_LAYOUT_CACHE_COUNT) {
+        return NULL;
+    }
+    return &type->layout_cache[(unsigned)layout];
+}
+
+/* Keep the historical fields usable by existing backend code while the
+ * per-standard caches remain the ownership boundary for immutable results. */
+static void activate_layout_cache(MGLIRType *type, MGLIRLayoutStd layout,
+                                  const MGLIRLayoutCache *cache)
+{
+    if (!type || !cache) {
+        return;
+    }
+    type->layout = cache->info;
+    type->layout_valid = cache->valid;
+    type->layout_standard = layout;
+    type->member_offsets = cache->member_offsets;
+}
+
 static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
                        MGLIRLayoutInfo *info)
 {
     if (!type || depth > MGL_IR_MAX_DEPTH) {
         return -1;
     }
+    MGLIRLayoutCache *cache = layout_cache_for(type, layout);
+    if (!cache) {
+        return -1;
+    }
+    if (cache->valid) {
+        activate_layout_cache(type, layout, cache);
+        if (info) {
+            *info = cache->info;
+        }
+        return 0;
+    }
 
     MGLIRLayoutInfo r;
     memset(&r, 0, sizeof(r));
+    uint32_t *computed_member_offsets = NULL;
 
     switch (type->kind) {
     case MGLIR_TYPE_SCALAR: {
@@ -109,7 +172,9 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
             return -1;
         }
         /* std140 vector base align is 16 for 3/4 comp, 8 for 2. */
-        r.size = s * type->cols;
+        if (mul_checked(s, type->cols, &r.size) != 0) {
+            return -1;
+        }
         r.alignment = vector_align(type->cols, s);
         break;
     }
@@ -123,12 +188,17 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
             return -1;
         }
         uint32_t base = vector_align(vec_comps, s);
-        uint32_t stride = is_std140(layout) ? round_align16(base) : base;
+        uint32_t stride = base;
+        if (is_std140(layout) && align_up_checked(base, 16, &stride) != 0) {
+            return -1;
+        }
         /* The layout pass stores every vector at the full stride in both
          * std140 and std430: mat3 std430 = 48.
          * std140/shared: matrix base alignment follows the array-of-vector
          * rule (GL 4.6 §7.6.2.2 (3)+(4)) — round vector align up to 16. */
-        r.size = count * stride;
+        if (mul_checked(count, stride, &r.size) != 0) {
+            return -1;
+        }
         r.alignment = is_std140(layout) ? stride : base;
         r.matrix_stride = stride;
         break;
@@ -144,12 +214,19 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
          * (already potentially >16); round only if below 16 in std140. */
         uint32_t align = e.alignment;
         if (is_std140(layout)) {
-            align = round_align16(align);
+            if (align_up_checked(align, 16, &align) != 0) {
+                return -1;
+            }
         }
-        uint32_t stride = align_up(e.size, align);
+        uint32_t stride = 0;
+        if (align_up_checked(e.size, align, &stride) != 0) {
+            return -1;
+        }
         if (is_std140(layout)) {
             /* std140 requires array element stride be 16-aligned. */
-            stride = round_align16(align_up(e.size, align));
+            if (align_up_checked(stride, 16, &stride) != 0) {
+                return -1;
+            }
         }
         r.alignment = align;
         r.array_stride = stride;
@@ -160,14 +237,22 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
         } else {
             /* The layout pass stores every element at the full stride:
              * float[3] std140 = 48 (=3*16), vec3[2] std430 = 32. */
-            r.size = type->array_size * stride;
+            if (mul_checked(type->array_size, stride, &r.size) != 0) {
+                return -1;
+            }
         }
         break;
     }
     case MGLIR_TYPE_STRUCT: {
-        if (type->member_offsets == NULL && type->member_count > 0) {
-            type->member_offsets = (uint32_t *)calloc(type->member_count, sizeof(uint32_t));
-            if (!type->member_offsets) {
+        uint32_t *member_offsets = NULL;
+        if (type->member_count > 0) {
+            if ((size_t)type->member_count >
+                SIZE_MAX / sizeof(*member_offsets)) {
+                return -1;
+            }
+            member_offsets = (uint32_t *)calloc(type->member_count,
+                                                sizeof(uint32_t));
+            if (!member_offsets) {
                 return -1;
             }
         }
@@ -176,17 +261,30 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
         for (uint32_t i = 0; i < type->member_count; i++) {
             MGLIRLayoutInfo m;
             if (layout_type(type->members[i], layout, depth + 1, &m) != 0) {
+                free(member_offsets);
                 return -1;
             }
-            offset = align_up(offset, m.alignment);
-            type->member_offsets[i] = offset;
-            offset += m.size;
+            if (align_up_checked(offset, m.alignment, &offset) != 0 ||
+                add_checked(offset, m.size, &offset) != 0) {
+                free(member_offsets);
+                return -1;
+            }
+            member_offsets[i] = offset - m.size;
             if (m.alignment > max_align) {
                 max_align = m.alignment;
             }
         }
-        r.alignment = is_std140(layout) ? round_align16(max_align) : max_align;
-        r.size = align_up(offset, r.alignment);
+        r.alignment = max_align;
+        if (is_std140(layout) &&
+            align_up_checked(max_align, 16, &r.alignment) != 0) {
+            free(member_offsets);
+            return -1;
+        }
+        if (align_up_checked(offset, r.alignment, &r.size) != 0) {
+            free(member_offsets);
+            return -1;
+        }
+        computed_member_offsets = member_offsets;
         break;
     }
     case MGLIR_TYPE_SAMPLER:
@@ -199,13 +297,13 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
         return -1;
     }
 
-    /* Layout is cached in type->layout (side effect).  A type object holds
-     * ONE layout result: computing std430 over an already std140-computed
-     * struct silently overwrites it (member offsets differ).  Layout must
-     * therefore be computed once per type per layout standard; shared type
-     * objects must never be re-laid out under a different standard. */
-    type->layout = r;
-    type->layout_valid = 1;
+    /* Publish only after the complete subtree succeeds.  Child caches may
+     * already contain a valid result, but this node never exposes a partial
+     * member-offset array. */
+    cache->info = r;
+    cache->member_offsets = computed_member_offsets;
+    cache->valid = 1;
+    activate_layout_cache(type, layout, cache);
     if (info) {
         *info = r;
     }
@@ -393,6 +491,8 @@ void mglIRTypeDestroy(MGLIRType *t)
     free((void *)t->name);
     free(t->members);
     free(t->member_names);
-    free(t->member_offsets);
+    for (unsigned i = 0; i < MGLIR_LAYOUT_CACHE_COUNT; i++) {
+        free(t->layout_cache[i].member_offsets);
+    }
     free(t);
 }

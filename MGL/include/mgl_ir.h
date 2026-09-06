@@ -101,6 +101,16 @@ typedef struct MGLIRLayoutInfo {
     uint32_t matrix_stride;       /* stride between matrix columns/rows */
 } MGLIRLayoutInfo;
 
+/* A type may be used by both uniform (std140) and storage (std430) blocks.
+ * Keep each result immutable and independent; the legacy fields below expose
+ * whichever cache was selected by the most recent mglIRComputeLayout call. */
+#define MGLIR_LAYOUT_CACHE_COUNT 5
+typedef struct MGLIRLayoutCache {
+    MGLIRLayoutInfo info;
+    uint32_t *member_offsets;   /* owned by this cache, structs only */
+    uint32_t valid;
+} MGLIRLayoutCache;
+
 typedef struct MGLIRType MGLIRType;
 
 struct MGLIRType {
@@ -127,6 +137,8 @@ struct MGLIRType {
 
     MGLIRLayoutInfo layout;     /* cached layout results */
     uint32_t layout_valid;      /* 1 after mglIRComputeLayout */
+    MGLIRLayoutStd layout_standard; /* standard used for the cached result */
+    MGLIRLayoutCache layout_cache[MGLIR_LAYOUT_CACHE_COUNT];
 };
 
 /* Constructors.  Returned structure is heap-owned; destroy with mglIRTypeDestroy. */

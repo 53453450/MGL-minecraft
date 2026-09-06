@@ -21,9 +21,12 @@
 #include "mgl_env_flag.h"
 
 #include <dispatch/dispatch.h>
+#include <cstdint>
+#include <cstring>
 #include <map>
 #include <mutex>
 #include <string>
+#include <type_traits>
 
 namespace {
 
@@ -42,13 +45,63 @@ PSOCache& psoCache() {
     return *cache;
 }
 
-std::string pipelineKey(const void* vs, const void* fs,
+template <typename T>
+static void appendKeyValue(std::string& key, T value)
+{
+    static_assert(std::is_trivially_copyable<T>::value,
+                  "pipeline key values must be trivially copyable");
+    char bytes[sizeof(T)];
+    std::memcpy(bytes, &value, sizeof(value));
+    key.append(bytes, sizeof(bytes));
+}
+
+std::string pipelineKey(const void* device, const void* vs, const void* fs,
                         const MGLRenderPipelineDescriptorState* d) {
     std::string key;
-    key.reserve(sizeof(vs) + sizeof(fs) + sizeof(*d));
-    key.append(reinterpret_cast<const char*>(&vs), sizeof(vs));
-    key.append(reinterpret_cast<const char*>(&fs), sizeof(fs));
-    key.append(reinterpret_cast<const char*>(d), sizeof(*d));
+    key.reserve(1024);
+    appendKeyValue(key, reinterpret_cast<uintptr_t>(device));
+    appendKeyValue(key, reinterpret_cast<uintptr_t>(vs));
+    appendKeyValue(key, reinterpret_cast<uintptr_t>(fs));
+    appendKeyValue(key, d->vertex_program_instance);
+    appendKeyValue(key, d->vertex_program_generation);
+    appendKeyValue(key, d->fragment_program_instance);
+    appendKeyValue(key, d->fragment_program_generation);
+    appendKeyValue(key, d->color_count);
+    for (uint32_t i = 0; i < 8; ++i) appendKeyValue(key, d->color_format[i]);
+    appendKeyValue(key, d->depth_format);
+    appendKeyValue(key, d->stencil_format);
+    appendKeyValue(key, d->rasterization_enabled);
+    appendKeyValue(key, d->icb_enabled);
+    appendKeyValue(key, d->alpha_to_coverage_enabled);
+    appendKeyValue(key, d->alpha_to_one_enabled);
+    appendKeyValue(key, d->input_primitive_topology);
+    appendKeyValue(key, d->attrib_count);
+    for (uint32_t i = 0; i < 32; ++i) {
+        appendKeyValue(key, d->attrib_format[i]);
+        appendKeyValue(key, d->attrib_offset[i]);
+        appendKeyValue(key, d->attrib_stride[i]);
+        appendKeyValue(key, d->attrib_buffer_index[i]);
+        appendKeyValue(key, d->attrib_step_function[i]);
+        appendKeyValue(key, d->attrib_step_rate[i]);
+    }
+    for (uint32_t i = 0; i < 8; ++i) {
+        appendKeyValue(key, d->color_write_mask[i]);
+        appendKeyValue(key, d->source_rgb_blend_factor[i]);
+        appendKeyValue(key, d->destination_rgb_blend_factor[i]);
+        appendKeyValue(key, d->source_alpha_blend_factor[i]);
+        appendKeyValue(key, d->destination_alpha_blend_factor[i]);
+        appendKeyValue(key, d->rgb_blend_operation[i]);
+        appendKeyValue(key, d->alpha_blend_operation[i]);
+    }
+    appendKeyValue(key, d->blending_enabled_mask);
+    appendKeyValue(key, d->raster_sample_count);
+    appendKeyValue(key, d->tessellation_partition_mode);
+    appendKeyValue(key, d->max_tessellation_factor);
+    appendKeyValue(key, d->tessellation_factor_scale_enabled);
+    appendKeyValue(key, d->tessellation_factor_format);
+    appendKeyValue(key, d->tessellation_control_point_index_type);
+    appendKeyValue(key, d->tessellation_factor_step_function);
+    appendKeyValue(key, d->tessellation_output_winding_order);
     return key;
 }
 
@@ -240,15 +293,17 @@ int createRenderPipelineInternal(
     MGLRenderPipelineDescriptorState state = *desc;
     normalizeDepthStencilFormats(&state);
 
-    std::string key = pipelineKey(vsFn, fsFn, &state);
-    std::lock_guard<std::mutex> lock(psoCacheMutex());
-    PSOCache& cache = psoCache();
-    auto it = cache.find(key);
+    std::string key = pipelineKey(dev, vsFn, fsFn, &state);
     const bool archiveEligible = archive && vsFn && fsFn;
-    if (it != cache.end() && !archiveEligible) {
-        static_cast<MTL::RenderPipelineState*>(it->second)->retain();
-        *pso_out = it->second;
-        return 0;
+    {
+        std::lock_guard<std::mutex> lock(psoCacheMutex());
+        PSOCache& cache = psoCache();
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            static_cast<MTL::RenderPipelineState*>(it->second)->retain();
+            *pso_out = it->second;
+            return 0;
+        }
     }
 
     MTL::RenderPipelineDescriptor* rpd =
@@ -275,31 +330,6 @@ int createRenderPipelineInternal(
         pso = dev->newRenderPipelineState(
             rpd, MTL::PipelineOptionFailOnBinaryArchiveMiss,
             nullptr, &nsErr);
-        if (pso) {
-            if (it != cache.end()) {
-                pso->release();
-                static_cast<MTL::RenderPipelineState*>(it->second)->retain();
-                *pso_out = it->second;
-                rpd->release();
-                return 0;
-            }
-        } else if (it != cache.end()) {
-            /* The PSO already exists in this process, so only teach the
-             * persistent archive about the miss; recompiling the same PSO is
-             * unnecessary. */
-            NS::Error* addErr = nullptr;
-            if (!archive->addRenderPipelineFunctions(rpd, &addErr)) {
-                char addMessage[512] = {0};
-                copyError(addErr, addMessage, sizeof(addMessage));
-                fprintf(stderr,
-                        "MGL BINARY ARCHIVE: addRenderPipeline warning: %s\n",
-                        addMessage[0] ? addMessage : "unknown error");
-            }
-            static_cast<MTL::RenderPipelineState*>(it->second)->retain();
-            *pso_out = it->second;
-            rpd->release();
-            return 0;
-        }
     }
     const bool archiveMiss = archiveEligible && !pso;
     if (!pso) {
@@ -323,8 +353,21 @@ int createRenderPipelineInternal(
     }
     rpd->release();
 
-    pso->retain(); // The cache holds a long-lived reference.
-    cache[key] = pso;
+    {
+        std::lock_guard<std::mutex> lock(psoCacheMutex());
+        PSOCache& cache = psoCache();
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            /* Another thread compiled the same key while this one was in
+             * Metal. Keep one cache entry and return a fresh caller ref. */
+            pso->release();
+            static_cast<MTL::RenderPipelineState*>(it->second)->retain();
+            *pso_out = it->second;
+            return 0;
+        }
+        pso->retain(); // The cache holds a long-lived reference.
+        cache.emplace(std::move(key), pso);
+    }
     *pso_out = pso; // The caller owns a reference released with mglAirRelease.
     return 0;
 }

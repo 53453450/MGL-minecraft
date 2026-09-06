@@ -250,6 +250,24 @@ static void test_block_layout(void)
     teardown();
 }
 
+static void test_flattened_ssbo_member_layout(void)
+{
+    analyze("#version 430 core\n"
+            "layout(std430, binding = 0) buffer Out { int data[8]; };\n"
+            "void main() {}\n");
+    CHECK(error_count == 0, "flattened SSBO clean");
+    MGLIRSymbol *data = find_sym("data");
+    CHECK(data != NULL && data->block_name &&
+              strcmp(data->block_name, "Out") == 0,
+          "flattened SSBO member published");
+    CHECK(data && data->type && data->type->kind == MGLIR_TYPE_ARRAY &&
+              data->type->layout_valid &&
+              data->type->layout_standard == MGLIR_LAYOUT_STD430 &&
+              data->type->layout.array_stride == sizeof(int),
+          "flattened SSBO member retains std430 array stride");
+    teardown();
+}
+
 static void test_call_arg_check(void)
 {
     analyze("#version 450 core\n"
@@ -393,6 +411,52 @@ static void test_interface_mismatch(void)
     CHECK(lec == 1 && le[0].message &&
           strstr(le[0].message, "interface variable 'color'"),
           "mismatch message");
+    mglGLSLSemanticCheckDestroy(le, lec);
+    mglIRModuleDestroy(&vs);
+    mglGLSLSemanticCheckDestroy(vs_err, vs_ec);
+    teardown();
+}
+
+static void test_interface_abi_qualifiers(void)
+{
+    analyze("#version 450 core\n"
+            "layout(location = 1) out vec4 color;\n"
+            "void main() { color = vec4(1.0); }\n");
+    MGLIRModule vs = module;
+    MGLSemaError *vs_err = errors;
+    uint32_t vs_ec = error_count;
+    errors = NULL;
+    error_count = 0;
+    memset(&module, 0, sizeof(module));
+
+    analyze("#version 450 core\n"
+            "layout(location = 2) in vec4 color;\n"
+            "void main() { vec4 c = color; }\n");
+    MGLSemaError *le = NULL;
+    uint32_t lec = 0;
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 1 && lec == 1,
+          "explicit interface location mismatch rejected");
+    mglGLSLSemanticCheckDestroy(le, lec);
+    mglIRModuleDestroy(&vs);
+    mglGLSLSemanticCheckDestroy(vs_err, vs_ec);
+    teardown();
+
+    analyze("#version 450 core\n"
+            "layout(location = 0) flat out vec4 color;\n"
+            "void main() { color = vec4(1.0); }\n");
+    vs = module;
+    vs_err = errors;
+    vs_ec = error_count;
+    errors = NULL;
+    error_count = 0;
+    memset(&module, 0, sizeof(module));
+    analyze("#version 450 core\n"
+            "layout(location = 0) in vec4 color;\n"
+            "void main() { vec4 c = color; }\n");
+    le = NULL;
+    lec = 0;
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 1 && lec == 1,
+          "interpolation qualifier mismatch rejected");
     mglGLSLSemanticCheckDestroy(le, lec);
     mglIRModuleDestroy(&vs);
     mglGLSLSemanticCheckDestroy(vs_err, vs_ec);
@@ -618,6 +682,7 @@ int main(void)
     test_implicit_conv();
     test_redecl();
     test_block_layout();
+    test_flattened_ssbo_member_layout();
     test_call_arg_check();
     test_integer_vector_types();
     test_matrix_arith();
@@ -626,6 +691,7 @@ int main(void)
     test_constructors();
     test_interface_ok();
     test_interface_mismatch();
+    test_interface_abi_qualifiers();
     test_interface_blocks();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

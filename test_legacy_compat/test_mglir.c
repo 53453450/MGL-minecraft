@@ -166,6 +166,47 @@ static void test_std430(void)
     mglIRTypeDestroy(ssbo);
 }
 
+static void test_layout_standard_cache(void)
+{
+    printf("layout standard cache\n");
+    MGLIRType *mem[] = {
+        mglIRTypeVector(MGLIR_SCALAR_FLOAT, 3),
+        mglIRTypeScalar(MGLIR_SCALAR_FLOAT),
+    };
+    const char *names[] = {"v", "f"};
+    MGLIRType *s = mglIRTypeStruct(mem, names, 2, "S");
+    uint32_t size = 0;
+    int rc140 = mglIRComputeLayout(s, MGLIR_LAYOUT_STD140, &size);
+    uint32_t old_offset = s->member_offsets ? s->member_offsets[1] : 0u;
+    int rc430 = mglIRComputeLayout(s, MGLIR_LAYOUT_STD430, &size);
+    CHECK(rc140 == 0 && rc430 == 0,
+          "cache independent results for both packing standards");
+    CHECK(s->layout_standard == MGLIR_LAYOUT_STD430 &&
+              s->member_offsets && s->member_offsets[1] == old_offset,
+          "activate the selected layout metadata");
+    CHECK(s->layout_cache[MGLIR_LAYOUT_STD140].valid &&
+              s->layout_cache[MGLIR_LAYOUT_STD140].member_offsets &&
+              s->layout_cache[MGLIR_LAYOUT_STD140].member_offsets[1] ==
+                  old_offset,
+          "preserve std140 offsets after std430 computation");
+    mglIRComputeLayout(s, MGLIR_LAYOUT_STD140, &size);
+    CHECK(s->layout_standard == MGLIR_LAYOUT_STD140 &&
+              s->member_offsets && s->member_offsets[1] == old_offset,
+          "restore std140 metadata from cache");
+    mglIRTypeDestroy(s);
+}
+
+static void test_layout_overflow(void)
+{
+    printf("layout overflow rejection\n");
+    MGLIRType *large = mglIRTypeArray(
+        mglIRTypeScalar(MGLIR_SCALAR_FLOAT), UINT32_MAX);
+    uint32_t size = 0;
+    CHECK(large && mglIRComputeLayout(large, MGLIR_LAYOUT_STD430, &size) != 0,
+          "reject array size overflow");
+    mglIRTypeDestroy(large);
+}
+
 int main(void)
 {
     printf("MGLIR std140/std430 layout tests\n");
@@ -174,6 +215,8 @@ int main(void)
     test_std140_array();
     test_std140_struct_literal();
     test_std430();
+    test_layout_standard_cache();
+    test_layout_overflow();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

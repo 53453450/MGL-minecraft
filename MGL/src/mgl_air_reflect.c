@@ -21,6 +21,7 @@
 
 #include <GL/glcorearb.h>
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,71 @@
 #include "mgl_uniform_reflection.h"
 #include "glm_limits.h" /* MAX_ATTRIBS: attrib_names contract size */
 #include "mgl_types_buffer.h" /* MAX_BINDABLE_BUFFERS */
+
+static int air_u32_add(uint32_t a, uint32_t b, uint32_t *out)
+{
+    uint64_t value = (uint64_t)a + (uint64_t)b;
+    if (!out || value > UINT32_MAX) {
+        return -1;
+    }
+    *out = (uint32_t)value;
+    return 0;
+}
+
+static int air_u32_mul(uint32_t a, uint32_t b, uint32_t *out)
+{
+    uint64_t value = (uint64_t)a * (uint64_t)b;
+    if (!out || value > UINT32_MAX) {
+        return -1;
+    }
+    *out = (uint32_t)value;
+    return 0;
+}
+
+static int air_size_mul(size_t a, size_t b, size_t *out)
+{
+    if (!out || (b != 0 && a > SIZE_MAX / b)) {
+        return -1;
+    }
+    *out = a * b;
+    return 0;
+}
+
+/* GL resource names are user input and nested structs/arrays can make them
+ * much longer than a convenient stack buffer.  Build names with a two-pass
+ * formatter so reflection never publishes a silently truncated name. */
+static char *air_format(const char *fmt, ...)
+{
+    if (!fmt) {
+        return NULL;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    va_list copy;
+    va_copy(copy, ap);
+    int needed = vsnprintf(NULL, 0, fmt, copy);
+    va_end(copy);
+    if (needed < 0) {
+        va_end(ap);
+        return NULL;
+    }
+    size_t bytes = (size_t)needed + 1u;
+    if (bytes == 0 || bytes > SIZE_MAX) {
+        va_end(ap);
+        return NULL;
+    }
+    char *out = (char *)malloc(bytes);
+    if (!out) {
+        va_end(ap);
+        return NULL;
+    }
+    if (vsnprintf(out, bytes, fmt, ap) != needed) {
+        free(out);
+        out = NULL;
+    }
+    va_end(ap);
+    return out;
+}
 
 GLuint mglAirGLTypeFromIR(const MGLIRType *t)
 {
@@ -255,16 +321,24 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
     for (uint32_t i = 0; i < st->member_count; i++) {
         const MGLIRType *mt = st->members[i];
         const char *mn = st->member_names[i];
-        uint32_t off = base_off + (st->member_offsets ? st->member_offsets[i]
-                                                      : 0u);
-        char path[192];
-        snprintf(path, sizeof(path), "%s%s%s", prefix, prefix[0] ? "." : "",
-                 mn ? mn : "?");
+        uint32_t member_offset = st->member_offsets
+            ? st->member_offsets[i] : 0u;
+        uint32_t off = 0;
+        if (air_u32_add(base_off, member_offset, &off) != 0) {
+            return -1;
+        }
+        char *path = air_format("%s%s%s", prefix, prefix[0] ? "." : "",
+                                mn ? mn : "?");
+        if (!path) {
+            return -1;
+        }
 
         if (mt->kind == MGLIR_TYPE_STRUCT) {
             if (air_block_flatten(mt, off, path, out, count, cap) != 0) {
+                free(path);
                 return -1;
             }
+            free(path);
             continue;
         }
         if (mt->kind == MGLIR_TYPE_ARRAY && mt->elem_type &&
@@ -274,33 +348,60 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
                                   ? (uint32_t)mt->layout.array_stride
                                   : 0u;
             for (uint32_t el = 0; el < n; el++) {
-                char epath[208];
-                snprintf(epath, sizeof(epath), "%s[%u]", path, el);
-                if (air_block_flatten(mt->elem_type, off + el * stride,
-                                      epath, out, count, cap) != 0) {
+                char *epath = air_format("%s[%u]", path, el);
+                if (!epath) {
+                    free(path);
                     return -1;
                 }
+                uint32_t element_offset = 0;
+                if (air_u32_mul(el, stride, &element_offset) != 0 ||
+                    air_u32_add(off, element_offset, &element_offset) != 0 ||
+                    air_block_flatten(mt->elem_type, element_offset, epath,
+                                      out, count, cap) != 0) {
+                    free(epath);
+                    free(path);
+                    return -1;
+                }
+                free(epath);
             }
+            free(path);
             continue;
         }
 
         /* Opaque members are separate sampler/image uniforms, not default-
          * block buffer leaves (GL 4.6 §4.1.7 / §7.6). */
         if (mt->kind == MGLIR_TYPE_SAMPLER || mt->kind == MGLIR_TYPE_IMAGE)
+        {
+            free(path);
             continue;
+        }
         if (mt->kind == MGLIR_TYPE_ARRAY && mt->elem_type &&
             (mt->elem_type->kind == MGLIR_TYPE_SAMPLER ||
              mt->elem_type->kind == MGLIR_TYPE_IMAGE))
+        {
+            free(path);
             continue;
+        }
 
         /* Leaf: scalar/vector/matrix or an array of those.  Array leaves
          * are one entry named with a "[0]" postfix at every path level
          * (GL 4.6 §7.3.1.1). */
         if (*count == *cap) {
-            uint32_t ncap = *cap ? *cap * 2 : 8;
+            if (*cap > UINT32_MAX / 2u) {
+                free(path);
+                return -1;
+            }
+            uint32_t ncap = *cap ? *cap * 2u : 8u;
+            size_t bytes = 0;
+            if (air_size_mul((size_t)ncap, sizeof(SpirvUBOMember),
+                             &bytes) != 0) {
+                free(path);
+                return -1;
+            }
             SpirvUBOMember *nl =
-                (SpirvUBOMember *)realloc(*out, ncap * sizeof(SpirvUBOMember));
+                (SpirvUBOMember *)realloc(*out, bytes);
             if (!nl) {
+                free(path);
                 return -1;
             }
             *out = nl;
@@ -311,17 +412,23 @@ static int air_block_flatten(const MGLIRType *st, uint32_t base_off,
         SpirvUBOMember *u = &(*out)[(*count)++];
         memset(u, 0, sizeof(*u));
         if (mt->kind == MGLIR_TYPE_ARRAY) {
-            char apath[208];
-            snprintf(apath, sizeof(apath), "%s[0]", path);
-            u->name = strdup(apath);
-            u->query_name = strdup(apath);
+            u->name = air_format("%s[0]", path);
+            u->query_name = u->name ? strdup(u->name) : NULL;
             u->size = mglAirGLArraySizeFromIR(mt);
             u->array_stride = (GLint)mt->layout.array_stride;
         } else {
             u->name = strdup(path);
-            u->query_name = strdup(path);
+            u->query_name = u->name ? strdup(path) : NULL;
             u->size = 1;
             u->array_stride = 0;
+        }
+        free(path);
+        if (!u->name || !u->query_name) {
+            free((void *)u->name);
+            free((void *)u->query_name);
+            u->name = NULL;
+            u->query_name = NULL;
+            return -1;
         }
         u->gl_type = mglAirGLTypeFromIR(lt);
         u->offset = off;
@@ -368,15 +475,10 @@ static void apply_block_interface_name(MGLShaderResource *res,
             if (!u->name) {
                 continue;
             }
-            size_t bn = strlen(block_type->name);
-            size_t mn = strlen(u->name);
-            char *qn = (char *)malloc(bn + 1 + mn + 1);
+            char *qn = air_format("%s.%s", block_type->name, u->name);
             if (!qn) {
                 continue;
             }
-            memcpy(qn, block_type->name, bn);
-            qn[bn] = '.';
-            memcpy(qn + bn + 1, u->name, mn + 1);
             free((void *)u->query_name);
             u->query_name = qn;
         }
@@ -388,9 +490,15 @@ static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
                          const MGLIRType *type, GLuint location,
                          GLuint binding, int stage)
 {
+    if (!list || !s || !type) {
+        return 0;
+    }
     MGLShaderResource r;
     memset(&r, 0, sizeof(r));
     r.name = strdup(s->name);
+    if (s->name && !r.name) {
+        return 0;
+    }
     r.location = location;
     r.gl_binding = binding;
     r.binding = binding;
@@ -472,23 +580,55 @@ static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
         {
             SpirvUBOMember *leaves = NULL;
             uint32_t leaf_count = 0, leaf_cap = 0;
-            if (air_block_flatten(type, 0u, "", &leaves, &leaf_count,
-                                  &leaf_cap) == 0 &&
-                leaf_count > 0) {
+            int flatten_rc = air_block_flatten(type, 0u, "", &leaves,
+                                               &leaf_count, &leaf_cap);
+            if (flatten_rc == 0 && leaf_count > 0) {
                 r.ubo_members = leaves;
                 r.ubo_member_count = leaf_count;
-            } else {
+            } else if (flatten_rc != 0) {
                 for (uint32_t m = 0; m < leaf_count; m++) {
                     free((void *)leaves[m].name);
                     free((void *)leaves[m].query_name);
                 }
                 free(leaves);
+                free((void *)r.name);
+                free(r.ubo_array_bindings);
+                /* The caller supplies the final diagnostic.  This path must
+                 * still report failure so a partial block is never published
+                 * as a valid resource. */
+                return 0;
             }
         }
     }
 
+    if (list->count == UINT32_MAX) {
+        free((void *)r.name);
+        if (r.ubo_members) {
+            for (GLuint m = 0; m < r.ubo_member_count; m++) {
+                free((void *)r.ubo_members[m].name);
+                free(r.ubo_members[m].query_name);
+            }
+            free(r.ubo_members);
+        }
+        free(r.ubo_array_bindings);
+        return 0;
+    }
+    size_t list_bytes = 0;
+    if (air_size_mul((size_t)list->count + 1u,
+                     sizeof(MGLShaderResource), &list_bytes) != 0) {
+        free((void *)r.name);
+        if (r.ubo_members) {
+            for (GLuint m = 0; m < r.ubo_member_count; m++) {
+                free((void *)r.ubo_members[m].name);
+                free(r.ubo_members[m].query_name);
+            }
+            free(r.ubo_members);
+        }
+        free(r.ubo_array_bindings);
+        return 0;
+    }
     MGLShaderResource *nl = (MGLShaderResource *)realloc(
-        list->list, (list->count + 1) * sizeof(MGLShaderResource));
+        list->list, list_bytes);
     if (!nl) {
         free((void *)r.name);
         if (r.ubo_members) {
@@ -523,11 +663,17 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
         for (uint32_t i = 0; i < t->member_count; i++) {
             const MGLIRType *mt = t->members[i];
             const char *mn = t->member_names[i];
-            char path[208];
-            snprintf(path, sizeof(path), "%s.%s", prefix, mn ? mn : "?");
+            char *path = air_format("%s.%s", prefix, mn ? mn : "?");
+            if (!path) {
+                return 0;
+            }
             if (!air_push_opaque_leaves(list, owner, mt, path, texture_binding,
                                         sampler_binding, stage, want_image))
+            {
+                free(path);
                 return 0;
+            }
+            free(path);
         }
         return 1;
     }
@@ -535,12 +681,18 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
         t->elem_type->kind == MGLIR_TYPE_STRUCT) {
         uint32_t n = t->array_size ? t->array_size : 1u;
         for (uint32_t el = 0; el < n; el++) {
-            char epath[208];
-            snprintf(epath, sizeof(epath), "%s[%u]", prefix, el);
+            char *epath = air_format("%s[%u]", prefix, el);
+            if (!epath) {
+                return 0;
+            }
             if (!air_push_opaque_leaves(list, owner, t->elem_type, epath,
                                         texture_binding, sampler_binding, stage,
                                         want_image))
+            {
+                free(epath);
                 return 0;
+            }
+            free(epath);
         }
         return 1;
     }
@@ -560,8 +712,12 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
     if (list->count == 0)
         return 0;
     MGLShaderResource *last = &list->list[list->count - 1];
+    char *resource_name = strdup(prefix);
+    if (!resource_name) {
+        return 0;
+    }
     free((void *)last->name);
-    last->name = strdup(prefix);
+    last->name = resource_name;
     if (!want_image) {
         last->resource_active = GL_TRUE;
         last->has_combined_sampler = GL_TRUE;
@@ -577,9 +733,18 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
         GLuint elements = mglAirGLArraySizeFromIR(t);
         if (elements < 1u)
             elements = 1u;
-        *texture_binding += elements;
+        uint32_t next_texture = 0;
+        if (air_u32_add(*texture_binding, elements, &next_texture) != 0) {
+            return 0;
+        }
+        uint32_t next_sampler = 0;
+        if (sampler_binding &&
+            air_u32_add(*sampler_binding, elements, &next_sampler) != 0) {
+            return 0;
+        }
+        *texture_binding = next_texture;
         if (sampler_binding)
-            *sampler_binding += elements;
+            *sampler_binding = next_sampler;
     } else {
         last->sampler_unit = -1;
         if (owner->binding != UINT32_MAX) {
@@ -591,7 +756,9 @@ static int air_push_opaque_leaves(MGLShaderResourceList *list,
         GLuint elements = mglAirGLArraySizeFromIR(t);
         if (elements < 1u)
             elements = 1u;
-        *texture_binding += elements;
+        if (air_u32_add(*texture_binding, elements, texture_binding) != 0) {
+            return 0;
+        }
     }
     return 1;
 }
@@ -706,10 +873,22 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
              * Instance arrays (`buffer B {…} name[N]`) need N consecutive
              * Metal slots — match air_uniform_block_element_count used when
              * emitting the resources below (and AIR codegen). */
-            ssboCount += air_uniform_block_element_count(t);
+            if (air_u32_add(ssboCount, air_uniform_block_element_count(t),
+                            &ssboCount) != 0) {
+                if (err && errCap)
+                    snprintf(err, errCap, "SSBO slot count overflow");
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
         } else if ((q & MGL_AST_Q_UNIFORM) && !s->block_name &&
                    air_symbol_is_ubo(s)) {
-            uboSlotCount += air_uniform_block_element_count(t);
+            if (air_u32_add(uboSlotCount, air_uniform_block_element_count(t),
+                            &uboSlotCount) != 0) {
+                if (err && errCap)
+                    snprintf(err, errCap, "UBO slot count overflow");
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
         } else if ((q & MGL_AST_Q_UNIFORM) &&
                    base_t && base_t->kind != MGLIR_TYPE_SAMPLER &&
                    base_t && base_t->kind != MGLIR_TYPE_IMAGE &&
@@ -732,11 +911,19 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                   stage == MGL_STAGE_TESS_EVALUATION ||
                   stage == MGL_STAGE_GEOMETRY ||
                   stage == MGL_STAGE_FRAGMENT) ? hasPlain : 0));
-    uint32_t ubo_binding = ssbo_binding + ssboCount;
+    uint32_t ubo_binding = 0;
+    if (air_u32_add(ssbo_binding, ssboCount, &ubo_binding) != 0) {
+        if (err && errCap) snprintf(err, errCap, "buffer slot count overflow");
+        mglAirReflectDestroy(lists);
+        return -1;
+    }
     uint32_t gl_ubo_binding = 0;
     uint32_t gl_ssbo_binding = 0;
-    uint32_t ac_binding = ubo_binding + uboSlotCount;
-    if (acCount > 0u && ac_binding + acCount > MAX_BINDABLE_BUFFERS) {
+    uint32_t ac_binding = 0;
+    uint32_t ac_end = 0;
+    if (air_u32_add(ubo_binding, uboSlotCount, &ac_binding) != 0 ||
+        air_u32_add(ac_binding, acCount, &ac_end) != 0 ||
+        (acCount > 0u && ac_end > MAX_BINDABLE_BUFFERS)) {
         if (err && errCap) {
             snprintf(err, errCap,
                      "atomic counter Metal slots exceed MAX_BINDABLE_BUFFERS");
@@ -967,6 +1154,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 if (last->ubo_is_array) {
                     last->ubo_array_bindings = (GLuint *)calloc(
                         block_count, sizeof(*last->ubo_array_bindings));
+                    if (!last->ubo_array_bindings) {
+                        if (err && errCap)
+                            snprintf(err, errCap, "out of memory");
+                        free(agg_types);
+                        free(agg_names);
+                        mglAirReflectDestroy(lists);
+                        return -1;
+                    }
                 }
                 GLuint gl_block_binding = s->binding != UINT32_MAX
                     ? s->binding : gl_ubo_binding;
@@ -984,16 +1179,50 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             /* Plain uniform (including named struct uniforms): collect into
              * the packed aggregate.  Struct/array-of-struct are expanded to
              * GL leaf names (`s.a`, `s[0].b`) below when emitting agg. */
-            MGLIRType **nt = (MGLIRType **)realloc(
-                agg_types, (agg_count + 1) * sizeof(MGLIRType *));
-            const char **nn = (const char **)realloc(
-                agg_names, (agg_count + 1) * sizeof(const char *));
-            if (!nt || !nn) {
+            if (agg_count == UINT32_MAX) {
+                if (err && errCap) snprintf(err, errCap, "too many uniforms");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
+            size_t agg_type_bytes = 0;
+            if (air_size_mul((size_t)agg_count + 1u,
+                             sizeof(MGLIRType *), &agg_type_bytes) != 0) {
+                if (err && errCap) snprintf(err, errCap, "uniform metadata overflow");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
+            MGLIRType **nt = (MGLIRType **)realloc(agg_types,
+                                                    agg_type_bytes);
+            if (!nt) {
                 if (err && errCap) snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
                 mglAirReflectDestroy(lists);
                 return -1;
             }
             agg_types = nt;
+            size_t agg_name_bytes = 0;
+            if (air_size_mul((size_t)agg_count + 1u,
+                             sizeof(const char *), &agg_name_bytes) != 0) {
+                if (err && errCap) snprintf(err, errCap, "uniform metadata overflow");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
+            const char **nn = (const char **)realloc(agg_names,
+                                                      agg_name_bytes);
+            if (!nn) {
+                if (err && errCap) snprintf(err, errCap, "out of memory");
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
             agg_names = nn;
             agg_types[agg_count] = (MGLIRType *)t;
             agg_names[agg_count] = s->name;
@@ -1029,6 +1258,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             if (ssbo_last->ubo_is_array) {
                 ssbo_last->ubo_array_bindings = (GLuint *)calloc(
                     block_count, sizeof(*ssbo_last->ubo_array_bindings));
+                if (!ssbo_last->ubo_array_bindings) {
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    return -1;
+                }
             }
             GLuint gl_block_binding = s->binding != UINT32_MAX
                 ? s->binding : gl_ssbo_binding;
@@ -1137,11 +1374,35 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             MGLIRType *ty = agg_types[m];
             const char *nm = agg_names[m];
             uint32_t size = 0;
-            if (mglIRComputeLayout(ty, MGLIR_LAYOUT_STD140, &size) != 0) {
-                size = 4;
+            if (mglIRComputeLayout(ty, MGLIR_LAYOUT_STD140, &size) != 0 ||
+                ty->layout.alignment == 0) {
+                for (uint32_t i = 0; i < leaf_count; i++) {
+                    free((void *)leaves[i].name);
+                    free(leaves[i].query_name);
+                }
+                free(leaves);
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                if (err && errCap)
+                    snprintf(err, errCap, "uniform layout overflow or invalid type");
+                return -1;
             }
-            off = (off + ty->layout.alignment - 1) &
-                  ~(ty->layout.alignment - 1);
+            uint32_t aligned_off = 0;
+            if (air_u32_add(off, ty->layout.alignment - 1u, &aligned_off) != 0) {
+                for (uint32_t i = 0; i < leaf_count; i++) {
+                    free((void *)leaves[i].name);
+                    free(leaves[i].query_name);
+                }
+                free(leaves);
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                if (err && errCap)
+                    snprintf(err, errCap, "uniform aggregate size overflow");
+                return -1;
+            }
+            off = aligned_off & ~(ty->layout.alignment - 1u);
             const MGLIRType *st = air_uniform_block_type(ty);
             if (st) {
                 if (ty->kind == MGLIR_TYPE_ARRAY && ty->elem_type) {
@@ -1150,13 +1411,8 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                                           ? (uint32_t)ty->layout.array_stride
                                           : size / (n ? n : 1u);
                     for (uint32_t el = 0; el < n; el++) {
-                        char epath[192];
-                        snprintf(epath, sizeof(epath), "%s[%u]",
-                                 nm ? nm : "?", el);
-                        if (air_block_flatten(ty->elem_type,
-                                              off + el * stride, epath,
-                                              &leaves, &leaf_count,
-                                              &leaf_cap) != 0) {
+                        char *epath = air_format("%s[%u]", nm ? nm : "?", el);
+                        if (!epath) {
                             for (uint32_t i = 0; i < leaf_count; i++) {
                                 free((void *)leaves[i].name);
                                 free(leaves[i].query_name);
@@ -1169,6 +1425,40 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                                 snprintf(err, errCap, "out of memory");
                             return -1;
                         }
+                        uint32_t element_offset = 0;
+                        if (air_u32_mul(el, stride, &element_offset) != 0 ||
+                            air_u32_add(off, element_offset, &element_offset)) {
+                            free(epath);
+                            for (uint32_t i = 0; i < leaf_count; i++) {
+                                free((void *)leaves[i].name);
+                                free(leaves[i].query_name);
+                            }
+                            free(leaves);
+                            free(agg_types);
+                            free(agg_names);
+                            mglAirReflectDestroy(lists);
+                            if (err && errCap)
+                                snprintf(err, errCap, "uniform aggregate size overflow");
+                            return -1;
+                        }
+                        if (air_block_flatten(ty->elem_type,
+                                              element_offset, epath,
+                                              &leaves, &leaf_count,
+                                              &leaf_cap) != 0) {
+                            free(epath);
+                            for (uint32_t i = 0; i < leaf_count; i++) {
+                                free((void *)leaves[i].name);
+                                free(leaves[i].query_name);
+                            }
+                            free(leaves);
+                            free(agg_types);
+                            free(agg_names);
+                            mglAirReflectDestroy(lists);
+                            if (err && errCap)
+                                snprintf(err, errCap, "out of memory");
+                            return -1;
+                        }
+                        free(epath);
                     }
                 } else if (air_block_flatten(st, off, nm ? nm : "?",
                                              &leaves, &leaf_count,
@@ -1187,9 +1477,37 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 }
             } else {
                 if (leaf_count == leaf_cap) {
-                    uint32_t ncap = leaf_cap ? leaf_cap * 2 : 8;
+                    if (leaf_cap > UINT32_MAX / 2u) {
+                        for (uint32_t i = 0; i < leaf_count; i++) {
+                            free((void *)leaves[i].name);
+                            free(leaves[i].query_name);
+                        }
+                        free(leaves);
+                        free(agg_types);
+                        free(agg_names);
+                        mglAirReflectDestroy(lists);
+                        if (err && errCap)
+                            snprintf(err, errCap, "too many uniform members");
+                        return -1;
+                    }
+                    uint32_t ncap = leaf_cap ? leaf_cap * 2u : 8u;
+                    size_t leaf_bytes = 0;
+                    if (air_size_mul((size_t)ncap, sizeof(SpirvUBOMember),
+                                     &leaf_bytes) != 0) {
+                        for (uint32_t i = 0; i < leaf_count; i++) {
+                            free((void *)leaves[i].name);
+                            free(leaves[i].query_name);
+                        }
+                        free(leaves);
+                        free(agg_types);
+                        free(agg_names);
+                        mglAirReflectDestroy(lists);
+                        if (err && errCap)
+                            snprintf(err, errCap, "uniform metadata overflow");
+                        return -1;
+                    }
                     SpirvUBOMember *nl = (SpirvUBOMember *)realloc(
-                        leaves, ncap * sizeof(SpirvUBOMember));
+                        leaves, leaf_bytes);
                     if (!nl) {
                         for (uint32_t i = 0; i < leaf_count; i++) {
                             free((void *)leaves[i].name);
@@ -1209,7 +1527,23 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 SpirvUBOMember *u = &leaves[leaf_count++];
                 memset(u, 0, sizeof(*u));
                 u->name = strdup(nm);
-                u->query_name = strdup(nm);
+                u->query_name = u->name ? strdup(nm) : NULL;
+                if (!u->name || !u->query_name) {
+                    free((void *)u->name);
+                    free((void *)u->query_name);
+                    leaf_count--;
+                    for (uint32_t i = 0; i < leaf_count; i++) {
+                        free((void *)leaves[i].name);
+                        free(leaves[i].query_name);
+                    }
+                    free(leaves);
+                    free(agg_types);
+                    free(agg_names);
+                    mglAirReflectDestroy(lists);
+                    if (err && errCap)
+                        snprintf(err, errCap, "out of memory");
+                    return -1;
+                }
                 u->gl_type = mglAirGLTypeFromIR(ty);
                 u->offset = off;
                 u->array_stride = (ty->kind == MGLIR_TYPE_ARRAY)
@@ -1223,7 +1557,19 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 u->top_level_array_size = u->size;
                 u->top_level_array_stride = u->array_stride;
             }
-            off += size;
+            if (air_u32_add(off, size, &off) != 0) {
+                for (uint32_t i = 0; i < leaf_count; i++) {
+                    free((void *)leaves[i].name);
+                    free(leaves[i].query_name);
+                }
+                free(leaves);
+                free(agg_types);
+                free(agg_names);
+                mglAirReflectDestroy(lists);
+                if (err && errCap)
+                    snprintf(err, errCap, "uniform aggregate size overflow");
+                return -1;
+            }
         }
         for (uint32_t m = 0; m < leaf_count; m++)
             leaves[m].location_offset = (GLint)m;
@@ -1231,6 +1577,19 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         char agg_name[64];
         snprintf(agg_name, sizeof(agg_name), "air_uniforms_s%d", stage);
         agg.name = strdup(agg_name);
+        if (!agg.name) {
+            for (uint32_t i = 0; i < leaf_count; i++) {
+                free((void *)leaves[i].name);
+                free(leaves[i].query_name);
+            }
+            free(leaves);
+            free(agg_types);
+            free(agg_names);
+            mglAirReflectDestroy(lists);
+            if (err && errCap)
+                snprintf(err, errCap, "out of memory");
+            return -1;
+        }
         agg.ubo_members = leaves;
         agg.ubo_member_count = leaf_count;
         agg.required_size = agg_size;
@@ -1239,18 +1598,54 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         agg.gl_binding = 0;
         agg.binding = user_buffer_base;
         MGLShaderResourceList *l = &lists[_UNIFORM_CONSTANT_RES];
-        MGLShaderResource *nl = (MGLShaderResource *)realloc(
-            l->list, (l->count + 1) * sizeof(MGLShaderResource));
-        if (nl) {
-            l->list = nl;
-            l->list[l->count++] = agg;
-        } else {
+        if (l->count == UINT32_MAX) {
+            free((void *)agg.name);
             for (uint32_t i = 0; i < leaf_count; i++) {
                 free((void *)leaves[i].name);
                 free(leaves[i].query_name);
             }
             free(leaves);
+            free(agg_types);
+            free(agg_names);
+            mglAirReflectDestroy(lists);
+            if (err && errCap)
+                snprintf(err, errCap, "too many uniform resources");
+            return -1;
         }
+        size_t resource_bytes = 0;
+        if (air_size_mul((size_t)l->count + 1u,
+                         sizeof(MGLShaderResource), &resource_bytes) != 0) {
+            free((void *)agg.name);
+            for (uint32_t i = 0; i < leaf_count; i++) {
+                free((void *)leaves[i].name);
+                free(leaves[i].query_name);
+            }
+            free(leaves);
+            free(agg_types);
+            free(agg_names);
+            mglAirReflectDestroy(lists);
+            if (err && errCap)
+                snprintf(err, errCap, "uniform metadata overflow");
+            return -1;
+        }
+        MGLShaderResource *nl = (MGLShaderResource *)realloc(
+            l->list, resource_bytes);
+        if (!nl) {
+            free((void *)agg.name);
+            for (uint32_t i = 0; i < leaf_count; i++) {
+                free((void *)leaves[i].name);
+                free(leaves[i].query_name);
+            }
+            free(leaves);
+            free(agg_types);
+            free(agg_names);
+            mglAirReflectDestroy(lists);
+            if (err && errCap)
+                snprintf(err, errCap, "out of memory");
+            return -1;
+        }
+        l->list = nl;
+        l->list[l->count++] = agg;
         free(agg_types);
         free(agg_names);
     }
