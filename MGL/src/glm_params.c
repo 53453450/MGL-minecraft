@@ -568,7 +568,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->active_state->var.max_atomic_counter_buffer_bindings = MAX_BINDABLE_BUFFERS;
     glm_ctx->active_state->var.max_atomic_counter_buffer_size = 16384;
     glm_ctx->active_state->var.max_image_units = 8;
-    glm_ctx->active_state->var.max_image_samples = 8;
+    glm_ctx->active_state->var.max_image_samples = 4;
     glm_ctx->active_state->var.max_vertex_image_uniforms = 8;
     glm_ctx->active_state->var.max_tess_control_image_uniforms = 8;
     glm_ctx->active_state->var.max_tess_evaluation_image_uniforms = 8;
@@ -595,6 +595,8 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->active_state->var.max_program_texture_gather_offset = 7;
     glm_ctx->active_state->var.max_shader_storage_block_size = 134217728; /* 128 MB */
     glm_ctx->active_state->var.max_samples = 4;
+    glm_ctx->active_state->var.max_image_samples =
+        glm_ctx->active_state->var.max_samples;
     glm_ctx->active_state->var.min_fragment_interpolation_offset = -0.5f;
     glm_ctx->active_state->var.max_fragment_interpolation_offset = 0.5f;
     glm_ctx->active_state->var.fragment_interpolation_offset_bits = 4;

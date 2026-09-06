@@ -503,6 +503,48 @@ static void test_debug_message_log(void)
     destroyGLMContext(ctx);
 }
 
+static void test_f04_msaa_query_and_fbo(void)
+{
+    GLMContext ctx = make_ctx();
+    expect(ctx != NULL, "F04 createGLMContext");
+    if (!ctx)
+        return;
+    MGLsetCurrentContext(ctx);
+    while (glGetError() != GL_NO_ERROR) {
+    }
+
+    GLint max_samples = 0;
+    GLint max_image_samples = 0;
+    glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
+    glGetIntegerv(GL_MAX_IMAGE_SAMPLES, &max_image_samples);
+    expect(max_samples == 4 && max_image_samples == 4,
+           "F04 MAX_SAMPLES == MAX_IMAGE_SAMPLES == 4");
+
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, tex);
+    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8, 8, 8, GL_TRUE);
+    expect(glGetError() == GL_NO_ERROR, "F04 TexImage2DMultisample");
+
+    GLint samples = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D_MULTISAMPLE, 0, GL_TEXTURE_SAMPLES,
+                             &samples);
+    expect(samples == 4, "F04 TEXTURE_SAMPLES reports GL sample count");
+
+    GLuint fbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D_MULTISAMPLE, tex, 0);
+    expect(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
+           "F04 MS color FBO is complete");
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    destroyGLMContext(ctx);
+}
+
 int main(void)
 {
     fail_count = 0;
@@ -519,6 +561,7 @@ int main(void)
     test_xfb_draw_fail_closed();
     test_vertex_attrib_defaults();
     test_debug_message_log();
+    test_f04_msaa_query_and_fbo();
     if (fail_count) {
         fprintf(stderr, "arch-correctness: %d failure(s)\n", fail_count);
         return 1;

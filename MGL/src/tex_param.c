@@ -1709,9 +1709,15 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
         case GL_TEXTURE_DEPTH_TYPE:
             *params = mglTexLevelComponentType(internalformat, pname);            return;
         case GL_TEXTURE_SAMPLES:
-            *params = 0;            return;
+            *params = (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                       tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+                ? (GLint)tex->samples : 0;
+            return;
         case GL_TEXTURE_FIXED_SAMPLE_LOCATIONS:
-            *params = GL_TRUE;            return;
+            *params = (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                       tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+                ? tex->fixed_sample_locations : GL_TRUE;
+            return;
         case GL_TEXTURE_SHARED_SIZE:
             *params = (mglTexLevelCanonicalInternalFormat(internalformat) == GL_RGB9_E5) ? 5 : 0;            return;
         default:
