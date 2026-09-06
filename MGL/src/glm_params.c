@@ -117,7 +117,7 @@ static void mglApplyES32Limits(GLMContext glm_ctx)
 
 void getMacOSDefaults(GLMContext glm_ctx)
 {
-    void *OpenGL, *libGL;
+    void *OpenGL = NULL, *libGL = NULL;
     const char *OpenGLPath = "/System/Library/Frameworks/OpenGL.framework/OpenGL";
     const char *libGLPath = "/System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib";
     CGLError (*CGLChoosePixelFormat)(const CGLPixelFormatAttribute *attribs, CGLPixelFormatObj OPENGL_NULLABLE * OPENGL_NONNULL pix, GLint *npix);
@@ -129,7 +129,12 @@ void getMacOSDefaults(GLMContext glm_ctx)
     void (*glGetFloatv)(GLenum param, GLfloat *params);
     void (*glGetBooleanv)(GLenum param, GLboolean *params);
 
-    CGLContextObj ctx;
+    /* Declared up front so the failure paths below can `goto` the GL 4.6
+     * defaults block without skipping an initialization. */
+    CGLContextObj ctx = NULL;
+    CGLPixelFormatObj pix = NULL;
+    CGLError errorCode = kCGLNoError;
+    GLint num = 0; // stores the number of possible pixel formats
 
     CGLPixelFormatAttribute attributes[4] = {
       kCGLPFAAccelerated,   // no software rendering
@@ -146,9 +151,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
                 "MGL WARN: failed to load system OpenGL defaults provider OpenGL=%p libGL=%p, using fallback defaults\n",
                 OpenGL,
                 libGL);
-        if (OpenGL) dlclose(OpenGL);
-        if (libGL) dlclose(libGL);
-        return;
+        goto apply_gl46_defaults;
     }
 
     CGLChoosePixelFormat = dlsym(OpenGL, "CGLChoosePixelFormat");
@@ -163,35 +166,33 @@ void getMacOSDefaults(GLMContext glm_ctx)
         !glGetIntegerv || !glGetDoublev || !glGetFloatv || !glGetBooleanv)
     {
         fprintf(stderr, "MGL WARN: missing system OpenGL symbols, using fallback defaults\n");
-        dlclose(OpenGL);
-        dlclose(libGL);
-        return;
+        goto apply_gl46_defaults;
     }
 
-    CGLPixelFormatObj pix;
-    CGLError errorCode;
-    GLint num; // stores the number of possible pixel formats
     errorCode = CGLChoosePixelFormat(attributes, &pix, &num);
     if (errorCode != kCGLNoError || !pix || num <= 0)
     {
         fprintf(stderr, "MGL WARN: CGLChoosePixelFormat failed (%d), using fallback defaults\n", (int)errorCode);
-        return;
+        goto apply_gl46_defaults;
     }
     errorCode = CGLCreateContext(pix, NULL, &ctx);
     if (errorCode != kCGLNoError || !ctx)
     {
         fprintf(stderr, "MGL WARN: CGLCreateContext failed (%d), using fallback defaults\n", (int)errorCode);
         CGLDestroyPixelFormat(pix);
-        return;
+        pix = NULL;
+        goto apply_gl46_defaults;
     }
     CGLDestroyPixelFormat( pix );
+    pix = NULL;
 
     errorCode = CGLSetCurrentContext(ctx);
     if (errorCode != kCGLNoError)
     {
         fprintf(stderr, "MGL WARN: CGLSetCurrentContext failed (%d), using fallback defaults\n", (int)errorCode);
         CGLDestroyContext(ctx);
-        return;
+        ctx = NULL;
+        goto apply_gl46_defaults;
     }
 
     glGetFloatv(GL_POINT_SIZE,&glm_ctx->active_state->var.point_size);
@@ -598,9 +599,15 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP,&glm_ctx->active_state->var.texture_binding_cube_map);
     glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE,&glm_ctx->active_state->var.texture_binding_rectangle);
 
+apply_gl46_defaults:
     /* Set limits required by OpenGL 4.6 / CTS that may not be queried from
      * the system GL or may return 0.  Each value meets or exceeds the
-     * minimum required by the Khronos conformance test suite. */
+     * minimum required by the Khronos conformance test suite.
+     *
+     * This block is reached both when the CGL probe succeeded and when it
+     * failed (headless CI, no accelerated pixel format): the probe only
+     * refines these values, it must not be the sole source.  Skipping it
+     * left GL_MAX_IMAGE_SAMPLES and friends at 0 on CGL-less hosts. */
     glm_ctx->active_state->var.max_cull_distances = 8;
     glm_ctx->active_state->var.max_combined_clip_and_cull_distances = 8;
     if (glm_ctx->active_state->var.max_vertex_output_components < 64) {
@@ -745,9 +752,13 @@ void getMacOSDefaults(GLMContext glm_ctx)
     mglApplyES32Limits(glm_ctx);
 #endif
 
-    CGLSetCurrentContext( NULL );
-    CGLDestroyContext( ctx );
-
-    dlclose(OpenGL);
-    dlclose(libGL);
+    if (ctx) {
+        CGLSetCurrentContext(NULL);
+        CGLDestroyContext(ctx);
+    }
+    if (pix) {
+        CGLDestroyPixelFormat(pix);
+    }
+    if (OpenGL) dlclose(OpenGL);
+    if (libGL) dlclose(libGL);
 }
