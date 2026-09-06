@@ -32,7 +32,7 @@ trap cleanup EXIT
 
 export DYLD_LIBRARY_PATH="$PROJECT_DIR/build${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 
-"$BINARY" --list | rg -qx 'minecraft-cpu'
+"$BINARY" --list | grep -qx 'minecraft-cpu'
 "$BINARY" --test dispatch --json "$TMP_DIR/dispatch.json" >/dev/null
 "$BINARY" --test pipeline --json "$TMP_DIR/pipeline.json" >/dev/null
 "$BINARY" --test minecraft-cpu --frames 2 --warmup 1 \
@@ -41,7 +41,7 @@ export DYLD_LIBRARY_PATH="$PROJECT_DIR/build${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_
 plutil -convert binary1 -o /dev/null -- "$TMP_DIR/dispatch.json"
 plutil -convert binary1 -o /dev/null -- "$TMP_DIR/pipeline.json"
 plutil -convert binary1 -o /dev/null -- "$TMP_DIR/minecraft.json"
-rg -q '"test": "Minecraft CPU 1.21"' "$TMP_DIR/minecraft.json"
-rg -q '"metric": "P95 Frame ms"' "$TMP_DIR/minecraft.json"
+grep -qF '"test": "Minecraft CPU 1.21"' "$TMP_DIR/minecraft.json"
+grep -qF '"metric": "P95 Frame ms"' "$TMP_DIR/minecraft.json"
 
 echo "benchmark smoke: PASS"
