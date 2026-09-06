@@ -6325,6 +6325,17 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     ERROR_CHECK_RETURN(texture != 0, GL_INVALID_OPERATION);
 
     tex = findTexture(ctx, texture);
+    /* Texture name 0 is represented by a lazily-created default object in
+     * the texture-unit state, not by an entry in the object hash table.  The
+     * glTexBuffer(..., buffer = 0) reset path reaches this helper with that
+     * object's synthetic name, so recover the currently bound buffer texture
+     * before reporting INVALID_OPERATION. */
+    if (!tex) {
+        Texture *bound = currentTexture(ctx, _TEXTURE_BUFFER_TARGET);
+        if (bound && bound->name == texture) {
+            tex = bound;
+        }
+    }
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(tex->target == GL_TEXTURE_BUFFER, GL_INVALID_OPERATION);
 

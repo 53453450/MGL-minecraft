@@ -11,6 +11,7 @@
 #include "MGLContext.h"
 #include "internal.h"
 #include "MGLRenderer.h"
+#include "MGLRenderer+Lifecycle_Private.h"
 
 #include <unistd.h>
 #include <math.h>
@@ -118,7 +119,13 @@ static void destroyContextMGL(_GLFWwindow* window)
             window->context.mgl.ctx = NULL;
         }
 
-        window->context.mgl.renderer = nil;
+        /* The context struct is a C allocation, so the renderer reference is
+         * explicitly retained below rather than managed by an ObjC property.
+         * Balance that retain before dropping the raw pointer. */
+        if (window->context.mgl.renderer) {
+            CFRelease((__bridge CFTypeRef)window->context.mgl.renderer);
+            window->context.mgl.renderer = nil;
+        }
 
     } // autoreleasepool
 }
@@ -212,7 +219,12 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
     window->context.mgl.ctx = createGLMContext(GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV,
                                                GL_DEPTH_COMPONENT, GL_FLOAT,
                                                0, 0);
-    assert(window->context.mgl.ctx);
+    if (!window->context.mgl.ctx)
+    {
+        _glfwInputError(GLFW_VERSION_UNAVAILABLE,
+                        "MGL: Failed to allocate MGL context");
+        return GLFW_FALSE;
+    }
     
     // Apply GLFW_SRGB_CAPABLE hint to the default framebuffer.
     // When enabled, the Metal drawable will use _sRGB pixel format so that
@@ -231,11 +243,35 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
     [window->ns.view wantsLayer];
 
     MGLRenderer *renderer = [[MGLRenderer alloc] init];
-    assert(renderer);
+    if (!renderer)
+    {
+        destroyGLMContext(window->context.mgl.ctx);
+        window->context.mgl.ctx = NULL;
+        _glfwInputError(GLFW_VERSION_UNAVAILABLE,
+                        "MGL: Failed to allocate renderer");
+        return GLFW_FALSE;
+    }
 
     window->context.mgl.renderer = (id)CFBridgingRetain(renderer);
+    /* Transfer the alloc ownership to the context's explicit retain. */
+    [renderer release];
 
     [window->context.mgl.renderer createMGLRendererAndBindToContext: window->context.mgl.ctx view: window->ns.view];
+
+    if (![renderer mglRendererIsReady])
+    {
+        /* The renderer owns the backend and platform shell through the
+         * context.  Destroy it before exposing any GLFW callbacks so a
+         * failed Metal device/queue/layer setup cannot become a half-live
+         * context. */
+        destroyGLMContext(window->context.mgl.ctx);
+        window->context.mgl.ctx = NULL;
+        CFRelease((__bridge CFTypeRef)window->context.mgl.renderer);
+        window->context.mgl.renderer = nil;
+        _glfwInputError(GLFW_VERSION_UNAVAILABLE,
+                        "MGL: Failed to initialize Metal renderer");
+        return GLFW_FALSE;
+    }
 
     //[window->context.mgl.object setView: window->ns.view];
 

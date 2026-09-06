@@ -18,6 +18,12 @@
 #include "hash_table.h"
 #include "mgl_types_program.h"
 #include "mgl_glsl_parser.h"
+#include "mgl_air_tess_abi.h"
+#include "mgl_air_gs_abi.h"
+#include "mgl_draw_gs.h"
+#include "mgl_draw_tess.h"
+#include "mgl_render.h"
+#include "mgl_shader_abi.h"
 
 static volatile sig_atomic_t g_got_segv;
 static jmp_buf g_jb;
@@ -545,6 +551,303 @@ static void test_f04_msaa_query_and_fbo(void)
     destroyGLMContext(ctx);
 }
 
+static void test_f16_tess_texture_and_per_patch_plan(void)
+{
+    Program tes;
+    memset(&tes, 0, sizeof(tes));
+    tes.tess_gen_mode = GL_ISOLINES;
+
+    uint8_t factors[2u * MGL_AIR_TESS_FACTOR_RECORD_BYTES];
+    memset(factors, 0, sizeof(factors));
+    /* Patch 0 stays discarded (outer 0). Patch 1 matches the isolines
+     * item-count fixture: edges {1,2,...} → 4 items. */
+    const uint16_t live[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x3800, 0x3800};
+    memcpy(factors + MGL_AIR_TESS_FACTOR_RECORD_BYTES, live, sizeof(live));
+
+    expect(mglTessEvalItemsPerPatch(&tes, factors) == 0u,
+           "F16 discarded patch items == 0");
+    expect(mglTessEvalItemsPerPatch(
+               &tes, factors + MGL_AIR_TESS_FACTOR_RECORD_BYTES) == 4u,
+           "F16 isolines live patch items == 4");
+    expect(mglTessEvalItemsPerInstance(&tes, factors, 2u) == 4u,
+           "F16 items per instance skips discarded patches");
+
+    MGLRenderComputeExecutionPlan plan;
+    memset(&plan, 0, sizeof(plan));
+    char dummy_glin[4];
+    MGLTessEvalPerPatchDispatchSpec spec;
+    memset(&spec, 0, sizeof(spec));
+    spec.gl_in_buffer = dummy_glin;
+    spec.patch_count = 2u;
+    spec.instance_count = 2u;
+    spec.items_per_instance = 4u;
+    spec.gl_in_vertices = 3u;
+    void *keep = NULL;
+    expect(mglTessAppendEvalPerPatchDispatches(&plan, &tes, factors, &spec,
+                                               &keep) != false,
+           "F16 TES per-patch plan succeeds");
+    expect(plan.dispatch_op_count == 2u,
+           "F16 TES dispatches once per live patch per instance");
+    free(keep);
+
+    MGLTessTextureBind binds[8];
+    expect(mglTessCollectTextureBinds(NULL, &tes, _TESS_EVALUATION_SHADER,
+                                      binds, 8u) == 0u,
+           "F16 empty TES program has no texture binds");
+
+    uint8_t stage_in[MGL_AIR_PER_VERTEX_STRIDE];
+    memset(stage_in, 0xFF, sizeof(stage_in));
+    expect(mglTessInitStageInDefaults(stage_in, 1u, MGL_AIR_PER_VERTEX_STRIDE) !=
+               false,
+           "F16 stage-in defaults succeed");
+    {
+        float point_size = 0.0f;
+        float cull0 = 0.0f;
+        memcpy(&point_size, stage_in + MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET,
+               sizeof(point_size));
+        memcpy(&cull0, stage_in + MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET,
+               sizeof(cull0));
+        expect(point_size == 1.0f, "F16 stage-in point size defaults to 1");
+        expect(cull0 == 1.0f, "F16 stage-in cull distance defaults to 1");
+    }
+
+    {
+        const uint32_t sparse[4] = {10u, 20u, 30u, 40u};
+        const uint32_t gather[2] = {3u, 0u};
+        uint32_t continuous[2] = {0u, 0u};
+        expect(mglTessCompactSparseCapture(sparse, 0u, 4u, sizeof(uint32_t),
+                                           gather, 2u, 1u, continuous,
+                                           sizeof(continuous)) != false,
+               "F16 sparse compact succeeds");
+        expect(continuous[0] == 40u && continuous[1] == 10u,
+               "F16 sparse compact gathers by index");
+    }
+
+    {
+        uint32_t loc_map[32];
+        memset(loc_map, 0xFF, sizeof(loc_map));
+        mglDrawGsFillLocationMap(NULL, NULL, NULL, loc_map);
+        expect(loc_map[0] == 0u && loc_map[31] == 0u,
+               "F16 empty GS location map is identity fallback");
+    }
+
+    {
+        uint32_t counts[MGL_AIR_GS_COUNTS_RECORD_WORDS * 2u];
+        memset(counts, 0, sizeof(counts));
+        mglDrawGsPresetCounts(counts, 2u);
+        expect(counts[1] == 1u &&
+                   counts[MGL_AIR_GS_COUNTS_RECORD_WORDS + 1u] == 1u,
+               "F16 GS counts preset instance_count=1");
+    }
+
+    {
+        MGLAIRGSXFBScatterParams scatter;
+        expect(mglDrawGsFillXFBScatterParams(NULL, &scatter) == 0u,
+               "F16 empty GS has no XFB buffers");
+        expect(scatter.buffer_stream[0] == MGL_AIR_GS_XFB_NO_STREAM,
+               "F16 empty XFB buffer_stream is NO_STREAM");
+        expect(scatter.field_count == 0u, "F16 empty XFB has no fields");
+    }
+
+    {
+        MGLRenderComputeExecutionPlan gs_plan;
+        memset(&gs_plan, 0, sizeof(gs_plan));
+        char input[1], output[1], counts[1], meta[1], gparams[4];
+        expect(mglDrawGsAppendCoreBindings(&gs_plan, input, 8u, output, counts,
+                                           counts, NULL, meta, counts, gparams,
+                                           (uint32_t)sizeof(gparams)) != false,
+               "F16 GS core bindings succeed without XFB");
+        expect(gs_plan.binding_op_count == 7u,
+               "F16 GS core bindings skip optional XFB slot");
+        expect(gs_plan.binding_ops[0].index == MGL_AIR_GS_SLOT_INPUT &&
+                   gs_plan.binding_ops[0].offset == 8u,
+               "F16 GS input slot and offset");
+        expect(gs_plan.binding_ops[6].kind == 1u &&
+                   gs_plan.binding_ops[6].index == MGL_AIR_GS_SLOT_GATHER_PARAMS,
+               "F16 GS gather params are bytes at slot 25");
+    }
+
+    {
+        Program gs;
+        memset(&gs, 0, sizeof(gs));
+        gs.geometry_output_type = GL_POINTS;
+        gs.geometry_vertices_out = 1u;
+        gs.geometry_invocations = 2u;
+        MGLGsComputeLayout layout;
+        expect(mglDrawGsComputeLayout(&gs, 3u, 4u, GL_POINTS, &layout) != false,
+               "F16 GS layout succeeds");
+        expect(layout.work_item_count == 24u, "F16 GS work items = prims*inst*inv");
+        expect(layout.records_per_primitive == 3u,
+               "F16 GS points layout is 2 headers + 1 expanded");
+        expect(layout.expanded_vertices == 1u, "F16 GS points expand 1 vertex");
+        expect(layout.output_stride == MGL_AIR_PER_VERTEX_STRIDE,
+               "F16 GS empty program uses default stride");
+    }
+
+    {
+        uint32_t vis[8] = {3u, 0u, 0u, 0u, 5u, 0u, 0u, 0u};
+        uint32_t offsets[8];
+        memset(offsets, 0xFF, sizeof(offsets));
+        mglDrawGsExclusivePrefixSum(vis, offsets, 2u, 1u);
+        expect(offsets[0] == 0u && offsets[4] == 3u,
+               "F16 GS XFB prefix sum is exclusive per buffer");
+    }
+
+    {
+        MGLRenderComputeExecutionPlan scatter;
+        char pipeline, params[4], vis[1], offsets[1], stage[1], xfb[1], written[1];
+        expect(mglDrawGsFillXFBScatterPlan(&scatter, &pipeline, params, 4u, vis,
+                                           offsets, stage, xfb, written, 3u) !=
+                   false,
+               "F16 GS XFB scatter plan succeeds");
+        expect(scatter.binding_op_count == 6u,
+               "F16 GS XFB scatter has params + 5 buffers");
+        expect(scatter.dispatch.groups_x == 3u,
+               "F16 GS XFB scatter dispatches one group per work item");
+        expect(scatter.barrier_scope == MGL_RENDER_COMPUTE_BARRIER_BUFFERS,
+               "F16 GS XFB scatter requests a buffer barrier");
+    }
+
+    {
+        uint8_t rec[MGL_AIR_PER_VERTEX_STRIDE];
+        expect(mglTessInitStageInDefaults(rec, 1u, MGL_AIR_PER_VERTEX_STRIDE) !=
+                   false,
+               "F16 pack setup defaults");
+        MGLTessStageInMember member;
+        memset(&member, 0, sizeof(member));
+        member.size = 16u;
+        member.component_bytes = 4u;
+        member.components = 4u;
+        member.base_type = MGL_TESS_STAGE_IN_FLOAT;
+        MGLTessStageInAttribSrc src;
+        memset(&src, 0, sizeof(src));
+        src.use_current = 1u;
+        src.current_valid = 1u;
+        src.type = GL_FLOAT;
+        src.attrib_size = 4u;
+        const float current[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+        memcpy(src.current, current, sizeof(current));
+        expect(mglTessPackStageInRecords(rec, 1u, MGL_AIR_PER_VERTEX_STRIDE, 0,
+                                         1, NULL, 0, false, 0u, 0, 0u, &member,
+                                         1u, &src) != false,
+               "F16 TCS stage-in pack succeeds");
+        float pos[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        memcpy(pos, rec, sizeof(pos));
+        expect(pos[0] == 1.0f && pos[3] == 4.0f,
+               "F16 TCS stage-in pack writes current attrib");
+    }
+
+    {
+        MGLRenderCullDistancePrimitive prims[4];
+        uint32_t n = 0u;
+        expect(mglRenderFillCullDistanceArrayPrimitives(
+                   GL_TRIANGLE_STRIP, 5, 4u, prims, 4u, &n) == 0,
+               "F16 strip cull split succeeds");
+        expect(n == 2u, "F16 strip count=4 yields 2 triangles");
+        expect(prims[0].vertices[0] == 5u && prims[0].vertices[1] == 6u &&
+                   prims[0].vertices[2] == 7u,
+               "F16 strip prim 0 is consecutive first+p");
+        expect(prims[1].vertices[0] == 6u && prims[1].vertices[1] == 7u &&
+                   prims[1].vertices[2] == 8u,
+               "F16 strip prim 1 is consecutive first+p");
+
+        expect(mglRenderFillCullDistanceArrayPrimitives(
+                   GL_TRIANGLE_FAN, 5, 4u, prims, 4u, &n) == 0,
+               "F16 fan cull split succeeds");
+        expect(n == 2u && prims[0].vertices[0] == 5u &&
+                   prims[0].vertices[1] == 6u && prims[0].vertices[2] == 7u &&
+                   prims[1].vertices[0] == 5u && prims[1].vertices[1] == 7u &&
+                   prims[1].vertices[2] == 8u,
+               "F16 fan prims share first vertex");
+
+        expect(mglRenderFillCullDistanceArrayPrimitives(
+                   GL_LINE_STRIP, 2, 3u, prims, 4u, &n) == 0,
+               "F16 line-strip cull split succeeds");
+        expect(n == 2u && prims[0].vertex_count == 0u &&
+                   prims[0].index_count == 0u && prims[0].vertices[0] == 2u &&
+                   prims[1].vertices[0] == 3u,
+               "F16 line-strip uses array start, no index buffer");
+
+        expect(mglRenderFillCullDistanceArrayPrimitives(
+                   GL_TRIANGLES, 0, 3u, prims, 4u, &n) == 1,
+               "F16 triangles are not a cull array split");
+    }
+
+    {
+        const uint32_t src[4] = {1u, 0xFFFFFFFFu, 2u, 0xFFFFFFFFu};
+        uint32_t dst[4] = {0u, 0u, 0u, 0u};
+        expect(mglTessSanitizeRestartIndices(dst, src, 4u, GL_UNSIGNED_INT,
+                                             0xFFFFFFFFu) != false,
+               "F16 restart sanitize succeeds");
+        expect(dst[0] == 1u && dst[1] == 0u && dst[2] == 2u && dst[3] == 0u,
+               "F16 restart indices become vertex 0");
+    }
+
+    {
+        expect(mglRenderIsCullDistanceAttribName("culldistance_data") &&
+                   mglRenderIsCullDistanceAttribName("culldistance_data[0]") &&
+                   !mglRenderIsCullDistanceAttribName("position"),
+               "F16 cull attrib name prefix");
+
+        Program prog;
+        memset(&prog, 0, sizeof(prog));
+        MGLShaderResource res;
+        memset(&res, 0, sizeof(res));
+        res.name = "culldistance_data";
+        res.location = 1u;
+        res.gl_type = GL_FLOAT;
+        res.gl_array_size = 1;
+        prog.shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES].list = &res;
+        prog.shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES].count = 1u;
+        uint32_t attribs[4];
+        expect(mglRenderCollectCullDistanceAttribs(&prog, attribs, 4u) == 1u &&
+                   attribs[0] == 1u,
+               "F16 collect culldistance_data at location 1");
+        res.name = "position";
+        expect(mglRenderCollectCullDistanceAttribs(&prog, attribs, 4u) == 0u,
+               "F16 collect skips non-cull attrib");
+        res.name = NULL;
+        prog.attrib_location_names[1] = (char *)"culldistance_data[2]";
+        expect(mglRenderCollectCullDistanceAttribs(&prog, attribs, 4u) == 1u &&
+                   attribs[0] == 1u,
+               "F16 collect falls back to attrib_location_names");
+
+        MGLRenderCullDistanceLayout layout;
+        memset(&layout, 0, sizeof(layout));
+        char buf_a, buf_b;
+        mglRenderAccumulateCullDistanceAttrib(&layout, &buf_a, 16, 32u, 4);
+        mglRenderAccumulateCullDistanceAttrib(&layout, &buf_a, 99, 32u, 8);
+        mglRenderAccumulateCullDistanceAttrib(&layout, &buf_b, 0, 16u, 0);
+        expect(layout.culldist_size == 3u && layout.mtl_buffer == &buf_a &&
+                   layout.stride == 32u &&
+                   mglRenderCullDistanceLayoutOffset(&layout) == 20u,
+               "F16 cull layout keeps first buffer and offset");
+
+        const uint32_t verts[3] = {5u, 6u, 7u};
+        MGLCullDistanceEmuParams params;
+        mglRenderFillCullDistanceEmuParams(3u, 9u, verts, 3u, 20u, 32u, 2u, 1u,
+                                           4u, &params);
+        expect(params.prim_vertex_count == 3u && params.first_vertex == 9u &&
+                   params.explicit_vertex_count == 3u &&
+                   params.explicit_vertices[0] == 5u &&
+                   params.culldist_size == 2u && params.first_instance == 1u &&
+                   params.instance_stride == 4u,
+               "F16 cull emu params fill");
+
+        uint64_t bytes = 0u;
+        expect(mglRenderCullDistanceCaptureBytes(0u, 3u, 1u, &bytes) == 0 &&
+                   bytes == 96u,
+               "F16 cull capture bytes for count=3");
+        expect(mglRenderCullDistanceCaptureBytes(0u, 0u, 1u, &bytes) == -1,
+               "F16 cull capture bytes reject count=0");
+
+        uint32_t cap[3] = {9u, 9u, 9u};
+        mglTessFillCaptureParams(4u, 8u, 2u, cap);
+        expect(cap[0] == 4u && cap[1] == 8u && cap[2] == 2u,
+               "F16 tess capture params are first/stride/base");
+    }
+}
+
 int main(void)
 {
     fail_count = 0;
@@ -562,6 +865,7 @@ int main(void)
     test_vertex_attrib_defaults();
     test_debug_message_log();
     test_f04_msaa_query_and_fbo();
+    test_f16_tess_texture_and_per_patch_plan();
     if (fail_count) {
         fprintf(stderr, "arch-correctness: %d failure(s)\n", fail_count);
         return 1;

@@ -621,6 +621,7 @@ test-mglsema: $(build_dir)/test_mglsema
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
+	MGL/src/mgl_frontend_session.c MGL/include/mgl_frontend_session.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c
@@ -629,6 +630,7 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 		test_legacy_compat/test_mglair.mm \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 		MGL/src/mgl_legacy_compat.c \
+		MGL/src/mgl_frontend_session.c \
 		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 		MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c \

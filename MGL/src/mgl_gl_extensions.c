@@ -6554,6 +6554,13 @@ void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint b
                 (void *)tex);
     }
 
+    /* CTS and the GL state-reset contract clear a buffer texture by binding
+     * texture 0 and then issuing TexBuffer(..., buffer = 0).  Materialize the
+     * default target object for that detach operation; a nonzero buffer still
+     * requires an actual texture binding and reports INVALID_OPERATION. */
+    if (!tex && buffer == 0u) {
+        tex = getTex(ctx, 0u, target);
+    }
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
     mglTextureBuffer(ctx, tex->name, internalformat, buffer);
