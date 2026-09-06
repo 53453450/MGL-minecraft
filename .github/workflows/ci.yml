@@ -12,6 +12,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify GL ABI against pinned gl.xml
+        run: make verify-gl-api
+
+      - name: Install toolchain
+        run: |
+          brew install llvm@15 cmake
+          echo "LLVM_ROOT=$(brew --prefix llvm@15)" >> "$GITHUB_ENV"
+          echo "$(brew --prefix llvm@15)/bin" >> "$GITHUB_PATH"
+
+      - name: Build GoogleTest
+        run: make gtest
+
       - name: Build libraries
         run: make -j4 lib
 

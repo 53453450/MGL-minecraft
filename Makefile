@@ -116,6 +116,8 @@ help:
 		'  make test-benchmark   Run the benchmark smoke gate.' \
 		'  make test-all         Run the complete non-interactive local test gate.' \
 		'  make test-regression  Build and run the headless regression suite.' \
+		'  make test-regression-update  Rebuild missing/changed golden TGA images.' \
+		'  make gtest            Clone and build the pinned GoogleTest used by AIR unit tests.' \
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
 		'  make test             Run the interactive GLFW test application.' \
 		'  make clean            Remove local build outputs.'
@@ -248,7 +250,8 @@ mgl_es_link_objs := $(mgl_es_objs) $(mgl_es_arc_objs) $(mgl_es_obj)
 # M1 AIR backend: GLSL -> metallib -> PSO gate (C++20 + LLVM, Metal runtime).
 # Define these before the compile/link configuration hashes below so changes
 # to C++ and LLVM flags invalidate existing objects and libraries.
-LLVM_ROOT ?= /opt/homebrew/opt/llvm@15
+BREW_LLVM15 := $(shell brew --prefix llvm@15 2>/dev/null)
+LLVM_ROOT ?= $(if $(strip $(BREW_LLVM15)),$(BREW_LLVM15),/opt/homebrew/opt/llvm@15)
 LLVM_CXX ?= $(APPLE_CLANG)
 LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include \
 	-IMGL/src \
@@ -438,13 +441,13 @@ clean:
 install-pkgdeps: download-pkgdeps compile-pkgdeps
 
 download-pkgdeps:
-	# GLFW is built from the repository-local modified checkout by lib.
-	# Only install the unrelated system dependency here; bench-system may
-	# still be used separately with a manually installed Homebrew GLFW.
-	brew install glm
+	# llvm@15 is required to link the AIR backend. cmake is required by
+	# GLFW and by `make gtest`. glm remains a convenience header for
+	# optional host-side tools; bench-system still needs a separately
+	# installed Homebrew GLFW.
+	brew install llvm@15 cmake glm
 
 compile-pkgdeps:
-
 	@echo "use /external/.sh"
 
 # Benchmark target — builds the comprehensive MGL translation-overhead benchmark.
@@ -512,6 +515,10 @@ test-regression: build-test-regression
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_regression \
 		--golden-dir $(abspath MGL_Golden_Images)
 
+test-regression-update: build-test-regression
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_regression \
+		--golden-dir $(abspath MGL_Golden_Images) --update
+
 $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O2 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
@@ -540,6 +547,10 @@ $(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c $
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework Metal -framework OpenGL \
 		-o $@
+
+verify-gl-api:
+	bash scripts/fetch_opengl_registry.sh
+	python3 scripts/verify_gl_api.py
 
 test-arch-correctness: $(build_dir)/test_arch_correctness
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_arch_correctness
@@ -662,18 +673,34 @@ test-metalcpp: $(build_dir)/test_metalcpp_smoke
 	$(build_dir)/test_metalcpp_smoke
 
 # AIR backend unit tests with GoogleTest (pure compile-time, no GPU).
+GTEST_TAG ?= v1.18.0
 GTEST_ROOT ?= $(HOME)/googletest
 GTEST_CXXFLAGS := -I$(GTEST_ROOT)/googletest/include -I$(GTEST_ROOT)/googlemock/include \
 	-IMGL/include/GL
 GTEST_LIBS := $(GTEST_ROOT)/build-mgl/lib/libgtest.a \
 	$(GTEST_ROOT)/build-mgl/lib/libgtest_main.a
+GTEST_STAMP := $(GTEST_ROOT)/build-mgl/.mgl-built
+
+gtest: $(GTEST_STAMP)
+
+$(GTEST_STAMP):
+	@if [ ! -f "$(GTEST_ROOT)/CMakeLists.txt" ]; then \
+		rm -rf "$(GTEST_ROOT)"; \
+		git clone --depth 1 --branch $(GTEST_TAG) \
+			https://github.com/google/googletest.git "$(GTEST_ROOT)"; \
+	fi
+	cmake -S "$(GTEST_ROOT)" -B "$(GTEST_ROOT)/build-mgl" \
+		-DCMAKE_BUILD_TYPE=Release
+	cmake --build "$(GTEST_ROOT)/build-mgl" --parallel
+	@touch $@
 
 $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
 	MGL/src/mgl_legacy_compat.c MGL/include/mgl_legacy_compat.h \
 	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
-	MGL/src/mgl_ir.c
+	MGL/src/mgl_ir.c \
+	$(GTEST_STAMP)
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
@@ -720,6 +747,7 @@ test-air:
 # Keep the local gate serial: the GPU suites share Metal compiler/archive state.
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
+	$(MAKE) verify-gl-api
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
@@ -730,6 +758,6 @@ test-all:
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
-	test-air test-all
+	test-air test-all gtest test-regression-update verify-gl-api
 
 -include $(deps)

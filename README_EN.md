@@ -41,12 +41,11 @@ components remain under their own licenses.
 **Prerequisites:**
 
 - macOS 14 or newer
-
-- Xcode Command Line Tools  
-
-- Homebrew  
-
-- CMake  
+- Xcode Command Line Tools
+- Homebrew
+- CMake
+- LLVM 15 (`brew install llvm@15`; `make lib` links `-lLLVM-15`)
+- GoogleTest for AIR unit tests (`make gtest`, clones into `~/googletest` by default) 
 
 ---
 
@@ -145,8 +144,7 @@ MGL-minecraft/
 ├── test_dirty_hash/             # Dirty-state batch regression
 ├── test_mgl/                    # Local functional tests
 ├── benchmark/                   # Performance test tools
-├── enum_parser/                 # OpenGL enum generation helper
-├── spec_parser/                 # Specification parsing helper
+├── spec_parser/                 # Specification parsing helper (verify-codegen)
 ├── scripts/                     # Asset, regression, trace, and benchmark scripts
 ├── docs/                        # AIR/Metal-cpp design and acceptance records
 ├── MGL_Golden_Images/           # Image regression baselines

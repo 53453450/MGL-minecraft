@@ -36,7 +36,9 @@ Language: 中文 | [English](README_EN.md)
 - macOS 14 或更新版本
 - Xcode Command Line Tools
 - Homebrew
-- Cmake
+- CMake
+- LLVM 15（`brew install llvm@15`；`make lib` 会链接 `-lLLVM-15`）
+- 跑 AIR gtest 时还需要 GoogleTest（`make gtest`，默认克隆到 `~/googletest`）
 
 ## 快速开始
 
@@ -124,8 +126,7 @@ MGL-minecraft/
 ├── test_dirty_hash/             # dirty-state 批处理回归
 ├── test_mgl/                    # 本地功能测试
 ├── benchmark/                   # 性能测试工具
-├── enum_parser/                 # OpenGL enum 生成辅助
-├── spec_parser/                 # 规范解析辅助
+├── spec_parser/                 # 规范解析辅助（verify-codegen）
 ├── scripts/                     # 资产生成、回归、trace 和 benchmark 脚本
 ├── docs/                        # AIR/Metal-cpp 设计与验收记录
 ├── MGL_Golden_Images/           # 图像回归基准
