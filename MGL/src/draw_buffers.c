@@ -311,6 +311,12 @@ static Buffer *mglCurrentElementBuffer(GLMContext ctx, const char *caller)
     return vao ? vao->element_array.buffer : NULL;
 }
 
+static GLuint mglCurrentElementBufferName(GLMContext ctx, const char *caller)
+{
+    Buffer *buf = mglCurrentElementBuffer(ctx, caller);
+    return buf ? buf->name : 0u;
+}
+
 bool check_draw_modes(GLenum mode)
 {
     switch(mode)
@@ -1904,7 +1910,7 @@ void mglDrawElements(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, co
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.instanceCount     = 1;
     mglDrawDispatch(ctx, &cmd);
 }
@@ -1922,7 +1928,7 @@ void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end,
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.instanceCount     = 1;
     mglDrawDispatch(ctx, &cmd);
 }
@@ -1948,7 +1954,7 @@ void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.instanceCount     = instancecount;
     mglDrawDispatch(ctx, &cmd);
 }
@@ -1962,7 +1968,7 @@ void mglDrawElementsBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenu
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.baseVertex        = basevertex;
     cmd.instanceCount     = 1;
     mglDrawDispatch(ctx, &cmd);
@@ -1980,7 +1986,7 @@ void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, G
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.baseVertex        = basevertex;
     cmd.instanceCount     = 1;
     mglDrawDispatch(ctx, &cmd);
@@ -1995,7 +2001,7 @@ void mglDrawElementsInstancedBaseVertex(GLMContext ctx, GLenum mode, GLsizei cou
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.instanceCount     = instancecount;
     cmd.baseVertex        = basevertex;
     mglDrawDispatch(ctx, &cmd);
@@ -2136,7 +2142,7 @@ void mglDrawElementsInstancedBaseInstance(GLMContext ctx, GLenum mode, GLsizei c
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.instanceCount     = instancecount;
     cmd.baseInstance      = baseinstance;
     mglDrawDispatch(ctx, &cmd);
@@ -2151,7 +2157,7 @@ void mglDrawElementsInstancedBaseVertexBaseInstance(GLMContext ctx, GLenum mode,
     cmd.count             = count;
     cmd.indexType         = type;
     cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.element_buffer_name = mglCurrentElementBufferName(ctx, __func__);
     cmd.instanceCount     = instancecount;
     cmd.baseVertex        = basevertex;
     cmd.baseInstance      = baseinstance;
@@ -2256,7 +2262,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
             cmd.count = count[i];
             cmd.indexType = type;
             cmd.indexBufferOffset = (GLuint)(uintptr_t)indices[i];
-            cmd.elementBuffer = elementBuffer;
+            cmd.element_buffer_name = elementBuffer ? elementBuffer->name : 0u;
             cmd.instanceCount = 1;
             mglRecordDrawCommand(ctx, &cmd);
         }
@@ -2316,7 +2322,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
             cmd.count = count[i];
             cmd.indexType = type;
             cmd.indexBufferOffset = (GLuint)(uintptr_t)indices[i];
-            cmd.elementBuffer = elementBuffer;
+            cmd.element_buffer_name = elementBuffer ? elementBuffer->name : 0u;
             cmd.baseVertex = basevertex[i];
             cmd.instanceCount = 1;
             mglRecordDrawCommand(ctx, &cmd);

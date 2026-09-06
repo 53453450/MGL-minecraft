@@ -42,6 +42,9 @@
 #include "mgl_trace_log.h"
 #include "mgl_sampler_compat.h"
 
+extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
+extern Texture *findTexture(GLMContext ctx, GLuint texture);
+
 /* === Task 4: Snapshot Arena (bump allocator) === */
 
 #define MGL_ARENA_INITIAL_CAPACITY  (4u * 1024u * 1024u)  /* 4 MB */
@@ -2565,7 +2568,7 @@ static bool mglCaptureDynamicVertexBindings(GLMContext ctx,
 
         MGLDynamicVertexBinding *override =
             &cmd->dynamic_vertex_bindings[cmd->dynamic_vertex_binding_count++];
-        override->buffer = current_buffer;
+        override->buffer_name = current_buffer->name;
         override->offset = (uint32_t)current_offset;
         override->binding_index = (uint8_t)binding_index;
         memset(override->reserved, 0, sizeof(override->reserved));
@@ -2605,11 +2608,14 @@ static bool mglCaptureDynamicVertexBindings(GLMContext ctx,
             }
         }
     }
-    /* Indexed commands already carry an immutable elementBuffer pointer.
+    /* Indexed commands already carry an immutable element-buffer name.
      * Treat an EBO-only VAO hash change as a capturable per-draw binding so
      * A -> B -> A index-buffer switches can remain in one direct batch. */
+    GLuint base_element_name = base->element_array.buffer
+        ? base->element_array.buffer->name : 0u;
     bool element_binding_changed =
-        cmd->elementBuffer && cmd->elementBuffer != base->element_array.buffer;
+        cmd->element_buffer_name &&
+        cmd->element_buffer_name != base_element_name;
     return cmd->dynamic_vertex_binding_count > 0 || element_binding_changed;
 }
 
@@ -2695,7 +2701,7 @@ static bool mglCaptureDynamicTextureBindings(GLMContext ctx,
                 binding->target_index = (uint8_t)target;
                 binding->is_active =
                     ctx->active_state->active_textures[unit] == current ? 1u : 0u;
-                binding->texture = current;
+                binding->texture_name = current->name;
                 found_active = found_active || binding->is_active != 0u;
             }
             if (!found_active) return false;
@@ -2959,7 +2965,7 @@ static bool mglCommandComputeElementVertexRange(GLMContext ctx,
 {
     if (!ctx || !cmd || !minVertex || !maxVertex || cmd->count <= 0) return false;
 
-    Buffer *elementBuffer = (Buffer *)cmd->elementBuffer;
+    Buffer *elementBuffer = mglDrawCommandElementBuffer(ctx, cmd);
     size_t indexSize = mglCommandIndexSize(cmd->indexType);
     if (!elementBuffer || !elementBuffer->data.buffer_data || indexSize == 0) return false;
     if (cmd->indexBufferOffset > (GLuint)elementBuffer->size) return false;
@@ -3455,7 +3461,7 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     }
 
     VertexArray *vao = ctx->active_state->vao;
-    Buffer *indexBuffer = (Buffer *)cmd->elementBuffer;
+    Buffer *indexBuffer = mglDrawCommandElementBuffer(ctx, cmd);
     size_t indexSize = uses_elements ? mglCommandIndexSize(cmd->indexType) : 0u;
     uint64_t indexOffset = (uint64_t)cmd->indexBufferOffset;
     const uint8_t *indices = NULL;
@@ -3836,7 +3842,7 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
     storedCmd->sampler_snapshot_id = sampler_snapshot_id;
     storedCmd->indexType = GL_UNSIGNED_INT;
     storedCmd->indexBufferOffset = (GLuint)indexWriteOffset;
-    storedCmd->elementBuffer = indexBuffer;
+    storedCmd->element_buffer_name = indexBuffer ? indexBuffer->name : 0u;
     storedCmd->baseVertex = 0;
     storedCmd->baseInstance = 0;
     return true;
@@ -3848,16 +3854,19 @@ static void mglTrackPendingDrawBufferReads(GLMContext ctx,
 {
     if (!ctx || !cmd) return;
 
-    if (uses_elements && cmd->elementBuffer && cmd->count > 0) {
+    if (uses_elements && cmd->element_buffer_name && cmd->count > 0) {
+        Buffer *elementBuffer = mglDrawCommandElementBuffer(ctx, cmd);
+        if (!elementBuffer)
+            return;
         size_t indexSize = mglCommandIndexSize(cmd->indexType);
         if (indexSize > 0) {
             uint64_t indexBytes = (uint64_t)cmd->count * (uint64_t)indexSize;
             mglTrackPendingReadBytes(ctx,
-                                     (Buffer *)cmd->elementBuffer,
+                                     elementBuffer,
                                      (uint64_t)cmd->indexBufferOffset,
                                      indexBytes);
         } else {
-            mglTrackPendingReadWholeBuffer(ctx, (Buffer *)cmd->elementBuffer);
+            mglTrackPendingReadWholeBuffer(ctx, elementBuffer);
         }
     }
 
@@ -4296,4 +4305,25 @@ bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd)
         default:
             return true;
     }
+}
+
+Buffer *mglDrawCommandElementBuffer(GLMContext ctx, const MGLDrawCommand *cmd)
+{
+    if (!ctx || !cmd || cmd->element_buffer_name == 0u)
+        return NULL;
+    return findBuffer(ctx, cmd->element_buffer_name);
+}
+
+Buffer *mglNamedBuffer(GLMContext ctx, GLuint name)
+{
+    if (!ctx || name == 0u)
+        return NULL;
+    return findBuffer(ctx, name);
+}
+
+Texture *mglNamedTexture(GLMContext ctx, GLuint name)
+{
+    if (!ctx || name == 0u)
+        return NULL;
+    return findTexture(ctx, name);
 }

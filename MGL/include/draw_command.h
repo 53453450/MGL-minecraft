@@ -111,7 +111,7 @@ typedef struct {
     uint8_t unit;
     uint8_t target_index;
     uint8_t is_active;
-    void   *texture;
+    GLuint  texture_name;
 } MGLDynamicTextureBinding;
 
 /* Per-draw vertex binding override for BindNoFlush merges.
@@ -120,7 +120,7 @@ typedef struct {
  * offsets keeps BuildDynamicVertexArray and the direct Metal rebind path
  * consistent when the batch base slice is non-zero. */
 typedef struct {
-    void    *buffer;
+    GLuint   buffer_name;
     uint32_t offset;
     uint8_t  binding_index;
     uint8_t  reserved[3];
@@ -168,7 +168,7 @@ typedef struct {
     GLuint   baseInstance;
     GLenum   indexType;
     GLuint   indexBufferOffset;
-    void    *elementBuffer;
+    GLuint   element_buffer_name;
     uint8_t  dynamic_vertex_binding_count;
     MGLDynamicVertexBinding
              dynamic_vertex_bindings[MGL_MAX_DYNAMIC_VERTEX_BINDINGS];
@@ -370,6 +370,15 @@ const char *mglDrawCommandTypeName(MGLDrawCommandType type);
 /* Returns true if `cmd->type` is an indexed (glDrawElements*) variant,
  * false for array (glDrawArrays*) variants or NULL cmd. */
 bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd);
+
+/* Resolve CommandIR object names against the live hash tables. Deleted
+ * names fail closed (NULL) instead of retaining stale pointers. */
+struct Buffer_t;
+struct Texture_t;
+struct Buffer_t *mglDrawCommandElementBuffer(GLMContext ctx,
+                                             const MGLDrawCommand *cmd);
+struct Buffer_t *mglNamedBuffer(GLMContext ctx, GLuint name);
+struct Texture_t *mglNamedTexture(GLMContext ctx, GLuint name);
 
 #ifdef __cplusplus
 }

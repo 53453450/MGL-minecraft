@@ -752,7 +752,10 @@ static void mglBatchExecuteIndirectCommands(
         return;
     }
 
-    Buffer *ebo = mglDrawCommandUsesElements(cmd) ? (Buffer *)cmd->elementBuffer : NULL;
+    Buffer *ebo = NULL;
+    if (mglDrawCommandUsesElements(cmd)) {
+        ebo = mglDrawCommandElementBuffer(glm_ctx, cmd);
+    }
     GLuint eboName = 0u;
     if (ebo &&
         mglRendererObjectPointerLikelyValid(ebo) &&
