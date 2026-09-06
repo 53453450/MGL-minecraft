@@ -748,6 +748,178 @@ apply_gl46_defaults:
         glm_ctx->active_state->var.max_uniform_buffer_bindings = 84;
     }
 
+    /* Ensure max_shader_storage_buffer_bindings meets minimum.  The CGL probe
+     * above may leave it at 0 on headless CI (no accelerated pixel format),
+     * so seed it here rather than relying on the probe.  The GL 4.6 minimum
+     * is 8; MGL maps SSBOs onto MAX_BINDABLE_BUFFERS slots. */
+    if (glm_ctx->active_state->var.max_shader_storage_buffer_bindings == 0 ||
+        glm_ctx->active_state->var.max_shader_storage_buffer_bindings > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->active_state->var.max_shader_storage_buffer_bindings = MAX_BINDABLE_BUFFERS;
+    }
+
+    /* ------------------------------------------------------------------
+     * Headless-CI capability floors.
+     *
+     * Everything above this point (the CGL probe, lines ~197-601) is SKIPPED
+     * when no accelerated pixel format is available (AppleParavirtDevice on
+     * GitHub macos-26 runners: CGLChoosePixelFormat -> error 10002).  The probe
+     * seeds many GL limits via glGetIntegerv on the host Apple GL; on headless
+     * hosts those queries never run and the corresponding fields stay at their
+     * zero-initialised value.  The floors below guarantee a GL 4.6 / Metal
+     * minimum so link/draw validation does not reject valid programs.
+     *
+     * Each uses `if (x < MIN) x = MIN` (or `== 0` for alignments), so a real
+     * higher value returned by the probe on a physical Mac is always preserved
+     * and only the zero/low headless case is repaired.
+     * ------------------------------------------------------------------ */
+
+    /* Texture / renderbuffer / element limits. */
+    if (glm_ctx->active_state->var.max_texture_size < 16384u)
+        glm_ctx->active_state->var.max_texture_size = 16384u;
+    if (glm_ctx->active_state->var.max_3d_texture_size < 2048u)
+        glm_ctx->active_state->var.max_3d_texture_size = 2048u;
+    if (glm_ctx->active_state->var.max_cube_map_texture_size < 16384u)
+        glm_ctx->active_state->var.max_cube_map_texture_size = 16384u;
+    if (glm_ctx->active_state->var.max_array_texture_layers < 2048u)
+        glm_ctx->active_state->var.max_array_texture_layers = 2048u;
+    if (glm_ctx->active_state->var.max_rectangle_texture_size < 16384u)
+        glm_ctx->active_state->var.max_rectangle_texture_size = 16384u;
+    if (glm_ctx->active_state->var.max_renderbuffer_size < 16384u)
+        glm_ctx->active_state->var.max_renderbuffer_size = 16384u;
+    if (glm_ctx->active_state->var.max_texture_buffer_size < 134217728u)
+        glm_ctx->active_state->var.max_texture_buffer_size = 134217728u;
+    if (glm_ctx->active_state->var.max_viewport_dims[0] < 16384u)
+        glm_ctx->active_state->var.max_viewport_dims[0] = 16384u;
+    if (glm_ctx->active_state->var.max_viewport_dims[1] < 16384u)
+        glm_ctx->active_state->var.max_viewport_dims[1] = 16384u;
+    if (glm_ctx->active_state->var.max_viewports < 16u)
+        glm_ctx->active_state->var.max_viewports = 16u;
+    if (glm_ctx->active_state->var.max_elements_vertices < 1048576u)
+        glm_ctx->active_state->var.max_elements_vertices = 1048576u;
+    if (glm_ctx->active_state->var.max_elements_indices < 1048576u)
+        glm_ctx->active_state->var.max_elements_indices = 1048576u;
+    if (glm_ctx->active_state->var.max_clip_distances < 8u)
+        glm_ctx->active_state->var.max_clip_distances = 8u;
+
+    /* Program texel offsets (signed). */
+    if (glm_ctx->active_state->var.min_program_texel_offset > -8)
+        glm_ctx->active_state->var.min_program_texel_offset = -8;
+    if (glm_ctx->active_state->var.max_program_texel_offset < 7)
+        glm_ctx->active_state->var.max_program_texel_offset = 7;
+
+    /* Misc scalar limits. */
+    if (glm_ctx->active_state->var.subpixel_bits < 4u)
+        glm_ctx->active_state->var.subpixel_bits = 4u;
+    if (glm_ctx->active_state->var.max_label_length < 256u)
+        glm_ctx->active_state->var.max_label_length = 256u;
+    if (glm_ctx->active_state->var.max_debug_group_stack_depth < 64u)
+        glm_ctx->active_state->var.max_debug_group_stack_depth = 64u;
+    if (glm_ctx->active_state->var.max_server_wait_timeout == 0u)
+        glm_ctx->active_state->var.max_server_wait_timeout = 0xFFFFFFFFu;
+    if (glm_ctx->active_state->var.max_uniform_block_size < 16384u)
+        glm_ctx->active_state->var.max_uniform_block_size = 16384u;
+    if (glm_ctx->active_state->var.max_uniform_locations < 1024u)
+        glm_ctx->active_state->var.max_uniform_locations = 1024u;
+    if (glm_ctx->active_state->var.max_dual_source_draw_buffers < 1u)
+        glm_ctx->active_state->var.max_dual_source_draw_buffers = 1u;
+    if (glm_ctx->active_state->var.max_varying_vectors < 32u)
+        glm_ctx->active_state->var.max_varying_vectors = 32u;
+    if (glm_ctx->active_state->var.max_vertex_uniform_vectors < 256u)
+        glm_ctx->active_state->var.max_vertex_uniform_vectors = 256u;
+    if (glm_ctx->active_state->var.max_fragment_uniform_vectors < 256u)
+        glm_ctx->active_state->var.max_fragment_uniform_vectors = 256u;
+    if (glm_ctx->active_state->var.max_vertex_attrib_relative_offset < 2047u ||
+        glm_ctx->active_state->var.max_vertex_attrib_relative_offset == 0x01010101u)
+        glm_ctx->active_state->var.max_vertex_attrib_relative_offset = 2047u;
+
+    /* Per-stage uniform block counts. */
+    if (glm_ctx->active_state->var.max_vertex_uniform_blocks < 14u)
+        glm_ctx->active_state->var.max_vertex_uniform_blocks = 14u;
+    if (glm_ctx->active_state->var.max_tess_control_uniform_blocks < 14u)
+        glm_ctx->active_state->var.max_tess_control_uniform_blocks = 14u;
+    if (glm_ctx->active_state->var.max_tess_evaluation_uniform_blocks < 14u)
+        glm_ctx->active_state->var.max_tess_evaluation_uniform_blocks = 14u;
+    if (glm_ctx->active_state->var.max_geometry_uniform_blocks < 14u)
+        glm_ctx->active_state->var.max_geometry_uniform_blocks = 14u;
+    if (glm_ctx->active_state->var.max_fragment_uniform_blocks < 14u)
+        glm_ctx->active_state->var.max_fragment_uniform_blocks = 14u;
+    if (glm_ctx->active_state->var.max_compute_uniform_blocks < 14u)
+        glm_ctx->active_state->var.max_compute_uniform_blocks = 14u;
+    if (glm_ctx->active_state->var.max_combined_uniform_blocks < 36u)
+        glm_ctx->active_state->var.max_combined_uniform_blocks = 36u;
+
+    /* Combined uniform components (tess variants already computed above). */
+    if (glm_ctx->active_state->var.max_combined_vertex_uniform_components < 1048576u)
+        glm_ctx->active_state->var.max_combined_vertex_uniform_components = 1048576u;
+    if (glm_ctx->active_state->var.max_combined_geometry_uniform_components < 1048576u)
+        glm_ctx->active_state->var.max_combined_geometry_uniform_components = 1048576u;
+    if (glm_ctx->active_state->var.max_combined_fragment_uniform_components < 1048576u)
+        glm_ctx->active_state->var.max_combined_fragment_uniform_components = 1048576u;
+
+    /* Per-stage / combined atomic counters. */
+    if (glm_ctx->active_state->var.max_vertex_atomic_counters < 8u)
+        glm_ctx->active_state->var.max_vertex_atomic_counters = 8u;
+    if (glm_ctx->active_state->var.max_tess_control_atomic_counters < 8u)
+        glm_ctx->active_state->var.max_tess_control_atomic_counters = 8u;
+    if (glm_ctx->active_state->var.max_tess_evaluation_atomic_counters < 8u)
+        glm_ctx->active_state->var.max_tess_evaluation_atomic_counters = 8u;
+    if (glm_ctx->active_state->var.max_geometry_atomic_counters < 8u)
+        glm_ctx->active_state->var.max_geometry_atomic_counters = 8u;
+    if (glm_ctx->active_state->var.max_fragment_atomic_counters < 8u)
+        glm_ctx->active_state->var.max_fragment_atomic_counters = 8u;
+    if (glm_ctx->active_state->var.max_compute_atomic_counters < 8u)
+        glm_ctx->active_state->var.max_compute_atomic_counters = 8u;
+    if (glm_ctx->active_state->var.max_combined_atomic_counters < 8u)
+        glm_ctx->active_state->var.max_combined_atomic_counters = 8u;
+
+    /* Compute-stage limits. */
+    if (glm_ctx->active_state->var.max_compute_texture_image_units < 16u)
+        glm_ctx->active_state->var.max_compute_texture_image_units = 16u;
+    if (glm_ctx->active_state->var.max_compute_uniform_components < 1024u)
+        glm_ctx->active_state->var.max_compute_uniform_components = 1024u;
+    if (glm_ctx->active_state->var.max_compute_atomic_counter_buffers < 8u)
+        glm_ctx->active_state->var.max_compute_atomic_counter_buffers = 8u;
+    if (glm_ctx->active_state->var.max_combined_compute_uniform_components < 1048576u)
+        glm_ctx->active_state->var.max_combined_compute_uniform_components = 1048576u;
+    if (glm_ctx->active_state->var.max_compute_work_group_invocations < 1024u)
+        glm_ctx->active_state->var.max_compute_work_group_invocations = 1024u;
+
+    /* Per-stage / combined shader-storage-block counts. */
+    if (glm_ctx->active_state->var.max_vertex_shader_storage_blocks < 8u)
+        glm_ctx->active_state->var.max_vertex_shader_storage_blocks = 8u;
+    if (glm_ctx->active_state->var.max_tess_control_shader_storage_blocks < 8u)
+        glm_ctx->active_state->var.max_tess_control_shader_storage_blocks = 8u;
+    if (glm_ctx->active_state->var.max_tess_evaluation_shader_storage_blocks < 8u)
+        glm_ctx->active_state->var.max_tess_evaluation_shader_storage_blocks = 8u;
+    if (glm_ctx->active_state->var.max_geometry_shader_storage_blocks < 8u)
+        glm_ctx->active_state->var.max_geometry_shader_storage_blocks = 8u;
+    if (glm_ctx->active_state->var.max_fragment_shader_storage_blocks < 8u)
+        glm_ctx->active_state->var.max_fragment_shader_storage_blocks = 8u;
+    if (glm_ctx->active_state->var.max_compute_shader_storage_blocks < 8u)
+        glm_ctx->active_state->var.max_compute_shader_storage_blocks = 8u;
+    if (glm_ctx->active_state->var.max_combined_shader_storage_blocks < 8u ||
+        glm_ctx->active_state->var.max_combined_shader_storage_blocks > MAX_BINDABLE_BUFFERS)
+        glm_ctx->active_state->var.max_combined_shader_storage_blocks = MAX_BINDABLE_BUFFERS;
+
+    /* Component limits that gate shader varyings. */
+    if (glm_ctx->active_state->var.max_fragment_input_components < 128u)
+        glm_ctx->active_state->var.max_fragment_input_components = 128u;
+    if (glm_ctx->active_state->var.max_geometry_input_components < 64u)
+        glm_ctx->active_state->var.max_geometry_input_components = 64u;
+    if (glm_ctx->active_state->var.max_geometry_output_components < 128u)
+        glm_ctx->active_state->var.max_geometry_output_components = 128u;
+
+    /* Offset alignments. */
+    if (glm_ctx->active_state->var.uniform_buffer_offset_alignment < 256u ||
+        glm_ctx->active_state->var.uniform_buffer_offset_alignment == 0u)
+        glm_ctx->active_state->var.uniform_buffer_offset_alignment = 256u;
+    if (glm_ctx->active_state->var.shader_storage_buffer_offset_alignment < 16u ||
+        glm_ctx->active_state->var.shader_storage_buffer_offset_alignment > 16u)
+        glm_ctx->active_state->var.shader_storage_buffer_offset_alignment = 16u;
+    if (glm_ctx->active_state->var.texture_buffer_offset_alignment < 16u ||
+        glm_ctx->active_state->var.texture_buffer_offset_alignment == 0x01010101u)
+        glm_ctx->active_state->var.texture_buffer_offset_alignment = 16u;
+
 #ifdef MGL_GL_ES
     mglApplyES32Limits(glm_ctx);
 #endif
