@@ -89,10 +89,14 @@ static void mglReleaseSyncReference(GLMContext ctx, Sync *sync)
 
 int isSync(GLMContext ctx, GLsync sync)
 {
-    if (sync->name < STATE(sync_name))
-        return 1;
+    /* NULL and non-members must not dereference into UAF/crash paths
+     * (ARCHITECTURE_AUDIT A13). Membership is context-local via sync_table. */
+    if (!ctx || !sync) {
+        return 0;
+    }
 
-    return 0;
+    Sync *found = (Sync *)searchHashTable(&STATE(sync_table), sync->name);
+    return found == sync ? 1 : 0;
 }
 
 GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
@@ -146,8 +150,7 @@ void mglDeleteSync(GLMContext ctx, GLsync sync)
 {
     if (isSync(ctx, sync) == GL_FALSE)
     {
-        // CRITICAL FIX: Handle invalid sync gracefully instead of crashing
-        fprintf(stderr, "MGL ERROR: Attempting to delete invalid sync object %p\n", sync);
+        ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
 
@@ -178,9 +181,8 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
 
     if (isSync(ctx, sync) == GL_FALSE)
     {
-        // CRITICAL FIX: Handle invalid sync gracefully instead of crashing
-        fprintf(stderr, "MGL ERROR: Invalid sync object %p passed to client wait sync\n", sync);
-        return GL_INVALID_VALUE;
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return GL_WAIT_FAILED;
     }
 
     /* retain so a concurrent glDeleteSync cannot free the sync while
@@ -243,15 +245,19 @@ void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout
 {
     if (isSync(ctx, sync) == GL_FALSE)
     {
-        // CRITICAL FIX: Handle invalid sync gracefully instead of crashing
-        fprintf(stderr, "MGL ERROR: Invalid sync object %p passed to wait sync\n", sync);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    /* GL 4.6 §5.3: flags must be zero. */
+    if (flags != 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
 
     if (timeout != GL_TIMEOUT_IGNORED) {
-        // CRITICAL FIX: Handle invalid timeout gracefully instead of crashing
-        fprintf(stderr, "MGL ERROR: Server wait sync timeout must be GL_TIMEOUT_IGNORED, got 0x%llx\n", timeout);
-        // Continue with GL_TIMEOUT_IGNORED behavior
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     /* retain so a concurrent glDeleteSync cannot free the sync while
@@ -273,8 +279,7 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
 {
     if (isSync(ctx, sync) == GL_FALSE)
     {
-        // CRITICAL FIX: Handle invalid sync gracefully instead of crashing
-        fprintf(stderr, "MGL ERROR: Invalid sync object %p passed to get sync iv\n", sync);
+        ERROR_RETURN(GL_INVALID_VALUE);
         if (length) *length = 0;
         return;
     }
@@ -282,12 +287,12 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
     // CRITICAL FIX: count is the number of elements the caller allocated in values.
     // Per OpenGL spec, only one value is returned per pname. length is an OUTPUT parameter.
     if (!count || count < 0) {
-        fprintf(stderr, "MGL ERROR: Invalid count %d in get sync iv\n", count);
+        ERROR_RETURN(GL_INVALID_VALUE);
         if (length) *length = 0;
         return;
     }
     if (!values) {
-        fprintf(stderr, "MGL ERROR: NULL values pointer in get sync iv\n");
+        ERROR_RETURN(GL_INVALID_VALUE);
         if (length) *length = 0;
         return;
     }
@@ -316,10 +321,10 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
             break;
 
         default:
-            // CRITICAL FIX: Handle unknown sync parameters gracefully instead of crashing
-            fprintf(stderr, "MGL ERROR: Unknown sync parameter 0x%x in get sync iv\n", pname);
-            *values = 0;
-            break;
+            ERROR_RETURN(GL_INVALID_ENUM);
+            if (length) *length = 0;
+            mglReleaseSyncReference(ctx, sync);
+            return;
     }
 
     if (length) *length = 1;
@@ -411,9 +416,9 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
         GL_TEXTURE_FETCH_BARRIER_BIT;
     if (barriers == GL_ALL_BARRIER_BITS || (barriers & image_relevant_bits))
     {
-        GLuint max_units = ctx->state.var.max_image_units;
+        GLuint max_units = STATE(var).max_image_units;
         for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
-            ImageUnit *iu = &ctx->state.image_units[i];
+            ImageUnit *iu = &STATE(image_units)[i];
             Texture *tex = iu->tex;
             if (!tex) {
                 continue;

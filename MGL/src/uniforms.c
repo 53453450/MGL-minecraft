@@ -328,7 +328,7 @@ static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *progra
     }
 
     if (mglObjectPointerLooksPlausible(program) &&
-        mglHashTableContainsData(&ctx->state.program_table, program)) {
+        mglHashTableContainsData(&STATE(program_table), program)) {
         return program;
     }
 
@@ -343,9 +343,9 @@ static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *progra
                 "MGL WARNING: %s dropping invalid program pointer %p\n",
                 func ? func : "uniform",
                 (void *)program);
-        if (ctx->state.program == program) {
-            ctx->state.program = NULL;
-            ctx->state.program_name = 0;
+        if (STATE(program) == program) {
+            STATE(program) = NULL;
+            STATE(program_name) = 0;
         }
         return NULL;
     }
@@ -358,7 +358,7 @@ static Program *mglUniformGetCurrentProgram(GLMContext ctx, const char *func)
     if (!ctx) {
         return NULL;
     }
-    return mglUniformValidateProgramPointer(ctx, ctx->state.program, func);
+    return mglUniformValidateProgramPointer(ctx, STATE(program), func);
 }
 
 static Program *mglUniformGetNamedProgram(GLMContext ctx, GLuint program, const char *func)
@@ -1580,7 +1580,7 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
     {
         GLint max_units = TEXTURE_UNITS;
         if (primaryResourceType == _STORAGE_IMAGE_RES) {
-            max_units = (GLint)ctx->state.var.max_image_units;
+            max_units = (GLint)STATE(var).max_image_units;
         }
         if (unit < 0 || unit >= max_units) {
             ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
@@ -1705,7 +1705,7 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
          * here, so without this the draw-command hazard/rebuild paths
          * would keep using the stale unit set. */
         program->sampled_texture_unit_mask_valid = 0u;
-        ctx->state.active_sampled_texture_unit_mask_valid = 0u;
+        STATE(active_sampled_texture_unit_mask_valid) = 0u;
         mglMarkRendererDirtyBits(&ctx->state,
                                  DIRTY_TEX_BINDING | DIRTY_SAMPLER);
     }
@@ -3062,7 +3062,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         buf = uniformSlot->buf;
         if (buf) {
             buf->plain_uniform_slot = GL_TRUE;
-            insertHashElement(&ctx->state.buffer_table, internalName, buf);
+            insertHashElement(&STATE(buffer_table), internalName, buf);
             mglProgramPlainUniformSetActive(program, (GLuint)location);
         }
     }
@@ -3081,7 +3081,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
      * fallback for programs that have not received an explicit upload yet, while
      * still preferring the per-program storage above when it exists.
      */
-    BufferBaseTarget *globalSlot = &ctx->state.buffer_base[_UNIFORM_CONSTANT].buffers[location];
+    BufferBaseTarget *globalSlot = &STATE(buffer_base)[_UNIFORM_CONSTANT].buffers[location];
     Buffer *prevGlobalBuf = globalSlot->buf;
     GLsizeiptr prevGlobalSize = globalSlot->size;
     if (!globalSlot->buf) {
@@ -3091,7 +3091,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         globalSlot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, globalName);
         if (globalSlot->buf) {
             globalSlot->buf->plain_uniform_slot = GL_TRUE;
-            insertHashElement(&ctx->state.buffer_table, globalName, globalSlot->buf);
+            insertHashElement(&STATE(buffer_table), globalName, globalSlot->buf);
         }
     }
     if (globalSlot->buf) {
@@ -3101,7 +3101,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         globalSlot->size = size;
         /* This is the only write point for _UNIFORM_CONSTANT slots; keep the
          * active_mask in sync like the glBindBufferBase/Range paths do. */
-        mglBufferBaseSetActive(&ctx->state.buffer_base[_UNIFORM_CONSTANT], (GLuint)location);
+        mglBufferBaseSetActive(&STATE(buffer_base)[_UNIFORM_CONSTANT], (GLuint)location);
     }
 
     /* The binding hashes only see slot identity ({buf, name, offset, size};
@@ -3802,12 +3802,12 @@ void mglRefreshLegacyStateUniforms(GLMContext ctx)
     GLfloat planes[8][4];
     for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
         for (int k = 0; k < 4; k++) {
-            planes[i][k] = (GLfloat)ctx->state.var.clip_planes[i][k];
+            planes[i][k] = (GLfloat)STATE(var).clip_planes[i][k];
         }
     }
     GLfloat enabled[8];
     for (int i = 0; i < MAX_CLIP_DISTANCES; i++) {
-        enabled[i] = (ctx->state.caps.clip_distances[i] != 0) ? 1.0f : 0.0f;
+        enabled[i] = (STATE(caps).clip_distances[i] != 0) ? 1.0f : 0.0f;
     }
     /* Deliver each element at its own leaf location: the renderer's struct
      * packing path reads one plain-uniform slot per array element (CTS

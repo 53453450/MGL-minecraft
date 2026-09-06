@@ -73,7 +73,7 @@ static void mglCommitSamplerParameter(GLMContext ctx,
 
 static void mglSamplerParameterUnhandled(GLMContext ctx)
 {
-    if (!ctx || ctx->state.error == GL_NO_ERROR)
+    if (!ctx || STATE(error) == GL_NO_ERROR)
         ERROR_RETURN(GL_INVALID_ENUM);
 }
 /* GL 4.6 spec: GL_TEXTURE_SWIZZLE_* are texture-object state, not sampler
@@ -204,7 +204,7 @@ void mglGenSamplers(GLMContext ctx, GLsizei count, GLuint *samplers)
 
     while(count--)
     {
-        GLuint name = getNewName(&ctx->state.sampler_table);
+        GLuint name = getNewName(&STATE(sampler_table));
         if (!getSampler(ctx, name))
             return;
         *samplers++ = name;
@@ -221,7 +221,7 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
     // glBindSampler takes a zero-based texture unit index, not GL_TEXTURE0 + unit.
     if (unit >= STATE_VAR(max_combined_texture_image_units) || unit >= TEXTURE_UNITS)
     {
-        ERROR_RETURN(GL_INVALID_INDEX);
+        ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
 
@@ -244,7 +244,7 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
         ptr = NULL;
     }
 
-    if (ctx->state.texture_samplers[unit] == ptr) {
+    if (STATE(texture_samplers)[unit] == ptr) {
         return;
     }
 
@@ -264,7 +264,7 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
                         ptr ? (unsigned)ptr->params.compare_mode : 0u,
                         ptr ? (unsigned)ptr->params.compare_func : 0u);
 
-    ctx->state.texture_samplers[unit] = ptr;
+    STATE(texture_samplers)[unit] = ptr;
     mglMarkStateDirtyBits(&ctx->state, DIRTY_SAMPLER);
 }
 
@@ -300,16 +300,16 @@ void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
             GLboolean cleared_binding = GL_FALSE;
             for(int i=0; i<TEXTURE_UNITS; i++)
             {
-                if (ctx->state.texture_samplers[i] == ptr)
+                if (STATE(texture_samplers)[i] == ptr)
                 {
-                    ctx->state.texture_samplers[i] = NULL;
+                    STATE(texture_samplers)[i] = NULL;
                     cleared_binding = GL_TRUE;
                 }
             }
             if (cleared_binding)
                 mglMarkStateDirtyBits(&ctx->state, DIRTY_SAMPLER);
 
-            deleteHashElement(&ctx->state.sampler_table, sampler);
+            deleteHashElement(&STATE(sampler_table), sampler);
 
             mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
 

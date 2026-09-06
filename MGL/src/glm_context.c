@@ -234,8 +234,9 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     bzero((void *)ctx, sizeof(GLMContextRec));
 
-    /* active_state defaults to the embedded state; batch replay redirects
-     * MGL_STATE reads through it while a snapshot is installed. */
+    /* active_state defaults to the embedded live state; batch flush
+     * redirects to replay_state so deferred encoding does not overwrite
+     * live API state (ARCHITECTURE_AUDIT R3). */
     ctx->active_state = &ctx->state;
 
     _ctx = ctx;
@@ -650,6 +651,9 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     initHashTable(&STATE(framebuffer_table), 32);
     initHashTable(&STATE(sampler_table), 32);
     initHashTable(&STATE(sync_table), 32);
+    initHashTable(&ctx->query_table, 64);
+    memset(ctx->active_query_by_target, 0, sizeof(ctx->active_query_by_target));
+    ctx->query_timestamp_counter = 1;
     
     init_dispatch(ctx);
 
@@ -908,6 +912,7 @@ void destroyGLMContext(GLMContext ctx)
     mglHashTableForEach(&ctx->state.program_pipeline_table, mglDestroyContextProgramPipeline, ctx);
     mglHashTableForEach(&ctx->state.transform_feedback_table, mglDestroyContextTransformFeedback, ctx);
     mglHashTableForEach(&ctx->state.sync_table, mglDestroyContextSync, ctx);
+    mglDestroyContextQueries(ctx);
 
     mglHashTableClearEntries(&ctx->state.program_table);
     mglHashTableClearEntries(&ctx->state.shader_table);

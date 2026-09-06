@@ -111,13 +111,13 @@ GLsizei mglSafeMaxTextureSize(GLMContext ctx)
         return kFallback;
     }
 
-    maxTex = ctx->state.var.max_texture_size;
+    maxTex = STATE(var).max_texture_size;
     if (maxTex == 0x01010101 || maxTex <= 1024 || maxTex > 32768) {
         fprintf(stderr,
                 "MGL WARNING: GL_MAX_TEXTURE_SIZE state value suspicious (%u), using safe fallback %d\n",
                 (unsigned)maxTex, (int)kFallback);
         // Self-heal corrupted/uninitialized state so repeated queries stay stable.
-        ctx->state.var.max_texture_size = kFallback;
+        STATE(var).max_texture_size = kFallback;
         return kFallback;
     }
 
@@ -127,7 +127,7 @@ GLsizei mglSafeMaxTextureSize(GLMContext ctx)
 static GLsizei mglSafeMaxTextureBufferSize(GLMContext ctx)
 {
     const GLsizei kFallback = 1 << 20; // texels, conservative but useful for Minecraft cloud buffers
-    GLuint value = ctx ? ctx->state.var.max_texture_buffer_size : 0u;
+    GLuint value = ctx ? STATE(var).max_texture_buffer_size : 0u;
 
     if (value == 0u || value == 0x01010101u || value > (1u << 28)) {
         if (ctx) {
@@ -135,7 +135,7 @@ static GLsizei mglSafeMaxTextureBufferSize(GLMContext ctx)
                     "MGL WARNING: GL_MAX_TEXTURE_BUFFER_SIZE state value suspicious (%u), using safe fallback %d\n",
                     value,
                     (int)kFallback);
-            ctx->state.var.max_texture_buffer_size = (GLuint)kFallback;
+            STATE(var).max_texture_buffer_size = (GLuint)kFallback;
         }
         return kFallback;
     }
@@ -146,7 +146,7 @@ static GLsizei mglSafeMaxTextureBufferSize(GLMContext ctx)
 static GLsizei mglSafeTextureBufferOffsetAlignment(GLMContext ctx)
 {
     const GLsizei kFallback = 16;
-    GLuint value = ctx ? ctx->state.var.texture_buffer_offset_alignment : 0u;
+    GLuint value = ctx ? STATE(var).texture_buffer_offset_alignment : 0u;
 
     if (value == 0u || value == 0x01010101u || value > 4096u) {
         if (ctx) {
@@ -154,7 +154,7 @@ static GLsizei mglSafeTextureBufferOffsetAlignment(GLMContext ctx)
                     "MGL WARNING: GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT state value suspicious (%u), using safe fallback %d\n",
                     value,
                     (int)kFallback);
-            ctx->state.var.texture_buffer_offset_alignment = (GLuint)kFallback;
+            STATE(var).texture_buffer_offset_alignment = (GLuint)kFallback;
         }
         return kFallback;
     }
@@ -164,7 +164,7 @@ static GLsizei mglSafeTextureBufferOffsetAlignment(GLMContext ctx)
 
 static GLuint mglSafeMaxViewports(GLMContext ctx)
 {
-    GLuint value = ctx ? ctx->state.var.max_viewports : 1u;
+    GLuint value = ctx ? STATE(var).max_viewports : 1u;
     if (value == 0u || value > MGL_MAX_VIEWPORTS) {
         value = MGL_MAX_VIEWPORTS;
     }
@@ -173,11 +173,11 @@ static GLuint mglSafeMaxViewports(GLMContext ctx)
 
 static GLuint mglSafeMaxVertexAttribBindings(GLMContext ctx)
 {
-    GLuint value = ctx ? ctx->state.var.max_vertex_attrib_bindings : 0u;
+    GLuint value = ctx ? STATE(var).max_vertex_attrib_bindings : 0u;
     if (value == 0u || value == 0x01010101u || value > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
         value = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
         if (ctx) {
-            ctx->state.var.max_vertex_attrib_bindings = value;
+            STATE(var).max_vertex_attrib_bindings = value;
         }
     }
     return value;
@@ -186,11 +186,11 @@ static GLuint mglSafeMaxVertexAttribBindings(GLMContext ctx)
 static GLuint mglSafeMaxVertexAttribRelativeOffset(GLMContext ctx)
 {
     const GLuint kFallback = 2047u;
-    GLuint value = ctx ? ctx->state.var.max_vertex_attrib_relative_offset : 0u;
+    GLuint value = ctx ? STATE(var).max_vertex_attrib_relative_offset : 0u;
     if (value < kFallback || value == 0x01010101u) {
         value = kFallback;
         if (ctx) {
-            ctx->state.var.max_vertex_attrib_relative_offset = value;
+            STATE(var).max_vertex_attrib_relative_offset = value;
         }
     }
     return value;
@@ -204,33 +204,33 @@ static GLuint mglSafeMaxVertexAttribStride(GLMContext ctx)
 
 static GLuint mglCurrentDrawFramebufferBinding(GLMContext ctx)
 {
-    GLuint name = (ctx && ctx->state.framebuffer) ? ctx->state.framebuffer->name : 0u;
+    GLuint name = (ctx && STATE(framebuffer)) ? STATE(framebuffer)->name : 0u;
     if (ctx) {
-        ctx->state.var.draw_framebuffer_binding = name;
+        STATE(var).draw_framebuffer_binding = name;
     }
     return name;
 }
 
 static GLuint mglCurrentReadFramebufferBinding(GLMContext ctx)
 {
-    GLuint name = (ctx && ctx->state.readbuffer) ? ctx->state.readbuffer->name : 0u;
+    GLuint name = (ctx && STATE(readbuffer)) ? STATE(readbuffer)->name : 0u;
     if (ctx) {
-        ctx->state.var.read_framebuffer_binding = name;
+        STATE(var).read_framebuffer_binding = name;
     }
     return name;
 }
 
 static GLuint mglCurrentRenderbufferBinding(GLMContext ctx)
 {
-    return (ctx && ctx->state.renderbuffer) ? ctx->state.renderbuffer->name : 0u;
+    return (ctx && STATE(renderbuffer)) ? STATE(renderbuffer)->name : 0u;
 }
 
 static GLuint mglCurrentVertexArrayBinding(GLMContext ctx)
 {
-    VertexArray *vao = ctx ? ctx->state.vao : NULL;
+    VertexArray *vao = ctx ? STATE(vao) : NULL;
     if (vao &&
         mglObjectPointerLooksPlausible(vao) &&
-        mglHashTableContainsData(&ctx->state.vao_table, vao) &&
+        mglHashTableContainsData(&STATE(vao_table), vao) &&
         mglPointerRangeIsReadable(vao, sizeof(*vao))) {
         return vao->name;
     }
@@ -255,7 +255,7 @@ static Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
  * attachments, falls back to default_samples. */
 static GLuint mglCurrentDrawFramebufferSamples(GLMContext ctx)
 {
-    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *fbo = ctx ? STATE(framebuffer) : NULL;
     if (!fbo)
         return 0u;
 
@@ -294,7 +294,7 @@ enum {
 
 static void mglReturnPolygonMode(GLMContext ctx, GLuint type, void *data)
 {
-    GLuint mode = ctx ? ctx->state.var.polygon_mode : GL_FILL;
+    GLuint mode = ctx ? STATE(var).polygon_mode : GL_FILL;
 
     switch(type) {
         case kBool:
@@ -316,23 +316,23 @@ static void mglReturnPolygonMode(GLMContext ctx, GLuint type, void *data)
     }
 }
 
-// set value based on type from ctx->state.var
+// set value based on type from STATE(var)
 #define RET_TYPE_VAR(__TYPE__, __VALUE__) \
 switch(type) {  \
-case kBool: RET_BOOL(ctx->state.var.__VALUE__);   \
-    case kInt: RET_INT(ctx->state.var.__VALUE__)    \
-    case kFloat: RET_FLOAT(ctx->state.var.__VALUE__)    \
-    case kDouble: RET_DOUBLE(ctx->state.var.__VALUE__)    \
+case kBool: RET_BOOL(STATE(var).__VALUE__);   \
+    case kInt: RET_INT(STATE(var).__VALUE__)    \
+    case kFloat: RET_FLOAT(STATE(var).__VALUE__)    \
+    case kDouble: RET_DOUBLE(STATE(var).__VALUE__)    \
 }
 
 // set count values based on type
 #define RET_TYPE_VAR_COUNT(__TYPE__, __VALUE__, __COUNT__) \
 for(int i=0, counts[]={1,4,4,8};i<__COUNT__; data+=counts[__TYPE__], i++) \
     switch(type) {  \
-        case kBool: RET_BOOL(ctx->state.var.__VALUE__[i])    \
-        case kInt: RET_INT(ctx->state.var.__VALUE__[i])    \
-        case kFloat: RET_FLOAT(ctx->state.var.__VALUE__[i])    \
-        case kDouble: RET_DOUBLE(ctx->state.var.__VALUE__[i])    \
+        case kBool: RET_BOOL(STATE(var).__VALUE__[i])    \
+        case kInt: RET_INT(STATE(var).__VALUE__[i])    \
+        case kFloat: RET_FLOAT(STATE(var).__VALUE__[i])    \
+        case kDouble: RET_DOUBLE(STATE(var).__VALUE__[i])    \
 }
 
 // set value based on type from a derived GLuint expression
@@ -347,23 +347,23 @@ do { \
     } \
 } while(0)
 
-// set value based on type from ctx->state not ctx->state.var
+// set value based on type from ctx->state not STATE(var)
 #define RET_TYPE(__TYPE__, __VALUE__) \
 switch(type) {  \
-    case kBool: RET_BOOL(ctx->state.__VALUE__)    \
-    case kInt: RET_INT(ctx->state.__VALUE__)    \
-    case kFloat: RET_FLOAT(ctx->state.__VALUE__)    \
-    case kDouble: RET_DOUBLE(ctx->state.__VALUE__)    \
+    case kBool: RET_BOOL(STATE(__VALUE__))    \
+    case kInt: RET_INT(STATE(__VALUE__))    \
+    case kFloat: RET_FLOAT(STATE(__VALUE__))    \
+    case kDouble: RET_DOUBLE(STATE(__VALUE__))    \
 }
 
 // set count values based on type
 #define RET_TYPE_COUNT(__TYPE__, __VALUE__, __COUNT__) \
 for(int i=0, counts[]={1,4,4,8};i<__COUNT__; data+=counts[__TYPE__], i++) \
     switch(type) {  \
-        case kBool: RET_BOOL(ctx->state.__VALUE__[i])    \
-        case kInt: RET_INT(ctx->state.__VALUE__[i])    \
-        case kFloat: RET_FLOAT(ctx->state.__VALUE__[i])    \
-        case kDouble: RET_DOUBLE(ctx->state.__VALUE__[i])    \
+        case kBool: RET_BOOL(STATE(__VALUE__)[i])    \
+        case kInt: RET_INT(STATE(__VALUE__)[i])    \
+        case kFloat: RET_FLOAT(STATE(__VALUE__)[i])    \
+        case kDouble: RET_DOUBLE(STATE(__VALUE__)[i])    \
 }
 
 /* GL 4.6 §22.5: GetIntegerv with TEXTURE_BINDING_* returns the texture bound
@@ -390,10 +390,10 @@ static GLuint mglActiveUnitTextureBinding(GLMContext ctx, GLenum pname)
         default: return 0;
     }
 
-    if (!ctx || ctx->state.active_texture >= TEXTURE_UNITS)
+    if (!ctx || STATE(active_texture) >= TEXTURE_UNITS)
         return 0;
 
-    Texture *tex = ctx->state.texture_units[ctx->state.active_texture].textures[texIndex];
+    Texture *tex = STATE(texture_units)[STATE(active_texture)].textures[texIndex];
     return tex ? tex->name : 0;
 }
 
@@ -403,7 +403,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         pname < (GL_DRAW_BUFFER0 + MAX_COLOR_ATTACHMENTS))
     {
         GLuint index = pname - GL_DRAW_BUFFER0;
-        GLuint maxDrawBuffers = ctx->state.var.max_draw_buffers;
+        GLuint maxDrawBuffers = STATE(var).max_draw_buffers;
         if (maxDrawBuffers == 0 || maxDrawBuffers > MAX_COLOR_ATTACHMENTS) {
             maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
         }
@@ -412,8 +412,8 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             return;
         }
 
-        GLenum value = (index < (GLuint)ctx->state.draw_buffer_count)
-            ? ctx->state.draw_buffers[index]
+        GLenum value = (index < (GLuint)STATE(draw_buffer_count))
+            ? STATE(draw_buffers)[index]
             : GL_NONE;
         switch(type) {
             case kBool: RET_BOOL(value);
@@ -455,10 +455,10 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x0BE1: RET_TYPE_VAR(type, blend_src_rgb[0]); break; // GL_BLEND_SRC
         case 0x0BE2: // GL_BLEND
             switch(type) {
-                case kBool: RET_BOOL(ctx->state.caps.blend);
-                case kInt: RET_INT(ctx->state.caps.blend);
-                case kFloat: RET_FLOAT(ctx->state.caps.blend);
-                case kDouble: RET_DOUBLE(ctx->state.caps.blend);
+                case kBool: RET_BOOL(STATE(caps).blend);
+                case kInt: RET_INT(STATE(caps).blend);
+                case kFloat: RET_FLOAT(STATE(caps).blend);
+                case kDouble: RET_DOUBLE(STATE(caps).blend);
             }
             break;
 
@@ -608,7 +608,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x846E: RET_TYPE_VAR_COUNT(type, aliased_line_width_range, 2); break; // GL_ALIASED_LINE_WIDTH_RANGE
         case 0x846D: RET_TYPE_VAR_COUNT(type, aliased_point_size_range, 2); break; // GL_ALIASED_POINT_SIZE_RANGE
         case 0x84E0: { // GL_ACTIVE_TEXTURE
-            GLenum activeTexture = GL_TEXTURE0 + (ctx ? ctx->state.active_texture : 0u);
+            GLenum activeTexture = GL_TEXTURE0 + (ctx ? STATE(active_texture) : 0u);
             switch(type) {
                 case kBool: RET_BOOL(activeTexture)
                 case kInt: RET_INT(activeTexture)
@@ -647,15 +647,15 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8894: RET_TYPE_VAR(type, array_buffer_binding); break; // GL_ARRAY_BUFFER_BINDING
         case 0x8895: { // GL_ELEMENT_ARRAY_BUFFER_BINDING
             GLuint ebo = 0;
-            VertexArray *vao = ctx->state.vao;
+            VertexArray *vao = STATE(vao);
             if (vao &&
                 mglObjectPointerLooksPlausible(vao) &&
-                mglHashTableContainsData(&ctx->state.vao_table, vao) &&
+                mglHashTableContainsData(&STATE(vao_table), vao) &&
                 mglPointerRangeIsReadable(vao, sizeof(*vao)) &&
                 vao->element_array.buffer) {
                 ebo = vao->element_array.buffer->name;
-            } else if (ctx->state.default_vao_element_array_buffer) {
-                ebo = ctx->state.default_vao_element_array_buffer->name;
+            } else if (STATE(default_vao_element_array_buffer)) {
+                ebo = STATE(default_vao_element_array_buffer)->name;
             }
             switch(type) {
                 case kBool: RET_BOOL(ebo);
@@ -682,7 +682,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8B4B: RET_TYPE_VAR(type, max_varying_floats); break; // GL_MAX_VARYING_FLOATS
         case 0x8B4C: RET_TYPE_VAR(type, max_vertex_texture_image_units); break; // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
         case 0x8B4D: RET_TYPE_VAR(type, max_combined_texture_image_units); break; // GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
-        case 0x8B8D: RET_TYPE_VAR_DERIVED(ctx->state.program_name); break; // GL_CURRENT_PROGRAM
+        case 0x8B8D: RET_TYPE_VAR_DERIVED(STATE(program_name)); break; // GL_CURRENT_PROGRAM
         case 0x8CA3: RET_TYPE_VAR(type, stencil_back_ref); break; // GL_STENCIL_BACK_REF
         case 0x8CA4: RET_TYPE_VAR(type, stencil_back_value_mask); break; // GL_STENCIL_BACK_VALUE_MASK
         case 0x8CA5: RET_TYPE_VAR(type, stencil_back_writemask); break; // GL_STENCIL_BACK_WRITEMASK
@@ -747,7 +747,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x84F8: RET_TYPE_VAR(type, max_rectangle_texture_size); break; // GL_MAX_RECTANGLE_TEXTURE_SIZE
         case 0x8F9E: RET_TYPE_VAR(type, primitive_restart_index); break; // GL_PRIMITIVE_RESTART_INDEX
         case 0x8A28: { // GL_UNIFORM_BUFFER_BINDING
-            GLuint binding = ctx->state.var.uniform_buffer_binding;
+            GLuint binding = STATE(var).uniform_buffer_binding;
             switch(type) {
                 case kBool: RET_BOOL(binding);
                 case kInt: RET_INT(binding);
@@ -826,11 +826,11 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x9110: RET_TYPE_VAR(type, max_integer_samples); break; // GL_MAX_INTEGER_SAMPLES
         case 0x88FC: RET_TYPE_VAR(type, max_dual_source_draw_buffers); break; // GL_MAX_DUAL_SOURCE_DRAW_BUFFERS
         case 0x8919: { // GL_SAMPLER_BINDING
-            GLuint unit = ctx ? ctx->state.active_texture : 0u;
-            GLuint binding = (ctx && unit < TEXTURE_UNITS && ctx->state.texture_samplers[unit])
-                ? ctx->state.texture_samplers[unit]->name
+            GLuint unit = ctx ? STATE(active_texture) : 0u;
+            GLuint binding = (ctx && unit < TEXTURE_UNITS && STATE(texture_samplers)[unit])
+                ? STATE(texture_samplers)[unit]->name
                 : 0u;
-            ctx->state.var.sampler_binding = binding;
+            STATE(var).sampler_binding = binding;
             switch(type) {
                 case kBool: RET_BOOL(binding);
                 case kInt: RET_INT(binding);
@@ -852,7 +852,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x87FF: RET_TYPE_VAR(type, program_binary_formats); break; // GL_PROGRAM_BINARY_FORMATS
         case 0x825A: RET_TYPE_VAR(type, program_pipeline_binding); break; // GL_PROGRAM_PIPELINE_BINDING
         case GL_TRANSFORM_FEEDBACK_BINDING: {
-            GLuint binding = (ctx && ctx->state.transform_feedback) ? ctx->state.transform_feedback->name : 0u;
+            GLuint binding = (ctx && STATE(transform_feedback)) ? STATE(transform_feedback)->name : 0u;
             switch(type) {
                 case kBool: RET_BOOL(binding);
                 case kInt: RET_INT(binding);
@@ -904,7 +904,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x9317: RET_TYPE_VAR(type, max_framebuffer_layers); break; // GL_MAX_FRAMEBUFFER_LAYERS
         case 0x9318: RET_TYPE_VAR(type, max_framebuffer_samples); break; // GL_MAX_FRAMEBUFFER_SAMPLES
         case 0x90D3: { // GL_SHADER_STORAGE_BUFFER_BINDING
-            GLuint binding = ctx->state.var.shader_storage_buffer_binding;
+            GLuint binding = STATE(var).shader_storage_buffer_binding;
             switch(type) {
                 case kBool: RET_BOOL(binding);
                 case kInt: RET_INT(binding);
@@ -1095,7 +1095,7 @@ void mglGetInteger64v(GLMContext ctx, GLenum pname, GLint64 *data)
      * the 32-bit signed range.  Return it directly to avoid sign
      * extension when going through the GLint path. */
     if (pname == GL_MAX_ELEMENT_INDEX) {
-        *data = (GLint64)(GLuint64)ctx->state.var.max_element_index;
+        *data = (GLint64)(GLuint64)STATE(var).max_element_index;
         return;
     }
 
@@ -1128,7 +1128,7 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
                 return;
             }
             for (int i = 0; i < 4; i++) {
-                data[i] = (GLint64)ctx->state.viewport_array[index][i];
+                data[i] = (GLint64)STATE(viewport_array)[index][i];
             }
             return;
 
@@ -1138,7 +1138,7 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
                 return;
             }
             for (int i = 0; i < 4; i++) {
-                data[i] = (GLint64)ctx->state.scissor_box_array[index][i];
+                data[i] = (GLint64)STATE(scissor_box_array)[index][i];
             }
             return;
 
@@ -1147,8 +1147,8 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            data[0] = (GLint64)ctx->state.depth_range_array[index][0];
-            data[1] = (GLint64)ctx->state.depth_range_array[index][1];
+            data[0] = (GLint64)STATE(depth_range_array)[index][0];
+            data[1] = (GLint64)STATE(depth_range_array)[index][1];
             return;
 
         case GL_SCISSOR_TEST:
@@ -1156,17 +1156,17 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            *data = ctx->state.caps.scissor_testi[index] ? GL_TRUE : GL_FALSE;
+            *data = STATE(caps).scissor_testi[index] ? GL_TRUE : GL_FALSE;
             return;
 
         case GL_SAMPLER_BINDING:
             if (index >= TEXTURE_UNITS ||
-                index >= ctx->state.var.max_combined_texture_image_units) {
+                index >= STATE(var).max_combined_texture_image_units) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            *data = ctx->state.texture_samplers[index]
-                ? (GLint64)ctx->state.texture_samplers[index]->name
+            *data = STATE(texture_samplers)[index]
+                ? (GLint64)STATE(texture_samplers)[index]->name
                 : 0;
             return;
 
@@ -1212,7 +1212,7 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
                     break;
             }
 
-            BufferBaseTarget *binding = &ctx->state.buffer_base[bufferIndex].buffers[index];
+            BufferBaseTarget *binding = &STATE(buffer_base)[bufferIndex].buffers[index];
             switch (target) {
                 case GL_UNIFORM_BUFFER_BINDING:
                 case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING:
@@ -1243,7 +1243,7 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            VertexArray *vao = ctx->state.vao;
+            VertexArray *vao = STATE(vao);
             if (!vao) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
@@ -1312,7 +1312,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                 return;
             }
             for (int i = 0; i < 4; i++) {
-                data[i] = (GLint)ctx->state.viewport_array[index][i];
+                data[i] = (GLint)STATE(viewport_array)[index][i];
             }
             break;
 
@@ -1322,7 +1322,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                 return;
             }
             for (int i = 0; i < 4; i++) {
-                data[i] = ctx->state.scissor_box_array[index][i];
+                data[i] = STATE(scissor_box_array)[index][i];
             }
             break;
 
@@ -1331,8 +1331,8 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            data[0] = (GLint)ctx->state.depth_range_array[index][0];
-            data[1] = (GLint)ctx->state.depth_range_array[index][1];
+            data[0] = (GLint)STATE(depth_range_array)[index][0];
+            data[1] = (GLint)STATE(depth_range_array)[index][1];
             break;
 
         case GL_SCISSOR_TEST:
@@ -1340,17 +1340,17 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            *data = ctx->state.caps.scissor_testi[index] ? GL_TRUE : GL_FALSE;
+            *data = STATE(caps).scissor_testi[index] ? GL_TRUE : GL_FALSE;
             break;
 
         case GL_SAMPLER_BINDING:
             if (index >= TEXTURE_UNITS ||
-                index >= ctx->state.var.max_combined_texture_image_units) {
+                index >= STATE(var).max_combined_texture_image_units) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            *data = ctx->state.texture_samplers[index]
-                ? (GLint)ctx->state.texture_samplers[index]->name
+            *data = STATE(texture_samplers)[index]
+                ? (GLint)STATE(texture_samplers)[index]->name
                 : 0;
             break;
 
@@ -1370,7 +1370,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
             Texture *tex = NULL;
 
             if (index >= TEXTURE_UNITS ||
-                index >= ctx->state.var.max_combined_texture_image_units) {
+                index >= STATE(var).max_combined_texture_image_units) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
@@ -1389,7 +1389,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                 case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY: texIndex = _TEXTURE_2D_MULTISAMPLE_ARRAY; break;
             }
 
-            tex = ctx->state.texture_units[index].textures[texIndex];
+            tex = STATE(texture_units)[index].textures[texIndex];
             *data = tex ? (GLint)tex->name : 0;
             break;
         }
@@ -1436,7 +1436,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                     break;
             }
 
-            BufferBaseTarget *binding = &ctx->state.buffer_base[bufferIndex].buffers[index];
+            BufferBaseTarget *binding = &STATE(buffer_base)[bufferIndex].buffers[index];
             switch (target) {
                 case GL_UNIFORM_BUFFER_BINDING:
                 case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING:
@@ -1467,7 +1467,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            VertexArray *vao = ctx->state.vao;
+            VertexArray *vao = STATE(vao);
             if (!vao) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
@@ -1494,8 +1494,8 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
         case GL_DRAW_BUFFER:
             if (index < MAX_COLOR_ATTACHMENTS)
             {
-                *data = (index < (GLuint)ctx->state.draw_buffer_count)
-                    ? ctx->state.draw_buffers[index]
+                *data = (index < (GLuint)STATE(draw_buffer_count))
+                    ? STATE(draw_buffers)[index]
                     : GL_NONE;
             }
             else
@@ -1507,7 +1507,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
         case GL_BLEND:
             if (index < MAX_COLOR_ATTACHMENTS)
             {
-                *data = ctx->state.caps.blendi[index] ? GL_TRUE : GL_FALSE;
+                *data = STATE(caps).blendi[index] ? GL_TRUE : GL_FALSE;
             }
             else
             {
@@ -1518,10 +1518,10 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
         case GL_COLOR_WRITEMASK:
             if (index < MAX_COLOR_ATTACHMENTS)
             {
-                data[0] = ctx->state.var.color_writemask[index][0] ? GL_TRUE : GL_FALSE;
-                data[1] = ctx->state.var.color_writemask[index][1] ? GL_TRUE : GL_FALSE;
-                data[2] = ctx->state.var.color_writemask[index][2] ? GL_TRUE : GL_FALSE;
-                data[3] = ctx->state.var.color_writemask[index][3] ? GL_TRUE : GL_FALSE;
+                data[0] = STATE(var).color_writemask[index][0] ? GL_TRUE : GL_FALSE;
+                data[1] = STATE(var).color_writemask[index][1] ? GL_TRUE : GL_FALSE;
+                data[2] = STATE(var).color_writemask[index][2] ? GL_TRUE : GL_FALSE;
+                data[3] = STATE(var).color_writemask[index][3] ? GL_TRUE : GL_FALSE;
             }
             else
             {
@@ -1531,42 +1531,42 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
 
         case GL_BLEND_SRC_RGB:
             if (index < MAX_COLOR_ATTACHMENTS)
-                *data = ctx->state.var.blend_src_rgb[index];
+                *data = STATE(var).blend_src_rgb[index];
             else
                 ERROR_RETURN(GL_INVALID_VALUE);
             break;
 
         case GL_BLEND_SRC_ALPHA:
             if (index < MAX_COLOR_ATTACHMENTS)
-                *data = ctx->state.var.blend_src_alpha[index];
+                *data = STATE(var).blend_src_alpha[index];
             else
                 ERROR_RETURN(GL_INVALID_VALUE);
             break;
 
         case GL_BLEND_DST_RGB:
             if (index < MAX_COLOR_ATTACHMENTS)
-                *data = ctx->state.var.blend_dst_rgb[index];
+                *data = STATE(var).blend_dst_rgb[index];
             else
                 ERROR_RETURN(GL_INVALID_VALUE);
             break;
 
         case GL_BLEND_DST_ALPHA:
             if (index < MAX_COLOR_ATTACHMENTS)
-                *data = ctx->state.var.blend_dst_alpha[index];
+                *data = STATE(var).blend_dst_alpha[index];
             else
                 ERROR_RETURN(GL_INVALID_VALUE);
             break;
 
         case GL_BLEND_EQUATION_RGB:
             if (index < MAX_COLOR_ATTACHMENTS)
-                *data = ctx->state.var.blend_equation_rgb[index];
+                *data = STATE(var).blend_equation_rgb[index];
             else
                 ERROR_RETURN(GL_INVALID_VALUE);
             break;
 
         case GL_BLEND_EQUATION_ALPHA:
             if (index < MAX_COLOR_ATTACHMENTS)
-                *data = ctx->state.var.blend_equation_alpha[index];
+                *data = STATE(var).blend_equation_alpha[index];
             else
                 ERROR_RETURN(GL_INVALID_VALUE);
             break;
@@ -1574,7 +1574,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
         case GL_MAX_COMPUTE_WORK_GROUP_COUNT:
             if (index < 3)
             {
-                *data = ctx->state.var.max_compute_work_group_count[index];
+                *data = STATE(var).max_compute_work_group_count[index];
             }
             else
             {
@@ -1585,7 +1585,7 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
         case GL_MAX_COMPUTE_WORK_GROUP_SIZE:
             if (index < 3)
             {
-                *data = ctx->state.var.max_compute_work_group_size[index];
+                *data = STATE(var).max_compute_work_group_size[index];
             }
             else
             {
@@ -1600,11 +1600,11 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
         case GL_IMAGE_BINDING_ACCESS:      // 0x8F3E
         case GL_IMAGE_BINDING_FORMAT:      // 0x906E
         {
-            if (index >= ctx->state.var.max_image_units) {
+            if (index >= STATE(var).max_image_units) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ImageUnit *iu = &ctx->state.image_units[index];
+            ImageUnit *iu = &STATE(image_units)[index];
             switch (target) {
                 case GL_IMAGE_BINDING_NAME:    *data = (GLint)iu->texture; break;
                 case GL_IMAGE_BINDING_LEVEL:   *data = (GLint)iu->level; break;
@@ -2333,16 +2333,16 @@ static GLint64 mglInternalFormatMaxWidth(GLMContext ctx, GLenum target)
 {
     switch (target) {
         case GL_RENDERBUFFER:
-            return mglPositiveStateOrFallback(ctx ? ctx->state.var.max_renderbuffer_size : 0u, 16384);
+            return mglPositiveStateOrFallback(ctx ? STATE(var).max_renderbuffer_size : 0u, 16384);
         case GL_TEXTURE_BUFFER:
             return mglSafeMaxTextureBufferSize(ctx);
         case GL_TEXTURE_RECTANGLE:
-            return mglPositiveStateOrFallback(ctx ? ctx->state.var.max_rectangle_texture_size : 0u, 16384);
+            return mglPositiveStateOrFallback(ctx ? STATE(var).max_rectangle_texture_size : 0u, 16384);
         case GL_TEXTURE_CUBE_MAP:
         case GL_TEXTURE_CUBE_MAP_ARRAY:
-            return mglPositiveStateOrFallback(ctx ? ctx->state.var.max_cube_map_texture_size : 0u, 16384);
+            return mglPositiveStateOrFallback(ctx ? STATE(var).max_cube_map_texture_size : 0u, 16384);
         case GL_TEXTURE_3D:
-            return mglPositiveStateOrFallback(ctx ? ctx->state.var.max_3d_texture_size : 0u, 2048);
+            return mglPositiveStateOrFallback(ctx ? STATE(var).max_3d_texture_size : 0u, 2048);
         default:
             return mglSafeMaxTextureSize(ctx);
     }
@@ -2355,7 +2355,7 @@ static GLint64 mglInternalFormatMaxHeight(GLMContext ctx, GLenum target)
         case GL_TEXTURE_BUFFER:
             return 1;
         case GL_TEXTURE_3D:
-            return mglPositiveStateOrFallback(ctx ? ctx->state.var.max_3d_texture_size : 0u, 2048);
+            return mglPositiveStateOrFallback(ctx ? STATE(var).max_3d_texture_size : 0u, 2048);
         default:
             return mglInternalFormatMaxWidth(ctx, target);
     }
@@ -2364,7 +2364,7 @@ static GLint64 mglInternalFormatMaxHeight(GLMContext ctx, GLenum target)
 static GLint64 mglInternalFormatMaxDepth(GLMContext ctx, GLenum target)
 {
     return target == GL_TEXTURE_3D
-        ? mglPositiveStateOrFallback(ctx ? ctx->state.var.max_3d_texture_size : 0u, 2048)
+        ? mglPositiveStateOrFallback(ctx ? STATE(var).max_3d_texture_size : 0u, 2048)
         : 1;
 }
 
@@ -2375,7 +2375,7 @@ static GLint64 mglInternalFormatMaxLayers(GLMContext ctx, GLenum target)
         case GL_TEXTURE_2D_ARRAY:
         case GL_TEXTURE_CUBE_MAP_ARRAY:
         case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-            return mglPositiveStateOrFallback(ctx ? ctx->state.var.max_array_texture_layers : 0u, 2048);
+            return mglPositiveStateOrFallback(ctx ? STATE(var).max_array_texture_layers : 0u, 2048);
         case GL_TEXTURE_CUBE_MAP:
             return 6;
         default:
@@ -2445,25 +2445,25 @@ static GLuint mglInternalFormatMaxSamples(GLMContext ctx, GLenum target, GLenum 
         return 4u;
     }
 
-    GLuint limit = ctx->state.var.max_samples ? ctx->state.var.max_samples : 4u;
+    GLuint limit = STATE(var).max_samples ? STATE(var).max_samples : 4u;
     if (target == GL_RENDERBUFFER) {
-        GLuint framebuffer_limit = ctx->state.var.max_framebuffer_samples ? ctx->state.var.max_framebuffer_samples : limit;
+        GLuint framebuffer_limit = STATE(var).max_framebuffer_samples ? STATE(var).max_framebuffer_samples : limit;
         if (framebuffer_limit < limit) {
             limit = framebuffer_limit;
         }
     }
     if (mglInternalFormatIsInteger(storage)) {
-        GLuint integer_limit = ctx->state.var.max_integer_samples ? ctx->state.var.max_integer_samples : limit;
+        GLuint integer_limit = STATE(var).max_integer_samples ? STATE(var).max_integer_samples : limit;
         if (integer_limit < limit) {
             limit = integer_limit;
         }
     } else if (mglInternalFormatHasDepth(storage) || mglInternalFormatHasStencil(storage)) {
-        GLuint depth_limit = ctx->state.var.max_depth_texture_samples ? ctx->state.var.max_depth_texture_samples : limit;
+        GLuint depth_limit = STATE(var).max_depth_texture_samples ? STATE(var).max_depth_texture_samples : limit;
         if (depth_limit < limit) {
             limit = depth_limit;
         }
     } else {
-        GLuint color_limit = ctx->state.var.max_color_texture_samples ? ctx->state.var.max_color_texture_samples : limit;
+        GLuint color_limit = STATE(var).max_color_texture_samples ? STATE(var).max_color_texture_samples : limit;
         if (color_limit < limit) {
             limit = color_limit;
         }

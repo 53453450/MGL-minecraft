@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  macos-gate:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build libraries
+        run: make -j4 lib
+
+      - name: CPU correctness probes
+        run: |
+          make test-arch-correctness
+          make test-mglair-gtest
+          make test-dirty-hash
+
+      - name: Perf smoke (CPU benchmarks)
+        run: make test-benchmark
+
+      - name: Headless regression (do not auto-update golden)
+        run: make test-regression
+
+      - name: Full test-all
+        run: make test-all

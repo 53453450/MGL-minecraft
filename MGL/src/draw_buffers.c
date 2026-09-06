@@ -54,7 +54,7 @@ static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
 
 static GLuint mglTraceDrawProgram(GLMContext ctx)
 {
-    return ctx ? ctx->state.program_name : 0u;
+    return ctx ? STATE(program_name) : 0u;
 }
 
 static bool mglValidateDrawIndirectCommands(GLMContext ctx,
@@ -239,7 +239,7 @@ static void mglDropCurrentVAO(GLMContext ctx)
     if (!ctx)
         return;
 
-    ctx->state.vao = NULL;
+    STATE(vao) = NULL;
     STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
     STATE_VAR(element_array_buffer_binding) =
         STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
@@ -253,7 +253,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *caller)
     if (!ctx)
         return NULL;
 
-    vao = ctx->state.vao;
+    vao = STATE(vao);
     if (!vao)
         return NULL;
 
@@ -360,7 +360,7 @@ bool processVAO(GLMContext ctx)
     if (vao->dirty_bits & DIRTY_VAO_BUFFER_BASE)
     {
         // map buffer bindings to vertex array
-        for(int i=0; i<ctx->state.max_vertex_attribs; i++)
+        for(int i=0; i<STATE(max_vertex_attribs); i++)
         {
             if (vao->enabled_attribs & (0x1 << i))
             {
@@ -398,7 +398,7 @@ bool validate_vao(GLMContext ctx, bool uses_elements)
             return false;
         }
 
-        ctx->state.vao = default_vao;
+        STATE(vao) = default_vao;
         STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = default_vao->element_array.buffer;
         STATE_VAR(element_array_buffer_binding) =
             default_vao->element_array.buffer ? default_vao->element_array.buffer->name : 0;
@@ -454,10 +454,11 @@ bool validate_vao(GLMContext ctx, bool uses_elements)
 
 bool validate_program(GLMContext ctx)
 {
-    Program *program = ctx ? ctx->state.program : NULL;
+    GLMState *st = ctx ? ctx->active_state : NULL;
+    Program *program = st ? st->program : NULL;
 
     if (program) {
-        GLuint expectedName = ctx->state.program_name;
+        GLuint expectedName = st->program_name;
         if (expectedName == 0u &&
             mglObjectPointerLooksPlausible(program) &&
             mglPointerRangeIsReadable(program, sizeof(*program))) {
@@ -470,8 +471,8 @@ bool validate_program(GLMContext ctx)
             !mglProgramPointerUsableForName(ctx, program, expectedName)) {
             fprintf(stderr, "MGL WARNING: validate_program dropping invalid cached program pointer %p\n",
                     (void *)program);
-            ctx->state.program = NULL;
-            ctx->state.program_name = 0;
+            st->program = NULL;
+            st->program_name = 0;
             program = NULL;
         }
     }
@@ -479,8 +480,8 @@ bool validate_program(GLMContext ctx)
     /* GL 4.6 §11.4: a draw issued while a program pipeline without an
      * active vertex shader stage is bound (and any graphics stage is
      * present) generates INVALID_OPERATION. */
-    if (!program && !ctx->state.program_name) {
-        ProgramPipeline *pipeline = ctx->state.program_pipeline;
+    if (!program && st && !st->program_name) {
+        ProgramPipeline *pipeline = st->program_pipeline;
         if (pipeline) {
             bool has_vs = pipeline->stage_programs[_VERTEX_SHADER] != NULL;
             bool has_any_graphics =
@@ -656,7 +657,7 @@ static void mglCPUFeedbackReadAttrib(GLMContext ctx,
 
     VertexAttrib *attrib = &vao->attrib[attribIndex];
     if (((vao->enabled_attribs >> attribIndex) & 1u) == 0u) {
-        CurrentVertexAttrib *current = &ctx->state.current_vertex_attrib[attribIndex];
+        CurrentVertexAttrib *current = &STATE(current_vertex_attrib)[attribIndex];
         out[0] = current->f[0];
         out[1] = current->f[1];
         out[2] = current->f[2];
@@ -895,14 +896,14 @@ static bool mglCPUFeedbackResolveXFBSlot(GLMContext ctx,
                                          GLsizeiptr *sizeOut)
 {
     GLuint slotIndex = 0;
-    if (ctx->state.program &&
-        ctx->state.program->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS) {
+    if (STATE(program) &&
+        STATE(program)->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS) {
         slotIndex = varying;
     }
     if (slotIndex >= MAX_BINDABLE_BUFFERS) {
         return false;
     }
-    BufferBaseTarget *slot = &ctx->state.buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[slotIndex];
+    BufferBaseTarget *slot = &STATE(buffer_base)[_TRANSFORM_FEEDBACK_BUFFER].buffers[slotIndex];
     Buffer *buffer = slot->buf;
     if (!buffer || !buffer->data.buffer_data || buffer->size <= 0) {
         return false;
@@ -1075,11 +1076,11 @@ static void mglCPUFeedbackFlushAndCount(GLMContext ctx,
     }
 
     GLuint64 generated = mglCPUFeedbackPrimitiveCount(
-        ctx->state.transform_feedback->primitive_mode, totalVertices);
+        STATE(transform_feedback)->primitive_mode, totalVertices);
     GLuint64 written = mglCPUFeedbackPrimitiveCount(
-        ctx->state.transform_feedback->primitive_mode, capturedVertices);
-    ctx->state.transform_feedback->primitives_generated = generated;
-    ctx->state.transform_feedback->primitives_written = written;
+        STATE(transform_feedback)->primitive_mode, capturedVertices);
+    STATE(transform_feedback)->primitives_generated = generated;
+    STATE(transform_feedback)->primitives_written = written;
     mglRecordActivePrimitiveQueryDraw(ctx, generated, written);
 }
 
@@ -1244,9 +1245,9 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
                                       VertexArray **vaoOut)
 {
     if (!ctx ||
-        !ctx->state.transform_feedback ||
-        !ctx->state.transform_feedback->active ||
-        ctx->state.transform_feedback->paused) {
+        !STATE(transform_feedback) ||
+        !STATE(transform_feedback)->active ||
+        STATE(transform_feedback)->paused) {
         return false;
     }
 
@@ -1257,8 +1258,8 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
      * stages executed on the GPU path, so CPU passthrough capture must not
      * swallow such draws. */
     Program *program = NULL;
-    if (ctx->state.program_pipeline) {
-        ProgramPipeline *pipeline = ctx->state.program_pipeline;
+    if (STATE(program_pipeline)) {
+        ProgramPipeline *pipeline = STATE(program_pipeline);
         if (pipeline->stage_programs[_GEOMETRY_SHADER] ||
             pipeline->stage_programs[_TESS_CONTROL_SHADER] ||
             pipeline->stage_programs[_TESS_EVALUATION_SHADER]) {
@@ -1266,7 +1267,7 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
         }
         program = pipeline->stage_programs[_VERTEX_SHADER];
     } else {
-        program = ctx->state.program;
+        program = STATE(program);
     }
     if (!program ||
         program->transform_feedback_varying_count <= 0 ||
@@ -1278,11 +1279,11 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
     /* GL spec: for a program without a geometry shader, the draw primitive
      * mode must match the transform-feedback primitive mode. */
     if (!program->shader_slots[_GEOMETRY_SHADER] &&
-        mode != ctx->state.transform_feedback->primitive_mode) {
+        mode != STATE(transform_feedback)->primitive_mode) {
         return false;
     }
 
-    VertexArray *vao = ctx->state.vao;
+    VertexArray *vao = STATE(vao);
     if (!vao) {
         vao = mglGetOrCreateDefaultVAO(ctx);
     }
@@ -1309,8 +1310,8 @@ bool mglTryCPUTransformFeedbackCapture(GLMContext ctx,
     }
     if (count <= 0) {
         /* Nothing to capture, but XFB is active: record zero primitives. */
-        ctx->state.transform_feedback->primitives_generated = 0;
-        ctx->state.transform_feedback->primitives_written = 0;
+        STATE(transform_feedback)->primitives_generated = 0;
+        STATE(transform_feedback)->primitives_written = 0;
         mglRecordActivePrimitiveQueryDraw(ctx, 0, 0);
         return true;
     }
@@ -1397,8 +1398,8 @@ bool mglTryCPUTransformFeedbackCaptureElements(GLMContext ctx,
         return false;
     }
     if (count <= 0) {
-        ctx->state.transform_feedback->primitives_generated = 0;
-        ctx->state.transform_feedback->primitives_written = 0;
+        STATE(transform_feedback)->primitives_generated = 0;
+        STATE(transform_feedback)->primitives_written = 0;
         mglRecordActivePrimitiveQueryDraw(ctx, 0, 0);
         return true;
     }
@@ -1528,12 +1529,12 @@ static Program *mglCurrentGeometryDrawProgram(GLMContext ctx)
     if (!ctx) {
         return NULL;
     }
-    if (ctx->state.program_name != 0u) {
-        Program *program = ctx->state.program;
+    if (STATE(program_name) != 0u) {
+        Program *program = STATE(program);
         return program && program->shader_slots[_GEOMETRY_SHADER]
             ? program : NULL;
     }
-    ProgramPipeline *pipeline = ctx->state.program_pipeline;
+    ProgramPipeline *pipeline = STATE(program_pipeline);
     return pipeline ? pipeline->stage_programs[_GEOMETRY_SHADER] : NULL;
 }
 
@@ -1763,14 +1764,14 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
      * draw (points, vertex-stage-only program with an XFB layout) must not
      * be parked in a replay batch whose handlers skip the capture. */
     bool xfbImmediate = false;
-    if (ctx->state.transform_feedback &&
-        ctx->state.transform_feedback->active &&
-        !ctx->state.transform_feedback->paused &&
-        ctx->state.transform_feedback->primitive_mode == cmd->mode &&
+    if (STATE(transform_feedback) &&
+        STATE(transform_feedback)->active &&
+        !STATE(transform_feedback)->paused &&
+        STATE(transform_feedback)->primitive_mode == cmd->mode &&
         cmd->type == MGL_CMD_DRAW_ARRAYS) {
-        Program *vs_prog = ctx->state.program_pipeline
-            ? ctx->state.program_pipeline->stage_programs[_VERTEX_SHADER]
-            : (ctx->state.program_name != 0u ? ctx->state.program : NULL);
+        Program *vs_prog = STATE(program_pipeline)
+            ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
+            : (STATE(program_name) != 0u ? STATE(program) : NULL);
         xfbImmediate = vs_prog &&
                        !vs_prog->shader_slots[_GEOMETRY_SHADER] &&
                        !vs_prog->shader_slots[_TESS_CONTROL_SHADER] &&
@@ -1783,7 +1784,7 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
      * per-sample. Batch replay encodes draws without those hooks. */
     bool msImmediate = false;
     {
-        Framebuffer *fbo = ctx->state.framebuffer;
+        Framebuffer *fbo = STATE(framebuffer);
         if (fbo && (fbo->color_attachment_bitfield & 1u)) {
             FBOAttachment *att = &fbo->color_attachments[0];
             Texture *tex = NULL;

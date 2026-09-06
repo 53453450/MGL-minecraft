@@ -37,9 +37,13 @@
 #include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static _Atomic uint32_t s_frontend_parse_count;
+static _Atomic uint32_t s_frontend_reuse_count;
 
 #define MGL_MAX_TOKENS 131072
 #define MGL_MAX_DIMS 8
@@ -566,15 +570,6 @@ static int lookup_var_type(const MGLParser *p, const char *name,
             return 1;
         }
     }
-    return 0;
-}
-
-static int lookup_member_len(const MGLParser *p, const char *path, uint32_t *len)
-{
-    int vc = 0, mc = 0, mr = 0;
-    if (!lookup_member_type(p, path, &vc, &mc, &mr) || !len) return 0;
-    if (mc > 0) { *len = (uint32_t)mc; return 1; }
-    if (vc > 0) { *len = (uint32_t)vc; return 1; }
     return 0;
 }
 
@@ -3124,8 +3119,29 @@ static __attribute__((unused)) char *preprocess_macros(const char *src, size_t l
     return out;
 }
 
+uint32_t mglFrontendParseCount(void)
+{
+    return atomic_load(&s_frontend_parse_count);
+}
+
+uint32_t mglFrontendReuseCount(void)
+{
+    return atomic_load(&s_frontend_reuse_count);
+}
+
+void mglFrontendNoteParse(void)
+{
+    atomic_fetch_add(&s_frontend_parse_count, 1u);
+}
+
+void mglFrontendNoteReuse(void)
+{
+    atomic_fetch_add(&s_frontend_reuse_count, 1u);
+}
+
 MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
 {
+    mglFrontendNoteParse();
     char pperr[256];
     char *ppsrc;
     MGLTokenStream ts;

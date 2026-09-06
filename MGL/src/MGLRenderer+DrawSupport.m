@@ -655,9 +655,9 @@ extern void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
 extern void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
                                                     GLuint64 invocations,
                                                     GLuint64 primitives);
-extern GLboolean mglHasActiveIndexedPrimitiveQuery(void);
-extern GLboolean mglHasActivePrimitiveQuery(void);
-extern GLboolean mglHasActiveGeometryShaderQuery(void);
+extern GLboolean mglHasActiveIndexedPrimitiveQuery(GLMContext ctx);
+extern GLboolean mglHasActivePrimitiveQuery(GLMContext ctx);
+extern GLboolean mglHasActiveGeometryShaderQuery(GLMContext ctx);
 
 static void mglRecordGeometryPrimitiveQueries(
     GLMContext ctx,
@@ -865,11 +865,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
     self->ctx = drawCtx;
     _tessellation.cullDistanceCaptureActive = YES;
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.cullDistanceCaptureActive = NO;
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return NO;
     }
     MGLCullDistanceEmuParams params = {
@@ -895,7 +895,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         _backend, (__bridge void *)capture);
     _tessellation.cullDistanceCaptureFirstInstance = baseInstance;
     _tessellation.cullDistanceCaptureInstanceStride = (uint32_t)count;
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     return YES;
 }
 
@@ -1194,7 +1194,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
     self->ctx = drawCtx;
     _tessellation.tessVertexCaptureActive = YES;
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.tessVertexCaptureActive = NO;
@@ -1209,7 +1209,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     /* Re-apply GL bindings after installing the capture buffers at 28/29.
      * The first capture draw in a context otherwise left VS SSBO/UBO slots
      * unbound (probe: first GS+SSBO write is 0, second is correct). */
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.tessVertexCaptureActive = NO;
@@ -1230,7 +1230,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     _currentCBHasWork = YES;
     [self endRenderEncoding];
     _tessellation.tessVertexCaptureActive = NO;
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     if (outOffset) *outOffset = captureOffset;
     return capture;
 }
@@ -1274,7 +1274,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!capture) return nil;
     self->ctx = drawCtx;
     _tessellation.tessVertexCaptureActive = YES;
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.tessVertexCaptureActive = NO;
@@ -1288,7 +1288,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         _renderPassManager.state->currentRenderEncoderOwner, captureParams, sizeof(captureParams), 28u);
     /* Same re-bind as the non-indexed capture path: first capture draw
      * otherwise left VS SSBO slots unbound. */
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     if (![self processGLState:true] ||
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
         _tessellation.tessVertexCaptureActive = NO;
@@ -1367,7 +1367,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         (NSInteger)baseVertex, (NSUInteger)baseInstance);
     _currentCBHasWork = YES;    [self endRenderEncoding];
     _tessellation.tessVertexCaptureActive = NO;
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     if (outOffset) *outOffset = captureOffset;
     return capture;
 }
@@ -1379,14 +1379,31 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                       instanceCount:(GLsizei)instanceCount
                                        baseInstance:(GLuint)baseInstance
 {
-    if (!drawCtx || mode != GL_POINTS || first < 0 || count <= 0 ||
-        instanceCount <= 0) {
+    /* VS-only XFB: capture one record per vertex for POINTS / LINES /
+     * TRIANGLES families (GL 4.6 §12.1).  Draw mode must be compatible with
+     * BeginTransformFeedback's primitiveMode — not POINTS-only. */
+    if (!drawCtx || first < 0 || count <= 0 || instanceCount <= 0) {
         return NO;
     }
     TransformFeedback *xfb = MGL_STATE(drawCtx)->transform_feedback;
-    if (!xfb || !xfb->active || xfb->paused ||
-        xfb->primitive_mode != mode) {
+    if (!xfb || !xfb->active || xfb->paused) {
         return NO;
+    }
+    {
+        const GLenum xfbMode = xfb->primitive_mode;
+        BOOL compatible = NO;
+        if (xfbMode == GL_POINTS) {
+            compatible = (mode == GL_POINTS);
+        } else if (xfbMode == GL_LINES) {
+            compatible = (mode == GL_LINES || mode == GL_LINE_LOOP ||
+                          mode == GL_LINE_STRIP);
+        } else if (xfbMode == GL_TRIANGLES) {
+            compatible = (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP ||
+                          mode == GL_TRIANGLE_FAN);
+        }
+        if (!compatible) {
+            return NO;
+        }
     }
     Program *program = mglResolveProgramForStageFromState(
         drawCtx, _VERTEX_SHADER);
@@ -1714,7 +1731,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     xfb->primitives_written += (GLuint64)writtenTotal;
     mglRecordActivePrimitiveQueryDraw(drawCtx, (GLuint64)recordCount,
                                       (GLuint64)writtenTotal);
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     return YES;
 }
 
@@ -1949,7 +1966,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!input) {
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
                          GL_INVALID_OPERATION);
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return YES;
     }
     /* Publish the capture record stride the kernels must use when walking
@@ -2053,7 +2070,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         NSLog(@"MGL GS ERROR: compute PSO failed program=%u: %s",
               (unsigned)program->name,
               pipelineError[0] ? pipelineError : "unknown error");
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return YES;
     }
     MGLRenderCommandBufferState commandState = {0};
@@ -2062,7 +2079,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             &commandState) ||
         commandState.status >= 2u) {
         if (![self newCommandBuffer]) {
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
     }
@@ -2081,7 +2098,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         _device, (NSUInteger)workItemCount * countsRecordBytes,
         0u);
     if (!output || !counts || !mglDrawSupportBufferContents(output) || !mglDrawSupportBufferContents(counts)) {
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
                          GL_OUT_OF_MEMORY);
         return YES;
@@ -2102,11 +2119,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         Texture *image = MGL_STATE(drawCtx)->image_units[unit].tex;
         Texture *sampled = MGL_STATE(drawCtx)->active_textures[unit];
         if (image && ![self bindMTLTexture:image]) {
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
         if (sampled && ![self bindMTLTexture:sampled]) {
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
     }
@@ -2355,7 +2372,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             }
             if (!xfbTemporary || !xfbVisBuffer || !xfbOffsetBuffer ||
                 !xfbWrittenBuffer || !scatterPipeline) {
-                drawCtx->state.dirty_bits = DIRTY_ALL;
+                drawCtx->active_state->dirty_bits = DIRTY_ALL;
                 mglDispatchError(drawCtx, label ? label : "geometryDraw",
                                  GL_OUT_OF_MEMORY);
                 return YES;
@@ -2390,7 +2407,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     id xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
         _device, &xfbMeta, sizeof(xfbMeta), 0u);
     if (!xfbMetaBuf) {
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
                          GL_OUT_OF_MEMORY);
         return YES;
@@ -2439,7 +2456,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         compute = mglDrawSupportCreateComputeEncoder(
             _renderPassManager.state->currentCommandBufferOwner);
         if (!compute) {
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
         mglDrawSupportSetComputePipeline(compute, pipeline);
@@ -2511,7 +2528,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!buffersOK || !texturesOK) {
         if (compute) mglDrawSupportEndComputeEncoder(compute);
         [self clearStageBindingCopyBacks:&stageCopyBacks];
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return YES;
     }
     if (cppDispatch) {
@@ -2542,8 +2559,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
             : MGL_RENDER_COMPUTE_BARRIER_NONE;
         const BOOL requireCPUVisibility =
-            xfbActive || mglHasActiveIndexedPrimitiveQuery() ||
-            mglHasActivePrimitiveQuery() || mglHasActiveGeometryShaderQuery();
+            xfbActive || mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
+            mglHasActivePrimitiveQuery(drawCtx) || mglHasActiveGeometryShaderQuery(drawCtx);
         const BOOL gsDiagnostic = getenv("MGL_GS_DIAG") != NULL;
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
@@ -2559,7 +2576,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             NSLog(@"MGL GS ERROR: C++ execution transaction failed: %s",
                   executionError[0] ? executionError : "unknown error");
             [self clearStageBindingCopyBacks:&stageCopyBacks];
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
         gsQueryCountersReady = executionResult.transaction.waited != 0;
@@ -2570,10 +2587,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         mglDrawSupportEndComputeEncoder(compute);
         if (![self flushStageBindingCopyBacks:&stageCopyBacks
                          requireCPUVisibility:(xfbActive ||
-                                               mglHasActiveIndexedPrimitiveQuery() ||
-                                               mglHasActivePrimitiveQuery() ||
-                                               mglHasActiveGeometryShaderQuery())]) {
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+                                               mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
+                                               mglHasActivePrimitiveQuery(drawCtx) ||
+                                               mglHasActiveGeometryShaderQuery(drawCtx))]) {
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
         gsQueryCountersReady = YES;
@@ -2594,7 +2611,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             _lastDrawPrimitiveMode = GL_TRIANGLES;
             break;
     }
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
 
     /* ---- GL4 ordered XFB: CPU prefix-sum + pass-2 scatter ----
      * pass 1 (above) filled the visibility buffer; compute per-buffer
@@ -2689,7 +2706,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             }
             NSLog(@"MGL GS XFB ERROR: scatter transaction failed: %s",
                   scatterError[0] ? scatterError : "unknown error");
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
         /* Reduce the per-(work-item, buffer) written counters. */
@@ -2754,7 +2771,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                     if (!xfbBlit) {
                         _geometry.expansionActive = NO;
                         _geometry.program = NULL;
-                        drawCtx->state.dirty_bits = DIRTY_ALL;
+                        drawCtx->active_state->dirty_bits = DIRTY_ALL;
                         return YES;
                     }
                 }
@@ -2817,9 +2834,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         /* Indexed stream>0 generated counters stay in the meta. */
     }
     if (!queryMeta && xfbMetaBuf && mglDrawSupportBufferContents(xfbMetaBuf) &&
-        (mglHasActiveIndexedPrimitiveQuery() ||
-         mglHasActivePrimitiveQuery() ||
-         mglHasActiveGeometryShaderQuery())) {
+        (mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
+         mglHasActivePrimitiveQuery(drawCtx) ||
+         mglHasActiveGeometryShaderQuery(drawCtx))) {
         queryMeta = (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
     }
     if (gsQueryCountersReady && counts &&
@@ -2874,7 +2891,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             gsStreamCount, bufferWritten, bufferStride, workItemCount);
         _geometry.expansionActive = NO;
         _geometry.program = NULL;
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return YES;
     }
     if (getenv("MGL_GS_DIAG"))
@@ -2887,9 +2904,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1 ||
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
-        if (xfbActive || mglHasActiveIndexedPrimitiveQuery() ||
-            mglHasActivePrimitiveQuery() ||
-            mglHasActiveGeometryShaderQuery()) {
+        if (xfbActive || mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
+            mglHasActivePrimitiveQuery(drawCtx) ||
+            mglHasActiveGeometryShaderQuery(drawCtx)) {
             _currentCBHasWork = YES;
             mglRecordGeometryPrimitiveQueries(
                 drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
@@ -2897,7 +2914,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
         _geometry.expansionActive = NO;
         _geometry.program = NULL;
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return YES;
     }
 
@@ -2928,7 +2945,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                      fragmentProgram:gsFragmentProgram]) {
             _geometry.expansionActive = NO;
             _geometry.program = NULL;
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
     }
@@ -3100,7 +3117,7 @@ after_gs_draws:
         gsStreamCount, bufferWritten, bufferStride, workItemCount);
     _geometry.expansionActive = NO;
     _geometry.program = NULL;
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     return YES;
 }
 
@@ -4063,7 +4080,7 @@ after_gs_draws:
                 _tessellation.tessVertexCaptureOffset = 0u;
                 _tessellation.tessIndexedDraw = NO;
                 _tessellation.tessInstanceRecords = 0u;
-                drawCtx->state.dirty_bits = DIRTY_ALL;
+                drawCtx->active_state->dirty_bits = DIRTY_ALL;
                 return YES;
             }
         } else if (indexedDraw) {
@@ -4191,7 +4208,7 @@ after_gs_draws:
         if (![self dispatchTessControlShader:drawCtx
                                      program:tcsProgram
                                     contract:&contract]) {
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
@@ -4213,7 +4230,7 @@ after_gs_draws:
                   (unsigned)tesProgram->name);
             mglDispatchError(drawCtx, label ? label : "tessellationDraw",
                              GL_OUT_OF_MEMORY);
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
@@ -4222,7 +4239,7 @@ after_gs_draws:
         _tessellation.nativeTESProgram = tesProgram;
         _tessellation.nativeTESActive = YES;
         [self clearStageBindingCopyBacks:&_tessellation.nativeTESCopyBacks];
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
 
         BOOL stateReady = [self processGLState:true];
         if (!stateReady || mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
@@ -4230,7 +4247,7 @@ after_gs_draws:
             _tessellation.nativeTESProgram = NULL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
 
@@ -4366,7 +4383,7 @@ after_gs_draws:
         (void)mglRendererBackendSetTessControlPointIndexBuffer(_backend, NULL);
         _tessellation.tessIndexedDraw = NO;
         _tessellation.tessInstanceRecords = 0u;
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return YES;
     }
 
@@ -4386,7 +4403,7 @@ after_gs_draws:
                 mglDispatchError(drawCtx, label ? label : "tessellationDraw",
                                  GL_INVALID_OPERATION);
             }
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
@@ -4397,7 +4414,7 @@ after_gs_draws:
          * error, not silently drop the patch stream. */
         mglDispatchError(drawCtx, label ? label : "tessellationDraw",
                          GL_INVALID_OPERATION);
-        drawCtx->state.dirty_bits = DIRTY_ALL;
+        drawCtx->active_state->dirty_bits = DIRTY_ALL;
         (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
         _tessellation.tessVertexCaptureOffset = 0u;
         return YES;
@@ -4407,12 +4424,12 @@ after_gs_draws:
         if (![self dispatchTessEvaluationShader:drawCtx
                                            program:tesProgram
                                           contract:&contract]) {
-            drawCtx->state.dirty_bits = DIRTY_ALL;
+            drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
         }
     }
 
-    drawCtx->state.dirty_bits = DIRTY_ALL;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
     (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
     _tessellation.tessVertexCaptureOffset = 0u;
     (void)label;

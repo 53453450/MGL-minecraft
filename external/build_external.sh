@@ -24,6 +24,10 @@ export SDKROOT
 cd glfw
 mkdir -p build
 cd build
-cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-make -j 4 glfw
+if [[ ! -f CMakeCache.txt ]]; then
+    cmake .. -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+fi
+# Prefer cmake --build so source edits rebuild incrementally instead of the
+# top-level Makefile treating libglfw3.a as always up to date.
+cmake --build . --target glfw -j "$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 cd ../..

@@ -35,6 +35,8 @@
 #include <ctype.h>
 #include "shaders.h"
 #include "glm_context.h"
+#include "mgl_glsl_parser.h"
+#include "mgl_compile_artifact.h"
 #include "mgl_metal_ref.h"
 #include "mgl_shader_abi.h"
 
@@ -145,7 +147,7 @@ GLuint mglCreateShader(GLMContext ctx, GLenum type)
             break;
 
         default:
-            ERROR_RETURN(GL_INVALID_ENUM);
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, 0);
     }
 
     shader = getNewName(&STATE(shader_table));
@@ -165,6 +167,11 @@ void mglFreeShader(GLMContext ctx, Shader *ptr)
     free((void *)ptr->mtl_shader_type_name);
     free((void *)ptr->src);
     if (ptr->log) free(ptr->log);
+    free(ptr->frontend_diagnostics);
+    ptr->frontend_diagnostics = NULL;
+    ptr->frontend_valid = GL_FALSE;
+    mglCompileArtifactFree(ptr->cached_artifact);
+    ptr->cached_artifact = NULL;
 
     free(ptr);
 }
@@ -305,6 +312,10 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
     ptr->src_len = len;
     ptr->src = src;
     ptr->dirty_bits |= DIRTY_SHADER;
+    ptr->compile_success = GL_FALSE;
+    ptr->frontend_valid = GL_FALSE;
+    mglCompileArtifactFree(ptr->cached_artifact);
+    ptr->cached_artifact = NULL;
 }
 
 void mglCompileShader(GLMContext ctx, GLuint shader)
@@ -315,6 +326,11 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     ptr->compile_success = GL_FALSE;
+    ptr->frontend_valid = GL_FALSE;
+    free(ptr->frontend_diagnostics);
+    ptr->frontend_diagnostics = NULL;
+    mglCompileArtifactFree(ptr->cached_artifact);
+    ptr->cached_artifact = NULL;
     if (ptr->log) {
         free(ptr->log);
         ptr->log = NULL;
@@ -331,20 +347,40 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
         default: break;
     }
 
-    unsigned char *bytes = NULL;
-    size_t size = 0u;
     char error_text[1024] = {0};
-    if (air_stage < 0 || !ptr->src ||
-        mglShaderCompileGLSL(ptr->src, air_stage, &bytes, &size,
-                             error_text, sizeof(error_text)) != 0) {
-        ptr->log = strdup(error_text[0]
-            ? error_text : "AIR shader compilation failed");
-        mglShaderFree(bytes);
+    if (air_stage < 0 || !ptr->src) {
+        ptr->log = strdup("AIR shader compilation failed");
+        ptr->frontend_diagnostics = ptr->log ? strdup(ptr->log) : NULL;
+        ptr->frontend_stage = air_stage;
         return;
     }
 
-    mglShaderFree(bytes);
+    /* R2: compile into an owned CompileArtifact so link can reuse metallib +
+     * reflection when no variant remapping is required. */
+    MGLCompileArtifact *art = mglCompileArtifactCreate();
+    if (!art) {
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return;
+    }
+    if (mglCompileArtifactFromGLSL(ptr->src, air_stage, NULL, art,
+                                   error_text, sizeof(error_text)) != 0 ||
+        !art->complete) {
+        ptr->log = strdup(error_text[0]
+            ? error_text : "AIR shader compilation failed");
+        ptr->frontend_diagnostics = ptr->log ? strdup(ptr->log) : NULL;
+        ptr->frontend_stage = air_stage;
+        if (art->frontend.diagnostics && !ptr->frontend_diagnostics) {
+            ptr->frontend_diagnostics = strdup(art->frontend.diagnostics);
+        }
+        mglCompileArtifactFree(art);
+        return;
+    }
+
     ptr->compile_success = GL_TRUE;
+    ptr->frontend_stage = air_stage;
+    ptr->frontend_parse_generation = mglFrontendParseCount();
+    ptr->frontend_valid = GL_TRUE;
+    ptr->cached_artifact = art;
     ptr->dirty_bits |= DIRTY_SHADER;
 }
 
@@ -375,7 +411,7 @@ void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)
             break;
 
         case GL_DELETE_STATUS:
-            *params = GL_FALSE;
+            *params = ptr->delete_status ? GL_TRUE : GL_FALSE;
             break;
 
         case GL_COMPILE_STATUS:

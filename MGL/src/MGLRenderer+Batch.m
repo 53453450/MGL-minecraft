@@ -436,6 +436,15 @@ static void mglBatchExecuteIndirectCommands(
  *                                (the "activated" mode used during batch replay)
  *
  * Configuration (A) is the teardown target; (B) is the batch-replay target. */
+/* Configuration (A) is the teardown target; (B) is batch-replay via
+ * replay_state (ARCHITECTURE_AUDIT R3). */
+- (void)mglActivateReplayStateForContext:(GLMContext)glm_ctx
+{
+    memcpy(&glm_ctx->replay_state, &glm_ctx->state, sizeof(glm_ctx->replay_state));
+    glm_ctx->active_state = &glm_ctx->replay_state;
+    _core.activeState = &glm_ctx->replay_state;
+}
+
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx
 {
     /* Configuration (A): ctx->active_state points to live embedded state,
@@ -1068,6 +1077,10 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     GLMState savedState;
     memcpy(&savedState, glm_ctx->active_state, sizeof(savedState));
     GLenum savedError = savedState.error;
+    /* R3: replay into ctx->replay_state so restoreStateForBatch does not
+     * overwrite live GL state.  Teardown retargets active_state to live. */
+    [self mglActivateReplayStateForContext:glm_ctx];
+    [self mglAssertDualProxyInSyncForContext:glm_ctx];
     GLenum replayError = GL_NO_ERROR;
 
     @try {
@@ -1339,9 +1352,8 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
 {
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     /* DUAL-PROXY INVARIANT checkpoint: entering batch replay state restore.
-     * Caller is responsible for having ctx->active_state already pointing
-     * to the desired target (&ctx->state for replay).  We sync _activeState
-     * to match at the end of this function. */
+     * Caller keeps ctx->active_state on live state until remaining ctx->state
+     * readers are migrated to active_state (R3).  Sync _activeState at end. */
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
     if (batch->state_snapshot) {
         /* Selective restore: only copy hot fields (~51KB vs 82KB full).
@@ -1469,28 +1481,41 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
                            savedError:(GLenum)savedError
                           replayError:(GLenum)replayError
 {
-    /* DUAL-PROXY INVARIANT checkpoint: entering batch replay teardown.
-     * Pre-teardown, both proxies may be in either config:
-     *   (A) default: _activeState=NULL, ctx->active_state=&ctx->state
-     *   (B) redirected: both point at &ctx->state (snapshot-based replay)
-     * The assert verifies whichever config holds is internally consistent. */
+    /* DUAL-PROXY INVARIANT checkpoint: entering batch replay teardown. */
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
-    /* Deactivate snapshot-based state access — revert to live ctx->state.
-     * DUAL-PROXY INVARIANT: use the helper so both proxies revert atomically
-     * (previously two separate statements: _activeState=nil then ctx reset). */
+    /* R3: when flush redirected into replay_state, live GLMState was not
+     * overwritten by restoreStateForBatch.  Sync HashTable struct fields that
+     * may have grown through the shared array storage, then skip the full
+     * savedState memcpy onto live. */
+    const BOOL usedReplayWorkspace =
+        (glm_ctx->active_state == &glm_ctx->replay_state);
+    if (usedReplayWorkspace) {
+        glm_ctx->state.vao_table = glm_ctx->replay_state.vao_table;
+        glm_ctx->state.buffer_table = glm_ctx->replay_state.buffer_table;
+        glm_ctx->state.texture_table = glm_ctx->replay_state.texture_table;
+        glm_ctx->state.shader_table = glm_ctx->replay_state.shader_table;
+        glm_ctx->state.program_table = glm_ctx->replay_state.program_table;
+        glm_ctx->state.program_pipeline_table =
+            glm_ctx->replay_state.program_pipeline_table;
+        glm_ctx->state.transform_feedback_table =
+            glm_ctx->replay_state.transform_feedback_table;
+        glm_ctx->state.renderbuffer_table =
+            glm_ctx->replay_state.renderbuffer_table;
+        glm_ctx->state.framebuffer_table =
+            glm_ctx->replay_state.framebuffer_table;
+        glm_ctx->state.sampler_table = glm_ctx->replay_state.sampler_table;
+        glm_ctx->state.sync_table = glm_ctx->replay_state.sync_table;
+    }
     [self mglRestoreLiveActiveStateForContext:glm_ctx];
-    /* DUAL-PROXY INVARIANT checkpoint: post-teardown, both proxies must be
-     * in default config (A).  MGL_STATE now falls through to &ctx->state. */
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
     _batching.absoluteVertexBindingOffsets = NO;
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
-    /* Task 4: Reset the snapshot arena now that all batch replay is complete
-     * and mglResetCommandBufferForContext has cleared all batch references.
-     * This is the safe point — no worker/encoder is accessing snapshot data. */
     if (_batching.arenaSnapshotEnabled) {
         mglResetBatchArena(&_batching.batchArena);
     }
-    memcpy(glm_ctx->active_state, savedState, sizeof(GLMState));
+    if (!usedReplayWorkspace) {
+        memcpy(glm_ctx->active_state, savedState, sizeof(GLMState));
+    }
     /* savedState carries the independent hash flags latched by live mutations.
      * Clear only renderer-consumed legacy bits; deriving flags from those bits
      * would force an unnecessary hash recompute after every non-empty flush. */
@@ -1500,6 +1525,7 @@ void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
     if (savedError == GL_NO_ERROR && replayError != GL_NO_ERROR) {
         MGL_STATE(glm_ctx)->error = replayError;
     }
+    (void)savedState;
 }
 
 - (BOOL)checkBatchShouldExecute:(MGLDrawBatch *)batch

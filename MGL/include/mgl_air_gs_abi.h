@@ -412,16 +412,20 @@ MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBScatterParams, fields) == 112u,
 /* =====================================================================
  * 6. Static layout invariants shared with the AIR backend
  * ===================================================================== */
-MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_STRIDE == 96u,
+MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_STRIDE == 112u,
                       "per-vertex record stride changed; update both sides");
-MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET == 64u,
-                      "clip distances must stay at record offset 64");
+MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET == 80u,
+                      "clip distances must stay at record offset 80");
 MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_POSITION_OFFSET == 0u,
                       "position must stay at record offset 0");
 MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET == 16u,
                       "point size must stay at record offset 16");
 MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET == 20u,
                       "cull distances must stay at record offset 20");
+MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_LAYER_OFFSET == 52u,
+                      "layer must follow full cull_distance array");
+MGL_AIR_STATIC_ASSERT(MGL_AIR_PER_VERTEX_LAYOUT_VERSION == 2u,
+                      "layout version must stay in lockstep with consumers");
 MGL_AIR_STATIC_ASSERT(MGL_AIR_GS_HEADER_RECORDS == 2u,
                       "GS record run header count is part of the ABI");
 

@@ -6968,7 +6968,7 @@ void glMultiTexBufferEXT(GLenum texunit, GLenum target, GLenum internalformat, G
         return;
     }
 
-    tex = ctx->state.texture_units[unit].textures[index];
+    tex = STATE(texture_units)[unit].textures[index];
     if (MGL_VERBOSE_TEXBUFFER_LOGS) {
         fprintf(stderr,
                 "MGL TRACE glMultiTexBufferEXT.resolve unit=%u boundTex=%u tex=%p\n",

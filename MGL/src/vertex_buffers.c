@@ -31,7 +31,7 @@ extern void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays);
 
 static GLuint mglVertexAttribBindingLimit(GLMContext ctx)
 {
-    GLuint limit = ctx ? ctx->state.var.max_vertex_attrib_bindings : MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    GLuint limit = ctx ? STATE(var).max_vertex_attrib_bindings : MGL_MAX_VERTEX_ATTRIB_BINDINGS;
     if (limit == 0u ||
         limit == 0x01010101u ||
         limit > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
@@ -59,7 +59,7 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
     }
     else
     {
-        vao = ctx->state.vao;
+        vao = STATE(vao);
         // no vao bound
         ERROR_CHECK_RETURN_VALUE(vao, GL_INVALID_OPERATION, false);
     }
@@ -98,7 +98,7 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
     vao->bindings[bindingindex].stride = stride;
 
     vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
-    if (ctx->state.vao == vao) {
+    if (STATE(vao) == vao) {
         mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
     }
 
@@ -107,7 +107,7 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
 
 void mglBindVertexBuffer(GLMContext ctx, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride)
 {
-    ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(STATE(vao), GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(bindingindex < mglVertexAttribBindingLimit(ctx), GL_INVALID_VALUE);
 
     bindVertexBuffer(ctx, 0, bindingindex, buffer, offset, stride);
@@ -115,7 +115,7 @@ void mglBindVertexBuffer(GLMContext ctx, GLuint bindingindex, GLuint buffer, GLi
 
 void mglBindVertexBuffers(GLMContext ctx, GLuint first, GLsizei count, const GLuint *buffers, const GLintptr *offsets, const GLsizei *strides)
 {
-    ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(STATE(vao), GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
     GLuint limit = mglVertexAttribBindingLimit(ctx);
     /* Per ARB_multi_bind spec:
@@ -198,7 +198,7 @@ void mglVertexArrayVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindinginde
     }
     else
     {
-        ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(STATE(vao), GL_INVALID_OPERATION);
     }
 
     ERROR_CHECK_RETURN(bindingindex < mglVertexAttribBindingLimit(ctx), GL_INVALID_VALUE);
@@ -214,7 +214,7 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
     }
     else
     {
-        ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(STATE(vao), GL_INVALID_OPERATION);
     }
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
     GLuint limit = mglVertexAttribBindingLimit(ctx);

@@ -108,7 +108,7 @@ static GLboolean mglEnsureRGB10A2Shadow(Texture *texture)
 
 static void mglUpdateDepthShadowForClear(GLMContext ctx)
 {
-    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *fbo = ctx ? STATE(framebuffer) : NULL;
     Texture *texture = fbo ? mglStencilAttachmentTexture(&fbo->depth) : NULL;
     /* Readers only consult depth_shadow for non-render-target textures
      * (see the glReadPixels depth path); render-target attachments read
@@ -116,26 +116,26 @@ static void mglUpdateDepthShadowForClear(GLMContext ctx)
      * work. */
     if (!texture || texture->is_render_target || !mglEnsureDepthShadow(texture)) return;
     GLint x0 = 0, y0 = 0, x1 = (GLint)texture->width, y1 = (GLint)texture->height;
-    if (ctx->state.caps.scissor_test) {
-        if (x0 < ctx->state.var.scissor_box[0]) x0 = ctx->state.var.scissor_box[0];
-        if (y0 < ctx->state.var.scissor_box[1]) y0 = ctx->state.var.scissor_box[1];
-        if (x1 > ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2])
-            x1 = ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2];
-        if (y1 > ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])
-            y1 = ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3];
+    if (STATE(caps).scissor_test) {
+        if (x0 < STATE(var).scissor_box[0]) x0 = STATE(var).scissor_box[0];
+        if (y0 < STATE(var).scissor_box[1]) y0 = STATE(var).scissor_box[1];
+        if (x1 > STATE(var).scissor_box[0] + STATE(var).scissor_box[2])
+            x1 = STATE(var).scissor_box[0] + STATE(var).scissor_box[2];
+        if (y1 > STATE(var).scissor_box[1] + STATE(var).scissor_box[3])
+            y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
     }
     for (GLint y = y0; y < y1; y++)
         for (GLint x = x0; x < x1; x++)
             texture->depth_shadow[(size_t)y * texture->width + x] =
-                (GLfloat)ctx->state.var.depth_clear_value;
+                (GLfloat)STATE(var).depth_clear_value;
 }
 
 void mglBlitDepthShadow(GLMContext ctx,
                         GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                         GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1)
 {
-    Framebuffer *readFBO = ctx ? ctx->state.readbuffer : NULL;
-    Framebuffer *drawFBO = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *readFBO = ctx ? STATE(readbuffer) : NULL;
+    Framebuffer *drawFBO = ctx ? STATE(framebuffer) : NULL;
     Texture *source = readFBO ? mglStencilAttachmentTexture(&readFBO->depth) : NULL;
     Texture *destination = drawFBO ? mglStencilAttachmentTexture(&drawFBO->depth) : NULL;
     if (!source || !destination ||
@@ -155,11 +155,11 @@ void mglBlitDepthShadow(GLMContext ctx,
     GLint dstW = dstX1 - dstX0, dstH = dstY1 - dstY0;
     for (GLint y = dstY0; y < dstY1; y++) {
         for (GLint x = dstX0; x < dstX1; x++) {
-            if (ctx->state.caps.scissor_test &&
-                (x < ctx->state.var.scissor_box[0] ||
-                 y < ctx->state.var.scissor_box[1] ||
-                 x >= ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2] ||
-                 y >= ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])) {
+            if (STATE(caps).scissor_test &&
+                (x < STATE(var).scissor_box[0] ||
+                 y < STATE(var).scissor_box[1] ||
+                 x >= STATE(var).scissor_box[0] + STATE(var).scissor_box[2] ||
+                 y >= STATE(var).scissor_box[1] + STATE(var).scissor_box[3])) {
                 continue;
             }
             GLint sx = srcX0 + ((x - dstX0) * srcW) / dstW;
@@ -175,7 +175,7 @@ void mglBlitDepthShadow(GLMContext ctx,
 
 static void mglUpdateStencilShadowForClear(GLMContext ctx)
 {
-    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *fbo = ctx ? STATE(framebuffer) : NULL;
     Texture *texture = fbo ? mglStencilAttachmentTexture(&fbo->stencil) : NULL;
     if (!texture || !mglEnsureStencilShadow(texture)) {
         return;
@@ -185,15 +185,15 @@ static void mglUpdateStencilShadowForClear(GLMContext ctx)
     GLint y0 = 0;
     GLint x1 = (GLint)texture->width;
     GLint y1 = (GLint)texture->height;
-    if (ctx->state.caps.scissor_test) {
-        if (x0 < ctx->state.var.scissor_box[0]) x0 = ctx->state.var.scissor_box[0];
-        if (y0 < ctx->state.var.scissor_box[1]) y0 = ctx->state.var.scissor_box[1];
-        if (x1 > ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2])
-            x1 = ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2];
-        if (y1 > ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])
-            y1 = ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3];
+    if (STATE(caps).scissor_test) {
+        if (x0 < STATE(var).scissor_box[0]) x0 = STATE(var).scissor_box[0];
+        if (y0 < STATE(var).scissor_box[1]) y0 = STATE(var).scissor_box[1];
+        if (x1 > STATE(var).scissor_box[0] + STATE(var).scissor_box[2])
+            x1 = STATE(var).scissor_box[0] + STATE(var).scissor_box[2];
+        if (y1 > STATE(var).scissor_box[1] + STATE(var).scissor_box[3])
+            y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
     }
-    GLubyte value = (GLubyte)ctx->state.var.stencil_clear_value;
+    GLubyte value = (GLubyte)STATE(var).stencil_clear_value;
     for (GLint row = y0; row < y1; row++) {
         memset(texture->stencil_shadow + (size_t)row * texture->width + x0,
                value,
@@ -205,8 +205,8 @@ void mglBlitStencilShadow(GLMContext ctx,
                           GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                           GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1)
 {
-    Framebuffer *readFBO = ctx ? ctx->state.readbuffer : NULL;
-    Framebuffer *drawFBO = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *readFBO = ctx ? STATE(readbuffer) : NULL;
+    Framebuffer *drawFBO = ctx ? STATE(framebuffer) : NULL;
     Texture *source = readFBO ? mglStencilAttachmentTexture(&readFBO->stencil) : NULL;
     Texture *destination = drawFBO ? mglStencilAttachmentTexture(&drawFBO->stencil) : NULL;
     if (!source || !destination || !source->stencil_shadow ||
@@ -220,11 +220,11 @@ void mglBlitStencilShadow(GLMContext ctx,
     GLint dstH = dstY1 - dstY0;
     for (GLint y = dstY0; y < dstY1; y++) {
         for (GLint x = dstX0; x < dstX1; x++) {
-            if (ctx->state.caps.scissor_test &&
-                (x < ctx->state.var.scissor_box[0] ||
-                 y < ctx->state.var.scissor_box[1] ||
-                 x >= ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2] ||
-                 y >= ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])) {
+            if (STATE(caps).scissor_test &&
+                (x < STATE(var).scissor_box[0] ||
+                 y < STATE(var).scissor_box[1] ||
+                 x >= STATE(var).scissor_box[0] + STATE(var).scissor_box[2] ||
+                 y >= STATE(var).scissor_box[1] + STATE(var).scissor_box[3])) {
                 continue;
             }
             GLint sourceX = srcX0 + ((x - dstX0) * srcW) / dstW;
@@ -244,21 +244,21 @@ void mglBlitRGB10A2Shadow(GLMContext ctx,
                           GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                           GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1)
 {
-    Framebuffer *readFBO = ctx ? ctx->state.readbuffer : NULL;
-    Framebuffer *drawFBO = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *readFBO = ctx ? STATE(readbuffer) : NULL;
+    Framebuffer *drawFBO = ctx ? STATE(framebuffer) : NULL;
     if (!readFBO || !drawFBO ||
-        ctx->state.read_buffer < GL_COLOR_ATTACHMENT0 ||
-        ctx->state.read_buffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS ||
+        STATE(read_buffer) < GL_COLOR_ATTACHMENT0 ||
+        STATE(read_buffer) >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS ||
         srcX1 <= srcX0 || srcY1 <= srcY0 || dstX1 <= dstX0 || dstY1 <= dstY0) return;
 
-    GLuint sourceIndex = ctx->state.read_buffer - GL_COLOR_ATTACHMENT0;
+    GLuint sourceIndex = STATE(read_buffer) - GL_COLOR_ATTACHMENT0;
     Texture *source = mglStencilAttachmentTexture(&readFBO->color_attachments[sourceIndex]);
     GLboolean sourceUsable = (source && source->rgb10a2_shadow) ? GL_TRUE : GL_FALSE;
 
-    GLsizei drawBufferCount = ctx->state.draw_buffer_count;
+    GLsizei drawBufferCount = STATE(draw_buffer_count);
     if (drawBufferCount > MAX_COLOR_ATTACHMENTS) drawBufferCount = MAX_COLOR_ATTACHMENTS;
     for (GLsizei slot = 0; slot < drawBufferCount; slot++) {
-        GLenum drawBuffer = ctx->state.draw_buffers[slot];
+        GLenum drawBuffer = STATE(draw_buffers)[slot];
         if (drawBuffer < GL_COLOR_ATTACHMENT0 ||
             drawBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) continue;
         Texture *destination =
@@ -280,11 +280,11 @@ void mglBlitRGB10A2Shadow(GLMContext ctx,
         GLint dstW = dstX1 - dstX0, dstH = dstY1 - dstY0;
         for (GLint y = dstY0; y < dstY1; y++) {
             for (GLint x = dstX0; x < dstX1; x++) {
-                if (ctx->state.caps.scissor_test &&
-                    (x < ctx->state.var.scissor_box[0] ||
-                     y < ctx->state.var.scissor_box[1] ||
-                     x >= ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2] ||
-                     y >= ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])) continue;
+                if (STATE(caps).scissor_test &&
+                    (x < STATE(var).scissor_box[0] ||
+                     y < STATE(var).scissor_box[1] ||
+                     x >= STATE(var).scissor_box[0] + STATE(var).scissor_box[2] ||
+                     y >= STATE(var).scissor_box[1] + STATE(var).scissor_box[3])) continue;
                 GLint sx = srcX0 + ((x - dstX0) * srcW) / dstW;
                 GLint sy = srcY0 + ((y - dstY0) * srcH) / dstH;
                 if (x < 0 || y < 0 || sx < 0 || sy < 0 ||
@@ -300,7 +300,7 @@ void mglBlitRGB10A2Shadow(GLMContext ctx,
 
 void mglInvalidateColorShadowsForDraw(GLMContext ctx)
 {
-    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *fbo = ctx ? STATE(framebuffer) : NULL;
     if (!fbo) return;
     for (GLuint attachmentIndex = 0; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
         Texture *texture = mglStencilAttachmentTexture(&fbo->color_attachments[attachmentIndex]);
@@ -324,12 +324,12 @@ static GLuint mglSafeDrawFramebufferName(GLMContext ctx)
     if (!ctx)
         return 0u;
 
-    fbo = ctx->state.framebuffer;
+    fbo = STATE(framebuffer);
     if (!fbo)
         return 0u;
 
     if (!mglObjectPointerLooksPlausible(fbo) ||
-        !mglHashTableContainsData(&ctx->state.framebuffer_table, fbo) ||
+        !mglHashTableContainsData(&STATE(framebuffer_table), fbo) ||
         !mglPointerRangeIsReadable(fbo, sizeof(*fbo)))
     {
         return 0u;
@@ -421,7 +421,7 @@ static void mglMarkPackBufferReadPixelsWrite(GLMContext ctx,
 
 static GLuint mglMaxDrawBuffers(GLMContext ctx)
 {
-    GLuint maxDrawBuffers = ctx ? ctx->state.var.max_draw_buffers : 0u;
+    GLuint maxDrawBuffers = ctx ? STATE(var).max_draw_buffers : 0u;
     if (maxDrawBuffers == 0u || maxDrawBuffers > MAX_COLOR_ATTACHMENTS)
         maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
     return maxDrawBuffers;
@@ -429,11 +429,11 @@ static GLuint mglMaxDrawBuffers(GLMContext ctx)
 
 static GLsizei mglDrawBufferCount(GLMContext ctx)
 {
-    if (!ctx || ctx->state.draw_buffer_count <= 0)
+    if (!ctx || STATE(draw_buffer_count) <= 0)
         return 0;
-    if (ctx->state.draw_buffer_count > (GLsizei)MAX_COLOR_ATTACHMENTS)
+    if (STATE(draw_buffer_count) > (GLsizei)MAX_COLOR_ATTACHMENTS)
         return MAX_COLOR_ATTACHMENTS;
-    return ctx->state.draw_buffer_count;
+    return STATE(draw_buffer_count);
 }
 
 static GLenum mglDrawBufferAt(GLMContext ctx, GLuint slot)
@@ -443,7 +443,7 @@ static GLenum mglDrawBufferAt(GLMContext ctx, GLuint slot)
 
     GLsizei count = mglDrawBufferCount(ctx);
     if (slot < (GLuint)count)
-        return ctx->state.draw_buffers[slot];
+        return STATE(draw_buffers)[slot];
 
     return GL_NONE;
 }
@@ -454,7 +454,7 @@ static GLboolean mglResolveDrawBufferToColorAttachment(GLMContext ctx, GLenum dr
         return GL_FALSE;
 
     if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
-        drawBuffer < (GL_COLOR_ATTACHMENT0 + ctx->state.max_color_attachments) &&
+        drawBuffer < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) &&
         drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS))
     {
         if (attachmentIndex)
@@ -497,10 +497,10 @@ static GLboolean mglColorMaskAllowsAnyWrite(GLMContext ctx, GLuint drawBufferInd
     if (!ctx || drawBufferIndex >= MAX_COLOR_ATTACHMENTS)
         return GL_FALSE;
 
-    return ctx->state.var.color_writemask[drawBufferIndex][0] ||
-           ctx->state.var.color_writemask[drawBufferIndex][1] ||
-           ctx->state.var.color_writemask[drawBufferIndex][2] ||
-           ctx->state.var.color_writemask[drawBufferIndex][3];
+    return STATE(var).color_writemask[drawBufferIndex][0] ||
+           STATE(var).color_writemask[drawBufferIndex][1] ||
+           STATE(var).color_writemask[drawBufferIndex][2] ||
+           STATE(var).color_writemask[drawBufferIndex][3];
 }
 
 static GLubyte mglClearComponentToByte(GLfloat value)
@@ -512,7 +512,7 @@ static GLubyte mglClearComponentToByte(GLfloat value)
 
 static void mglUpdateRGB10A2ShadowForClear(GLMContext ctx)
 {
-    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    Framebuffer *fbo = ctx ? STATE(framebuffer) : NULL;
     if (!fbo) return;
     GLsizei drawBufferCount = mglDrawBufferCount(ctx);
     for (GLsizei slot = 0; slot < drawBufferCount; slot++) {
@@ -524,27 +524,27 @@ static void mglUpdateRGB10A2ShadowForClear(GLMContext ctx)
         if (!mglEnsureRGB10A2Shadow(texture)) continue;
 
         GLint x0 = 0, y0 = 0, x1 = (GLint)texture->width, y1 = (GLint)texture->height;
-        if (ctx->state.caps.scissor_test) {
-            if (x0 < ctx->state.var.scissor_box[0]) x0 = ctx->state.var.scissor_box[0];
-            if (y0 < ctx->state.var.scissor_box[1]) y0 = ctx->state.var.scissor_box[1];
-            if (x1 > ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2])
-                x1 = ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2];
-            if (y1 > ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])
-                y1 = ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3];
+        if (STATE(caps).scissor_test) {
+            if (x0 < STATE(var).scissor_box[0]) x0 = STATE(var).scissor_box[0];
+            if (y0 < STATE(var).scissor_box[1]) y0 = STATE(var).scissor_box[1];
+            if (x1 > STATE(var).scissor_box[0] + STATE(var).scissor_box[2])
+                x1 = STATE(var).scissor_box[0] + STATE(var).scissor_box[2];
+            if (y1 > STATE(var).scissor_box[1] + STATE(var).scissor_box[3])
+                y1 = STATE(var).scissor_box[1] + STATE(var).scissor_box[3];
         }
         GLubyte clear[4] = {
-            mglClearComponentToByte(ctx->state.color_clear_value[2]),
-            mglClearComponentToByte(ctx->state.color_clear_value[1]),
-            mglClearComponentToByte(ctx->state.color_clear_value[0]),
-            mglClearComponentToByte(ctx->state.color_clear_value[3])
+            mglClearComponentToByte(STATE(color_clear_value)[2]),
+            mglClearComponentToByte(STATE(color_clear_value)[1]),
+            mglClearComponentToByte(STATE(color_clear_value)[0]),
+            mglClearComponentToByte(STATE(color_clear_value)[3])
         };
         for (GLint y = y0; y < y1; y++) {
             for (GLint x = x0; x < x1; x++) {
                 GLubyte *pixel = texture->rgb10a2_shadow + ((size_t)y * texture->width + x) * 4u;
-                if (ctx->state.var.color_writemask[slot][2]) pixel[0] = clear[0];
-                if (ctx->state.var.color_writemask[slot][1]) pixel[1] = clear[1];
-                if (ctx->state.var.color_writemask[slot][0]) pixel[2] = clear[2];
-                if (ctx->state.var.color_writemask[slot][3]) pixel[3] = clear[3];
+                if (STATE(var).color_writemask[slot][2]) pixel[0] = clear[0];
+                if (STATE(var).color_writemask[slot][1]) pixel[1] = clear[1];
+                if (STATE(var).color_writemask[slot][0]) pixel[2] = clear[2];
+                if (STATE(var).color_writemask[slot][3]) pixel[3] = clear[3];
             }
         }
     }
@@ -555,7 +555,7 @@ static void mglMaterializeImmediateClear(GLMContext ctx, GLbitfield mask, const 
     static uint64_t s_immediateClearCount = 0;
 
     if (!ctx ||
-        ctx->state.caps.scissor_test ||
+        STATE(caps).scissor_test ||
         (mask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) == 0)
     {
         return;
@@ -568,19 +568,19 @@ static void mglMaterializeImmediateClear(GLMContext ctx, GLbitfield mask, const 
                             (unsigned long long)callCount,
                             (unsigned)mask,
                             (unsigned)mglSafeDrawFramebufferName(ctx),
-                            ctx->state.caps.scissor_test ? 1 : 0,
-                            (int)ctx->state.var.scissor_box[0],
-                            (int)ctx->state.var.scissor_box[1],
-                            (int)ctx->state.var.scissor_box[2],
-                            (int)ctx->state.var.scissor_box[3],
-                            ctx->state.var.depth_writemask ? 1 : 0,
-                            (double)ctx->state.var.depth_clear_value,
-                            (unsigned)ctx->state.dirty_bits,
+                            STATE(caps).scissor_test ? 1 : 0,
+                            (int)STATE(var).scissor_box[0],
+                            (int)STATE(var).scissor_box[1],
+                            (int)STATE(var).scissor_box[2],
+                            (int)STATE(var).scissor_box[3],
+                            STATE(var).depth_writemask ? 1 : 0,
+                            (double)STATE(var).depth_clear_value,
+                            (unsigned)STATE(dirty_bits),
                             (unsigned long long)hit);
     }
 
     mglRendererClearBuffer(ctx, 0, mask);
-    ctx->state.clear_bitmask &= ~mask;
+    STATE(clear_bitmask) &= ~mask;
 }
 
 static void mglStoreCurrentDrawBufferSelection(GLMContext ctx)
@@ -589,15 +589,15 @@ static void mglStoreCurrentDrawBufferSelection(GLMContext ctx)
         return;
     }
 
-    Framebuffer *fbo = ctx->state.framebuffer;
-    GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
-    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &ctx->state.default_draw_buffer_count;
-    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &ctx->state.default_draw_buffer;
+    Framebuffer *fbo = STATE(framebuffer);
+    GLenum *drawBuffers = fbo ? fbo->draw_buffers : STATE(default_draw_buffers);
+    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &STATE(default_draw_buffer_count);
+    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &STATE(default_draw_buffer);
 
-    *drawBuffer = ctx->state.draw_buffer;
-    *drawBufferCount = ctx->state.draw_buffer_count;
+    *drawBuffer = STATE(draw_buffer);
+    *drawBufferCount = STATE(draw_buffer_count);
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-        drawBuffers[i] = ctx->state.draw_buffers[i];
+        drawBuffers[i] = STATE(draw_buffers)[i];
     }
 }
 
@@ -607,10 +607,10 @@ static void mglStoreCurrentReadBufferSelection(GLMContext ctx)
         return;
     }
 
-    if (ctx->state.readbuffer) {
-        ctx->state.readbuffer->read_buffer = ctx->state.read_buffer;
+    if (STATE(readbuffer)) {
+        STATE(readbuffer)->read_buffer = STATE(read_buffer);
     } else {
-        ctx->state.default_read_buffer = ctx->state.read_buffer;
+        STATE(default_read_buffer) = STATE(read_buffer);
     }
 }
 
@@ -631,20 +631,20 @@ void mglClear(GLMContext ctx, GLbitfield mask)
     mglFlushCommandBuffer(ctx);
 
     if ((mask & GL_STENCIL_BUFFER_BIT) &&
-        (ctx->state.var.stencil_writemask != 0u ||
-         ctx->state.var.stencil_back_writemask != 0u)) {
+        (STATE(var).stencil_writemask != 0u ||
+         STATE(var).stencil_back_writemask != 0u)) {
         mglUpdateStencilShadowForClear(ctx);
     }
-    if ((mask & GL_DEPTH_BUFFER_BIT) && ctx->state.var.depth_writemask) {
+    if ((mask & GL_DEPTH_BUFFER_BIT) && STATE(var).depth_writemask) {
         mglUpdateDepthShadowForClear(ctx);
-        ctx->state.query_depth_value = (GLfloat)ctx->state.var.depth_clear_value;
-        ctx->state.query_depth_known = GL_TRUE;
+        STATE(query_depth_value) = (GLfloat)STATE(var).depth_clear_value;
+        STATE(query_depth_known) = GL_TRUE;
     }
     if (mask & GL_COLOR_BUFFER_BIT) {
         mglUpdateRGB10A2ShadowForClear(ctx);
     }
 
-    if (ctx->state.caps.scissor_test) {
+    if (STATE(caps).scissor_test) {
         uint64_t hit = ++s_scissoredClearCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
             mglTraceLogExternal("CLEAR_SCISSORED_GL call=%llu hit=%llu mask=0x%x fbo=%u drawBuf=0x%x readBuf=0x%x box=%d,%d,%d,%d colorMask=%d%d%d%d depth(write=%d clear=%.6f) stencilWrite(front=0x%x back=0x%x)",
@@ -652,38 +652,38 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                                 (unsigned long long)hit,
                                 (unsigned)mask,
                                 (unsigned)mglSafeDrawFramebufferName(ctx),
-                                (unsigned)ctx->state.draw_buffer,
-                                (unsigned)ctx->state.read_buffer,
-                                (int)ctx->state.var.scissor_box[0],
-                                (int)ctx->state.var.scissor_box[1],
-                                (int)ctx->state.var.scissor_box[2],
-                                (int)ctx->state.var.scissor_box[3],
-                                ctx->state.var.color_writemask[0][0] ? 1 : 0,
-                                ctx->state.var.color_writemask[0][1] ? 1 : 0,
-                                ctx->state.var.color_writemask[0][2] ? 1 : 0,
-                                ctx->state.var.color_writemask[0][3] ? 1 : 0,
-                                ctx->state.var.depth_writemask ? 1 : 0,
-                                (double)ctx->state.var.depth_clear_value,
-                                (unsigned)ctx->state.var.stencil_writemask,
-                                (unsigned)ctx->state.var.stencil_back_writemask);
+                                (unsigned)STATE(draw_buffer),
+                                (unsigned)STATE(read_buffer),
+                                (int)STATE(var).scissor_box[0],
+                                (int)STATE(var).scissor_box[1],
+                                (int)STATE(var).scissor_box[2],
+                                (int)STATE(var).scissor_box[3],
+                                STATE(var).color_writemask[0][0] ? 1 : 0,
+                                STATE(var).color_writemask[0][1] ? 1 : 0,
+                                STATE(var).color_writemask[0][2] ? 1 : 0,
+                                STATE(var).color_writemask[0][3] ? 1 : 0,
+                                STATE(var).depth_writemask ? 1 : 0,
+                                (double)STATE(var).depth_clear_value,
+                                (unsigned)STATE(var).stencil_writemask,
+                                (unsigned)STATE(var).stencil_back_writemask);
         }
         mglRendererClearBuffer(ctx, 0, mask);
         if ((mask & GL_STENCIL_BUFFER_BIT) &&
-            ctx->state.framebuffer &&
-            (ctx->state.var.stencil_writemask != 0u ||
-             ctx->state.var.stencil_back_writemask != 0u)) {
-            ctx->state.framebuffer->stencil.clear_color[0] =
-                (GLfloat)ctx->state.var.stencil_clear_value;
+            STATE(framebuffer) &&
+            (STATE(var).stencil_writemask != 0u ||
+             STATE(var).stencil_back_writemask != 0u)) {
+            STATE(framebuffer)->stencil.clear_color[0] =
+                (GLfloat)STATE(var).stencil_clear_value;
         }
-        ctx->state.clear_bitmask = 0;
+        STATE(clear_bitmask) = 0;
         mglMarkRendererDirtyBits(&ctx->state,
                                  DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
         return;
     }
 
-    Framebuffer *fbo = ctx->state.framebuffer;
-    GLbitfield previousMask = ctx->state.clear_bitmask;
-    ctx->state.clear_bitmask = mask;
+    Framebuffer *fbo = STATE(framebuffer);
+    GLbitfield previousMask = STATE(clear_bitmask);
+    STATE(clear_bitmask) = mask;
 
     if (mask & GL_COLOR_BUFFER_BIT)
     {
@@ -696,16 +696,16 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                 if (mglResolveDrawBufferToColorAttachment(ctx,
                                                           mglDrawBufferAt(ctx, (GLuint)slot),
                                                           &attachmentIndex) &&
-                    attachmentIndex < ctx->state.max_color_attachments &&
+                    attachmentIndex < STATE(max_color_attachments) &&
                     (fbo->color_attachment_bitfield & (1u << attachmentIndex)) &&
                     mglColorMaskAllowsAnyWrite(ctx, (GLuint)slot))
                 {
                     FBOAttachment *att = &fbo->color_attachments[attachmentIndex];
                     att->clear_bitmask |= GL_COLOR_BUFFER_BIT;
-                    att->clear_color[0] = ctx->state.color_clear_value[0];
-                    att->clear_color[1] = ctx->state.color_clear_value[1];
-                    att->clear_color[2] = ctx->state.color_clear_value[2];
-                    att->clear_color[3] = ctx->state.color_clear_value[3];
+                    att->clear_color[0] = STATE(color_clear_value)[0];
+                    att->clear_color[1] = STATE(color_clear_value)[1];
+                    att->clear_color[2] = STATE(color_clear_value)[2];
+                    att->clear_color[3] = STATE(color_clear_value)[3];
                     Texture *clearTex = mglStencilAttachmentTexture(att);
                     if (clearTex && clearTex->name == 8u) {
                         mglTraceLogExternal("PENDING_COLOR_CLEAR_SET tex=%u call=%llu fbo=%u attachment=%u slot=%d drawBuf=0x%x readBuf=0x%x mask=0x%x clearMask=0x%x rgba=(%.3f,%.3f,%.3f,%.3f) scissor(test=%d box=%d,%d,%d,%d) colorMask=%d%d%d%d",
@@ -715,22 +715,22 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                                             (unsigned)attachmentIndex,
                                             (int)slot,
                                             (unsigned)mglDrawBufferAt(ctx, (GLuint)slot),
-                                            (unsigned)ctx->state.read_buffer,
+                                            (unsigned)STATE(read_buffer),
                                             (unsigned)mask,
                                             (unsigned)att->clear_bitmask,
                                             att->clear_color[0],
                                             att->clear_color[1],
                                             att->clear_color[2],
                                             att->clear_color[3],
-                                            ctx->state.caps.scissor_test ? 1 : 0,
-                                            (int)ctx->state.var.scissor_box[0],
-                                            (int)ctx->state.var.scissor_box[1],
-                                            (int)ctx->state.var.scissor_box[2],
-                                            (int)ctx->state.var.scissor_box[3],
-                                            ctx->state.var.color_writemask[slot][0] ? 1 : 0,
-                                            ctx->state.var.color_writemask[slot][1] ? 1 : 0,
-                                            ctx->state.var.color_writemask[slot][2] ? 1 : 0,
-                                            ctx->state.var.color_writemask[slot][3] ? 1 : 0);
+                                            STATE(caps).scissor_test ? 1 : 0,
+                                            (int)STATE(var).scissor_box[0],
+                                            (int)STATE(var).scissor_box[1],
+                                            (int)STATE(var).scissor_box[2],
+                                            (int)STATE(var).scissor_box[3],
+                                            STATE(var).color_writemask[slot][0] ? 1 : 0,
+                                            STATE(var).color_writemask[slot][1] ? 1 : 0,
+                                            STATE(var).color_writemask[slot][2] ? 1 : 0,
+                                            STATE(var).color_writemask[slot][3] ? 1 : 0);
                     }
                 }
             }
@@ -740,46 +740,46 @@ void mglClear(GLMContext ctx, GLbitfield mask)
             GLenum drawBuffer = mglDrawBufferAt(ctx, 0u);
             if (drawBuffer != GL_NONE && mglColorMaskAllowsAnyWrite(ctx, 0u))
             {
-                ctx->state.default_fbo_clear_bitmask |= GL_COLOR_BUFFER_BIT;
-                ctx->state.default_clear_color[0] = ctx->state.color_clear_value[0];
-                ctx->state.default_clear_color[1] = ctx->state.color_clear_value[1];
-                ctx->state.default_clear_color[2] = ctx->state.color_clear_value[2];
-                ctx->state.default_clear_color[3] = ctx->state.color_clear_value[3];
+                STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
+                STATE(default_clear_color)[0] = STATE(color_clear_value)[0];
+                STATE(default_clear_color)[1] = STATE(color_clear_value)[1];
+                STATE(default_clear_color)[2] = STATE(color_clear_value)[2];
+                STATE(default_clear_color)[3] = STATE(color_clear_value)[3];
             }
         }
     }
 
     if (mask & GL_DEPTH_BUFFER_BIT)
     {
-        if (!ctx->state.var.depth_writemask)
+        if (!STATE(var).depth_writemask)
             goto clear_stencil;
 
         if (fbo)
         {
             fbo->depth.clear_bitmask |= GL_DEPTH_BUFFER_BIT;
-            fbo->depth.clear_color[0] = (GLfloat)ctx->state.var.depth_clear_value;
+            fbo->depth.clear_color[0] = (GLfloat)STATE(var).depth_clear_value;
         }
         else
         {
-            ctx->state.default_fbo_clear_bitmask |= GL_DEPTH_BUFFER_BIT;
+            STATE(default_fbo_clear_bitmask) |= GL_DEPTH_BUFFER_BIT;
         }
     }
 
 clear_stencil:
     if (mask & GL_STENCIL_BUFFER_BIT)
     {
-        if (ctx->state.var.stencil_writemask == 0u &&
-            ctx->state.var.stencil_back_writemask == 0u)
+        if (STATE(var).stencil_writemask == 0u &&
+            STATE(var).stencil_back_writemask == 0u)
             goto clear_done;
 
         if (fbo)
         {
             fbo->stencil.clear_bitmask |= GL_STENCIL_BUFFER_BIT;
-            fbo->stencil.clear_color[0] = (GLfloat)ctx->state.var.stencil_clear_value;
+            fbo->stencil.clear_color[0] = (GLfloat)STATE(var).stencil_clear_value;
         }
         else
         {
-            ctx->state.default_fbo_clear_bitmask |= GL_STENCIL_BUFFER_BIT;
+            STATE(default_fbo_clear_bitmask) |= GL_STENCIL_BUFFER_BIT;
         }
     }
 
@@ -792,19 +792,19 @@ clear_done:
                             (unsigned)mask,
                             (unsigned)previousMask,
                             (unsigned)mglSafeDrawFramebufferName(ctx),
-                            (unsigned)ctx->state.draw_buffer,
-                            (unsigned)ctx->state.read_buffer,
-                            ctx->state.caps.scissor_test ? 1 : 0,
-                            (int)ctx->state.var.scissor_box[0],
-                            (int)ctx->state.var.scissor_box[1],
-                            (int)ctx->state.var.scissor_box[2],
-                            (int)ctx->state.var.scissor_box[3],
-                            (unsigned)ctx->state.clear_bitmask,
-                            (unsigned)ctx->state.default_fbo_clear_bitmask,
-                            (unsigned)(ctx->state.framebuffer ? ctx->state.framebuffer->depth.clear_bitmask : 0u),
-                            ctx->state.var.depth_writemask ? 1 : 0,
-                            (double)ctx->state.var.depth_clear_value,
-                            (unsigned)ctx->state.dirty_bits);
+                            (unsigned)STATE(draw_buffer),
+                            (unsigned)STATE(read_buffer),
+                            STATE(caps).scissor_test ? 1 : 0,
+                            (int)STATE(var).scissor_box[0],
+                            (int)STATE(var).scissor_box[1],
+                            (int)STATE(var).scissor_box[2],
+                            (int)STATE(var).scissor_box[3],
+                            (unsigned)STATE(clear_bitmask),
+                            (unsigned)STATE(default_fbo_clear_bitmask),
+                            (unsigned)(STATE(framebuffer) ? STATE(framebuffer)->depth.clear_bitmask : 0u),
+                            STATE(var).depth_writemask ? 1 : 0,
+                            (double)STATE(var).depth_clear_value,
+                            (unsigned)STATE(dirty_bits));
     }
 
     mglMaterializeImmediateClear(ctx, mask, "glClear", callCount);
@@ -815,10 +815,10 @@ void mglClearColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLf
     static uint64_t s_mglClearColorCallCount = 0;
     uint64_t callCount = ++s_mglClearColorCallCount;
 
-    ctx->state.color_clear_value[0] = red;
-    ctx->state.color_clear_value[1] = green;
-    ctx->state.color_clear_value[2] = blue;
-    ctx->state.color_clear_value[3] = alpha;
+    STATE(color_clear_value)[0] = red;
+    STATE(color_clear_value)[1] = green;
+    STATE(color_clear_value)[2] = blue;
+    STATE(color_clear_value)[3] = alpha;
 
     mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
 
@@ -829,23 +829,23 @@ void mglClearColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLf
                             green,
                             blue,
                             alpha,
-                            (void *)ctx->state.framebuffer,
+                            (void *)STATE(framebuffer),
                             (unsigned)mglSafeDrawFramebufferName(ctx),
-                            (unsigned)ctx->state.draw_buffer,
-                            (unsigned)ctx->state.dirty_bits);
+                            (unsigned)STATE(draw_buffer),
+                            (unsigned)STATE(dirty_bits));
     }
 }
 
 void mglClearStencil(GLMContext ctx, GLint s)
 {
-    ctx->state.var.stencil_clear_value = s;
+    STATE(var).stencil_clear_value = s;
 
     mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
 }
 
 void mglClearDepth(GLMContext ctx, GLdouble depth)
 {
-    ctx->state.var.depth_clear_value = mglClampDepthClearValue(depth);
+    STATE(var).depth_clear_value = mglClampDepthClearValue(depth);
 
     mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
 
@@ -855,7 +855,7 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
 {
     static uint64_t s_mglClearBufferfvCallCount = 0;
     uint64_t callCount = ++s_mglClearBufferfvCallCount;
-    Framebuffer * fbo = ctx->state.framebuffer;
+    Framebuffer * fbo = STATE(framebuffer);
     FBOAttachment * fboa;
 
     if (!value)
@@ -888,11 +888,11 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
             } else {
                 if (drawbuffer != 0)
                     break;
-                ctx->state.default_fbo_clear_bitmask |= GL_COLOR_BUFFER_BIT;
-                ctx->state.default_clear_color[0] = value[0];
-                ctx->state.default_clear_color[1] = value[1];
-                ctx->state.default_clear_color[2] = value[2];
-                ctx->state.default_clear_color[3] = value[3];
+                STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
+                STATE(default_clear_color)[0] = value[0];
+                STATE(default_clear_color)[1] = value[1];
+                STATE(default_clear_color)[2] = value[2];
+                STATE(default_clear_color)[3] = value[3];
             }
             break;
         case GL_DEPTH:
@@ -907,17 +907,17 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                 fboa->clear_bitmask |= GL_DEPTH_BUFFER_BIT;
                 fboa->clear_color[0] = (GLfloat)mglClampDepthClearValue(value[0]);
             } else {
-                ctx->state.default_fbo_clear_bitmask |= GL_DEPTH_BUFFER_BIT;
-                ctx->state.var.depth_clear_value = mglClampDepthClearValue(value[0]);
+                STATE(default_fbo_clear_bitmask) |= GL_DEPTH_BUFFER_BIT;
+                STATE(var).depth_clear_value = mglClampDepthClearValue(value[0]);
             }
             /* Keep the depth-shadow CPU readback buffer in sync with this
              * clear, exactly as mglClear() does — glClearBufferfv(GL_DEPTH)
              * must be visible to subsequent glReadPixels(GL_DEPTH_COMPONENT)
              * and glGetTexImage(DEPTH_COMPONENT) reads. */
-            if (ctx->state.var.depth_writemask) {
+            if (STATE(var).depth_writemask) {
                 mglUpdateDepthShadowForClear(ctx);
-                ctx->state.query_depth_value = (GLfloat)ctx->state.var.depth_clear_value;
-                ctx->state.query_depth_known = GL_TRUE;
+                STATE(query_depth_value) = (GLfloat)STATE(var).depth_clear_value;
+                STATE(query_depth_known) = GL_TRUE;
             }
             break;
         default:
@@ -934,17 +934,17 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                             (unsigned)buffer,
                             (int)drawbuffer,
                             (unsigned)(fbo ? fbo->name : 0),
-                            ctx->state.caps.scissor_test ? 1 : 0,
-                            (int)ctx->state.var.scissor_box[0],
-                            (int)ctx->state.var.scissor_box[1],
-                            (int)ctx->state.var.scissor_box[2],
-                            (int)ctx->state.var.scissor_box[3],
+                            STATE(caps).scissor_test ? 1 : 0,
+                            (int)STATE(var).scissor_box[0],
+                            (int)STATE(var).scissor_box[1],
+                            (int)STATE(var).scissor_box[2],
+                            (int)STATE(var).scissor_box[3],
                             value ? (double)value[0] : 0.0,
                             value ? (double)value[1] : 0.0,
                             value ? (double)value[2] : 0.0,
                             value ? (double)value[3] : 0.0,
-                            ctx->state.var.depth_writemask ? 1 : 0,
-                            (unsigned)ctx->state.dirty_bits);
+                            STATE(var).depth_writemask ? 1 : 0,
+                            (unsigned)STATE(dirty_bits));
     }
 
     GLbitfield clearMask = 0;
@@ -960,7 +960,7 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
 {
     static uint64_t s_mglClearBufferfiCallCount = 0;
     uint64_t callCount = ++s_mglClearBufferfiCallCount;
-    Framebuffer * fbo = ctx->state.framebuffer;
+    Framebuffer * fbo = STATE(framebuffer);
     FBOAttachment * fboa;
 
     switch (buffer) {
@@ -980,21 +980,21 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
                 fboa->clear_bitmask |= GL_STENCIL_BUFFER_BIT;
                 fboa->clear_color[0] = (GLfloat)stencil;
             } else {
-                ctx->state.default_fbo_clear_bitmask |= GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
-                ctx->state.var.depth_clear_value = mglClampDepthClearValue(depth);
-                ctx->state.var.stencil_clear_value = (GLuint)stencil;
+                STATE(default_fbo_clear_bitmask) |= GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
+                STATE(var).depth_clear_value = mglClampDepthClearValue(depth);
+                STATE(var).stencil_clear_value = (GLuint)stencil;
             }
             /* Keep the depth/stencil shadow CPU readback buffers in sync with
              * this clear, exactly as mglClear() does — glClearBufferfi must
              * be visible to subsequent glReadPixels(GL_DEPTH_STENCIL) and
              * glGetTexImage(DEPTH_STENCIL) reads. */
-            if (ctx->state.var.depth_writemask) {
+            if (STATE(var).depth_writemask) {
                 mglUpdateDepthShadowForClear(ctx);
-                ctx->state.query_depth_value = (GLfloat)ctx->state.var.depth_clear_value;
-                ctx->state.query_depth_known = GL_TRUE;
+                STATE(query_depth_value) = (GLfloat)STATE(var).depth_clear_value;
+                STATE(query_depth_known) = GL_TRUE;
             }
-            if (ctx->state.var.stencil_writemask != 0u ||
-                ctx->state.var.stencil_back_writemask != 0u) {
+            if (STATE(var).stencil_writemask != 0u ||
+                STATE(var).stencil_back_writemask != 0u) {
                 mglUpdateStencilShadowForClear(ctx);
             }
             break;
@@ -1012,15 +1012,15 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
                             (unsigned)buffer,
                             (int)drawbuffer,
                             (unsigned)(fbo ? fbo->name : 0),
-                            ctx->state.caps.scissor_test ? 1 : 0,
-                            (int)ctx->state.var.scissor_box[0],
-                            (int)ctx->state.var.scissor_box[1],
-                            (int)ctx->state.var.scissor_box[2],
-                            (int)ctx->state.var.scissor_box[3],
+                            STATE(caps).scissor_test ? 1 : 0,
+                            (int)STATE(var).scissor_box[0],
+                            (int)STATE(var).scissor_box[1],
+                            (int)STATE(var).scissor_box[2],
+                            (int)STATE(var).scissor_box[3],
                             (double)depth,
                             (int)stencil,
-                            ctx->state.var.depth_writemask ? 1 : 0,
-                            (unsigned)ctx->state.dirty_bits);
+                            STATE(var).depth_writemask ? 1 : 0,
+                            (unsigned)STATE(dirty_bits));
     }
 
     mglMaterializeImmediateClear(ctx,
@@ -1059,7 +1059,7 @@ void mglDrawBuffers(GLMContext ctx, GLsizei n, const GLenum *bufs)
     }
 
     GLbitfield seenColorAttachments = 0u;
-    Framebuffer *fbo = ctx->state.framebuffer;
+    Framebuffer *fbo = STATE(framebuffer);
     for (GLsizei i = 0; i < n; ++i)
     {
         GLenum buf = bufs[i];
@@ -1204,7 +1204,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
             return;
     }
 
-    if (ctx->state.framebuffer &&
+    if (STATE(framebuffer) &&
         buf != GL_NONE &&
         (buf < GL_COLOR_ATTACHMENT0 ||
          buf >= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) ||
@@ -1235,7 +1235,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     {
         // GL_COLOR_ATTACHMENTi selection on user FBO should be sticky even before
         // attachment validation completes. Resolve readiness later during draw/clear/blit.
-        Framebuffer *fbo = ctx->state.framebuffer;
+        Framebuffer *fbo = STATE(framebuffer);
         if (fbo)
         {
             GLuint draw_index = (GLuint)(buf - GL_COLOR_ATTACHMENT0);
@@ -1257,7 +1257,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
 
 void mglReadBuffer(GLMContext ctx, GLenum buf)
 {
-    Framebuffer *readFbo = ctx->state.readbuffer;
+    Framebuffer *readFbo = STATE(readbuffer);
 
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
         (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
@@ -1329,11 +1329,11 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
     switch(pname)
     {
         case GL_PACK_SWAP_BYTES:
-            ctx->state.pack.swap_bytes = (param != 0 ? true : false);
+            STATE(pack).swap_bytes = (param != 0 ? true : false);
             break;
 
         case GL_PACK_LSB_FIRST:
-            ctx->state.pack.lsb_first = (param != 0 ? true : false);
+            STATE(pack).lsb_first = (param != 0 ? true : false);
             break;
 
         case GL_PACK_ROW_LENGTH:
@@ -1342,7 +1342,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.pack.row_length = param;
+            STATE(pack).row_length = param;
             break;
 
         case GL_PACK_IMAGE_HEIGHT:
@@ -1351,7 +1351,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.pack.image_height = param;
+            STATE(pack).image_height = param;
             break;
 
         case GL_PACK_SKIP_ROWS:
@@ -1360,7 +1360,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.pack.skip_rows = param;
+            STATE(pack).skip_rows = param;
             break;
 
         case GL_PACK_SKIP_PIXELS:
@@ -1369,7 +1369,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.pack.skip_pixels = param;
+            STATE(pack).skip_pixels = param;
             break;
 
         case GL_PACK_SKIP_IMAGES:
@@ -1378,7 +1378,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.pack.skip_images = param;
+            STATE(pack).skip_images = param;
             break;
 
         case GL_PACK_ALIGNMENT:
@@ -1388,7 +1388,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 case 2:
                 case 4:
                 case 8:
-                    ctx->state.pack.alignment = param;
+                    STATE(pack).alignment = param;
                     break;
 
                 default:
@@ -1399,27 +1399,27 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
             break;
         case GL_PACK_COMPRESSED_BLOCK_WIDTH:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.pack.compressed_block_width = param;
+            STATE(pack).compressed_block_width = param;
             break;
         case GL_PACK_COMPRESSED_BLOCK_HEIGHT:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.pack.compressed_block_height = param;
+            STATE(pack).compressed_block_height = param;
             break;
         case GL_PACK_COMPRESSED_BLOCK_DEPTH:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.pack.compressed_block_depth = param;
+            STATE(pack).compressed_block_depth = param;
             break;
         case GL_PACK_COMPRESSED_BLOCK_SIZE:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.pack.compressed_block_size = param;
+            STATE(pack).compressed_block_size = param;
             break;
 
         case GL_UNPACK_SWAP_BYTES:
-            ctx->state.unpack.swap_bytes = (param != 0 ? true : false);
+            STATE(unpack).swap_bytes = (param != 0 ? true : false);
             break;
 
         case GL_UNPACK_LSB_FIRST:
-            ctx->state.unpack.lsb_first = (param != 0 ? true : false);
+            STATE(unpack).lsb_first = (param != 0 ? true : false);
             break;
 
         case GL_UNPACK_ROW_LENGTH:
@@ -1428,7 +1428,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.unpack.row_length = param;
+            STATE(unpack).row_length = param;
             break;
         case GL_UNPACK_IMAGE_HEIGHT:
             if (param < 0) {
@@ -1436,7 +1436,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.unpack.image_height = param;
+            STATE(unpack).image_height = param;
             break;
 
         case GL_UNPACK_SKIP_ROWS:
@@ -1445,7 +1445,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.unpack.skip_rows = param;
+            STATE(unpack).skip_rows = param;
             break;
 
         case GL_UNPACK_SKIP_PIXELS:
@@ -1454,7 +1454,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.unpack.skip_pixels = param;
+            STATE(unpack).skip_pixels = param;
             break;
 
         case GL_UNPACK_SKIP_IMAGES:
@@ -1463,7 +1463,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
-            ctx->state.unpack.skip_images = param;
+            STATE(unpack).skip_images = param;
             break;
 
         case GL_UNPACK_ALIGNMENT:
@@ -1473,7 +1473,7 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                 case 2:
                 case 4:
                 case 8:
-                    ctx->state.unpack.alignment = param;
+                    STATE(unpack).alignment = param;
                     break;
 
                 default:
@@ -1484,19 +1484,19 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
             break;
         case GL_UNPACK_COMPRESSED_BLOCK_WIDTH:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.unpack.compressed_block_width = param;
+            STATE(unpack).compressed_block_width = param;
             break;
         case GL_UNPACK_COMPRESSED_BLOCK_HEIGHT:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.unpack.compressed_block_height = param;
+            STATE(unpack).compressed_block_height = param;
             break;
         case GL_UNPACK_COMPRESSED_BLOCK_DEPTH:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.unpack.compressed_block_depth = param;
+            STATE(unpack).compressed_block_depth = param;
             break;
         case GL_UNPACK_COMPRESSED_BLOCK_SIZE:
             if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
-            ctx->state.unpack.compressed_block_size = param;
+            STATE(unpack).compressed_block_size = param;
             break;
 
         default:
@@ -2500,8 +2500,8 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
                                         GLsizei width, GLsizei height,
                                         GLenum format, GLenum type)
 {
-    Texture *depthTexture = ctx->state.readbuffer
-        ? mglStencilAttachmentTexture(&ctx->state.readbuffer->depth)
+    Texture *depthTexture = STATE(readbuffer)
+        ? mglStencilAttachmentTexture(&STATE(readbuffer)->depth)
         : NULL;
 
     GLfloat *floatDepth = NULL;
@@ -2623,14 +2623,14 @@ static bool mglReadPixelsStencilIndex(GLMContext ctx,
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
 
-    GLubyte value = (GLubyte)ctx->state.var.stencil_clear_value;
-    Texture *stencilTexture = ctx->state.readbuffer
-        ? mglStencilAttachmentTexture(&ctx->state.readbuffer->stencil)
+    GLubyte value = (GLubyte)STATE(var).stencil_clear_value;
+    Texture *stencilTexture = STATE(readbuffer)
+        ? mglStencilAttachmentTexture(&STATE(readbuffer)->stencil)
         : NULL;
-    if (ctx->state.readbuffer &&
-        ctx->state.readbuffer->stencil.texture != 0u)
+    if (STATE(readbuffer) &&
+        STATE(readbuffer)->stencil.texture != 0u)
     {
-        value = (GLubyte)ctx->state.readbuffer->stencil.clear_color[0];
+        value = (GLubyte)STATE(readbuffer)->stencil.clear_color[0];
     }
     for (GLsizei row = 0; row < height; row++)
     {
@@ -2693,11 +2693,11 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
                                       GLsizei width, GLsizei height,
                                       GLenum type)
 {
-    Texture *depthTex = ctx->state.readbuffer
-        ? mglStencilAttachmentTexture(&ctx->state.readbuffer->depth)
+    Texture *depthTex = STATE(readbuffer)
+        ? mglStencilAttachmentTexture(&STATE(readbuffer)->depth)
         : NULL;
-    Texture *stencilTex = ctx->state.readbuffer
-        ? mglStencilAttachmentTexture(&ctx->state.readbuffer->stencil)
+    Texture *stencilTex = STATE(readbuffer)
+        ? mglStencilAttachmentTexture(&STATE(readbuffer)->stencil)
         : NULL;
 
     GLfloat *gpuDepth = NULL;
@@ -2829,28 +2829,28 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     switch(format)
     {
         case GL_STENCIL_INDEX:
-            if (!ctx->state.readbuffer) {
+            if (!STATE(readbuffer)) {
                 ERROR_CHECK_RETURN(ctx->stencil_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
             } else {
-                ERROR_CHECK_RETURN(ctx->state.readbuffer->stencil.texture != 0, GL_INVALID_OPERATION);
+                ERROR_CHECK_RETURN(STATE(readbuffer)->stencil.texture != 0, GL_INVALID_OPERATION);
             }
             break;
 
         case GL_DEPTH_COMPONENT:
-            if (!ctx->state.readbuffer) {
+            if (!STATE(readbuffer)) {
                 ERROR_CHECK_RETURN(ctx->depth_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
             } else {
-                ERROR_CHECK_RETURN(ctx->state.readbuffer->depth.texture != 0, GL_INVALID_OPERATION);
+                ERROR_CHECK_RETURN(STATE(readbuffer)->depth.texture != 0, GL_INVALID_OPERATION);
             }
             break;
 
         case GL_DEPTH_STENCIL:
-            if (!ctx->state.readbuffer) {
+            if (!STATE(readbuffer)) {
                 ERROR_CHECK_RETURN((ctx->depth_format.mtl_pixel_format > 0) &&
                                    (ctx->stencil_format.mtl_pixel_format > 0), GL_INVALID_OPERATION);
             } else {
-                ERROR_CHECK_RETURN(ctx->state.readbuffer->depth.texture != 0 &&
-                                   ctx->state.readbuffer->stencil.texture != 0, GL_INVALID_OPERATION);
+                ERROR_CHECK_RETURN(STATE(readbuffer)->depth.texture != 0 &&
+                                   STATE(readbuffer)->stencil.texture != 0, GL_INVALID_OPERATION);
             }
             switch(type)
             {
@@ -2956,11 +2956,11 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                            format == 0x8d97 /*GL_ALPHA_INTEGER*/);
         /* Determine if the current read framebuffer color attachment is integer */
         bool fb_is_int = false;
-        Framebuffer *readFb = ctx->state.readbuffer;
+        Framebuffer *readFb = STATE(readbuffer);
         if (readFb &&
-            ctx->state.read_buffer >= GL_COLOR_ATTACHMENT0 &&
-            ctx->state.read_buffer < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
-            GLuint idx = ctx->state.read_buffer - GL_COLOR_ATTACHMENT0;
+            STATE(read_buffer) >= GL_COLOR_ATTACHMENT0 &&
+            STATE(read_buffer) < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+            GLuint idx = STATE(read_buffer) - GL_COLOR_ATTACHMENT0;
             if (readFb->color_attachments[idx].texture) {
                     FBOAttachment *att = &readFb->color_attachments[idx];
                     GLint ifmt = 0;
@@ -3190,11 +3190,11 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
     FBOAttachment *readColorAttachment = NULL;
     Texture *readColorTexture = NULL;
-    if (ctx->state.readbuffer &&
-        ctx->state.read_buffer >= GL_COLOR_ATTACHMENT0 &&
-        ctx->state.read_buffer < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+    if (STATE(readbuffer) &&
+        STATE(read_buffer) >= GL_COLOR_ATTACHMENT0 &&
+        STATE(read_buffer) < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
         readColorAttachment =
-            &ctx->state.readbuffer->color_attachments[ctx->state.read_buffer - GL_COLOR_ATTACHMENT0];
+            &STATE(readbuffer)->color_attachments[STATE(read_buffer) - GL_COLOR_ATTACHMENT0];
         readColorTexture = mglStencilAttachmentTexture(readColorAttachment);
     }
     if (readColorTexture &&

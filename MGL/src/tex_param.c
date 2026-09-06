@@ -588,7 +588,7 @@ static Texture *mglCurrentTextureForParameter(GLMContext ctx, GLenum target)
     }
 
     Texture *tex = getTex(ctx, 0, target);
-    if (!tex && (!ctx || ctx->state.error == GL_NO_ERROR))
+    if (!tex && (!ctx || STATE(error) == GL_NO_ERROR))
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
@@ -604,7 +604,7 @@ static Texture *mglNamedTextureForParameter(GLMContext ctx, GLuint texture)
     }
 
     Texture *tex = getTex(ctx, texture, 0);
-    if (!tex && (!ctx || ctx->state.error == GL_NO_ERROR))
+    if (!tex && (!ctx || STATE(error) == GL_NO_ERROR))
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
@@ -650,7 +650,7 @@ static bool mglTexParameterError(GLMContext ctx, GLenum error)
 
 static void mglTexParameterUnhandled(GLMContext ctx)
 {
-    if (!ctx || ctx->state.error == GL_NO_ERROR)
+    if (!ctx || STATE(error) == GL_NO_ERROR)
     {
         ERROR_RETURN(GL_INVALID_ENUM);
     }

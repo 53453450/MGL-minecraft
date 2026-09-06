@@ -591,7 +591,7 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
 {
     if (target == GL_ELEMENT_ARRAY_BUFFER)
     {
-        VertexArray *bound_vao = ctx->state.vao;
+        VertexArray *bound_vao = STATE(vao);
         int vao_is_valid =
             bound_vao &&
             mglObjectPointerLooksPlausible(bound_vao) &&
@@ -603,7 +603,7 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
         {
             fprintf(stderr, "MGL WARNING: dropping invalid current VAO pointer %p during EBO unbind\n",
                     (void *)bound_vao);
-            ctx->state.vao = NULL;
+            STATE(vao) = NULL;
             bound_vao = NULL;
         }
 
@@ -818,7 +818,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
     if (!ctx)
         return NULL;
 
-    vao = ctx->state.vao;
+    vao = STATE(vao);
     if (!vao)
         return NULL;
 
@@ -828,7 +828,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
         !mglHashTableContainsData(&STATE(vao_table), vao))
     {
         fprintf(stderr, "MGL WARNING: current VAO pointer %p is not in a sane VAO table; resetting to VAO 0\n", (void *)vao);
-        ctx->state.vao = NULL;
+        STATE(vao) = NULL;
         STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
         STATE_VAR(element_array_buffer_binding) =
             STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
@@ -841,7 +841,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
         fprintf(stderr, "MGL WARNING: current VAO pointer %p has invalid magic 0x%x; resetting to VAO 0\n",
                 (void *)vao,
                 vao->magic);
-        ctx->state.vao = NULL;
+        STATE(vao) = NULL;
         STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
         STATE_VAR(element_array_buffer_binding) =
             STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
@@ -1333,21 +1333,21 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
                 GLboolean cleared = GL_FALSE;
                 for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++)
                 {
-                    if (ctx->state.buffer_base[idx].buffers[i].buf == ptr ||
-                        ctx->state.buffer_base[idx].buffers[i].buffer == buffer)
+                    if (STATE(buffer_base)[idx].buffers[i].buf == ptr ||
+                        STATE(buffer_base)[idx].buffers[i].buffer == buffer)
                     {
-                        bzero(&ctx->state.buffer_base[idx].buffers[i], sizeof(BufferBaseTarget));
+                        bzero(&STATE(buffer_base)[idx].buffers[i], sizeof(BufferBaseTarget));
                         cleared = GL_TRUE;
                     }
                 }
                 if (cleared) {
-                    mglBufferBaseRebuildActiveMask(&ctx->state.buffer_base[idx]);
+                    mglBufferBaseRebuildActiveMask(&STATE(buffer_base)[idx]);
                 }
             }
 
-            mglClearBufferMapReferences(&ctx->state.vertex_buffer_map_list, ptr, buffer);
-            mglClearBufferMapReferences(&ctx->state.fragment_buffer_map_list, ptr, buffer);
-            mglClearBufferMapReferences(&ctx->state.compute_buffer_map_list, ptr, buffer);
+            mglClearBufferMapReferences(&STATE(vertex_buffer_map_list), ptr, buffer);
+            mglClearBufferMapReferences(&STATE(fragment_buffer_map_list), ptr, buffer);
+            mglClearBufferMapReferences(&STATE(compute_buffer_map_list), ptr, buffer);
 
             /* Name deletion, not immediate destruction: mark delete_status
              * and release the caller's reference.  mtl_data is released only
@@ -1399,7 +1399,7 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
 
     if (MGL_VERBOSE_BIND_BUFFER_LOGS) {
         fprintf(stderr, "MGL TRACE BindBuffer target=0x%x buffer=%u ctx=%p vao=%p\n",
-                target, buffer, (void *)ctx, ctx ? (void *)ctx->state.vao : NULL);
+                target, buffer, (void *)ctx, ctx ? (void *)STATE(vao) : NULL);
     }
 
     // GL_INVALID_ENUM is generated if target is not supported.
@@ -1559,7 +1559,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
 
     buffer_index = bufferIndexFromTarget(ctx, target);
 
-    BufferBaseTarget *base_slot = &ctx->state.buffer_base[buffer_index].buffers[index];
+    BufferBaseTarget *base_slot = &STATE(buffer_base)[buffer_index].buffers[index];
 
     if (buffer)
     {
@@ -1607,7 +1607,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
          * query/state sentinel meaning "the whole buffer at time of use". */
         base_slot->size = 0;
         base_slot->buf = ptr;
-        mglBufferBaseSetActive(&ctx->state.buffer_base[buffer_index], index);
+        mglBufferBaseSetActive(&STATE(buffer_base)[buffer_index], index);
         /* Indexed buffer binds also update the generic binding for target.
          * CTS allocates SSBO storage through glBindBufferBase followed by
          * glBufferData(GL_SHADER_STORAGE_BUFFER, ...), so keep both views in
@@ -1633,7 +1633,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
             }
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
-        mglBufferBaseClearActive(&ctx->state.buffer_base[buffer_index], index);
+        mglBufferBaseClearActive(&STATE(buffer_base)[buffer_index], index);
         STATE(buffers[buffer_index]) = NULL;
         mglSetGenericBufferBinding(ctx, target, 0u);
     }
@@ -1703,7 +1703,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
 
     buffer_index = bufferIndexFromTarget(ctx, target);
 
-    BufferBaseTarget *base_slot = &ctx->state.buffer_base[buffer_index].buffers[index];
+    BufferBaseTarget *base_slot = &STATE(buffer_base)[buffer_index].buffers[index];
 
     /* Offset alignment is validated even for buffer=0 (unbind): CTS
      * negative-api-bind uses BindBufferRange(buf=0, offset=align-1, size=0).
@@ -1752,7 +1752,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
             }
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
-        mglBufferBaseClearActive(&ctx->state.buffer_base[buffer_index], index);
+        mglBufferBaseClearActive(&STATE(buffer_base)[buffer_index], index);
         /* Keep indexed and generic target bindings in sync.  CTS exercises
          * glBindBufferRange/Base followed by target-based buffer operations. */
         STATE(buffers[buffer_index]) = NULL;
@@ -1823,7 +1823,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
         base_slot->offset = offset;
         base_slot->size = size;
         base_slot->buf = ptr;
-        mglBufferBaseSetActive(&ctx->state.buffer_base[buffer_index], index);
+        mglBufferBaseSetActive(&STATE(buffer_base)[buffer_index], index);
         /* Keep indexed and generic target bindings in sync.  CTS exercises
          * glBindBufferRange/Base followed by target-based buffer operations. */
         STATE(buffers[buffer_index]) = ptr;
@@ -2282,7 +2282,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
                                 dst_after_hash,
                                 dst_after_preview,
                                 ptr->data.dirty_bits,
-                                ctx->state.dirty_bits);
+                                STATE(dirty_bits));
         }
     }
     else
@@ -3452,13 +3452,13 @@ void mglBindBuffersRange(GLMContext ctx, GLenum target, GLuint first, GLsizei co
 
         if (name == 0u)
         {
-            BufferBaseTarget *base_slot = &ctx->state.buffer_base[buffer_index].buffers[index];
+            BufferBaseTarget *base_slot = &STATE(buffer_base)[buffer_index].buffers[index];
             if (base_slot->buffer != 0 || base_slot->buf != NULL ||
                 base_slot->offset != 0 || base_slot->size != 0) {
                 mglFlushPendingDraws(ctx);
             }
             bzero(base_slot, sizeof(BufferBaseTarget));
-            mglBufferBaseClearActive(&ctx->state.buffer_base[buffer_index], index);
+            mglBufferBaseClearActive(&STATE(buffer_base)[buffer_index], index);
             STATE(buffers[buffer_index]) = NULL;
             mglSetGenericBufferBinding(ctx, target, 0u);
             mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
@@ -3742,9 +3742,9 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
      * explicit BUFFER_UPDATE barrier still observe shader stores
      * (CTS advanced-sso-atomicCounters). */
     {
-        GLuint max_units = ctx->state.var.max_image_units;
+        GLuint max_units = STATE(var).max_image_units;
         for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
-            Texture *tex = ctx->state.image_units[i].tex;
+            Texture *tex = STATE(image_units)[i].tex;
             if (tex &&
                 tex->target == GL_TEXTURE_BUFFER &&
                 tex->texture_buffer == ptr) {

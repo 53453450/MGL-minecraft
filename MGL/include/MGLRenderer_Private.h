@@ -277,11 +277,14 @@ static inline double mglTraceNowSeconds(void)
  * above MGL_STATE() for the invariant definition.
  *
  * Use these instead of writing either proxy directly:
+ *   - mglActivateReplayStateForContext:     batch flush begin (point both
+ *                                          proxies at ctx->replay_state)
  *   - mglRestoreLiveActiveStateForContext:  batch replay teardown (revert to
  *                                          live ctx->state, ivar = NULL)
  *   - mglAssertDualProxyInSyncForContext:   debug-mode checkpoint
  *                                          (NSCAssert compiled out in release)
  */
+- (void)mglActivateReplayStateForContext:(GLMContext)glm_ctx;
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx;
 - (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx;
 

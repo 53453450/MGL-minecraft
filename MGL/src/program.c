@@ -52,9 +52,178 @@
 #include "mgl_sampler_compat.h"
 #include "mgl_buffer_plan.h"
 #include "mgl_shader_resource.h"
+#include "mgl_compile_artifact.h"
 #include "mgl_render.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_ast.h"
+
+
+
+/* A16: keep the last successful executable until a new link commits. */
+typedef struct MGLSavedLinkExecutable {
+    MGLShaderModule modules[_MAX_SHADER_TYPES];
+    MGLShaderResourceList shader_resources_list[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
+    GLboolean uses_vertex_id;
+    GLboolean uses_primitive_id;
+    GLboolean usesFragCoordParams;
+    uint32_t vertexAttribUsageMask;
+    GLboolean uses_point_size_params;
+    GLboolean uses_cull_distance;
+    uint32_t cull_distance_count;
+    GLboolean tess_uses_cull_distance;
+    uint32_t tess_cull_distance_count;
+    GLboolean uses_lod_bias;
+    MGLGSRoute gs_route;
+    GLenum geometry_input_type;
+    GLenum geometry_output_type;
+    GLuint geometry_vertices_out;
+    GLboolean geometry_max_vertices_specified;
+    GLuint geometry_invocations;
+    GLuint geometry_stream_count;
+    GLuint geometry_stream_varying_count[4];
+    GLuint geometry_stream_xfb_stride[4];
+    GLuint tess_control_output_vertices;
+    GLenum tess_gen_mode;
+    GLenum tess_gen_spacing;
+    GLenum tess_gen_vertex_order;
+    GLboolean tess_gen_point_mode;
+    GLboolean tess_eval_compute;
+    GLboolean tess_gen_mode_specified;
+    struct { unsigned x, y, z; } local_workgroup_size;
+    GLint legacy_clip_plane_loc;
+    GLint legacy_clip_plane_enabled_loc;
+    uint8_t sampler_binding_shared[TEXTURE_UNITS];
+    uint8_t sampler_binding_shared_valid;
+    uint64_t sampler_location_bitmap[2];
+    uint8_t sampler_location_bitmap_valid;
+    uint32_t sampled_texture_unit_mask[4];
+    uint8_t sampled_texture_unit_mask_valid;
+} MGLSavedLinkExecutable;
+
+static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
+{
+    memset(out, 0, sizeof(*out));
+    memcpy(out->modules, pptr->modules, sizeof(out->modules));
+    memcpy(out->shader_resources_list, pptr->shader_resources_list,
+           sizeof(out->shader_resources_list));
+    out->uses_vertex_id = pptr->uses_vertex_id;
+    out->uses_primitive_id = pptr->uses_primitive_id;
+    out->usesFragCoordParams = pptr->usesFragCoordParams;
+    out->vertexAttribUsageMask = pptr->vertexAttribUsageMask;
+    out->uses_point_size_params = pptr->uses_point_size_params;
+    out->uses_cull_distance = pptr->uses_cull_distance;
+    out->cull_distance_count = pptr->cull_distance_count;
+    out->tess_uses_cull_distance = pptr->tess_uses_cull_distance;
+    out->tess_cull_distance_count = pptr->tess_cull_distance_count;
+    out->uses_lod_bias = pptr->uses_lod_bias;
+    out->gs_route = pptr->gs_route;
+    out->geometry_input_type = pptr->geometry_input_type;
+    out->geometry_output_type = pptr->geometry_output_type;
+    out->geometry_vertices_out = pptr->geometry_vertices_out;
+    out->geometry_max_vertices_specified = pptr->geometry_max_vertices_specified;
+    out->geometry_invocations = pptr->geometry_invocations;
+    out->geometry_stream_count = pptr->geometry_stream_count;
+    memcpy(out->geometry_stream_varying_count, pptr->geometry_stream_varying_count,
+           sizeof(out->geometry_stream_varying_count));
+    memcpy(out->geometry_stream_xfb_stride, pptr->geometry_stream_xfb_stride,
+           sizeof(out->geometry_stream_xfb_stride));
+    out->tess_control_output_vertices = pptr->tess_control_output_vertices;
+    out->tess_gen_mode = pptr->tess_gen_mode;
+    out->tess_gen_spacing = pptr->tess_gen_spacing;
+    out->tess_gen_vertex_order = pptr->tess_gen_vertex_order;
+    out->tess_gen_point_mode = pptr->tess_gen_point_mode;
+    out->tess_eval_compute = pptr->tess_eval_compute;
+    out->tess_gen_mode_specified = pptr->tess_gen_mode_specified;
+    out->local_workgroup_size.x = pptr->local_workgroup_size.x;
+    out->local_workgroup_size.y = pptr->local_workgroup_size.y;
+    out->local_workgroup_size.z = pptr->local_workgroup_size.z;
+    out->legacy_clip_plane_loc = pptr->legacy_clip_plane_loc;
+    out->legacy_clip_plane_enabled_loc = pptr->legacy_clip_plane_enabled_loc;
+    memcpy(out->sampler_binding_shared, pptr->sampler_binding_shared,
+           sizeof(out->sampler_binding_shared));
+    out->sampler_binding_shared_valid = pptr->sampler_binding_shared_valid;
+    out->sampler_location_bitmap[0] = pptr->sampler_location_bitmap[0];
+    out->sampler_location_bitmap[1] = pptr->sampler_location_bitmap[1];
+    out->sampler_location_bitmap_valid = pptr->sampler_location_bitmap_valid;
+    memcpy(out->sampled_texture_unit_mask, pptr->sampled_texture_unit_mask,
+           sizeof(out->sampled_texture_unit_mask));
+    out->sampled_texture_unit_mask_valid = pptr->sampled_texture_unit_mask_valid;
+
+    memset(pptr->modules, 0, sizeof(pptr->modules));
+    memset(pptr->shader_resources_list, 0, sizeof(pptr->shader_resources_list));
+}
+
+static void mglDiscardSavedLinkExecutable(MGLSavedLinkExecutable *saved)
+{
+    Program tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    memcpy(tmp.modules, saved->modules, sizeof(tmp.modules));
+    memcpy(tmp.shader_resources_list, saved->shader_resources_list,
+           sizeof(tmp.shader_resources_list));
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        clearStageCompileState(&tmp, stage);
+    }
+    memset(saved, 0, sizeof(*saved));
+}
+
+static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable *saved)
+{
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        clearStageCompileState(pptr, stage);
+    }
+    memcpy(pptr->modules, saved->modules, sizeof(pptr->modules));
+    memcpy(pptr->shader_resources_list, saved->shader_resources_list,
+           sizeof(pptr->shader_resources_list));
+    pptr->uses_vertex_id = saved->uses_vertex_id;
+    pptr->uses_primitive_id = saved->uses_primitive_id;
+    pptr->usesFragCoordParams = saved->usesFragCoordParams;
+    pptr->vertexAttribUsageMask = saved->vertexAttribUsageMask;
+    pptr->uses_point_size_params = saved->uses_point_size_params;
+    pptr->uses_cull_distance = saved->uses_cull_distance;
+    pptr->cull_distance_count = saved->cull_distance_count;
+    pptr->tess_uses_cull_distance = saved->tess_uses_cull_distance;
+    pptr->tess_cull_distance_count = saved->tess_cull_distance_count;
+    pptr->uses_lod_bias = saved->uses_lod_bias;
+    pptr->gs_route = saved->gs_route;
+    pptr->geometry_input_type = saved->geometry_input_type;
+    pptr->geometry_output_type = saved->geometry_output_type;
+    pptr->geometry_vertices_out = saved->geometry_vertices_out;
+    pptr->geometry_max_vertices_specified = saved->geometry_max_vertices_specified;
+    pptr->geometry_invocations = saved->geometry_invocations;
+    pptr->geometry_stream_count = saved->geometry_stream_count;
+    memcpy(pptr->geometry_stream_varying_count, saved->geometry_stream_varying_count,
+           sizeof(pptr->geometry_stream_varying_count));
+    memcpy(pptr->geometry_stream_xfb_stride, saved->geometry_stream_xfb_stride,
+           sizeof(pptr->geometry_stream_xfb_stride));
+    pptr->tess_control_output_vertices = saved->tess_control_output_vertices;
+    pptr->tess_gen_mode = saved->tess_gen_mode;
+    pptr->tess_gen_spacing = saved->tess_gen_spacing;
+    pptr->tess_gen_vertex_order = saved->tess_gen_vertex_order;
+    pptr->tess_gen_point_mode = saved->tess_gen_point_mode;
+    pptr->tess_eval_compute = saved->tess_eval_compute;
+    pptr->tess_gen_mode_specified = saved->tess_gen_mode_specified;
+    pptr->local_workgroup_size.x = saved->local_workgroup_size.x;
+    pptr->local_workgroup_size.y = saved->local_workgroup_size.y;
+    pptr->local_workgroup_size.z = saved->local_workgroup_size.z;
+    pptr->legacy_clip_plane_loc = saved->legacy_clip_plane_loc;
+    pptr->legacy_clip_plane_enabled_loc = saved->legacy_clip_plane_enabled_loc;
+    memcpy(pptr->sampler_binding_shared, saved->sampler_binding_shared,
+           sizeof(pptr->sampler_binding_shared));
+    pptr->sampler_binding_shared_valid = saved->sampler_binding_shared_valid;
+    pptr->sampler_location_bitmap[0] = saved->sampler_location_bitmap[0];
+    pptr->sampler_location_bitmap[1] = saved->sampler_location_bitmap[1];
+    pptr->sampler_location_bitmap_valid = saved->sampler_location_bitmap_valid;
+    memcpy(pptr->sampled_texture_unit_mask, saved->sampled_texture_unit_mask,
+           sizeof(pptr->sampled_texture_unit_mask));
+    pptr->sampled_texture_unit_mask_valid = saved->sampled_texture_unit_mask_valid;
+    memset(saved, 0, sizeof(*saved));
+    /* Failed relink keeps the prior executable for currently-bound draw
+     * (GL 4.6 glLinkProgram), but LINK_STATUS must stay FALSE. */
+    pptr->link_success = GL_FALSE;
+    pptr->link_state = MGL_PROGRAM_LINK_FAILED;
+    pptr->dirty_bits |= DIRTY_PROGRAM;
+    mglBuildActiveUniformCache(pptr);
+}
 
 
 static _Atomic uint64_t mglNextMSLTextureCacheInstanceID = 1u;
@@ -213,15 +382,43 @@ static uint32_t mglEvalConstUniformInit(const MGLExpr *e, uint32_t words[16],
 
 /* Seed plain-uniform CPU slots from GLSL default initializers so the first
  * draw sees defaults without SSA-folding them (which would ignore glUniform*). */
+static void mglProgramClearPlainUniformStorage(GLMContext ctx, Program *pptr)
+{
+    if (!ctx || !pptr) {
+        return;
+    }
+    for (GLuint w = 0u; w < 2u; w++) {
+        uint64_t bits = pptr->plain_uniform_active_mask[w];
+        while (bits) {
+            unsigned b = (unsigned)__builtin_ctzll(bits);
+            bits &= bits - 1ull;
+            GLuint i = w * 64u + (GLuint)b;
+            if (i >= MAX_BINDABLE_BUFFERS) {
+                continue;
+            }
+            BufferBaseTarget *slot = &pptr->plain_uniform_buffers[i];
+            Buffer *buf = slot->buf;
+            if (buf) {
+                deleteHashElement(&STATE(buffer_table), buf->name);
+                buf->delete_status = GL_TRUE;
+                mglReleaseBufferReference(ctx, buf);
+            }
+            memset(slot, 0, sizeof(*slot));
+        }
+    }
+    memset(pptr->plain_uniform_active_mask, 0,
+           sizeof(pptr->plain_uniform_active_mask));
+}
+
 static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
 {
     if (!ctx || !pptr) {
         return;
     }
-    Program *prev_prog = ctx->state.program;
-    GLuint prev_name = ctx->state.program_name;
-    ctx->state.program = pptr;
-    ctx->state.program_name = pptr->name;
+    Program *prev_prog = STATE(program);
+    GLuint prev_name = STATE(program_name);
+    STATE(program) = pptr;
+    STATE(program_name) = pptr->name;
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         Shader *shader = pptr->shader_slots[stage];
@@ -330,8 +527,8 @@ static void mglSeedUniformInitializers(GLMContext ctx, Program *pptr)
         mglGLSLTranslationUnitDestroy(tu);
     }
 
-    ctx->state.program = prev_prog;
-    ctx->state.program_name = prev_name;
+    STATE(program) = prev_prog;
+    STATE(program_name) = prev_name;
 }
 
 static GLboolean mglPointerLooksMallocOwned(const void *ptr)
@@ -596,6 +793,7 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
     }
 
     ptr->link_success = GL_FALSE;
+    ptr->link_state = MGL_PROGRAM_LINK_NONE;
 
     /* Free the buffer binding plan cache before releasing the spirv
      * resources it was built from.  The plan copies reflection values
@@ -1190,14 +1388,14 @@ static bool mglValidateTransformFeedbackVaryings(GLMContext ctx, Program *pptr)
         return false;
 
     const GLuint maxInterleaved = ctx
-        ? ctx->state.var.max_transform_feedback_interleaved_components : 64u;
+        ? STATE(var).max_transform_feedback_interleaved_components : 64u;
     const GLuint maxSeparateComponents = ctx
-        ? ctx->state.var.max_transform_feedback_separate_components : 4u;
+        ? STATE(var).max_transform_feedback_separate_components : 4u;
     const GLuint maxBuffers = ctx
-        ? ctx->state.var.max_transform_feedback_buffers
+        ? STATE(var).max_transform_feedback_buffers
         : MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS;
     const GLuint maxSeparateAttribs = ctx
-        ? ctx->state.var.max_transform_feedback_separate_attribs
+        ? STATE(var).max_transform_feedback_separate_attribs
         : MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS;
     if (maxBuffers == 0u || maxBuffers > MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS ||
         maxSeparateAttribs == 0u ||
@@ -1466,10 +1664,57 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         iface_peers =
             &pptr->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
     }
-    int air_rc = mglAirCompileGLSLWithReflectInfoEx(
-        shader->src, air_stage, attrib_snapshot, &bytes, &size,
-        pptr->shader_resources_list[stage], &stage_info, air_flags,
-        iface_peers, err, sizeof err);
+    int air_rc;
+    if (mglCompileArtifactCanReuseAtLink(shader->cached_artifact, air_stage,
+                                         air_flags, iface_peers,
+                                         attrib_snapshot)) {
+        /* R2: adopt glCompileShader CompileArtifact — skip second parse/codegen. */
+        MGLCompileArtifact *cached = shader->cached_artifact;
+        bytes = cached->metallib_bytes;
+        size = cached->metallib_size;
+        cached->metallib_bytes = NULL;
+        cached->metallib_size = 0;
+        memcpy(pptr->shader_resources_list[stage], cached->resources,
+               sizeof(cached->resources));
+        memset(cached->resources, 0, sizeof(cached->resources));
+        stage_info = cached->stage_info;
+        cached->complete = 0;
+        mglCompileArtifactFree(shader->cached_artifact);
+        shader->cached_artifact = NULL;
+        mglFrontendNoteReuse();
+        air_rc = 0;
+    } else if (air_flags == 0u && iface_peers == NULL) {
+        /* R2: stages without variant flags/peers compile through a temporary
+         * CompileArtifact so metallib + reflection publish together. */
+        MGLCompileArtifact art;
+        mglCompileArtifactInit(&art);
+        air_rc = mglCompileArtifactFromGLSL(shader->src, air_stage,
+                                            attrib_snapshot, &art, err,
+                                            sizeof err);
+        if (air_rc == 0 && art.complete) {
+            bytes = art.metallib_bytes;
+            size = art.metallib_size;
+            art.metallib_bytes = NULL;
+            art.metallib_size = 0;
+            memcpy(pptr->shader_resources_list[stage], art.resources,
+                   sizeof(art.resources));
+            memset(art.resources, 0, sizeof(art.resources));
+            stage_info = art.stage_info;
+            mglCompileArtifactDestroy(&art);
+            if (shader->frontend_valid &&
+                shader->frontend_stage == air_stage) {
+                mglFrontendNoteReuse();
+            }
+        } else {
+            mglCompileArtifactDestroy(&art);
+            air_rc = -1;
+        }
+    } else {
+        air_rc = mglAirCompileGLSLWithReflectInfoEx(
+            shader->src, air_stage, attrib_snapshot, &bytes, &size,
+            pptr->shader_resources_list[stage], &stage_info, air_flags,
+            iface_peers, err, sizeof err);
+    }
     if (air_rc != 0) {
         for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
             free((void *)attrib_snapshot[ai]);
@@ -1861,8 +2106,8 @@ static bool mglValidateCombinedClipAndCullDistances(GLMContext ctx,
                                                     Program *pptr)
 {
     GLuint maxCombined =
-        ctx && ctx->state.var.max_combined_clip_and_cull_distances
-            ? ctx->state.var.max_combined_clip_and_cull_distances
+        ctx && STATE(var).max_combined_clip_and_cull_distances
+            ? STATE(var).max_combined_clip_and_cull_distances
             : 8u;
     GLuint clipSize = 0u;
     GLuint cullSize = 0u;
@@ -1917,22 +2162,60 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
-    pptr->link_success = GL_FALSE;
-
     mglFlushPendingDraws(ctx);
 
-    /* Re-link must use only currently attached shaders.  A prior successful
-     * link leaves shader_slots populated after detach (GL executable
-     * retention); without this sync, a detached GS still compiles and
-     * bindAIRProgram sees GS + gs_route=NONE (xfb_captures / stage re-link). */
+    /* Validate attachments before tearing down a prior executable (A16).
+     * GL keeps the last successful link when a new link fails. */
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (mglProgramAttachedShaderCount(pptr, (GLuint)stage) > 0u) {
+            has_any_shader = true;
+            break;
+        }
+    }
+    if (!has_any_shader) {
+        fprintf(stderr, "MGL WARNING: mglLinkProgram called with no attached shaders\n");
+        return;
+    }
+    if ((pptr->attached_shader_mask & COMPUTE_SHADER_MASK_BIT) &&
+        (pptr->attached_shader_mask & ~COMPUTE_SHADER_MASK_BIT)) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: compute shaders cannot be linked with non-compute stages\n",
+                pptr->name);
+        return;
+    }
+
+    MGLSavedLinkExecutable saved_executable;
+    GLboolean have_saved_executable = GL_FALSE;
+    if (pptr->link_success ||
+        pptr->modules[_VERTEX_SHADER].metallib_bytes ||
+        pptr->modules[_FRAGMENT_SHADER].metallib_bytes ||
+        pptr->modules[_COMPUTE_SHADER].metallib_bytes ||
+        pptr->modules[_GEOMETRY_SHADER].metallib_bytes ||
+        pptr->modules[_TESS_CONTROL_SHADER].metallib_bytes ||
+        pptr->modules[_TESS_EVALUATION_SHADER].metallib_bytes) {
+        mglCaptureLinkExecutable(pptr, &saved_executable);
+        have_saved_executable = GL_TRUE;
+    }
+
+    pptr->link_success = GL_FALSE;
+    pptr->link_state = MGL_PROGRAM_LINK_FAILED;
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Shader *old_slot = pptr->shader_slots[stage];
+        Shader *new_slot = NULL;
         if (pptr->attached_shader_counts[stage] > 0u) {
-            pptr->shader_slots[stage] =
-                pptr->attached_shader_slots[stage][0];
-        } else {
-            pptr->shader_slots[stage] = NULL;
+            new_slot = pptr->attached_shader_slots[stage][0];
+        } else if (!have_saved_executable) {
             clearStageCompileState(pptr, stage);
         }
+        if (old_slot && old_slot != new_slot &&
+            !mglProgramHasAttachedShader(pptr, stage, old_slot)) {
+            old_slot->refcount--;
+            if (old_slot->refcount == 0 && old_slot->delete_status) {
+                deleteHashElement(&STATE(shader_table), old_slot->name);
+                mglFreeShader(ctx, old_slot);
+            }
+        }
+        pptr->shader_slots[stage] = new_slot;
     }
 
     /* C++ compute PSOs retain functions from the previous link generation.
@@ -1975,6 +2258,21 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* Invalidate the active-uniform cache; rebuilt from the freshly
      * reflected shader_resources_list after a successful link. */
     mglFreeActiveUniformCache(pptr);
+    /* Sampler/plain-uniform reset is deferred until a successful commit when
+     * a prior executable is parked (A16+A18).  First-time links still clear. */
+    if (!have_saved_executable) {
+        for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+            pptr->sampler_units[i] = -1;
+            pptr->sampler_units_explicit[i] = GL_FALSE;
+        }
+        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+            for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+                pptr->sampler_units_by_stage[stage][i] = -1;
+                pptr->sampler_units_explicit_by_stage[stage][i] = GL_FALSE;
+            }
+        }
+        memset(pptr->plain_uniform_active_mask, 0, sizeof(pptr->plain_uniform_active_mask));
+    }
     /* Invalidate the IR-level reflection cache for buffer slot
      * conflict detection.  Lazily recomputed on first
      * mglBufferSlotConflictsForProgram call during resource binding. */
@@ -1982,25 +2280,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* Bump the per-Program cache generation so renderer pipeline keys cannot
      * reuse objects from the previous linked executable. */
     pptr->pipeline_cache_generation++;
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        if (mglProgramAttachedShaderCount(pptr, (GLuint)stage) > 0u) {
-            has_any_shader = true;
-            break;
-        }
-    }
-
-    if (!has_any_shader) {
-        fprintf(stderr, "MGL WARNING: mglLinkProgram called with no attached shaders\n");
-        return;
-    }
-
-    if ((pptr->attached_shader_mask & COMPUTE_SHADER_MASK_BIT) &&
-        (pptr->attached_shader_mask & ~COMPUTE_SHADER_MASK_BIT)) {
-        fprintf(stderr,
-                "MGL WARNING: mglLinkProgram failed program %u: compute shaders cannot be linked with non-compute stages\n",
-                pptr->name);
-        return;
-    }
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
@@ -2017,7 +2296,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                         "MGL WARNING: mglLinkProgram failed program %u: shader stage %d is not compiled\n",
                         pptr->name,
                         stage);
-                return;
+                goto link_fail;
             }
         }
     }
@@ -2030,11 +2309,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     if (!link_ok) {
-        return;
+        goto link_fail;
     }
 
     if (!mglValidateCombinedClipAndCullDistances(ctx, pptr)) {
-        return;
+        goto link_fail;
     }
 
     /* GL 4.6 §11.4.3: a non-separable program that contains any of
@@ -2050,7 +2329,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     "MGL WARNING: mglLinkProgram failed program %u: "
                     "no vertex shader attached for a non-separable program\n",
                     pptr->name);
-            return;
+            goto link_fail;
         }
     }
 
@@ -2059,7 +2338,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 "MGL WARNING: mglLinkProgram failed program %u: vertex "
                 "output / geometry input interface mismatch\n",
                 pptr->name);
-        return;
+        goto link_fail;
     }
 
     /* GL 4.6 §11.3.2: a program fails to link if max_vertices is not
@@ -2070,7 +2349,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 "MGL WARNING: mglLinkProgram failed program %u: "
                 "geometry shader missing layout(max_vertices)\n",
                 pptr->name);
-        return;
+        goto link_fail;
     }
 
     /* GLSL 4.60 §4.4.1 / GL 4.6 §11.2.1.2: TES must declare an input
@@ -2082,7 +2361,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 "MGL WARNING: mglLinkProgram failed program %u: "
                 "tessellation evaluation shader missing input primitive mode\n",
                 pptr->name);
-        return;
+        goto link_fail;
     }
 
     /* GL 4.6 §7.4/§11.1.3.9: a program fails to link if a geometry shader
@@ -2106,23 +2385,23 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             }
         }
         if (total_counters >
-            (GLuint)ctx->state.var.max_geometry_atomic_counters) {
+            (GLuint)STATE(var).max_geometry_atomic_counters) {
             fprintf(stderr,
                     "MGL WARNING: mglLinkProgram failed program %u: "
                     "geometry shader uses %u atomic counters, limit %d\n",
                     pptr->name, total_counters,
-                    ctx->state.var.max_geometry_atomic_counters);
-            return;
+                    STATE(var).max_geometry_atomic_counters);
+            goto link_fail;
         }
         if (distinct_bindings >
-            (GLuint)ctx->state.var.max_geometry_atomic_counter_buffers) {
+            (GLuint)STATE(var).max_geometry_atomic_counter_buffers) {
             fprintf(stderr,
                     "MGL WARNING: mglLinkProgram failed program %u: "
                     "geometry shader uses %u atomic counter buffers, "
                     "limit %d\n",
                     pptr->name, distinct_bindings,
-                    ctx->state.var.max_geometry_atomic_counter_buffers);
-            return;
+                    STATE(var).max_geometry_atomic_counter_buffers);
+            goto link_fail;
         }
     }
 
@@ -2133,7 +2412,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 "MGL WARNING: mglLinkProgram failed program %u: transform feedback "
                 "varying not found in program outputs\n",
                 pptr->name);
-        return;
+        goto link_fail;
     }
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
@@ -2204,7 +2483,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     pptr->geometry_output_type,
                     pptr->geometry_vertices_out,
                     pptr->geometry_invocations);
-            return;
+            goto link_fail;
         }
     } else {
         pptr->gs_route = MGL_GS_ROUTE_NONE;
@@ -2216,7 +2495,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: separable program %u has incompatible gl_PerVertex redeclarations\n",
                 pptr->name);
-        return;
+        goto link_fail;
     }
 
     /* Validate layout(binding=N) values against GL implementation limits.
@@ -2238,14 +2517,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     GLuint b = rl->list[i].gl_binding;
                     GLuint n = rl->list[i].ubo_array_size > 0
                                    ? rl->list[i].ubo_array_size : 1;
-                    if (b + n > ctx->state.var.max_uniform_buffer_bindings) {
+                    if (b + n > STATE(var).max_uniform_buffer_bindings) {
                         fprintf(stderr,
                                 "MGL LINK ERROR: program %u stage %d UBO '%s' binding %u (array size %u) "
                                 "exceeds GL_MAX_UNIFORM_BUFFER_BINDINGS (%u)\n",
                                 pptr->name, stage,
                                 rl->list[i].name ? rl->list[i].name : "(null)",
                                 b, n,
-                                ctx->state.var.max_uniform_buffer_bindings);
+                                STATE(var).max_uniform_buffer_bindings);
                         binding_error = true;
                         break;
                     }
@@ -2258,14 +2537,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     &pptr->shader_resources_list[stage][_STORAGE_BUFFER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
-                    if (b >= ctx->state.var.max_shader_storage_buffer_bindings) {
+                    if (b >= STATE(var).max_shader_storage_buffer_bindings) {
                         fprintf(stderr,
                                 "MGL LINK ERROR: program %u stage %d SSBO '%s' binding %u "
                                 "exceeds GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS (%u)\n",
                                 pptr->name, stage,
                                 rl->list[i].name ? rl->list[i].name : "(null)",
                                 b,
-                                ctx->state.var.max_shader_storage_buffer_bindings);
+                                STATE(var).max_shader_storage_buffer_bindings);
                         binding_error = true;
                         break;
                     }
@@ -2278,14 +2557,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     &pptr->shader_resources_list[stage][_STORAGE_IMAGE_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
-                    if (b >= ctx->state.var.max_image_units) {
+                    if (b >= STATE(var).max_image_units) {
                         fprintf(stderr,
                                 "MGL LINK ERROR: program %u stage %d image '%s' binding %u "
                                 "exceeds GL_MAX_IMAGE_UNITS (%u)\n",
                                 pptr->name, stage,
                                 rl->list[i].name ? rl->list[i].name : "(null)",
                                 b,
-                                ctx->state.var.max_image_units);
+                                STATE(var).max_image_units);
                         binding_error = true;
                         break;
                     }
@@ -2305,22 +2584,22 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 GLuint stage_max = 0u;
                 switch (stage) {
                 case _VERTEX_SHADER:
-                    stage_max = ctx->state.var.max_vertex_image_uniforms;
+                    stage_max = STATE(var).max_vertex_image_uniforms;
                     break;
                 case _TESS_CONTROL_SHADER:
-                    stage_max = ctx->state.var.max_tess_control_image_uniforms;
+                    stage_max = STATE(var).max_tess_control_image_uniforms;
                     break;
                 case _TESS_EVALUATION_SHADER:
-                    stage_max = ctx->state.var.max_tess_evaluation_image_uniforms;
+                    stage_max = STATE(var).max_tess_evaluation_image_uniforms;
                     break;
                 case _GEOMETRY_SHADER:
-                    stage_max = ctx->state.var.max_geometry_image_uniforms;
+                    stage_max = STATE(var).max_geometry_image_uniforms;
                     break;
                 case _FRAGMENT_SHADER:
-                    stage_max = ctx->state.var.max_fragment_image_uniforms;
+                    stage_max = STATE(var).max_fragment_image_uniforms;
                     break;
                 case _COMPUTE_SHADER:
-                    stage_max = ctx->state.var.max_compute_image_uniforms;
+                    stage_max = STATE(var).max_compute_image_uniforms;
                     break;
                 default:
                     break;
@@ -2340,14 +2619,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     &pptr->shader_resources_list[stage][_ATOMIC_COUNTER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
-                    if (b >= ctx->state.var.max_atomic_counter_buffer_bindings) {
+                    if (b >= STATE(var).max_atomic_counter_buffer_bindings) {
                         fprintf(stderr,
                                 "MGL LINK ERROR: program %u stage %d atomic counter '%s' binding %u "
                                 "exceeds GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS (%u)\n",
                                 pptr->name, stage,
                                 rl->list[i].name ? rl->list[i].name : "(null)",
                                 b,
-                                ctx->state.var.max_atomic_counter_buffer_bindings);
+                                STATE(var).max_atomic_counter_buffer_bindings);
                         binding_error = true;
                         break;
                     }
@@ -2369,12 +2648,12 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     combined_images += elems;
                 }
             }
-            if (combined_images > ctx->state.var.max_combined_image_uniforms) {
+            if (combined_images > STATE(var).max_combined_image_uniforms) {
                 fprintf(stderr,
                         "MGL LINK ERROR: program %u has %u combined active image "
                         "uniforms; exceeds GL_MAX_COMBINED_IMAGE_UNIFORMS (%u)\n",
                         pptr->name, combined_images,
-                        ctx->state.var.max_combined_image_uniforms);
+                        STATE(var).max_combined_image_uniforms);
                 binding_error = true;
             }
         }
@@ -2475,14 +2754,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
 
         if (binding_error) {
-            return;
+            goto link_fail;
         }
     }
 
     /* GL 4.6 §7.7.2: distinct atomic counters sharing a binding must not
      * overlap in the counter buffer. */
     if (!mglValidateAtomicCounterOffsetOverlap(pptr)) {
-        return;
+        goto link_fail;
     }
 
     if ((pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT) &&
@@ -2497,7 +2776,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                         "MGL WARNING: mglLinkProgram failed program %u: %s\n",
                         pptr->name,
                         iface_err[0] ? iface_err : "stage interface mismatch");
-                return;
+                goto link_fail;
             }
         }
     }
@@ -2515,12 +2794,31 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                         pptr->name,
                         iface_err[0] ? iface_err
                                      : "tessellation stage interface mismatch");
-                return;
+                goto link_fail;
             }
         }
     }
 
+    if (have_saved_executable) {
+        mglDiscardSavedLinkExecutable(&saved_executable);
+        have_saved_executable = GL_FALSE;
+        for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+            pptr->sampler_units[i] = -1;
+            pptr->sampler_units_explicit[i] = GL_FALSE;
+        }
+        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+            for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+                pptr->sampler_units_by_stage[stage][i] = -1;
+                pptr->sampler_units_explicit_by_stage[stage][i] = GL_FALSE;
+            }
+        }
+    }
+    /* A18: successful link commit resets ProgramLinkState sampler + plain
+     * uniform storage so prior uploads cannot pollute the new executable. */
+    mglProgramClearPlainUniformStorage(ctx, pptr);
+
     pptr->link_success = GL_TRUE;
+    pptr->link_state = MGL_PROGRAM_LINK_OK;
     pptr->dirty_bits |= DIRTY_PROGRAM;
     /* Cache the legacy clip-plane uniform locations (the translator injects
      * them only for VS stages that use gl_ClipVertex). */
@@ -2641,6 +2939,13 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     mglRendererBindProgram(ctx, pptr);
 
     //ERROR_CHECK_RETURN(pptr->mtl_data, GL_INVALID_OPERATION);
+link_fail:
+    if (have_saved_executable) {
+        mglRestoreSavedLinkExecutable(pptr, &saved_executable);
+        have_saved_executable = GL_FALSE;
+    }
+    return;
+
 }
 
 void mglUseProgram(GLMContext ctx, GLuint program)
@@ -2653,9 +2958,9 @@ void mglUseProgram(GLMContext ctx, GLuint program)
         return;
     }
 
-    if (ctx->state.program_name == program &&
-        ((program == 0u && ctx->state.program == NULL) ||
-         (program != 0u && ctx->state.program != NULL))) {
+    if (STATE(program_name) == program &&
+        ((program == 0u && STATE(program) == NULL) ||
+         (program != 0u && STATE(program) != NULL))) {
         return;
     }
 
@@ -2707,9 +3012,18 @@ void mglUseProgram(GLMContext ctx, GLuint program)
 
         if (!pptr->link_success)
         {
-            // Compatibility fallback: some pipelines can probe/use programs before
-            // link is completed/available in this backend. Skip instead of poisoning
-            // global GL error state every frame.
+            /* GL 4.6 default: INVALID_OPERATION and keep prior program.
+             * MGL_COMPAT_PROGRAM_ERRORS=1 restores the historical skip
+             * (keeps prior program without an error) for Minecraft shims. */
+            static int compat_program = -1;
+            if (compat_program < 0) {
+                const char *env = getenv("MGL_COMPAT_PROGRAM_ERRORS");
+                compat_program = (env && atoi(env) > 0) ? 1 : 0;
+            }
+            if (!compat_program) {
+                STATE(error) = GL_INVALID_OPERATION;
+                return;
+            }
             s_unlinked_program_hits++;
             if (s_last_unlinked_program != program || (s_unlinked_program_hits % 128u) == 1u) {
                 fprintf(stderr, "MGL WARNING: mglUseProgram skipping unlinked program %u (hit=%u)\n",
@@ -2725,21 +3039,21 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     }
 
     bool bindingChanged =
-        ctx->state.program != pptr ||
-        ctx->state.program_name != program;
+        STATE(program) != pptr ||
+        STATE(program_name) != program;
 
     if (bindingChanged)
     {
-        Program *oldProgram = ctx->state.program;
+        Program *oldProgram = STATE(program);
         if (oldProgram &&
             !mglProgramPointerUsableForName(ctx,
                                             oldProgram,
-                                            oldProgram->name ? oldProgram->name : ctx->state.program_name))
+                                            oldProgram->name ? oldProgram->name : STATE(program_name)))
         {
             fprintf(stderr, "MGL WARNING: mglUseProgram dropping invalid cached program pointer %p\n",
                     (void *)oldProgram);
             oldProgram = NULL;
-            ctx->state.program = NULL;
+            STATE(program) = NULL;
         }
 
         if (oldProgram)
@@ -2751,20 +3065,20 @@ void mglUseProgram(GLMContext ctx, GLuint program)
             }
         }
 
-        ctx->state.program = pptr;
+        STATE(program) = pptr;
 
         if (pptr)
         {
             pptr->refcount++;
         }
-        mglMarkStateDirtyBits(&ctx->state, DIRTY_PROGRAM);
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
     }
 
     /*
      * Keep program name and pointer state in sync so renderer-side recovery can
      * re-resolve by name if the cached pointer is lost.
      */
-    ctx->state.program_name = program;
+    STATE(program_name) = program;
 
 }
 

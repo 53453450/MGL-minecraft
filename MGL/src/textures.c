@@ -777,7 +777,7 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
                 "MGL TRACE BindTexture target=0x%x texture=%u activeUnit=%u ctx=%p\n",
                 target,
                 texture,
-                ctx ? ctx->state.active_texture : 0u,
+                ctx ? STATE(active_texture) : 0u,
                 (void *)ctx);
     }
 
@@ -921,7 +921,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     /* Per the GL 4.6 spec, glBindImageTexture generates GL_INVALID_VALUE if
      * <unit> is greater than or equal to GL_MAX_IMAGE_UNITS.  MGL reports
      * GL_MAX_IMAGE_UNITS == 8 (independent of TEXTURE_UNITS == 128). */
-    if (unit >= ctx->state.var.max_image_units) {
+    if (unit >= STATE(var).max_image_units) {
         fprintf(stderr, "MGL Error: mglBindImageTexture: unit >= max_image_units (%d)\n", unit);
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -936,7 +936,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     }
 
     if (texture == 0u) {
-        ImageUnit *iu = &ctx->state.image_units[unit];
+        ImageUnit *iu = &STATE(image_units)[unit];
         if (iu->texture != 0u || iu->tex != NULL) {
             /* Image-unit rebinds are not covered by dynamic texture capture /
              * MGL_BIND_NO_FLUSH batch merge; flush so pending draws keep the
@@ -1066,7 +1066,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     unit_params.mtl_image_view = NULL;
 
     {
-        const ImageUnit *cur = &ctx->state.image_units[unit];
+        const ImageUnit *cur = &STATE(image_units)[unit];
         const bool binding_changed =
             cur->texture != unit_params.texture ||
             cur->level != unit_params.level ||
@@ -1083,11 +1083,11 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         }
     }
 
-    if (ctx->state.image_units[unit].mtl_image_view) {
-        mglRenderReleaseMetalObject(ctx->state.image_units[unit].mtl_image_view);
-        ctx->state.image_units[unit].mtl_image_view = NULL;
+    if (STATE(image_units)[unit].mtl_image_view) {
+        mglRenderReleaseMetalObject(STATE(image_units)[unit].mtl_image_view);
+        STATE(image_units)[unit].mtl_image_view = NULL;
     }
-    ctx->state.image_units[unit] = unit_params;
+    STATE(image_units)[unit] = unit_params;
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
     mglRendererPrepareImageUnitSlice(ctx, unit);
@@ -1150,18 +1150,18 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
             {
                 GLboolean cleared_unit = GL_FALSE;
 
-                if(ctx->state.active_textures[i] == tex) {
-                    ctx->state.active_textures[i] = NULL;
+                if(STATE(active_textures)[i] == tex) {
+                    STATE(active_textures)[i] = NULL;
                     cleared_unit = GL_TRUE;
                 }
-                if(ctx->state.last_sampled_2d_textures[i] == tex) {
-                    ctx->state.last_sampled_2d_textures[i] = NULL;
+                if(STATE(last_sampled_2d_textures)[i] == tex) {
+                    STATE(last_sampled_2d_textures)[i] = NULL;
                     cleared_unit = GL_TRUE;
                 }
 
                 for (int target_index = 0; target_index < _MAX_TEXTURE_TYPES; target_index++) {
-                    if (ctx->state.texture_units[i].textures[target_index] == tex) {
-                        ctx->state.texture_units[i].textures[target_index] = NULL;
+                    if (STATE(texture_units)[i].textures[target_index] == tex) {
+                        STATE(texture_units)[i].textures[target_index] = NULL;
                         cleared_unit = GL_TRUE;
                     }
                 }
@@ -1174,9 +1174,9 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
 
             for(int i=0; i<TEXTURE_UNITS; i++)
             {
-                if(ctx->state.image_units[i].texture == name)
+                if(STATE(image_units)[i].texture == name)
                 {
-                    mglResetImageUnit(&ctx->state.image_units[i]);
+                    mglResetImageUnit(&STATE(image_units)[i]);
 
                     mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
                 }
@@ -1292,7 +1292,7 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
     for (GLsizei i = 0; i < count; i++) {
         GLuint tex_name = textures ? textures[i] : 0u;
         if (tex_name == 0u) {
-            mglResetImageUnit(&ctx->state.image_units[first + i]);
+            mglResetImageUnit(&STATE(image_units)[first + i]);
             continue;
         }
 
@@ -3185,7 +3185,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                                             resolved_src,
                                             src_pitch,
                                             unpack_layout.src_image_size,
-                                            ctx->state.unpack.swap_bytes == GL_TRUE)) {
+                                            STATE(unpack).swap_bytes == GL_TRUE)) {
                 unpackTexture(ctx,
                               tex,
                               face,
@@ -3962,7 +3962,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
                                     resolved_src,
                                     src_pitch,
                                     src_image_size,
-                                    ctx->state.unpack.swap_bytes == GL_TRUE)) {
+                                    STATE(unpack).swap_bytes == GL_TRUE)) {
         unpackTexture(ctx, tex, face, level, (void *)resolved_src, texture_data, src_pitch, src_image_size, pixel_size, xoffset, yoffset, zoffset, width, height, depth);
     }
 
@@ -4401,11 +4401,11 @@ void mglTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset,
                 type,
                 unpack_name,
                 pixels,
-                ctx->state.unpack.row_length,
-                ctx->state.unpack.alignment,
-                ctx->state.unpack.skip_pixels,
-                ctx->state.unpack.skip_rows,
-                ctx->state.unpack.skip_images);
+                STATE(unpack).row_length,
+                STATE(unpack).alignment,
+                STATE(unpack).skip_pixels,
+                STATE(unpack).skip_rows,
+                STATE(unpack).skip_images);
     }
 
     face = 0;
@@ -4811,12 +4811,12 @@ void mglTextureStorage2DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if ((GLuint)width > ctx->state.var.max_texture_size ||
-        (GLuint)height > ctx->state.var.max_texture_size) {
+    if ((GLuint)width > STATE(var).max_texture_size ||
+        (GLuint)height > STATE(var).max_texture_size) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if ((GLuint)samples > MAX(ctx->state.var.max_framebuffer_samples, 1u)) {
+    if ((GLuint)samples > MAX(STATE(var).max_framebuffer_samples, 1u)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -4959,13 +4959,13 @@ void mglTextureStorage3DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if ((GLuint)width > ctx->state.var.max_texture_size ||
-        (GLuint)height > ctx->state.var.max_texture_size ||
-        (GLuint)depth > ctx->state.var.max_array_texture_layers) {
+    if ((GLuint)width > STATE(var).max_texture_size ||
+        (GLuint)height > STATE(var).max_texture_size ||
+        (GLuint)depth > STATE(var).max_array_texture_layers) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if ((GLuint)samples > MAX(ctx->state.var.max_framebuffer_samples, 1u)) {
+    if ((GLuint)samples > MAX(STATE(var).max_framebuffer_samples, 1u)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -5780,9 +5780,9 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
      * writable image unit. Mirror the barrier's authoritative mark + finish so
      * we observe GPU image writes instead of the stale CPU upload. */
     if (!render_target_needs_readback) {
-        GLuint max_units = ctx->state.var.max_image_units;
+        GLuint max_units = STATE(var).max_image_units;
         for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
-            ImageUnit *iu = &ctx->state.image_units[i];
+            ImageUnit *iu = &STATE(image_units)[i];
             if (iu->tex != tex) {
                 continue;
             }
@@ -5804,7 +5804,7 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
     }
 
     if (!render_target_needs_readback &&
-        mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels, ctx->state.pack.swap_bytes == GL_TRUE)) {
+        mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels, STATE(pack).swap_bytes == GL_TRUE)) {
         return;
     }
 
@@ -5976,7 +5976,7 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
     }
 
 
-    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, 1, format, type, &pack_layout, pixels, ctx->state.pack.swap_bytes == GL_TRUE)) {
+    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, 1, format, type, &pack_layout, pixels, STATE(pack).swap_bytes == GL_TRUE)) {
         return;
     }
 
@@ -6098,7 +6098,7 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
                                                    type,
                                                    &slice_layout,
                                                    dst_base + ((size_t)z * pack_layout.dst_image_size),
-                                                   ctx->state.pack.swap_bytes == GL_TRUE)) {
+                                                   STATE(pack).swap_bytes == GL_TRUE)) {
                 memset(dst_base + ((size_t)z * pack_layout.dst_image_size), 0, pack_layout.write_span_bytes);
             }
         }
@@ -6117,7 +6117,7 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
                                           type,
                                           &pack_layout,
                                           pixels,
-                                          ctx->state.pack.swap_bytes == GL_TRUE)) {
+                                          STATE(pack).swap_bytes == GL_TRUE)) {
         return;
     }
 

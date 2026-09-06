@@ -1124,18 +1124,18 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)mglApplyPendingDefaultColorClearToTexture:(id)texture
 {
-    if (!ctx || !texture || !(ctx->state.default_fbo_clear_bitmask & GL_COLOR_BUFFER_BIT)) {
+    if (!ctx || !texture || !(STATE(default_fbo_clear_bitmask) & GL_COLOR_BUFFER_BIT)) {
         return;
     }
 
     if (mglRenderEncodeColorClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
-            ctx->state.default_clear_color[0],
-            ctx->state.default_clear_color[1],
-            ctx->state.default_clear_color[2],
-            ctx->state.default_clear_color[3]) == 0) {
-        ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+            STATE(default_clear_color)[0],
+            STATE(default_clear_color)[1],
+            STATE(default_clear_color)[2],
+            STATE(default_clear_color)[3]) == 0) {
+        STATE(default_fbo_clear_bitmask) &= ~GL_COLOR_BUFFER_BIT;
         return;
     }
     NSLog(@"MGL WARNING: C++ default framebuffer color clear failed");
@@ -1800,15 +1800,15 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)mglApplyPendingDefaultDepthClearToTexture:(id)texture
 {
-    if (!ctx || !texture || !(ctx->state.default_fbo_clear_bitmask & GL_DEPTH_BUFFER_BIT)) {
+    if (!ctx || !texture || !(STATE(default_fbo_clear_bitmask) & GL_DEPTH_BUFFER_BIT)) {
         return;
     }
 
     if (mglRenderEncodeDepthClearForCommandBufferOwner(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
-            ctx->state.var.depth_clear_value) == 0) {
-        ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+            STATE(var).depth_clear_value) == 0) {
+        STATE(default_fbo_clear_bitmask) &= ~GL_DEPTH_BUFFER_BIT;
     } else {
         NSLog(@"MGL WARNING: C++ default depth clear failed");
     }
@@ -1831,8 +1831,8 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (glm_ctx->state.readbuffer) {
-        Framebuffer *fbo = glm_ctx->state.readbuffer;
+    if (glm_ctx->active_state->readbuffer) {
+        Framebuffer *fbo = glm_ctx->active_state->readbuffer;
         FBOAttachment *attachment = fbo ? &fbo->depth : NULL;
         Texture *readTextureObject = [self framebufferAttachmentTexture:attachment];
         if (!readTextureObject) {
@@ -1876,7 +1876,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    GLuint drawBufferIndex = mglDefaultDrawBufferIndexForGL(glm_ctx->state.read_buffer);
+    GLuint drawBufferIndex = mglDefaultDrawBufferIndexForGL(glm_ctx->active_state->read_buffer);
     id texture = nil;
     if (drawBufferIndex < _MAX_DRAW_BUFFERS) {
         texture = (__bridge id)
@@ -1918,8 +1918,8 @@ static void mglTextureCopyTextureToBuffer(
                        type:(GLenum)type
 {
     ctx = glm_ctx;
-    Framebuffer *fbo = glm_ctx ? glm_ctx->state.readbuffer : NULL;
-    GLenum readBuffer = glm_ctx ? glm_ctx->state.read_buffer : GL_NONE;
+    Framebuffer *fbo = glm_ctx ? glm_ctx->active_state->readbuffer : NULL;
+    GLenum readBuffer = glm_ctx ? glm_ctx->active_state->read_buffer : GL_NONE;
     if (!fbo || readBuffer < GL_COLOR_ATTACHMENT0 ||
         readBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
@@ -1994,21 +1994,21 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    if (glm_ctx->state.readbuffer)
+    if (glm_ctx->active_state->readbuffer)
     {
-        Framebuffer *fbo = glm_ctx->state.readbuffer;
-        GLenum readBuffer = glm_ctx->state.read_buffer;
+        Framebuffer *fbo = glm_ctx->active_state->readbuffer;
+        GLenum readBuffer = glm_ctx->active_state->read_buffer;
         if (!fbo ||
             readBuffer == GL_NONE ||
             readBuffer < GL_COLOR_ATTACHMENT0 ||
-            readBuffer >= GL_COLOR_ATTACHMENT0 + glm_ctx->state.max_color_attachments ||
+            readBuffer >= GL_COLOR_ATTACHMENT0 + glm_ctx->active_state->max_color_attachments ||
             readBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
             static uint64_t s_invalidReadFBOCount = 0;
             uint64_t hit = ++s_invalidReadFBOCount;
             if (hit <= 32ull || (hit % 256ull) == 0ull) {
                 NSLog(@"MGL WARNING: readPixels invalid FBO read buffer=0x%x maxColor=%u hit=%llu; returning zero data",
                       (unsigned)readBuffer,
-                      (unsigned)glm_ctx->state.max_color_attachments,
+                      (unsigned)glm_ctx->active_state->max_color_attachments,
                       (unsigned long long)hit);
             }
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
@@ -2077,7 +2077,7 @@ static void mglTextureCopyTextureToBuffer(
     GLuint mgl_drawbuffer;
     id texture = nil;
 
-    switch(glm_ctx->state.read_buffer)
+    switch(glm_ctx->active_state->read_buffer)
     {
         case GL_FRONT: mgl_drawbuffer = _FRONT; break;
         case GL_BACK: mgl_drawbuffer = _FRONT; break;
@@ -2089,7 +2089,7 @@ static void mglTextureCopyTextureToBuffer(
         case GL_RIGHT: mgl_drawbuffer = _FRONT_RIGHT; break;
         default:
             NSLog(@"MGL WARNING: readPixels unsupported default read buffer=0x%x; returning zero data",
-                  (unsigned)glm_ctx->state.read_buffer);
+                  (unsigned)glm_ctx->active_state->read_buffer);
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
     }
@@ -5961,11 +5961,11 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)flushImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
 {
-    if (!glm_ctx || unit >= glm_ctx->state.var.max_image_units ||
+    if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
         unit >= TEXTURE_UNITS) {
         return;
     }
-    ImageUnit *iu = &glm_ctx->state.image_units[unit];
+    ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
     if (!iu->tex || !iu->mtl_image_view || iu->layered ||
         iu->tex->target != GL_TEXTURE_3D) {
         return;
@@ -6008,11 +6008,11 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)prepareImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
 {
-    if (!glm_ctx || unit >= glm_ctx->state.var.max_image_units ||
+    if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
         unit >= TEXTURE_UNITS) {
         return;
     }
-    ImageUnit *iu = &glm_ctx->state.image_units[unit];
+    ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
     if (!iu->tex || iu->layered || iu->tex->target != GL_TEXTURE_3D) {
         return;
     }

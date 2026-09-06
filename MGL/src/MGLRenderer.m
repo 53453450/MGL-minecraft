@@ -530,7 +530,10 @@ Program *mglResolveProgramFromState(GLMContext ctx)
         return NULL;
     }
 
-    if (!resolved->link_success) {
+    if (!resolved->link_success &&
+        !resolved->modules[_VERTEX_SHADER].metallib_bytes &&
+        !resolved->modules[_FRAGMENT_SHADER].metallib_bytes &&
+        !resolved->modules[_COMPUTE_SHADER].metallib_bytes) {
         NSLog(@"MGL PROGRAM RESOLVE pending: name=%u ptr=%p not linked",
               (unsigned)ctx->active_state->program_name, resolved);
         return NULL;
@@ -699,7 +702,13 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
         return NULL;
     }
 
-    if (!stageProgram->link_success) {
+    if (!stageProgram->link_success &&
+        !stageProgram->modules[_VERTEX_SHADER].metallib_bytes &&
+        !stageProgram->modules[_FRAGMENT_SHADER].metallib_bytes &&
+        !stageProgram->modules[_COMPUTE_SHADER].metallib_bytes &&
+        !stageProgram->modules[_GEOMETRY_SHADER].metallib_bytes &&
+        !stageProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes &&
+        !stageProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes) {
         NSLog(@"MGL PROGRAM PIPELINE RESOLVE pending stage program pipeline=%u stage=%s program=%u",
               (unsigned)pipeline->name,
               mglShaderStageName(stage),

@@ -77,24 +77,24 @@ bool mglComputeTexturePackLayout(GLMContext ctx,
     memset(layout, 0, sizeof(*layout));
     layout->pixel_size = pixel_size;
 
-    if (ctx->state.pack.row_length < 0 ||
-        ctx->state.pack.image_height < 0 ||
-        ctx->state.pack.skip_pixels < 0 ||
-        ctx->state.pack.skip_rows < 0 ||
-        ctx->state.pack.skip_images < 0) {
+    if (STATE(pack).row_length < 0 ||
+        STATE(pack).image_height < 0 ||
+        STATE(pack).skip_pixels < 0 ||
+        STATE(pack).skip_rows < 0 ||
+        STATE(pack).skip_images < 0) {
         fprintf(stderr,
                 "MGL ERROR: %s invalid negative pack state rowLength=%d imageHeight=%d skipPixels=%d skipRows=%d skipImages=%d\n",
                 op ? op : "texture readback",
-                ctx->state.pack.row_length,
-                ctx->state.pack.image_height,
-                ctx->state.pack.skip_pixels,
-                ctx->state.pack.skip_rows,
-                ctx->state.pack.skip_images);
+                STATE(pack).row_length,
+                STATE(pack).image_height,
+                STATE(pack).skip_pixels,
+                STATE(pack).skip_rows,
+                STATE(pack).skip_images);
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
 
-    layout->row_length_pixels = ctx->state.pack.row_length > 0 ?
-                                (size_t)ctx->state.pack.row_length :
+    layout->row_length_pixels = STATE(pack).row_length > 0 ?
+                                (size_t)STATE(pack).row_length :
                                 (size_t)width;
 
     if (!mglMulSizeT((size_t)width, pixel_size, &layout->row_copy_bytes) ||
@@ -108,7 +108,7 @@ bool mglComputeTexturePackLayout(GLMContext ctx,
         ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
     }
 
-    size_t alignment = (size_t)(ctx->state.pack.alignment > 0 ? ctx->state.pack.alignment : 1);
+    size_t alignment = (size_t)(STATE(pack).alignment > 0 ? STATE(pack).alignment : 1);
     size_t align_rem = layout->dst_pitch % alignment;
     if (align_rem) {
         size_t pad = alignment - align_rem;
@@ -122,8 +122,8 @@ bool mglComputeTexturePackLayout(GLMContext ctx,
         }
     }
 
-    layout->dst_image_rows = ctx->state.pack.image_height > 0 ?
-                             (size_t)ctx->state.pack.image_height :
+    layout->dst_image_rows = STATE(pack).image_height > 0 ?
+                             (size_t)STATE(pack).image_height :
                              (size_t)height;
     if (!mglMulSizeT(layout->dst_pitch, layout->dst_image_rows, &layout->dst_image_size)) {
         fprintf(stderr,
@@ -137,17 +137,17 @@ bool mglComputeTexturePackLayout(GLMContext ctx,
     size_t skip_pixels_bytes = 0u;
     size_t skip_rows_bytes = 0u;
     size_t skip_images_bytes = 0u;
-    GLint skip_images = ctx->state.pack.skip_images;
-    if (!mglMulSizeT((size_t)ctx->state.pack.skip_pixels, pixel_size, &skip_pixels_bytes) ||
-        !mglMulSizeT((size_t)ctx->state.pack.skip_rows, layout->dst_pitch, &skip_rows_bytes) ||
+    GLint skip_images = STATE(pack).skip_images;
+    if (!mglMulSizeT((size_t)STATE(pack).skip_pixels, pixel_size, &skip_pixels_bytes) ||
+        !mglMulSizeT((size_t)STATE(pack).skip_rows, layout->dst_pitch, &skip_rows_bytes) ||
         !mglMulSizeT((size_t)skip_images, layout->dst_image_size, &skip_images_bytes) ||
         !mglAddSizeT(skip_pixels_bytes, skip_rows_bytes, &layout->skip_offset_bytes) ||
         !mglAddSizeT(layout->skip_offset_bytes, skip_images_bytes, &layout->skip_offset_bytes)) {
         fprintf(stderr,
                 "MGL ERROR: %s pack skip computation overflow skipPixels=%d skipRows=%d skipImages=%d dstPitch=%zu imageSize=%zu pixelSize=%zu\n",
                 op ? op : "texture readback",
-                ctx->state.pack.skip_pixels,
-                ctx->state.pack.skip_rows,
+                STATE(pack).skip_pixels,
+                STATE(pack).skip_rows,
                 skip_images,
                 layout->dst_pitch,
                 layout->dst_image_size,
@@ -1317,24 +1317,24 @@ bool mglComputeTextureUnpackLayout(GLMContext ctx,
     memset(layout, 0, sizeof(*layout));
     layout->pixel_size = pixel_size;
 
-    if (ctx->state.unpack.row_length < 0 ||
-        ctx->state.unpack.image_height < 0 ||
-        ctx->state.unpack.skip_pixels < 0 ||
-        ctx->state.unpack.skip_rows < 0 ||
-        ctx->state.unpack.skip_images < 0) {
+    if (STATE(unpack).row_length < 0 ||
+        STATE(unpack).image_height < 0 ||
+        STATE(unpack).skip_pixels < 0 ||
+        STATE(unpack).skip_rows < 0 ||
+        STATE(unpack).skip_images < 0) {
         fprintf(stderr,
                 "MGL ERROR: %s invalid negative unpack state rowLength=%d imageHeight=%d skipPixels=%d skipRows=%d skipImages=%d\n",
                 op ? op : "texture upload",
-                ctx->state.unpack.row_length,
-                ctx->state.unpack.image_height,
-                ctx->state.unpack.skip_pixels,
-                ctx->state.unpack.skip_rows,
-                ctx->state.unpack.skip_images);
+                STATE(unpack).row_length,
+                STATE(unpack).image_height,
+                STATE(unpack).skip_pixels,
+                STATE(unpack).skip_rows,
+                STATE(unpack).skip_images);
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
 
-    layout->row_length_pixels = ctx->state.unpack.row_length > 0 ?
-                                (size_t)ctx->state.unpack.row_length :
+    layout->row_length_pixels = STATE(unpack).row_length > 0 ?
+                                (size_t)STATE(unpack).row_length :
                                 (size_t)width;
 
     if (!mglMulSizeT((size_t)width, pixel_size, &layout->row_copy_bytes) ||
@@ -1348,7 +1348,7 @@ bool mglComputeTextureUnpackLayout(GLMContext ctx,
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
 
-    size_t alignment = (size_t)(ctx->state.unpack.alignment > 0 ? ctx->state.unpack.alignment : 1);
+    size_t alignment = (size_t)(STATE(unpack).alignment > 0 ? STATE(unpack).alignment : 1);
     size_t align_rem = layout->src_pitch % alignment;
     if (align_rem) {
         size_t pad = alignment - align_rem;
@@ -1362,8 +1362,8 @@ bool mglComputeTextureUnpackLayout(GLMContext ctx,
         }
     }
 
-    layout->src_image_rows = ctx->state.unpack.image_height > 0 ?
-                             (size_t)ctx->state.unpack.image_height :
+    layout->src_image_rows = STATE(unpack).image_height > 0 ?
+                             (size_t)STATE(unpack).image_height :
                              (size_t)height;
 
     if (!mglMulSizeT(layout->src_pitch, layout->src_image_rows, &layout->src_image_size)) {
@@ -1378,17 +1378,17 @@ bool mglComputeTextureUnpackLayout(GLMContext ctx,
     size_t skip_pixels_bytes = 0u;
     size_t skip_rows_bytes = 0u;
     size_t skip_images_bytes = 0u;
-    GLint skip_images = ctx->state.unpack.skip_images;
-    if (!mglMulSizeT((size_t)ctx->state.unpack.skip_pixels, pixel_size, &skip_pixels_bytes) ||
-        !mglMulSizeT((size_t)ctx->state.unpack.skip_rows, layout->src_pitch, &skip_rows_bytes) ||
+    GLint skip_images = STATE(unpack).skip_images;
+    if (!mglMulSizeT((size_t)STATE(unpack).skip_pixels, pixel_size, &skip_pixels_bytes) ||
+        !mglMulSizeT((size_t)STATE(unpack).skip_rows, layout->src_pitch, &skip_rows_bytes) ||
         !mglMulSizeT((size_t)skip_images, layout->src_image_size, &skip_images_bytes) ||
         !mglAddSizeT(skip_pixels_bytes, skip_rows_bytes, &layout->skip_offset_bytes) ||
         !mglAddSizeT(layout->skip_offset_bytes, skip_images_bytes, &layout->skip_offset_bytes)) {
         fprintf(stderr,
                 "MGL ERROR: %s unpack skip computation overflow skipPixels=%d skipRows=%d skipImages=%d srcPitch=%zu imageSize=%zu pixelSize=%zu\n",
                 op ? op : "texture upload",
-                ctx->state.unpack.skip_pixels,
-                ctx->state.unpack.skip_rows,
+                STATE(unpack).skip_pixels,
+                STATE(unpack).skip_rows,
                 skip_images,
                 layout->src_pitch,
                 layout->src_image_size,
@@ -1648,11 +1648,11 @@ bool mglResolveTexSubImageSource(GLMContext ctx,
                 pixels_raw,
                 resolved_src,
                 source_class,
-                ctx->state.unpack.row_length,
-                ctx->state.unpack.alignment,
-                ctx->state.unpack.skip_pixels,
-                ctx->state.unpack.skip_rows,
-                ctx->state.unpack.skip_images,
+                STATE(unpack).row_length,
+                STATE(unpack).alignment,
+                STATE(unpack).skip_pixels,
+                STATE(unpack).skip_rows,
+                STATE(unpack).skip_images,
                 skip_offset_bytes,
                 required_bytes,
                 src_hash);
@@ -1708,16 +1708,16 @@ bool mglResolveTexSubImageSource(GLMContext ctx,
 }
 bool mglVerifyInternalFormatAndFormatTypeForCall(GLMContext ctx, GLint internalformat, GLenum format, GLenum type)
 {
-    GLuint old_error_count = ctx ? ctx->state.error_count : 0u;
-    GLenum old_error = ctx ? ctx->state.error : GL_NO_ERROR;
+    GLuint old_error_count = ctx ? STATE(error_count) : 0u;
+    GLenum old_error = ctx ? STATE(error) : GL_NO_ERROR;
 
     if (verifyInternalFormatAndFormatType(ctx, internalformat, format, type)) {
         return true;
     }
 
     if (ctx &&
-        ctx->state.error_count == old_error_count &&
-        ctx->state.error == old_error) {
+        STATE(error_count) == old_error_count &&
+        STATE(error) == old_error) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
 
@@ -1829,17 +1829,17 @@ bool mglStoreCompressedTextureImage(GLMContext ctx,
          * ceil(height / block_h) when UNPACK_IMAGE_HEIGHT is 0).  When layout
          * is already tight, fall through to a plain memcpy of imageSize bytes
          * (matches historic behaviour). */
-        GLint user_cbw = ctx->state.unpack.compressed_block_width;
-        GLint user_cbh = ctx->state.unpack.compressed_block_height;
-        GLint user_cbd = ctx->state.unpack.compressed_block_depth;
-        GLint user_cbs = ctx->state.unpack.compressed_block_size;
+        GLint user_cbw = STATE(unpack).compressed_block_width;
+        GLint user_cbh = STATE(unpack).compressed_block_height;
+        GLint user_cbd = STATE(unpack).compressed_block_depth;
+        GLint user_cbs = STATE(unpack).compressed_block_size;
         bool compressed_pixel_store_active = (user_cbw > 0 && user_cbs > 0);
         GLuint ubw = 0, ubh = 0, ubs = 0, ubd = 1;
-        GLint row_length  = ctx->state.unpack.row_length;
-        GLint image_height = (depth > 1) ? ctx->state.unpack.image_height : 0;
-        GLint skip_p = ctx->state.unpack.skip_pixels;
-        GLint skip_r = (height > 1) ? ctx->state.unpack.skip_rows : 0;
-        GLint skip_i = (depth > 1) ? ctx->state.unpack.skip_images : 0;
+        GLint row_length  = STATE(unpack).row_length;
+        GLint image_height = (depth > 1) ? STATE(unpack).image_height : 0;
+        GLint skip_p = STATE(unpack).skip_pixels;
+        GLint skip_r = (height > 1) ? STATE(unpack).skip_rows : 0;
+        GLint skip_i = (depth > 1) ? STATE(unpack).skip_images : 0;
 
         if (compressed_pixel_store_active) {
             GLuint fmt_bh = 0, fmt_bd = 1;

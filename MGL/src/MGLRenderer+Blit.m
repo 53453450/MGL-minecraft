@@ -1671,9 +1671,9 @@ static id mglLookupAuxRenderPipeline(
 {
     MGL_ASSERT_GL_THREAD();
     GLbitfield depthStencilMask = mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-    if (depthStencilMask != 0u && glm_ctx->state.readbuffer && glm_ctx->state.framebuffer) {
-        Framebuffer *depthReadFBO = glm_ctx->state.readbuffer;
-        Framebuffer *depthDrawFBO = glm_ctx->state.framebuffer;
+    if (depthStencilMask != 0u && glm_ctx->active_state->readbuffer && glm_ctx->active_state->framebuffer) {
+        Framebuffer *depthReadFBO = glm_ctx->active_state->readbuffer;
+        Framebuffer *depthDrawFBO = glm_ctx->active_state->framebuffer;
         FBOAttachment *depthReadAttachment =
             (depthStencilMask & GL_DEPTH_BUFFER_BIT) ? &depthReadFBO->depth : &depthReadFBO->stencil;
         FBOAttachment *depthDrawAttachment =
@@ -1788,11 +1788,11 @@ static id mglLookupAuxRenderPipeline(
                     GLint copyDstY0 = dstY0;
                     GLint copyDstX1 = dstX1;
                     GLint copyDstY1 = dstY1;
-                    if (glm_ctx->state.caps.scissor_test) {
-                        GLint scissorX0 = glm_ctx->state.var.scissor_box[0];
-                        GLint scissorY0 = glm_ctx->state.var.scissor_box[1];
-                        GLint scissorX1 = scissorX0 + glm_ctx->state.var.scissor_box[2];
-                        GLint scissorY1 = scissorY0 + glm_ctx->state.var.scissor_box[3];
+                    if (glm_ctx->active_state->caps.scissor_test) {
+                        GLint scissorX0 = glm_ctx->active_state->var.scissor_box[0];
+                        GLint scissorY0 = glm_ctx->active_state->var.scissor_box[1];
+                        GLint scissorX1 = scissorX0 + glm_ctx->active_state->var.scissor_box[2];
+                        GLint scissorY1 = scissorY0 + glm_ctx->active_state->var.scissor_box[3];
                         copyDstX0 = MAX(copyDstX0, scissorX0);
                         copyDstY0 = MAX(copyDstY0, scissorY0);
                         copyDstX1 = MIN(copyDstX1, scissorX1);
@@ -1985,11 +1985,11 @@ static id mglLookupAuxRenderPipeline(
                                     scissorX1 = MAX((NSInteger)0, MIN(scissorX1, (NSInteger)dstTexW));
                                     scissorY0 = MAX((NSInteger)0, MIN(scissorY0, (NSInteger)dstTexH));
                                     scissorY1 = MAX((NSInteger)0, MIN(scissorY1, (NSInteger)dstTexH));
-                                    if (glm_ctx && glm_ctx->state.caps.scissor_test) {
-                                        NSInteger glScissorX0 = glm_ctx->state.var.scissor_box[0];
-                                        NSInteger glScissorY0 = glm_ctx->state.var.scissor_box[1];
-                                        NSInteger glScissorX1 = glScissorX0 + glm_ctx->state.var.scissor_box[2];
-                                        NSInteger glScissorY1 = glScissorY0 + glm_ctx->state.var.scissor_box[3];
+                                    if (glm_ctx && glm_ctx->active_state->caps.scissor_test) {
+                                        NSInteger glScissorX0 = glm_ctx->active_state->var.scissor_box[0];
+                                        NSInteger glScissorY0 = glm_ctx->active_state->var.scissor_box[1];
+                                        NSInteger glScissorX1 = glScissorX0 + glm_ctx->active_state->var.scissor_box[2];
+                                        NSInteger glScissorY1 = glScissorY0 + glm_ctx->active_state->var.scissor_box[3];
                                         NSInteger metalScissorY0 = (NSInteger)dstTexH - glScissorY1;
                                         NSInteger metalScissorY1 = (NSInteger)dstTexH - glScissorY0;
                                         scissorX0 = MAX(scissorX0, glScissorX0);
@@ -2057,8 +2057,8 @@ static id mglLookupAuxRenderPipeline(
     MGLMetalAttachmentSubresource drawSubresource = {0u, 0u, 0u};
     //int readtex, drawtex;
 
-    readfbo = glm_ctx->state.readbuffer;
-    drawfbo = glm_ctx->state.framebuffer;
+    readfbo = glm_ctx->active_state->readbuffer;
+    drawfbo = glm_ctx->active_state->framebuffer;
 
     if (drawfbo == NULL) {
         NSUInteger requestedDrawableWidth = (NSUInteger)MAX(0, MAX(dstX0, dstX1));
@@ -2079,7 +2079,7 @@ static id mglLookupAuxRenderPipeline(
         }
         readtexid = [self mglDrawableTexture];
     } else {
-        readAttachment = glm_ctx->state.read_buffer;
+        readAttachment = glm_ctx->active_state->read_buffer;
         if (readAttachment == GL_NONE) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer skipped color blit with GL_READ_BUFFER=GL_NONE");
             return NO;
@@ -2134,7 +2134,7 @@ static id mglLookupAuxRenderPipeline(
         }
         drawtexid = [self mglDrawableTexture];
     } else {
-        drawAttachment = glm_ctx->state.draw_buffer;
+        drawAttachment = glm_ctx->active_state->draw_buffer;
         if (drawAttachment == GL_NONE) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer skipped color blit with GL_DRAW_BUFFER=GL_NONE");
             return NO;
@@ -2208,12 +2208,22 @@ static id mglLookupAuxRenderPipeline(
     id readtexid = *readtexidPtr;
     MGLMetalAttachmentSubresource readSubresource = *readSubresourcePtr;
     BOOL didMsaaResolve = NO;
-    if (mglBlitTextureInfo(readtexid).sample_count > 1u &&
-        mglBlitTextureInfo(drawtexid).sample_count <= 1u &&
-        !mglMetalPixelFormatIsIntegerColor(mglBlitTextureInfo(readtexid).pixel_format)) {
+    const MGLRenderTextureInfo readInfo = mglBlitTextureInfo(readtexid);
+    const MGLRenderTextureInfo drawInfo = mglBlitTextureInfo(drawtexid);
+    /* Native Metal MSAA, or the AIR FBO path that stores MS planes as a
+     * 2DArray (sample_count==1, array_length==GL samples). */
+    const BOOL nativeMsaa = readInfo.sample_count > 1u;
+    const BOOL emulatedMsaa =
+        !nativeMsaa &&
+        readTextureObject &&
+        readTextureObject->samples > 1u &&
+        readInfo.texture_type == MGLTextureType2DArray &&
+        drawInfo.sample_count <= 1u;
+    if ((nativeMsaa || emulatedMsaa) && drawInfo.sample_count <= 1u &&
+        !mglMetalPixelFormatIsIntegerColor(readInfo.pixel_format)) {
         MGLRenderTextureDescriptorState resolveDesc = {0};
         resolveDesc.texture_type = MGLTextureType2D;
-        resolveDesc.pixel_format = mglBlitTextureInfo(readtexid).pixel_format;
+        resolveDesc.pixel_format = readInfo.pixel_format;
         resolveDesc.width = srcTexW;
         resolveDesc.height = srcTexH;
         resolveDesc.depth = 1;
@@ -2225,18 +2235,43 @@ static id mglLookupAuxRenderPipeline(
         id resolveTex =
             mglBlitCreateTexture(_device, &resolveDesc);
         if (!resolveTex) {
-            NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create MSAA resolve texture srcSamples=%lu",
-                  (unsigned long)mglBlitTextureInfo(readtexid).sample_count);
+            NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create MSAA resolve texture srcSamples=%lu emulated=%d",
+                  (unsigned long)(nativeMsaa ? readInfo.sample_count
+                                             : (NSUInteger)readTextureObject->samples),
+                  emulatedMsaa ? 1 : 0);
             return NO;
         }
 
-        BOOL resolveEncoded =
-            mglRenderEncodeMultisampleResolveForCommandBufferOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
-                (__bridge void *)readtexid, readSubresource.level,
-                readSubresource.slice, readSubresource.depthPlane,
-                (__bridge void *)resolveTex, 0, 0, 0, 0) == 0;
+        BOOL resolveEncoded = NO;
+        if (nativeMsaa) {
+            resolveEncoded =
+                mglRenderEncodeMultisampleResolveForCommandBufferOwner(
+                    _renderPassManager.state->currentCommandBufferOwner,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                    (__bridge void *)readtexid, readSubresource.level,
+                    readSubresource.slice, readSubresource.depthPlane,
+                    (__bridge void *)resolveTex, 0, 0, 0, 0) == 0;
+        } else {
+            /* Emulated MS: GL NEAREST resolve picks one sample; use plane 0. */
+            id copyBlit =
+                (__bridge id)mglRenderCreateBlitEncoderBorrowed(
+                    _renderPassManager.state->currentCommandBufferOwner);
+            if (copyBlit) {
+                if (readTextureObject->is_render_target) {
+                    mglBlitSynchronizeTexture(copyBlit, readtexid,
+                                              /*slice*/0u, readSubresource.level);
+                }
+                mglBlitCopyTexture(
+                    copyBlit, readtexid, /*sourceSlice*/0u,
+                    readSubresource.level,
+                    mglBlitOrigin(0u, 0u, 0u),
+                    mglBlitSize(srcTexW, srcTexH, 1u),
+                    resolveTex, 0u, 0u,
+                    mglBlitOrigin(0u, 0u, 0u));
+                mglBlitEndBlitEncoder(copyBlit);
+                resolveEncoded = YES;
+            }
+        }
         if (!resolveEncoded) return NO;
 
         /* Synchronize the resolved texture so the subsequent blit/shader can
@@ -2252,9 +2287,11 @@ static id mglLookupAuxRenderPipeline(
         static uint64_t s_msaaResolveLogCount = 0;
         uint64_t msaaHit = ++s_msaaResolveLogCount;
         if (msaaHit <= 8ull || (msaaHit % 256ull) == 0ull) {
-            mglTraceLogNSString(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu srcTex=%lux%lu srcObj=%u",
+            mglTraceLogNSString(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu emulated=%d srcTex=%lux%lu srcObj=%u",
                   (unsigned long long)msaaHit,
-                  (unsigned long)mglBlitTextureInfo(readtexid).sample_count,
+                  (unsigned long)(nativeMsaa ? readInfo.sample_count
+                                             : (NSUInteger)readTextureObject->samples),
+                  emulatedMsaa ? 1 : 0,
                   (unsigned long)srcTexW, (unsigned long)srcTexH,
                   readTextureObject ? (unsigned)readTextureObject->name : 0u);
         }
@@ -2516,11 +2553,11 @@ static id mglLookupAuxRenderPipeline(
         NSInteger scissorX1 = (NSInteger)scissorBase.x1;
         NSInteger scissorY0 = (NSInteger)scissorBase.y0;
         NSInteger scissorY1 = (NSInteger)scissorBase.y1;
-        if (glm_ctx && glm_ctx->state.caps.scissor_test) {
-            NSInteger glScissorX0 = glm_ctx->state.var.scissor_box[0];
-            NSInteger glScissorY0 = glm_ctx->state.var.scissor_box[1];
-            NSInteger glScissorX1 = glScissorX0 + glm_ctx->state.var.scissor_box[2];
-            NSInteger glScissorY1 = glScissorY0 + glm_ctx->state.var.scissor_box[3];
+        if (glm_ctx && glm_ctx->active_state->caps.scissor_test) {
+            NSInteger glScissorX0 = glm_ctx->active_state->var.scissor_box[0];
+            NSInteger glScissorY0 = glm_ctx->active_state->var.scissor_box[1];
+            NSInteger glScissorX1 = glScissorX0 + glm_ctx->active_state->var.scissor_box[2];
+            NSInteger glScissorY1 = glScissorY0 + glm_ctx->active_state->var.scissor_box[3];
             NSInteger metalScissorY0 = (NSInteger)dstTexH - glScissorY1;
             NSInteger metalScissorY1 = (NSInteger)dstTexH - glScissorY0;
             scissorX0 = MAX(scissorX0, glScissorX0);
@@ -2894,7 +2931,7 @@ static id mglLookupAuxRenderPipeline(
             (uint32_t)dstTexW, (uint32_t)dstTexH,
             needsFormatConversionBlit ? 1 : 0,
             needsRenderTargetSyncBlit ? 1 : 0,
-            (glm_ctx && glm_ctx->state.caps.scissor_test) ? 1 : 0,
+            (glm_ctx && glm_ctx->active_state->caps.scissor_test) ? 1 : 0,
             &plan) != 0) {
         NSLog(@"MGL WARN: mtlBlitFramebuffer empty clipped region src=%.3fx%.3f dst=%.3fx%.3f, skipping",
               fabs(axisX.src1 - axisX.src0),
@@ -2976,8 +3013,8 @@ static id mglLookupAuxRenderPipeline(
                         (unsigned long)mglBlitTextureInfo(drawtexid).pixel_format,
                         (unsigned long)dstTexW,
                         (unsigned long)dstTexH,
-                        (unsigned)(glm_ctx ? glm_ctx->state.draw_buffer : 0u),
-                        (unsigned)(glm_ctx ? glm_ctx->state.read_buffer : 0u));
+                        (unsigned)(glm_ctx ? glm_ctx->active_state->draw_buffer : 0u),
+                        (unsigned)(glm_ctx ? glm_ctx->active_state->read_buffer : 0u));
         } else {
             mglTraceLogNSString(@"MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%x filter=0x%x "
                   "srcReq=(%d,%d)-(%d,%d) dstReq=(%d,%d)-(%d,%d) "
@@ -3015,8 +3052,8 @@ static id mglLookupAuxRenderPipeline(
                   (unsigned long)mglBlitTextureInfo(drawtexid).pixel_format,
                   (unsigned long)dstTexW,
                   (unsigned long)dstTexH,
-                  (unsigned)(glm_ctx ? glm_ctx->state.draw_buffer : 0u),
-                  (unsigned)(glm_ctx ? glm_ctx->state.read_buffer : 0u));
+                  (unsigned)(glm_ctx ? glm_ctx->active_state->draw_buffer : 0u),
+                  (unsigned)(glm_ctx ? glm_ctx->active_state->read_buffer : 0u));
         }
     }
 
@@ -3132,7 +3169,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
     /* Resolve the source framebuffer attachment. For depth destinations we
      * read from the depth attachment; for color destinations we read from
      * the current read buffer's color attachment. */
-    Framebuffer *fbo = glm_ctx->state.readbuffer;
+    Framebuffer *fbo = glm_ctx->active_state->readbuffer;
     if (!fbo) {
         /* Default framebuffer: not supported via this path. */
         return NO;
@@ -3142,7 +3179,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
     if (destIsDepth) {
         srcAttachment = &fbo->depth;
     } else {
-        GLenum readBuffer = glm_ctx->state.read_buffer;
+        GLenum readBuffer = glm_ctx->active_state->read_buffer;
         if (readBuffer < GL_COLOR_ATTACHMENT0 ||
             readBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
             return NO;
@@ -3217,7 +3254,7 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                                             textureObj:srcTexObj
                                             mtlTexture:srcTexture];
     } else {
-        GLenum readBuffer = glm_ctx->state.read_buffer;
+        GLenum readBuffer = glm_ctx->active_state->read_buffer;
         [self mglApplyPendingFBOColorClearForReadback:fbo
                                             attachment:srcAttachment
                                             textureObj:srcTexObj

@@ -13,7 +13,8 @@
  *   [0, expanded_offset)                     stream 0, ascending,
  *   (expanded_offset .. run end) descending  streams > 0, each record
  *                                            stamped with its stream id
- *                                            at byte 48 of the header.
+ *                                            at MGL_AIR_PER_VERTEX_STREAM_OFFSET
+ *                                            (layout v2: byte 60).
  * Stream 0 is identified by region; streams > 0 by the stamp.
  *
  * This kernel is precompiled (P3 aux asset chain); it contains no runtime
@@ -31,7 +32,8 @@ using namespace metal;
 
 #define MGL_GS_XFB_MAX_STREAMS 4u
 #define MGL_GS_XFB_MAX_FIELDS 30u
-#define MGL_GS_XFB_STREAM_STAMP_OFFSET 48u
+/* Must match MGL_AIR_PER_VERTEX_STREAM_OFFSET in mgl_shader_abi.h (layout v2). */
+#define MGL_GS_XFB_STREAM_STAMP_OFFSET 60u
 #define MGL_GS_XFB_NO_STREAM 0xFFFFFFFFu
 
 struct MGLGSXFBBufferMeta {

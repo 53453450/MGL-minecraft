@@ -89,56 +89,53 @@ typedef struct MGLAIRStageInfo {
 
 /* Fixed inter-stage record shared by VS capture, TCS, TES and the GS compute
  * expansion path.  Keeping the offsets in the public C ABI prevents the AIR
- * backend and renderer from silently drifting apart when built separately. */
+ * backend and renderer from silently drifting apart when built separately.
+ *
+ * Layout version 2 (ARCHITECTURE_AUDIT A04): cull distances no longer alias
+ * layer / viewport_index / stream.  Cache keys that embed the per-vertex
+ * stride or this version must be bumped together with consumers. */
 enum {
+    MGL_AIR_PER_VERTEX_LAYOUT_VERSION = 2,
     MGL_AIR_PER_VERTEX_POSITION_OFFSET = 0,
     MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET = 16,
     MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET = 20,
     MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT = 8,
     /* gl_ClipDistance (GL_MAX_CLIP_DISTANCES): plain-VS output array. */
     MGL_MAX_CLIP_DISTANCES = 8,
-    /* gl_Layer / gl_ViewportIndex outputs (GS expansion): one int per
-     * vertex; the rasterizing vertex stage re-emits both (GL 4.6
-     * §11.1.3.5/§11.1.3.6 tie them to the same value). */
-    MGL_AIR_PER_VERTEX_LAYER_OFFSET = 40,
-    MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET = 44,
+    /* Full 8 cull floats occupy @20..@51; layer/viewport/stream follow. */
+    MGL_AIR_PER_VERTEX_LAYER_OFFSET = 52,
+    MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET = 56,
     /* GS multi-stream XFB: stream id stamped by EmitStreamVertex so the
      * pass-2 scatter can attribute each record to its stream (GL 4.6
      * §11.1.3.4).  Stream-0 records are identified by region, not stamp. */
-    MGL_AIR_PER_VERTEX_STREAM_OFFSET = 48,
+    MGL_AIR_PER_VERTEX_STREAM_OFFSET = 60,
     /* GS-written gl_PrimitiveID at a dedicated offset; ferried to the
      * fragment stage through the reserved varying location below. */
-    MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET = 52,
-    /* gl_ClipDistance array for GS/TCS/TES per-vertex records.  Plain VS
-     * still emits Metal clip_distance; these bytes ferry clip through the
-     * compute-expansion path into the passthrough vertex stage. */
-    MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET = 64,
+    MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET = 64,
+    /* gl_ClipDistance array for GS/TCS/TES per-vertex records.  Kept
+     * 16-byte aligned for float4 loads in passthrough Metal paths. */
+    MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET = 80,
     MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT = MGL_MAX_CLIP_DISTANCES,
     /* Reserved varying location carrying gl_PrimitiveID from the geometry
      * passthrough vertex function to the fragment shader. */
     MGL_AIR_PRIMITIVE_ID_LOCATION = 31,
-    MGL_AIR_PER_VERTEX_STRIDE = 96,
+    MGL_AIR_PER_VERTEX_STRIDE = 112,
 };
 
 /* Byte layout of one per-vertex record.  The kernel and the renderer
  * address every field through the MGL_AIR_PER_VERTEX_* offsets above;
  * this struct mirrors those constants for documentation and static
- * checking.
- *
- * cull_distance[5]/[6]/[7] share bytes with layer / viewport_index /
- * stream when those built-ins are used; shaders that emit six or more
- * cull distances cannot also write the overlapping built-ins.
- * clip_distance sits past the 64-byte legacy footprint so existing
- * layer/viewport/stream aliasing is unchanged. */
+ * checking.  Fields are non-overlapping (A04). */
 typedef struct MGLAIRPerVertexRecord {
     float position[4];          /* @0                                    */
     float point_size;           /* @16                                   */
-    float cull_distance_lo[5];  /* @20 .. @39                            */
-    int32_t layer;              /* @40  aliases cull_distance[5]         */
-    int32_t viewport_index;     /* @44  aliases cull_distance[6]         */
-    uint32_t stream;            /* @48  aliases cull_distance[7]         */
-    float cull_distance_hi[3];  /* @52 .. @63                            */
-    float clip_distance[8];     /* @64 .. @95                            */
+    float cull_distance[8];     /* @20 .. @51                            */
+    int32_t layer;              /* @52                                   */
+    int32_t viewport_index;     /* @56                                   */
+    uint32_t stream;            /* @60                                   */
+    int32_t primitive_id;       /* @64                                   */
+    uint32_t _pad_align_clip[3]; /* @68 .. @79                           */
+    float clip_distance[8];     /* @80 .. @111                           */
 } MGLAIRPerVertexRecord;
 
 #include <stddef.h>
@@ -153,7 +150,7 @@ MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, position) ==
 MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, point_size) ==
                   MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET,
               "point_size offset drift");
-MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, cull_distance_lo) ==
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, cull_distance) ==
                   MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET,
               "cull_distance offset drift");
 MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, layer) ==
@@ -165,11 +162,36 @@ MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, viewport_index) ==
 MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, stream) ==
                   MGL_AIR_PER_VERTEX_STREAM_OFFSET,
               "stream offset must match the kernel's stamp offset");
+MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, primitive_id) ==
+                  MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET,
+              "primitive_id offset drift");
 MGL_AIR_VA_STATIC_ASSERT(offsetof(MGLAIRPerVertexRecord, clip_distance) ==
                   MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET,
               "clip_distance offset drift");
 MGL_AIR_VA_STATIC_ASSERT(sizeof(MGLAIRPerVertexRecord) == MGL_AIR_PER_VERTEX_STRIDE,
               "record size drift");
+/* Field ranges must not overlap (ARCHITECTURE_AUDIT A04). */
+MGL_AIR_VA_STATIC_ASSERT(
+    MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET +
+            MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT * 4u ==
+        MGL_AIR_PER_VERTEX_LAYER_OFFSET,
+    "cull_distance must end where layer begins");
+MGL_AIR_VA_STATIC_ASSERT(
+    MGL_AIR_PER_VERTEX_LAYER_OFFSET + 4u == MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET &&
+        MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET + 4u == MGL_AIR_PER_VERTEX_STREAM_OFFSET &&
+        MGL_AIR_PER_VERTEX_STREAM_OFFSET + 4u == MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET,
+    "layer/viewport/stream/primitive_id must be contiguous ints");
+MGL_AIR_VA_STATIC_ASSERT(
+    (MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET % 16u) == 0u,
+    "clip_distance must stay 16-byte aligned");
+MGL_AIR_VA_STATIC_ASSERT(
+    MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET + 4u <= MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET,
+    "built-in ints must not overlap clip_distance");
+MGL_AIR_VA_STATIC_ASSERT(
+    MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET +
+            MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT * 4u ==
+        MGL_AIR_PER_VERTEX_STRIDE,
+    "clip_distance must fill the end of the record");
 
 static inline uint32_t mglAIRVaryingLocationSpan(GLuint gl_type,
                                                  GLint array_size)

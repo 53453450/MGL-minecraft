@@ -362,14 +362,15 @@ TEST(Metallib, TessellationPacksPatchVaryings) {
     EXPECT_EQ(0, memcmp(tesResult.bytes.data(), "MTLB", 4));
 }
 
-TEST(Metallib, TessControlRejectsExplicitReturn) {
+TEST(Metallib, TessControlAllowsExplicitReturn) {
     static const char *src =
         "#version 450 core\n"
         "layout(vertices = 3) out;\n"
         "void main() { return; }\n";
     CompileResult r = compile(src, MGL_STAGE_TESS_CONTROL);
-    EXPECT_NE(0, r.rc);
-    EXPECT_NE(std::string::npos, r.err.find("explicit return"));
+    EXPECT_EQ(0, r.rc) << r.err;
+    ASSERT_FALSE(r.bytes.empty());
+    EXPECT_EQ(0, memcmp(r.bytes.data(), "MTLB", 4));
 }
 
 TEST(Metallib, CullDistanceCompilesInTessEvaluationStage) {
@@ -830,7 +831,7 @@ TEST(Metallib, RejectsUnsupportedStage) {
 
 TEST(Metallib, NullArgumentsRejected) {
     EXPECT_NE(0, mglShaderCompileGLSL(nullptr, MGL_STAGE_VERTEX, nullptr,
-                                      nullptr, 0));
+                                      nullptr, nullptr, 0));
 }
 
 TEST(Interface, MatchingStagesAccepted) {
@@ -919,7 +920,11 @@ TEST(Reflect, UniformBlockInstanceArray) {
 
     ASSERT_EQ(1u, lists[_UNIFORM_BUFFER_RES].count);
     const MGLShaderResource &block = lists[_UNIFORM_BUFFER_RES].list[0];
-    EXPECT_STREQ("blocks", block.name);
+    /* GL 4.6 §7.3.1: uniform-block resource name is the block type name;
+     * the instance name is retained separately for access checks. */
+    EXPECT_STREQ("UniformBlock", block.name);
+    EXPECT_TRUE(block.ubo_has_instance_name);
+    EXPECT_STREQ("blocks", block.ubo_instance_name);
     EXPECT_EQ(4u, block.ubo_array_size);
     EXPECT_TRUE(block.ubo_is_array);
     EXPECT_EQ(0u, block.binding);
@@ -958,13 +963,17 @@ TEST(Reflect, ComputeResources) {
                                      lists, nullptr, 0));
 
     ASSERT_EQ(1u, lists[_STORAGE_BUFFER_RES].count);
-    EXPECT_STREQ("b", lists[_STORAGE_BUFFER_RES].list[0].name);
+    EXPECT_STREQ("B", lists[_STORAGE_BUFFER_RES].list[0].name);
+    EXPECT_TRUE(lists[_STORAGE_BUFFER_RES].list[0].ubo_has_instance_name);
+    EXPECT_STREQ("b", lists[_STORAGE_BUFFER_RES].list[0].ubo_instance_name);
     /* gl_binding remains the client-visible GLSL binding (3); the AIR slot
      * is tracked separately in `binding` and is allocated after the packed
      * plain-uniform buffer. */
     EXPECT_EQ(3u, lists[_STORAGE_BUFFER_RES].list[0].gl_binding);
     ASSERT_EQ(1u, lists[_STORAGE_BUFFER_RES].list[0].ubo_member_count);
-    EXPECT_STREQ("data", lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].name);
+    /* Array members are flattened to the [0] leaf path for active-uniform
+     * style queries; size still reports the full array length. */
+    EXPECT_STREQ("data[0]", lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].name);
     EXPECT_EQ(GL_FLOAT, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].gl_type);
     EXPECT_EQ(4, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].size);
     EXPECT_EQ(0u, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].offset);

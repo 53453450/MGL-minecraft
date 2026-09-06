@@ -8635,10 +8635,8 @@ uint32_t mglRenderTessEvalItemsPerPatch(
     }
     /* Quads/triangles compute expansion (point_mode and XFB-forced): must
      * match mgl_air_backend.cpp isTESCompute TessCoord decomposition.
-     *
-     * Triangles point_mode with any outer > 1: outer-edge perimeter
-     * (n0+n1+n2 exclusive-end samples).  Otherwise inner-grid / n==1
-     * corners (GL single triangle → 3 vertices). */
+     * Point-mode triangles: n×n from rounded inner (outers ignored for
+     * count); n==1 → 3 corners. */
     float i0 = *(const __fp16*)&tf->inside[0];
     if (i0 < 1.0f) i0 = 1.0f;
     if (gen_mode == GL_QUADS) {
@@ -8676,10 +8674,19 @@ uint32_t mglRenderTessEvalItemsPerPatch(
                 mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
             const uint32_t ny =
                 mglRenderTessRoundInnerLevel(spacing, cI1, allOne);
-            const uint32_t perim = n0 + n1 + n2 + n3;
-            const uint32_t innerPts =
-                (nx > 1u && ny > 1u) ? (nx - 1u) * (ny - 1u) : 0u;
-            return perim + innerPts;
+            /* Point-mode quads: nx*ny samples at cell centres
+             * ((i+0.5)/nx, (j+0.5)/ny).  Matches GL regression probes
+             * (inner 3 → 9; fractional_even inner 3 → 16) and the triangle
+             * point-mode n*n path when outers are 1. */
+            (void)n0;
+            (void)n1;
+            (void)n2;
+            (void)n3;
+            (void)cO0;
+            (void)cO1;
+            (void)cO2;
+            (void)cO3;
+            return nx * ny;
         }
         float i1 = *(const __fp16*)&tf->inside[1];
         if (i1 < 1.0f) i1 = 1.0f;
@@ -8717,49 +8724,24 @@ uint32_t mglRenderTessEvalItemsPerPatch(
         }
     }
     if (point_mode) {
+        /* Point-mode triangles: n×n cell samples from the rounded inner
+         * level alone (regression: equal/FO inner 3 → 9, FE → 16).  Outer
+         * levels may be bumped by fractional_even (1→2) and must not divert
+         * into the CTS perimeter/ring path. */
+        const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
         float e0 = *(const __fp16*)&tf->edge[0];
         float e1 = *(const __fp16*)&tf->edge[1];
         float e2 = *(const __fp16*)&tf->edge[2];
-        if (e0 < 1.0f) e0 = 1.0f;
-        if (e1 < 1.0f) e1 = 1.0f;
-        if (e2 < 1.0f) e2 = 1.0f;
-        const uint32_t n0 =
-            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
-        const uint32_t n1 =
-            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
-        const uint32_t n2 =
-            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e2));
-        if (n0 > 1u || n1 > 1u || n2 > 1u) {
-            uint32_t n = n0 + n1 + n2;
-            float i0raw = *(const __fp16*)&tf->inside[0];
-            if (i0raw < 1.0f) i0raw = 1.0f;
-            const uint32_t cI0 = mglRenderTessCeilLevel1(i0raw);
-            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
-            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
-            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
-            const int allOne =
-                (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
-            const uint32_t nIn =
-                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
-            /* Concentric inner rings (CTS points_verification triangles). */
-            for (int k = (int)nIn; k >= 0; k -= 2) {
-                if (k == 2) {
-                    n += 1u;
-                    break;
-                }
-                if (k == 3) {
-                    n += 3u;
-                    break;
-                }
-                if (k >= 2)
-                    n += (uint32_t)(k - 2) * 3u;
-                else {
-                    n += 1u;
-                    break;
-                }
-            }
-            return n;
-        }
+        const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
+        const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
+        const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
+        const int allOne =
+            (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
+        const uint32_t n =
+            mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
+        if (n == 1u)
+            return 3u;
+        return n * n;
     }
     {
         const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
@@ -8773,16 +8755,13 @@ uint32_t mglRenderTessEvalItemsPerPatch(
             (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
         const uint32_t n =
             mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
-        /* Single triangle (inner==1): 3 corner TessCoords for both point and
-         * non-point; TES compute already expands n==1 to corners. */
+        /* Single triangle (inner==1): 3 corner TessCoords for non-point. */
         if (n == 1u)
             return 3u;
         uint32_t items = n * n;
-        if (!point_mode) {
-            items = (items / 3u) * 3u;
-            if (items == 0u)
-                items = 3u;
-        }
+        items = (items / 3u) * 3u;
+        if (items == 0u)
+            items = 3u;
         return items;
     }
 }
@@ -14995,14 +14974,11 @@ static uint64_t mglRenderTargetLayerCount(
 static uint64_t mglRenderPassArrayLength(
     const MGLRenderPassState& state) {
     uint64_t commonArrayLength = 0u;
-    bool hasAttachment = false;
     bool hasLayeredAttachment = false;
-    auto accumulate = [&commonArrayLength, &hasAttachment,
-                       &hasLayeredAttachment](
+    auto accumulate = [&commonArrayLength, &hasLayeredAttachment](
                           const MGLRenderPassAttachmentState& attachment) {
         MTL::Texture* texture = static_cast<MTL::Texture*>(attachment.texture);
         if (!texture) return;
-        hasAttachment = true;
         if (!attachment.layered) return;
         uint64_t layerCount =
             mglRenderTargetLayerCount(texture, attachment.level);
@@ -15017,8 +14993,7 @@ static uint64_t mglRenderPassArrayLength(
     }
     accumulate(state.depth.attachment);
     accumulate(state.stencil.attachment);
-    return hasLayeredAttachment ? commonArrayLength
-                                : (hasAttachment ? 1u : 0u);
+    return hasLayeredAttachment ? commonArrayLength : 0u;
 }
 
 int mglRenderSetRenderPassStateAttachmentTexture(

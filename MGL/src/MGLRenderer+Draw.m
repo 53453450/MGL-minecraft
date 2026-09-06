@@ -140,7 +140,7 @@ static MGLRenderer *mglRendererDrawTarget(GLMContext glm_ctx)
     return mglRendererForContext(glm_ctx);
 }
 
-void mglRendererDrawArrays(GLMContext glm_ctx,
+void mglRendererCompatDrawArrays(GLMContext glm_ctx,
                                  uint32_t mode, int32_t first, int32_t count)
 {
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
@@ -150,7 +150,7 @@ void mglRendererDrawArrays(GLMContext glm_ctx,
     }
 }
 
-void mglRendererDrawElements(GLMContext glm_ctx, uint32_t mode,
+void mglRendererCompatDrawElements(GLMContext glm_ctx, uint32_t mode,
     int32_t count, uint32_t type, const void *indices)
 {
     MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);

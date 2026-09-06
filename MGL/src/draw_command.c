@@ -201,6 +201,38 @@ static const int kMGLSnapshotBufferBaseTypes[] = {
 static const size_t kMGLSnapshotBufferBaseTypeCount =
     sizeof(kMGLSnapshotBufferBaseTypes) / sizeof(kMGLSnapshotBufferBaseTypes[0]);
 
+static void mglRetainVAOBufferReferences(const VertexArray *vao)
+{
+    if (!vao)
+        return;
+    for (size_t i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++) {
+        if (vao->bindings[i].buffer)
+            mglRetainBufferReference(vao->bindings[i].buffer);
+    }
+    for (size_t i = 0; i < MAX_ATTRIBS; i++) {
+        if (vao->attrib[i].buffer)
+            mglRetainBufferReference(vao->attrib[i].buffer);
+    }
+    if (vao->element_array.buffer)
+        mglRetainBufferReference(vao->element_array.buffer);
+}
+
+static void mglReleaseVAOBufferReferences(GLMContext ctx, const VertexArray *vao)
+{
+    if (!vao)
+        return;
+    for (size_t i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++) {
+        if (vao->bindings[i].buffer)
+            mglReleaseBufferReference(ctx, vao->bindings[i].buffer);
+    }
+    for (size_t i = 0; i < MAX_ATTRIBS; i++) {
+        if (vao->attrib[i].buffer)
+            mglReleaseBufferReference(ctx, vao->attrib[i].buffer);
+    }
+    if (vao->element_array.buffer)
+        mglReleaseBufferReference(ctx, vao->element_array.buffer);
+}
+
 static void mglRetainBatchBufferReferences(MGLDrawBatch *batch)
 {
     GLMState *snap = (GLMState *)batch->state_snapshot;
@@ -211,6 +243,9 @@ static void mglRetainBatchBufferReferences(MGLDrawBatch *batch)
             if (slots[i].buf) mglRetainBufferReference(slots[i].buf);
         }
     }
+    /* VAO snapshot is a shallow copy — retain every Buffer it still points at
+     * so DeleteBuffers cannot free shells before deferred replay (A14). */
+    mglRetainVAOBufferReferences((const VertexArray *)batch->vao_snapshot);
 }
 
 /* Must be called BEFORE state_snapshot is freed, since it reads buf pointers
@@ -225,6 +260,7 @@ static void mglReleaseBatchBufferReferences(GLMContext ctx, MGLDrawBatch *batch)
             if (slots[i].buf) mglReleaseBufferReference(ctx, slots[i].buf);
         }
     }
+    mglReleaseVAOBufferReferences(ctx, (const VertexArray *)batch->vao_snapshot);
 }
 
 static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
@@ -2127,13 +2163,14 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
     out->fbo_name = ctx->active_state->framebuffer ? ctx->active_state->framebuffer->name : 0;
 
     for (int i = 0; i < 4; i++) {
-        out->viewport[i] = (int16_t)ctx->active_state->viewport[i];
+        out->viewport[i] = (int32_t)ctx->active_state->viewport[i];
     }
 
     out->scissor_enabled = ctx->active_state->caps.scissor_test ? 1 : 0;
     if (out->scissor_enabled) {
         for (int i = 0; i < 4; i++) {
-            out->scissor[i] = (int16_t)ctx->active_state->var.scissor_box[i];
+            /* Full GL scissor range — do not narrow to int16 (A03). */
+            out->scissor[i] = (int32_t)ctx->active_state->var.scissor_box[i];
         }
     }
 
@@ -3996,6 +4033,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         batch->sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
         batch->key = key;
         batch->uses_elements = cmd_uses_elements;
+        mglDrawStateFromKey(&batch->draw_state, &key, cmd_uses_elements ? 1u : 0u);
         /* The frontend command is zero-initialized and does not own the
          * command-buffer-local snapshot ID.  Check the normalized copy so a
          * draw without a sampler snapshot is not mistaken for snapshot 0. */
@@ -4015,6 +4053,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
+                mglDrawStateFromKey(&batch->draw_state, &key, cmd_uses_elements ? 1u : 0u);
                 can_stream_merge = false;
             }
         }
@@ -4066,6 +4105,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
+                mglDrawStateFromKey(&batch->draw_state, &key, cmd_uses_elements ? 1u : 0u);
                 if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
                     mglReleaseBatch(ctx, batch);

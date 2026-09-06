@@ -73,7 +73,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
     if (!ctx)
         return NULL;
 
-    vao = ctx->state.vao;
+    vao = STATE(vao);
     if (!vao)
         return NULL;
 
@@ -84,10 +84,10 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
     {
         fprintf(stderr, "MGL VAO INVALID in %s vao=%p (not found in sane vao_table)\n",
                 func_name, (void *)vao);
-        ctx->state.vao = NULL;
-        ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
-        ctx->state.var.element_array_buffer_binding =
-            ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        STATE(vao) = NULL;
+        STATE(buffers)[_ELEMENT_ARRAY_BUFFER] = STATE(default_vao_element_array_buffer);
+        STATE(var).element_array_buffer_binding =
+            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         return NULL;
     }
@@ -96,10 +96,10 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
     {
         fprintf(stderr, "MGL VAO INVALID in %s vao=%p magic=0x%x\n",
                 func_name, (void *)vao, vao->magic);
-        ctx->state.vao = NULL;
-        ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
-        ctx->state.var.element_array_buffer_binding =
-            ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        STATE(vao) = NULL;
+        STATE(buffers)[_ELEMENT_ARRAY_BUFFER] = STATE(default_vao_element_array_buffer);
+        STATE(var).element_array_buffer_binding =
+            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         return NULL;
     }
@@ -414,7 +414,7 @@ void mglGetVertexAttribdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *
 
         case GL_CURRENT_VERTEX_ATTRIB:
             for (int i = 0; i < 4; i++)
-                params[i] = ctx->state.current_vertex_attrib[index].d[i];
+                params[i] = STATE(current_vertex_attrib)[index].d[i];
             break;
 
         default:
@@ -428,7 +428,7 @@ void mglGetVertexAttribiv(GLMContext ctx, GLuint index, GLenum pname, GLint *par
 
     if (pname != GL_CURRENT_VERTEX_ATTRIB)
     {
-        ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(STATE(vao), GL_INVALID_OPERATION);
     }
 
     /* Binding-related queries (GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,
@@ -468,7 +468,7 @@ void mglGetVertexAttribfv(GLMContext ctx, GLuint index, GLenum pname, GLfloat *p
 
     if (pname != GL_CURRENT_VERTEX_ATTRIB)
     {
-        ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(STATE(vao), GL_INVALID_OPERATION);
     }
 
     if (pname == GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING ||
@@ -744,7 +744,7 @@ void mglEnableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
     ptr->enabled_attribs |= (0x1 << index);
 
     ptr->dirty_bits |= DIRTY_VAO_ATTRIB;
-    if (ctx->state.vao == ptr) {
+    if (STATE(vao) == ptr) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
@@ -767,7 +767,7 @@ void mglDisableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
     ptr->enabled_attribs &= ~(0x1 << index);
 
     ptr->dirty_bits |= DIRTY_VAO;
-    if (ctx->state.vao == ptr) {
+    if (STATE(vao) == ptr) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
@@ -848,7 +848,7 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
         }
         ptr->element_array.buffer = NULL;
         ptr->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
-        if (ctx->state.vao == ptr)
+        if (STATE(vao) == ptr)
         {
             STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = NULL;
             STATE_VAR(element_array_buffer_binding) = 0;
@@ -868,7 +868,7 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
     ptr->element_array.buffer = buf_ptr;
 
     ptr->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
-    if (ctx->state.vao == ptr)
+    if (STATE(vao) == ptr)
     {
         STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = buf_ptr;
         STATE_VAR(element_array_buffer_binding) = buf_ptr->name;
@@ -892,7 +892,7 @@ void setVertexBindingIndex(GLMContext ctx, VertexArray *vao, GLuint attribindex,
     attrib->buffer_bindingindex = bindingindex;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
-    if (ctx->state.vao == vao) {
+    if (STATE(vao) == vao) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
@@ -901,7 +901,7 @@ void mglVertexAttribBinding(GLMContext ctx, GLuint attribindex, GLuint bindingin
 {
     VertexArray *ptr;
 
-    ptr = ctx->state.vao;
+    ptr = STATE(vao);
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
@@ -922,7 +922,7 @@ void mglVertexArrayAttribBinding(GLMContext ctx, GLuint vaobj, GLuint attribinde
 void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(relativeoffset <= ctx->state.var.max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(relativeoffset <= STATE(var).max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
 
     /* GL_BGRA is an allowed size for certain packed types (INVALID_OPERATION
      * when mismatched — not INVALID_VALUE). */
@@ -983,7 +983,7 @@ void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint
     attrib->relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
-    if (ctx->state.vao == vao) {
+    if (STATE(vao) == vao) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
@@ -992,7 +992,7 @@ void mglVertexAttribFormat(GLMContext ctx, GLuint attribindex, GLint size, GLenu
 {
     VertexArray *ptr;
 
-    ptr = ctx->state.vao;
+    ptr = STATE(vao);
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
@@ -1013,7 +1013,7 @@ void mglVertexArrayAttribFormat(GLMContext ctx, GLuint vaobj, GLuint attribindex
 void setAttribIFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(relativeoffset <= ctx->state.var.max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(relativeoffset <= STATE(var).max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
 
     switch(type)
     {
@@ -1056,7 +1056,7 @@ void setAttribIFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
     attrib->relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
-    if (ctx->state.vao == vao) {
+    if (STATE(vao) == vao) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
@@ -1065,7 +1065,7 @@ void mglVertexAttribIFormat(GLMContext ctx, GLuint attribindex, GLint size, GLen
 {
     VertexArray *ptr;
 
-    ptr = ctx->state.vao;
+    ptr = STATE(vao);
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
@@ -1086,7 +1086,7 @@ void mglVertexArrayAttribIFormat(GLMContext ctx, GLuint vaobj, GLuint attribinde
 void setAttribLFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(relativeoffset <= ctx->state.var.max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(relativeoffset <= STATE(var).max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
 
     switch(type)
     {
@@ -1119,7 +1119,7 @@ void setAttribLFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
     attrib->relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
-    if (ctx->state.vao == vao) {
+    if (STATE(vao) == vao) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
@@ -1128,7 +1128,7 @@ void mglVertexAttribLFormat(GLMContext ctx, GLuint attribindex, GLint size, GLen
 {
     VertexArray *ptr;
 
-    ptr = ctx->state.vao;
+    ptr = STATE(vao);
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
@@ -1150,7 +1150,7 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
 {
     VertexArray *ptr;
 
-    ptr = ctx->state.vao;
+    ptr = STATE(vao);
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
@@ -1187,7 +1187,7 @@ void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GL
     }
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
-    if (ctx->state.vao == vao) {
+    if (STATE(vao) == vao) {
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
@@ -1196,7 +1196,7 @@ void mglVertexBindingDivisor(GLMContext ctx, GLuint bindingindex, GLuint divisor
 {
     VertexArray *ptr;
 
-    ptr = ctx->state.vao;
+    ptr = STATE(vao);
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 

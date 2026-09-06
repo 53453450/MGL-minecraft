@@ -37,6 +37,7 @@
 #include "glm_context.h"
 #include "draw_command.h"
 #include "mgl_safety.h"
+#include "mgl_metal_ref.h"
 #include "pixel_utils.h"
 #include "utils.h"
 
@@ -46,7 +47,7 @@
 #define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS 0x8CD9
 #endif
 
-#define RENDBUF_STATE(_val_)    ctx->state.renderbuffer->_val_
+#define RENDBUF_STATE(_val_)    STATE(renderbuffer)->_val_
 
 #ifndef MGL_VERBOSE_FBO_LOGS
 #define MGL_VERBOSE_FBO_LOGS 0
@@ -61,9 +62,9 @@ static GLboolean mglDefaultFramebufferParamValid(GLMContext ctx, GLenum pname,
         return GL_FALSE;
     switch (pname) {
     case GL_FRAMEBUFFER_DEFAULT_LAYERS:
-        return (GLuint)param <= ctx->state.var.max_framebuffer_layers;
+        return (GLuint)param <= STATE(var).max_framebuffer_layers;
     case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
-        return (GLuint)param <= ctx->state.var.max_framebuffer_samples;
+        return (GLuint)param <= STATE(var).max_framebuffer_samples;
     default:
         return GL_TRUE;
     }
@@ -107,7 +108,7 @@ static GLuint mglTraceSafeFramebufferName(GLMContext ctx, Framebuffer *fbo)
 {
     if (!ctx || !fbo ||
         !mglObjectPointerLooksPlausible(fbo) ||
-        !mglHashTableContainsData(&ctx->state.framebuffer_table, fbo) ||
+        !mglHashTableContainsData(&STATE(framebuffer_table), fbo) ||
         !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         return 0u;
     }
@@ -261,7 +262,7 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
         return GL_FALSE;
     }
 
-    if (!ctx->state.caps.scissor_test) {
+    if (!STATE(caps).scissor_test) {
         static unsigned s_immediate_flush_logs = 0u;
         if (s_immediate_flush_logs < 64u) {
             fprintf(stderr,
@@ -466,11 +467,11 @@ Framebuffer *currentFBOForType(GLMContext ctx, GLenum target)
     {
         case GL_FRAMEBUFFER:
         case GL_DRAW_FRAMEBUFFER:
-            return ctx->state.framebuffer;
+            return STATE(framebuffer);
             break;
 
         case GL_READ_FRAMEBUFFER:
-            return ctx->state.readbuffer;
+            return STATE(readbuffer);
             break;
 
         default:
@@ -593,14 +594,14 @@ void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo)
     }
 
     if (fbo && mglFramebufferPrimaryColorSize(ctx, fbo, &width, &height)) {
-        ctx->state.viewport[0] = 0;
-        ctx->state.viewport[1] = 0;
-        ctx->state.viewport[2] = (GLint)width;
-        ctx->state.viewport[3] = (GLint)height;
-        ctx->state.viewport_array[0][0] = 0.0f;
-        ctx->state.viewport_array[0][1] = 0.0f;
-        ctx->state.viewport_array[0][2] = (GLfloat)width;
-        ctx->state.viewport_array[0][3] = (GLfloat)height;
+        STATE(viewport)[0] = 0;
+        STATE(viewport)[1] = 0;
+        STATE(viewport)[2] = (GLint)width;
+        STATE(viewport)[3] = (GLint)height;
+        STATE(viewport_array)[0][0] = 0.0f;
+        STATE(viewport_array)[0][1] = 0.0f;
+        STATE(viewport_array)[0][2] = (GLfloat)width;
+        STATE(viewport_array)[0][3] = (GLfloat)height;
     }
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
@@ -610,13 +611,13 @@ static GLboolean mglFramebufferBufferIsColorAttachment(GLMContext ctx, GLenum bu
 {
     return ctx &&
            buffer >= GL_COLOR_ATTACHMENT0 &&
-           buffer < (GL_COLOR_ATTACHMENT0 + ctx->state.max_color_attachments) &&
+           buffer < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) &&
            buffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS);
 }
 
 static GLuint mglFramebufferMaxDrawBuffers(GLMContext ctx)
 {
-    GLuint maxDrawBuffers = ctx ? ctx->state.var.max_draw_buffers : 0u;
+    GLuint maxDrawBuffers = ctx ? STATE(var).max_draw_buffers : 0u;
     if (maxDrawBuffers == 0u || maxDrawBuffers > MAX_COLOR_ATTACHMENTS) {
         maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
     }
@@ -636,11 +637,11 @@ static GLboolean mglFramebufferStatusTraceEnabled(void)
 
 static void mglFramebufferSetSingleDrawBuffer(GLMContext ctx, GLenum buffer)
 {
-    ctx->state.draw_buffer = buffer;
-    ctx->state.draw_buffer_count = 1;
-    ctx->state.draw_buffers[0] = buffer;
+    STATE(draw_buffer) = buffer;
+    STATE(draw_buffer_count) = 1;
+    STATE(draw_buffers)[0] = buffer;
     for (GLuint i = 1; i < MAX_COLOR_ATTACHMENTS; ++i) {
-        ctx->state.draw_buffers[i] = GL_NONE;
+        STATE(draw_buffers)[i] = GL_NONE;
     }
 }
 
@@ -650,14 +651,14 @@ static void mglFramebufferStoreCurrentDrawBuffer(GLMContext ctx, Framebuffer *fb
         return;
     }
 
-    GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
-    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &ctx->state.default_draw_buffer_count;
-    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &ctx->state.default_draw_buffer;
+    GLenum *drawBuffers = fbo ? fbo->draw_buffers : STATE(default_draw_buffers);
+    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &STATE(default_draw_buffer_count);
+    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &STATE(default_draw_buffer);
 
-    *drawBuffer = ctx->state.draw_buffer;
-    *drawBufferCount = ctx->state.draw_buffer_count;
+    *drawBuffer = STATE(draw_buffer);
+    *drawBufferCount = STATE(draw_buffer_count);
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-        drawBuffers[i] = ctx->state.draw_buffers[i];
+        drawBuffers[i] = STATE(draw_buffers)[i];
     }
 }
 
@@ -668,9 +669,9 @@ static void mglFramebufferStoreCurrentReadBuffer(GLMContext ctx, Framebuffer *fb
     }
 
     if (fbo) {
-        fbo->read_buffer = ctx->state.read_buffer;
+        fbo->read_buffer = STATE(read_buffer);
     } else {
-        ctx->state.default_read_buffer = ctx->state.read_buffer;
+        STATE(default_read_buffer) = STATE(read_buffer);
     }
 }
 
@@ -680,19 +681,19 @@ static void mglFramebufferLoadDrawBuffer(GLMContext ctx, Framebuffer *fbo)
         return;
     }
 
-    const GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
-    GLsizei drawBufferCount = fbo ? fbo->draw_buffer_count : ctx->state.default_draw_buffer_count;
-    GLenum drawBuffer = fbo ? fbo->draw_buffer : ctx->state.default_draw_buffer;
+    const GLenum *drawBuffers = fbo ? fbo->draw_buffers : STATE(default_draw_buffers);
+    GLsizei drawBufferCount = fbo ? fbo->draw_buffer_count : STATE(default_draw_buffer_count);
+    GLenum drawBuffer = fbo ? fbo->draw_buffer : STATE(default_draw_buffer);
 
     if (drawBufferCount <= 0 || drawBufferCount > (GLsizei)MAX_COLOR_ATTACHMENTS) {
         drawBufferCount = 1;
         drawBuffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_FRONT;
     }
 
-    ctx->state.draw_buffer = drawBuffer;
-    ctx->state.draw_buffer_count = drawBufferCount;
+    STATE(draw_buffer) = drawBuffer;
+    STATE(draw_buffer_count) = drawBufferCount;
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-        ctx->state.draw_buffers[i] = (i < (GLuint)drawBufferCount) ? drawBuffers[i] : GL_NONE;
+        STATE(draw_buffers)[i] = (i < (GLuint)drawBufferCount) ? drawBuffers[i] : GL_NONE;
     }
 }
 
@@ -702,11 +703,11 @@ static void mglFramebufferLoadReadBuffer(GLMContext ctx, Framebuffer *fbo)
         return;
     }
 
-    GLenum readBuffer = fbo ? fbo->read_buffer : ctx->state.default_read_buffer;
+    GLenum readBuffer = fbo ? fbo->read_buffer : STATE(default_read_buffer);
     if (readBuffer == 0u) {
         readBuffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_FRONT;
     }
-    ctx->state.read_buffer = readBuffer;
+    STATE(read_buffer) = readBuffer;
 }
 
 static void mglFramebufferSyncBindingNames(GLMContext ctx)
@@ -715,10 +716,10 @@ static void mglFramebufferSyncBindingNames(GLMContext ctx)
         return;
     }
 
-    ctx->state.var.draw_framebuffer_binding =
-        ctx->state.framebuffer ? ctx->state.framebuffer->name : 0u;
-    ctx->state.var.read_framebuffer_binding =
-        ctx->state.readbuffer ? ctx->state.readbuffer->name : 0u;
+    STATE(var).draw_framebuffer_binding =
+        STATE(framebuffer) ? STATE(framebuffer)->name : 0u;
+    STATE(var).read_framebuffer_binding =
+        STATE(readbuffer) ? STATE(readbuffer)->name : 0u;
 }
 
 static void mglFramebufferUseTemporaryDrawBinding(GLMContext ctx, Framebuffer *fbo)
@@ -727,7 +728,7 @@ static void mglFramebufferUseTemporaryDrawBinding(GLMContext ctx, Framebuffer *f
         return;
     }
 
-    ctx->state.framebuffer = fbo;
+    STATE(framebuffer) = fbo;
     mglFramebufferSyncBindingNames(ctx);
     mglFramebufferLoadDrawBuffer(ctx, fbo);
 }
@@ -740,8 +741,8 @@ static void mglFramebufferUseTemporaryReadDrawBinding(GLMContext ctx,
         return;
     }
 
-    ctx->state.readbuffer = readFbo;
-    ctx->state.framebuffer = drawFbo;
+    STATE(readbuffer) = readFbo;
+    STATE(framebuffer) = drawFbo;
     mglFramebufferSyncBindingNames(ctx);
     mglFramebufferLoadReadBuffer(ctx, readFbo);
     mglFramebufferLoadDrawBuffer(ctx, drawFbo);
@@ -753,7 +754,7 @@ void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo)
         return;
     }
 
-    ctx->state.framebuffer = fbo;
+    STATE(framebuffer) = fbo;
     mglFramebufferSyncBindingNames(ctx);
     mglFramebufferLoadDrawBuffer(ctx, fbo);
     if (fbo) {
@@ -777,13 +778,13 @@ static void mglFramebufferCaptureBindingSnapshot(GLMContext ctx, MGLFramebufferB
         return;
     }
 
-    snapshot->draw_fbo = ctx->state.framebuffer;
-    snapshot->read_fbo = ctx->state.readbuffer;
-    snapshot->draw_buffer = ctx->state.draw_buffer;
-    snapshot->draw_buffer_count = ctx->state.draw_buffer_count;
-    snapshot->read_buffer = ctx->state.read_buffer;
+    snapshot->draw_fbo = STATE(framebuffer);
+    snapshot->read_fbo = STATE(readbuffer);
+    snapshot->draw_buffer = STATE(draw_buffer);
+    snapshot->draw_buffer_count = STATE(draw_buffer_count);
+    snapshot->read_buffer = STATE(read_buffer);
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-        snapshot->draw_buffers[i] = ctx->state.draw_buffers[i];
+        snapshot->draw_buffers[i] = STATE(draw_buffers)[i];
     }
 }
 
@@ -793,20 +794,20 @@ static void mglFramebufferRestoreBindingSnapshot(GLMContext ctx, const MGLFrameb
         return;
     }
 
-    ctx->state.framebuffer = snapshot->draw_fbo;
-    ctx->state.readbuffer = snapshot->read_fbo;
+    STATE(framebuffer) = snapshot->draw_fbo;
+    STATE(readbuffer) = snapshot->read_fbo;
     mglFramebufferSyncBindingNames(ctx);
-    ctx->state.draw_buffer = snapshot->draw_buffer;
-    ctx->state.draw_buffer_count = snapshot->draw_buffer_count;
-    ctx->state.read_buffer = snapshot->read_buffer;
+    STATE(draw_buffer) = snapshot->draw_buffer;
+    STATE(draw_buffer_count) = snapshot->draw_buffer_count;
+    STATE(read_buffer) = snapshot->read_buffer;
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-        ctx->state.draw_buffers[i] = snapshot->draw_buffers[i];
+        STATE(draw_buffers)[i] = snapshot->draw_buffers[i];
     }
-    if (ctx->state.framebuffer) {
-        ctx->state.framebuffer->dirty_bits |= DIRTY_FBO_BINDING;
+    if (STATE(framebuffer)) {
+        STATE(framebuffer)->dirty_bits |= DIRTY_FBO_BINDING;
     }
-    if (ctx->state.readbuffer) {
-        ctx->state.readbuffer->dirty_bits |= DIRTY_FBO_BINDING;
+    if (STATE(readbuffer)) {
+        STATE(readbuffer)->dirty_bits |= DIRTY_FBO_BINDING;
     }
     mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
 }
@@ -814,9 +815,9 @@ static void mglFramebufferRestoreBindingSnapshot(GLMContext ctx, const MGLFrameb
 static void mglNormalizeDrawBufferForFramebufferBinding(GLMContext ctx, Framebuffer *fbo)
 {
     GLboolean drawBufferIsColorAttachment =
-        mglFramebufferBufferIsColorAttachment(ctx, ctx->state.draw_buffer);
+        mglFramebufferBufferIsColorAttachment(ctx, STATE(draw_buffer));
 
-    if (fbo && !drawBufferIsColorAttachment && ctx->state.draw_buffer != GL_NONE) {
+    if (fbo && !drawBufferIsColorAttachment && STATE(draw_buffer) != GL_NONE) {
         mglFramebufferSetSingleDrawBuffer(ctx, GL_COLOR_ATTACHMENT0);
     } else if (!fbo && drawBufferIsColorAttachment) {
         mglFramebufferSetSingleDrawBuffer(ctx, GL_FRONT);
@@ -828,12 +829,12 @@ static void mglNormalizeDrawBufferForFramebufferBinding(GLMContext ctx, Framebuf
 static void mglNormalizeReadBufferForFramebufferBinding(GLMContext ctx, Framebuffer *fbo)
 {
     GLboolean readBufferIsColorAttachment =
-        mglFramebufferBufferIsColorAttachment(ctx, ctx->state.read_buffer);
+        mglFramebufferBufferIsColorAttachment(ctx, STATE(read_buffer));
 
-    if (fbo && !readBufferIsColorAttachment && ctx->state.read_buffer != GL_NONE) {
-        ctx->state.read_buffer = GL_COLOR_ATTACHMENT0;
+    if (fbo && !readBufferIsColorAttachment && STATE(read_buffer) != GL_NONE) {
+        STATE(read_buffer) = GL_COLOR_ATTACHMENT0;
     } else if (!fbo && readBufferIsColorAttachment) {
-        ctx->state.read_buffer = GL_FRONT;
+        STATE(read_buffer) = GL_FRONT;
     }
 
     mglFramebufferStoreCurrentReadBuffer(ctx, fbo);
@@ -890,22 +891,22 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
             return;
     }
 
-    oldDrawFbo = ctx->state.framebuffer;
-    oldReadFbo = ctx->state.readbuffer;
+    oldDrawFbo = STATE(framebuffer);
+    oldReadFbo = STATE(readbuffer);
 
-    VertexArray *currentVAO = ctx->state.vao;
+    VertexArray *currentVAO = STATE(vao);
     /* Table membership implies live memory (VAOs leave the table before
      * free), so no readability probe is needed on the hit path. */
     if (currentVAO &&
         (!mglObjectPointerLooksPlausible(currentVAO) ||
-         !mglHashTableContainsData(&ctx->state.vao_table, currentVAO)))
+         !mglHashTableContainsData(&STATE(vao_table), currentVAO)))
     {
         fprintf(stderr, "MGL WARNING: VAO pointer polluted before BindFramebuffer: vao=%p not in sane VAO table, resetting\n",
                 (void *)currentVAO);
-        ctx->state.vao = NULL;
-        ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
-        ctx->state.var.element_array_buffer_binding =
-            ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        STATE(vao) = NULL;
+        STATE(buffers)[_ELEMENT_ARRAY_BUFFER] = STATE(default_vao_element_array_buffer);
+        STATE(var).element_array_buffer_binding =
+            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
         mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
         currentVAO = NULL;
     }
@@ -914,10 +915,10 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         fprintf(stderr, "MGL WARNING: VAO pointer polluted before BindFramebuffer: vao=%p magic=0x%x, resetting\n",
                 (void *)currentVAO,
                 currentVAO->magic);
-        ctx->state.vao = NULL;
-        ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
-        ctx->state.var.element_array_buffer_binding =
-            ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        STATE(vao) = NULL;
+        STATE(buffers)[_ELEMENT_ARRAY_BUFFER] = STATE(default_vao_element_array_buffer);
+        STATE(var).element_array_buffer_binding =
+            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
         mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
     }
 
@@ -958,7 +959,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     switch(target) {
         case GL_DRAW_FRAMEBUFFER:
             mglFramebufferStoreCurrentDrawBuffer(ctx, oldDrawFbo);
-            ctx->state.framebuffer = ptr;
+            STATE(framebuffer) = ptr;
             mglFramebufferSyncBindingNames(ctx);
             mglFramebufferLoadDrawBuffer(ctx, ptr);
             drawTargetChanged = GL_TRUE;
@@ -966,7 +967,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
 
         case GL_READ_FRAMEBUFFER:
             mglFramebufferStoreCurrentReadBuffer(ctx, oldReadFbo);
-            ctx->state.readbuffer = ptr;
+            STATE(readbuffer) = ptr;
             mglFramebufferSyncBindingNames(ctx);
             mglFramebufferLoadReadBuffer(ctx, ptr);
             readTargetChanged = GL_TRUE;
@@ -975,8 +976,8 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         case GL_FRAMEBUFFER:
             mglFramebufferStoreCurrentDrawBuffer(ctx, oldDrawFbo);
             mglFramebufferStoreCurrentReadBuffer(ctx, oldReadFbo);
-            ctx->state.framebuffer = ptr;
-            ctx->state.readbuffer = ptr;
+            STATE(framebuffer) = ptr;
+            STATE(readbuffer) = ptr;
             mglFramebufferSyncBindingNames(ctx);
             mglFramebufferLoadDrawBuffer(ctx, ptr);
             mglFramebufferLoadReadBuffer(ctx, ptr);
@@ -1003,11 +1004,11 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     {
         static uint64_t s_fbindTraceCount = 0;
         uint64_t hit = ++s_fbindTraceCount;
-        FBOAttachment *color0 = (ctx->state.framebuffer &&
-                                 (ctx->state.framebuffer->color_attachment_bitfield & 1u))
-            ? &ctx->state.framebuffer->color_attachments[0]
+        FBOAttachment *color0 = (STATE(framebuffer) &&
+                                 (STATE(framebuffer)->color_attachment_bitfield & 1u))
+            ? &STATE(framebuffer)->color_attachments[0]
             : NULL;
-        FBOAttachment *depth = ctx->state.framebuffer ? &ctx->state.framebuffer->depth : NULL;
+        FBOAttachment *depth = STATE(framebuffer) ? &STATE(framebuffer)->depth : NULL;
         Texture *color_tex = mglTraceAttachmentTexture(ctx, color0);
         Texture *depth_tex = mglTraceAttachmentTexture(ctx, depth);
         GLuint c_ever = 0u, c_full = 0u, c_source = 0u;
@@ -1022,10 +1023,10 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
                                    &d_ever,
                                    &d_full,
                                    &d_source);
-        GLboolean small_box = ctx->state.var.scissor_box[2] > 0 &&
-                              ctx->state.var.scissor_box[3] > 0 &&
-                              ctx->state.var.scissor_box[2] <= 128 &&
-                              ctx->state.var.scissor_box[3] <= 128;
+        GLboolean small_box = STATE(var).scissor_box[2] > 0 &&
+                              STATE(var).scissor_box[3] > 0 &&
+                              STATE(var).scissor_box[2] <= 128 &&
+                              STATE(var).scissor_box[3] <= 128;
         if (hit <= 256ull ||
             (hit % 512ull) == 0ull ||
             small_box ||
@@ -1042,14 +1043,14 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
                                 (unsigned)mglTraceSafeFramebufferName(ctx, oldReadFbo),
                                 drawTargetChanged ? 1 : 0,
                                 readTargetChanged ? 1 : 0,
-                                (unsigned)mglTraceSafeFramebufferName(ctx, ctx->state.framebuffer),
-                                (unsigned)mglTraceSafeFramebufferName(ctx, ctx->state.readbuffer),
-                                (unsigned)ctx->state.draw_buffer,
-                                (unsigned)ctx->state.read_buffer,
-                                (int)ctx->state.draw_buffer_count,
+                                (unsigned)mglTraceSafeFramebufferName(ctx, STATE(framebuffer)),
+                                (unsigned)mglTraceSafeFramebufferName(ctx, STATE(readbuffer)),
+                                (unsigned)STATE(draw_buffer),
+                                (unsigned)STATE(read_buffer),
+                                (int)STATE(draw_buffer_count),
                                 (unsigned)ctx->draw_command_buffer.batch_count,
                                 (unsigned)ctx->draw_command_buffer.total_commands,
-                                (unsigned)ctx->state.dirty_bits,
+                                (unsigned)STATE(dirty_bits),
                                 color0 ? (unsigned)color0->texture : 0u,
                                 color0 ? (unsigned)color0->textarget : 0u,
                                 color0 ? (unsigned)color0->level : 0u,
@@ -1076,15 +1077,15 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
                                 depth_tex ? (unsigned)depth_tex->mtl_render_target_write_version : 0u,
                                 depth_tex ? (unsigned)depth_tex->mtl_gl_sampled_write_version : 0u,
                                 depth ? (unsigned)depth->clear_bitmask : 0u,
-                                (int)ctx->state.viewport[0],
-                                (int)ctx->state.viewport[1],
-                                (int)ctx->state.viewport[2],
-                                (int)ctx->state.viewport[3],
-                                ctx->state.caps.scissor_test ? 1 : 0,
-                                (int)ctx->state.var.scissor_box[0],
-                                (int)ctx->state.var.scissor_box[1],
-                                (int)ctx->state.var.scissor_box[2],
-                                (int)ctx->state.var.scissor_box[3]);
+                                (int)STATE(viewport)[0],
+                                (int)STATE(viewport)[1],
+                                (int)STATE(viewport)[2],
+                                (int)STATE(viewport)[3],
+                                STATE(caps).scissor_test ? 1 : 0,
+                                (int)STATE(var).scissor_box[0],
+                                (int)STATE(var).scissor_box[1],
+                                (int)STATE(var).scissor_box[2],
+                                (int)STATE(var).scissor_box[3]);
         }
     }
     
@@ -1114,12 +1115,12 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
         // Unbind if currently bound; restore default draw/read buffer state.
         // Without Load*Buffer, read_buffer stays GL_COLOR_ATTACHMENT0 and
         // subsequent default-framebuffer ReadPixels returns zeros (CTS load-ms).
-        if (ctx->state.framebuffer == fbo) {
-            ctx->state.framebuffer = NULL;
+        if (STATE(framebuffer) == fbo) {
+            STATE(framebuffer) = NULL;
             mglFramebufferLoadDrawBuffer(ctx, NULL);
         }
-        if (ctx->state.readbuffer == fbo) {
-            ctx->state.readbuffer = NULL;
+        if (STATE(readbuffer) == fbo) {
+            STATE(readbuffer) = NULL;
             mglFramebufferLoadReadBuffer(ctx, NULL);
         }
         mglFramebufferSyncBindingNames(ctx);
@@ -1333,8 +1334,8 @@ static GLuint mglRenderbufferStorageSamples(GLMContext ctx, GLsizei samples)
     GLuint sample_limit = 4u;
 
     if (ctx) {
-        GLuint fb_limit = ctx->state.var.max_framebuffer_samples;
-        GLuint render_limit = ctx->state.var.max_samples;
+        GLuint fb_limit = STATE(var).max_framebuffer_samples;
+        GLuint render_limit = STATE(var).max_samples;
         if (fb_limit == 0u) fb_limit = sample_limit;
         if (render_limit == 0u) render_limit = sample_limit;
         sample_limit = fb_limit < render_limit ? fb_limit : render_limit;
@@ -1351,13 +1352,13 @@ static GLenum mglRenderbufferStorageValidationError(GLMContext ctx, GLsizei samp
     }
 
     if (samples > 0 && ctx) {
-        GLuint max_samples = ctx->state.var.max_samples ? ctx->state.var.max_samples : 4u;
+        GLuint max_samples = STATE(var).max_samples ? STATE(var).max_samples : 4u;
         if ((GLuint)samples > max_samples) {
             return GL_INVALID_OPERATION;
         }
 
         if (mglInternalFormatIsInteger((GLint)internalformat)) {
-            GLuint max_integer_samples = ctx->state.var.max_integer_samples ? ctx->state.var.max_integer_samples : max_samples;
+            GLuint max_integer_samples = STATE(var).max_integer_samples ? STATE(var).max_integer_samples : max_samples;
             if ((GLuint)samples > max_integer_samples) {
                 return GL_INVALID_OPERATION;
             }
@@ -1497,15 +1498,15 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_COMPLETE, "default", 0u, NULL);
     }
 
-    if (fbo == ctx->state.framebuffer) {
-        fbo->draw_buffer = ctx->state.draw_buffer;
-        fbo->draw_buffer_count = ctx->state.draw_buffer_count;
+    if (fbo == STATE(framebuffer)) {
+        fbo->draw_buffer = STATE(draw_buffer);
+        fbo->draw_buffer_count = STATE(draw_buffer_count);
         for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            fbo->draw_buffers[i] = ctx->state.draw_buffers[i];
+            fbo->draw_buffers[i] = STATE(draw_buffers)[i];
         }
     }
-    if (fbo == ctx->state.readbuffer) {
-        fbo->read_buffer = ctx->state.read_buffer;
+    if (fbo == STATE(readbuffer)) {
+        fbo->read_buffer = STATE(read_buffer);
     }
 
     if (!mglFramebufferHasAnyAttachment(fbo)) {
@@ -1631,11 +1632,11 @@ GLenum  mglCheckFramebufferStatus(GLMContext ctx, GLenum target)
     switch (target) {
         case GL_FRAMEBUFFER:
         case GL_DRAW_FRAMEBUFFER:
-            fbo = ctx->state.framebuffer;
+            fbo = STATE(framebuffer);
             break;
 
         case GL_READ_FRAMEBUFFER:
-            fbo = ctx->state.readbuffer;
+            fbo = STATE(readbuffer);
             break;
 
         default:
@@ -1680,7 +1681,7 @@ void mglBindRenderbuffer(GLMContext ctx, GLenum target, GLuint renderbuffer)
     Renderbuffer    *ptr;
     GLuint index;
 
-    // if (ctx->state.framebuffer == NULL)
+    // if (STATE(framebuffer) == NULL)
     // {
     //     // no fbo bound..
     //     assert(0);
@@ -1709,7 +1710,7 @@ void mglBindRenderbuffer(GLMContext ctx, GLenum target, GLuint renderbuffer)
         return;
     }
 
-    ctx->state.renderbuffer = ptr;
+    STATE(renderbuffer) = ptr;
     // no dirty state
 }
 
@@ -1782,8 +1783,8 @@ void mglDeleteRenderbuffers(GLMContext ctx, GLsizei n, const GLuint *renderbuffe
             continue;
         }
 
-        if (ctx->state.renderbuffer == rbo) {
-            ctx->state.renderbuffer = NULL;
+        if (STATE(renderbuffer) == rbo) {
+            STATE(renderbuffer) = NULL;
         }
 
         mglHashTableForEach(&STATE(framebuffer_table),
@@ -1820,7 +1821,7 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
         return;
     }
 
-    if(ctx->state.renderbuffer == NULL)
+    if(STATE(renderbuffer) == NULL)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
@@ -1843,7 +1844,7 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
     tex->num_levels = 1u;
     tex->mipmap_levels = 1u;
 
-    ctx->state.renderbuffer->tex = tex;
+    STATE(renderbuffer)->tex = tex;
 }
 
 void mglGetRenderbufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
@@ -1856,7 +1857,7 @@ void mglGetRenderbufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, 
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!ctx->state.renderbuffer) {
+    if (!STATE(renderbuffer)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -2000,10 +2001,10 @@ static GLenum mglFramebufferTextureLayerBoundTargetError(GLMContext ctx,
     switch (target) {
         case GL_FRAMEBUFFER:
         case GL_DRAW_FRAMEBUFFER:
-            fbo = ctx ? ctx->state.framebuffer : NULL;
+            fbo = ctx ? STATE(framebuffer) : NULL;
             break;
         case GL_READ_FRAMEBUFFER:
-            fbo = ctx ? ctx->state.readbuffer : NULL;
+            fbo = ctx ? STATE(readbuffer) : NULL;
             break;
         default:
             return GL_INVALID_ENUM;
@@ -2913,11 +2914,11 @@ void getFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuffer, GLe
     {
         case GL_DRAW_FRAMEBUFFER:
         case GL_FRAMEBUFFER:
-            fbo = ctx->state.framebuffer;
+            fbo = STATE(framebuffer);
             break;
 
         case GL_READ_FRAMEBUFFER:
-            fbo = ctx->state.readbuffer;
+            fbo = STATE(readbuffer);
             break;
 
         default:
@@ -3088,8 +3089,8 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
     if (blitHit <= 128ull ||
         (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u ||
         (blitHit % 512ull) == 0ull) {
-        Framebuffer *drawFbo = ctx ? ctx->state.framebuffer : NULL;
-        Framebuffer *readFbo = ctx ? ctx->state.readbuffer : NULL;
+        Framebuffer *drawFbo = ctx ? STATE(framebuffer) : NULL;
+        Framebuffer *readFbo = ctx ? STATE(readbuffer) : NULL;
         mglTraceLogExternal("BLIT_FRAMEBUFFER call=%llu src=(%d,%d)-(%d,%d) dst=(%d,%d)-(%d,%d) mask=0x%x filter=0x%x drawFbo=%u readFbo=%u drawBuf=0x%x readBuf=0x%x depthStencil=%d",
                             (unsigned long long)blitHit,
                             srcX0, srcY0, srcX1, srcY1,
@@ -3098,8 +3099,8 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
                             (unsigned)filter,
                             (unsigned)mglTraceSafeFramebufferName(ctx, drawFbo),
                             (unsigned)mglTraceSafeFramebufferName(ctx, readFbo),
-                            (unsigned)(ctx ? ctx->state.draw_buffer : 0u),
-                            (unsigned)(ctx ? ctx->state.read_buffer : 0u),
+                            (unsigned)(ctx ? STATE(draw_buffer) : 0u),
+                            (unsigned)(ctx ? STATE(read_buffer) : 0u),
                             (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u ? 1 : 0);
     }
 
@@ -3127,8 +3128,8 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
      * internal format class).  Per GL 4.6 spec §18.3.1, blitting between
      * incompatible formats generates GL_INVALID_OPERATION. */
     if ((mask & GL_COLOR_BUFFER_BIT) != 0u) {
-        Framebuffer *srcFbo = ctx ? ctx->state.readbuffer : NULL;
-        Framebuffer *dstFbo = ctx ? ctx->state.framebuffer : NULL;
+        Framebuffer *srcFbo = ctx ? STATE(readbuffer) : NULL;
+        Framebuffer *dstFbo = ctx ? STATE(framebuffer) : NULL;
         if (srcFbo && dstFbo &&
             srcFbo->color_attachment_bitfield != 0u &&
             dstFbo->color_attachment_bitfield != 0u) {
@@ -3187,7 +3188,7 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
         ERROR_RETURN(validation_error);
         return;
     }
-    if(ctx->state.renderbuffer == NULL)
+    if(STATE(renderbuffer) == NULL)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
@@ -3197,13 +3198,21 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
      * texture so the Metal layer creates a multisample render target. */
     mglRenderbufferStorage(ctx, target, internalformat, width, height);
 
-    /* Apply the requested sample count to the backing texture so that
-     * mglFramebufferSamples / mglFramebufferAttachmentSamples report the
-     * correct value.  The Metal render pass descriptor sets up the MSAA
-     * resolve when this renderbuffer is attached. */
-    if (ctx->state.renderbuffer && ctx->state.renderbuffer->tex)
+    /* Apply the requested sample count BEFORE any Metal texture is materialized
+     * from this GL Texture.  mglRenderbufferStorage leaves samples at 0, so
+     * createMTLTextureFromGLTexture would otherwise plan a single-sample 2D
+     * backing; later blit resolve then sees type=2DArray/2D without
+     * sample_count>1 and skips (ARCHITECTURE_AUDIT / air_msaa_resolve). */
+    if (STATE(renderbuffer) && STATE(renderbuffer)->tex)
     {
-        ctx->state.renderbuffer->tex->samples = mglRenderbufferStorageSamples(ctx, samples);
+        Texture *tex = STATE(renderbuffer)->tex;
+        tex->samples = mglRenderbufferStorageSamples(ctx, samples);
+        if (tex->mtl_data) {
+            /* Drop any premature single-sample Metal texture so the next
+             * FBO bind recreates with Multisample → array-emulated planes. */
+            mglSafeReleaseMetalObj((void **)&tex->mtl_data);
+        }
+        tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
     }
 }
 
@@ -3636,9 +3645,9 @@ void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei 
         }
     }
 
-    GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
-    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &ctx->state.default_draw_buffer_count;
-    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &ctx->state.default_draw_buffer;
+    GLenum *drawBuffers = fbo ? fbo->draw_buffers : STATE(default_draw_buffers);
+    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &STATE(default_draw_buffer_count);
+    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &STATE(default_draw_buffer);
     GLboolean changed = (*drawBufferCount != n);
 
     for (GLsizei i = 0; !changed && i < n; ++i) {
@@ -3665,11 +3674,11 @@ void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei 
     *drawBufferCount = n;
     *drawBuffer = (n > 0) ? bufs[0] : GL_NONE;
 
-    if (fbo == ctx->state.framebuffer) {
-        ctx->state.draw_buffer = *drawBuffer;
-        ctx->state.draw_buffer_count = *drawBufferCount;
+    if (fbo == STATE(framebuffer)) {
+        STATE(draw_buffer) = *drawBuffer;
+        STATE(draw_buffer_count) = *drawBufferCount;
         for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
-            ctx->state.draw_buffers[i] = drawBuffers[i];
+            STATE(draw_buffers)[i] = drawBuffers[i];
         }
     }
 
@@ -3707,7 +3716,7 @@ void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum sr
             case GL_BACK_RIGHT:
             case GL_LEFT:
             case GL_RIGHT:
-                readBuffer = &ctx->state.default_read_buffer;
+                readBuffer = &STATE(default_read_buffer);
                 break;
             default:
                 ERROR_RETURN(GL_INVALID_ENUM);
@@ -3719,10 +3728,10 @@ void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum sr
         *readBuffer = src;
     }
 
-    if (fbo == ctx->state.readbuffer) {
-        ctx->state.read_buffer = src;
-    } else if (!fbo && !ctx->state.readbuffer) {
-        ctx->state.read_buffer = src;
+    if (fbo == STATE(readbuffer)) {
+        STATE(read_buffer) = src;
+    } else if (!fbo && !STATE(readbuffer)) {
+        STATE(read_buffer) = src;
     }
 
 }
@@ -3997,7 +4006,7 @@ void mglNamedRenderbufferStorageMultisample(GLMContext ctx, GLuint renderbuffer,
 
 void mglGetNamedRenderbufferParameteriv(GLMContext ctx, GLuint renderbuffer, GLenum pname, GLint *params)
 {
-    Renderbuffer *saved = ctx->state.renderbuffer;
+    Renderbuffer *saved = STATE(renderbuffer);
     Renderbuffer *rbo = findRenderbuffer(ctx, renderbuffer);
 
     if (!params) {
@@ -4009,7 +4018,7 @@ void mglGetNamedRenderbufferParameteriv(GLMContext ctx, GLuint renderbuffer, GLe
         return;
     }
 
-    ctx->state.renderbuffer = rbo;
+    STATE(renderbuffer) = rbo;
     mglGetRenderbufferParameteriv(ctx, GL_RENDERBUFFER, pname, params);
-    ctx->state.renderbuffer = saved;
+    STATE(renderbuffer) = saved;
 }

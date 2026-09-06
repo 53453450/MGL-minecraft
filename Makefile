@@ -20,6 +20,13 @@ build_es_dir := $(build_dir)/es
 CFLAGS += -Wall #-Wunused-parameter #-Wextra
 CFLAGS += -gfull
 CFLAGS += -O2
+# Keep default C++ TUs aligned with C/ObjC: same opt, debug, arch, and SDK.
+# CXXFLAGS_GL_* previously omitted these and compiled mgl_render.cpp /
+# mgl_air_backend.cpp without -O*/-arch/-isysroot (ARCHITECTURE_AUDIT A11).
+CXXFLAGS += -gfull
+CXXFLAGS += -O2
+CXXFLAGS += -arch $(HOST_ARCH)
+CXXFLAGS += -isysroot $(SDK_ROOT)
 #CFLAGS += -00
 # Sanitizer builds: `make SANITIZE=address lib` (or =thread).  Production
 # builds stay unsanitized; ASan-loaded dylibs are known to crash under
@@ -79,12 +86,10 @@ GLFW_M_SOURCES = $(GLFW_SRC_DIR)/cocoa_init.m \
                 $(GLFW_SRC_DIR)/cocoa_window.m \
                 $(GLFW_SRC_DIR)/mgl_context.m
 
-# Simplified GLFW object paths - use a flat structure for easier building
-GLFW_BUILD_DIR = $(build_dir)/glfw
-GLFW_C_OBJS = $(GLFW_C_SOURCES:$(GLFW_SRC_DIR)/%.c=$(GLFW_BUILD_DIR)/%.o)
-
-GLFW_M_OBJS = $(GLFW_M_SOURCES:$(GLFW_SRC_DIR)/%.m=$(GLFW_BUILD_DIR)/%.o)
-glfw_objs = $(GLFW_C_OBJS) $(GLFW_M_OBJS)
+# Source edges for the fork static library (not a parallel object tree).
+GLFW_STATIC_DEPS = $(GLFW_C_SOURCES) $(GLFW_M_SOURCES) \
+                external/glfw/CMakeLists.txt \
+                external/build_external.sh
 
 ifneq ($(SDK_ROOT),)
 CFLAGS_GL_CORE += -isysroot $(SDK_ROOT)
@@ -232,7 +237,6 @@ deps += $(mgl_core_obj:.o=.d)
 deps += $(mgl_es_obj:.o=.d)
 deps += $(mgl_core_arc_objs:.o=.d)
 deps += $(mgl_es_arc_objs:.o=.d)
-deps += $(glfw_objs:.o=.d)
 
 
 mgl_lib := $(build_dir)/libmgl.dylib
@@ -320,7 +324,9 @@ $(mgl_es_lib): $(mgl_es_link_objs) $(es_link_stamp)
 
 # Configure + build GLFW on demand so a clean clone builds with plain
 # `make` (no glslang/SPIRV-* trees involved; see external/build_external.sh).
-external/glfw/build/src/libglfw3.a:
+# Depend on fork sources so edits (e.g. mgl_context.m) invalidate the archive
+# and re-enter the cmake incremental build (ARCHITECTURE_AUDIT A07).
+external/glfw/build/src/libglfw3.a: $(GLFW_STATIC_DEPS)
 	@bash external/build_external.sh
 
 # Build GLFW shared library from pre-built static library
@@ -423,18 +429,6 @@ $(build_dir)/%.o: %.m
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -fmodules -MMD $(CXXFLAGS_GL_ES) -c $< -o $@
 
-
-
-
-# GLFW-specific build rules with simplified flat directory structure
-$(GLFW_BUILD_DIR)/%.o: $(GLFW_SRC_DIR)/%.c
-	@mkdir -p $(dir $@)
-	$(CC) -MMD $(CFLAGS) -c $< -o $@
-
-$(GLFW_BUILD_DIR)/%.o: $(GLFW_SRC_DIR)/%.m
-	@mkdir -p $(dir $@)
-	clang -fno-objc-arc -fmodules -MMD $(CFLAGS) $(GLFW_FRAMEWORKS) -c $< -o $@
-
 clean:
 	rm -rf $(build_dir)
 	rm -f libmgl.dylib
@@ -534,6 +528,22 @@ $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 test-dirty-hash: $(build_dir)/test_dirty_hash
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_dirty_hash
 
+$(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c $(build_dir)/libmgl.dylib
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-DMGL_GL_CORE \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_arch_correctness.c \
+		-L$(build_dir) -lmgl \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $@
+
+test-arch-correctness: $(build_dir)/test_arch_correctness
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_arch_correctness
+
 test-benchmark: bench
 	scripts/run_benchmark_smoke.sh --no-build
 
@@ -631,6 +641,7 @@ test-mcrepro: $(build_dir)/test_mcrepro
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
+	MGL/src/mgl_metal_draw_executor.c MGL/include/mgl_backend_handles.h \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
 	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
@@ -640,6 +651,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render.cpp \
 		MGL/src/mgl_renderer_backend.cpp \
+		MGL/src/mgl_metal_draw_executor.c \
 		MGL/src/MGLPlatformRendererShell.m \
 		MGL/src/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \
@@ -711,10 +723,11 @@ test-all:
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
+	$(MAKE) test-arch-correctness
 	$(MAKE) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
-	build-test-regression test-regression test-dirty-hash test-benchmark \
+	build-test-regression test-regression test-dirty-hash test-arch-correctness test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all

@@ -435,7 +435,7 @@ void mglDumpTexSubImageZeroCpuResourceTag(GLMContext ctx,
                                                  size_t pixel_size,
                                                  uint64_t warning_id)
 {
-    GLuint active_unit = ctx ? ctx->state.active_texture : 0u;
+    GLuint active_unit = ctx ? STATE(active_texture) : 0u;
     Texture *active_tex = NULL;
     Texture *bound_2d = NULL;
     Texture *bound_cube = NULL;
@@ -446,15 +446,15 @@ void mglDumpTexSubImageZeroCpuResourceTag(GLMContext ctx,
     GLuint program_name = 0u;
 
     if (ctx) {
-        program_name = ctx->state.program_name;
-        unpack = ctx->state.buffers[_PIXEL_UNPACK_BUFFER];
+        program_name = STATE(program_name);
+        unpack = STATE(buffers)[_PIXEL_UNPACK_BUFFER];
         if (active_unit < TEXTURE_UNITS) {
-            active_tex = ctx->state.active_textures[active_unit];
-            bound_2d = ctx->state.texture_units[active_unit].textures[_TEXTURE_2D];
-            bound_cube = ctx->state.texture_units[active_unit].textures[_TEXTURE_CUBE_MAP];
-            bound_2d_array = ctx->state.texture_units[active_unit].textures[_TEXTURE_2D_ARRAY];
-            bound_sampler = ctx->state.texture_samplers[active_unit];
-            mask_word = ctx->state.active_texture_mask[active_unit / 32u];
+            active_tex = STATE(active_textures)[active_unit];
+            bound_2d = STATE(texture_units)[active_unit].textures[_TEXTURE_2D];
+            bound_cube = STATE(texture_units)[active_unit].textures[_TEXTURE_CUBE_MAP];
+            bound_2d_array = STATE(texture_units)[active_unit].textures[_TEXTURE_2D_ARRAY];
+            bound_sampler = STATE(texture_samplers)[active_unit];
+            mask_word = STATE(active_texture_mask)[active_unit / 32u];
         }
     }
 
@@ -510,12 +510,12 @@ void mglDumpTexSubImageZeroCpuResourceTag(GLMContext ctx,
             unpack ? (long long)unpack->written_min : -1ll,
             unpack ? (long long)unpack->written_max : -1ll,
             unpack ? mglBufferInitSourceName(unpack->last_init_source) : "none",
-            ctx ? ctx->state.unpack.row_length : 0,
-            ctx ? ctx->state.unpack.image_height : 0,
-            ctx ? ctx->state.unpack.alignment : 0,
-            ctx ? ctx->state.unpack.skip_pixels : 0,
-            ctx ? ctx->state.unpack.skip_rows : 0,
-            ctx ? ctx->state.unpack.skip_images : 0,
+            ctx ? STATE(unpack).row_length : 0,
+            ctx ? STATE(unpack).image_height : 0,
+            ctx ? STATE(unpack).alignment : 0,
+            ctx ? STATE(unpack).skip_pixels : 0,
+            ctx ? STATE(unpack).skip_rows : 0,
+            ctx ? STATE(unpack).skip_images : 0,
             required_bytes,
             compact_upload_bytes,
             src_pitch,
@@ -550,10 +550,10 @@ void mglDumpTexSubImageZeroCpuResourceTag(GLMContext ctx,
     if (ctx && tex) {
         unsigned printed = 0u;
         for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
-            Texture *unit_active = ctx->state.active_textures[unit];
-            Texture *unit_2d = ctx->state.texture_units[unit].textures[_TEXTURE_2D];
-            Texture *unit_cube = ctx->state.texture_units[unit].textures[_TEXTURE_CUBE_MAP];
-            Texture *unit_2d_array = ctx->state.texture_units[unit].textures[_TEXTURE_2D_ARRAY];
+            Texture *unit_active = STATE(active_textures)[unit];
+            Texture *unit_2d = STATE(texture_units)[unit].textures[_TEXTURE_2D];
+            Texture *unit_cube = STATE(texture_units)[unit].textures[_TEXTURE_CUBE_MAP];
+            Texture *unit_2d_array = STATE(texture_units)[unit].textures[_TEXTURE_2D_ARRAY];
             if (unit_active == tex || unit_2d == tex || unit_cube == tex || unit_2d_array == tex) {
                 fprintf(stderr,
                         "MGL ZERO CPU UPLOAD boundUnit warn=%" PRIu64 " unit=%u active=%u tex2D=%u cube=%u tex2DArray=%u sampler=%u\n",
@@ -563,7 +563,7 @@ void mglDumpTexSubImageZeroCpuResourceTag(GLMContext ctx,
                         unit_2d ? unit_2d->name : 0u,
                         unit_cube ? unit_cube->name : 0u,
                         unit_2d_array ? unit_2d_array->name : 0u,
-                        ctx->state.texture_samplers[unit] ? ctx->state.texture_samplers[unit]->name : 0u);
+                        STATE(texture_samplers)[unit] ? STATE(texture_samplers)[unit]->name : 0u);
                 printed++;
                 if (printed >= 8u) {
                     fprintf(stderr,

@@ -55,7 +55,7 @@ static void mglSetCurrentVertexAttribFloat(GLMContext ctx,
 	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
 	ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
-	CurrentVertexAttrib *attrib = &ctx->state.current_vertex_attrib[index];
+	CurrentVertexAttrib *attrib = &STATE(current_vertex_attrib)[index];
 	attrib->f[0] = x;
 	attrib->f[1] = y;
 	attrib->f[2] = z;
@@ -81,7 +81,7 @@ static void mglSetCurrentVertexAttribInt(GLMContext ctx,
 	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
 	ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
-	CurrentVertexAttrib *attrib = &ctx->state.current_vertex_attrib[index];
+	CurrentVertexAttrib *attrib = &STATE(current_vertex_attrib)[index];
 	attrib->i[0] = x;
 	attrib->i[1] = y;
 	attrib->i[2] = z;
@@ -107,7 +107,7 @@ static void mglSetCurrentVertexAttribUInt(GLMContext ctx,
 	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
 	ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
-	CurrentVertexAttrib *attrib = &ctx->state.current_vertex_attrib[index];
+	CurrentVertexAttrib *attrib = &STATE(current_vertex_attrib)[index];
 	attrib->u[0] = x;
 	attrib->u[1] = y;
 	attrib->u[2] = z;
@@ -133,7 +133,7 @@ static void mglSetCurrentVertexAttribDouble(GLMContext ctx,
 	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
 	ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
-	CurrentVertexAttrib *attrib = &ctx->state.current_vertex_attrib[index];
+	CurrentVertexAttrib *attrib = &STATE(current_vertex_attrib)[index];
 	attrib->d[0] = x;
 	attrib->d[1] = y;
 	attrib->d[2] = z;
@@ -181,20 +181,10 @@ typedef struct QueryObject_t {
 } QueryObject;
 
 /* Primitive queries are indexed by output stream (GL 4.6 §13.2.4).
- * Other query targets only accept index zero, but keeping a fixed-width
- * second dimension makes the active-query lookup unambiguous and preserves
- * the existing target-slot numbering. */
-#define MGL_QUERY_MAX_INDEX 4u
+ * Registry/active slots live on GLMContext (ARCHITECTURE_AUDIT A02).
+ * MGL_QUERY_MAX_INDEX / MGL_QUERY_TARGET_SLOT_COUNT are in glm_context.h. */
 
-static HashTable s_query_table;
-/* Single-threaded access only — MGL assumes one GL context per thread.
- * If multi-threaded access is ever needed, add a module-level
- * os_unfair_lock around all reads and writes. */
-static GLboolean s_query_table_initialized = GL_FALSE;
-static GLuint s_active_query_by_target[18][MGL_QUERY_MAX_INDEX];
-static GLuint64 s_fake_timestamp_counter = 1;
-
-static QueryObject *mgl_find_query(GLuint id);
+static QueryObject *mgl_find_query(GLMContext ctx, GLuint id);
 
 static size_t mgl_round_up_16(size_t value)
 {
@@ -203,7 +193,7 @@ static size_t mgl_round_up_16(size_t value)
 
 static GLuint mgl_effective_max_viewports(GLMContext ctx)
 {
-	GLuint max_viewports = ctx ? ctx->state.var.max_viewports : 1;
+	GLuint max_viewports = ctx ? STATE(var).max_viewports : 1;
 	if (max_viewports == 0 || max_viewports > MGL_MAX_VIEWPORTS) {
 		max_viewports = MGL_MAX_VIEWPORTS;
 	}
@@ -219,14 +209,10 @@ static GLboolean mgl_validate_viewport_range(GLMContext ctx, GLuint first, GLsiz
 	return GL_TRUE;
 }
 
-static void mgl_init_query_table_if_needed(void)
+static void mgl_init_query_table_if_needed(GLMContext ctx)
 {
-	if (!s_query_table_initialized)
-	{
-		initHashTable(&s_query_table, 64);
-		memset(s_active_query_by_target, 0, sizeof(s_active_query_by_target));
-		s_query_table_initialized = GL_TRUE;
-	}
+	(void)ctx;
+	/* query_table is initialized in createGLMContext. */
 }
 
 static int mgl_query_target_slot(GLenum target)
@@ -323,10 +309,10 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 	if (!ctx)
 		return;
 
-	mgl_init_query_table_if_needed();
+	mgl_init_query_table_if_needed(ctx);
 	for (int slot = 0; slot < 3; slot++)
 	{
-		QueryObject *q = mgl_find_query(s_active_query_by_target[slot][0]);
+		QueryObject *q = mgl_find_query(ctx, ctx->active_query_by_target[slot][0]);
 		if (!q || !q->active || !mgl_query_target_is_sample(q->target))
 			continue;
 
@@ -341,7 +327,7 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 	 * a draw.  GS dispatches replace the fallback with exact values below. */
 	for (int slot = 6; slot <= 16; slot++)
 	{
-		QueryObject *q = mgl_find_query(s_active_query_by_target[slot][0]);
+		QueryObject *q = mgl_find_query(ctx, ctx->active_query_by_target[slot][0]);
 		if (!q || !q->active)
 			continue;
 		q->saw_draw = GL_TRUE;
@@ -352,15 +338,16 @@ void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
 	                                       GLuint64 invocations,
 	                                       GLuint64 primitives)
 {
-	(void)ctx;
-	mgl_init_query_table_if_needed();
+	if (!ctx)
+		return;
+	mgl_init_query_table_if_needed(ctx);
 	const int invocation_slot =
 		mgl_query_target_slot(GL_GEOMETRY_SHADER_INVOCATIONS);
 	const int primitive_slot =
 		mgl_query_target_slot(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED);
 
 	QueryObject *invocation_query =
-		mgl_find_query(s_active_query_by_target[invocation_slot][0]);
+		mgl_find_query(ctx, ctx->active_query_by_target[invocation_slot][0]);
 	if (invocation_query && invocation_query->active &&
 		invocation_query->target == GL_GEOMETRY_SHADER_INVOCATIONS)
 	{
@@ -370,7 +357,7 @@ void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
 	}
 
 	QueryObject *primitive_query =
-		mgl_find_query(s_active_query_by_target[primitive_slot][0]);
+		mgl_find_query(ctx, ctx->active_query_by_target[primitive_slot][0]);
 	if (primitive_query && primitive_query->active &&
 		primitive_query->target == GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED)
 	{
@@ -380,15 +367,17 @@ void mglRecordActiveGeometryShaderQueryDraw(GLMContext ctx,
 	}
 }
 
-GLboolean mglHasActiveGeometryShaderQuery(void)
+GLboolean mglHasActiveGeometryShaderQuery(GLMContext ctx)
 {
-	mgl_init_query_table_if_needed();
+	if (!ctx)
+		return GL_FALSE;
+	mgl_init_query_table_if_needed(ctx);
 	const int slots[] = {
 		mgl_query_target_slot(GL_GEOMETRY_SHADER_INVOCATIONS),
 		mgl_query_target_slot(GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED),
 	};
 	for (size_t i = 0; i < sizeof(slots) / sizeof(slots[0]); i++) {
-		QueryObject *q = mgl_find_query(s_active_query_by_target[slots[i]][0]);
+		QueryObject *q = mgl_find_query(ctx, ctx->active_query_by_target[slots[i]][0]);
 		if (q && q->active)
 			return GL_TRUE;
 	}
@@ -400,14 +389,15 @@ void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
                                                GLuint64 generated,
                                                GLuint64 written)
 {
-	(void)ctx;
+	if (!ctx)
+		return;
 	if (index >= MGL_QUERY_MAX_INDEX)
 		return;
 
-	mgl_init_query_table_if_needed();
+	mgl_init_query_table_if_needed(ctx);
 
 	QueryObject *generated_query =
-		mgl_find_query(s_active_query_by_target[3][index]);
+		mgl_find_query(ctx, ctx->active_query_by_target[3][index]);
 	if (generated_query && generated_query->active &&
 	    generated_query->target == GL_PRIMITIVES_GENERATED)
 	{
@@ -417,7 +407,7 @@ void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
 	}
 
 	QueryObject *written_query =
-		mgl_find_query(s_active_query_by_target[4][index]);
+		mgl_find_query(ctx, ctx->active_query_by_target[4][index]);
 	if (written_query && written_query->active &&
 	    written_query->target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN)
 	{
@@ -434,53 +424,76 @@ void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
 	mglRecordActivePrimitiveQueryDrawIndexed(ctx, 0u, generated, written);
 }
 
-GLboolean mglHasActiveIndexedPrimitiveQuery(void)
+GLboolean mglHasActiveIndexedPrimitiveQuery(GLMContext ctx)
 {
-	mgl_init_query_table_if_needed();
+	if (!ctx)
+		return GL_FALSE;
+	mgl_init_query_table_if_needed(ctx);
 	for (GLuint index = 1u; index < MGL_QUERY_MAX_INDEX; index++) {
-		if (s_active_query_by_target[3][index] != 0u ||
-			s_active_query_by_target[4][index] != 0u)
+		if (ctx->active_query_by_target[3][index] != 0u ||
+			ctx->active_query_by_target[4][index] != 0u)
 			return GL_TRUE;
 	}
 	return GL_FALSE;
 }
 
 /* Non-indexed (stream 0) PRIMITIVES_GENERATED / TF_PRIMITIVES_WRITTEN. */
-GLboolean mglHasActivePrimitiveQuery(void)
+GLboolean mglHasActivePrimitiveQuery(GLMContext ctx)
 {
-	mgl_init_query_table_if_needed();
-	return (s_active_query_by_target[3][0] != 0u ||
-	        s_active_query_by_target[4][0] != 0u)
+	if (!ctx)
+		return GL_FALSE;
+	mgl_init_query_table_if_needed(ctx);
+	return (ctx->active_query_by_target[3][0] != 0u ||
+	        ctx->active_query_by_target[4][0] != 0u)
 	       ? GL_TRUE : GL_FALSE;
 }
 
 GLboolean mglShouldSkipConditionalRender(GLMContext ctx)
 {
-	return (ctx && ctx->state.conditional_render_active &&
-	        ctx->state.conditional_render_skip) ? GL_TRUE : GL_FALSE;
+	return (ctx && STATE(conditional_render_active) &&
+	        STATE(conditional_render_skip)) ? GL_TRUE : GL_FALSE;
 }
 
-static QueryObject *mgl_find_query(GLuint id)
+static QueryObject *mgl_find_query(GLMContext ctx, GLuint id)
 {
-	mgl_init_query_table_if_needed();
-	return (QueryObject *)searchHashTable(&s_query_table, id);
+	if (!ctx || id == 0)
+		return NULL;
+	return (QueryObject *)searchHashTable(&ctx->query_table, id);
 }
 
-static QueryObject *mgl_get_query(GLuint id)
+static QueryObject *mgl_get_query(GLMContext ctx, GLuint id)
 {
 	QueryObject *q;
 
-	mgl_init_query_table_if_needed();
-	q = (QueryObject *)searchHashTable(&s_query_table, id);
+	if (!ctx || id == 0)
+		return NULL;
+	q = (QueryObject *)searchHashTable(&ctx->query_table, id);
 	if (!q)
 	{
 		q = (QueryObject *)calloc(1, sizeof(QueryObject));
 		if (!q)
 			return NULL;
 		q->name = id;
-		insertHashElement(&s_query_table, id, q);
+		insertHashElement(&ctx->query_table, id, q);
 	}
 	return q;
+}
+
+static void mgl_destroy_query_entry(GLuint name, void *data, void *user)
+{
+	(void)name;
+	(void)user;
+	free(data);
+}
+
+void mglDestroyContextQueries(GLMContext ctx)
+{
+	if (!ctx)
+		return;
+	memset(ctx->active_query_by_target, 0, sizeof(ctx->active_query_by_target));
+	mglHashTableForEach(&ctx->query_table, mgl_destroy_query_entry, NULL);
+	mglHashTableClearEntries(&ctx->query_table);
+	destroyHashTable(&ctx->query_table);
 }
 
 static GLboolean mgl_query_value(const QueryObject *q, GLenum pname, GLuint64 *value)
@@ -505,7 +518,7 @@ static GLboolean mgl_query_value(const QueryObject *q, GLenum pname, GLuint64 *v
 	}
 }
 
-static void mgl_finish_query_result(QueryObject *q)
+static void mgl_finish_query_result(GLMContext ctx, QueryObject *q)
 {
 	if (!q)
 		return;
@@ -548,8 +561,8 @@ static void mgl_finish_query_result(QueryObject *q)
 			 * Only fall back to the fake counter when the Metal
 			 * backend was never called — a real zero result (e.g.
 			 * an extremely fast GPU pass) must be preserved. */
-			if (!q->timer_result_known)
-				q->result = s_fake_timestamp_counter++;
+			if (!q->timer_result_known && ctx)
+				q->result = ctx->query_timestamp_counter++;
 			break;
 		default:
 			q->result = 0;
@@ -1769,7 +1782,7 @@ void mglBeginConditionalRender(GLMContext ctx, GLuint id, GLenum mode)
 		return;
 	}
 
-	q = mgl_find_query(id);
+	q = mgl_find_query(ctx, id);
 	if (!q || q->active || !q->available)
 	{
 		STATE(error) = GL_INVALID_OPERATION;
@@ -1809,7 +1822,7 @@ static void mglBeginQueryAtIndex(GLMContext ctx, GLenum target,
 		return;
 	}
 
-	q = mgl_get_query(id);
+	q = mgl_get_query(ctx, id);
 	if (!q)
 	{
 		STATE(error) = GL_OUT_OF_MEMORY;
@@ -1817,7 +1830,7 @@ static void mglBeginQueryAtIndex(GLMContext ctx, GLenum target,
 	}
 
 	if (q->active || (q->target != 0 && q->target != target) ||
-		s_active_query_by_target[slot][index] != 0)
+		ctx->active_query_by_target[slot][index] != 0)
 	{
 		STATE(error) = GL_INVALID_OPERATION;
 		return;
@@ -1832,7 +1845,7 @@ static void mglBeginQueryAtIndex(GLMContext ctx, GLenum target,
 	q->pipeline_result_known = GL_FALSE;
 	q->timer_result_known = GL_FALSE;
 	q->result = 0;
-	s_active_query_by_target[slot][index] = id;
+	ctx->active_query_by_target[slot][index] = id;
 
 	/* For sample queries, activate the Metal visibility result buffer so
 	 * the GPU accurately reports whether any fragments passed per-fragment
@@ -2686,12 +2699,12 @@ void mglCreateQueries(GLMContext ctx, GLenum target, GLsizei n, GLuint *ids)
 	if (!ids)
 		return;
 
-	mgl_init_query_table_if_needed();
+	mgl_init_query_table_if_needed(ctx);
 	for (GLsizei i = 0; i < n; i++)
 	{
 		QueryObject *q;
-		ids[i] = getNewName(&s_query_table);
-		q = mgl_get_query(ids[i]);
+		ids[i] = getNewName(&ctx->query_table);
+		q = mgl_get_query(ctx, ids[i]);
 		if (!q)
 		{
 			STATE(error) = GL_OUT_OF_MEMORY;
@@ -2803,7 +2816,7 @@ void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 		int slot;
 		if (ids[i] == 0)
 			continue;
-		q = mgl_find_query(ids[i]);
+		q = mgl_find_query(ctx, ids[i]);
 		if (!q)
 			continue;
 		if (q->active)
@@ -2814,11 +2827,11 @@ void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 		slot = mgl_query_target_slot(q->target);
 		if (slot >= 0) {
 			for (GLuint index = 0u; index < MGL_QUERY_MAX_INDEX; index++) {
-				if (s_active_query_by_target[slot][index] == q->name)
-					s_active_query_by_target[slot][index] = 0;
+				if (ctx->active_query_by_target[slot][index] == q->name)
+					ctx->active_query_by_target[slot][index] = 0;
 			}
 		}
-		deleteHashElement(&s_query_table, q->name);
+		deleteHashElement(&ctx->query_table, q->name);
 		free(q);
 	}
 }
@@ -2877,8 +2890,8 @@ void mglDepthRangeArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLdo
 		if (index == 0) {
 			mglDepthRange(ctx, n, f);
 		} else if (index < MGL_MAX_VIEWPORTS) {
-			ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
-			ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+			STATE(depth_range_array)[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
+			STATE(depth_range_array)[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
 			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 		}
 	}
@@ -2890,8 +2903,8 @@ void mglDepthRangeIndexed(GLMContext ctx, GLuint index, GLdouble n, GLdouble f)
 	if (index == 0) {
 		mglDepthRange(ctx, n, f);
 	} else if (index < MGL_MAX_VIEWPORTS) {
-		ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
-		ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+		STATE(depth_range_array)[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
+		STATE(depth_range_array)[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
 		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
@@ -2968,13 +2981,13 @@ static void mglEndQueryAtIndex(GLMContext ctx, GLenum target, GLuint index)
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
-	id = s_active_query_by_target[slot][index];
+	id = ctx->active_query_by_target[slot][index];
 	if (id == 0)
 	{
 		STATE(error) = GL_INVALID_OPERATION;
 		return;
 	}
-	q = mgl_find_query(id);
+	q = mgl_find_query(ctx, id);
 	if (!q)
 	{
 		STATE(error) = GL_INVALID_OPERATION;
@@ -3008,8 +3021,8 @@ static void mglEndQueryAtIndex(GLMContext ctx, GLenum target, GLuint index)
 		q->timer_result_known = GL_TRUE;
 	}
 
-	mgl_finish_query_result(q);
-	s_active_query_by_target[slot][index] = 0;
+	mgl_finish_query_result(ctx, q);
+	ctx->active_query_by_target[slot][index] = 0;
 }
 
 void mglEndQuery(GLMContext ctx, GLenum target)
@@ -3044,10 +3057,10 @@ void mglGenQueries(GLMContext ctx, GLsizei n, GLuint *ids)
 	if (!ids)
 		return;
 
-	mgl_init_query_table_if_needed();
+	mgl_init_query_table_if_needed(ctx);
 	for (GLsizei i = 0; i < n; i++)
 	{
-		ids[i] = getNewName(&s_query_table);
+		ids[i] = getNewName(&ctx->query_table);
 	}
 }
 
@@ -3474,19 +3487,19 @@ void mglGetDoublei_v(GLMContext ctx, GLenum target, GLuint index, GLdouble *data
 		case GL_VIEWPORT:
 			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
 			for (int i = 0; i < 4; i++) {
-				data[i] = (GLdouble)ctx->state.viewport_array[index][i];
+				data[i] = (GLdouble)STATE(viewport_array)[index][i];
 			}
 			return;
 		case GL_SCISSOR_BOX:
 			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
 			for (int i = 0; i < 4; i++) {
-				data[i] = (GLdouble)ctx->state.scissor_box_array[index][i];
+				data[i] = (GLdouble)STATE(scissor_box_array)[index][i];
 			}
 			return;
 		case GL_DEPTH_RANGE:
 			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
-			data[0] = ctx->state.depth_range_array[index][0];
-			data[1] = ctx->state.depth_range_array[index][1];
+			data[0] = STATE(depth_range_array)[index][0];
+			data[1] = STATE(depth_range_array)[index][1];
 			return;
 		default:
 			break;
@@ -3507,19 +3520,19 @@ void mglGetFloati_v(GLMContext ctx, GLenum target, GLuint index, GLfloat *data)
 		case GL_VIEWPORT:
 			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
 			for (int i = 0; i < 4; i++) {
-				data[i] = ctx->state.viewport_array[index][i];
+				data[i] = STATE(viewport_array)[index][i];
 			}
 			return;
 		case GL_SCISSOR_BOX:
 			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
 			for (int i = 0; i < 4; i++) {
-				data[i] = (GLfloat)ctx->state.scissor_box_array[index][i];
+				data[i] = (GLfloat)STATE(scissor_box_array)[index][i];
 			}
 			return;
 		case GL_DEPTH_RANGE:
 			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
-			data[0] = (GLfloat)ctx->state.depth_range_array[index][0];
-			data[1] = (GLfloat)ctx->state.depth_range_array[index][1];
+			data[0] = (GLfloat)STATE(depth_range_array)[index][0];
+			data[1] = (GLfloat)STATE(depth_range_array)[index][1];
 			return;
 		default:
 			break;
@@ -3587,8 +3600,8 @@ void mglGetMultisamplefv(GLMContext ctx, GLenum pname, GLuint index, GLfloat *va
 	 * get_sample_position() returns in the shader, so the CPU-side query
 	 * (glGetMultisamplefv) and the GPU-side gl_SamplePosition agree. */
 	GLsizei samples = 1;
-	if (ctx && ctx->state.framebuffer) {
-		Framebuffer *fbo = ctx->state.framebuffer;
+	if (ctx && STATE(framebuffer)) {
+		Framebuffer *fbo = STATE(framebuffer);
 		GLint sc = (GLint)fbo->default_samples;
 		if (sc <= 1) {
 			FBOAttachment *a = &fbo->color_attachments[0];
@@ -5123,7 +5136,7 @@ void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLe
 
 void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	QueryObject *q = mgl_find_query(id);
+	QueryObject *q = mgl_find_query(ctx, id);
 	Buffer *buf = findBuffer(ctx, buffer);
 	GLuint64 value = 0;
 	GLint64 stored;
@@ -5163,7 +5176,7 @@ void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenu
 
 void mglGetQueryBufferObjectiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	QueryObject *q = mgl_find_query(id);
+	QueryObject *q = mgl_find_query(ctx, id);
 	Buffer *buf = findBuffer(ctx, buffer);
 	GLuint64 value = 0;
 	GLint stored;
@@ -5203,7 +5216,7 @@ void mglGetQueryBufferObjectiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum 
 
 void mglGetQueryBufferObjectui64v(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	QueryObject *q = mgl_find_query(id);
+	QueryObject *q = mgl_find_query(ctx, id);
 	Buffer *buf = findBuffer(ctx, buffer);
 	GLuint64 stored = 0;
 
@@ -5241,7 +5254,7 @@ void mglGetQueryBufferObjectui64v(GLMContext ctx, GLuint id, GLuint buffer, GLen
 
 void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	QueryObject *q = mgl_find_query(id);
+	QueryObject *q = mgl_find_query(ctx, id);
 	Buffer *buf = findBuffer(ctx, buffer);
 	GLuint64 value = 0;
 	GLuint stored;
@@ -5282,7 +5295,6 @@ void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum
 void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pname, GLint *params)
 {
 	int slot = mgl_query_target_slot(target);
-	(void)ctx;
 	if (!params)
 		return;
 	if (slot < 0)
@@ -5296,7 +5308,7 @@ void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pn
 		return;
 	}
 	if (pname == GL_CURRENT_QUERY) {
-		*params = (GLint)s_active_query_by_target[slot][index];
+		*params = (GLint)ctx->active_query_by_target[slot][index];
 		return;
 	}
 	if (pname == GL_QUERY_COUNTER_BITS) {
@@ -5308,7 +5320,7 @@ void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pn
 
 void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *params)
 {
-	QueryObject *q = mgl_find_query(id);
+	QueryObject *q = mgl_find_query(ctx, id);
 	if (!params)
 		return;
 	if (!q)
@@ -5334,7 +5346,7 @@ void mglGetQueryObjectiv(GLMContext ctx, GLuint id, GLenum pname, GLint *params)
 
 void mglGetQueryObjectui64v(GLMContext ctx, GLuint id, GLenum pname, GLuint64 *params)
 {
-	QueryObject *q = mgl_find_query(id);
+	QueryObject *q = mgl_find_query(ctx, id);
 	if (!params)
 		return;
 	if (!q)
@@ -5372,7 +5384,7 @@ void mglGetQueryiv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 	switch (pname)
 	{
 		case GL_CURRENT_QUERY:
-			*params = (GLint)s_active_query_by_target[slot][0];
+			*params = (GLint)ctx->active_query_by_target[slot][0];
 			break;
 		case GL_QUERY_COUNTER_BITS:
 			*params = (target == GL_TIME_ELAPSED) ? 64 : 32;
@@ -5575,7 +5587,7 @@ void mglGetVertexAttribIiv(GLMContext ctx, GLuint index, GLenum pname, GLint *pa
 	ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 	if (pname == GL_CURRENT_VERTEX_ATTRIB) {
 		for (int i = 0; i < 4; i++)
-			params[i] = ctx->state.current_vertex_attrib[index].i[i];
+			params[i] = STATE(current_vertex_attrib)[index].i[i];
 		return;
 	}
 	mglGetVertexAttribiv(ctx, index, pname, params);
@@ -5587,7 +5599,7 @@ void mglGetVertexAttribIuiv(GLMContext ctx, GLuint index, GLenum pname, GLuint *
 	ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 	if (pname == GL_CURRENT_VERTEX_ATTRIB) {
 		for (int i = 0; i < 4; i++)
-			params[i] = ctx->state.current_vertex_attrib[index].u[i];
+			params[i] = STATE(current_vertex_attrib)[index].u[i];
 		return;
 	}
 	GLint value = 0;
@@ -5669,8 +5681,7 @@ void mglGetnUniformuiv(GLMContext ctx, GLuint program, GLint location, GLsizei b
 
 GLboolean mglIsQuery(GLMContext ctx, GLuint id)
 {
-	(void)ctx;
-	return mgl_find_query(id) ? GL_TRUE : GL_FALSE;
+	return mgl_find_query(ctx, id) ? GL_TRUE : GL_FALSE;
 }
 
 GLboolean mglIsTransformFeedback(GLMContext ctx, GLuint id)
@@ -5703,7 +5714,7 @@ static bool mglReadIndirectCountParameter(GLMContext ctx,
 		mglTraceLogExternal("%s_SKIP reason=bad_drawcount_offset drawcountOffset=%lld program=%u",
 		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
 		                    (long long)drawcount,
-		                    (unsigned)ctx->state.program_name);
+		                    (unsigned)STATE(program_name));
 		ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
 	}
 
@@ -5711,7 +5722,7 @@ static bool mglReadIndirectCountParameter(GLMContext ctx,
 	if (!parameter_buffer) {
 		mglTraceLogExternal("%s_SKIP reason=no_parameter_buffer program=%u",
 		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
-		                    (unsigned)ctx->state.program_name);
+		                    (unsigned)STATE(program_name));
 		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
 	}
 	if (parameter_buffer->mapped &&
@@ -5719,7 +5730,7 @@ static bool mglReadIndirectCountParameter(GLMContext ctx,
 		mglTraceLogExternal("%s_SKIP reason=parameter_buffer_mapped buffer=%u program=%u",
 		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
 		                    (unsigned)parameter_buffer->name,
-		                    (unsigned)ctx->state.program_name);
+		                    (unsigned)STATE(program_name));
 		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
 	}
 	if (parameter_buffer->size < 0 ||
@@ -5730,7 +5741,7 @@ static bool mglReadIndirectCountParameter(GLMContext ctx,
 		                    (unsigned)parameter_buffer->name,
 		                    (long long)drawcount,
 		                    (long long)parameter_buffer->size,
-		                    (unsigned)ctx->state.program_name);
+		                    (unsigned)STATE(program_name));
 		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
 	}
 
@@ -5756,7 +5767,7 @@ static bool mglReadIndirectCountParameter(GLMContext ctx,
 		                    backing_size,
 		                    readable_size,
 		                    (long long)drawcount,
-		                    (unsigned)ctx->state.program_name);
+		                    (unsigned)STATE(program_name));
 		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
 	}
 
@@ -5791,20 +5802,20 @@ void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *in
 	                    (long long)drawcount,
 	                    (int)maxdrawcount,
 	                    (int)stride,
-	                    (unsigned)(ctx ? ctx->state.program_name : 0u));
+	                    (unsigned)(ctx ? STATE(program_name) : 0u));
 
 	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
 	if (drawcount < 0 || maxdrawcount < 0) {
 		mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_COUNT_SKIP reason=bad_count_args drawcountOffset=%lld maxdrawcount=%d program=%u",
 		                    (long long)drawcount,
 		                    (int)maxdrawcount,
-		                    (unsigned)ctx->state.program_name);
+		                    (unsigned)STATE(program_name));
 		ERROR_RETURN(GL_INVALID_VALUE);
 		return;
 	}
 	if (maxdrawcount == 0) {
 		mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_COUNT_SKIP reason=zero_maxdrawcount program=%u",
-	                    (unsigned)ctx->state.program_name);
+	                    (unsigned)STATE(program_name));
 		return;
 	}
 
@@ -5827,7 +5838,7 @@ void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *in
 	                    (int)maxdrawcount,
 	                    (int)stride,
 	                    (unsigned)(parameter_buffer ? parameter_buffer->name : 0u),
-	                    (unsigned)ctx->state.program_name);
+	                    (unsigned)STATE(program_name));
 	mglMultiDrawArraysIndirect(ctx, mode, indirect, effective_drawcount, stride);
 }
 
@@ -5844,20 +5855,20 @@ void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type,
 	                    (long long)drawcount,
 	                    (int)maxdrawcount,
 	                    (int)stride,
-	                    (unsigned)(ctx ? ctx->state.program_name : 0u));
+	                    (unsigned)(ctx ? STATE(program_name) : 0u));
 
 	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
 	if (drawcount < 0 || maxdrawcount < 0) {
 		mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_COUNT_SKIP reason=bad_count_args drawcountOffset=%lld maxdrawcount=%d program=%u",
 		                    (long long)drawcount,
 		                    (int)maxdrawcount,
-		                    (unsigned)ctx->state.program_name);
+		                    (unsigned)STATE(program_name));
 		ERROR_RETURN(GL_INVALID_VALUE);
 		return;
 	}
 	if (maxdrawcount == 0) {
 		mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_COUNT_SKIP reason=zero_maxdrawcount program=%u",
-	                    (unsigned)ctx->state.program_name);
+	                    (unsigned)STATE(program_name));
 		return;
 	}
 
@@ -5881,7 +5892,7 @@ void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type,
 	                    (int)maxdrawcount,
 	                    (int)stride,
 	                    (unsigned)(parameter_buffer ? parameter_buffer->name : 0u),
-	                    (unsigned)ctx->state.program_name);
+	                    (unsigned)STATE(program_name));
 	mglMultiDrawElementsIndirect(ctx, mode, type, indirect, effective_drawcount, stride);
 }
 
@@ -5962,14 +5973,14 @@ void mglPatchParameterfv(GLMContext ctx, GLenum pname, const GLfloat *values)
 	switch (pname)
 	{
 		case GL_PATCH_DEFAULT_INNER_LEVEL:
-			ctx->state.var.patch_default_inner_level[0] = values[0];
-			ctx->state.var.patch_default_inner_level[1] = values[1];
+			STATE(var).patch_default_inner_level[0] = values[0];
+			STATE(var).patch_default_inner_level[1] = values[1];
 			return;
 		case GL_PATCH_DEFAULT_OUTER_LEVEL:
-			ctx->state.var.patch_default_outer_level[0] = values[0];
-			ctx->state.var.patch_default_outer_level[1] = values[1];
-			ctx->state.var.patch_default_outer_level[2] = values[2];
-			ctx->state.var.patch_default_outer_level[3] = values[3];
+			STATE(var).patch_default_outer_level[0] = values[0];
+			STATE(var).patch_default_outer_level[1] = values[1];
+			STATE(var).patch_default_outer_level[2] = values[2];
+			STATE(var).patch_default_outer_level[3] = values[3];
 			return;
 		default:
 			ERROR_RETURN(GL_INVALID_ENUM);
@@ -5982,12 +5993,12 @@ void mglPatchParameteri(GLMContext ctx, GLenum pname, GLint value)
 	switch (pname)
 	{
 		case GL_PATCH_VERTICES:
-			if (value <= 0 || value > (GLint)ctx->state.var.max_patch_vertices)
+			if (value <= 0 || value > (GLint)STATE(var).max_patch_vertices)
 			{
 				ERROR_RETURN(GL_INVALID_VALUE);
 				return;
 			}
-			ctx->state.var.patch_vertices = (GLuint)value;
+			STATE(var).patch_vertices = (GLuint)value;
 			return;
 		default:
 			ERROR_RETURN(GL_INVALID_ENUM);
@@ -6194,7 +6205,7 @@ void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)
 		STATE(error) = GL_INVALID_OPERATION;
 		return;
 	}
-	q = mgl_get_query(id);
+	q = mgl_get_query(ctx, id);
 	if (!q)
 	{
 		STATE(error) = GL_OUT_OF_MEMORY;
@@ -6250,8 +6261,8 @@ void mglResumeTransformFeedback(GLMContext ctx)
 
 void mglSampleMaski(GLMContext ctx, GLuint maskNumber, GLbitfield mask)
 {
-	ERROR_CHECK_RETURN(maskNumber < ctx->state.var.max_sample_mask_words, GL_INVALID_VALUE);
-	ctx->state.var.sample_mask_value = mask;
+	ERROR_CHECK_RETURN(maskNumber < STATE(var).max_sample_mask_words, GL_INVALID_VALUE);
+	STATE(var).sample_mask_value = mask;
 }
 
 void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *v)
@@ -6270,10 +6281,10 @@ void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *
 		if (index == 0) {
 			mglScissor(ctx, box[0], box[1], (GLsizei)box[2], (GLsizei)box[3]);
 		} else if (index < MGL_MAX_VIEWPORTS) {
-			ctx->state.scissor_box_array[index][0] = box[0];
-			ctx->state.scissor_box_array[index][1] = box[1];
-			ctx->state.scissor_box_array[index][2] = box[2];
-			ctx->state.scissor_box_array[index][3] = box[3];
+			STATE(scissor_box_array)[index][0] = box[0];
+			STATE(scissor_box_array)[index][1] = box[1];
+			STATE(scissor_box_array)[index][2] = box[2];
+			STATE(scissor_box_array)[index][3] = box[3];
 			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 		}
 	}
@@ -6287,10 +6298,10 @@ void mglScissorIndexed(GLMContext ctx, GLuint index, GLint left, GLint bottom, G
 	if (index == 0) {
 		mglScissor(ctx, left, bottom, width, height);
 	} else if (index < MGL_MAX_VIEWPORTS) {
-		ctx->state.scissor_box_array[index][0] = left;
-		ctx->state.scissor_box_array[index][1] = bottom;
-		ctx->state.scissor_box_array[index][2] = width;
-		ctx->state.scissor_box_array[index][3] = height;
+		STATE(scissor_box_array)[index][0] = left;
+		STATE(scissor_box_array)[index][1] = bottom;
+		STATE(scissor_box_array)[index][2] = width;
+		STATE(scissor_box_array)[index][3] = height;
 		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
@@ -6397,12 +6408,12 @@ void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoin
 void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer)
 {
     Texture *tex;
-    GLuint active_unit = ctx ? ctx->state.active_texture : 0u;
+    GLuint active_unit = ctx ? STATE(active_texture) : 0u;
 
     ERROR_CHECK_RETURN(target == GL_TEXTURE_BUFFER, GL_INVALID_ENUM);
 
     tex = (ctx && active_unit < TEXTURE_UNITS)
-        ? ctx->state.texture_units[active_unit].textures[_TEXTURE_BUFFER_TARGET]
+        ? STATE(texture_units)[active_unit].textures[_TEXTURE_BUFFER_TARGET]
         : NULL;
 
     if (MGL_VERBOSE_TEXBUFFER_LOGS) {
@@ -6424,12 +6435,12 @@ void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint b
 void mglTexBufferRange(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size)
 {
     Texture *tex;
-    GLuint active_unit = ctx ? ctx->state.active_texture : 0u;
+    GLuint active_unit = ctx ? STATE(active_texture) : 0u;
 
     ERROR_CHECK_RETURN(target == GL_TEXTURE_BUFFER, GL_INVALID_ENUM);
 
     tex = (ctx && active_unit < TEXTURE_UNITS)
-        ? ctx->state.texture_units[active_unit].textures[_TEXTURE_BUFFER_TARGET]
+        ? STATE(texture_units)[active_unit].textures[_TEXTURE_BUFFER_TARGET]
         : NULL;
 
     if (MGL_VERBOSE_TEXBUFFER_LOGS) {
@@ -6471,8 +6482,8 @@ void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
         return;
     }
 
-    if (ctx && ctx->state.active_texture < TEXTURE_UNITS) {
-        tex = ctx->state.texture_units[ctx->state.active_texture].textures[_TEXTURE_2D_MULTISAMPLE];
+    if (ctx && STATE(active_texture) < TEXTURE_UNITS) {
+        tex = STATE(texture_units)[STATE(active_texture)].textures[_TEXTURE_2D_MULTISAMPLE];
     }
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
@@ -6500,8 +6511,8 @@ void mglTexStorage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
         return;
     }
 
-    if (ctx && ctx->state.active_texture < TEXTURE_UNITS) {
-        tex = ctx->state.texture_units[ctx->state.active_texture].textures[_TEXTURE_2D_MULTISAMPLE_ARRAY];
+    if (ctx && STATE(active_texture) < TEXTURE_UNITS) {
+        tex = STATE(texture_units)[STATE(active_texture)].textures[_TEXTURE_2D_MULTISAMPLE_ARRAY];
     }
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
@@ -6588,7 +6599,7 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 	Program *pptr = findProgram(ctx, program);
 	ERROR_CHECK_RETURN(pptr, GL_INVALID_VALUE);
 	if (bufferMode == GL_SEPARATE_ATTRIBS &&
-	    (GLuint)count > ctx->state.var.max_transform_feedback_separate_attribs) {
+	    (GLuint)count > STATE(var).max_transform_feedback_separate_attribs) {
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
@@ -6606,7 +6617,7 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 		}
 		if (strcmp(varyings[i], "gl_NextBuffer") == 0) {
 			nextBufferCount++;
-			if (nextBufferCount >= ctx->state.var.max_transform_feedback_buffers) {
+			if (nextBufferCount >= STATE(var).max_transform_feedback_buffers) {
 				STATE(error) = GL_INVALID_OPERATION;
 				return;
 			}
@@ -7094,11 +7105,11 @@ void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLf
 	if (index == 0) {
 		mglViewport(ctx, (GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
 	} else if (index < MGL_MAX_VIEWPORTS) {
-		ctx->state.viewport_array[index][0] = x;
-		ctx->state.viewport_array[index][1] = y;
-		ctx->state.viewport_array[index][2] = w;
-		ctx->state.viewport_array[index][3] = h;
-		ctx->state.viewport_array_set = GL_TRUE;
+		STATE(viewport_array)[index][0] = x;
+		STATE(viewport_array)[index][1] = y;
+		STATE(viewport_array)[index][2] = w;
+		STATE(viewport_array)[index][3] = h;
+		STATE(viewport_array_set) = GL_TRUE;
 		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }

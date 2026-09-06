@@ -772,8 +772,9 @@ int main(int argc, const char *argv[]) {
          * (data[] and an atomic counter), a 2D texture, plus
          * gl_GlobalInvocationID and the new builtins; dispatch a single
          * thread and verify every device buffer
-         * (41 + 1 + 1328 + 100 + 0 + 4 + 12 -> 1486, data[3] =
-         * 13.285..., counter = 5 + 7 = 12). */
+         * (41 + 1 + 5 + 100 + 0 + 4 + 1328 -> 1479, data[3] =
+         * 13.285..., counter ends at 5+7=12; atomicAdd returns the old
+         * value 5 per GLSL). */
         unsigned char *csBytes = NULL;
         size_t csSize = 0;
         if (mglShaderCompileGLSL(kCS, MGL_STAGE_COMPUTE, &csBytes, &csSize,
@@ -838,7 +839,7 @@ int main(int argc, const char *argv[]) {
         [cb commit];
         [cb waitUntilCompleted];
         int csGot = ((int *)cbuf.contents)[0];
-        if (csGot != 1486) {
+        if (csGot != 1479) {
             fprintf(stderr, "COMPUTE_VALUE_FAIL: %d\n", csGot);
             return 1;
         }
@@ -1071,7 +1072,8 @@ int main(int argc, const char *argv[]) {
             id<MTLBuffer> tcsIn = [dev newBufferWithBytes:stageIn
                                                    length:sizeof stageIn
                                                   options:MTLResourceStorageModeShared];
-            id<MTLBuffer> factors = [dev newBufferWithLength:24
+            id<MTLBuffer> factors = [dev newBufferWithLength:
+                2u * MGL_AIR_TESS_FACTOR_RECORD_BYTES
                                                      options:MTLResourceStorageModeShared];
             id<MTLBuffer> patchOut = [dev newBufferWithLength:32
                                                       options:MTLResourceStorageModeShared];
@@ -1116,16 +1118,22 @@ int main(int argc, const char *argv[]) {
                     }
                 }
             }
-            const uint16_t *halfFactors = (const uint16_t *)factors.contents;
-            const uint16_t expectedFactors[12] = {
-                0x3c00u, 0x3c00u, 0x3c00u, 0x4200u, 0x3c00u, 0x3c00u,
-                0x3c00u, 0x3c00u, 0x3c00u, 0x4400u, 0x3c00u, 0x3c00u,
+            /* Six half factors at the start of each 36-byte factor record. */
+            const uint16_t expectedHalf[2][6] = {
+                {0x3c00u, 0x3c00u, 0x3c00u, 0x4200u, 0x3c00u, 0x3c00u},
+                {0x3c00u, 0x3c00u, 0x3c00u, 0x4400u, 0x3c00u, 0x3c00u},
             };
-            for (int i = 0; i < 12; i++) {
-                if (halfFactors[i] != expectedFactors[i]) {
-                    fprintf(stderr, "TCS_FACTOR_FAIL: factor=%d bits=0x%04x\n",
-                            i, halfFactors[i]);
-                    return 1;
+            for (int patch = 0; patch < 2; patch++) {
+                const uint16_t *halfFactors = (const uint16_t *)(
+                    (const uint8_t *)factors.contents +
+                    (size_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES);
+                for (int i = 0; i < 6; i++) {
+                    if (halfFactors[i] != expectedHalf[patch][i]) {
+                        fprintf(stderr,
+                                "TCS_FACTOR_FAIL: patch=%d factor=%d bits=0x%04x\n",
+                                patch, i, halfFactors[i]);
+                        return 1;
+                    }
                 }
             }
             printf("TCS_OK\n");
@@ -1211,15 +1219,15 @@ int main(int argc, const char *argv[]) {
                 return 1;
             }
 
-            float controlPoints[3][24] = {0};
+            float controlPoints[3][(MGL_AIR_PER_VERTEX_STRIDE + 32) / sizeof(float)] = {{0}};
             controlPoints[0][0] = -1.0f;
             controlPoints[0][1] = -1.0f;
             controlPoints[0][3] = 1.0f;
             controlPoints[1][0] = 1.0f;
             controlPoints[1][1] = -1.0f;
             controlPoints[1][3] = 1.0f;
-            controlPoints[1][20] = 0.25f;
-            controlPoints[1][21] = 0.5f;
+            controlPoints[1][(MGL_AIR_PER_VERTEX_STRIDE + 16) / sizeof(float)] = 0.25f;
+            controlPoints[1][(MGL_AIR_PER_VERTEX_STRIDE + 16) / sizeof(float) + 1] = 0.5f;
             controlPoints[2][0] = -1.0f;
             controlPoints[2][1] = 1.0f;
             controlPoints[2][3] = 1.0f;

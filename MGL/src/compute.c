@@ -66,9 +66,9 @@ void mglDispatchCompute(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y
     if (!ctx)
         return;
 
-    ERROR_CHECK_RETURN(num_groups_x <= (GLuint)ctx->state.var.max_compute_work_group_count[0], GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(num_groups_y <= (GLuint)ctx->state.var.max_compute_work_group_count[1], GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(num_groups_z <= (GLuint)ctx->state.var.max_compute_work_group_count[2], GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(num_groups_x <= (GLuint)STATE(var).max_compute_work_group_count[0], GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(num_groups_y <= (GLuint)STATE(var).max_compute_work_group_count[1], GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(num_groups_z <= (GLuint)STATE(var).max_compute_work_group_count[2], GL_INVALID_VALUE);
 
     if (mglShouldSkipConditionalRender(ctx))
         return;
@@ -99,8 +99,8 @@ void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
         return;
     }
 
-    buf = ctx->state.buffers[_DISPATCH_INDIRECT_BUFFER];
-    if (ctx->state.var.dispatch_indirect_buffer_binding == 0 || !buf)
+    buf = STATE(buffers)[_DISPATCH_INDIRECT_BUFFER];
+    if (STATE(var).dispatch_indirect_buffer_binding == 0 || !buf)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
@@ -122,12 +122,12 @@ void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
         return;
     }
 
-    if ((ctx->state.var.max_compute_work_group_count[0] > 0 &&
-         groups[0] > (GLuint)ctx->state.var.max_compute_work_group_count[0]) ||
-        (ctx->state.var.max_compute_work_group_count[1] > 0 &&
-         groups[1] > (GLuint)ctx->state.var.max_compute_work_group_count[1]) ||
-        (ctx->state.var.max_compute_work_group_count[2] > 0 &&
-         groups[2] > (GLuint)ctx->state.var.max_compute_work_group_count[2]))
+    if ((STATE(var).max_compute_work_group_count[0] > 0 &&
+         groups[0] > (GLuint)STATE(var).max_compute_work_group_count[0]) ||
+        (STATE(var).max_compute_work_group_count[1] > 0 &&
+         groups[1] > (GLuint)STATE(var).max_compute_work_group_count[1]) ||
+        (STATE(var).max_compute_work_group_count[2] > 0 &&
+         groups[2] > (GLuint)STATE(var).max_compute_work_group_count[2]))
     {
     /* GL 4.6 §7.12.9: an indirect count outside the compute work-group
      * limit is GL_INVALID_VALUE; report it instead of silently skipping. */

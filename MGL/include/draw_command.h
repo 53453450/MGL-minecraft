@@ -34,6 +34,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <string.h>
+
+#include "mgl_backend_handles.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -193,8 +196,8 @@ typedef struct {
     uint32_t fragment_program_name;
     uint32_t vao_name;
     uint32_t fbo_name;
-    int16_t  viewport[4];
-    int16_t  scissor[4];
+    int32_t  viewport[4];
+    int32_t  scissor[4];
     uint8_t  scissor_enabled;
     uint8_t  primitive_type;
     uint16_t caps_flags;
@@ -203,6 +206,21 @@ typedef struct {
     uint64_t uniform_buffer_hash;
     uint64_t vertex_layout_hash;
 } MGLStateKey;
+
+/* Immutable draw inputs for deferred replay (ARCHITECTURE_AUDIT R3).
+ * Captured with the batch; encoder setup should prefer this over mutating
+ * live GLMState.  Currently populated for every batch; indexed draws use it
+ * to re-apply viewport/scissor without relying on live-state side effects. */
+typedef struct MGLDrawState {
+    uint32_t program_name;
+    uint32_t vao_name;
+    uint32_t fbo_name;
+    int32_t  viewport[4];
+    int32_t  scissor[4];
+    uint8_t  scissor_enabled;
+    uint8_t  uses_elements;
+    uint8_t  valid;
+} MGLDrawState;
 
 typedef struct {
     MGLStateKey     key;
@@ -232,7 +250,26 @@ typedef struct {
     bool            has_sampler_snapshots;
     bool            sampler_snapshots_mixed;
     bool            arena_managed;  /* snapshot/commands allocated from arena */
+    MGLDrawState    draw_state;     /* immutable draw inputs (R3) */
 } MGLDrawBatch;
+
+/* Fill batch->draw_state from an already-computed MGLStateKey. */
+static inline void mglDrawStateFromKey(MGLDrawState *ds, const MGLStateKey *key,
+                                       uint8_t uses_elements)
+{
+    if (!ds || !key) {
+        return;
+    }
+    memset(ds, 0, sizeof(*ds));
+    ds->program_name = key->program_name;
+    ds->vao_name = key->vao_name;
+    ds->fbo_name = key->fbo_name;
+    memcpy(ds->viewport, key->viewport, sizeof(ds->viewport));
+    memcpy(ds->scissor, key->scissor, sizeof(ds->scissor));
+    ds->scissor_enabled = key->scissor_enabled;
+    ds->uses_elements = uses_elements;
+    ds->valid = 1u;
+}
 
 typedef struct {
     void     *buffer;

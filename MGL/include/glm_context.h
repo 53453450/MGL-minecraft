@@ -95,6 +95,11 @@ static_assert(_TEXTURE_BUFFER == _TEXTURE_BUFFER_TARGET, "_TEXTURE_BUFFER != _TE
 
 static_assert(TEXTURE_UNITS == 128, "active_texture_mask relies on this");
 
+/* Query objects and active slots are context-local (GL 4.6 §2.1 / §4.2).
+ * Do not place them in shareable GLMState / ShareGroup tables (A02). */
+#define MGL_QUERY_TARGET_SLOT_COUNT 18u
+#define MGL_QUERY_MAX_INDEX 4u
+
 typedef struct GLMContextRec_t *GLMContext;
 
 typedef struct GLMContextRec_t {
@@ -109,10 +114,9 @@ typedef struct GLMContextRec_t {
 #endif
 
     GLMState    state;
-    /* Pointer to the currently active GLMState.  Always points to the embedded
-     * state above.  STATE() / STATE_VAR() / VAO() macros and all direct
-     * accesses in the Metal encoding layer go through this pointer so the C GL
-     * layer and the Metal layer share one state access path. */
+    /* Pointer to the currently active GLMState.  Defaults to &state; batch
+     * replay may later redirect to replay_state once remaining ctx->state
+     * readers migrate (ARCHITECTURE_AUDIT R3). */
     GLMState   *active_state;
     GLboolean   assert_on_error;
 
@@ -134,12 +138,21 @@ typedef struct GLMContextRec_t {
      * MGLRenderer-owned MGLBatchArena ivar.  Accessed from draw_command.c. */
     MGLBatchArena  *batch_arena;
 
+    /* Context-owned query registry (ARCHITECTURE_AUDIT A02). */
+    HashTable   query_table;
+    GLuint      active_query_by_target[MGL_QUERY_TARGET_SLOT_COUNT][MGL_QUERY_MAX_INDEX];
+    GLuint64    query_timestamp_counter;
+
     /* Renderer roots. The backend owns Metal state; the context retains the
      * platform renderer shell until backend teardown is complete. */
     void *renderer_backend;
     void *platform_renderer_shell;
 
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
+
+    /* Trailing replay workspace (R3).  Kept last so inserting it does not
+     * shift earlier GLMContextRec field offsets for incremental rebuilds. */
+    GLMState replay_state;
 } GLMContextRec;
 
 
@@ -154,6 +167,8 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx);
 
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);
+/* Free context-local query objects; called from destroyGLMContext. */
+void mglDestroyContextQueries(GLMContext ctx);
 
 #include "mgl_context_enums.h"
 

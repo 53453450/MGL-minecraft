@@ -912,9 +912,9 @@ static GLenum mglPassthroughDeclType(
     Shader *mgl_gs_for_ps = program->shader_slots[_GEOMETRY_SHADER];
     BOOL hasPointSize = mgl_gs_for_ps && mgl_gs_for_ps->src &&
                         strstr(mgl_gs_for_ps->src, "gl_PointSize") != NULL;
-    /* GS-written gl_PrimitiveID is parked at record offset 52 (vec4 slot 3,
-     * component y) and ferried to the fragment stage as a flat int varying
-     * at the reserved location below. */
+    /* GS-written gl_PrimitiveID is parked at record offset 64 (vec4 slot 4,
+     * component x; layout v2 / A04) and ferried to the fragment stage as a
+     * flat float varying at the reserved location below. */
     BOOL hasPrimitiveId = mgl_gs_for_ps && mgl_gs_for_ps->src &&
                           strstr(mgl_gs_for_ps->src, "gl_PrimitiveID") != NULL;
     BOOL hasClipDistance = mgl_gs_for_ps && mgl_gs_for_ps->src &&
@@ -1004,10 +1004,13 @@ static GLenum mglPassthroughDeclType(
     if (hasPrimitiveId) {
         /* Two-step load: the frontend rejects a member access directly on
          * an SSBO array element.  The record already holds the float
-         * carrier, so forward it unchanged. */
-        [source appendString:
-            @"    vec4 mgl_prim_vec = mgl_gs_output.records[mgl_base + 3];\n"
-             "    mgl_primitive_id = mgl_prim_vec.y;\n"];
+         * carrier, so forward it unchanged.  Layout v2: primitive_id @64. */
+        unsigned primSlot =
+            (unsigned)(MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET / 16u);
+        [source appendFormat:
+            @"    vec4 mgl_prim_vec = mgl_gs_output.records[mgl_base + %u];\n"
+             "    mgl_primitive_id = mgl_prim_vec.x;\n",
+             primSlot];
     }
     if (hasClipDistance) {
         /* Clip distances live at byte offset 64 (vec4 slots 4..5). */
@@ -1089,11 +1092,16 @@ static GLenum mglPassthroughDeclType(
          strstr(mgl_gs->src, "gl_ViewportIndex") ||
          fsNeedsLayer || fsNeedsViewport)) {
 
-        [source appendString:
+        /* Layout v2 (A04): layer @52 / viewport @56 share vec4 slot 3 as
+         * .y / .z (stream occupies .w). */
+        unsigned layerSlot =
+            (unsigned)(MGL_AIR_PER_VERTEX_LAYER_OFFSET / 16u);
+        [source appendFormat:
             @"    vec4 mgl_layer_vp = "
-             "mgl_gs_output.records[mgl_base + 2];\n"
-             "    gl_Layer = floatBitsToInt(mgl_layer_vp.z);\n"
-             "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.w);\n"];
+             "mgl_gs_output.records[mgl_base + %u];\n"
+             "    gl_Layer = floatBitsToInt(mgl_layer_vp.y);\n"
+             "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.z);\n",
+             layerSlot];
      }
      for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
          MGLShaderResource *output = &outputs->list[i];
@@ -5799,7 +5807,7 @@ static GLenum mglPassthroughDeclType(
         fragmentProgram->uses_lod_bias == GL_TRUE;
     if (useLodBias) {
 
-        const GLfloat biasmax = ctx->state.var.max_texture_lod_bias;
+        const GLfloat biasmax = STATE(var).max_texture_lod_bias;
         float lodBiasArr[TEXTURE_UNITS];
         for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
             Texture *tex = MGL_STATE(ctx)->active_textures[unit];
@@ -5926,7 +5934,7 @@ static GLenum mglPassthroughDeclType(
                 }
             } else {
                 // programs are now compiled before execution, we shouldn't get here
-                //assert(ctx->state.program->mtl_data); //
+                //assert(STATE(program)->mtl_data); //
 
                 // figure out vertex shader uniforms / buffer mappings
                 RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
@@ -6005,7 +6013,7 @@ static GLenum mglPassthroughDeclType(
             RETURN_FALSE_ON_FAILURE([self syncPipelineStateWithDeferredBufferMap:deferredBufferMapForPipelineBuild]);
         }
 
-        //if (ctx->state.dirty_bits)
+        //if (STATE(dirty_bits))
         //    logDirtyBits(ctx);
 
         // Unconditionally clear all dirty bits after processing.
@@ -6015,7 +6023,7 @@ static GLenum mglPassthroughDeclType(
         // cause false-positive rebinds on the next draw.
         MGL_STATE(ctx)->dirty_bits = 0;
     }
-    else // if (ctx->state.dirty_bits)
+    else // if (STATE(dirty_bits))
     {
         // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
         // like a uniform or buffer sub data call

@@ -46,24 +46,24 @@ GLenum  mglGetError(GLMContext ctx)
 
     /* Drain the error queue.  When no errors are queued, return GL_NO_ERROR.
      * When errors are queued, pop the oldest one and return it. */
-    if (ctx->state.error_count == 0)
+    if (STATE(error_count) == 0)
     {
-        /* Backwards compatibility: some call sites set ctx->state.error
+        /* Backwards compatibility: some call sites set STATE(error)
          * directly instead of going through mglDispatchError.  Surface that
          * single error so it is not silently lost. */
-        GLenum legacy = ctx->state.error;
-        ctx->state.error = GL_NO_ERROR;
+        GLenum legacy = STATE(error);
+        STATE(error) = GL_NO_ERROR;
         return legacy;
     }
 
-    GLenum err = ctx->state.error_queue[ctx->state.error_head];
-    ctx->state.error_head = (ctx->state.error_head + 1u) % MGL_ERROR_QUEUE_SIZE;
-    ctx->state.error_count--;
+    GLenum err = STATE(error_queue)[STATE(error_head)];
+    STATE(error_head) = (STATE(error_head) + 1u) % MGL_ERROR_QUEUE_SIZE;
+    STATE(error_count)--;
 
     /* Mirror the new head (or GL_NO_ERROR when empty) for legacy code that
-     * reads ctx->state.error directly. */
-    ctx->state.error = (ctx->state.error_count > 0)
-        ? ctx->state.error_queue[ctx->state.error_head]
+     * reads STATE(error) directly. */
+    STATE(error) = (STATE(error_count) > 0)
+        ? STATE(error_queue)[STATE(error_head)]
         : GL_NO_ERROR;
 
     return err;
@@ -75,16 +75,22 @@ static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
     if (!func || error != GL_INVALID_OPERATION)
         return 0;
 
-    /* MGL_STRICT_TEXTURE_ERRORS=1 disables the compatibility error-swallowing
-     * so developers can surface real texture bugs during CTS / debugging.
-     * Cached once on first call (consistent with the rest of MGL's env-var
-     * caching pattern; GL context is single-threaded). */
-    static int strict_mode = -1;
-    if (strict_mode < 0) {
-        const char *env = getenv("MGL_STRICT_TEXTURE_ERRORS");
-        strict_mode = (env && atoi(env) > 0) ? 1 : 0;
+    /* Default: surface GL_INVALID_OPERATION from texture APIs (GL 4.6).
+     * Set MGL_COMPAT_TEXTURE_ERRORS=1 to restore the legacy swallow path used
+     * by some apps. MGL_STRICT_TEXTURE_ERRORS=1 remains an explicit alias for
+     * the default strict behavior (A17). */
+    static int swallow_compat = -1;
+    if (swallow_compat < 0) {
+        const char *compat = getenv("MGL_COMPAT_TEXTURE_ERRORS");
+        const char *strict = getenv("MGL_STRICT_TEXTURE_ERRORS");
+        if (compat && atoi(compat) > 0)
+            swallow_compat = 1;
+        else if (strict && atoi(strict) == 0)
+            swallow_compat = 1;
+        else
+            swallow_compat = 0;
     }
-    if (strict_mode) {
+    if (!swallow_compat) {
         return 0;
     }
 
@@ -166,19 +172,19 @@ void error_func(GLMContext ctx, const char *func, GLenum error)
      * hold at least 16 errors; when full, the new error is dropped (the
      * oldest 16 are retained).  This replaces the previous depth-1 behavior
      * that silently discarded every error after the first. */
-    if (ctx->state.error_count < MGL_ERROR_QUEUE_SIZE)
+    if (STATE(error_count) < MGL_ERROR_QUEUE_SIZE)
     {
-        GLuint tail = (ctx->state.error_head + ctx->state.error_count) % MGL_ERROR_QUEUE_SIZE;
-        ctx->state.error_queue[tail] = error;
-        ctx->state.error_count++;
-        /* Mirror the head for legacy code that reads ctx->state.error. */
-        ctx->state.error = ctx->state.error_queue[ctx->state.error_head];
+        GLuint tail = (STATE(error_head) + STATE(error_count)) % MGL_ERROR_QUEUE_SIZE;
+        STATE(error_queue)[tail] = error;
+        STATE(error_count)++;
+        /* Mirror the head for legacy code that reads STATE(error). */
+        STATE(error) = STATE(error_queue)[STATE(error_head)];
     }
     else
     {
         /* Queue full — the new error is dropped per spec.  Keep the legacy
          * field pointing at the current head. */
-        ctx->state.error = ctx->state.error_queue[ctx->state.error_head];
+        STATE(error) = STATE(error_queue)[STATE(error_head)];
     }
 
     /* Temporarily disabled to allow QEMU to continue despite errors */

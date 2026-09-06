@@ -42,6 +42,11 @@
 extern "C" {
 #endif
 
+uint32_t mglFrontendParseCount(void);
+uint32_t mglFrontendReuseCount(void);
+void mglFrontendNoteParse(void);
+void mglFrontendNoteReuse(void);
+
 /* Parse a complete GLSL source buffer into a translation unit.  The
  * returned MGLTranslationUnit is heap-owned (including all nested nodes);
  * free with mglGLSLTranslationUnitDestroy.  On any parse error the function

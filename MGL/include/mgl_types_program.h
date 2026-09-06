@@ -112,6 +112,16 @@ typedef enum MGLGSRoute {
     MGL_GS_ROUTE_UNSUPPORTED        /* GS attached, no execution path yet */
 } MGLGSRoute;
 
+/* A18: ProgramLinkState — link-committed executable vs draft attachment. */
+typedef enum MGLProgramLinkState {
+    MGL_PROGRAM_LINK_NONE = 0,      /* never successfully linked */
+    MGL_PROGRAM_LINK_OK,            /* executable published */
+    MGL_PROGRAM_LINK_FAILED         /* last link failed; prior OK may remain */
+} MGLProgramLinkState;
+
+/* Incomplete; full definition in mgl_compile_artifact.h. */
+struct MGLCompileArtifact;
+
 typedef struct Shader_t {
     GLuint dirty_bits;
     GLuint name;
@@ -125,6 +135,14 @@ typedef struct Shader_t {
     char *log;
     int refcount;
     GLboolean delete_status;
+    /* R2 FrontendArtifact fields (owned diagnostics). */
+    int frontend_stage;
+    char *frontend_diagnostics;
+    uint32_t frontend_parse_generation;
+    GLboolean frontend_valid;
+    /* Owned stage CompileArtifact from glCompileShader; link may adopt it
+     * when no variant air_flags / iface_peers / attrib remap are required. */
+    struct MGLCompileArtifact *cached_artifact;
 } Shader;
 
 /* Per-shader backend module state: AIR serialized metallib bytes + the
@@ -271,6 +289,7 @@ typedef struct Program_t {
     GLuint attached_shader_counts[_MAX_SHADER_TYPES];
     GLbitfield attached_shader_mask;
     GLboolean link_success;
+    MGLProgramLinkState link_state;
     MGLShaderModule modules[_MAX_SHADER_TYPES];
     MGLShaderResourceList shader_resources_list[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     struct {

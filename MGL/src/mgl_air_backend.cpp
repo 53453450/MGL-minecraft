@@ -4327,9 +4327,8 @@ static llvm::Value *loadGeometryPointSize(Codegen &cg, uint32_t record)
 static void storeGeometryLayer(Codegen &cg, llvm::Value *record,
                                llvm::Value *layer)
 {
-    /* Offsets 40/44 alias gl_CullDistance[5]/[6].  Only stamp layer when the
-     * shader actually wrote gl_Layer; unconditional zero stores would wipe
-     * high-index cull distances needed for GS primitive culling. */
+    /* Offsets for layer/viewport are dedicated (layout v2 / A04); only stamp
+     * when the shader actually wrote the builtin. */
     if (!cg.lvalues.count("gl_Layer"))
         return;
     llvm::Value *p = cg.b->CreateGEP(
@@ -4351,15 +4350,16 @@ static void storeGeometryViewportIndex(Codegen &cg, llvm::Value *record,
     cg.b->CreateAlignedStore(viewportIndex, p, llvm::Align(4));
 }
 
-/* gl_PrimitiveID written by the GS rides at offset 52 so the fragment
- * stage can receive it through the passthrough vertex function (flat).
- * The record holds a float carrier (sitofp of the id): Apple's AGX
- * compiler segfaults in InstCombine when a flat int stage_input that is
- * actually read crosses into the fragment stage, so the id travels as a
- * float and the FS entry converts it back with round+fptosi.  Every
- * reader/writer of this slot must use the same carrier type.
- * Unwritten records keep whatever the strip cache held; the renderer's
- * PTVS only forwards it for programs that declared gl_PrimitiveID. */
+/* gl_PrimitiveID written by the GS rides at
+ * MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET so the fragment stage can receive
+ * it through the passthrough vertex function (flat).  The record holds a
+ * float carrier (sitofp of the id): Apple's AGX compiler segfaults in
+ * InstCombine when a flat int stage_input that is actually read crosses
+ * into the fragment stage, so the id travels as a float and the FS entry
+ * converts it back with round+fptosi.  Every reader/writer of this slot
+ * must use the same carrier type.  Unwritten records keep whatever the
+ * strip cache held; the renderer's PTVS only forwards it for programs that
+ * declared gl_PrimitiveID. */
 static void copyGeometryPrimitiveIdSelected(Codegen &cg, llvm::Value *dst,
                                             uint32_t falseRecord,
                                             uint32_t trueRecord,
@@ -7108,9 +7108,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         if (strncmp(name, "imageAtomic", 11) == 0) {
             /* Metal 3.1 texture atomics (air.atomic_fetch_*_explicit_texture_*).
-             * Emulated RMW races under parallel TES/GS/FS, so native atomics
-             * are required for multi-invocation CTS (advanced-allStages).
-             * CompSwap and multisample keep the RMW fallback. */
+             * Unsupported combinations are rejected at codegen (A05). */
             const MGLExpr *ia = e->u.call.arg_count > 0
                 ? e->u.call.args[0] : nullptr;
             const MGLIRType *imgTy = nullptr;
@@ -7132,7 +7130,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
             llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
             llvm::Type *v4i32 = llvm::FixedVectorType::get(i32, 4);
-            llvm::Type *voidTy = llvm::Type::getVoidTy(*cg.ctx);
             auto toIvec2X0 = [&](llvm::Value *x) -> llvm::Value * {
                 llvm::Value *v = llvm::UndefValue::get(v2i32);
                 v = cg.b->CreateInsertElement(v, x, cg.b->getInt32(0));
@@ -7211,223 +7208,89 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             data = coerceScalar(cg, data,
                                 isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
 
-            /* Native Metal texture atomics exist for 1D/2D/3D/array/buffer;
-             * cube is unsupported on this GPU (falls back to RMW). MS and
-             * CompSwap also stay on the RMW path. */
+            /* Native Metal texture atomics exist for 1D/2D/3D/array/buffer.
+             * CompSwap, multisample, and cube kinds have no correct atomic
+             * lowering here — refuse rather than emit racy RMW (A05). */
             const bool useNative =
                 !isCompSwap && !isMsImage &&
                 (tk == MGLIR_TEX_1D || tk == MGLIR_TEX_BUFFER ||
                  tk == MGLIR_TEX_2D || tk == MGLIR_TEX_2D_RECT ||
                  tk == MGLIR_TEX_1D_ARRAY || tk == MGLIR_TEX_2D_ARRAY ||
                  tk == MGLIR_TEX_3D);
-            if (useNative) {
-                const char *opStem = nullptr;
-                if (strcmp(name, "imageAtomicAdd") == 0)
-                    opStem = "atomic_fetch_add";
-                else if (strcmp(name, "imageAtomicMin") == 0)
-                    opStem = "atomic_fetch_min";
-                else if (strcmp(name, "imageAtomicMax") == 0)
-                    opStem = "atomic_fetch_max";
-                else if (strcmp(name, "imageAtomicAnd") == 0)
-                    opStem = "atomic_fetch_and";
-                else if (strcmp(name, "imageAtomicOr") == 0)
-                    opStem = "atomic_fetch_or";
-                else if (strcmp(name, "imageAtomicXor") == 0)
-                    opStem = "atomic_fetch_xor";
-                else if (strcmp(name, "imageAtomicExchange") == 0)
-                    opStem = "atomic_exchange";
-                else {
-                    cg.err = 1;
-                    cg.errmsg = "codegen: unsupported imageAtomic op";
-                    return nullptr;
-                }
-                llvm::Value *dataV4 = llvm::UndefValue::get(v4i32);
-                dataV4 = cg.b->CreateInsertElement(dataV4, data,
-                                                   cg.b->getInt32(0));
-                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
-                                                   cg.b->getInt32(1));
-                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
-                                                   cg.b->getInt32(2));
-                dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
-                                                   cg.b->getInt32(3));
-                llvm::Value *zero2 = llvm::ConstantVector::get(
-                    {cg.b->getInt32(0), cg.b->getInt32(0)});
-                llvm::Value *zero3 = llvm::ConstantVector::get(
-                    {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
-                /* memory_order_relaxed=0, access::read_write=3 */
-                llvm::Value *order = cg.b->getInt32(0);
-                llvm::Value *access = cg.b->getInt32(3);
-                auto airName = [&](const char *dim) -> std::string {
-                    return std::string("air.") + opStem + "_explicit_" + dim +
-                           (isUint ? ".u.v4i32" : ".s.v4i32");
-                };
-                llvm::Value *oldV4 = nullptr;
-                if (tk == MGLIR_TEX_3D) {
-                    oldV4 = callAirFn(cg, airName("texture_3d").c_str(), v4i32,
-                                      {tex, coord3, zero3, dataV4, order,
-                                       access});
-                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
-                    oldV4 = callAirFn(
-                        cg, airName("texture_2d_array").c_str(), v4i32,
-                        {tex, coord2, layerOrFace, zero2, dataV4, order,
-                         access});
+            if (!useNative) {
+                cg.err = 1;
+                if (isCompSwap) {
+                    cg.errmsg =
+                        "codegen: imageAtomicCompSwap is not supported "
+                        "(no native texture compare-exchange)";
+                } else if (isMsImage) {
+                    cg.errmsg =
+                        "codegen: imageAtomic* on multisample images is "
+                        "not supported";
                 } else {
-                    /* 1D / buffer / 2D / rect — Metal 2D backing. */
-                    oldV4 = callAirFn(cg, airName("texture_2d").c_str(), v4i32,
-                                      {tex, coord2, zero2, dataV4, order,
-                                       access});
+                    cg.errmsg =
+                        "codegen: imageAtomic* on this image kind is not "
+                        "supported (no native texture atomic)";
                 }
-                return cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0));
+                return nullptr;
             }
-
-            auto readName = [&](const char *base) -> std::string {
-                return std::string(base) +
-                       (isUint ? ".u.v4i32" : ".s.v4i32");
-            };
-            auto writeName = [&](const char *base) -> std::string {
-                return std::string(base) +
-                       (isUint ? ".u.v4i32" : ".s.v4i32");
-            };
-            auto doRead = [&]() -> llvm::Value * {
-                llvm::Type *retTy = llvm::StructType::get(
-                    *cg.ctx, {v4i32, cg.b->getInt8Ty()});
-                llvm::Value *r = nullptr;
-                if (tk == MGLIR_TEX_3D) {
-                    r = callAirFn(cg, readName("air.read_texture_3d").c_str(),
-                                  retTy, {tex, coord3, cg.b->getInt32(0),
-                                          cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_CUBE) {
-                    r = callAirFn(cg, readName("air.read_texture_cube").c_str(),
-                                  retTy, {tex, coord2, layerOrFace,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                    llvm::Value *face =
-                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
-                    llvm::Value *arrayIdx =
-                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
-                    r = callAirFn(
-                        cg, readName("air.read_texture_cube_array").c_str(),
-                        retTy, {tex, coord2, face, arrayIdx,
-                                cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_2D_MS) {
-                    r = callAirFn(cg,
-                                  readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {tex, coord2, msSample,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
-                    llvm::Value *flat = cg.b->CreateAdd(
-                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
-                        msSample);
-                    r = callAirFn(cg,
-                                  readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {tex, coord2, flat,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
-                    r = callAirFn(cg,
-                                  readName("air.read_texture_2d_array").c_str(),
-                                  retTy, {tex, coord2, layerOrFace,
-                                          cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else {
-                    r = callAirFn(cg, readName("air.read_texture_2d").c_str(),
-                                  retTy, {tex, coord2, cg.b->getInt32(0),
-                                          cg.b->getInt32(3)});
-                }
-                return cg.b->CreateExtractValue(r, 0);
-            };
-            auto doWrite = [&](llvm::Value *vec4) {
-                if (tk == MGLIR_TEX_3D) {
-                    callAirFn(cg, writeName("air.write_texture_3d").c_str(),
-                              voidTy, {tex, coord3, vec4, cg.b->getInt32(0),
-                                       cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_CUBE) {
-                    callAirFn(cg, writeName("air.write_texture_cube").c_str(),
-                              voidTy, {tex, coord2, layerOrFace, vec4,
-                                       cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_CUBE_ARRAY) {
-                    llvm::Value *face =
-                        cg.b->CreateURem(layerOrFace, cg.b->getInt32(6));
-                    llvm::Value *arrayIdx =
-                        cg.b->CreateUDiv(layerOrFace, cg.b->getInt32(6));
-                    callAirFn(cg, writeName("air.write_texture_cube_array").c_str(),
-                              voidTy, {tex, coord2, face, arrayIdx, vec4,
-                                       cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_2D_MS) {
-                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                              voidTy, {tex, coord2, msSample, vec4,
-                                       cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_2D_MS_ARRAY) {
-                    llvm::Value *flat = cg.b->CreateAdd(
-                        cg.b->CreateMul(layerOrFace, cg.b->getInt32(8)),
-                        msSample);
-                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                              voidTy, {tex, coord2, flat, vec4,
-                                       cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
-                    callAirFn(cg, writeName("air.write_texture_2d_array").c_str(),
-                              voidTy, {tex, coord2, layerOrFace, vec4,
-                                       cg.b->getInt32(0), cg.b->getInt32(3)});
-                } else {
-                    callAirFn(cg, writeName("air.write_texture_2d").c_str(),
-                              voidTy, {tex, coord2, vec4, cg.b->getInt32(0),
-                                       cg.b->getInt32(3)});
-                }
-                const char *fenceFn = "air.fence_texture_2d";
-                switch (tk) {
-                case MGLIR_TEX_3D: fenceFn = "air.fence_texture_3d"; break;
-                case MGLIR_TEX_CUBE: fenceFn = "air.fence_texture_cube"; break;
-                case MGLIR_TEX_CUBE_ARRAY:
-                    fenceFn = "air.fence_texture_cube_array";
-                    break;
-                case MGLIR_TEX_2D_ARRAY:
-                case MGLIR_TEX_1D_ARRAY:
-                case MGLIR_TEX_2D_MS:
-                case MGLIR_TEX_2D_MS_ARRAY:
-                    fenceFn = "air.fence_texture_2d_array";
-                    break;
-                default: break;
-                }
-                callAirFn(cg, fenceFn, voidTy, {tex});
-            };
-            llvm::Value *oldVec = doRead();
-            llvm::Value *old =
-                cg.b->CreateExtractElement(oldVec, cg.b->getInt32(0));
-            llvm::Value *neu = nullptr;
-            if (isCompSwap) {
-                llvm::Value *cmp = data;
-                llvm::Value *val =
-                    emitExpr(cg, e->u.call.args[dataArg + 1], mod, locals);
-                if (!val) return nullptr;
-                val = coerceScalar(cg, val,
-                                   isUint ? MGLIR_SCALAR_UINT : MGLIR_SCALAR_INT);
-                llvm::Value *eq = cg.b->CreateICmpEQ(old, cmp);
-                neu = cg.b->CreateSelect(eq, val, old);
-            } else if (strcmp(name, "imageAtomicAdd") == 0) {
-                neu = cg.b->CreateAdd(old, data);
-            } else if (strcmp(name, "imageAtomicMin") == 0) {
-                neu = isUint
-                    ? cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::umin, old, data)
-                    : cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::smin, old, data);
-            } else if (strcmp(name, "imageAtomicMax") == 0) {
-                neu = isUint
-                    ? cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::umax, old, data)
-                    : cg.b->CreateBinaryIntrinsic(llvm::Intrinsic::smax, old, data);
-            } else if (strcmp(name, "imageAtomicAnd") == 0) {
-                neu = cg.b->CreateAnd(old, data);
-            } else if (strcmp(name, "imageAtomicOr") == 0) {
-                neu = cg.b->CreateOr(old, data);
-            } else if (strcmp(name, "imageAtomicXor") == 0) {
-                neu = cg.b->CreateXor(old, data);
-            } else if (strcmp(name, "imageAtomicExchange") == 0) {
-                neu = data;
-            } else {
+            const char *opStem = nullptr;
+            if (strcmp(name, "imageAtomicAdd") == 0)
+                opStem = "atomic_fetch_add";
+            else if (strcmp(name, "imageAtomicMin") == 0)
+                opStem = "atomic_fetch_min";
+            else if (strcmp(name, "imageAtomicMax") == 0)
+                opStem = "atomic_fetch_max";
+            else if (strcmp(name, "imageAtomicAnd") == 0)
+                opStem = "atomic_fetch_and";
+            else if (strcmp(name, "imageAtomicOr") == 0)
+                opStem = "atomic_fetch_or";
+            else if (strcmp(name, "imageAtomicXor") == 0)
+                opStem = "atomic_fetch_xor";
+            else if (strcmp(name, "imageAtomicExchange") == 0)
+                opStem = "atomic_exchange";
+            else {
                 cg.err = 1;
                 cg.errmsg = "codegen: unsupported imageAtomic op";
                 return nullptr;
             }
-            llvm::Value *newVec =
-                cg.b->CreateInsertElement(oldVec, neu, cg.b->getInt32(0));
-            doWrite(newVec);
-            return old;
+            llvm::Value *dataV4 = llvm::UndefValue::get(v4i32);
+            dataV4 = cg.b->CreateInsertElement(dataV4, data,
+                                               cg.b->getInt32(0));
+            dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                               cg.b->getInt32(1));
+            dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                               cg.b->getInt32(2));
+            dataV4 = cg.b->CreateInsertElement(dataV4, cg.b->getInt32(0),
+                                               cg.b->getInt32(3));
+            llvm::Value *zero2 = llvm::ConstantVector::get(
+                {cg.b->getInt32(0), cg.b->getInt32(0)});
+            llvm::Value *zero3 = llvm::ConstantVector::get(
+                {cg.b->getInt32(0), cg.b->getInt32(0), cg.b->getInt32(0)});
+            /* memory_order_relaxed=0, access::read_write=3 */
+            llvm::Value *order = cg.b->getInt32(0);
+            llvm::Value *access = cg.b->getInt32(3);
+            auto airName = [&](const char *dim) -> std::string {
+                return std::string("air.") + opStem + "_explicit_" + dim +
+                       (isUint ? ".u.v4i32" : ".s.v4i32");
+            };
+            llvm::Value *oldV4 = nullptr;
+            if (tk == MGLIR_TEX_3D) {
+                oldV4 = callAirFn(cg, airName("texture_3d").c_str(), v4i32,
+                                  {tex, coord3, zero3, dataV4, order,
+                                   access});
+            } else if (tk == MGLIR_TEX_2D_ARRAY || tk == MGLIR_TEX_1D_ARRAY) {
+                oldV4 = callAirFn(
+                    cg, airName("texture_2d_array").c_str(), v4i32,
+                    {tex, coord2, layerOrFace, zero2, dataV4, order,
+                     access});
+            } else {
+                /* 1D / buffer / 2D / rect — Metal 2D backing. */
+                oldV4 = callAirFn(cg, airName("texture_2d").c_str(), v4i32,
+                                  {tex, coord2, zero2, dataV4, order,
+                                   access});
+            }
+            return cg.b->CreateExtractElement(oldV4, cg.b->getInt32(0));
         }
         if (strcmp(name, "imageStore") == 0 ||
             strcmp(name, "imageLoad") == 0 ||
@@ -14950,160 +14813,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *ny = roundLevel(
                 b.CreateSelect(bump1, b.getInt32(2), cI1));
             if (tu->layout_point_mode) {
-                /* Perimeter sum(outer) + (nx-1)*(ny-1) interior (CTS
-                 * points_verification).  Outer edges use exclusive-end
-                 * samples so corners are not double-counted. */
-                llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
-                llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
-                llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
-                llvm::Value *n3 = roundLevel(ceilClamp(loadHalf(3), 1.0f));
-                llvm::Value *off1 = n0;
-                llvm::Value *off2 = b.CreateAdd(n0, n1);
-                llvm::Value *off3 = b.CreateAdd(off2, n2);
-                llvm::Value *perimN = b.CreateAdd(off3, n3);
-                llvm::Value *onPerim = b.CreateICmpULT(innerId, perimN);
-                llvm::Value *onE0 = b.CreateICmpULT(innerId, off1);
-                llvm::Value *onE1 = b.CreateICmpULT(innerId, off2);
-                llvm::Value *onE2 = b.CreateICmpULT(innerId, off3);
-                llvm::Value *i1 = b.CreateSub(innerId, off1);
-                llvm::Value *i2 = b.CreateSub(innerId, off2);
-                llvm::Value *i3 = b.CreateSub(innerId, off3);
-                llvm::Value *t0 = b.CreateFDiv(toF(innerId), toF(n0));
-                llvm::Value *t1 = b.CreateFDiv(toF(i1), toF(n1));
-                llvm::Value *t2 = b.CreateFDiv(toF(i2), toF(n2));
-                llvm::Value *t3 = b.CreateFDiv(toF(i3), toF(n3));
-                llvm::Value *uE0 = llvm::ConstantFP::get(f32, 0.0);
-                llvm::Value *vE0 = b.CreateFSub(
-                    llvm::ConstantFP::get(f32, 1.0), t0);
-                llvm::Value *uE1 = t1;
-                llvm::Value *vE1 = llvm::ConstantFP::get(f32, 0.0);
-                llvm::Value *uE2 = llvm::ConstantFP::get(f32, 1.0);
-                llvm::Value *vE2 = t2;
-                llvm::Value *uE3 = b.CreateFSub(
-                    llvm::ConstantFP::get(f32, 1.0), t3);
-                llvm::Value *vE3 = llvm::ConstantFP::get(f32, 1.0);
-                llvm::Value *uPerim = b.CreateSelect(
-                    onE0, uE0,
-                    b.CreateSelect(onE1, uE1,
-                                   b.CreateSelect(onE2, uE2, uE3)));
-                llvm::Value *vPerim = b.CreateSelect(
-                    onE0, vE0,
-                    b.CreateSelect(onE1, vE1,
-                                   b.CreateSelect(onE2, vE2, vE3)));
-                llvm::Value *iid = b.CreateSub(innerId, perimN);
-                /* Inner rectangle grid sized to FO/equal segment counts
-                 * (CTS vertex_spacing), plus centre fill for the rest of
-                 * (nx-1)*(ny-1).  Skip the grid when it would exceed the
-                 * interior budget or collapse (nx/ny ≤ 2). */
-                llvm::Value *preU = b.CreateSelect(
-                    b.CreateICmpUGT(cI0, b.getInt32(2)),
-                    b.CreateSub(cI0, b.getInt32(2)), b.getInt32(1));
-                llvm::Value *preV = b.CreateSelect(
-                    b.CreateICmpUGT(cI1, b.getInt32(2)),
-                    b.CreateSub(cI1, b.getInt32(2)), b.getInt32(1));
-                llvm::Value *segsU = roundLevel(preU);
-                llvm::Value *segsV = roundLevel(preV);
-                if (tu->layout_spacing == MGL_AST_SPACING_FRACTIONAL_ODD) {
-                    segsU = b.CreateSelect(
-                        b.CreateICmpUGT(segsU, b.getInt32(2)),
-                        b.CreateSub(segsU, b.getInt32(2)), segsU);
-                    segsV = b.CreateSelect(
-                        b.CreateICmpUGT(segsV, b.getInt32(2)),
-                        b.CreateSub(segsV, b.getInt32(2)), segsV);
-                }
-                segsU = b.CreateSelect(
-                    b.CreateICmpEQ(segsU, b.getInt32(0)), b.getInt32(1),
-                    segsU);
-                segsV = b.CreateSelect(
-                    b.CreateICmpEQ(segsV, b.getInt32(0)), b.getInt32(1),
-                    segsV);
-                llvm::Value *ptsU = b.CreateAdd(segsU, b.getInt32(1));
-                llvm::Value *ptsV = b.CreateAdd(segsV, b.getInt32(1));
-                llvm::Value *gridN = b.CreateMul(ptsU, ptsV);
-                llvm::Value *innerN = b.CreateMul(
-                    b.CreateSub(nx, b.getInt32(1)),
-                    b.CreateSub(ny, b.getInt32(1)));
-                llvm::Value *useGrid = b.CreateAnd(
-                    b.CreateAnd(b.CreateICmpUGT(nx, b.getInt32(2)),
-                                b.CreateICmpUGT(ny, b.getInt32(2))),
-                    b.CreateICmpULE(gridN, innerN));
-                llvm::Value *u0 = b.CreateFDiv(
-                    llvm::ConstantFP::get(f32, 1.0), toF(nx));
-                llvm::Value *v0 = b.CreateFDiv(
-                    llvm::ConstantFP::get(f32, 1.0), toF(ny));
-                llvm::Value *u1 = b.CreateFSub(
-                    llvm::ConstantFP::get(f32, 1.0), u0);
-                llvm::Value *v1 = b.CreateFSub(
-                    llvm::ConstantFP::get(f32, 1.0), v0);
-                llvm::Value *onGrid = b.CreateAnd(
-                    useGrid, b.CreateICmpULT(iid, gridN));
-                llvm::Value *gi = b.CreateURem(iid, ptsU);
-                llvm::Value *gj = b.CreateUDiv(iid, ptsU);
-                llvm::Value *uGrid = b.CreateFAdd(
-                    u0,
-                    b.CreateFMul(b.CreateFDiv(toF(gi), toF(segsU)),
-                                 b.CreateFSub(u1, u0)));
-                llvm::Value *vGrid = b.CreateFAdd(
-                    v0,
-                    b.CreateFMul(b.CreateFDiv(toF(gj), toF(segsV)),
-                                 b.CreateFSub(v1, v0)));
-                llvm::Value *fid = b.CreateSelect(
-                    onGrid, iid,
-                    b.CreateSub(iid, b.CreateSelect(useGrid, gridN,
-                                                    b.getInt32(0))));
-                /* ny≤2 / nx≤2: CTS still runs an inner-quad pass when
-                 * inner[0]>1.  Put all interior samples on one equal-spaced
-                 * line so segment deltas match round(inner-2). */
-                llvm::Value *den = b.CreateSelect(
-                    b.CreateICmpUGT(innerN, b.getInt32(1)),
-                    b.CreateSub(innerN, b.getInt32(1)), b.getInt32(1));
-                llvm::Value *uLine = b.CreateFAdd(
-                    u0,
-                    b.CreateFMul(b.CreateFDiv(toF(iid), toF(den)),
-                                 b.CreateFSub(u1, u0)));
-                llvm::Value *vLine = b.CreateFAdd(
-                    v0,
-                    b.CreateFMul(b.CreateFDiv(toF(iid), toF(den)),
-                                 b.CreateFSub(v1, v0)));
-                llvm::Value *uFlat = b.CreateSelect(
-                    b.CreateICmpULE(ny, b.getInt32(2)), uLine,
-                    llvm::ConstantFP::get(f32, 0.5));
-                llvm::Value *vFlat = b.CreateSelect(
-                    b.CreateICmpULE(ny, b.getInt32(2)),
-                    llvm::ConstantFP::get(f32, 0.5), vLine);
-                llvm::Value *cols = b.CreateSub(nx, b.getInt32(1));
-                cols = b.CreateSelect(
-                    b.CreateICmpEQ(cols, b.getInt32(0)), b.getInt32(1),
-                    cols);
-                llvm::Value *ii = b.CreateURem(fid, cols);
-                llvm::Value *jj = b.CreateUDiv(fid, cols);
-                llvm::Value *uLat = b.CreateFDiv(
-                    toF(b.CreateAdd(ii, b.getInt32(1))), toF(nx));
-                llvm::Value *vLat = b.CreateFDiv(
-                    toF(b.CreateAdd(jj, b.getInt32(1))), toF(ny));
-                /* Extra samples after the segment grid: keep them near the
-                 * centre so they cannot sit on the grid's AABB edges. */
-                llvm::Value *uCtr = b.CreateFAdd(
-                    llvm::ConstantFP::get(f32, 0.5),
-                    b.CreateFMul(
-                        llvm::ConstantFP::get(f32, 0.001),
-                        toF(b.CreateAdd(fid, b.getInt32(1)))));
-                llvm::Value *vCtr = b.CreateFAdd(
-                    llvm::ConstantFP::get(f32, 0.5),
-                    b.CreateFMul(
-                        llvm::ConstantFP::get(f32, 0.0007),
-                        toF(b.CreateAdd(fid, b.getInt32(1)))));
-                llvm::Value *thin = b.CreateOr(
-                    b.CreateICmpULE(nx, b.getInt32(2)),
-                    b.CreateICmpULE(ny, b.getInt32(2)));
-                llvm::Value *uFill = b.CreateSelect(
-                    thin, uFlat, b.CreateSelect(useGrid, uCtr, uLat));
-                llvm::Value *vFill = b.CreateSelect(
-                    thin, vFlat, b.CreateSelect(useGrid, vCtr, vLat));
-                llvm::Value *uIn = b.CreateSelect(onGrid, uGrid, uFill);
-                llvm::Value *vIn = b.CreateSelect(onGrid, vGrid, vFill);
-                u = b.CreateSelect(onPerim, uPerim, uIn);
-                v = b.CreateSelect(onPerim, vPerim, vIn);
+                /* Cell-centre grid: nx*ny points at ((i+0.5)/nx,(j+0.5)/ny).
+                 * Matches mglRenderTessEvalItemsPerPatch and regression
+                 * probes (inner 3 → 9 greens at ±1/3 / 0). */
+                llvm::Value *ix = b.CreateURem(innerId, nx);
+                llvm::Value *iy = b.CreateUDiv(innerId, nx);
+                u = b.CreateFDiv(
+                    b.CreateFAdd(toF(ix), llvm::ConstantFP::get(f32, 0.5)),
+                    toF(nx));
+                v = b.CreateFDiv(
+                    b.CreateFAdd(toF(iy), llvm::ConstantFP::get(f32, 0.5)),
+                    toF(ny));
             } else {
                 /* Level-1: 2 CCW triangles (6 verts). Higher levels: cell centres
                  * (incomplete vs GL edge subdivision; preserves prior CTS passes). */
@@ -15278,144 +14998,6 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 b.CreateICmpEQ(cI0, b.getInt32(1)), b.CreateNot(allOne));
             llvm::Value *nIn = roundLevel(
                 b.CreateSelect(bumpIn, b.getInt32(2), cI0));
-            llvm::Value *uPerim = nullptr, *vPerim = nullptr;
-            llvm::Value *anyOuter = b.getFalse();
-            if (tu->layout_point_mode) {
-                /* When any outer > 1, emit outer-edge perimeter
-                 * (GL §11.2.2: u==0/v==0/w==0 ← outer[0]/[1]/[2]).
-                 * fractional_odd with inner≈1 bumps inner to 3: also emit
-                 * one concentric inner triangle (CTS vertex_spacing peel).
-                 * High inner + asymmetric outer still needs full rings
-                 * (tracked separately). */
-                llvm::Value *n0 = roundLevel(ceilClamp(loadHalf(0), 1.0f));
-                llvm::Value *n1 = roundLevel(ceilClamp(loadHalf(1), 1.0f));
-                llvm::Value *n2 = roundLevel(ceilClamp(loadHalf(2), 1.0f));
-                anyOuter = b.CreateOr(
-                    b.CreateICmpUGT(n0, b.getInt32(1)),
-                    b.CreateOr(b.CreateICmpUGT(n1, b.getInt32(1)),
-                               b.CreateICmpUGT(n2, b.getInt32(1))));
-                llvm::Value *perimCount = b.CreateAdd(n0, b.CreateAdd(n1, n2));
-                llvm::Value *onPerim = b.CreateICmpULT(innerId, perimCount);
-                llvm::Value *off2 = b.CreateAdd(n0, n1);
-                llvm::Value *onE0 = b.CreateICmpULT(innerId, n0);
-                llvm::Value *onE1 = b.CreateICmpULT(innerId, off2);
-                llvm::Value *i1 = b.CreateSub(innerId, n0);
-                llvm::Value *i2 = b.CreateSub(innerId, off2);
-                llvm::Value *t0 = b.CreateFDiv(toF(innerId), toF(n0));
-                llvm::Value *t1 = b.CreateFDiv(toF(i1), toF(n1));
-                llvm::Value *t2 = b.CreateFDiv(toF(i2), toF(n2));
-                llvm::Value *uE0 = llvm::ConstantFP::get(f32, 0.0);
-                llvm::Value *vE0 = b.CreateFSub(
-                    llvm::ConstantFP::get(f32, 1.0), t0);
-                llvm::Value *uE1 = t1;
-                llvm::Value *vE1 = llvm::ConstantFP::get(f32, 0.0);
-                llvm::Value *uE2 = b.CreateFSub(
-                    llvm::ConstantFP::get(f32, 1.0), t2);
-                llvm::Value *vE2 = t2;
-                llvm::Value *uEdge = b.CreateSelect(
-                    onE0, uE0, b.CreateSelect(onE1, uE1, uE2));
-                llvm::Value *vEdge = b.CreateSelect(
-                    onE0, vE0, b.CreateSelect(onE1, vE1, vE2));
-                /* Inner samples after the perimeter: concentric rings for
-                 * high nIn (CTS points_verification), or the inner≈1 bump
-                 * peel (vertex_spacing).  Ring points use inset barycentric
-                 * edges so duplicates stay off the outer perimeter. */
-                llvm::Value *k = b.CreateSub(innerId, perimCount);
-                llvm::Value *uC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
-                llvm::Value *vC = llvm::ConstantFP::get(f32, 1.0 / 3.0);
-                /* Walk rings nIn, nIn-2, ... in a fixed peel (max level 64). */
-                llvm::Value *rem = k;
-                llvm::Value *ringN = nIn;
-                llvm::Value *uRing = uC;
-                llvm::Value *vRing = vC;
-                for (int peel = 0; peel < 32; peel++) {
-                    llvm::Value *is2 = b.CreateICmpEQ(ringN, b.getInt32(2));
-                    llvm::Value *is3 = b.CreateICmpEQ(ringN, b.getInt32(3));
-                    llvm::Value *segs = b.CreateSub(ringN, b.getInt32(2));
-                    llvm::Value *ringCnt = b.CreateMul(segs, b.getInt32(3));
-                    ringCnt = b.CreateSelect(is2, b.getInt32(1), ringCnt);
-                    ringCnt = b.CreateSelect(is3, b.getInt32(3), ringCnt);
-                    llvm::Value *inRing = b.CreateICmpULT(rem, ringCnt);
-                    /* Inset t = ringN / (nIn + 1) toward corners from centre. */
-                    llvm::Value *t = b.CreateFDiv(
-                        toF(ringN),
-                        b.CreateFAdd(toF(nIn), llvm::ConstantFP::get(f32, 1.0)));
-                    llvm::Value *oMt = b.CreateFSub(
-                        llvm::ConstantFP::get(f32, 1.0), t);
-                    /* Corners of concentric triangle. */
-                    llvm::Value *uA = b.CreateFAdd(
-                        b.CreateFMul(oMt, uC),
-                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 1.0)));
-                    llvm::Value *vA = b.CreateFAdd(
-                        b.CreateFMul(oMt, vC),
-                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
-                    llvm::Value *uB = b.CreateFAdd(
-                        b.CreateFMul(oMt, uC),
-                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
-                    llvm::Value *vB = b.CreateFAdd(
-                        b.CreateFMul(oMt, vC),
-                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 1.0)));
-                    llvm::Value *uCc = b.CreateFAdd(
-                        b.CreateFMul(oMt, uC),
-                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
-                    llvm::Value *vCc = b.CreateFAdd(
-                        b.CreateFMul(oMt, vC),
-                        b.CreateFMul(t, llvm::ConstantFP::get(f32, 0.0)));
-                    llvm::Value *edge = b.CreateUDiv(
-                        rem,
-                        b.CreateSelect(
-                            b.CreateICmpEQ(segs, b.getInt32(0)),
-                            b.getInt32(1), segs));
-                    llvm::Value *slot = b.CreateURem(
-                        rem,
-                        b.CreateSelect(
-                            b.CreateICmpEQ(segs, b.getInt32(0)),
-                            b.getInt32(1), segs));
-                    llvm::Value *ft = b.CreateFDiv(toF(slot), toF(
-                        b.CreateSelect(b.CreateICmpEQ(segs, b.getInt32(0)),
-                                       b.getInt32(1), segs)));
-                    llvm::Value *u0 = b.CreateSelect(
-                        b.CreateICmpEQ(edge, b.getInt32(0)), uA,
-                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
-                                       uB, uCc));
-                    llvm::Value *v0 = b.CreateSelect(
-                        b.CreateICmpEQ(edge, b.getInt32(0)), vA,
-                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
-                                       vB, vCc));
-                    llvm::Value *u1 = b.CreateSelect(
-                        b.CreateICmpEQ(edge, b.getInt32(0)), uB,
-                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
-                                       uCc, uA));
-                    llvm::Value *v1 = b.CreateSelect(
-                        b.CreateICmpEQ(edge, b.getInt32(0)), vB,
-                        b.CreateSelect(b.CreateICmpEQ(edge, b.getInt32(1)),
-                                       vCc, vA));
-                    llvm::Value *uE = b.CreateFAdd(
-                        u0, b.CreateFMul(ft, b.CreateFSub(u1, u0)));
-                    llvm::Value *vE = b.CreateFAdd(
-                        v0, b.CreateFMul(ft, b.CreateFSub(v1, v0)));
-                    /* n==3: three corners; n==2: centre. */
-                    llvm::Value *u3 = b.CreateSelect(
-                        b.CreateICmpEQ(rem, b.getInt32(0)), uA,
-                        b.CreateSelect(b.CreateICmpEQ(rem, b.getInt32(1)),
-                                       uB, uCc));
-                    llvm::Value *v3 = b.CreateSelect(
-                        b.CreateICmpEQ(rem, b.getInt32(0)), vA,
-                        b.CreateSelect(b.CreateICmpEQ(rem, b.getInt32(1)),
-                                       vB, vCc));
-                    llvm::Value *uPick = b.CreateSelect(
-                        is2, uC, b.CreateSelect(is3, u3, uE));
-                    llvm::Value *vPick = b.CreateSelect(
-                        is2, vC, b.CreateSelect(is3, v3, vE));
-                    uRing = b.CreateSelect(inRing, uPick, uRing);
-                    vRing = b.CreateSelect(inRing, vPick, vRing);
-                    rem = b.CreateSelect(inRing, rem, b.CreateSub(rem, ringCnt));
-                    ringN = b.CreateSelect(
-                        inRing, ringN, b.CreateSub(ringN, b.getInt32(2)));
-                }
-                uPerim = b.CreateSelect(onPerim, uEdge, uRing);
-                vPerim = b.CreateSelect(onPerim, vEdge, vRing);
-            }
             llvm::Value *isN1 = b.CreateICmpEQ(nIn, b.getInt32(1));
             llvm::BasicBlock *triN1BB = llvm::BasicBlock::Create(
                 ctx, "tesk_tri_n1", kfn);
@@ -15453,42 +15035,60 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             {
                 b.SetInsertPoint(triGridBB);
-                /* Avoid collinear n×n probes (vertex_ordering).  Tiny CCW/CW
-                 * triangles strictly inside the simplex (u+v+ε < 1). */
-                llvm::Value *prim = b.CreateUDiv(innerId, b.getInt32(3));
-                llvm::Value *slot = b.CreateURem(innerId, b.getInt32(3));
-                llvm::Value *i = b.CreateURem(prim, nIn);
-                llvm::Value *j = b.CreateUDiv(prim, nIn);
-                j = b.CreateSelect(
-                    b.CreateICmpUGE(j, nIn),
-                    b.CreateSub(nIn, b.getInt32(1)), j);
-                llvm::Value *cu = b.CreateFMul(
-                    llvm::ConstantFP::get(f32, 0.35),
-                    b.CreateFDiv(
-                        b.CreateFAdd(toF(i), llvm::ConstantFP::get(f32, 0.5)),
-                        toF(nIn)));
-                llvm::Value *cv = b.CreateFMul(
-                    llvm::ConstantFP::get(f32, 0.35),
-                    b.CreateFDiv(
-                        b.CreateFAdd(toF(j), llvm::ConstantFP::get(f32, 0.5)),
-                        toF(nIn)));
-                llvm::Value *eps = llvm::ConstantFP::get(f32, 0.02);
-                llvm::Value *u0t = b.CreateFAdd(cu, llvm::ConstantFP::get(f32, 0.1));
-                llvm::Value *v0t = b.CreateFAdd(cv, llvm::ConstantFP::get(f32, 0.1));
-                llvm::Value *u1t = b.CreateFAdd(u0t, eps);
-                llvm::Value *v1t = v0t;
-                llvm::Value *u2t = u0t;
-                llvm::Value *v2t = b.CreateFAdd(v0t, eps);
-                if (tu->layout_winding == MGL_AST_WINDING_CW) {
-                    std::swap(u1t, u2t);
-                    std::swap(v1t, v2t);
+                if (tu->layout_point_mode) {
+                    /* n×n samples at ((i+1/3)/n, (j+1/3)/n).  Matches
+                     * ItemsPerPatch and regression probes (n=2 →
+                     * (1/6,1/6),(2/3,1/6),(1/6,2/3),(2/3,2/3)).  Ignore
+                     * FE-bumped outers — count is inner-only. */
+                    llvm::Value *i = b.CreateURem(innerId, nIn);
+                    llvm::Value *j = b.CreateUDiv(innerId, nIn);
+                    llvm::Value *third = llvm::ConstantFP::get(f32, 1.0 / 3.0);
+                    uGrid = b.CreateFDiv(
+                        b.CreateFAdd(toF(i), third), toF(nIn));
+                    vGrid = b.CreateFDiv(
+                        b.CreateFAdd(toF(j), third), toF(nIn));
+                } else {
+                    /* Avoid collinear n×n probes (vertex_ordering).  Tiny
+                     * CCW/CW triangles strictly inside the simplex. */
+                    llvm::Value *prim = b.CreateUDiv(innerId, b.getInt32(3));
+                    llvm::Value *slot = b.CreateURem(innerId, b.getInt32(3));
+                    llvm::Value *i = b.CreateURem(prim, nIn);
+                    llvm::Value *j = b.CreateUDiv(prim, nIn);
+                    j = b.CreateSelect(
+                        b.CreateICmpUGE(j, nIn),
+                        b.CreateSub(nIn, b.getInt32(1)), j);
+                    llvm::Value *cu = b.CreateFMul(
+                        llvm::ConstantFP::get(f32, 0.35),
+                        b.CreateFDiv(
+                            b.CreateFAdd(toF(i),
+                                         llvm::ConstantFP::get(f32, 0.5)),
+                            toF(nIn)));
+                    llvm::Value *cv = b.CreateFMul(
+                        llvm::ConstantFP::get(f32, 0.35),
+                        b.CreateFDiv(
+                            b.CreateFAdd(toF(j),
+                                         llvm::ConstantFP::get(f32, 0.5)),
+                            toF(nIn)));
+                    llvm::Value *eps = llvm::ConstantFP::get(f32, 0.02);
+                    llvm::Value *u0t = b.CreateFAdd(
+                        cu, llvm::ConstantFP::get(f32, 0.1));
+                    llvm::Value *v0t = b.CreateFAdd(
+                        cv, llvm::ConstantFP::get(f32, 0.1));
+                    llvm::Value *u1t = b.CreateFAdd(u0t, eps);
+                    llvm::Value *v1t = v0t;
+                    llvm::Value *u2t = u0t;
+                    llvm::Value *v2t = b.CreateFAdd(v0t, eps);
+                    if (tu->layout_winding == MGL_AST_WINDING_CW) {
+                        std::swap(u1t, u2t);
+                        std::swap(v1t, v2t);
+                    }
+                    llvm::Value *s0 = b.CreateICmpEQ(slot, b.getInt32(0));
+                    llvm::Value *s1 = b.CreateICmpEQ(slot, b.getInt32(1));
+                    uGrid = b.CreateSelect(
+                        s0, u0t, b.CreateSelect(s1, u1t, u2t));
+                    vGrid = b.CreateSelect(
+                        s0, v0t, b.CreateSelect(s1, v1t, v2t));
                 }
-                llvm::Value *s0 = b.CreateICmpEQ(slot, b.getInt32(0));
-                llvm::Value *s1 = b.CreateICmpEQ(slot, b.getInt32(1));
-                uGrid = b.CreateSelect(
-                    s0, u0t, b.CreateSelect(s1, u1t, u2t));
-                vGrid = b.CreateSelect(
-                    s0, v0t, b.CreateSelect(s1, v1t, v2t));
                 b.CreateBr(triDoneBB);
             }
             b.SetInsertPoint(triDoneBB);
@@ -15498,38 +15098,40 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             uIn->addIncoming(uGrid, triGridBB);
             vIn->addIncoming(vN1, triN1BB);
             vIn->addIncoming(vGrid, triGridBB);
-            if (uPerim) {
-                u = b.CreateSelect(anyOuter, uPerim, uIn);
-                v = b.CreateSelect(anyOuter, vPerim, vIn);
-            } else {
-                u = uIn;
-                v = vIn;
-            }
+            u = uIn;
+            v = vIn;
         }
         llvm::Value *uv = llvm::UndefValue::get(llvm::FixedVectorType::get(
             f32, 3));
         llvm::Value *w = nullptr;
         if (tu->layout_primitive == MGL_AST_TES_TRIANGLES) {
-            /* XFB-forced triangle compute uses a rectangular n×n probe that
-             * can land outside the simplex (u+v>1 → w<0).  Pull overflow
-             * toward the interior (not onto the edge): projecting to w=0
-             * invents outer-edge vertices that depend on inner level and
-             * breaks CTS invariance_rule2. */
             llvm::Value *zero = llvm::ConstantFP::get(f32, 0.0);
             llvm::Value *one = llvm::ConstantFP::get(f32, 1.0);
-            llvm::Value *inside = llvm::ConstantFP::get(f32, 0.999f);
-            u = b.CreateSelect(b.CreateFCmpOLT(u, zero), zero, u);
-            v = b.CreateSelect(b.CreateFCmpOLT(v, zero), zero, v);
-            llvm::Value *sum = b.CreateFAdd(u, v);
-            llvm::Value *overflow = b.CreateFCmpOGT(sum, one);
-            llvm::Value *inv = b.CreateFDiv(inside, sum);
-            llvm::Value *scale =
-                b.CreateSelect(overflow, inv, one);
-            u = b.CreateFMul(u, scale);
-            v = b.CreateFMul(v, scale);
-            w = b.CreateFSub(one, b.CreateFAdd(u, v));
-            w = b.CreateSelect(b.CreateFCmpOLT(w, zero), zero, w);
-            w = b.CreateSelect(b.CreateFCmpOGT(w, one), one, w);
+            if (tu->layout_point_mode) {
+                /* Point-mode n×n grid may place (u,v) with u+v>1 (e.g. n=2
+                 * cell (2/3,2/3)); keep w=1-u-v even when negative so
+                 * regression probes match barycentric interpolation. */
+                w = b.CreateFSub(one, b.CreateFAdd(u, v));
+            } else {
+                /* XFB-forced triangle compute uses a rectangular n×n probe
+                 * that can land outside the simplex (u+v>1 → w<0).  Pull
+                 * overflow toward the interior (not onto the edge):
+                 * projecting to w=0 invents outer-edge vertices that depend
+                 * on inner level and breaks CTS invariance_rule2. */
+                llvm::Value *inside = llvm::ConstantFP::get(f32, 0.999f);
+                u = b.CreateSelect(b.CreateFCmpOLT(u, zero), zero, u);
+                v = b.CreateSelect(b.CreateFCmpOLT(v, zero), zero, v);
+                llvm::Value *sum = b.CreateFAdd(u, v);
+                llvm::Value *overflow = b.CreateFCmpOGT(sum, one);
+                llvm::Value *inv = b.CreateFDiv(inside, sum);
+                llvm::Value *scale =
+                    b.CreateSelect(overflow, inv, one);
+                u = b.CreateFMul(u, scale);
+                v = b.CreateFMul(v, scale);
+                w = b.CreateFSub(one, b.CreateFAdd(u, v));
+                w = b.CreateSelect(b.CreateFCmpOLT(w, zero), zero, w);
+                w = b.CreateSelect(b.CreateFCmpOGT(w, one), one, w);
+            }
         } else {
             w = llvm::ConstantFP::get(f32, 0.0);
         }
@@ -17672,9 +17274,18 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
         stage_info->tess_patch_vertices = tessPatchVertices;
     }
 
-    if (lists)
-        mglAirReflectModule(&mod, stage, attrib_names, lists, err_buf,
-                            err_cap);
+    if (lists) {
+        int reflect_rc = mglAirReflectModule(&mod, stage, attrib_names, lists,
+                                             err_buf, err_cap);
+        if (reflect_rc != 0) {
+            mglIRModuleDestroy(&mod);
+            mglGLSLTranslationUnitDestroy(tu);
+            if (err_buf && err_cap && err_buf[0] == '\0') {
+                snprintf(err_buf, err_cap, "reflection failed");
+            }
+            return -1;
+        }
+    }
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
 
