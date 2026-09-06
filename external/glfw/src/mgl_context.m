@@ -192,6 +192,13 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
         return GLFW_FALSE;
     }
 
+    if (ctxconfig->share)
+    {
+        _glfwInputError(GLFW_INVALID_VALUE,
+                        "MGL: shared GL contexts are not supported");
+        return GLFW_FALSE;
+    }
+
     // MGL internally targets a modern core feature set, but the OpenGL CTS
     // covers GL 3.0/3.1 packages before moving to 3.2+ core profile contexts.
     if (ctxconfig->major < 3 ||
