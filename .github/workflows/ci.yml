@@ -7,10 +7,23 @@ on:
 
 jobs:
   macos-gate:
-    runs-on: macos-14
+    # macOS 26+ only.  The aux metallibs injected into mgl_aux_assets.c are
+    # produced by the Metal 4 frontend (Xcode 26 / macOS 26 SDK).  Xcode 15.4
+    # on macos-14 ships a Metal 3 frontend and rejects them outright with
+    # "lambda expressions are not supported in Metal".  Keep this label in
+    # sync with MGL_MIN_MACOS_SDK_MAJOR in the Makefile.
+    runs-on: macos-26
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify toolchain baseline
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          xcrun --sdk macosx --find metal
+          xcrun --sdk macosx metal --version
+          make verify-toolchain
 
       - name: Verify GL ABI against pinned gl.xml
         run: make verify-gl-api

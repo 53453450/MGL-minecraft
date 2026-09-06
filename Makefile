@@ -9,8 +9,36 @@ SDK_ROOT ?= $(shell xcrun --sdk macosx --show-sdk-path)
 SDK_ROOT := $(strip $(SDK_ROOT))
 APPLE_CLANG ?= $(shell xcrun --find clang)
 APPLE_CLANG := $(strip $(APPLE_CLANG))
+APPLE_CLANGXX ?= $(shell xcrun --find clang++)
+APPLE_CLANGXX := $(strip $(APPLE_CLANGXX))
 HOST_ARCH ?= $(shell uname -m)
 HOST_ARCH := $(strip $(HOST_ARCH))
+# Default C/C++ TU compilers.  make would otherwise fall back to bare `cc` /
+# `c++` resolved through $PATH, which silently drifts when a CI job prepends a
+# Homebrew LLVM bin dir: brew clang++ carries its own libc++ and fails against
+# the macOS SDK headers (16 "reference to unresolved using declaration" errors
+# in <cmath>/<compare>).  Pinning to the selected Xcode keeps every TU - C,
+# ObjC ($(APPLE_CLANG)), C++ and the LLVM-linked test binaries ($(LLVM_CXX)) -
+# on one toolchain.  config.mk / environment overrides still win.
+# NOTE: `?=` cannot be used here: make's built-in CC/CXX have origin "default",
+# which `?=` treats as already defined, so the pin would be silently ignored.
+# Only take over when nobody (environment, config.mk, command line) set them.
+ifeq ($(origin CC),default)
+CC := $(APPLE_CLANG)
+endif
+ifeq ($(origin CXX),default)
+CXX := $(APPLE_CLANGXX)
+endif
+
+# Metal toolchain floor.  The injected aux metallibs (see MGL/aux_shaders) are
+# built by the Metal 4 frontend that ships with the macOS 26+ SDK; Xcode 15.x
+# (Metal 3) rejects them, e.g. "lambda expressions are not supported in Metal"
+# in gs_xfb_scatter.metal.  `make verify-toolchain` fails fast and names the
+# fix instead of surfacing an opaque MSL error from deep inside a -j build.
+MACOS_SDK_VERSION ?= $(shell xcrun --sdk macosx --show-sdk-version 2>/dev/null)
+MACOS_SDK_VERSION := $(strip $(MACOS_SDK_VERSION))
+MACOS_SDK_MAJOR := $(firstword $(subst ., ,$(MACOS_SDK_VERSION)))
+MGL_MIN_MACOS_SDK_MAJOR ?= 26
 
 # build dirs
 build_dir ?= build
@@ -94,6 +122,12 @@ GLFW_STATIC_DEPS = $(GLFW_C_SOURCES) $(GLFW_M_SOURCES) \
 ifneq ($(SDK_ROOT),)
 CFLAGS_GL_CORE += -isysroot $(SDK_ROOT)
 CFLAGS_GL_ES += -isysroot $(SDK_ROOT)
+# Link against the same SDK the translation units were compiled with.
+# Without this the linker falls back to the CommandLineTools default SDK,
+# which drifts independently of $(SDK_ROOT): it makes the dylib's minos
+# host-dependent, and a CLT SDK newer than the Xcode linker fails outright
+# ("ld: library 'System' not found" on a macOS 27 CLT SDK + Xcode 26 ld).
+LDFLAGS += -isysroot $(SDK_ROOT)
 endif
 
 LIBS += -L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib
@@ -336,7 +370,7 @@ external/glfw/build/src/libglfw3.a: $(GLFW_STATIC_DEPS)
 $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
 	@echo "Creating GLFW shared library from static library..."
 	@mkdir -p $(dir $@)
-	$(CC) -shared -fPIC -dynamiclib \
+	$(CC) $(LDFLAGS) -shared -fPIC -dynamiclib \
 		-Wl,-force_load,$(word 1,$^) \
 		-L$(build_dir) -lmgl \
 		-o $@ \
@@ -350,9 +384,29 @@ $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
 
 # specific rules
 
-core: $(mgl_lib) $(build_dir)/libglfw.dylib
+# Toolchain floor: the injected aux metallibs need the Metal 4 frontend that
+# ships with Xcode 26 / macOS 26 SDKs.  Checked on every `core` / `es` build so
+# an unsupported toolchain fails here with an actionable message instead of
+# deep inside a parallel build (e.g. "lambda expressions are not supported in
+# Metal" from MGL/aux_shaders/gs_xfb_scatter.metal).
+verify-toolchain:
+	@printf 'xcode:    '; xcodebuild -version 2>/dev/null | tr '\n' ' '; echo
+	@echo "sdk:      $(SDK_ROOT) ($(MACOS_SDK_VERSION))"
+	@echo "c/cxx:    $(CC) / $(CXX)"
+	@echo "metal:    $(MGL_METAL)"
+	@test -n "$(MACOS_SDK_MAJOR)" || { echo "ERROR: cannot read the macOS SDK version (xcrun --sdk macosx --show-sdk-version); is Xcode installed?"; exit 1; }
+	@case "$(MACOS_SDK_MAJOR)" in *[!0-9]*) echo "ERROR: unparseable macOS SDK version '$(MACOS_SDK_VERSION)'."; exit 1;; esac
+	@test -n "$(MGL_METAL)" || { echo "ERROR: metal compiler not found (xcrun --sdk macosx --find metal)."; exit 1; }
+	@test "$(MACOS_SDK_MAJOR)" -ge "$(MGL_MIN_MACOS_SDK_MAJOR)" || { \
+		echo "ERROR: macOS SDK $(MACOS_SDK_VERSION) is older than the required $(MGL_MIN_MACOS_SDK_MAJOR)."; \
+		echo "       MGL aux shaders are Metal 4 and need Xcode 26+."; \
+		echo "       Fix:    sudo xcode-select -s /Applications/Xcode_26.app"; \
+		echo "       Bypass: make MGL_MIN_MACOS_SDK_MAJOR=0 <target>  (unsupported)"; \
+		exit 1; }
 
-es: $(mgl_es_lib)
+core: verify-toolchain $(mgl_lib) $(build_dir)/libglfw.dylib
+
+es: verify-toolchain $(mgl_es_lib)
 
 lib: core es
 
@@ -776,6 +830,7 @@ test-all:
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
-	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke
+	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
+	verify-toolchain
 
 -include $(deps)
