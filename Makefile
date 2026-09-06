@@ -666,7 +666,7 @@ test-mcrepro: $(build_dir)/test_mcrepro
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
-	MGL/src/mgl_metal_draw_executor.c MGL/include/mgl_backend_handles.h \
+	MGL/include/mgl_backend_handles.h \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
 	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
@@ -676,7 +676,6 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render.cpp \
 		MGL/src/mgl_renderer_backend.cpp \
-		MGL/src/mgl_metal_draw_executor.c \
 		MGL/src/MGLPlatformRendererShell.m \
 		MGL/src/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \

@@ -139,6 +139,54 @@ mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
     size_t instanceCount, int64_t baseVertex,
     size_t baseInstance, const char *label);
 
+/* Prepared array/element draw: polygon-mode / fan / loop / quads / restart /
+ * Metal primitives. Cull-distance expansion stays in the ObjC caller. */
+bool mglEncodeDrawArraysForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    MGLDrawMetalHandle device,
+    GLenum mode,
+    GLint first,
+    GLsizei count,
+    size_t instanceCount,
+    size_t baseInstance,
+    const char *label);
+
+bool mglEncodeDrawElementsForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    MGLDrawMetalHandle device,
+    Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer,
+    GLenum mode,
+    GLenum glIndexType,
+    size_t indexOffset,
+    GLsizei count,
+    size_t instanceCount,
+    int64_t baseVertex,
+    size_t baseInstance,
+    const char *label);
+
+bool mglEncodeDrawArraysIndirectForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    GLenum mode,
+    MGLDrawMetalHandle indirectBuffer,
+    size_t indirectOffset,
+    const char *label);
+
+bool mglEncodeDrawElementsIndirectForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    MGLDrawMetalHandle device,
+    Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer,
+    GLenum mode,
+    GLenum glIndexType,
+    MGLDrawMetalHandle indirectBuffer,
+    size_t indirectOffset,
+    const char *label);
+
 /* === Indirect-draw skip checks === */
 
 bool mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,

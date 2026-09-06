@@ -15,7 +15,7 @@
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
 
-void mglRendererCompatBindTexture(GLMContext glm_ctx,
+void mglRendererBindTexture(GLMContext glm_ctx,
                                   Texture *texture)
 {
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);

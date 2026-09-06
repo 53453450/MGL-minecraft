@@ -883,6 +883,160 @@ bool mglEncodeArrayPolygonPointForRenderEncoderOwner(
         instanceCount, baseInstance, label);
 }
 
+bool mglEncodeDrawArraysForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    MGLDrawMetalHandle device,
+    GLenum mode,
+    GLint first,
+    GLsizei count,
+    size_t instanceCount,
+    size_t baseInstance,
+    const char *label)
+{
+    if (!renderEncoderOwner) {
+        return false;
+    }
+    if (mglPolygonModePointForDrawMode(ctx, mode)) {
+        return mglEncodeArrayPolygonPointForRenderEncoderOwner(
+            renderEncoderOwner, device, mode, first, count,
+            instanceCount, baseInstance, label);
+    }
+    if (mode == GL_TRIANGLE_FAN) {
+        return mglEncodeArrayTriangleFanForRenderEncoderOwner(
+            renderEncoderOwner, device, count, first,
+            instanceCount, baseInstance, label);
+    }
+    if (mode == GL_LINE_LOOP) {
+        return mglEncodeArrayLineLoopForRenderEncoderOwner(
+            renderEncoderOwner, ctx, device, count, first,
+            instanceCount, baseInstance, label);
+    }
+    if (mode == GL_QUADS) {
+        return mglEncodeArrayQuadsForRenderEncoderOwner(
+            renderEncoderOwner, device, count, first,
+            instanceCount, baseInstance,
+            mglPolygonModeLineForDrawMode(ctx, mode), label);
+    }
+    const uint32_t primitiveType =
+        mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
+    if (primitiveType == 0xFFFFFFFFu) {
+        fprintf(stderr,
+                "MGL WARNING: %s unsupported primitive mode=0x%x, skipping draw",
+                label ? label : "drawArrays",
+                (unsigned)mode);
+        return false;
+    }
+    mglDrawEncodePrimitives(renderEncoderOwner, primitiveType,
+                            (size_t)first, (size_t)count,
+                            instanceCount, baseInstance);
+    return true;
+}
+
+bool mglEncodeDrawElementsForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    MGLDrawMetalHandle device,
+    Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer,
+    GLenum mode,
+    GLenum glIndexType,
+    size_t indexOffset,
+    GLsizei count,
+    size_t instanceCount,
+    int64_t baseVertex,
+    size_t baseInstance,
+    const char *label)
+{
+    if (!renderEncoderOwner || !glElementBuffer || !metalElementBuffer) {
+        return false;
+    }
+
+    const uint32_t metalIndexType =
+        mglRenderMTLIndexTypeForGLType((uint32_t)glIndexType);
+    if (metalIndexType == 0xFFFFFFFFu) {
+        fprintf(stderr,
+                "MGL WARNING: %s unsupported index type=0x%x, skipping draw",
+                label ? label : "drawElements",
+                (unsigned)glIndexType);
+        return false;
+    }
+
+    const bool polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
+    uint32_t primitiveType;
+    if (polygonModePoint) {
+        primitiveType = MGL_DRAW_PRIMITIVE_POINT;
+    } else if (mode == GL_TRIANGLE_FAN) {
+        primitiveType = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    } else if (mode == GL_LINE_LOOP) {
+        primitiveType = MGL_DRAW_PRIMITIVE_LINE_STRIP;
+    } else if (mode == GL_QUADS) {
+        primitiveType = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    } else {
+        primitiveType = mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
+    }
+    if (primitiveType == 0xFFFFFFFFu) {
+        fprintf(stderr,
+                "MGL WARNING: %s unsupported primitive mode=0x%x, skipping draw",
+                label ? label : "drawElements",
+                (unsigned)mode);
+        return false;
+    }
+
+    const MGLPrimitiveRestartEncodeResult restartResult =
+        mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
+            renderEncoderOwner, device, ctx, glElementBuffer,
+            metalElementBuffer, mode, primitiveType, glIndexType,
+            metalIndexType, indexOffset, count, instanceCount,
+            baseVertex, baseInstance, label);
+    if (restartResult == MGLPrimitiveRestartEncodeFailed) {
+        return false;
+    }
+    if (restartResult == MGLPrimitiveRestartEncodeHandled) {
+        return true;
+    }
+
+    if (polygonModePoint) {
+        return mglEncodeElementPolygonPointForRenderEncoderOwner(
+            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
+            mode, glIndexType, metalIndexType, indexOffset, count,
+            instanceCount, baseVertex, baseInstance, label);
+    }
+    if (mode == GL_TRIANGLE_FAN) {
+        return mglEncodeElementTriangleFanForRenderEncoderOwner(
+            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
+            glIndexType, indexOffset, count, instanceCount,
+            baseVertex, baseInstance, label);
+    }
+    if (mode == GL_LINE_LOOP) {
+        return mglEncodeElementLineLoopForRenderEncoderOwner(
+            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
+            glIndexType, indexOffset, count, instanceCount,
+            baseVertex, baseInstance, label);
+    }
+    if (mode == GL_QUADS) {
+        return mglEncodeElementQuadsForRenderEncoderOwner(
+            renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
+            glIndexType, indexOffset, count, instanceCount,
+            baseVertex, baseInstance,
+            mglPolygonModeLineForDrawMode(ctx, mode), label);
+    }
+
+    size_t drawIndexOffset = indexOffset;
+    uint64_t drawIndexType = (uint64_t)metalIndexType;
+    MGLDrawMetalHandle drawIndexBuffer = mglPreparedElementIndexBuffer(
+        device, glElementBuffer, metalElementBuffer, glIndexType,
+        &drawIndexOffset, &drawIndexType);
+    if (!drawIndexBuffer) {
+        return false;
+    }
+    mglDrawEncodeIndexed(renderEncoderOwner, primitiveType, (size_t)count,
+                         (uint32_t)drawIndexType, drawIndexBuffer,
+                         drawIndexOffset, instanceCount, baseVertex,
+                         baseInstance);
+    return true;
+}
+
 bool mglEncodeElementPolygonPointForRenderEncoderOwner(
     void *renderEncoderOwner,
     MGLDrawMetalHandle device, Buffer *glElementBuffer,
@@ -909,6 +1063,92 @@ mglEncodePrimitiveRestartedElementDrawForRenderEncoderOwner(
     return mglEncodePrimitiveRestartedElementDrawTarget(renderEncoderOwner, device, ctx, glElementBuffer,
         metalElementBuffer, mode, primitiveType, glIndexType, metalIndexType,
         indexOffset, count, instanceCount, baseVertex, baseInstance, label);
+}
+
+bool mglEncodeDrawArraysIndirectForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    GLenum mode,
+    MGLDrawMetalHandle indirectBuffer,
+    size_t indirectOffset,
+    const char *label)
+{
+    (void)label;
+    if (!renderEncoderOwner || !indirectBuffer) {
+        return false;
+    }
+    const uint32_t primitiveType =
+        mglPolygonModePointForDrawMode(ctx, mode)
+            ? (uint32_t)MGL_DRAW_PRIMITIVE_POINT
+            : mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
+    if (primitiveType == 0xFFFFFFFFu) {
+        fprintf(stderr,
+                "MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call\n",
+                (unsigned)mode);
+        return false;
+    }
+    const MGLRenderDrawPlan plan = {
+        .kind = MGL_RENDER_DRAW_ARRAY_INDIRECT,
+        .primitive_type = primitiveType,
+        .indirect_buffer = (__bridge void *)indirectBuffer,
+        .indirect_buffer_offset = indirectOffset,
+    };
+    return mglRenderEncodeDrawForRenderEncoderOwner(
+               renderEncoderOwner, &plan, NULL, 0) == 0;
+}
+
+bool mglEncodeDrawElementsIndirectForRenderEncoderOwner(
+    void *renderEncoderOwner,
+    GLMContext ctx,
+    MGLDrawMetalHandle device,
+    Buffer *glElementBuffer,
+    MGLDrawMetalHandle metalElementBuffer,
+    GLenum mode,
+    GLenum glIndexType,
+    MGLDrawMetalHandle indirectBuffer,
+    size_t indirectOffset,
+    const char *label)
+{
+    (void)label;
+    if (!renderEncoderOwner || !indirectBuffer) {
+        return false;
+    }
+    uint32_t metalIndexType = mglRenderMTLIndexTypeForGLType((uint32_t)glIndexType);
+    if (metalIndexType == 0xFFFFFFFFu) {
+        fprintf(stderr,
+                "MGL WARNING: Unsupported index type=0x%x, skipping draw call\n",
+                (unsigned)glIndexType);
+        return false;
+    }
+    const uint32_t primitiveType =
+        mglPolygonModePointForDrawMode(ctx, mode)
+            ? (uint32_t)MGL_DRAW_PRIMITIVE_POINT
+            : mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
+    if (primitiveType == 0xFFFFFFFFu) {
+        fprintf(stderr,
+                "MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call\n",
+                (unsigned)mode);
+        return false;
+    }
+    size_t indexOffset = 0u;
+    uint64_t drawIndexType = metalIndexType;
+    MGLDrawMetalHandle prepared = mglPreparedElementIndexBuffer(
+        device, glElementBuffer, metalElementBuffer, glIndexType, &indexOffset,
+        &drawIndexType);
+    if (!prepared) {
+        return false;
+    }
+    const MGLRenderDrawPlan plan = {
+        .kind = MGL_RENDER_DRAW_INDEXED_INDIRECT,
+        .primitive_type = primitiveType,
+        .index_type = (uint32_t)drawIndexType,
+        .index_buffer = (__bridge void *)prepared,
+        .index_buffer_offset = indexOffset,
+        .indirect_buffer = (__bridge void *)indirectBuffer,
+        .indirect_buffer_offset = indirectOffset,
+    };
+    return mglRenderEncodeDrawForRenderEncoderOwner(
+               renderEncoderOwner, &plan, NULL, 0) == 0;
 }
 
 bool mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,

@@ -31,7 +31,8 @@ typedef struct MGLPipelineHandle {
     uint64_t generation;
 } MGLPipelineHandle;
 
-/* Executor entry used by fake/CPU tests and the Metal path. */
+/* Executor entry used by fake/CPU tests. Production Metal encode does not
+ * install this vtable; do not add a Compat-wrapping Metal executor. */
 typedef struct MGLDrawExecutorVTable {
     int (*encode_indexed)(void *executor, const void *draw_state,
                           MGLBufferHandle vb, MGLBufferHandle ib,
@@ -66,10 +67,6 @@ static inline int mglHandleIsLive(const void *obj, uint64_t gen,
 void *mglFakeDrawExecutorCreate(void);
 const MGLDrawExecutorVTable *mglFakeDrawExecutorVTable(void *executor);
 unsigned mglFakeDrawExecutorEncodeCount(void *executor);
-
-/* Metal adapter (mgl_metal_draw_executor.c) — routes via Compat bridge. */
-void *mglMetalDrawExecutorCreate(void);
-const MGLDrawExecutorVTable *mglMetalDrawExecutorVTable(void *executor);
 
 #ifdef __cplusplus
 }

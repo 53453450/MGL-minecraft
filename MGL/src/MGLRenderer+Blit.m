@@ -3116,7 +3116,7 @@ static id mglLookupAuxRenderPipeline(
     [self blitFramebufferDirectColorCopyWithState:&st];
 }
 
-void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
+void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                       int src_x0,
                                       int src_y0,
                                       int src_x1,
@@ -3137,7 +3137,6 @@ void mglRendererCompatBlitFramebuffer(GLMContext glm_ctx,
                            dstX1:dst_x1 dstY1:dst_y1
                             mask:mask filter:filter];
 }
-
 
 /* Texture-to-texture blit path for glCopyTexImage2D / glCopyTexSubImage when
  * the destination texture uses a non-BGRA8-compatible Metal pixel format

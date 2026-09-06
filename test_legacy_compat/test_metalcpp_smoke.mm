@@ -178,25 +178,25 @@ static int s_operationResourceCount = 0;
 extern "C" void mglRendererPlatformBackendWillDestroy(
     void *, MGLRendererBackendHandle *) {}
 
-extern "C" void mglRendererCompatDispatchCompute(GLMContext, unsigned int groupsX,
+extern "C" void mglRendererDispatchCompute(GLMContext, unsigned int groupsX,
     unsigned int groupsY, unsigned int groupsZ) {
     if (groupsX == 2 && groupsY == 3 && groupsZ == 4) {
         ++s_operationComputeCount;
     }
 }
 
-extern "C" void mglRendererCompatDispatchComputeIndirect(GLMContext, intptr_t indirect) {
+extern "C" void mglRendererDispatchComputeIndirect(GLMContext, intptr_t indirect) {
     if (indirect == 64) ++s_operationComputeIndirectCount;
 }
 
-extern "C" void mglRendererCompatDrawArrays(GLMContext, uint32_t mode, int32_t first,
-                                            int32_t count) {
+extern "C" void mglRendererDrawArrays(GLMContext, uint32_t mode, int32_t first,
+                                      int32_t count) {
     if (mode == GL_TRIANGLES && first == 5 && count == 6) {
         ++s_operationDrawCount;
     }
 }
-extern "C" void mglRendererCompatDrawElements(GLMContext, uint32_t, int32_t, uint32_t,
-                                              const void *) {}
+extern "C" void mglRendererDrawElements(GLMContext, uint32_t, int32_t, uint32_t,
+                                        const void *) {}
 extern "C" void mglRendererDrawRangeElements(GLMContext, uint32_t, uint32_t, uint32_t,
     int32_t, uint32_t, const void *) {}
 extern "C" void mglRendererDrawArraysInstanced(GLMContext, uint32_t, int32_t, int32_t, int32_t) {}
@@ -223,34 +223,34 @@ extern "C" void mglRendererMultiDrawElementsBaseVertex(GLMContext, uint32_t, con
 extern "C" void mglRendererMultiDrawArraysIndirect(GLMContext, uint32_t, const void *, int32_t, int32_t) {}
 extern "C" void mglRendererMultiDrawElementsIndirect(GLMContext, uint32_t, uint32_t, const void *, int32_t, int32_t) {}
 
-extern "C" void mglRendererCompatBindTexture(GLMContext, Texture *) {}
-extern "C" void mglRendererCompatFlushDrawBuffer(GLMContext) {}
-extern "C" void mglRendererCompatSwapBuffers(GLMContext) {}
-extern "C" void mglRendererCompatClearBuffer(GLMContext, unsigned int, unsigned int) {}
-extern "C" void mglRendererCompatBlitFramebuffer(GLMContext, int, int, int, int, int, int, int, int,
+extern "C" void mglRendererBindTexture(GLMContext, Texture *) {}
+extern "C" void mglRendererFlushDrawBuffer(GLMContext) {}
+extern "C" void mglRendererSwapBuffers(GLMContext) {}
+extern "C" void mglRendererClearBuffer(GLMContext, unsigned int, unsigned int) {}
+extern "C" void mglRendererBlitFramebuffer(GLMContext, int, int, int, int, int, int, int, int,
     unsigned int, unsigned int) {}
-extern "C" void mglRendererCompatReadDrawable(GLMContext, void *, uint32_t, uint32_t,
+extern "C" void mglRendererReadDrawable(GLMContext, void *, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t) {}
-extern "C" void mglRendererCompatReadIntegerPixels(GLMContext, void *, uint32_t, uint32_t,
+extern "C" void mglRendererReadIntegerPixels(GLMContext, void *, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t, uint32_t, uint32_t) {}
-extern "C" void mglRendererCompatReadDepthPixels(GLMContext, void *, uint32_t, uint32_t,
+extern "C" void mglRendererReadDepthPixels(GLMContext, void *, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t) {}
-extern "C" void mglRendererCompatGetTexImage(GLMContext, Texture *, void *, uint32_t, uint32_t,
+extern "C" void mglRendererGetTexImage(GLMContext, Texture *, void *, uint32_t, uint32_t,
     int32_t, int32_t, int32_t, int32_t,
     uint32_t, uint32_t, uint32_t, uint32_t) {}
-extern "C" void mglRendererCompatGenerateMipmaps(GLMContext, Texture *) {
+extern "C" void mglRendererGenerateMipmaps(GLMContext, Texture *) {
     ++s_operationResourceCount;
 }
-extern "C" void mglRendererCompatTexSubImage(GLMContext, Texture *, Buffer *, size_t, size_t, size_t, size_t,
+extern "C" void mglRendererTexSubImage(GLMContext, Texture *, Buffer *, size_t, size_t, size_t, size_t,
     uint32_t, uint32_t, size_t, size_t, size_t, size_t, size_t, size_t) {}
-extern "C" bool mglRendererCompatTexSubImageBytes(GLMContext, Texture *, const void *, size_t,
+extern "C" bool mglRendererTexSubImageBytes(GLMContext, Texture *, const void *, size_t,
     size_t, size_t, size_t, uint32_t, uint32_t,
     size_t, size_t, size_t, size_t, size_t, size_t) {
     return true;
 }
-extern "C" void mglRendererCompatCopyTexSubImage(GLMContext, Texture *, uint32_t, int32_t, int32_t, int32_t,
+extern "C" void mglRendererCopyTexSubImage(GLMContext, Texture *, uint32_t, int32_t, int32_t, int32_t,
     int32_t, int32_t, int32_t, int32_t) {}
-extern "C" void mglRendererCompatCopyImageSubData(GLMContext, Texture *, int32_t, int32_t, int32_t, int32_t,
+extern "C" void mglRendererCopyImageSubData(GLMContext, Texture *, int32_t, int32_t, int32_t, int32_t,
     Texture *, int32_t, int32_t, int32_t, int32_t,
     int32_t, int32_t, int32_t) {}
 

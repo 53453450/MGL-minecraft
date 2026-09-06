@@ -20,13 +20,17 @@
 #include "mgl_program_resource.h"
 #include "mgl_render.h"
 #include "mgl_backend_handles.h"
-#include "mgl_renderer_compat_bridge.h"
 #include "mgl_shader_resource.h"
 
 extern "C" Program *mglResolveProgramForStageFromState(
     GLMContext context, int stage);
 extern "C" void mglRendererPlatformBackendWillDestroy(
     void *platform_shell, MGLRendererBackendHandle *backend);
+extern "C" void mglRendererDrawArrays(GLMContext context, uint32_t mode,
+                                      int32_t first, int32_t count);
+extern "C" void mglRendererDrawElements(GLMContext context, uint32_t mode,
+                                        int32_t count, uint32_t type,
+                                        const void *indices);
 extern "C" void mglRendererDrawRangeElements(GLMContext context, uint32_t mode,
     uint32_t start, uint32_t end, int32_t count, uint32_t type,
     const void *indices);
@@ -179,144 +183,10 @@ struct MGLRendererBackendHandle {
     bool renderer_initialized = false;
     bool shutdown_started = false;
     bool destroying = false;
-    /* R4: present/transfer routes through DrawExecutor VTable. */
+    /* Fake DrawExecutor is test-only; production never installs a vtable. */
     void *draw_executor = nullptr;
     const MGLDrawExecutorVTable *draw_executor_vt = nullptr;
 };
-
-static void *mglRendererBackendPlatformShell(GLMContext context)
-{
-    return context && context->renderer_backend
-        ? context->platform_renderer_shell
-        : nullptr;
-}
-
-static MGLRendererBackendHandle *mglRendererBackendFromContext(
-    GLMContext context)
-{
-    return context
-        ? static_cast<MGLRendererBackendHandle *>(context->renderer_backend)
-        : nullptr;
-}
-
-static void mglRendererBackendExecFlushDrawBuffer(GLMContext context)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->flush_draw_buffer) {
-        backend->draw_executor_vt->flush_draw_buffer(backend->draw_executor,
-                                                     context);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatFlushDrawBuffer(context);
-}
-
-static void mglRendererBackendExecSwapBuffers(GLMContext context)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->swap_buffers) {
-        backend->draw_executor_vt->swap_buffers(backend->draw_executor,
-                                                context);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatSwapBuffers(context);
-}
-
-static void mglRendererBackendExecClearBuffer(GLMContext context, uint32_t type,
-                                              uint32_t mask)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->clear_buffer) {
-        backend->draw_executor_vt->clear_buffer(backend->draw_executor, context,
-                                                type, mask);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatClearBuffer(context, type, mask);
-}
-
-static void mglRendererBackendExecDrawArrays(GLMContext context, uint32_t mode,
-                                             int32_t first, int32_t count)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->draw_arrays) {
-        backend->draw_executor_vt->draw_arrays(backend->draw_executor, context,
-                                               mode, first, count);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatDrawArrays(context, mode, first, count);
-}
-
-static void mglRendererBackendExecDrawElements(GLMContext context, uint32_t mode,
-                                               int32_t count, uint32_t type,
-                                               const void *indices)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->draw_elements) {
-        backend->draw_executor_vt->draw_elements(backend->draw_executor, context,
-                                                 mode, count, type, indices);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatDrawElements(context, mode, count, type, indices);
-}
-
-static void mglRendererBackendExecBlitFramebuffer(
-    GLMContext context,
-    int32_t src_x0, int32_t src_y0, int32_t src_x1, int32_t src_y1,
-    int32_t dst_x0, int32_t dst_y0, int32_t dst_x1, int32_t dst_y1,
-    uint32_t mask, uint32_t filter)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->blit_framebuffer) {
-        backend->draw_executor_vt->blit_framebuffer(
-            backend->draw_executor, context, src_x0, src_y0, src_x1, src_y1,
-            dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatBlitFramebuffer(context, src_x0, src_y0, src_x1,
-                                         src_y1, dst_x0, dst_y0, dst_x1,
-                                         dst_y1, mask, filter);
-}
-
-static void mglRendererBackendExecDispatchCompute(GLMContext context,
-                                                  uint32_t groups_x,
-                                                  uint32_t groups_y,
-                                                  uint32_t groups_z)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->dispatch_compute) {
-        backend->draw_executor_vt->dispatch_compute(
-            backend->draw_executor, context, groups_x, groups_y, groups_z);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatDispatchCompute(context, groups_x, groups_y, groups_z);
-}
-
-static void mglRendererBackendExecGenerateMipmaps(GLMContext context,
-                                                  Texture *texture)
-{
-    MGLRendererBackendHandle *backend = mglRendererBackendFromContext(context);
-    if (backend && backend->draw_executor_vt &&
-        backend->draw_executor_vt->generate_mipmaps) {
-        backend->draw_executor_vt->generate_mipmaps(backend->draw_executor,
-                                                    context, texture);
-        return;
-    }
-    if (mglRendererBackendPlatformShell(context))
-        mglRendererCompatGenerateMipmaps(context, texture);
-}
 
 static void mglRendererBackendReleaseOwnedState(
     MGLRendererBackendHandle *backend)
@@ -1641,12 +1511,6 @@ extern "C" void mglRendererBindBuffer(GLMContext context, Buffer *buffer)
     mglRenderBindBuffer(context, buffer);
 }
 
-extern "C" void mglRendererBindTexture(GLMContext context, Texture *texture)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) mglRendererCompatBindTexture(context, texture);
-}
-
 extern "C" void mglRendererBindProgram(GLMContext context, Program *program)
 {
     mglRenderBindProgram(context, program);
@@ -1689,49 +1553,9 @@ extern "C" void mglRendererFlush(GLMContext context, bool finish)
     mglRenderFlush(context, finish);
 }
 
-extern "C" void mglRendererSwapBuffers(GLMContext context)
-{
-    mglRendererBackendExecSwapBuffers(context);
-}
-
-extern "C" void mglRendererFlushDrawBuffer(GLMContext context)
-{
-    mglRendererBackendExecFlushDrawBuffer(context);
-}
-
 extern "C" void mglRendererInvalidateRenderPass(GLMContext context)
 {
     mglRenderInvalidateRenderPass(context);
-}
-
-extern "C" void mglRendererClearBuffer(
-    GLMContext context, uint32_t type, uint32_t mask)
-{
-    mglRendererBackendExecClearBuffer(context, type, mask);
-}
-
-extern "C" void mglRendererDrawArrays(GLMContext context, uint32_t mode,
-                                      int32_t first, int32_t count)
-{
-    mglRendererBackendExecDrawArrays(context, mode, first, count);
-}
-
-extern "C" void mglRendererDrawElements(GLMContext context, uint32_t mode,
-                                        int32_t count, uint32_t type,
-                                        const void *indices)
-{
-    mglRendererBackendExecDrawElements(context, mode, count, type, indices);
-}
-
-extern "C" void mglRendererBlitFramebuffer(
-    GLMContext context,
-    int32_t src_x0, int32_t src_y0, int32_t src_x1, int32_t src_y1,
-    int32_t dst_x0, int32_t dst_y0, int32_t dst_x1, int32_t dst_y1,
-    uint32_t mask, uint32_t filter)
-{
-    mglRendererBackendExecBlitFramebuffer(
-        context, src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1,
-        dst_y1, mask, filter);
 }
 
 extern "C" void mglRendererBufferSubData(
@@ -1759,143 +1583,6 @@ extern "C" void mglRendererFlushBufferRange(
     GLMContext context, Buffer *buffer, intptr_t offset, intptr_t length)
 {
     mglRenderFlushBufferRange(context, buffer, offset, length);
-}
-
-extern "C" void mglRendererReadDrawable(
-    GLMContext context, void *pixel_bytes,
-    uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatReadDrawable(context, pixel_bytes, bytes_per_row, bytes_per_image,
-            x, y, width, height);
-    }
-}
-
-extern "C" void mglRendererReadIntegerPixels(
-    GLMContext context, void *pixel_bytes,
-    uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height,
-    uint32_t format, uint32_t type)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatReadIntegerPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
-            x, y, width, height, format, type);
-    }
-}
-
-extern "C" void mglRendererReadDepthPixels(
-    GLMContext context, void *pixel_bytes,
-    uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatReadDepthPixels(context, pixel_bytes, bytes_per_row, bytes_per_image,
-            x, y, width, height);
-    }
-}
-
-extern "C" void mglRendererGetTexImage(
-    GLMContext context, Texture *texture, void *pixel_bytes,
-    uint32_t bytes_per_row, uint32_t bytes_per_image,
-    int32_t x, int32_t y, int32_t width, int32_t height,
-    uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatGetTexImage(context, texture, pixel_bytes,
-            bytes_per_row, bytes_per_image, x, y, width, height,
-            format, type, level, slice);
-    }
-}
-
-extern "C" void mglRendererGenerateMipmaps(
-    GLMContext context, Texture *texture)
-{
-    mglRendererBackendExecGenerateMipmaps(context, texture);
-}
-
-extern "C" void mglRendererTexSubImage(
-    GLMContext context, Texture *texture, Buffer *buffer,
-    size_t source_offset, size_t source_pitch,
-    size_t source_image_size, size_t source_size,
-    uint32_t slice, uint32_t level,
-    size_t width, size_t height, size_t depth,
-    size_t x_offset, size_t y_offset, size_t z_offset)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatTexSubImage(context, texture, buffer,
-            source_offset, source_pitch, source_image_size, source_size,
-            slice, level, width, height, depth,
-            x_offset, y_offset, z_offset);
-    }
-}
-
-extern "C" bool mglRendererTexSubImageBytes(
-    GLMContext context, Texture *texture,
-    const void *bytes, size_t bytes_size,
-    size_t source_offset, size_t source_pitch, size_t source_image_size,
-    uint32_t slice, uint32_t level,
-    size_t width, size_t height, size_t depth,
-    size_t x_offset, size_t y_offset, size_t z_offset)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    return platform_shell && mglRendererCompatTexSubImageBytes(context, texture, bytes, bytes_size,
-        source_offset, source_pitch, source_image_size,
-        slice, level, width, height, depth,
-        x_offset, y_offset, z_offset);
-}
-
-extern "C" void mglRendererCopyTexSubImage(
-    GLMContext context, Texture *texture,
-    uint32_t slice, int32_t level,
-    int32_t x_offset, int32_t y_offset,
-    int32_t x, int32_t y, int32_t width, int32_t height)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatCopyTexSubImage(context, texture, slice, level, x_offset, y_offset,
-            x, y, width, height);
-    }
-}
-
-extern "C" void mglRendererCopyImageSubData(
-    GLMContext context, Texture *source_texture,
-    int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
-    Texture *destination_texture,
-    int32_t destination_level,
-    int32_t destination_x, int32_t destination_y, int32_t destination_z,
-    int32_t width, int32_t height, int32_t depth)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatCopyImageSubData(context, source_texture,
-            source_level, source_x, source_y, source_z,
-            destination_texture, destination_level,
-            destination_x, destination_y, destination_z,
-            width, height, depth);
-    }
-}
-
-extern "C" void mglRendererDispatchCompute(
-    GLMContext context, uint32_t groups_x,
-    uint32_t groups_y, uint32_t groups_z)
-{
-    mglRendererBackendExecDispatchCompute(context, groups_x, groups_y,
-                                          groups_z);
-}
-
-extern "C" void mglRendererDispatchComputeIndirect(
-    GLMContext context, intptr_t indirect)
-{
-    void *platform_shell = mglRendererBackendPlatformShell(context);
-    if (platform_shell) {
-        mglRendererCompatDispatchComputeIndirect(context, indirect);
-    }
 }
 
 extern "C" void mglRendererBeginSampleQuery(

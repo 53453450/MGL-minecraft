@@ -400,6 +400,7 @@ typedef struct {
 - (BOOL)currentDrawRasterizationIsEmpty;
 - (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode;
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode;
+- (BOOL)ensureRasterEncoderForDraw;
 - (BOOL)resolveElementBufferForCommand:(const MGLDrawCommand *)cmd
                                   label:(const char *)label
                                 context:(GLMContext)drawCtx

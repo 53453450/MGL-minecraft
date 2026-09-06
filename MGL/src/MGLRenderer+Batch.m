@@ -1032,7 +1032,7 @@ static void mglBatchExecuteIndirectCommands(
     }
 }
 
-void mglRendererCompatFlushDrawBuffer(GLMContext glm_ctx)
+void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 {
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (!renderer || !glm_ctx) return;

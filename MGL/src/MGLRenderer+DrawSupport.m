@@ -22,6 +22,11 @@
 #include "mgl_air_tess_abi.h"
 #include "mgl_aux_assets.h"
 #include "mgl_program_reflection.h"
+#include "mgl_draw_issue.h"
+#include "mgl_draw_gs.h"
+#include "mgl_draw_tess.h"
+#include "mgl_index_buffer.h"
+#include "mgl_draw_mode.h"
 
 static void *mglDrawSupportBufferContents(id buffer)
 {
@@ -156,208 +161,6 @@ static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
     *outPrimitiveCount = result.primitive_count;
     *outMaxIndex = result.max_index;
     return true;
-}
-
-/* Build the primitive input stream for a GS draw.  The GS kernel consumes a
- * complete, fixed-width primitive per work item, so array strips/fans/loops
- * and indexed restart segments are normalized here to the same gather ABI.
- * Values remain raw vertex ids: indexed capture applies baseVertex, while
- * array capture uses first_vertex to address its [first, first + count) span. */
-static bool mglGeometryGatherTopology(const uint8_t *indexBytes,
-                                      GLenum indexType,
-                                      GLsizei count,
-                                      GLint first,
-                                      bool indexed,
-                                      bool restartEnabled,
-                                      uint32_t restartIndex,
-                                      GLenum mode,
-                                      uint32_t **outGather,
-                                      uint32_t *outGatherCount,
-                                      uint32_t *outPrimitiveCount,
-                                      uint32_t *outMaxIndex)
-{
-    if (!outGather || !outGatherCount || !outPrimitiveCount ||
-        !outMaxIndex || count <= 0 || (indexed && !indexBytes) ||
-        (!indexed && first < 0)) {
-        return false;
-    }
-    const uint32_t n = (uint32_t)count;
-    const uint32_t elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
-        : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
-    if ((size_t)n > SIZE_MAX / sizeof(uint32_t) ||
-        (size_t)n > SIZE_MAX / (6u * sizeof(uint32_t))) return false;
-    uint32_t *source = malloc((size_t)n * sizeof(*source));
-    uint32_t *segment = malloc((size_t)n * sizeof(*segment));
-    uint32_t *gather = malloc((size_t)n * 6u * sizeof(*gather));
-    if (!source || !segment || !gather) {
-        free(source); free(segment); free(gather);
-        return false;
-    }
-    uint32_t maxIndex = 0u;
-    for (uint32_t i = 0u; i < n; i++) {
-        uint32_t value;
-        if (!indexed) {
-            const int64_t v = (int64_t)first + (int64_t)i;
-            if (v < 0 || (uint64_t)v > UINT32_MAX) {
-                free(source); free(segment); free(gather);
-                return false;
-            }
-            value = (uint32_t)v;
-        } else if (elemBytes == 1u) {
-            value = indexBytes[i];
-        } else if (elemBytes == 2u) {
-            value = ((const uint16_t *)indexBytes)[i];
-        } else {
-            value = ((const uint32_t *)indexBytes)[i];
-        }
-        source[i] = value;
-        if (!(indexed && restartEnabled && value == restartIndex) &&
-            value > maxIndex) maxIndex = value;
-    }
-
-    uint32_t gathered = 0u;
-    uint32_t primitives = 0u;
-    uint32_t segmentCount = 0u;
-    const bool restartMode = indexed && restartEnabled;
-    const uint32_t primitiveWidth =
-        (mode == GL_POINTS) ? 1u
-        : (mode == GL_LINES || mode == GL_LINE_STRIP ||
-           mode == GL_LINE_LOOP) ? 2u
-        : (mode == GL_LINES_ADJACENCY) ? 4u
-        : (mode == GL_TRIANGLES_ADJACENCY) ? 6u : 3u;
-
-    /* Emit one restart-delimited segment according to the GL topology. */
-    #define EMIT(v) do { gather[gathered++] = (v); } while (0)
-    #define EMIT_SEGMENT() do {                                                \
-        if (segmentCount > 0u) {                                               \
-            if (mode == GL_POINTS) {                                           \
-                for (uint32_t q = 0u; q < segmentCount; q++) {                 \
-                    EMIT(segment[q]); primitives++;                           \
-                }                                                                  \
-            } else if (mode == GL_LINES || mode == GL_TRIANGLES ||             \
-                       mode == GL_LINES_ADJACENCY ||                           \
-                       mode == GL_TRIANGLES_ADJACENCY) {                       \
-                const uint32_t groups = segmentCount / primitiveWidth;         \
-                for (uint32_t q = 0u; q < groups; q++) {                        \
-                    for (uint32_t k = 0u; k < primitiveWidth; k++)             \
-                        EMIT(segment[q * primitiveWidth + k]);                 \
-                    primitives++;                                               \
-                }                                                                  \
-            } else if (mode == GL_LINE_STRIP_ADJACENCY) {                       \
-                /* Each lines_adjacency primitive is the four vertices          \
-                 * starting at its first member; GL 4.6 10.4.2.2 strips        \
-                 * adjacency advance by ONE vertex per primitive (a            \
-                 * two-vertex stride halves the emitted lines). */              \
-                for (uint32_t q = 0u; q + 3u < segmentCount; q++) {             \
-                    for (uint32_t k = 0u; k < 4u; k++)                           \
-                        EMIT(segment[q + k]);                                   \
-                    primitives++;                                               \
-                }                                                                  \
-            } else if (mode == GL_TRIANGLE_STRIP_ADJACENCY) {                   \
-                /* GL 4.6 10.1.14 + table 10.1: each triangles_adjacency   \
-                 * primitive takes a six-vertex window, but its adjacency \
-                 * vertices reach outside that window (even triangles     \
-                 * borrow the previous window's first vertex, odd ones    \
-                 * the next window's), and odd triangles swap their first \
-                 * two core vertices.  Emit the exact gl_in order. */     \
-                uint32_t tri = 0u;                                              \
-                for (uint32_t q = 0u; q + 5u < segmentCount; q += 2u, tri++) {  \
-                    uint32_t last = (q + 6u >= segmentCount);                   \
-                    if (tri == 0u) {                                            \
-                        /* first: core 1,3,5; adj 2,7,4 */                      \
-                        EMIT(segment[q]); EMIT(segment[q + 1u]);                \
-                        EMIT(segment[q + 2u]);                                  \
-                        EMIT(last ? segment[q + 5u] : segment[q + 6u]);         \
-                        EMIT(segment[q + 4u]); EMIT(segment[q + 3u]);           \
-                    } else if (tri & 1u) {                                      \
-                        /* odd: core 2i+3,2i+1,2i+5; adj 2i-1,2i+4,2i+7 */      \
-                        EMIT(segment[q + 2u]); EMIT(segment[q - 2u]);           \
-                        EMIT(segment[q]);                                       \
-                        EMIT(segment[q + 3u]); EMIT(segment[q + 4u]);           \
-                        EMIT(last ? segment[q + 5u] : segment[q + 6u]);         \
-                    } else {                                                    \
-                        /* even: core 2i+1,2i+3,2i+5; adj 2i-1,2i+6,2i+4 */     \
-                        EMIT(segment[q]); EMIT(segment[q - 2u]);                \
-                        EMIT(segment[q + 2u]);                                  \
-                        EMIT(last ? segment[q + 5u] : segment[q + 6u]);         \
-                        EMIT(segment[q + 4u]); EMIT(segment[q + 3u]);           \
-                    }                                                           \
-                    primitives++;                                               \
-                }                                                               \
-            } else if (mode == GL_LINE_STRIP) {                                \
-                for (uint32_t q = 0u; q + 1u < segmentCount; q++) {            \
-                    EMIT(segment[q]); EMIT(segment[q + 1u]); primitives++;     \
-                }                                                                  \
-            } else if (mode == GL_LINE_LOOP) {                                  \
-                if (segmentCount >= 2u) {                                      \
-                    for (uint32_t q = 0u; q + 1u < segmentCount; q++) {         \
-                        EMIT(segment[q]); EMIT(segment[q + 1u]); primitives++;  \
-                    }                                                              \
-                    EMIT(segment[segmentCount - 1u]); EMIT(segment[0u]);         \
-                    primitives++;                                               \
-                }                                                                  \
-            } else if (mode == GL_TRIANGLE_STRIP) {                             \
-                for (uint32_t q = 0u; q + 2u < segmentCount; q++) {             \
-                    /* GL 4.6 10.4.2.2: odd strip triangles swap their first    \
-                     * two vertices so every triangle keeps one winding; the    \
-                     * geometry shader must see the swapped order too. */       \
-                    if (q & 1u) {                                               \
-                        EMIT(segment[q + 1u]); EMIT(segment[q]);                \
-                    } else {                                                    \
-                        EMIT(segment[q]); EMIT(segment[q + 1u]);                \
-                    }                                                           \
-                    EMIT(segment[q + 2u]);                                      \
-                    primitives++;                                               \
-                }                                                               \
-            } else if (mode == GL_TRIANGLE_FAN) {                               \
-                for (uint32_t q = 1u; q + 1u < segmentCount; q++) {             \
-                    EMIT(segment[0u]); EMIT(segment[q]); EMIT(segment[q + 1u]); \
-                    primitives++;                                               \
-                }                                                                  \
-            }                                                                      \
-        }                                                                          \
-        segmentCount = 0u;                                                         \
-    } while (0)
-    for (uint32_t i = 0u; i < n; i++) {
-        if (restartMode && source[i] == restartIndex) {
-            EMIT_SEGMENT();
-        } else {
-            segment[segmentCount++] = source[i];
-        }
-    }
-    EMIT_SEGMENT();
-    #undef EMIT_SEGMENT
-    #undef EMIT
-    free(source);
-    free(segment);
-    if (gathered == 0u || primitives == 0u) {
-        free(gather);
-        return false;
-    }
-    *outGather = gather;
-    *outGatherCount = gathered;
-    *outPrimitiveCount = primitives;
-    *outMaxIndex = maxIndex;
-    return true;
-}
-
-static bool mglGeometryInputModeAccepts(GLenum gsMode, GLenum drawMode)
-{
-    switch (gsMode) {
-        case GL_POINTS: return drawMode == GL_POINTS;
-        case GL_LINES: return drawMode == GL_LINES ||
-                              drawMode == GL_LINE_STRIP ||
-                              drawMode == GL_LINE_LOOP;
-        case GL_LINES_ADJACENCY: return drawMode == GL_LINES_ADJACENCY ||
-                                          drawMode == GL_LINE_STRIP_ADJACENCY;
-        case GL_TRIANGLES: return drawMode == GL_TRIANGLES ||
-                                  drawMode == GL_TRIANGLE_STRIP ||
-                                  drawMode == GL_TRIANGLE_FAN;
-        case GL_TRIANGLES_ADJACENCY:
-            return drawMode == GL_TRIANGLES_ADJACENCY ||
-                   drawMode == GL_TRIANGLE_STRIP_ADJACENCY;
-        default: return false;
-    }
 }
 
 static id mglDrawSupportCreateBuffer(
@@ -579,72 +382,6 @@ static void mglDrawSupportEndComputeEncoder(
     (void)mglRenderEndComputeEncoder((__bridge void *)encoder);
 }
 
-static void mglDrawSupportSetTessellationFactors(
-    void *renderEncoderOwner,
-    id buffer,
-    NSUInteger offset,
-    NSUInteger instanceStride)
-{
-    (void)mglRenderSetTessellationFactorBufferForOwner(
-        renderEncoderOwner, (__bridge void *)buffer, offset, instanceStride);
-}
-
-static void mglDrawSupportDrawPatches(
-    void *renderEncoderOwner,
-    NSUInteger controlPointCount,
-    NSUInteger patchStart,
-    NSUInteger patchCount,
-    id patchIndexBuffer,
-    NSUInteger patchIndexBufferOffset,
-    NSUInteger instanceCount,
-    NSUInteger baseInstance)
-{
-    MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_PATCHES,
-            .primitive_type = (uint32_t)MGL_DRAW_PRIMITIVE_TRIANGLE,
-            .control_point_count = controlPointCount,
-            .patch_start = patchStart,
-            .patch_count = patchCount,
-            .patch_index_buffer = (__bridge void *)patchIndexBuffer,
-            .patch_index_buffer_offset = patchIndexBufferOffset,
-            .instance_count = instanceCount,
-            .base_instance = baseInstance,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
-}
-
-static void mglDrawSupportDrawIndexedPatches(
-    void *renderEncoderOwner,
-    NSUInteger controlPointCount,
-    NSUInteger patchStart,
-    NSUInteger patchCount,
-    id patchIndexBuffer,
-    NSUInteger patchIndexBufferOffset,
-    id controlPointIndexBuffer,
-    NSUInteger controlPointIndexBufferOffset,
-    NSUInteger instanceCount,
-    NSUInteger baseInstance)
-{
-    MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_INDEXED_PATCHES,
-            .primitive_type = (uint32_t)MGL_DRAW_PRIMITIVE_TRIANGLE,
-            .control_point_count = controlPointCount,
-            .patch_start = patchStart,
-            .patch_count = patchCount,
-            .patch_index_buffer = (__bridge void *)patchIndexBuffer,
-            .patch_index_buffer_offset = patchIndexBufferOffset,
-            .control_point_index_buffer =
-                (__bridge void *)controlPointIndexBuffer,
-            .control_point_index_buffer_offset =
-                controlPointIndexBufferOffset,
-            .instance_count = instanceCount,
-            .base_instance = baseInstance,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
-}
-
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
                                                GLuint64 generated,
                                                GLuint64 written);
@@ -708,24 +445,6 @@ static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
     *sizeOut = (NSUInteger)size;
     *offsetOut = (NSUInteger)offset;
     return YES;
-}
-
-static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
-                                           Program *tesProgram)
-{
-    if (!tesProgram) {
-        return NO;
-    }
-
-    return mglRenderNativeTESInterfaceSupported(
-        tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function,
-        (uint64_t)tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes,
-        (uint32_t)tesProgram->tess_gen_point_mode,
-        (uint32_t)tesProgram->transform_feedback_varying_count,
-        (uint32_t)tesProgram->tess_gen_mode,
-        tcsProgram ? tcsProgram->modules[_TESS_CONTROL_SHADER].mtl_function : NULL,
-        tcsProgram ? (uint64_t)tcsProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes : 0u,
-        tcsProgram ? (uint32_t)tcsProgram->tess_control_output_vertices : 0u) != 0;
 }
 
 static id mglDefaultTessFactorBuffer(id device,
@@ -1781,7 +1500,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
               (unsigned)program->geometry_vertices_out,
               (int)program->gs_route);
     }
-    if (!mglGeometryInputModeAccepts(gsInputMode, mode) || count <= 0 ||
+    if (!mglDrawGsInputModeAccepts(gsInputMode, mode) || count <= 0 ||
         instanceCount <= 0 || (!indexedDraw && first < 0)) {
         if (getenv("MGL_GS_DIAG")) {
             NSLog(@"MGL GS DIAG topology rejected mode=0x%x gsIn=0x%x",
@@ -1853,7 +1572,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         uint32_t restartIndex = 0u;
         const bool restartEnabled = indexedDraw &&
             mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
-        if (!mglGeometryGatherTopology(
+        if (!mglDrawGsGatherTopology(
                 indexBytes, indexType, count, first, indexedDraw,
                 restartEnabled, restartIndex, mode, &gatherArray,
                 &gatherCount, &gatherPrimitives, &gatherMaxIndex)) {
@@ -3013,6 +2732,26 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         }
         goto after_gs_draws;
     }
+    const bool gsDiagEncode =
+        getenv("MGL_GS_ONLY_PRIM") || getenv("MGL_GS_DRAW_OFFSET") ||
+        getenv("MGL_GS_VSTART_DRAW") || getenv("MGL_GS_BIND_INPUT") ||
+        getenv("MGL_GS_DIRECT_DRAW") || getenv("MGL_GS_DRAW_VCOUNT") ||
+        getenv("MGL_GS_REVERSE_DRAW") || getenv("MGL_GS_DIAG");
+    if (!gsDiagEncode) {
+        const MGLGsPassthroughEncodeState gsEnc = {
+            .encoder_owner =
+                _renderPassManager.state->currentRenderEncoderOwner,
+            .output_buffer = (__bridge void *)output,
+            .counts_buffer = (__bridge void *)counts,
+            .output_primitive = outputPrimitive,
+            .work_item_count = (uint32_t)workItemCount,
+            .records_per_primitive = (uint32_t)recordsPerPrimitive,
+            .output_stride = (uint32_t)outputStride,
+            .counts_record_bytes = (uint32_t)countsRecordBytes,
+        };
+        mglDrawGsEncodePassthrough(&gsEnc);
+        goto after_gs_draws;
+    }
     const char *onlyPrim = getenv("MGL_GS_ONLY_PRIM");
     for (GLuint iter = 0u; iter < workItemCount; iter++) {
         GLuint primitive = getenv("MGL_GS_REVERSE_DRAW")
@@ -3422,9 +3161,9 @@ after_gs_draws:
                               mtlBuffer:(id *)mtlBufferOut
 {
     Buffer *gl_element_buffer = NULL;
-    if (cmd && cmd->elementBuffer) {
+    if (cmd && cmd->element_buffer_name) {
         gl_element_buffer = mglRendererGetValidatedBuffer(drawCtx,
-                                                          (Buffer *)cmd->elementBuffer,
+                                                          mglDrawCommandElementBuffer(drawCtx, cmd),
                                                           label ? label : "deferred indexed draw",
                                                           0);
         if (!gl_element_buffer) {
@@ -3656,6 +3395,75 @@ after_gs_draws:
            mglDrawModeProducesPolygons(mode);
 }
 
+- (BOOL)ensureRasterEncoderForDraw
+{
+    if (mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+        return YES;
+    }
+    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_DRAW];
+    if (mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        return NO;
+    }
+    if (!_pipelineCache.state->pipelineState) {
+        return NO;
+    }
+
+    uint32_t rpColor0Format = 0u;
+    uint32_t rpDepthFormat = 0u;
+    uint32_t rpStencilFormat = 0u;
+    MGLRenderPassAttachmentState colorAttachment = {0};
+    MGLRenderPassAttachmentState depthAttachment = {0};
+    MGLRenderPassAttachmentState stencilAttachment = {0};
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        _renderPassManager.state->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, &colorAttachment);
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        _renderPassManager.state->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, &depthAttachment);
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        _renderPassManager.state->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, &stencilAttachment);
+    id rpColor0 = (__bridge id)colorAttachment.texture;
+    id rpDepth = (__bridge id)depthAttachment.texture;
+    id rpStencil = (__bridge id)stencilAttachment.texture;
+    MGLRenderTextureInfo textureInfo = {0};
+    if (rpColor0 && mglRenderGetTextureInfo(
+            (__bridge void *)rpColor0, &textureInfo) == 0) {
+        rpColor0Format = textureInfo.pixel_format;
+    }
+    if (rpDepth && mglRenderGetTextureInfo(
+            (__bridge void *)rpDepth, &textureInfo) == 0) {
+        rpDepthFormat = textureInfo.pixel_format;
+    }
+    if (rpStencil && mglRenderGetTextureInfo(
+            (__bridge void *)rpStencil, &textureInfo) == 0) {
+        rpStencilFormat = textureInfo.pixel_format;
+    }
+
+    const BOOL colorMismatch =
+        (_pipelineCache.state->pipelineColor0Format != 0u &&
+         rpColor0Format != 0u &&
+         _pipelineCache.state->pipelineColor0Format != rpColor0Format);
+    const BOOL depthMismatch =
+        (_pipelineCache.state->pipelineDepthFormat != rpDepthFormat);
+    const BOOL stencilMismatch =
+        (_pipelineCache.state->pipelineStencilFormat != rpStencilFormat);
+    if (colorMismatch || depthMismatch || stencilMismatch) {
+        return NO;
+    }
+    if (mglRenderSetRenderPipelineStateForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            _pipelineCache.state->pipelineState) != 0) {
+        return NO;
+    }
+    mglRenderBindingSetPipelineState(_bindingStateOwner,
+                                     _pipelineCache.state->pipelineState);
+    MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+    return YES;
+}
+
 - (void)bindCullDistanceEmulationBuffers:(GLenum)mode
                              firstVertex:(GLuint)firstVertex
                         explicitVertices:(const GLuint *)explicitVertices
@@ -3837,36 +3645,27 @@ after_gs_draws:
                                 baseInstance:(GLuint)baseInstance
                                        label:(const char *)label
 {
-    if (!mode || *mode != GL_PATCHES) {
+    if (!mode) {
         return NO;
     }
-    if (!drawCtx || count <= 0) {
-        return YES;
-    }
-
     self->ctx = drawCtx;
 
     Program *tcsProgram = mglResolveProgramForStageFromState(drawCtx, _TESS_CONTROL_SHADER);
     Program *tesProgram = mglResolveProgramForStageFromState(drawCtx, _TESS_EVALUATION_SHADER);
+    const MGLTessDrawClass tessClass =
+        mglTessClassifyDraw(drawCtx, *mode, count, instanceCount, tcsProgram,
+                            tesProgram, label);
+    if (tessClass == MGL_TESS_DRAW_NOT_APPLICABLE) {
+        return NO;
+    }
+    if (tessClass != MGL_TESS_DRAW_ACTIVE) {
+        return YES;
+    }
     if (tcsProgram && !tcsProgram->shader_slots[_TESS_CONTROL_SHADER]) {
         tcsProgram = NULL;
     }
     if (tesProgram && !tesProgram->shader_slots[_TESS_EVALUATION_SHADER]) {
         tesProgram = NULL;
-    }
-    if (!tcsProgram && !tesProgram) {
-        return NO;
-    }
-    /* GL 4.6 §10.5: TCS active without TES → Draw* INVALID_OPERATION
-     * (CTS xfb_captures negative case: {VS, TCS, FS}). */
-    if (tcsProgram && !tesProgram) {
-        mglDispatchError(drawCtx, label ? label : "tessellationDraw",
-                         GL_INVALID_OPERATION);
-        return YES;
-    }
-
-    if (instanceCount <= 0) {
-        return YES;
     }
 
     if (tcsProgram) {
@@ -3883,63 +3682,25 @@ after_gs_draws:
 
     const BOOL airTES = tesProgram &&
         tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes != NULL;
-    BOOL nativeTES = mglNativeTESInterfaceSupported(tcsProgram, tesProgram);
+    BOOL nativeTES = mglTessNativeInterfaceSupported(tcsProgram, tesProgram);
     /* Native Metal post-tess wires TES→FS.  When a GS is present it must
      * run between them via the AIR TES compute → handleGeometryDrawIfNeeded
      * handoff (see dispatchAIRTessEvalCompute). */
-    {
-        Program *gsProgram =
-            mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER);
-        if (gsProgram &&
-            (gsProgram->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) &&
-            gsProgram->shader_slots[_GEOMETRY_SHADER]) {
-            nativeTES = NO;
-        }
+    if (mglTessNativeBlockedByGeometry(
+            mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER))) {
+        nativeTES = NO;
     }
 
-    GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(drawCtx)->var.patch_vertices);
-    GLuint patchCount = (GLuint)count / patchVertices;
-    if (patchCount == 0u) {
-        return YES;
-    }
-
-
-    uint32_t restartIndex = 0u;
-    bool restartEnabled = false;
-    if (indexType != 0u) {
-        restartEnabled =
-            mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
-    }
     Program *vertexProgram =
         mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
     MGLAIRTessDrawContract contract;
-    memset(&contract, 0, sizeof(contract));
-    contract.patch_vertices = patchVertices;
-    contract.vertex_count = (uint32_t)count;
-    contract.patch_count = patchCount;
-    contract.instance_count = instanceCount > 0 ? (uint32_t)instanceCount : 1u;
-    contract.base_instance = baseInstance;
-    contract.first = first;
-    contract.index_type = indexType;
-    contract.index_source = (uint64_t)(uintptr_t)indices;
-    contract.index_count = indexType != 0u ? (uint64_t)count : 0u;
-    contract.base_vertex = baseVertex;
-    contract.primitive_restart = restartEnabled ? 1u : 0u;
-    contract.restart_index = restartIndex;
-    contract.tess_factor_bytes_per_patch = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
-    contract.tess_gen_mode = tesProgram
-        ? (uint32_t)tesProgram->tess_gen_mode : (uint32_t)GL_TRIANGLES;
-    contract.point_mode = tesProgram
-        ? (uint32_t)tesProgram->tess_gen_point_mode : 0u;
-    contract.tcs_out_vertices =
-        tcsProgram && tcsProgram->tess_control_output_vertices > 0u
-            ? tcsProgram->tess_control_output_vertices : patchVertices;
-    contract.per_vertex_out_stride = vertexProgram
-        ? mglAIRPerVertexStrideForResources(
-              &vertexProgram->shader_resources_list[_VERTEX_SHADER]
-                                                   [_STAGE_OUTPUT_RES])
-        : MGL_AIR_PER_VERTEX_STRIDE;
-    contract.patch_out_stride = 16u; /* refined by the TCS dispatcher */
+    mglTessFillDrawContract(&contract, drawCtx, tcsProgram, tesProgram,
+                            vertexProgram, first, count, indexType, indices,
+                            baseVertex, instanceCount, baseInstance);
+    GLuint patchVertices = contract.patch_vertices;
+    GLuint patchCount = contract.patch_count;
+    const bool restartEnabled = contract.primitive_restart != 0u;
+    const uint32_t restartIndex = contract.restart_index;
 
     (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
     _tessellation.tessVertexCaptureOffset = 0u;
@@ -4258,106 +4019,39 @@ after_gs_draws:
              * pointer correctly for patchStart. Draw each patch separately:
              * slot 0 is rebased to the patch, while slot 30 stays at the
              * instance base so TES varyings can apply patchId exactly once. */
-            const NSUInteger instanceRecords =
-                _tessellation.tessInstanceRecords;
-            const NSUInteger instanceStrideBytes =
-                instanceRecords * _tessellation.tcsOutputStride;
-            mglDrawSupportSetTessellationFactors(
-                _renderPassManager.state->currentRenderEncoderOwner, nativeFactors, 0u,
-                tesProgram->tess_gen_mode == GL_QUADS
-                    ? MGL_AIR_TESS_FACTOR_RECORD_BYTES
-                    : MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES);
-            for (GLsizei i = 0; i < instanceCount; i++) {
-                const NSUInteger instanceOffset =
-                    _tessellation.tessVertexCaptureOffset +
-                    (NSUInteger)i * instanceStrideBytes;
-                mglDrawSupportSetVertexBuffer(
-                    _renderPassManager.state->currentRenderEncoderOwner, tcsOutputBuffer,
-                    instanceOffset, 0u);
-                [self recordLastBoundVertexBuffer:tcsOutputBuffer
-                                           offset:instanceOffset
-                                          atIndex:0u];
-                mglDrawSupportSetVertexBuffer(
-                    _renderPassManager.state->currentRenderEncoderOwner, tcsOutputBuffer,
-                    instanceOffset, 30u);
-                [self recordLastBoundVertexBuffer:tcsOutputBuffer
-                                           offset:instanceOffset
-                                          atIndex:30u];
-                GLuint patchInfo[2] = {patchVertices, _tessellation.tcsOutVertices};
-                if (patchInfo[1] == 0u) patchInfo[1] = patchVertices;
-                mglDrawSupportSetVertexBytes(
-                    _renderPassManager.state->currentRenderEncoderOwner, patchInfo, sizeof(patchInfo), 28u);
-                id tcsPatchOutBuffer =
-                    (__bridge id)
-                        mglRendererBackendGetTcsPatchOutBuffer(_backend);
-                const BOOL perPatchNativeResources = (tcsPatchOutBuffer != nil);
-                const NSUInteger nativeFactorStride =
-                    tesProgram->tess_gen_mode == GL_QUADS
-                        ? MGL_AIR_TESS_FACTOR_RECORD_BYTES
-                        : MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
-                NSUInteger patchOutStride = 16u;
-                if (perPatchNativeResources && tcsProgram) {
-                    patchOutStride = mglAIRPatchVaryingStride(
-                        &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
-                                                         [_STAGE_OUTPUT_RES]);
-                }
-                if (_tessellation.tessIndexedDraw) {
-                    id controlPointIndexBuffer =
-                        (__bridge id)
-                            mglRendererBackendGetTessControlPointIndexBuffer(
-                                _backend);
-                    mglDrawSupportDrawIndexedPatches(
-                        _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, 0u, patchCount,
-                        nil, 0u,
-                        controlPointIndexBuffer, 0u,
-                        1u, (NSUInteger)baseInstance + (NSUInteger)i);
-                } else {
-                    const NSUInteger cpcStride =
-                        (NSUInteger)_tessellation.tcsOutVertices *
-                        _tessellation.tcsOutputStride;
-                    for (GLuint p = 0u; p < patchCount; p++) {
-                        const NSUInteger patchOffset =
-                            instanceOffset + (NSUInteger)p * cpcStride;
-                        mglDrawSupportSetVertexBuffer(
-                            _renderPassManager.state->currentRenderEncoderOwner, tcsOutputBuffer,
-                            patchOffset, 0u);
-                        [self recordLastBoundVertexBuffer:
-                                  tcsOutputBuffer
-                                                   offset:patchOffset
-                                                  atIndex:0u];
-                        GLuint patchInfoWords[3] = {
-                            patchVertices, _tessellation.tcsOutVertices, p,
-                        };
-                        if (patchInfoWords[1] == 0u) patchInfoWords[1] = patchVertices;
-                        mglDrawSupportSetVertexBytes(
-                            _renderPassManager.state->currentRenderEncoderOwner,
-                            patchInfoWords, sizeof(patchInfoWords), 28u);
-                        if (perPatchNativeResources) {
-                            mglDrawSupportSetVertexBuffer(
-                                _renderPassManager.state->currentRenderEncoderOwner,
-                                tcsPatchOutBuffer,
-                                (NSUInteger)p * patchOutStride, 27u);
-                            [self recordLastBoundVertexBuffer:
-                                      tcsPatchOutBuffer
-                                                   offset:(NSUInteger)p * patchOutStride
-                                                  atIndex:27u];
-                            mglDrawSupportSetTessellationFactors(
-                                _renderPassManager.state->currentRenderEncoderOwner,
-                                nativeFactors,
-                                (NSUInteger)p * nativeFactorStride, 0u);
-                            mglDrawSupportDrawPatches(
-                                _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, 0u, 1u,
-                                nil, 0u, 1u,
-                                (NSUInteger)baseInstance + (NSUInteger)i);
-                        } else {
-                            mglDrawSupportDrawPatches(
-                                _renderPassManager.state->currentRenderEncoderOwner, _tessellation.tcsOutVertices, p, 1u,
-                                nil, 0u, 1u,
-                                (NSUInteger)baseInstance + (NSUInteger)i);
-                        }
-                    }
-                }
+            id tcsPatchOutBuffer = (__bridge id)
+                mglRendererBackendGetTcsPatchOutBuffer(_backend);
+            uint32_t patchOutStride = 16u;
+            if (tcsPatchOutBuffer && tcsProgram) {
+                patchOutStride = mglAIRPatchVaryingStride(
+                    &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
+                                                     [_STAGE_OUTPUT_RES]);
             }
+            MGLTessNativeEncodeState nativeEncode;
+            memset(&nativeEncode, 0, sizeof(nativeEncode));
+            nativeEncode.encoder_owner =
+                _renderPassManager.state->currentRenderEncoderOwner;
+            nativeEncode.tcs_output_buffer = (__bridge void *)tcsOutputBuffer;
+            nativeEncode.native_factors = (__bridge void *)nativeFactors;
+            nativeEncode.control_point_index_buffer =
+                mglRendererBackendGetTessControlPointIndexBuffer(_backend);
+            nativeEncode.tcs_patch_out_buffer =
+                (__bridge void *)tcsPatchOutBuffer;
+            nativeEncode.patch_vertices = patchVertices;
+            nativeEncode.patch_count = patchCount;
+            nativeEncode.instance_count = (uint32_t)instanceCount;
+            nativeEncode.base_instance = baseInstance;
+            nativeEncode.tess_gen_mode = (uint32_t)tesProgram->tess_gen_mode;
+            nativeEncode.tcs_out_vertices = _tessellation.tcsOutVertices;
+            nativeEncode.tcs_output_stride = _tessellation.tcsOutputStride;
+            nativeEncode.tess_vertex_capture_offset =
+                _tessellation.tessVertexCaptureOffset;
+            nativeEncode.tess_instance_records =
+                _tessellation.tessInstanceRecords;
+            nativeEncode.tess_indexed_draw =
+                _tessellation.tessIndexedDraw ? 1u : 0u;
+            nativeEncode.patch_out_stride = patchOutStride;
+            mglTessEncodeNativePatches(&nativeEncode);
             _currentCBHasWork = YES;
 
             GLuint64 primitives = mglNativeTessPrimitiveCount(
@@ -4542,4 +4236,336 @@ after_gs_draws:
     (void)mglRenderEndBlitEncoder(blit);
 }
 
+static MGLRenderer *mglDrawHostSelf(void *renderer)
+{
+    return renderer ? (__bridge MGLRenderer *)renderer : nil;
+}
+
+bool mglDrawHostBindContext(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    host->ctx = ctx;
+    return true;
+}
+
+void mglDrawHostSetLastPrimitiveMode(void *renderer, GLenum mode)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (host) {
+        host->_lastDrawPrimitiveMode = mode;
+    }
+}
+
+bool mglDrawHostHandleTessellation(void *renderer, GLMContext ctx,
+                                   GLenum *mode, GLint first, GLsizei count,
+                                   GLenum indexType, const void *indices,
+                                   GLint baseVertex, GLsizei instanceCount,
+                                   GLuint baseInstance, const char *label)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host || !mode) {
+        return false;
+    }
+    return [host handleTessellationPatchDrawIfNeeded:ctx
+                                                mode:mode
+                                               first:first
+                                               count:count
+                                           indexType:indexType
+                                             indices:indices
+                                          baseVertex:baseVertex
+                                       instanceCount:instanceCount
+                                        baseInstance:baseInstance
+                                               label:label] ? true : false;
+}
+
+bool mglDrawHostHandleGeometry(void *renderer, GLMContext ctx, GLenum mode,
+                               GLint first, GLsizei count, GLenum indexType,
+                               const void *indices, GLint baseVertex,
+                               GLsizei instanceCount, GLuint baseInstance,
+                               const char *label)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    return [host handleGeometryDrawIfNeeded:ctx
+                                       mode:mode
+                                      first:first
+                                      count:count
+                                  indexType:indexType
+                                    indices:indices
+                                 baseVertex:baseVertex
+                              instanceCount:instanceCount
+                               baseInstance:baseInstance
+                                      label:label] ? true : false;
+}
+
+bool mglDrawHostHandleXFB(void *renderer, GLMContext ctx, GLenum mode,
+                          GLint first, GLsizei count, GLsizei instanceCount,
+                          GLuint baseInstance)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    return [host handleVertexTransformFeedbackDrawIfNeeded:ctx
+                                                      mode:mode
+                                                     first:first
+                                                     count:count
+                                             instanceCount:instanceCount
+                                              baseInstance:baseInstance]
+               ? true
+               : false;
+}
+
+bool mglDrawHostCaptureCullDistanceArray(void *renderer, GLMContext ctx,
+                                         GLint first, GLsizei count,
+                                         GLsizei instanceCount,
+                                         GLuint baseInstance)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    return [host captureAIRCullDistancesForArrayDraw:ctx
+                                               first:first
+                                               count:count
+                                       instanceCount:instanceCount
+                                        baseInstance:baseInstance]
+               ? true
+               : false;
+}
+
+bool mglDrawHostProcessGLStateLocked(void *renderer, bool draw_command)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    return [host processGLStateLocked:draw_command] ? true : false;
+}
+
+bool mglDrawHostRasterizationIsEmpty(void *renderer)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    return host && [host currentDrawRasterizationIsEmpty];
+}
+
+bool mglDrawHostModeFullyCulled(void *renderer, GLenum mode)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    return host && [host currentDrawModeIsFullyCulled:mode];
+}
+
+void mglDrawHostApplyPolygonOffset(void *renderer, GLenum mode)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (host) {
+        [host applyPolygonOffsetForDrawMode:mode];
+    }
+}
+
+bool mglDrawHostEnsureRasterEncoder(void *renderer)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    return host && [host ensureRasterEncoderForDraw];
+}
+
+bool mglDrawHostValidateArrayVertexInputs(void *renderer, GLMContext ctx,
+                                          GLenum mode, GLint first,
+                                          GLsizei count)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    return [host validateDrawArraysVertexInputs:ctx
+                                           mode:mode
+                                          first:first
+                                          count:count
+                                       drawCall:0];
+}
+
+bool mglDrawHostEncodeCullDistanceArray(void *renderer, GLenum mode,
+                                        GLint first, GLsizei count,
+                                        GLsizei instanceCount,
+                                        GLuint baseInstance)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host || mglPolygonModePointForDrawMode(host->ctx, mode)) {
+        return false;
+    }
+    MGLEncodeContext encCtx = {
+        .render_encoder_owner =
+            host->_renderPassManager.state->currentRenderEncoderOwner,
+    };
+    return [host encodeCullDistanceArrayDraw:mode
+                                       first:first
+                                       count:count
+                               instanceCount:instanceCount
+                                baseInstance:baseInstance
+                               encodeContext:&encCtx]
+               ? true
+               : false;
+}
+
+void *mglDrawHostEncoderOwner(void *renderer)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    return host ? host->_renderPassManager.state->currentRenderEncoderOwner
+                : NULL;
+}
+
+void *mglDrawHostDevice(void *renderer)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    return host ? mglRendererBackendGetDevice(host->_backend) : NULL;
+}
+
+void mglDrawHostRecordArraySubmitted(void *renderer, GLenum mode,
+                                     uint64_t vertexCount)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (host) {
+        [host recordArrayDrawSubmittedMode:mode vertexCount:vertexCount];
+    }
+}
+
+void mglDrawHostWatchdogArrays(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return;
+    }
+    mglLogDrawWithoutSwapWatchdog(
+        "arrays", 0, ctx,
+        host->_renderPassManager.state->currentCommandBufferOwner,
+        host->_renderPassManager.state->currentRenderEncoderOwner,
+        host->_renderPassManager.state->renderPassStateOwner);
+}
+
+bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
+                                           GLenum type, const void *indices,
+                                           GLsizei count, GLint baseVertex,
+                                           GLsizei instanceCount,
+                                           GLuint baseInstance)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host || mglPolygonModePointForDrawMode(host->ctx, mode)) {
+        return false;
+    }
+    Buffer *glBuffer = NULL;
+    id metalBuffer = nil;
+    if (![host resolveElementBufferForDraw:"drawElements"
+                                   context:host->ctx
+                                  glBuffer:&glBuffer
+                                 mtlBuffer:&metalBuffer]) {
+        return false;
+    }
+    const NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        glBuffer, metalBuffer, type, offset, count);
+    return [host prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                   indexBytes:cullIndexBytes
+                                                    indexType:type
+                                                        count:count
+                                                   baseVertex:baseVertex
+                                                instanceCount:instanceCount
+                                                 baseInstance:baseInstance
+                                              polygonLineMode:
+                                                  mglPolygonModeLineForDrawMode(
+                                                      host->ctx, mode)]
+               ? true
+               : false;
+}
+
+bool mglDrawHostResolveElementBuffer(void *renderer, GLMContext ctx,
+                                     const char *label, Buffer **glBufferOut,
+                                     void **metalBufferOut)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    id metalBuffer = nil;
+    if (![host resolveElementBufferForDraw:label ? label : "drawElements"
+                                   context:ctx
+                                  glBuffer:glBufferOut
+                                 mtlBuffer:&metalBuffer]) {
+        return false;
+    }
+    if (metalBufferOut) {
+        *metalBufferOut = (__bridge void *)metalBuffer;
+    }
+    return true;
+}
+
+void mglDrawHostRecordElementSubmitted(void *renderer, GLenum mode,
+                                       uint64_t indexCount)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (host) {
+        [host recordElementDrawSubmittedMode:mode indexCount:indexCount];
+    }
+}
+
+void mglDrawHostWatchdogElements(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return;
+    }
+    mglLogDrawWithoutSwapWatchdog(
+        "elements", 0, ctx,
+        host->_renderPassManager.state->currentCommandBufferOwner,
+        host->_renderPassManager.state->currentRenderEncoderOwner,
+        host->_renderPassManager.state->renderPassStateOwner);
+}
+
+bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,
+                                      const char *label, Buffer **glBufferOut,
+                                      void **metalBufferOut)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    if (!host) {
+        return false;
+    }
+    id metalBuffer = nil;
+    if (![host resolveIndirectBufferForDraw:label ? label : "indirectDraw"
+                                   context:ctx
+                                  glBuffer:glBufferOut
+                                 mtlBuffer:&metalBuffer]) {
+        return false;
+    }
+    if (metalBufferOut) {
+        *metalBufferOut = (__bridge void *)metalBuffer;
+    }
+    return true;
+}
+
+bool mglDrawHostPrepareIndirectCPURead(void *renderer, GLMContext ctx,
+                                       const char *label)
+{
+    MGLRenderer *host = mglDrawHostSelf(renderer);
+    return host && [host prepareEmulatedIndirectCPURead:ctx
+                                                  label:label ? label : "indirectDraw"];
+}
+
+bool mglDrawHostHasGeometry(GLMContext ctx)
+{
+    Program *gsProgram = mglResolveProgramForStageFromState(ctx, _GEOMETRY_SHADER);
+    return gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER];
+}
+
+bool mglDrawHostUsesCullDistance(GLMContext ctx)
+{
+    Program *vertexProgram =
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    return vertexProgram && vertexProgram->uses_cull_distance;
+}
+
 @end
+

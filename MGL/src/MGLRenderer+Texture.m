@@ -85,7 +85,7 @@ static MGLRegionValue mglTextureRegion3D(uint64_t x, uint64_t y, uint64_t z,
                                          uint64_t width, uint64_t height, uint64_t depth)
 { return (MGLRegionValue){mglTextureOrigin(x, y, z), mglTextureSize(width, height, depth)}; }
 
-void mglRendererCompatReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
+void mglRendererReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
@@ -96,7 +96,7 @@ void mglRendererCompatReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
                    fromRegion:mglRendererCompatRegion(x, y, width, height)];
 }
 
-void mglRendererCompatReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
+void mglRendererReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type)
@@ -109,7 +109,7 @@ void mglRendererCompatReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
                             format:format type:type];
 }
 
-void mglRendererCompatReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
+void mglRendererReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
@@ -120,7 +120,7 @@ void mglRendererCompatReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
                       fromRegion:mglRendererCompatRegion(x, y, width, height)];
 }
 
-void mglRendererCompatGetTexImage(GLMContext glm_ctx, Texture *texture,
+void mglRendererGetTexImage(GLMContext glm_ctx, Texture *texture,
     void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
@@ -133,7 +133,7 @@ void mglRendererCompatGetTexImage(GLMContext glm_ctx, Texture *texture,
                       format:format type:type mipmapLevel:level slice:slice];
 }
 
-void mglRendererCompatGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
+void mglRendererGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
 {
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (!renderer || !glm_ctx) return;
@@ -161,7 +161,7 @@ void mglRendererFlushImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
     [renderer flushImageUnitSlice:glm_ctx unit:unit];
 }
 
-void mglRendererCompatTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
+void mglRendererTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     size_t source_size, uint32_t slice, uint32_t level,
     size_t width, size_t height, size_t depth,
@@ -177,7 +177,7 @@ void mglRendererCompatTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *
                      zoffset:z_offset];
 }
 
-bool mglRendererCompatTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
+bool mglRendererTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
     const void *bytes, size_t bytes_size,
     size_t source_offset, size_t source_pitch, size_t source_image_size,
     uint32_t slice, uint32_t level,
@@ -196,7 +196,7 @@ bool mglRendererCompatTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
                                   zoffset:z_offset];
 }
 
-void mglRendererCompatCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
+void mglRendererCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
     uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
@@ -207,7 +207,7 @@ void mglRendererCompatCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
                               x:x y:y width:width height:height];
 }
 
-void mglRendererCompatCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
+void mglRendererCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
     int32_t source_level, int32_t source_x, int32_t source_y, int32_t source_z,
     Texture *destination_texture, int32_t destination_level,
     int32_t destination_x, int32_t destination_y, int32_t destination_z,

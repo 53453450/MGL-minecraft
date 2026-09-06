@@ -141,7 +141,7 @@ static void mglComputeEndEncoder(id encoder)
                                 indirect:(GLintptr)indirect;
 @end
 
-void mglRendererCompatDispatchCompute(GLMContext glm_ctx,
+void mglRendererDispatchCompute(GLMContext glm_ctx,
                                       unsigned int groups_x,
                                       unsigned int groups_y,
                                       unsigned int groups_z)
@@ -156,7 +156,7 @@ void mglRendererCompatDispatchCompute(GLMContext glm_ctx,
     METAL_UNLOCK();
 }
 
-void mglRendererCompatDispatchComputeIndirect(GLMContext glm_ctx,
+void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                                               intptr_t indirect)
 {
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);

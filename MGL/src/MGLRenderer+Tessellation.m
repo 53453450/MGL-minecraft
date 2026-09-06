@@ -22,6 +22,7 @@
 #include "mgl_shader_abi.h"
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
+#include "mgl_draw_tess.h"
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
 
@@ -1148,30 +1149,20 @@ typedef struct {
                                 executionPlan:&executionPlan
                                  temporaries:executionTemporaries];
 
-    /* Create indirect params buffer (buffer 29).
-     * spvIndirectParams[0] = vertexCount, [1] = instanceCount. */
-    const GLuint patchVertices = MAX(1u, contract->patch_vertices);
-    const GLuint vertexCount = contract->vertex_count;
-    const GLuint instanceCount = MAX(1u, contract->instance_count);
+    MGLTessTCSCoreLayout tcsLayout;
+    if (!mglTessComputeTCSCoreLayout(tcsProgram, contract, &tcsLayout)) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+    _tessellation.tcsOutputStride = tcsLayout.output_stride;
+    _tessellation.tcsOutVertices = tcsLayout.tcs_out_vertices;
+    const GLuint patchVertices = tcsLayout.patch_vertices;
+    const GLuint instanceCount = tcsLayout.instance_count;
+    const GLuint patchCount = tcsLayout.patch_count;
 
-    /* Create TCS per-vertex output buffer (buffer 28 = spvOut).
-     * TCS writes: spvOut[gl_PrimitiveID * outputVertices + invocationID]
-     * where outputVertices = tess_control_output_vertices (layout(vertices=N) out).
-     * Compute the per-vertex stride from the TCS stage output resources. */
-    GLuint tcsOutVertices = tcsProgram->tess_control_output_vertices;
-    if (tcsOutVertices == 0) tcsOutVertices = patchVertices;
-
-    NSUInteger tcsOutStride = mglAIRPerVertexStrideForResources(
-        &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
-                                                 [_STAGE_OUTPUT_RES]);
-    _tessellation.tcsOutputStride = tcsOutStride;
-    _tessellation.tcsOutVertices = tcsOutVertices;
-
-    GLuint patchCountTC = vertexCount / patchVertices;
-    if (patchCountTC == 0u) patchCountTC = 1u;
-    NSUInteger tcsOutSize = (NSUInteger)patchCountTC * tcsOutVertices * tcsOutStride;
     id tcsOutputBuffer = mglTessCreateBuffer(
-        _device, tcsOutSize, MGL_TESS_RESOURCE_STORAGE_SHARED);
+        _device, (NSUInteger)tcsLayout.output_bytes,
+        MGL_TESS_RESOURCE_STORAGE_SHARED);
     (void)mglRendererBackendSetTcsOutputBuffer(
         _backend, (__bridge void *)tcsOutputBuffer);
     void *tcsOutputContents = mglTessBufferContents(tcsOutputBuffer);
@@ -1179,32 +1170,13 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(tcsOutputContents, 0, tcsOutSize);
+    memset(tcsOutputContents, 0, (size_t)tcsLayout.output_bytes);
     _tessellation.tcsOutputOffset = 0u;
+    [executionTemporaries addObject:tcsOutputBuffer];
 
-    if (!mglTessPlanBufferOrBind(
-            &executionPlan,
-            executionTemporaries, computeEncoder,
-            tcsOutputBuffer, 0,
-            MGL_AIR_TESS_SLOT_TCS_OUTPUT)) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-
-    /* Create TCS per-patch output buffer (buffer 27 = spvPatchOut).
-     * Patch varyings use the same stable location ABI as other stage
-     * interfaces: one 16-byte slot per location. */
-    NSUInteger tcsPatchStride = 16u;
-    if (tcsProgram) {
-        /* Per-patch outputs share _STAGE_OUTPUT_RES with
-         * per-vertex outputs; SpvDecorationPatch is reflected as is_per_patch. */
-        MGLShaderResourceList *outs =
-            &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
-        tcsPatchStride = mglAIRPatchVaryingStride(outs);
-    }
-    NSUInteger tcsPatchSize = (NSUInteger)patchCountTC * tcsPatchStride;
     id tcsPatchOutBuffer = mglTessCreateBuffer(
-        _device, tcsPatchSize, MGL_TESS_RESOURCE_STORAGE_SHARED);
+        _device, (NSUInteger)tcsLayout.patch_out_bytes,
+        MGL_TESS_RESOURCE_STORAGE_SHARED);
     (void)mglRendererBackendSetTcsPatchOutBuffer(
         _backend, (__bridge void *)tcsPatchOutBuffer);
     void *tcsPatchOutContents = mglTessBufferContents(tcsPatchOutBuffer);
@@ -1212,15 +1184,8 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(tcsPatchOutContents, 0, tcsPatchSize);
-    if (!mglTessPlanBufferOrBind(
-            &executionPlan,
-            executionTemporaries, computeEncoder,
-            tcsPatchOutBuffer, 0,
-            MGL_AIR_TESS_SLOT_PATCH_OUT)) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
+    memset(tcsPatchOutContents, 0, (size_t)tcsLayout.patch_out_bytes);
+    [executionTemporaries addObject:tcsPatchOutBuffer];
 
     GLuint indirectParams[2] = { patchVertices, instanceCount };
     id indirectBuf = mglTessCreateBufferWithBytes(
@@ -1230,34 +1195,18 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    if (!mglTessPlanBufferOrBind(
-            &executionPlan,
-            executionTemporaries, computeEncoder, indirectBuf, 0,
-            MGL_AIR_TESS_SLOT_INDIRECT)) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
+    [executionTemporaries addObject:indirectBuf];
 
-    /* Create tessellation factor buffer (buffer 26).
-     * RECORD_BYTES/patch: Metal half factors + exact float32 levels. */
-    const GLuint patchCount = MAX(1u, contract->patch_count);
-    NSUInteger tessFactorSize =
-        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
     id tessFactorBuf = mglTessCreateBuffer(
-        _device, tessFactorSize, MGL_TESS_RESOURCE_STORAGE_SHARED);
+        _device, (NSUInteger)tcsLayout.factor_bytes,
+        MGL_TESS_RESOURCE_STORAGE_SHARED);
     void *tessFactorContents = mglTessBufferContents(tessFactorBuf);
     if (!tessFactorContents) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(tessFactorContents, 0, tessFactorSize);
-    if (!mglTessPlanBufferOrBind(
-            &executionPlan,
-            executionTemporaries, computeEncoder, tessFactorBuf, 0,
-            MGL_AIR_TESS_SLOT_TESS_FACTOR)) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
+    memset(tessFactorContents, 0, (size_t)tcsLayout.factor_bytes);
+    [executionTemporaries addObject:tessFactorBuf];
 
     NSUInteger tcsInStride = 0u;
     id tcsStageInBuffer =
@@ -1268,6 +1217,7 @@ typedef struct {
         tcsInStride = mglAIRPerVertexStrideForResources(
             &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
                                                      [_STAGE_INPUT_RES]);
+        [executionTemporaries addObject:tcsStageInBuffer];
     } else {
         tcsStageInBuffer =
             [self newTCSStageInBufferForContext:glm_ctx
@@ -1282,6 +1232,9 @@ typedef struct {
                                      patchCount:patchCount
                                       outStride:&tcsInStride];
         tcsStageInOffset = 0u;
+        if (tcsStageInBuffer) {
+            [executionTemporaries addObject:tcsStageInBuffer];
+        }
     }
     if (!tcsStageInBuffer) {
         NSLog(@"MGL TESS WARNING: failed to pack TCS stage_in buffer for program %u",
@@ -1289,18 +1242,11 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    if (!mglTessPlanBufferOrBind(
-            &executionPlan,
-            executionTemporaries, computeEncoder, tcsStageInBuffer,
-            tcsStageInOffset, MGL_AIR_TESS_SLOT_TCS_STAGE_IN)) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-
-    /* Dispatch: one threadgroup per patch, tcsOutVertices threads per threadgroup (one thread per TCS output vertex = gl_InvocationID). */
-    if (!mglTessPlanDispatchOrBind(
-            &executionPlan, computeEncoder,
-            patchCount, 1u, 1u, tcsOutVertices, 1u, 1u)) {
+    if (!mglTessAppendTCSCoreBindings(
+            &executionPlan, (__bridge void *)tcsOutputBuffer,
+            (__bridge void *)tcsPatchOutBuffer, (__bridge void *)indirectBuf,
+            (__bridge void *)tessFactorBuf, (__bridge void *)tcsStageInBuffer,
+            (uint64_t)tcsStageInOffset, &tcsLayout)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
@@ -1389,12 +1335,7 @@ static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
 static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                                           const void *factorRecord)
 {
-
-    return (GLuint)mglRenderTessEvalItemsPerPatch(
-        factorRecord,
-        (uint32_t)(tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES),
-        (uint32_t)(tesProgram ? tesProgram->tess_gen_spacing : 0),
-        (uint32_t)(tesProgram ? tesProgram->tess_gen_point_mode : 0));
+    return mglTessEvalItemsPerPatch((Program *)tesProgram, factorRecord);
 }
 
 /* Isolines / point-mode TES: expand one vertex record per work item with
@@ -1517,18 +1458,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         return false;
     }
     const GLuint instanceCountU = (GLuint)instanceCount;
-    uint64_t itemsPerInstance = 0u;
-    for (GLuint p = 0u; p < patchCount; p++) {
-        const void *record =
-            (const void *)((const uint8_t *)factorBytes +
-                           (NSUInteger)p *
-                               MGL_AIR_TESS_FACTOR_RECORD_BYTES);
-        /* items==0: patch discarded (outer ≤ 0).  Do not coerce to 1 —
-         * that re-emitted discarded patches with PrimitiveID 0 and broke
-         * CTS input_patch_discard (expected IDs 1,3). */
-        GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
-        itemsPerInstance += (uint64_t)items;
-    }
+    const uint64_t itemsPerInstance = mglTessEvalItemsPerInstance(
+        tesProgram, factorBytes, patchCount);
     if (itemsPerInstance == 0u) {
         /* Every patch discarded (outer ≤ 0, e.g. CTS isolines with
          * outer=-1).  Empty expansion is success — do not raise
@@ -1929,18 +1860,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    {
-        uint32_t base = 0u;
-        for (GLuint p = 0u; p < patchCount; p++) {
-            patchBases[p] = base;
-            const void *record =
-                (const void *)((const uint8_t *)factorBytes +
-                               (NSUInteger)p *
-                                   MGL_AIR_TESS_FACTOR_RECORD_BYTES);
-            GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
-            base += items;
-        }
-        patchBases[patchCount] = base;
+    if (!mglTessFillEvalPatchItemBases(tesProgram, factorBytes, patchCount,
+                                       patchBases)) {
+        free(patchBases);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
     }
     uint32_t contractWords[4];
     contractWords[1] = glInVertices;
