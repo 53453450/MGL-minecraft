@@ -22,6 +22,7 @@
 
 #include <dispatch/dispatch.h>
 #include <map>
+#include <mutex>
 #include <string>
 
 namespace {
@@ -29,6 +30,12 @@ namespace {
 // The cache is process-lifetime storage. Explicit shutdown releases its Metal
 // objects before clearing it, avoiding static-destruction ordering hazards.
 using PSOCache = std::map<std::string, void*>;
+
+static std::mutex &psoCacheMutex()
+{
+    static std::mutex *m = new std::mutex();
+    return *m;
+}
 
 PSOCache& psoCache() {
     static PSOCache* cache = new PSOCache();
@@ -234,6 +241,7 @@ int createRenderPipelineInternal(
     normalizeDepthStencilFormats(&state);
 
     std::string key = pipelineKey(vsFn, fsFn, &state);
+    std::lock_guard<std::mutex> lock(psoCacheMutex());
     PSOCache& cache = psoCache();
     auto it = cache.find(key);
     const bool archiveEligible = archive && vsFn && fsFn;
@@ -414,6 +422,7 @@ void mglAirRelease(void* obj) {
 }
 
 void mglAirLoaderShutdown(void) {
+    std::lock_guard<std::mutex> lock(psoCacheMutex());
     PSOCache& cache = psoCache();
     for (auto &entry : cache) {
         if (entry.second) {
