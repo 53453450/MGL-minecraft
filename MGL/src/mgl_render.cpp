@@ -10496,6 +10496,19 @@ int mglRenderGetDeviceIdentity(const void *device,
     return 0;
 }
 
+int mglRenderIsVirtualizedGPU(void) {
+    mgl::Renderer& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) return 0;
+    NS::String* name_string = renderer.device->name();
+    const char* name = name_string ? name_string->utf8String() : nullptr;
+    if (!name) return 0;
+    return (std::strstr(name, "Paravirtual") != nullptr ||
+            std::strstr(name, "paravirtual") != nullptr)
+               ? 1
+               : 0;
+}
+
 static MTL::StencilDescriptor* mglRenderBuildStencilDescriptor(
     const MGLRenderStencilDescriptorState& state) {
     if (!state.present) return nullptr;

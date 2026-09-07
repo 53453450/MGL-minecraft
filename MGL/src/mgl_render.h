@@ -1594,6 +1594,9 @@ int mglRenderGetDeviceIdentity(const void *device,
                                   char *name_out,
                                   size_t name_capacity);
 
+/* 1 if the default Metal device is Apple Paravirtual (hosted CI VMs). */
+int mglRenderIsVirtualizedGPU(void);
+
 int mglRenderCreateDepthStencilStateFromState(
     const MGLRenderDepthStencilDescriptorState *descriptor,
     void **depth_stencil_state_out);

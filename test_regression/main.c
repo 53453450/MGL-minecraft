@@ -16518,6 +16518,20 @@ int main(int argc, char **argv)
     }
     MGLsetCurrentContext(glm_ctx);
 
+    /* Hosted macos-26 CI uses Apple Paravirtual GPU; known-unreliable cases
+     * are skipped unless MGL_FORCE_PARAVIRT_TESTS=1.  Env
+     * MGL_SKIP_PARAVIRT_UNRELIABLE=1 forces the same skip on any host. */
+    int skip_paravirt = 0;
+    if (getenv("MGL_FORCE_PARAVIRT_TESTS")) {
+        skip_paravirt = 0;
+    } else if (getenv("MGL_SKIP_PARAVIRT_UNRELIABLE") ||
+               mglRenderIsVirtualizedGPU()) {
+        skip_paravirt = 1;
+        fprintf(stderr,
+                "  note: Paravirt/unreliable GPU cases will be SKIPPED "
+                "(set MGL_FORCE_PARAVIRT_TESTS=1 to run them)\n");
+    }
+
     fprintf(stderr, "MGL regression suite — %d tests\n", NUM_TESTS);
     fprintf(stderr, "  golden: %s\n", golden_dir);
     fprintf(stderr, "  out:    %s\n", out_dir);
@@ -16536,8 +16550,7 @@ int main(int argc, char **argv)
             n_skip++;
             continue;
         }
-        if (!only && getenv("MGL_SKIP_PARAVIRT_UNRELIABLE") &&
-            test_unreliable_on_paravirt(t->name)) {
+        if (!only && skip_paravirt && test_unreliable_on_paravirt(t->name)) {
             fprintf(stderr, "[%02d/%02d] %-24s ... SKIP (paravirt)\n",
                     i + 1, NUM_TESTS, t->name);
             n_skip++;
