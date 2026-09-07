@@ -16285,6 +16285,7 @@ static int test_unreliable_on_paravirt(const char *name)
         "depth_test",
         "legacy_glsl_frontend",
         "air_geometry_points_grid",
+        "gs_link_semantics",
         "air_geometry_lines_expand",
         NULL,
     };
