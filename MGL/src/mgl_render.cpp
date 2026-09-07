@@ -38,6 +38,7 @@
 #include "glm_limits.h"
 #include "mgl_shader_abi.h"
 #include "mgl_buffer_slots.h"
+#include "mgl_tess_domain.h"
 
 #include <algorithm>
 #include <array>
@@ -6944,28 +6945,18 @@ extern "C"
 bool mglRenderTessFactorsDiscardPatch(uint32_t gen_mode,
                                          const float* edge,
                                          const float* inside) {
+    MGLTessFactorInput in;
+    MGLTessNormalizedFactors n;
     if (!edge || !inside) {
         return true;
     }
-    /* GL §11.2.3: only outer levels ≤ 0 discard the patch.  Inner levels
-     * are clamped (negative → min) and must not discard — CTS vertex_spacing
-     * intentionally passes inner=-1. */
-    (void)inside;
-    switch (gen_mode) {
-        case GL_ISOLINES:
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]);
-        case GL_QUADS:
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f || edge[3] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]) || isnan(edge[3]);
-        default: /* GL_TRIANGLES */
-            return edge[0] <= 0.0f || edge[1] <= 0.0f ||
-                   edge[2] <= 0.0f ||
-                   isnan(edge[0]) || isnan(edge[1]) ||
-                   isnan(edge[2]);
-    }
+    memset(&in, 0, sizeof(in));
+    in.gen_mode = gen_mode;
+    in.spacing = GL_EQUAL;
+    memcpy(in.outer, edge, sizeof(in.outer));
+    memcpy(in.inner, inside, sizeof(in.inner));
+    mglTessNormalizeFactors(&in, &n);
+    return n.discard != 0;
 }
 
 extern "C"
@@ -7046,6 +7037,11 @@ uint64_t mglRenderTessPrimitiveCount(
         if (mglRenderTessFactorsDiscardPatch(tess_gen_mode, edge, inside)) {
             continue;
         }
+        /* TECH_DEBT(cts-shaped): batch=1 native primitive accounting
+         * symptom: inner-only estimate omits outer rings and spacing
+         * remove-when: native topology counts have independent goldens
+         * tracking: docs/CTS_TECH_DEBT_INVENTORY.md#tess-native-count
+         */
         float inside0 = fmaxf(inside[0], 1.0f);
         float inside1 = fmaxf(inside[1], 1.0f);
         uint64_t per_patch = tess_gen_mode == GL_QUADS
@@ -8432,42 +8428,7 @@ int mglRenderBlitFramebufferPlan(
 extern "C"
 uint32_t mglRenderTessRoundLevelForSpacing(uint32_t spacing,
                                               uint32_t ceil_level) {
-    /* GL_MAX_TESS_GEN_LEVEL is 64 (glm_params).  Fractional modes clamp
-     * before rounding per GL §11.2.2.2 / EXT_tessellation_shader. */
-    const uint32_t max_level = 64u;
-    if (spacing == GL_FRACTIONAL_EVEN) {
-        if (ceil_level < 2u) ceil_level = 2u;
-        if (ceil_level > max_level) ceil_level = max_level;
-        const uint32_t r = (ceil_level & 1u) ? ceil_level + 1u : ceil_level;
-        return r > 2u ? r : 2u;
-    }
-    if (spacing == GL_FRACTIONAL_ODD) {
-        if (ceil_level < 1u) ceil_level = 1u;
-        if (ceil_level > max_level - 1u) ceil_level = max_level - 1u;
-        return (ceil_level & 1u) ? ceil_level : ceil_level + 1u;
-    }
-    if (ceil_level < 1u) ceil_level = 1u;
-    if (ceil_level > max_level) ceil_level = max_level;
-    return ceil_level;
-}
-
-/* GL 4.6 §11.2.2.1 / Vulkan: if a clamped inner level is 1 but the patch
- * is not the all-levels-1 degenerate case, treat that inner as 1+ε before
- * spacing round (equal→2, FO→3).  CTS inner_tessellation_level_rounding. */
-static uint32_t mglRenderTessRoundInnerLevel(uint32_t spacing,
-                                             uint32_t ceil_inner,
-                                             int all_levels_one)
-{
-    if (ceil_inner == 1u && !all_levels_one)
-        ceil_inner = 2u;
-    return mglRenderTessRoundLevelForSpacing(spacing, ceil_inner);
-}
-
-static uint32_t mglRenderTessCeilLevel1(float v)
-{
-    if (v < 1.0f)
-        v = 1.0f;
-    return (uint32_t)ceilf(v);
+    return mglTessRoundLevelForSpacing(spacing, ceil_level);
 }
 
 /* TES XFB field byte size for a GL type (FLOAT/INT/UINT + vec2/3/4; 0 for
@@ -8658,172 +8619,40 @@ uint64_t mglRenderTESXFBVertexStride(const void* program_v) {
     return stride;
 }
 
+static MGLTessFactorInput tessDomainInput(const void *factor_record,
+    uint32_t gen_mode, uint32_t spacing, uint32_t point_mode, uint32_t winding)
+{
+    MGLTessFactorInput in = {};
+    in.gen_mode = gen_mode;
+    in.spacing = spacing;
+    in.winding = winding;
+    in.point_mode = point_mode ? 1u : 0u;
+    const uint8_t *exact = (const uint8_t *)factor_record +
+        MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET;
+    memcpy(in.outer, exact, sizeof(in.outer));
+    memcpy(in.inner, exact + sizeof(in.outer), sizeof(in.inner));
+    return in;
+}
+
 extern "C"
 uint32_t mglRenderTessEvalItemsPerPatch(
     const void* factor_record, uint32_t gen_mode, uint32_t spacing,
     uint32_t point_mode) {
-    if (!factor_record) return 0u;
-    typedef struct __attribute__((packed)) {
-        uint16_t edge[4];
-        uint16_t inside[2];
-    } MGLTessFactorRecord;
-    const MGLTessFactorRecord* tf = (const MGLTessFactorRecord*)factor_record;
-    {
-        float edge[4], inside[2];
-        for (int i = 0; i < 4; i++) {
-            edge[i] = *(const __fp16*)&tf->edge[i];
-        }
-        for (int i = 0; i < 2; i++) {
-            inside[i] = *(const __fp16*)&tf->inside[i];
-        }
-        if (mglRenderTessFactorsDiscardPatch(gen_mode, edge, inside)) {
-            return 0u;
-        }
-    }
-    if (gen_mode == GL_ISOLINES) {
-        float e0 = *(const __fp16*)&tf->edge[0];
-        float e1 = *(const __fp16*)&tf->edge[1];
-        if (e0 < 1.0f) e0 = 1.0f;
-        if (e1 < 1.0f) e1 = 1.0f;
-        /* outer[0] always equal_spacing; outer[1] uses TES spacing. */
-        const uint32_t n = (uint32_t)ceilf(e0);
-        const uint32_t m =
-            mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
-        if (point_mode)
-            return n * (m + 1u);
-        return n * m * 2u;
-    }
-    /* Quads/triangles compute expansion (point_mode and XFB-forced): must
-     * match mgl_air_backend.cpp isTESCompute TessCoord decomposition.
-     * Point-mode triangles: n×n from rounded inner (outers ignored for
-     * count); n==1 → 3 corners. */
-    float i0 = *(const __fp16*)&tf->inside[0];
-    if (i0 < 1.0f) i0 = 1.0f;
-    if (gen_mode == GL_QUADS) {
-        if (point_mode) {
-            float e0 = *(const __fp16*)&tf->edge[0];
-            float e1 = *(const __fp16*)&tf->edge[1];
-            float e2 = *(const __fp16*)&tf->edge[2];
-            float e3 = *(const __fp16*)&tf->edge[3];
-            float i1 = *(const __fp16*)&tf->inside[1];
-            if (e0 < 1.0f) e0 = 1.0f;
-            if (e1 < 1.0f) e1 = 1.0f;
-            if (e2 < 1.0f) e2 = 1.0f;
-            if (e3 < 1.0f) e3 = 1.0f;
-            if (i1 < 1.0f) i1 = 1.0f;
-            const uint32_t n0 =
-                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e0));
-            const uint32_t n1 =
-                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e1));
-            const uint32_t n2 =
-                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e2));
-            const uint32_t n3 =
-                mglRenderTessRoundLevelForSpacing(spacing, (uint32_t)ceilf(e3));
-            /* CTS points_verification: perimeter sum(outer) +
-             * (inner0-1)*(inner1-1) interior samples. */
-            const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
-            const uint32_t cI1 = mglRenderTessCeilLevel1(i1);
-            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
-            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
-            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
-            const uint32_t cO3 = mglRenderTessCeilLevel1(e3);
-            const int allOne =
-                (cI0 == 1u && cI1 == 1u && cO0 == 1u && cO1 == 1u &&
-                 cO2 == 1u && cO3 == 1u);
-            const uint32_t nx =
-                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
-            const uint32_t ny =
-                mglRenderTessRoundInnerLevel(spacing, cI1, allOne);
-            /* Point-mode quads: nx*ny samples at cell centres
-             * ((i+0.5)/nx, (j+0.5)/ny).  Matches GL regression probes
-             * (inner 3 → 9; fractional_even inner 3 → 16) and the triangle
-             * point-mode n*n path when outers are 1. */
-            (void)n0;
-            (void)n1;
-            (void)n2;
-            (void)n3;
-            (void)cO0;
-            (void)cO1;
-            (void)cO2;
-            (void)cO3;
-            return nx * ny;
-        }
-        float i1 = *(const __fp16*)&tf->inside[1];
-        if (i1 < 1.0f) i1 = 1.0f;
-        {
-            float e0 = *(const __fp16*)&tf->edge[0];
-            float e1 = *(const __fp16*)&tf->edge[1];
-            float e2 = *(const __fp16*)&tf->edge[2];
-            float e3 = *(const __fp16*)&tf->edge[3];
-            const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
-            const uint32_t cI1 = mglRenderTessCeilLevel1(i1);
-            const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
-            const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
-            const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
-            const uint32_t cO3 = mglRenderTessCeilLevel1(e3);
-            const int allOne =
-                (cI0 == 1u && cI1 == 1u && cO0 == 1u && cO1 == 1u &&
-                 cO2 == 1u && cO3 == 1u);
-            const uint32_t nx =
-                mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
-            const uint32_t ny =
-                mglRenderTessRoundInnerLevel(spacing, cI1, allOne);
-            /* Level-1 non-point: 2 triangles = 6 verts so items/3 != 0. */
-            if (!point_mode && nx == 1u && ny == 1u)
-                return 6u;
-            uint32_t items = nx * ny;
-            /* Non-point XFB/raster treat the stream as a triangle list.
-             * Drop a trailing incomplete primitive so multi-patch captures
-             * keep patch boundaries on 3-vertex edges (CTS PrimitiveID). */
-            if (!point_mode) {
-                items = (items / 3u) * 3u;
-                if (items == 0u)
-                    items = 3u;
-            }
-            return items;
-        }
-    }
-    if (point_mode) {
-        /* Point-mode triangles: n×n cell samples from the rounded inner
-         * level alone (regression: equal/FO inner 3 → 9, FE → 16).  Outer
-         * levels may be bumped by fractional_even (1→2) and must not divert
-         * into the CTS perimeter/ring path. */
-        const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
-        float e0 = *(const __fp16*)&tf->edge[0];
-        float e1 = *(const __fp16*)&tf->edge[1];
-        float e2 = *(const __fp16*)&tf->edge[2];
-        const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
-        const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
-        const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
-        const int allOne =
-            (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
-        const uint32_t n =
-            mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
-        if (n == 1u)
-            return 3u;
-        return n * n;
-    }
-    {
-        const uint32_t cI0 = mglRenderTessCeilLevel1(i0);
-        float e0 = *(const __fp16*)&tf->edge[0];
-        float e1 = *(const __fp16*)&tf->edge[1];
-        float e2 = *(const __fp16*)&tf->edge[2];
-        const uint32_t cO0 = mglRenderTessCeilLevel1(e0);
-        const uint32_t cO1 = mglRenderTessCeilLevel1(e1);
-        const uint32_t cO2 = mglRenderTessCeilLevel1(e2);
-        const int allOne =
-            (cI0 == 1u && cO0 == 1u && cO1 == 1u && cO2 == 1u);
-        const uint32_t n =
-            mglRenderTessRoundInnerLevel(spacing, cI0, allOne);
-        /* Single triangle (inner==1): 3 corner TessCoords for non-point. */
-        if (n == 1u)
-            return 3u;
-        uint32_t items = n * n;
-        items = (items / 3u) * 3u;
-        if (items == 0u)
-            items = 3u;
-        return items;
-    }
+    if (!factor_record) return 0;
+    const MGLTessFactorInput in = tessDomainInput(
+        factor_record, gen_mode, spacing, point_mode, GL_CCW);
+    return mglTessDomainVertexCount(&in);
+}
+
+extern "C"
+uint32_t mglRenderSeedTessDomain(const void *factor_record,
+    uint32_t gen_mode, uint32_t spacing, uint32_t point_mode, uint32_t winding,
+    void *records, uint32_t count, uint32_t stride)
+{
+    if (!factor_record) return 0;
+    const MGLTessFactorInput in = tessDomainInput(
+        factor_record, gen_mode, spacing, point_mode, winding);
+    return mglTessGenerateDomainStrided(&in, records, count, stride);
 }
 
 extern "C"

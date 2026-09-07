@@ -5072,32 +5072,35 @@ static int verifyTessEvalItemsAndCaptureSize(void) {
     /* P4.5 (item 1141/887): per-patch eval items + checked capture size. */
     /* patch record: edge {1,2,0,0} inside {0.5, 0.5} — 0.5=0x3800, 1.0=0x3C00,
      * 2.0=0x4000, 2.5=0x4100. */
-    uint16_t rec[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x3800, 0x3800};
+    uint8_t rec[MGL_AIR_TESS_FACTOR_RECORD_BYTES] = {};
+    float levels[6] = {1, 2, 3, 4, 0.5f, 0.5f};
+    mglRenderFillDefaultTessFactorBuffer(rec, sizeof rec, levels, levels + 4, 1);
     if (mglRenderTessEvalItemsPerPatch(rec, GL_ISOLINES, 0, 0) != 4) {
         fprintf(stderr, "FAIL: eval items isolines\n");
         return 1;
     }
-    /* quad point-mode: nx*ny cell centres.  edges {1,2,3,4}, insides
-     * {0.5→1 bumped to 2, 2.5→3} → 2*3 = 6. */
-    rec[5] = 0x4100;
-    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 1) != 6) {
+    /* 10 boundary vertices + (2-1)*(3-1) interior vertices. */
+    levels[5] = 2.5f;
+    mglRenderFillDefaultTessFactorBuffer(rec, sizeof rec, levels, levels + 4, 1);
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 1) != 12) {
         fprintf(stderr, "FAIL: eval items quad point\n");
         return 1;
     }
-    /* triangle point-mode: i0=2.5 -> n=3 -> 9. */
-    rec[4] = 0x4100;
+    /* Triangle: six boundary vertices and three inner-ring vertices. */
+    levels[4] = 2.5f;
+    mglRenderFillDefaultTessFactorBuffer(rec, sizeof rec, levels, levels + 4, 1);
     if (mglRenderTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 9) {
         fprintf(stderr, "FAIL: eval items tri point\n");
         return 1;
     }
-    /* non-point quad: rounded inner grid (items floored to triangle-list
-     * multiple); edges {1,2,3,4} insides {2.5,2.5} → 9. */
-    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 0) != 9) {
+    /* Euler count: 2*4 interior + 10 boundary - 2 = 16 triangles. */
+    if (mglRenderTessEvalItemsPerPatch(rec, GL_QUADS, 0, 0) != 48) {
         fprintf(stderr, "FAIL: eval items non-point\n");
         return 1;
     }
     /* discarded (edge0 = 0) -> 0. */
-    rec[0] = 0;
+    levels[0] = 0;
+    mglRenderFillDefaultTessFactorBuffer(rec, sizeof rec, levels, levels + 4, 1);
     if (mglRenderTessEvalItemsPerPatch(rec, GL_TRIANGLES, 0, 1) != 0 ||
         mglRenderTessEvalItemsPerPatch(NULL, GL_TRIANGLES, 0, 1) != 0) {
         fprintf(stderr, "FAIL: eval items discard/null\n");

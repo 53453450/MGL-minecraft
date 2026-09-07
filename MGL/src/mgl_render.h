@@ -825,9 +825,10 @@ uint64_t mglRenderTessPrimitiveCount(
     uint32_t tess_gen_mode,
     uint32_t instance_count);
 
-/* GL 4.6 section 11.2.2.2 patch discard predicate.
- * Tests the applicable outer/inner tessellation levels before any clamp to
- * one; non-positive or NaN levels discard the patch.  NULL inputs are
+/* GL 4.6 section 11.2.2 (Tessellation Primitive Generation) patch discard
+ * predicate.
+ * Tests the applicable outer tessellation levels before any clamp to
+ * one; non-positive or NaN outer levels discard the patch. NULL inputs are
  * conservatively treated as discarded.  Shared by both gates. */
 bool mglRenderTessFactorsDiscardPatch(
     uint32_t gen_mode,
@@ -835,21 +836,23 @@ bool mglRenderTessFactorsDiscardPatch(
     const float *inside);
 
 /* per-patch expanded item count for the isolines /
- * point-mode TES kernel (lockstep with mgl_air_backend.cpp's u/v
- * decomposition) — returns 0 when the factor record is missing or the patch
- * is discarded (caller falls back to 1).  Pure data transform shared by
- * both gates. */
+ * point-mode / XFB TES kernel — lockstep with mglTessDomainVertexCount
+ * (mgl_tess_domain.h).  Returns 0 when discarded. */
 uint32_t mglRenderTessEvalItemsPerPatch(
     const void *factor_record,
     uint32_t gen_mode,
     uint32_t spacing,
     uint32_t point_mode);
 
+/* Seed TES output-record position.xyz with domain coordinates before AIR runs.
+ * factor_record is the full canonical record including exact float levels. */
+uint32_t mglRenderSeedTessDomain(const void *factor_record,
+    uint32_t gen_mode, uint32_t spacing, uint32_t point_mode, uint32_t winding,
+    void *records, uint32_t count, uint32_t stride);
+
 /* GL 4.6 §11.2.2.2 subdivision-count rounding —
  * fractional_even -> next even (min 2), fractional_odd -> next odd,
- * otherwise ceil(level).  Single source of truth shared by the TES
- * eval-item accounting and the ObjC native per-patch primitive counting
- * (mglTessRoundLevelForSpacing shell in MGLRenderer+Tessellation.m). */
+ * otherwise ceil(level). Delegates to the pure tessellation domain layer. */
 uint32_t mglRenderTessRoundLevelForSpacing(
     uint32_t spacing,
     uint32_t ceil_level);

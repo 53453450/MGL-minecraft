@@ -82,6 +82,9 @@ typedef struct MGLAIRTessDrawContract {
 } MGLAIRTessDrawContract;
 
 /* ---- Tess factor buffer layouts (Metal) ----
+ * TES compute output records are seeded with domain coordinates in position.xyz
+ * before dispatch. Each invocation reads its own coordinates then overwrites
+ * that record with shader outputs. Generation uses the exact float factors.
  * The compute path (buffer 26) always allocates the quad layout because
  * MTLQuadTessellationFactorsHalf covers all three modes at the cost of two
  * unused half floats for triangles/isolines.

@@ -602,6 +602,31 @@ $(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c $
 		-framework Metal -framework OpenGL \
 		-o $@
 
+$(build_dir)/test_tess_domain: test_legacy_compat/test_tess_domain.c \
+	MGL/src/mgl_tess_factor_normalize.c MGL/src/mgl_tess_domain_gen.c \
+	MGL/include/mgl_tess_domain.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_tess_domain.c \
+		MGL/src/mgl_tess_factor_normalize.c \
+		MGL/src/mgl_tess_domain_gen.c \
+		-o $@
+
+test-tess-domain: $(build_dir)/test_tess_domain
+	$(build_dir)/test_tess_domain
+
+$(build_dir)/test_tess_air: test_legacy_compat/test_tess_air.mm $(build_dir)/libmgl.dylib \
+	MGL/include/mgl_tess_domain.h MGL/include/mgl_air_tess_abi.h
+	$(LLVM_CXX) -x objective-c++ -fobjc-arc $(LLVM_CXXFLAGS) \
+		test_legacy_compat/test_tess_air.mm -L$(build_dir) -lmgl -lc++ \
+		-framework Foundation -framework Metal -o $@
+
+test-tess-air: $(build_dir)/test_tess_air
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_tess_air
+
 $(build_dir)/test_es_smoke: test_legacy_compat/test_es_smoke.c $(build_dir)/libmgl_es.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS_GL_ES) \
@@ -721,6 +746,8 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # initialization/shutdown must remain stable.
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
+	MGL/src/mgl_tess_factor_normalize.c MGL/src/mgl_tess_domain_gen.c \
+	MGL/include/mgl_tess_domain.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
 	MGL/include/mgl_backend_handles.h \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
@@ -731,6 +758,8 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render.cpp \
+		MGL/src/mgl_tess_factor_normalize.c \
+		MGL/src/mgl_tess_domain_gen.c \
 		MGL/src/mgl_renderer_backend.cpp \
 		MGL/src/MGLPlatformRendererShell.m \
 		MGL/src/mgl_aux_assets.c \
@@ -823,11 +852,13 @@ test-all:
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
 	$(MAKE) test-arch-correctness
+	$(MAKE) test-tess-domain
+	$(MAKE) test-tess-air
 	$(MAKE) test-es-smoke
 	$(MAKE) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
-	build-test-regression test-regression test-dirty-hash test-arch-correctness test-benchmark \
+	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-tess-air test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \

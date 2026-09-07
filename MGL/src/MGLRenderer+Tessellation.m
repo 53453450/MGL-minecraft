@@ -34,6 +34,7 @@ enum {
     MGL_TESS_TEXTURE_TYPE_CUBE_ARRAY = 6u,
     MGL_TESS_PRIMITIVE_POINT = 0u,
     MGL_TESS_PRIMITIVE_LINE = 1u,
+    MGL_TESS_PRIMITIVE_TRIANGLE = 3u,
 };
 
 static id mglTessCreateBuffer(id device,
@@ -1183,13 +1184,6 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 }
 
 
-/* GL 4.6 §11.2.2.2 subdivision-count rounding (C++ source of truth). */
-static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
-{
-    return (GLuint)mglRenderTessRoundLevelForSpacing(
-        (uint32_t)spacing, (uint32_t)ceilLevel);
-}
-
 /* Isolines / point-mode TES: expand one vertex record per work item with
  * the AIR TES compute kernel (backend ABI: stage_in(24) factors(26)
  * patchInputs(27) stageOut(28) indirect(29), one dispatch per patch), then
@@ -1350,6 +1344,23 @@ static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
         return false;
     }
     memset(outContents, 0, outSize);
+
+    NSUInteger itemBase = 0;
+    for (GLuint p = 0; p < patchCount; p++) {
+        const void *record = (const uint8_t *)factorBytes +
+            (NSUInteger)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+        const uint32_t items = mglTessEvalItemsPerPatch(tesProgram, record);
+        if (mglRenderSeedTessDomain(record, tesProgram->tess_gen_mode,
+                tesProgram->tess_gen_spacing, tesProgram->tess_gen_point_mode,
+                tesProgram->tess_gen_vertex_order,
+                (uint8_t *)outContents + itemBase * outStride,
+                items, (uint32_t)outStride) != items) {
+            return false;
+        }
+        itemBase += items;
+    }
+    for (GLuint inst = 1; inst < instanceCountU; inst++)
+        memcpy((uint8_t *)outContents + inst * instanceBytes, outContents, instanceBytes);
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
     if (mglRenderEncoderOwnerHasCurrent(
@@ -1942,7 +1953,7 @@ static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
     }
     uint32_t primType = pointMode ? MGL_TESS_PRIMITIVE_POINT
         : (genMode == GL_ISOLINES ? MGL_TESS_PRIMITIVE_LINE
-                                  : MGL_TESS_PRIMITIVE_POINT);
+                                  : MGL_TESS_PRIMITIVE_TRIANGLE);
 
     _tessellation.tessComputeActive = YES;
     _tessellation.tessComputeProgram = tesProgram;
@@ -1974,9 +1985,8 @@ static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
         return NO;
     }
 
-    [self applyPolygonOffsetForDrawMode:genMode == GL_ISOLINES
-                                            ? GL_LINES
-                                            : GL_POINTS];
+    [self applyPolygonOffsetForDrawMode:pointMode ? GL_POINTS
+        : (genMode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES)];
     id encoder = nil;
     for (GLsizei i = 0; i < instanceCount; i++) {
         NSUInteger instanceOffset =
@@ -2015,491 +2025,18 @@ static GLuint mglTessRoundLevelForSpacing(GLenum spacing, GLuint ceilLevel)
  * The TES kernel uses gl_PrimitiveID (mapped to threadgroup_position_in_grid)
  * as the patch index.  We dispatch one threadgroup per patch with 1 thread
  * per threadgroup, so each invocation handles one patch. */
--(bool) dispatchTessEvaluationShader:(GLMContext) glm_ctx
-                            program:(Program *) tesProgram
-                           contract:(const MGLAIRTessDrawContract *) contract
+-(bool) dispatchTessEvaluationShader:(GLMContext)glm_ctx
+                            program:(Program *)tesProgram
+                           contract:(const MGLAIRTessDrawContract *)contract
 {
-    if (!tesProgram || !glm_ctx || !contract) {
+    if (!tesProgram || !glm_ctx || !contract || !tesProgram->tess_eval_compute)
         return false;
-    }
-    id tessFactorBuffer = (__bridge id)
-        mglRendererBackendGetCurrentTessFactorBuffer(_backend);
-
-    Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
-    if (!tesShader || !tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function) {
-        NSLog(@"MGL TESS WARNING: TES program %u has no compiled function", tesProgram->name);
-        return false;
-    }
-
-    /* Create compute pipeline state for TES kernel. */
-    void *tesPipelineHandle = NULL;
-    char tesPipelineError[512] = {0};
-    int tesPipelineResult = mglGetOrCreateProgramComputePipeline(
-        tesProgram, _TESS_EVALUATION_SHADER, &tesPipelineHandle,
-        tesPipelineError, sizeof(tesPipelineError));
-    id tesPipeline =
-        tesPipelineResult == 0 && tesPipelineHandle
-            ? (__bridge_transfer id)tesPipelineHandle
-            : nil;
-    if (!tesPipeline) {
-        NSLog(@"MGL TESS ERROR: failed to create TES compute pipeline for program %u: %s",
-              tesProgram->name,
-              tesPipelineError[0] ? tesPipelineError : "unknown error");
-        return false;
-    }
-
-    /* PASS 1: Pre-resolve all Metal textures that the TES kernel needs.
-     * Must happen before opening any encoder (same reason as TCS). */
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
-        [self endRenderEncoding];
-    }
-
-    /* Ensure a writable command buffer exists (same reason as TCS). */
-    MGLRenderCommandBufferState commandState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
-            &commandState) ||
-        commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
-        if (![self newCommandBuffer]) {
-            NSLog(@"MGL TESS ERROR: failed to create command buffer for TES dispatch");
-            return false;
-        }
-    }
-
-    MGLTessTextureBind tesTextureBinds[TEXTURE_UNITS * 2u];
-    const uint32_t tesTextureBindCount = mglTessCollectTextureBinds(
-        glm_ctx, tesProgram, _TESS_EVALUATION_SHADER, tesTextureBinds,
-        (uint32_t)(sizeof(tesTextureBinds) / sizeof(tesTextureBinds[0])));
-    if (![self ensureTessTextureMetalData:tesTextureBinds
-                                    count:tesTextureBindCount
-                                      ctx:glm_ctx]) {
-        return false;
-    }
-
-    MGLStageBindingCopyBackList stageCopyBacks = {0};
-    MGLTessStageBufferBindingList stageBufferBindings = {0};
-    if (![self prepareTessStageBufferBindings:&stageBufferBindings
-                                         stage:_TESS_EVALUATION_SHADER
-                                     copyBacks:&stageCopyBacks]) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-
-    MGLRenderComputeExecutionPlan executionPlan = {0};
-    NSMutableArray *executionTemporaries = [NSMutableArray array];
-    id computeEncoder = nil;
-    executionPlan.pipeline = (__bridge void *)tesPipeline;
-
-    if (![self planTessTextureBinds:tesTextureBinds
-                              count:tesTextureBindCount
-                                ctx:glm_ctx
-                               plan:&executionPlan
-                        temporaries:executionTemporaries]) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-
-    /* Bind stage buffers (UBO, SSBO, atomic counters) for TES. */
-    if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
-                                  toComputeEncoder:computeEncoder
-                                     executionPlan:&executionPlan
-                                      temporaries:executionTemporaries]) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-    [self bindPointSizeParamsToComputeEncoder:computeEncoder
-                                      program:tesProgram
-                                        stage:_TESS_EVALUATION_SHADER
-                                executionPlan:&executionPlan
-                                 temporaries:executionTemporaries];
-
-
-    const GLuint patchVertices = MAX(1u, contract->patch_vertices);
-    const GLuint patchCount = MAX(1u, contract->patch_count);
-
-    /* Bind patch info to buffer(28): {patch_vertices_in, tcs_out_vertices}.
-     * _mgl_patch_info.x = patch vertices (gl_in.size() replacement)
-     * _mgl_patch_info.y = TCS output vertices per patch (for per-patch gl_in indexing) */
-    {
-        GLuint patchInfo[2] = { patchVertices, _tessellation.tcsOutVertices };
-        if (patchInfo[1] == 0) patchInfo[1] = patchVertices;
-        if (!mglTessPlanBytesOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder, patchInfo,
-                sizeof(patchInfo), MGL_AIR_TESS_SLOT_PATCH_INFO)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-    }
-
-    /* Bind TCS output buffer to buffer(30) for TES gl_in.
-     * TCS writes per-vertex output to spvOut (buffer 28 in TCS).  TES reads
-     * gl_in[...] from buffer(30).  The data layout is: TCS writes
-     * spvOut[patchID * outputVertices + invocationID], so TES gl_in should
-     * point to the same buffer.  The MSL rewriter changed TES's [[stage_in]]
-     * to "device <type> *gl_in [[buffer(30)]]". */
-    id tcsOutputBuffer = (__bridge id)
-        mglRendererBackendGetTcsOutputBuffer(_backend);
-    if (tcsOutputBuffer) {
-        if (!mglTessPlanBufferOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder,
-                tcsOutputBuffer, 0,
-                MGL_AIR_TESS_SLOT_GL_IN)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-    }
-
-
-    id tcsPatchOutBuffer = (__bridge id)
-        mglRendererBackendGetTcsPatchOutBuffer(_backend);
-    if (tcsPatchOutBuffer) {
-        if (!mglTessPlanBufferOrBind(
-                &executionPlan,
-                executionTemporaries, computeEncoder,
-                tcsPatchOutBuffer, 0,
-                MGL_AIR_TESS_SLOT_PATCH_OUT)) {
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-    }
-
-    /* Compute vertsPerPatch from tessellation factors.
-     * We dispatch vertsPerPatch threads per threadgroup so each thread
-     * writes one XFB entry.  The vertex count formula matches what the
-     * CTS counter program expects (primitive count * vertices-per-primitive). */
-    GLuint vertsPerPatch = 1;
-    if (tessFactorBuffer) {
-        const uint8_t *tfBase =
-            (const uint8_t *)mglTessBufferContents(tessFactorBuffer);
-        GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
-        GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
-        if (patchCount > 0 && tfBase) {
-            const uint16_t *halfs = (const uint16_t *)tfBase;
-            float edge0 = *(const __fp16 *)&halfs[0];
-            float inside0 = *(const __fp16 *)&halfs[4];
-            float inside1 = *(const __fp16 *)&halfs[5];
-            if (edge0 < 1.0f) edge0 = 1.0f;
-            if (inside0 < 1.0f) inside0 = 1.0f;
-            if (inside1 < 1.0f) inside1 = 1.0f;
-            GLuint primPerPatch = 1;
-            if (genMode == GL_QUADS) {
-                primPerPatch = 2u * (GLuint)ceilf(inside0) * (GLuint)ceilf(inside1);
-            } else if (genMode == GL_TRIANGLES) {
-                primPerPatch = (GLuint)ceilf(inside0) * (GLuint)ceilf(inside0);
-            } else { /* GL_ISOLINES */
-                primPerPatch = (GLuint)ceilf(edge0);
-            }
-            if (primPerPatch == 0u) primPerPatch = 1u;
-            if (pointMode) {
-                /* GL point_mode: one point per tessellated vertex.  For
-                 * triangles with inner level 1 that is 3 corners, not the
-                 * 1×1 grid-cell count used for higher inner levels. */
-                if (genMode == GL_TRIANGLES && primPerPatch == 1u) {
-                    vertsPerPatch = 3u;
-                } else {
-                    vertsPerPatch = primPerPatch;
-                }
-            } else if (genMode == GL_ISOLINES) {
-                vertsPerPatch = primPerPatch * 2u;
-            } else {
-                vertsPerPatch = primPerPatch * 3u;
-            }
-        }
-    }
-    if (vertsPerPatch == 0) vertsPerPatch = 1;
-
-    /* Bind XFB output buffer to buffer(29) for _mgl_xfb_out. Metal buffer
-     * arguments cannot express a subrange, so a direct binding is safe only
-     * when every injected write fits in both the requested GL range and the
-     * current logical store. On overflow, capture into a full-size temporary
-     * buffer and copy back only the prefix containing complete primitives. */
-    TransformFeedback *xfbState = MGL_STATE(glm_ctx)->transform_feedback;
-    const bool xfbCaptureActive = false;
-    id xfbTemporary = nil;
-    id xfbCopyDestination = nil;
-    Buffer *xfbDestination = NULL;
-    NSUInteger xfbCopyDestinationOffset = 0u;
-    NSUInteger xfbCopyBytes = 0u;
-    NSUInteger xfbPrimitiveCapacity = 0u;
-    NSUInteger xfbWrittenBytes = 0u;
-
-    if (xfbCaptureActive) {
-        BufferBaseTarget *xfbSlot =
-            &MGL_STATE(glm_ctx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
-        NSUInteger xfbStride = mglTESXFBVertexStride(tesProgram);
-        NSUInteger conservativeStride =
-            (NSUInteger)tesProgram->transform_feedback_varying_count * 16u;
-        NSUInteger allocationStride = xfbStride ? xfbStride : conservativeStride;
-        NSUInteger captureVertices = 0u;
-        NSUInteger requiredBytes = 0u;
-        NSUInteger xfbSessionOffset = 0u;
-        bool sessionOffsetOK =
-            xfbState->buffer_write_offsets[0] <= (GLuint64)NSUIntegerMax;
-        if (sessionOffsetOK) {
-            xfbSessionOffset = (NSUInteger)xfbState->buffer_write_offsets[0];
-        }
-        bool sizeOK =
-            allocationStride > 0u &&
-            mglCheckedNSUIntegerProduct((NSUInteger)patchCount,
-                                        (NSUInteger)vertsPerPatch,
-                                        &captureVertices) &&
-            mglCheckedNSUIntegerProduct(captureVertices,
-                                        allocationStride,
-                                        &requiredBytes) &&
-            requiredBytes > 0u;
-
-        id xfbMTL = nil;
-        NSUInteger visibleBytes = 0u;
-        NSUInteger remainingVisibleBytes = 0u;
-        NSUInteger destinationOffset = 0u;
-        bool destinationOffsetOK = false;
-        if (xfbSlot->buf) {
-            if (!xfbSlot->buf->data.mtl_data) {
-                [self bindMTLBuffer:xfbSlot->buf];
-            }
-            xfbMTL = (__bridge id)(xfbSlot->buf->data.mtl_data);
-            if (xfbMTL) {
-                BufferMap xfbMap = {0};
-                xfbMap.buf = xfbSlot->buf;
-                xfbMap.offset = xfbSlot->offset;
-                xfbMap.size = xfbSlot->size;
-                visibleBytes = mglBufferMapVisibleBackingBytes(
-                    &xfbMap, (size_t)mglTessBufferLength(xfbMTL));
-                if (sessionOffsetOK && xfbSessionOffset <= visibleBytes &&
-                    xfbSlot->offset >= 0 &&
-                    (NSUInteger)xfbSlot->offset <= NSUIntegerMax - xfbSessionOffset) {
-                    remainingVisibleBytes = visibleBytes - xfbSessionOffset;
-                    destinationOffset = (NSUInteger)xfbSlot->offset + xfbSessionOffset;
-                    destinationOffsetOK = true;
-                }
-            }
-        }
-
-        if (!sizeOK) {
-            NSLog(@"MGL TESS XFB: capture size overflow for program %u",
-                  (unsigned)tesProgram->name);
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-
-        GLuint verticesPerPrimitive =
-            tesProgram->tess_gen_point_mode ? 1u :
-            (tesProgram->tess_gen_mode == GL_ISOLINES ? 2u : 3u);
-        NSUInteger primitiveBytes = 0u;
-        bool primitiveLayoutOK =
-            xfbStride != 0u &&
-            mglCheckedNSUIntegerProduct(xfbStride,
-                                        (NSUInteger)verticesPerPrimitive,
-                                        &primitiveBytes) &&
-            primitiveBytes > 0u;
-
-        if (primitiveLayoutOK && xfbMTL && destinationOffsetOK &&
-            requiredBytes <= remainingVisibleBytes) {
-            if (!mglTessPlanBufferOrBind(
-                    &executionPlan,
-                    executionTemporaries, computeEncoder, xfbMTL,
-                    destinationOffset, kMGLBufferSlot_IndirectParams)) {
-                [self clearStageBindingCopyBacks:&stageCopyBacks];
-                return false;
-            }
-            xfbSlot->buf->ever_written = GL_TRUE;
-            xfbPrimitiveCapacity = captureVertices / verticesPerPrimitive;
-            xfbWrittenBytes = xfbPrimitiveCapacity * primitiveBytes;
-        } else {
-            xfbTemporary = mglTessCreateBuffer(
-                _device, requiredBytes, MGL_TESS_RESOURCE_STORAGE_SHARED);
-            if (!xfbTemporary) {
-                NSLog(@"MGL TESS XFB: failed to allocate %lu-byte overflow buffer",
-                      (unsigned long)requiredBytes);
-                [self clearStageBindingCopyBacks:&stageCopyBacks];
-                return false;
-            }
-            void *xfbTemporaryContents = mglTessBufferContents(xfbTemporary);
-            if (!xfbTemporaryContents) {
-                [self clearStageBindingCopyBacks:&stageCopyBacks];
-                return false;
-            }
-            memset(xfbTemporaryContents, 0, requiredBytes);
-            if (!mglTessPlanBufferOrBind(
-                    &executionPlan,
-                    executionTemporaries, computeEncoder, xfbTemporary, 0,
-                    kMGLBufferSlot_IndirectParams)) {
-                [self clearStageBindingCopyBacks:&stageCopyBacks];
-                return false;
-            }
-
-            /* Unknown layouts stay in the temporary buffer. This is an honest
-             * no-capture fallback; copying an unproven stride could overwrite
-             * bytes outside a complete transform-feedback primitive. */
-            if (primitiveLayoutOK && xfbMTL && destinationOffsetOK &&
-                remainingVisibleBytes >= primitiveBytes) {
-                xfbPrimitiveCapacity = MIN(captureVertices / verticesPerPrimitive,
-                                           remainingVisibleBytes / primitiveBytes);
-                xfbCopyBytes = xfbPrimitiveCapacity * primitiveBytes;
-                xfbWrittenBytes = xfbCopyBytes;
-                xfbCopyDestination = xfbMTL;
-                xfbCopyDestinationOffset = destinationOffset;
-                xfbDestination = xfbSlot->buf;
-            }
-        }
-    }
-
-    if (!mglTessPlanDispatchOrBind(
-            &executionPlan, computeEncoder,
-            patchCount, 1u, 1u, vertsPerPatch, 1u, 1u)) {
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        return false;
-    }
-
-    /* Without this, a TES dispatch with no copy-backs stays in the current
-     * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
-     * glFinish then never executes the TES writes (SSBO stores vanish). */
-    _currentCBHasWork = YES;
-
-    {
-        MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
-        uint32_t copyBackEntryCount = 0u;
-        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
-            MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
-            if (entry->length == 0u) continue;
-            copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCopyBackEntry){
-                    .temporary = entry->temporary,
-                    .destination = entry->destination,
-                    .destination_buffer = entry->destination_buffer,
-                    .destination_offset = entry->destination_offset,
-                    .length = entry->length,
-                };
-        }
-        executionPlan.barrier_scope = copyBackEntryCount
-            ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
-            : MGL_RENDER_COMPUTE_BARRIER_NONE;
-        MGLRenderComputeExecutionResult executionResult = {0};
-        char executionError[256] = {0};
-        if (mglRenderExecuteComputeExecutionPlan(
-                _renderPassManager.state->currentCommandBufferOwner,
-                _gpuRecovery.commandRecoveryOwner,
-                &executionPlan, copyBackEntries, copyBackEntryCount, 0u,
-                &executionResult, executionError,
-                sizeof(executionError)) != 0) {
-            if (executionResult.transaction.device_reset_requested) {
-                atomic_store_explicit(&_deviceResetRequested, true,
-                                      memory_order_release);
-            }
-            NSLog(@"MGL TESS ERROR: C++ TES-only execution failed: %s",
-                  executionError[0] ? executionError : "unknown error");
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            return false;
-        }
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-    }
-
-    if (xfbCopyBytes > 0u) {
-        const MGLRenderBufferCopyEntry xfbCopy = {
-            .source_buffer = (__bridge void *)xfbTemporary,
-            .source_offset = 0u,
-            .destination_buffer = (__bridge void *)xfbCopyDestination,
-            .destination_offset = xfbCopyDestinationOffset,
-            .length = xfbCopyBytes,
-        };
-        if (!mglTessEncodeBufferCopiesForOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
-                &xfbCopy, 1u)) {
-            NSLog(@"MGL TESS XFB: failed to encode bounded copy");
-            return false;
-        }
-        if (xfbDestination) {
-            xfbDestination->ever_written = GL_TRUE;
-        }
-    }
-
-    if (xfbCaptureActive && xfbWrittenBytes > 0u) {
-        GLuint64 currentOffset = xfbState->buffer_write_offsets[0];
-        if ((GLuint64)xfbWrittenBytes > UINT64_MAX - currentOffset) {
-            xfbState->buffer_write_offsets[0] = UINT64_MAX;
-        } else {
-            xfbState->buffer_write_offsets[0] =
-                currentOffset + (GLuint64)xfbWrittenBytes;
-        }
-    }
-
-
-    if (tessFactorBuffer) {
-        const uint8_t *tfBase =
-            (const uint8_t *)mglTessBufferContents(tessFactorBuffer);
-
-        GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
-        GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
-        const GLenum spacing =
-            tesProgram ? tesProgram->tess_gen_spacing : 0;
-
-        GLuint64 totalPrimitives = 0;
-        for (GLuint p = 0; p < patchCount; p++) {
-            /* Tessellation factors are half-floats at the head of each
-             * RECORD_BYTES patch record.  Convert to float. */
-            const uint16_t *halfs =
-                (const uint16_t *)(tfBase +
-                                   (NSUInteger)p *
-                                       MGL_AIR_TESS_FACTOR_RECORD_BYTES);
-            float edge[4], inside[2];
-            for (int i = 0; i < 4; i++) {
-                edge[i] = *(const __fp16 *)&halfs[i];
-            }
-            for (int i = 0; i < 2; i++) {
-                inside[i] = *(const __fp16 *)&halfs[4 + i];
-            }
-
-            if (mglRenderTessFactorsDiscardPatch(
-                    (uint32_t)genMode, edge, inside)) {
-                continue;
-            }
-            for (int i = 0; i < 4; i++) {
-                if (edge[i] < 1.0f) edge[i] = 1.0f;
-            }
-            for (int i = 0; i < 2; i++) {
-                if (inside[i] < 1.0f) inside[i] = 1.0f;
-            }
-
-            GLuint perPatch = 0;
-            if (pointMode) {
-                /* Point mode: 1 primitive per tessellated point.  Delegate to
-                 * mglRenderTessEvalItemsPerPatch so quads/triangles interior
-                 * rings stay in sync with TES compute. */
-                perPatch = (GLuint)mglRenderTessEvalItemsPerPatch(
-                    tfBase + (NSUInteger)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES,
-                    (uint32_t)genMode, (uint32_t)spacing, 1u);
-            } else {
-                if (genMode == GL_QUADS) {
-                    /* Each quad splits into 2 triangles. */
-                    perPatch =
-                        2u * mglTessRoundLevelForSpacing(
-                                 spacing, (GLuint)ceilf(inside[0])) *
-                        mglTessRoundLevelForSpacing(
-                            spacing, (GLuint)ceilf(inside[1]));
-                } else if (genMode == GL_TRIANGLES) {
-                    const GLuint n = mglTessRoundLevelForSpacing(
-                        spacing, (GLuint)ceilf(inside[0]));
-                    perPatch = n * n;
-                } else { /* GL_ISOLINES */
-                    /* Each isoline segment is 1 line primitive (2 vertices). */
-                    perPatch = (GLuint)ceilf(edge[0]);
-                }
-            }
-            if (perPatch == 0u) perPatch = 1u;
-            totalPrimitives += perPatch;
-        }
-
-        GLuint64 writtenPrimitives = totalPrimitives;
-        if (xfbCaptureActive && writtenPrimitives > (GLuint64)xfbPrimitiveCapacity) {
-            writtenPrimitives = (GLuint64)xfbPrimitiveCapacity;
-        }
-        mglRecordActivePrimitiveQueryDraw(glm_ctx, totalPrimitives, writtenPrimitives);
-    }
-
-    return true;
+    return [self dispatchAIRTessEvalCompute:glm_ctx
+                                   program:tesProgram
+                                  contract:contract
+                                patchCount:contract->patch_count
+                             instanceCount:(GLsizei)contract->instance_count
+                              baseInstance:contract->base_instance];
 }
 
 @end

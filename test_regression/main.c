@@ -8999,12 +8999,11 @@ static int test_air_tessellation_isolines_point_mode(unsigned char *pixels,
      * equivalent; they must run through the AIR TES compute expansion +
      * passthrough vertex (line/point rasterization).  Three draws:
      *
-     *  1. isolines, outer = {4, 2} -> 2 isolines x 4 line segments each;
-     *     segment midpoints are probed.
-     *  2. quads point_mode, inner = {3, 3} -> 9 points at grid cell
-     *     centres; all 9 exact locations are probed.
-     *  3. triangles point_mode, inner = 2 -> 4 points at the cell
-     *     centroids; all 4 are probed. */
+     *  1. isolines, outer = {4, 2} -> 4 isolines x 2 line segments each.
+     *  2. quads point_mode, outer = 1, inner = {3, 3}: four corners and
+     *     four interior vertices (GL 4.6 section 11.2).
+     *  3. triangles point_mode, outer = 1, inner = 2: three corners and
+     *     the barycentric center. */
     static const char *vs =
         "#version 450 core\n"
         "layout(location=0) in vec2 position;\n"
@@ -9151,8 +9150,7 @@ static int test_air_tessellation_isolines_point_mode(unsigned char *pixels,
         }
     }
 
-    /* Draw 2: quads point_mode, inner = {3, 3} -> 9 points at the grid
-     * cell centres x = -1/3, 0, 1/3; y = -1/3, 0, 1/3. */
+    /* Draw 2: outer corners plus the inner 2x2 grid. */
     clear_color(0.0f, 0.0f, 0.0f);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad_positions), quad_positions,
                  GL_STATIC_DRAW);
@@ -9162,11 +9160,11 @@ static int test_air_tessellation_isolines_point_mode(unsigned char *pixels,
     glFinish();
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     {
-        static const float xs[3] = {-1.0f / 3.0f, 0.0f, 1.0f / 3.0f};
-        for (int j = 0; j < 3; j++) {
-            for (int i = 0; i < 3; i++) {
-                const int sx = (int)((xs[i] + 1.0f) * 0.5f * REG_W);
-                const int sy = (int)((xs[j] + 1.0f) * 0.5f * REG_H);
+        static const float rings[2][2] = {{-0.5f, 0.5f}, {-1.f/6.f, 1.f/6.f}};
+        for (int j = 0; j < 2; j++) {
+            for (int i = 0; i < 4; i++) {
+                const int sx = (int)((rings[j][i % 2] + 1.0f) * 0.5f * REG_W);
+                const int sy = (int)((rings[j][i / 2] + 1.0f) * 0.5f * REG_H);
                 const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
                 if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
                     fprintf(stderr,
@@ -9179,10 +9177,7 @@ static int test_air_tessellation_isolines_point_mode(unsigned char *pixels,
         }
     }
 
-    /* Draw 3: triangles point_mode, inner = 2 -> 4 points at (u,v) =
-     * (1/6,1/6), (2/3,1/6), (1/6,2/3), (2/3,2/3) with w = 1-u-v, mapped
-     * via p = A*u + B*v + C*w (A(-0.6,-0.4) B(0.6,-0.4) C(0,0.7)):
-     * (0,1/3), (-0.3,-13/60), (0.3,-13/60), (0,-23/30). */
+    /* Draw 3: triangle corners and center mapped through A*u+B*v+C*w. */
     clear_color(0.0f, 0.0f, 0.0f);
     glBufferData(GL_ARRAY_BUFFER, sizeof(tri_positions), tri_positions,
                  GL_STATIC_DRAW);
@@ -9193,10 +9188,10 @@ static int test_air_tessellation_isolines_point_mode(unsigned char *pixels,
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     {
         static const float probes[4][2] = {
-            { 0.0f,  1.0f / 3.0f},
-            {-0.3f, -13.0f / 60.0f},
-            { 0.3f, -13.0f / 60.0f},
-            { 0.0f, -23.0f / 30.0f},
+            {-0.6f, -0.4f},
+            { 0.6f, -0.4f},
+            { 0.0f,  0.7f},
+            { 0.0f, -1.0f / 30.0f},
         };
         for (int i = 0; i < 4; i++) {
             const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
@@ -9378,7 +9373,7 @@ static int test_air_tessellation_isolines_variants(unsigned char *pixels,
     }
 
     /* Stage 2: TES-only quad point_mode via glDrawArraysIndirect, inner
-     * {3, 3} -> 9 points (query count 9). */
+     * {3, 3}, outer = 1 -> four boundary plus four interior points. */
     clear_color(0.0f, 0.0f, 0.0f);
     glBufferData(GL_ARRAY_BUFFER, sizeof(quad_positions), quad_positions,
                  GL_STATIC_DRAW);
@@ -9402,20 +9397,20 @@ static int test_air_tessellation_isolines_variants(unsigned char *pixels,
     {
         GLuint written = 0u;
         glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
-        if (written != 9u) {
+        if (written != 8u) {
             fprintf(stderr,
                     "air_tessellation_isolines_variants: indirect quad point "
-                    "query got %u primitives, expected 9\n", written);
+                    "query got %u primitives, expected 8\n", written);
             goto cleanup;
         }
     }
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     {
-        static const float xs[3] = {-1.0f / 3.0f, 0.0f, 1.0f / 3.0f};
-        for (int j = 0; j < 3; j++) {
-            for (int i = 0; i < 3; i++) {
-                const int sx = (int)((xs[i] + 1.0f) * 0.5f * REG_W);
-                const int sy = (int)((xs[j] + 1.0f) * 0.5f * REG_H);
+        static const float rings[2][2] = {{-0.5f, 0.5f}, {-1.f/6.f, 1.f/6.f}};
+        for (int j = 0; j < 2; j++) {
+            for (int i = 0; i < 4; i++) {
+                const int sx = (int)((rings[j][i % 2] + 1.0f) * 0.5f * REG_W);
+                const int sy = (int)((rings[j][i / 2] + 1.0f) * 0.5f * REG_H);
                 const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
                 if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
                     fprintf(stderr,
@@ -9939,7 +9934,7 @@ static int test_air_tessellation_isolines_tripoint_instanced(
         "#version 450 core\n"
         "layout(location=0) in vec2 position;\n"
         "void main() {\n"
-        "  gl_Position = vec4(position + vec2(float(gl_InstanceID) * 0.6, 0.0),\n"
+        "  gl_Position = vec4(position + vec2(float(gl_InstanceID) * 0.3, 0.0),\n"
         "                     0.0, 1.0);\n"
         "}\n";
     static const char *fs =
@@ -10002,14 +9997,12 @@ static int test_air_tessellation_isolines_tripoint_instanced(
     }
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     {
-        /* Points (u,v) = (1/6,1/6),(2/3,1/6),(1/6,2/3),(2/3,2/3) with
-         * w=1-u-v mapped via A*u+B*v+C*w: (0,1/3), (-0.3,-13/60),
-         * (0.3,-13/60), (0,-23/30); instance 1 shifted +0.6. */
+        /* Three corners and center per instance; shift keeps all in view. */
         static const float probes[8][2] = {
-            { 0.0f,  1.0f / 3.0f}, { 0.6f,  1.0f / 3.0f},
-            {-0.3f, -13.0f / 60.0f}, { 0.3f, -13.0f / 60.0f},
-            { 0.3f, -13.0f / 60.0f}, { 0.9f, -13.0f / 60.0f},
-            { 0.0f, -23.0f / 30.0f}, { 0.6f, -23.0f / 30.0f},
+            {-0.6f, -0.4f}, {-0.3f, -0.4f},
+            { 0.6f, -0.4f}, { 0.9f, -0.4f},
+            { 0.0f,  0.7f}, { 0.3f,  0.7f},
+            { 0.0f, -1.f/30.f}, { 0.3f, -1.f/30.f},
         };
         for (int i = 0; i < 8; i++) {
             const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
@@ -10264,17 +10257,10 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
      *    culling (ccw front-facing visible, cw culled; the query counts the
      *    generated primitives either way), then outer factor 0 discards the
      *    patch (nothing rasterized);
-     *  - point-mode quads: fractional_odd (inner 3 -> 9 points) and
-     *    fractional_even (inner 3 -> 16 points) subdivision counts verified
-     *    via GL_PRIMITIVES_GENERATED (the CPU-side item accounting uses
-     *    mglTessRoundLevelForSpacing; the GPU kernel rounding was verified
-     *    during bring-up, see AIR_M3_CPP_TODO item 345);
-     *  - point-mode triangles: the same two spacings verified the same way.
-     * Only the first two tessellation draws of the test may be raster
-     * verified: the 3rd+ tessellation draw (native or point-mode) reads a
-     * stale vertex capture (slot 24) -- the pre-existing stale-buffer
-     * aliasing bug -- so the zero-outer and spacing segments after it are
-     * query-only (the CPU-side query is immune). */
+     *  - point-mode quads: outer 1, inner 3 -> 8 odd / 17 even points;
+     *  - point-mode triangles: outer 1, inner 3 -> 6 odd / 13 even points.
+     * Point-mode queries include boundary and interior vertices. Raster
+     * coordinates are covered by the point-mode and accumulation tests. */
     (void)out_path;
     static const char *vs =
         "#version 450 core\n"
@@ -10322,7 +10308,10 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
     };
     /* Raster-verified modes (first two point-mode dispatches). */
     static const int modeIdx[2] = {0, 2}; /* odd, even */
-    static const GLuint spacingQuery[2] = {9u, 16u};
+    /* Outer=1 rounds to 1 (odd) or 2 (even). GL 4.6 section 11.2:
+     * quad: B + (n-1)^2; triangle: B + ring vertices + optional center. */
+    static const GLuint quadSpacingQuery[2] = {8u, 17u};
+    static const GLuint triSpacingQuery[2] = {6u, 13u};
     GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, q = 0u;
     GLuint quadProg[3] = {0u, 0u, 0u};
     GLuint triProg[3] = {0u, 0u, 0u};
@@ -10410,10 +10399,7 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
         glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
         glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
     }
-    /* Segment 2: zero outer factor discards the patch.  The raster of
-     * draws 3+ is scrambled by the pre-existing stale-buffer aliasing bug
-     * (see the note above), so this segment is query-only: a discarded
-     * patch must generate 0 primitives. */
+    /* Segment 2: a discarded patch must generate zero primitives. */
     {
         const GLfloat outer[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         const GLfloat inner[2] = {2.0f, 1.0f};
@@ -10436,14 +10422,7 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
         }
     }
 
-    /* Segment 3: point-mode quads, inner {3,3}: subdivision count follows
-     * spacing (odd 9 / even 16).  Query-only: the CPU-side item accounting
-     * (mglAIRTessEvalItemsPerPatch -> mglTessRoundLevelForSpacing) drives
-     * the GL_PRIMITIVES_GENERATED query, and the GPU kernel's spacing
-     * rounding was independently verified during bring-up (correct cell
-     * tesscoords in the stage-out records; see AIR_M3_CPP_TODO item 345).
-     * Raster probes are impossible here: the 3rd+ tessellation draw in a
-     * row is scrambled by the pre-existing stale-buffer aliasing bug. */
+    /* Segment 3: four/eight boundary plus four/nine interior vertices. */
     glPatchParameteri(GL_PATCH_VERTICES, 4);
     {
         const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -10460,17 +10439,16 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
         glEndQuery(GL_PRIMITIVES_GENERATED);
         glFinish();
         glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
-        if (prims != spacingQuery[mi]) {
+        if (prims != quadSpacingQuery[mi]) {
             fprintf(stderr,
                     "air_tessellation_factors_spacing: quad point_mode %s "
                     "expected %u prims, got %u\n",
-                    spacingNames[i], spacingQuery[mi], prims);
+                    spacingNames[i], quadSpacingQuery[mi], prims);
             goto cleanup;
         }
     }
 
-    /* Segment 4: point-mode triangles, inner {3}: query-only (odd 9 /
-     * even 16), for the same reason as segment 3. */
+    /* Segment 4: three/six boundary plus three/seven ring vertices. */
     glPatchParameteri(GL_PATCH_VERTICES, 3);
     {
         const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -10487,11 +10465,11 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
         glEndQuery(GL_PRIMITIVES_GENERATED);
         glFinish();
         glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
-        if (prims != spacingQuery[mi]) {
+        if (prims != triSpacingQuery[mi]) {
             fprintf(stderr,
                     "air_tessellation_factors_spacing: tri point_mode %s "
                     "expected %u prims, got %u\n",
-                    spacingNames[i], spacingQuery[mi], prims);
+                    spacingNames[i], triSpacingQuery[mi], prims);
             goto cleanup;
         }
     }
@@ -10609,16 +10587,15 @@ static int test_air_tessellation_cull_distance(unsigned char *pixels,
         glFinish();
         glGetQueryObjectuiv(q, GL_QUERY_RESULT, &prims);
         glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        if (prims != 9u) {
+        if (prims != 8u) {
             fprintf(stderr,
                     "air_tessellation_cull_distance: quad point_mode query "
-                    "expected 9 prims, got %u\n", prims);
+                    "expected 8 prims, got %u\n", prims);
             goto cleanup;
         }
-        /* u = 1/6 column at (38, 38): green; u = 3/6 at (64, 38): green;
-         * u = 5/6 at (90, 38): culled -> black. */
+        /* Interior vertices u=1/3 and 2/3 survive; the u=1 corners cull. */
         {
-            static const float vis[2][2] = {{-0.4f, -0.4f}, {0.0f, -0.4f}};
+            static const float vis[2][2] = {{-0.2f, -0.2f}, {0.2f, -0.2f}};
             for (int i = 0; i < 2; i++) {
                 const int sx = (int)((vis[i][0] + 1.0f) * 0.5f * REG_W);
                 const int sy = (int)((vis[i][1] + 1.0f) * 0.5f * REG_H);
@@ -10643,8 +10620,8 @@ static int test_air_tessellation_cull_distance(unsigned char *pixels,
             }
         }
         {
-            const int sx = (int)((0.4f + 1.0f) * 0.5f * REG_W);
-            const int sy = (int)((-0.4f + 1.0f) * 0.5f * REG_H);
+            const int sx = (int)((0.6f + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((-0.6f + 1.0f) * 0.5f * REG_H);
             for (int dy = -2; dy <= 2; dy++) {
                 for (int dx = -2; dx <= 2; dx++) {
                     const int px = sx + dx, py = sy + dy;
@@ -10757,7 +10734,7 @@ static int test_air_tessellation_accumulation(unsigned char *pixels,
      * spacing/zero-factor and compute-fallback work of 2026-08-14); this
      * test pins the two failure modes:
      *  - a third consecutive point-mode quad draw (n=4 after n=2, n=3)
-     *    must rasterize all 16 cells at their correct positions (the
+     *    must rasterize all 13 vertices at their correct positions (the
      *    stale-capture failure produced huge gl_in positions -> empty
      *    raster), and
      *  - an interleaved isolines sequence + a fifth/sixth quad draw must
@@ -10833,18 +10810,11 @@ static int test_air_tessellation_accumulation(unsigned char *pixels,
         if (d == 2) {
             glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
                          pixels);
-            fprintf(stderr, "ACCUM n=4 green map:\n");
-            for (int yy = 0; yy < REG_H; yy++) {
-                for (int xx = 0; xx < REG_W; xx++) {
-                    const unsigned char *cc = &pixels[(yy * REG_W + xx) * 4];
-                    if (cc[0] <= 20u && cc[1] >= 200u && cc[2] <= 20u)
-                        fprintf(stderr, "  g@(%d,%d)\n", xx, yy);
-                }
-            }
-            for (int j = 0; j < 4; j++) {
-                for (int i = 0; i < 4; i++) {
-                    const float u = ((float)i + 0.5f) / 4.0f;
-                    const float v = ((float)j + 0.5f) / 4.0f;
+            for (int j = 0; j <= 4; j++) {
+                for (int i = 0; i <= 4; i++) {
+                    if ((i == 0 || i == 4) != (j == 0 || j == 4)) continue;
+                    const float u = (float)i / 4.0f;
+                    const float v = (float)j / 4.0f;
                     const float x = -0.6f + 1.2f * u;
                     const float y = -0.6f + 1.2f * v;
                     const int sx = (int)((x + 1.0f) * 0.5f * REG_W);
@@ -10864,7 +10834,7 @@ static int test_air_tessellation_accumulation(unsigned char *pixels,
                     if (!found) {
                         fprintf(stderr,
                                 "air_tessellation_accumulation: 3rd quad "
-                                "draw cell (%d,%d) missing at (%d,%d)\n",
+                                "draw vertex (%d,%d) missing at (%d,%d)\n",
                                 i, j, sx, sy);
                         goto cleanup;
                     }
@@ -10935,10 +10905,10 @@ static int test_air_tessellation_accumulation(unsigned char *pixels,
             glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE,
                          pixels);
             static const float probes[4][2] = {
-                {-0.6f + 1.2f * 1.5f / 6.0f, -0.6f + 1.2f * 1.5f / 6.0f},
-                {-0.6f + 1.2f * 4.5f / 6.0f, -0.6f + 1.2f * 2.5f / 6.0f},
-                {-0.6f + 1.2f * 2.5f / 6.0f, -0.6f + 1.2f * 4.5f / 6.0f},
-                {-0.6f + 1.2f * 5.5f / 6.0f, -0.6f + 1.2f * 5.5f / 6.0f},
+                {-0.4f, -0.4f},
+                { 0.2f, -0.2f},
+                {-0.2f,  0.2f},
+                { 0.4f,  0.4f},
             };
             for (int p = 0; p < 4; p++) {
                 const int sx = (int)((probes[p][0] + 1.0f) * 0.5f * REG_W);

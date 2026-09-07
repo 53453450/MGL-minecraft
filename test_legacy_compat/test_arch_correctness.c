@@ -563,6 +563,9 @@ static void test_f16_tess_texture_and_per_patch_plan(void)
      * item-count fixture: edges {1,2,...} → 4 items. */
     const uint16_t live[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x3800, 0x3800};
     memcpy(factors + MGL_AIR_TESS_FACTOR_RECORD_BYTES, live, sizeof(live));
+    const float exact[6] = {1, 2, 3, 4, 0.5f, 0.5f};
+    memcpy(factors + MGL_AIR_TESS_FACTOR_RECORD_BYTES +
+           MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET, exact, sizeof(exact));
 
     expect(mglTessEvalItemsPerPatch(&tes, factors) == 0u,
            "F16 discarded patch items == 0");
