@@ -12929,19 +12929,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      *
      * Skip generated GS/TES passthrough VS: those rasterize with an explicit
      * Triangle/Line topology, and Metal rejects point_size on that class.
-     * Capture / TES stages keep the historical "only if written" gate. */
+     * Same for VS that write gl_Layer / gl_ViewportIndex: Metal requires an
+     * explicit topology for [[render_target_array_index]], and Paravirtual
+     * rejects Triangle + point_size.  Capture / TES stages keep the
+     * historical "only if written" gate. */
     const bool isStagePassthrough =
         isVS && (strstr(esrc, "mgl_gs_output") != nullptr ||
                  strstr(esrc, "mgl_tes_output") != nullptr);
+    const bool usesLayerViewport =
+        isVS && (strstr(esrc, "gl_Layer") != nullptr ||
+                 strstr(esrc, "gl_ViewportIndex") != nullptr);
     const bool usesPointSize =
-        (isVS && !isCapture && !isStagePassthrough) ||
+        (isVS && !isCapture && !isStagePassthrough && !usesLayerViewport) ||
         ((isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr);
     const bool usesClipDistance =
         (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
         irClipCount > 0;
-    const bool usesLayerViewport =
-        isVS && (strstr(esrc, "gl_Layer") != nullptr ||
-                 strstr(esrc, "gl_ViewportIndex") != nullptr);
     const uint32_t userBufferLocationBase = isTES ? 1u : 0u;
     if (isVS || isTES) {
         /* retElems always carries the output record (capture variants
