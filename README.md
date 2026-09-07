@@ -6,7 +6,7 @@ Language: 中文 | [English](README_EN.md)
 [![License](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![OpenGL](https://img.shields.io/badge/OpenGL-4.6-green.svg)]()
-[![Metal](https://img.shields.io/badge/Metal-3.0-orange.svg)]()
+[![Metal](https://img.shields.io/badge/Metal-4.0-orange.svg)]()
 
 **MGL (Metal-GL)** 是一个将 OpenGL 4.6 和 OpenGL ES 3.x 转译到 Apple Metal 的图形驱动层。它允许现有的 OpenGL 应用无需修改即可在 macOS 上使用 Metal 后端运行。
 
@@ -33,7 +33,7 @@ Language: 中文 | [English](README_EN.md)
 
 **前置**: 
 
-- macOS 14 或更新版本
+- macOS 26 或更新版本
 - Xcode Command Line Tools
 - Homebrew
 - CMake

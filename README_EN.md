@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/License-LGPL--3.0--only-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
 [![OpenGL](https://img.shields.io/badge/OpenGL-4.6-green.svg)]()
-[![Metal](https://img.shields.io/badge/Metal-3.0-orange.svg)]()
+[![Metal](https://img.shields.io/badge/Metal-4.0-orange.svg)]()
 
 **MGL (Metal-GL)** is a graphics translation layer that converts OpenGL 4.6 and OpenGL ES 3.x calls into Apple Metal. It allows existing OpenGL applications to run on macOS using a Metal backend without modification.
 
@@ -40,7 +40,7 @@ components remain under their own licenses.
 
 **Prerequisites:**
 
-- macOS 14 or newer
+- macOS 26 or newer
 - Xcode Command Line Tools
 - Homebrew
 - CMake
