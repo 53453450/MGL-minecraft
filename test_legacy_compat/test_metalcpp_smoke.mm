@@ -8691,6 +8691,7 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     const int timestampsOk =
         mglRenderSampleTimestamps(&cpuTimestamp, &gpuTimestamp) == 0 &&
         cpuTimestamp != 0 && gpuTimestamp != 0;
+    GLMContextRec callbackContext = {};
     if (!timestampsOk) {
         /* Apple Paravirtual GPU often returns zeros for sampleTimestamps. */
         if ([device.name containsString:@"Paravirtual"]) {
@@ -8707,7 +8708,6 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
             return 1;
         }
     } else {
-        GLMContextRec callbackContext = {};
         const int flushCountBeforeTimestamp = s_legacyFlushCount;
         uint64_t callbackTimestamp = mglRenderGetGPUTimestamp(
             &callbackContext);
