@@ -697,7 +697,7 @@ test-mglair: $(build_dir)/test_mglair
 # AIR backend.  C sources build as C (they are not valid C++).
 MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
 	MGL/src/mgl_glsl_cpp.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
-	MGL/src/mgl_legacy_compat.c
+	MGL/src/mgl_legacy_compat.c MGL/src/mgl_frontend_session.c
 MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
 
 $(build_dir)/mcrepro_%.o: MGL/src/%.c
