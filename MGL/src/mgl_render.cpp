@@ -993,14 +993,39 @@ Renderer& renderer() {
 
 void copyError(NS::Error* error, char* out, size_t capacity) {
     if (!out || capacity == 0) return;
-    if (error && error->localizedDescription()) {
-        const char* message = error->localizedDescription()->utf8String();
-        if (message) {
-            snprintf(out, capacity, "%s", message);
-            return;
-        }
+    if (!error) {
+        snprintf(out, capacity, "unknown Metal error");
+        return;
     }
-    snprintf(out, capacity, "unknown Metal error");
+    const char* message = nullptr;
+    if (error->localizedDescription())
+        message = error->localizedDescription()->utf8String();
+    const char* domain = nullptr;
+    if (error->domain()) domain = error->domain()->utf8String();
+    const char* reason = nullptr;
+    if (error->localizedFailureReason())
+        reason = error->localizedFailureReason()->utf8String();
+    const char* info = nullptr;
+    if (NS::Dictionary* userInfo = error->userInfo()) {
+        if (NS::String* desc = userInfo->description())
+            info = desc->utf8String();
+    }
+    /* Prefer a dense single-line dump so CI logs keep domain/code/userInfo
+     * even when localizedDescription is the opaque "Compilation failed". */
+    if (message && message[0] && (domain || reason || info)) {
+        snprintf(out, capacity,
+                 "%s (domain=%s code=%ld reason=%s userInfo=%s)",
+                 message, domain ? domain : "?", (long)error->code(),
+                 reason && reason[0] ? reason : "-",
+                 info && info[0] ? info : "-");
+        return;
+    }
+    if (message && message[0]) {
+        snprintf(out, capacity, "%s", message);
+        return;
+    }
+    snprintf(out, capacity, "unknown Metal error (domain=%s code=%ld)",
+             domain ? domain : "?", (long)error->code());
 }
 
 void releasePipelineCaches(Renderer& renderer) {
@@ -1480,7 +1505,12 @@ int mglRenderQueryCapability(void* device_ref,
     MGLRenderCapabilityState state = {};
     NS::String* name_string = device->name();
     const char* name = name_string ? name_string->utf8String() : nullptr;
-    const bool virtualized = name && std::strstr(name, "AGX") != nullptr;
+    /* GitHub macos-26 runners expose "Apple Paravirtual device".  The old
+     * strstr("AGX") check never matched either Paravirt or real M-series
+     * marketing names ("Apple M4"), so is_virtualized stayed 0 on CI. */
+    const bool virtualized =
+        name && (std::strstr(name, "Paravirtual") != nullptr ||
+                 std::strstr(name, "paravirtual") != nullptr);
     const bool apple_family = device->supportsFamily(MTL::GPUFamilyApple1);
     const bool apple_name = name && std::strncmp(name, "Apple ", 6) == 0;
 

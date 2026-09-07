@@ -608,6 +608,17 @@ apply_gl46_defaults:
      * failed (headless CI, no accelerated pixel format): the probe only
      * refines these values, it must not be the sole source.  Skipping it
      * left GL_MAX_IMAGE_SAMPLES and friends at 0 on CGL-less hosts. */
+
+    /* GL 4.6 §11.3.4.6: these are assigned in the CGL success path above.
+     * On headless CI (CGLChoosePixelFormat fails) they stay 0 and
+     * gs_link_semantics fails.  MGL does not implement a defined first/last
+     * convention, so report UNDEFINED_VERTEX. */
+    if (glm_ctx->active_state->var.layer_provoking_vertex == 0)
+        glm_ctx->active_state->var.layer_provoking_vertex = GL_UNDEFINED_VERTEX;
+    if (glm_ctx->active_state->var.viewport_index_provoking_vertex == 0)
+        glm_ctx->active_state->var.viewport_index_provoking_vertex =
+            GL_UNDEFINED_VERTEX;
+
     glm_ctx->active_state->var.max_cull_distances = 8;
     glm_ctx->active_state->var.max_combined_clip_and_cull_distances = 8;
     if (glm_ctx->active_state->var.max_vertex_output_components < 64) {

@@ -1603,7 +1603,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
               gparams.loc_map[0], gparams.loc_map[1],
               gparams.loc_map[2], gparams.loc_map[3]);
     void *pipelineHandle = NULL;
-    char pipelineError[512] = {0};
+    char pipelineError[2048] = {0};
     int pipelineResult = mglGetOrCreateProgramComputePipeline(
         program, _GEOMETRY_SHADER, &pipelineHandle,
         pipelineError, sizeof(pipelineError));

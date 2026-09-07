@@ -901,7 +901,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     }
 
     void *computePipelineHandle = NULL;
-    char computePipelineError[512] = {0};
+    char computePipelineError[2048] = {0};
     int computePipelineResult = mglGetOrCreateProgramComputePipeline(
         program, _COMPUTE_SHADER, &computePipelineHandle,
         computePipelineError, sizeof(computePipelineError));

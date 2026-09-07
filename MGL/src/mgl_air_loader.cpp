@@ -107,14 +107,37 @@ std::string pipelineKey(const void* device, const void* vs, const void* fs,
 
 void copyError(NS::Error* e, char* err, size_t errcap) {
     if (!err || errcap == 0) return;
-    if (e && e->localizedDescription()) {
-        const char* s = e->localizedDescription()->utf8String();
-        if (s) {
-            snprintf(err, errcap, "%s", s);
-            return;
-        }
+    if (!e) {
+        snprintf(err, errcap, "unknown Metal error");
+        return;
     }
-    snprintf(err, errcap, "unknown Metal error");
+    const char* message = nullptr;
+    if (e->localizedDescription())
+        message = e->localizedDescription()->utf8String();
+    const char* domain = nullptr;
+    if (e->domain()) domain = e->domain()->utf8String();
+    const char* reason = nullptr;
+    if (e->localizedFailureReason())
+        reason = e->localizedFailureReason()->utf8String();
+    const char* info = nullptr;
+    if (NS::Dictionary* userInfo = e->userInfo()) {
+        if (NS::String* desc = userInfo->description())
+            info = desc->utf8String();
+    }
+    if (message && message[0] && (domain || reason || info)) {
+        snprintf(err, errcap,
+                 "%s (domain=%s code=%ld reason=%s userInfo=%s)",
+                 message, domain ? domain : "?", (long)e->code(),
+                 reason && reason[0] ? reason : "-",
+                 info && info[0] ? info : "-");
+        return;
+    }
+    if (message && message[0]) {
+        snprintf(err, errcap, "%s", message);
+        return;
+    }
+    snprintf(err, errcap, "unknown Metal error (domain=%s code=%ld)",
+             domain ? domain : "?", (long)e->code());
 }
 
 // MTL::PixelFormat packed depth-stencil predicate.
