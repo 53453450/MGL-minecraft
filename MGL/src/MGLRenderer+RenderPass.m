@@ -4823,8 +4823,21 @@ static GLenum mglPassthroughDeclType(
          * point case is forced: leaving triangles on the historical
          * unspecified value keeps programs that write gl_PointSize while
          * drawing triangles linkable (Metal rejects a triangle-class
-         * pipeline whose vertex function writes point size). */
-        if (geometryExpansion || _lastDrawPrimitiveMode == GL_POINTS) {
+         * pipeline whose vertex function writes point size).
+         *
+         * Exception: VS writing [[render_target_array_index]] (gl_Layer)
+         * requires an explicit topology.  Real AGX often tolerates
+         * Unspecified; Apple Paravirtual rejects with CompilerError. */
+        BOOL needsExplicitTopology =
+            geometryExpansion || _lastDrawPrimitiveMode == GL_POINTS;
+        if (!needsExplicitTopology && vertexProgram) {
+            Shader *vsShader = vertexProgram->shader_slots[_VERTEX_SHADER];
+            if (vsShader && vsShader->src &&
+                strstr(vsShader->src, "gl_Layer")) {
+                needsExplicitTopology = YES;
+            }
+        }
+        if (needsExplicitTopology) {
             switch (_lastDrawPrimitiveMode) {
                 case GL_POINTS:
                     state->input_primitive_topology =
