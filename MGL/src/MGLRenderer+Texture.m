@@ -6078,7 +6078,8 @@ static void mglTextureCopyTextureToBuffer(
     GLuint effective_mipmap_levels = tex->mipmap_levels;
     BOOL storageMipmapped = NO;
 
-    uint completeness_check_faces = (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) ? 1 : num_faces;
+    uint completeness_check_faces = mglRenderCompletenessCheckFaces(
+        (uint32_t)tex->target, (uint32_t)num_faces);
 
     /* Texture storage is independent from GL_TEXTURE_MAX_LEVEL.  Minecraft
      * uses BASE/MAX_LEVEL to express temporary GpuTextureView mip windows; if
@@ -6276,22 +6277,8 @@ static void mglTextureCopyTextureToBuffer(
     NSLog(@"MGL AGX: Creating emergency fallback texture (size: %dx%dx%d)", tex->width, tex->height, tex->depth);
 
     @try {
-        uint32_t fallbackFormat = mtlPixelFormatForGLTex(tex);
-        if (fallbackFormat == MGLPixelFormatInvalid) {
-            // Conservative defaults by GL intent when translation is unavailable.
-            if (tex->internalformat == GL_DEPTH24_STENCIL8 ||
-                tex->internalformat == GL_DEPTH32F_STENCIL8) {
-                fallbackFormat = MGLPixelFormatDepth32Float_Stencil8;
-            } else if (tex->internalformat == GL_DEPTH_COMPONENT ||
-                       tex->internalformat == GL_DEPTH_COMPONENT16 ||
-                       tex->internalformat == GL_DEPTH_COMPONENT24 ||
-                       tex->internalformat == GL_DEPTH_COMPONENT32 ||
-                       tex->internalformat == GL_DEPTH_COMPONENT32F) {
-                fallbackFormat = MGLPixelFormatDepth32Float;
-            } else {
-                fallbackFormat = MGLPixelFormatRGBA8Unorm;
-            }
-        }
+        uint32_t fallbackFormat = mglRenderFallbackPixelFormat(
+            mtlPixelFormatForGLTex(tex), (uint32_t)tex->internalformat);
 
         BOOL isDepthOrStencilFormat =
             (fallbackFormat == MGLPixelFormatDepth16Unorm ||

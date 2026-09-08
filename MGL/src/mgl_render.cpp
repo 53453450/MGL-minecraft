@@ -8990,6 +8990,28 @@ int mglRenderImageUnitSliceNeedsFlush(int has_tex, int has_view, int layered,
                : 0;
 }
 
+uint32_t mglRenderCompletenessCheckFaces(uint32_t target, uint32_t num_faces) {
+    return target == GL_TEXTURE_CUBE_MAP_ARRAY ? 1u : num_faces;
+}
+
+uint32_t mglRenderFallbackPixelFormat(uint32_t mapped, uint32_t internalformat) {
+    if (mapped != 0u) {
+        return mapped;
+    }
+    if (internalformat == GL_DEPTH24_STENCIL8 ||
+        internalformat == GL_DEPTH32F_STENCIL8) {
+        return 260u; /* Depth32Float_Stencil8 */
+    }
+    if (internalformat == GL_DEPTH_COMPONENT ||
+        internalformat == GL_DEPTH_COMPONENT16 ||
+        internalformat == GL_DEPTH_COMPONENT24 ||
+        internalformat == GL_DEPTH_COMPONENT32 ||
+        internalformat == GL_DEPTH_COMPONENT32F) {
+        return 252u; /* Depth32Float */
+    }
+    return 70u; /* RGBA8Unorm */
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

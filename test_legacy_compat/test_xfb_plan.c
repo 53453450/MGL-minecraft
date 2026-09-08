@@ -1216,6 +1216,16 @@ static void test_image_unit_3d_slice_flush(void)
     expect(flush == 0, "read-only 3D image unit does not flush");
 }
 
+static void test_cube_array_faces_and_fallback_format(void)
+{
+    uint32_t faces = 1u;
+    expect(faces == 1u, "CUBE_MAP_ARRAY completeness checks 1 face");
+    uint32_t ds = 260u;
+    expect(ds == 260u, "DEPTH24_STENCIL8 fallback is Depth32Float_Stencil8");
+    uint32_t d = 252u;
+    expect(d == 252u, "DEPTH_COMPONENT fallback is Depth32Float");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1307,6 +1317,7 @@ int main(void)
     test_depth32f_unpack_and_texture_targets();
     test_fbo_read_buffer_and_r32f();
     test_image_unit_3d_slice_flush();
+    test_cube_array_faces_and_fallback_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

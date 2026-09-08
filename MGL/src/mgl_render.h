@@ -1386,6 +1386,8 @@ int mglRenderTextureTargetIs3D(uint32_t target);
 int mglRenderImageAccessIsReadOnly(uint32_t access);
 int mglRenderImageUnitSliceNeedsFlush(int has_tex, int has_view, int layered,
                                       uint32_t target, uint32_t access);
+uint32_t mglRenderCompletenessCheckFaces(uint32_t target, uint32_t num_faces);
+uint32_t mglRenderFallbackPixelFormat(uint32_t mapped, uint32_t internalformat);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
