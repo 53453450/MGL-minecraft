@@ -1295,6 +1295,8 @@ uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
                                       uint32_t metal_binding,
                                       uint32_t resource_binding,
                                       uint32_t max_units);
+uint32_t mglRenderDefaultSamplerUnit(int32_t default_unit, uint32_t max_units);
+int mglRenderMetalBindingPastUnits(uint32_t metal_binding, uint32_t max_units);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

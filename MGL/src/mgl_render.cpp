@@ -8253,6 +8253,16 @@ uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
     return (uint32_t)sampler_unit + element;
 }
 
+uint32_t mglRenderDefaultSamplerUnit(int32_t default_unit, uint32_t max_units) {
+    return mglRenderSamplerUnitValid(default_unit, max_units)
+               ? (uint32_t)default_unit
+               : 0u;
+}
+
+int mglRenderMetalBindingPastUnits(uint32_t metal_binding, uint32_t max_units) {
+    return metal_binding >= max_units ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

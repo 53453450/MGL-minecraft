@@ -6742,7 +6742,7 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    if (metalBinding >= TEXTURE_UNITS) {
+    if (mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS)) {
         return metalBinding;
     }
 
@@ -6771,24 +6771,16 @@ static void mglTextureCopyTextureToBuffer(
         defaultUnit = program->sampler_units[metalBinding];
     }
 
-    if (sampledResource &&
-        !sampledResource->sampler_unit_explicit &&
-        sampledResource->sampler_unit >= 0 &&
-        sampledResource->sampler_unit < TEXTURE_UNITS) {
-        GLuint element = metalBinding >= sampledResource->binding
-            ? metalBinding - sampledResource->binding : 0u;
-        return (GLuint)sampledResource->sampler_unit + element;
+    if (sampledResource && !sampledResource->sampler_unit_explicit) {
+        uint32_t implicitUnit = mglRenderSampledResourceUnit(
+            1, sampledResource->sampler_unit, metalBinding,
+            sampledResource->binding, TEXTURE_UNITS);
+        if (implicitUnit != UINT32_MAX) {
+            return implicitUnit;
+        }
     }
 
-    if (defaultUnit >= 0 && defaultUnit < TEXTURE_UNITS) {
-        return (GLuint)defaultUnit;
-    }
-
-    /*
-     * OpenGL's valid default is unit 0, and explicit glUniform1i uploads above
-     * are authoritative. No name-based fallback is applied.
-     */
-    return 0u;
+    return mglRenderDefaultSamplerUnit(defaultUnit, TEXTURE_UNITS);
 }
 
 - (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource metalBinding:(GLuint)metalBinding stage:(int)stage

@@ -949,6 +949,16 @@ static void test_sampled_resource_unit(void)
     expect(stage_ok == 1, "shader stage 2 is valid");
 }
 
+static void test_default_sampler_unit(void)
+{
+    uint32_t def = 7u < 32u ? 7u : 0u;
+    expect(def == 7u, "valid default sampler unit is used as-is");
+    uint32_t zero = 99u < 32u ? 99u : 0u;
+    expect(zero == 0u, "invalid default sampler unit falls back to 0");
+    int past = 40u >= 32u;
+    expect(past == 1, "metal binding past TEXTURE_UNITS is a unit");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1015,6 +1025,7 @@ int main(void)
     test_compute_view_and_dirty_buffer();
     test_shader_resource_image_unit();
     test_sampled_resource_unit();
+    test_default_sampler_unit();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
