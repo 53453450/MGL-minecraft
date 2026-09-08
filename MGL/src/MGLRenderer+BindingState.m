@@ -216,31 +216,18 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
     /* Mutable textures may BindImage a mip that was never defined. Metal
      * rejects views past mipmapLevelCount — leave unbound so loads read 0
      * and stores are ignored (CTS incomplete_textures). */
-    if (level >= info.mipmap_level_count) {
+    if (!mglRenderImageLevelInRange((uint32_t)level,
+                                    (uint32_t)info.mipmap_level_count)) {
         return NULL;
     }
     const uint32_t srcType = info.texture_type;
     const uint32_t bindFormat =
         mglBindingStateImageBindPixelFormat(iu, info.pixel_format);
     const GLenum glTarget = iu->tex ? iu->tex->target : (GLenum)0;
-    const GLboolean isMsTarget =
-        (glTarget == GL_TEXTURE_2D_MULTISAMPLE ||
-         glTarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) ? GL_TRUE : GL_FALSE;
-
-    if (!iu->layered && !isMsTarget) {
-        uint32_t dstType = 0u;
-        GLboolean needsSlice = GL_FALSE;
-        if (srcType == MGL_BINDING_TEXTURE_TYPE_2D_ARRAY ||
-            srcType == MGL_BINDING_TEXTURE_TYPE_3D ||
-            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE ||
-            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
-            dstType = MGL_BINDING_TEXTURE_TYPE_2D;
-            needsSlice = GL_TRUE;
-        } else if (srcType == MGL_BINDING_TEXTURE_TYPE_1D_ARRAY) {
-            dstType = MGL_BINDING_TEXTURE_TYPE_1D;
-            needsSlice = GL_TRUE;
-        }
-        if (needsSlice) {
+    const int isMsTarget = mglRenderImageTargetIsMultisample((uint32_t)glTarget);
+    uint32_t dstType = 0u;
+    if (mglRenderImageNeedsNonLayeredSlice(iu->layered ? 1 : 0, isMsTarget,
+                                           srcType, &dstType)) {
             void *view = NULL;
             int rc = mglRenderCreateTextureViewRange(
                     base_texture, bindFormat, dstType,
@@ -250,18 +237,12 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
                 return (__bridge void *)mglBindingStateCacheImageUnitView(
                     iu, texture, view);
             }
-        }
     }
 
-    if (level > 0u || bindFormat != info.pixel_format) {
-        NSUInteger sliceCount = mglBindingStateTextureArrayLength(texture);
-        if (srcType == MGL_BINDING_TEXTURE_TYPE_CUBE ||
-            srcType == MGL_BINDING_TEXTURE_TYPE_CUBE_ARRAY) {
-            sliceCount = mglBindingStateTextureArrayLength(texture) * 6u;
-        }
-        if (sliceCount < 1u) {
-            sliceCount = 1u;
-        }
+    if (mglRenderImageNeedsFormatOrMipView(level, bindFormat,
+                                           info.pixel_format)) {
+        NSUInteger sliceCount = (NSUInteger)mglRenderImageViewSliceCount(
+            srcType, mglBindingStateTextureArrayLength(texture));
         void *view = NULL;
         if (mglRenderCreateTextureViewRange(
                 base_texture, bindFormat,

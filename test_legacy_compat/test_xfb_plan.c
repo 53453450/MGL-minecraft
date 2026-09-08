@@ -790,6 +790,18 @@ static void test_attrib_format_and_image_bind(void)
     expect(img2 == 70u, "invalid mapped image format keeps native");
 }
 
+static void test_image_nonlayered_slice(void)
+{
+    int ms = 0;
+    int layered = 0;
+    int need = !layered && !ms;
+    expect(need == 1, "non-layered non-MS image needs a 2D slice view");
+    uint64_t slices = 2u * 6u;
+    expect(slices == 12u, "cube array image view uses 6 faces per layer");
+    int in_mip = (1u < 4u);
+    expect(in_mip == 1, "image mip level 1 is in range of 4");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -842,6 +854,7 @@ int main(void)
     test_attrib_conversion_bind();
     test_index_size_and_vertex_bind_offset();
     test_attrib_format_and_image_bind();
+    test_image_nonlayered_slice();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

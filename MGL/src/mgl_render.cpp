@@ -7833,6 +7833,50 @@ uint32_t mglRenderImageBindPixelFormat(uint32_t internalformat,
     return mapped_bind_format;
 }
 
+int mglRenderImageTargetIsMultisample(uint32_t gl_target) {
+    return gl_target == GL_TEXTURE_2D_MULTISAMPLE ||
+                   gl_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
+               ? 1
+               : 0;
+}
+
+int mglRenderImageLevelInRange(uint32_t level, uint32_t mipmap_count) {
+    return level < mipmap_count ? 1 : 0;
+}
+
+int mglRenderImageNeedsNonLayeredSlice(int layered, int is_ms, uint32_t src_type,
+                                       uint32_t *dst_type_out) {
+    if (layered || is_ms) {
+        return 0;
+    }
+    uint32_t dst = 0u;
+    if (src_type == MGLTextureType2DArray || src_type == MGLTextureType3D ||
+        src_type == MGLTextureTypeCube || src_type == MGLTextureTypeCubeArray) {
+        dst = MGLTextureType2D;
+    } else if (src_type == MGLTextureType1DArray) {
+        dst = MGLTextureType1D;
+    } else {
+        return 0;
+    }
+    if (dst_type_out) {
+        *dst_type_out = dst;
+    }
+    return 1;
+}
+
+int mglRenderImageNeedsFormatOrMipView(uint32_t level, uint32_t bind_format,
+                                       uint32_t native_format) {
+    return level > 0u || bind_format != native_format ? 1 : 0;
+}
+
+uint64_t mglRenderImageViewSliceCount(uint32_t src_type, uint64_t array_length) {
+    uint64_t slices = array_length;
+    if (src_type == MGLTextureTypeCube || src_type == MGLTextureTypeCubeArray) {
+        slices = array_length * 6u;
+    }
+    return slices < 1u ? 1u : slices;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -1226,6 +1226,13 @@ uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
 uint32_t mglRenderImageBindPixelFormat(uint32_t internalformat,
                                        uint32_t native_format,
                                        uint32_t mapped_bind_format);
+int mglRenderImageTargetIsMultisample(uint32_t gl_target);
+int mglRenderImageLevelInRange(uint32_t level, uint32_t mipmap_count);
+int mglRenderImageNeedsNonLayeredSlice(int layered, int is_ms, uint32_t src_type,
+                                       uint32_t *dst_type_out);
+int mglRenderImageNeedsFormatOrMipView(uint32_t level, uint32_t bind_format,
+                                       uint32_t native_format);
+uint64_t mglRenderImageViewSliceCount(uint32_t src_type, uint64_t array_length);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
