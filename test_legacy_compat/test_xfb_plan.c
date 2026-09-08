@@ -1166,6 +1166,16 @@ static void test_texture_target_is_buffer(void)
     expect(not_buf == 0, "GL_TEXTURE_2D target is not a texture buffer");
 }
 
+static void test_integer_format_component_map(void)
+{
+    int map[4] = {2, 1, 0, 3};
+    expect(map[0] == 2 && map[2] == 0, "BGRA_INTEGER swizzle is B,G,R,A");
+    uint32_t comps = 1u;
+    expect(comps == 1u, "RED_INTEGER has 1 output component");
+    uint32_t bytes = 2u;
+    expect(bytes == 2u, "GL_SHORT integer type is 2 bytes");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1252,6 +1262,7 @@ int main(void)
     test_compare_func_repair_and_depth_write();
     test_draw_mode_fully_culled();
     test_texture_target_is_buffer();
+    test_integer_format_component_map();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

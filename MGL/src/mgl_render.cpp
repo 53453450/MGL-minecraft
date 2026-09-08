@@ -8803,6 +8803,96 @@ int mglRenderDrawModeFullyCulled(int cull_face, uint32_t cull_face_mode,
 int mglRenderTextureTargetIsBuffer(uint32_t target) {
     return target == GL_TEXTURE_BUFFER ? 1 : 0;
 }
+
+uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]) {
+    uint32_t components = 4u;
+    int m0 = 0, m1 = 1, m2 = 2, m3 = 3;
+    switch (format) {
+    case GL_RED_INTEGER:
+        components = 1u;
+        m0 = 0;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case GL_RG_INTEGER:
+        components = 2u;
+        m0 = 0;
+        m1 = 1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case GL_RGB_INTEGER:
+        components = 3u;
+        m0 = 0;
+        m1 = 1;
+        m2 = 2;
+        m3 = -1;
+        break;
+    case GL_BGR_INTEGER:
+        components = 3u;
+        m0 = 2;
+        m1 = 1;
+        m2 = 0;
+        m3 = -1;
+        break;
+    case GL_RGBA_INTEGER:
+        components = 4u;
+        m0 = 0;
+        m1 = 1;
+        m2 = 2;
+        m3 = 3;
+        break;
+    case GL_BGRA_INTEGER:
+        components = 4u;
+        m0 = 2;
+        m1 = 1;
+        m2 = 0;
+        m3 = 3;
+        break;
+    case 0x8d95: /* GL_GREEN_INTEGER */
+        components = 1u;
+        m0 = 1;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case 0x8d96: /* GL_BLUE_INTEGER */
+        components = 1u;
+        m0 = 2;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    case 0x8d97: /* GL_ALPHA_INTEGER */
+        components = 1u;
+        m0 = 3;
+        m1 = -1;
+        m2 = -1;
+        m3 = -1;
+        break;
+    default:
+        components = 4u;
+        break;
+    }
+    if (map) {
+        map[0] = m0;
+        map[1] = m1;
+        map[2] = m2;
+        map[3] = m3;
+    }
+    return components;
+}
+
+uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type) {
+    if (type == GL_BYTE || type == GL_UNSIGNED_BYTE) {
+        return 1u;
+    }
+    if (type == GL_SHORT || type == GL_UNSIGNED_SHORT) {
+        return 2u;
+    }
+    return 4u;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

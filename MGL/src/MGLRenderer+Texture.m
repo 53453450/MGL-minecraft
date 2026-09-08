@@ -2002,21 +2002,11 @@ static void mglTextureCopyTextureToBuffer(
      * componentMap[c] = source component index for output component c, or -1. */
     NSUInteger outputComponents = 4u;
     int componentMap[4] = {0, 1, 2, 3};
-    switch (format) {
-        case GL_RED_INTEGER:    outputComponents = 1u; componentMap[0]=0; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
-        case GL_RG_INTEGER:     outputComponents = 2u; componentMap[0]=0; componentMap[1]=1; componentMap[2]=-1; componentMap[3]=-1; break;
-        case GL_RGB_INTEGER:    outputComponents = 3u; componentMap[0]=0; componentMap[1]=1; componentMap[2]=2;  componentMap[3]=-1; break;
-        case GL_BGR_INTEGER:    outputComponents = 3u; componentMap[0]=2; componentMap[1]=1; componentMap[2]=0;  componentMap[3]=-1; break;
-        case GL_RGBA_INTEGER:   outputComponents = 4u; componentMap[0]=0; componentMap[1]=1; componentMap[2]=2;  componentMap[3]=3;  break;
-        case GL_BGRA_INTEGER:   outputComponents = 4u; componentMap[0]=2; componentMap[1]=1; componentMap[2]=0;  componentMap[3]=3;  break;
-        case 0x8d95: /*GL_GREEN_INTEGER*/ outputComponents = 1u; componentMap[0]=1; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
-        case 0x8d96: /*GL_BLUE_INTEGER*/  outputComponents = 1u; componentMap[0]=2; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
-        case 0x8d97: /*GL_ALPHA_INTEGER*/ outputComponents = 1u; componentMap[0]=3; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
-        default: outputComponents = 4u; break;
-    }
+    outputComponents = (NSUInteger)mglRenderIntegerFormatComponentMap(
+        (uint32_t)format, componentMap);
 
-    NSUInteger outputComponentBytes = (type == GL_BYTE || type == GL_UNSIGNED_BYTE) ? 1u :
-                                      (type == GL_SHORT || type == GL_UNSIGNED_SHORT) ? 2u : 4u;
+    NSUInteger outputComponentBytes =
+        (NSUInteger)mglRenderIntegerTypeComponentBytes((uint32_t)type);
 
     [self mglReadIntegerTextureAsRGBA32:texture
                             pixelBytes:pixelBytes
