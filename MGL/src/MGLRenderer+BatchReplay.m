@@ -19,6 +19,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_draw_encode.h"
+#include "mgl_batch_replay.h"
 
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
@@ -34,33 +35,6 @@ static void *mglBatchReplayEncoderTraceToken(
 {
     if (!encCtx) return NULL;
     return encCtx->render_encoder_owner;
-}
-
-static bool mglBatchReplayCollectResourceBinding(
-    MGLRenderResourceBindingSnapshot *snapshot,
-    uint32_t stage,
-    uint32_t kind,
-    void *resource,
-    uint32_t index)
-{
-    if (!snapshot || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
-        kind > MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
-        return false;
-    }
-    uint32_t *count = stage == MGL_RENDER_BINDING_STAGE_VERTEX
-        ? &snapshot->vertex_op_count : &snapshot->fragment_op_count;
-    MGLRenderResourceBindingOp *ops =
-        stage == MGL_RENDER_BINDING_STAGE_VERTEX
-            ? snapshot->vertex_ops : snapshot->fragment_ops;
-    if (*count >= MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
-        return false;
-    }
-    ops[(*count)++] = (MGLRenderResourceBindingOp){
-        .kind = kind,
-        .index = index,
-        .resource = resource,
-    };
-    return true;
 }
 
 static void mglBatchReplayDrawPrimitivesIndirect(
@@ -99,69 +73,6 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
         };
     (void)mglRenderEncodeDrawForRenderEncoderOwner(
         renderEncoderOwner, &plan, NULL, 0);
-}
-
-static bool mglBuildDynamicVertexArray(GLMContext ctx,
-                                       const VertexArray *base,
-                                       const MGLDrawCommand *cmd,
-                                       VertexArray *out)
-{
-    if (!ctx || !base || !cmd || !out ||
-        cmd->dynamic_vertex_binding_count > MGL_MAX_DYNAMIC_VERTEX_BINDINGS) {
-        return false;
-    }
-
-    *out = *base;
-    for (uint8_t i = 0; i < cmd->dynamic_vertex_binding_count; i++) {
-        const MGLDynamicVertexBinding *override =
-            &cmd->dynamic_vertex_bindings[i];
-        if (!override->buffer_name ||
-            override->binding_index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-            return false;
-        }
-        Buffer *resolved = mglNamedBuffer(ctx, override->buffer_name);
-        if (!resolved) {
-            return false;
-        }
-        BufferBinding *binding = &out->bindings[override->binding_index];
-        binding->buffer = resolved;
-        binding->offset = (GLintptr)override->offset;
-        /* Keep classic VertexAttribPointer mirror fields in sync so resolve
-         * stays correct if a path still reads attrib.binding_offset. */
-        for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
-            if ((out->enabled_attribs & (1u << attrib)) == 0u ||
-                out->attrib[attrib].buffer_bindingindex !=
-                    override->binding_index) {
-                continue;
-            }
-            out->attrib[attrib].buffer = resolved;
-            out->attrib[attrib].binding_offset = (GLintptr)override->offset;
-        }
-    }
-    return true;
-}
-
-static bool mglDynamicVertexAttribCanBindDirectly(Program *active_program,
-                                                   GLuint attrib_index,
-                                                   const VertexAttrib *attrib)
-{
-    if (!attrib ||
-        mglRenderAttribNeedsConversion(attrib->long_attribute ? 1 : 0,
-                                       (uint32_t)attrib->type,
-                                       attrib->integer ? 1 : 0)) {
-        return false;
-    }
-    if (!attrib->integer) {
-        return true;
-    }
-
-    MGLShaderResource *resource =
-        mglRendererProgramVertexAttribResource(active_program, attrib_index);
-    GLuint shader_type = resource ? resource->gl_type : 0u;
-    return !mglIntegerAttribNeedsConversion(attrib->type,
-                                            shader_type,
-                                            attrib->size,
-                                            NULL);
 }
 
 static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
@@ -431,7 +342,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 GLuint effective_stride = binding->stride > 0
                     ? (GLuint)binding->stride : vao->attrib[attrib].stride;
                 if (effective_stride == representative_strides[stream] &&
-                    !mglDynamicVertexAttribCanBindDirectly(active_program,
+                    !mgl_batch_replay_attrib_can_bind_directly(active_program,
                                                           attrib,
                                                           &vao->attrib[attrib])) {
                     return false;
@@ -729,7 +640,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
             uint32_t binding_stage =
                 mglRenderTextureBindingStageForShader(stage);
-            if (!mglBatchReplayCollectResourceBinding(
+            if (!mgl_batch_replay_collect_resource_binding(
                     &snapshot, binding_stage,
                     MGL_RENDER_RESOURCE_BINDING_TEXTURE,
                     (__bridge void *)texture, metal_slot)) {
@@ -754,7 +665,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 GLuint sampler_slot = resource
                     ? mglMetalCombinedSamplerSlot(resource) : metal_slot;
                 if (sampler_slot >= kMaxFragmentSamplerSlots) return false;
-                if (!mglBatchReplayCollectResourceBinding(
+                if (!mgl_batch_replay_collect_resource_binding(
                         &snapshot, binding_stage,
                         MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                         (__bridge void *)sampler, sampler_slot)) {
@@ -858,7 +769,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                                    &bindingStage)) {
             return false;
         }
-        if (!mglBatchReplayCollectResourceBinding(
+        if (!mgl_batch_replay_collect_resource_binding(
                 &snapshot, bindingStage,
                 MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                 (__bridge void *)sampler, entry->metal_slot)) {
@@ -893,53 +804,23 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     VertexArray *draw_vao = base_vao;
     if (cmd->dynamic_vertex_binding_count > 0) {
         if (!base_vao || base_vao->magic != MGL_VAO_MAGIC ||
-            !mglBuildDynamicVertexArray(glm_ctx, base_vao, cmd, &dynamic_vao)) {
+            !mgl_batch_replay_build_dynamic_vertex_array(glm_ctx, base_vao, cmd, &dynamic_vao)) {
             return false;
         }
         draw_vao = &dynamic_vao;
     }
 
-    for (uint8_t i = 0; i < cmd->dynamic_uniform_binding_count; i++) {
-        const MGLDynamicUniformBinding *override =
-            &cmd->dynamic_uniform_bindings[i];
-        if (override->binding_index >= MAX_BINDABLE_BUFFERS) {
-            return false;
-        }
-        BufferBaseTarget *slot =
-            &MGL_STATE(glm_ctx)->buffer_base[_UNIFORM_BUFFER]
-                 .buffers[override->binding_index];
-        if (!slot->buf) {
-            return false;
-        }
-        slot->offset = override->offset;
-        slot->size = override->size;
+    /* O2.3: UBO/texture unit expansion in mgl_batch_replay_*. */
+    if (cmd->dynamic_uniform_binding_count > 0 &&
+        !mgl_batch_replay_apply_uniform_range_overrides(glm_ctx, cmd)) {
+        return false;
     }
 
     bool touched_texture_units[TEXTURE_UNITS] = { false };
-    for (uint8_t i = 0; i < cmd->dynamic_texture_binding_count; i++) {
-        const MGLDynamicTextureBinding *override =
-            &cmd->dynamic_texture_bindings[i];
-        if (override->unit >= TEXTURE_UNITS ||
-            override->target_index >= _MAX_TEXTURE_TYPES ||
-            !override->texture_name) {
-            return false;
-        }
-        Texture *texture = mglNamedTexture(glm_ctx, override->texture_name);
-        if (!texture) {
-            return false;
-        }
-        if (texture->index != override->target_index) {
-            return false;
-        }
-        if (!touched_texture_units[override->unit]) {
-            MGL_STATE(glm_ctx)->active_textures[override->unit] = NULL;
-            touched_texture_units[override->unit] = true;
-        }
-        MGL_STATE(glm_ctx)->texture_units[override->unit]
-            .textures[override->target_index] = texture;
-        if (override->is_active) {
-            MGL_STATE(glm_ctx)->active_textures[override->unit] = texture;
-        }
+    if (cmd->dynamic_texture_binding_count > 0 &&
+        !mgl_batch_replay_apply_texture_overrides(
+            glm_ctx, cmd, touched_texture_units, TEXTURE_UNITS)) {
+        return false;
     }
 
     bool direct_texture_ok = true;
