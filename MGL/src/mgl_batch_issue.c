@@ -120,3 +120,35 @@ int mgl_batch_issue_cull_capture_path(int uses_cull_distance,
     }
     return MGL_BATCH_CULL_CAPTURE_ELEMENTS;
 }
+
+
+int mgl_batch_issue_stream_index_ready(int has_index_buffer, int process_ok,
+                                       int has_mtl_index)
+{
+    if (!has_index_buffer || !process_ok) {
+        return MGL_BATCH_STREAM_INDEX_NO_BUFFER;
+    }
+    if (!has_mtl_index) {
+        return MGL_BATCH_STREAM_INDEX_NO_MTL;
+    }
+    return MGL_BATCH_STREAM_INDEX_OK;
+}
+
+const char *mgl_batch_issue_stream_index_reason(int ready)
+{
+    switch (ready) {
+    case MGL_BATCH_STREAM_INDEX_NO_BUFFER:
+        return "stream_index_buffer";
+    case MGL_BATCH_STREAM_INDEX_NO_MTL:
+        return "stream_no_mtl_index";
+    default:
+        return "stream_direct_merged";
+    }
+}
+
+int mgl_batch_issue_should_apply_stable_sampler(int snapshots_mixed,
+                                                uint32_t snapshot_id,
+                                                uint32_t invalid_id)
+{
+    return !snapshots_mixed && snapshot_id != invalid_id;
+}

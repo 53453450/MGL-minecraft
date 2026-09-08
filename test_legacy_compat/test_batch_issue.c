@@ -100,11 +100,39 @@ static void test_direct_arrays_and_dyn(void)
            "cull elements");
 }
 
+static void test_stream_index_and_sampler(void)
+{
+    expect(mgl_batch_issue_stream_index_ready(0, 0, 0) ==
+               MGL_BATCH_STREAM_INDEX_NO_BUFFER,
+           "no index buf");
+    expect(mgl_batch_issue_stream_index_ready(1, 0, 1) ==
+               MGL_BATCH_STREAM_INDEX_NO_BUFFER,
+           "process fail");
+    expect(mgl_batch_issue_stream_index_ready(1, 1, 0) ==
+               MGL_BATCH_STREAM_INDEX_NO_MTL,
+           "no mtl");
+    expect(mgl_batch_issue_stream_index_ready(1, 1, 1) ==
+               MGL_BATCH_STREAM_INDEX_OK,
+           "index ok");
+    expect(strcmp(mgl_batch_issue_stream_index_reason(
+                      MGL_BATCH_STREAM_INDEX_NO_MTL),
+                  "stream_no_mtl_index") == 0,
+           "reason mtl");
+    expect(mgl_batch_issue_should_apply_stable_sampler(0, 3u, 0xFFFFFFFFu) == 1,
+           "apply stable");
+    expect(mgl_batch_issue_should_apply_stable_sampler(1, 3u, 0xFFFFFFFFu) == 0,
+           "mixed skip");
+    expect(mgl_batch_issue_should_apply_stable_sampler(0, 0xFFFFFFFFu,
+                                                       0xFFFFFFFFu) == 0,
+           "invalid id skip");
+}
+
 int main(void)
 {
     test_rt_mark();
     test_stream_mdi_gate();
     test_direct_arrays_and_dyn();
+    test_stream_index_and_sampler();
     if (g_fails) {
         fprintf(stderr, "test_batch_issue: %d fail(s)\n", g_fails);
         return 1;

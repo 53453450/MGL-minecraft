@@ -94,8 +94,30 @@ uint32_t mgl_batch_compute_key_delta_dirty_bits(
     const MGLBatchStateKeyView *cur, uint32_t full_bits,
     const MGLBatchDirtyDomainMasks *masks, MGLBatchDirtyDeltaFlags *flags_out);
 
+/* ---- A3 residual: FBO dirty fold after key-delta ---- */
+
+typedef struct MGLBatchRestoreFboIn {
+    uint8_t fbo_binding_dirty; /* replay FBO has DIRTY_FBO_BINDING */
+    uint8_t prev_fbo_differs;  /* prevKeyValid && fbo_name mismatch */
+    uint8_t has_encoder;
+    uint8_t bind_valid;
+    uint8_t pass_matches;      /* current render pass matches FBO */
+} MGLBatchRestoreFboIn;
+
+/* Fold DIRTY_FBO into replay_dirty_bits; when encoder empty or bind invalid,
+ * force full_bits (+ preserve any FBO already set). dirty_fbo_mask is DIRTY_FBO. */
+uint32_t mgl_batch_restore_fold_fbo_dirty(uint32_t replay_dirty_bits,
+                                          uint32_t full_bits,
+                                          uint32_t dirty_fbo_mask,
+                                          const MGLBatchRestoreFboIn *in);
+
+/* Absolute-offset contract dirty: DIRTY_VAO|DIRTY_BUFFER when contract flips. */
+uint32_t mgl_batch_restore_absolute_contract_dirty(
+    int want_absolute, int current_absolute, uint32_t vao_buffer_mask);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* MGL_BATCH_RESTORE_H */
+

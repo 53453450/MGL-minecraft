@@ -104,3 +104,37 @@ uint32_t mgl_batch_compute_key_delta_dirty_bits(
     }
     return bits;
 }
+
+
+uint32_t mgl_batch_restore_fold_fbo_dirty(uint32_t replay_dirty_bits,
+                                         uint32_t full_bits,
+                                         uint32_t dirty_fbo_mask,
+                                         const MGLBatchRestoreFboIn *in)
+{
+    if (!in) {
+        return replay_dirty_bits;
+    }
+    const int need_fbo =
+        in->fbo_binding_dirty || in->prev_fbo_differs ||
+        (in->has_encoder && !in->pass_matches);
+    if (need_fbo) {
+        replay_dirty_bits |= dirty_fbo_mask;
+    }
+    if (!in->has_encoder || !in->bind_valid) {
+        replay_dirty_bits =
+            full_bits | ((replay_dirty_bits & dirty_fbo_mask) ? dirty_fbo_mask
+                                                             : 0u);
+        if (in->fbo_binding_dirty ||
+            (in->has_encoder && !in->pass_matches) ||
+            in->prev_fbo_differs) {
+            replay_dirty_bits |= dirty_fbo_mask;
+        }
+    }
+    return replay_dirty_bits;
+}
+
+uint32_t mgl_batch_restore_absolute_contract_dirty(
+    int want_absolute, int current_absolute, uint32_t vao_buffer_mask)
+{
+    return (want_absolute != current_absolute) ? vao_buffer_mask : 0u;
+}

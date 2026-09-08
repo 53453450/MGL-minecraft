@@ -77,8 +77,24 @@ enum {
 int mgl_batch_issue_cull_capture_path(int uses_cull_distance,
                                       uint32_t cmd_type);
 
+/* Stream non-MDI index materialize readiness (before MTL draw). */
+enum {
+    MGL_BATCH_STREAM_INDEX_OK = 0,
+    MGL_BATCH_STREAM_INDEX_NO_BUFFER = 1,
+    MGL_BATCH_STREAM_INDEX_NO_MTL = 2
+};
+int mgl_batch_issue_stream_index_ready(int has_index_buffer, int process_ok,
+                                       int has_mtl_index);
+const char *mgl_batch_issue_stream_index_reason(int ready);
+
+/* Stable sampler snapshot apply gate for checkBatchShouldExecute. */
+int mgl_batch_issue_should_apply_stable_sampler(int snapshots_mixed,
+                                                uint32_t snapshot_id,
+                                                uint32_t invalid_id);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* MGL_BATCH_ISSUE_H */
+

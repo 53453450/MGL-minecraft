@@ -119,10 +119,41 @@ static void test_dirty_delta(void)
            "ubo-only render_state_hash noise");
 }
 
+static void test_fbo_fold(void)
+{
+    const uint32_t full = 0xFFu;
+    const uint32_t dirty_fbo = 0x80u;
+    MGLBatchRestoreFboIn in;
+    memset(&in, 0, sizeof(in));
+    in.has_encoder = 1u;
+    in.bind_valid = 1u;
+    in.pass_matches = 1u;
+    uint32_t bits = mgl_batch_restore_fold_fbo_dirty(0x1u, full, dirty_fbo, &in);
+    expect(bits == 0x1u, "no fbo pressure → unchanged");
+    in.prev_fbo_differs = 1u;
+    bits = mgl_batch_restore_fold_fbo_dirty(0x1u, full, dirty_fbo, &in);
+    expect(bits == (0x1u | dirty_fbo), "prev fbo differ → OR DIRTY_FBO");
+    in.prev_fbo_differs = 0u;
+    in.has_encoder = 0u;
+    bits = mgl_batch_restore_fold_fbo_dirty(0x1u, full, dirty_fbo, &in);
+    expect(bits == full, "empty encoder → full domains");
+    in.has_encoder = 1u;
+    in.bind_valid = 0u;
+    in.fbo_binding_dirty = 1u;
+    bits = mgl_batch_restore_fold_fbo_dirty(0u, full, dirty_fbo, &in);
+    expect((bits & dirty_fbo) != 0u && (bits & full) == full,
+           "invalid bind + fbo dirty → full|FBO");
+    expect(mgl_batch_restore_absolute_contract_dirty(1, 0, 0x3u) == 0x3u,
+           "absolute contract flip");
+    expect(mgl_batch_restore_absolute_contract_dirty(1, 1, 0x3u) == 0u,
+           "absolute contract same");
+}
+
 int main(void)
 {
     test_same_key_skip();
     test_dirty_delta();
+    test_fbo_fold();
     if (g_fails) {
         fprintf(stderr, "test_batch_restore: %d fail(s)\n", g_fails);
         return 1;
