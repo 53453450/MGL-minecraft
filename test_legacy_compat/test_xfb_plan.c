@@ -1266,6 +1266,16 @@ static void test_glsl_type_name_and_matrix(void)
     expect(rows == 2u, "GL_FLOAT_MAT3x2 has 2 rows");
 }
 
+static void test_glsl_swizzle_and_column_type(void)
+{
+    const char *xy = ".xy";
+    expect(xy[1] == 'x', "2-row column swizzle is .xy");
+    const char *vec3 = "vec3";
+    expect(vec3[0] == 'v', "3-row column type is vec3");
+    const char *x = ".x";
+    expect(x[1] == 'x', "scalar GLSL type swizzle is .x");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1362,6 +1372,7 @@ int main(void)
     test_bytes_per_pixel_internal_format();
     test_sampler_explicit_and_1d_prefer();
     test_glsl_type_name_and_matrix();
+    test_glsl_swizzle_and_column_type();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

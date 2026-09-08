@@ -9203,6 +9203,57 @@ uint32_t mglRenderGLSLMatrixRows(uint32_t type) {
     }
 }
 
+const char *mglRenderGLSLColumnSwizzle(uint32_t rows) {
+    switch (rows) {
+    case 2u:
+        return ".xy";
+    case 3u:
+        return ".xyz";
+    case 4u:
+        return "";
+    default:
+        return NULL;
+    }
+}
+
+const char *mglRenderGLSLColumnType(uint32_t rows) {
+    switch (rows) {
+    case 1u:
+        return "float";
+    case 2u:
+        return "vec2";
+    case 3u:
+        return "vec3";
+    case 4u:
+        return "vec4";
+    default:
+        return NULL;
+    }
+}
+
+const char *mglRenderGLSLTypeSwizzle(uint32_t type) {
+    switch (type) {
+    case GL_FLOAT:
+    case GL_INT:
+    case GL_UNSIGNED_INT:
+        return ".x";
+    case GL_FLOAT_VEC2:
+    case GL_INT_VEC2:
+    case GL_UNSIGNED_INT_VEC2:
+        return ".xy";
+    case GL_FLOAT_VEC3:
+    case GL_INT_VEC3:
+    case GL_UNSIGNED_INT_VEC3:
+        return ".xyz";
+    case GL_FLOAT_VEC4:
+    case GL_INT_VEC4:
+    case GL_UNSIGNED_INT_VEC4:
+        return "";
+    default:
+        return NULL;
+    }
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -742,42 +742,17 @@ static unsigned mglGeometryPassthroughMatrixRows(GLenum type)
 
 static const char *mglGeometryPassthroughColumnSwizzle(unsigned rows)
 {
-    switch (rows) {
-        case 2u: return ".xy";
-        case 3u: return ".xyz";
-        case 4u: return "";
-        default: return NULL;
-    }
+    return mglRenderGLSLColumnSwizzle(rows);
 }
 
 static const char *mglGeometryPassthroughColumnType(unsigned rows)
 {
-    switch (rows) {
-        case 1u: return "float";
-        case 2u: return "vec2";
-        case 3u: return "vec3";
-        case 4u: return "vec4";
-        default: return NULL;
-    }
+    return mglRenderGLSLColumnType(rows);
 }
 
 static const char *mglGeometryPassthroughSwizzle(GLenum type)
 {
-    switch (type) {
-        case GL_FLOAT:
-        case GL_INT:
-        case GL_UNSIGNED_INT: return ".x";
-        case GL_FLOAT_VEC2:
-        case GL_INT_VEC2:
-        case GL_UNSIGNED_INT_VEC2: return ".xy";
-        case GL_FLOAT_VEC3:
-        case GL_INT_VEC3:
-        case GL_UNSIGNED_INT_VEC3: return ".xyz";
-        case GL_FLOAT_VEC4:
-        case GL_INT_VEC4:
-        case GL_UNSIGNED_INT_VEC4: return "";
-        default: return NULL;
-    }
+    return mglRenderGLSLTypeSwizzle((uint32_t)type);
 }
 
 static const char *mglGeometryPassthroughFloatType(GLenum type)
