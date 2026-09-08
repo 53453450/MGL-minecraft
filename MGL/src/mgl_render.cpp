@@ -9417,6 +9417,10 @@ int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
     return !already_norm && type == GL_UNSIGNED_BYTE && size == 4u ? 1 : 0;
 }
 
+int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer) {
+    return !mglRenderDrawBufferIsNone(draw_buffer);
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

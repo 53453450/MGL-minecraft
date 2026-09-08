@@ -1426,6 +1426,7 @@ int mglRenderIndexTypeIsU8(uint32_t type);
 int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer);
 int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
                                             int already_norm);
+int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

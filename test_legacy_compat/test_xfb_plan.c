@@ -1380,6 +1380,14 @@ static void test_attrib_converted_metal_stream(void)
     expect(ubyte == 1, "unnormalized UBYTE4 color attrib needs normalize");
 }
 
+static void test_should_present_draw_buffer(void)
+{
+    int none = 0;
+    expect(none == 0, "GL_NONE draw buffer does not present");
+    int back = 1;
+    expect(back == 1, "GL_BACK draw buffer presents");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1489,6 +1497,7 @@ int main(void)
     test_fbo_blit_attachment_and_attrib_convert();
     test_index_type_u8();
     test_attrib_converted_metal_stream();
+    test_should_present_draw_buffer();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

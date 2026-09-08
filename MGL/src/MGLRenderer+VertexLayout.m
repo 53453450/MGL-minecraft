@@ -296,7 +296,9 @@
         if (fbo->color_attachments[i].texture)
         {
             bool isDrawBuffer = true;
-            if (fbo->color_attachments[i].textarget == GL_RENDERBUFFER && fbo->color_attachments[i].buf.rbo) {
+            if (mglRenderTargetIsRenderbuffer(
+                    (uint32_t)fbo->color_attachments[i].textarget) &&
+                fbo->color_attachments[i].buf.rbo) {
                 isDrawBuffer = fbo->color_attachments[i].buf.rbo->is_draw_buffer;
             }
 

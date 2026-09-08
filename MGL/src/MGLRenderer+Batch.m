@@ -205,7 +205,10 @@ static void mglBatchExecuteIndirectCommands(
         Program *renderingProgram = mglResolveProgramFromState(ctx);
         BOOL framebufferYFlipWrite =
             renderingProgram &&
-            renderingProgram->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE &&
+            renderingProgram->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip &&
+            mglRenderSamplerUnitExplicit(
+                (uint32_t)renderingProgram->modules[_VERTEX_SHADER]
+                    .mgl_injected_framebuffer_yflip) &&
             !mglRendererProgramHasSampledResourceNamed(renderingProgram, "InSampler") &&
             !mglRendererProgramHasSampledResourceNamed(renderingProgram, "DiffuseSampler");
 
@@ -1271,7 +1274,8 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
         }
     }
     MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglTraceNowSeconds());
-    if (traceFlush || skippedCommandCount > 0 || replayError != GL_NO_ERROR) {
+    if (traceFlush || skippedCommandCount > 0 ||
+        !mglRenderErrorIsNone((uint32_t)replayError)) {
         mglTraceLogNSString(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
               (unsigned long long)flushHit,
               cb->batch_count, cb->total_commands,
@@ -1529,7 +1533,8 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
     mglClearStateDirtyBitsPreservingHashInvalidation(glm_ctx->active_state);
     mglRestoreProgramPipelinePair(glm_ctx, MGL_STATE(glm_ctx)->program_name,
                                   MGL_STATE(glm_ctx)->var.program_pipeline_binding);
-    if (savedError == GL_NO_ERROR && replayError != GL_NO_ERROR) {
+    if (mglRenderErrorIsNone((uint32_t)savedError) &&
+        !mglRenderErrorIsNone((uint32_t)replayError)) {
         MGL_STATE(glm_ctx)->error = replayError;
     }
     (void)savedState;
@@ -1561,7 +1566,7 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
     }
 
     if ([self processGLState:true] == false) {
-        if (MGL_STATE(glm_ctx)->error != GL_NO_ERROR) {
+        if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(glm_ctx)->error)) {
             *replayError = MGL_STATE(glm_ctx)->error;
         }
         [self traceReplayBatch:batch context:glm_ctx flushId:flushId

@@ -909,7 +909,7 @@ Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx, FBOAttachment *a
     if (!glctx || !attachment) {
         return NULL;
     }
-    if (attachment->textarget == GL_RENDERBUFFER) {
+    if (mglRenderTargetIsRenderbuffer((uint32_t)attachment->textarget)) {
         return attachment->buf.rbo ? attachment->buf.rbo->tex : NULL;
     }
     if (attachment->buf.tex) {
@@ -1019,7 +1019,7 @@ BOOL mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
         !mglPointerRangeIsReadable(tex, sizeof(*tex))) {
         return NO;
     }
-    if (tex->target != GL_TEXTURE_2D ||
+    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
         tex->index != _TEXTURE_2D ||
         tex->is_render_target ||
         mglRendererGLInternalFormatLooksDepthOrStencil(tex->internalformat)) {
@@ -1058,7 +1058,7 @@ BOOL mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx,
         !mglPointerRangeIsReadable(tex, sizeof(*tex))) {
         return NO;
     }
-    if (tex->target != GL_TEXTURE_2D ||
+    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
         tex->index != _TEXTURE_2D ||
         mglRendererGLInternalFormatLooksDepthOrStencil(tex->internalformat)) {
         return NO;
@@ -3124,7 +3124,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
 
     GLMContext activeCtx = glm_ctx;
     GLenum drawBuffer = activeCtx->state.draw_buffer;
-    bool shouldPresent = (drawBuffer != GL_NONE);
+    bool shouldPresent = mglRenderShouldPresentDrawBuffer((uint32_t)drawBuffer) != 0;
     if (traceSwap) {
         mglTraceLogNSString(@"MGL TRACE swap.begin call=%llu shouldPresent=%d draw_buffer=0x%x",
               (unsigned long long)swapCall, shouldPresent ? 1 : 0, (unsigned)drawBuffer);
@@ -3744,7 +3744,8 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     GLint clearW = x1 - x0;
     GLint clearH = y1 - y0;
     GLint metalY = y0;
-    if (MGL_STATE(glm_ctx)->var.clip_origin != GL_UPPER_LEFT) {
+    if (mglRenderClipOriginIsLowerLeft(
+            (uint32_t)MGL_STATE(glm_ctx)->var.clip_origin)) {
         metalY = (GLint)passHeight - y1;
         if (metalY < 0) {
             metalY = 0;
