@@ -1451,6 +1451,24 @@ void mglRenderInitDefaultRenderPassState(
     *state_out = mgl::defaultRenderPassState();
 }
 
+int mglRenderPassAttachmentClass(uint32_t kind) {
+    if (kind == (uint32_t)MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR) {
+        return 1;
+    }
+    if (kind == (uint32_t)MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH) {
+        return 2;
+    }
+    if (kind == (uint32_t)MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL) {
+        return 3;
+    }
+    return 0;
+}
+
+int mglRenderPassColorAttachmentIndexValid(uint32_t color_index,
+                                           uint32_t max_color) {
+    return color_index < max_color ? 1 : 0;
+}
+
 int mglRenderInit(void* objc_device) {
     if (!objc_device) {
         return -1;

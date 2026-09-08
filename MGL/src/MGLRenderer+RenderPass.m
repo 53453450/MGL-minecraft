@@ -279,15 +279,17 @@ static bool mglRenderPassGetPersistentAttachmentState(
     if (!attachmentOut) return false;
     MGLRenderPassState state = {0};
     if (!mglRenderPassGetPersistentState(commandState, &state)) return false;
-    switch (attachmentKind) {
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
-            if (colorIndex >= MAX_COLOR_ATTACHMENTS) return false;
+    switch (mglRenderPassAttachmentClass(attachmentKind)) {
+        case 1:
+            if (!mglRenderPassColorAttachmentIndexValid(
+                    (uint32_t)colorIndex, MAX_COLOR_ATTACHMENTS))
+                return false;
             *attachmentOut = state.color[colorIndex].attachment;
             return true;
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
+        case 2:
             *attachmentOut = state.depth.attachment;
             return true;
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
+        case 3:
             *attachmentOut = state.stencil.attachment;
             return true;
         default:
@@ -302,13 +304,14 @@ mglRenderPassAttachmentStateFromSnapshot(
     NSUInteger colorIndex)
 {
     if (!state) return NULL;
-    switch (attachmentKind) {
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR:
-            return colorIndex < MAX_COLOR_ATTACHMENTS
+    switch (mglRenderPassAttachmentClass(attachmentKind)) {
+        case 1:
+            return mglRenderPassColorAttachmentIndexValid(
+                       (uint32_t)colorIndex, MAX_COLOR_ATTACHMENTS)
                 ? &state->color[colorIndex].attachment : NULL;
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
+        case 2:
             return &state->depth.attachment;
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
+        case 3:
             return &state->stencil.attachment;
         default:
             return NULL;
@@ -411,9 +414,11 @@ static BOOL mglRenderPassClearValuesFor(
 {
     MGLRenderPassState state = {0};
     if (!mglRenderPassGetPersistentState(commandState, &state)) return NO;
-    switch (attachmentKind) {
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR: {
-            if (colorIndex >= MAX_COLOR_ATTACHMENTS) return NO;
+    switch (mglRenderPassAttachmentClass(attachmentKind)) {
+        case 1: {
+            if (!mglRenderPassColorAttachmentIndexValid(
+                    (uint32_t)colorIndex, MAX_COLOR_ATTACHMENTS))
+                return NO;
             const MGLRenderPassColorState *color =
                 &state.color[colorIndex];
             if (clearColorOut) {
@@ -424,10 +429,10 @@ static BOOL mglRenderPassClearValuesFor(
             }
             return YES;
         }
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH:
+        case 2:
             if (clearDepthOut) *clearDepthOut = state.depth.clear_depth;
             return YES;
-        case MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL:
+        case 3:
             if (clearStencilOut) *clearStencilOut = state.stencil.clear_stencil;
             return YES;
         default:

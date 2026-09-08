@@ -2365,6 +2365,25 @@ static void test_plain_uniform_buffer_table(void)
     expect(uses_plain_uniform_bufs(3) == 0, "SSBO uses buffer_base");
 }
 
+static int rp_attach_class(uint32_t k)
+{
+    if (k == 0u) return 1;
+    if (k == 1u) return 2;
+    if (k == 2u) return 3;
+    return 0;
+}
+static int rp_color_idx_ok(uint32_t i, uint32_t max) { return i < max; }
+
+static void test_renderpass_attachment_class(void)
+{
+    expect(rp_attach_class(0u) == 1, "COLOR class");
+    expect(rp_attach_class(1u) == 2, "DEPTH class");
+    expect(rp_attach_class(2u) == 3, "STENCIL class");
+    expect(rp_attach_class(9u) == 0, "invalid kind");
+    expect(rp_color_idx_ok(0u, 8u) == 1, "color 0 valid");
+    expect(rp_color_idx_ok(8u, 8u) == 0, "color 8 out of range");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2531,6 +2550,7 @@ int main(void)
     test_gs_air_route_block();
     test_ubo_isolate_copy();
     test_plain_uniform_buffer_table();
+    test_renderpass_attachment_class();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

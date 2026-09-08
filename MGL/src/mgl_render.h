@@ -3361,6 +3361,10 @@ typedef enum MGLRenderPassAttachmentKind_t {
     MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL = 2,
 } MGLRenderPassAttachmentKind;
 
+int mglRenderPassAttachmentClass(uint32_t kind);
+int mglRenderPassColorAttachmentIndexValid(uint32_t color_index,
+                                           uint32_t max_color);
+
 typedef struct MGLRenderPassIdentityState_t {
     void *framebuffer;
     uint32_t framebuffer_name;
