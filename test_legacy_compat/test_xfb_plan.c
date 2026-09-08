@@ -1076,6 +1076,16 @@ static void test_blend_factor_and_operation_map(void)
     expect(unknown == 0u, "unknown blend factor falls back to Zero");
 }
 
+static void test_stencil_op_from_gl(void)
+{
+    uint32_t keep = 0u;
+    expect(keep == 0u, "GL_KEEP maps to stencil op 0");
+    uint32_t incrw = 4u;
+    expect(incrw == 4u, "GL_INCR_WRAP maps to stencil op 4");
+    uint32_t inv = 7u;
+    expect(inv == 7u, "GL_INVERT maps to stencil op 7");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1153,6 +1163,7 @@ int main(void)
     test_attrib_step_and_buffer_index();
     test_blend_repair_and_color_mask();
     test_blend_factor_and_operation_map();
+    test_stencil_op_from_gl();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -8568,6 +8568,45 @@ int mglRenderBlendOperationFromGL(uint32_t gl_op, uint32_t *out) {
     return known;
 }
 
+int mglRenderStencilOpFromGL(uint32_t gl_op, uint32_t *out) {
+    uint32_t op = 0u;
+    int known = 1;
+    switch (gl_op) {
+    case GL_KEEP:
+        op = 0u;
+        break;
+    case GL_ZERO:
+        op = 1u;
+        break;
+    case GL_REPLACE:
+        op = 2u;
+        break;
+    case GL_INCR:
+        op = 3u;
+        break;
+    case GL_INCR_WRAP:
+        op = 4u;
+        break;
+    case GL_DECR:
+        op = 5u;
+        break;
+    case GL_DECR_WRAP:
+        op = 6u;
+        break;
+    case GL_INVERT:
+        op = 7u;
+        break;
+    default:
+        known = 0;
+        op = 0u;
+        break;
+    }
+    if (out) {
+        *out = op;
+    }
+    return known;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

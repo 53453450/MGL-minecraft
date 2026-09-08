@@ -2840,20 +2840,11 @@ void logDirtyBits(GLMContext ctx)
 #pragma mark render encoder and command buffer init code
 - (uint32_t) mtlStencilOpForGLOp:(GLenum) op
 {
-    switch(op)
-    {
-        case GL_KEEP: return 0u;
-        case GL_ZERO: return 1u;
-        case GL_REPLACE: return 2u;
-        case GL_INCR: return 3u;
-        case GL_INCR_WRAP: return 4u;
-        case GL_DECR: return 5u;
-        case GL_DECR_WRAP: return 6u;
-        case GL_INVERT: return 7u;
-        default:
-            NSLog(@"MGL WARNING: Unknown stencil operation 0x%x, falling back to KEEP", op);
-            return 0u;
+    uint32_t mtlOp = 0u;
+    if (!mglRenderStencilOpFromGL((uint32_t)op, &mtlOp)) {
+        NSLog(@"MGL WARNING: Unknown stencil operation 0x%x, falling back to KEEP", op);
     }
+    return mtlOp;
 }
 
 /* updateCurrentRenderEncoder moved to MGLRenderer+RenderPass.m */

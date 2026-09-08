@@ -1339,6 +1339,7 @@ uint32_t mglRenderForceDefaultFBOAlphaWrite(int attachment, int has_fbo,
                                            uint32_t mask);
 int mglRenderBlendFactorFromGL(uint32_t gl_blend, uint32_t *out);
 int mglRenderBlendOperationFromGL(uint32_t gl_op, uint32_t *out);
+int mglRenderStencilOpFromGL(uint32_t gl_op, uint32_t *out);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
