@@ -9775,6 +9775,40 @@ int mglRenderBufferHasMapWriteBit(uint32_t access_flags) {
     return (access_flags & GL_MAP_WRITE_BIT) != 0 ? 1 : 0;
 }
 
+int mglRenderClearMaskHasColor(uint32_t mask) {
+    return (mask & GL_COLOR_BUFFER_BIT) != 0 ? 1 : 0;
+}
+
+int mglRenderClearMaskHasDepth(uint32_t mask) {
+    return (mask & GL_DEPTH_BUFFER_BIT) != 0 ? 1 : 0;
+}
+
+int mglRenderClearMaskHasStencil(uint32_t mask) {
+    return (mask & GL_STENCIL_BUFFER_BIT) != 0 ? 1 : 0;
+}
+
+int mglRenderClearMaskHasDepthStencil(uint32_t mask) {
+    return mglRenderClearMaskHasDepth(mask) || mglRenderClearMaskHasStencil(mask)
+               ? 1
+               : 0;
+}
+
+uint32_t mglRenderClearMaskDepthStencilBits(uint32_t mask) {
+    return mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+}
+
+uint32_t mglRenderClearMaskClearColor(uint32_t mask) {
+    return mask & ~GL_COLOR_BUFFER_BIT;
+}
+
+uint32_t mglRenderClearMaskClearDepth(uint32_t mask) {
+    return mask & ~GL_DEPTH_BUFFER_BIT;
+}
+
+uint32_t mglRenderClearMaskClearStencil(uint32_t mask) {
+    return mask & ~GL_STENCIL_BUFFER_BIT;
+}
+
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
     uint32_t tmp = 0u;
     return mglRenderBlendOperationFromGL(op, &tmp);

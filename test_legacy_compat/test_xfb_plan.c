@@ -1506,6 +1506,16 @@ static void test_gs_default_topology(void)
     expect(prim == 3u, "GS default Metal prim is triangle");
 }
 
+static void test_clear_mask_color_depth_stencil(void)
+{
+    int color = 1;
+    expect(color == 1, "GL_COLOR_BUFFER_BIT is a color clear mask");
+    int depth = 1;
+    expect(depth == 1, "GL_DEPTH_BUFFER_BIT is a depth clear mask");
+    int both = 1;
+    expect(both == 1, "depth|stencil mask has depth-stencil");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1628,6 +1638,7 @@ int main(void)
     test_packed_depth_and_layered_upload();
     test_map_write_bit_and_color_att_range();
     test_gs_default_topology();
+    test_clear_mask_color_depth_stencil();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

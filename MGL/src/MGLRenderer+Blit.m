@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Blit_Private.h"
+#include "mgl_render.h"
 #include "mgl_env_flag.h"
 #include "mgl_aux_assets.h"
 #include <stdio.h>
@@ -1670,14 +1671,15 @@ static id mglLookupAuxRenderPipeline(
                                      mask:(GLbitfield)mask filter:(GLenum)filter
 {
     MGL_ASSERT_GL_THREAD();
-    GLbitfield depthStencilMask = mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+    GLbitfield depthStencilMask =
+        (GLbitfield)mglRenderClearMaskDepthStencilBits((uint32_t)mask);
     if (depthStencilMask != 0u && glm_ctx->active_state->readbuffer && glm_ctx->active_state->framebuffer) {
         Framebuffer *depthReadFBO = glm_ctx->active_state->readbuffer;
         Framebuffer *depthDrawFBO = glm_ctx->active_state->framebuffer;
         FBOAttachment *depthReadAttachment =
-            (depthStencilMask & GL_DEPTH_BUFFER_BIT) ? &depthReadFBO->depth : &depthReadFBO->stencil;
+            mglRenderClearMaskHasDepth((uint32_t)depthStencilMask) ? &depthReadFBO->depth : &depthReadFBO->stencil;
         FBOAttachment *depthDrawAttachment =
-            (depthStencilMask & GL_DEPTH_BUFFER_BIT) ? &depthDrawFBO->depth : &depthDrawFBO->stencil;
+            mglRenderClearMaskHasDepth((uint32_t)depthStencilMask) ? &depthDrawFBO->depth : &depthDrawFBO->stencil;
         Texture *depthReadObject = [self framebufferAttachmentTexture:depthReadAttachment];
         Texture *depthDrawObject = [self framebufferAttachmentTexture:depthDrawAttachment];
 
@@ -1709,7 +1711,7 @@ static id mglLookupAuxRenderPipeline(
                 (NSUInteger)dstHeight <= mglBlitTextureInfo(depthDrawTexture).height) {
                 [self endRenderEncoding];
                 if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthMsaaResolve"]) {
-                    if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
+                    if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
                         [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
                                                            attachment:depthReadAttachment
                                                            textureObj:depthReadObject
@@ -1717,10 +1719,10 @@ static id mglLookupAuxRenderPipeline(
                     }
 
                     BOOL resolvedAny = NO;
-                    if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
+                    if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
                         resolvedAny = YES;
                     }
-                    if ((depthStencilMask & GL_STENCIL_BUFFER_BIT) &&
+                    if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
                         mglMetalPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
                         resolvedAny = YES;
                     }
@@ -1728,7 +1730,7 @@ static id mglLookupAuxRenderPipeline(
                     if (resolvedAny) {
                         MGLRenderPassState resolveState =
                             mglBlitDefaultRenderPassState();
-                        if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
+                        if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
                             resolveState.depth.attachment =
                                 mglBlitRenderPassAttachment(
                                     depthReadTexture, 0u,
@@ -1742,7 +1744,7 @@ static id mglLookupAuxRenderPipeline(
                             resolveState.depth.resolve_filter =
                                 (uint32_t)MGLMultisampleDepthResolveFilterSample0;
                         }
-                        if ((depthStencilMask & GL_STENCIL_BUFFER_BIT) &&
+                        if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
                             mglMetalPixelFormatIsPackedDepthStencil(
                                 mglBlitTextureInfo(depthReadTexture).pixel_format)) {
                             resolveState.stencil.attachment =
@@ -1764,12 +1766,12 @@ static id mglLookupAuxRenderPipeline(
                         if (resolveEncoder) {
                             mglBlitEndRenderEncoder(resolveEncoder);
                             mglMarkTextureLevelRenderTargetWritten(depthDrawObject, depthDrawAttachment->level);
-                            if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
-                                mask &= ~GL_DEPTH_BUFFER_BIT;
+                            if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
+                                mask = (GLbitfield)mglRenderClearMaskClearDepth((uint32_t)mask);
                             }
-                            if ((depthStencilMask & GL_STENCIL_BUFFER_BIT) &&
+                            if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
                                 mglMetalPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
-                                mask &= ~GL_STENCIL_BUFFER_BIT;
+                                mask = (GLbitfield)mglRenderClearMaskClearStencil((uint32_t)mask);
                             }
                         }
                     }
@@ -1812,7 +1814,7 @@ static id mglLookupAuxRenderPipeline(
                         copyDstY1 <= (GLint)mglBlitTextureInfo(depthDrawTexture).height) {
                         [self endRenderEncoding];
                         if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthStencil"]) {
-                            if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
+                            if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
                                 [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
                                                                    attachment:depthReadAttachment
                                                                    textureObj:depthReadObject
@@ -1866,7 +1868,7 @@ static id mglLookupAuxRenderPipeline(
                         mglBlitTextureInfo(depthDrawTexture).texture_type == MGLTextureType2D) {
                         /* Apply pending depth clears before the scaled blit so the
                          * source texture reflects any lazy glClear operations. */
-                        if (depthStencilMask & GL_DEPTH_BUFFER_BIT) {
+                        if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
                             [self endRenderEncoding];
                             if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthScaledClear"]) {
                                 [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
@@ -2775,8 +2777,8 @@ static id mglLookupAuxRenderPipeline(
                                        dstX0:dstX0 dstY0:dstY0 dstX1:dstX1 dstY1:dstY1
                                          mask:mask filter:filter];
 
-    if ((mask & GL_COLOR_BUFFER_BIT) == 0u) {
-        if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u) {
+    if (!mglRenderClearMaskHasColor((uint32_t)mask)) {
+        if (mglRenderClearMaskHasDepthStencil((uint32_t)mask)) {
             static uint64_t s_depthStencilOnlyBlitWarnCount = 0;
             uint64_t hit = ++s_depthStencilOnlyBlitWarnCount;
             if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -2788,7 +2790,7 @@ static id mglLookupAuxRenderPipeline(
         return;
     }
 
-    if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u) {
+    if (mglRenderClearMaskHasDepthStencil((uint32_t)mask)) {
         static uint64_t s_depthStencilBlitWarnCount = 0;
         uint64_t hit = ++s_depthStencilBlitWarnCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -2837,7 +2839,7 @@ static id mglLookupAuxRenderPipeline(
         readTextureObject &&
         readtexid &&
         isColorAttachment(glm_ctx, readAttachment) &&
-        (readFBOAttachment->clear_bitmask & GL_COLOR_BUFFER_BIT)) {
+        mglRenderClearMaskHasColor((uint32_t)readFBOAttachment->clear_bitmask)) {
         BOOL clearEncoded =
             mglRenderEncodeColorClearForCommandBufferOwner(
                 _renderPassManager.state->currentCommandBufferOwner,
@@ -2848,7 +2850,9 @@ static id mglLookupAuxRenderPipeline(
                 readFBOAttachment->clear_color[2],
                 readFBOAttachment->clear_color[3]) == 0;
         if (clearEncoded) {
-            readFBOAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+            readFBOAttachment->clear_bitmask =
+                (GLbitfield)mglRenderClearMaskClearColor(
+                    (uint32_t)readFBOAttachment->clear_bitmask);
             mglMarkTextureLevelRenderTargetWritten(readTextureObject, readFBOAttachment->level);
             mglTraceLogNSString(@"MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
                   (unsigned)readfbo->name,
