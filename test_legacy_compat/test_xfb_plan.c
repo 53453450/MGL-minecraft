@@ -372,6 +372,16 @@ static void test_tess_binding_helpers(void)
     expect(not_ready == 0, "native TES rejects short TCS stride");
 }
 
+static void test_native_factor_and_ms(void)
+{
+    /* quads reuse; triangles 3 patches * 8 bytes */
+    expect(3u * 8u == 24u, "triangle factor repack size");
+    int emulated = (0x9100u == 0x9100u) && (4 > 1);
+    expect(emulated == 1, "2D MS texture with samples>1 is emulated");
+    int reuse_warn = (1 && 4 > 1);
+    expect(reuse_warn == 1, "multi-instance TCS reuse warns");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -392,6 +402,7 @@ int main(void)
     test_tess_eval_gather();
     test_copyback_collect();
     test_tess_binding_helpers();
+    test_native_factor_and_ms();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

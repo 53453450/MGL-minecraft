@@ -21,6 +21,7 @@
 #include "mgl_shader_abi.h"
 #include "mgl_shader_resource.h"
 #include "mgl_buffer_slots.h"
+#include "mgl_env_flag.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -1722,6 +1723,61 @@ extern "C" int mglTessNativeBuffersReady(int has_factors, int has_tcs_out,
 {
     return has_factors && has_tcs_out &&
            tcs_stride >= MGL_AIR_PER_VERTEX_STRIDE;
+}
+
+extern "C" int mglTessPlanNativeFactor(uint32_t tess_gen_mode,
+                                       uint64_t canonical_bytes,
+                                       uint32_t patch_count,
+                                       uint32_t *out_bytes)
+{
+    if (out_bytes) {
+        *out_bytes = 0u;
+    }
+    if (patch_count == 0u) {
+        return MGL_TESS_NATIVE_FACTOR_NONE;
+    }
+    const uint64_t need =
+        (uint64_t)patch_count * (uint64_t)MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    if (canonical_bytes < need) {
+        return MGL_TESS_NATIVE_FACTOR_NONE;
+    }
+    if (tess_gen_mode == GL_QUADS) {
+        return MGL_TESS_NATIVE_FACTOR_REUSE;
+    }
+    if (tess_gen_mode == GL_TRIANGLES) {
+        const uint64_t tri_bytes =
+            (uint64_t)patch_count * (uint64_t)MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
+        if (tri_bytes > UINT32_MAX) {
+            return MGL_TESS_NATIVE_FACTOR_NONE;
+        }
+        if (out_bytes) {
+            *out_bytes = (uint32_t)tri_bytes;
+        }
+        return MGL_TESS_NATIVE_FACTOR_REPACK_TRI;
+    }
+    return MGL_TESS_NATIVE_FACTOR_NONE;
+}
+
+extern "C" uint32_t mglTessNativePatchOutStride(int has_tcs,
+                                                uint32_t tcs_patch_stride)
+{
+    if (has_tcs && tcs_patch_stride > 0u) {
+        return tcs_patch_stride;
+    }
+    return 16u;
+}
+
+extern "C" int mglTessMultiInstanceTCSReuseWarn(int from_tcs,
+                                                int32_t instance_count)
+{
+    return from_tcs && instance_count > 1 ? 1 : 0;
+}
+
+extern "C" int mglTessMultiInstanceTCSReuseIsError(int from_tcs,
+                                                   int32_t instance_count)
+{
+    return mglTessMultiInstanceTCSReuseWarn(from_tcs, instance_count) &&
+           mglEnvFlagEnabled("MGL_TESS_MULTI_INSTANCE_ERROR");
 }
 
 extern "C" bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode)

@@ -476,22 +476,22 @@ static id mglNativeTessFactorBuffer(id device,
                                                 GLenum mode,
                                                 GLuint patchCount)
 {
-    const NSUInteger canonicalStride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
-    if (!device || !canonical || !mglDrawSupportBufferContents(canonical) || patchCount == 0u ||
-        mglDrawSupportBufferLength(canonical) < (NSUInteger)patchCount * canonicalStride) {
+    if (!device || !canonical || !mglDrawSupportBufferContents(canonical) ||
+        patchCount == 0u) {
         return nil;
     }
-    if (mode == GL_QUADS) {
+    uint32_t repackBytes = 0u;
+    const int factorKind = mglTessPlanNativeFactor(
+        (uint32_t)mode, (uint64_t)mglDrawSupportBufferLength(canonical),
+        patchCount, &repackBytes);
+    if (factorKind == MGL_TESS_NATIVE_FACTOR_REUSE) {
         return canonical;
     }
-    if (mode != GL_TRIANGLES) {
+    if (factorKind != MGL_TESS_NATIVE_FACTOR_REPACK_TRI) {
         return nil;
     }
 
-    const NSUInteger triangleStride = MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
-    id result = mglDrawSupportCreateBuffer(
-        device, (NSUInteger)patchCount * triangleStride,
-        0u);
+    id result = mglDrawSupportCreateBuffer(device, (NSUInteger)repackBytes, 0u);
     if (!result || !mglDrawSupportBufferContents(result)) {
         return nil;
     }
@@ -499,7 +499,7 @@ static id mglNativeTessFactorBuffer(id device,
     if (mglRenderRepackTessFactorTriangles(
             (const void *)mglDrawSupportBufferContents(canonical), (uint64_t)mglDrawSupportBufferLength(canonical),
             (void *)mglDrawSupportBufferContents(result),
-            (uint64_t)((NSUInteger)patchCount * triangleStride),
+            (uint64_t)repackBytes,
             patchCount) != 0) {
         return nil;
     }
@@ -3204,12 +3204,13 @@ after_gs_draws:
              * instance base so TES varyings can apply patchId exactly once. */
             id tcsPatchOutBuffer = (__bridge id)
                 mglRendererBackendGetTcsPatchOutBuffer(_backend);
-            uint32_t patchOutStride = 16u;
-            if (tcsPatchOutBuffer && tcsProgram) {
-                patchOutStride = mglAIRPatchVaryingStride(
-                    &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
-                                                     [_STAGE_OUTPUT_RES]);
-            }
+            uint32_t patchOutStride = mglTessNativePatchOutStride(
+                tcsProgram != NULL,
+                tcsPatchOutBuffer && tcsProgram
+                    ? mglAIRPatchVaryingStride(
+                          &tcsProgram->shader_resources_list
+                               [_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES])
+                    : 0u);
             MGLTessNativeEncodeState nativeEncode;
             memset(&nativeEncode, 0, sizeof(nativeEncode));
             nativeEncode.encoder_owner =
@@ -3321,11 +3322,10 @@ after_gs_draws:
     FBOAttachment *att = &fbo->color_attachments[0];
     Texture *tex = [self framebufferAttachmentTexture:att];
     if (!tex) return NULL;
-    if (tex->target != GL_TEXTURE_2D_MULTISAMPLE &&
-        tex->target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+    if (!mglRenderIsEmulatedMSColorTexture((uint32_t)tex->target,
+                                           (int32_t)tex->samples)) {
         return NULL;
     }
-    if (tex->samples <= 1) return NULL;
     /* Metal backing is created during processGLState; before the first draw
      * mtl_data may still be nil. All MS textures are emulated as array
      * sample planes, so the GL target/samples check is sufficient. */
@@ -3343,13 +3343,7 @@ after_gs_draws:
     if (!fp) return NO;
     Shader *fs = fp->shader_slots[_FRAGMENT_SHADER];
     if (!fs || !fs->src) return NO;
-    const char *src = fs->src;
-    return strstr(src, "gl_SampleID") != NULL ||
-           strstr(src, "gl_SamplePosition") != NULL ||
-           strstr(src, "gl_SampleMask") != NULL ||
-           strstr(src, "interpolateAtSample") != NULL ||
-           strstr(src, "interpolateAtOffset") != NULL ||
-           strstr(src, "sample in") != NULL;
+    return mglRenderFragmentNeedsPerSampleMSValues(fs->src) != 0;
 }
 
 - (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx

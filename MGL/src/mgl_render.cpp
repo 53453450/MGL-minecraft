@@ -13603,6 +13603,27 @@ int mglRenderShaderSourceUsesSampleParams(const char *src) {
                : 0;
 }
 
+int mglRenderFragmentNeedsPerSampleMSValues(const char *src) {
+    if (!src) {
+        return 0;
+    }
+    return strstr(src, "gl_SampleID") || strstr(src, "gl_SamplePosition") ||
+                   strstr(src, "gl_SampleMask") ||
+                   strstr(src, "interpolateAtSample") ||
+                   strstr(src, "interpolateAtOffset") ||
+                   strstr(src, "sample in")
+               ? 1
+               : 0;
+}
+
+int mglRenderIsEmulatedMSColorTexture(uint32_t target, int32_t samples) {
+    if (target != GL_TEXTURE_2D_MULTISAMPLE &&
+        target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        return 0;
+    }
+    return samples > 1 ? 1 : 0;
+}
+
 int mglRenderTextureSampleParams(uint32_t target, int32_t samples,
                                  uint32_t *num_samples,
                                  uint32_t *sample_buffers) {

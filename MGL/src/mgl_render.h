@@ -2495,6 +2495,8 @@ MGLProcessGLStateClass mglRenderClassifyProcessGLState(
     int has_ctx, int draw_command, int has_vao, int dirty_state);
 
 int mglRenderShaderSourceUsesSampleParams(const char *src);
+int mglRenderFragmentNeedsPerSampleMSValues(const char *src);
+int mglRenderIsEmulatedMSColorTexture(uint32_t target, int32_t samples);
 
 int mglRenderTextureSampleParams(uint32_t target, int32_t samples,
                                  uint32_t *num_samples,

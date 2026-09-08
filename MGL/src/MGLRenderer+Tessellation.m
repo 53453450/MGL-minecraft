@@ -1146,7 +1146,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * TCS outs is wrong when VS outputs vary by gl_InstanceID.  Until
      * per-instance TCS re-dispatch exists: one-shot log, and hard-fail when
      * MGL_TESS_MULTI_INSTANCE_ERROR is set. */
-    if (glInFromTCS && instanceCount > 1) {
+    if (mglTessMultiInstanceTCSReuseWarn(glInFromTCS ? 1 : 0,
+                                         (int32_t)instanceCount)) {
         static BOOL s_multiInstanceTCSLogged = NO;
         if (!s_multiInstanceTCSLogged) {
             NSLog(@"MGL TESS ERROR: multi-instance TES with TCS reuses "
@@ -1155,7 +1156,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                   (unsigned)tesProgram->name, (int)instanceCount);
             s_multiInstanceTCSLogged = YES;
         }
-        if (mglEnvFlagEnabled("MGL_TESS_MULTI_INSTANCE_ERROR")) {
+        if (mglTessMultiInstanceTCSReuseIsError(glInFromTCS ? 1 : 0,
+                                                (int32_t)instanceCount)) {
             return false;
         }
     }

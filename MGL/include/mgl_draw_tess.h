@@ -427,6 +427,18 @@ void mglTessFillPointSizeParams(float point_size, int program_point_size,
                                 float out[2]);
 int mglTessNativeBuffersReady(int has_factors, int has_tcs_out,
                               uint32_t tcs_stride);
+
+enum {
+    MGL_TESS_NATIVE_FACTOR_NONE = 0,
+    MGL_TESS_NATIVE_FACTOR_REUSE = 1,
+    MGL_TESS_NATIVE_FACTOR_REPACK_TRI = 2,
+};
+
+int mglTessPlanNativeFactor(uint32_t tess_gen_mode, uint64_t canonical_bytes,
+                            uint32_t patch_count, uint32_t *out_bytes);
+uint32_t mglTessNativePatchOutStride(int has_tcs, uint32_t tcs_patch_stride);
+int mglTessMultiInstanceTCSReuseWarn(int from_tcs, int32_t instance_count);
+int mglTessMultiInstanceTCSReuseIsError(int from_tcs, int32_t instance_count);
 void mglTessBindCaptureSlots(void *encoder_owner, void *capture_buffer,
                              const uint32_t params[3]);
 void mglTessEncodeCaptureArray(void *encoder_owner, uint32_t first,
