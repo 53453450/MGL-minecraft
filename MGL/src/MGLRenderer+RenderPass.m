@@ -2997,10 +2997,8 @@ static GLenum mglPassthroughDeclType(
                                  cachedDepth != nil;
     if (defaultPassNeedsDepth)
     {
-        uint32_t depthFormat = ctx->depth_format.mtl_pixel_format;
-        if (depthFormat == MGLPixelFormatInvalid) {
-            depthFormat = MGLPixelFormatDepth32Float;
-        }
+        uint32_t depthFormat = mglRenderDepthFormatOrFallback(
+            ctx->depth_format.mtl_pixel_format);
 
         if(cachedDepth)
         {
@@ -3108,7 +3106,7 @@ static GLenum mglPassthroughDeclType(
                 cachedDepthHeight != depthHeight) {
                 MGLRenderTextureDescriptorState depthDesc = {0};
                 depthDesc.texture_type = MGLTextureType2D;
-                depthDesc.pixel_format = MGLPixelFormatDepth32Float;
+                depthDesc.pixel_format = mglRenderDefaultDepthPixelFormat();
                 depthDesc.width = depthWidth;
                 depthDesc.height = depthHeight;
                 depthDesc.depth = 1;
@@ -3134,7 +3132,7 @@ static GLenum mglPassthroughDeclType(
                     uint64_t hit = ++s_transientDepthCreateCount;
                     if (hit <= 16 || (hit % 128) == 0) {
                         NSLog(@"MGL TRANSIENT FBO: created depth attachment fmt=%lu size=%lux%lu fbo=%u",
-                              (unsigned long)MGLPixelFormatDepth32Float,
+                              (unsigned long)mglRenderDefaultDepthPixelFormat(),
                               (unsigned long)depthWidth,
                               (unsigned long)depthHeight,
                               (unsigned)(mglRendererSafeFramebufferName(ctx)));

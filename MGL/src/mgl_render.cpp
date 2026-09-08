@@ -8349,7 +8349,7 @@ int mglRenderVSWritesLayer(const char *src) {
 }
 
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format) {
-    return format == 0u ? 252u /* Depth32Float */ : format;
+    return format == 0u ? mglRenderDefaultDepthPixelFormat() : format;
 }
 
 uint32_t mglRenderStencilFormatOrFallback(uint32_t format) {
@@ -9243,6 +9243,10 @@ int mglRenderDepthReadbackPlan(uint32_t pixel_format, int *is_depth16,
         *is_packed_d32f_s8 = ds;
     }
     return d16 || ds || pixel_format == 252u /* Depth32Float */ ? 1 : 0;
+}
+
+uint32_t mglRenderDefaultDepthPixelFormat(void) {
+    return 252u; /* Depth32Float */
 }
 
 int mglRenderSamplerUnitExplicit(uint32_t flag) {

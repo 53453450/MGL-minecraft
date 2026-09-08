@@ -1872,6 +1872,26 @@ static void test_depth_readback_plan(void)
            "RGBA8 is not a depth readback format");
 }
 
+static uint32_t default_depth_pixel_format(void)
+{
+    return 252u;
+}
+
+static uint32_t depth_format_or_fallback(uint32_t fmt)
+{
+    return fmt == 0u ? default_depth_pixel_format() : fmt;
+}
+
+static void test_default_depth_pixel_format(void)
+{
+    expect(default_depth_pixel_format() == 252u,
+           "default FBO/blit depth is Depth32Float");
+    expect(depth_format_or_fallback(0u) == 252u,
+           "invalid depth falls back to Depth32Float");
+    expect(depth_format_or_fallback(250u) == 250u,
+           "Depth16 stays Depth16");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2012,6 +2032,7 @@ int main(void)
     test_stencil_view_format();
     test_ds_format_classification();
     test_depth_readback_plan();
+    test_default_depth_pixel_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

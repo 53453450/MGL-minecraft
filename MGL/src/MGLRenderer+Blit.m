@@ -865,7 +865,7 @@ static id mglLookupAuxRenderPipeline(
 
     MGLRenderTextureDescriptorState desc = {0};
     desc.texture_type = MGLTextureType2D;
-    desc.pixel_format = MGLPixelFormatDepth32Float;
+    desc.pixel_format = mglRenderDefaultDepthPixelFormat();
     desc.width = mglBlitTextureInfo(sourceTexture).width;
     desc.height = mglBlitTextureInfo(sourceTexture).height;
     desc.depth = 1;
@@ -881,7 +881,7 @@ static id mglLookupAuxRenderPipeline(
     }
 
     id pipeline =
-        [self scaledDepthBlitPipelineForPixelFormat:MGLPixelFormatDepth32Float];
+        [self scaledDepthBlitPipelineForPixelFormat:mglRenderDefaultDepthPixelFormat()];
     id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
     if (!pipeline || !sampler) {
         NSLog(@"MGL WARNING: readPixels DS depth extract unavailable for %s pipeline=%p sampler=%p",
