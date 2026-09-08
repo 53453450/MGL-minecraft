@@ -8476,6 +8476,14 @@ int mglRenderStageMapsVertexAttribs(int stage) {
     return stage == (int)_VERTEX_SHADER ? 1 : 0;
 }
 
+int mglRenderVertexCaptureNeedsLoad(int stage, const void *bytes,
+                                    const void *library, const void *function) {
+    return mglRenderStageMapsVertexAttribs(stage) && bytes &&
+                   (!library || !function)
+               ? 1
+               : 0;
+}
+
 int mglRenderStageUsesComputeBufferMap(int stage) {
     return stage == (int)_COMPUTE_SHADER ? 1 : 0;
 }

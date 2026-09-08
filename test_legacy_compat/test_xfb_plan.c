@@ -2299,6 +2299,25 @@ static void test_array_stage_binding(void)
     expect(tex_bind_stage(4) == 1u, "array expansion on FS binds fragment stage");
 }
 
+static int vs_capture_needs_load(int stage, const void *bytes, const void *lib,
+                                 const void *fn)
+{
+    return stage == 0 && bytes && (!lib || !fn);
+}
+
+static void test_vertex_capture_load(void)
+{
+    static const char blob = 1;
+    expect(vs_capture_needs_load(0, &blob, NULL, NULL) == 1,
+           "VS tess/cull capture loads when blob present");
+    expect(vs_capture_needs_load(0, &blob, &blob, &blob) == 0,
+           "already-loaded capture is skipped");
+    expect(vs_capture_needs_load(4, &blob, NULL, NULL) == 0,
+           "non-VS stages do not load capture");
+    expect(vs_capture_needs_load(0, NULL, NULL, NULL) == 0,
+           "missing blob does not load");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2461,6 +2480,7 @@ int main(void)
     test_vertex_vs_compute_stage();
     test_replay_binding_stage();
     test_array_stage_binding();
+    test_vertex_capture_load();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

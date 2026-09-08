@@ -2018,10 +2018,10 @@ static GLenum mglPassthroughDeclType(
                     ptr->modules[i].mtl_library = (void *)CFBridgingRetain(library);
                     ptr->modules[i].mtl_function = (void *)CFBridgingRetain(function);
                 }
-                if (i == _VERTEX_SHADER &&
-                    ptr->modules[i].metallib_tess_capture_bytes &&
-                    (!ptr->modules[i].mtl_tess_capture_library ||
-                     !ptr->modules[i].mtl_tess_capture_function)) {
+                if (mglRenderVertexCaptureNeedsLoad(
+                        i, ptr->modules[i].metallib_tess_capture_bytes,
+                        ptr->modules[i].mtl_tess_capture_library,
+                        ptr->modules[i].mtl_tess_capture_function)) {
                     id library = nil;
                     id function = nil;
                     char loadError[256] = {0};
@@ -2040,10 +2040,10 @@ static GLenum mglPassthroughDeclType(
                     ptr->modules[i].mtl_tess_capture_function =
                         (void *)CFBridgingRetain(function);
                 }
-                if (i == _VERTEX_SHADER &&
-                    ptr->modules[i].metallib_cull_capture_bytes &&
-                    (!ptr->modules[i].mtl_cull_capture_library ||
-                     !ptr->modules[i].mtl_cull_capture_function)) {
+                if (mglRenderVertexCaptureNeedsLoad(
+                        i, ptr->modules[i].metallib_cull_capture_bytes,
+                        ptr->modules[i].mtl_cull_capture_library,
+                        ptr->modules[i].mtl_cull_capture_function)) {
                     id library = nil;
                     id function = nil;
                     char loadError[256] = {0};

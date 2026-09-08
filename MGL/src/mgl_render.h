@@ -1320,6 +1320,8 @@ uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
 int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);
 int mglRenderShaderStageValid(int stage);
 int mglRenderStageMapsVertexAttribs(int stage);
+int mglRenderVertexCaptureNeedsLoad(int stage, const void *bytes,
+                                    const void *library, const void *function);
 int mglRenderStageUsesComputeBufferMap(int stage);
 uint32_t mglRenderTextureBindingStageForShader(int shader_stage);
 int mglRenderSamplerBindingStageForShader(int shader_stage,
