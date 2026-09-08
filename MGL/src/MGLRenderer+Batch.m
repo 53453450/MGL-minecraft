@@ -18,6 +18,7 @@
 #import "mgl_sampler_compat.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_batch_path.h"
 
 static BOOL mglBatchHasActiveEncoder(void *owner)
 {
@@ -1295,56 +1296,50 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
 {
-    if (!batch || batch->command_count == 0) {
-        return MGL_BATCH_PATH_DIRECT;
+    /* O2.1: path decision in pure C (mgl_batch_select_path). ObjC only
+     * materializes context-derived flags + OS ICB gate. */
+    MGLBatchSelectInputs in = {0};
+    if (!batch) {
+        return (MGLBatchPath)mgl_batch_select_path(&in);
     }
-
-    if (batch->sampler_snapshots_mixed) {
-        return MGL_BATCH_PATH_DIRECT;
+    in.command_count = batch->command_count;
+    in.sampler_snapshots_mixed = batch->sampler_snapshots_mixed ? 1u : 0u;
+    in.stream_merged = batch->stream_merged ? 1u : 0u;
+    in.has_dynamic_uniform_bindings =
+        batch->has_dynamic_uniform_bindings ? 1u : 0u;
+    in.has_dynamic_vertex_bindings =
+        batch->has_dynamic_vertex_bindings ? 1u : 0u;
+    in.has_dynamic_texture_bindings =
+        batch->has_dynamic_texture_bindings ? 1u : 0u;
+    in.mdi_compatible = batch->mdi_compatible ? 1u : 0u;
+    in.uses_elements = batch->uses_elements ? 1u : 0u;
+    in.primitive_type = batch->key.primitive_type;
+    in.enable_icb = mglEnvFlagEnabled("MGL_ENABLE_ICB_BATCH") ? 1u : 0u;
+    in.disable_icb = mglEnvFlagEnabled("MGL_DISABLE_ICB_BATCH") ? 1u : 0u;
+    in.disable_mdi = mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1u : 0u;
+    if (@available(macOS 10.14, *)) {
+        in.icb_os_supported = 1u;
     }
-
     Program *vertexProgram =
         mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     if (vertexProgram && vertexProgram->uses_cull_distance) {
-        /* CullDistance capture and per-primitive expansion are performed by
-         * issueDirectBatch. MDI/ICB/stream merge cannot preserve the hidden
-         * capture buffer and primitive-local sibling lookup. */
-        return MGL_BATCH_PATH_DIRECT;
+        in.uses_cull_distance = 1u;
     }
-
-    if (batch->stream_merged) {
-        return MGL_BATCH_PATH_STREAM_MERGE;
-    }
-
-    if (!batch->has_dynamic_uniform_bindings &&
-        !batch->has_dynamic_vertex_bindings &&
-        !batch->has_dynamic_texture_bindings &&
-        !batch->sampler_snapshots_mixed &&
-        mglEnvFlagEnabled("MGL_ENABLE_ICB_BATCH") &&
-        !mglEnvFlagEnabled("MGL_DISABLE_ICB_BATCH") &&
-        batch->key.primitive_type != 0xFFu) {
-        if (@available(macOS 10.14, *)) {
-            return MGL_BATCH_PATH_ICB;
-        }
-    }
-
-    if (!mglEnvFlagEnabled("MGL_DISABLE_MDI") &&
-        batch->mdi_compatible &&
-        batch->command_count >= MGL_MDI_MIN_BATCH_SIZE &&
-        !mglPolygonModePointForDrawMode(glm_ctx, batch->commands[0].mode)) {
-        bool primitiveRestart = false;
+    if (batch->command_count > 0u) {
+        in.polygon_mode_point =
+            mglPolygonModePointForDrawMode(glm_ctx, batch->commands[0].mode)
+                ? 1u
+                : 0u;
         if (batch->uses_elements) {
-            uint32_t dummy;
-            primitiveRestart = mglPrimitiveRestartIndexForType(glm_ctx,
-                                                               batch->commands[0].indexType,
-                                                               &dummy);
-        }
-        if (!primitiveRestart) {
-            return MGL_BATCH_PATH_MDI;
+            uint32_t dummy = 0u;
+            in.primitive_restart =
+                mglPrimitiveRestartIndexForType(
+                    glm_ctx, batch->commands[0].indexType, &dummy)
+                    ? 1u
+                    : 0u;
         }
     }
-
-    return MGL_BATCH_PATH_DIRECT;
+    return (MGLBatchPath)mgl_batch_select_path(&in);
 }
 
 - (void)restoreStateForBatch:(MGLDrawBatch *)batch

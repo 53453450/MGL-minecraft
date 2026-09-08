@@ -630,6 +630,20 @@ $(build_dir)/test_xfb_plan: test_legacy_compat/test_xfb_plan.c
 test-xfb-plan: $(build_dir)/test_xfb_plan
 	$(build_dir)/test_xfb_plan
 
+$(build_dir)/test_batch_path: test_legacy_compat/test_batch_path.c \
+	MGL/src/mgl_batch_path.c MGL/include/mgl_batch_path.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_batch_path.c \
+		MGL/src/mgl_batch_path.c \
+		-o $@
+
+test-batch-path: $(build_dir)/test_batch_path
+	$(build_dir)/test_batch_path
+
 $(build_dir)/test_tess_air: test_legacy_compat/test_tess_air.mm $(build_dir)/libmgl.dylib \
 	MGL/include/mgl_tess_domain.h MGL/include/mgl_air_tess_abi.h
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc $(LLVM_CXXFLAGS) \
@@ -866,12 +880,13 @@ test-all:
 	$(MAKE) test-arch-correctness
 	$(MAKE) test-tess-domain
 	$(MAKE) test-xfb-plan
+	$(MAKE) test-batch-path
 	$(MAKE) test-tess-air
 	$(MAKE) test-es-smoke
 	$(MAKE) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
-	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-tess-air test-benchmark \
+	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-tess-air test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
