@@ -2227,7 +2227,7 @@ after_gs_draws:
                   (unsigned long long)byteStart,
                   (unsigned long long)byteEnd,
                   (unsigned long long)metalLen,
-                  (unsigned long long)vboSize,
+                  (unsigned long long)vbo->size,
                   (int)first,
                   (int)count);
             return false;
@@ -2264,12 +2264,12 @@ after_gs_draws:
                   (int)count,
                   (unsigned long long)byteStart,
                   (unsigned long long)byteEnd,
-                  (unsigned long long)vboSize,
+                  (unsigned long long)vbo->size,
                   (unsigned long long)metalLen,
-                  (unsigned long long)stride,
-                  (unsigned long long)bindingOffset,
-                  (unsigned long long)relOffset,
-                  (unsigned long long)elemBytes);
+                  (unsigned long long)fetch.stride,
+                  (unsigned long long)resolved.binding_offset,
+                  (unsigned long long)resolved.relativeoffset,
+                  (unsigned long long)fetch.elem_bytes);
         }
     }
 
