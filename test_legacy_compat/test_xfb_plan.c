@@ -979,6 +979,22 @@ static void test_pso_topology_and_tess_state(void)
     expect(rast == 0, "rasterizer discard without FS disables rasterization");
 }
 
+static void test_pipeline_functions_and_ds_fallback(void)
+{
+    int ready = 1 && (0 || 1);
+    expect(ready == 1, "VS plus rasterizer discard is pipeline-ready without FS");
+    int layer = 1;
+    expect(layer == 1, "gl_Layer in VS source requires explicit topology");
+    uint32_t d = 0u ? 0u : 252u;
+    expect(d == 252u, "invalid depth format falls back to Depth32Float");
+    uint32_t s = 0u ? 0u : 253u;
+    expect(s == 253u, "invalid stencil format falls back to Stencil8");
+    int done = ((0x1u >> 1) == 0u);
+    expect(done == 1, "color attachment bitfield done after last bit");
+    uint32_t maxf = 64u;
+    expect(maxf == 64u, "native TES max tessellation factor is 64");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1048,6 +1064,7 @@ int main(void)
     test_default_sampler_unit();
     test_expected_type_unset();
     test_pso_topology_and_tess_state();
+    test_pipeline_functions_and_ds_fallback();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

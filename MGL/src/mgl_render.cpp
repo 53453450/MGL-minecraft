@@ -8314,6 +8314,30 @@ int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment) {
     return rasterizer_discard ? (has_fragment ? 1 : 0) : 1;
 }
 
+int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_discard) {
+    return has_vs && (has_fs || rasterizer_discard) ? 1 : 0;
+}
+
+int mglRenderVSWritesLayer(const char *src) {
+    return src && strstr(src, "gl_Layer") ? 1 : 0;
+}
+
+uint32_t mglRenderDepthFormatOrFallback(uint32_t format) {
+    return format == 0u ? 252u /* Depth32Float */ : format;
+}
+
+uint32_t mglRenderStencilFormatOrFallback(uint32_t format) {
+    return format == 0u ? 253u /* Stencil8 */ : format;
+}
+
+int mglRenderColorAttachmentBitfieldDone(uint32_t bitfield, int index) {
+    return (bitfield >> (index + 1)) == 0u ? 1 : 0;
+}
+
+uint32_t mglRenderMaxTessellationFactor(void) {
+    return 64u;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

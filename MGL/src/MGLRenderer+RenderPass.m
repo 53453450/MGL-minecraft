@@ -4790,7 +4790,9 @@ static GLenum mglPassthroughDeclType(
         NSLog(@"MGL PIPELINE DESC vs=%p fs=%p",
               vertexFunction, fragmentFunction);
     }
-    if (!vertexFunction || (!fragmentFunction && !rasterizerDiscard)) {
+    if (!mglRenderPipelineFunctionsReady(vertexFunction ? 1 : 0,
+                                         fragmentFunction ? 1 : 0,
+                                         rasterizerDiscard ? 1 : 0)) {
         NSLog(@"MGL PIPELINE DESC fail: missing MTLFunction key=%u vsProgram=%u fsProgram=%u (vs=%p fs=%p)",
               (unsigned)renderProgramKey,
               (unsigned)vertexProgramName,
@@ -4812,7 +4814,7 @@ static GLenum mglPassthroughDeclType(
     state->color_count = MAX_COLOR_ATTACHMENTS;
     state->rasterization_enabled = 1;
 
-    state->max_tessellation_factor = 64u;
+    state->max_tessellation_factor = mglRenderMaxTessellationFactor();
 
 
     {
@@ -4830,14 +4832,10 @@ static GLenum mglPassthroughDeclType(
          * Unspecified; Apple Paravirtual rejects with CompilerError. */
         BOOL needsExplicitTopology = mglRenderNeedsExplicitTopology(
             geometryExpansion ? 1 : 0, (uint32_t)_lastDrawPrimitiveMode,
-            0);
-        if (!needsExplicitTopology && vertexProgram) {
-            Shader *vsShader = vertexProgram->shader_slots[_VERTEX_SHADER];
-            if (vsShader && vsShader->src &&
-                strstr(vsShader->src, "gl_Layer")) {
-                needsExplicitTopology = YES;
-            }
-        }
+            vertexProgram && vertexProgram->shader_slots[_VERTEX_SHADER]
+                ? mglRenderVSWritesLayer(
+                      vertexProgram->shader_slots[_VERTEX_SHADER]->src)
+                : 0);
         if (needsExplicitTopology) {
             state->input_primitive_topology =
                 mglRenderPrimitiveTopologyClass((uint32_t)_lastDrawPrimitiveMode);
@@ -4847,7 +4845,7 @@ static GLenum mglPassthroughDeclType(
     if (nativeTES) {
         state->tessellation_partition_mode =
             mglRenderTessPartitionMode(vertexProgram->tess_gen_spacing);
-        state->max_tessellation_factor = 64u;
+        state->max_tessellation_factor = mglRenderMaxTessellationFactor();
         state->tessellation_factor_scale_enabled = 0;
         state->tessellation_factor_format =
             (uint32_t)MGLTessellationFactorFormatHalf;
@@ -4887,7 +4885,8 @@ static GLenum mglPassthroughDeclType(
                 }
             }
 
-            if ((fbo->color_attachment_bitfield >> (i + 1)) == 0) {
+            if (mglRenderColorAttachmentBitfieldDone(
+                    (uint32_t)fbo->color_attachment_bitfield, i)) {
                 break;
             }
         }
@@ -4899,10 +4898,10 @@ static GLenum mglPassthroughDeclType(
                 return NO;
             }
             if (tex && tex->mtl_data) {
-                uint32_t depthFormat = mtlPixelFormatForGLTex(tex);
-                if (depthFormat == MGLPixelFormatInvalid) {
+                uint32_t rawDepth = (uint32_t)mtlPixelFormatForGLTex(tex);
+                uint32_t depthFormat = mglRenderDepthFormatOrFallback(rawDepth);
+                if (rawDepth == MGLPixelFormatInvalid) {
                     NSLog(@"MGL ERROR: Invalid depth texture format, falling back to Depth32Float");
-                    depthFormat = MGLPixelFormatDepth32Float;
                 }
                 state->depth_format = (uint32_t)depthFormat;
             } else {
@@ -4917,10 +4916,10 @@ static GLenum mglPassthroughDeclType(
                 return NO;
             }
             if (tex && tex->mtl_data) {
-                uint32_t stencilFormat = mtlPixelFormatForGLTex(tex);
-                if (stencilFormat == MGLPixelFormatInvalid) {
+                uint32_t rawStencil = (uint32_t)mtlPixelFormatForGLTex(tex);
+                uint32_t stencilFormat = mglRenderStencilFormatOrFallback(rawStencil);
+                if (rawStencil == MGLPixelFormatInvalid) {
                     NSLog(@"MGL ERROR: Invalid stencil texture format, falling back to Stencil8");
-                    stencilFormat = MGLPixelFormatStencil8;
                 }
                 state->stencil_format = (uint32_t)stencilFormat;
             } else {
