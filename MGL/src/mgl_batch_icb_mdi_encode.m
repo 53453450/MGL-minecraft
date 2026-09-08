@@ -1,8 +1,6 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
- *
- * A3: ICB + stream-MDI encode split from MGLRenderer+Batch.m (cluster metric).
- * Same (Batch) category; gates/plans in mgl_batch_issue / mgl_batch_replay.
+ * A3: ICB + stream-MDI — whole loops via mgl_batch_mtl_issue_*_batch.
  */
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
@@ -13,330 +11,165 @@
 #include "mgl_draw_encode.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
+#include <CoreFoundation/CoreFoundation.h>
 
+typedef struct {
+    MGLRenderer *r;
+    MGLDrawBatch *batch;
+    GLMContext ctx;
+    const MGLEncodeContext *enc;
+    void *sticky_icb; /* objc_retain for C++ driver lifetime */
+} MGLIcbMdiCtx;
 
-static BOOL mglBatchHasActiveEncoder(void *owner)
+static void mglIcbTrace(void *v, uint32_t i, const char *phase, const char *reason)
 {
-    return mglRenderEncoderOwnerHasCurrent(owner) != 0;
+    MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
+    if (!c->batch || i >= c->batch->command_count) return;
+    [c->r traceReplayCommand:c->batch command:&c->batch->commands[i]
+                     context:c->ctx
+                     flushId:c->r->_renderPassManager.state->traceReplayFlushId
+                  batchIndex:c->r->_renderPassManager.state->traceReplayBatchIndex
+                commandIndex:i phase:phase reason:reason];
 }
 
+static void *mglIcbScratch(void *v, uint64_t len, uint64_t *off)
+{
+    NSUInteger o = 0;
+    id b = [((MGLIcbMdiCtx *)v)->r mdiArgumentScratchBufferWithLength:(NSUInteger)len
+                                                               offset:&o];
+    if (off) *off = (uint64_t)o;
+    return (__bridge void *)b;
+}
+
+static int mglIcbMap(void *v, void *buf, uint64_t off, uint64_t need, void **out)
+{
+    (void)v;
+    void *contents = NULL;
+    uint64_t length = 0;
+    if (mglRenderGetBufferContents(buf, &contents, &length) != 0 ||
+        !mgl_batch_issue_scratch_range_ok(off, need, length) || !contents)
+        return 0;
+    if (out) *out = (uint8_t *)contents + off;
+    return 1;
+}
+
+static int mglIcbResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
+                         uint64_t *ioff, uint32_t *mtype)
+{
+    MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
+    MGLDrawCommand *cmd = &c->batch->commands[i];
+    Buffer *glBuf = NULL;
+    id idxBuf = nil;
+    if (![c->r resolveElementBufferForCommand:cmd label:"icbBatch" context:c->ctx
+                                     glBuffer:&glBuf mtlBuffer:&idxBuf])
+        return 0;
+    NSUInteger drawOff = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
+    uint64_t drawType = mglIndexTypeForGLType((GLenum)gl_itype);
+    id prepared = mglPreparedElementIndexBuffer(
+        c->r->_device, glBuf, idxBuf, (GLenum)gl_itype, &drawOff, &drawType);
+    if (ioff) *ioff = (uint64_t)drawOff;
+    if (mtype) *mtype = (uint32_t)drawType;
+    if (mtl) *mtl = (__bridge void *)prepared;
+    return 1;
+}
+
+static void *mglIcbCreate(void *v, int indexed, uint64_t count)
+{
+    MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
+    id icb = nil;
+    @try {
+        icb = (__bridge_transfer id)mgl_batch_mtl_create_icb(indexed, count);
+    } @catch (NSException *ex) {
+        static uint64_t s_hit = 0;
+        uint64_t hit = ++s_hit;
+        if (hit <= 8ull || (hit % 256ull) == 0ull) {
+            NSLog(@"MGL WARNING: ICB creation failed, falling back: %@", ex);
+        }
+        mglIcbTrace(v, 0, "FALLBACK", "icb_create_exception");
+        return NULL;
+    }
+    if (!icb) {
+        mglIcbTrace(v, 0, "FALLBACK", "icb_create_nil");
+        return NULL;
+    }
+    if (c->sticky_icb) {
+        CFRelease(c->sticky_icb);
+        c->sticky_icb = NULL;
+    }
+    c->sticky_icb = (__bridge_retained void *)icb;
+    return c->sticky_icb;
+}
+
+static void *mglStreamIdx(void *v)
+{
+    MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
+    Buffer *indexBuffer = (Buffer *)c->batch->stream_index_buffer;
+    if (!indexBuffer || ![c->r processBuffer:indexBuffer]) {
+        mglIcbTrace(v, 0, "FALLBACK", "stream_mdi_index_buffer");
+        return NULL;
+    }
+    id mtl = (__bridge id)(indexBuffer->data.mtl_data);
+    if (!mtl) {
+        mglIcbTrace(v, 0, "FALLBACK", "stream_mdi_no_mtl_index");
+        return NULL;
+    }
+    return (__bridge void *)mtl;
+}
 
 @implementation MGLRenderer (Batch)
 
 - (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
                     encodeContext:(const MGLEncodeContext *)encCtx
 {
-    /* A3: stream-MDI gate in mgl_batch_issue_stream_mdi_gate. */
-    size_t neededBytesRaw = 0;
-    MGLBatchStreamMdiGateIn gateIn = {
-        .stream_merged = (batch && batch->stream_merged) ? 1u : 0u,
-        .has_encoder =
-            (encCtx && mglBatchHasActiveEncoder(encCtx->render_encoder_owner))
-                ? 1u
-                : 0u,
-        .disable_mdi = mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1u : 0u,
-        .primitive_type = batch ? batch->key.primitive_type : 0xFFu,
-        .command_count = batch ? batch->command_count : 0u,
-        .stream_index_count = batch ? batch->stream_index_count : 0u,
-        .arg_size = sizeof(MGLDrawIndexedPrimitivesIndirectArguments),
+    MGLIcbMdiCtx ctx = {.r = self, .batch = batch, .ctx = glm_ctx, .enc = encCtx};
+    MGLBatchStreamMdiIssueOps ops = {
+        .ctx = &ctx,
+        .on_trace = mglIcbTrace,
+        .resolve_stream_index = mglStreamIdx,
+        .alloc_scratch = mglIcbScratch,
+        .map_scratch = mglIcbMap,
     };
-    const int gate = mgl_batch_issue_stream_mdi_gate(&gateIn, &neededBytesRaw);
-    if (gate != MGL_BATCH_STREAM_MDI_OK) {
-        if (gate == MGL_BATCH_STREAM_MDI_FAIL_OVERFLOW && batch &&
-            batch->command_count > 0) {
-            [self traceReplayCommand:batch
-                             command:&batch->commands[0]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:0
-                               phase:"FALLBACK"
-                              reason:mgl_batch_issue_stream_mdi_gate_reason(gate)];
-        }
-        return NO;
-    }
-
-    Buffer *indexBuffer = (Buffer *)batch->stream_index_buffer;
-    if (!indexBuffer || ![self processBuffer:indexBuffer]) {
-        if (batch->command_count > 0) {
-            [self traceReplayCommand:batch
-                             command:&batch->commands[0]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:0
-                               phase:"FALLBACK"
-                              reason:"stream_mdi_index_buffer"];
-        }
-        return NO;
-    }
-
-    id mtlIndexBuffer = (__bridge id)(indexBuffer->data.mtl_data);
-    if (!mtlIndexBuffer) {
-        if (batch->command_count > 0) {
-            [self traceReplayCommand:batch
-                             command:&batch->commands[0]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:0
-                               phase:"FALLBACK"
-                              reason:"stream_mdi_no_mtl_index"];
-        }
-        return NO;
-    }
-
-    size_t argSize = sizeof(MGLDrawIndexedPrimitivesIndirectArguments);
-    NSUInteger neededBytes = (NSUInteger)neededBytesRaw;
-    NSUInteger indirectArgsOffset = 0;
-    id indirectArgsBuffer =
-        [self mdiArgumentScratchBufferWithLength:neededBytes
-                                          offset:&indirectArgsOffset];
-    if (!indirectArgsBuffer) {
-        if (batch->command_count > 0) {
-            [self traceReplayCommand:batch
-                             command:&batch->commands[0]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:0
-                               phase:"FALLBACK"
-                              reason:"stream_mdi_args_alloc"];
-        }
-        return NO;
-    }
-    void *indirectArgsContents = NULL;
-    uint64_t indirectArgsLength = 0;
-    if (mglRenderGetBufferContents(
-            (__bridge void *)indirectArgsBuffer, &indirectArgsContents,
-            &indirectArgsLength) != 0 ||
-        !mgl_batch_issue_scratch_range_ok(indirectArgsOffset, neededBytes,
-                                          indirectArgsLength)) {
-        return NO;
-    }
-
-    MGLDrawIndexedPrimitivesIndirectArguments *args =
-        (MGLDrawIndexedPrimitivesIndirectArguments *)
-            ((uint8_t *)indirectArgsContents + indirectArgsOffset);
-    mgl_batch_replay_fill_stream_mdi_indexed_args(batch, args);
-
-    uint32_t primType = (uint32_t)batch->key.primitive_type;
-    for (uint32_t i = 0; i < batch->command_count; i++) {
-        MGLDrawCommand *cmd = &batch->commands[i];
-        (void)mgl_batch_mtl_draw_indexed_indirect(
-            encCtx->render_encoder_owner, primType, MGL_DRAW_INDEX_UINT32,
-            (__bridge void *)mtlIndexBuffer, (uint64_t)cmd->indexBufferOffset,
-            (__bridge void *)indirectArgsBuffer,
-            indirectArgsOffset + (i * argSize));
-        [self traceReplayCommand:batch
-                         command:cmd
-                         context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                    commandIndex:i
-                           phase:"SUBMIT"
-                          reason:"stream_mdi_indexed"];
-    }
-
-    return YES;
+    return mgl_batch_mtl_issue_stream_mdi_batch(
+               batch, mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1 : 0,
+               encCtx ? encCtx->render_encoder_owner : NULL, &ops)
+               ? YES
+               : NO;
 }
-
 
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch
                                 context:(GLMContext)glm_ctx
                           encodeContext:(const MGLEncodeContext *)encCtx
 {
-    /* O2.4/O2.5: ICB eligibility in mgl_batch_replay_icb_gate + unified env. */
-    MGLBatchIcbConfig icb = mgl_batch_icb_config();
-    const int icbGate = mgl_batch_replay_icb_gate(
+    MGLBatchIcbConfig icbCfg = mgl_batch_icb_config();
+    MGLIcbMdiCtx ctx = {.r = self, .batch = batch, .ctx = glm_ctx, .enc = encCtx,
+                       .sticky_icb = NULL};
+    MGLBatchIcbIssueOps ops = {
+        .ctx = &ctx,
+        .on_trace = mglIcbTrace,
+        .create_icb = mglIcbCreate,
+        .resolve_index = mglIcbResolve,
+    };
+    int os_ok = 0;
+    if (@available(macOS 10.14, *)) {
+        os_ok = 1;
+    }
+    const int ok = mgl_batch_mtl_issue_icb_batch(
         batch, _device ? 1 : 0,
-        mglBatchHasActiveEncoder(encCtx ? encCtx->render_encoder_owner : NULL)
+        (encCtx &&
+         mglRenderEncoderOwnerHasCurrent(encCtx->render_encoder_owner))
             ? 1
             : 0,
-        (int)icb.enable, (int)icb.disable);
-    if (icbGate != MGL_BATCH_ICB_OK) {
-        if (icbGate != MGL_BATCH_ICB_DISABLED && batch &&
-            batch->command_count > 0) {
-            [self traceReplayCommand:batch
-                             command:&batch->commands[0]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:0
-                               phase:"FALLBACK"
-                              reason:mgl_batch_replay_icb_gate_reason(icbGate)];
-        }
-        return NO;
+        (int)icbCfg.enable, (int)icbCfg.disable, os_ok,
+        encCtx ? encCtx->render_encoder_owner : NULL, &ops);
+    if (ctx.sticky_icb) {
+        CFRelease(ctx.sticky_icb);
+        ctx.sticky_icb = NULL;
     }
-
-    if (@available(macOS 10.14, *)) {
-        BOOL indexed = batch->uses_elements ? YES : NO;
-        id icb = nil;
-        @try {
-            icb = (__bridge_transfer id)mgl_batch_mtl_create_icb(
-                indexed ? 1 : 0, (uint64_t)batch->command_count);
-        } @catch (NSException *exception) {
-            static uint64_t s_icbCreateExceptionCount = 0;
-            uint64_t hit = ++s_icbCreateExceptionCount;
-            if (hit <= 8ull || (hit % 256ull) == 0ull) {
-                NSLog(@"MGL WARNING: ICB creation failed, falling back to indirect draw loop: %@", exception);
-            }
-            [self traceReplayCommand:batch
-                             command:&batch->commands[0]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:0
-                               phase:"FALLBACK"
-                              reason:"icb_create_exception"];
-            return NO;
-        }
-        if (!icb) {
-            [self traceReplayCommand:batch
-                             command:&batch->commands[0]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:0
-                               phase:"FALLBACK"
-                              reason:"icb_create_nil"];
-            return NO;
-        }
-
-        (void)mgl_batch_mtl_reset_icb(
-            (__bridge void *)icb, 0, (uint64_t)batch->command_count);
-
-        uint32_t primType = (uint32_t)batch->key.primitive_type;
-        if (indexed) {
-            for (uint32_t i = 0; i < batch->command_count; i++) {
-                MGLDrawCommand *cmd = &batch->commands[i];
-                if (mglRenderIndexTypeIsU8((uint32_t)cmd->indexType)) {
-                    [self traceReplayCommand:batch
-                                     command:cmd
-                                     context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                                commandIndex:i
-                                       phase:"FALLBACK"
-                                      reason:"icb_u8_index"];
-                    return NO;
-                }
-
-                Buffer *glBuf = NULL;
-                id idxBuf = nil;
-                if (![self resolveElementBufferForCommand:cmd
-                                                    label:"icbBatch"
-                                                  context:glm_ctx
-                                                 glBuffer:&glBuf
-                                                mtlBuffer:&idxBuf]) {
-                    [self traceReplayCommand:batch
-                                     command:cmd
-                                     context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                                commandIndex:i
-                                       phase:"FALLBACK"
-                                      reason:"icb_resolve_element"];
-                    return NO;
-                }
-
-                NSUInteger drawIndexOffset = cmd->indexBufferOffset;
-                uint64_t drawIndexType = mglIndexTypeForGLType(cmd->indexType);
-                id drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
-                                                                              glBuf,
-                                                                              idxBuf,
-                                                                              cmd->indexType,
-                                                                              &drawIndexOffset,
-                                                                              &drawIndexType);
-                if (!drawIndexBuffer || (GLuint)drawIndexType == 0xFFFFFFFF) {
-                    [self traceReplayCommand:batch
-                                     command:cmd
-                                     context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                                commandIndex:i
-                                       phase:"FALLBACK"
-                                      reason:"icb_prepared_index"];
-                    return NO;
-                }
-
-                id indirectCommand =
-                    (__bridge id)mgl_batch_mtl_icb_command(
-                        (__bridge void *)icb, (uint64_t)i);
-                if (!indirectCommand) {
-                    [self traceReplayCommand:batch
-                                     command:cmd
-                                     context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                                commandIndex:i
-                                       phase:"FALLBACK"
-                                      reason:"icb_command_nil"];
-                    return NO;
-                }
-
-                (void)mgl_batch_mtl_set_icb_draw_indexed(
-                    (__bridge void *)indirectCommand, primType,
-                    (uint64_t)cmd->count, (uint32_t)drawIndexType,
-                    (__bridge void *)drawIndexBuffer, drawIndexOffset,
-                    (uint64_t)cmd->instanceCount, (int64_t)cmd->baseVertex,
-                    (uint64_t)cmd->baseInstance);
-                (void)mgl_batch_mtl_use_render_resource(
-                    encCtx->render_encoder_owner,
-                    (__bridge void *)drawIndexBuffer, 1u, 1u);
-            }
-        } else {
-            for (uint32_t i = 0; i < batch->command_count; i++) {
-                MGLDrawCommand *cmd = &batch->commands[i];
-                id indirectCommand =
-                    (__bridge id)mgl_batch_mtl_icb_command(
-                        (__bridge void *)icb, (uint64_t)i);
-                if (!indirectCommand) {
-                    [self traceReplayCommand:batch
-                                     command:cmd
-                                     context:glm_ctx
-                                     flushId:_renderPassManager.state->traceReplayFlushId
-                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                                commandIndex:i
-                                       phase:"FALLBACK"
-                                      reason:"icb_command_nil"];
-                    return NO;
-                }
-                MGLBatchIcbArrayDrawParams ap;
-                mgl_batch_issue_icb_array_draw_params(
-                    (uint32_t)cmd->first, (uint32_t)cmd->count,
-                    (uint32_t)cmd->instanceCount, (uint32_t)cmd->baseInstance,
-                    &ap);
-                (void)mgl_batch_mtl_set_icb_draw(
-                    (__bridge void *)indirectCommand, primType, ap.vertex_start,
-                    ap.vertex_count, ap.instance_count, ap.base_instance);
-            }
-        }
-
-        (void)mgl_batch_mtl_use_render_resource(
-            encCtx->render_encoder_owner, (__bridge void *)icb, 1u, 1u);
-        (void)mgl_batch_mtl_execute_icb(
-            encCtx->render_encoder_owner, (__bridge void *)icb, 0,
-            (uint64_t)batch->command_count);
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            [self traceReplayCommand:batch
-                             command:&batch->commands[i]
-                             context:glm_ctx
-                             flushId:_renderPassManager.state->traceReplayFlushId
-                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                        commandIndex:i
-                               phase:"SUBMIT"
-                              reason:"icb"];
-        }
-        return YES;
-    }
-
-    return NO;
+    return ok ? YES : NO;
 }
 
-
 - (id)mdiArgumentScratchBufferWithLength:(NSUInteger)length
-                                             offset:(NSUInteger *)offsetOut
+                                  offset:(NSUInteger *)offsetOut
 {
     return (__bridge id)[_renderPassManager
         mdiArgumentScratchBufferWithDevice:(__bridge void *)_device

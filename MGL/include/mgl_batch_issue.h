@@ -157,6 +157,30 @@ enum {
 /* Which batch/draw PERF pair to bump after schedule (MDI/ICB: none). */
 int mgl_batch_flush_scheduled_path_perf_kind(int path);
 
+
+
+/* ---- A3 encode-fold: applyDynamicBindings orchestration ---- */
+
+typedef struct MGLBatchDynApplyOps {
+    void *ctx;
+    void (*refresh_owner)(void *ctx);
+    int (*has_encoder)(void *ctx);
+    int (*build_dyn_vao)(void *ctx); /* 1 ok; only if vertex_count>0 */
+    int (*apply_ubo)(void *ctx);
+    int (*apply_tex)(void *ctx); /* fills touched; 1 ok */
+    int (*bind_tex_direct)(void *ctx);
+    int (*bind_tex_mapper)(void *ctx);
+    int (*restore_after_tex_upload)(void *ctx);
+    int (*bind_vertex_direct)(void *ctx);
+    int (*bind_uniform_direct)(void *ctx);
+    int (*mapper_fallback)(void *ctx);
+} MGLBatchDynApplyOps;
+
+/* Returns 1 on success. vertex/uniform/texture counts from cmd. */
+int mgl_batch_issue_apply_dyn_bindings(uint8_t vertex_count, uint8_t uniform_count,
+                                       uint8_t texture_count,
+                                       const MGLBatchDynApplyOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

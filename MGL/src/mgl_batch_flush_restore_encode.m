@@ -1,10 +1,6 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
- *
- * A3: flush/restore/check/stream/schedule encode split from Batch.m
- * (cluster metric). Same (Batch) category; plans in mgl_batch_restore /
- * mgl_batch_issue / mgl_batch_path. Not mgl_render.cpp / metal_port /
- * replay_trace shell growth.
+ * A3: flush/restore/check/stream/schedule encode (Batch cluster).
  */
 
 #import "MGLRenderer_Private.h"
@@ -333,7 +329,7 @@
     (void)savedState;
 }
 
-- (void)mglTraceSkipBatchCommands:(MGLDrawBatch *)batch
+- (BOOL)mglTraceSkipBatchCommands:(MGLDrawBatch *)batch
                           context:(GLMContext)glm_ctx
                           flushId:(uint64_t)flushId
                        batchIndex:(uint32_t)batchIndex
@@ -351,19 +347,6 @@
     }
     *skippedCommands += batch->command_count;
     MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
-}
-
-- (BOOL)mglCheckSkip:(MGLDrawBatch *)batch
-             context:(GLMContext)glm_ctx
-             flushId:(uint64_t)flushId
-          batchIndex:(uint32_t)batchIndex
-               phase:(const char *)phase
-              reason:(const char *)reason
-     skippedCommands:(uint32_t *)skippedCommands
-{
-    [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
-                         batchIndex:batchIndex phase:phase reason:reason
-                    skippedCommands:skippedCommands];
     return NO;
 }
 
@@ -380,7 +363,7 @@
 
     if (![self prepareRenderPassIfFBOChanged:batch context:glm_ctx
                                  replayError:replayError]) {
-        return [self mglCheckSkip:batch context:glm_ctx flushId:flushId
+        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
                        batchIndex:batchIndex phase:"SKIP_FBO_ROTATION"
                            reason:"fbo_rotation"
                   skippedCommands:skippedCommands];
@@ -389,7 +372,7 @@
         if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(glm_ctx)->error)) {
             *replayError = MGL_STATE(glm_ctx)->error;
         }
-        return [self mglCheckSkip:batch context:glm_ctx flushId:flushId
+        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
                        batchIndex:batchIndex phase:"SKIP_PROCESS_STATE"
                            reason:"processGLState"
                   skippedCommands:skippedCommands];
@@ -404,7 +387,7 @@
         ![self applySamplerSnapshotForCommand:&batch->commands[0]
                                       context:glm_ctx
                                 encodeContext:&samplerEncCtx]) {
-        return [self mglCheckSkip:batch context:glm_ctx flushId:flushId
+        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
                        batchIndex:batchIndex phase:"SKIP_SAMPLER_SNAPSHOT"
                            reason:"sampler_snapshot"
                   skippedCommands:skippedCommands];
@@ -412,14 +395,14 @@
     [self traceReplayBatch:batch context:glm_ctx flushId:flushId
                 batchIndex:batchIndex phase:"READY"];
     if ([self currentDrawRasterizationIsEmpty]) {
-        return [self mglCheckSkip:batch context:glm_ctx flushId:flushId
+        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
                        batchIndex:batchIndex phase:"SKIP_EMPTY_RASTER"
                            reason:"empty_rasterization"
                   skippedCommands:skippedCommands];
     }
     GLenum mode = batch->commands[0].mode;
     if ([self currentDrawModeIsFullyCulled:mode]) {
-        return [self mglCheckSkip:batch context:glm_ctx flushId:flushId
+        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
                        batchIndex:batchIndex phase:"SKIP_FULLY_CULLED"
                            reason:"front_and_back_culled"
                   skippedCommands:skippedCommands];
@@ -477,13 +460,14 @@
     if (streamPath == MGL_BATCH_STREAM_TRY_MDI) {
         [self mglTraceStreamCmd0:batch context:glm_ctx phase:"ISSUE"
                           reason:mgl_batch_replay_stream_path_reason(streamPath)];
-        if ([self issueStreamMergedMDIBatch:batch context:glm_ctx encodeContext:encCtx]) {
+        if ([self issueStreamMergedMDIBatch:batch context:glm_ctx
+                              encodeContext:encCtx]) {
             return;
         }
     }
-
     Buffer *indexBuffer = (Buffer *)batch->stream_index_buffer;
-    const int processOk = indexBuffer ? ([self processBuffer:indexBuffer] ? 1 : 0) : 0;
+    const int processOk =
+        indexBuffer ? ([self processBuffer:indexBuffer] ? 1 : 0) : 0;
     id mtlIndexBuffer =
         (indexBuffer && indexBuffer->data.mtl_data)
             ? (__bridge id)(indexBuffer->data.mtl_data)
@@ -496,7 +480,6 @@
         [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
-
     MGLDrawCommand *firstCmd = &batch->commands[0];
     (void)mgl_batch_mtl_draw_indexed(
         encCtx->render_encoder_owner, (uint32_t)batch->key.primitive_type,
@@ -506,8 +489,5 @@
     [self mglTraceStreamCmd0:batch context:glm_ctx phase:"SUBMIT"
                       reason:mgl_batch_issue_stream_index_reason(indexReady)];
 }
-
-
-
 
 @end

@@ -280,3 +280,87 @@ int mgl_batch_flush_scheduled_path_perf_kind(int path)
         return MGL_BATCH_FLUSH_PERF_DIRECT;
     }
 }
+
+
+int mgl_batch_issue_apply_dyn_bindings(uint8_t vertex_count, uint8_t uniform_count,
+                                       uint8_t texture_count,
+                                       const MGLBatchDynApplyOps *ops)
+{
+    if (!ops) {
+        return 0;
+    }
+    if (!mgl_batch_issue_dyn_cmd_has_bindings(vertex_count, uniform_count,
+                                             texture_count)) {
+        return 1;
+    }
+    if (ops->refresh_owner) {
+        ops->refresh_owner(ops->ctx);
+    }
+    if (!ops->has_encoder || !ops->has_encoder(ops->ctx)) {
+        return 0;
+    }
+    if (vertex_count > 0u) {
+        if (!ops->build_dyn_vao || !ops->build_dyn_vao(ops->ctx)) {
+            return 0;
+        }
+    }
+    if (uniform_count > 0u) {
+        if (!ops->apply_ubo || !ops->apply_ubo(ops->ctx)) {
+            return 0;
+        }
+    }
+    int tex_ok = 1;
+    if (texture_count > 0u) {
+        if (!ops->apply_tex || !ops->apply_tex(ops->ctx)) {
+            return 0;
+        }
+        tex_ok = ops->bind_tex_direct && ops->bind_tex_direct(ops->ctx);
+        if (ops->refresh_owner) {
+            ops->refresh_owner(ops->ctx);
+        }
+        if (!tex_ok) {
+            tex_ok = ops->bind_tex_mapper && ops->bind_tex_mapper(ops->ctx);
+            if (!tex_ok && ops->restore_after_tex_upload) {
+                if (ops->refresh_owner) {
+                    ops->refresh_owner(ops->ctx);
+                }
+                tex_ok = ops->restore_after_tex_upload(ops->ctx);
+                if (ops->refresh_owner) {
+                    ops->refresh_owner(ops->ctx);
+                }
+                if (tex_ok) {
+                    tex_ok =
+                        ops->bind_tex_mapper && ops->bind_tex_mapper(ops->ctx);
+                }
+            }
+            if (ops->refresh_owner) {
+                ops->refresh_owner(ops->ctx);
+            }
+        }
+        if (ops->refresh_owner) {
+            ops->refresh_owner(ops->ctx);
+        }
+    }
+    if (!tex_ok) {
+        return 0;
+    }
+    if (ops->refresh_owner) {
+        ops->refresh_owner(ops->ctx);
+    }
+    const int vertex_ok =
+        vertex_count == 0u ||
+        (ops->bind_vertex_direct && ops->bind_vertex_direct(ops->ctx));
+    if (ops->refresh_owner) {
+        ops->refresh_owner(ops->ctx);
+    }
+    const int uniform_ok =
+        uniform_count == 0u ||
+        (ops->bind_uniform_direct && ops->bind_uniform_direct(ops->ctx));
+    if (ops->refresh_owner) {
+        ops->refresh_owner(ops->ctx);
+    }
+    if (!mgl_batch_issue_dyn_needs_mapper_fallback(vertex_ok, uniform_ok)) {
+        return 1;
+    }
+    return ops->mapper_fallback && ops->mapper_fallback(ops->ctx);
+}

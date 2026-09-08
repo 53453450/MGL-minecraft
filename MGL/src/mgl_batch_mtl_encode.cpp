@@ -5,6 +5,7 @@
  */
 #include "mgl_batch_mtl_encode.h"
 #include "mgl_batch_replay.h"
+#include "mgl_batch_issue.h"
 #include "mgl_frame_activity.h"
 #include "mgl_index_buffer.h"
 
@@ -352,4 +353,358 @@ extern "C" void mgl_batch_mtl_restore_note_skip_fail_perf(int skip_dec)
     default:
         break;
     }
+}
+
+static void mgl_batch_mtl_trace_mdi(const MGLBatchMdiIssueOps *ops, uint32_t i,
+                                    const char *phase, const char *reason)
+{
+    if (ops && ops->on_trace) {
+        ops->on_trace(ops->ctx, i, phase, reason);
+    }
+}
+
+static void mgl_batch_mtl_trace_smdi(const MGLBatchStreamMdiIssueOps *ops,
+                                     uint32_t i, const char *phase,
+                                     const char *reason)
+{
+    if (ops && ops->on_trace) {
+        ops->on_trace(ops->ctx, i, phase, reason);
+    }
+}
+
+static void mgl_batch_mtl_trace_icb(const MGLBatchIcbIssueOps *ops, uint32_t i,
+                                    const char *phase, const char *reason)
+{
+    if (ops && ops->on_trace) {
+        ops->on_trace(ops->ctx, i, phase, reason);
+    }
+}
+
+extern "C" void mgl_batch_mtl_issue_mdi_batch(const void *batch_void,
+                                              int disable_mdi,
+                                              void *render_encoder_owner,
+                                              const MGLBatchMdiIssueOps *ops)
+{
+    const MGLDrawBatch *batch = (const MGLDrawBatch *)batch_void;
+    if (!ops) {
+        return;
+    }
+    size_t argSize = 0;
+    size_t neededBytesRaw = 0;
+    const int mdiGate =
+        mgl_batch_replay_mdi_gate(batch, disable_mdi, &argSize, &neededBytesRaw);
+    if (mdiGate != MGL_BATCH_MDI_OK) {
+        if (mdiGate == MGL_BATCH_MDI_FALLBACK_EMPTY) {
+            return;
+        }
+        if (mdiGate != MGL_BATCH_MDI_FALLBACK_DISABLED && batch &&
+            batch->command_count > 0u) {
+            mgl_batch_mtl_trace_mdi(ops, 0, "FALLBACK",
+                                    mgl_batch_replay_mdi_gate_reason(mdiGate));
+        }
+        if (ops->issue_direct) {
+            ops->issue_direct(ops->ctx);
+        }
+        return;
+    }
+
+    if (!ops->alloc_scratch || !ops->map_scratch) {
+        if (ops->issue_direct) {
+            ops->issue_direct(ops->ctx);
+        }
+        return;
+    }
+
+    uint64_t indirectArgsOffset = 0;
+    void *indirectArgsBuffer = ops->alloc_scratch(
+        ops->ctx, (uint64_t)neededBytesRaw, &indirectArgsOffset);
+    if (!indirectArgsBuffer) {
+        if (batch->command_count > 0u) {
+            mgl_batch_mtl_trace_mdi(ops, 0, "FALLBACK", "mdi_args_alloc");
+        }
+        if (ops->issue_direct) {
+            ops->issue_direct(ops->ctx);
+        }
+        return;
+    }
+
+    void *argsBase = NULL;
+    if (!ops->map_scratch(ops->ctx, indirectArgsBuffer, indirectArgsOffset,
+                          (uint64_t)neededBytesRaw, &argsBase) ||
+        !argsBase) {
+        if (ops->issue_direct) {
+            ops->issue_direct(ops->ctx);
+        }
+        return;
+    }
+
+    const uint32_t primType = (uint32_t)batch->key.primitive_type;
+    if (batch->uses_elements) {
+        const uint32_t glIdxType = (uint32_t)batch->commands[0].indexType;
+        MGLDrawIndexedPrimitivesIndirectArguments *args =
+            (MGLDrawIndexedPrimitivesIndirectArguments *)argsBase;
+        if (!mgl_batch_replay_fill_mdi_indexed_args(batch, args)) {
+            mgl_batch_mtl_trace_mdi(ops, 0, "FALLBACK", "mdi_mixed_index_type");
+            if (ops->issue_direct) {
+                ops->issue_direct(ops->ctx);
+            }
+            return;
+        }
+        if (!ops->resolve_index) {
+            if (ops->issue_direct) {
+                ops->issue_direct(ops->ctx);
+            }
+            return;
+        }
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            const MGLDrawCommand *cmd = &batch->commands[i];
+            void *mtlIndex = NULL;
+            uint64_t drawIndexOffset = (uint64_t)cmd->indexBufferOffset;
+            uint32_t drawIndexType = 0u;
+            if (!ops->resolve_index(ops->ctx, i, glIdxType, &mtlIndex,
+                                    &drawIndexOffset, &drawIndexType)) {
+                mgl_batch_mtl_trace_mdi(ops, i, "SKIP", "mdi_resolve_element");
+                continue;
+            }
+            if (!mtlIndex || drawIndexType == 0xFFFFFFFFu) {
+                mgl_batch_mtl_trace_mdi(ops, i, "SKIP", "mdi_prepared_index");
+                continue;
+            }
+            (void)mgl_batch_mtl_draw_indexed_indirect(
+                render_encoder_owner, primType, drawIndexType, mtlIndex,
+                drawIndexOffset, indirectArgsBuffer,
+                indirectArgsOffset + (uint64_t)i * argSize);
+            mgl_batch_mtl_trace_mdi(ops, i, "SUBMIT", "mdi_indexed");
+        }
+        return;
+    }
+
+    MGLDrawPrimitivesIndirectArguments *args =
+        (MGLDrawPrimitivesIndirectArguments *)argsBase;
+    mgl_batch_replay_fill_mdi_array_args(batch, args);
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        (void)mgl_batch_mtl_draw_array_indirect(
+            render_encoder_owner, primType, indirectArgsBuffer,
+            indirectArgsOffset + (uint64_t)i * argSize);
+        mgl_batch_mtl_trace_mdi(ops, i, "SUBMIT", "mdi_arrays");
+    }
+}
+
+extern "C" int mgl_batch_mtl_issue_stream_mdi_batch(
+    const void *batch_void, int disable_mdi, void *render_encoder_owner,
+    const MGLBatchStreamMdiIssueOps *ops)
+{
+    const MGLDrawBatch *batch = (const MGLDrawBatch *)batch_void;
+    if (!ops || !batch) {
+        return 0;
+    }
+    size_t neededBytesRaw = 0;
+    MGLBatchStreamMdiGateIn gateIn = {
+        .stream_merged = batch->stream_merged ? 1u : 0u,
+        .has_encoder = render_encoder_owner ? 1u : 0u,
+        .disable_mdi = disable_mdi ? 1u : 0u,
+        .primitive_type = batch->key.primitive_type,
+        .command_count = batch->command_count,
+        .stream_index_count = (uint32_t)batch->stream_index_count,
+        .arg_size = sizeof(MGLDrawIndexedPrimitivesIndirectArguments),
+    };
+    /* has_encoder: prefer live check via render_encoder_owner presence;
+     * ObjC still gates with mglRenderEncoderOwnerHasCurrent before call. */
+    if (render_encoder_owner) {
+        gateIn.has_encoder =
+            mglRenderEncoderOwnerHasCurrent(render_encoder_owner) ? 1u : 0u;
+    }
+    const int gate = mgl_batch_issue_stream_mdi_gate(&gateIn, &neededBytesRaw);
+    if (gate != MGL_BATCH_STREAM_MDI_OK) {
+        if (gate == MGL_BATCH_STREAM_MDI_FAIL_OVERFLOW &&
+            batch->command_count > 0u) {
+            mgl_batch_mtl_trace_smdi(
+                ops, 0, "FALLBACK",
+                mgl_batch_issue_stream_mdi_gate_reason(gate));
+        }
+        return 0;
+    }
+
+    if (!ops->resolve_stream_index || !ops->alloc_scratch || !ops->map_scratch) {
+        return 0;
+    }
+    void *mtlIndex = ops->resolve_stream_index(ops->ctx);
+    if (!mtlIndex) {
+        /* ObjC resolve traces specific FALLBACK reason before returning NULL. */
+        return 0;
+    }
+
+    uint64_t indirectArgsOffset = 0;
+    void *indirectArgsBuffer = ops->alloc_scratch(
+        ops->ctx, (uint64_t)neededBytesRaw, &indirectArgsOffset);
+    if (!indirectArgsBuffer) {
+        if (batch->command_count > 0u) {
+            mgl_batch_mtl_trace_smdi(ops, 0, "FALLBACK", "stream_mdi_args_alloc");
+        }
+        return 0;
+    }
+    void *argsBase = NULL;
+    if (!ops->map_scratch(ops->ctx, indirectArgsBuffer, indirectArgsOffset,
+                          (uint64_t)neededBytesRaw, &argsBase) ||
+        !argsBase) {
+        return 0;
+    }
+
+    MGLDrawIndexedPrimitivesIndirectArguments *args =
+        (MGLDrawIndexedPrimitivesIndirectArguments *)argsBase;
+    mgl_batch_replay_fill_stream_mdi_indexed_args(batch, args);
+
+    const uint32_t primType = (uint32_t)batch->key.primitive_type;
+    const size_t argSize = sizeof(MGLDrawIndexedPrimitivesIndirectArguments);
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        (void)mgl_batch_mtl_draw_indexed_indirect(
+            render_encoder_owner, primType, MGL_DRAW_INDEX_UINT32, mtlIndex,
+            (uint64_t)batch->commands[i].indexBufferOffset, indirectArgsBuffer,
+            indirectArgsOffset + (uint64_t)i * argSize);
+        mgl_batch_mtl_trace_smdi(ops, i, "SUBMIT", "stream_mdi_indexed");
+    }
+    return 1;
+}
+
+extern "C" int mgl_batch_mtl_issue_icb_batch(
+    const void *batch_void, int has_device, int has_encoder, int icb_enable,
+    int icb_disable, int os_supported, void *render_encoder_owner,
+    const MGLBatchIcbIssueOps *ops)
+{
+    const MGLDrawBatch *batch = (const MGLDrawBatch *)batch_void;
+    if (!ops || !batch) {
+        return 0;
+    }
+    const int icbGate = mgl_batch_replay_icb_gate(
+        batch, has_device, has_encoder, icb_enable, icb_disable);
+    if (icbGate != MGL_BATCH_ICB_OK) {
+        if (icbGate != MGL_BATCH_ICB_DISABLED && batch->command_count > 0u) {
+            mgl_batch_mtl_trace_icb(ops, 0, "FALLBACK",
+                                    mgl_batch_replay_icb_gate_reason(icbGate));
+        }
+        return 0;
+    }
+    if (!os_supported) {
+        return 0;
+    }
+    if (!ops->create_icb) {
+        return 0;
+    }
+
+    const int indexed = batch->uses_elements ? 1 : 0;
+    void *icb =
+        ops->create_icb(ops->ctx, indexed, (uint64_t)batch->command_count);
+    if (!icb) {
+        /* create_icb traces FALLBACK itself on exception/nil. */
+        return 0;
+    }
+
+    (void)mgl_batch_mtl_reset_icb(icb, 0, (uint64_t)batch->command_count);
+    const uint32_t primType = (uint32_t)batch->key.primitive_type;
+
+    if (indexed) {
+        if (!ops->resolve_index) {
+            return 0;
+        }
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            const MGLDrawCommand *cmd = &batch->commands[i];
+            if (mglRenderIndexTypeIsU8((uint32_t)cmd->indexType)) {
+                mgl_batch_mtl_trace_icb(ops, i, "FALLBACK", "icb_u8_index");
+                return 0;
+            }
+            void *mtlIndex = NULL;
+            uint64_t drawIndexOffset = (uint64_t)cmd->indexBufferOffset;
+            uint32_t drawIndexType = 0u;
+            if (!ops->resolve_index(ops->ctx, i, (uint32_t)cmd->indexType,
+                                    &mtlIndex, &drawIndexOffset,
+                                    &drawIndexType) ||
+                !mtlIndex || drawIndexType == 0xFFFFFFFFu) {
+                mgl_batch_mtl_trace_icb(
+                    ops, i, "FALLBACK",
+                    !mtlIndex ? "icb_resolve_element" : "icb_prepared_index");
+                return 0;
+            }
+            void *indirectCommand = mgl_batch_mtl_icb_command(icb, (uint64_t)i);
+            if (!indirectCommand) {
+                mgl_batch_mtl_trace_icb(ops, i, "FALLBACK", "icb_command_nil");
+                return 0;
+            }
+            (void)mgl_batch_mtl_set_icb_draw_indexed(
+                indirectCommand, primType, (uint64_t)cmd->count, drawIndexType,
+                mtlIndex, drawIndexOffset, (uint64_t)cmd->instanceCount,
+                (int64_t)cmd->baseVertex, (uint64_t)cmd->baseInstance);
+            (void)mgl_batch_mtl_use_render_resource(render_encoder_owner,
+                                                    mtlIndex, 1u, 1u);
+        }
+    } else {
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            const MGLDrawCommand *cmd = &batch->commands[i];
+            void *indirectCommand = mgl_batch_mtl_icb_command(icb, (uint64_t)i);
+            if (!indirectCommand) {
+                mgl_batch_mtl_trace_icb(ops, i, "FALLBACK", "icb_command_nil");
+                return 0;
+            }
+            MGLBatchIcbArrayDrawParams ap;
+            mgl_batch_issue_icb_array_draw_params(
+                (uint32_t)cmd->first, (uint32_t)cmd->count,
+                (uint32_t)cmd->instanceCount, (uint32_t)cmd->baseInstance, &ap);
+            (void)mgl_batch_mtl_set_icb_draw(indirectCommand, primType,
+                                             ap.vertex_start, ap.vertex_count,
+                                             ap.instance_count, ap.base_instance);
+        }
+    }
+
+    (void)mgl_batch_mtl_use_render_resource(render_encoder_owner, icb, 1u, 1u);
+    (void)mgl_batch_mtl_execute_icb(render_encoder_owner, icb, 0,
+                                    (uint64_t)batch->command_count);
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        mgl_batch_mtl_trace_icb(ops, i, "SUBMIT", "icb");
+    }
+    return 1;
+}
+
+
+extern "C" int mgl_batch_mtl_issue_simple_replay(
+    const void *batch_void, void *render_encoder_owner,
+    const MGLBatchSimpleReplayOps *ops)
+{
+    const MGLDrawBatch *batch = (const MGLDrawBatch *)batch_void;
+    if (!batch || !ops || batch->command_count == 0u ||
+        batch->command_count > MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS) {
+        return 0;
+    }
+    MGLRenderReplayBatchCommand cmds[MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS];
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        const MGLDrawCommand *cmd = &batch->commands[i];
+        MGLRenderReplayBatchCommand *out = &cmds[i];
+        mgl_batch_replay_fill_simple_cmd_common(cmd, out);
+        if (mgl_batch_replay_cmd_is_array_draw((uint32_t)cmd->type)) {
+            continue;
+        }
+        if (!mgl_batch_replay_cmd_is_elements_draw((uint32_t)cmd->type)) {
+            return 0;
+        }
+        if (!ops->resolve_index) {
+            return 0;
+        }
+        void *mtlIndex = NULL;
+        uint64_t idxOff = (uint64_t)cmd->indexBufferOffset;
+        uint32_t mtlType = 0u;
+        if (!ops->resolve_index(ops->ctx, i, (uint32_t)cmd->indexType, &mtlIndex,
+                                &idxOff, &mtlType) ||
+            !mtlIndex || mtlType == 0xFFFFFFFFu) {
+            return 0;
+        }
+        out->index_type = mtlType;
+        out->index_buffer_offset = (uint32_t)idxOff;
+        out->index_buffer = mtlIndex;
+    }
+    MGLRenderReplayBatch replayBatch = {
+        .primitive_type = (uint32_t)batch->key.primitive_type,
+        .command_count = batch->command_count,
+        .commands = cmds,
+    };
+    return mglRenderReplayBatchDrawsForRenderEncoderOwner(
+               render_encoder_owner, &replayBatch, NULL, 0) ==
+           MGL_RENDER_REPLAY_BATCH_OK;
 }

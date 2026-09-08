@@ -167,6 +167,46 @@ static void test_stream_index_and_sampler(void)
            "invalid id skip");
 }
 
+
+static int g_dyn_steps;
+
+static void dyn_refresh(void *ctx) { (void)ctx; g_dyn_steps += 1; }
+static int dyn_has_enc(void *ctx) { (void)ctx; return 1; }
+static int dyn_ok(void *ctx) { (void)ctx; return 1; }
+static int dyn_fail(void *ctx) { (void)ctx; return 0; }
+
+static void test_dyn_apply(void)
+{
+    g_dyn_steps = 0;
+    expect(mgl_batch_issue_apply_dyn_bindings(0, 0, 0, NULL) == 0, "null ops");
+    expect(mgl_batch_issue_apply_dyn_bindings(0, 0, 0, &(MGLBatchDynApplyOps){0}) ==
+               1,
+           "no bindings");
+    MGLBatchDynApplyOps ops = {
+        .ctx = NULL,
+        .refresh_owner = dyn_refresh,
+        .has_encoder = dyn_has_enc,
+        .build_dyn_vao = dyn_ok,
+        .apply_ubo = dyn_ok,
+        .apply_tex = dyn_ok,
+        .bind_tex_direct = dyn_ok,
+        .bind_tex_mapper = dyn_fail,
+        .restore_after_tex_upload = dyn_fail,
+        .bind_vertex_direct = dyn_ok,
+        .bind_uniform_direct = dyn_ok,
+        .mapper_fallback = dyn_ok,
+    };
+    expect(mgl_batch_issue_apply_dyn_bindings(1, 1, 0, &ops) == 1, "vu ok");
+    expect(g_dyn_steps > 0, "refreshed");
+    ops.bind_vertex_direct = dyn_fail;
+    ops.mapper_fallback = dyn_ok;
+    expect(mgl_batch_issue_apply_dyn_bindings(1, 0, 0, &ops) == 1,
+           "vertex fallback");
+    ops.mapper_fallback = dyn_fail;
+    expect(mgl_batch_issue_apply_dyn_bindings(1, 0, 0, &ops) == 0,
+           "fallback fail");
+}
+
 int main(void)
 {
     test_rt_mark();
@@ -174,6 +214,7 @@ int main(void)
     test_direct_arrays_and_dyn();
     test_stream_index_and_sampler();
     test_encode_fold();
+    test_dyn_apply();
 
     expect(mgl_batch_flush_scheduled_path_perf_kind(2) ==
                MGL_BATCH_FLUSH_PERF_STREAM,

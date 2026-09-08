@@ -1,8 +1,6 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
- *
  * A3: dyn-bind / sampler / simple-replay encode (Batch cluster).
- * Plans in mgl_batch_replay / mgl_batch_mtl_encode. No metal_port / trace growth.
  */
 
 #import "MGLRenderer_Private.h"
@@ -36,7 +34,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 {
     return mglHashBytesFNV1a(key, sizeof(*key));
 }
-
 
 @implementation MGLRenderer (Draw)
 
@@ -506,14 +503,38 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     return fallback_ok;
 }
 
+typedef struct {
+    __unsafe_unretained MGLRenderer *r;
+    MGLDrawBatch *batch;
+    GLMContext ctx;
+} MGLSimpleReplayCtx;
+
+static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
+                            uint64_t *ioff, uint32_t *mtype)
+{
+    MGLSimpleReplayCtx *c = (MGLSimpleReplayCtx *)v;
+    MGLDrawCommand *cmd = &c->batch->commands[i];
+    Buffer *glBuf = NULL;
+    id idxBuf = nil;
+    if (![c->r resolveElementBufferForCommand:cmd label:"cppBatchReplay"
+                                      context:c->ctx glBuffer:&glBuf
+                                    mtlBuffer:&idxBuf])
+        return 0;
+    NSUInteger off = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
+    uint64_t itype = mglIndexTypeForGLType((GLenum)gl_itype);
+    id prepared = mglPreparedElementIndexBuffer(
+        c->r->_device, glBuf, idxBuf, (GLenum)gl_itype, &off, &itype);
+    if (ioff) *ioff = (uint64_t)off;
+    if (mtype) *mtype = (uint32_t)itype;
+    if (mtl) *mtl = (__bridge void *)prepared;
+    return prepared ? 1 : 0;
+}
 
 - (BOOL)tryReplaySimpleBatch:(MGLDrawBatch *)batch
                             context:(GLMContext)glm_ctx
                       encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!batch || batch->command_count == 0u) {
-        return NO;
-    }
+    if (!batch || batch->command_count == 0u) return NO;
     Program *batchProgram =
         mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     const GLenum batchMode = batch->commands[0].mode;
@@ -526,48 +547,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             mglRenderDrawModeNeedsEmulate((uint32_t)batchMode) ? 1 : 0)) {
         return NO;
     }
-
-    MGLRenderReplayBatchCommand cmds[MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS];
-    for (uint32_t i = 0; i < batch->command_count; i++) {
-        MGLDrawCommand *cmd = &batch->commands[i];
-        MGLRenderReplayBatchCommand *out = &cmds[i];
-        mgl_batch_replay_fill_simple_cmd_common(cmd, out);
-        if (mgl_batch_replay_cmd_is_array_draw((uint32_t)cmd->type)) {
-            continue;
-        }
-        if (!mgl_batch_replay_cmd_is_elements_draw((uint32_t)cmd->type)) {
-            return NO;
-        }
-        Buffer *glBuf = NULL;
-        id idxBuf = nil;
-        if (![self resolveElementBufferForCommand:cmd
-                                            label:"cppBatchReplay"
-                                          context:glm_ctx
-                                         glBuffer:&glBuf
-                                        mtlBuffer:&idxBuf]) {
-            return NO;
-        }
-        NSUInteger idxOffset = cmd->indexBufferOffset;
-        uint64_t mtlIdxType = mglIndexTypeForGLType(cmd->indexType);
-        id prepared = mglPreparedElementIndexBuffer(
-            _device, glBuf, idxBuf, cmd->indexType, &idxOffset, &mtlIdxType);
-        if (!prepared || (GLuint)mtlIdxType == 0xFFFFFFFFu) {
-            return NO;
-        }
-        out->index_type = (uint32_t)mtlIdxType;
-        out->index_buffer_offset = (uint32_t)idxOffset;
-        out->index_buffer = (__bridge void *)prepared;
-    }
-
-    MGLRenderReplayBatch replayBatch = {
-        .primitive_type = (uint32_t)batch->key.primitive_type,
-        .command_count = batch->command_count,
-        .commands = cmds,
-    };
-    return mglRenderReplayBatchDrawsForRenderEncoderOwner(
-        encCtx->render_encoder_owner, &replayBatch, NULL, 0) ==
-        MGL_RENDER_REPLAY_BATCH_OK;
+    MGLSimpleReplayCtx ctx = {self, batch, glm_ctx};
+    MGLBatchSimpleReplayOps ops = {.ctx = &ctx, .resolve_index = mglSimpleResolve};
+    return mgl_batch_mtl_issue_simple_replay(
+               batch, encCtx->render_encoder_owner, &ops)
+               ? YES
+               : NO;
 }
-
 
 @end

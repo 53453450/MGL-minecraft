@@ -295,6 +295,43 @@ typedef struct MGLBatchStreamMergedOps {
 void mgl_batch_issue_stream_merged(const MGLDrawBatch *batch, int disable_mdi,
                                    const MGLBatchStreamMergedOps *ops);
 
+/* ---- A3 encode-fold: direct-batch command loop (plan in C) ---- */
+
+typedef struct MGLBatchDirectCmdView {
+    uint32_t type;
+    uint32_t mode;
+    int32_t count;
+    int32_t instance_count;
+    uint32_t base_instance;
+} MGLBatchDirectCmdView;
+
+typedef struct MGLBatchDirectIssueOps {
+    void *ctx;
+    void (*refresh_encoder)(void *ctx);
+    int (*try_simple_replay)(void *ctx);
+    uint32_t (*command_count)(void *ctx);
+    void (*fill_cmd)(void *ctx, uint32_t i, MGLBatchDirectCmdView *out);
+    int (*uses_cull_distance)(void *ctx);
+    uint32_t (*batch_primitive_type)(void *ctx);
+    int (*snapshots_mixed)(void *ctx);
+    int (*has_dyn_texture)(void *ctx);
+    int (*cull_capture)(void *ctx, uint32_t cmd_index, int cull_path);
+    int (*after_cull_ok)(void *ctx);
+    int (*apply_dyn_bindings)(void *ctx, uint32_t cmd_index);
+    int (*apply_cmd_sampler)(void *ctx, uint32_t cmd_index);
+    int (*polygon_mode_point)(void *ctx, uint32_t mode);
+    void (*trace_skip)(void *ctx, uint32_t cmd_index, const char *reason);
+    void (*submit_arrays)(void *ctx, uint32_t cmd_index, uint32_t mode,
+                          int32_t count, int32_t instance_count,
+                          uint32_t base_instance, int polygon_mode_point,
+                          const char *reason, const char *cull_reason);
+    void (*submit_elements)(void *ctx, uint32_t cmd_index, uint32_t mode,
+                            int32_t count, int32_t instance_count,
+                            int polygon_mode_point);
+} MGLBatchDirectIssueOps;
+
+void mgl_batch_issue_direct_batch(const MGLBatchDirectIssueOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

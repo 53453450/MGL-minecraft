@@ -866,3 +866,90 @@ extern "C" void mgl_batch_issue_stream_merged(const MGLDrawBatch *batch,
         ops->draw_stream_indexed(ops->ctx, mtl_index);
     }
 }
+
+
+extern "C" void mgl_batch_issue_direct_batch(const MGLBatchDirectIssueOps *ops)
+{
+    if (!ops || !ops->command_count || !ops->fill_cmd) {
+        return;
+    }
+    void *ctx = ops->ctx;
+    if (ops->refresh_encoder) {
+        ops->refresh_encoder(ctx);
+    }
+    if (ops->try_simple_replay && ops->try_simple_replay(ctx)) {
+        return;
+    }
+    const uint32_t n = ops->command_count(ctx);
+    const int uses_cull =
+        ops->uses_cull_distance ? ops->uses_cull_distance(ctx) : 0;
+    const uint32_t batch_prim =
+        ops->batch_primitive_type ? ops->batch_primitive_type(ctx) : 0xFFu;
+    const int snap_mixed = ops->snapshots_mixed ? ops->snapshots_mixed(ctx) : 0;
+    const int dyn_tex = ops->has_dyn_texture ? ops->has_dyn_texture(ctx) : 0;
+
+    for (uint32_t i = 0; i < n; i++) {
+        if (ops->refresh_encoder) {
+            ops->refresh_encoder(ctx);
+        }
+        MGLBatchDirectCmdView cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        ops->fill_cmd(ctx, i, &cmd);
+        const int cullPath =
+            mgl_batch_issue_cull_capture_path(uses_cull, cmd.type);
+        if (cullPath != MGL_BATCH_CULL_CAPTURE_NONE && ops->cull_capture) {
+            if (ops->cull_capture(ctx, i, cullPath)) {
+                if (!ops->after_cull_ok || !ops->after_cull_ok(ctx)) {
+                    if (ops->trace_skip) {
+                        ops->trace_skip(ctx, i, "cull_distance_capture_restore");
+                    }
+                    continue;
+                }
+                if (ops->refresh_encoder) {
+                    ops->refresh_encoder(ctx);
+                }
+            }
+        }
+        if (ops->apply_dyn_bindings && !ops->apply_dyn_bindings(ctx, i)) {
+            if (ops->trace_skip) {
+                ops->trace_skip(ctx, i, "dynamic_binding");
+            }
+            continue;
+        }
+        if (mgl_batch_issue_should_apply_cmd_sampler(snap_mixed, dyn_tex) &&
+            ops->apply_cmd_sampler && !ops->apply_cmd_sampler(ctx, i)) {
+            if (ops->trace_skip) {
+                ops->trace_skip(ctx, i, "sampler_snapshot");
+            }
+            continue;
+        }
+
+        const int poly_pt =
+            ops->polygon_mode_point ? ops->polygon_mode_point(ctx, cmd.mode) : 0;
+        MGLBatchReplayDirectPrimPlan primPlan;
+        mgl_batch_replay_direct_prim_plan(cmd.mode, poly_pt, batch_prim,
+                                          &primPlan);
+        if (primPlan.skip_unsupported_prim) {
+            if (ops->trace_skip) {
+                ops->trace_skip(ctx, i, "direct_unsupported_primitive");
+            }
+            continue;
+        }
+        if (mgl_batch_replay_cmd_is_array_draw(cmd.type)) {
+            int32_t ic = 0;
+            uint32_t bi = 0u;
+            const char *reason = NULL;
+            const char *cullReason = NULL;
+            mgl_batch_issue_direct_arrays_params(cmd.type, cmd.instance_count,
+                                                 cmd.base_instance, &ic, &bi,
+                                                 &reason, &cullReason);
+            if (ops->submit_arrays) {
+                ops->submit_arrays(ctx, i, cmd.mode, cmd.count, ic, bi, poly_pt,
+                                   reason, cullReason);
+            }
+        } else if (ops->submit_elements) {
+            ops->submit_elements(ctx, i, cmd.mode, cmd.count, cmd.instance_count,
+                                 poly_pt);
+        }
+    }
+}

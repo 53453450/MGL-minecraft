@@ -74,6 +74,78 @@ void mgl_batch_mtl_issue_stream_mdi_draws(
     void *indirect_buffer, uint64_t args_base_offset, uint64_t arg_size,
     uint32_t command_count, const MGLBatchMtlCmdTraceOps *trace);
 
+/* ---- A3 encode-fold: whole MDI / stream-MDI / ICB issue loops ---- */
+
+typedef struct MGLBatchMdiIssueOps {
+    void *ctx;
+    void (*on_trace)(void *ctx, uint32_t cmd_index, const char *phase,
+                     const char *reason);
+    void (*issue_direct)(void *ctx);
+    /* Alloc indirect-args scratch; return MTLBuffer* or NULL. */
+    void *(*alloc_scratch)(void *ctx, uint64_t length, uint64_t *offset_out);
+    /* Map scratch; *contents_out = base+offset. Return 1 if range ok. */
+    int (*map_scratch)(void *ctx, void *buffer, uint64_t offset, uint64_t needed,
+                       void **contents_out);
+    /* Indexed: prepare index for cmd i. Return 1 on success. */
+    int (*resolve_index)(void *ctx, uint32_t cmd_index, uint32_t gl_index_type,
+                         void **mtl_index_out, uint64_t *index_offset_inout,
+                         uint32_t *mtl_index_type_out);
+} MGLBatchMdiIssueOps;
+
+/* Full MDI path: gate + scratch + fill + draw loop. batch is MGLDrawBatch*. */
+void mgl_batch_mtl_issue_mdi_batch(const void *batch, int disable_mdi,
+                                   void *render_encoder_owner,
+                                   const MGLBatchMdiIssueOps *ops);
+
+typedef struct MGLBatchStreamMdiIssueOps {
+    void *ctx;
+    void (*on_trace)(void *ctx, uint32_t cmd_index, const char *phase,
+                     const char *reason);
+    /* Process stream index buffer → MTL index (or NULL). */
+    void *(*resolve_stream_index)(void *ctx);
+    void *(*alloc_scratch)(void *ctx, uint64_t length, uint64_t *offset_out);
+    int (*map_scratch)(void *ctx, void *buffer, uint64_t offset, uint64_t needed,
+                       void **contents_out);
+} MGLBatchStreamMdiIssueOps;
+
+/* Stream-merged MDI. Returns 1 on success, 0 → caller falls back. */
+int mgl_batch_mtl_issue_stream_mdi_batch(const void *batch, int disable_mdi,
+                                         void *render_encoder_owner,
+                                         const MGLBatchStreamMdiIssueOps *ops);
+
+typedef struct MGLBatchIcbIssueOps {
+    void *ctx;
+    void (*on_trace)(void *ctx, uint32_t cmd_index, const char *phase,
+                     const char *reason);
+    /* ObjC @try create; return ICB or NULL. */
+    void *(*create_icb)(void *ctx, int indexed, uint64_t command_count);
+    int (*resolve_index)(void *ctx, uint32_t cmd_index, uint32_t gl_index_type,
+                         void **mtl_index_out, uint64_t *index_offset_inout,
+                         uint32_t *mtl_index_type_out);
+} MGLBatchIcbIssueOps;
+
+/* Full ICB path. Returns 1 on success, 0 → caller falls back to direct. */
+int mgl_batch_mtl_issue_icb_batch(const void *batch, int has_device,
+                                  int has_encoder, int icb_enable,
+                                  int icb_disable, int os_supported,
+                                  void *render_encoder_owner,
+                                  const MGLBatchIcbIssueOps *ops);
+
+
+/* Simple replay: eligibility checked by caller; fill+encode loop in C++. */
+typedef struct MGLBatchSimpleReplayOps {
+    void *ctx;
+    /* Elements cmds only: prepare index. Return 1 ok. */
+    int (*resolve_index)(void *ctx, uint32_t cmd_index, uint32_t gl_index_type,
+                         void **mtl_index_out, uint64_t *index_offset_inout,
+                         uint32_t *mtl_index_type_out);
+} MGLBatchSimpleReplayOps;
+
+/* Returns 1 on success. Caller must ensure simple_eligible. */
+int mgl_batch_mtl_issue_simple_replay(const void *batch,
+                                      void *render_encoder_owner,
+                                      const MGLBatchSimpleReplayOps *ops);
+
 /* ---- A3 residual: dyn-bind set*Buffer / resource ports ---- */
 
 enum { MGL_BATCH_MTL_BUFFER_BIND_MAX = 64 };
