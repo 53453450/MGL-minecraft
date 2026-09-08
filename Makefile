@@ -801,6 +801,19 @@ $(build_dir)/test_mglir: test_legacy_compat/test_mglir.c MGL/src/mgl_ir.c
 test-mglir: $(build_dir)/test_mglir
 	$(build_dir)/test_mglir
 
+# Non-Metal C1b type golden: carrier / mangle / typeFromIR (LLVM only).
+$(build_dir)/test_mgl_air_type: test_legacy_compat/test_mgl_air_type.cpp \
+	MGL/src/mgl_air_type.cpp MGL/include/mgl_air_type.h \
+	MGL/include/mgl_air_codegen.h MGL/src/mgl_ir.c
+	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
+		test_legacy_compat/test_mgl_air_type.cpp \
+		MGL/src/mgl_air_type.cpp \
+		-x c MGL/src/mgl_ir.c \
+		-o $@
+
+test-mgl-air-type: $(build_dir)/test_mgl_air_type
+	$(build_dir)/test_mgl_air_type
+
 $(build_dir)/test_mgllex: test_legacy_compat/test_mgllex.c MGL/src/mgl_glsl_lexer.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
 		-IMGL/include \
@@ -952,6 +965,7 @@ $(build_dir)/test_regression \
 $(build_dir)/test_dirty_hash \
 $(build_dir)/test_legacy_compat \
 $(build_dir)/test_mglir \
+$(build_dir)/test_mgl_air_type \
 $(build_dir)/test_mgllex \
 $(build_dir)/test_mglparse \
 $(build_dir)/test_mglsema \
@@ -967,6 +981,7 @@ $(build_dir):
 test-frontends:
 	$(MAKE) test-legacy-compat
 	$(MAKE) test-mglir
+	$(MAKE) test-mgl-air-type
 	$(MAKE) test-mgllex
 	$(MAKE) test-mglparse
 	$(MAKE) test-mglsema
@@ -1001,7 +1016,7 @@ test-all:
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
-	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
+	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
 	verify-toolchain

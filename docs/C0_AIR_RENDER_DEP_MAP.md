@@ -309,6 +309,7 @@ Chose **air type helpers → `mgl_air_type.*` + `mgl_air_codegen.h`** (DXMT C1b)
 | Monolith | bodies removed; anon-ns `using mgl::air::*` facade |
 | Build | `Makefile` wildcard `*.cpp` picks up TU; explicit `test_mglair` / `test_mcrepro` / `test_mglair_gtest` lists updated |
 | LOC | `mgl_air_backend.cpp` ~16905→~16302 (−603); new `mgl_air_type.cpp` ~484 |
+| Golden | `test_mgl_air_type` — non-Metal carrier/mangle/`typeFromIR` (LLVM+ir only; no Codegen emit, no Metal) |
 
 **Next strip suggestion:** further air domain knives (module-assembly VarSym classify / location assign, math builtins, or a later expr facade) — do **not** sink back into `mgl_air_backend.cpp`; keep emitExpr/matrix for a dedicated knife. Trajectory toward &lt;~15k air TU.
 
@@ -338,7 +339,7 @@ Chose **air resource collection → `mgl_air_resource.*`** (DXMT C1c). Banner st
 - [x] C0 itself: no monolith edits (docs-only)
 - [x] **C1** (first knife): IntegerReadback → `mgl_readback_policy.{h,c}`; `mgl_render.cpp` ~21043→~20599 (−444)
 - [x] **C1** (O4.1 residual knife): Y-flip / depth pack / GetTexImagePlan / MSAA stride → same TU; `mgl_render.cpp` ~20599→~20470 (−129); Metal MSAA encode residual documented
-- [x] **C1b** (air type helpers): `MType`/carriers/LLVM/mangle/`typeFromIR` → `mgl_air_type.*` + `mgl_air_codegen.h`; `mgl_air_backend.cpp` ~16905→~16302 (−603); emitExpr/matrix deferred
+- [x] **C1b** (air type helpers): `MType`/carriers/LLVM/mangle/`typeFromIR` → `mgl_air_type.*` + `mgl_air_codegen.h`; `mgl_air_backend.cpp` ~16905→~16302 (−603); emitExpr/matrix deferred; non-Metal golden `test_mgl_air_type`
 - [x] **C1c** (air resource collection): `uniformBlock*`/`collectUniforms`/opaque leaves/sampler path → `mgl_air_resource.*`; `mgl_air_backend.cpp` ~16302→~16157 (−145); emitExpr/matrix deferred
 - [ ] Future knives: continue by domain table (module-assembly VarSym / math builtins / later expr facade, or binding-policy residual); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 
