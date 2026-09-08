@@ -2152,6 +2152,28 @@ static void test_plain_uniform_binding(void)
            "UBO uses gl_binding");
 }
 
+static int iris_u_allows_fallback(const char *n)
+{
+    if (!n) return 1;
+    if (!strcmp(n, "u_ProjectionMatrix") || !strcmp(n, "u_ModelViewMatrix") ||
+        !strcmp(n, "u_RegionOffset") || !strcmp(n, "u_TexCoordShrink") ||
+        !strcmp(n, "u_FogColor") || !strcmp(n, "u_EnvironmentFog") ||
+        !strcmp(n, "u_RenderFog"))
+        return 0;
+    return 1;
+}
+
+static void test_iris_uniform_fallback(void)
+{
+    expect(iris_u_allows_fallback(NULL) == 1, "missing name allows fallback");
+    expect(iris_u_allows_fallback("u_RegionOffset") == 0,
+           "Iris u_RegionOffset denies TextureMat fallback");
+    expect(iris_u_allows_fallback("u_TexCoordShrink") == 0,
+           "Iris u_TexCoordShrink denies ColorModulator fallback");
+    expect(iris_u_allows_fallback("ModelViewMat") == 1,
+           "legacy ModelViewMat still allows fallback");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2304,6 +2326,7 @@ int main(void)
     test_sampler_like_resource();
     test_shader_resource_type_name();
     test_plain_uniform_binding();
+    test_iris_uniform_fallback();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

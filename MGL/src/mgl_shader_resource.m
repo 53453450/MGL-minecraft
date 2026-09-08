@@ -99,28 +99,10 @@ GLuint mglMetalCombinedSamplerSlotForElement(const MGLShaderResource *res,
 
 bool mglPlainUniformAllowsGlobalFallback(const MGLShaderResource *res)
 {
-    if (!res || !res->name) {
+    if (!res) {
         return true;
     }
-
-    /*
-     * Mojang/Iris' newer item/entity programs use u_* plain uniforms with the
-     * same numeric locations as the old ShaderInstance uniforms, but the slots
-     * do not mean the same thing. Falling back from u_RegionOffset or
-     * u_TexCoordShrink to TextureMat/ColorModulator corrupts first-person items
-     * and can make inventory icons disappear.
-     */
-    if (!strcmp(res->name, "u_ProjectionMatrix") ||
-        !strcmp(res->name, "u_ModelViewMatrix") ||
-        !strcmp(res->name, "u_RegionOffset") ||
-        !strcmp(res->name, "u_TexCoordShrink") ||
-        !strcmp(res->name, "u_FogColor") ||
-        !strcmp(res->name, "u_EnvironmentFog") ||
-        !strcmp(res->name, "u_RenderFog")) {
-        return false;
-    }
-
-    return true;
+    return mglRenderPlainUniformAllowsGlobalFallback(res->name) != 0;
 }
 
 const char *mglMGLShaderResourceTypeName(int type)

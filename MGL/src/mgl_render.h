@@ -1297,6 +1297,7 @@ uint32_t mglRenderClientBufferBindingForResource(uint32_t resource_type,
                                                  int32_t uniform_location,
                                                  uint32_t location,
                                                  uint32_t gl_binding);
+int mglRenderPlainUniformAllowsGlobalFallback(const char *name);
 int mglRenderSamplerNameLooksSamplerLike(const char *name);
 int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim,
                                       int32_t uniform_location, const char *name);
