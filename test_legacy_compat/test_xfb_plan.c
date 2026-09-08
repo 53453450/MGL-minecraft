@@ -1714,6 +1714,14 @@ static void test_gl_boolean_and_level_written(void)
            "written texture level is ever_written+initialized, not suspicious");
 }
 
+static uint32_t error_none(void) { return 0u; }
+
+static void test_batch_replay_error_none(void)
+{
+    expect(error_none() == 0u, "batch replay starts at GL_NO_ERROR");
+    expect(error_none() != 0x0502u, "replay error is not INVALID_OPERATION");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1847,6 +1855,7 @@ int main(void)
     test_draw_error_codes();
     test_blit_texture_error_codes();
     test_gl_boolean_and_level_written();
+    test_batch_replay_error_none();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

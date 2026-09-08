@@ -1091,7 +1091,7 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
      * overwrite live GL state.  Teardown retargets active_state to live. */
     [self mglActivateReplayStateForContext:glm_ctx];
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
-    GLenum replayError = GL_NO_ERROR;
+    GLenum replayError = (GLenum)mglRenderErrorNone();
 
     @try {
 

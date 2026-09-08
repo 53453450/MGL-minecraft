@@ -1412,6 +1412,7 @@ int mglRenderMSSamplePlaneAdjust(int in_ms_loop, uint32_t target,
 int mglRenderTextureTargetIsMSOr2DArray(uint32_t target);
 int mglRenderClipOriginIsLowerLeft(uint32_t origin);
 int mglRenderErrorIsNone(uint32_t error);
+uint32_t mglRenderErrorNone(void);
 uint32_t mglRenderErrorInvalidOperation(void);
 uint32_t mglRenderErrorInvalidValue(void);
 uint32_t mglRenderErrorOutOfMemory(void);

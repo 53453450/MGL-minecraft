@@ -9372,6 +9372,10 @@ int mglRenderErrorIsNone(uint32_t error) {
     return error == GL_NO_ERROR ? 1 : 0;
 }
 
+uint32_t mglRenderErrorNone(void) {
+    return GL_NO_ERROR;
+}
+
 uint32_t mglRenderErrorInvalidOperation(void) {
     return GL_INVALID_OPERATION;
 }
