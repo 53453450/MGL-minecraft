@@ -3443,48 +3443,8 @@ static void mglTextureCopyTextureToBuffer(
 
         // Determine pixel format size to create appropriate black data
 
-        NSUInteger bytesPerPixel = 4; // Default to RGBA
-
-        switch(mglTextureInfo(texture).pixel_format) {
-
-            case MGLPixelFormatR8Unorm:
-
-            case MGLPixelFormatR8Uint:
-
-            case MGLPixelFormatR8Sint:
-
-                bytesPerPixel = 1;
-
-                break;
-
-            case MGLPixelFormatRG8Unorm:
-
-            case MGLPixelFormatRG8Uint:
-
-            case MGLPixelFormatRG8Sint:
-
-                bytesPerPixel = 2;
-
-                break;
-
-            case MGLPixelFormatRGBA8Unorm:
-
-            case MGLPixelFormatRGBA8Uint:
-
-            case MGLPixelFormatRGBA8Sint:
-
-                bytesPerPixel = 4;
-
-                break;
-
-            default:
-
-                bytesPerPixel = 4; // Default assumption
-
-                break;
-
-        }
-
+        NSUInteger bytesPerPixel = (NSUInteger)mglRenderMetalPixelFormatBytesPerPixel(
+            mglTextureInfo(texture).pixel_format);
 
         // Calculate dynamic alignment for Metal textures based on pixel format
 

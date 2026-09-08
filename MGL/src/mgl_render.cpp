@@ -9130,6 +9130,21 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
     return bpp;
 }
 
+uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format) {
+    switch (pixel_format) {
+    case 10u: /* MGLPixelFormatR8Unorm */
+    case 13u: /* MGLPixelFormatR8Uint */
+    case 14u: /* MGLPixelFormatR8Sint */
+        return 1u;
+    case 30u: /* MGLPixelFormatRG8Unorm */
+    case 33u: /* MGLPixelFormatRG8Uint */
+    case 34u: /* MGLPixelFormatRG8Sint */
+        return 2u;
+    default:
+        return 4u;
+    }
+}
+
 int mglRenderSamplerUnitExplicit(uint32_t flag) {
     return flag == GL_TRUE ? 1 : 0;
 }

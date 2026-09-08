@@ -1722,6 +1722,22 @@ static void test_batch_replay_error_none(void)
     expect(error_none() != 0x0502u, "replay error is not INVALID_OPERATION");
 }
 
+static uint32_t metal_pixel_bpp(uint32_t fmt)
+{
+    if (fmt == 10u || fmt == 13u || fmt == 14u) return 1u;
+    if (fmt == 30u || fmt == 33u || fmt == 34u) return 2u;
+    return 4u;
+}
+
+static void test_metal_pixel_format_bpp(void)
+{
+    expect(metal_pixel_bpp(10u) == 1u, "R8Unorm fill uses 1 bpp");
+    expect(metal_pixel_bpp(13u) == 1u, "R8Uint fill uses 1 bpp");
+    expect(metal_pixel_bpp(30u) == 2u, "RG8Unorm fill uses 2 bpp");
+    expect(metal_pixel_bpp(70u) == 4u, "RGBA8Unorm fill uses 4 bpp");
+    expect(metal_pixel_bpp(0u) == 4u, "unknown Metal pixel format fill uses 4 bpp");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1856,6 +1872,7 @@ int main(void)
     test_blit_texture_error_codes();
     test_gl_boolean_and_level_written();
     test_batch_replay_error_none();
+    test_metal_pixel_format_bpp();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
