@@ -1921,6 +1921,14 @@ static void test_readback_pixel_format_class(void)
            "BGRA8 readback class");
 }
 
+static uint32_t rb_bgra8_carrier(void) { return 80u; }
+
+static void test_readback_bgra8_carrier(void)
+{
+    expect(rb_bgra8_carrier() == 80u, "readback BGRA8 carrier is BGRA8Unorm");
+    expect(rb_bgra8(rb_bgra8_carrier()) == 1, "carrier is in BGRA8 class");
+}
+
 static int unorm8_color(uint32_t f)
 {
     return f == 70u || f == 71u || f == 80u || f == 81u;
@@ -2583,6 +2591,7 @@ int main(void)
     test_depth_readback_plan();
     test_default_depth_pixel_format();
     test_readback_pixel_format_class();
+    test_readback_bgra8_carrier();
     test_blit_rgba_bgra_pair();
     test_default_color_and_pipeline_compat();
     test_texbuffer_format();

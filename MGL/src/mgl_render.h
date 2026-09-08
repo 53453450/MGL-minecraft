@@ -1529,6 +1529,7 @@ int mglRenderReadbackPixelFormatIsRG11B10(uint32_t pixel_format);
 int mglRenderReadbackPixelFormatIs16or32(uint32_t pixel_format);
 int mglRenderReadbackPixelFormatIsRGBA8(uint32_t pixel_format);
 int mglRenderReadbackPixelFormatIsBGRA8(uint32_t pixel_format);
+uint32_t mglRenderReadbackBGRA8CarrierFormat(void);
 int mglRenderPixelFormatIsUnorm8Color(uint32_t pixel_format);
 int mglRenderBlitIsRGBA8BGRA8Pair(uint32_t src_format, uint32_t dst_format);
 int mglRenderIsValidGLCompareFunction(uint32_t func);

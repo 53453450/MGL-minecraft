@@ -206,7 +206,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                                                            dstBytesPerRow,
                                                            width,
                                                            height,
-                                                           MGLPixelFormatBGRA8Unorm,
+                                                           mglRenderReadbackBGRA8CarrierFormat(),
                                                            format,
                                                            type,
                                                            flipY);

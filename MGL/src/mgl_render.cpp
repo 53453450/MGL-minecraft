@@ -10234,6 +10234,10 @@ int mglRenderReadbackPixelFormatIsBGRA8(uint32_t pixel_format) {
                : 0;
 }
 
+uint32_t mglRenderReadbackBGRA8CarrierFormat(void) {
+    return 80u; /* BGRA8Unorm */
+}
+
 int mglRenderPixelFormatIsUnorm8Color(uint32_t pixel_format) {
     return mglRenderReadbackPixelFormatIsRGBA8(pixel_format) ||
            mglRenderReadbackPixelFormatIsBGRA8(pixel_format);
