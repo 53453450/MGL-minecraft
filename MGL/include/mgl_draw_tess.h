@@ -13,6 +13,7 @@
 
 #include "glcorearb.h"
 #include "glm_context.h"
+#include "glm_limits.h"
 #include "mgl_air_tess_abi.h"
 #include "mgl_types_program.h"
 
@@ -93,6 +94,45 @@ bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
                             MGLTessEvalComputePlan *out);
 
 bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs);
+
+bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode);
+bool mglXfbVsOnlyEligible(const Program *program);
+
+typedef struct MGLXfbVsField {
+    uint32_t buffer_index;
+    uint32_t source_offset;
+    uint32_t component_offset;
+    uint32_t component_count;
+    uint32_t gl_type;
+    uint8_t has_source;
+} MGLXfbVsField;
+
+typedef struct MGLXfbVsPlan {
+    uint32_t buffer_count;
+    uint32_t field_count;
+    uint32_t capture_stride;
+    uint32_t buffer_stride[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS];
+    MGLXfbVsField fields[MAX_ATTRIBS];
+} MGLXfbVsPlan;
+
+bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out);
+
+typedef struct MGLXfbVsBufferDest {
+    uint8_t skip;
+    uint32_t written_records;
+    uint32_t written_bytes;
+    uint32_t destination_offset;
+} MGLXfbVsBufferDest;
+
+bool mglXfbPlanVsBufferDest(uint32_t record_count, uint32_t stride,
+                            int has_buffer, int64_t slot_offset,
+                            uint64_t session_offset, uint64_t visible_bytes,
+                            MGLXfbVsBufferDest *out);
+
+uint32_t mglXfbPackVsRecords(const MGLXfbVsPlan *plan, uint32_t buffer,
+                             const void *src, uint64_t src_offset,
+                             uint32_t src_stride, uint32_t record_count,
+                             void *dst, uint32_t dst_stride);
 
 typedef struct MGLTessNativeEncodeState {
     void *encoder_owner;

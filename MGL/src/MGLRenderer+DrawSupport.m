@@ -951,167 +951,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!xfb || !xfb->active || xfb->paused) {
         return NO;
     }
-    {
-        const GLenum xfbMode = xfb->primitive_mode;
-        BOOL compatible = NO;
-        if (xfbMode == GL_POINTS) {
-            compatible = (mode == GL_POINTS);
-        } else if (xfbMode == GL_LINES) {
-            compatible = (mode == GL_LINES || mode == GL_LINE_LOOP ||
-                          mode == GL_LINE_STRIP);
-        } else if (xfbMode == GL_TRIANGLES) {
-            compatible = (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP ||
-                          mode == GL_TRIANGLE_FAN);
-        }
-        if (!compatible) {
-            return NO;
-        }
+    if (!mglXfbPrimitiveModeAccepts(xfb->primitive_mode, mode)) {
+        return NO;
     }
     Program *program = mglResolveProgramForStageFromState(
         drawCtx, _VERTEX_SHADER);
-    if (!program || program->shader_slots[_GEOMETRY_SHADER] ||
-        program->shader_slots[_TESS_CONTROL_SHADER] ||
-        program->shader_slots[_TESS_EVALUATION_SHADER] ||
-        !program->transform_feedback_layout_valid ||
-        program->transform_feedback_varying_count <= 0) {
+    MGLXfbVsPlan plan = {0};
+    if (!mglXfbPlanVsCapture(program, &plan)) {
         return NO;
-    }
-
-    const MGLShaderResourceList *outputs =
-        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
-    NSUInteger bufferStride[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS] = {0u};
-    NSUInteger sourceOffset[MAX_ATTRIBS] = {0u};
-    BOOL hasSource[MAX_ATTRIBS] = {NO};
-    GLuint bufferCount = program->transform_feedback_layout_buffer_count;
-    if (bufferCount == 0u || bufferCount > MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS) {
-        return NO;
-    }
-
-    for (GLsizei varying = 0;
-         varying < program->transform_feedback_varying_count;
-         varying++) {
-        const MGLTransformFeedbackVaryingPlan *plan =
-            &program->transform_feedback_layout[varying];
-        if (plan->buffer_index >= bufferCount || plan->stream > 0 ||
-            plan->component_count > 4u) {
-            return NO;
-        }
-        /* Resolve gl_type early so double components size the stride at
-         * 8 bytes (GL XFB packs GLdouble, not float). */
-        GLenum earlyType = 0;
-        const char *earlyName =
-            program->transform_feedback_varying_names[varying];
-        if (earlyName && earlyName[0]) {
-            char baseName[96];
-            strncpy(baseName, earlyName, sizeof(baseName) - 1);
-            baseName[sizeof(baseName) - 1] = '\0';
-            char *bracket = strchr(baseName, '[');
-            if (bracket) *bracket = '\0';
-            for (GLuint i = 0u; outputs->list && i < outputs->count; i++) {
-                if (outputs->list[i].name &&
-                    strcmp(outputs->list[i].name, baseName) == 0) {
-                    earlyType = outputs->list[i].gl_type;
-                    break;
-                }
-            }
-        }
-        NSUInteger compBytes = sizeof(uint32_t);
-        if (earlyType == GL_DOUBLE || earlyType == GL_DOUBLE_VEC2 ||
-            earlyType == GL_DOUBLE_VEC3 || earlyType == GL_DOUBLE_VEC4)
-            compBytes = sizeof(GLdouble);
-        NSUInteger end = ((NSUInteger)plan->component_offset +
-                          (NSUInteger)plan->component_count) * compBytes;
-        if (end > bufferStride[plan->buffer_index]) {
-            bufferStride[plan->buffer_index] = end;
-        }
-        if (plan->component_count == 0u || plan->stream < 0) {
-            continue;
-        }
-
-        const char *name = program->transform_feedback_varying_names[varying];
-        if (!name || !name[0]) return NO;
-        if (strcmp(name, "gl_Position") == 0 && plan->builtin) {
-            sourceOffset[varying] = MGL_AIR_PER_VERTEX_POSITION_OFFSET;
-            hasSource[varying] = YES;
-            continue;
-        }
-        if (strcmp(name, "gl_PointSize") == 0 && plan->builtin) {
-            sourceOffset[varying] = MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET;
-            hasSource[varying] = YES;
-            continue;
-        }
-        /* Single-element capture ("v[2]") shifts the record slot by the
-         * element index; whole-array names still span multiple slots and
-         * stay unsupported here. */
-        char baseName[96];
-        const char *bracket = strchr(name, '[');
-        GLuint arrayElement = 0u;
-        if (bracket) {
-            char *end = NULL;
-            unsigned long parsed = strtoul(bracket + 1, &end, 10);
-            size_t baseLen = (size_t)(bracket - name);
-            if (!end || *end != ']' || end[1] != '\0' || baseLen == 0u ||
-                baseLen >= sizeof(baseName)) {
-                return NO;
-            }
-            memcpy(baseName, name, baseLen);
-            baseName[baseLen] = '\0';
-            arrayElement = (GLuint)parsed;
-        } else {
-            size_t nameLen = strlen(name);
-            if (nameLen >= sizeof(baseName)) return NO;
-            memcpy(baseName, name, nameLen + 1u);
-        }
-        const MGLShaderResource *output = NULL;
-        for (GLuint i = 0u; outputs->list && i < outputs->count; i++) {
-            if (outputs->list[i].name &&
-                strcmp(outputs->list[i].name, baseName) == 0) {
-                output = &outputs->list[i];
-                break;
-            }
-        }
-        if (!output || output->location >= 0x0fffffffu) {
-            return NO;
-        }
-        GLuint recordSlot = output->location;
-        if (bracket) {
-            if (!output->is_array ||
-                arrayElement >= (GLuint)((output->gl_array_size > 0)
-                                             ? output->gl_array_size
-                                             : 1)) {
-                return NO;
-            }
-            recordSlot += arrayElement;
-        } else if (output->is_array) {
-            return NO;
-        }
-        sourceOffset[varying] = MGL_AIR_PER_VERTEX_STRIDE +
-                                (NSUInteger)recordSlot * 16u;
-        hasSource[varying] = YES;
-    }
-
-    /* Capture VS emits float carriers for every user varying slot; integer
-     * XFB outputs must be converted when packing (GL stores ints as ints). */
-    GLenum varyingGlType[MAX_ATTRIBS];
-    memset(varyingGlType, 0, sizeof(varyingGlType));
-    for (GLsizei varying = 0;
-         varying < program->transform_feedback_varying_count;
-         varying++) {
-        if (!hasSource[varying]) continue;
-        const char *name = program->transform_feedback_varying_names[varying];
-        if (!name || !name[0]) continue;
-        char baseName[96];
-        strncpy(baseName, name, sizeof(baseName) - 1);
-        baseName[sizeof(baseName) - 1] = '\0';
-        char *bracket = strchr(baseName, '[');
-        if (bracket) *bracket = '\0';
-        for (GLuint i = 0u; outputs->list && i < outputs->count; i++) {
-            if (outputs->list[i].name &&
-                strcmp(outputs->list[i].name, baseName) == 0) {
-                varyingGlType[varying] = outputs->list[i].gl_type;
-                break;
-            }
-        }
     }
 
     NSUInteger captureOffset = 0u;
@@ -1127,7 +974,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
 
     const uint8_t *captureBytes =
         (const uint8_t *)mglDrawSupportBufferContents(capture);
-    NSUInteger captureStride = mglAIRPerVertexStrideForResources(outputs);
     uint64_t recordCount64 = (uint64_t)(uint32_t)count *
                              (uint64_t)(uint32_t)instanceCount;
     if (!captureBytes || recordCount64 > NSUIntegerMax) {
@@ -1140,103 +986,46 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * counting).  Track the capped count across all buffers. */
     NSUInteger writtenTotal = recordCount;
 
-    for (GLuint buffer = 0u; buffer < bufferCount; buffer++) {
-        if (bufferStride[buffer] == 0u) continue;
+    for (GLuint buffer = 0u; buffer < plan.buffer_count; buffer++) {
+        if (plan.buffer_stride[buffer] == 0u) continue;
         BufferBaseTarget *slot =
             &MGL_STATE(drawCtx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
                                         .buffers[buffer];
-        if (!slot->buf || slot->offset < 0) {
-            writtenTotal = 0;
-            continue;
-        }
         BufferMap map = {0};
         map.buf = slot->buf;
         map.offset = slot->offset;
         map.size = slot->size;
-        NSUInteger visible = mglBufferMapVisibleBackingBytes(
-            &map, slot->buf->size > 0 ? (size_t)slot->buf->size : 0u);
+        NSUInteger visible = slot->buf
+            ? mglBufferMapVisibleBackingBytes(
+                  &map, slot->buf->size > 0 ? (size_t)slot->buf->size : 0u)
+            : 0u;
         NSUInteger sessionOffset = xfb->buffer_write_offsets[buffer] <=
                 (GLuint64)NSUIntegerMax
             ? (NSUInteger)xfb->buffer_write_offsets[buffer] : visible;
-        if (sessionOffset >= visible) {
+        MGLXfbVsBufferDest dest = {0};
+        if (!mglXfbPlanVsBufferDest((uint32_t)recordCount,
+                                    plan.buffer_stride[buffer],
+                                    slot->buf != NULL, slot->offset,
+                                    (uint64_t)sessionOffset, (uint64_t)visible,
+                                    &dest) ||
+            dest.skip) {
             writtenTotal = 0;
             continue;
         }
-        NSUInteger capacity = (visible - sessionOffset) / bufferStride[buffer];
-        NSUInteger writtenRecords = MIN(recordCount, capacity);
-        if (writtenRecords == 0u ||
-            writtenRecords > NSUIntegerMax / bufferStride[buffer]) {
-            writtenTotal = 0;
-            continue;
+        if (dest.written_records < writtenTotal) {
+            writtenTotal = dest.written_records;
         }
-        if (writtenRecords < writtenTotal) {
-            writtenTotal = writtenRecords;
-        }
-        NSUInteger writtenBytes = writtenRecords * bufferStride[buffer];
-        uint8_t *packed = (uint8_t *)calloc(1u, writtenBytes);
+        uint8_t *packed = (uint8_t *)calloc(1u, dest.written_bytes);
         if (!packed) {
             mglDispatchError(drawCtx, "vertexTransformFeedback",
                              GL_OUT_OF_MEMORY);
             return YES;
         }
-        for (NSUInteger record = 0u; record < writtenRecords; record++) {
-            const uint8_t *srcRecord = captureBytes + captureOffset +
-                                       record * captureStride;
-            uint8_t *dstRecord = packed + record * bufferStride[buffer];
-            for (GLsizei varying = 0;
-                 varying < program->transform_feedback_varying_count;
-                 varying++) {
-                const MGLTransformFeedbackVaryingPlan *plan =
-                    &program->transform_feedback_layout[varying];
-                if (plan->buffer_index != buffer || !hasSource[varying]) {
-                    continue;
-                }
-                GLuint comps = plan->component_count;
-                GLenum glType = varyingGlType[varying];
-                NSUInteger dstCompBytes =
-                    (glType == GL_DOUBLE || glType == GL_DOUBLE_VEC2 ||
-                     glType == GL_DOUBLE_VEC3 || glType == GL_DOUBLE_VEC4)
-                        ? sizeof(GLdouble)
-                        : sizeof(uint32_t);
-                uint8_t *dstField =
-                    dstRecord + (NSUInteger)plan->component_offset * dstCompBytes;
-                const uint8_t *srcField = srcRecord + sourceOffset[varying];
-                /* AIR capture slots are float carriers; convert for integer
-                 * / double XFB outputs. Floating types copy bits as-is. */
-                if (glType == GL_INT || glType == GL_INT_VEC2 ||
-                    glType == GL_INT_VEC3 || glType == GL_INT_VEC4) {
-                    for (GLuint c = 0u; c < comps && c < 4u; c++) {
-                        float f = 0.f;
-                        memcpy(&f, srcField + c * 4u, sizeof(f));
-                        GLint iv = (GLint)f;
-                        memcpy(dstField + c * 4u, &iv, sizeof(iv));
-                    }
-                } else if (glType == GL_UNSIGNED_INT ||
-                           glType == GL_UNSIGNED_INT_VEC2 ||
-                           glType == GL_UNSIGNED_INT_VEC3 ||
-                           glType == GL_UNSIGNED_INT_VEC4) {
-                    for (GLuint c = 0u; c < comps && c < 4u; c++) {
-                        float f = 0.f;
-                        memcpy(&f, srcField + c * 4u, sizeof(f));
-                        GLuint uv = (GLuint)f;
-                        memcpy(dstField + c * 4u, &uv, sizeof(uv));
-                    }
-                } else if (glType == GL_DOUBLE || glType == GL_DOUBLE_VEC2 ||
-                           glType == GL_DOUBLE_VEC3 ||
-                           glType == GL_DOUBLE_VEC4) {
-                    for (GLuint c = 0u; c < comps && c < 4u; c++) {
-                        float f = 0.f;
-                        memcpy(&f, srcField + c * 4u, sizeof(f));
-                        GLdouble dv = (GLdouble)f;
-                        memcpy(dstField + c * sizeof(GLdouble), &dv,
-                               sizeof(dv));
-                    }
-                } else {
-                    memcpy(dstField, srcField, (NSUInteger)comps * 4u);
-                }
-            }
-        }
-        NSUInteger destinationOffset = (NSUInteger)slot->offset + sessionOffset;
+        mglXfbPackVsRecords(&plan, buffer, captureBytes, captureOffset,
+                            plan.capture_stride, dest.written_records, packed,
+                            plan.buffer_stride[buffer]);
+        NSUInteger destinationOffset = dest.destination_offset;
+        NSUInteger writtenBytes = dest.written_bytes;
         mglRendererBufferSubData(drawCtx, slot->buf, destinationOffset,
                                  writtenBytes, packed);
         /* The renderer's subdata routes through the shadow/snapshot pair,
@@ -1421,11 +1210,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                              GL_OUT_OF_MEMORY);
             return YES;
         }
-        gparams.vertices_per_instance = indexedDraw
-            ? gatherMaxIndex + 1u : (uint32_t)count;
-        gparams.primitives_per_instance = gatherPrimitives;
-        gparams.first_vertex = indexedDraw ? 0u : (uint32_t)first;
-        gparams.gather_enabled = 1u;
+        mglDrawGsFillGatherParams(indexedDraw ? 1 : 0, (uint32_t)count,
+                                  (uint32_t)first, gatherMaxIndex,
+                                  gatherPrimitives, &gparams);
         if (getenv("MGL_GS_DIAG")) {
             NSLog(@"MGL GS DIAG gather mode=0x%x indexed=%d first=%d count=%d gathered=%u prims=%u max=%u params={%u,%u,%u,%u}",
                   (unsigned)mode, indexedDraw ? 1 : 0, (int)first, (int)count,
@@ -1502,16 +1289,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * can be wider than what this GS declares as inputs (e.g. a flat
      * instance_id the GS never reads).  A stride mismatch made every
      * gl_in[N>0] read land inside the wrong record. */
-    if (gparams.stage_in_stride == 0u && captureTES) {
-        gparams.stage_in_stride =
-            mglAIRPerVertexStrideForResources(
-                &captureTES->shader_resources_list[_TESS_EVALUATION_SHADER]
-                                                   [_STAGE_OUTPUT_RES]);
-    } else if (gparams.stage_in_stride == 0u && captureVS) {
-        gparams.stage_in_stride =
-            mglAIRPerVertexStrideForResources(
-                &captureVS->shader_resources_list[_VERTEX_SHADER]
-                                                 [_STAGE_OUTPUT_RES]);
+    if (gparams.stage_in_stride == 0u) {
+        gparams.stage_in_stride = mglDrawGsResolveStageInStride(
+            captureVS, captureTES, 0u);
     }
     /* Publish the GS-input -> capture-offset location map.  The capture
      * lays records out by the *vertex* stage's output locations; a VS

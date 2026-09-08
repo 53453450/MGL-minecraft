@@ -8494,6 +8494,14 @@ uint64_t mglRenderTESXFBFieldByteSize(uint64_t gl_type) {
             return 48u;
         case GL_FLOAT_MAT4:
             return 64u;
+        case GL_DOUBLE:
+            return 8u;
+        case GL_DOUBLE_VEC2:
+            return 16u;
+        case GL_DOUBLE_VEC3:
+            return 24u;
+        case GL_DOUBLE_VEC4:
+            return 32u;
         default:
             return 0u;
     }
@@ -13298,6 +13306,26 @@ int mglRenderClassifyCommandBufferCommit(
             MGL_RENDER_COMMAND_BUFFER_COMMIT_PROCEED;
     }
     return 0;
+}
+
+int mglRenderClassifyProcessGLState(
+    int has_ctx, int draw_command, int has_vao, int dirty_state) {
+    if (!has_ctx) {
+        return MGL_PROCESS_GL_ABORT;
+    }
+    if (!has_vao) {
+        if (draw_command) {
+            return MGL_PROCESS_GL_ABORT;
+        }
+        if (dirty_state) {
+            return MGL_PROCESS_GL_NO_VAO_CLEAR;
+        }
+        return MGL_PROCESS_GL_NON_DRAW;
+    }
+    if (!draw_command) {
+        return MGL_PROCESS_GL_NON_DRAW;
+    }
+    return MGL_PROCESS_GL_CONTINUE;
 }
 
 namespace {

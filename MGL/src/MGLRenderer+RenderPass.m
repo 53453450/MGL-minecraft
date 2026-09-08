@@ -5476,28 +5476,19 @@ static GLenum mglPassthroughDeclType(
         return false;
     }
 
-    // REMOVED: Thread synchronization was causing deadlocks
-    // The issue is not thread contention but Metal object corruption
-
-    // ULTIMATE FAILSAFE: Metal state corruption detection and recovery
     static int corruption_recovery_count = 0;
     static int max_recovery_attempts = 3;
-
-    // Check for corrupted Metal objects that might cause crashes.
-    // Only reject NULL / obviously invalid low addresses.
-    if (!_device || !_commandQueue || ((uintptr_t)_device < 0x1000) || ((uintptr_t)_commandQueue < 0x1000)) {
+    if (!_device || !_commandQueue || ((uintptr_t)_device < 0x1000) ||
+        ((uintptr_t)_commandQueue < 0x1000)) {
         NSLog(@"MGL CRITICAL: Metal state corruption detected in processGLState!");
-        NSLog(@"MGL CRITICAL: device=0x%lx, queue=0x%lx", (uintptr_t)_device, (uintptr_t)_commandQueue);
-
+        NSLog(@"MGL CRITICAL: device=0x%lx, queue=0x%lx", (uintptr_t)_device,
+              (uintptr_t)_commandQueue);
         if (corruption_recovery_count < max_recovery_attempts) {
-            NSLog(@"MGL CRITICAL: Attempting Metal state recovery (%d/%d)", corruption_recovery_count + 1, max_recovery_attempts);
-
-            // Force a complete Metal state reset
+            NSLog(@"MGL CRITICAL: Attempting Metal state recovery (%d/%d)",
+                  corruption_recovery_count + 1, max_recovery_attempts);
             @try {
                 [self emergencyResetMetalState];
                 corruption_recovery_count++;
-
-                // Re-check after recovery
                 if (!_device || !_commandQueue) {
                     NSLog(@"MGL CRITICAL: Metal recovery failed, aborting operation");
                     return false;
@@ -5512,79 +5503,41 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    //logDirtyBits(ctx);
-
-    if (!draw_command) {
-        [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
-    }
-
-    // since a clear is embedded into a render encoder
-    if (MGL_STATE(ctx)->vao == NULL)
-    {
-        if (draw_command)
-        {
+    const int hasVao = MGL_STATE(ctx)->vao != NULL;
+    const int dirtyState =
+        (MGL_STATE(ctx)->dirty_bits & DIRTY_STATE) ? 1 : 0;
+    const MGLProcessGLStateClass processClass =
+        mglRenderClassifyProcessGLState(1, draw_command ? 1 : 0, hasVao,
+                                        dirtyState);
+    if (processClass == MGL_PROCESS_GL_ABORT) {
+        if (draw_command && !hasVao) {
             NSLog(@"Error: No VAO defined for ctx\n");
-
-            // quietly return if we are not in a draw command with no vao defined
-            // like a clear or init call
-            return false;
         }
-
-        // for a clear flush sequence...
-        if (MGL_STATE(ctx)->dirty_bits & DIRTY_STATE)
-        {
-            // end encoding on current render encoder
-            [self endRenderEncodingLocked];
-
-            // Use GPU throttling to prevent crashes when creating new render encoder
-            if (![self validateMetalObjects]) {
-                NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
-                MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
-                return true;
-            }
-
-            @try {
-                [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_CLEAR];
-            } @catch (NSException *exception) {
-                NSLog(@"MGL ERROR: Render encoder creation failed: %@", exception);
-            }
-
-            // Clear the dirty bit to prevent repeated attempts
+        return false;
+    }
+    if (processClass == MGL_PROCESS_GL_NON_DRAW) {
+        if (!draw_command) {
+            [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
+        }
+        return true;
+    }
+    if (processClass == MGL_PROCESS_GL_NO_VAO_CLEAR) {
+        if (!draw_command) {
+            [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
+        }
+        [self endRenderEncodingLocked];
+        if (![self validateMetalObjects]) {
+            NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
             MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
+            return true;
         }
-
-        return true;
-    }
-
-    // only draw commands need a functioning render encoder
-    // this can mess up a transition between compute and rendering on a flush
-    // so just return
-    // we may have to create a blank render encoder to safely run compute and
-    // rendering correctly
-    if (draw_command == false)
-    {
-        return true;
-    }
-
-    // MEMORY SAFETY: Validate context before use
-    if (!ctx) {
-        NSLog(@"MGL ERROR: NULL context detected in processGLState");
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.null_ctx",
-                                ctx,
-                                _renderPassManager.state->currentCommandBufferOwner,
-                                _renderPassManager.state->currentRenderEncoderOwner,
-                                _renderPassManager.state->renderPassStateOwner,
-                                _drawable);
+        @try {
+            [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_CLEAR];
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Render encoder creation failed: %@", exception);
         }
-        return false;
-    }
-
-    // Validate context pointer lower bound only (high addresses are valid on macOS/arm64)
-    uintptr_t ctx_addr = (uintptr_t)ctx;
-    if (ctx_addr < 0x1000) {
-        NSLog(@"MGL ERROR: Invalid context pointer detected: 0x%lx", ctx_addr);
-        return false;
+        MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
+        return true;
     }
 
     // Early circuit-breaker: if a program is currently quarantined due to repeated

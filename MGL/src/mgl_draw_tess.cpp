@@ -647,6 +647,17 @@ extern "C" void mglTessPackXFBFieldFromCarrier(uint32_t gl_type, const void *src
         }
         return;
     }
+    if (gl_type == GL_DOUBLE || gl_type == GL_DOUBLE_VEC2 ||
+        gl_type == GL_DOUBLE_VEC3 || gl_type == GL_DOUBLE_VEC4) {
+        const uint32_t dcomps = field_bytes / (uint32_t)sizeof(double);
+        for (uint32_t c = 0u; c < dcomps && c < 4u; c++) {
+            float f = 0.f;
+            memcpy(&f, in + c * 4u, sizeof(f));
+            const double dv = (double)f;
+            memcpy(out + c * sizeof(double), &dv, sizeof(dv));
+        }
+        return;
+    }
     if (gl_type == GL_FLOAT_MAT2) {
         memcpy(out + 0u, in + 0u, 8u);
         memcpy(out + 8u, in + 16u, 8u);
@@ -1480,4 +1491,194 @@ extern "C" bool mglTessPlanIsolatedBinding(
                                : fallback;
     }
     return true;
+}
+
+extern "C" bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode)
+{
+    if (xfb_mode == GL_POINTS) {
+        return draw_mode == GL_POINTS;
+    }
+    if (xfb_mode == GL_LINES) {
+        return draw_mode == GL_LINES || draw_mode == GL_LINE_LOOP ||
+               draw_mode == GL_LINE_STRIP;
+    }
+    if (xfb_mode == GL_TRIANGLES) {
+        return draw_mode == GL_TRIANGLES || draw_mode == GL_TRIANGLE_STRIP ||
+               draw_mode == GL_TRIANGLE_FAN;
+    }
+    return false;
+}
+
+extern "C" bool mglXfbVsOnlyEligible(const Program *program)
+{
+    return program && !program->shader_slots[_GEOMETRY_SHADER] &&
+           !program->shader_slots[_TESS_CONTROL_SHADER] &&
+           !program->shader_slots[_TESS_EVALUATION_SHADER] &&
+           program->transform_feedback_layout_valid &&
+           program->transform_feedback_varying_count > 0;
+}
+
+extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
+{
+    if (!out || !mglXfbVsOnlyEligible(program)) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    const uint32_t buffer_count = program->transform_feedback_layout_buffer_count;
+    if (buffer_count == 0u ||
+        buffer_count > MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS) {
+        return false;
+    }
+    out->buffer_count = buffer_count;
+    out->capture_stride = mglAIRPerVertexStrideForResources(
+        &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+    const GLsizei varying_count = program->transform_feedback_varying_count;
+    if (varying_count < 0 || (uint32_t)varying_count > MAX_ATTRIBS) {
+        return false;
+    }
+    out->field_count = (uint32_t)varying_count;
+    for (GLsizei varying = 0; varying < varying_count; varying++) {
+        const MGLTransformFeedbackVaryingPlan *layout =
+            &program->transform_feedback_layout[varying];
+        MGLXfbVsField *field = &out->fields[varying];
+        field->buffer_index = layout->buffer_index;
+        field->component_offset = layout->component_offset;
+        field->component_count = layout->component_count;
+        if (layout->buffer_index >= buffer_count || layout->stream > 0 ||
+            layout->component_count > 4u) {
+            return false;
+        }
+        const char *name = program->transform_feedback_varying_names[varying];
+        if (layout->component_count == 0u || layout->stream < 0) {
+            continue;
+        }
+        if (!name || !name[0]) {
+            return false;
+        }
+        if (strcmp(name, "gl_Position") == 0 && layout->builtin) {
+            field->source_offset = MGL_AIR_PER_VERTEX_POSITION_OFFSET;
+            field->gl_type = GL_FLOAT_VEC4;
+            field->has_source = 1u;
+        } else if (strcmp(name, "gl_PointSize") == 0 && layout->builtin) {
+            field->source_offset = MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET;
+            field->gl_type = GL_FLOAT;
+            field->has_source = 1u;
+        } else {
+            const char *bracket = strchr(name, '[');
+            GLuint array_element = 0u;
+            if (bracket) {
+                char *end = NULL;
+                const unsigned long parsed = strtoul(bracket + 1, &end, 10);
+                if (!end || *end != ']' || end[1] != '\0') {
+                    return false;
+                }
+                array_element = (GLuint)parsed;
+            }
+            const MGLShaderResource *output =
+                mglProgramFindStageOutputForXFBName(
+                    const_cast<Program *>(program), _VERTEX_SHADER, name);
+            if (!output || output->location >= 0x0fffffffu) {
+                return false;
+            }
+            uint32_t record_slot = (uint32_t)output->location;
+            if (bracket) {
+                const GLuint array_size =
+                    output->gl_array_size > 0 ? (GLuint)output->gl_array_size
+                                              : 1u;
+                if (!output->is_array || array_element >= array_size) {
+                    return false;
+                }
+                record_slot += array_element;
+            } else if (output->is_array) {
+                return false;
+            }
+            field->source_offset =
+                MGL_AIR_PER_VERTEX_STRIDE + record_slot * 16u;
+            field->gl_type = (uint32_t)output->gl_type;
+            field->has_source = 1u;
+        }
+        const uint32_t comp_bytes =
+            (field->gl_type == GL_DOUBLE || field->gl_type == GL_DOUBLE_VEC2 ||
+             field->gl_type == GL_DOUBLE_VEC3 ||
+             field->gl_type == GL_DOUBLE_VEC4)
+                ? (uint32_t)sizeof(double)
+                : (uint32_t)sizeof(uint32_t);
+        const uint32_t end =
+            (layout->component_offset + layout->component_count) * comp_bytes;
+        if (end > out->buffer_stride[layout->buffer_index]) {
+            out->buffer_stride[layout->buffer_index] = end;
+        }
+    }
+    return true;
+}
+
+extern "C" bool mglXfbPlanVsBufferDest(uint32_t record_count, uint32_t stride,
+                                       int has_buffer, int64_t slot_offset,
+                                       uint64_t session_offset,
+                                       uint64_t visible_bytes,
+                                       MGLXfbVsBufferDest *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!has_buffer || slot_offset < 0 || stride == 0u) {
+        out->skip = 1u;
+        return true;
+    }
+    if (session_offset >= visible_bytes) {
+        out->skip = 1u;
+        return true;
+    }
+    const uint64_t capacity = (visible_bytes - session_offset) / stride;
+    uint64_t written = record_count < capacity ? record_count : capacity;
+    if (written == 0u || written > UINT32_MAX / stride) {
+        out->skip = 1u;
+        return true;
+    }
+    const uint64_t dest = (uint64_t)slot_offset + session_offset;
+    if (dest > UINT32_MAX) {
+        out->skip = 1u;
+        return true;
+    }
+    out->written_records = (uint32_t)written;
+    out->written_bytes = (uint32_t)written * stride;
+    out->destination_offset = (uint32_t)dest;
+    return true;
+}
+
+extern "C" uint32_t mglXfbPackVsRecords(const MGLXfbVsPlan *plan, uint32_t buffer,
+                                        const void *src, uint64_t src_offset,
+                                        uint32_t src_stride,
+                                        uint32_t record_count, void *dst,
+                                        uint32_t dst_stride)
+{
+    if (!plan || !src || !dst || src_stride == 0u || dst_stride == 0u ||
+        buffer >= plan->buffer_count) {
+        return 0u;
+    }
+    const uint8_t *in = (const uint8_t *)src + src_offset;
+    uint8_t *out = (uint8_t *)dst;
+    for (uint32_t record = 0u; record < record_count; record++) {
+        const uint8_t *src_record = in + (uint64_t)record * src_stride;
+        uint8_t *dst_record = out + (uint64_t)record * dst_stride;
+        for (uint32_t varying = 0u; varying < plan->field_count; varying++) {
+            const MGLXfbVsField *field = &plan->fields[varying];
+            if (field->buffer_index != buffer || !field->has_source) {
+                continue;
+            }
+            const uint32_t dst_elem =
+                (field->gl_type == GL_DOUBLE ||
+                 field->gl_type == GL_DOUBLE_VEC2 ||
+                 field->gl_type == GL_DOUBLE_VEC3 ||
+                 field->gl_type == GL_DOUBLE_VEC4)
+                    ? (uint32_t)sizeof(double)
+                    : (uint32_t)sizeof(uint32_t);
+            const uint32_t field_bytes = field->component_count * dst_elem;
+            mglTessPackXFBFieldFromCarrier(
+                field->gl_type, src_record + field->source_offset,
+                dst_record + field->component_offset * dst_elem, field_bytes);
+        }
+    }
+    return record_count;
 }

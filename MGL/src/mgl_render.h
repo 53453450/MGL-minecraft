@@ -2445,6 +2445,16 @@ int mglRenderSetCommandBufferLabel(void *command_buffer,
 int mglRenderClassifyCommandBufferCommit(
     const MGLRenderCommandBufferState *state,
     MGLRenderCommandBufferCommitDecision *decision_out);
+
+typedef enum {
+    MGL_PROCESS_GL_ABORT = 0,
+    MGL_PROCESS_GL_NON_DRAW = 1,
+    MGL_PROCESS_GL_NO_VAO_CLEAR = 2,
+    MGL_PROCESS_GL_CONTINUE = 3,
+} MGLProcessGLStateClass;
+
+MGLProcessGLStateClass mglRenderClassifyProcessGLState(
+    int has_ctx, int draw_command, int has_vao, int dirty_state);
 /* Commit one detached/current command buffer through the C++ owner.  When
  * submission_handle points at a matching C++ submission, that ownership is
  * consumed; otherwise the borrowed command buffer is committed directly.

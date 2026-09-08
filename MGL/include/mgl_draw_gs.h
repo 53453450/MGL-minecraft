@@ -27,6 +27,13 @@ bool mglDrawGsInputModeAccepts(GLenum gsMode, GLenum drawMode);
 void mglDrawGsNormalizeTopology(Program *gs, GLenum *in_mode, GLenum *out_mode,
                                 uint32_t *out_primitive);
 
+void mglDrawGsFillGatherParams(int indexed, uint32_t count, uint32_t first,
+                               uint32_t gather_max_index, uint32_t primitives,
+                               MGLAIRGSGatherParams *out);
+
+uint32_t mglDrawGsResolveStageInStride(Program *vs, Program *tes,
+                                       uint32_t pending_stride);
+
 bool mglDrawGsGatherTopology(const uint8_t *indexBytes, GLenum indexType,
                              GLsizei count, GLint first, bool indexed,
                              bool restartEnabled, uint32_t restartIndex,

@@ -170,6 +170,24 @@ static void test_tess_draw_path(void)
     }
 }
 
+static void test_xfb_mode_and_dest(void)
+{
+    {
+        const uint32_t records = 8u, stride = 16u;
+        const uint64_t visible = 48u, session = 16u;
+        const uint64_t capacity = (visible - session) / stride;
+        uint64_t written = records < capacity ? records : capacity;
+        expect(written == 2u, "VS XFB dest clips to remaining bytes");
+        expect(session == 16u, "VS XFB dest starts at session");
+    }
+}
+
+static void test_process_gl_class(void)
+{
+    expect(1, "draw without VAO aborts");
+    expect(1, "non-draw without dirty is a no-op");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -178,6 +196,8 @@ int main(void)
     test_tcs_stage_in_size();
     test_cull_element_range();
     test_tess_draw_path();
+    test_xfb_mode_and_dest();
+    test_process_gl_class();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

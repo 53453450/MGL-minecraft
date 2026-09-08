@@ -68,6 +68,40 @@ extern "C" void mglDrawGsNormalizeTopology(Program *gs, GLenum *in_mode,
     }
 }
 
+extern "C" void mglDrawGsFillGatherParams(int indexed, uint32_t count,
+                                          uint32_t first,
+                                          uint32_t gather_max_index,
+                                          uint32_t primitives,
+                                          MGLAIRGSGatherParams *out)
+{
+    if (!out) {
+        return;
+    }
+    out->vertices_per_instance =
+        indexed ? gather_max_index + 1u : count;
+    out->primitives_per_instance = primitives;
+    out->first_vertex = indexed ? 0u : first;
+    out->gather_enabled = 1u;
+}
+
+extern "C" uint32_t mglDrawGsResolveStageInStride(Program *vs, Program *tes,
+                                                  uint32_t pending_stride)
+{
+    if (pending_stride > 0u) {
+        return pending_stride;
+    }
+    if (tes) {
+        return mglAIRPerVertexStrideForResources(
+            &tes->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                       [_STAGE_OUTPUT_RES]);
+    }
+    if (vs) {
+        return mglAIRPerVertexStrideForResources(
+            &vs->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+    }
+    return 0u;
+}
+
 extern "C" bool mglDrawGsGatherTopology(const uint8_t *indexBytes,
                                         GLenum indexType, GLsizei count,
                                         GLint first, bool indexed,
