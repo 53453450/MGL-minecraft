@@ -1250,144 +1250,64 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (conversionKind == MGL_ATTRIB_CONV_DOUBLE) {
-            NSUInteger convertedStride = 0;
-            id convertedBuffer = [self floatVertexBufferForDoubleAttrib:attribBuffer
-                                                                          resolved:&resolved
-                                                                              size:attribState->size
-                                                                          outStride:&convertedStride];
-            if (!convertedBuffer) {
-                NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert GL_DOUBLE vertex attrib",
-                      attrib,
-                      attribBuffer->name);
-                continue;
-            }
-            if (!mglBindingStateIsValid(_bindingStateOwner) ||
-                !mglBindingStateBufferMatches(
-                    _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
-                    (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
-                MGL_VATTR_EMIT_BUFFER(bindingIndex,
-                                      (__bridge void *)convertedBuffer, 0);
-                /* Converted buffers are fresh per call on gate-on
-                 * (__bridge_transfer, no cache): flush immediately so the
-                 * encoder retains the buffer while the loop local is alive. */
-                MGL_VATTR_FLUSH_SNAPSHOT();
-                mglRenderBindingUpdateVertexBuffer(
-                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
-                    (uint32_t)bindingIndex);
-                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-            } else {
-                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
-            }
-            anyBindingPresent[bindingIndex] = true;
-            continue;
-        }
-
-        if (conversionKind == MGL_ATTRIB_CONV_INT_TO_FLOAT) {
-            NSUInteger convertedStride = 0;
-            id convertedBuffer = [self floatVertexBufferForIntAttrib:attribBuffer
-                                                                        resolved:&resolved
-                                                                            size:attribState->size
-                                                                      normalized:attribState->normalized
-                                                                            type:attribState->type
-                                                                        outStride:&convertedStride];
-            if (!convertedBuffer) {
-                NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert GL_INT/GL_UNSIGNED_INT vertex attrib to float",
-                      attrib,
-                      attribBuffer->name);
-                continue;
-            }
-            if (!mglBindingStateIsValid(_bindingStateOwner) ||
-                !mglBindingStateBufferMatches(
-                    _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
-                    (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
-                MGL_VATTR_EMIT_BUFFER(bindingIndex,
-                                      (__bridge void *)convertedBuffer, 0);
-                /* Converted buffers are fresh per call on gate-on
-                 * (__bridge_transfer, no cache): flush immediately so the
-                 * encoder retains the buffer while the loop local is alive. */
-                MGL_VATTR_FLUSH_SNAPSHOT();
-                mglRenderBindingUpdateVertexBuffer(
-                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
-                    (uint32_t)bindingIndex);
-                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-            } else {
-                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
-            }
-            anyBindingPresent[bindingIndex] = true;
-            continue;
-        }
-
-        if (conversionKind == MGL_ATTRIB_CONV_FIXED ||
-            conversionKind == MGL_ATTRIB_CONV_UINT_1010102 ||
-            conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F) {
+        if (conversionKind != MGL_ATTRIB_CONV_NONE) {
             NSUInteger convertedStride = 0;
             id convertedBuffer = nil;
-            if (conversionKind == MGL_ATTRIB_CONV_FIXED) {
-                convertedBuffer = [self floatVertexBufferForFixedAttrib:attribBuffer
-                                                               resolved:&resolved
-                                                                   size:attribState->size
-                                                              outStride:&convertedStride];
-            } else if (conversionKind == MGL_ATTRIB_CONV_UINT_1010102) {
-                convertedBuffer = [self floatVertexBufferForPacked1010102Attrib:attribBuffer
-                                                                        resolved:&resolved
-                                                                       outStride:&convertedStride];
-            } else { /* GL_UNSIGNED_INT_10F_11F_11F_REV */
-                convertedBuffer = [self floatVertexBufferForPacked10f11f11fAttrib:attribBuffer
+            switch (conversionKind) {
+                case MGL_ATTRIB_CONV_DOUBLE:
+                    convertedBuffer = [self floatVertexBufferForDoubleAttrib:attribBuffer
+                                                                    resolved:&resolved
+                                                                        size:attribState->size
+                                                                   outStride:&convertedStride];
+                    break;
+                case MGL_ATTRIB_CONV_INT_TO_FLOAT:
+                    convertedBuffer = [self floatVertexBufferForIntAttrib:attribBuffer
+                                                                 resolved:&resolved
+                                                                     size:attribState->size
+                                                               normalized:attribState->normalized
+                                                                     type:attribState->type
+                                                                outStride:&convertedStride];
+                    break;
+                case MGL_ATTRIB_CONV_FIXED:
+                    convertedBuffer = [self floatVertexBufferForFixedAttrib:attribBuffer
+                                                                   resolved:&resolved
+                                                                       size:attribState->size
+                                                                  outStride:&convertedStride];
+                    break;
+                case MGL_ATTRIB_CONV_UINT_1010102:
+                    convertedBuffer = [self floatVertexBufferForPacked1010102Attrib:attribBuffer
                                                                            resolved:&resolved
                                                                           outStride:&convertedStride];
+                    break;
+                case MGL_ATTRIB_CONV_UINT_10F11F11F:
+                    convertedBuffer = [self floatVertexBufferForPacked10f11f11fAttrib:attribBuffer
+                                                                             resolved:&resolved
+                                                                            outStride:&convertedStride];
+                    break;
+                case MGL_ATTRIB_CONV_INTEGER_SIGN:
+                    convertedBuffer = [self integerVertexBufferForAttrib:attribBuffer
+                                                                resolved:&resolved
+                                                                    size:attribState->size
+                                                                 srcType:attribState->type
+                                                               dstIsInt:integerConvDstIsInt
+                                                              outStride:&convertedStride];
+                    break;
+                default:
+                    break;
             }
             if (!convertedBuffer) {
-                NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert packed/fixed vertex attrib (type=0x%x)",
-                      attrib, attribBuffer->name, (unsigned)attribState->type);
+                NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert vertex attrib kind=%d type=0x%x",
+                      attrib, attribBuffer->name, conversionKind,
+                      (unsigned)attribState->type);
                 continue;
             }
+            (void)convertedStride;
             if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
                     (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
                 MGL_VATTR_EMIT_BUFFER(bindingIndex,
                                       (__bridge void *)convertedBuffer, 0);
-                /* Converted buffers are fresh per call on gate-on
-                 * (__bridge_transfer, no cache): flush immediately so the
-                 * encoder retains the buffer while the loop local is alive. */
-                MGL_VATTR_FLUSH_SNAPSHOT();
-                mglRenderBindingUpdateVertexBuffer(
-                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
-                    (uint32_t)bindingIndex);
-                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-            } else {
-                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
-            }
-            anyBindingPresent[bindingIndex] = true;
-            continue;
-        }
-
-        if (conversionKind == MGL_ATTRIB_CONV_INTEGER_SIGN) {
-            NSUInteger convertedStride = 0;
-            id convertedBuffer = [self integerVertexBufferForAttrib:attribBuffer
-                                                                       resolved:&resolved
-                                                                           size:attribState->size
-                                                                         srcType:attribState->type
-                                                                       dstIsInt:integerConvDstIsInt
-                                                                      outStride:&convertedStride];
-            if (!convertedBuffer) {
-                NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert integer vertex attrib (src=0x%x dstIsInt=%d)",
-                      attrib,
-                      attribBuffer->name,
-                      (unsigned)attribState->type,
-                      (int)integerConvDstIsInt);
-                continue;
-            }
-            if (!mglBindingStateIsValid(_bindingStateOwner) ||
-                !mglBindingStateBufferMatches(
-                    _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
-                    (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
-                MGL_VATTR_EMIT_BUFFER(bindingIndex,
-                                      (__bridge void *)convertedBuffer, 0);
-                /* Converted buffers are fresh per call on gate-on
-                 * (__bridge_transfer, no cache): flush immediately so the
-                 * encoder retains the buffer while the loop local is alive. */
                 MGL_VATTR_FLUSH_SNAPSHOT();
                 mglRenderBindingUpdateVertexBuffer(
                     _bindingStateOwner, (__bridge void *)convertedBuffer, 0,

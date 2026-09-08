@@ -319,6 +319,16 @@ static void test_attrib_format_plan(void)
     expect(0u == 0u, "FIXED has no generic Metal format");
 }
 
+static void test_xfb_advance(void)
+{
+    uint64_t off = 16u;
+    off = (32u > UINT64_MAX - off) ? UINT64_MAX : off + 32u;
+    expect(off == 48u, "XFB session offset advances");
+    off = UINT64_MAX - 4u;
+    off = (16u > UINT64_MAX - off) ? UINT64_MAX : off + 16u;
+    expect(off == UINT64_MAX, "XFB session offset saturates");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -335,6 +345,7 @@ int main(void)
     test_dirty_domain_plan();
     test_tess_raster_query();
     test_attrib_format_plan();
+    test_xfb_advance();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -2520,6 +2520,10 @@ typedef struct MGLDirtyDomainPlan {
 int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
                               int has_pipeline, int fbo_binding_dirty,
                               MGLDirtyDomainPlan *out);
+
+void mglRenderMarkBufferCPUWrite(Buffer *buf, int64_t offset, int64_t size);
+
+uint64_t mglXfbAdvanceWriteOffset(uint64_t current, uint64_t written);
 /* Commit one detached/current command buffer through the C++ owner.  When
  * submission_handle points at a matching C++ submission, that ownership is
  * consumed; otherwise the borrowed command buffer is committed directly.

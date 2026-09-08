@@ -1620,22 +1620,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                     memcpy((uint8_t *)destBuf->data.buffer_data + destOffset,
                            packed, written);
                 }
-                destBuf->ever_written = GL_TRUE;
-                destBuf->has_initialized_data = GL_TRUE;
-                destBuf->cpu_shadow_pending = GL_TRUE;
-                destBuf->gpu_write_target = GL_FALSE;
-                destBuf->data.dirty_bits |= DIRTY_BUFFER_DATA;
-                destBuf->last_write_offset = (GLintptr)destOffset;
-                destBuf->last_write_size = (GLsizeiptr)written;
-                if (destBuf->written_min < 0 ||
-                    (GLintptr)destOffset < destBuf->written_min) {
-                    destBuf->written_min = (GLintptr)destOffset;
-                }
-                GLintptr writeEnd = (GLintptr)(destOffset + written);
-                if (destBuf->written_max < 0 ||
-                    writeEnd > destBuf->written_max) {
-                    destBuf->written_max = writeEnd;
-                }
+                mglRenderMarkBufferCPUWrite(destBuf, (int64_t)destOffset,
+                                            (int64_t)written);
                 free(packed);
             }
         } else {
@@ -1666,33 +1652,15 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                        xfbCopyDestinationOffset,
                    packed, xfbWrittenBytes);
         }
-        xfbDestination->ever_written = GL_TRUE;
-        xfbDestination->has_initialized_data = GL_TRUE;
-        xfbDestination->cpu_shadow_pending = GL_TRUE;
-        xfbDestination->gpu_write_target = GL_FALSE;
-        xfbDestination->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        xfbDestination->last_write_offset =
-            (GLintptr)xfbCopyDestinationOffset;
-        xfbDestination->last_write_size = (GLsizeiptr)xfbWrittenBytes;
-        if (xfbDestination->written_min < 0 ||
-            (GLintptr)xfbCopyDestinationOffset < xfbDestination->written_min) {
-            xfbDestination->written_min = (GLintptr)xfbCopyDestinationOffset;
-        }
-        GLintptr writeEnd =
-            (GLintptr)(xfbCopyDestinationOffset + xfbWrittenBytes);
-        if (xfbDestination->written_max < 0 ||
-            writeEnd > xfbDestination->written_max) {
-            xfbDestination->written_max = writeEnd;
-        }
+        mglRenderMarkBufferCPUWrite(xfbDestination,
+                                    (int64_t)xfbCopyDestinationOffset,
+                                    (int64_t)xfbWrittenBytes);
         free(packed);
         }
     }
     if (xfbActive && xfbWrittenBytes > 0u) {
-        const GLuint64 currentOffset = xfbState->buffer_write_offsets[0];
-        xfbState->buffer_write_offsets[0] =
-            (GLuint64)xfbWrittenBytes > UINT64_MAX - currentOffset
-                ? UINT64_MAX
-                : currentOffset + (GLuint64)xfbWrittenBytes;
+        xfbState->buffer_write_offsets[0] = mglXfbAdvanceWriteOffset(
+            xfbState->buffer_write_offsets[0], (uint64_t)xfbWrittenBytes);
     }
 
     /* Rasterize through the passthrough vertex stage, or hand the expanded

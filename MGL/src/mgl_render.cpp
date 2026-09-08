@@ -13703,6 +13703,36 @@ int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
     return 0;
 }
 
+void mglRenderMarkBufferCPUWrite(Buffer *buf, int64_t offset, int64_t size) {
+    if (!buf) {
+        return;
+    }
+    buf->ever_written = GL_TRUE;
+    buf->has_initialized_data = GL_TRUE;
+    buf->cpu_shadow_pending = GL_TRUE;
+    buf->gpu_write_target = GL_FALSE;
+    buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    buf->last_init_source = kInitMapWrite;
+    buf->last_write_offset = (GLintptr)offset;
+    buf->last_write_size = (GLsizeiptr)size;
+    if (size > 0 && offset >= 0) {
+        const GLintptr write_end = (GLintptr)(offset + size);
+        if (buf->written_min < 0 || (GLintptr)offset < buf->written_min) {
+            buf->written_min = (GLintptr)offset;
+        }
+        if (buf->written_max < 0 || write_end > buf->written_max) {
+            buf->written_max = write_end;
+        }
+    }
+}
+
+uint64_t mglXfbAdvanceWriteOffset(uint64_t current, uint64_t written) {
+    if (written > UINT64_MAX - current) {
+        return UINT64_MAX;
+    }
+    return current + written;
+}
+
 namespace {
 
 double commandRecoveryNowSeconds() {

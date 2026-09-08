@@ -1058,24 +1058,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         /* CPU pack is authoritative: do not mark gpu_write_target (flush
          * readback would clobber the shadow with the untouched Metal image)
          * and keep cpu_shadow_pending so MapBuffer skips Metal→CPU sync. */
-        slot->buf->cpu_shadow_pending = GL_TRUE;
-        slot->buf->gpu_write_target = GL_FALSE;
-        slot->buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        mglRenderMarkBufferCPUWrite(slot->buf, (int64_t)destinationOffset,
+                                    (int64_t)writtenBytes);
         free(packed);
-        slot->buf->ever_written = GL_TRUE;
-        slot->buf->has_initialized_data = GL_TRUE;
-        slot->buf->last_init_source = kInitMapWrite;
-        slot->buf->last_write_offset = (GLintptr)destinationOffset;
-        slot->buf->last_write_size = (GLsizeiptr)writtenBytes;
-        if (slot->buf->written_min < 0 ||
-            (GLintptr)destinationOffset < slot->buf->written_min) {
-            slot->buf->written_min = (GLintptr)destinationOffset;
-        }
-        GLintptr writeEnd = (GLintptr)(destinationOffset + writtenBytes);
-        if (slot->buf->written_max < 0 || writeEnd > slot->buf->written_max) {
-            slot->buf->written_max = writeEnd;
-        }
-        xfb->buffer_write_offsets[buffer] += (GLuint64)writtenBytes;
+        xfb->buffer_write_offsets[buffer] = mglXfbAdvanceWriteOffset(
+            xfb->buffer_write_offsets[buffer], (uint64_t)writtenBytes);
     }
 
     xfb->primitives_generated += (GLuint64)recordCount;
@@ -1862,23 +1849,15 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                     ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
                 if (slot->buf) {
                     slot->buf->ever_written = GL_TRUE;
-                    /* glMapBufferRange serves the CPU shadow; mirror the
-                     * scatter result there (same contract as the VS CPU
-                     * XFB path) so a subsequent map sees the captured
-                     * bytes without waiting on the Metal blit. */
                     if (xfbTempBytes && slot->buf->data.buffer_data &&
                         (size_t)slot->buf->size >=
                             bufferDstOffset[b] + copyBytes) {
                         memcpy((uint8_t *)slot->buf->data.buffer_data +
                                    bufferDstOffset[b],
                                xfbTempBytes + bufferPhysBase[b], copyBytes);
-                        slot->buf->has_initialized_data = GL_TRUE;
-                        slot->buf->cpu_shadow_pending = GL_TRUE;
-                        slot->buf->gpu_write_target = GL_FALSE;
-                        slot->buf->last_init_source = kInitMapWrite;
-                        slot->buf->last_write_offset =
-                            (GLintptr)bufferDstOffset[b];
-                        slot->buf->last_write_size = (GLsizeiptr)copyBytes;
+                        mglRenderMarkBufferCPUWrite(
+                            slot->buf, (int64_t)bufferDstOffset[b],
+                            (int64_t)copyBytes);
                     }
                     uint8_t *liveBase = (uint8_t *)mglDrawSupportBufferContents(
                         bufferDstMTL[b]);
@@ -1894,12 +1873,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                         }
                     }
                 }
-                const GLuint64 currentOffset =
-                    xfbState->buffer_write_offsets[b];
-                xfbState->buffer_write_offsets[b] =
-                    (GLuint64)copyBytes > UINT64_MAX - currentOffset
-                        ? UINT64_MAX
-                        : currentOffset + (GLuint64)copyBytes;
+                xfbState->buffer_write_offsets[b] = mglXfbAdvanceWriteOffset(
+                    xfbState->buffer_write_offsets[b], (uint64_t)copyBytes);
             }
             if (xfbBlit) mglDrawSupportEndBlitEncoder(xfbBlit);
         }
