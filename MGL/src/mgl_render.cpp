@@ -8724,6 +8724,65 @@ int32_t mglRenderMetalScissorY(int32_t y, int32_t h, uint32_t pass_h,
     int32_t metal_y = (int32_t)pass_h - (y + h);
     return metal_y < 0 ? 0 : metal_y;
 }
+
+void mglRenderClampViewport(double *x, double *y, double *w, double *h,
+                            uint32_t pass_w, uint32_t pass_h) {
+    if (!x || !y || !w || !h) {
+        return;
+    }
+    double vx = *x;
+    double vy = *y;
+    double vw = *w;
+    double vh = *h;
+    double pw = (double)pass_w;
+    double ph = (double)pass_h;
+    if (vw <= 0.0 || vh <= 0.0) {
+        *x = 0.0;
+        *y = 0.0;
+        *w = pw;
+        *h = ph;
+        return;
+    }
+    if (vx < 0.0) {
+        vw += vx;
+        vx = 0.0;
+    }
+    if (vy < 0.0) {
+        vh += vy;
+        vy = 0.0;
+    }
+    if (vx >= pw || vy >= ph) {
+        *x = 0.0;
+        *y = 0.0;
+        *w = pw;
+        *h = ph;
+        return;
+    }
+    double max_w = pw - vx;
+    double max_h = ph - vy;
+    if (vw > max_w) {
+        vw = max_w;
+    }
+    if (vh > max_h) {
+        vh = max_h;
+    }
+    if (vw <= 0.0 || vh <= 0.0) {
+        *x = 0.0;
+        *y = 0.0;
+        *w = pw;
+        *h = ph;
+        return;
+    }
+    *x = vx;
+    *y = vy;
+    *w = vw;
+    *h = vh;
+}
+
+double mglRenderMetalViewportY(double y, double h, uint32_t pass_h) {
+    double metal_y = (double)pass_h - (y + h);
+    return metal_y < 0.0 ? 0.0 : metal_y;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

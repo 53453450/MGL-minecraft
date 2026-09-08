@@ -1131,6 +1131,15 @@ static void test_scissor_clamp_and_metal_y(void)
     expect(metal_y == 90, "lower-left clip origin flips scissor y");
 }
 
+static void test_viewport_clamp_and_metal_y(void)
+{
+    double vw = 0.0, vh = 0.0;
+    if (vw <= 0.0 || vh <= 0.0) { vw = 640.0; vh = 480.0; }
+    expect(vw == 640.0 && vh == 480.0, "empty viewport falls back to pass size");
+    double metal_vy = 480.0 - (10.0 + 100.0);
+    expect(metal_vy == 370.0, "viewport y always flips to Metal top-left");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1213,6 +1222,7 @@ int main(void)
     test_depth_clip_and_polygon_mode();
     test_depth_stencil_use_and_suppress();
     test_scissor_clamp_and_metal_y();
+    test_viewport_clamp_and_metal_y();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

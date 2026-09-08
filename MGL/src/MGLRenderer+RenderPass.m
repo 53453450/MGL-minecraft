@@ -2626,56 +2626,10 @@ static GLenum mglPassthroughDeclType(
             GLdouble vy = rawVy;
             GLdouble vw = rawVw;
             GLdouble vh = rawVh;
-
-            if (vw <= 0.0 || vh <= 0.0) {
-                vx = 0.0;
-                vy = 0.0;
-                vw = (GLdouble)passWidth;
-                vh = (GLdouble)passHeight;
-            }
-
-            if (vx < 0.0) {
-                vw += vx;
-                vx = 0.0;
-            }
-            if (vy < 0.0) {
-                vh += vy;
-                vy = 0.0;
-            }
-
-            if (vx >= (GLdouble)passWidth || vy >= (GLdouble)passHeight) {
-                vx = 0.0;
-                vy = 0.0;
-                vw = (GLdouble)passWidth;
-                vh = (GLdouble)passHeight;
-            } else {
-                GLdouble maxVw = (GLdouble)passWidth - vx;
-                GLdouble maxVh = (GLdouble)passHeight - vy;
-                if (vw > maxVw) {
-                    vw = maxVw;
-                }
-                if (vh > maxVh) {
-                    vh = maxVh;
-                }
-                if (vw <= 0.0 || vh <= 0.0) {
-                    vx = 0.0;
-                    vy = 0.0;
-                    vw = (GLdouble)passWidth;
-                    vh = (GLdouble)passHeight;
-                }
-            }
-
-            /*
-             * glViewport's x/y select the same framebuffer rectangle regardless
-             * of glClipControl origin.  The origin only changes how clip-space Y
-             * maps within that rectangle; Metal still addresses the texture from
-             * the top, so always convert GL's lower-left viewport rectangle to a
-             * Metal top-left origin here.
-             */
-            GLdouble metalVy = (GLdouble)passHeight - (vy + vh);
-            if (metalVy < 0.0) {
-                metalVy = 0.0;
-            }
+            mglRenderClampViewport(&vx, &vy, &vw, &vh, (uint32_t)passWidth,
+                                   (uint32_t)passHeight);
+            GLdouble metalVy = mglRenderMetalViewportY(vy, vh,
+                                                       (uint32_t)passHeight);
 
             Texture *guiRTColor = NULL;
             Texture *guiRTDepth = NULL;
