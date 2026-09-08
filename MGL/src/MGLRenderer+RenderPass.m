@@ -207,7 +207,7 @@ static id mglRenderPassFallbackRenderTargetForSize(
 
     MGLRenderTextureDescriptorState desc = {0};
     desc.texture_type = textureType;
-    desc.pixel_format = MGLPixelFormatBGRA8Unorm;
+    desc.pixel_format = mglRenderDefaultColorPixelFormat();
     desc.width = width;
     desc.height = height;
     desc.depth = 1;
@@ -6326,15 +6326,15 @@ stencil_format_ok:;
                 _pipelineCache.state->pipelineProgramName == currentProgramName &&
                 _pipelineCache.state->pipelineVertexFunction == (__bridge void *)vertexFunction &&
                 _pipelineCache.state->pipelineFragmentFunction == (__bridge void *)fragmentFunction);
-                BOOL colorCompatible = (_pipelineCache.state->pipelineColor0Format == MGLPixelFormatInvalid ||
-                builtColor0Format == (uint32_t)MGLPixelFormatInvalid ||
-                (uint32_t)_pipelineCache.state->pipelineColor0Format == builtColor0Format);
-                BOOL depthCompatible = (_pipelineCache.state->pipelineDepthFormat == MGLPixelFormatInvalid ||
-                builtDepthFormat == (uint32_t)MGLPixelFormatInvalid ||
-                (uint32_t)_pipelineCache.state->pipelineDepthFormat == builtDepthFormat);
-                BOOL stencilCompatible = (_pipelineCache.state->pipelineStencilFormat == MGLPixelFormatInvalid ||
-                builtStencilFormat == (uint32_t)MGLPixelFormatInvalid ||
-                (uint32_t)_pipelineCache.state->pipelineStencilFormat == builtStencilFormat);
+                BOOL colorCompatible = mglRenderPipelineFormatCompatible(
+                    (uint32_t)_pipelineCache.state->pipelineColor0Format,
+                    builtColor0Format) != 0;
+                BOOL depthCompatible = mglRenderPipelineFormatCompatible(
+                    (uint32_t)_pipelineCache.state->pipelineDepthFormat,
+                    builtDepthFormat) != 0;
+                BOOL stencilCompatible = mglRenderPipelineFormatCompatible(
+                    (uint32_t)_pipelineCache.state->pipelineStencilFormat,
+                    builtStencilFormat) != 0;
 
                 if (previousPipelineState && sameProgram && colorCompatible && depthCompatible && stencilCompatible) {
                     NSLog(@"MGL WARNING: Interface mismatch for program %u; not reusing previous PSO",
@@ -6515,9 +6515,7 @@ stencil_format_ok:;
             } else if (_drawable && [self mglDrawableTexture]) {
                 safeColor0Format = mglRenderPassTextureInfo([self mglDrawableTexture]).pixel_format;
             }
-            if (safeColor0Format == MGLPixelFormatInvalid) {
-                safeColor0Format = MGLPixelFormatBGRA8Unorm;
-            }
+            safeColor0Format = mglRenderColorFormatOrBGRA(safeColor0Format);
             safeState.color_format[0] = (uint32_t)safeColor0Format;
             safeState.depth_format = finalState.depth_format;
             safeState.stencil_format = finalState.stencil_format;

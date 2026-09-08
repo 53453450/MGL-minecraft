@@ -1940,6 +1940,26 @@ static void test_blit_rgba_bgra_pair(void)
            "8-bit dest skips GPU copy-tex blit");
 }
 
+static uint32_t color_or_bgra(uint32_t f)
+{
+    return f == 0u ? 80u : f;
+}
+
+static int pipeline_fmt_compat(uint32_t cached, uint32_t built)
+{
+    return cached == 0u || built == 0u || cached == built;
+}
+
+static void test_default_color_and_pipeline_compat(void)
+{
+    expect(color_or_bgra(0u) == 80u, "invalid color falls back to BGRA8");
+    expect(color_or_bgra(70u) == 70u, "RGBA8 color stays RGBA8");
+    expect(pipeline_fmt_compat(0u, 70u) == 1, "Invalid cached PSO is compatible");
+    expect(pipeline_fmt_compat(70u, 0u) == 1, "Invalid built PSO is compatible");
+    expect(pipeline_fmt_compat(70u, 70u) == 1, "matching color formats compatible");
+    expect(pipeline_fmt_compat(70u, 80u) == 0, "RGBA vs BGRA PSO mismatch");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2083,6 +2103,7 @@ int main(void)
     test_default_depth_pixel_format();
     test_readback_pixel_format_class();
     test_blit_rgba_bgra_pair();
+    test_default_color_and_pipeline_compat();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -572,9 +572,7 @@ static id mglLookupAuxRenderPipeline(
 
 - (id)scaledBlitPipelineForPixelFormat:(uint32_t)pixelFormat
 {
-    if (pixelFormat == MGLPixelFormatInvalid || pixelFormat == 0) {
-        pixelFormat = MGLPixelFormatBGRA8Unorm;
-    }
+    pixelFormat = mglRenderColorFormatOrBGRA(pixelFormat);
 
     uint64_t variant = (uint64_t)pixelFormat;
     id cached =
@@ -616,9 +614,7 @@ static id mglLookupAuxRenderPipeline(
  * the source's bottom row, restoring GL lower-left sampling semantics. */
 - (id)scaledBlitComputePipelineForPixelFormat:(uint32_t)pixelFormat
 {
-    if (pixelFormat == MGLPixelFormatInvalid || pixelFormat == 0) {
-        pixelFormat = MGLPixelFormatBGRA8Unorm;
-    }
+    pixelFormat = mglRenderColorFormatOrBGRA(pixelFormat);
 
     MGLTextureDataKind dataKind =
         mglTextureDataKindForPixelFormat(pixelFormat);

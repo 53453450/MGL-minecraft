@@ -8378,8 +8378,16 @@ int mglRenderColorFormatNeedsFallback(uint32_t format) {
     return format == 0u ? 1 : 0;
 }
 
+uint32_t mglRenderDefaultColorPixelFormat(void) {
+    return 80u; /* BGRA8Unorm */
+}
+
 uint32_t mglRenderColorFormatOrBGRA(uint32_t format) {
-    return format == 0u ? 80u /* BGRA8Unorm */ : format;
+    return format == 0u ? mglRenderDefaultColorPixelFormat() : format;
+}
+
+int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built) {
+    return cached == 0u || built == 0u || cached == built ? 1 : 0;
 }
 
 int mglRenderSkipInvalidColorAttachment(uint32_t format) {
