@@ -8472,6 +8472,14 @@ int mglRenderShaderStageValid(int stage) {
     return stage >= 0 && stage < _MAX_SHADER_TYPES ? 1 : 0;
 }
 
+int mglRenderStageMapsVertexAttribs(int stage) {
+    return stage == (int)_VERTEX_SHADER ? 1 : 0;
+}
+
+int mglRenderStageUsesComputeBufferMap(int stage) {
+    return stage == (int)_COMPUTE_SHADER ? 1 : 0;
+}
+
 uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
                                       int32_t sampler_unit,
                                       uint32_t metal_binding,

@@ -2263,6 +2263,17 @@ static void test_writable_storage_class(void)
     expect(writable_storage(1) == 0, "UBO is not writable storage");
 }
 
+static int maps_vertex_attribs(int s) { return s == 0; }
+static int uses_compute_buf_map(int s) { return s == 5; }
+
+static void test_vertex_vs_compute_stage(void)
+{
+    expect(maps_vertex_attribs(0) == 1, "vertex stage maps VAO attribs");
+    expect(maps_vertex_attribs(5) == 0, "compute does not map VAO attribs");
+    expect(uses_compute_buf_map(5) == 1, "compute uses compute_buffer_map_list");
+    expect(uses_compute_buf_map(0) == 0, "vertex uses a local buffer map");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2422,6 +2433,7 @@ int main(void)
     test_default_drawbuffer_front();
     test_compute_texture_list_expand();
     test_writable_storage_class();
+    test_vertex_vs_compute_stage();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

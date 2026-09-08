@@ -249,7 +249,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     } while (0)
 
     BufferMapList localBufferMap = {0};
-    BufferMapList *bufferMap = stage == _COMPUTE_SHADER
+    BufferMapList *bufferMap = mglRenderStageUsesComputeBufferMap(stage)
         ? &MGL_STATE(ctx)->compute_buffer_map_list : &localBufferMap;
     RETURN_FALSE_ON_FAILURE(
         [self mapGLBuffersToMTLBufferMap:bufferMap stage:stage]);

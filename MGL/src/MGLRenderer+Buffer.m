@@ -154,16 +154,13 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     }
 
     // bind vao attribs to buffers (attribs can share the same buffer)
-    if (stage == _VERTEX_SHADER)
+    if (mglRenderStageMapsVertexAttribs(stage))
     {
         int count = mglRendererGetProgramBindingCount(ctx, stage, _STAGE_INPUT_RES);
         VertexArray *vao = mglRendererGetValidatedVAO(ctx, "mapGLBuffersToMTLBufferMap");
         if (![self mapVertexAttributeBuffersToBufferMap:buffer_map vao:vao stageInputCount:count stage:stage]) {
             return false;
         }
-    }
-    else if (stage == _COMPUTE_SHADER)
-    {
     }
 
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {

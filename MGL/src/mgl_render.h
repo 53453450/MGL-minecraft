@@ -1319,6 +1319,8 @@ uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
                                     uint32_t element, uint32_t fallback);
 int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);
 int mglRenderShaderStageValid(int stage);
+int mglRenderStageMapsVertexAttribs(int stage);
+int mglRenderStageUsesComputeBufferMap(int stage);
 uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
                                       int32_t sampler_unit,
                                       uint32_t metal_binding,
