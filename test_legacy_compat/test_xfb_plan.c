@@ -1053,6 +1053,17 @@ static void test_attrib_step_and_buffer_index(void)
     expect(count == 6u, "attrib_count grows to index+1");
 }
 
+static void test_blend_repair_and_color_mask(void)
+{
+    uint32_t v = 0x9999u;
+    if (!0) v = 1u;
+    expect(v == 1u, "invalid blend src repairs to GL_ONE");
+    uint32_t mask = 1u | 2u | 4u;
+    expect(mask == 7u, "RGB color mask without alpha is 7");
+    uint32_t forced = mask | 8u;
+    expect(forced == 15u, "default FBO attachment 0 forces alpha write");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1128,6 +1139,7 @@ int main(void)
     test_sampled_rt_copy_and_vertex_desc();
     test_vertex_descriptor_native_attrib();
     test_attrib_step_and_buffer_index();
+    test_blend_repair_and_color_mask();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

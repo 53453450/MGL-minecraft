@@ -166,59 +166,71 @@
     bool repairedState = false;
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
-        if (!mglIsValidGLBlendFactor(MGL_STATE(ctx)->var.blend_src_rgb[i])) {
-            mglLogRenderStateRepair("blend_src_rgb", MGL_STATE(ctx)->var.blend_src_rgb[i], GL_ONE);
-            MGL_STATE(ctx)->var.blend_src_rgb[i] = GL_ONE;
+        uint32_t srcRgb = (uint32_t)MGL_STATE(ctx)->var.blend_src_rgb[i];
+        if (mglRenderApplyBlendRepair(
+                mglIsValidGLBlendFactor((GLenum)srcRgb) ? 1 : 0, &srcRgb,
+                (uint32_t)GL_ONE)) {
+            mglLogRenderStateRepair("blend_src_rgb",
+                                    MGL_STATE(ctx)->var.blend_src_rgb[i], GL_ONE);
+            MGL_STATE(ctx)->var.blend_src_rgb[i] = (GLenum)srcRgb;
             repairedState = true;
         }
-        if (!mglIsValidGLBlendFactor(MGL_STATE(ctx)->var.blend_src_alpha[i])) {
-            mglLogRenderStateRepair("blend_src_alpha", MGL_STATE(ctx)->var.blend_src_alpha[i], GL_ONE);
-            MGL_STATE(ctx)->var.blend_src_alpha[i] = GL_ONE;
+        uint32_t srcAlpha = (uint32_t)MGL_STATE(ctx)->var.blend_src_alpha[i];
+        if (mglRenderApplyBlendRepair(
+                mglIsValidGLBlendFactor((GLenum)srcAlpha) ? 1 : 0, &srcAlpha,
+                (uint32_t)GL_ONE)) {
+            mglLogRenderStateRepair("blend_src_alpha",
+                                    MGL_STATE(ctx)->var.blend_src_alpha[i], GL_ONE);
+            MGL_STATE(ctx)->var.blend_src_alpha[i] = (GLenum)srcAlpha;
             repairedState = true;
         }
-        if (!mglIsValidGLBlendFactor(MGL_STATE(ctx)->var.blend_dst_rgb[i])) {
-            mglLogRenderStateRepair("blend_dst_rgb", MGL_STATE(ctx)->var.blend_dst_rgb[i], GL_ZERO);
-            MGL_STATE(ctx)->var.blend_dst_rgb[i] = GL_ZERO;
+        uint32_t dstRgb = (uint32_t)MGL_STATE(ctx)->var.blend_dst_rgb[i];
+        if (mglRenderApplyBlendRepair(
+                mglIsValidGLBlendFactor((GLenum)dstRgb) ? 1 : 0, &dstRgb,
+                (uint32_t)GL_ZERO)) {
+            mglLogRenderStateRepair("blend_dst_rgb",
+                                    MGL_STATE(ctx)->var.blend_dst_rgb[i], GL_ZERO);
+            MGL_STATE(ctx)->var.blend_dst_rgb[i] = (GLenum)dstRgb;
             repairedState = true;
         }
-        if (!mglIsValidGLBlendFactor(MGL_STATE(ctx)->var.blend_dst_alpha[i])) {
-            mglLogRenderStateRepair("blend_dst_alpha", MGL_STATE(ctx)->var.blend_dst_alpha[i], GL_ZERO);
-            MGL_STATE(ctx)->var.blend_dst_alpha[i] = GL_ZERO;
+        uint32_t dstAlpha = (uint32_t)MGL_STATE(ctx)->var.blend_dst_alpha[i];
+        if (mglRenderApplyBlendRepair(
+                mglIsValidGLBlendFactor((GLenum)dstAlpha) ? 1 : 0, &dstAlpha,
+                (uint32_t)GL_ZERO)) {
+            mglLogRenderStateRepair("blend_dst_alpha",
+                                    MGL_STATE(ctx)->var.blend_dst_alpha[i], GL_ZERO);
+            MGL_STATE(ctx)->var.blend_dst_alpha[i] = (GLenum)dstAlpha;
             repairedState = true;
         }
-        if (!mglIsValidGLBlendEquation(MGL_STATE(ctx)->var.blend_equation_rgb[i])) {
-            mglLogRenderStateRepair("blend_equation_rgb", MGL_STATE(ctx)->var.blend_equation_rgb[i], GL_FUNC_ADD);
-            MGL_STATE(ctx)->var.blend_equation_rgb[i] = GL_FUNC_ADD;
+        uint32_t eqRgb = (uint32_t)MGL_STATE(ctx)->var.blend_equation_rgb[i];
+        if (mglRenderApplyBlendRepair(
+                mglIsValidGLBlendEquation((GLenum)eqRgb) ? 1 : 0, &eqRgb,
+                (uint32_t)GL_FUNC_ADD)) {
+            mglLogRenderStateRepair("blend_equation_rgb",
+                                    MGL_STATE(ctx)->var.blend_equation_rgb[i],
+                                    GL_FUNC_ADD);
+            MGL_STATE(ctx)->var.blend_equation_rgb[i] = (GLenum)eqRgb;
             repairedState = true;
         }
-        if (!mglIsValidGLBlendEquation(MGL_STATE(ctx)->var.blend_equation_alpha[i])) {
-            mglLogRenderStateRepair("blend_equation_alpha", MGL_STATE(ctx)->var.blend_equation_alpha[i], GL_FUNC_ADD);
-            MGL_STATE(ctx)->var.blend_equation_alpha[i] = GL_FUNC_ADD;
+        uint32_t eqAlpha = (uint32_t)MGL_STATE(ctx)->var.blend_equation_alpha[i];
+        if (mglRenderApplyBlendRepair(
+                mglIsValidGLBlendEquation((GLenum)eqAlpha) ? 1 : 0, &eqAlpha,
+                (uint32_t)GL_FUNC_ADD)) {
+            mglLogRenderStateRepair("blend_equation_alpha",
+                                    MGL_STATE(ctx)->var.blend_equation_alpha[i],
+                                    GL_FUNC_ADD);
+            MGL_STATE(ctx)->var.blend_equation_alpha[i] = (GLenum)eqAlpha;
             repairedState = true;
         }
 
-        uint32_t colorMask_i;
-        if (!MGL_STATE(ctx)->caps.use_color_mask[i]) {
-            colorMask_i = 15u;
-        } else {
-            colorMask_i = 0u;
-            if (MGL_STATE(ctx)->var.color_writemask[i][0]) colorMask_i |= 1u;
-            if (MGL_STATE(ctx)->var.color_writemask[i][1]) colorMask_i |= 2u;
-            if (MGL_STATE(ctx)->var.color_writemask[i][2]) colorMask_i |= 4u;
-            if (MGL_STATE(ctx)->var.color_writemask[i][3]) colorMask_i |= 8u;
-        }
-
-        /* Force alpha write when rendering to the default framebuffer (drawable).
-         * GL's default framebuffer is conceptually opaque (no alpha channel),
-         * but Metal's CAMetalLayer drawable is RGBA8. If the GL app sets
-         * glColorMask(R,G,B,0), the alpha channel is never written, leaving
-         * the drawable with alpha=0. On macOS, the compositor treats alpha=0
-         * as fully transparent, causing the displayed image to appear black.
-         * Force alpha write on attachment 0 when rendering to the default
-         * framebuffer to ensure the drawable is opaque. */
-        if (i == 0 && MGL_STATE(ctx)->framebuffer == NULL) {
-            colorMask_i |= 8u;
-        }
+        uint32_t colorMask_i = mglRenderColorWriteMaskFromChannels(
+            MGL_STATE(ctx)->caps.use_color_mask[i] ? 1 : 0,
+            MGL_STATE(ctx)->var.color_writemask[i][0] ? 1 : 0,
+            MGL_STATE(ctx)->var.color_writemask[i][1] ? 1 : 0,
+            MGL_STATE(ctx)->var.color_writemask[i][2] ? 1 : 0,
+            MGL_STATE(ctx)->var.color_writemask[i][3] ? 1 : 0);
+        colorMask_i = mglRenderForceDefaultFBOAlphaWrite(
+            i, MGL_STATE(ctx)->framebuffer ? 1 : 0, colorMask_i);
         [_pipelineCache setBlendFactorsForAttachment:(NSUInteger)i
                                         srcRgbFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_rgb[i]]
                                       srcAlphaFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_alpha[i]]

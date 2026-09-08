@@ -1332,6 +1332,11 @@ int mglRenderVertexBufferIndexValid(int index, uint32_t max);
 void mglRenderAttribStepFromDivisor(int uses_current, uint32_t divisor,
                                     uint32_t *step_fn, uint32_t *step_rate);
 uint32_t mglRenderAttribCountAfter(uint32_t current, uint32_t index);
+int mglRenderApplyBlendRepair(int valid, uint32_t *value, uint32_t fallback);
+uint32_t mglRenderColorWriteMaskFromChannels(int use_mask, int r, int g, int b,
+                                            int a);
+uint32_t mglRenderForceDefaultFBOAlphaWrite(int attachment, int has_fbo,
+                                           uint32_t mask);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

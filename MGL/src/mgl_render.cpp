@@ -8432,6 +8432,40 @@ uint32_t mglRenderAttribCountAfter(uint32_t current, uint32_t index) {
     return index + 1u > current ? index + 1u : current;
 }
 
+int mglRenderApplyBlendRepair(int valid, uint32_t *value, uint32_t fallback) {
+    if (valid || !value) {
+        return 0;
+    }
+    *value = fallback;
+    return 1;
+}
+
+uint32_t mglRenderColorWriteMaskFromChannels(int use_mask, int r, int g, int b,
+                                            int a) {
+    if (!use_mask) {
+        return 15u;
+    }
+    uint32_t mask = 0u;
+    if (r) {
+        mask |= 1u;
+    }
+    if (g) {
+        mask |= 2u;
+    }
+    if (b) {
+        mask |= 4u;
+    }
+    if (a) {
+        mask |= 8u;
+    }
+    return mask;
+}
+
+uint32_t mglRenderForceDefaultFBOAlphaWrite(int attachment, int has_fbo,
+                                           uint32_t mask) {
+    return attachment == 0 && !has_fbo ? (mask | 8u) : mask;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
