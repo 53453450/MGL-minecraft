@@ -1960,6 +1960,21 @@ static void test_default_color_and_pipeline_compat(void)
     expect(pipeline_fmt_compat(70u, 80u) == 0, "RGBA vs BGRA PSO mismatch");
 }
 
+static int texbuf_fmt_valid(uint32_t f) { return f != 0u; }
+static int texbuf_needs_atomic(uint32_t f)
+{
+    return f == 53u || f == 54u;
+}
+
+static void test_texbuffer_format(void)
+{
+    expect(texbuf_fmt_valid(0u) == 0, "invalid texbuffer format is rejected");
+    expect(texbuf_fmt_valid(70u) == 1, "RGBA8 texbuffer format is valid");
+    expect(texbuf_needs_atomic(53u) == 1, "R32Uint texbuffer needs atomic");
+    expect(texbuf_needs_atomic(54u) == 1, "R32Sint texbuffer needs atomic");
+    expect(texbuf_needs_atomic(10u) == 0, "R8Unorm texbuffer does not need atomic");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2104,6 +2119,7 @@ int main(void)
     test_readback_pixel_format_class();
     test_blit_rgba_bgra_pair();
     test_default_color_and_pipeline_compat();
+    test_texbuffer_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

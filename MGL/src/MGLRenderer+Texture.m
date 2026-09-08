@@ -5608,7 +5608,7 @@ static void mglTextureCopyTextureToBuffer(
      * samplerBuffer + layout(binding) CTS reject the real texture as
      * actualKind=uint vs expectedKind=float and substitute a 1x1 fallback. */
     uint32_t bufferPixelFormat = mtlPixelFormatForGLTex(tex);
-    if (bufferPixelFormat == MGLPixelFormatInvalid || bufferPixelFormat == 0) {
+    if (mglRenderColorFormatNeedsFallback(bufferPixelFormat)) {
         NSLog(@"MGL TEXBUFFER ERROR: invalid Metal format for tex=%u internal=0x%x",
               tex->name,
               tex->internalformat);
@@ -5731,8 +5731,7 @@ static void mglTextureCopyTextureToBuffer(
     uint64_t bufferUsage =
         MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE;
     /* imageAtomic* on iimageBuffer needs ShaderAtomic (R32I/R32UI). */
-    if (bufferPixelFormat == MGLPixelFormatR32Uint ||
-        bufferPixelFormat == MGLPixelFormatR32Sint) {
+    if (mglRenderPixelFormatNeedsShaderAtomic(bufferPixelFormat)) {
         bufferUsage |= MGL_TEXTURE_USAGE_SHADER_ATOMIC;
     }
     MGLRenderTextureDescriptorState bufferDesc = {
