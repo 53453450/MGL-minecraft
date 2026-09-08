@@ -10,8 +10,10 @@
 
 /*
  * mgl_readback_policy.c — C1 / O4.1 strip from mgl_render.cpp.
- * IntegerReadback source/packed/classify tables + CPU convert loop
+ * IntegerReadback source/packed/classify + CPU convert, Y-flip rows,
+ * depth pack / depth-readback plan, GetTexImagePlan, MSAA array stride
  * (CTS ReadbackPolicy). Pure C; pixel_format uses MGLPixelFormat ABI.
+ * Metal MSAA resolve encode remains in mgl_render.cpp.
  */
 
 #include "mgl_readback_policy.h"
@@ -19,6 +21,7 @@
 #include "glcorearb.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 int mglRenderConvertIntegerReadback(
@@ -463,6 +466,141 @@ int mglRenderIntegerReadbackClassify(
         out->output_component_bytes =
             (gl_type == GL_BYTE || gl_type == GL_UNSIGNED_BYTE) ? 1u :
             (gl_type == GL_SHORT || gl_type == GL_UNSIGNED_SHORT) ? 2u : 4u;
+    }
+    return 0;
+}
+
+void mglRenderCopyRows(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t row_bytes, uint64_t height, int flip_y) {
+    if (!src || !dst || row_bytes == 0u || height == 0u) {
+        return;
+    }
+    const uint8_t *src_bytes = (const uint8_t *)src;
+    uint8_t *dst_bytes = (uint8_t *)dst;
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t *src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        uint8_t *dst_row = dst_bytes + (dst_y * dst_bytes_per_row);
+        memcpy(dst_row, src_row, (size_t)row_bytes);
+    }
+}
+
+void mglRenderCopyDepthTextureBytesToFloat(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint64_t src_depth_bytes, int is_depth16, int flip_y) {
+    if (!src || !dst || width == 0u || height == 0u ||
+        src_depth_bytes == 0u) {
+        return;
+    }
+    const uint8_t *src_bytes = (const uint8_t *)src;
+    uint8_t *dst_bytes = (uint8_t *)dst;
+    for (uint64_t y = 0; y < height; y++) {
+        const uint8_t *src_row = src_bytes + (y * src_bytes_per_row);
+        uint64_t dst_y = flip_y ? (height - 1u - y) : y;
+        float *dst_row = (float *)(void *)(dst_bytes + (dst_y * dst_bytes_per_row));
+        for (uint64_t x = 0; x < width; x++) {
+            if (is_depth16) {
+                uint16_t value = 0u;
+                memcpy(&value, src_row + (x * src_depth_bytes),
+                       sizeof(value));
+                dst_row[x] = (float)value / 65535.0f;
+            } else {
+                memcpy(&dst_row[x], src_row + (x * src_depth_bytes),
+                       sizeof(float));
+            }
+        }
+    }
+}
+
+int mglRenderDepthReadbackPlan(uint32_t pixel_format, int *is_depth16,
+                               int *is_packed_d32f_s8) {
+    int d16 = pixel_format == 250u /* MGLPixelFormatDepth16Unorm */ ? 1 : 0;
+    int ds = pixel_format == 260u /* MGLPixelFormatDepth32Float_Stencil8 */
+                 ? 1
+                 : 0;
+    if (is_depth16) {
+        *is_depth16 = d16;
+    }
+    if (is_packed_d32f_s8) {
+        *is_packed_d32f_s8 = ds;
+    }
+    return d16 || ds ||
+                   pixel_format == 252u /* MGLPixelFormatDepth32Float */
+               ? 1
+               : 0;
+}
+
+void *mglRenderTextureRepackDepthPlanes(const void *bytes,
+                                        size_t bytes_per_image,
+                                        size_t expected_bytes_per_image,
+                                        size_t copy_depth) {
+    if (!bytes || expected_bytes_per_image == 0 ||
+        bytes_per_image < expected_bytes_per_image || copy_depth == 0) {
+        return NULL;
+    }
+    if (expected_bytes_per_image > SIZE_MAX / copy_depth) {
+        return NULL;
+    }
+    size_t packed_size = expected_bytes_per_image * copy_depth;
+    void *packed = malloc(packed_size);
+    if (!packed) {
+        return NULL;
+    }
+    const uint8_t *src = (const uint8_t *)bytes;
+    uint8_t *dst = (uint8_t *)packed;
+    for (size_t z = 0; z < copy_depth; z++) {
+        memcpy(dst + z * expected_bytes_per_image,
+               src + z * bytes_per_image, expected_bytes_per_image);
+    }
+    return packed;
+}
+
+uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {
+    return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ? 8u : 1u;
+}
+
+int mglRenderGetTexImagePlan(
+    uint32_t pixel_format, uint32_t gl_format, uint32_t gl_type,
+    uint32_t width, uint32_t height, uint32_t depth,
+    uint32_t dst_pixel_bytes, uint32_t source_bpp,
+    int bgra8_format_compatible,
+    uint32_t bytes_per_row, uint32_t bytes_per_image,
+    int storage_private,
+    MGLRenderGetTexImagePlan *out) {
+    if (!out) return -1;
+    out->direct_r32_float_read =
+        (pixel_format == 55u /* MGLPixelFormatR32Float */ &&
+         gl_format == GL_RED && gl_type == GL_FLOAT) ? 1 : 0;
+    out->use_bgra8_conversion =
+        (dst_pixel_bytes > 0u && depth == 1u &&
+         !out->direct_r32_float_read && bgra8_format_compatible) ? 1 : 0;
+    out->source_is_bgra8 =
+        (pixel_format == 80u /* MGLPixelFormatBGRA8Unorm */ ||
+         pixel_format == 81u /* MGLPixelFormatBGRA8Unorm_sRGB */ ||
+         pixel_format == 70u /* MGLPixelFormatRGBA8Unorm */ ||
+         pixel_format == 71u /* MGLPixelFormatRGBA8Unorm_sRGB */) ? 1 : 0;
+    uint64_t row_bytes;
+    if (out->use_bgra8_conversion && !out->source_is_bgra8 &&
+        source_bpp > 0u) {
+        row_bytes = (uint64_t)width * (uint64_t)source_bpp;
+    } else if (out->use_bgra8_conversion) {
+        row_bytes = (uint64_t)width * 4u;
+    } else {
+        row_bytes = bytes_per_row > 0
+            ? (uint64_t)bytes_per_row
+            : (uint64_t)width * (dst_pixel_bytes > 0
+                                     ? (uint64_t)dst_pixel_bytes : 1u);
+    }
+    out->row_bytes = row_bytes;
+    out->image_bytes = row_bytes * (uint64_t)height;
+    out->total_bytes = out->image_bytes;
+    if (!out->use_bgra8_conversion && storage_private &&
+        bytes_per_image > 0 && depth > 1) {
+        out->total_bytes = (uint64_t)bytes_per_image * (uint64_t)depth;
     }
     return 0;
 }

@@ -534,21 +534,7 @@ uint32_t mglRenderLinearPixelFormat(uint32_t pixel_format);
 uint32_t mglRenderEffectiveMTLPixelFormat(uint32_t pixel_format,
                                              uint32_t srgb_decode_ext);
 
-/* copy packed rows with optional Y-flip.  Pure CPU
- * memcpy of `row_bytes` per row — mirrors mglMetalCopyRows (void). */
-void mglRenderCopyRows(
-    const void *src, uint64_t src_bytes_per_row,
-    void *dst, uint64_t dst_bytes_per_row,
-    uint64_t row_bytes, uint64_t height, int flip_y);
-
-/* Depth16Unorm / unpacked depth-float rows -> GL
- * float rows with optional Y-flip.  Mirrors the CPU convert loop in
- * mglReadDepthTextureAsFloat (void; bad args are a no-op). */
-void mglRenderCopyDepthTextureBytesToFloat(
-    const void *src, uint64_t src_bytes_per_row,
-    void *dst, uint64_t dst_bytes_per_row,
-    uint64_t width, uint64_t height,
-    uint64_t src_depth_bytes, int is_depth16, int flip_y);
+/* C1: CopyRows + CopyDepthTextureBytesToFloat -> mgl_readback_policy.h */
 
 /* copy GL BGRA8 rows into a BGRA8-compatible Metal pixel
  * format (RGBA8Unorm / BGRA8Unorm / RGB9E5Float / RGB10A2Unorm /
@@ -694,13 +680,8 @@ int mglRenderBuildTextureUploadPlan(
     uint64_t destination_level,
     uint64_t destination_slice,
     MGLRenderTextureUploadPlan *plan_out);
-/* Repackages strided 3D depth planes into the tight image stride required by
- * replaceRegion. Returns a malloc-owned buffer or NULL on invalid input or
- * allocation failure. */
-void *mglRenderTextureRepackDepthPlanes(const void *bytes,
-                                           size_t bytes_per_image,
-                                           size_t expected_bytes_per_image,
-                                           size_t copy_depth);
+/* C1: TextureRepackDepthPlanes -> mgl_readback_policy.h */
+
 /* Expands RGB texels to RGBA for the 2D texel-buffer fallback. The caller owns
  * dst. Missing tail texels are zero-filled and alpha comes from the low
  * dst_comp_bytes of alpha_default. Returns 0 on success. */
@@ -769,7 +750,7 @@ int mglRenderBuildRuntimeArraySizes(
     uint32_t *out_sizes,
     uint32_t out_capacity);
 
-/* C1: IntegerReadback types/API → mgl_readback_policy.h */
+/* C1: IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride -> mgl_readback_policy.h */
 
 /* tess-factor buffer CPU transforms — the default
  * canonical factor fill (RECORD_BYTES/patch: 12B half + 24B exact f32),
@@ -1363,8 +1344,7 @@ uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format);
 int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format);
 int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
                                         uint32_t row_bytes, uint32_t width);
-int mglRenderDepthReadbackPlan(uint32_t pixel_format, int *is_depth16,
-                               int *is_packed_d32f_s8);
+/* C1: DepthReadbackPlan -> mgl_readback_policy.h */
 uint32_t mglRenderDefaultDepthPixelFormat(void);
 int mglRenderSamplerUnitExplicit(uint32_t flag);
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
@@ -1377,7 +1357,7 @@ const char *mglRenderGLSLColumnType(uint32_t rows);
 const char *mglRenderGLSLTypeSwizzle(uint32_t type);
 const char *mglRenderGLSLIntegerAsFloatType(uint32_t type);
 int mglRenderGLSLNeedsFlat(uint32_t type);
-uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget);
+/* C1: MSAAArrayLayerStride -> mgl_readback_policy.h (EncodeMultisampleResolve residual in cpp) */
 int mglRenderDefaultDrawBufferIndex(uint32_t draw_buffer, uint32_t *out);
 int mglRenderTargetIsRenderbuffer(uint32_t target);
 int mglRenderMSSamplePlaneAdjust(int in_ms_loop, uint32_t target,
@@ -1805,38 +1785,7 @@ int mglRenderBlitFramebufferPlan(
     int scissor_test_enabled,
     MGLRenderBlitFramebufferPlan *out);
 
-typedef struct MGLRenderGetTexImagePlan_t {
-    int direct_r32_float_read;
-    int use_bgra8_conversion;
-    int source_is_bgra8;
-    uint64_t row_bytes;
-    uint64_t image_bytes;
-    uint64_t total_bytes;
-} MGLRenderGetTexImagePlan;
-
-/* mtlGetTexImage staging plan — direct R32F read
- * detection, the BGRA8 conversion eligibility (dst bytes + single depth
- * layer + non-direct + compatible source), the source-is-BGRA8-family
- * check, and the row/image/total byte computation (conversion pitch:
- * width*sourceBpp for non-BGRA8 sources, width*4 for BGRA8 sources;
- * otherwise bytesPerRow or width*max(dst,1); the depth>1 + bytesPerImage
- * case applies to private storage only).  Shared by both gates; the caller
- * resolves sizeForFormatType / readback bytes-per-pixel / format
- * compatibility through the existing C helpers. */
-int mglRenderGetTexImagePlan(
-    uint32_t pixel_format,
-    uint32_t gl_format,
-    uint32_t gl_type,
-    uint32_t width,
-    uint32_t height,
-    uint32_t depth,
-    uint32_t dst_pixel_bytes,
-    uint32_t source_bpp,
-    int bgra8_format_compatible,
-    uint32_t bytes_per_row,
-    uint32_t bytes_per_image,
-    int storage_private,
-    MGLRenderGetTexImagePlan *out);
+/* C1: MGLRenderGetTexImagePlan + mglRenderGetTexImagePlan -> mgl_readback_policy.h */
 
 typedef struct MGLRenderLevelUploadOp_t {
     uint32_t level;

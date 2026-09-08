@@ -1,7 +1,7 @@
 # C0 — Dependency map: `mgl_air_backend.cpp` & `mgl_render.cpp`
 
 > Track **C0** was docs-only; **C1** started monolith knives (IntegerReadback out).
-> Snapshot: `main` @ C1 IntegerReadback strip (~16.9k air / ~20.6k render LOC). Re-measure with `wc -l` after splits.
+> Snapshot: `main` @ C1 O4.1 readback_policy strip (~16.9k air / ~20.5k render LOC). Re-measure with `wc -l` after splits.
 > Purpose: make include / caller / domain boundaries visible before any TU knife.
 
 ---
@@ -11,7 +11,7 @@
 | TU | ~LOC | Role | Risk if sink blindly |
 |----|-----:|------|----------------------|
 | `MGL/src/mgl_air_backend.cpp` | ~16905 | GLSL AST → LLVM AIR → `.metallib` | Mixes type model, expr/stmt emit, stage ABI, legacy rewrite, reflect helpers |
-| `MGL/src/mgl_render.cpp` | ~20599 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, …) |
+| `MGL/src/mgl_render.cpp` | ~20470 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, …) |
 
 Policy (OBJC TODO / ARCH): **do not grow these**; new sinks land in domain TUs.
 
@@ -174,6 +174,7 @@ ObjC runtime / Mach / Block headers are also included for Metal object class pro
 | ~3808–6700 | Texture upload / format / readback copy | `TextureSubUploadPlan`, `Copy*ToGL` |
 | ~6638–7200 | Stage binding / tess factor helpers | `EncodeStageBindingCopyBacks`, tess factor |
 | ~~7238–7549~~ | ~~Integer readback classify~~ | **C1 extracted** → `mgl_readback_policy.{h,c}` (`Convert` + `Source`/`Packed`/`Classify`) |
+| ~~CopyRows / depth / GetTexImagePlan / MSAA stride~~ | ~~Y-flip / depth pack / plan~~ | **C1 extracted** → same TU; Metal `EncodeMultisampleResolve*` residual in monolith |
 | ~7550–8500 | Binding policy / residual near former readback | sampler/slot maps |
 | ~8509–9400 | PSO / pass / blend / stencil / viewport | `PipelinePass*`, `Blend*FromGL` |
 | ~9400–11200 | Format tables / clear mask / UBO pack | pixel-format class, plain-uniform pack |
@@ -239,7 +240,7 @@ rg -l '#include "mgl_render.h"' MGL/
 Prefer extending these instead of growing `mgl_render.cpp`:
 
 - `mgl_buffer_plan.*`, `mgl_render_pass_plan.*`, `mgl_tess_domain.*`
-- `mgl_readback_policy.*` (**C1** — Convert + Source/Packed/Classify)
+- `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
 - `mgl_draw_{issue,gs,tess,cull,gs_metal}.*`
 - `mgl_batch_{path,hazard,replay,restore,issue,rt_mark}.*`
 - `mgl_compute_pipeline_cache.*`, `mgl_renderer_backend.*`
@@ -264,9 +265,11 @@ flowchart LR
 
 ---
 
-## 4. C1 knife log — IntegerReadback
+## 4. C1 knife log — readback_policy (O4.1)
 
-Chose **render IntegerReadback → `mgl_readback_policy.*`** (DXMT / O4.1) over air type/expr (**C1b**): four pure `extern "C"` helpers with no `Codegen` / Metal-cpp owner coupling; air type+expr is tangled through `emitExpr` / `MType` across multi-kLOC.
+Chose **render readback policy → `mgl_readback_policy.*`** (DXMT / O4.1) over air type/expr (**C1b**): pure `extern "C"` helpers with no `Codegen` / Metal-cpp owner coupling; air type+expr is tangled through `emitExpr` / `MType` across multi-kLOC.
+
+### 4.1 First strip — IntegerReadback
 
 | Item | Detail |
 |------|--------|
@@ -275,8 +278,18 @@ Chose **render IntegerReadback → `mgl_readback_policy.*`** (DXMT / O4.1) over 
 | Monolith | bodies removed; `mgl_render.h` includes the domain header (Texture.m call sites unchanged) |
 | Build | `Makefile` wildcard `*.c` picks up the TU; `test_metalcpp_smoke` explicit list updated |
 | Pixel format | domain TU uses `MGLPixelFormat` numeric ABI (no metal-cpp) |
+| LOC | `mgl_render.cpp` ~21043→~20599 (−444) |
 
-**Next strip suggestion (C1b / O4.1 residual):** more readback policy into this TU (Y-flip / MSAA resolve / depth pack; `GetTexImagePlan` if clean); **C1b** = air type helpers (~290–723) — separate knife, do not start from this strip.
+### 4.2 Second strip — Y-flip / MSAA stride / depth pack / GetTexImagePlan
+
+| Item | Detail |
+|------|--------|
+| Moved | `mglRenderCopyRows`, `mglRenderCopyDepthTextureBytesToFloat`, `mglRenderDepthReadbackPlan`, `mglRenderTextureRepackDepthPlanes`, `mglRenderMSAAArrayLayerStride`, `mglRenderGetTexImagePlan` (+ `MGLRenderGetTexImagePlan`) |
+| Residual (Metal) | `mglRenderEncodeMultisampleResolve*` stays in `mgl_render.cpp` / ObjC ports — not a pure policy table |
+| Not moved | format-convert loops that merely take `flip_y` (`Copy*TextureBytesToGL`, BGRA8 paths) — still entangled with decode tables in the monolith |
+| LOC | `mgl_render.cpp` ~20599→~20470 (−129); `mgl_readback_policy.c` ~468→~606; header ~126→~196 |
+
+**Next strip suggestion:** **C1b** = air type helpers (~290–723) — separate knife. Optional later: more flip-aware format convert into this TU only if a clean boundary appears; do not sink back into `mgl_render.cpp`.
 
 ---
 
@@ -285,5 +298,6 @@ Chose **render IntegerReadback → `mgl_readback_policy.*`** (DXMT / O4.1) over 
 - [x] Includes / callers / domains documented for **only** these two TUs
 - [x] C0 itself: no monolith edits (docs-only)
 - [x] **C1** (first knife): IntegerReadback → `mgl_readback_policy.{h,c}`; `mgl_render.cpp` ~21043→~20599 (−444)
-- [ ] Future knives: continue by domain table above (next: binding-policy residual near former readback, or air type helpers); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1** (O4.1 residual knife): Y-flip / depth pack / GetTexImagePlan / MSAA stride → same TU; `mgl_render.cpp` ~20599→~20470 (−129); Metal MSAA encode residual documented
+- [ ] Future knives: continue by domain table above (next: C1b air type helpers, or binding-policy residual); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 

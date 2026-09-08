@@ -12,20 +12,22 @@
  * mgl_readback_policy.h
  *
  * C1 / O4.1 domain strip from mgl_render.cpp — IntegerReadback classify +
- * CPU convert (CTS ReadbackPolicy alignment). Pure data transforms /
+ * CPU convert, plus Y-flip / depth pack / GetTexImagePlan / MSAA array
+ * stride policy (CTS ReadbackPolicy alignment). Pure data transforms /
  * tables; no Metal-cpp, no renderer instance. pixel_format uses the
  * MGLPixelFormat / MTL::PixelFormat numeric ABI (see pixel_utils.h).
  *
- * Future O4.1 residents (Y-flip / MSAA resolve / depth pack) land here;
- * do not sink back into mgl_render.cpp.
+ * Metal MSAA resolve encode stays in mgl_render.cpp (residual).
+ * Do not sink these helpers back into mgl_render.cpp.
  *
  * Callers historically went through mgl_render.h; that header includes
  * this one so Texture.m keeps its existing call sites.
  */
 
-#ifndef MGL_INTEGER_READBACK_H
-#define MGL_INTEGER_READBACK_H
+#ifndef MGL_READBACK_POLICY_H
+#define MGL_READBACK_POLICY_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -119,8 +121,76 @@ int mglRenderIntegerReadbackSourceClassify(
     uint32_t pixel_format,
     MGLRenderIntegerReadbackSource *out);
 
+/* --- C1 / O4.1 residual: Y-flip / depth pack / GetTexImagePlan / MSAA stride --- */
+
+/* copy packed rows with optional Y-flip. Pure CPU memcpy of `row_bytes`
+ * per row — mirrors mglMetalCopyRows (void). */
+void mglRenderCopyRows(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t row_bytes, uint64_t height, int flip_y);
+
+/* Depth16Unorm / unpacked depth-float rows -> GL float rows with optional
+ * Y-flip. Mirrors the CPU convert loop in mglReadDepthTextureAsFloat
+ * (void; bad args are a no-op). */
+void mglRenderCopyDepthTextureBytesToFloat(
+    const void *src, uint64_t src_bytes_per_row,
+    void *dst, uint64_t dst_bytes_per_row,
+    uint64_t width, uint64_t height,
+    uint64_t src_depth_bytes, int is_depth16, int flip_y);
+
+/* Depth readback format plan — Depth16Unorm / Depth32Float /
+ * Depth32Float_Stencil8 classification for the float readback path.
+ * Pure numeric MGLPixelFormat ABI. Sets *is_depth16 / *is_packed_d32f_s8
+ * when non-NULL. Returns 1 if the format is a supported depth readback
+ * source, else 0. */
+int mglRenderDepthReadbackPlan(uint32_t pixel_format, int *is_depth16,
+                               int *is_packed_d32f_s8);
+
+/* Repack strided 3D depth planes into the tight image stride required by
+ * replaceRegion. Returns a malloc-owned buffer or NULL on invalid input
+ * or allocation failure. */
+void *mglRenderTextureRepackDepthPlanes(const void *bytes,
+                                        size_t bytes_per_image,
+                                        size_t expected_bytes_per_image,
+                                        size_t copy_depth);
+
+/* MSAA array layer stride policy — layered 2D_MULTISAMPLE_ARRAY uses
+ * stride 8, otherwise 1. Pure classification (Metal encode of MSAA
+ * resolve remains in mgl_render.cpp). */
+uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget);
+
+typedef struct MGLRenderGetTexImagePlan_t {
+    int direct_r32_float_read;
+    int use_bgra8_conversion;
+    int source_is_bgra8;
+    uint64_t row_bytes;
+    uint64_t image_bytes;
+    uint64_t total_bytes;
+} MGLRenderGetTexImagePlan;
+
+/* mtlGetTexImage staging plan — direct R32F read detection, BGRA8
+ * conversion eligibility, source-is-BGRA8-family check, and
+ * row/image/total byte computation. Shared by both gates; caller
+ * resolves sizeForFormatType / readback bpp / format compatibility
+ * through existing C helpers. pixel_format is MGLPixelFormat ABI. */
+int mglRenderGetTexImagePlan(
+    uint32_t pixel_format,
+    uint32_t gl_format,
+    uint32_t gl_type,
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    uint32_t dst_pixel_bytes,
+    uint32_t source_bpp,
+    int bgra8_format_compatible,
+    uint32_t bytes_per_row,
+    uint32_t bytes_per_image,
+    int storage_private,
+    MGLRenderGetTexImagePlan *out);
+
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* MGL_INTEGER_READBACK_H */
+#endif /* MGL_READBACK_POLICY_H */
