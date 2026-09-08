@@ -835,6 +835,22 @@ extern "C" uint64_t mglDrawGsQueryWritten(uint32_t output_primitive,
     return prim_bytes > 0u ? buffer0_written / prim_bytes : 0u;
 }
 
+extern "C" uint32_t mglDrawGsClampStreamCount(uint32_t stream_count) {
+    return stream_count > MGL_AIR_GS_MAX_STREAMS ? MGL_AIR_GS_MAX_STREAMS
+                                                 : stream_count;
+}
+
+extern "C" uint64_t mglDrawGsIndexedStreamWritten(int xfb_active,
+                                                  uint64_t buffer_written,
+                                                  uint64_t stride) {
+    return xfb_active && stride > 0u ? buffer_written / stride : 0u;
+}
+
+extern "C" uint64_t mglDrawGsStream0QueryWritten(int xfb_active,
+                                                 uint64_t written_stream0) {
+    return xfb_active ? written_stream0 : 0u;
+}
+
 extern "C" int mglDrawGsSkipRaster(int xfb_active, int rasterizer_discard)
 {
     return xfb_active && rasterizer_discard ? 1 : 0;

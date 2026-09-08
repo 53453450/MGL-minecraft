@@ -337,20 +337,17 @@ static void mglRecordGeometryPrimitiveQueries(
     mglRecordActiveGeometryShaderQueryDraw(
         ctx, geometryInvocations, generatedStream0);
     mglRecordActivePrimitiveQueryDraw(
-        ctx, generatedStream0, xfbActive ? writtenStream0 : 0u);
+        ctx, generatedStream0,
+        mglDrawGsStream0QueryWritten(xfbActive ? 1 : 0, writtenStream0));
     if (!meta || !bufferWritten || !bufferStride) return;
-    if (streamCount > MGL_AIR_GS_MAX_STREAMS) {
-        streamCount = MGL_AIR_GS_MAX_STREAMS;
-    }
+    streamCount = mglDrawGsClampStreamCount(streamCount);
     for (uint32_t s = 1u; s < streamCount; s++) {
         /* Indexed stream s query: generated stays in the meta; written is
          * the ordered scatter's whole-primitive bytes for buffer s divided
          * by its per-record stride (streams > 0 are points, vpp = 1). */
-        GLuint64 written = 0u;
-        if (xfbActive && bufferStride[s] > 0u) {
-            written = (GLuint64)bufferWritten[s] /
-                      (GLuint64)bufferStride[s];
-        }
+        GLuint64 written = mglDrawGsIndexedStreamWritten(
+            xfbActive ? 1 : 0, (uint64_t)bufferWritten[s],
+            (uint64_t)bufferStride[s]);
         mglRecordActivePrimitiveQueryDrawIndexed(
             ctx, s, (GLuint64)meta->stream[s].generated, written);
     }

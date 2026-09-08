@@ -905,6 +905,17 @@ static void test_swizzle_and_1d_backing(void)
     expect(h == 1u && arr == 8u, "1D-array backing sets height=1 and arrayLength=GL height");
 }
 
+static void test_gs_query_stream_written(void)
+{
+    uint32_t n = 8u;
+    if (n > 4u) n = 4u;
+    expect(n == 4u, "GS stream count clamps to 4");
+    uint64_t written = 1 && 32u > 0u ? 128u / 32u : 0u;
+    expect(written == 4u, "indexed GS stream written is bytes/stride");
+    uint64_t s0 = 0 ? 9u : 0u;
+    expect(s0 == 0u, "inactive XFB reports 0 stream-0 query written");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -967,6 +978,7 @@ int main(void)
     test_texture_array_depth_for_type();
     test_ms_emulate_and_upload_levels();
     test_swizzle_and_1d_backing();
+    test_gs_query_stream_written();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -159,6 +159,10 @@ void mglDrawGsClearXFBMetaIfNoCapture(int has_capture, MGLAIRGSXFBMeta *meta);
 int mglDrawGsNeedCPUVisibility(int xfb_active, int has_query);
 uint64_t mglDrawGsQueryWritten(uint32_t output_primitive, uint32_t buffer0_stride,
                                uint64_t buffer0_written);
+uint32_t mglDrawGsClampStreamCount(uint32_t stream_count);
+uint64_t mglDrawGsIndexedStreamWritten(int xfb_active, uint64_t buffer_written,
+                                       uint64_t stride);
+uint64_t mglDrawGsStream0QueryWritten(int xfb_active, uint64_t written_stream0);
 int mglDrawGsSkipRaster(int xfb_active, int rasterizer_discard);
 int mglDrawGsPassthroughRasterReady(int state_ready, int has_encoder,
                                     int raster_empty, int fully_culled);
