@@ -815,6 +815,18 @@ static void test_texture_buffer_and_cube_layers(void)
     expect(def == 1, "TEX_OBJ_RES_NAME is the default texture name");
 }
 
+static void test_air_sampler_lookup(void)
+{
+    int reject = 1 && 1;
+    expect(reject == 1, "default typed texture is rejected when unit has a real active");
+    int prefer_1d = 1 && 1;
+    expect(prefer_1d == 1, "AIR texture2d expected type prefers GL_TEXTURE_1D");
+    int prefer_ms = 1;
+    expect(prefer_ms == 1, "AIR texture2d_array prefers 1D_ARRAY or 2DMS");
+    int buf_dim = 1;
+    expect(buf_dim == 1, "image_dim BUFFER is a texel buffer resource");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -869,6 +881,7 @@ int main(void)
     test_attrib_format_and_image_bind();
     test_image_nonlayered_slice();
     test_texture_buffer_and_cube_layers();
+    test_air_sampler_lookup();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

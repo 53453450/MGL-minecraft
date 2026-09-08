@@ -6934,7 +6934,7 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
     if (sampledResource &&
-        sampledResource->image_dim == MGL_IMAGE_DIM_BUFFER) {
+        mglRenderImageDimIsBuffer(sampledResource->image_dim)) {
         Texture *bufferTexture =
             MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER];
         if (bufferTexture &&
@@ -6953,19 +6953,19 @@ static void mglTextureCopyTextureToBuffer(
      * texture at a non-MS object (CTS StorageMultisampleTest does
      * bindTexture(MS) then bindTextureUnit(unit, nonMS)). */
     if (sampledResource && sampledResource->image_multisampled) {
-        GLuint msIndex = sampledResource->image_arrayed
-            ? (GLuint)_TEXTURE_2D_MULTISAMPLE_ARRAY
-            : (GLuint)_TEXTURE_2D_MULTISAMPLE;
+        GLuint msIndex =
+            (GLuint)mglRenderMSTextureUnitIndex(sampledResource->image_arrayed
+                                                    ? 1
+                                                    : 0);
         Texture *msTexture =
             MGL_STATE(ctx)->texture_units[textureUnit].textures[msIndex];
-        if (msTexture && msTexture->name != TEX_OBJ_RES_NAME) {
+        if (msTexture && !mglRenderTextureNameIsDefault(msTexture->name)) {
             return msTexture;
         }
         Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
         if (activeTexture &&
-            (activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE ||
-             activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
-            activeTexture->name != TEX_OBJ_RES_NAME) {
+            mglRenderIsMultisampleTextureTarget(activeTexture->target) &&
+            !mglRenderTextureNameIsDefault(activeTexture->name)) {
             return activeTexture;
         }
     }
@@ -6979,36 +6979,40 @@ static void mglTextureCopyTextureToBuffer(
          * TEX_OBJ_RES_NAME) while the unit's active texture is a real
          * GL_TEXTURE_1D, prefer the 1D texture. Otherwise the default 2D
          * texture leaks across test cases and masks the real 1D binding. */
-        if (typedTexture && typedTexture->name == TEX_OBJ_RES_NAME) {
-            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
-            if (activeTexture && activeTexture->name != TEX_OBJ_RES_NAME) {
-                typedTexture = NULL;
-            }
+        Texture *activeTyped = MGL_STATE(ctx)->active_textures[textureUnit];
+        if (typedTexture &&
+            mglRenderRejectDefaultTypedTexture(
+                mglRenderTextureNameIsDefault(typedTexture->name),
+                activeTyped &&
+                        !mglRenderTextureNameIsDefault(activeTyped->name)
+                    ? 1
+                    : 0)) {
+            typedTexture = NULL;
         }
         if (typedTexture) {
             return typedTexture;
         }
 
+        if (mglRenderPrefer1DOverDefault2D(
+                expectedType, activeTyped ? activeTyped->target : 0u)) {
+            return activeTyped;
+        }
         if (expectedType == MGLTextureType2D) {
-            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
-            if (activeTexture &&
-                activeTexture->target == GL_TEXTURE_1D) {
-                return activeTexture;
-            }
+            Texture *activeTexture = activeTyped;
             /* AIR packs samplerBuffer as texture2d; the GL binding lives in
              * the TEXTURE_BUFFER slot. Prefer that over a missing 2D binding
              * when the reflected resource is a buffer sampler/image. */
             if (sampledResource &&
-                sampledResource->image_dim == MGL_IMAGE_DIM_BUFFER) {
+                mglRenderImageDimIsBuffer(sampledResource->image_dim)) {
                 Texture *bufferTexture =
                     MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER];
                 if (bufferTexture &&
-                    bufferTexture->name != TEX_OBJ_RES_NAME) {
+                    !mglRenderTextureNameIsDefault(bufferTexture->name)) {
                     return bufferTexture;
                 }
                 if (activeTexture &&
-                    activeTexture->target == GL_TEXTURE_BUFFER &&
-                    activeTexture->name != TEX_OBJ_RES_NAME) {
+                    mglRenderIsTextureBufferTarget(activeTexture->target) &&
+                    !mglRenderTextureNameIsDefault(activeTexture->name)) {
                     return activeTexture;
                 }
             }
@@ -7016,14 +7020,9 @@ static void mglTextureCopyTextureToBuffer(
 
         /* AIR lowers sampler1DArray / sampler2DMS* to texture2d_array, while GL
          * binds into _TEXTURE_1D_ARRAY / _TEXTURE_2D_MULTISAMPLE[_ARRAY]. */
-        if (expectedType == MGLTextureType2DArray) {
-            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
-            if (activeTexture &&
-                (activeTexture->target == GL_TEXTURE_1D_ARRAY ||
-                 activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE ||
-                 activeTexture->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
-                return activeTexture;
-            }
+        if (mglRenderPreferMSOr1DArrayOver2DArray(
+                expectedType, activeTyped ? activeTyped->target : 0u)) {
+            return activeTyped;
         }
 
         // Texel-buffer resources must not silently fall back to GL_TEXTURE_2D.

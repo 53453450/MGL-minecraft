@@ -7909,6 +7909,42 @@ int mglRenderTextureNameIsDefault(uint32_t name) {
     return name == TEX_OBJ_RES_NAME ? 1 : 0;
 }
 
+int mglRenderMSTextureUnitIndex(int image_arrayed) {
+    return image_arrayed ? _TEXTURE_2D_MULTISAMPLE_ARRAY
+                         : _TEXTURE_2D_MULTISAMPLE;
+}
+
+int mglRenderIsMultisampleTextureTarget(uint32_t gl_target) {
+    return gl_target == GL_TEXTURE_2D_MULTISAMPLE ||
+                   gl_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
+               ? 1
+               : 0;
+}
+
+int mglRenderRejectDefaultTypedTexture(int typed_is_default, int active_is_real) {
+    return typed_is_default && active_is_real ? 1 : 0;
+}
+
+int mglRenderPrefer1DOverDefault2D(uint32_t expected_type, uint32_t active_target) {
+    return expected_type == MGLTextureType2D && active_target == GL_TEXTURE_1D
+               ? 1
+               : 0;
+}
+
+int mglRenderPreferMSOr1DArrayOver2DArray(uint32_t expected_type,
+                                          uint32_t active_target) {
+    return expected_type == MGLTextureType2DArray &&
+                   (active_target == GL_TEXTURE_1D_ARRAY ||
+                    active_target == GL_TEXTURE_2D_MULTISAMPLE ||
+                    active_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+               ? 1
+               : 0;
+}
+
+int mglRenderImageDimIsBuffer(uint32_t image_dim) {
+    return image_dim == MGL_IMAGE_DIM_BUFFER ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -1239,6 +1239,13 @@ int mglRenderTextureDimsValid(uint32_t gl_target, int32_t width, int32_t height,
 int mglRenderTextureBufferNeedsDirty(int is_tbo, int has_buf, uint32_t buf_dirty);
 uint64_t mglRenderExpectedArrayLayers(uint32_t gl_target, int32_t depth);
 int mglRenderTextureNameIsDefault(uint32_t name);
+int mglRenderMSTextureUnitIndex(int image_arrayed);
+int mglRenderIsMultisampleTextureTarget(uint32_t gl_target);
+int mglRenderRejectDefaultTypedTexture(int typed_is_default, int active_is_real);
+int mglRenderPrefer1DOverDefault2D(uint32_t expected_type, uint32_t active_target);
+int mglRenderPreferMSOr1DArrayOver2DArray(uint32_t expected_type,
+                                          uint32_t active_target);
+int mglRenderImageDimIsBuffer(uint32_t image_dim);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
