@@ -578,7 +578,7 @@ static id mglLookupAuxRenderPipeline(
     id cached =
         mglLookupAuxRenderPipeline(
             MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
-            pixelFormat, MGLPixelFormatInvalid, MGLPixelFormatInvalid,
+            pixelFormat, mglRenderInvalidPixelFormat(), mglRenderInvalidPixelFormat(),
             MGLColorWriteMaskAll, 1u);
     if (cached) return cached;
 
@@ -587,7 +587,7 @@ static id mglLookupAuxRenderPipeline(
         mglCreateAuxRenderPipelineFromAsset(
             "scaled_blit", "mgl_scaled_blit_vs", "mgl_scaled_blit_fs",
             MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
-            pixelFormat, MGLPixelFormatInvalid, MGLPixelFormatInvalid,
+            pixelFormat, mglRenderInvalidPixelFormat(), mglRenderInvalidPixelFormat(),
             MGLColorWriteMaskAll, 1u, &error);
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled blit asset pipeline create failed pixelFormat=%lu error=%@",
@@ -669,7 +669,7 @@ static id mglLookupAuxRenderPipeline(
     id cached =
         mglLookupAuxRenderPipeline(
             MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
-            MGLPixelFormatInvalid, pixelFormat, stencilFormat,
+            mglRenderInvalidPixelFormat(), pixelFormat, stencilFormat,
             MGLColorWriteMaskNone, 1u);
     if (cached) return cached;
 
@@ -679,7 +679,7 @@ static id mglLookupAuxRenderPipeline(
             "scaled_depth_blit", "mgl_scaled_depth_blit_vs",
             "mgl_scaled_depth_blit_fs",
             MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
-            MGLPixelFormatInvalid, pixelFormat, stencilFormat,
+            mglRenderInvalidPixelFormat(), pixelFormat, stencilFormat,
             MGLColorWriteMaskNone, 1u, &error);
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled depth asset pipeline create failed depthPixelFormat=%lu error=%@",
@@ -1601,7 +1601,7 @@ static id mglLookupAuxRenderPipeline(
     id cached =
         mglLookupAuxRenderPipeline(
             MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
-            colorFormat, depthFormat, MGLPixelFormatInvalid,
+            colorFormat, depthFormat, mglRenderInvalidPixelFormat(),
             writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone,
             1u);
     if (cached) return cached;
@@ -1612,7 +1612,7 @@ static id mglLookupAuxRenderPipeline(
             "clear_rect", "mgl_clear_rect_vs",
             writesColor ? "mgl_clear_rect_fs" : NULL,
             MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
-            colorFormat, depthFormat, MGLPixelFormatInvalid,
+            colorFormat, depthFormat, mglRenderInvalidPixelFormat(),
             writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone,
             1u, &error);
     if (!pipeline) {

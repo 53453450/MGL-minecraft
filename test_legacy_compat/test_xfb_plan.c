@@ -2434,6 +2434,13 @@ static void test_pso_invalid_format_init(void)
     expect(invalid_fmt() == 0u, "PSO/recovery inits use Invalid sentinel");
 }
 
+static void test_aux_blit_unused_ds(void)
+{
+    expect(invalid_fmt() == 0u, "color blit unused DS slots are Invalid");
+    expect(invalid_fmt() == 0u, "depth blit unused color slot is Invalid");
+    expect(invalid_fmt() == 0u, "clear-rect unused stencil slot is Invalid");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2605,6 +2612,7 @@ int main(void)
     test_pass_unify_packed_ds();
     test_missing_attachment_format();
     test_pso_invalid_format_init();
+    test_aux_blit_unused_ds();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
