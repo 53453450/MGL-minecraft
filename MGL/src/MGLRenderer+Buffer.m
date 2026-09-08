@@ -503,11 +503,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 bentry->buf = buf;
                 bentry->offset = baseBinding->offset;
                 bentry->size = baseBinding->size;
-                if (spvc_type == _UNIFORM_BUFFER_RES) {
-                    bentry->size = mglBufferMapExtendUniformRange(
-                        bentry->size, buf->size, bentry->offset,
-                        reflectedRequiredSize);
-                }
+                bentry->size = mglRenderMappedUniformSize(
+                    spvc_type, bentry->size, buf->size, bentry->offset,
+                    (uint64_t)reflectedRequiredSize);
                 baseBinding->buffer = buf->name;
                 buffer_map->count++;
 
@@ -547,8 +545,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                 usedFallbackBinding ? 1 : 0);
                 }
 
-                if (reflectedRequiredSize > 0 && baseBinding->size > 0 &&
-                    (NSUInteger)baseBinding->size < reflectedRequiredSize) {
+                if (mglRenderBaseBindingTooSmall(baseBinding->size,
+                                                 (uint64_t)reflectedRequiredSize)) {
                     GLuint programName = ctx ? MGL_STATE(ctx)->program_name : 0u;
                     if (mglShouldLogSmallBaseBinding(programName,
                                                      stage,
@@ -1051,11 +1049,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     entry->buf = buf;
                     entry->offset = baseBinding->offset;
                     entry->size = baseBinding->size;
-                    if (spvc_type == _UNIFORM_BUFFER_RES) {
-                        entry->size = mglBufferMapExtendUniformRange(
-                            entry->size, buf->size, entry->offset,
-                            reflectedRequiredSize);
-                    }
+                    entry->size = mglRenderMappedUniformSize(
+                        spvc_type, entry->size, buf->size, entry->offset,
+                        (uint64_t)reflectedRequiredSize);
                     baseBinding->buffer = buf->name;
                     buffer_map->count++;
 
@@ -1096,8 +1092,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     usedFallbackBinding ? 1 : 0);
                     }
 
-                    if (reflectedRequiredSize > 0 && baseBinding->size > 0 &&
-                        (NSUInteger)baseBinding->size < reflectedRequiredSize) {
+                    if (mglRenderBaseBindingTooSmall(baseBinding->size,
+                                                     (uint64_t)reflectedRequiredSize)) {
                         GLuint programName = ctx ? MGL_STATE(ctx)->program_name : 0u;
                         if (mglShouldLogSmallBaseBinding(programName,
                                                          stage,

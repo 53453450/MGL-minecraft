@@ -7924,6 +7924,31 @@ int mglRenderBufferBindingEmpty(int has_buf, uint32_t name) {
     return !has_buf && name == 0u ? 1 : 0;
 }
 
+int mglRenderIsUniformBufferResource(int spvc_type) {
+    return spvc_type == _UNIFORM_BUFFER_RES ? 1 : 0;
+}
+
+int64_t mglRenderMappedUniformSize(int spvc_type, int64_t bound, int64_t buf_size,
+                                   int64_t offset, uint64_t reflected) {
+    if (spvc_type != _UNIFORM_BUFFER_RES) {
+        return bound;
+    }
+    if (bound <= 0 || reflected == 0u || (uint64_t)bound >= reflected ||
+        buf_size <= offset) {
+        return bound;
+    }
+    int64_t remaining = buf_size - offset;
+    int64_t want = (int64_t)reflected;
+    if (remaining < want) {
+        want = remaining;
+    }
+    return want > bound ? want : bound;
+}
+
+int mglRenderBaseBindingTooSmall(int64_t range, uint64_t reflected) {
+    return reflected > 0u && range > 0 && (uint64_t)range < reflected ? 1 : 0;
+}
+
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }

@@ -1245,6 +1245,10 @@ int mglRenderClientBindingInRange(uint32_t binding, uint32_t max);
 int mglRenderAllowGlobalBufferFallback(int has_fallback, int spvc_type,
                                        uint32_t flags);
 int mglRenderBufferBindingEmpty(int has_buf, uint32_t name);
+int mglRenderIsUniformBufferResource(int spvc_type);
+int64_t mglRenderMappedUniformSize(int spvc_type, int64_t bound, int64_t buf_size,
+                                   int64_t offset, uint64_t reflected);
+int mglRenderBaseBindingTooSmall(int64_t range, uint64_t reflected);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

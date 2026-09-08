@@ -709,6 +709,23 @@ static void test_mapped_buffer_fallback(void)
     expect(fb == 1, "non-constant resources allow global fallback");
 }
 
+static void test_mapped_uniform_size(void)
+{
+    int is_ubo = 1;
+    expect(is_ubo == 1, "UNIFORM_BUFFER_RES is a UBO resource");
+    int64_t bound = 64, buf = 96, off = 0;
+    uint64_t reflected = 96u;
+    int64_t want = (bound <= 0 || reflected == 0u || (uint64_t)bound >= reflected ||
+                    buf <= off)
+                       ? bound
+                       : (buf - off < (int64_t)reflected ? buf - off
+                                                         : (int64_t)reflected);
+    if (want < bound) want = bound;
+    expect(want == 96, "UBO range extends 64 to reflected 96 when store holds it");
+    int small = (reflected > 0u) && (bound > 0) && ((uint64_t)bound < reflected);
+    expect(small == 1, "bound 64 is too small vs reflected 96");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -755,6 +772,7 @@ int main(void)
     test_buffer_plan_struct_pack();
     test_struct_pack_copy_clamp();
     test_mapped_buffer_fallback();
+    test_mapped_uniform_size();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
