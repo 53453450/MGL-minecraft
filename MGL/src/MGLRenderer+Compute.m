@@ -490,19 +490,6 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                           temporaries:(NSMutableArray *)temporaries
 {
     GLuint count;
-    enum {
-        _TEXTURE,
-        _IMAGE_TEXTURE
-    };
-    struct {
-        int spvc_type;
-        int gl_texture_type;
-    } mapped_types[] = {
-        {_SAMPLED_IMAGE_RES, _TEXTURE},
-        {_STORAGE_IMAGE_RES, _IMAGE_TEXTURE},
-        {0,0}
-    };
-
     if (!computeCommandEncoder && !executionPlan) {
         NSLog(@"MGL COMPUTE ERROR: NULL compute encoder for texture binding");
         return false;
@@ -581,13 +568,17 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
 
     Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
 
-    for(int type=0; mapped_types[type].spvc_type; type++)
+    static const int kComputeTextureSpvcTypes[] = {
+        _SAMPLED_IMAGE_RES, _STORAGE_IMAGE_RES,
+    };
+    for (int type = 0; type < 2; type++)
     {
-        int spvc_type;
-        int gl_texture_type;
-
-        spvc_type = mapped_types[type].spvc_type;
-        gl_texture_type = mapped_types[type].gl_texture_type;
+        int spvc_type = kComputeTextureSpvcTypes[type];
+        int gl_texture_type =
+            mglRenderComputeTextureBindKind((uint32_t)spvc_type);
+        if (gl_texture_type < 0) {
+            continue;
+        }
 
         // iterate shader storage buffers
         count = mglRendererGetProgramBindingCount(ctx, stage, spvc_type);
@@ -641,23 +632,9 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                     continue;
                 }
 
-                switch(gl_texture_type)
+                if (mglRenderComputeTextureBindIsStorage(
+                        (uint32_t)gl_texture_type))
                 {
-                    case _TEXTURE:
-                        glUnit = [self textureUnitForSampledResource:resource
-                                                         metalBinding:metalBinding
-                                                                stage:stage];
-                        if (glUnit >= TEXTURE_UNITS) {
-                            continue;
-                        }
-                        ptr = [self textureForSampledResource:resource
-                                                 metalBinding:metalBinding
-                                                         stage:stage
-                                                  expectedType:mglRendererGetProgramDeclaredTextureType(
-                                                      ctx, stage, spvc_type, i)];
-                        break;
-                    case _IMAGE_TEXTURE:
-                        {
                         const int explicitUnit =
                             computeProgram && metalBinding < TEXTURE_UNITS &&
                             computeProgram->sampler_units_explicit_by_stage[stage]
@@ -681,14 +658,19 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                                                         TEXTURE_UNITS)) {
                             continue;
                         }
-                        }
                         ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
-                        break;
-                    default:
-                        ptr = NULL;
-                        NSLog(@"MGL COMPUTE ERROR: unknown compute texture binding class %d", gl_texture_type);
-                        MGL_CTEX_FLUSH_SNAPSHOT();
-                        return false;
+                } else {
+                        glUnit = [self textureUnitForSampledResource:resource
+                                                         metalBinding:metalBinding
+                                                                stage:stage];
+                        if (glUnit >= TEXTURE_UNITS) {
+                            continue;
+                        }
+                        ptr = [self textureForSampledResource:resource
+                                                 metalBinding:metalBinding
+                                                         stage:stage
+                                                  expectedType:mglRendererGetProgramDeclaredTextureType(
+                                                      ctx, stage, spvc_type, i)];
                 }
 
                 if (ptr)
@@ -705,7 +687,8 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
 
                     /* Storage images: BindImage <format>/level/slice views
                      * (same helper as VS/FS). Cached on ImageUnit. */
-                    if (gl_texture_type == _IMAGE_TEXTURE) {
+                    if (mglRenderComputeTextureBindIsStorage(
+                            (uint32_t)gl_texture_type)) {
                         texture = (__bridge id)mglRendererStorageImageTexture(
                             (__bridge void *)texture,
                             &MGL_STATE(ctx)->image_units[glUnit]);
@@ -714,7 +697,9 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                     id sampler;
 
                     // late binding of texture samplers.. but its better than scanning the entire texture_samplers
-                    if(gl_texture_type == _TEXTURE && MGL_STATE(ctx)->texture_samplers[glUnit])
+                    if (!mglRenderComputeTextureBindIsStorage(
+                            (uint32_t)gl_texture_type) &&
+                        MGL_STATE(ctx)->texture_samplers[glUnit])
                     {
                         Sampler *gl_sampler;
 
@@ -754,8 +739,9 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
 
                     MGL_CTEX_EMIT_TEXTURE(metalBinding,
                                           (__bridge void *)texture);
-                    if (gl_texture_type == _TEXTURE &&
-                        (!resource || resource->has_combined_sampler)) {
+                    if (mglRenderComputeTextureBindNeedsSampler(
+                            (uint32_t)gl_texture_type,
+                            !resource || resource->has_combined_sampler)) {
                         GLuint samplerBinding = resource
                             ? mglMetalCombinedSamplerSlotForElement(resource,
                                                                     resourceElement)

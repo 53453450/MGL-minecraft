@@ -1286,6 +1286,9 @@ uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
                                         uint32_t explicit_unit,
                                         int32_t sampler_unit,
                                         uint32_t gl_binding, uint32_t element);
+int mglRenderComputeTextureBindKind(uint32_t spvc_type);
+int mglRenderComputeTextureBindIsStorage(uint32_t kind);
+int mglRenderComputeTextureBindNeedsSampler(uint32_t kind, int has_combined);
 uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
                                     uint32_t element, uint32_t fallback);
 int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);

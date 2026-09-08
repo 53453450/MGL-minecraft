@@ -8251,6 +8251,25 @@ uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
     return base + element;
 }
 
+int mglRenderComputeTextureBindKind(uint32_t spvc_type) {
+    /* _STORAGE_IMAGE_RES=7, _SAMPLED_IMAGE_RES=8 */
+    if (spvc_type == 8u) {
+        return 0; /* sampled */
+    }
+    if (spvc_type == 7u) {
+        return 1; /* storage */
+    }
+    return -1;
+}
+
+int mglRenderComputeTextureBindIsStorage(uint32_t kind) {
+    return kind == 1u ? 1 : 0;
+}
+
+int mglRenderComputeTextureBindNeedsSampler(uint32_t kind, int has_combined) {
+    return kind == 0u && has_combined ? 1 : 0;
+}
+
 uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
                                     uint32_t element, uint32_t fallback) {
     return has_resource ? binding + element : fallback;

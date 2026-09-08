@@ -2009,6 +2009,22 @@ static void test_depth_blit_stencil_format(void)
            "Depth32F blit has no stencil attachment");
 }
 
+static int compute_tex_bind_kind(uint32_t spvc)
+{
+    if (spvc == 8u) return 0;
+    if (spvc == 7u) return 1;
+    return -1;
+}
+
+static void test_compute_texture_bind_kind(void)
+{
+    expect(compute_tex_bind_kind(8u) == 0, "sampled image is sampled bind");
+    expect(compute_tex_bind_kind(7u) == 1, "storage image is storage bind");
+    expect(compute_tex_bind_kind(1u) < 0, "UBO is not a compute texture bind");
+    expect(compute_tex_bind_kind(8u) == 0 && 1, "sampled bind emits sampler");
+    expect(compute_tex_bind_kind(7u) == 1, "storage bind skips sampler");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2156,6 +2172,7 @@ int main(void)
     test_texbuffer_format();
     test_invalid_format_skip();
     test_depth_blit_stencil_format();
+    test_compute_texture_bind_kind();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
