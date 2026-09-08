@@ -3046,10 +3046,11 @@ after_gs_draws:
             return YES;
         }
 
+        GLenum nativeRasterMode = (GLenum)mglTessNativeRasterDrawMode();
         if (mglTessNativeShouldDraw(
                 [self currentDrawRasterizationIsEmpty] ? 1 : 0,
-                [self currentDrawModeIsFullyCulled:GL_TRIANGLES] ? 1 : 0)) {
-            [self applyPolygonOffsetForDrawMode:GL_TRIANGLES];
+                [self currentDrawModeIsFullyCulled:nativeRasterMode] ? 1 : 0)) {
+            [self applyPolygonOffsetForDrawMode:nativeRasterMode];
             /* Metal does not advance the post-tessellation control-point
              * pointer correctly for patchStart. Draw each patch separately:
              * slot 0 is rebased to the patch, while slot 30 stays at the

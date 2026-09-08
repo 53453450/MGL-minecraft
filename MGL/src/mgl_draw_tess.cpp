@@ -725,6 +725,13 @@ extern "C" int mglTessNativeShouldDraw(int raster_empty, int fully_culled)
     return !raster_empty && !fully_culled ? 1 : 0;
 }
 
+extern "C" uint32_t mglTessNativeRasterDrawMode(void)
+{
+    /* Native Metal tessellator path is triangles-only (isolines / point_mode
+     * take the AIR compute TES route). */
+    return GL_TRIANGLES;
+}
+
 extern "C" int mglTessTextureBindIsStorage(uint32_t kind)
 {
     return kind == MGL_TESS_BIND_STORAGE_IMAGE ? 1 : 0;

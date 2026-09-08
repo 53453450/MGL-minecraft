@@ -985,3 +985,13 @@ extern "C" uint64_t mglDrawGsReduceBufferWritten(const uint32_t *written,
     }
     return total;
 }
+
+extern "C" uint32_t mglDrawGsPassthroughDeclType(uint32_t output_type,
+                                                 uint32_t fs_type,
+                                                 int names_match)
+{
+    if (names_match && fs_type != output_type) {
+        return fs_type;
+    }
+    return output_type;
+}

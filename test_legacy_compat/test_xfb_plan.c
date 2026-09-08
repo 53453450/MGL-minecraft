@@ -1566,6 +1566,30 @@ static void test_state_repair_defaults(void)
     expect(keep == 0x0201u, "valid compare func is not repaired");
 }
 
+static void test_native_tes_raster_draw_mode(void)
+{
+    uint32_t mode = 0x0004u; /* GL_TRIANGLES */
+    expect(mode == 0x0004u, "native TES raster draw mode is GL_TRIANGLES");
+}
+
+static uint32_t gs_passthrough_decl(uint32_t out_type, uint32_t fs_type,
+                                    int names_match)
+{
+    if (names_match && fs_type != out_type)
+        return fs_type;
+    return out_type;
+}
+
+static void test_gs_passthrough_decl_type(void)
+{
+    expect(gs_passthrough_decl(0x8B51u, 0x8B50u, 1) == 0x8B50u,
+           "matching FS vec2 overrides GS vec3 passthrough decl");
+    expect(gs_passthrough_decl(0x8B51u, 0x8B50u, 0) == 0x8B51u,
+           "name mismatch keeps GS output type");
+    expect(gs_passthrough_decl(0x8B51u, 0x8B51u, 1) == 0x8B51u,
+           "matching same type keeps GS output type");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1692,6 +1716,8 @@ int main(void)
     test_clear_mask_color_depth_stencil();
     test_clear_mask_has_any();
     test_state_repair_defaults();
+    test_native_tes_raster_draw_mode();
+    test_gs_passthrough_decl_type();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -21,6 +21,7 @@
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
 #include "mgl_draw_tess.h"
+#include "mgl_draw_gs.h"
 #include "mgl_render.h"
 
 #import <objc/message.h>
@@ -843,16 +844,20 @@ static GLenum mglPassthroughDeclType(
     const MGLShaderResourceList *fsInputs,
     const MGLShaderResource *output)
 {
+    uint32_t decl = output->gl_type;
     for (GLuint fi = 0; fsInputs && fsInputs->list && fi < fsInputs->count;
          fi++) {
         const MGLShaderResource *in = &fsInputs->list[fi];
-        if (in->name && output->name &&
-            strcmp(in->name, output->name) == 0 &&
-            in->gl_type != output->gl_type) {
-            return in->gl_type;
+        decl = mglDrawGsPassthroughDeclType(
+            decl, in->gl_type,
+            output->name && in->name && strcmp(in->name, output->name) == 0
+                ? 1
+                : 0);
+        if (decl != output->gl_type) {
+            return (GLenum)decl;
         }
     }
-    return output->gl_type;
+    return (GLenum)decl;
 }
 
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program

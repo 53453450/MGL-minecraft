@@ -185,6 +185,8 @@ uint64_t mglDrawGsReduceGeneratedPrimitives(GLenum output_mode,
 uint64_t mglDrawGsReduceBufferWritten(const uint32_t *written,
                                       uint32_t work_item_count,
                                       uint32_t buffer_index);
+uint32_t mglDrawGsPassthroughDeclType(uint32_t output_type, uint32_t fs_type,
+                                      int names_match);
 
 #ifdef __cplusplus
 }

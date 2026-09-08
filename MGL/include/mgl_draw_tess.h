@@ -246,6 +246,7 @@ int mglTessPassthroughRasterReady(int state_ready, int has_encoder,
                                   int raster_empty);
 int mglTessNativePipelineReady(int state_ready, int has_encoder);
 int mglTessNativeShouldDraw(int raster_empty, int fully_culled);
+uint32_t mglTessNativeRasterDrawMode(void);
 int mglTessTextureBindIsStorage(uint32_t kind);
 int mglTessTextureBindNeedsSampler(uint32_t kind, uint32_t combined_slot);
 
