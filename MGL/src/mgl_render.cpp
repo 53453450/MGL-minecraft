@@ -7821,6 +7821,10 @@ int mglRenderBufferSizeValid(int64_t size) {
     return size >= 0 ? 1 : 0;
 }
 
+uint64_t mglRenderBufferSizeOrZero(int64_t size) {
+    return size >= 0 ? (uint64_t)size : 0u;
+}
+
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }

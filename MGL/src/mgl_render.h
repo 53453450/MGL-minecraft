@@ -1223,6 +1223,7 @@ int mglRenderResolveMappedBufferSlot(int has_metal_binding,
                                      uint32_t max_slots, uint32_t *out_slot);
 int mglRenderBufferMapOffsetValid(int64_t offset);
 int mglRenderBufferSizeValid(int64_t size);
+uint64_t mglRenderBufferSizeOrZero(int64_t size);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

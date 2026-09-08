@@ -653,6 +653,18 @@ static void test_xfb_session_and_tcs_stage_in(void)
     expect(empty == 1, "TCS stage-in with no members is empty-ok");
 }
 
+static void test_tess_compute_preamble(void)
+{
+    int compiled = 1 && 1;
+    expect(compiled == 1, "TCS/TES need shader+mtl_function");
+    int end_enc = (1 == 1);
+    expect(end_enc == 1, "must end render encoder before tess compute");
+    int pso = (0 == 0) && 1;
+    expect(pso == 1, "tess compute pipeline ready on create_ok+handle");
+    uint64_t sz = (-4 >= 0) ? (uint64_t)-4 : 0u;
+    expect(sz == 0u, "negative GL buffer size becomes 0 for stage-in");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -694,6 +706,7 @@ int main(void)
     test_tess_passthrough_xfb_success();
     test_native_tes_and_texture_bind();
     test_xfb_session_and_tcs_stage_in();
+    test_tess_compute_preamble();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

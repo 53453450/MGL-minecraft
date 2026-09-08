@@ -1883,6 +1883,22 @@ extern "C" int mglTessCommandBufferCanInitBlit(int has_state, uint32_t status)
     return has_state && status == 0u ? 1 : 0;
 }
 
+extern "C" int mglTessStageHasCompiledFunction(int has_shader,
+                                               int has_mtl_function)
+{
+    return has_shader && has_mtl_function ? 1 : 0;
+}
+
+extern "C" int mglTessMustEndRenderBeforeCompute(int has_render_encoder)
+{
+    return has_render_encoder == 1 ? 1 : 0;
+}
+
+extern "C" int mglTessComputePipelineReady(int create_ok, int has_handle)
+{
+    return create_ok == 0 && has_handle ? 1 : 0;
+}
+
 extern "C" int mglTessIsolatedNeedsCopyBack(int writable, int has_source,
                                             uint32_t init_length)
 {

@@ -758,7 +758,7 @@ typedef struct {
                 srcs[m].divisor = resolved.divisor;
                 srcs[m].binding_offset = resolved.binding_offset;
                 srcs[m].relativeoffset = resolved.relativeoffset;
-                srcs[m].buffer_size = vbo->size >= 0 ? (uint64_t)vbo->size : 0u;
+                srcs[m].buffer_size = mglRenderBufferSizeOrZero(vbo->size);
             }
         }
     }
@@ -784,7 +784,9 @@ typedef struct {
     }
 
     Shader *tcsShader = tcsProgram->shader_slots[_TESS_CONTROL_SHADER];
-    if (!tcsShader || !tcsProgram->modules[_TESS_CONTROL_SHADER].mtl_function) {
+    if (!mglTessStageHasCompiledFunction(
+            tcsShader ? 1 : 0,
+            tcsProgram->modules[_TESS_CONTROL_SHADER].mtl_function ? 1 : 0)) {
         NSLog(@"MGL TESS WARNING: TCS program %u has no compiled function", tcsProgram->name);
         return false;
     }
@@ -796,7 +798,7 @@ typedef struct {
         tcsProgram, _TESS_CONTROL_SHADER, &tcsPipelineHandle,
         tcsPipelineError, sizeof(tcsPipelineError));
     id tcsPipeline =
-        tcsPipelineResult == 0 && tcsPipelineHandle
+        mglTessComputePipelineReady(tcsPipelineResult, tcsPipelineHandle ? 1 : 0)
             ? (__bridge_transfer id)tcsPipelineHandle
             : nil;
     if (!tcsPipeline) {
@@ -812,8 +814,8 @@ typedef struct {
      * encoder on the command buffer, and Metal forbids two encoders
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+    if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner))) {
         [self endRenderEncoding];
     }
 
@@ -1070,7 +1072,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     }
 
     Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
-    if (!tesShader || !tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function) {
+    if (!mglTessStageHasCompiledFunction(
+            tesShader ? 1 : 0,
+            tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function ? 1 : 0)) {
         NSLog(@"MGL TESS WARNING: TES program %u has no compiled function",
               tesProgram->name);
         return false;
@@ -1082,7 +1086,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         tesProgram, _TESS_EVALUATION_SHADER, &tesPipelineHandle,
         tesPipelineError, sizeof(tesPipelineError));
     id tesPipeline =
-        tesPipelineResult == 0 && tesPipelineHandle
+        mglTessComputePipelineReady(tesPipelineResult, tesPipelineHandle ? 1 : 0)
             ? (__bridge_transfer id)tesPipelineHandle
             : nil;
     if (!tesPipeline) {
@@ -1200,8 +1204,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     }
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+    if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner))) {
         [self endRenderEncoding];
     }
     MGLRenderCommandBufferState commandState = {0};

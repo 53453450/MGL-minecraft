@@ -483,6 +483,9 @@ int mglTessPlanIndexedStageIn(uint32_t index_type, uint64_t index_offset,
                               MGLTessIndexedStageInPlan *out);
 int mglTessCommandBufferNeedsNew(int has_state, uint32_t status);
 int mglTessCommandBufferCanInitBlit(int has_state, uint32_t status);
+int mglTessStageHasCompiledFunction(int has_shader, int has_mtl_function);
+int mglTessMustEndRenderBeforeCompute(int has_render_encoder);
+int mglTessComputePipelineReady(int create_ok, int has_handle);
 int mglTessIsolatedNeedsCopyBack(int writable, int has_source,
                                  uint32_t init_length);
 
