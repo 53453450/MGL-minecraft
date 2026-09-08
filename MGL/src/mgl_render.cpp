@@ -9618,6 +9618,78 @@ int mglRenderReadbackTypeIsPacked(uint32_t type) {
                : 0;
 }
 
+int mglRenderIsValidGLCompareFunction(uint32_t func) {
+    switch (func) {
+    case GL_NEVER:
+    case GL_LESS:
+    case GL_EQUAL:
+    case GL_LEQUAL:
+    case GL_GREATER:
+    case GL_NOTEQUAL:
+    case GL_GEQUAL:
+    case GL_ALWAYS:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int mglRenderCompareFuncFromGL(uint32_t func, uint32_t *out) {
+    uint32_t mapped = MGLCompareFunctionAlways;
+    int known = 1;
+    switch (func) {
+    case GL_NEVER:
+        mapped = MGLCompareFunctionNever;
+        break;
+    case GL_LESS:
+        mapped = MGLCompareFunctionLess;
+        break;
+    case GL_EQUAL:
+        mapped = MGLCompareFunctionEqual;
+        break;
+    case GL_LEQUAL:
+        mapped = MGLCompareFunctionLessEqual;
+        break;
+    case GL_GREATER:
+        mapped = MGLCompareFunctionGreater;
+        break;
+    case GL_NOTEQUAL:
+        mapped = MGLCompareFunctionNotEqual;
+        break;
+    case GL_GEQUAL:
+        mapped = MGLCompareFunctionGreaterEqual;
+        break;
+    case GL_ALWAYS:
+        mapped = MGLCompareFunctionAlways;
+        break;
+    default:
+        known = 0;
+        break;
+    }
+    if (out) {
+        *out = mapped;
+    }
+    return known;
+}
+
+int mglRenderFrontFaceIsClockwise(uint32_t front_face) {
+    return front_face == GL_CW ? 1 : 0;
+}
+
+int mglRenderFrontFaceIsCounterClockwise(uint32_t front_face) {
+    return front_face == GL_CCW ? 1 : 0;
+}
+
+int mglRenderIsValidGLBlendEquation(uint32_t op) {
+    uint32_t tmp = 0u;
+    return mglRenderBlendOperationFromGL(op, &tmp);
+}
+
+int mglRenderIsValidGLBlendFactor(uint32_t factor) {
+    uint32_t tmp = 0u;
+    return mglRenderBlendFactorFromGL(factor, &tmp);
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

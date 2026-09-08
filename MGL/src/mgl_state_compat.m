@@ -17,6 +17,7 @@
  */
 
 #import "mgl_state_compat.h"
+#include "mgl_render.h"
 
 #import <Foundation/Foundation.h>
 #include <math.h>
@@ -30,111 +31,53 @@ uint32_t mglMTLCompareFunctionForGL(GLenum func,
                                     uint32_t fallback,
                                     const char *label)
 {
-    switch (func) {
-        case GL_NEVER: return MGLCompareFunctionNever;
-        case GL_LESS: return MGLCompareFunctionLess;
-        case GL_EQUAL: return MGLCompareFunctionEqual;
-        case GL_LEQUAL: return MGLCompareFunctionLessEqual;
-        case GL_GREATER: return MGLCompareFunctionGreater;
-        case GL_NOTEQUAL: return MGLCompareFunctionNotEqual;
-        case GL_GEQUAL: return MGLCompareFunctionGreaterEqual;
-        case GL_ALWAYS: return MGLCompareFunctionAlways;
-        default: {
-            static uint64_t s_badCompareFunctionCount = 0;
-            uint64_t hit = ++s_badCompareFunctionCount;
-
-            if (hit <= 32 || (hit % 256) == 0) {
-                NSLog(@"MGL WARNING: invalid %s compare func=0x%x, fallback=%lu hit=%llu",
-                      label ? label : "unknown",
-                      func,
-                      (unsigned long)fallback,
-                      (unsigned long long)hit);
-            }
-
-            return fallback;
-        }
+    uint32_t mapped = 0u;
+    if (mglRenderCompareFuncFromGL((uint32_t)func, &mapped)) {
+        return mapped;
     }
+    static uint64_t s_badCompareFunctionCount = 0;
+    uint64_t hit = ++s_badCompareFunctionCount;
+    if (hit <= 32 || (hit % 256) == 0) {
+        NSLog(@"MGL WARNING: invalid %s compare func=0x%x, fallback=%lu hit=%llu",
+              label ? label : "unknown",
+              func,
+              (unsigned long)fallback,
+              (unsigned long long)hit);
+    }
+    return fallback;
 }
 
 uint32_t mglMTLWindingForGL(GLenum frontFace)
 {
-    switch (frontFace) {
-        case GL_CW:
-            return MGLWindingClockwise;
-        case GL_CCW:
-            return MGLWindingCounterClockwise;
-        default: {
-            static uint64_t s_badFrontFaceCount = 0;
-            uint64_t hit = ++s_badFrontFaceCount;
-
-            if (hit <= 32 || (hit % 256) == 0) {
-                NSLog(@"MGL WARNING: invalid front face enum=0x%x, fallback=GL_CCW hit=%llu",
-                      frontFace,
-                      (unsigned long long)hit);
-            }
-
-            return MGLWindingCounterClockwise;
-        }
+    if (mglRenderFrontFaceIsClockwise((uint32_t)frontFace)) {
+        return MGLWindingClockwise;
     }
+    if (mglRenderFrontFaceIsCounterClockwise((uint32_t)frontFace)) {
+        return MGLWindingCounterClockwise;
+    }
+    static uint64_t s_badFrontFaceCount = 0;
+    uint64_t hit = ++s_badFrontFaceCount;
+    if (hit <= 32 || (hit % 256) == 0) {
+        NSLog(@"MGL WARNING: invalid front face enum=0x%x, fallback=GL_CCW hit=%llu",
+              frontFace,
+              (unsigned long long)hit);
+    }
+    return MGLWindingCounterClockwise;
 }
 
 BOOL mglIsValidGLCompareFunction(GLenum func)
 {
-    switch (func) {
-        case GL_NEVER:
-        case GL_LESS:
-        case GL_EQUAL:
-        case GL_LEQUAL:
-        case GL_GREATER:
-        case GL_NOTEQUAL:
-        case GL_GEQUAL:
-        case GL_ALWAYS:
-            return YES;
-        default:
-            return NO;
-    }
+    return mglRenderIsValidGLCompareFunction((uint32_t)func) != 0;
 }
 
 BOOL mglIsValidGLBlendEquation(GLenum op)
 {
-    switch (op) {
-        case GL_FUNC_ADD:
-        case GL_FUNC_SUBTRACT:
-        case GL_FUNC_REVERSE_SUBTRACT:
-        case GL_MIN:
-        case GL_MAX:
-            return YES;
-        default:
-            return NO;
-    }
+    return mglRenderIsValidGLBlendEquation((uint32_t)op) != 0;
 }
 
 BOOL mglIsValidGLBlendFactor(GLenum factor)
 {
-    switch (factor) {
-        case GL_ZERO:
-        case GL_ONE:
-        case GL_SRC_COLOR:
-        case GL_ONE_MINUS_SRC_COLOR:
-        case GL_DST_COLOR:
-        case GL_ONE_MINUS_DST_COLOR:
-        case GL_SRC_ALPHA:
-        case GL_ONE_MINUS_SRC_ALPHA:
-        case GL_DST_ALPHA:
-        case GL_ONE_MINUS_DST_ALPHA:
-        case GL_CONSTANT_COLOR:
-        case GL_ONE_MINUS_CONSTANT_COLOR:
-        case GL_CONSTANT_ALPHA:
-        case GL_ONE_MINUS_CONSTANT_ALPHA:
-        case GL_SRC_ALPHA_SATURATE:
-        case GL_SRC1_COLOR:
-        case GL_ONE_MINUS_SRC1_COLOR:
-        case GL_SRC1_ALPHA:
-        case GL_ONE_MINUS_SRC1_ALPHA:
-            return YES;
-        default:
-            return NO;
-    }
+    return mglRenderIsValidGLBlendFactor((uint32_t)factor) != 0;
 }
 
 void mglLogRenderStateRepair(const char *field, GLenum value, GLenum fallback)

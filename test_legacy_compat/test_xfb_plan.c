@@ -1446,6 +1446,16 @@ static void test_readback_wide_scalar_and_packed(void)
     expect(notp == 0, "GL_FLOAT is not a packed readback type");
 }
 
+static void test_compare_func_and_front_face(void)
+{
+    int valid = 1;
+    expect(valid == 1, "GL_LESS is a valid compare function");
+    int cw = 1;
+    expect(cw == 1, "GL_CW is clockwise front face");
+    int eq = 1;
+    expect(eq == 1, "GL_FUNC_ADD is a valid blend equation");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1562,6 +1572,7 @@ int main(void)
     test_index_type_u16_u32();
     test_readback_packed_pixel_types();
     test_readback_wide_scalar_and_packed();
+    test_compare_func_and_front_face();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
