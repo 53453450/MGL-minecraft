@@ -48,12 +48,30 @@ typedef struct MGLBatchSelectInputs {
     uint8_t primitive_restart;
     uint8_t primitive_type; /* 0xFF = unset / invalid for ICB */
     uint8_t icb_os_supported;
-    uint8_t enable_icb;  /* MGL_ENABLE_ICB_BATCH */
-    uint8_t disable_icb; /* MGL_DISABLE_ICB_BATCH */
+    uint8_t enable_icb;  /* from mgl_batch_icb_config().enable */
+    uint8_t disable_icb; /* from mgl_batch_icb_config().disable */
     uint8_t disable_mdi; /* MGL_DISABLE_MDI */
 } MGLBatchSelectInputs;
 
 int mgl_batch_select_path(const MGLBatchSelectInputs *in);
+
+/*
+ * O2.4: unified ICB gate for batch path selection AND
+ * MTLRenderPipelineDescriptor.supportIndirectCommandBuffers.
+ * Prefer MGL_ENABLE_ICB / MGL_DISABLE_ICB. Legacy ENABLE_ICB_BATCH or
+ * ENABLE_ICB_PIPELINES either enable; DISABLE_ICB_BATCH (or DISABLE_ICB)
+ * hard-disables. Avoids ENABLE_BATCH / ENABLE_PIPELINES split.
+ */
+typedef struct MGLBatchIcbConfig {
+    uint8_t enable;  /* opt-in want ICB */
+    uint8_t disable; /* hard off */
+} MGLBatchIcbConfig;
+
+MGLBatchIcbConfig mgl_batch_icb_config(void);
+
+/* True when pipelines should set supportIndirectCommandBuffers /
+ * when batch ICB path may be selected (still needs OS + other gates). */
+int mgl_batch_icb_support_indirect_command_buffers(void);
 
 #ifdef __cplusplus
 }

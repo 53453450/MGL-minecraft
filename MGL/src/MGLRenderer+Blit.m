@@ -15,6 +15,7 @@
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
 #include "mgl_env_flag.h"
+#include "mgl_batch_path.h"
 #include "mgl_aux_assets.h"
 #include <stdio.h>
 
@@ -503,7 +504,7 @@ static id mglCreateAuxRenderPipelineFromAsset(
     }
     void *pipeline = NULL;
     char message[512] = {0};
-    int icbEnabled = mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES");
+    int icbEnabled = mgl_batch_icb_support_indirect_command_buffers();
     if (mglRenderGetOrCreateAuxRenderPipelineFromMetallib(
             asset->data, asset->size, asset->hash,
             vsEntry, fsEntry, kind, variant,
@@ -532,7 +533,7 @@ static id mglLookupAuxRenderPipeline(
     uint32_t rasterSampleCount)
 {
     void *pipeline = NULL;
-    int icbEnabled = mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES");
+    int icbEnabled = mgl_batch_icb_support_indirect_command_buffers();
     if (mglRenderGetOrCreateAuxRenderPipeline(
             NULL, NULL, kind, variant, (uint32_t)colorFormat,
             (uint32_t)depthFormat, (uint32_t)stencilFormat,

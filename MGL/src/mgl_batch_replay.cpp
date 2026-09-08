@@ -9,7 +9,7 @@
  */
 
 /*
- * O2.3: BatchReplay stage/bind expansion — domain ownership (not ObjC).
+ * O2.3/O2.5: BatchReplay stage/bind + MDI/direct plans — domain ownership.
  */
 
 #include "mgl_batch_replay.h"
@@ -20,6 +20,7 @@
 #include "mgl_vertex_format.h"
 
 #include <string.h>
+#include <limits.h>
 
 extern "C" bool mgl_batch_replay_collect_resource_binding(
     MGLRenderResourceBindingSnapshot *snapshot, uint32_t stage, uint32_t kind,
@@ -166,4 +167,188 @@ extern "C" bool mgl_batch_replay_apply_texture_overrides(
         }
     }
     return true;
+}
+
+extern "C" int mgl_batch_replay_mdi_gate(const MGLDrawBatch *batch,
+                                         int disable_mdi, size_t *arg_size,
+                                         size_t *needed_bytes)
+{
+    if (!batch || batch->command_count == 0u) {
+        return MGL_BATCH_MDI_FALLBACK_EMPTY;
+    }
+    if (disable_mdi) {
+        return MGL_BATCH_MDI_FALLBACK_DISABLED;
+    }
+    if (batch->key.primitive_type == 0xFFu) {
+        return MGL_BATCH_MDI_FALLBACK_BAD_PRIM;
+    }
+    const size_t asz =
+        batch->uses_elements ? sizeof(MGLDrawIndexedPrimitivesIndirectArguments)
+                             : sizeof(MGLDrawPrimitivesIndirectArguments);
+    if (batch->command_count > (UINT32_MAX / asz)) {
+        return MGL_BATCH_MDI_FALLBACK_OVERFLOW;
+    }
+    if (arg_size) {
+        *arg_size = asz;
+    }
+    if (needed_bytes) {
+        *needed_bytes = asz * (size_t)batch->command_count;
+    }
+    return MGL_BATCH_MDI_OK;
+}
+
+extern "C" const char *mgl_batch_replay_mdi_gate_reason(int gate)
+{
+    switch (gate) {
+    case MGL_BATCH_MDI_FALLBACK_DISABLED:
+        return "mdi_disabled";
+    case MGL_BATCH_MDI_FALLBACK_BAD_PRIM:
+        return "mdi_unsupported_primitive";
+    case MGL_BATCH_MDI_FALLBACK_OVERFLOW:
+        return "mdi_args_overflow";
+    case MGL_BATCH_MDI_FALLBACK_EMPTY:
+        return "mdi_empty";
+    default:
+        return "mdi_ok";
+    }
+}
+
+extern "C" int mgl_batch_replay_fill_mdi_indexed_args(
+    const MGLDrawBatch *batch, MGLDrawIndexedPrimitivesIndirectArguments *args)
+{
+    if (!batch || !args || !batch->uses_elements || batch->command_count == 0u) {
+        return 0;
+    }
+    const GLenum glIdxType = batch->commands[0].indexType;
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        const MGLDrawCommand *cmd = &batch->commands[i];
+        if (cmd->indexType != glIdxType) {
+            return 0;
+        }
+        args[i].indexCount = (uint32_t)cmd->count;
+        args[i].instanceCount = (uint32_t)cmd->instanceCount;
+        args[i].indexStart = 0u;
+        args[i].baseVertex = cmd->baseVertex;
+        args[i].baseInstance = cmd->baseInstance;
+    }
+    return 1;
+}
+
+extern "C" void mgl_batch_replay_fill_mdi_array_args(
+    const MGLDrawBatch *batch, MGLDrawPrimitivesIndirectArguments *args)
+{
+    if (!batch || !args) {
+        return;
+    }
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        const MGLDrawCommand *cmd = &batch->commands[i];
+        args[i].vertexCount = (uint32_t)cmd->count;
+        args[i].instanceCount = (uint32_t)cmd->instanceCount;
+        args[i].vertexStart = (uint32_t)cmd->first;
+        args[i].baseInstance = cmd->baseInstance;
+    }
+}
+
+extern "C" void mgl_batch_replay_fill_stream_mdi_indexed_args(
+    const MGLDrawBatch *batch, MGLDrawIndexedPrimitivesIndirectArguments *args)
+{
+    if (!batch || !args) {
+        return;
+    }
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        const MGLDrawCommand *cmd = &batch->commands[i];
+        args[i].indexCount = (uint32_t)cmd->count;
+        args[i].instanceCount =
+            (uint32_t)(cmd->instanceCount > 0 ? cmd->instanceCount : 1);
+        args[i].indexStart = 0u;
+        args[i].baseVertex = 0;
+        args[i].baseInstance = cmd->baseInstance;
+    }
+}
+
+extern "C" int mgl_batch_replay_simple_eligible(
+    const MGLDrawBatch *batch, uint32_t max_commands, int has_active_encoder,
+    int uses_cull_distance, int primitive_restart, int polygon_mode_point,
+    int mode_needs_emulate)
+{
+    if (!has_active_encoder || !batch || batch->command_count == 0u ||
+        batch->command_count > max_commands) {
+        return 0;
+    }
+    if (uses_cull_distance || primitive_restart) {
+        return 0;
+    }
+    if (batch->has_dynamic_vertex_bindings ||
+        batch->has_dynamic_uniform_bindings ||
+        batch->has_dynamic_texture_bindings || batch->has_sampler_snapshots ||
+        batch->sampler_snapshots_mixed) {
+        return 0;
+    }
+    if (batch->key.primitive_type == 0xFFu) {
+        return 0;
+    }
+    if (polygon_mode_point || mode_needs_emulate) {
+        return 0;
+    }
+    return 1;
+}
+
+extern "C" void mgl_batch_replay_direct_prim_plan(
+    uint32_t mode, int polygon_mode_point, uint32_t batch_primitive_type,
+    MGLBatchReplayDirectPrimPlan *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->polygon_mode_point = polygon_mode_point ? 1u : 0u;
+    out->emulate_triangle_fan =
+        mglRenderEmulateTriangleFan(mode, polygon_mode_point) ? 1u : 0u;
+    out->emulate_line_loop = mglRenderEmulateLineLoop(mode) ? 1u : 0u;
+    out->emulate_quads =
+        mglRenderEmulateQuads(mode, polygon_mode_point) ? 1u : 0u;
+    if (out->polygon_mode_point) {
+        out->prim_type = MGL_DRAW_PRIMITIVE_POINT;
+    } else if (out->emulate_triangle_fan) {
+        out->prim_type = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    } else if (out->emulate_line_loop) {
+        out->prim_type = MGL_DRAW_PRIMITIVE_LINE_STRIP;
+    } else if (out->emulate_quads) {
+        out->prim_type = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    } else {
+        out->prim_type = batch_primitive_type;
+        if (batch_primitive_type == 0xFFu) {
+            out->skip_unsupported_prim = 1u;
+        }
+    }
+}
+
+extern "C" int mgl_batch_replay_icb_gate(const MGLDrawBatch *batch,
+                                        int has_device, int has_encoder,
+                                        int icb_enable, int icb_disable)
+{
+    if (!batch || batch->command_count == 0u || !has_device || !has_encoder) {
+        return MGL_BATCH_ICB_UNAVAILABLE;
+    }
+    if (batch->key.primitive_type == 0xFFu) {
+        return MGL_BATCH_ICB_BAD_PRIM;
+    }
+    if (!icb_enable || icb_disable) {
+        return MGL_BATCH_ICB_DISABLED;
+    }
+    return MGL_BATCH_ICB_OK;
+}
+
+extern "C" const char *mgl_batch_replay_icb_gate_reason(int gate)
+{
+    switch (gate) {
+    case MGL_BATCH_ICB_UNAVAILABLE:
+        return "icb_unavailable";
+    case MGL_BATCH_ICB_BAD_PRIM:
+        return "icb_unsupported_primitive";
+    case MGL_BATCH_ICB_DISABLED:
+        return "icb_disabled";
+    default:
+        return "icb_ok";
+    }
 }

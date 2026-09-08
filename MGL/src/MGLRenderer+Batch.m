@@ -19,6 +19,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_batch_path.h"
+#include "mgl_batch_replay.h"
 
 static BOOL mglBatchHasActiveEncoder(void *owner)
 {
@@ -1314,8 +1315,12 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
     in.mdi_compatible = batch->mdi_compatible ? 1u : 0u;
     in.uses_elements = batch->uses_elements ? 1u : 0u;
     in.primitive_type = batch->key.primitive_type;
-    in.enable_icb = mglEnvFlagEnabled("MGL_ENABLE_ICB_BATCH") ? 1u : 0u;
-    in.disable_icb = mglEnvFlagEnabled("MGL_DISABLE_ICB_BATCH") ? 1u : 0u;
+    /* O2.4: unified ICB env (ENABLE_ICB / legacy BATCH|PIPELINES). */
+    {
+        MGLBatchIcbConfig icb = mgl_batch_icb_config();
+        in.enable_icb = icb.enable;
+        in.disable_icb = icb.disable;
+    }
     in.disable_mdi = mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1u : 0u;
     if (@available(macOS 10.14, *)) {
         in.icb_os_supported = 1u;
@@ -1854,14 +1859,7 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
     MGLDrawIndexedPrimitivesIndirectArguments *args =
         (MGLDrawIndexedPrimitivesIndirectArguments *)
             ((uint8_t *)indirectArgsContents + indirectArgsOffset);
-    for (uint32_t i = 0; i < batch->command_count; i++) {
-        MGLDrawCommand *cmd = &batch->commands[i];
-        args[i].indexCount = (uint32_t)cmd->count;
-        args[i].instanceCount = (uint32_t)(cmd->instanceCount > 0 ? cmd->instanceCount : 1);
-        args[i].indexStart = 0u;
-        args[i].baseVertex = 0;
-        args[i].baseInstance = cmd->baseInstance;
-    }
+    mgl_batch_replay_fill_stream_mdi_indexed_args(batch, args);
 
     uint32_t primType = (uint32_t)batch->key.primitive_type;
     for (uint32_t i = 0; i < batch->command_count; i++) {
@@ -1888,9 +1886,17 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                                 context:(GLMContext)glm_ctx
                           encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!batch || batch->command_count == 0 || !_device ||
-        !mglBatchHasActiveEncoder(encCtx ? encCtx->render_encoder_owner : NULL)) {
-        if (batch && batch->command_count > 0) {
+    /* O2.4/O2.5: ICB eligibility in mgl_batch_replay_icb_gate + unified env. */
+    MGLBatchIcbConfig icb = mgl_batch_icb_config();
+    const int icbGate = mgl_batch_replay_icb_gate(
+        batch, _device ? 1 : 0,
+        mglBatchHasActiveEncoder(encCtx ? encCtx->render_encoder_owner : NULL)
+            ? 1
+            : 0,
+        (int)icb.enable, (int)icb.disable);
+    if (icbGate != MGL_BATCH_ICB_OK) {
+        if (icbGate != MGL_BATCH_ICB_DISABLED && batch &&
+            batch->command_count > 0) {
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
@@ -1898,23 +1904,8 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                           batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
-                              reason:"icb_unavailable"];
+                              reason:mgl_batch_replay_icb_gate_reason(icbGate)];
         }
-        return NO;
-    }
-    if (batch->key.primitive_type == 0xFFu) {
-        [self traceReplayCommand:batch
-                         command:&batch->commands[0]
-                         context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                    commandIndex:0
-                           phase:"FALLBACK"
-                          reason:"icb_unsupported_primitive"];
-        return NO;
-    }
-    if (!mglEnvFlagEnabled("MGL_ENABLE_ICB_BATCH") ||
-        mglEnvFlagEnabled("MGL_DISABLE_ICB_BATCH")) {
         return NO;
     }
 

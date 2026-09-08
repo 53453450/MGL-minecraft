@@ -86,42 +86,33 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 - (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
                 encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!batch || batch->command_count == 0) {
-        return;
-    }
-    if (mglEnvFlagEnabled("MGL_DISABLE_MDI")) {
-        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
-        return;
-    }
-    if (batch->key.primitive_type == 0xFFu) {
-        [self traceReplayCommand:batch
-                         command:&batch->commands[0]
-                         context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                    commandIndex:0
-                           phase:"FALLBACK"
-                          reason:"mdi_unsupported_primitive"];
+    /* O2.5: MDI gate in mgl_batch_replay_mdi_gate (no Metal). */
+    size_t argSize = 0;
+    size_t neededBytesRaw = 0;
+    const int mdiGate = mgl_batch_replay_mdi_gate(
+        batch, mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1 : 0, &argSize,
+        &neededBytesRaw);
+    if (mdiGate != MGL_BATCH_MDI_OK) {
+        if (mdiGate == MGL_BATCH_MDI_FALLBACK_EMPTY) {
+            return;
+        }
+        if (mdiGate != MGL_BATCH_MDI_FALLBACK_DISABLED && batch &&
+            batch->command_count > 0) {
+            [self traceReplayCommand:batch
+                             command:&batch->commands[0]
+                             context:glm_ctx
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                        commandIndex:0
+                               phase:"FALLBACK"
+                              reason:mgl_batch_replay_mdi_gate_reason(mdiGate)];
+        }
         [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
 
     bool indexed = batch->uses_elements;
-    size_t argSize = indexed ? sizeof(MGLDrawIndexedPrimitivesIndirectArguments)
-                             : sizeof(MGLDrawPrimitivesIndirectArguments);
-    if (batch->command_count > (UINT32_MAX / argSize)) {
-        [self traceReplayCommand:batch
-                         command:&batch->commands[0]
-                         context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                    commandIndex:0
-                           phase:"FALLBACK"
-                          reason:"mdi_args_overflow"];
-        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
-        return;
-    }
-    NSUInteger neededBytes = (NSUInteger)argSize * (NSUInteger)batch->command_count;
+    NSUInteger neededBytes = (NSUInteger)neededBytesRaw;
 
     NSUInteger indirectArgsOffset = 0;
     id indirectArgsBuffer =
@@ -160,25 +151,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         MGLDrawIndexedPrimitivesIndirectArguments *args =
             (MGLDrawIndexedPrimitivesIndirectArguments *)
                 ((uint8_t *)indirectArgsContents + indirectArgsOffset);
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            MGLDrawCommand *cmd = &batch->commands[i];
-            if (cmd->indexType != glIdxType) {
-                [self traceReplayCommand:batch
-                                 command:cmd
-                                 context:glm_ctx
-                                 flushId:_renderPassManager.state->traceReplayFlushId
-                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                            commandIndex:i
-                                   phase:"FALLBACK"
-                                  reason:"mdi_mixed_index_type"];
-                [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
-                return;
-            }
-            args[i].indexCount = (uint32_t)cmd->count;
-            args[i].instanceCount = (uint32_t)cmd->instanceCount;
-            args[i].indexStart = 0u;
-            args[i].baseVertex = cmd->baseVertex;
-            args[i].baseInstance = cmd->baseInstance;
+        if (!mgl_batch_replay_fill_mdi_indexed_args(batch, args)) {
+            [self traceReplayCommand:batch
+                             command:&batch->commands[0]
+                             context:glm_ctx
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                        commandIndex:0
+                               phase:"FALLBACK"
+                              reason:"mdi_mixed_index_type"];
+            [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
+            return;
         }
 
         for (uint32_t i = 0; i < batch->command_count; i++) {
@@ -237,13 +220,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         MGLDrawPrimitivesIndirectArguments *args =
             (MGLDrawPrimitivesIndirectArguments *)
                 ((uint8_t *)indirectArgsContents + indirectArgsOffset);
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            MGLDrawCommand *cmd = &batch->commands[i];
-            args[i].vertexCount = (uint32_t)cmd->count;
-            args[i].instanceCount = (uint32_t)cmd->instanceCount;
-            args[i].vertexStart = (uint32_t)cmd->first;
-            args[i].baseInstance = cmd->baseInstance;
-        }
+        mgl_batch_replay_fill_mdi_array_args(batch, args);
 
         for (uint32_t i = 0; i < batch->command_count; i++) {
             mglBatchReplayDrawPrimitivesIndirect(
@@ -906,32 +883,20 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                             context:(GLMContext)glm_ctx
                       encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!mglBatchReplayHasActiveEncoder(encCtx) || !batch ||
-        batch->command_count == 0 ||
-        batch->command_count > MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS) {
+    /* O2.5: eligibility in mgl_batch_replay_simple_eligible. */
+    if (!batch || batch->command_count == 0u) {
         return NO;
     }
     Program *batchProgram =
         mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-    if (batchProgram && batchProgram->uses_cull_distance) {
-        return NO;
-    }
-    if (MGL_STATE(glm_ctx)->caps.primitive_restart) {
-        return NO;
-    }
-    if (batch->has_dynamic_vertex_bindings ||
-        batch->has_dynamic_uniform_bindings ||
-        batch->has_dynamic_texture_bindings ||
-        batch->has_sampler_snapshots || batch->sampler_snapshots_mixed) {
-        return NO;
-    }
-    if (batch->key.primitive_type == 0xFFu) {
-        return NO;
-    }
-
-    GLenum batchMode = batch->commands[0].mode;
-    if (mglPolygonModePointForDrawMode(glm_ctx, batchMode) ||
-        mglRenderDrawModeNeedsEmulate((uint32_t)batchMode)) {
+    const GLenum batchMode = batch->commands[0].mode;
+    if (!mgl_batch_replay_simple_eligible(
+            batch, MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS,
+            mglBatchReplayHasActiveEncoder(encCtx) ? 1 : 0,
+            (batchProgram && batchProgram->uses_cull_distance) ? 1 : 0,
+            MGL_STATE(glm_ctx)->caps.primitive_restart ? 1 : 0,
+            mglPolygonModePointForDrawMode(glm_ctx, batchMode) ? 1 : 0,
+            mglRenderDrawModeNeedsEmulate((uint32_t)batchMode) ? 1 : 0)) {
         return NO;
     }
 
@@ -1101,20 +1066,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         GLsizei count = cmd->count;
         GLsizei instanceCount = cmd->instanceCount;
 
-        BOOL polygonModePoint = mglPolygonModePointForDrawMode(glm_ctx, mode);
-        BOOL emulateTriangleFan = mglRenderEmulateTriangleFan(
-                                      (uint32_t)mode, polygonModePoint ? 1 : 0) != 0;
-        BOOL emulateLineLoop = mglRenderEmulateLineLoop((uint32_t)mode) != 0;
-        BOOL emulateQuads = mglRenderEmulateQuads(
-                                (uint32_t)mode, polygonModePoint ? 1 : 0) != 0;
-        uint32_t primType = polygonModePoint
-            ? MGL_DRAW_PRIMITIVE_POINT
-            : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE
-                                  : (emulateLineLoop ? MGL_DRAW_PRIMITIVE_LINE_STRIP
-                                                     : (emulateQuads ? MGL_DRAW_PRIMITIVE_TRIANGLE
-                                                                    : (uint32_t)batch->key.primitive_type)));
-        if (!polygonModePoint && !emulateTriangleFan && !emulateLineLoop && !emulateQuads &&
-            batch->key.primitive_type == 0xFFu) {
+        MGLBatchReplayDirectPrimPlan primPlan;
+        mgl_batch_replay_direct_prim_plan(
+            (uint32_t)mode,
+            mglPolygonModePointForDrawMode(glm_ctx, mode) ? 1 : 0,
+            (uint32_t)batch->key.primitive_type, &primPlan);
+        if (primPlan.skip_unsupported_prim) {
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
@@ -1125,6 +1082,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_unsupported_primitive"];
             continue;
         }
+        const BOOL polygonModePoint = primPlan.polygon_mode_point ? YES : NO;
+        const BOOL emulateTriangleFan =
+            primPlan.emulate_triangle_fan ? YES : NO;
+        const BOOL emulateLineLoop = primPlan.emulate_line_loop ? YES : NO;
+        const BOOL emulateQuads = primPlan.emulate_quads ? YES : NO;
+        const uint32_t primType = primPlan.prim_type;
 
         switch (cmd->type) {
             case MGL_CMD_DRAW_ARRAYS:

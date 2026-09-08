@@ -19,6 +19,7 @@
 #include "mgl_metal.h"
 #include "mgl_air_loader.h"
 #include "mgl_env_flag.h"
+#include "mgl_batch_path.h"
 
 #include <dispatch/dispatch.h>
 #include <cstdint>
@@ -180,7 +181,8 @@ MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
         NS::String::string("GLSL Pipeline", NS::UTF8StringEncoding));
 
     rpd->setRasterizationEnabled(desc->rasterization_enabled ? true : false);
-    if (mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES")) {
+    /* O2.4: same gate as batch ICB path selection. */
+    if (mgl_batch_icb_support_indirect_command_buffers()) {
         rpd->setSupportIndirectCommandBuffers(true);
     }
     rpd->setAlphaToCoverageEnabled(desc->alpha_to_coverage_enabled ? true : false);

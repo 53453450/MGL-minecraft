@@ -10,6 +10,8 @@
 
 #include "mgl_batch_path.h"
 
+#include "mgl_env_flag.h"
+
 int mgl_batch_select_path(const MGLBatchSelectInputs *in)
 {
     if (!in || in->command_count == 0u) {
@@ -45,4 +47,26 @@ int mgl_batch_select_path(const MGLBatchSelectInputs *in)
     }
 
     return MGL_BATCH_SELECT_DIRECT;
+}
+
+MGLBatchIcbConfig mgl_batch_icb_config(void)
+{
+    MGLBatchIcbConfig cfg = {0};
+    /* Unified name or either legacy enable → enable. */
+    if (mgl_env_flag_enabled("MGL_ENABLE_ICB") ||
+        mgl_env_flag_enabled("MGL_ENABLE_ICB_BATCH") ||
+        mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES")) {
+        cfg.enable = 1u;
+    }
+    if (mgl_env_flag_enabled("MGL_DISABLE_ICB") ||
+        mgl_env_flag_enabled("MGL_DISABLE_ICB_BATCH")) {
+        cfg.disable = 1u;
+    }
+    return cfg;
+}
+
+int mgl_batch_icb_support_indirect_command_buffers(void)
+{
+    MGLBatchIcbConfig cfg = mgl_batch_icb_config();
+    return (cfg.enable && !cfg.disable) ? 1 : 0;
 }
