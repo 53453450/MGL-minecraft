@@ -8405,6 +8405,33 @@ int mglRenderAttribFormatMapped(uint32_t format) {
     return format != 0u ? 1 : 0;
 }
 
+int mglRenderVertexBufferIndexValid(int index, uint32_t max) {
+    return index >= 0 && (uint32_t)index < max ? 1 : 0;
+}
+
+void mglRenderAttribStepFromDivisor(int uses_current, uint32_t divisor,
+                                    uint32_t *step_fn, uint32_t *step_rate) {
+    if (!uses_current && divisor) {
+        if (step_fn) {
+            *step_fn = 2u; /* MTLVertexStepFunctionPerInstance */
+        }
+        if (step_rate) {
+            *step_rate = divisor;
+        }
+        return;
+    }
+    if (step_fn) {
+        *step_fn = 1u; /* MTLVertexStepFunctionPerVertex */
+    }
+    if (step_rate) {
+        *step_rate = 1u;
+    }
+}
+
+uint32_t mglRenderAttribCountAfter(uint32_t current, uint32_t index) {
+    return index + 1u > current ? index + 1u : current;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

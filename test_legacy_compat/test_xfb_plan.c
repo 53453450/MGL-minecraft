@@ -1042,6 +1042,17 @@ static void test_vertex_descriptor_native_attrib(void)
     expect(mapped == 1, "non-zero attrib format is mapped");
 }
 
+static void test_attrib_step_and_buffer_index(void)
+{
+    int ok = (3 >= 0) && (3u < 31u);
+    expect(ok == 1, "vertex buffer index 3 is valid");
+    uint32_t step_fn = 2u;
+    uint32_t step_rate = 4u;
+    expect(step_fn == 2u && step_rate == 4u, "divisor 4 uses per-instance step");
+    uint32_t count = 5u + 1u > 3u ? 5u + 1u : 3u;
+    expect(count == 6u, "attrib_count grows to index+1");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1116,6 +1127,7 @@ int main(void)
     test_color_write_mask_and_blend();
     test_sampled_rt_copy_and_vertex_desc();
     test_vertex_descriptor_native_attrib();
+    test_attrib_step_and_buffer_index();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

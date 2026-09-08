@@ -120,7 +120,9 @@
             int mapped_buffer_index;
 
             mapped_buffer_index = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, i, __FUNCTION__);
-            if (mapped_buffer_index < 0 || mapped_buffer_index >= (int)kMGLMaxMetalVertexBufferCount) {
+            if (!mglRenderVertexBufferIndexValid(
+                    mapped_buffer_index,
+                    (uint32_t)kMGLMaxMetalVertexBufferCount)) {
                 NSLog(@"MGL ERROR: Invalid vertex buffer index %d for attribute %d (max valid=%lu)",
                       mapped_buffer_index, i, (unsigned long)kMGLMaxMetalVertexBufferIndex);
                 return NO;
@@ -145,21 +147,11 @@
             state->attrib_offset[i] = attribOffset;
             state->attrib_buffer_index[i] = (uint32_t)mapped_buffer_index;
             state->attrib_stride[i] = (uint32_t)stride;
-            if (!usesCurrentValue && resolved.divisor)
-            {
-                state->attrib_step_rate[i] = (uint32_t)resolved.divisor;
-                state->attrib_step_function[i] =
-                    2u;
-            }
-            else
-            {
-                state->attrib_step_rate[i] = 1u;
-                state->attrib_step_function[i] =
-                    1u;
-            }
-            if (i + 1u > state->attrib_count) {
-                state->attrib_count = i + 1u;
-            }
+            mglRenderAttribStepFromDivisor(
+                usesCurrentValue ? 1 : 0, (uint32_t)resolved.divisor,
+                &state->attrib_step_function[i], &state->attrib_step_rate[i]);
+            state->attrib_count =
+                mglRenderAttribCountAfter(state->attrib_count, i);
         }
     }
 

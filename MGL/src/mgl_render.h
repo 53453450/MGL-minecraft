@@ -1328,6 +1328,10 @@ int mglRenderNativeAttribIndexValid(uint32_t index);
 uint32_t mglRenderNativeAttribStepFunction(void);
 int mglRenderSkipUnboundAttrib(int uses_current, int has_binding);
 int mglRenderAttribFormatMapped(uint32_t format);
+int mglRenderVertexBufferIndexValid(int index, uint32_t max);
+void mglRenderAttribStepFromDivisor(int uses_current, uint32_t divisor,
+                                    uint32_t *step_fn, uint32_t *step_rate);
+uint32_t mglRenderAttribCountAfter(uint32_t current, uint32_t index);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
