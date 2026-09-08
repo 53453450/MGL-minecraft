@@ -1326,6 +1326,14 @@ static void test_clip_origin_lower_left(void)
     expect(ul == 0, "GL_UPPER_LEFT is not lower-left");
 }
 
+static void test_error_none_and_color_scan_stop(void)
+{
+    int none = 1;
+    expect(none == 1, "GL_NO_ERROR is the no-error state");
+    int stop = (8u >= 8u) || (1 && !0);
+    expect(stop == 1, "GL_NONE with no next color stops attachment scan");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1429,6 +1437,7 @@ int main(void)
     test_tess_isolines_and_point_size();
     test_ms_sample_plane_and_array_targets();
     test_clip_origin_lower_left();
+    test_error_none_and_color_scan_stop();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

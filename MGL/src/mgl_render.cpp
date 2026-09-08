@@ -9342,6 +9342,15 @@ int mglRenderClipOriginIsLowerLeft(uint32_t origin) {
     return origin == GL_LOWER_LEFT ? 1 : 0;
 }
 
+int mglRenderErrorIsNone(uint32_t error) {
+    return error == GL_NO_ERROR ? 1 : 0;
+}
+
+int mglRenderStopColorAttachmentScan(uint32_t next_index, uint32_t max,
+                                     int next_is_none, int has_next_color) {
+    return next_index >= max || (next_is_none && !has_next_color) ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

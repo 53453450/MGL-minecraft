@@ -1626,9 +1626,11 @@ static GLenum mglPassthroughDeclType(
                 &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
                 i + 1u);
         }
-        if (i + 1u >= MAX_COLOR_ATTACHMENTS ||
-            (mglMetalDrawBufferAt(ctx, i + 1u) == GL_NONE &&
-             !nextColor)) {
+        if (mglRenderStopColorAttachmentScan(
+                i + 1u, (uint32_t)MAX_COLOR_ATTACHMENTS,
+                mglRenderDrawBufferIsNone(
+                    (uint32_t)mglMetalDrawBufferAt(ctx, i + 1u)),
+                nextColor ? 1 : 0)) {
             break;
         }
     }
@@ -2945,7 +2947,8 @@ static GLenum mglPassthroughDeclType(
             (uint32_t)MGL_STATE(ctx)->draw_buffer, &mappedDraw)) {
         DEBUG_PRINT("MGL: Unknown draw_buffer value: 0x%x, falling back to FRONT\n", MGL_STATE(ctx)->draw_buffer);
         NSLog(@"MGL WARNING: Unknown draw_buffer value 0x%x, using FRONT fallback", MGL_STATE(ctx)->draw_buffer);
-    } else if (MGL_STATE(ctx)->draw_buffer == GL_NONE) {
+    } else if (mglRenderDrawBufferIsNone(
+                   (uint32_t)MGL_STATE(ctx)->draw_buffer)) {
         DEBUG_PRINT("MGL: draw_buffer is GL_NONE, falling back to FRONT\n");
     }
     mgl_drawbuffer = (GLuint)mappedDraw;
@@ -6972,7 +6975,7 @@ stencil_format_ok:;
      * RenderPass Sync unit (RenderPass Sync domain), surfacing any GL error as replayError
      * so the batch is skipped rather than drawn against a stale pass. */
     if (![self syncRenderPassStateForContext:glm_ctx]) {
-        if (MGL_STATE(glm_ctx)->error != GL_NO_ERROR)
+        if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(glm_ctx)->error))
             *replayError = MGL_STATE(glm_ctx)->error;
         return NO;
     }
