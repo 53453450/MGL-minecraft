@@ -434,6 +434,24 @@ typedef struct MGLTessTCSStageInPlan {
 bool mglTessPlanTCSStageIn(uint32_t patch_vertices, uint32_t patch_count,
                            GLsizei vertex_count, MGLTessTCSStageInPlan *out);
 
+enum {
+    MGL_TESS_INDEXED_STAGE_IN_ARRAY = 0,
+    MGL_TESS_INDEXED_STAGE_IN_OK = 1,
+    MGL_TESS_INDEXED_STAGE_IN_BAD = 2,
+};
+
+typedef struct MGLTessIndexedStageInPlan {
+    uint32_t status;
+    uint32_t index_stride;
+    uint64_t bytes_needed;
+} MGLTessIndexedStageInPlan;
+
+int mglTessPlanIndexedStageIn(uint32_t index_type, uint64_t index_offset,
+                              int32_t count, int64_t ebo_size,
+                              MGLTessIndexedStageInPlan *out);
+int mglTessCommandBufferNeedsNew(int has_state, uint32_t status);
+int mglTessCommandBufferCanInitBlit(int has_state, uint32_t status);
+
 int mglTessStageInUseCurrentValue(uint32_t enabled_attribs, uint32_t attrib,
                                   int has_binding);
 

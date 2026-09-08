@@ -31,6 +31,23 @@ void mglDrawGsFillGatherParams(int indexed, uint32_t count, uint32_t first,
                                uint32_t gather_max_index, uint32_t primitives,
                                MGLAIRGSGatherParams *out);
 
+enum {
+    MGL_GS_INPUT_PENDING_TES = 0,
+    MGL_GS_INPUT_CAPTURE_INDEXED = 1,
+    MGL_GS_INPUT_CAPTURE_ARRAY = 2,
+};
+
+typedef struct MGLGsInputSourcePlan {
+    uint32_t kind;
+    uint32_t input_offset;
+    uint32_t pending_stride;
+} MGLGsInputSourcePlan;
+
+void mglDrawGsPlanInputSource(int pending_active, int has_pending,
+                              uint32_t pending_offset, uint32_t pending_stride,
+                              int indexed, MGLGsInputSourcePlan *out);
+uint32_t mglDrawGsMaxVerticesOut(uint32_t geometry_vertices_out);
+
 uint32_t mglDrawGsResolveStageInStride(Program *vs, Program *tes,
                                        uint32_t pending_stride);
 

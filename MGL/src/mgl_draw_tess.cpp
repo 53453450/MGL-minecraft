@@ -1678,6 +1678,50 @@ extern "C" bool mglTessPlanTCSStageIn(uint32_t patch_vertices,
     return true;
 }
 
+extern "C" int mglTessPlanIndexedStageIn(uint32_t index_type,
+                                         uint64_t index_offset, int32_t count,
+                                         int64_t ebo_size,
+                                         MGLTessIndexedStageInPlan *out)
+{
+    if (!out) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    if (index_type == 0u) {
+        out->status = MGL_TESS_INDEXED_STAGE_IN_ARRAY;
+        return 1;
+    }
+    const uint32_t stride = mglRenderGLIndexElementSize(index_type);
+    if (stride == 0u || count <= 0) {
+        out->status = MGL_TESS_INDEXED_STAGE_IN_BAD;
+        return 1;
+    }
+    const uint64_t need = (uint64_t)count * (uint64_t)stride;
+    if (index_offset > UINT64_MAX - need) {
+        out->status = MGL_TESS_INDEXED_STAGE_IN_BAD;
+        return 1;
+    }
+    const uint64_t ebo = ebo_size >= 0 ? (uint64_t)ebo_size : 0u;
+    if (index_offset > ebo || ebo - index_offset < need) {
+        out->status = MGL_TESS_INDEXED_STAGE_IN_BAD;
+        return 1;
+    }
+    out->status = MGL_TESS_INDEXED_STAGE_IN_OK;
+    out->index_stride = stride;
+    out->bytes_needed = need;
+    return 1;
+}
+
+extern "C" int mglTessCommandBufferNeedsNew(int has_state, uint32_t status)
+{
+    return !has_state || status >= 2u ? 1 : 0;
+}
+
+extern "C" int mglTessCommandBufferCanInitBlit(int has_state, uint32_t status)
+{
+    return has_state && status == 0u ? 1 : 0;
+}
+
 extern "C" int mglTessStageInUseCurrentValue(uint32_t enabled_attribs,
                                              uint32_t attrib, int has_binding)
 {

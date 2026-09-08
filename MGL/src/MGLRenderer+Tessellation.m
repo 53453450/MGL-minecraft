@@ -477,10 +477,9 @@ typedef struct {
         return true;
     }
     MGLRenderCommandBufferState commandState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
-            &commandState) ||
-        commandState.status != MGL_TESS_COMMAND_STATUS_NOT_ENQUEUED) {
+    const int hasCommandState = mglRenderCommandBufferOwnerHasState(
+        _renderPassManager.state->currentCommandBufferOwner, &commandState);
+    if (!mglTessCommandBufferCanInitBlit(hasCommandState, commandState.status)) {
         return false;
     }
 
@@ -685,26 +684,22 @@ typedef struct {
 
     const uint8_t *indexBytes = NULL;
     NSUInteger indexOffset = (NSUInteger)(uintptr_t)indices;
-    NSUInteger indexStride = 0u;
     uint32_t restartIndex = 0u;
     bool primitiveRestart = false;
     if (indexType != 0u) {
-        indexStride = mglGLIndexElementSize(indexType);
-        if (indexStride == 0u || indexOffset > NSUIntegerMax - ((NSUInteger)count * indexStride)) {
-            return nil;
-        }
         Buffer *ebo = getElementBuffer(drawCtx);
         if (!ebo || ![self processBuffer:ebo]) {
             NSLog(@"MGL TESS WARNING: TCS indexed stage_in has no readable element buffer");
             return nil;
         }
         const uint8_t *eboBytes = mglRendererReadableBufferBytes(ebo);
-        NSUInteger bytesNeeded = (NSUInteger)count * indexStride;
-        if (!eboBytes || indexOffset > (NSUInteger)ebo->size || ((NSUInteger)ebo->size - indexOffset) < bytesNeeded) {
-            NSLog(@"MGL TESS WARNING: TCS indexed stage_in element range OOB offset=%lu needed=%lu size=%lld",
-                  (unsigned long)indexOffset,
-                  (unsigned long)bytesNeeded,
-                  (long long)ebo->size);
+        MGLTessIndexedStageInPlan idxPlan = {0};
+        if (!eboBytes ||
+            !mglTessPlanIndexedStageIn((uint32_t)indexType, (uint64_t)indexOffset,
+                                       (int32_t)count, ebo->size, &idxPlan) ||
+            idxPlan.status != MGL_TESS_INDEXED_STAGE_IN_OK) {
+            NSLog(@"MGL TESS WARNING: TCS indexed stage_in element range OOB offset=%lu size=%lld",
+                  (unsigned long)indexOffset, (long long)ebo->size);
             return nil;
         }
         indexBytes = eboBytes + indexOffset;
@@ -824,10 +819,9 @@ typedef struct {
      * and prior operations (glBufferData, glEndQuery, etc.) may have
      * committed the previous command buffer. */
     MGLRenderCommandBufferState commandState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
-            &commandState) ||
-        commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
+    const int hasCommandState = mglRenderCommandBufferOwnerHasState(
+        _renderPassManager.state->currentCommandBufferOwner, &commandState);
+    if (mglTessCommandBufferNeedsNew(hasCommandState, commandState.status)) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TCS dispatch");
             return false;
@@ -1204,10 +1198,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         [self endRenderEncoding];
     }
     MGLRenderCommandBufferState commandState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
-            &commandState) ||
-        commandState.status >= MGL_TESS_COMMAND_STATUS_COMMITTED) {
+    const int hasCommandState = mglRenderCommandBufferOwnerHasState(
+        _renderPassManager.state->currentCommandBufferOwner, &commandState);
+    if (mglTessCommandBufferNeedsNew(hasCommandState, commandState.status)) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TES compute");
             return false;

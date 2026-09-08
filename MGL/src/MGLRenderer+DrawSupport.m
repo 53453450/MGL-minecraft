@@ -1224,8 +1224,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     const NSUInteger outputStride = gsLayout.output_stride;
     const NSUInteger expandedVertices = gsLayout.expanded_vertices;
     const NSUInteger recordsPerPrimitive = gsLayout.records_per_primitive;
-    const uint32_t maxVertices = program->geometry_vertices_out > 0u
-        ? program->geometry_vertices_out : 1u;
+    const uint32_t maxVertices =
+        mglDrawGsMaxVerticesOut(program->geometry_vertices_out);
 
     /* Run the real VS once into the shared per-vertex records used by the AIR GS
      * kernel.  This helper closes the render encoder before compute begins.
@@ -1235,16 +1235,19 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     id input = nil;
     Program *captureVS = mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
     Program *captureTES = NULL;
-    if (_tessellation.pendingGSInputActive && _tessellation.pendingGSInput) {
+    MGLGsInputSourcePlan inputSource = {0};
+    mglDrawGsPlanInputSource(
+        _tessellation.pendingGSInputActive ? 1 : 0,
+        _tessellation.pendingGSInput ? 1 : 0,
+        (uint32_t)_tessellation.pendingGSInputOffset,
+        (uint32_t)_tessellation.pendingGSInputStride, indexedDraw ? 1 : 0,
+        &inputSource);
+    if (inputSource.kind == MGL_GS_INPUT_PENDING_TES) {
         input = (__bridge id)_tessellation.pendingGSInput;
-        inputOffset = _tessellation.pendingGSInputOffset;
+        inputOffset = (NSUInteger)inputSource.input_offset;
         captureTES = mglResolveProgramForStageFromState(
             drawCtx, _TESS_EVALUATION_SHADER);
-        if (_tessellation.pendingGSInputStride > 0u) {
-            gparams.stage_in_stride =
-                (uint32_t)_tessellation.pendingGSInputStride;
-        }
-    } else if (indexedDraw) {
+    } else if (inputSource.kind == MGL_GS_INPUT_CAPTURE_INDEXED) {
         input = [self captureAIRVertexPositionsForGeometryIndexed:drawCtx
                                                       indexBuffer:eboMetal
                                                         indexType:indexType
@@ -1276,10 +1279,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * can be wider than what this GS declares as inputs (e.g. a flat
      * instance_id the GS never reads).  A stride mismatch made every
      * gl_in[N>0] read land inside the wrong record. */
-    if (gparams.stage_in_stride == 0u) {
-        gparams.stage_in_stride = mglDrawGsResolveStageInStride(
-            captureVS, captureTES, 0u);
-    }
+    gparams.stage_in_stride = mglDrawGsResolveStageInStride(
+        captureVS, captureTES, inputSource.pending_stride);
     /* Publish the GS-input -> capture-offset location map.  The capture
      * lays records out by the *vertex* stage's output locations; a VS
      * output the GS never declares (a flat helper like instance_id) shifts

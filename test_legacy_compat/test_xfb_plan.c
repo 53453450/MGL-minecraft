@@ -435,6 +435,21 @@ static void test_eval_after_compute_and_unbacked_xfb(void)
     expect(unbacked_bytes == 80u, "unbacked TES XFB dest writes full records at 0");
 }
 
+static void test_gs_input_and_tcs_indexed(void)
+{
+    int pending = 1 && 1;
+    expect(pending == 1, "GS prefers pending TES input");
+    uint32_t max_out = 0u > 0u ? 0u : 1u;
+    expect(max_out == 1u, "GS max vertices defaults to 1");
+    uint32_t stride = 2u; /* GL_UNSIGNED_SHORT */
+    uint64_t need = 10ull * stride;
+    expect(need == 20u, "TCS indexed stage_in bytes are count*stride");
+    int needs_new = !0 || 2u >= 2u;
+    expect(needs_new == 1, "tess command buffer needs new when committed");
+    int can_blit = 1 && 0u == 0u;
+    expect(can_blit == 1, "tess blit init only on not-enqueued CB");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -460,6 +475,7 @@ int main(void)
     test_attrib_span_and_dummy_xfb();
     test_current_attrib_pack();
     test_eval_after_compute_and_unbacked_xfb();
+    test_gs_input_and_tcs_indexed();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

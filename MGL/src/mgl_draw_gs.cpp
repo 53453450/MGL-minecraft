@@ -84,6 +84,30 @@ extern "C" void mglDrawGsFillGatherParams(int indexed, uint32_t count,
     out->gather_enabled = 1u;
 }
 
+extern "C" void mglDrawGsPlanInputSource(int pending_active, int has_pending,
+                                         uint32_t pending_offset,
+                                         uint32_t pending_stride, int indexed,
+                                         MGLGsInputSourcePlan *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (pending_active && has_pending) {
+        out->kind = MGL_GS_INPUT_PENDING_TES;
+        out->input_offset = pending_offset;
+        out->pending_stride = pending_stride;
+        return;
+    }
+    out->kind = indexed ? MGL_GS_INPUT_CAPTURE_INDEXED
+                        : MGL_GS_INPUT_CAPTURE_ARRAY;
+}
+
+extern "C" uint32_t mglDrawGsMaxVerticesOut(uint32_t geometry_vertices_out)
+{
+    return geometry_vertices_out > 0u ? geometry_vertices_out : 1u;
+}
+
 extern "C" uint32_t mglDrawGsResolveStageInStride(Program *vs, Program *tes,
                                                   uint32_t pending_stride)
 {
