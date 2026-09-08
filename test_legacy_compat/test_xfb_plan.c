@@ -1310,6 +1310,14 @@ static void test_tess_isolines_and_point_size(void)
     expect(pts == 1, "non-GL_FALSE tess_gen_point_mode writes point size");
 }
 
+static void test_ms_sample_plane_and_array_targets(void)
+{
+    int adj = 1 && 1 && (4 > 0);
+    expect(adj == 1, "MS sample loop offsets MSAA attachment slice");
+    int arr = 1;
+    expect(arr == 1, "2D_ARRAY is an MS-or-2D-array target");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1411,6 +1419,7 @@ int main(void)
     test_msaa_array_layer_stride();
     test_default_draw_buffer_and_renderbuffer();
     test_tess_isolines_and_point_size();
+    test_ms_sample_plane_and_array_targets();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

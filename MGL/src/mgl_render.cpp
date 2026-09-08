@@ -9323,6 +9323,21 @@ int mglRenderTargetIsRenderbuffer(uint32_t target) {
     return target == GL_RENDERBUFFER ? 1 : 0;
 }
 
+int mglRenderMSSamplePlaneAdjust(int in_ms_loop, uint32_t target,
+                                 int32_t offset) {
+    return in_ms_loop && mglRenderIsMultisampleTextureTarget(target) &&
+                   offset > 0
+               ? 1
+               : 0;
+}
+
+int mglRenderTextureTargetIsMSOr2DArray(uint32_t target) {
+    return mglRenderIsMultisampleTextureTarget(target) ||
+                   target == GL_TEXTURE_2D_ARRAY
+               ? 1
+               : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

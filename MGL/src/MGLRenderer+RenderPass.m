@@ -2833,10 +2833,9 @@ static GLenum mglPassthroughDeclType(
 
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->color_attachments[attachmentIndex]);
-            if (_mglInMSSampleDrawLoop &&
-                (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
-                 tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) &&
-                _mglMSSamplePlaneOffset > 0) {
+            if (mglRenderMSSamplePlaneAdjust(
+                    _mglInMSSampleDrawLoop ? 1 : 0, (uint32_t)tex->target,
+                    (int32_t)_mglMSSamplePlaneOffset)) {
                 subresource.slice += (uint32_t)_mglMSSamplePlaneOffset;
             }
             mglRenderPassSetPersistentAttachment(
@@ -2848,9 +2847,7 @@ static GLenum mglPassthroughDeclType(
                 subresource.depthPlane,
                 fbo->color_attachments[attachmentIndex].layered);
 
-            if (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
-                tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
-                tex->target == GL_TEXTURE_2D_ARRAY) {
+            if (mglRenderTextureTargetIsMSOr2DArray((uint32_t)tex->target)) {
                 id rpTex = mglRenderPassColorTextureFor(_renderPassManager.state, colorSlot);
                 (void)rpTex;
             }
