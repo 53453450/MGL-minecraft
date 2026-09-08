@@ -2384,6 +2384,18 @@ static void test_renderpass_attachment_class(void)
     expect(rp_color_idx_ok(8u, 8u) == 0, "color 8 out of range");
 }
 
+static uint32_t metal_slot(int has, uint32_t bind, uint32_t elem, uint32_t fb)
+{
+    return has ? bind + elem : fb;
+}
+
+static void test_metal_resource_slot(void)
+{
+    expect(metal_slot(1, 5u, 0u, 0u) == 5u, "present resource uses binding");
+    expect(metal_slot(0, 5u, 0u, 0u) == 0u, "missing resource uses fallback 0");
+    expect(metal_slot(1, 5u, 2u, 0u) == 7u, "element offsets the Metal slot");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2551,6 +2563,7 @@ int main(void)
     test_ubo_isolate_copy();
     test_plain_uniform_buffer_table();
     test_renderpass_attachment_class();
+    test_metal_resource_slot();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

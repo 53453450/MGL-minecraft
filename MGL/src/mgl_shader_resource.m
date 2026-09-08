@@ -35,7 +35,8 @@ GLuint mglClientBufferBindingForResource(int resourceType, const MGLShaderResour
 
 GLuint mglMetalResourceSlot(const MGLShaderResource *res)
 {
-    return res ? res->binding : 0u;
+    return mglRenderResourceMetalSlot(res != NULL, res ? res->binding : 0u, 0u,
+                                      0u);
 }
 
 GLuint mglStageBufferResourceElementCount(int resourceType, const MGLShaderResource *res)
@@ -59,7 +60,8 @@ GLuint mglClientBufferBindingForResourceElement(int resourceType,
 
 GLuint mglMetalResourceSlotForElement(const MGLShaderResource *res, GLuint element)
 {
-    return mglMetalResourceSlot(res) + element;
+    return mglRenderResourceMetalSlot(res != NULL, res ? res->binding : 0u,
+                                      element, 0u);
 }
 
 GLuint mglMetalCombinedSamplerSlot(const MGLShaderResource *res)
