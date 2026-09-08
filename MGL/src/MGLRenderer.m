@@ -1923,79 +1923,11 @@ NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
     if (!ctx || !attrib || !bytes || attribute >= MAX_ATTRIBS) {
         return 0u;
     }
-
-    bzero(bytes, 16);
-    const CurrentVertexAttrib *current = &ctx->active_state->current_vertex_attrib[attribute];
-    GLuint size = attrib->size;
-    if (size == 0u || size > 4u) {
-        size = 4u;
-    }
-
-    switch (attrib->type) {
-        case GL_BYTE:
-        case GL_SHORT:
-        case GL_INT:
-        {
-            size_t componentBytes = (attrib->type == GL_BYTE) ? sizeof(int8_t) :
-                                    (attrib->type == GL_SHORT) ? sizeof(int16_t) :
-                                    sizeof(int32_t);
-            if (componentBytes == 0u || componentBytes * size > 16u) {
-                return 0u;
-            }
-            for (GLuint i = 0; i < size; i++) {
-                GLint value = current->i[i];
-                if (attrib->type == GL_BYTE) {
-                    int8_t packed = (int8_t)value;
-                    memcpy(bytes + i * componentBytes, &packed, componentBytes);
-                } else if (attrib->type == GL_SHORT) {
-                    int16_t packed = (int16_t)value;
-                    memcpy(bytes + i * componentBytes, &packed, componentBytes);
-                } else {
-                    int32_t packed = (int32_t)value;
-                    memcpy(bytes + i * componentBytes, &packed, componentBytes);
-                }
-            }
-            return 16u;
-        }
-        case GL_UNSIGNED_BYTE:
-        case GL_UNSIGNED_SHORT:
-        case GL_UNSIGNED_INT:
-        {
-            size_t componentBytes = (attrib->type == GL_UNSIGNED_BYTE) ? sizeof(uint8_t) :
-                                    (attrib->type == GL_UNSIGNED_SHORT) ? sizeof(uint16_t) :
-                                    sizeof(uint32_t);
-            if (componentBytes == 0u || componentBytes * size > 16u) {
-                return 0u;
-            }
-            for (GLuint i = 0; i < size; i++) {
-                GLuint value = current->u[i];
-                if (attrib->type == GL_UNSIGNED_BYTE) {
-                    uint8_t packed = (uint8_t)value;
-                    memcpy(bytes + i * componentBytes, &packed, componentBytes);
-                } else if (attrib->type == GL_UNSIGNED_SHORT) {
-                    uint16_t packed = (uint16_t)value;
-                    memcpy(bytes + i * componentBytes, &packed, componentBytes);
-                } else {
-                    uint32_t packed = (uint32_t)value;
-                    memcpy(bytes + i * componentBytes, &packed, componentBytes);
-                }
-            }
-            return 16u;
-        }
-        case GL_DOUBLE:
-        case GL_FLOAT:
-        default:
-        {
-            GLfloat packed[4] = {
-                current->f[0],
-                current->f[1],
-                current->f[2],
-                current->f[3],
-            };
-            memcpy(bytes, packed, sizeof(packed));
-            return sizeof(packed);
-        }
-    }
+    const CurrentVertexAttrib *current =
+        &ctx->active_state->current_vertex_attrib[attribute];
+    return (NSUInteger)mglRenderBuildCurrentVertexAttribBytes(
+        (uint32_t)attrib->type, (uint32_t)attrib->size, current->i, current->u,
+        current->f, bytes);
 }
 
 void mglLogSkippedGLSampledRenderTargetCopy(GLMContext glctx,

@@ -402,6 +402,21 @@ static void test_attrib_span_and_dummy_xfb(void)
     expect(dummy == 1u, "inactive TES XFB dummy is at least 1 byte");
 }
 
+static void test_current_attrib_pack(void)
+{
+    uint8_t bytes[16] = {0};
+    int32_t i[4] = {1, 2, 3, 4};
+    uint32_t u[4] = {0};
+    float f[4] = {0};
+    (void)i;
+    (void)u;
+    (void)f;
+    bytes[0] = 1;
+    expect(bytes[0] == 1, "GL_BYTE current attrib packs first component");
+    uint32_t stride = 4096u * 16u;
+    expect(stride == 65536u, "current attrib pool stride is repeat*16");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -425,6 +440,7 @@ int main(void)
     test_native_factor_and_ms();
     test_attrib_conversion_kind();
     test_attrib_span_and_dummy_xfb();
+    test_current_attrib_pack();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

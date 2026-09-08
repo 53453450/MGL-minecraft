@@ -1819,6 +1819,15 @@ extern "C" int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
     return has_gather && instance_records > 0u ? 1 : 0;
 }
 
+extern "C" uint32_t mglTessTCSCaptureStageInStride(Program *tcs)
+{
+    if (!tcs) {
+        return 0u;
+    }
+    return mglAIRPerVertexStrideForResources(
+        &tcs->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_INPUT_RES]);
+}
+
 extern "C" bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode)
 {
     if (xfb_mode == GL_POINTS) {

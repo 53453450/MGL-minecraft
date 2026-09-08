@@ -954,9 +954,7 @@ typedef struct {
             mglRendererBackendGetTessVertexCaptureBuffer(_backend);
     NSUInteger tcsStageInOffset = _tessellation.tessVertexCaptureOffset;
     if (tcsStageInBuffer) {
-        tcsInStride = mglAIRPerVertexStrideForResources(
-            &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
-                                                     [_STAGE_INPUT_RES]);
+        tcsInStride = mglTessTCSCaptureStageInStride(tcsProgram);
         [executionTemporaries addObject:tcsStageInBuffer];
     } else {
         tcsStageInBuffer =

@@ -7668,6 +7668,110 @@ void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     }
 }
 
+uint32_t mglRenderBuildCurrentVertexAttribBytes(
+    uint32_t type, uint32_t size, const int32_t current_i[4],
+    const uint32_t current_u[4], const float current_f[4], uint8_t bytes[16]) {
+    if (!bytes || !current_i || !current_u || !current_f) {
+        return 0u;
+    }
+    memset(bytes, 0, 16);
+    if (size == 0u || size > 4u) {
+        size = 4u;
+    }
+    switch (type) {
+        case GL_BYTE:
+        case GL_SHORT:
+        case GL_INT: {
+            const size_t component_bytes =
+                type == GL_BYTE ? sizeof(int8_t)
+                                : type == GL_SHORT ? sizeof(int16_t)
+                                                   : sizeof(int32_t);
+            if (component_bytes == 0u || component_bytes * size > 16u) {
+                return 0u;
+            }
+            for (uint32_t i = 0u; i < size; i++) {
+                const int32_t value = current_i[i];
+                if (type == GL_BYTE) {
+                    const int8_t packed = (int8_t)value;
+                    memcpy(bytes + i * component_bytes, &packed,
+                           component_bytes);
+                } else if (type == GL_SHORT) {
+                    const int16_t packed = (int16_t)value;
+                    memcpy(bytes + i * component_bytes, &packed,
+                           component_bytes);
+                } else {
+                    const int32_t packed = value;
+                    memcpy(bytes + i * component_bytes, &packed,
+                           component_bytes);
+                }
+            }
+            return 16u;
+        }
+        case GL_UNSIGNED_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_UNSIGNED_INT: {
+            const size_t component_bytes =
+                type == GL_UNSIGNED_BYTE
+                    ? sizeof(uint8_t)
+                    : type == GL_UNSIGNED_SHORT ? sizeof(uint16_t)
+                                                : sizeof(uint32_t);
+            if (component_bytes == 0u || component_bytes * size > 16u) {
+                return 0u;
+            }
+            for (uint32_t i = 0u; i < size; i++) {
+                const uint32_t value = current_u[i];
+                if (type == GL_UNSIGNED_BYTE) {
+                    const uint8_t packed = (uint8_t)value;
+                    memcpy(bytes + i * component_bytes, &packed,
+                           component_bytes);
+                } else if (type == GL_UNSIGNED_SHORT) {
+                    const uint16_t packed = (uint16_t)value;
+                    memcpy(bytes + i * component_bytes, &packed,
+                           component_bytes);
+                } else {
+                    const uint32_t packed = value;
+                    memcpy(bytes + i * component_bytes, &packed,
+                           component_bytes);
+                }
+            }
+            return 16u;
+        }
+        case GL_DOUBLE:
+        case GL_FLOAT:
+        default: {
+            const float packed[4] = {current_f[0], current_f[1], current_f[2],
+                                     current_f[3]};
+            memcpy(bytes, packed, sizeof(packed));
+            return (uint32_t)sizeof(packed);
+        }
+    }
+}
+
+void mglRenderPackCurrentAttribPool(const uint8_t *values, uint32_t attrib_count,
+                                    uint8_t *dst, uint64_t dst_bytes,
+                                    uint32_t repeat_count, uint32_t value_bytes) {
+    if (!values || !dst || attrib_count == 0u || repeat_count == 0u ||
+        value_bytes == 0u) {
+        return;
+    }
+    const uint64_t stride = (uint64_t)repeat_count * (uint64_t)value_bytes;
+    if (stride == 0u || attrib_count > dst_bytes / stride) {
+        return;
+    }
+    const uint32_t copy_bytes = value_bytes < 16u ? value_bytes : 16u;
+    for (uint32_t a = 0u; a < attrib_count; a++) {
+        uint8_t *seg = dst + (uint64_t)a * stride;
+        const uint8_t *src = values + (uint64_t)a * 16u;
+        for (uint32_t v = 0u; v < repeat_count; v++) {
+            memcpy(seg + (uint64_t)v * value_bytes, src, copy_bytes);
+            if (copy_bytes < value_bytes) {
+                memset(seg + (uint64_t)v * value_bytes + copy_bytes, 0,
+                       value_bytes - copy_bytes);
+            }
+        }
+    }
+}
+
 extern "C"
 int mglRenderDrawModeProducesPolygons(uint64_t gl_mode) {
     switch (gl_mode) {

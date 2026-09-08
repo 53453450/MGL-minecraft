@@ -1175,6 +1175,13 @@ int mglRenderPlanVertexAttribSpan(int64_t binding_offset, int64_t relativeoffset
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 
+uint32_t mglRenderBuildCurrentVertexAttribBytes(
+    uint32_t type, uint32_t size, const int32_t current_i[4],
+    const uint32_t current_u[4], const float current_f[4], uint8_t bytes[16]);
+void mglRenderPackCurrentAttribPool(const uint8_t *values, uint32_t attrib_count,
+                                    uint8_t *dst, uint64_t dst_bytes,
+                                    uint32_t repeat_count, uint32_t value_bytes);
+
 /* does GL primitive mode produce polygonal primitives
  * (triangles/quads) subject to glPolygonMode point/line emulation?  Matches
  * mglDrawModeProducesPolygons.  Returns 1/0. */

@@ -1084,18 +1084,10 @@ static bool mglBindingStateFlushResourceBindings(
                           @"current vertex attrib pool", attrib);
                     continue;
                 }
-                uint8_t *dst = (uint8_t *)pool.mutableBytes;
-                for (GLuint a = 0; a < (GLuint)MAX_ATTRIBS; a++) {
-                    uint8_t *seg = dst + (NSUInteger)a *
-                                           kMGLCurrentAttribPoolStride;
-                    for (NSUInteger vI = 0;
-                         vI < kMGLCurrentAttribRepeatCount; vI++) {
-                        memcpy(seg + vI * kMGLCurrentAttribValueBytes,
-                               poolValues[a],
-                               MIN((NSUInteger)16u,
-                                   kMGLCurrentAttribValueBytes));
-                    }
-                }
+                mglRenderPackCurrentAttribPool(
+                    (const uint8_t *)poolValues, (uint32_t)MAX_ATTRIBS,
+                    (uint8_t *)pool.mutableBytes, (uint64_t)poolBytes,
+                    kMGLCurrentAttribRepeatCount, kMGLCurrentAttribValueBytes);
                 currentAttribBuffer = mglBindingStateCreateBufferWithBytes(
                     _device, pool.bytes, pool.length,
                     MGL_BINDING_RESOURCE_STORAGE_SHARED);
