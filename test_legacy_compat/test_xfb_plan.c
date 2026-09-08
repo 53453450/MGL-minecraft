@@ -2416,6 +2416,19 @@ static void test_pass_unify_packed_ds(void)
     expect(unify_packed_ds(260u, 260u, &out) == 0, "already matching skips unify");
 }
 
+static uint32_t invalid_fmt(void) { return 0u; }
+static uint32_t attach_or_invalid(int has, uint32_t mapped)
+{
+    return has ? mapped : invalid_fmt();
+}
+
+static void test_missing_attachment_format(void)
+{
+    expect(attach_or_invalid(1, 80u) == 80u, "present attachment keeps format");
+    expect(attach_or_invalid(0, 80u) == 0u, "missing attachment is Invalid");
+    expect(invalid_fmt() == 0u, "Invalid pixel format sentinel is 0");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2585,6 +2598,7 @@ int main(void)
     test_renderpass_attachment_class();
     test_metal_resource_slot();
     test_pass_unify_packed_ds();
+    test_missing_attachment_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

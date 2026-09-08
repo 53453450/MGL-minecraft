@@ -8693,6 +8693,14 @@ int mglRenderPixelFormatIsInvalid(uint32_t format) {
     return format == 0u ? 1 : 0;
 }
 
+uint32_t mglRenderInvalidPixelFormat(void) {
+    return 0u;
+}
+
+uint32_t mglRenderAttachmentFormatOrInvalid(int has_metal, uint32_t mapped) {
+    return has_metal ? mapped : mglRenderInvalidPixelFormat();
+}
+
 int mglRenderPassUnifyPackedDS(uint32_t depth_format, uint32_t stencil_format,
                                uint32_t *out_format) {
     if (mglRenderPixelFormatIsInvalid(depth_format) ||
