@@ -1169,8 +1169,11 @@ static bool mglBindingStateFlushResourceBindings(
             return false;
         }
         if (kMGLVerboseBindLogs &&
-            attribBuffer->written_min >= 0 && attribBuffer->written_max >= 0) {
-            if (attrOffset < attribBuffer->written_min || attrEnd > attribBuffer->written_max) {
+            mglRenderAttribWrittenRangeTracked(attribBuffer->written_min,
+                                               attribBuffer->written_max) &&
+            mglRenderAttribOutsideWrittenRange(
+                attrOffset, attrEnd, attribBuffer->written_min,
+                attribBuffer->written_max)) {
                 static uint64_t s_vbindWrittenRangeWarningCount = 0;
                 uint64_t hit = ++s_vbindWrittenRangeWarningCount;
                 if (hit <= 16ull || (hit % 4096ull) == 0ull) {
@@ -1189,7 +1192,6 @@ static bool mglBindingStateFlushResourceBindings(
                 // all mapped ranges. Sodium arena-allocates large buffers and writes
                 // vertex data at varying sub-range offsets. The Metal backing has the
                 // data from the flush, so the draw will render correctly.
-            }
         }
 
         if (kMGLVerboseBindLogs) {
@@ -1218,12 +1220,12 @@ static bool mglBindingStateFlushResourceBindings(
         BOOL integerConvDstIsInt =
             mglRenderIntegerAttribDstIsInt((uint32_t)shaderGlType) != 0;
 
-        if (conversionKind == MGL_ATTRIB_CONV_NONE &&
-            anyBindingPresent[bindingIndex]) {
+        if (mglRenderSkipAlreadyBoundUnconverted(
+                conversionKind, anyBindingPresent[bindingIndex] ? 1 : 0)) {
             continue;
         }
 
-        if (conversionKind != MGL_ATTRIB_CONV_NONE) {
+        if (mglRenderAttribNeedsConversionBind(conversionKind)) {
             NSUInteger convertedStride = 0;
             id convertedBuffer = [self convertedVertexBufferForAttribKind:conversionKind
                                                                    source:attribBuffer

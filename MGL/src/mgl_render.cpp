@@ -7773,6 +7773,23 @@ int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
                : 0;
 }
 
+int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind, int already_present) {
+    return conversion_kind == MGL_ATTRIB_CONV_NONE && already_present ? 1 : 0;
+}
+
+int mglRenderAttribNeedsConversionBind(int conversion_kind) {
+    return conversion_kind != MGL_ATTRIB_CONV_NONE ? 1 : 0;
+}
+
+int mglRenderAttribWrittenRangeTracked(int64_t written_min, int64_t written_max) {
+    return written_min >= 0 && written_max >= 0 ? 1 : 0;
+}
+
+int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
+                                       int64_t written_min, int64_t written_max) {
+    return attr_off < written_min || attr_end > written_max ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

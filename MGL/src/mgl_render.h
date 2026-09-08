@@ -1211,6 +1211,11 @@ int mglRenderUseUniformConstantInline(int is_base, int resource_type,
                                       int has_cpu, int64_t offset,
                                       uint32_t required, uint32_t scratch);
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
+int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind, int already_present);
+int mglRenderAttribNeedsConversionBind(int conversion_kind);
+int mglRenderAttribWrittenRangeTracked(int64_t written_min, int64_t written_max);
+int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
+                                       int64_t written_min, int64_t written_max);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

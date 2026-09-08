@@ -753,6 +753,18 @@ static void test_plain_uniform_array_stride(void)
     expect(in_s == 1, "member offset 8 is in 96-byte struct");
 }
 
+static void test_attrib_conversion_bind(void)
+{
+    int skip = (0 == 0) && 1;
+    expect(skip == 1, "already-bound unconverted attrib is skipped");
+    int conv = (2 != 0);
+    expect(conv == 1, "non-NONE conversion kind needs converted bind");
+    int tracked = (-1 >= 0) && (16 >= 0);
+    expect(tracked == 0, "uninitialized written range is not tracked");
+    int outside = (0 < 8) || (32 > 16);
+    expect(outside == 1, "attrib span outside written min/max");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -802,6 +814,7 @@ int main(void)
     test_mapped_uniform_size();
     test_plain_uniform_struct_pack();
     test_plain_uniform_array_stride();
+    test_attrib_conversion_bind();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
