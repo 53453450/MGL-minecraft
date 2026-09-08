@@ -2228,9 +2228,13 @@ static GLenum mglPassthroughDeclType(
 
         if (useDepthState)
         {
-            if (!mglIsValidGLCompareFunction(state->var.depth_func)) {
+            uint32_t depthFunc = mglRenderCompareFuncOrFallback(
+                (uint32_t)state->var.depth_func,
+                mglIsValidGLCompareFunction(state->var.depth_func) ? 1 : 0,
+                (uint32_t)GL_LESS);
+            if (depthFunc != (uint32_t)state->var.depth_func) {
                 mglLogRenderStateRepair("depth_func", state->var.depth_func, GL_LESS);
-                state->var.depth_func = GL_LESS;
+                state->var.depth_func = (GLenum)depthFunc;
                 mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
             }
 
@@ -2238,7 +2242,8 @@ static GLenum mglPassthroughDeclType(
                 mglMTLCompareFunctionForGL(state->var.depth_func,
                                            MGLCompareFunctionLess,
                                            "depth");
-            dsDesc.depth_write_enabled = state->var.depth_writemask ? 1u : 0u;
+            dsDesc.depth_write_enabled = mglRenderDepthWriteEnabled(
+                state->var.depth_writemask ? 1 : 0, 0);
         }
 
         /* GL_RASTERIZER_DISCARD / VS capture: no fragment is produced, so
@@ -2250,7 +2255,8 @@ static GLenum mglPassthroughDeclType(
                 _tessellation.tessVertexCaptureActive ? 1 : 0,
                 _tessellation.cullDistanceCaptureActive ? 1 : 0) != 0;
         if (suppressDepthStencilWrites) {
-            dsDesc.depth_write_enabled = 0u;
+            dsDesc.depth_write_enabled = mglRenderDepthWriteEnabled(
+                state->var.depth_writemask ? 1 : 0, 1);
         }
 
         if (useStencilState)
@@ -2269,9 +2275,13 @@ static GLenum mglPassthroughDeclType(
                             (int)(MGL_STATE(ctx)->framebuffer ? MGL_STATE(ctx)->framebuffer->stencil.layered : 0));
             }
             {
-                if (!mglIsValidGLCompareFunction(state->var.stencil_func)) {
+                uint32_t stencilFunc = mglRenderCompareFuncOrFallback(
+                    (uint32_t)state->var.stencil_func,
+                    mglIsValidGLCompareFunction(state->var.stencil_func) ? 1 : 0,
+                    (uint32_t)GL_ALWAYS);
+                if (stencilFunc != (uint32_t)state->var.stencil_func) {
                     mglLogRenderStateRepair("stencil_func", state->var.stencil_func, GL_ALWAYS);
-                    state->var.stencil_func = GL_ALWAYS;
+                    state->var.stencil_func = (GLenum)stencilFunc;
                     mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
                 }
 
@@ -2300,9 +2310,13 @@ static GLenum mglPassthroughDeclType(
             }
 
             {
-                if (!mglIsValidGLCompareFunction(state->var.stencil_back_func)) {
+                uint32_t stencilBack = mglRenderCompareFuncOrFallback(
+                    (uint32_t)state->var.stencil_back_func,
+                    mglIsValidGLCompareFunction(state->var.stencil_back_func) ? 1 : 0,
+                    (uint32_t)GL_ALWAYS);
+                if (stencilBack != (uint32_t)state->var.stencil_back_func) {
                     mglLogRenderStateRepair("stencil_back_func", state->var.stencil_back_func, GL_ALWAYS);
-                    state->var.stencil_back_func = GL_ALWAYS;
+                    state->var.stencil_back_func = (GLenum)stencilBack;
                     mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
                 }
 

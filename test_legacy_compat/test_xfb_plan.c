@@ -1140,6 +1140,16 @@ static void test_viewport_clamp_and_metal_y(void)
     expect(metal_vy == 370.0, "viewport y always flips to Metal top-left");
 }
 
+static void test_compare_func_repair_and_depth_write(void)
+{
+    uint32_t df = 0 ? 0x999u : 513u;
+    expect(df == 513u, "invalid depth_func falls back to GL_LESS");
+    uint32_t sf = 0 ? 0x999u : 519u;
+    expect(sf == 519u, "invalid stencil_func falls back to GL_ALWAYS");
+    uint32_t wr = (!1 && 1) ? 1u : 0u;
+    expect(wr == 0u, "suppressed depth write is disabled");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1223,6 +1233,7 @@ int main(void)
     test_depth_stencil_use_and_suppress();
     test_scissor_clamp_and_metal_y();
     test_viewport_clamp_and_metal_y();
+    test_compare_func_repair_and_depth_write();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

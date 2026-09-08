@@ -1362,6 +1362,9 @@ int32_t mglRenderMetalScissorY(int32_t y, int32_t h, uint32_t pass_h,
 void mglRenderClampViewport(double *x, double *y, double *w, double *h,
                             uint32_t pass_w, uint32_t pass_h);
 double mglRenderMetalViewportY(double y, double h, uint32_t pass_h);
+uint32_t mglRenderCompareFuncOrFallback(uint32_t func, int valid,
+                                        uint32_t fallback);
+uint32_t mglRenderDepthWriteEnabled(int writemask, int suppress);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

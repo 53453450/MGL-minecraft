@@ -8783,6 +8783,15 @@ double mglRenderMetalViewportY(double y, double h, uint32_t pass_h) {
     double metal_y = (double)pass_h - (y + h);
     return metal_y < 0.0 ? 0.0 : metal_y;
 }
+
+uint32_t mglRenderCompareFuncOrFallback(uint32_t func, int valid,
+                                        uint32_t fallback) {
+    return valid ? func : fallback;
+}
+
+uint32_t mglRenderDepthWriteEnabled(int writemask, int suppress) {
+    return (!suppress && writemask) ? 1u : 0u;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }
