@@ -1676,6 +1676,20 @@ static void test_bind_draw_gl_defaults(void)
     expect(keep == 0u, "already-unnormalized stays unless needed");
 }
 
+static uint32_t draw_error_invalid_value(void) { return 0x0501u; }
+static uint32_t draw_error_invalid_operation(void) { return 0x0502u; }
+static uint32_t draw_error_out_of_memory(void) { return 0x0505u; }
+
+static void test_draw_error_codes(void)
+{
+    expect(draw_error_invalid_value() == 0x0501u,
+           "draw path invalid first/count is GL_INVALID_VALUE");
+    expect(draw_error_invalid_operation() == 0x0502u,
+           "draw/tess/GS/compute illegal state is GL_INVALID_OPERATION");
+    expect(draw_error_out_of_memory() == 0x0505u,
+           "draw/tess alloc failure is GL_OUT_OF_MEMORY");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1806,6 +1820,7 @@ int main(void)
     test_gs_passthrough_decl_type();
     test_rgb_expand_params();
     test_bind_draw_gl_defaults();
+    test_draw_error_codes();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

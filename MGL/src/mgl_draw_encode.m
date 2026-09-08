@@ -86,7 +86,7 @@ static bool mglEncodeArrayLineLoopTarget(void *renderEncoderOwner,
               label ? label : "draw",
               (int)firstVertex);
         if (drawCtx) {
-            mglDispatchError(drawCtx, label ? label : __FUNCTION__, GL_INVALID_VALUE);
+            mglDispatchError(drawCtx, label ? label : __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         }
         return false;
     }

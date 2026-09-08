@@ -882,7 +882,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     program = mglResolveProgramForStageFromState(ctx, _COMPUTE_SHADER);
     if (!program) {
         NSLog(@"MGL COMPUTE ERROR: glDispatchCompute with no current program");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return false;
     }
 
@@ -898,7 +898,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     computeShader = program->shader_slots[_COMPUTE_SHADER];
     if (!computeShader) {
         NSLog(@"MGL COMPUTE ERROR: current program %u has no compute shader", program->name);
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return false;
     }
 
@@ -1039,7 +1039,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
             mglComputeEndEncoder(computeCommandEncoder);
         }
         [self clearStageBindingCopyBacks:&copyBacks];
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1095,7 +1095,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                   reason ? reason : "dispatch",
                   executionError[0] ? executionError : "unknown error");
             [self clearStageBindingCopyBacks:&copyBacks];
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return NO;
         }
         [self clearStageBindingCopyBacks:&copyBacks];
@@ -1128,7 +1128,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                      requireCPUVisibility:NO]) {
         NSLog(@"MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after %s",
               reason ? reason : "dispatch");
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return NO;
     }
     if (useExecutionPlan && hasCopyBackEntries &&
@@ -1215,11 +1215,11 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     Buffer *glIndirectBuffer = MGL_STATE(glm_ctx)->buffers[_DISPATCH_INDIRECT_BUFFER];
     if (MGL_STATE(glm_ctx)->var.dispatch_indirect_buffer_binding == 0 || !glIndirectBuffer) {
         NSLog(@"MGL COMPUTE ERROR: glDispatchComputeIndirect with no GL_DISPATCH_INDIRECT_BUFFER bound");
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     if (indirect < 0) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         return;
     }
 
@@ -1233,7 +1233,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     if (!indirectBuffer) {
         NSLog(@"MGL COMPUTE ERROR: dispatch indirect buffer %u has no Metal backing",
               glIndirectBuffer ? glIndirectBuffer->name : 0u);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -1249,7 +1249,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
               (unsigned long)indirectOffset,
               (unsigned long)indirectArgBytes,
               (unsigned long)indirectBufferInfo.length);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 

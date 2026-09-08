@@ -9372,6 +9372,18 @@ int mglRenderErrorIsNone(uint32_t error) {
     return error == GL_NO_ERROR ? 1 : 0;
 }
 
+uint32_t mglRenderErrorInvalidOperation(void) {
+    return GL_INVALID_OPERATION;
+}
+
+uint32_t mglRenderErrorInvalidValue(void) {
+    return GL_INVALID_VALUE;
+}
+
+uint32_t mglRenderErrorOutOfMemory(void) {
+    return GL_OUT_OF_MEMORY;
+}
+
 int mglRenderStopColorAttachmentScan(uint32_t next_index, uint32_t max,
                                      int next_is_none, int has_next_color) {
     return next_index >= max || (next_is_none && !has_next_color) ? 1 : 0;

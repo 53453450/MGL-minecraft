@@ -948,7 +948,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         uint8_t *packed = (uint8_t *)calloc(1u, dest.written_bytes);
         if (!packed) {
             mglDispatchError(drawCtx, "vertexTransformFeedback",
-                             GL_OUT_OF_MEMORY);
+                             (GLenum)mglRenderErrorOutOfMemory());
             return YES;
         }
         mglXfbPackVsRecords(&plan, buffer, captureBytes, captureOffset,
@@ -1058,7 +1058,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         /*  contract: never drop a GS draw silently.  A draw whose mode
          * does not match the GS input topology is an invalid operation. */
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_INVALID_OPERATION);
+                         (GLenum)mglRenderErrorInvalidOperation());
         return YES;
     }
     if (![self bindMTLProgram:program] ||
@@ -1066,7 +1066,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         NSLog(@"MGL GS ERROR: failed to load AIR kernel program=%u",
               (unsigned)program->name);
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_INVALID_OPERATION);
+                         (GLenum)mglRenderErrorInvalidOperation());
         return YES;
     }
 
@@ -1074,7 +1074,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (![self ensureAIRGeometryPassthroughFunctionForProgram:program
                                               outputPrimitive:outputPrimitive]) {
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_OUT_OF_MEMORY);
+                         (GLenum)mglRenderErrorOutOfMemory());
         return YES;
     }
 
@@ -1094,7 +1094,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         if (indexedDraw &&
             (!ebo || ![self processBuffer:ebo] || !ebo->data.mtl_data)) {
             mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                             GL_INVALID_OPERATION);
+                             (GLenum)mglRenderErrorInvalidOperation());
             return YES;
         }
         if (indexedDraw) {
@@ -1104,7 +1104,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 ebo, eboMetal, indexType, indexOffsetBytes, count);
             if (!indexBytes) {
                 mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                                 GL_INVALID_OPERATION);
+                                 (GLenum)mglRenderErrorInvalidOperation());
                 return YES;
             }
         }
@@ -1125,7 +1125,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         gatherArray = NULL;
         if (!gatherBuf) {
             mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                             GL_OUT_OF_MEMORY);
+                             (GLenum)mglRenderErrorOutOfMemory());
             return YES;
         }
         mglDrawGsFillGatherParams(indexedDraw ? 1 : 0, (uint32_t)count,
@@ -1148,7 +1148,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!mglDrawGsComputeLayout(program, primitiveCount, (uint32_t)instanceCount,
                                 gsOutputMode, &gsLayout)) {
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_OUT_OF_MEMORY);
+                         (GLenum)mglRenderErrorOutOfMemory());
         return YES;
     }
     const GLuint workItemCount = gsLayout.work_item_count;
@@ -1200,7 +1200,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     if (!input) {
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_INVALID_OPERATION);
+                         (GLenum)mglRenderErrorInvalidOperation());
         drawCtx->active_state->dirty_bits = DIRTY_ALL;
         return YES;
     }
@@ -1285,7 +1285,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!output || !counts || !mglDrawSupportBufferContents(output) || !mglDrawSupportBufferContents(counts)) {
         drawCtx->active_state->dirty_bits = DIRTY_ALL;
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_OUT_OF_MEMORY);
+                         (GLenum)mglRenderErrorOutOfMemory());
         return YES;
     }
     memset(mglDrawSupportBufferContents(counts), 0,
@@ -1472,7 +1472,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 !xfbWrittenBuffer || !scatterPipeline) {
                 drawCtx->active_state->dirty_bits = DIRTY_ALL;
                 mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                                 GL_OUT_OF_MEMORY);
+                                 (GLenum)mglRenderErrorOutOfMemory());
                 return YES;
             }
         }
@@ -1505,7 +1505,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!xfbMetaBuf) {
         drawCtx->active_state->dirty_bits = DIRTY_ALL;
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_OUT_OF_MEMORY);
+                         (GLenum)mglRenderErrorOutOfMemory());
         return YES;
     }
     const BOOL cppDispatch = YES;
@@ -1525,7 +1525,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             &gparams, (uint32_t)sizeof(gparams))) {
         drawCtx->active_state->dirty_bits = DIRTY_ALL;
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         GL_OUT_OF_MEMORY);
+                         (GLenum)mglRenderErrorOutOfMemory());
         return YES;
     }
     if (getenv("MGL_GS_DIAG")) {
@@ -1669,7 +1669,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 (__bridge void *)xfbWrittenBuffer, (uint32_t)workItemCount)) {
             drawCtx->active_state->dirty_bits = DIRTY_ALL;
             mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                             GL_OUT_OF_MEMORY);
+                             (GLenum)mglRenderErrorOutOfMemory());
             return YES;
         }
         MGLRenderComputeExecutionResult scatterResult = {0};
@@ -2324,7 +2324,7 @@ after_gs_draws:
     if (!gl_element_buffer) {
         NSLog(@"MGL WARNING: %s skipped because no element array buffer is bound", label ? label : "indexed draw");
         if (drawCtx) {
-            mglDispatchError(drawCtx, label ? label : __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(drawCtx, label ? label : __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         }
         return NO;
     }
@@ -2359,7 +2359,7 @@ after_gs_draws:
     if (!gl_indirect_buffer) {
         NSLog(@"MGL WARNING: %s skipped because no draw indirect buffer is bound", label ? label : "indirect draw");
         if (drawCtx) {
-            mglDispatchError(drawCtx, label ? label : __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(drawCtx, label ? label : __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         }
         return NO;
     }
@@ -2864,7 +2864,7 @@ after_gs_draws:
             if (!sparseCompactOk) {
                 NSLog(@"MGL TESS ERROR: indexed TCS sparse capture failed");
                 mglDispatchError(drawCtx, label ? label : "tessellationDraw",
-                                 GL_INVALID_OPERATION);
+                                 (GLenum)mglRenderErrorInvalidOperation());
                 (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend,
                                                                    NULL);
                 _tessellation.tessVertexCaptureOffset = 0u;
@@ -3021,7 +3021,7 @@ after_gs_draws:
             NSLog(@"MGL TESS ERROR: invalid native TES buffers program=%u",
                   (unsigned)tesProgram->name);
             mglDispatchError(drawCtx, label ? label : "tessellationDraw",
-                             GL_OUT_OF_MEMORY);
+                             (GLenum)mglRenderErrorOutOfMemory());
             drawCtx->active_state->dirty_bits = DIRTY_ALL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
             _tessellation.tessVertexCaptureOffset = 0u;
@@ -3104,7 +3104,7 @@ after_gs_draws:
             NSLog(@"MGL TESS ERROR: failed to copy isolated native TES "
                   "writable buffer prefixes");
             mglDispatchError(drawCtx, label ? label : "tessellationDraw",
-                             GL_OUT_OF_MEMORY);
+                             (GLenum)mglRenderErrorOutOfMemory());
         }
 
         _tessellation.nativeTESActive = NO;
@@ -3132,7 +3132,7 @@ after_gs_draws:
                                    baseInstance:baseInstance];
             if (!dispatched) {
                 mglDispatchError(drawCtx, label ? label : "tessellationDraw",
-                                 GL_INVALID_OPERATION);
+                                 (GLenum)mglRenderErrorInvalidOperation());
             }
             drawCtx->active_state->dirty_bits = DIRTY_ALL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
@@ -3144,7 +3144,7 @@ after_gs_draws:
         /*  contract: an unsupported tessellation draw must surface a GL
          * error, not silently drop the patch stream. */
         mglDispatchError(drawCtx, label ? label : "tessellationDraw",
-                         GL_INVALID_OPERATION);
+                         (GLenum)mglRenderErrorInvalidOperation());
         drawCtx->active_state->dirty_bits = DIRTY_ALL;
         (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
         _tessellation.tessVertexCaptureOffset = 0u;
