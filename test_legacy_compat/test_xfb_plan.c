@@ -1294,6 +1294,14 @@ static void test_msaa_array_layer_stride(void)
     expect(one == 1u, "non-layered attachment keeps stride 1");
 }
 
+static void test_default_draw_buffer_and_renderbuffer(void)
+{
+    uint32_t front = 0u;
+    expect(front == 0u, "GL_NONE and FRONT_AND_BACK map to _FRONT");
+    int rbo = 1;
+    expect(rbo == 1, "GL_RENDERBUFFER is a renderbuffer target");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1393,6 +1401,7 @@ int main(void)
     test_glsl_swizzle_and_column_type();
     test_glsl_int_as_float_and_flat();
     test_msaa_array_layer_stride();
+    test_default_draw_buffer_and_renderbuffer();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

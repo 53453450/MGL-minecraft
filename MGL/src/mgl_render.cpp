@@ -9293,6 +9293,36 @@ uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {
     return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ? 8u : 1u;
 }
 
+int mglRenderDefaultDrawBufferIndex(uint32_t draw_buffer, uint32_t *out) {
+    uint32_t idx = 0u;
+    int known = 1;
+    if (mglRenderDefaultReadBufferIndex(draw_buffer, &idx)) {
+        if (out) {
+            *out = idx;
+        }
+        return 1;
+    }
+    switch (draw_buffer) {
+    case GL_FRONT_AND_BACK:
+    case GL_COLOR_ATTACHMENT0:
+    case GL_NONE:
+        idx = 0u; /* _FRONT */
+        break;
+    default:
+        known = 0;
+        idx = 0u;
+        break;
+    }
+    if (out) {
+        *out = idx;
+    }
+    return known;
+}
+
+int mglRenderTargetIsRenderbuffer(uint32_t target) {
+    return target == GL_RENDERBUFFER ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

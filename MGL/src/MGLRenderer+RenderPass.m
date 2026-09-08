@@ -1435,7 +1435,7 @@ static GLenum mglPassthroughDeclType(
         return NULL;
     }
 
-    if (fbo_attachment->textarget == GL_RENDERBUFFER)
+    if (mglRenderTargetIsRenderbuffer((uint32_t)fbo_attachment->textarget))
     {
         if (fbo_attachment->buf.rbo) {
             tex = fbo_attachment->buf.rbo->tex;
@@ -1444,7 +1444,8 @@ static GLenum mglPassthroughDeclType(
     else
     {
         tex = fbo_attachment->buf.tex;
-        if (!tex && fbo_attachment->texture != 0 && fbo_attachment->textarget != GL_RENDERBUFFER)
+        if (!tex && fbo_attachment->texture != 0 &&
+            !mglRenderTargetIsRenderbuffer((uint32_t)fbo_attachment->textarget))
         {
             tex = findTexture(ctx, fbo_attachment->texture);
             if (tex)
@@ -2665,7 +2666,7 @@ static GLenum mglPassthroughDeclType(
                             }
 
                             Texture *attachmentTexture = NULL;
-                            if (attachment->textarget == GL_RENDERBUFFER) {
+                            if (mglRenderTargetIsRenderbuffer((uint32_t)attachment->textarget)) {
                                 attachmentTexture = attachment->buf.rbo ? attachment->buf.rbo->tex : NULL;
                             } else {
                                 attachmentTexture = attachment->buf.tex;
@@ -2939,29 +2940,15 @@ static GLenum mglPassthroughDeclType(
     id depth_texture = nil;
     id stencil_texture = nil;
 
-    switch(MGL_STATE(ctx)->draw_buffer)
-    {
-        case GL_FRONT: mgl_drawbuffer = _FRONT; break;
-        case GL_BACK: mgl_drawbuffer = _FRONT; break;
-        case GL_FRONT_LEFT: mgl_drawbuffer = _FRONT_LEFT; break;
-        case GL_FRONT_RIGHT: mgl_drawbuffer = _FRONT_RIGHT; break;
-        case GL_BACK_LEFT: mgl_drawbuffer = _FRONT_LEFT; break;
-        case GL_BACK_RIGHT: mgl_drawbuffer = _FRONT_RIGHT; break;
-        case GL_LEFT: mgl_drawbuffer = _FRONT_LEFT; break;
-        case GL_RIGHT: mgl_drawbuffer = _FRONT_RIGHT; break;
-        case GL_FRONT_AND_BACK: mgl_drawbuffer = _FRONT; break;
-        case GL_COLOR_ATTACHMENT0: mgl_drawbuffer = _FRONT; break;
-        case GL_NONE:
-            // Handle GL_NONE gracefully - no draw buffer selected
-            mgl_drawbuffer = _FRONT; // fallback to front
-            DEBUG_PRINT("MGL: draw_buffer is GL_NONE, falling back to FRONT\n");
-            break;
-        default:
-            DEBUG_PRINT("MGL: Unknown draw_buffer value: 0x%x, falling back to FRONT\n", MGL_STATE(ctx)->draw_buffer);
-            mgl_drawbuffer = _FRONT; // fallback to front instead of failing render setup
-            NSLog(@"MGL WARNING: Unknown draw_buffer value 0x%x, using FRONT fallback", MGL_STATE(ctx)->draw_buffer);
-            break;
+    uint32_t mappedDraw = 0u;
+    if (!mglRenderDefaultDrawBufferIndex(
+            (uint32_t)MGL_STATE(ctx)->draw_buffer, &mappedDraw)) {
+        DEBUG_PRINT("MGL: Unknown draw_buffer value: 0x%x, falling back to FRONT\n", MGL_STATE(ctx)->draw_buffer);
+        NSLog(@"MGL WARNING: Unknown draw_buffer value 0x%x, using FRONT fallback", MGL_STATE(ctx)->draw_buffer);
+    } else if (MGL_STATE(ctx)->draw_buffer == GL_NONE) {
+        DEBUG_PRINT("MGL: draw_buffer is GL_NONE, falling back to FRONT\n");
     }
+    mgl_drawbuffer = (GLuint)mappedDraw;
 
     if(![self checkDrawBufferSize:mgl_drawbuffer])
     {
