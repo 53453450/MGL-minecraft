@@ -1892,6 +1892,35 @@ static void test_default_depth_pixel_format(void)
            "Depth16 stays Depth16");
 }
 
+static int rb_snorm8(uint32_t f)
+{
+    return f == 12u || f == 32u || f == 72u;
+}
+static int rb_rgb10a2(uint32_t f) { return f == 90u; }
+static int rb_rg11b10(uint32_t f) { return f == 92u; }
+static int rb_16or32(uint32_t f)
+{
+    return f == 20u || f == 22u || f == 25u || f == 55u || f == 60u ||
+           f == 62u || f == 65u || f == 105u || f == 110u || f == 112u ||
+           f == 115u || f == 125u;
+}
+static int rb_rgba8(uint32_t f) { return f == 70u || f == 71u; }
+static int rb_bgra8(uint32_t f) { return f == 80u || f == 81u; }
+
+static void test_readback_pixel_format_class(void)
+{
+    expect(rb_snorm8(12u) && rb_snorm8(72u) && !rb_snorm8(70u),
+           "SNORM8 readback class");
+    expect(rb_rgb10a2(90u) && !rb_rgb10a2(91u), "RGB10A2Unorm readback class");
+    expect(rb_rg11b10(92u) && !rb_rg11b10(90u), "RG11B10Float readback class");
+    expect(rb_16or32(20u) && rb_16or32(125u) && !rb_16or32(70u),
+           "16/32-bit float/unorm readback class");
+    expect(rb_rgba8(70u) && rb_rgba8(71u) && !rb_rgba8(80u),
+           "RGBA8 readback class");
+    expect(rb_bgra8(80u) && rb_bgra8(81u) && !rb_bgra8(70u),
+           "BGRA8 readback class");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2033,6 +2062,7 @@ int main(void)
     test_ds_format_classification();
     test_depth_readback_plan();
     test_default_depth_pixel_format();
+    test_readback_pixel_format_class();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

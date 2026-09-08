@@ -131,11 +131,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* SNORM8 direct path in C++ (bypass lossy BGRA8). */
-    BOOL sourceIsSnorm8 =
-        (pixelFormat == MGLPixelFormatR8Snorm ||
-         pixelFormat == MGLPixelFormatRG8Snorm ||
-         pixelFormat == MGLPixelFormatRGBA8Snorm);
-    if (sourceIsSnorm8) {
+    if (mglRenderReadbackPixelFormatIsSnorm8((uint32_t)pixelFormat)) {
         return mglRenderCopySnorm8TextureBytesToGL(
                    src, (uint64_t)srcBytesPerRow,
                    dst, (uint64_t)dstBytesPerRow,
@@ -146,8 +142,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* RGB10A2 direct path in C++ (bypass lossy BGRA8). */
-    BOOL sourceIsRGB10A2Direct = (pixelFormat == MGLPixelFormatRGB10A2Unorm);
-    if (sourceIsRGB10A2Direct &&
+    if (mglRenderReadbackPixelFormatIsRGB10A2((uint32_t)pixelFormat) &&
         mglRenderReadbackTypeAllowsRGB10A2((uint32_t)type))
     {
         return mglRenderCopyRGB10A2TextureBytesToGL(
@@ -160,8 +155,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* RG11B10Float direct path in C++ (bypass lossy BGRA8). */
-    BOOL sourceIsRG11B10FloatDirect = (pixelFormat == MGLPixelFormatRG11B10Float);
-    if (sourceIsRG11B10FloatDirect &&
+    if (mglRenderReadbackPixelFormatIsRG11B10((uint32_t)pixelFormat) &&
         mglRenderReadbackTypeAllowsRG11B10((uint32_t)type))
     {
         return mglRenderCopyRG11B10TextureBytesToGL(
@@ -174,24 +168,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* 16/32-bit direct path in C++ (bypass lossy BGRA8). */
-    BOOL sourceIs16BitUnorm =
-        (pixelFormat == MGLPixelFormatR16Unorm ||
-         pixelFormat == MGLPixelFormatRG16Unorm ||
-         pixelFormat == MGLPixelFormatRGBA16Unorm);
-    BOOL sourceIs16BitSnorm =
-        (pixelFormat == MGLPixelFormatR16Snorm ||
-         pixelFormat == MGLPixelFormatRG16Snorm ||
-         pixelFormat == MGLPixelFormatRGBA16Snorm);
-    BOOL sourceIs16BitFloat =
-        (pixelFormat == MGLPixelFormatR16Float ||
-         pixelFormat == MGLPixelFormatRG16Float ||
-         pixelFormat == MGLPixelFormatRGBA16Float);
-    BOOL sourceIs32BitFloat =
-        (pixelFormat == MGLPixelFormatR32Float ||
-         pixelFormat == MGLPixelFormatRG32Float ||
-         pixelFormat == MGLPixelFormatRGBA32Float);
-
-    if ((sourceIs16BitUnorm || sourceIs16BitSnorm || sourceIs16BitFloat || sourceIs32BitFloat) &&
+    if (mglRenderReadbackPixelFormatIs16or32((uint32_t)pixelFormat) &&
         mglRenderReadbackTypeAllows16or32((uint32_t)type))
     {
         return mglRenderCopy16or32TextureBytesToGL(
@@ -203,13 +180,8 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             ? YES : NO;
     }
 
-    BOOL sourceIsRGBA =
-        (pixelFormat == MGLPixelFormatRGBA8Unorm ||
-         pixelFormat == MGLPixelFormatRGBA8Unorm_sRGB);
-    BOOL sourceIsBGRA =
-        (pixelFormat == MGLPixelFormatBGRA8Unorm ||
-         pixelFormat == MGLPixelFormatBGRA8Unorm_sRGB);
-    if (!sourceIsRGBA && !sourceIsBGRA) {
+    if (!mglRenderReadbackPixelFormatIsRGBA8((uint32_t)pixelFormat) &&
+        !mglRenderReadbackPixelFormatIsBGRA8((uint32_t)pixelFormat)) {
         if (!mglMetalReadbackFormatIsBGRA8Compatible(pixelFormat) ||
             width > NSUIntegerMax / 4u ||
             height > NSUIntegerMax / (width * 4u)) {

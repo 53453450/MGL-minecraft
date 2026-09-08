@@ -9824,6 +9824,59 @@ int mglRenderReadbackTypeIsPacked(uint32_t type) {
                : 0;
 }
 
+int mglRenderReadbackPixelFormatIsSnorm8(uint32_t pixel_format) {
+    switch (pixel_format) {
+    case 12u: /* R8Snorm */
+    case 32u: /* RG8Snorm */
+    case 72u: /* RGBA8Snorm */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int mglRenderReadbackPixelFormatIsRGB10A2(uint32_t pixel_format) {
+    return pixel_format == 90u /* RGB10A2Unorm */ ? 1 : 0;
+}
+
+int mglRenderReadbackPixelFormatIsRG11B10(uint32_t pixel_format) {
+    return pixel_format == 92u /* RG11B10Float */ ? 1 : 0;
+}
+
+int mglRenderReadbackPixelFormatIs16or32(uint32_t pixel_format) {
+    switch (pixel_format) {
+    case 20u:  /* R16Unorm */
+    case 22u:  /* R16Snorm */
+    case 25u:  /* R16Float */
+    case 55u:  /* R32Float */
+    case 60u:  /* RG16Unorm */
+    case 62u:  /* RG16Snorm */
+    case 65u:  /* RG16Float */
+    case 105u: /* RG32Float */
+    case 110u: /* RGBA16Unorm */
+    case 112u: /* RGBA16Snorm */
+    case 115u: /* RGBA16Float */
+    case 125u: /* RGBA32Float */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int mglRenderReadbackPixelFormatIsRGBA8(uint32_t pixel_format) {
+    return pixel_format == 70u /* RGBA8Unorm */ ||
+                   pixel_format == 71u /* RGBA8Unorm_sRGB */
+               ? 1
+               : 0;
+}
+
+int mglRenderReadbackPixelFormatIsBGRA8(uint32_t pixel_format) {
+    return pixel_format == 80u /* BGRA8Unorm */ ||
+                   pixel_format == 81u /* BGRA8Unorm_sRGB */
+               ? 1
+               : 0;
+}
+
 int mglRenderIsValidGLCompareFunction(uint32_t func) {
     switch (func) {
     case GL_NEVER:
