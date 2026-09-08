@@ -598,6 +598,45 @@ typedef struct MGLTessCaptureSessionHostOps {
 bool mglTessRunCaptureSession(void *capture, const uint32_t *params,
                               const MGLTessCaptureSessionHostOps *ops);
 
+/* O1.4 residual: full AIR vertex capture orchestration (array + indexed). */
+typedef struct MGLTessVertexCaptureHostOps {
+    void *renderer;
+    int (*bind_mtl_program)(void *renderer, Program *program);
+    void *(*create_buffer)(void *renderer, uint64_t length);
+    void *(*create_buffer_with_bytes)(void *renderer, const void *bytes,
+                                      uint64_t length);
+    void *(*buffer_contents)(void *buffer);
+    uint64_t (*buffer_length)(void *buffer);
+    void (*mark_dirty_all)(void *ctx);
+    int (*process_gl_state)(void *renderer);
+    int (*encoder_has_current)(void *renderer);
+    void (*bind_capture_slots)(void *renderer, void *capture,
+                               const uint32_t *params);
+    void (*set_capture_active)(void *renderer, int active);
+    void *(*encoder_owner)(void *renderer);
+    void (*mark_cb_has_work)(void *renderer);
+    void (*end_render_encoding)(void *renderer);
+    int (*primitive_restart)(GLMContext ctx, GLenum index_type,
+                             uint32_t *out_restart_index);
+    void *(*prepare_element_index)(void *renderer, void *index_buffer,
+                                   GLenum gl_index_type, uint64_t *inout_offset,
+                                   uint64_t *inout_mtl_type);
+    void (*log_gs_diag)(const char *msg);
+} MGLTessVertexCaptureHostOps;
+
+/* Returns retained capture buffer or NULL; *out_offset set on success. */
+void *mglTessRunVertexCaptureArray(GLMContext ctx, GLint first, GLsizei count,
+                                   GLsizei instanceCount, GLuint baseInstance,
+                                   uint64_t *out_offset,
+                                   const MGLTessVertexCaptureHostOps *ops);
+
+void *mglTessRunVertexCaptureIndexed(
+    GLMContext ctx, void *index_mtl, uint64_t index_type, uint64_t index_offset,
+    GLsizei count, GLint baseVertex, GLsizei instanceCount, GLuint baseInstance,
+    uint32_t maxIndex, uint64_t *out_offset,
+    const MGLTessVertexCaptureHostOps *ops);
+
+
 
 bool mglGeometryGatherIndices(const uint8_t *indexBytes, GLenum indexType,
                               GLsizei count, int32_t baseVertex,

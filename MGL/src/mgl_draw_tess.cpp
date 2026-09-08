@@ -25,9 +25,12 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <cstddef>
 #include <CoreFoundation/CoreFoundation.h>
+
+extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
 #ifndef MAX
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -2439,6 +2442,190 @@ extern "C" bool mglTessRunCaptureSession(void *capture, const uint32_t *params,
     }
     return true;
 }
+
+namespace {
+
+static int vertex_capture_ops_ready(const MGLTessVertexCaptureHostOps *ops)
+{
+    return ops && ops->renderer && ops->bind_mtl_program && ops->create_buffer &&
+           ops->mark_dirty_all && ops->process_gl_state &&
+           ops->encoder_has_current && ops->bind_capture_slots &&
+           ops->set_capture_active && ops->encoder_owner &&
+           ops->mark_cb_has_work && ops->end_render_encoding;
+}
+
+static bool run_vertex_capture_session(GLMContext ctx, void *capture,
+                                       const uint32_t *params,
+                                       const MGLTessVertexCaptureHostOps *ops)
+{
+    MGLTessCaptureSessionHostOps session = {
+        .ctx = ctx,
+        .renderer = ops->renderer,
+        .mark_dirty_all = ops->mark_dirty_all,
+        .process_gl_state = ops->process_gl_state,
+        .encoder_has_current = ops->encoder_has_current,
+        .bind_capture_slots = ops->bind_capture_slots,
+        .set_capture_active = ops->set_capture_active,
+    };
+    return mglTessRunCaptureSession(capture, params, &session);
+}
+
+} // namespace
+
+extern "C" void *mglTessRunVertexCaptureArray(
+    GLMContext ctx, GLint first, GLsizei count, GLsizei instanceCount,
+    GLuint baseInstance, uint64_t *out_offset,
+    const MGLTessVertexCaptureHostOps *ops)
+{
+    if (out_offset) {
+        *out_offset = 0u;
+    }
+    if (!vertex_capture_ops_ready(ops) || !ctx ||
+        !mglTessArrayCaptureInputsOk(first, count, instanceCount)) {
+        return nullptr;
+    }
+    Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    if (!vertexProgram || !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
+        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
+        return nullptr;
+    }
+    MGLTessVertexCapturePlan plan = {};
+    if (!mglTessPlanVertexCapture(vertexProgram, (uint32_t)count,
+                                  (uint32_t)instanceCount, (uint32_t)first,
+                                  baseInstance, &plan)) {
+        return nullptr;
+    }
+    void *capture = ops->create_buffer(ops->renderer, plan.capture_size);
+    if (!capture) {
+        return nullptr;
+    }
+    if (!run_vertex_capture_session(ctx, capture, plan.params, ops)) {
+        CFRelease(capture);
+        return nullptr;
+    }
+    if (ops->log_gs_diag && std::getenv("MGL_GS_DIAG")) {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+                      "MGL GS DIAG capture-draw POINT first=%d count=%d "
+                      "instances=%d baseInst=%u stride=%u size=%llu",
+                      (int)first, (int)count, (int)instanceCount, baseInstance,
+                      (unsigned)plan.capture_stride,
+                      (unsigned long long)plan.capture_size);
+        ops->log_gs_diag(buf);
+    }
+    mglTessEncodeCaptureArray(ops->encoder_owner(ops->renderer), (uint32_t)first,
+                              (uint32_t)count, (uint32_t)instanceCount,
+                              baseInstance);
+    ops->mark_cb_has_work(ops->renderer);
+    ops->end_render_encoding(ops->renderer);
+    ops->set_capture_active(ops->renderer, 0);
+    ops->mark_dirty_all(ctx);
+    if (out_offset) {
+        *out_offset = plan.capture_offset;
+    }
+    return capture;
+}
+
+extern "C" void *mglTessRunVertexCaptureIndexed(
+    GLMContext ctx, void *index_mtl, uint64_t index_type, uint64_t index_offset,
+    GLsizei count, GLint baseVertex, GLsizei instanceCount, GLuint baseInstance,
+    uint32_t maxIndex, uint64_t *out_offset,
+    const MGLTessVertexCaptureHostOps *ops)
+{
+    if (out_offset) {
+        *out_offset = 0u;
+    }
+    if (!vertex_capture_ops_ready(ops) || !ctx || count <= 0 ||
+        instanceCount <= 0 || !index_mtl) {
+        return nullptr;
+    }
+    Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    if (!vertexProgram || !ops->bind_mtl_program(ops->renderer, vertexProgram) ||
+        !vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function) {
+        return nullptr;
+    }
+    MGLTessVertexCapturePlan plan = {};
+    if (!mglTessPlanVertexCapture(vertexProgram, maxIndex + 1u,
+                                  (uint32_t)instanceCount, 0u, baseInstance,
+                                  &plan)) {
+        return nullptr;
+    }
+    void *capture = ops->create_buffer(ops->renderer, plan.capture_size);
+    if (!capture) {
+        return nullptr;
+    }
+    if (!run_vertex_capture_session(ctx, capture, plan.params, ops)) {
+        CFRelease(capture);
+        return nullptr;
+    }
+
+    void *sanitizedIndexBuffer = index_mtl;
+    uint64_t sanitizedIndexOffset = index_offset;
+    uint32_t restartIndex = 0u;
+    const int restartEnabled =
+        ops->primitive_restart
+            ? ops->primitive_restart(ctx, (GLenum)index_type, &restartIndex)
+            : 0;
+    const int contentsReadable =
+        (ops->buffer_contents && ops->buffer_contents(index_mtl)) ? 1 : 0;
+    MGLTessIndexedCaptureIndexPrep prep = {};
+    if (!ops->buffer_length ||
+        !mglTessPlanIndexedCaptureIndexPrep(
+            (uint32_t)index_type, index_offset, (uint32_t)count,
+            ops->buffer_length(index_mtl), contentsReadable,
+            restartEnabled ? 1 : 0, restartIndex, &prep)) {
+        ops->set_capture_active(ops->renderer, 0);
+        CFRelease(capture);
+        return nullptr;
+    }
+    if (prep.need_sanitize && ops->create_buffer_with_bytes &&
+        ops->buffer_contents) {
+        uint8_t *copy = (uint8_t *)std::malloc((size_t)prep.stream_bytes);
+        if (copy) {
+            const uint8_t *src =
+                (const uint8_t *)ops->buffer_contents(index_mtl) + index_offset;
+            if (mglTessSanitizeRestartIndices(copy, src, (uint32_t)count,
+                                              (GLenum)index_type,
+                                              prep.restart_index)) {
+                void *clean = ops->create_buffer_with_bytes(
+                    ops->renderer, copy, prep.stream_bytes);
+                if (clean) {
+                    sanitizedIndexBuffer = clean;
+                    sanitizedIndexOffset = 0u;
+                }
+            }
+            std::free(copy);
+        }
+    }
+    void *drawIndexBuffer = sanitizedIndexBuffer;
+    uint64_t drawIndexOffset = sanitizedIndexOffset;
+    uint64_t mtlIndexType = (uint64_t)prep.mtl_index_type;
+    if (prep.need_metal_index_prep && ops->prepare_element_index) {
+        uint64_t preparedOffset = sanitizedIndexOffset;
+        uint64_t preparedType = mtlIndexType;
+        void *prepared = ops->prepare_element_index(
+            ops->renderer, sanitizedIndexBuffer, (GLenum)index_type,
+            &preparedOffset, &preparedType);
+        if (prepared) {
+            drawIndexBuffer = prepared;
+            drawIndexOffset = preparedOffset;
+            mtlIndexType = preparedType;
+        }
+    }
+    mglTessEncodeCaptureIndexed(
+        ops->encoder_owner(ops->renderer), drawIndexBuffer, (uint32_t)mtlIndexType,
+        drawIndexOffset, (uint32_t)count, (int32_t)baseVertex,
+        (uint32_t)instanceCount, baseInstance);
+    ops->mark_cb_has_work(ops->renderer);
+    ops->end_render_encoding(ops->renderer);
+    ops->set_capture_active(ops->renderer, 0);
+    ops->mark_dirty_all(ctx);
+    if (out_offset) {
+        *out_offset = plan.capture_offset;
+    }
+    return capture;
+}
+
 
 #include "mgl_air_tess_abi.h"
 

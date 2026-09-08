@@ -13,6 +13,7 @@
 
 #include "glcorearb.h"
 #include "glm_context.h"
+#include "mgl_draw_validate.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -77,6 +78,12 @@ bool mglDrawHostCaptureCullDistanceArray(void *renderer, GLMContext ctx,
                                          GLint first, GLsizei count,
                                          GLsizei instanceCount,
                                          GLuint baseInstance);
+bool mglDrawHostCaptureCullDistanceElement(void *renderer, GLMContext ctx,
+                                           const uint8_t *indexBytes,
+                                           GLenum indexType, GLsizei count,
+                                           GLint baseVertex,
+                                           GLsizei instanceCount,
+                                           GLuint baseInstance);
 bool mglDrawHostProcessGLStateLocked(void *renderer, bool draw_command);
 bool mglDrawHostRasterizationIsEmpty(void *renderer);
 bool mglDrawHostModeFullyCulled(void *renderer, GLenum mode);
@@ -95,6 +102,15 @@ void mglDrawHostRecordArraySubmitted(void *renderer, GLenum mode,
                                      uint64_t vertexCount);
 void mglDrawHostWatchdogArrays(void *renderer, GLMContext ctx);
 
+bool mglDrawHostPrepareEncodeCullDistanceElement(
+    void *renderer, GLenum mode, const uint8_t *indexBytes, GLenum type,
+    GLsizei count, GLint baseVertex, GLsizei instanceCount,
+    GLuint baseInstance, int polygon_line_mode);
+bool mglDrawHostEncodeCullDistanceElementBytes(
+    void *renderer, GLenum mode, const uint8_t *indexBytes, GLenum type,
+    GLsizei count, GLint baseVertex, GLsizei instanceCount,
+    GLuint baseInstance, int polygon_line_mode,
+    const void *enc_ctx);
 bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
                                            GLenum type, const void *indices,
                                            GLsizei count, GLint baseVertex,
@@ -114,6 +130,64 @@ bool mglDrawHostPrepareIndirectCPURead(void *renderer, GLMContext ctx,
                                        const char *label);
 bool mglDrawHostHasGeometry(GLMContext ctx);
 bool mglDrawHostUsesCullDistance(GLMContext ctx);
+void *mglDrawHostRunVertexCaptureArray(void *renderer, GLMContext ctx,
+                                      GLint first, GLsizei count,
+                                      GLsizei instanceCount,
+                                      GLuint baseInstance,
+                                      uint64_t *out_offset);
+void *mglDrawHostRunVertexCaptureIndexed(
+    void *renderer, GLMContext ctx, void *index_mtl, uint64_t index_type,
+    uint64_t index_offset, GLsizei count, GLint baseVertex,
+    GLsizei instanceCount, GLuint baseInstance, uint32_t maxIndex,
+    uint64_t *out_offset);
+
+/* O1.4 residual: drawArrays VBO-range validation HostOps runner. */
+typedef struct MGLValidateArraysAttribInfo {
+    uint32_t attrib_index;
+    uint32_t buffer_name;
+    int64_t binding_offset;
+    int64_t relativeoffset;
+    uint32_t stride;
+    uint32_t divisor;
+    uint32_t attrib_type;
+    uint32_t attrib_size;
+    int64_t vbo_size;
+    int has_drawable;
+    int64_t written_min;
+    int64_t written_max;
+    uint32_t last_init_source;
+    uint32_t mapped;
+    uint32_t access;
+    uint32_t access_flags;
+    uint32_t has_initialized_data;
+    int64_t last_write_offset;
+    int64_t last_write_size;
+    const void *last_write_src_ptr;
+    uint64_t last_write_src_hash;
+    void *buffer_obj; /* Buffer* borrowed */
+    void *mtl_data; /* borrowed */
+} MGLValidateArraysAttribInfo;
+
+typedef struct MGLValidateArraysHostOps {
+    void *renderer;
+    void *(*get_validated_vao)(GLMContext ctx, const char *where);
+    int (*attrib_enabled)(void *vao, uint32_t attrib);
+    int (*resolve_attrib)(GLMContext ctx, void *vao, uint32_t attrib,
+                          const char *where, MGLValidateArraysAttribInfo *out);
+    int (*ensure_mtl_buffer)(void *renderer, MGLValidateArraysAttribInfo *info);
+    uint64_t (*mtl_buffer_length)(void *mtl_data);
+    uint32_t (*max_attribs)(void);
+    uint32_t (*current_program_key)(GLMContext ctx);
+    int (*should_inspect)(uint64_t draw_call, uint32_t program_key);
+    void (*log_line)(const char *msg);
+} MGLValidateArraysHostOps;
+
+/* 1 = inputs OK (or validation disabled), 0 = block draw. */
+int mglDrawValidateArraysVertexInputs(GLMContext ctx, GLenum mode, GLint first,
+                                      GLsizei count, uint64_t draw_call,
+                                      int validation_enabled,
+                                      const MGLValidateArraysHostOps *ops);
+
 /* O1.5: ObjC mtlDrawArrays/Elements one-liners → lock/MS host then mglIssue*. */
 void mglDrawHostGuardIssueArrays(void *renderer, GLMContext ctx, GLenum mode,
                                  GLint first, GLsizei count,

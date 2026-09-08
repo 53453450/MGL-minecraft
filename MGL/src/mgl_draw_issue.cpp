@@ -16,10 +16,12 @@
 #include "mgl_index_buffer.h"
 #include "mgl_trace_log.h"
 #include "mgl_types_buffer.h"
+#include "mgl_render.h"
 
 #include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstdarg>
 
 extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx,
                                                        int stage);
@@ -708,3 +710,171 @@ extern "C" void mglIssueMultiDrawElementsIndirect(
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount,
                 (int)stride, mglIssueProgramName(ctx));
 }
+
+
+static void mglValidateLogLine(const MGLValidateArraysHostOps *ops, const char *fmt, ...)
+{
+    if (!ops || !ops->log_line || !fmt) return;
+    char buf[768];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    ops->log_line(buf);
+}
+
+extern "C" int mglDrawValidateArraysVertexInputs(
+    GLMContext ctx, GLenum mode, GLint first, GLsizei count, uint64_t draw_call,
+    int validation_enabled, const MGLValidateArraysHostOps *ops)
+{
+    MGLValidateArraysEarlyStatus st = MGL_VALIDATE_ARRAYS_OK;
+    int early_ok = 0;
+    uint64_t firstVertex = 0u, lastVertex = 0u;
+    const int cont = mglDrawValidateArraysEarly(
+        validation_enabled, ctx ? 1 : 0, first, count, &firstVertex, &lastVertex,
+        &st, &early_ok);
+    if (!cont) {
+        if (st == MGL_VALIDATE_ARRAYS_DISABLED) return 1;
+        if (st == MGL_VALIDATE_ARRAYS_ZERO_COUNT) return 0;
+        if (st == MGL_VALIDATE_ARRAYS_NULL_CTX) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu reason=null_ctx mode=0x%x first=%d count=%d",
+                 (unsigned long long)draw_call, (unsigned)mode, (int)first, (int)count);
+            return 0;
+        }
+        if (st == MGL_VALIDATE_ARRAYS_INVALID_RANGE) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu reason=invalid_range mode=0x%x first=%d count=%d",
+                 (unsigned long long)draw_call, (unsigned)mode, (int)first, (int)count);
+            return 0;
+        }
+        if (st == MGL_VALIDATE_ARRAYS_OVERFLOW) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu reason=vertex_range_overflow mode=0x%x first=%d count=%d",
+                 (unsigned long long)draw_call, (unsigned)mode, (int)first, (int)count);
+            return 0;
+        }
+        return early_ok ? 1 : 0;
+    }
+    if (!ops || !ops->get_validated_vao || !ops->attrib_enabled ||
+        !ops->resolve_attrib || !ops->ensure_mtl_buffer ||
+        !ops->mtl_buffer_length || !ops->max_attribs) {
+        return 0;
+    }
+
+    void *vao = ops->get_validated_vao(ctx, "drawArrays.vboRange");
+    if (!vao) {
+        mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu reason=invalid_vao mode=0x%x first=%d count=%d",
+             (unsigned long long)draw_call, (unsigned)mode, (int)first, (int)count);
+        return 0;
+    }
+
+    const uint32_t maxAttribs = ops->max_attribs();
+    for (uint32_t attrib = 0; attrib < maxAttribs; attrib++) {
+        if (!ops->attrib_enabled(vao, attrib)) continue;
+
+        MGLValidateArraysAttribInfo info = {};
+        if (!ops->resolve_attrib(ctx, vao, attrib, "drawArrays.vboRange", &info)) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu attrib=%u reason=invalid_vbo mode=0x%x first=%d count=%d",
+                 (unsigned long long)draw_call, (unsigned)attrib, (unsigned)mode,
+                 (int)first, (int)count);
+            return 0;
+        }
+
+        if (!info.has_drawable) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=never_written "
+                 "init(source=%u mapped=%u access=0x%x accessFlags=0x%x full=%u "
+                 "range=[%lld,%lld) lastOff=%lld lastSize=%lld src=%p hash=0x%016llx)",
+                 (unsigned long long)draw_call, (unsigned)attrib,
+                 (unsigned)info.buffer_name, (unsigned)info.last_init_source,
+                 (unsigned)info.mapped, (unsigned)info.access,
+                 (unsigned)info.access_flags, (unsigned)info.has_initialized_data,
+                 (long long)info.written_min, (long long)info.written_max,
+                 (long long)info.last_write_offset, (long long)info.last_write_size,
+                 info.last_write_src_ptr,
+                 (unsigned long long)info.last_write_src_hash);
+            return 0;
+        }
+
+        if (!mglRenderAttribOffsetsValid(info.binding_offset, info.relativeoffset)) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=negative_attrib_offset "
+                 "bindingOffset=%lld relativeOffset=%lld",
+                 (unsigned long long)draw_call, (unsigned)attrib,
+                 (unsigned)info.buffer_name, (long long)info.binding_offset,
+                 (long long)info.relativeoffset);
+            return 0;
+        }
+
+        MGLRenderAttribFetchPlan fetch = {};
+        if (!mglRenderPlanAttribFetch(
+                info.attrib_type, info.attrib_size, info.stride,
+                info.binding_offset, info.relativeoffset, info.divisor,
+                firstVertex, lastVertex, info.vbo_size, &fetch) ||
+            fetch.status != MGL_ATTRIB_FETCH_OK) {
+            const char *reason = "invalid_attrib_format";
+            if (fetch.status == MGL_ATTRIB_FETCH_OVERFLOW) reason = "byte_range_overflow";
+            else if (fetch.status == MGL_ATTRIB_FETCH_OOB) reason = "vbo_oob";
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=%s "
+                 "byteRange=[%llu,%llu) stride=%llu elem=%llu type=0x%x size=%u divisor=%u",
+                 (unsigned long long)draw_call, (unsigned)attrib,
+                 (unsigned)info.buffer_name, reason,
+                 (unsigned long long)fetch.byte_start, (unsigned long long)fetch.byte_end,
+                 (unsigned long long)fetch.stride, (unsigned long long)fetch.elem_bytes,
+                 (unsigned)info.attrib_type, (unsigned)info.attrib_size,
+                 (unsigned)info.divisor);
+            return 0;
+        }
+
+        if (!ops->ensure_mtl_buffer(ops->renderer, &info) || !info.mtl_data) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=no_mtl_buffer "
+                 "byteRange=[%llu,%llu)",
+                 (unsigned long long)draw_call, (unsigned)attrib,
+                 (unsigned)info.buffer_name, (unsigned long long)fetch.byte_start,
+                 (unsigned long long)fetch.byte_end);
+            return 0;
+        }
+
+        const uint64_t metalLen = ops->mtl_buffer_length(info.mtl_data);
+        if (fetch.byte_end > metalLen) {
+            mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=metal_oob "
+                 "byteRange=[%llu,%llu) metalLen=%llu vboSize=%llu first=%d count=%d",
+                 (unsigned long long)draw_call, (unsigned)attrib,
+                 (unsigned)info.buffer_name, (unsigned long long)fetch.byte_start,
+                 (unsigned long long)fetch.byte_end, (unsigned long long)metalLen,
+                 (unsigned long long)info.vbo_size, (int)first, (int)count);
+            return 0;
+        }
+
+        if (info.written_min >= 0 && info.written_max >= 0) {
+            const uint64_t writtenMin = (uint64_t)info.written_min;
+            const uint64_t writtenMax = (uint64_t)info.written_max;
+            if (fetch.byte_start < writtenMin || fetch.byte_end > writtenMax) {
+                mglValidateLogLine(ops, "MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=unwritten_range "
+                     "byteRange=[%llu,%llu) written=[%llu,%llu) first=%d count=%d source=%u",
+                     (unsigned long long)draw_call, (unsigned)attrib,
+                     (unsigned)info.buffer_name, (unsigned long long)fetch.byte_start,
+                     (unsigned long long)fetch.byte_end, (unsigned long long)writtenMin,
+                     (unsigned long long)writtenMax, (int)first, (int)count,
+                     (unsigned)info.last_init_source);
+                return 0;
+            }
+        }
+
+        if (ops->should_inspect && ops->current_program_key && ops->log_line) {
+            const uint32_t key = ops->current_program_key(ctx);
+            if (ops->should_inspect(draw_call, key) && attrib == 0u) {
+                mglValidateLogLine(ops, "MGL TRACE drawArrays.attrib0 call=%llu program=%u buffer=%u first=%d count=%d "
+                     "byteRange=[%llu,%llu) vboSize=%llu metalLen=%llu stride=%llu "
+                     "bindingOffset=%llu relOffset=%llu elemBytes=%llu",
+                     (unsigned long long)draw_call, (unsigned)key,
+                     (unsigned)info.buffer_name, (int)first, (int)count,
+                     (unsigned long long)fetch.byte_start,
+                     (unsigned long long)fetch.byte_end,
+                     (unsigned long long)info.vbo_size, (unsigned long long)metalLen,
+                     (unsigned long long)fetch.stride,
+                     (unsigned long long)info.binding_offset,
+                     (unsigned long long)info.relativeoffset,
+                     (unsigned long long)fetch.elem_bytes);
+            }
+        }
+    }
+    return 1;
+}
+

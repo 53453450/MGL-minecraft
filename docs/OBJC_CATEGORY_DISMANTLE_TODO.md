@@ -49,8 +49,8 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+BindingState.m` | ~4675 | **厚** | 拆：slot/stage/UBO/SSBO 表 → C++；ObjC 只 `setVertexBuffer` 等绑定口 |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
 | `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
-| `+DrawStageHost.m` | ~1986 | 中→薄 | O1.4 residual：GS Metal 扩张已下沉 `mgl_draw_gs_metal.cpp`；余 capture/cull/validate + 薄 HostOps |
-| `mgl_draw_metal_port.m` | ~457 | 薄端口 | O1.6：CreateBuffer/DrawPrimitives 等 id 物化 |
+| `+DrawStageHost.m` | ~360 | 薄 | O1.4 residual2：capture/validate/cull encode → C++；HostOps → `mgl_draw_metal_port.m`；仅 bindCull/MS + 一行包装 |
+| `mgl_draw_metal_port.m` | ~1950 | 薄端口+HostOps | O1.6 id 物化 + O1.4 residual2 StageHost HostOps/ABI |
 | `+Batch.m` | ~2097 | **厚** | path 决策（MDI/stream/ICB）→ C；ObjC 只 enqueue/flush 端口 |
 | `+Tessellation.m` | ~1766 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~1602 | **厚** | replay 绑定与 stage 分支 → C++；ObjC 一行 replay 口 |
@@ -94,9 +94,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 | 符号 / 区域 | 文件 | 债因 |
 |-------------|------|------|
-| `runVertexCaptureSession` / `captureAIRVertexPositions*` host | `+DrawStageHost.m` | O1.2/O1.4：session 在 C++；capture 仍是 MTL 物化口 |
-| `mglDrawHostGsExecuteMetalExpansion` | `+DrawStageHost.m` | O1.4 residual：薄 HostOps 转发 → `mglDrawGsExecuteMetalExpansion` |
-| `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawStageHost.m` | ObjC 只填 port 表；layout 已在 C++（O1.3） |
+| `runVertexCaptureSession` / `captureAIRVertexPositions*` | `mgl_draw_tess` + metal_port | O1.4 residual2：编排在 `mglTessRunVertexCapture*`；ObjC 一行包装 |
+| `mglDrawHostGsExecuteMetalExpansion` | `mgl_draw_metal_port.m` | O1.4 residual：薄 HostOps 转发 → `mglDrawGsExecuteMetalExpansion` |
+| `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawStageHost.m` | ObjC 只填 port 表；layout 已在 C++（O1.3）；cull encode 在 `mgl_draw_cull.cpp` |
 | `scheduleDrawBatch` 物化口 | `+Batch.m` | 决策已在 `mgl_batch_select_path`；ObjC 填 inputs（O2.1） |
 | `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1：编排在 `mgl_render_pass_plan`；ObjC 物化 MTL* |
 | Texture/Blit/BindingState 巨型 category | 见 §1.1 | O3–O4 |
@@ -112,6 +112,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [x] **O1.3** VAO cull attrib resolve → C++（ObjC 只提供 VAO 指针表） — `mglRenderBuildCullDistanceLayoutFromPorts`；ObjC 只 resolve→port 表 + last-bound 记账
 - [x] **O1.4** 双路径收口：删除 ObjC `handleTessellation*` / `handleGeometry*` / `handleVertexTransformFeedback*`；XFB+TES 编排在 `mglXfbRunVsOnlyDraw` / `mglTessRunPatchDraw`（HostOps）；GS 早段拓扑/gather/capture 在 `mglDrawGsRunDraw`；Metal 扩张在 `mglDrawGsExecuteMetalExpansion`（`mgl_draw_gs_metal.cpp`），ObjC 仅薄 HostOps
 - [x] **O1.4 residual** GS Metal expansion HostOps：PSO/XFB scatter/passthrough encode 下沉；StageHost 2562→~1986
+- [x] **O1.4 residual2** capture AIR cull/vertex + validate arrays → `mgl_draw_cull` / `mgl_draw_tess` / `mgl_draw_issue`+`mgl_draw_validate`；HostOps → metal_port；StageHost ~1986→~360；`test-validate-arrays-early`
 - [x] **O1.5** `+Draw.m`：`mtlDraw*` 一行转发；Locked 删除；MS sample loop 进 `mglDrawHostGuardIssue*`
 - [x] **O1.6** 验收：`+DrawSupport.m` &lt; 400 LOC（~350）：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → `+DrawStageHost`；Support 仅 resolve/raster/polygon/ensure
 
@@ -188,9 +189,10 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 ## 5. 即时下一刀（建议本周）
 
 1. ~~**O1.1–O1.6**~~：DrawSupport &lt;400；XFB/TES HostOps 已下沉
-2. ~~**O1.4 residual**~~：`mglDrawGsExecuteMetalExpansion` + `mgl_draw_gs_metal.cpp`；StageHost ~1986（余 capture/cull/validate + 薄 HostOps）
-3. ~~**O2.1**~~：`mgl_batch_select_path` + `test-batch-path` 已合入
-4. ~~**O0**~~：本文与 `scripts/objc_renderer_loc.sh` 已挂进 `docs/` / ARCH / README
-5. **下一刀**：StageHost capture/cull/validate → C++（目标 StageHost &lt;800 或删除）；然后 O2.2 hazard / O2.3 replay
+2. ~~**O1.4 residual**~~：`mglDrawGsExecuteMetalExpansion` + `mgl_draw_gs_metal.cpp`
+3. ~~**O1.4 residual2**~~：capture/validate/cull → C++；HostOps → metal_port；StageHost ~360（bindCull/MS + 一行包装）
+4. ~~**O2.1**~~：`mgl_batch_select_path` + `test-batch-path` 已合入
+5. ~~**O0**~~：本文与 `scripts/objc_renderer_loc.sh` 已挂进 `docs/` / ARCH / README
+6. **下一刀**：O2.2 hazard overflow；O2.3 BatchReplay stage/bind；可考虑删除 StageHost（并入 metal_port / Support）
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
