@@ -49,8 +49,8 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+BindingState.m` | ~4675 | **厚** | 拆：slot/stage/UBO/SSBO 表 → C++；ObjC 只 `setVertexBuffer` 等绑定口 |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
 | `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
-| `+DrawStageHost.m` | ~360 | 薄 | O1.4 residual2：capture/validate/cull encode → C++；HostOps → `mgl_draw_metal_port.m`；仅 bindCull/MS + 一行包装 |
-| `mgl_draw_metal_port.m` | ~1950 | 薄端口+HostOps | O1.6 id 物化 + O1.4 residual2 StageHost HostOps/ABI |
+| `+DrawStageHost.m` | ~363 | 薄 | A1：保留（非空）；bindCull/MS + 一行包装；GS 扩张已无策略 |
+| `mgl_draw_metal_port.m` | ~1938 | 薄端口+HostOps | A1：删 `mglDrawHostGsExecuteMetalExpansion`；嵌套 `metal_ops`；id 物化 + HostOps 表 |
 | `+Batch.m` | ~2083 | **厚** | path 决策（MDI/stream/ICB）→ C；ObjC 只 enqueue/flush 端口 |
 | `+Tessellation.m` | ~1766 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~1446 | **厚** | O2.3/O2.5：stage/bind + MDI/simple/direct plan 在 `mgl_batch_replay`；ObjC 仍厚于 Metal encode |
@@ -95,7 +95,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | 符号 / 区域 | 文件 | 债因 |
 |-------------|------|------|
 | `runVertexCaptureSession` / `captureAIRVertexPositions*` | `mgl_draw_tess` + metal_port | O1.4 residual2：编排在 `mglTessRunVertexCapture*`；ObjC 一行包装 |
-| `mglDrawHostGsExecuteMetalExpansion` | `mgl_draw_metal_port.m` | O1.4 residual：薄 HostOps 转发 → `mglDrawGsExecuteMetalExpansion` |
+| ~~`mglDrawHostGsExecuteMetalExpansion`~~ | — | **A1 DONE**：已删除；`RunDraw` 经嵌套 `metal_ops` 直调 `mglDrawGsExecuteMetalExpansion`；fragment clear 在 C++ |
 | `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawStageHost.m` | ObjC 只填 port 表；layout 已在 C++（O1.3）；cull encode 在 `mgl_draw_cull.cpp` |
 | `scheduleDrawBatch` 物化口 | `+Batch.m` | 决策已在 `mgl_batch_select_path`；ObjC 填 inputs（O2.1） |
 | `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1：编排在 `mgl_render_pass_plan`；ObjC 物化 MTL* |
@@ -113,6 +113,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [x] **O1.4** 双路径收口：删除 ObjC `handleTessellation*` / `handleGeometry*` / `handleVertexTransformFeedback*`；XFB+TES 编排在 `mglXfbRunVsOnlyDraw` / `mglTessRunPatchDraw`（HostOps）；GS 早段拓扑/gather/capture 在 `mglDrawGsRunDraw`；Metal 扩张在 `mglDrawGsExecuteMetalExpansion`（`mgl_draw_gs_metal.cpp`），ObjC 仅薄 HostOps
 - [x] **O1.4 residual** GS Metal expansion HostOps：PSO/XFB scatter/passthrough encode 下沉；StageHost 2562→~1986
 - [x] **O1.4 residual2** capture AIR cull/vertex + validate arrays → `mgl_draw_cull` / `mgl_draw_tess` / `mgl_draw_issue`+`mgl_draw_validate`；HostOps → metal_port；StageHost ~1986→~360；`test-validate-arrays-early`
+- [x] **A1** 抽干 `mglDrawHostGsExecuteMetalExpansion`：嵌套 `metal_ops`；`RunDraw` 直调 C++；fragment clear 下沉；StageHost 保持 ~363（&lt;800；bindCull/MS 非空故不删）；禁新厚 category；Draw 簇进 `objc_renderer_loc.sh`
 - [x] **O1.5** `+Draw.m`：`mtlDraw*` 一行转发；Locked 删除；MS sample loop 进 `mglDrawHostGuardIssue*`
 - [x] **O1.6** 验收：`+DrawSupport.m` &lt; 400 LOC（~350）：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → `+DrawStageHost`；Support 仅 resolve/raster/polygon/ensure
 
@@ -122,7 +123,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [x] **O2.2** hazard overflow 策略（sticky vs flush-and-continue）→ C；ObjC 不设语义 — `mgl_batch_hazard_*` + `test-batch-hazard`；`draw_command` 只执行 action；默认 sticky，`MGL_HAZARD_OVERFLOW_FLUSH_CONTINUE` 选 flush-and-continue
 - [x] **O2.3** `+BatchReplay` stage/bind 展开 → C++；ObjC 只 `set*Bytes` / `draw*` 端口 — `mgl_batch_replay.*`（dynamic VAO / UBO·texture override / resource binding collect / attrib can-bind）
 - [x] **O2.4** ICB：batch 与 `supportIndirectCommandBuffers` 门闩同层配置 — `mgl_batch_icb_config` / `mgl_batch_icb_support_indirect_command_buffers`；ObjC Batch/Blit + `mgl_air_loader` 同用；`test-batch-icb`；legacy ENABLE_ICB_BATCH|PIPELINES / DISABLE_ICB(_BATCH) 仍识别
-- [ ] **O2.5** 验收：`+Batch*.m` 合计 &lt; 600 LOC；MC 路径可用 env 金样 / benchmark 回归 — *进行中*：MDI gate/fill、simple eligible、direct prim plan、stream MDI fill、ICB gate 已进 `mgl_batch_replay`；ObjC 仍厚于 Metal encode 物化
+- [ ] **O2.5 / A3** 验收：`+Batch*.m` 合计 &lt; 600 LOC；MC 路径可用 env 金样 / benchmark 回归 — *进行中*：MDI/simple/direct/stream/ICB plan 已进 `mgl_batch_replay`；ObjC 仍厚于 Metal encode（~2083+~1446≈3529）
 
 ### Batch O3 — RenderPass / PSO / Binding【P1】
 
@@ -195,6 +196,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 5. ~~**O0**~~：本文与 `scripts/objc_renderer_loc.sh` 已挂进 `docs/` / ARCH / README
 6. ~~**O2.2 / O2.3**~~：`mgl_batch_hazard` + `mgl_batch_replay` stage/bind
 7. ~~**O2.4**~~：`mgl_batch_icb_*` 统一 batch path + `supportIndirectCommandBuffers`；`test-batch-icb`
-8. **下一刀**：O2.5 继续压 `+Batch*.m` Metal encode（目标合计 &lt;600）；StageHost 删除仍可选（~363，非空）
+8. ~~**A1**~~：删 `mglDrawHostGsExecuteMetalExpansion`；`metal_ops` 嵌套；StageHost ~363 保留
+9. **下一刀（A3 / O2.5）**：继续压 `+Batch*.m` Metal encode（合计仍 ~3529，目标 &lt;600）；勿再开厚 Draw category
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。

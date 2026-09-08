@@ -10,6 +10,8 @@
 
 #include "mgl_draw_gs.h"
 
+#include "glm_limits.h"
+
 #include "error.h"
 #include "mgl_air_gs_abi.h"
 #include "mgl_aux_assets.h"
@@ -94,8 +96,9 @@ static int gs_ops_ready(const MGLGsMetalExpansionHostOps *ops)
            ops->set_expansion && ops->mark_cb_has_work && ops->begin_blit &&
            ops->blit_copy && ops->end_blit && ops->process_gl_state &&
            ops->encoder_has_current && ops->raster_empty && ops->fully_culled &&
-           ops->apply_polygon_offset && ops->rebind_fragment_after_gs &&
-           ops->encoder_owner && ops->flush_command_buffer &&
+           ops->apply_polygon_offset && ops->binding_state_owner &&
+           ops->rebind_fragment_after_gs && ops->encoder_owner &&
+           ops->flush_command_buffer &&
            ops->record_queries && ops->set_vertex_buffer &&
            ops->draw_primitives && ops->draw_primitives_indirect;
 }
@@ -705,6 +708,17 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
     }
 
     if (!std::getenv("MGL_ABLATE_GS_REBIND")) {
+        /* A1: clear stale fragment bindings in C++; ObjC only rebinds. */
+        void *binding = ops->binding_state_owner(ops->renderer);
+        if (binding) {
+            for (uint32_t slot = 0u; slot < 31u; slot++) {
+                (void)mglRenderBindingClearFragmentBuffer(binding, slot);
+            }
+            const uint32_t tex_slots = (uint32_t)TEXTURE_UNITS;
+            for (uint32_t slot = 0u; slot < tex_slots; slot++) {
+                (void)mglRenderBindingClearFragmentTexture(binding, slot);
+            }
+        }
         if (!ops->rebind_fragment_after_gs(ops->renderer, ctx)) {
             ops->set_expansion(ops->renderer, NULL, 0, 0);
             ctx->active_state->dirty_bits = DIRTY_ALL;

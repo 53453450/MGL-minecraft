@@ -9,10 +9,11 @@
  */
 
 // MGLRenderer+DrawStageHost.m
-// O1.4 residual: thin ObjC glue. Capture/validate/cull encode → C++ domain
-// (mgl_draw_tess / mgl_draw_cull / mgl_draw_issue). HostOps ports + host ABI →
-// mgl_draw_metal_port.m. This category keeps bindCull VAO ports + MS sample loop
-// and one-line BatchReplay-facing wrappers.
+// A1 / O1.4 residual2: thin ObjC glue (kept; not empty). Capture/validate/cull
+// encode → C++ (mgl_draw_tess / mgl_draw_cull / mgl_draw_issue). GS Metal
+// expansion HostOps → mgl_draw_metal_port.m → mgl_draw_gs_metal.cpp. This
+// category keeps bindCull VAO ports + MS sample loop + one-line wrappers.
+// Do not open new thick ObjC categories here.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"

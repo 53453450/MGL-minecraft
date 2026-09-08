@@ -1031,7 +1031,7 @@ extern "C" int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first,
         !ops->process_buffer || !ops->capture_array || !ops->capture_indexed ||
         !ops->create_buffer_with_bytes || !ops->pending_gs_input_active ||
         !ops->pending_gs_input || !ops->pending_gs_input_offset ||
-        !ops->pending_gs_input_stride || !ops->execute_metal_expansion) {
+        !ops->pending_gs_input_stride || !ops->metal_ops) {
         return 0;
     }
 
@@ -1186,12 +1186,13 @@ extern "C" int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first,
 
     const int input_owned =
         inputSource.kind != MGL_GS_INPUT_PENDING_TES ? 1 : 0;
-    const int rc = ops->execute_metal_expansion(
-        ops->renderer, ctx, mode, first, count, indexType, indices, baseVertex,
-        instanceCount, baseInstance, label, program, gsInputMode, gsOutputMode,
+    /* A1: C++ owns expansion; ObjC only filled metal_ops HostOps table. */
+    const int rc = mglDrawGsExecuteMetalExpansion(
+        ctx, mode, first, count, indexType, indices, baseVertex, instanceCount,
+        baseInstance, label, program, gsInputMode, gsOutputMode,
         outputPrimitive, indexedDraw, gatherBuf, &gparams, sizeof(gparams),
         &gsLayout, input, inputOffset, captureVS, captureTES,
-        inputSource.pending_stride);
+        inputSource.pending_stride, ops->metal_ops);
     if (gatherBuf) {
         CFRelease(gatherBuf);
     }

@@ -192,8 +192,9 @@ int mglDrawGsStageShouldBlockDraw(int stage, uint32_t gs_route,
                                   uint32_t metallib_size);
 
 
-/* O1.4+: GS draw host runner. Topology/gather/input + Metal expansion in C++;
- * ObjC supplies thin MTL HostOps (PSO materialize / bind / blit / encode). */
+/* O1.4+/A1: GS draw host runner. Topology/gather/input + Metal expansion in C++;
+ * ObjC supplies thin MTL HostOps (PSO materialize / bind / blit / encode).
+ * A1: RunDraw calls ExecuteMetalExpansion directly via nested metal_ops. */
 typedef struct MGLRenderCopyBackEntry_t MGLRenderCopyBackEntry;
 typedef struct MGLRenderComputeExecutionResult_t MGLRenderComputeExecutionResult;
 
@@ -228,6 +229,8 @@ typedef struct MGLGsMetalExpansionHostOps {
     int (*raster_empty)(void *renderer);
     int (*fully_culled)(void *renderer, GLenum mode);
     void (*apply_polygon_offset)(void *renderer, GLenum mode);
+    /* A1: clear loops live in C++; ObjC only rebinds fragment resources. */
+    void *(*binding_state_owner)(void *renderer);
     int (*rebind_fragment_after_gs)(void *renderer, GLMContext ctx);
     void *(*encoder_owner)(void *renderer);
     void (*flush_command_buffer)(void *renderer, int wait);
@@ -249,7 +252,7 @@ typedef struct MGLGsMetalExpansionHostOps {
     void (*log_diag)(const char *msg);
 } MGLGsMetalExpansionHostOps;
 
-/* C++ owns GS Metal expansion; ObjC fills HostOps and forwards. */
+/* C++ owns GS Metal expansion; ObjC fills nested metal_ops HostOps only. */
 int mglDrawGsExecuteMetalExpansion(
     GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLenum indexType,
     const void *indices, GLint baseVertex, GLsizei instanceCount,
@@ -280,35 +283,12 @@ typedef struct MGLGsDrawHostOps {
     void *(*pending_gs_input)(void *renderer);
     uint32_t (*pending_gs_input_offset)(void *renderer);
     uint32_t (*pending_gs_input_stride)(void *renderer);
-    /* Thin ObjC forwarder → mglDrawGsExecuteMetalExpansion + HostOps. */
-    int (*execute_metal_expansion)(void *renderer, GLMContext ctx, GLenum mode,
-                                   GLint first, GLsizei count, GLenum indexType,
-                                   const void *indices, GLint baseVertex,
-                                   GLsizei instanceCount, GLuint baseInstance,
-                                   const char *label, Program *program,
-                                   GLenum gs_input_mode, GLenum gs_output_mode,
-                                   uint32_t output_primitive, int indexed,
-                                   void *gather_buf, const void *gparams,
-                                   uint32_t gparams_bytes,
-                                   const MGLGsComputeLayout *layout,
-                                   void *input, uint64_t input_offset,
-                                   Program *capture_vs, Program *capture_tes,
-                                   uint32_t pending_stride);
+    /* A1: nested Metal expansion HostOps; C++ calls
+     * mglDrawGsExecuteMetalExpansion directly (no ObjC middle-man). */
+    const MGLGsMetalExpansionHostOps *metal_ops;
     void (*dispatch_error)(GLMContext ctx, const char *where, GLenum err);
     void (*log_diag)(const char *msg);
 } MGLGsDrawHostOps;
-
-
-/* ObjC thin HostOps filler → mglDrawGsExecuteMetalExpansion. */
-int mglDrawHostGsExecuteMetalExpansion(
-    void *renderer, GLMContext ctx, GLenum mode, GLint first, GLsizei count,
-    GLenum indexType, const void *indices, GLint baseVertex,
-    GLsizei instanceCount, GLuint baseInstance, const char *label,
-    Program *program, GLenum gs_input_mode, GLenum gs_output_mode,
-    uint32_t output_primitive, int indexed, void *gather_buf,
-    const void *gparams, uint32_t gparams_bytes,
-    const MGLGsComputeLayout *layout, void *input, uint64_t input_offset,
-    Program *capture_vs, Program *capture_tes, uint32_t pending_stride);
 
 /* Returns 1 if GS handled the draw, 0 if N/A. */
 int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first, GLsizei count,

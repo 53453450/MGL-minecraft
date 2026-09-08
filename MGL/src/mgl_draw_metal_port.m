@@ -866,7 +866,7 @@ static uint32_t mglStagePendingGsStride(void *renderer)
 }
 
 
-/* ---- O1.4 residual: GS Metal expansion HostOps (thin MTL materialization) ---- */
+/* ---- A1 / O1.4: GS Metal expansion HostOps (thin MTL materialization only) ---- */
 
 static void mglGsMetalRelease(void *obj)
 {
@@ -998,15 +998,17 @@ static void mglGsMetalEndBlit(void *blit)
     CFRelease(blit);
 }
 
+static void *mglGsMetalBindingOwner(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    return self ? self->_bindingStateOwner : NULL;
+}
+
+/* A1: clears are in mgl_draw_gs_metal.cpp; ObjC only rebinds MTL resources. */
 static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !ctx) return 0;
-    for (uint32_t slot = 0u; slot < 31u; slot++)
-        mglRenderBindingClearFragmentBuffer(self->_bindingStateOwner, slot);
-    const uint32_t texSlots = (uint32_t)TEXTURE_UNITS;
-    for (uint32_t slot = 0u; slot < texSlots; slot++)
-        mglRenderBindingClearFragmentTexture(self->_bindingStateOwner, slot);
     MGLEncodeContext gsEncCtx = {
         .render_encoder_owner =
             self->_renderPassManager.state->currentRenderEncoderOwner,
@@ -1093,23 +1095,10 @@ static void mglGsMetalLogDiag(const char *msg)
     if (msg) NSLog(@"%s", msg);
 }
 
-int mglDrawHostGsExecuteMetalExpansion(
-    void *renderer, GLMContext drawCtx, GLenum mode, GLint first, GLsizei count,
-    GLenum indexType, const void *indices, GLint baseVertex,
-    GLsizei instanceCount, GLuint baseInstance, const char *label,
-    Program *program, GLenum gsInputMode, GLenum gsOutputMode,
-    uint32_t outputPrimitive, int indexedDraw, void *gatherBufPtr,
-    const void *gparamsPtr, uint32_t gparamsBytes,
-    const MGLGsComputeLayout *gsLayoutPtr, void *inputPtr,
-    uint64_t inputOffsetIn, Program *captureVS, Program *captureTES,
-    uint32_t pendingStride)
+/* A1: fill nested Metal expansion HostOps (no ObjC expansion middle-man). */
+static MGLGsMetalExpansionHostOps mglGsMetalMakeExpansionOps(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !drawCtx || !program || !gsLayoutPtr || !gparamsPtr) {
-        return 1;
-    }
-    self->ctx = drawCtx;
-    MGLGsMetalExpansionHostOps hops = {
+    return (MGLGsMetalExpansionHostOps){
         .renderer = renderer,
         .create_buffer = mglStageCreateBuffer,
         .create_buffer_with_bytes = mglStageCreateBufferBytes,
@@ -1133,6 +1122,7 @@ int mglDrawHostGsExecuteMetalExpansion(
         .raster_empty = mglStageRasterEmpty,
         .fully_culled = mglStageFullyCulled,
         .apply_polygon_offset = mglStageApplyPolygonOffset,
+        .binding_state_owner = mglGsMetalBindingOwner,
         .rebind_fragment_after_gs = mglGsMetalRebindFragment,
         .encoder_owner = mglStageEncoderOwner,
         .flush_command_buffer = mglStageFlushCB,
@@ -1144,12 +1134,6 @@ int mglDrawHostGsExecuteMetalExpansion(
         .draw_primitives_indirect = mglGsMetalDrawPrimsIndirect,
         .log_diag = mglGsMetalLogDiag,
     };
-    return mglDrawGsExecuteMetalExpansion(
-        drawCtx, mode, first, count, indexType, indices, baseVertex,
-        instanceCount, baseInstance, label, program, gsInputMode, gsOutputMode,
-        outputPrimitive, indexedDraw, gatherBufPtr, gparamsPtr, gparamsBytes,
-        gsLayoutPtr, inputPtr, inputOffsetIn, captureVS, captureTES,
-        pendingStride, &hops);
 }
 
 
@@ -1569,6 +1553,7 @@ bool mglDrawHostHandleGeometry(void *renderer, GLMContext ctx, GLenum mode,
     MGLRenderer *host = mglStageHostSelf(renderer);
     if (!host) return false;
     host->ctx = ctx;
+    MGLGsMetalExpansionHostOps metal_ops = mglGsMetalMakeExpansionOps(renderer);
     MGLGsDrawHostOps ops = {
         .renderer = renderer,
         .bind_mtl_program = mglStageBindProgram,
@@ -1581,7 +1566,7 @@ bool mglDrawHostHandleGeometry(void *renderer, GLMContext ctx, GLenum mode,
         .pending_gs_input = mglStagePendingGsInput,
         .pending_gs_input_offset = mglStagePendingGsOff,
         .pending_gs_input_stride = mglStagePendingGsStride,
-        .execute_metal_expansion = mglDrawHostGsExecuteMetalExpansion,
+        .metal_ops = &metal_ops,
         .dispatch_error = NULL,
         .log_diag = NULL,
     };
