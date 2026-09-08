@@ -11,6 +11,7 @@
 #include "mgl_draw_encode.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
+#include "mgl_batch_encode_shared.h"
 #include <CoreFoundation/CoreFoundation.h>
 
 typedef struct {
@@ -44,13 +45,7 @@ static void *mglIcbScratch(void *v, uint64_t len, uint64_t *off)
 static int mglIcbMap(void *v, void *buf, uint64_t off, uint64_t need, void **out)
 {
     (void)v;
-    void *contents = NULL;
-    uint64_t length = 0;
-    if (mglRenderGetBufferContents(buf, &contents, &length) != 0 ||
-        !mgl_batch_issue_scratch_range_ok(off, need, length) || !contents)
-        return 0;
-    if (out) *out = (uint8_t *)contents + off;
-    return 1;
+    return mgl_batch_encode_map_scratch(buf, off, need, out);
 }
 
 static int mglIcbResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,

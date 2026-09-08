@@ -14,6 +14,7 @@
 
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"
+#include "mgl_batch_mtl_encode.h"
 
 #include "mgl_render.h"
 #include "mgl_types_texture.h"
@@ -952,4 +953,180 @@ extern "C" void mgl_batch_issue_direct_batch(const MGLBatchDirectIssueOps *ops)
                                  poly_pt);
         }
     }
+}
+
+extern "C" int mgl_batch_mtl_bind_dyn_vertex(const MGLBatchDynVertexBindOps *ops)
+{
+    if (!ops || !ops->plan_binding || !ops->resolve_slot || !ops->ensure_mtl ||
+        !ops->vao_binding_offset) {
+        return 0;
+    }
+    for (uint8_t bi = 0; bi < ops->binding_count; bi++) {
+        MGLBatchDynVertexStreamPlan plan;
+        memset(&plan, 0, sizeof(plan));
+        const int planRc = ops->plan_binding(ops->ctx, bi, &plan);
+        if (planRc == MGL_BATCH_DYN_VERTEX_FAIL) {
+            return 0;
+        }
+        if (planRc == MGL_BATCH_DYN_VERTEX_UNUSED) {
+            continue;
+        }
+        int resolved_slots[MGL_BATCH_DYN_VERTEX_MAX_STREAMS];
+        uint32_t resolved_slot_count = 0u;
+        for (uint32_t stream = 0; stream < plan.stream_count; stream++) {
+            int resolved_slot = -1;
+            if (!ops->resolve_slot(ops->ctx, plan.representative_attribs[stream],
+                                   &resolved_slot) ||
+                resolved_slot < 0) {
+                continue;
+            }
+            if (!mgl_batch_replay_dyn_vertex_slot_ok(resolved_slot,
+                                                     ops->max_metal_slots)) {
+                return 0;
+            }
+            if (ops->stream_can_bind &&
+                !ops->stream_can_bind(ops->ctx, &plan, stream)) {
+                return 0;
+            }
+            if (resolved_slot_count < MGL_BATCH_DYN_VERTEX_MAX_STREAMS) {
+                resolved_slots[resolved_slot_count++] = resolved_slot;
+            }
+        }
+        if (resolved_slot_count == 0u) {
+            continue;
+        }
+        void *mtl = NULL;
+        void *gl_buf = NULL;
+        uint64_t dyn_off = 0;
+        uint64_t mtl_len = 0;
+        if (!ops->ensure_mtl(ops->ctx, &plan, &mtl, &gl_buf, &dyn_off,
+                             &mtl_len) ||
+            !mtl) {
+            return 0;
+        }
+        const uint64_t bind_off = ops->vao_binding_offset(ops->ctx, &plan);
+        if (!mgl_batch_replay_dyn_vertex_offset_ok(bind_off, dyn_off, mtl_len)) {
+            return 0;
+        }
+        MGLBatchBufferBindReq reqs[MGL_BATCH_MTL_BUFFER_BIND_MAX];
+        uint32_t req_count = 0u;
+        for (uint32_t s = 0; s < resolved_slot_count; s++) {
+            if (req_count >= MGL_BATCH_MTL_BUFFER_BIND_MAX) {
+                break;
+            }
+            reqs[req_count].mtl_buffer = mtl;
+            reqs[req_count].gl_buffer = gl_buf;
+            reqs[req_count].offset = dyn_off;
+            reqs[req_count].metal_slot = (uint32_t)resolved_slots[s];
+            reqs[req_count].is_vertex_stage = 1u;
+            req_count++;
+        }
+        (void)mgl_batch_mtl_encode_buffer_binds(ops->binding_state_owner,
+                                                ops->render_encoder_owner, reqs,
+                                                req_count);
+    }
+    return 1;
+}
+
+extern "C" int mgl_batch_mtl_bind_dyn_uniforms(const MGLBatchDynUniformBindOps *ops)
+{
+    if (!ops || !ops->cmd || !ops->glm_ctx || !ops->gather_lengths ||
+        !ops->resolve_op) {
+        return 0;
+    }
+    const uint32_t count = ops->cmd->dynamic_uniform_binding_count;
+    if (count == 0u) {
+        return 1;
+    }
+    if (count > MGL_MAX_DYNAMIC_UNIFORM_BINDINGS) {
+        return 0;
+    }
+    uint64_t mtl_lengths[MGL_MAX_DYNAMIC_UNIFORM_BINDINGS];
+    memset(mtl_lengths, 0, sizeof(mtl_lengths));
+    if (!ops->gather_lengths(ops->ctx, mtl_lengths, count)) {
+        return 0;
+    }
+    MGLBatchUniformBindPlan plan;
+    if (!mgl_batch_replay_plan_uniform_binds(
+            ops->glm_ctx, ops->cmd, mtl_lengths, count,
+            ops->min_stage_binding_size, ops->max_buffer_slots, &plan)) {
+        return 0;
+    }
+    MGLBatchBufferBindReq reqs[MGL_BATCH_MTL_BUFFER_BIND_MAX];
+    uint32_t req_count = 0u;
+    for (uint32_t oi = 0; oi < plan.count; oi++) {
+        const MGLBatchUniformBindOp *op = &plan.ops[oi];
+        void *mtl = NULL;
+        void *gl_buf = NULL;
+        if (!ops->resolve_op(ops->ctx, op, &mtl, &gl_buf) || !mtl) {
+            return 0;
+        }
+        if (req_count >= MGL_BATCH_MTL_BUFFER_BIND_MAX) {
+            return 0;
+        }
+        reqs[req_count].mtl_buffer = mtl;
+        reqs[req_count].gl_buffer = gl_buf;
+        reqs[req_count].offset = op->offset;
+        reqs[req_count].metal_slot = op->metal_slot;
+        reqs[req_count].is_vertex_stage = op->is_vertex_stage;
+        req_count++;
+    }
+    (void)mgl_batch_mtl_encode_buffer_binds(ops->binding_state_owner,
+                                            ops->render_encoder_owner, reqs,
+                                            req_count);
+    return 1;
+}
+
+extern "C" int mgl_batch_mtl_bind_dyn_sampled(const MGLBatchDynSampledBindOps *ops)
+{
+    if (!ops || !ops->glm_ctx || !ops->resolve_candidate || !ops->touched_units) {
+        return 0;
+    }
+    MGLBatchSampledTexPlan plan;
+    if (!mgl_batch_replay_plan_sampled_texture_candidates(ops->glm_ctx, &plan)) {
+        return 0;
+    }
+    MGLBatchResourceBindReq reqs[MGL_BATCH_MTL_RESOURCE_BIND_MAX];
+    uint32_t req_count = 0u;
+    for (uint32_t i = 0; i < plan.count; i++) {
+        void *texture = NULL;
+        void *sampler = NULL;
+        uint32_t binding_stage = 0u;
+        uint32_t sampler_slot = 0u;
+        int needs_sampler = 0;
+        const int rc = ops->resolve_candidate(
+            ops->ctx, &plan.entries[i], ops->touched_units, &texture,
+            &binding_stage, &needs_sampler, &sampler, &sampler_slot);
+        if (rc < 0) {
+            return 0;
+        }
+        if (rc == 0) {
+            continue;
+        }
+        if (!texture || req_count >= MGL_BATCH_MTL_RESOURCE_BIND_MAX) {
+            return 0;
+        }
+        reqs[req_count].resource = texture;
+        reqs[req_count].metal_slot = plan.entries[i].metal_slot;
+        reqs[req_count].binding_stage = binding_stage;
+        reqs[req_count].kind = MGL_RENDER_RESOURCE_BINDING_TEXTURE;
+        req_count++;
+        if (!needs_sampler) {
+            continue;
+        }
+        if (!sampler ||
+            !mgl_batch_replay_sampler_slot_ok(sampler_slot,
+                                              ops->max_sampler_slots) ||
+            req_count >= MGL_BATCH_MTL_RESOURCE_BIND_MAX) {
+            return 0;
+        }
+        reqs[req_count].resource = sampler;
+        reqs[req_count].metal_slot = sampler_slot;
+        reqs[req_count].binding_stage = binding_stage;
+        reqs[req_count].kind = MGL_RENDER_RESOURCE_BINDING_SAMPLER;
+        req_count++;
+    }
+    return mgl_batch_mtl_encode_resource_binds(ops->binding_state_owner,
+                                               ops->render_encoder_owner, reqs,
+                                               req_count);
 }

@@ -332,6 +332,64 @@ typedef struct MGLBatchDirectIssueOps {
 
 void mgl_batch_issue_direct_batch(const MGLBatchDirectIssueOps *ops);
 
+/* ---- A3 encode-fold: dyn vertex / uniform bind loops ---- */
+
+typedef struct MGLBatchDynVertexBindOps {
+    void *ctx;
+    uint8_t binding_count;
+    int max_metal_slots;
+    void *binding_state_owner;
+    void *render_encoder_owner;
+    /* Returns plan rc: FAIL / UNUSED / OK (see mgl_batch_replay_plan_dyn_vertex*). */
+    int (*plan_binding)(void *ctx, uint8_t binding_index,
+                        MGLBatchDynVertexStreamPlan *plan_out);
+    int (*resolve_slot)(void *ctx, uint32_t attrib_index, int *slot_out);
+    int (*stream_can_bind)(void *ctx, const MGLBatchDynVertexStreamPlan *plan,
+                           uint32_t stream);
+    /* Upload/bind MTL; set mtl/gl/dyn_offset/mtl_length. Return 0 fail. */
+    int (*ensure_mtl)(void *ctx, const MGLBatchDynVertexStreamPlan *plan,
+                      void **mtl_out, void **gl_out, uint64_t *dyn_offset_out,
+                      uint64_t *mtl_length_out);
+    uint64_t (*vao_binding_offset)(void *ctx,
+                                   const MGLBatchDynVertexStreamPlan *plan);
+} MGLBatchDynVertexBindOps;
+
+int mgl_batch_mtl_bind_dyn_vertex(const MGLBatchDynVertexBindOps *ops);
+
+typedef struct MGLBatchDynUniformBindOps {
+    void *ctx;
+    void *binding_state_owner;
+    void *render_encoder_owner;
+    uint64_t min_stage_binding_size;
+    uint32_t max_buffer_slots;
+    /* Fill mtl_lengths[0..count). Return 0 fail. */
+    int (*gather_lengths)(void *ctx, uint64_t *mtl_lengths, uint32_t count);
+    const MGLDrawCommand *cmd; /* non-null; GLM ctx via gather/plan */
+    GLMContext glm_ctx;
+    /* After plan: resolve op → mtl/gl. Return 0 fail. */
+    int (*resolve_op)(void *ctx, const MGLBatchUniformBindOp *op, void **mtl_out,
+                      void **gl_out);
+} MGLBatchDynUniformBindOps;
+
+int mgl_batch_mtl_bind_dyn_uniforms(const MGLBatchDynUniformBindOps *ops);
+
+typedef struct MGLBatchDynSampledBindOps {
+    void *ctx;
+    void *binding_state_owner;
+    void *render_encoder_owner;
+    uint32_t max_sampler_slots;
+    GLMContext glm_ctx;
+    /* Return 0 to skip candidate; 1 append texture (+optional sampler). */
+    int (*resolve_candidate)(void *ctx, const MGLBatchSampledTexCandidate *e,
+                             const bool *touched_units, void **texture_out,
+                             uint32_t *binding_stage_out, int *needs_sampler_out,
+                             void **sampler_out, uint32_t *sampler_slot_out);
+    const bool *touched_units;
+} MGLBatchDynSampledBindOps;
+
+int mgl_batch_mtl_bind_dyn_sampled(const MGLBatchDynSampledBindOps *ops);
+
+
 #ifdef __cplusplus
 }
 #endif

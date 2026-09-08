@@ -190,6 +190,20 @@ uint32_t mgl_batch_mtl_restore_plan_delta_dirty(int can_delta,
 void mgl_batch_mtl_restore_note_delta_perf(const MGLBatchDirtyDeltaFlags *flags);
 void mgl_batch_mtl_restore_note_skip_fail_perf(int skip_dec);
 
+/* Resolved sampler snapshot entries → resource binds (loop in C++). */
+typedef struct MGLBatchResolvedSamplerBind {
+    void *sampler;
+    uint32_t metal_slot;
+    int shader_stage; /* _VERTEX_SHADER / _FRAGMENT_SHADER / … */
+} MGLBatchResolvedSamplerBind;
+
+int mgl_batch_mtl_encode_resolved_samplers(void *binding_state_owner,
+                                           void *render_encoder_owner,
+                                           const MGLBatchResolvedSamplerBind *items,
+                                           uint32_t count);
+
+
+
 #ifdef __cplusplus
 }
 #endif

@@ -8,6 +8,7 @@
 #import "MGLRenderer+Draw_Private.h"
 #include "mgl_render.h"
 #include "mgl_batch_rt_mark.h"
+#include <string.h>
 
 @implementation MGLRenderer (Batch)
 
@@ -113,28 +114,19 @@
                 [self markCurrentFramebufferColorAttachmentWrittenAtIndex:attachmentIndex];
                 break;
             }
-        }
-    }
-}
-
-
 - (void)mglTraceRTSampleCopyWriteMark:(Texture *)tex
                                   fbo:(Framebuffer *)fbo
                            attachment:(FBOAttachment *)attachment
                                   hit:(uint64_t)hit
 {
-    if (!tex || !fbo || !attachment || !ctx) {
-        return;
-    }
+    if (!tex || !fbo || !attachment || !ctx) return;
     Program *program = mglResolveProgramFromState(ctx);
-    Texture *rtColor = NULL;
-    Texture *rtDepth = NULL;
+    Texture *rtColor = NULL, *rtDepth = NULL;
     (void)mglFramebufferLooksLikeGLSampledCopyRenderTarget(ctx, fbo, &rtColor,
                                                            &rtDepth);
-    id colorMTL = tex->mtl_data ? (__bridge id)(tex->mtl_data) : nil;
-    id depthMTL = (rtDepth && rtDepth->mtl_data)
-                      ? (__bridge id)(rtDepth->mtl_data)
-                      : nil;
+    id colorMTL = tex->mtl_data ? (__bridge id)tex->mtl_data : nil;
+    id depthMTL =
+        (rtDepth && rtDepth->mtl_data) ? (__bridge id)rtDepth->mtl_data : nil;
     id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
         _renderPassManager.state->renderPassStateOwner,
         MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
@@ -142,55 +134,61 @@
         _renderPassManager.state->renderPassStateOwner,
         MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     MGLRenderTextureInfo colorInfo = {0};
-    if (colorMTL) {
+    if (colorMTL)
         (void)mglRenderGetTextureInfo((__bridge void *)colorMTL, &colorInfo);
-    }
-    mglTraceLog(
-        "RT_SAMPLE_COPY_WRITE_MARK hit=%llu fbo=%u program=%u rtTex=%u "
-        "label=\"%s\" depthTex=%u depthLabel=\"%s\" viewport=%d,%d,%d,%d "
-        "scissor(en=%d box=%d,%d,%d,%d) depth(test=%d write=%d func=0x%x) "
-        "blend=%d cull=%d colorMask=%d%d%d%d level=%u "
-        "texInit(ever=%u full=%u source=%u) levels=%u mips=%u mipmapped=%u "
-        "mtlColor=%p fmt=%lu size=%lux%lu rpColor=%p rpDepth=%p depthMTL=%p",
-        (unsigned long long)hit, (unsigned)fbo->name,
-        program ? (unsigned)program->name
-                : (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
-        (unsigned)mglTraceTextureName(tex), mglTraceTextureLabel(tex),
-        (unsigned)mglTraceTextureName(rtDepth), mglTraceTextureLabel(rtDepth),
-        (int)MGL_STATE(ctx)->viewport[0], (int)MGL_STATE(ctx)->viewport[1],
-        (int)MGL_STATE(ctx)->viewport[2], (int)MGL_STATE(ctx)->viewport[3],
-        MGL_STATE(ctx)->caps.scissor_test ? 1 : 0,
-        (int)MGL_STATE(ctx)->var.scissor_box[0],
-        (int)MGL_STATE(ctx)->var.scissor_box[1],
-        (int)MGL_STATE(ctx)->var.scissor_box[2],
-        (int)MGL_STATE(ctx)->var.scissor_box[3],
-        MGL_STATE(ctx)->caps.depth_test ? 1 : 0,
-        MGL_STATE(ctx)->var.depth_writemask ? 1 : 0,
-        (unsigned)MGL_STATE(ctx)->var.depth_func,
-        MGL_STATE(ctx)->caps.blend ? 1 : 0,
-        MGL_STATE(ctx)->caps.cull_face ? 1 : 0,
-        MGL_STATE(ctx)->var.color_writemask[0][0] ? 1 : 0,
-        MGL_STATE(ctx)->var.color_writemask[0][1] ? 1 : 0,
-        MGL_STATE(ctx)->var.color_writemask[0][2] ? 1 : 0,
-        MGL_STATE(ctx)->var.color_writemask[0][3] ? 1 : 0,
-        (unsigned)attachment->level,
-        mglTextureAttachmentLevel(tex, attachment->level)
-            ? (unsigned)mglTextureAttachmentLevel(tex, attachment->level)
-                  ->ever_written
-            : 0u,
-        mglTextureAttachmentLevel(tex, attachment->level)
-            ? (unsigned)mglTextureAttachmentLevel(tex, attachment->level)
-                  ->has_initialized_data
-            : 0u,
-        mglTextureAttachmentLevel(tex, attachment->level)
-            ? (unsigned)mglTextureAttachmentLevel(tex, attachment->level)
-                  ->last_init_source
-            : 0u,
-        tex ? (unsigned)tex->num_levels : 0u,
-        tex ? (unsigned)tex->mipmap_levels : 0u,
-        tex ? (unsigned)tex->mipmapped : 0u, colorMTL,
-        (unsigned long)colorInfo.pixel_format, (unsigned long)colorInfo.width,
-        (unsigned long)colorInfo.height, rpColor0, rpDepth, depthMTL);
+    TextureLevel *lvl = mglTextureAttachmentLevel(tex, attachment->level);
+    MGLBatchTraceStatePod state;
+    memset(&state, 0, sizeof(state));
+    for (int i = 0; i < 4; i++) state.viewport[i] = (int32_t)MGL_STATE(ctx)->viewport[i];
+    state.scissor_test = MGL_STATE(ctx)->caps.scissor_test ? 1 : 0;
+    for (int i = 0; i < 4; i++)
+        state.scissor[i] = (int32_t)MGL_STATE(ctx)->var.scissor_box[i];
+    state.depth_test = MGL_STATE(ctx)->caps.depth_test ? 1 : 0;
+    state.depth_write = MGL_STATE(ctx)->var.depth_writemask ? 1 : 0;
+    state.depth_func = (uint32_t)MGL_STATE(ctx)->var.depth_func;
+    state.blend = MGL_STATE(ctx)->caps.blend ? 1 : 0;
+    state.cull = MGL_STATE(ctx)->caps.cull_face ? 1 : 0;
+    for (int i = 0; i < 4; i++)
+        state.color_mask[i] = MGL_STATE(ctx)->var.color_writemask[0][i] ? 1 : 0;
+    MGLBatchTraceRtWriteView v = {
+        .hit = hit,
+        .fbo_name = fbo->name,
+        .program = program ? program->name
+                           : (ctx ? MGL_STATE(ctx)->program_name : 0u),
+        .rt_tex = mglTraceTextureName(tex),
+        .rt_label = mglTraceTextureLabel(tex),
+        .depth_tex = mglTraceTextureName(rtDepth),
+        .depth_label = mglTraceTextureLabel(rtDepth),
+        .level = attachment->level,
+        .ever = lvl ? lvl->ever_written : 0u,
+        .full = lvl ? lvl->has_initialized_data : 0u,
+        .source = lvl ? lvl->last_init_source : 0u,
+        .levels = tex ? tex->num_levels : 0u,
+        .mips = tex ? tex->mipmap_levels : 0u,
+        .mipmapped = tex ? tex->mipmapped : 0u,
+        .mtl_color = (__bridge void *)colorMTL,
+        .fmt = colorInfo.pixel_format,
+        .width = colorInfo.width,
+        .height = colorInfo.height,
+        .rp_color = (__bridge void *)rpColor0,
+        .rp_depth = (__bridge void *)rpDepth,
+        .depth_mtl = (__bridge void *)depthMTL,
+    };
+    for (int i = 0; i < 4; i++) v.viewport[i] = state.viewport[i];
+    v.scissor_en = state.scissor_test;
+    for (int i = 0; i < 4; i++) v.scissor[i] = state.scissor[i];
+    v.depth_test = state.depth_test;
+    v.depth_write = state.depth_write;
+    v.depth_func = state.depth_func;
+    v.blend = state.blend;
+    v.cull = state.cull;
+    for (int i = 0; i < 4; i++) v.color_mask[i] = state.color_mask[i];
+    char line[1536];
+    if (mgl_batch_trace_format_rt_write_mark(line, sizeof(line), &v) > 0)
+        mglTraceLog("%s", line);
+}
+
+pth, depthMTL);
 }
 
 

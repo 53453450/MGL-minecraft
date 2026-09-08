@@ -11,8 +11,10 @@
 #include "mgl_batch_issue.h"
 
 #include "mgl_batch_path.h"
+#include "mgl_batch_restore.h"
 
 #include <limits.h>
+#include <string.h>
 
 int mgl_batch_issue_stream_mdi_gate(const MGLBatchStreamMdiGateIn *in,
                                     size_t *needed_bytes)
@@ -363,4 +365,166 @@ int mgl_batch_issue_apply_dyn_bindings(uint8_t vertex_count, uint8_t uniform_cou
         return 1;
     }
     return ops->mapper_fallback && ops->mapper_fallback(ops->ctx);
+}
+
+void mgl_batch_flush_run_batches(MGLBatchFlushLoopState *st,
+                                 const MGLBatchFlushLoopOps *ops)
+{
+    if (!st || !ops || !ops->batch_count || !ops->command_count) {
+        return;
+    }
+    void *ctx = ops->ctx;
+    const uint32_t n = ops->batch_count(ctx);
+    for (uint32_t b = 0; b < n; b++) {
+        const uint32_t cmd_count = ops->command_count(ctx, b);
+        if (cmd_count == 0u) {
+            continue;
+        }
+
+        MGLBatchSameKeySkipIn skip_in;
+        memset(&skip_in, 0, sizeof(skip_in));
+        int want_abs = 0;
+        if (ops->fill_skip_in) {
+            ops->fill_skip_in(ctx, b, &skip_in, &want_abs);
+        }
+        skip_in.skip_enabled = ops->skip_enabled ? 1u : 0u;
+        skip_in.last_key_valid = st->last_key_valid;
+        skip_in.last_execute_ok = st->last_execute_ok;
+        skip_in.last_was_stream = st->last_was_stream;
+
+        const int skip_dec = mgl_batch_same_key_skip_decision(&skip_in);
+        if (ops->note_skip_perf) {
+            ops->note_skip_perf(ctx, skip_dec);
+        }
+        if (ops->oracle_env_enabled && ops->on_oracle_would_skip &&
+            mgl_batch_restore_oracle_would_skip(
+                ops->skip_enabled ? 1 : 0, st->last_key_valid ? 1 : 0,
+                st->last_execute_ok ? 1 : 0,
+                (ops->oracle_keys_equal && ops->oracle_keys_equal(ctx, b))
+                    ? 1
+                    : 0)) {
+            ops->on_oracle_would_skip(ctx);
+        }
+
+        if (skip_dec == MGL_BATCH_SAME_KEY_SKIP) {
+            if (ops->apply_same_key_skip) {
+                ops->apply_same_key_skip(ctx, b);
+            }
+        } else {
+            /* absolute_offsets_match was computed before set; mismatch → dirty. */
+            uint32_t forced =
+                st->last_was_stream ? ops->vao_buffer_dirty_mask : 0u;
+            if (!skip_in.absolute_offsets_match) {
+                forced |= ops->vao_buffer_dirty_mask;
+            }
+            if (ops->set_absolute_offsets) {
+                ops->set_absolute_offsets(ctx, want_abs);
+            }
+            if (ops->restore) {
+                ops->restore(ctx, b, forced);
+            }
+        }
+
+        if (!ops->check_execute || !ops->check_execute(ctx, b)) {
+            st->last_execute_ok = 0u;
+            continue;
+        }
+
+        st->last_execute_ok = 1u;
+        st->last_key_valid = 1u;
+        st->last_was_stream = 0u;
+        if (ops->mark_execute_ok) {
+            ops->mark_execute_ok(ctx, b);
+        }
+
+        const int path = ops->schedule ? ops->schedule(ctx, b)
+                                       : MGL_BATCH_SELECT_DIRECT;
+        mgl_batch_flush_accum_path(&st->path_stats, path, cmd_count);
+        const char *phase = mgl_batch_flush_path_phase(path);
+        if (ops->trace_phase) {
+            ops->trace_phase(ctx, b, phase);
+        }
+
+        const int path_perf = mgl_batch_flush_scheduled_path_perf_kind(path);
+        if (path_perf == MGL_BATCH_FLUSH_PERF_STREAM) {
+            if (ops->perf_stream) {
+                ops->perf_stream(ctx, cmd_count);
+            }
+            if (ops->issue_stream) {
+                ops->issue_stream(ctx, b);
+            }
+            st->last_was_stream = 1u;
+        } else if (path == MGL_BATCH_SELECT_MDI) {
+            if (ops->issue_mdi) {
+                ops->issue_mdi(ctx, b);
+            }
+        } else if (path == MGL_BATCH_SELECT_ICB) {
+            if (ops->issue_icb) {
+                ops->issue_icb(ctx, b);
+            }
+        } else {
+            if (ops->perf_direct) {
+                ops->perf_direct(ctx, cmd_count);
+            }
+            if (ops->issue_direct) {
+                ops->issue_direct(ctx, b);
+            }
+        }
+
+        if (ops->record_stats) {
+            ops->record_stats(ctx, b);
+        }
+    }
+}
+
+int mgl_batch_check_should_execute(const MGLBatchCheckExecOps *ops)
+{
+    if (!ops) {
+        return 0;
+    }
+    if (ops->begin_trace) {
+        ops->begin_trace(ops->ctx);
+    }
+    if (ops->prepare_fbo && !ops->prepare_fbo(ops->ctx)) {
+        return ops->trace_skip
+                   ? ops->trace_skip(ops->ctx, "SKIP_FBO_ROTATION",
+                                     "fbo_rotation")
+                   : 0;
+    }
+    if (ops->process_gl_state && !ops->process_gl_state(ops->ctx)) {
+        if (ops->capture_error_if_any) {
+            ops->capture_error_if_any(ops->ctx);
+        }
+        return ops->trace_skip
+                   ? ops->trace_skip(ops->ctx, "SKIP_PROCESS_STATE",
+                                     "processGLState")
+                   : 0;
+    }
+    if (ops->should_apply_sampler && ops->should_apply_sampler(ops->ctx)) {
+        if (!ops->apply_sampler || !ops->apply_sampler(ops->ctx)) {
+            return ops->trace_skip
+                       ? ops->trace_skip(ops->ctx, "SKIP_SAMPLER_SNAPSHOT",
+                                         "sampler_snapshot")
+                       : 0;
+        }
+    }
+    if (ops->trace_ready) {
+        ops->trace_ready(ops->ctx);
+    }
+    if (ops->empty_raster && ops->empty_raster(ops->ctx)) {
+        return ops->trace_skip
+                   ? ops->trace_skip(ops->ctx, "SKIP_EMPTY_RASTER",
+                                     "empty_rasterization")
+                   : 0;
+    }
+    if (ops->fully_culled && ops->fully_culled(ops->ctx)) {
+        return ops->trace_skip
+                   ? ops->trace_skip(ops->ctx, "SKIP_FULLY_CULLED",
+                                     "front_and_back_culled")
+                   : 0;
+    }
+    if (ops->apply_polygon_offset) {
+        ops->apply_polygon_offset(ops->ctx);
+    }
+    return 1;
 }

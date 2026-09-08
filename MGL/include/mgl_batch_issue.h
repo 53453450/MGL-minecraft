@@ -17,6 +17,8 @@
 #ifndef MGL_BATCH_ISSUE_H
 #define MGL_BATCH_ISSUE_H
 
+#include "mgl_batch_restore.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -180,6 +182,67 @@ typedef struct MGLBatchDynApplyOps {
 int mgl_batch_issue_apply_dyn_bindings(uint8_t vertex_count, uint8_t uniform_count,
                                        uint8_t texture_count,
                                        const MGLBatchDynApplyOps *ops);
+
+/* ---- A3 encode-fold: flush batch loop + check-execute drivers ---- */
+
+typedef struct MGLBatchFlushLoopState {
+    uint8_t last_key_valid;
+    uint8_t last_execute_ok;
+    uint8_t last_was_stream;
+    MGLBatchFlushPathStats path_stats;
+} MGLBatchFlushLoopState;
+
+typedef struct MGLBatchFlushLoopOps {
+    void *ctx;
+    uint32_t (*batch_count)(void *ctx);
+    uint32_t (*command_count)(void *ctx, uint32_t batch_index);
+    /* Fill skip POD except last_* (runner stamps those). *want_abs out. */
+    void (*fill_skip_in)(void *ctx, uint32_t batch_index,
+                         MGLBatchSameKeySkipIn *in, int *want_abs);
+    void (*note_skip_perf)(void *ctx, int skip_dec);
+    int (*oracle_keys_equal)(void *ctx, uint32_t batch_index);
+    void (*on_oracle_would_skip)(void *ctx);
+    void (*apply_same_key_skip)(void *ctx, uint32_t batch_index);
+    void (*set_absolute_offsets)(void *ctx, int want_abs);
+    void (*restore)(void *ctx, uint32_t batch_index, uint32_t forced_dirty);
+    int (*check_execute)(void *ctx, uint32_t batch_index); /* 0 → continue */
+    void (*mark_execute_ok)(void *ctx, uint32_t batch_index);
+    int (*schedule)(void *ctx, uint32_t batch_index); /* MGL_BATCH_SELECT_* */
+    void (*trace_phase)(void *ctx, uint32_t batch_index, const char *phase);
+    void (*perf_stream)(void *ctx, uint32_t command_count);
+    void (*perf_direct)(void *ctx, uint32_t command_count);
+    void (*issue_stream)(void *ctx, uint32_t batch_index);
+    void (*issue_mdi)(void *ctx, uint32_t batch_index);
+    void (*issue_icb)(void *ctx, uint32_t batch_index);
+    void (*issue_direct)(void *ctx, uint32_t batch_index);
+    void (*record_stats)(void *ctx, uint32_t batch_index);
+    uint32_t vao_buffer_dirty_mask; /* DIRTY_VAO|DIRTY_BUFFER */
+    uint8_t skip_enabled;
+    uint8_t oracle_env_enabled;
+} MGLBatchFlushLoopOps;
+
+void mgl_batch_flush_run_batches(MGLBatchFlushLoopState *st,
+                                 const MGLBatchFlushLoopOps *ops);
+
+typedef struct MGLBatchCheckExecOps {
+    void *ctx;
+    void (*begin_trace)(void *ctx); /* set flush/batch + RESTORE phase */
+    int (*prepare_fbo)(void *ctx);  /* 0 → skip fbo_rotation */
+    int (*process_gl_state)(void *ctx); /* 0 → skip; may set error */
+    void (*capture_error_if_any)(void *ctx);
+    int (*should_apply_sampler)(void *ctx);
+    int (*apply_sampler)(void *ctx); /* 0 → skip sampler_snapshot */
+    void (*trace_ready)(void *ctx);
+    int (*empty_raster)(void *ctx);
+    int (*fully_culled)(void *ctx);
+    void (*apply_polygon_offset)(void *ctx);
+    /* Returns 0 always; records skip. phase/reason are literals. */
+    int (*trace_skip)(void *ctx, const char *phase, const char *reason);
+} MGLBatchCheckExecOps;
+
+/* Returns 1 if batch should execute, 0 if skipped. */
+int mgl_batch_check_should_execute(const MGLBatchCheckExecOps *ops);
+
 
 #ifdef __cplusplus
 }

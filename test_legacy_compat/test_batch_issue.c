@@ -6,6 +6,8 @@
 
 #include "mgl_batch_issue.h"
 #include "mgl_batch_rt_mark.h"
+#include "mgl_batch_path.h"
+#include "mgl_batch_restore.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -175,6 +177,124 @@ static int dyn_has_enc(void *ctx) { (void)ctx; return 1; }
 static int dyn_ok(void *ctx) { (void)ctx; return 1; }
 static int dyn_fail(void *ctx) { (void)ctx; return 0; }
 
+
+static uint32_t g_flush_batches;
+static uint32_t g_flush_seen;
+static int g_flush_issued;
+
+static uint32_t flush_batch_count(void *ctx)
+{
+    (void)ctx;
+    return g_flush_batches;
+}
+static uint32_t flush_cmd_count(void *ctx, uint32_t b)
+{
+    (void)ctx;
+    return b == 0u ? 2u : 0u;
+}
+static void flush_fill_skip(void *ctx, uint32_t b, MGLBatchSameKeySkipIn *in,
+                            int *want_abs)
+{
+    (void)ctx;
+    (void)b;
+    memset(in, 0, sizeof(*in));
+    in->has_encoder = 1u;
+    in->bind_valid = 1u;
+    in->keys_equal = 0u;
+    in->absolute_offsets_match = 1u;
+    in->pass_matches = 1u;
+    if (want_abs) *want_abs = 0;
+}
+static int flush_check(void *ctx, uint32_t b)
+{
+    (void)ctx;
+    (void)b;
+    g_flush_seen += 1u;
+    return 1;
+}
+static void flush_mark(void *ctx, uint32_t b)
+{
+    (void)ctx;
+    (void)b;
+}
+static int flush_sched(void *ctx, uint32_t b)
+{
+    (void)ctx;
+    (void)b;
+    return MGL_BATCH_SELECT_DIRECT;
+}
+static void flush_issue_direct(void *ctx, uint32_t b)
+{
+    (void)ctx;
+    (void)b;
+    g_flush_issued += 1;
+}
+
+static void test_flush_run(void)
+{
+    MGLBatchFlushLoopState st;
+    memset(&st, 0, sizeof(st));
+    g_flush_batches = 1u;
+    g_flush_seen = 0u;
+    g_flush_issued = 0;
+    MGLBatchFlushLoopOps ops = {
+        .ctx = NULL,
+        .batch_count = flush_batch_count,
+        .command_count = flush_cmd_count,
+        .fill_skip_in = flush_fill_skip,
+        .check_execute = flush_check,
+        .mark_execute_ok = flush_mark,
+        .schedule = flush_sched,
+        .issue_direct = flush_issue_direct,
+        .vao_buffer_dirty_mask = 0x3u,
+    };
+    mgl_batch_flush_run_batches(&st, &ops);
+    expect(g_flush_seen == 1u, "checked one");
+    expect(g_flush_issued == 1, "issued direct");
+    expect(st.last_execute_ok == 1u, "exec ok");
+    expect(st.path_stats.direct_batches == 1u, "direct path");
+}
+
+static int g_check_skip;
+static int check_ok(void *ctx)
+{
+    (void)ctx;
+    return 1;
+}
+static int check_no(void *ctx)
+{
+    (void)ctx;
+    return 0;
+}
+static int check_skip(void *ctx, const char *phase, const char *reason)
+{
+    (void)ctx;
+    (void)phase;
+    (void)reason;
+    g_check_skip += 1;
+    return 0;
+}
+
+static void test_check_exec(void)
+{
+    g_check_skip = 0;
+    MGLBatchCheckExecOps ops = {
+        .ctx = NULL,
+        .begin_trace = NULL,
+        .prepare_fbo = check_ok,
+        .process_gl_state = check_ok,
+        .should_apply_sampler = check_no,
+        .empty_raster = check_no,
+        .fully_culled = check_no,
+        .apply_polygon_offset = NULL,
+        .trace_skip = check_skip,
+    };
+    expect(mgl_batch_check_should_execute(&ops) == 1, "execute ok");
+    ops.prepare_fbo = check_no;
+    expect(mgl_batch_check_should_execute(&ops) == 0, "fbo skip");
+    expect(g_check_skip == 1, "skip called");
+}
+
 static void test_dyn_apply(void)
 {
     g_dyn_steps = 0;
@@ -215,6 +335,8 @@ int main(void)
     test_stream_index_and_sampler();
     test_encode_fold();
     test_dyn_apply();
+    test_flush_run();
+    test_check_exec();
 
     expect(mgl_batch_flush_scheduled_path_perf_kind(2) ==
                MGL_BATCH_FLUSH_PERF_STREAM,

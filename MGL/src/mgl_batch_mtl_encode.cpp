@@ -4,6 +4,7 @@
  * A3 encode-fold: MTL draw/ICB ports for batch encode ObjC thinning.
  */
 #include "mgl_batch_mtl_encode.h"
+#include "mgl_draw_encode.h"
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"
 #include "mgl_frame_activity.h"
@@ -708,3 +709,37 @@ extern "C" int mgl_batch_mtl_issue_simple_replay(
                render_encoder_owner, &replayBatch, NULL, 0) ==
            MGL_RENDER_REPLAY_BATCH_OK;
 }
+
+
+extern "C" int mgl_batch_mtl_encode_resolved_samplers(
+    void *binding_state_owner, void *render_encoder_owner,
+    const MGLBatchResolvedSamplerBind *items, uint32_t count)
+{
+    if (!items && count > 0u) {
+        return 0;
+    }
+    MGLBatchResourceBindReq reqs[MGL_BATCH_MTL_RESOURCE_BIND_MAX];
+    uint32_t req_count = 0u;
+    for (uint32_t i = 0; i < count; i++) {
+        if (!items[i].sampler) {
+            return 0;
+        }
+        uint32_t binding_stage = 0u;
+        if (!mglRenderSamplerBindingStageForShader(items[i].shader_stage,
+                                                   &binding_stage)) {
+            return 0;
+        }
+        if (req_count >= MGL_BATCH_MTL_RESOURCE_BIND_MAX) {
+            return 0;
+        }
+        reqs[req_count].resource = items[i].sampler;
+        reqs[req_count].metal_slot = items[i].metal_slot;
+        reqs[req_count].binding_stage = binding_stage;
+        reqs[req_count].kind = MGL_RENDER_RESOURCE_BINDING_SAMPLER;
+        req_count++;
+    }
+    return mgl_batch_mtl_encode_resource_binds(binding_state_owner,
+                                               render_encoder_owner, reqs,
+                                               req_count);
+}
+

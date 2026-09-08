@@ -2,7 +2,6 @@
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  * A3: flush/restore/check/stream/schedule encode (Batch cluster).
  */
-
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
@@ -13,173 +12,248 @@
 #include "mgl_batch_restore.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
-
 #include <string.h>
+
+typedef struct {
+    __unsafe_unretained MGLRenderer *r; GLMContext ctx; const GLMState *saved;
+    uint64_t hit; GLenum *err; uint32_t *skipped; MGLStateKey key;
+    MGLBatchFlushLoopState *st; MGLEncodeContext enc;
+} FCtx;
+static MGLDrawBatch *FB(FCtx *c, uint32_t b) {
+    return &c->ctx->draw_command_buffer.batches[b];
+}
+static uint32_t fCount(void *v) {
+    return ((FCtx *)v)->ctx->draw_command_buffer.batch_count;
+}
+static uint32_t fCmds(void *v, uint32_t b) { return FB(v, b)->command_count; }
+static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa) {
+    FCtx *c = v; MGLDrawBatch *batch = FB(c, b);
+    int want = batch->has_dynamic_vertex_bindings ? 1 : 0;
+    if (wa) *wa = want;
+    in->has_encoder = mglRenderEncoderOwnerHasCurrent(
+        c->r->_renderPassManager.state->currentRenderEncoderOwner) ? 1u : 0u;
+    in->bind_valid = mglBindingStateIsValid(c->r->_bindingStateOwner) ? 1u : 0u;
+    in->keys_equal = mglStateKeysEqual(&batch->key, &c->key) ? 1u : 0u;
+    in->absolute_offsets_match =
+        (want == (c->r->_batching.absoluteVertexBindingOffsets ? 1 : 0)) ? 1u : 0u;
+    in->pass_matches = [c->r currentRenderPassMatchesCurrentFramebuffer] ? 1u : 0u;
+}
+static void fNote(void *v, int d) { (void)v; mgl_batch_mtl_restore_note_skip_fail_perf(d); }
+static int fOracleEq(void *v, uint32_t b) {
+    return mglStateKeysEqual(&FB(v, b)->key, &((FCtx *)v)->key);
+}
+static void fOracle(void *v) { (void)v; MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap); }
+static void fApplySkip(void *v, uint32_t b) {
+    (void)b; FCtx *c = v;
+    if (c->r->_activeState != c->ctx->active_state) c->r->_activeState = c->ctx->active_state;
+    MGL_STATE(c->ctx)->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap);
+}
+static void fSetAbs(void *v, int w) {
+    ((FCtx *)v)->r->_batching.absoluteVertexBindingOffsets = w ? YES : NO;
+}
+static void fRestore(void *v, uint32_t b, uint32_t forced) {
+    FCtx *c = v;
+    [c->r restoreStateForBatch:FB(c, b) context:c->ctx savedState:c->saved
+                       prevKey:(c->st->last_key_valid ? &c->key : NULL)
+               forcedDirtyBits:forced];
+}
+static int fCheck(void *v, uint32_t b) {
+    FCtx *c = v;
+    return [c->r checkBatchShouldExecute:FB(c, b) context:c->ctx flushId:c->hit
+                              batchIndex:b replayError:c->err skippedCommands:c->skipped] ? 1 : 0;
+}
+static void fMark(void *v, uint32_t b) {
+    ((FCtx *)v)->key = FB(v, b)->key; MGL_PERF_INC(g_mglBatchesReplayedSinceSwap);
+}
+static int fSched(void *v, uint32_t b) {
+    return (int)[((FCtx *)v)->r scheduleDrawBatch:FB(v, b) context:((FCtx *)v)->ctx];
+}
+static void fTrace(void *v, uint32_t b, const char *ph) {
+    FCtx *c = v;
+    [c->r traceReplayBatch:FB(c, b) context:c->ctx flushId:c->hit batchIndex:b phase:ph];
+}
+static void fPerfS(void *v, uint32_t n) {
+    (void)v; MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
+    MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap, n);
+}
+static void fPerfD(void *v, uint32_t n) {
+    (void)v; MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
+    MGL_PERF_ADD(g_mglDrawDirectSinceSwap, n);
+}
+static void fEnc(FCtx *c) {
+    c->enc.render_encoder_owner =
+        c->r->_renderPassManager.state->currentRenderEncoderOwner;
+}
+static void fIssS(void *v, uint32_t b) {
+    FCtx *c = v; fEnc(c);
+    [c->r issueStreamMergedBatch:FB(c, b) context:c->ctx encodeContext:&c->enc];
+}
+static void fIssM(void *v, uint32_t b) {
+    FCtx *c = v; fEnc(c);
+    [c->r issueMDIBatch:FB(c, b) context:c->ctx encodeContext:&c->enc];
+}
+static void fIssI(void *v, uint32_t b) {
+    FCtx *c = v; fEnc(c);
+    [c->r issueIndirectCommandBufferBatch:FB(c, b) context:c->ctx encodeContext:&c->enc];
+}
+static void fIssD(void *v, uint32_t b) {
+    FCtx *c = v; fEnc(c);
+    [c->r issueDirectBatch:FB(c, b) context:c->ctx encodeContext:&c->enc];
+}
+static void fRec(void *v, uint32_t b) {
+    [((FCtx *)v)->r recordBatchCommandStats:FB(v, b) context:((FCtx *)v)->ctx];
+}
+
+typedef struct {
+    __unsafe_unretained MGLRenderer *r; MGLDrawBatch *batch; GLMContext ctx;
+    uint64_t hit; uint32_t bi; GLenum *err; uint32_t *skipped; GLenum mode;
+} CCtx;
+static void cBegin(void *v) {
+    CCtx *c = v;
+    [c->r->_renderPassManager setTraceReplayFlushId:c->hit batchIndex:c->bi];
+    [c->r traceReplayBatch:c->batch context:c->ctx flushId:c->hit batchIndex:c->bi
+                     phase:"RESTORE"];
+}
+static int cFbo(void *v) {
+    CCtx *c = v;
+    return [c->r prepareRenderPassIfFBOChanged:c->batch context:c->ctx
+                                   replayError:c->err] ? 1 : 0;
+}
+static int cProc(void *v) { return [((CCtx *)v)->r processGLState:true] ? 1 : 0; }
+static void cErr(void *v) {
+    CCtx *c = v;
+    if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(c->ctx)->error))
+        *c->err = MGL_STATE(c->ctx)->error;
+}
+static int cShouldS(void *v) {
+    CCtx *c = v;
+    return mgl_batch_issue_should_apply_stable_sampler(
+        c->batch->sampler_snapshots_mixed ? 1 : 0, c->batch->sampler_snapshot_id,
+        MGL_INVALID_SAMPLER_SNAPSHOT_ID);
+}
+static int cApplyS(void *v) {
+    CCtx *c = v;
+    MGLEncodeContext e = {.render_encoder_owner =
+        c->r->_renderPassManager.state->currentRenderEncoderOwner};
+    return [c->r applySamplerSnapshotForCommand:&c->batch->commands[0]
+                                        context:c->ctx encodeContext:&e] ? 1 : 0;
+}
+static void cReady(void *v) {
+    CCtx *c = v;
+    [c->r traceReplayBatch:c->batch context:c->ctx flushId:c->hit batchIndex:c->bi
+                     phase:"READY"];
+}
+static int cEmpty(void *v) {
+    return [((CCtx *)v)->r currentDrawRasterizationIsEmpty] ? 1 : 0;
+}
+static int cCull(void *v) {
+    CCtx *c = v; c->mode = c->batch->commands[0].mode;
+    return [c->r currentDrawModeIsFullyCulled:c->mode] ? 1 : 0;
+}
+static void cPoly(void *v) {
+    [((CCtx *)v)->r applyPolygonOffsetForDrawMode:((CCtx *)v)->mode];
+}
+static int cSkip(void *v, const char *ph, const char *rs) {
+    CCtx *c = v;
+    return [c->r mglTraceSkipBatchCommands:c->batch context:c->ctx flushId:c->hit
+                                batchIndex:c->bi phase:ph reason:rs
+                           skippedCommands:c->skipped] ? 1 : 0;
+}
+
+typedef struct {
+    __unsafe_unretained MGLRenderer *r; MGLDrawBatch *batch; GLMContext ctx;
+    const MGLEncodeContext *enc;
+} SCtx;
+static void sTr0(void *v, const char *ph, const char *rs) {
+    SCtx *c = v;
+    [c->r mglTraceStreamCmd0:c->batch context:c->ctx phase:ph reason:rs];
+}
+static int sMdi(void *v) {
+    SCtx *c = v;
+    return [c->r issueStreamMergedMDIBatch:c->batch context:c->ctx
+                             encodeContext:c->enc] ? 1 : 0;
+}
+static void sDir(void *v) {
+    SCtx *c = v;
+    [c->r issueDirectBatch:c->batch context:c->ctx encodeContext:c->enc];
+}
+static int sIdx(void *v, void **mtl) {
+    SCtx *c = v;
+    Buffer *ib = (Buffer *)c->batch->stream_index_buffer;
+    int pok = ib ? ([c->r processBuffer:ib] ? 1 : 0) : 0;
+    id m = (ib && ib->data.mtl_data) ? (__bridge id)ib->data.mtl_data : nil;
+    int ready = mgl_batch_issue_stream_index_ready(ib ? 1 : 0, pok, m ? 1 : 0);
+    if (ready != MGL_BATCH_STREAM_INDEX_OK) {
+        [c->r mglTraceStreamCmd0:c->batch context:c->ctx phase:"FALLBACK"
+                          reason:mgl_batch_issue_stream_index_reason(ready)];
+        if (mtl) *mtl = NULL; return 0;
+    }
+    if (mtl) *mtl = (__bridge void *)m; return 1;
+}
+static void sDraw(void *v, void *mtl) {
+    SCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[0];
+    (void)mgl_batch_mtl_draw_indexed(
+        c->enc->render_encoder_owner, (uint32_t)c->batch->key.primitive_type,
+        (uint64_t)c->batch->stream_index_count, MGL_DRAW_INDEX_UINT32, mtl, 0, 1, 0,
+        (uint64_t)cmd->baseInstance);
+    [c->r mglTraceStreamCmd0:c->batch context:c->ctx phase:"SUBMIT"
+                      reason:mgl_batch_issue_stream_index_reason(MGL_BATCH_STREAM_INDEX_OK)];
+}
 
 @implementation MGLRenderer (Batch)
 
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx
 {
     ctx = glm_ctx;
-
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
-
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
-    if (cb->batch_count == 0) {
-        return;
-    }
-
-    /* Draws are about to be encoded into the current CB. */
+    if (cb->batch_count == 0) return;
     _currentCBHasWork = YES;
-
-    static uint64_t s_flushDrawBufferLogCount = 0;
-    uint64_t flushHit = ++s_flushDrawBufferLogCount;
-    MGLBatchFlushPathStats pathStats;
-    memset(&pathStats, 0, sizeof(pathStats));
-    uint32_t skippedCommandCount = 0;
-
-    GLMState savedState;
-    memcpy(&savedState, glm_ctx->active_state, sizeof(savedState));
-    GLenum savedError = savedState.error;
+    static uint64_t s_hit = 0; uint64_t hit = ++s_hit; uint32_t skipped = 0;
+    GLMState saved; memcpy(&saved, glm_ctx->active_state, sizeof(saved));
+    GLenum savedError = saved.error;
     [self mglActivateReplayStateForContext:glm_ctx];
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
     GLenum replayError = (GLenum)mglRenderErrorNone();
-
     @try {
-
-    MGLStateKey lastKey;
-    BOOL lastKeyValid = NO;
-    BOOL lastExecuteOk = NO;
-    BOOL lastWasStreamBatch = NO;  /* force VAO/buffer dirty after stream */
-    memset(&lastKey, 0, sizeof(lastKey));
-
-    for (uint32_t b = 0; b < cb->batch_count; b++) {
-        @autoreleasepool {
-            MGLDrawBatch *batch = &cb->batches[b];
-            if (batch->command_count == 0)
-                continue;
-
-            BOOL wantAbsoluteVertexOffsets =
-                batch->has_dynamic_vertex_bindings ? YES : NO;
-
-            {
-            MGLBatchSameKeySkipIn skipIn = {
-                .skip_enabled = _batching.skipSameKeyRestoreEnabled ? 1u : 0u,
-                .last_key_valid = lastKeyValid ? 1u : 0u,
-                .last_execute_ok = lastExecuteOk ? 1u : 0u,
-                .last_was_stream = lastWasStreamBatch ? 1u : 0u,
-                .has_encoder =
-                    mglRenderEncoderOwnerHasCurrent(
-                        _renderPassManager.state->currentRenderEncoderOwner)
-                        ? 1u
-                        : 0u,
-                .bind_valid = mglBindingStateIsValid(_bindingStateOwner) ? 1u : 0u,
-                .keys_equal = mglStateKeysEqual(&batch->key, &lastKey) ? 1u : 0u,
-                .absolute_offsets_match =
-                    (wantAbsoluteVertexOffsets ==
-                     _batching.absoluteVertexBindingOffsets)
-                        ? 1u
-                        : 0u,
-                .pass_matches =
-                    [self currentRenderPassMatchesCurrentFramebuffer] ? 1u : 0u,
-            };
-            const int skipDec = mgl_batch_same_key_skip_decision(&skipIn);
-            BOOL canSkipRestore = (skipDec == MGL_BATCH_SAME_KEY_SKIP);
-            mgl_batch_mtl_restore_note_skip_fail_perf(skipDec);
-            if (mgl_batch_restore_oracle_would_skip(
-                    _batching.skipSameKeyRestoreEnabled ? 1 : 0,
-                    lastKeyValid ? 1 : 0, lastExecuteOk ? 1 : 0,
-                    mglStateKeysEqual(&batch->key, &lastKey) ? 1 : 0) &&
-                mglEnvFlagEnabled("MGL_SKIP_SAME_KEY_ORACLE")) {
-                MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap);
-            }
-
-            if (canSkipRestore) {
-                if (_activeState != glm_ctx->active_state) {
-                    _activeState = glm_ctx->active_state;
-                }
-                MGL_STATE(glm_ctx)->dirty_bits = 0;
-                MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap);
-            } else {
-                const GLuint absoluteContractDirty =
-                    mgl_batch_restore_absolute_contract_dirty(
-                        wantAbsoluteVertexOffsets ? 1 : 0,
-                        _batching.absoluteVertexBindingOffsets ? 1 : 0,
-                        (DIRTY_VAO | DIRTY_BUFFER));
-                _batching.absoluteVertexBindingOffsets = wantAbsoluteVertexOffsets;
-                [self restoreStateForBatch:batch
-                                   context:glm_ctx
-                                savedState:&savedState
-                                   prevKey:(lastKeyValid ? &lastKey : NULL)
-                           forcedDirtyBits:((lastWasStreamBatch
-                                            ? (DIRTY_VAO | DIRTY_BUFFER) : 0u) |
-                                           absoluteContractDirty)];
-            }
-
-            if (![self checkBatchShouldExecute:batch
-                                       context:glm_ctx
-                                       flushId:flushHit
-                                    batchIndex:b
-                                   replayError:&replayError
-                               skippedCommands:&skippedCommandCount]) {
-                lastExecuteOk = NO;
-                continue;
-            }
-
-            lastExecuteOk = YES;
-            lastKey = batch->key;
-            lastKeyValid = YES;
-            lastWasStreamBatch = NO;
-            MGL_PERF_INC(g_mglBatchesReplayedSinceSwap);
-
-            MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
-            MGLEncodeContext encCtx = {
-                .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
-            };
-            mgl_batch_flush_accum_path(&pathStats, (int)scheduledPath,
-                                       batch->command_count);
-            const char *issuePhase = mgl_batch_flush_path_phase((int)scheduledPath);
-            [self traceReplayBatch:batch context:glm_ctx flushId:flushHit
-                        batchIndex:b phase:issuePhase];
-            const int pathPerf =
-                mgl_batch_flush_scheduled_path_perf_kind((int)scheduledPath);
-            if (pathPerf == MGL_BATCH_FLUSH_PERF_STREAM) {
-                MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
-                MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap, batch->command_count);
-                [self issueStreamMergedBatch:batch context:glm_ctx encodeContext:&encCtx];
-                lastWasStreamBatch = YES;
-            } else if (scheduledPath == MGL_BATCH_PATH_MDI) {
-                [self issueMDIBatch:batch context:glm_ctx encodeContext:&encCtx];
-            } else if (scheduledPath == MGL_BATCH_PATH_ICB) {
-                [self issueIndirectCommandBufferBatch:batch context:glm_ctx encodeContext:&encCtx];
-            } else {
-                MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
-                MGL_PERF_ADD(g_mglDrawDirectSinceSwap, batch->command_count);
-                [self issueDirectBatch:batch context:glm_ctx encodeContext:&encCtx];
-            }
-
-            [self recordBatchCommandStats:batch context:glm_ctx];
-        } /* sequentialBatch */
+        MGLBatchFlushLoopState st; memset(&st, 0, sizeof(st));
+        FCtx fc = {.r = self, .ctx = glm_ctx, .saved = &saved, .hit = hit,
+                   .err = &replayError, .skipped = &skipped, .st = &st};
+        memset(&fc.key, 0, sizeof(fc.key));
+        MGLBatchFlushLoopOps ops = {
+            .ctx = &fc, .batch_count = fCount, .command_count = fCmds,
+            .fill_skip_in = fSkipIn, .note_skip_perf = fNote,
+            .oracle_keys_equal = fOracleEq, .on_oracle_would_skip = fOracle,
+            .apply_same_key_skip = fApplySkip, .set_absolute_offsets = fSetAbs,
+            .restore = fRestore, .check_execute = fCheck, .mark_execute_ok = fMark,
+            .schedule = fSched, .trace_phase = fTrace, .perf_stream = fPerfS,
+            .perf_direct = fPerfD, .issue_stream = fIssS, .issue_mdi = fIssM,
+            .issue_icb = fIssI, .issue_direct = fIssD, .record_stats = fRec,
+            .vao_buffer_dirty_mask = (DIRTY_VAO | DIRTY_BUFFER),
+            .skip_enabled = _batching.skipSameKeyRestoreEnabled ? 1u : 0u,
+            .oracle_env_enabled =
+                mglEnvFlagEnabled("MGL_SKIP_SAME_KEY_ORACLE") ? 1u : 0u,
+        };
+        mgl_batch_flush_run_batches(&st, &ops);
+        MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglTraceNowSeconds());
+        if (mgl_batch_flush_should_trace_log(
+                hit, cb->total_commands, kMGLDiagnosticStateLogs ? 1 : 0, skipped,
+                mglRenderErrorIsNone((uint32_t)replayError) ? 0 : 1)) {
+            mglTraceLogNSString(
+                @"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u "
+                @"arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u "
+                @"mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u "
+                @"directBatches=%u directCommands=%u skippedCommands=%u",
+                (unsigned long long)hit, cb->batch_count, cb->total_commands,
+                cb->array_cmd_count, cb->element_cmd_count,
+                st.path_stats.stream_batches, st.path_stats.stream_commands,
+                st.path_stats.mdi_batches, st.path_stats.mdi_commands,
+                st.path_stats.icb_batches, st.path_stats.icb_commands,
+                st.path_stats.direct_batches, st.path_stats.direct_commands, skipped);
         }
-    }
-    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglTraceNowSeconds());
-    if (mgl_batch_flush_should_trace_log(
-            flushHit, cb->total_commands, kMGLDiagnosticStateLogs ? 1 : 0,
-            skippedCommandCount,
-            mglRenderErrorIsNone((uint32_t)replayError) ? 0 : 1)) {
-        mglTraceLogNSString(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
-              (unsigned long long)flushHit,
-              cb->batch_count, cb->total_commands,
-              cb->array_cmd_count, cb->element_cmd_count,
-              pathStats.stream_batches, pathStats.stream_commands,
-              pathStats.mdi_batches, pathStats.mdi_commands,
-              pathStats.icb_batches, pathStats.icb_commands,
-              pathStats.direct_batches, pathStats.direct_commands,
-              skippedCommandCount);
-    }
     } @finally {
         [_renderPassManager setTraceReplayFlushId:0 batchIndex:0];
-        [self teardownBatchReplayForContext:glm_ctx savedState:&savedState
+        [self teardownBatchReplayForContext:glm_ctx savedState:&saved
                                 savedError:savedError replayError:replayError];
     }
 }
@@ -357,58 +431,17 @@
                     replayError:(GLenum *)replayError
                 skippedCommands:(uint32_t *)skippedCommands
 {
-    [_renderPassManager setTraceReplayFlushId:flushId batchIndex:batchIndex];
-    [self traceReplayBatch:batch context:glm_ctx flushId:flushId
-                batchIndex:batchIndex phase:"RESTORE"];
-
-    if (![self prepareRenderPassIfFBOChanged:batch context:glm_ctx
-                                 replayError:replayError]) {
-        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
-                       batchIndex:batchIndex phase:"SKIP_FBO_ROTATION"
-                           reason:"fbo_rotation"
-                  skippedCommands:skippedCommands];
-    }
-    if ([self processGLState:true] == false) {
-        if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(glm_ctx)->error)) {
-            *replayError = MGL_STATE(glm_ctx)->error;
-        }
-        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
-                       batchIndex:batchIndex phase:"SKIP_PROCESS_STATE"
-                           reason:"processGLState"
-                  skippedCommands:skippedCommands];
-    }
-    MGLEncodeContext samplerEncCtx = {
-        .render_encoder_owner =
-            _renderPassManager.state->currentRenderEncoderOwner,
+    CCtx c = {.r = self, .batch = batch, .ctx = glm_ctx, .hit = flushId,
+              .bi = batchIndex, .err = replayError, .skipped = skippedCommands,
+              .mode = batch && batch->command_count ? batch->commands[0].mode : 0};
+    MGLBatchCheckExecOps ops = {
+        .ctx = &c, .begin_trace = cBegin, .prepare_fbo = cFbo,
+        .process_gl_state = cProc, .capture_error_if_any = cErr,
+        .should_apply_sampler = cShouldS, .apply_sampler = cApplyS,
+        .trace_ready = cReady, .empty_raster = cEmpty, .fully_culled = cCull,
+        .apply_polygon_offset = cPoly, .trace_skip = cSkip,
     };
-    if (mgl_batch_issue_should_apply_stable_sampler(
-            batch->sampler_snapshots_mixed ? 1 : 0, batch->sampler_snapshot_id,
-            MGL_INVALID_SAMPLER_SNAPSHOT_ID) &&
-        ![self applySamplerSnapshotForCommand:&batch->commands[0]
-                                      context:glm_ctx
-                                encodeContext:&samplerEncCtx]) {
-        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
-                       batchIndex:batchIndex phase:"SKIP_SAMPLER_SNAPSHOT"
-                           reason:"sampler_snapshot"
-                  skippedCommands:skippedCommands];
-    }
-    [self traceReplayBatch:batch context:glm_ctx flushId:flushId
-                batchIndex:batchIndex phase:"READY"];
-    if ([self currentDrawRasterizationIsEmpty]) {
-        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
-                       batchIndex:batchIndex phase:"SKIP_EMPTY_RASTER"
-                           reason:"empty_rasterization"
-                  skippedCommands:skippedCommands];
-    }
-    GLenum mode = batch->commands[0].mode;
-    if ([self currentDrawModeIsFullyCulled:mode]) {
-        return [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
-                       batchIndex:batchIndex phase:"SKIP_FULLY_CULLED"
-                           reason:"front_and_back_culled"
-                  skippedCommands:skippedCommands];
-    }
-    [self applyPolygonOffsetForDrawMode:mode];
-    return YES;
+    return mgl_batch_check_should_execute(&ops) ? YES : NO;
 }
 
 - (void)recordBatchCommandStats:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
@@ -444,50 +477,14 @@
 - (void)issueStreamMergedBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
                  encodeContext:(const MGLEncodeContext *)encCtx
 {
-    const int streamPath = mgl_batch_replay_stream_path(
-        batch, mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1 : 0);
-    if (streamPath == MGL_BATCH_STREAM_EMPTY) {
-        [self mglTraceStreamCmd0:batch context:glm_ctx phase:"SKIP"
-                          reason:mgl_batch_replay_stream_path_reason(streamPath)];
-        return;
-    }
-    if (streamPath == MGL_BATCH_STREAM_BAD_PRIM) {
-        [self mglTraceStreamCmd0:batch context:glm_ctx phase:"FALLBACK"
-                          reason:mgl_batch_replay_stream_path_reason(streamPath)];
-        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
-        return;
-    }
-    if (streamPath == MGL_BATCH_STREAM_TRY_MDI) {
-        [self mglTraceStreamCmd0:batch context:glm_ctx phase:"ISSUE"
-                          reason:mgl_batch_replay_stream_path_reason(streamPath)];
-        if ([self issueStreamMergedMDIBatch:batch context:glm_ctx
-                              encodeContext:encCtx]) {
-            return;
-        }
-    }
-    Buffer *indexBuffer = (Buffer *)batch->stream_index_buffer;
-    const int processOk =
-        indexBuffer ? ([self processBuffer:indexBuffer] ? 1 : 0) : 0;
-    id mtlIndexBuffer =
-        (indexBuffer && indexBuffer->data.mtl_data)
-            ? (__bridge id)(indexBuffer->data.mtl_data)
-            : nil;
-    const int indexReady = mgl_batch_issue_stream_index_ready(
-        indexBuffer ? 1 : 0, processOk, mtlIndexBuffer ? 1 : 0);
-    if (indexReady != MGL_BATCH_STREAM_INDEX_OK) {
-        [self mglTraceStreamCmd0:batch context:glm_ctx phase:"FALLBACK"
-                          reason:mgl_batch_issue_stream_index_reason(indexReady)];
-        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
-        return;
-    }
-    MGLDrawCommand *firstCmd = &batch->commands[0];
-    (void)mgl_batch_mtl_draw_indexed(
-        encCtx->render_encoder_owner, (uint32_t)batch->key.primitive_type,
-        (uint64_t)batch->stream_index_count, MGL_DRAW_INDEX_UINT32,
-        (__bridge void *)mtlIndexBuffer, 0, 1, 0,
-        (uint64_t)firstCmd->baseInstance);
-    [self mglTraceStreamCmd0:batch context:glm_ctx phase:"SUBMIT"
-                      reason:mgl_batch_issue_stream_index_reason(indexReady)];
+    SCtx c = {.r = self, .batch = batch, .ctx = glm_ctx, .enc = encCtx};
+    MGLBatchStreamMergedOps ops = {
+        .ctx = &c, .trace_cmd0 = sTr0, .try_stream_mdi = sMdi,
+        .issue_direct = sDir, .resolve_stream_index = sIdx,
+        .draw_stream_indexed = sDraw,
+    };
+    mgl_batch_issue_stream_merged(batch, mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1 : 0,
+                                  &ops);
 }
 
 @end

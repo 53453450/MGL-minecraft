@@ -68,19 +68,19 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | 文件 | 约 LOC | 判定 |
 |------|-------:|------|
 | `mgl_draw_encode.m` | ~1225 | **迁出**：应并入 / 对齐 `mgl_draw_encode` C++，ObjC 不留 encode |
-| `mgl_batch_flush_restore_encode.m` | ~493 | **Batch 簇残量**：flush/restore/stream；dirty/skip/oracle/stats/path perf 已下沉 |
-| `mgl_batch_dyn_bind_encode.m` | ~558 | **Batch 簇残量**：dyn-bind/sampler；simple-replay → `mgl_batch_mtl_issue_simple_replay` |
-| `mgl_batch_issue_encode.m` | ~315 | **Batch 簇残量**：issue/direct；MDI+direct loops → `mgl_batch_mtl_issue_mdi_batch` / `mgl_batch_issue_direct_batch` |
-| `mgl_batch_replay_trace.m` | ~456 | **Batch 簇残量**：trace；FS-slot POD 已抽；**禁止再扩** |
-| `mgl_batch_icb_mdi_encode.m` | ~180 | **Batch 簇残量**：ICB/stream-MDI；whole loops → `mgl_batch_mtl_issue_*_batch` |
-| `mgl_batch_rt_mark_port.m` | ~197 | **Batch 簇残量**：RT-mark；cross/diag gates 在 C |
+| `mgl_batch_flush_restore_encode.m` | ~490 | **Batch 簇残量**：flush/restore/stream；dirty/skip/oracle/stats/path perf 已下沉 |
+| `mgl_batch_dyn_bind_encode.m` | ~512 | **Batch 簇残量**：dyn-bind/sampler；simple-replay → `mgl_batch_mtl_issue_simple_replay` |
+| `mgl_batch_issue_encode.m` | ~310 | **Batch 簇残量**：issue/direct；MDI+direct loops → `mgl_batch_mtl_issue_mdi_batch` / `mgl_batch_issue_direct_batch` |
+| `mgl_batch_replay_trace.m` | ~374 | **Batch 簇残量**：trace；FS-slot POD 已抽；**禁止再扩** |
+| `mgl_batch_icb_mdi_encode.m` | ~175 | **Batch 簇残量**：ICB/stream-MDI；whole loops → `mgl_batch_mtl_issue_*_batch` |
+| `mgl_batch_rt_mark_port.m` | ~195 | **Batch 簇残量**：RT-mark；cross/diag gates 在 C |
 | `hash_table.m` | ~854 | 平台资源表；可保留或 C++ owner |
 | `MGLRenderPassManager.m` | ~523 | 并入 RenderPass 下沉 |
 | `MGLPipelineCache.m` | ~445 | 并入 PSO builder（CTS Batch 4） |
 | `MGLPlatformRendererShell.m` | ~229 | **Keep 样板** |
 | `mgl_readback.m` 等 compat | 小 | 策略进 ReadbackPolicy；`.m` 变转发 |
 
-**Batch ObjC 诚实合计（Track B）**：categories 310 + encode/trace/port ~2200 = **~2509**（`scripts/objc_renderer_loc.sh`）。A3 encode-fold 本刀 2910→~2509（重心 issue/ICB whole-loop drivers）；**勿宣称 cleanup done**（残量仍 ~2.5k）。
+**Batch ObjC 诚实合计（Track B）**：categories 310 + encode/trace/port ~2056 = **~2366**（`scripts/objc_renderer_loc.sh`）。A3 encode-fold 本刀 2509→~2366（−143；dyn drivers + flush_run/check + apply_dyn 接线 + trace POD）；**勿宣称 cleanup done**（残量仍 ~2.4k）。
 
 ---
 
@@ -107,7 +107,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawStageHost.m` | ObjC 只填 port 表；layout 已在 C++（O1.3）；cull encode 在 `mgl_draw_cull.cpp` |
 | `scheduleDrawBatch` 物化口 | `mgl_batch_flush_restore_encode.m` | 决策+batch flags fill 在 C；ObjC 仅 cull/os/env（A3 fold） |
 | ~~`flushDrawBufferLocked` 编排环~~ | `mgl_batch_flush_restore_encode.m` | A3 续：dirty/skip/oracle/stats/path perf 在 C；MTL issue 仍 ObjC |
-| ~~`bindDynamic*Directly` MTL 物化环~~ | `mgl_batch_dyn_bind_encode.m` | A3 续：set*Buffer/sampler resource → `mgl_batch_mtl_encode_*_binds` |
+| ~~`bindDynamic*Directly` MTL 物化环~~ | `mgl_batch_dyn_bind_encode.m` | A3 续：vertex/uniform/sampled whole-loop → `mgl_batch_mtl_bind_dyn_*`；`apply_dyn` 已接线 |
 | `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1：编排在 `mgl_render_pass_plan`；ObjC 物化 MTL* |
 | Texture/Blit/BindingState 巨型 category | 见 §1.1 | O3–O4 |
 
@@ -134,7 +134,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [x] **O2.3** `+BatchReplay` stage/bind 展开 → C++；ObjC 只 `set*Bytes` / `draw*` 端口 — `mgl_batch_replay.*`（dynamic VAO / UBO·texture override / resource binding collect / attrib can-bind）
 - [x] **O2.4** ICB：batch 与 `supportIndirectCommandBuffers` 门闩同层配置 — `mgl_batch_icb_config` / `mgl_batch_icb_support_indirect_command_buffers`；ObjC Batch/Blit + `mgl_air_loader` 同用；`test-batch-icb`；legacy ENABLE_ICB_BATCH|PIPELINES / DISABLE_ICB(_BATCH) 仍识别
 - [x] **O2.5 / A3** 验收（**字面口径**）：`MGLRenderer+Batch*.m` 合计 &lt; 600 — **~310**（289+21）。flush/restore/check/stream → `mgl_batch_flush_restore_encode.m`；dyn-bind/sampler/simple → `mgl_batch_dyn_bind_encode.m`；FBO/index/sampler POD + `test-batch-restore`/`test-batch-issue`。MC env 金样 / benchmark 仍建议补跑
-  - **Metric arbitrage / Track B**：同域 ObjC **未清完**。诚实 Batch ObjC 簇（categories + `mgl_batch_*_encode.m` + `mgl_batch_replay_trace.m` + `mgl_batch_rt_mark_port.m`）= **~2509**（encode/trace 仍 ~2.2k）。**勿宣称 ObjC cleanup done**。度量：`scripts/objc_renderer_loc.sh`（B 已改簇定义）
+  - **Metric arbitrage / Track B**：同域 ObjC **未清完**。诚实 Batch ObjC 簇（categories + `mgl_batch_*_encode.m` + `mgl_batch_replay_trace.m` + `mgl_batch_rt_mark_port.m`）= **~2366**（encode/trace 仍 ~2.0k）。**勿宣称 ObjC cleanup done**。度量：`scripts/objc_renderer_loc.sh`（B 已改簇定义）
 
 ### Batch O3 — RenderPass / PSO / Binding【P1】
 
@@ -216,7 +216,8 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 14. ~~**A3 encode-fold 本刀**~~：plan-in-C + `mgl_batch_mtl_encode` 一行 MTL 口；flush path stats / restore dirty / select fill / scratch / ICB array params / dyn offset·sampler slot / RT cross·diag；诚实簇 **3352→~3087**。禁扩 metal_port / replay_trace / `mgl_render.cpp`。**勿宣称 cleanup done**
 15. ~~**A3 encode-fold 续（flush/dyn 重心）**~~：`mgl_batch_mtl_encode_buffer_binds` / `resource_binds`；restore dirty/skip/oracle/finish + flush path-perf/cmd-stats；dyn mtl-ptr/slot/sampled gates；trace FS-slot POD（**shrink** replay_trace）；诚实簇 **3087→~2910**。禁扩 metal_port / trace / `mgl_render.cpp`。**勿宣称 cleanup done**
 16. ~~**A3 encode-fold 本刀（issue/ICB whole loops）**~~：`mgl_batch_mtl_issue_mdi_batch` / `stream_mdi_batch` / `icb_batch` / `simple_replay`；`mgl_batch_issue_direct_batch` + `apply_dyn_bindings`（C，ObjC 未全接线）；issue 514→~315、icb_mdi 347→~180；诚实簇 **2910→~2509**（−401）。禁扩 metal_port / trace / `mgl_render.cpp`。**勿宣称 cleanup done**
-17. **下一刀（A / encode fold 续）**：继续压 `dyn_bind`(~558) / `flush_restore`(~493) / `issue`(~315) / trace(~456)；目标再砍诚实簇（仍 ~2.5k）；**C1 仍等**诚实簇明显再掉；O3 / O6 可并行但勿掩盖残量
+17. ~~**A3 encode-fold 续（dyn/flush/trace）**~~：接线 `mgl_batch_issue_apply_dyn_bindings`；`mgl_batch_mtl_bind_dyn_vertex/uniforms/sampled`；`mgl_batch_flush_run_batches` + `mgl_batch_check_should_execute`；stream_merged 接线；trace/RT POD formatters（**shrink** replay_trace 456→~374）。诚实簇 **2509→~2366**（−143）。禁扩 metal_port / `mgl_render.cpp`。**勿宣称 cleanup done**
+18. **下一刀（A / encode fold 续）**：继续压 `dyn_bind`(~512) / `flush_restore`(~490) / `issue`(~310) / trace(~374)；目标再砍诚实簇（仍 ~2.4k，**C1 仍等**明显再掉）；O3 / O6 可并行但勿掩盖残量
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
