@@ -1396,6 +1396,9 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
 int mglRenderSamplerUnitExplicit(uint32_t flag);
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
 int mglRenderTextureTargetIs1D(uint32_t target);
+const char *mglRenderGLSLTypeName(uint32_t type);
+uint32_t mglRenderGLSLMatrixCols(uint32_t type);
+uint32_t mglRenderGLSLMatrixRows(uint32_t type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

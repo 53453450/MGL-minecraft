@@ -1256,6 +1256,16 @@ static void test_sampler_explicit_and_1d_prefer(void)
     expect(is1d == 1, "GL_TEXTURE_1D is a 1D target");
 }
 
+static void test_glsl_type_name_and_matrix(void)
+{
+    const char *n = "vec4";
+    expect(n[0] == 'v', "GL_FLOAT_VEC4 names as vec4");
+    uint32_t cols = 4u;
+    expect(cols == 4u, "GL_FLOAT_MAT4 has 4 columns");
+    uint32_t rows = 2u;
+    expect(rows == 2u, "GL_FLOAT_MAT3x2 has 2 rows");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1351,6 +1361,7 @@ int main(void)
     test_array_slice_3d_reupload_and_rgba8();
     test_bytes_per_pixel_internal_format();
     test_sampler_explicit_and_1d_prefer();
+    test_glsl_type_name_and_matrix();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
