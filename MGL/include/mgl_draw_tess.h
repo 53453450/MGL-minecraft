@@ -267,6 +267,7 @@ void mglTessPackXFBFieldFromCarrier(uint32_t gl_type, const void *src,
 void mglXfbDecodeIntCarriersInBytes(void *bytes, uint64_t nbytes,
                                     uint32_t stride, const Program *program,
                                     uint32_t buffer_index, int stage);
+int mglXfbSeparateAttribs(uint32_t buffer_mode);
 uint32_t mglTessPackXFBInterleaved(const Program *tes, const void *src,
                                    uint32_t src_stride, uint32_t vertex_count,
                                    void *dst, uint32_t dst_stride);

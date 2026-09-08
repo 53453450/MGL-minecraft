@@ -1330,8 +1330,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * (Program.transform_feedback_layout[]).  Records are scattered by the
      * pass-2 aux kernel in emission order with whole-primitive cross-buffer
      * truncation. */
-    const bool gsSeparate =
-        program->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS;
+    const bool gsSeparate = mglXfbSeparateAttribs(
+        program->transform_feedback_buffer_mode) != 0;
 
     /* Per-buffer scatter plan (indexed by transform-feedback buffer 0..3). */
     MGLAIRGSXFBScatterParams scatterParams;
@@ -1736,12 +1736,15 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 }
             }
             for (uint32_t b = 0u; b < xfbBufferCount; b++) {
-                if (!bufferDstMTL[b] || scatterParams.buffers[b].stride == 0u)
+                if (!mglDrawGsXFBCopyReady(
+                        bufferDstMTL[b] ? 1 : 0,
+                        scatterParams.buffers[b].stride,
+                        (uint64_t)bufferWritten[b])) {
                     continue;
-                NSUInteger copyBytes = bufferWritten[b];
-                if (copyBytes == 0u) continue;
-                if (copyBytes > bufferRemaining[b])
-                    copyBytes = bufferRemaining[b];
+                }
+                NSUInteger copyBytes = (NSUInteger)mglDrawGsClampXFBCopy(
+                    (uint64_t)bufferWritten[b],
+                    (uint64_t)bufferRemaining[b]);
                 if (copyBytes == 0u) continue;
                 if (!xfbBlit) {
                     xfbBlit = mglDrawSupportCreateBlitEncoder(

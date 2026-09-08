@@ -162,6 +162,8 @@ uint64_t mglDrawGsQueryWritten(uint32_t output_primitive, uint32_t buffer0_strid
 int mglDrawGsSkipRaster(int xfb_active, int rasterizer_discard);
 int mglDrawGsPassthroughRasterReady(int state_ready, int has_encoder,
                                     int raster_empty, int fully_culled);
+uint64_t mglDrawGsClampXFBCopy(uint64_t written, uint64_t remaining);
+int mglDrawGsXFBCopyReady(int has_dst, uint32_t stride, uint64_t written);
 
 void mglDrawGsFillXFBMetaFromDest(const MGLAIRGSXFBScatterParams *params,
                                   const MGLGsXFBDestPlan *dest,

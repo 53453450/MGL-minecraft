@@ -7668,6 +7668,18 @@ void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     }
 }
 
+int mglRenderBufferHasCPUDirty(uint32_t dirty_bits) {
+    return (dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) ? 1 : 0;
+}
+
+int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits) {
+    return size > 0 && mglRenderBufferHasCPUDirty(dirty_bits) ? 1 : 0;
+}
+
+int mglRenderCPUPointerUsable(const void *p) {
+    return p && (uintptr_t)p >= 0x1000ull ? 1 : 0;
+}
+
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],
     const uint32_t current_u[4], const float current_f[4], uint8_t bytes[16]) {

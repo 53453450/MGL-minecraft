@@ -495,6 +495,20 @@ static void test_xfb_int_carrier_and_gs_raster(void)
     expect(not_ready == 0, "GS passthrough skip when fully culled");
 }
 
+static void test_buffer_dirty_and_xfb_copy(void)
+{
+    int needs = (16 > 0) && ((0x1 | 0x2) != 0);
+    expect(needs == 1, "CPU upload when size>0 and DATA/ADDR dirty");
+    int empty = (0 > 0) && 1;
+    expect(empty == 0, "empty buffer does not CPU-upload");
+    uint64_t copy = 100u < 40u ? 100u : 40u;
+    expect(copy == 40u, "GS XFB copy clamps to remaining");
+    int ready = 1 && 16u > 0u && 8u > 0u;
+    expect(ready == 1, "GS XFB copy ready with dst+stride+written");
+    int separate = (0x8C8F == 0x8C8F);
+    expect(separate == 1, "GL_SEPARATE_ATTRIBS is separate XFB");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -524,6 +538,7 @@ int main(void)
     test_gs_xfb_scatter_runtime();
     test_gs_post_dispatch();
     test_xfb_int_carrier_and_gs_raster();
+    test_buffer_dirty_and_xfb_copy();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

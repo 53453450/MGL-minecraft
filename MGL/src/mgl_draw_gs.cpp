@@ -849,6 +849,17 @@ extern "C" int mglDrawGsPassthroughRasterReady(int state_ready, int has_encoder,
                : 0;
 }
 
+extern "C" uint64_t mglDrawGsClampXFBCopy(uint64_t written, uint64_t remaining)
+{
+    return written < remaining ? written : remaining;
+}
+
+extern "C" int mglDrawGsXFBCopyReady(int has_dst, uint32_t stride,
+                                     uint64_t written)
+{
+    return has_dst && stride > 0u && written > 0u ? 1 : 0;
+}
+
 extern "C" uint64_t mglDrawGsXFBVisBytes(uint32_t work_item_count)
 {
     uint64_t n = 0u;

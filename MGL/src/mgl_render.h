@@ -1174,6 +1174,9 @@ int mglRenderPlanVertexAttribSpan(int64_t binding_offset, int64_t relativeoffset
                                   int64_t *end_out);
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
+int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
+int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
+int mglRenderCPUPointerUsable(const void *p);
 
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],

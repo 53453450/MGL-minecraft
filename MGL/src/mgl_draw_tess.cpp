@@ -865,6 +865,11 @@ extern "C" void mglXfbDecodeIntCarriersInBytes(void *bytes, uint64_t nbytes,
     }
 }
 
+extern "C" int mglXfbSeparateAttribs(uint32_t buffer_mode)
+{
+    return buffer_mode == GL_SEPARATE_ATTRIBS ? 1 : 0;
+}
+
 extern "C" int mglTessResolveXFBSource(const Program *program, const char *name,
                                        uint32_t *offset_out,
                                        uint32_t *gl_type_out,

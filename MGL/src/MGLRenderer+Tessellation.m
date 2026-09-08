@@ -302,7 +302,8 @@ static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
     if (!buffer) {
         return NULL;
     }
-    if (buffer->data.buffer_data && ((uintptr_t)buffer->data.buffer_data >= 0x1000ull)) {
+    if (buffer->data.buffer_data &&
+        mglRenderCPUPointerUsable(buffer->data.buffer_data)) {
         return (const uint8_t *)(uintptr_t)buffer->data.buffer_data;
     }
     if (buffer->data.mtl_data) {
@@ -374,8 +375,7 @@ typedef struct {
         id buffer = ptr->data.mtl_data
             ? (__bridge id)(ptr->data.mtl_data)
             : nil;
-        if (buffer &&
-            (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR))) {
+        if (buffer && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
             /* Consume the CPU-side initialization before a tessellation
              * stage can write the same Metal backing. Otherwise a later
              * stage bind would upload the stale shadow over the GPU result. */
@@ -1312,9 +1312,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         id xfbMTL = nil;
         NSUInteger visibleBytes = 0u;
         if (xfbSlot->buf) {
-            if (xfbSlot->buf->size > 0 &&
-                (xfbSlot->buf->data.dirty_bits &
-                 (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR))) {
+            if (mglRenderBufferNeedsCPUUpload(
+                    xfbSlot->buf->size, xfbSlot->buf->data.dirty_bits)) {
                 /* Consume CPU initialization before the XFB blit writes the
                  * same backing. Otherwise a later map can upload the stale
                  * shadow over the captured GPU data. */
@@ -1479,7 +1478,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             return false;
         }
         const bool separateAttribs =
-            tesProgram->transform_feedback_buffer_mode == GL_SEPARATE_ATTRIBS;
+            mglXfbSeparateAttribs(
+                tesProgram->transform_feedback_buffer_mode) != 0;
         if (separateAttribs) {
             /* One GL buffer binding per varying (GL 4.6 §11.1.3.2). */
             for (GLsizei varying = 0;
@@ -1507,9 +1507,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                 if (!destBuf) {
                     continue;
                 }
-                if (destBuf->size > 0 &&
-                    (destBuf->data.dirty_bits &
-                     (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR))) {
+                if (mglRenderBufferNeedsCPUUpload(
+                        destBuf->size, destBuf->data.dirty_bits)) {
                     if (![self updateDirtyBuffer:destBuf]) {
                         return false;
                     }
