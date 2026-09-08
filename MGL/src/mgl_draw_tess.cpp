@@ -1210,3 +1210,149 @@ extern "C" void mglTessEncodeCaptureIndexed(
     (void)mglRenderEncodeDrawForRenderEncoderOwner(encoder_owner, &plan, NULL,
                                                    0);
 }
+
+extern "C" bool mglTessPlanVertexCapture(Program *vs,
+                                         uint32_t records_per_instance,
+                                         uint32_t instance_count, uint32_t first,
+                                         uint32_t base_instance,
+                                         MGLTessVertexCapturePlan *out)
+{
+    if (!out || records_per_instance == 0u || instance_count == 0u) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    uint32_t stride = MGL_AIR_PER_VERTEX_STRIDE;
+    if (vs) {
+        stride = mglAIRPerVertexStrideForResources(
+            &vs->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+        if (stride < MGL_AIR_PER_VERTEX_STRIDE) {
+            stride = MGL_AIR_PER_VERTEX_STRIDE;
+        }
+    }
+    uint64_t size = 0u;
+    uint64_t offset = 0u;
+    if (mglRenderCheckedTessCaptureSize(
+            (int64_t)records_per_instance, (int64_t)instance_count,
+            (uint64_t)stride, (uint64_t)MGL_AIR_PER_VERTEX_STRIDE, &size,
+            &offset) != 0) {
+        return false;
+    }
+    out->records_per_instance = records_per_instance;
+    out->capture_stride = stride;
+    out->capture_size = size;
+    out->capture_offset = offset;
+    mglTessFillCaptureParams(first, records_per_instance, base_instance,
+                             out->params);
+    return true;
+}
+
+extern "C" bool mglTessResolveEvalGlIn(
+    const MGLAIRTessDrawContract *contract, int has_tcs_output,
+    uint64_t tcs_output_offset, uint64_t tcs_output_stride,
+    uint32_t tcs_out_vertices, int has_capture, uint64_t capture_offset,
+    int indexed_draw, uint32_t instance_records, uint32_t instance_count,
+    MGLTessEvalGlInPlan *out)
+{
+    if (!out || !contract) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!has_tcs_output && !has_capture) {
+        return false;
+    }
+    if (indexed_draw && instance_records == 0u) {
+        return false;
+    }
+    if (has_tcs_output) {
+        out->from_tcs = 1u;
+        out->gl_in_offset = tcs_output_offset;
+        out->gl_in_stride = tcs_output_stride;
+        out->gl_in_vertices = tcs_out_vertices;
+    } else {
+        out->gl_in_offset = capture_offset;
+        out->gl_in_stride = contract->per_vertex_out_stride;
+        out->gl_in_vertices = contract->patch_vertices > 0u
+                                  ? contract->patch_vertices
+                                  : 1u;
+    }
+    if (out->gl_in_stride < MGL_AIR_PER_VERTEX_STRIDE) {
+        out->gl_in_stride = MGL_AIR_PER_VERTEX_STRIDE;
+    }
+    if (out->gl_in_vertices == 0u) {
+        out->gl_in_vertices =
+            contract->patch_vertices > 0u ? contract->patch_vertices : 1u;
+    }
+    if (!out->from_tcs && !indexed_draw) {
+        out->gl_in_instance_stride =
+            (uint64_t)instance_records * out->gl_in_stride;
+    }
+    (void)instance_count;
+    return true;
+}
+
+extern "C" bool mglTessPlanTCSStageIn(uint32_t patch_vertices,
+                                     uint32_t patch_count, GLsizei vertex_count,
+                                     MGLTessTCSStageInPlan *out)
+{
+    if (!out || patch_count == 0u) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    const uint32_t verts_per_patch = patch_vertices > 0u ? patch_vertices : 1u;
+    uint64_t vertices = 0u;
+    if (__builtin_mul_overflow((uint64_t)patch_count, (uint64_t)verts_per_patch,
+                               &vertices)) {
+        return false;
+    }
+    if (vertex_count > 0 && vertices < (uint64_t)vertex_count) {
+        vertices = (uint64_t)vertex_count;
+    }
+    if (vertices == 0u ||
+        vertices > UINT64_MAX / (uint64_t)MGL_AIR_PER_VERTEX_STRIDE) {
+        return false;
+    }
+    out->vertices = vertices;
+    out->stride = MGL_AIR_PER_VERTEX_STRIDE;
+    out->bytes = vertices * out->stride;
+    out->members[0].attribute = 0u;
+    out->members[0].offset = 0u;
+    out->members[0].size = 16u;
+    out->members[0].component_bytes = 4u;
+    out->members[0].components = 4u;
+    out->members[0].base_type = MGL_TESS_STAGE_IN_FLOAT;
+    out->member_count = 1u;
+    return true;
+}
+
+extern "C" bool mglTessPlanIsolatedBinding(
+    int has_buffer, int64_t offset, uint64_t buffer_length,
+    int64_t storage_remaining, uint64_t available_bytes,
+    uint32_t required_bytes, int resource_type,
+    MGLTessIsolatedBindingPlan *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (offset < 0) {
+        return false;
+    }
+    const int isolated =
+        !has_buffer || storage_remaining <= 0 ||
+        (uint64_t)offset >= buffer_length || available_bytes == 0u ||
+        (required_bytes > 0u && available_bytes < required_bytes);
+    const uint32_t fallback =
+        required_bytes > sizeof(uint32_t) ? required_bytes : sizeof(uint32_t);
+    out->isolated = isolated ? 1u : 0u;
+    out->writable = (resource_type == _STORAGE_BUFFER_RES ||
+                     resource_type == _ATOMIC_COUNTER_RES)
+                        ? 1u
+                        : 0u;
+    out->fallback_length = isolated ? fallback : 0u;
+    if (isolated && has_buffer && available_bytes > 0u) {
+        out->init_length = available_bytes < fallback
+                               ? (uint32_t)available_bytes
+                               : fallback;
+    }
+    return true;
+}

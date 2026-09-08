@@ -1111,6 +1111,13 @@ int mglRenderScanIndexRangeIgnoringRestart(
     int restart_enabled, uint32_t restart_index,
     uint32_t *out_min, uint32_t *out_max, int *out_valid);
 
+/* Convert a restart-aware index span into the inclusive [first, first+count)
+ * vertex range used by cull-distance capture. Returns 0 on success. */
+int mglRenderPlanCullDistanceElementRange(
+    const uint8_t *bytes, uint32_t elem_width, uint32_t count,
+    int restart_enabled, uint32_t restart_index, int32_t base_vertex,
+    int32_t *out_first, uint32_t *out_count);
+
 /* prepared (Metal-side) byte offset for a GL element
  * buffer — GL_UNSIGNED_BYTE indices are expanded to UInt16 so the offset
  * doubles, other types pass through.  Matches mglComputePreparedIndexByteOffset.

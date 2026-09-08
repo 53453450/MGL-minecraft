@@ -418,24 +418,6 @@ static void mglRecordGeometryPrimitiveQueries(
     }
 }
 
-static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
-                                      NSUInteger stride,
-                                      NSUInteger *sizeOut,
-                                      NSUInteger *offsetOut)
-{
-
-    uint64_t size = 0u;
-    uint64_t offset = 0u;
-    if (mglRenderCheckedTessCaptureSize(
-            (int64_t)count, (int64_t)instanceCount, (uint64_t)stride,
-            (uint64_t)MGL_AIR_PER_VERTEX_STRIDE, &size, &offset) != 0) {
-        return NO;
-    }
-    *sizeOut = (NSUInteger)size;
-    *offsetOut = (NSUInteger)offset;
-    return YES;
-}
-
 static id mglDefaultTessFactorBuffer(id device,
                                                 GLMState *state,
                                                 GLuint patchCount)
@@ -613,23 +595,16 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
     const uint32_t elemWidth = indexType == GL_UNSIGNED_BYTE ? 1u
         : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
-    uint32_t scanMin = 0u, scanMax = 0u;
-    int scanValid = 0;
-    if (mglRenderScanIndexRangeIgnoringRestart(
+    int32_t first = 0;
+    uint32_t vertexCount = 0u;
+    if (mglRenderPlanCullDistanceElementRange(
             indexBytes, elemWidth, (uint32_t)count,
-            restartEnabled ? 1 : 0, restartIndex,
-            &scanMin, &scanMax, &scanValid) != 0 || !scanValid) {
+            restartEnabled ? 1 : 0, restartIndex, baseVertex,
+            &first, &vertexCount) != 0) {
         return NO;
     }
-    uint32_t minIndex = scanMin;
-    uint32_t maxIndex = scanMax;
-    const int64_t first = (int64_t)minIndex + (int64_t)baseVertex;
-    const int64_t last = (int64_t)maxIndex + (int64_t)baseVertex;
-    if (first < 0 || last < first || last > INT32_MAX) return NO;
-    const uint64_t vertexCount = (uint64_t)(last - first) + 1u;
-    if (vertexCount > INT32_MAX) return NO;
     return [self captureAIRCullDistancesForArrayDraw:drawCtx
-                                               first:(GLint)first
+                                               first:first
                                                count:(GLsizei)vertexCount
                                        instanceCount:instanceCount
                                         baseInstance:baseInstance];
@@ -791,18 +766,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return nil;
     }
 
-    NSUInteger captureSize = 0u;
-    NSUInteger captureOffset = 0u;
-    NSUInteger captureStride = mglAIRPerVertexStrideForResources(
-        &vertexProgram->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
-    const NSUInteger recordsPerInstance = (NSUInteger)count;
-    if (!mglCheckedTessCaptureSize(recordsPerInstance, instanceCount,
-                                   captureStride, &captureSize,
-                                   &captureOffset)) {
+    MGLTessVertexCapturePlan plan = {0};
+    if (!mglTessPlanVertexCapture(vertexProgram, (uint32_t)count,
+                                  (uint32_t)instanceCount, (uint32_t)first,
+                                  baseInstance, &plan)) {
         return nil;
     }
     id capture = mglDrawSupportCreateBuffer(
-        _device, captureSize, 0u);
+        _device, (NSUInteger)plan.capture_size, 0u);
     if (!capture) return nil;
 
     self->ctx = drawCtx;
@@ -813,12 +784,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
-    uint32_t captureParams[3];
-    mglTessFillCaptureParams((uint32_t)first, (uint32_t)recordsPerInstance,
-                             baseInstance, captureParams);
     mglTessBindCaptureSlots(
         _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, captureParams);
+        (__bridge void *)capture, plan.params);
     /* Re-apply GL bindings after installing the capture buffers at 28/29.
      * The first capture draw in a context otherwise left VS SSBO/UBO slots
      * unbound (probe: first GS+SSBO write is 0, second is correct). */
@@ -830,11 +798,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     mglTessBindCaptureSlots(
         _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, captureParams);
+        (__bridge void *)capture, plan.params);
     if (getenv("MGL_GS_DIAG")) {
-        NSLog(@"MGL GS DIAG capture-draw POINT first=%d count=%d instances=%d baseInst=%u stride=%lu size=%lu",
+        NSLog(@"MGL GS DIAG capture-draw POINT first=%d count=%d instances=%d baseInst=%u stride=%u size=%llu",
               (int)first, (int)count, (int)instanceCount, baseInstance,
-              (unsigned long)captureStride, (unsigned long)captureSize);
+              (unsigned)plan.capture_stride,
+              (unsigned long long)plan.capture_size);
     }
     mglTessEncodeCaptureArray(
         _renderPassManager.state->currentRenderEncoderOwner, (uint32_t)first,
@@ -843,7 +812,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     [self endRenderEncoding];
     _tessellation.tessVertexCaptureActive = NO;
     drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (outOffset) *outOffset = captureOffset;
+    if (outOffset) *outOffset = (NSUInteger)plan.capture_offset;
     return capture;
 }
 
@@ -871,18 +840,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return nil;
     }
 
-    NSUInteger captureSize = 0u;
-    NSUInteger captureOffset = 0u;
-    NSUInteger captureStride = mglAIRPerVertexStrideForResources(
-        &vertexProgram->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
-    const NSUInteger recordsPerInstance = (NSUInteger)maxIndex + 1u;
-    if (!mglCheckedTessCaptureSize(recordsPerInstance, instanceCount,
-                                   captureStride, &captureSize,
-                                   &captureOffset)) {
+    MGLTessVertexCapturePlan plan = {0};
+    if (!mglTessPlanVertexCapture(vertexProgram, maxIndex + 1u,
+                                  (uint32_t)instanceCount, 0u, baseInstance,
+                                  &plan)) {
         return nil;
     }
     id capture = mglDrawSupportCreateBuffer(
-        _device, captureSize, 0u);
+        _device, (NSUInteger)plan.capture_size, 0u);
     if (!capture) return nil;
     self->ctx = drawCtx;
     _tessellation.tessVertexCaptureActive = YES;
@@ -892,12 +857,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         _tessellation.tessVertexCaptureActive = NO;
         return nil;
     }
-    uint32_t captureParams[3];
-    mglTessFillCaptureParams(0u, (uint32_t)recordsPerInstance, baseInstance,
-                             captureParams);
     mglTessBindCaptureSlots(
         _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, captureParams);
+        (__bridge void *)capture, plan.params);
     /* Same re-bind as the non-indexed capture path: first capture draw
      * otherwise left VS SSBO slots unbound. */
     drawCtx->active_state->dirty_bits = DIRTY_ALL;
@@ -908,7 +870,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     mglTessBindCaptureSlots(
         _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, captureParams);
+        (__bridge void *)capture, plan.params);
     /* The capture kernel indexes records by raw vertex_id with no bounds
      * check; a primitive-restart marker (0xFFFFFFFF for UInt32) in the
      * stream would write past the sparse record span and corrupt the
@@ -968,7 +930,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     _currentCBHasWork = YES;    [self endRenderEncoding];
     _tessellation.tessVertexCaptureActive = NO;
     drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (outOffset) *outOffset = captureOffset;
+    if (outOffset) *outOffset = (NSUInteger)plan.capture_offset;
     return capture;
 }
 
@@ -3279,26 +3241,18 @@ after_gs_draws:
                                                           outOffset:&captureOffset];
                     Program *captureVS = mglResolveProgramForStageFromState(
                         drawCtx, _VERTEX_SHADER);
-                    NSUInteger captureStride = captureVS
-                        ? mglAIRPerVertexStrideForResources(
-                              &captureVS->shader_resources_list[_VERTEX_SHADER]
-                                                               [_STAGE_OUTPUT_RES])
-                        : MGL_AIR_PER_VERTEX_STRIDE;
-                    if (captureStride < MGL_AIR_PER_VERTEX_STRIDE) {
-                        captureStride = MGL_AIR_PER_VERTEX_STRIDE;
-                    }
-                    const NSUInteger sparseRecords =
-                        (NSUInteger)gatherMaxIndex + 1u;
+                    MGLTessVertexCapturePlan compactPlan = {0};
                     const GLsizei instCount =
                         instanceCount > 0 ? instanceCount : 1;
-                    NSUInteger continuousSize = 0u;
-                    NSUInteger continuousOffset = 0u;
+                    const NSUInteger sparseRecords =
+                        (NSUInteger)gatherMaxIndex + 1u;
                     if (sparseCapture &&
-                        mglCheckedTessCaptureSize((GLsizei)gatherCount,
-                                                  instCount, captureStride,
-                                                  &continuousSize,
-                                                  &continuousOffset)) {
-                        (void)continuousOffset;
+                        mglTessPlanVertexCapture(captureVS, gatherCount,
+                                                 (uint32_t)instCount, 0u, 0u,
+                                                 &compactPlan)) {
+                        NSUInteger captureStride = compactPlan.capture_stride;
+                        NSUInteger continuousSize =
+                            (NSUInteger)compactPlan.capture_size;
                         _currentCBHasWork = YES;
                         [self flushCommandBuffer:YES];
                         const uint8_t *sparseBytes =

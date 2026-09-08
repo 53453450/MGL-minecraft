@@ -219,6 +219,60 @@ bool mglTessSanitizeRestartIndices(void *dst, const void *src, uint32_t count,
 
 void mglTessFillCaptureParams(uint32_t first, uint32_t records_per_instance,
                               uint32_t base_instance, uint32_t out[3]);
+
+typedef struct MGLTessVertexCapturePlan {
+    uint32_t records_per_instance;
+    uint32_t capture_stride;
+    uint64_t capture_size;
+    uint64_t capture_offset;
+    uint32_t params[3];
+} MGLTessVertexCapturePlan;
+
+bool mglTessPlanVertexCapture(Program *vs, uint32_t records_per_instance,
+                              uint32_t instance_count, uint32_t first,
+                              uint32_t base_instance,
+                              MGLTessVertexCapturePlan *out);
+
+typedef struct MGLTessEvalGlInPlan {
+    uint32_t from_tcs;
+    uint64_t gl_in_offset;
+    uint64_t gl_in_stride;
+    uint32_t gl_in_vertices;
+    uint64_t gl_in_instance_stride;
+} MGLTessEvalGlInPlan;
+
+bool mglTessResolveEvalGlIn(const MGLAIRTessDrawContract *contract,
+                            int has_tcs_output, uint64_t tcs_output_offset,
+                            uint64_t tcs_output_stride,
+                            uint32_t tcs_out_vertices, int has_capture,
+                            uint64_t capture_offset, int indexed_draw,
+                            uint32_t instance_records, uint32_t instance_count,
+                            MGLTessEvalGlInPlan *out);
+
+typedef struct MGLTessTCSStageInPlan {
+    uint64_t vertices;
+    uint64_t stride;
+    uint64_t bytes;
+    MGLTessStageInMember members[1];
+    uint32_t member_count;
+} MGLTessTCSStageInPlan;
+
+bool mglTessPlanTCSStageIn(uint32_t patch_vertices, uint32_t patch_count,
+                           GLsizei vertex_count, MGLTessTCSStageInPlan *out);
+
+typedef struct MGLTessIsolatedBindingPlan {
+    uint8_t isolated;
+    uint8_t writable;
+    uint32_t fallback_length;
+    uint32_t init_length;
+} MGLTessIsolatedBindingPlan;
+
+bool mglTessPlanIsolatedBinding(int has_buffer, int64_t offset,
+                                uint64_t buffer_length,
+                                int64_t storage_remaining,
+                                uint64_t available_bytes,
+                                uint32_t required_bytes, int resource_type,
+                                MGLTessIsolatedBindingPlan *out);
 void mglTessBindCaptureSlots(void *encoder_owner, void *capture_buffer,
                              const uint32_t params[3]);
 void mglTessEncodeCaptureArray(void *encoder_owner, uint32_t first,

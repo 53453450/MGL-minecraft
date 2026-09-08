@@ -7730,6 +7730,37 @@ int mglRenderScanIndexRangeIgnoringRestart(
 }
 
 extern "C"
+int mglRenderPlanCullDistanceElementRange(
+    const uint8_t* bytes, uint32_t elem_width, uint32_t count,
+    int restart_enabled, uint32_t restart_index, int32_t base_vertex,
+    int32_t* out_first, uint32_t* out_count) {
+    if (!out_first || !out_count) {
+        return -1;
+    }
+    *out_first = 0;
+    *out_count = 0u;
+    uint32_t scan_min = 0u, scan_max = 0u;
+    int scan_valid = 0;
+    if (mglRenderScanIndexRangeIgnoringRestart(
+            bytes, elem_width, count, restart_enabled, restart_index,
+            &scan_min, &scan_max, &scan_valid) != 0 || !scan_valid) {
+        return -1;
+    }
+    const int64_t first = (int64_t)scan_min + (int64_t)base_vertex;
+    const int64_t last = (int64_t)scan_max + (int64_t)base_vertex;
+    if (first < 0 || last < first || last > INT32_MAX) {
+        return -1;
+    }
+    const uint64_t vertex_count = (uint64_t)(last - first) + 1u;
+    if (vertex_count > INT32_MAX) {
+        return -1;
+    }
+    *out_first = (int32_t)first;
+    *out_count = (uint32_t)vertex_count;
+    return 0;
+}
+
+extern "C"
 int mglRenderComputePreparedIndexByteOffset(
     uint64_t gl_index_type, uint64_t gl_byte_offset,
     uint64_t* out_prepared_offset) {

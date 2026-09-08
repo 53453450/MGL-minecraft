@@ -374,11 +374,6 @@ typedef struct {
             continue;
         }
         [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
-        if (map->offset < 0) {
-            return false;
-        }
-        NSUInteger bindOffset = (NSUInteger)map->offset;
-
         id buffer = ptr->data.mtl_data
             ? (__bridge id)(ptr->data.mtl_data)
             : nil;
@@ -394,24 +389,25 @@ typedef struct {
                 ? (__bridge id)(ptr->data.mtl_data)
                 : nil;
         }
+        MGLTessIsolatedBindingPlan bindPlan = {0};
+        GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
+        const uint64_t bufferLength = mglTessBufferLength(buffer);
+        NSUInteger availableBytes = buffer
+            ? mglBufferMapVisibleBackingBytes(map, bufferLength)
+            : 0u;
         NSUInteger requiredBytes =
             mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
         if (map->resource_type == _ATOMIC_COUNTER_RES &&
             requiredBytes < sizeof(uint32_t)) {
             requiredBytes = sizeof(uint32_t);
         }
-
-        GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
-        const uint64_t bufferLength = mglTessBufferLength(buffer);
-        NSUInteger availableBytes = buffer
-            ? mglBufferMapVisibleBackingBytes(map, bufferLength)
-            : 0u;
-        BOOL needsIsolatedBinding =
-            !buffer ||
-            storageRemaining <= 0 ||
-            bindOffset >= bufferLength ||
-            availableBytes == 0 ||
-            (requiredBytes > 0 && availableBytes < requiredBytes);
+        if (!mglTessPlanIsolatedBinding(
+                buffer != nil, map->offset, bufferLength,
+                (int64_t)storageRemaining, (uint64_t)availableBytes,
+                (uint32_t)requiredBytes, (int)map->resource_type,
+                &bindPlan)) {
+            return false;
+        }
 
         MGLTessStageBufferBinding *binding = &bindings->slots[metalBindingIndex];
         binding->buffer = nil;
@@ -420,16 +416,16 @@ typedef struct {
         binding->initialization_source_offset = 0u;
         binding->initialization_length = 0u;
         binding->valid = YES;
-        if (!needsIsolatedBinding) {
+        if (!bindPlan.isolated) {
             binding->buffer = buffer;
-            binding->offset = bindOffset;
+            binding->offset = (NSUInteger)map->offset;
             /* The GL buffer's Metal backing is about to be staged in a
              * compute encoder: pin its snapshot-pool slot. */
             mglNoteBufferEncoded(ptr);
             continue;
         }
 
-        NSUInteger fallbackLength = MAX(requiredBytes, sizeof(uint32_t));
+        NSUInteger fallbackLength = bindPlan.fallback_length;
         id isolated = mglTessCreateBuffer(
             _device, fallbackLength, MGL_TESS_RESOURCE_STORAGE_SHARED);
         void *isolatedContents = mglTessBufferContents(isolated);
@@ -440,22 +436,19 @@ typedef struct {
 
         binding->buffer = isolated;
         binding->offset = 0u;
-        if (buffer && availableBytes > 0) {
+        if (bindPlan.init_length > 0u) {
             binding->initialization_source = buffer;
-            binding->initialization_source_offset = bindOffset;
-            binding->initialization_length = MIN(availableBytes, fallbackLength);
+            binding->initialization_source_offset = (NSUInteger)map->offset;
+            binding->initialization_length = bindPlan.init_length;
         }
 
-        BOOL writableResource =
-            map->resource_type == _STORAGE_BUFFER_RES ||
-            map->resource_type == _ATOMIC_COUNTER_RES;
-        if (writableResource && buffer && availableBytes > 0 &&
+        if (bindPlan.writable && buffer && bindPlan.init_length > 0u &&
             ![self recordStageBindingCopyBack:copyBacks
                                        atIndex:metalBindingIndex
                                      temporary:isolated
                                    destination:buffer
                              destinationBuffer:ptr
-                            destinationOffset:bindOffset
+                            destinationOffset:(NSUInteger)map->offset
                                         length:availableBytes]) {
             return false;
         }
@@ -689,33 +682,16 @@ typedef struct {
         return nil;
     }
 
+    MGLTessTCSStageInPlan stagePlan = {0};
+    if (!mglTessPlanTCSStageIn(patchVertices, patchCount, count, &stagePlan)) {
+        return nil;
+    }
+    NSUInteger tcsInStride = (NSUInteger)stagePlan.stride;
+    NSUInteger memberCount = stagePlan.member_count;
     MGLTessStageInMember members[MAX_ATTRIBS];
     memset(members, 0, sizeof(members));
-    NSUInteger tcsInStride = 0u;
-    NSUInteger memberCount = 0u;
-    /* AIR TCS shared record: position comes from attribute 0 and point size
-     * and cull distances are initialized separately. */
-    tcsInStride = MGL_AIR_PER_VERTEX_STRIDE;
-    members[0].attribute = 0u;
-    members[0].offset = 0u;
-    members[0].size = 16u;
-    members[0].component_bytes = 4u;
-    members[0].components = 4u;
-    members[0].base_type = MGL_TESS_STAGE_IN_FLOAT;
-    memberCount = 1u;
-    if (tcsInStride == 0u) {
-        NSLog(@"MGL TESS WARNING: unable to compute TCS stage_in stride for program %u",
-              (unsigned)tcsProgram->name);
-        return nil;
-    }
-
-    NSUInteger tcsInVertices = (NSUInteger)patchCount * (NSUInteger)MAX(patchVertices, 1u);
-    if (tcsInVertices < (NSUInteger)count) {
-        tcsInVertices = (NSUInteger)count;
-    }
-    if (tcsInVertices == 0u || tcsInStride > NSUIntegerMax / tcsInVertices) {
-        return nil;
-    }
+    members[0] = stagePlan.members[0];
+    NSUInteger tcsInVertices = (NSUInteger)stagePlan.vertices;
 
     VertexArray *vao = mglRendererGetValidatedVAO(drawCtx, "tcs.stage_in");
     if (!vao) {
@@ -750,7 +726,7 @@ typedef struct {
         primitiveRestart = mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
     }
 
-    NSUInteger tcsInSize = tcsInStride * tcsInVertices;
+    NSUInteger tcsInSize = (NSUInteger)stagePlan.bytes;
     id stageInBuffer = mglTessCreateBuffer(
         _device, tcsInSize, MGL_TESS_RESOURCE_STORAGE_SHARED);
     void *stageInContents = mglTessBufferContents(stageInBuffer);
@@ -1151,17 +1127,26 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         mglRendererBackendGetTcsOutputBuffer(_backend);
     id tessFactorBuffer = (__bridge id)
         mglRendererBackendGetCurrentTessFactorBuffer(_backend);
-    id glInBuffer = tcsOutputBuffer;
-    NSUInteger glInOffset = _tessellation.tcsOutputOffset;
-    NSUInteger glInStride = _tessellation.tcsOutputStride;
-    GLuint glInVertices = _tessellation.tcsOutVertices;
-    if (!glInBuffer) {
-        glInBuffer = (__bridge id)
-            mglRendererBackendGetTessVertexCaptureBuffer(_backend);
-        glInOffset = _tessellation.tessVertexCaptureOffset;
-        glInStride = contract->per_vertex_out_stride;
-        glInVertices = MAX(1u, contract->patch_vertices);
+    id captureBuffer = (__bridge id)
+        mglRendererBackendGetTessVertexCaptureBuffer(_backend);
+    MGLTessEvalGlInPlan glInPlan = {0};
+    if (!mglTessResolveEvalGlIn(
+            contract, tcsOutputBuffer != nil,
+            (uint64_t)_tessellation.tcsOutputOffset,
+            (uint64_t)_tessellation.tcsOutputStride,
+            _tessellation.tcsOutVertices, captureBuffer != nil,
+            (uint64_t)_tessellation.tessVertexCaptureOffset,
+            _tessellation.tessIndexedDraw ? 1 : 0,
+            (uint32_t)_tessellation.tessInstanceRecords,
+            (uint32_t)instanceCount, &glInPlan)) {
+        NSLog(@"MGL TESS ERROR: missing TES compute inputs program=%u",
+              (unsigned)tesProgram->name);
+        return false;
     }
+    id glInBuffer = glInPlan.from_tcs ? tcsOutputBuffer : captureBuffer;
+    NSUInteger glInOffset = (NSUInteger)glInPlan.gl_in_offset;
+    NSUInteger glInStride = (NSUInteger)glInPlan.gl_in_stride;
+    GLuint glInVertices = glInPlan.gl_in_vertices;
     if (!glInBuffer || !tessFactorBuffer) {
         NSLog(@"MGL TESS ERROR: missing TES compute inputs program=%u",
               (unsigned)tesProgram->name);
@@ -1181,11 +1166,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             return false;
         }
     }
-    if (glInStride < MGL_AIR_PER_VERTEX_STRIDE) {
-        glInStride = MGL_AIR_PER_VERTEX_STRIDE;
-    }
-    if (glInVertices == 0u) glInVertices = MAX(1u, contract->patch_vertices);
-    const BOOL glInFromTCS = (glInBuffer == tcsOutputBuffer);
+    const BOOL glInFromTCS = glInPlan.from_tcs != 0u;
     /* TCS currently expands one instance of control points / factors.
      * TES still loops instances for XFB/output bases.  Reusing instance-0
      * TCS outs is wrong when VS outputs vary by gl_InstanceID.  Until
@@ -1205,9 +1186,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         }
     }
     const NSUInteger glInInstanceStride =
-        (glInFromTCS || _tessellation.tessIndexedDraw)
-            ? 0u
-            : _tessellation.tessInstanceRecords * glInStride;
+        (NSUInteger)glInPlan.gl_in_instance_stride;
 
     /* Compute per-patch item counts and the per-instance total. */
     const uint16_t *factorBytes =

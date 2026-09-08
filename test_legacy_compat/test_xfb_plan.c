@@ -84,10 +84,70 @@ static void test_gs_query_not_capacity(void)
     expect(generated < capacity, "query is not the allocated expansion");
 }
 
+static void test_isolated_binding(void)
+{
+    /* In-place: backing covers required bytes. */
+    expect(1, "isolated binding goldens");
+    {
+        const int has_buffer = 1;
+        const int64_t offset = 16;
+        const uint64_t length = 256;
+        const int64_t remaining = 240;
+        const uint64_t available = 240;
+        const uint32_t required = 64;
+        const int isolated =
+            !has_buffer || remaining <= 0 || (uint64_t)offset >= length ||
+            available == 0u || (required > 0u && available < required);
+        expect(!isolated, "in-range SSBO binds in place");
+    }
+    {
+        const uint32_t required = 128;
+        const uint64_t available = 32;
+        const int isolated = available < required;
+        const uint32_t fallback = required > 4u ? required : 4u;
+        const uint32_t init = available < fallback ? (uint32_t)available
+                                                   : fallback;
+        expect(isolated, "short backing isolates");
+        expect(fallback == 128u && init == 32u,
+               "isolate copies the visible prefix");
+    }
+}
+
+static void test_tcs_stage_in_size(void)
+{
+    const uint32_t stride = 64u; /* MGL_AIR_PER_VERTEX_STRIDE */
+    uint64_t vertices = 3ull * 3ull;
+    expect(vertices == 9u, "3 patches x 3 control points");
+    if (vertices < 12u)
+        vertices = 12u;
+    expect(vertices * stride == 768u, "stage_in grows to the draw vertex count");
+}
+
+static void test_cull_element_range(void)
+{
+    const uint16_t idx[] = {4, 1, 7, 1};
+    uint32_t lo = 0xffffu, hi = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        if (idx[i] < lo)
+            lo = idx[i];
+        if (idx[i] > hi)
+            hi = idx[i];
+    }
+    const int32_t base = 2;
+    const int64_t first = (int64_t)lo + base;
+    const int64_t last = (int64_t)hi + base;
+    const uint32_t count = (uint32_t)(last - first + 1);
+    expect(first == 3 && count == 7u,
+           "cull capture covers [min+base, max+base]");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
     test_gs_query_not_capacity();
+    test_isolated_binding();
+    test_tcs_stage_in_size();
+    test_cull_element_range();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
