@@ -945,7 +945,7 @@ static id mglLookupAuxRenderPipeline(
         return NO;
     }
 
-    if (tex->target != GL_TEXTURE_2D ||
+    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
         tex->width == 0u ||
         tex->height == 0u ||
         mglBlitTextureInfo(source).texture_type != MGLTextureType2D ||
@@ -1148,7 +1148,7 @@ static id mglLookupAuxRenderPipeline(
         !tex->metal_data_authoritative) {
         id dirtyMetal = (__bridge id)(tex->mtl_data);
         BOOL flushed = NO;
-        if (tex->target == GL_TEXTURE_2D &&
+        if (mglRenderTextureTargetIs2D((uint32_t)tex->target) &&
             mglBlitTextureInfo(dirtyMetal).texture_type == MGLTextureType2D &&
             !mglTextureUploadNeedsSwizzleBake(tex)) {
             flushed = [self uploadFullCPUTextureDataIntoTexture:tex
@@ -2098,7 +2098,7 @@ static id mglLookupAuxRenderPipeline(
             return NO;
         }
         readSubresource = mglMetalAttachmentSubresourceForAttachment(readFBOAttachment);
-        if (readFBOAttachment->textarget == GL_RENDERBUFFER)
+        if (mglRenderTargetIsRenderbuffer((uint32_t)readFBOAttachment->textarget))
         {
             readTextureObject = readFBOAttachment->buf.rbo->tex;
         }
@@ -2133,15 +2133,13 @@ static id mglLookupAuxRenderPipeline(
         drawtexid = [self mglDrawableTexture];
     } else {
         drawAttachment = glm_ctx->active_state->draw_buffer;
-        if (drawAttachment == GL_NONE) {
+        if (mglRenderDrawBufferIsNone((uint32_t)drawAttachment)) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer skipped color blit with GL_DRAW_BUFFER=GL_NONE");
             return NO;
         }
-        if (!isColorAttachment(glm_ctx, drawAttachment) &&
-            drawAttachment != GL_DEPTH_ATTACHMENT &&
-            drawAttachment != GL_STENCIL_ATTACHMENT &&
-            drawAttachment != GL_DEPTH_STENCIL_ATTACHMENT)
-        {
+        if (!mglRenderFBOBlitAttachmentKnown(
+                (uint32_t)drawAttachment,
+                isColorAttachment(glm_ctx, drawAttachment) ? 1 : 0)) {
             drawAttachment = GL_COLOR_ATTACHMENT0;
         }
 
@@ -2151,7 +2149,7 @@ static id mglLookupAuxRenderPipeline(
             return NO;
         }
         drawSubresource = mglMetalAttachmentSubresourceForAttachment(drawFBOAttachment);
-        if (drawFBOAttachment->textarget == GL_RENDERBUFFER)
+        if (mglRenderTargetIsRenderbuffer((uint32_t)drawFBOAttachment->textarget))
         {
             drawTextureObject = drawFBOAttachment->buf.rbo->tex;
         }

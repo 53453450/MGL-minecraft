@@ -1422,6 +1422,7 @@ int mglRenderImageAccessWritable(uint32_t access);
 int mglRenderFilterIsNearest(uint32_t filter);
 int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color);
 int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer);
+int mglRenderIndexTypeIsU8(uint32_t type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

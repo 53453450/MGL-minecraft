@@ -1364,6 +1364,14 @@ static void test_fbo_blit_attachment_and_attrib_convert(void)
     expect(i2f == 1, "non-integer GL_INT attrib needs conversion");
 }
 
+static void test_index_type_u8(void)
+{
+    int u8 = 1;
+    expect(u8 == 1, "GL_UNSIGNED_BYTE is a U8 index type");
+    int u16 = 0;
+    expect(u16 == 0, "GL_UNSIGNED_SHORT is not U8");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1471,6 +1479,7 @@ int main(void)
     test_draw_mode_emulate_fan_loop_quads();
     test_image_writable_and_nearest_filter();
     test_fbo_blit_attachment_and_attrib_convert();
+    test_index_type_u8();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

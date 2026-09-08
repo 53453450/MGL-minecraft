@@ -9398,6 +9398,10 @@ int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer) {
     return 0;
 }
 
+int mglRenderIndexTypeIsU8(uint32_t type) {
+    return type == GL_UNSIGNED_BYTE ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

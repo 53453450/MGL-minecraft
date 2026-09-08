@@ -1959,7 +1959,7 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
         if (indexed) {
             for (uint32_t i = 0; i < batch->command_count; i++) {
                 MGLDrawCommand *cmd = &batch->commands[i];
-                if (cmd->indexType == GL_UNSIGNED_BYTE) {
+                if (mglRenderIndexTypeIsU8((uint32_t)cmd->indexType)) {
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
