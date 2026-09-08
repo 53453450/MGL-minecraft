@@ -5279,17 +5279,15 @@ static void mglTextureCopyTextureToBuffer(
     // Validate texture dimensions to prevent Metal assertion failures.
     // Texture buffers (GL_TEXTURE_BUFFER) can have very large widths (millions of texels)
     // since they map to MGLTextureTypeTextureBuffer which uses GPU address space.
-    if (tex->target != GL_TEXTURE_BUFFER) {
-        if (!tex || tex->width <= 0 || tex->height <= 0 ||
-            tex->width > 32768 || tex->height > 32768 || tex->depth > 32768) {
+    if (!mglRenderTextureDimsValid(tex->target, tex->width, tex->height,
+                                   tex->depth)) {
             NSLog(@"MGL ERROR: Invalid texture dimensions %dx%dx%d - rejecting",
                   tex ? tex->width : 0, tex ? tex->height : 0, tex ? tex->depth : 0);
             tex->dirty_bits = 0;
             return nil;
         }
-    }
 
-    if (tex->target == GL_TEXTURE_BUFFER) {
+    if (mglRenderIsTextureBufferTarget(tex->target)) {
         return [self createMTLTexelBufferTexture:tex];
     }
 
@@ -6939,12 +6937,14 @@ static void mglTextureCopyTextureToBuffer(
         sampledResource->image_dim == MGL_IMAGE_DIM_BUFFER) {
         Texture *bufferTexture =
             MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER];
-        if (bufferTexture && bufferTexture->name != TEX_OBJ_RES_NAME) {
+        if (bufferTexture &&
+            !mglRenderTextureNameIsDefault(bufferTexture->name)) {
             return bufferTexture;
         }
         Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
-        if (activeTexture && activeTexture->target == GL_TEXTURE_BUFFER &&
-            activeTexture->name != TEX_OBJ_RES_NAME) {
+        if (activeTexture &&
+            mglRenderIsTextureBufferTarget(activeTexture->target) &&
+            !mglRenderTextureNameIsDefault(activeTexture->name)) {
             return activeTexture;
         }
     }

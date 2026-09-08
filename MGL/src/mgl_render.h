@@ -1233,6 +1233,12 @@ int mglRenderImageNeedsNonLayeredSlice(int layered, int is_ms, uint32_t src_type
 int mglRenderImageNeedsFormatOrMipView(uint32_t level, uint32_t bind_format,
                                        uint32_t native_format);
 uint64_t mglRenderImageViewSliceCount(uint32_t src_type, uint64_t array_length);
+int mglRenderIsTextureBufferTarget(uint32_t gl_target);
+int mglRenderTextureDimsValid(uint32_t gl_target, int32_t width, int32_t height,
+                              int32_t depth);
+int mglRenderTextureBufferNeedsDirty(int is_tbo, int has_buf, uint32_t buf_dirty);
+uint64_t mglRenderExpectedArrayLayers(uint32_t gl_target, int32_t depth);
+int mglRenderTextureNameIsDefault(uint32_t name);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

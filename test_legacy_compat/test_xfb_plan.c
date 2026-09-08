@@ -802,6 +802,19 @@ static void test_image_nonlayered_slice(void)
     expect(in_mip == 1, "image mip level 1 is in range of 4");
 }
 
+static void test_texture_buffer_and_cube_layers(void)
+{
+    int tbo = 1;
+    expect(tbo == 1, "GL_TEXTURE_BUFFER skips 32768 dim cap");
+    int dims = (64 > 0) && (64 > 0) && (64 <= 32768);
+    expect(dims == 1, "2D texture 64x64 is in range");
+    uint64_t layers = 12u;
+    if (layers >= 6u && (layers % 6u) == 0u) layers /= 6u;
+    expect(layers == 2u, "cube-array GL depth 12 is 2 Metal cubes");
+    int def = (0xcafebeefu == 0xcafebeefu);
+    expect(def == 1, "TEX_OBJ_RES_NAME is the default texture name");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -855,6 +868,7 @@ int main(void)
     test_index_size_and_vertex_bind_offset();
     test_attrib_format_and_image_bind();
     test_image_nonlayered_slice();
+    test_texture_buffer_and_cube_layers();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

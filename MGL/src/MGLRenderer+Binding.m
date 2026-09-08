@@ -67,8 +67,11 @@ static id mglBindingCreateDefaultSampler(void)
 
 - (bool)bindMTLTextureLocked:(Texture *)tex
 {
-    if (tex && tex->target == GL_TEXTURE_BUFFER && tex->texture_buffer &&
-        tex->texture_buffer->data.dirty_bits) {
+    if (mglRenderTextureBufferNeedsDirty(
+            mglRenderIsTextureBufferTarget(tex ? tex->target : 0u),
+            tex && tex->texture_buffer ? 1 : 0,
+            tex && tex->texture_buffer ? tex->texture_buffer->data.dirty_bits
+                                       : 0u)) {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     }
 
@@ -81,11 +84,8 @@ static id mglBindingCreateDefaultSampler(void)
             /* Metal cube-array arrayLength is cube count; GL depth is usually
              * face count (cubes * 6). Comparing raw depth forced a rebuild that
              * wiped imageStore results on the next bind. */
-            uint64_t expectedLayers = MAX((uint64_t)tex->depth, 1u);
-            if (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY &&
-                expectedLayers >= 6u && (expectedLayers % 6u) == 0u) {
-                expectedLayers /= 6u;
-            }
+            uint64_t expectedLayers = mglRenderExpectedArrayLayers(
+                tex->target, tex->depth);
             if (existingInfo.array_length < expectedLayers ||
                 existingInfo.width != (uint64_t)tex->width ||
                 existingInfo.height != (uint64_t)tex->height) {

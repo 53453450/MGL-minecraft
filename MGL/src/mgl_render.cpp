@@ -7877,6 +7877,38 @@ uint64_t mglRenderImageViewSliceCount(uint32_t src_type, uint64_t array_length) 
     return slices < 1u ? 1u : slices;
 }
 
+int mglRenderIsTextureBufferTarget(uint32_t gl_target) {
+    return gl_target == GL_TEXTURE_BUFFER ? 1 : 0;
+}
+
+int mglRenderTextureDimsValid(uint32_t gl_target, int32_t width, int32_t height,
+                              int32_t depth) {
+    if (gl_target == GL_TEXTURE_BUFFER) {
+        return 1;
+    }
+    return width > 0 && height > 0 && width <= 32768 && height <= 32768 &&
+                   depth <= 32768
+               ? 1
+               : 0;
+}
+
+int mglRenderTextureBufferNeedsDirty(int is_tbo, int has_buf, uint32_t buf_dirty) {
+    return is_tbo && has_buf && buf_dirty != 0u ? 1 : 0;
+}
+
+uint64_t mglRenderExpectedArrayLayers(uint32_t gl_target, int32_t depth) {
+    uint64_t layers = depth > 0 ? (uint64_t)depth : 1u;
+    if (gl_target == GL_TEXTURE_CUBE_MAP_ARRAY && layers >= 6u &&
+        (layers % 6u) == 0u) {
+        layers /= 6u;
+    }
+    return layers;
+}
+
+int mglRenderTextureNameIsDefault(uint32_t name) {
+    return name == TEX_OBJ_RES_NAME ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
