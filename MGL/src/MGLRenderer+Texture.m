@@ -5338,32 +5338,18 @@ static void mglTextureCopyTextureToBuffer(
     pixelFormat = mtlPixelFormatForGLTex(tex);
     BOOL expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
     BOOL usesUploadSwizzleBake = mglTextureUploadNeedsSwizzleBake(tex);
-    if (expandsSingleChannelSwizzle) {
-        uint32_t swizzleStorageFormat =
-            mglRenderSingleChannelSwizzleStoragePixelFormat(
-                (uint32_t)tex->internalformat);
-        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
-            pixelFormat = swizzleStorageFormat;
-        } else {
-            pixelFormat = MGLPixelFormatRGBA8Unorm;
-        }
-    } else if (mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex)) {
-        uint32_t swizzleStorageFormat =
-            mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
-                (uint32_t)tex->internalformat);
-        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
-            pixelFormat = swizzleStorageFormat;
-        }
-    } else if (mglTextureUploadNeedsStencilSwizzleBake(tex)) {
-        pixelFormat = mglRenderStencilSwizzleStoragePixelFormat();
-    } else if (mglTextureUploadNeedsDepthStencilDepthSwizzleBake(tex)) {
-        uint32_t swizzleStorageFormat =
-            mglRenderSingleChannelSwizzleStoragePixelFormat(
-                (uint32_t)tex->internalformat);
-        if (swizzleStorageFormat != MGLPixelFormatInvalid) {
-            pixelFormat = swizzleStorageFormat;
-        }
-    }
+    pixelFormat = mglRenderResolveUploadSwizzlePixelFormat(
+        pixelFormat, expandsSingleChannelSwizzle ? 1 : 0,
+        mglRenderSingleChannelSwizzleStoragePixelFormat(
+            (uint32_t)tex->internalformat),
+        mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) ? 1 : 0,
+        mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+            (uint32_t)tex->internalformat),
+        mglTextureUploadNeedsStencilSwizzleBake(tex) ? 1 : 0,
+        mglRenderStencilSwizzleStoragePixelFormat(),
+        mglTextureUploadNeedsDepthStencilDepthSwizzleBake(tex) ? 1 : 0,
+        mglRenderSingleChannelSwizzleStoragePixelFormat(
+            (uint32_t)tex->internalformat));
 
     // Validate format compatibility with AGX, but preserve original intent
     BOOL needsFormatConversion = NO;
@@ -5484,19 +5470,17 @@ static void mglTextureCopyTextureToBuffer(
         tex_desc.mipmap_level_count = MAX((GLuint)1, effective_mipmap_levels);
     }
 
-    if (texture1DBackedBy2D) {
-        tex_desc.texture_type = MGLTextureType2D;
-        tex_desc.height = 1;
-    }
-    if (texture1DArrayBackedBy2DArray) {
-        tex_desc.texture_type = MGLTextureType2DArray;
-        /* For GL_TEXTURE_1D_ARRAY, the GL height parameter is the array slice
-         * count.  Since tex_type was promoted to MGLTextureType2DArray above,
-         * the arrayLength branch at line ~12397 (keyed on MGLTextureType1DArray)
-         * was skipped, leaving arrayLength=1 from the is_array/depth fallback.
-         * Set arrayLength from the GL height (slice count) here. */
-        tex_desc.array_length = MAX((NSUInteger)1, height);
-        tex_desc.height = 1;
+    if (texture1DBackedBy2D || texture1DArrayBackedBy2DArray) {
+        uint32_t backedType = tex_desc.texture_type;
+        uint64_t backedArray = tex_desc.array_length;
+        uint32_t backedHeight = (uint32_t)tex_desc.height;
+        mglRenderApply1DBackingToDesc(texture1DBackedBy2D ? 1 : 0,
+                                      texture1DArrayBackedBy2DArray ? 1 : 0,
+                                      (uint64_t)height, &backedType,
+                                      &backedArray, &backedHeight);
+        tex_desc.texture_type = backedType;
+        tex_desc.array_length = backedArray;
+        tex_desc.height = backedHeight;
     }
 
     /* GL image access mode (GL_READ_ONLY / GL_WRITE_ONLY / GL_READ_WRITE)

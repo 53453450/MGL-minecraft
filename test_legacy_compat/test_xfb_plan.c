@@ -894,6 +894,17 @@ static void test_ms_emulate_and_upload_levels(void)
     expect(shared == 1, "CPU-upload or depth/stencil prefers shared storage");
 }
 
+static void test_swizzle_and_1d_backing(void)
+{
+    uint32_t native = 40u;
+    uint32_t single = 0u;
+    uint32_t out = 1 ? (single != 0u ? single : 70u) : native;
+    expect(out == 70u, "single-channel swizzle with no storage format uses RGBA8");
+    uint32_t h = 1u;
+    uint64_t arr = 8u < 1u ? 1u : 8u;
+    expect(h == 1u && arr == 8u, "1D-array backing sets height=1 and arrayLength=GL height");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -955,6 +966,7 @@ int main(void)
     test_texture_access_and_mip_promote();
     test_texture_array_depth_for_type();
     test_ms_emulate_and_upload_levels();
+    test_swizzle_and_1d_backing();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

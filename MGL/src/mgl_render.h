@@ -1271,6 +1271,13 @@ int mglRenderEmulateMSAsArray(uint32_t tex_type, uint32_t samples, uint64_t dept
                               uint32_t *out_type, uint32_t *sample_count,
                               uint64_t *array_len, uint64_t *depth_out);
 int mglRenderPreferSharedStorage(int needs_cpu, int is_depth_stencil);
+uint32_t mglRenderResolveUploadSwizzlePixelFormat(
+    uint32_t native, int single_ch, uint32_t single_fmt, int int_multi,
+    uint32_t int_fmt, int stencil, uint32_t stencil_fmt, int ds_depth,
+    uint32_t ds_fmt);
+void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
+                                   uint64_t height, uint32_t *type,
+                                   uint64_t *array_len, uint32_t *height_out);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

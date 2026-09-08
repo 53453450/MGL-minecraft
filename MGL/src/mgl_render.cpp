@@ -8158,6 +8158,49 @@ int mglRenderPreferSharedStorage(int needs_cpu, int is_depth_stencil) {
     return needs_cpu || is_depth_stencil ? 1 : 0;
 }
 
+uint32_t mglRenderResolveUploadSwizzlePixelFormat(
+    uint32_t native, int single_ch, uint32_t single_fmt, int int_multi,
+    uint32_t int_fmt, int stencil, uint32_t stencil_fmt, int ds_depth,
+    uint32_t ds_fmt) {
+    if (single_ch) {
+        return single_fmt != 0u ? single_fmt : 70u; /* RGBA8Unorm */
+    }
+    if (int_multi) {
+        return int_fmt != 0u ? int_fmt : native;
+    }
+    if (stencil) {
+        return stencil_fmt;
+    }
+    if (ds_depth) {
+        return ds_fmt != 0u ? ds_fmt : native;
+    }
+    return native;
+}
+
+void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
+                                   uint64_t height, uint32_t *type,
+                                   uint64_t *array_len, uint32_t *height_out) {
+    if (backed_1d) {
+        if (type) {
+            *type = MGLTextureType2D;
+        }
+        if (height_out) {
+            *height_out = 1u;
+        }
+    }
+    if (backed_1d_array) {
+        if (type) {
+            *type = MGLTextureType2DArray;
+        }
+        if (array_len) {
+            *array_len = height < 1u ? 1u : height;
+        }
+        if (height_out) {
+            *height_out = 1u;
+        }
+    }
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
