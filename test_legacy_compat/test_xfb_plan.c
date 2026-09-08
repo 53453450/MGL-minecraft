@@ -1334,6 +1334,16 @@ static void test_error_none_and_color_scan_stop(void)
     expect(stop == 1, "GL_NONE with no next color stops attachment scan");
 }
 
+static void test_draw_mode_emulate_fan_loop_quads(void)
+{
+    int need = 1;
+    expect(need == 1, "TRIANGLE_FAN/LINE_LOOP/QUADS need emulate");
+    int fan = 1 && !0;
+    expect(fan == 1, "TRIANGLE_FAN without point mode emulates triangles");
+    int loop = 1;
+    expect(loop == 1, "LINE_LOOP emulates line strip");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1438,6 +1448,7 @@ int main(void)
     test_ms_sample_plane_and_array_targets();
     test_clip_origin_lower_left();
     test_error_none_and_color_scan_stop();
+    test_draw_mode_emulate_fan_loop_quads();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

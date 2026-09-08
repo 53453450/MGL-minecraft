@@ -9351,6 +9351,24 @@ int mglRenderStopColorAttachmentScan(uint32_t next_index, uint32_t max,
     return next_index >= max || (next_is_none && !has_next_color) ? 1 : 0;
 }
 
+int mglRenderDrawModeNeedsEmulate(uint32_t mode) {
+    return mode == GL_TRIANGLE_FAN || mode == GL_LINE_LOOP || mode == GL_QUADS
+               ? 1
+               : 0;
+}
+
+int mglRenderEmulateTriangleFan(uint32_t mode, int polygon_point) {
+    return mode == GL_TRIANGLE_FAN && !polygon_point ? 1 : 0;
+}
+
+int mglRenderEmulateLineLoop(uint32_t mode) {
+    return mode == GL_LINE_LOOP ? 1 : 0;
+}
+
+int mglRenderEmulateQuads(uint32_t mode, int polygon_point) {
+    return mode == GL_QUADS && !polygon_point ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -1414,6 +1414,10 @@ int mglRenderClipOriginIsLowerLeft(uint32_t origin);
 int mglRenderErrorIsNone(uint32_t error);
 int mglRenderStopColorAttachmentScan(uint32_t next_index, uint32_t max,
                                      int next_is_none, int has_next_color);
+int mglRenderDrawModeNeedsEmulate(uint32_t mode);
+int mglRenderEmulateTriangleFan(uint32_t mode, int polygon_point);
+int mglRenderEmulateLineLoop(uint32_t mode);
+int mglRenderEmulateQuads(uint32_t mode, int polygon_point);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

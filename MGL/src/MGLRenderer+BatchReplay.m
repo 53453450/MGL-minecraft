@@ -1053,8 +1053,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     GLenum batchMode = batch->commands[0].mode;
     if (mglPolygonModePointForDrawMode(glm_ctx, batchMode) ||
-        batchMode == GL_TRIANGLE_FAN || batchMode == GL_LINE_LOOP ||
-        batchMode == GL_QUADS) {
+        mglRenderDrawModeNeedsEmulate((uint32_t)batchMode)) {
         return NO;
     }
 
@@ -1225,9 +1224,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         GLsizei instanceCount = cmd->instanceCount;
 
         BOOL polygonModePoint = mglPolygonModePointForDrawMode(glm_ctx, mode);
-        BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
-        BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-        BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+        BOOL emulateTriangleFan = mglRenderEmulateTriangleFan(
+                                      (uint32_t)mode, polygonModePoint ? 1 : 0) != 0;
+        BOOL emulateLineLoop = mglRenderEmulateLineLoop((uint32_t)mode) != 0;
+        BOOL emulateQuads = mglRenderEmulateQuads(
+                                (uint32_t)mode, polygonModePoint ? 1 : 0) != 0;
         uint32_t primType = polygonModePoint
             ? MGL_DRAW_PRIMITIVE_POINT
             : (emulateTriangleFan ? MGL_DRAW_PRIMITIVE_TRIANGLE
