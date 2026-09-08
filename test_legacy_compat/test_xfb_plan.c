@@ -2254,6 +2254,15 @@ static void test_compute_texture_list_expand(void)
     expect(compute_tex_list_expands(1u) == 0, "UBO uses list index not expansion");
 }
 
+static int writable_storage(int t) { return t == 3 || t == 9; }
+
+static void test_writable_storage_class(void)
+{
+    expect(writable_storage(3) == 1, "SSBO is writable storage");
+    expect(writable_storage(9) == 1, "atomic counter is writable storage");
+    expect(writable_storage(1) == 0, "UBO is not writable storage");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2412,6 +2421,7 @@ int main(void)
     test_combined_sampler_slot();
     test_default_drawbuffer_front();
     test_compute_texture_list_expand();
+    test_writable_storage_class();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

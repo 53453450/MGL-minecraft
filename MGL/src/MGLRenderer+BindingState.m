@@ -764,8 +764,8 @@ static bool mglBindingStateFlushResourceBindings(
             }
 
             BOOL writableResource =
-                map->resource_type == _STORAGE_BUFFER_RES ||
-                map->resource_type == _ATOMIC_COUNTER_RES;
+                mglRenderWritableStorageNeedsGPUAuthoritative(
+                    (int)map->resource_type) != 0;
             if (_tessellation.nativeTESActive && writableResource && buffer &&
                 availableBytes > 0 &&
                 ![self recordStageBindingCopyBack:
