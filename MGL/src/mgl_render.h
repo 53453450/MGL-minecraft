@@ -1183,6 +1183,13 @@ int mglRenderResolveMappedBufferSlot(int has_metal_binding,
                                      int32_t metal_binding_index,
                                      int32_t buffer_base_index,
                                      uint32_t max_slots, uint32_t *out_slot);
+int mglRenderBufferMapOffsetValid(int64_t offset);
+int mglRenderBufferSizeValid(int64_t size);
+int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
+int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
+int mglRenderAttribOffsetsValid(int64_t binding_offset,
+                                int64_t relativeoffset);
+void mglRenderClearCPUWriteRange(Buffer *buf);
 
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],

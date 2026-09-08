@@ -2159,7 +2159,8 @@ after_gs_draws:
             return false;
         }
 
-        if (resolved.binding_offset < 0 || resolved.relativeoffset < 0) {
+        if (!mglRenderAttribOffsetsValid(resolved.binding_offset,
+                                         resolved.relativeoffset)) {
             NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=negative_attrib_offset bindingOffset=%lld relativeOffset=%lld",
                   (unsigned long long)drawCall,
                   (unsigned)attrib,

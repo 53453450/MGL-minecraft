@@ -686,7 +686,7 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (offset < 0) {
+        if (!mglRenderBufferMapOffsetValid(offset)) {
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has negative offset=%lld, skipping",
                   i, (long long)offset);
             MGL_VBIND_EMIT_CLEAR(bindingIndex);
@@ -695,7 +695,7 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (ptr->size < 0) {
+        if (!mglRenderBufferSizeValid(ptr->size)) {
             NSLog(@"MGL WARNING: Vertex buffer %u has invalid size=%lld, skipping",
                   ptr->name, (long long)ptr->size);
             MGL_VBIND_EMIT_CLEAR(bindingIndex);
@@ -1153,18 +1153,12 @@ static bool mglBindingStateFlushResourceBindings(
          * path, which maps the Metal backing on demand and keeps
          * lazily-populated buffers working. */
 
-        if (resolved.binding_offset < 0) {
-            NSLog(@"MGL VBIND BLOCK draw: attrib=%u buffer=%u negative bindingOffset=%lld",
+        if (!mglRenderAttribOffsetsValid(resolved.binding_offset,
+                                         resolved.relativeoffset)) {
+            NSLog(@"MGL VBIND BLOCK draw: attrib=%u buffer=%u negative bindingOffset=%lld relativeOffset=%lld",
                   attrib,
                   attribBuffer->name,
-                  (long long)resolved.binding_offset);
-            MGL_VATTR_FLUSH_SNAPSHOT();
-            return false;
-        }
-        if (resolved.relativeoffset < 0) {
-            NSLog(@"MGL VBIND BLOCK draw: attrib=%u buffer=%u negative relativeOffset=%lld",
-                  attrib,
-                  attribBuffer->name,
+                  (long long)resolved.binding_offset,
                   (long long)resolved.relativeoffset);
             MGL_VATTR_FLUSH_SNAPSHOT();
             return false;
@@ -1785,7 +1779,7 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (offset < 0) {
+        if (!mglRenderBufferMapOffsetValid(offset)) {
             NSLog(@"MGL FBIND skip slot=%u buffer=%u: negative offset=%lld",
                   i, ptr->name, (long long)offset);
             MGL_FBIND_EMIT_CLEAR(bindingIndex);
@@ -1794,7 +1788,7 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (ptr->size < 0) {
+        if (!mglRenderBufferSizeValid(ptr->size)) {
             NSLog(@"MGL FBIND skip slot=%u buffer=%u: invalid size=%lld",
                   i, ptr->name, (long long)ptr->size);
             continue;

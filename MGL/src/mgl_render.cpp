@@ -7703,6 +7703,38 @@ int mglRenderResolveMappedBufferSlot(int has_metal_binding,
     return 1;
 }
 
+int mglRenderBufferMapOffsetValid(int64_t offset) {
+    return offset >= 0 ? 1 : 0;
+}
+
+int mglRenderBufferSizeValid(int64_t size) {
+    return size >= 0 ? 1 : 0;
+}
+
+int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
+    return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
+}
+
+int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type) {
+    return resource_type == _STORAGE_BUFFER_RES ||
+                   resource_type == _ATOMIC_COUNTER_RES
+               ? 1
+               : 0;
+}
+
+int mglRenderAttribOffsetsValid(int64_t binding_offset,
+                                int64_t relativeoffset) {
+    return binding_offset >= 0 && relativeoffset >= 0 ? 1 : 0;
+}
+
+void mglRenderClearCPUWriteRange(Buffer *buf) {
+    if (!buf) {
+        return;
+    }
+    buf->written_min = -1;
+    buf->written_max = -1;
+}
+
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],
     const uint32_t current_u[4], const float current_f[4], uint8_t bytes[16]) {

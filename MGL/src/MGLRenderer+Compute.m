@@ -290,7 +290,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
         }
         metalBindingIndex = (NSUInteger)resolvedSlot;
         [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
-        if (map->offset < 0) {
+        if (!mglRenderBufferMapOffsetValid(map->offset)) {
             NSLog(@"MGL COMPUTE WARNING: buffer map[%d] negative offset=%lld, skipping",
                   i,
                   (long long)map->offset);
@@ -306,7 +306,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
         if (ptr->data.mtl_data) {
             MGLRenderBufferInfo existingInfo = {0};
             if (mglRenderGetBufferInfo(ptr->data.mtl_data, &existingInfo) == 0 &&
-                ptr->size > 0 && existingInfo.length < (uint64_t)ptr->size) {
+                mglRenderMetalBackingTooSmall(ptr->size, existingInfo.length)) {
                 /* A plain-uniform buffer may grow after another stage has
                  * materialized a short backing store.  The dirty-update path
                  * preserves the old Metal allocation, so drop it here and
@@ -332,10 +332,9 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
         /* After this encode, Metal is authoritative for writable SSBOs /
          * atomics — drop CPU written_min/max so a later dirty CoW cannot
          * re-apply stale BufferData zeros over GPU stores. */
-        if (map->resource_type == _STORAGE_BUFFER_RES ||
-            map->resource_type == _ATOMIC_COUNTER_RES) {
-            ptr->written_min = -1;
-            ptr->written_max = -1;
+        if (mglRenderWritableStorageNeedsGPUAuthoritative(
+                (int)map->resource_type)) {
+            mglRenderClearCPUWriteRange(ptr);
         }
         id buffer = ptr->data.mtl_data
             ? (__bridge id)(ptr->data.mtl_data)

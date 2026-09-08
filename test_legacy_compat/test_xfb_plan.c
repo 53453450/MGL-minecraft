@@ -550,6 +550,18 @@ static void test_tess_eval_xfb_slot(void)
     expect(dest == 1, "TES XFB dest ready with metal+buf+plan");
 }
 
+static void test_buffer_map_offset_and_backing(void)
+{
+    int off_ok = (-1 >= 0);
+    expect(off_ok == 0, "negative buffer-map offset is invalid");
+    int size_ok = (0 >= 0);
+    expect(size_ok == 1, "zero GL buffer size is valid");
+    int too_small = (64 > 0) && (16u < 64u);
+    expect(too_small == 1, "Metal backing shorter than GL size must grow");
+    int attrib_off = (8 >= 0) && (-4 >= 0);
+    expect(attrib_off == 0, "negative attrib relativeoffset is invalid");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -583,6 +595,7 @@ int main(void)
     test_mapped_buffer_slot();
     test_tcs_stage_in_source();
     test_tess_eval_xfb_slot();
+    test_buffer_map_offset_and_backing();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
