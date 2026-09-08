@@ -1355,6 +1355,10 @@ int mglRenderUseStencilState(int stencil_test, int pass_has_stencil);
 int mglRenderSuppressDepthStencilWrites(int rasterizer_discard, int tess_capture,
                                         int cull_capture);
 uint32_t mglRenderStencilWriteMask(int suppress, uint32_t mask);
+void mglRenderClampScissorRect(int32_t *x, int32_t *y, int32_t *w, int32_t *h,
+                               uint32_t pass_w, uint32_t pass_h);
+int32_t mglRenderMetalScissorY(int32_t y, int32_t h, uint32_t pass_h,
+                               uint32_t clip_origin);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

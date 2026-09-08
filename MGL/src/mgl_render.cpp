@@ -8670,6 +8670,60 @@ int mglRenderSuppressDepthStencilWrites(int rasterizer_discard, int tess_capture
 uint32_t mglRenderStencilWriteMask(int suppress, uint32_t mask) {
     return suppress ? 0u : mask;
 }
+
+void mglRenderClampScissorRect(int32_t *x, int32_t *y, int32_t *w, int32_t *h,
+                               uint32_t pass_w, uint32_t pass_h) {
+    if (!x || !y || !w || !h) {
+        return;
+    }
+    int32_t sx = *x;
+    int32_t sy = *y;
+    int32_t sw = *w;
+    int32_t sh = *h;
+    if (sx < 0) {
+        sw += sx;
+        sx = 0;
+    }
+    if (sy < 0) {
+        sh += sy;
+        sy = 0;
+    }
+    if (sx >= (int32_t)pass_w || sy >= (int32_t)pass_h) {
+        *x = 0;
+        *y = 0;
+        *w = 0;
+        *h = 0;
+        return;
+    }
+    int32_t max_w = (int32_t)pass_w - sx;
+    int32_t max_h = (int32_t)pass_h - sy;
+    if (sw > max_w) {
+        sw = max_w;
+    }
+    if (sh > max_h) {
+        sh = max_h;
+    }
+    if (sw <= 0 || sh <= 0) {
+        *x = 0;
+        *y = 0;
+        *w = 0;
+        *h = 0;
+        return;
+    }
+    *x = sx;
+    *y = sy;
+    *w = sw;
+    *h = sh;
+}
+
+int32_t mglRenderMetalScissorY(int32_t y, int32_t h, uint32_t pass_h,
+                               uint32_t clip_origin) {
+    if (clip_origin == GL_UPPER_LEFT) {
+        return y;
+    }
+    int32_t metal_y = (int32_t)pass_h - (y + h);
+    return metal_y < 0 ? 0 : metal_y;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

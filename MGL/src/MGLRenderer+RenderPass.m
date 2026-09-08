@@ -2591,52 +2591,14 @@ static GLenum mglPassthroughDeclType(
                 sy = rawSy;
                 sw = rawSw;
                 sh = rawSh;
-
-                // GL allows negative x/y; clamp origin and shrink extent accordingly.
-                if (sx < 0) {
-                    sw += sx;
-                    sx = 0;
-                }
-                if (sy < 0) {
-                    sh += sy;
-                    sy = 0;
-                }
-
-                if (sx >= (GLint)passWidth || sy >= (GLint)passHeight) {
-
-                    sx = 0;
-                    sy = 0;
-                    sw = 0;
-                    sh = 0;
-                } else {
-                    GLint maxWidth = (GLint)passWidth - sx;
-                    GLint maxHeight = (GLint)passHeight - sy;
-
-                    if (sw > maxWidth) {
-                        sw = maxWidth;
-                    }
-                    if (sh > maxHeight) {
-                        sh = maxHeight;
-                    }
-
-                    if (sw <= 0 || sh <= 0) {
-                        /* GL allows 0-size scissor rects; they produce no
-                         * fragments.  Do not reset to the full pass. */
-                        sx = 0;
-                        sy = 0;
-                        sw = 0;
-                        sh = 0;
-                    }
-                }
+                mglRenderClampScissorRect(&sx, &sy, &sw, &sh,
+                                          (uint32_t)passWidth,
+                                          (uint32_t)passHeight);
             }
 
-            GLint metalSy = sy;
-            if (state->var.clip_origin != GL_UPPER_LEFT) {
-                metalSy = (GLint)passHeight - (sy + sh);
-                if (metalSy < 0) {
-                    metalSy = 0;
-                }
-            }
+            GLint metalSy = mglRenderMetalScissorY(
+                sx, sh, (uint32_t)passHeight,
+                (uint32_t)state->var.clip_origin);
 
 	            if (traceEncoderState) {
                 NSLog(@"MGL SCISSOR apply pass=%lux%lu scissorEnabled=%d origin=0x%x raw=(%d,%d,%d,%d) glResolved=(%d,%d,%d,%d) metal=(%d,%d,%d,%d)",

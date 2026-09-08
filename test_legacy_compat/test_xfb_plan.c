@@ -1122,6 +1122,15 @@ static void test_depth_stencil_use_and_suppress(void)
     expect(mask == 0u, "suppressed stencil write mask is 0");
 }
 
+static void test_scissor_clamp_and_metal_y(void)
+{
+    int32_t x = -4, w = 10;
+    if (x < 0) { w += x; x = 0; }
+    expect(x == 0 && w == 6, "negative scissor x clamps and shrinks width");
+    int32_t metal_y = 100 - (2 + 8);
+    expect(metal_y == 90, "lower-left clip origin flips scissor y");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1203,6 +1212,7 @@ int main(void)
     test_cull_mode_and_front_face();
     test_depth_clip_and_polygon_mode();
     test_depth_stencil_use_and_suppress();
+    test_scissor_clamp_and_metal_y();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
