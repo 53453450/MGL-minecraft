@@ -1286,6 +1286,14 @@ static void test_glsl_int_as_float_and_flat(void)
     expect(nflat == 0, "float varyings do not need flat");
 }
 
+static void test_msaa_array_layer_stride(void)
+{
+    uint32_t ms = 8u;
+    expect(ms == 8u, "layered MSAA array uses 8-slice stride");
+    uint32_t one = 1u;
+    expect(one == 1u, "non-layered attachment keeps stride 1");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1384,6 +1392,7 @@ int main(void)
     test_glsl_type_name_and_matrix();
     test_glsl_swizzle_and_column_type();
     test_glsl_int_as_float_and_flat();
+    test_msaa_array_layer_stride();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

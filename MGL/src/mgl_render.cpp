@@ -9289,6 +9289,10 @@ int mglRenderGLSLNeedsFlat(uint32_t type) {
     }
 }
 
+uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {
+    return layered && textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ? 8u : 1u;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

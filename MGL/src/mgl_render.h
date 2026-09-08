@@ -1404,6 +1404,7 @@ const char *mglRenderGLSLColumnType(uint32_t rows);
 const char *mglRenderGLSLTypeSwizzle(uint32_t type);
 const char *mglRenderGLSLIntegerAsFloatType(uint32_t type);
 int mglRenderGLSLNeedsFlat(uint32_t type);
+uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

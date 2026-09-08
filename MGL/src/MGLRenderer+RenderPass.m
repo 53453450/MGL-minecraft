@@ -785,20 +785,19 @@ static uint32_t mglGeometryPassthroughLayerStride(GLMContext context)
     Framebuffer *fbo = context->active_state->framebuffer;
     for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
         const FBOAttachment *attachment = &fbo->color_attachments[i];
-        if (attachment->layered &&
-            attachment->textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
-            return 8u;
+        uint32_t stride = mglRenderMSAAArrayLayerStride(
+            attachment->layered ? 1 : 0, (uint32_t)attachment->textarget);
+        if (stride > 1u) {
+            return stride;
         }
     }
-    if (fbo->depth.layered &&
-        fbo->depth.textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
-        return 8u;
+    uint32_t depthStride = mglRenderMSAAArrayLayerStride(
+        fbo->depth.layered ? 1 : 0, (uint32_t)fbo->depth.textarget);
+    if (depthStride > 1u) {
+        return depthStride;
     }
-    if (fbo->stencil.layered &&
-        fbo->stencil.textarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
-        return 8u;
-    }
-    return 1u;
+    return mglRenderMSAAArrayLayerStride(
+        fbo->stencil.layered ? 1 : 0, (uint32_t)fbo->stencil.textarget);
 }
 
 /* The backend keeps one passthrough function per kind.  Include the render
