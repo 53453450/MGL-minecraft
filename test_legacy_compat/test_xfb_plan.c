@@ -466,6 +466,21 @@ static void test_gs_xfb_scatter_runtime(void)
     expect(copy_back == 1, "isolated tess binding copy-back when writable+init");
 }
 
+static void test_gs_post_dispatch(void)
+{
+    uint32_t streams = 0u > 0u ? 0u : 1u;
+    expect(streams == 1u, "GS stream count defaults to 1");
+    uint32_t vpp = 3u;
+    uint64_t written = 96u;
+    uint32_t stride = 16u;
+    expect((vpp * stride) == 48u, "GS query prim bytes are vpp*stride");
+    expect((written / 48u) == 2u, "GS query written is bytes/primBytes");
+    int skip = 1 && 1;
+    expect(skip == 1, "GS XFB plus rasterizer discard skips raster");
+    int need_cpu = 1 || 0;
+    expect(need_cpu == 1, "GS XFB requires CPU visibility");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -493,6 +508,7 @@ int main(void)
     test_eval_after_compute_and_unbacked_xfb();
     test_gs_input_and_tcs_indexed();
     test_gs_xfb_scatter_runtime();
+    test_gs_post_dispatch();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

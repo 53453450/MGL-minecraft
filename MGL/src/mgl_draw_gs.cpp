@@ -756,10 +756,88 @@ extern "C" void mglDrawGsFillXFBScatterRuntime(
     params->stage_out_stride = output_stride;
     params->records_per_primitive = records_per_primitive;
     params->vertices_per_primitive =
-        output_primitive == MGL_DRAW_PRIMITIVE_POINT
-            ? 1u
-            : (output_primitive == MGL_DRAW_PRIMITIVE_LINE ? 2u : 3u);
+        mglDrawGsVerticesPerPrimitive(output_primitive);
     params->expanded_offset_records = MGL_AIR_GS_HEADER_RECORDS;
+}
+
+extern "C" uint32_t mglDrawGsVerticesPerPrimitive(uint32_t output_primitive)
+{
+    if (output_primitive == MGL_DRAW_PRIMITIVE_POINT) {
+        return 1u;
+    }
+    if (output_primitive == MGL_DRAW_PRIMITIVE_LINE) {
+        return 2u;
+    }
+    return 3u;
+}
+
+extern "C" uint32_t mglDrawGsStreamCount(uint32_t geometry_stream_count)
+{
+    return geometry_stream_count > 0u ? geometry_stream_count : 1u;
+}
+
+extern "C" GLenum mglDrawGsLastDrawMode(uint32_t output_primitive)
+{
+    if (output_primitive == MGL_DRAW_PRIMITIVE_POINT) {
+        return GL_POINTS;
+    }
+    if (output_primitive == MGL_DRAW_PRIMITIVE_LINE) {
+        return GL_LINES;
+    }
+    return GL_TRIANGLES;
+}
+
+extern "C" void mglDrawGsFillXFBDestForMeta(const uint32_t *cap_bytes,
+                                            const uint32_t *phys_base,
+                                            uint32_t count,
+                                            MGLGsXFBDestPlan *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!cap_bytes || !phys_base) {
+        return;
+    }
+    if (count > MGL_AIR_GS_MAX_STREAMS) {
+        count = MGL_AIR_GS_MAX_STREAMS;
+    }
+    for (uint32_t b = 0u; b < count; b++) {
+        out->buffers[b].cap_bytes = cap_bytes[b];
+        out->buffers[b].phys_base = phys_base[b];
+        out->buffers[b].valid = cap_bytes[b] > 0u ? 1u : 0u;
+    }
+}
+
+extern "C" void mglDrawGsClearXFBMetaIfNoCapture(int has_capture,
+                                                 MGLAIRGSXFBMeta *meta)
+{
+    if (has_capture || !meta) {
+        return;
+    }
+    for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
+        meta->stream[s].stride = 0u;
+    }
+}
+
+extern "C" int mglDrawGsNeedCPUVisibility(int xfb_active, int has_query)
+{
+    return xfb_active || has_query ? 1 : 0;
+}
+
+extern "C" uint64_t mglDrawGsQueryWritten(uint32_t output_primitive,
+                                          uint32_t buffer0_stride,
+                                          uint64_t buffer0_written)
+{
+    const uint64_t prim_bytes =
+        (uint64_t)mglDrawGsVerticesPerPrimitive(output_primitive) *
+        (uint64_t)buffer0_stride;
+    return prim_bytes > 0u ? buffer0_written / prim_bytes : 0u;
+}
+
+extern "C" int mglDrawGsSkipRaster(int xfb_active, int rasterizer_discard)
+{
+    return xfb_active && rasterizer_discard ? 1 : 0;
 }
 
 extern "C" uint64_t mglDrawGsXFBVisBytes(uint32_t work_item_count)

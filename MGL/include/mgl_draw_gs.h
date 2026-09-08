@@ -149,6 +149,17 @@ void mglDrawGsFillXFBScatterRuntime(MGLAIRGSXFBScatterParams *params,
                                     uint32_t output_primitive);
 uint64_t mglDrawGsXFBVisBytes(uint32_t work_item_count);
 int mglDrawGsXFBActive(int has_xfb, int active, int paused);
+uint32_t mglDrawGsVerticesPerPrimitive(uint32_t output_primitive);
+uint32_t mglDrawGsStreamCount(uint32_t geometry_stream_count);
+GLenum mglDrawGsLastDrawMode(uint32_t output_primitive);
+void mglDrawGsFillXFBDestForMeta(const uint32_t *cap_bytes,
+                                 const uint32_t *phys_base, uint32_t count,
+                                 MGLGsXFBDestPlan *out);
+void mglDrawGsClearXFBMetaIfNoCapture(int has_capture, MGLAIRGSXFBMeta *meta);
+int mglDrawGsNeedCPUVisibility(int xfb_active, int has_query);
+uint64_t mglDrawGsQueryWritten(uint32_t output_primitive, uint32_t buffer0_stride,
+                               uint64_t buffer0_written);
+int mglDrawGsSkipRaster(int xfb_active, int rasterizer_discard);
 
 void mglDrawGsFillXFBMetaFromDest(const MGLAIRGSXFBScatterParams *params,
                                   const MGLGsXFBDestPlan *dest,

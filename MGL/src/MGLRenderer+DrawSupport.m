@@ -1556,23 +1556,21 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         bufferStride[b] = scatterParams.buffers[b].stride;
     }
     const uint32_t gsStreamCount =
-        program->geometry_stream_count > 0u ? program->geometry_stream_count
-                                            : 1u;
+        mglDrawGsStreamCount(program->geometry_stream_count);
     const bool multiStream = gsStreamCount > 1u;
     (void)gsSeparate;
     MGLGsXFBDestPlan destForMeta = {0};
+    uint32_t capBytesU32[MGL_AIR_GS_MAX_STREAMS] = {0};
+    uint32_t physBaseU32[MGL_AIR_GS_MAX_STREAMS] = {0};
     for (uint32_t b = 0u; b < MGL_AIR_GS_MAX_STREAMS; b++) {
-        destForMeta.buffers[b].cap_bytes = (uint32_t)bufferCapBytes[b];
-        destForMeta.buffers[b].phys_base = (uint32_t)bufferPhysBase[b];
-        destForMeta.buffers[b].valid = bufferCapBytes[b] > 0u ? 1u : 0u;
+        capBytesU32[b] = (uint32_t)bufferCapBytes[b];
+        physBaseU32[b] = (uint32_t)bufferPhysBase[b];
     }
-    destForMeta.phys_total = 0u;
+    mglDrawGsFillXFBDestForMeta(capBytesU32, physBaseU32,
+                                MGL_AIR_GS_MAX_STREAMS, &destForMeta);
     MGLAIRGSXFBMeta xfbMeta;
     mglDrawGsFillXFBMetaFromDest(&scatterParams, &destForMeta, &xfbMeta);
-    if (!xfbCaptureBuffer) {
-        for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++)
-            xfbMeta.stream[s].stride = 0u;
-    }
+    mglDrawGsClearXFBMetaIfNoCapture(xfbCaptureBuffer ? 1 : 0, &xfbMeta);
     id xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
         _device, &xfbMeta, sizeof(xfbMeta), 0u);
     if (!xfbMetaBuf) {
@@ -1663,9 +1661,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         executionPlan.barrier_scope = copyBackEntryCount
             ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
             : MGL_RENDER_COMPUTE_BARRIER_NONE;
-        const BOOL requireCPUVisibility =
-            xfbActive || mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
-            mglHasActivePrimitiveQuery(drawCtx) || mglHasActiveGeometryShaderQuery(drawCtx);
+        const BOOL requireCPUVisibility = mglDrawGsNeedCPUVisibility(
+            xfbActive ? 1 : 0,
+            (mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
+             mglHasActivePrimitiveQuery(drawCtx) ||
+             mglHasActiveGeometryShaderQuery(drawCtx))
+                ? 1
+                : 0) != 0;
         const BOOL gsDiagnostic = getenv("MGL_GS_DIAG") != NULL;
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
@@ -1692,17 +1694,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     /* The passthrough pipeline rasterizes the GS output primitive class, so
      * drive inputPrimitiveTopology from the output mode, not the GL input
      * mode (e.g. points in -> triangle_strip out). */
-    switch (outputPrimitive) {
-        case MGL_DRAW_PRIMITIVE_POINT:
-            _lastDrawPrimitiveMode = GL_POINTS;
-            break;
-        case MGL_DRAW_PRIMITIVE_LINE:
-            _lastDrawPrimitiveMode = GL_LINES;
-            break;
-        default:
-            _lastDrawPrimitiveMode = GL_TRIANGLES;
-            break;
-    }
+    _lastDrawPrimitiveMode = mglDrawGsLastDrawMode(outputPrimitive);
     drawCtx->active_state->dirty_bits = DIRTY_ALL;
 
     /* ---- GL4 ordered XFB: CPU prefix-sum + pass-2 scatter ----
@@ -1777,9 +1769,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
 
     GLuint64 queryGenerated = 0u;
-    const GLuint64 vpp = outputPrimitive == MGL_DRAW_PRIMITIVE_POINT
-        ? 1u
-        : (outputPrimitive == MGL_DRAW_PRIMITIVE_LINE ? 2u : 3u);
     GLuint64 queryWritten = 0u;
     const MGLAIRGSXFBMeta *queryMeta = NULL;
     if (xfbActive && xfbMetaBuf && mglDrawSupportBufferContents(xfbMetaBuf)) {
@@ -1865,10 +1854,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         /* stream 0 (non-indexed) written primitives come from buffer 0's
          * written bytes; the buffer-0 record stride is the per-primitive
          * packed size for the captured stream-0 varyings. */
-        const NSUInteger buffer0PrimBytes =
-            (NSUInteger)vpp * scatterParams.buffers[0].stride;
-        queryWritten = buffer0PrimBytes > 0u
-            ? (GLuint64)bufferWritten[0] / buffer0PrimBytes : 0u;
+        queryWritten = mglDrawGsQueryWritten(
+            outputPrimitive, scatterParams.buffers[0].stride,
+            (uint64_t)bufferWritten[0]);
         /* Indexed stream>0 generated counters stay in the meta. */
     }
     if (!queryMeta && xfbMetaBuf && mglDrawSupportBufferContents(xfbMetaBuf) &&
@@ -1887,7 +1875,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             gsOutputMode, (uint32_t)workItemCount, maxVertices, NULL,
             queryMeta);
     }
-    if (xfbActive && MGL_STATE(drawCtx)->caps.rasterizer_discard) {
+    if (mglDrawGsSkipRaster(xfbActive ? 1 : 0,
+                            MGL_STATE(drawCtx)->caps.rasterizer_discard
+                                ? 1
+                                : 0)) {
         /* GL_RASTERIZER_DISCARD: no pixels by definition; the compute
          * expansion already ran and the primitive query must still count
          * the generated/written primitives (persistent query semantics). */
