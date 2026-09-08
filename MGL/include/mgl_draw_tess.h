@@ -292,6 +292,10 @@ int mglTessXFBCopyBackReady(uint64_t written, int has_temp, int has_dest);
 int mglXfbVaryingSlotValid(uint32_t varying);
 int mglXfbCPUShadowFits(int has_cpu, int64_t buf_size, uint64_t dest_offset,
                         uint64_t written);
+uint64_t mglXfbSessionOffsetOr(uint64_t write_offset, uint64_t fallback);
+int mglXfbRecordCountFits(uint64_t records);
+int mglTessStageInAttribInRange(uint32_t attrib);
+int mglTessTCSStageInEmptyOK(uint32_t member_count);
 uint32_t mglTessPackXFBInterleaved(const Program *tes, const void *src,
                                    uint32_t src_stride, uint32_t vertex_count,
                                    void *dst, uint32_t dst_stride);

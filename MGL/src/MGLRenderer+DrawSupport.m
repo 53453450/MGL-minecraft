@@ -910,7 +910,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         (const uint8_t *)mglDrawSupportBufferContents(capture);
     uint64_t recordCount64 = (uint64_t)(uint32_t)count *
                              (uint64_t)(uint32_t)instanceCount;
-    if (!captureBytes || recordCount64 > NSUIntegerMax) {
+    if (!captureBytes || !mglXfbRecordCountFits(recordCount64)) {
         return YES;
     }
     NSUInteger recordCount = (NSUInteger)recordCount64;
@@ -933,9 +933,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             ? mglBufferMapVisibleBackingBytes(
                   &map, slot->buf->size > 0 ? (size_t)slot->buf->size : 0u)
             : 0u;
-        NSUInteger sessionOffset = xfb->buffer_write_offsets[buffer] <=
-                (GLuint64)NSUIntegerMax
-            ? (NSUInteger)xfb->buffer_write_offsets[buffer] : visible;
+        NSUInteger sessionOffset = (NSUInteger)mglXfbSessionOffsetOr(
+            (uint64_t)xfb->buffer_write_offsets[buffer], (uint64_t)visible);
         MGLXfbVsBufferDest dest = {0};
         if (!mglXfbPlanVsBufferDest((uint32_t)recordCount,
                                     plan.buffer_stride[buffer],
@@ -1396,10 +1395,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
             map.size = slot->size;
             NSUInteger visible = mglBufferMapVisibleBackingBytes(
                 &map, (size_t)mglDrawSupportBufferLength(mtl));
-            NSUInteger sessionOffset = 0u;
-            if (xfbState->buffer_write_offsets[b] <= (GLuint64)NSUIntegerMax) {
-                sessionOffset = (NSUInteger)xfbState->buffer_write_offsets[b];
-            }
+            NSUInteger sessionOffset = (NSUInteger)mglXfbSessionOffsetOr(
+                (uint64_t)xfbState->buffer_write_offsets[b], 0u);
             xfbBindings[b].bound = 1u;
             xfbBindings[b].slot_offset = slot->offset;
             xfbBindings[b].session_offset = (uint64_t)sessionOffset;

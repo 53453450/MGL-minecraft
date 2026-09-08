@@ -965,6 +965,27 @@ extern "C" int mglXfbCPUShadowFits(int has_cpu, int64_t buf_size,
     return dest_offset + written <= (uint64_t)buf_size ? 1 : 0;
 }
 
+extern "C" uint64_t mglXfbSessionOffsetOr(uint64_t write_offset,
+                                          uint64_t fallback)
+{
+    return write_offset <= (uint64_t)UINTPTR_MAX ? write_offset : fallback;
+}
+
+extern "C" int mglXfbRecordCountFits(uint64_t records)
+{
+    return records <= (uint64_t)UINTPTR_MAX ? 1 : 0;
+}
+
+extern "C" int mglTessStageInAttribInRange(uint32_t attrib)
+{
+    return attrib < (uint32_t)MAX_ATTRIBS ? 1 : 0;
+}
+
+extern "C" int mglTessTCSStageInEmptyOK(uint32_t member_count)
+{
+    return member_count == 0u ? 1 : 0;
+}
+
 extern "C" int mglTessResolveXFBSource(const Program *program, const char *name,
                                        uint32_t *offset_out,
                                        uint32_t *gl_type_out,

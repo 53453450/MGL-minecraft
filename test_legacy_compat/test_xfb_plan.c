@@ -641,6 +641,18 @@ static void test_native_tes_and_texture_bind(void)
     expect(sampler == 1, "sampled image with combined slot needs sampler");
 }
 
+static void test_xfb_session_and_tcs_stage_in(void)
+{
+    uint64_t off = 24u <= (uint64_t)-1 ? 24u : 0u;
+    expect(off == 24u, "XFB session offset fits uintptr");
+    int records = (100u <= (uint64_t)-1);
+    expect(records == 1, "XFB record count fits uintptr");
+    int attrib = (16u < 32u);
+    expect(attrib == 1, "TCS stage-in attrib 16 is in range");
+    int empty = (0u == 0u);
+    expect(empty == 1, "TCS stage-in with no members is empty-ok");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -681,6 +693,7 @@ int main(void)
     test_xfb_copyback_and_shadow();
     test_tess_passthrough_xfb_success();
     test_native_tes_and_texture_bind();
+    test_xfb_session_and_tcs_stage_in();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

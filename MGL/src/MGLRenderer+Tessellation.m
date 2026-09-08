@@ -721,7 +721,7 @@ typedef struct {
         return nil;
     }
 
-    if (memberCount == 0u) {
+    if (mglTessTCSStageInEmptyOK((uint32_t)memberCount)) {
         if (outStride) {
             *outStride = tcsInStride;
         }
@@ -732,7 +732,7 @@ typedef struct {
     memset(srcs, 0, sizeof(srcs));
     for (NSUInteger m = 0; m < memberCount; m++) {
         const MGLTessStageInMember *member = &members[m];
-        if (member->attribute >= MAX_ATTRIBS) {
+        if (!mglTessStageInAttribInRange(member->attribute)) {
             continue;
         }
         const VertexAttrib *attrib = &vao->attrib[member->attribute];
@@ -1300,10 +1300,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             &MGL_STATE(glm_ctx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
         NSUInteger captureVertices = 0u;
         NSUInteger requiredBytes = 0u;
-        const bool sessionOffsetOK =
-            xfbState->buffer_write_offsets[0] <= (GLuint64)NSUIntegerMax;
-        const NSUInteger xfbSessionOffset =
-            sessionOffsetOK ? (NSUInteger)xfbState->buffer_write_offsets[0] : 0u;
+        const NSUInteger xfbSessionOffset = (NSUInteger)mglXfbSessionOffsetOr(
+            (uint64_t)xfbState->buffer_write_offsets[0], 0u);
         xfbCompactStride = mglTESXFBVertexStride(tesProgram);
         uint32_t captureVertsU = 0u;
         uint32_t requiredBytesU = 0u;
@@ -1530,13 +1528,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                     [self bindMTLBuffer:destBuf];
                 }
                 id destMTL = (__bridge id)(destBuf->data.mtl_data);
-                const bool sessionOffsetOK =
-                    xfbState->buffer_write_offsets[varying] <=
-                    (GLuint64)NSUIntegerMax;
-                const uint64_t sessionOffset =
-                    sessionOffsetOK
-                        ? (uint64_t)xfbState->buffer_write_offsets[varying]
-                        : 0u;
+                const uint64_t sessionOffset = mglXfbSessionOffsetOr(
+                    (uint64_t)xfbState->buffer_write_offsets[varying], 0u);
                 uint64_t visible = 0u;
                 if (destMTL && slot->offset >= 0) {
                     BufferMap xfbMap = {0};
