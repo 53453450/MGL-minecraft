@@ -8940,6 +8940,39 @@ int mglRenderTextureTargetIs2D(uint32_t target) {
     return target == GL_TEXTURE_2D ? 1 : 0;
 }
 
+int mglRenderFBOReadBufferValid(uint32_t read_buffer, uint32_t max_color,
+                                uint32_t max_attach) {
+    if (read_buffer == GL_NONE) {
+        return 0;
+    }
+    if (read_buffer < GL_COLOR_ATTACHMENT0) {
+        return 0;
+    }
+    if (read_buffer >= GL_COLOR_ATTACHMENT0 + max_color) {
+        return 0;
+    }
+    if (read_buffer >= GL_COLOR_ATTACHMENT0 + max_attach) {
+        return 0;
+    }
+    return 1;
+}
+
+int mglRenderDirectR32FloatRead(uint32_t pixel_format, uint32_t format,
+                                uint32_t type) {
+    return pixel_format == 55u /* R32Float */ && format == GL_RED &&
+                   type == GL_FLOAT
+               ? 1
+               : 0;
+}
+
+int mglRenderTraceR8RedUByte(uint32_t internalformat, uint32_t format,
+                             uint32_t type) {
+    return internalformat == GL_R8 && format == GL_RED &&
+                   type == GL_UNSIGNED_BYTE
+               ? 1
+               : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

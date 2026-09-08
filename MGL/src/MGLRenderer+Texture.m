@@ -2039,10 +2039,10 @@ static void mglTextureCopyTextureToBuffer(
         Framebuffer *fbo = glm_ctx->active_state->readbuffer;
         GLenum readBuffer = glm_ctx->active_state->read_buffer;
         if (!fbo ||
-            readBuffer == GL_NONE ||
-            readBuffer < GL_COLOR_ATTACHMENT0 ||
-            readBuffer >= GL_COLOR_ATTACHMENT0 + glm_ctx->active_state->max_color_attachments ||
-            readBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+            !mglRenderFBOReadBufferValid(
+                (uint32_t)readBuffer,
+                (uint32_t)glm_ctx->active_state->max_color_attachments,
+                (uint32_t)MAX_COLOR_ATTACHMENTS)) {
             static uint64_t s_invalidReadFBOCount = 0;
             uint64_t hit = ++s_invalidReadFBOCount;
             if (hit <= 32ull || (hit % 256ull) == 0ull) {
@@ -2288,9 +2288,9 @@ static void mglTextureCopyTextureToBuffer(
 
     NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
     BOOL directR32FloatRead =
-        (mglTextureInfo(texture).pixel_format == MGLPixelFormatR32Float &&
-         format == GL_RED &&
-         type == GL_FLOAT);
+        mglRenderDirectR32FloatRead(
+            (uint32_t)mglTextureInfo(texture).pixel_format, (uint32_t)format,
+            (uint32_t)type) != 0;
     BOOL useBGRA8Conversion =
         (dstPixelBytes > 0u &&
          readRegion.size.depth == 1u &&
@@ -2390,9 +2390,8 @@ static void mglTextureCopyTextureToBuffer(
             memcpy(pixelBytes, mglTextureBufferContents(stagingBuffer), totalBytes);
         }
         if (mglTraceLogIsEnabled() &&
-            tex->internalformat == GL_R8 &&
-            format == GL_RED &&
-            type == GL_UNSIGNED_BYTE &&
+            mglRenderTraceR8RedUByte((uint32_t)tex->internalformat,
+                                     (uint32_t)format, (uint32_t)type) &&
             readRegion.size.width > 0 &&
             readRegion.size.height > 0) {
             const uint8_t *rb = (const uint8_t *)pixelBytes;

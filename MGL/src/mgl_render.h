@@ -1376,6 +1376,12 @@ int mglRenderDepth32FStencil8NeedsUnpack(uint32_t internalformat,
                                          uint32_t src_bpr, uint32_t width);
 int mglRenderTextureTargetIsArrayOr3D(uint32_t target);
 int mglRenderTextureTargetIs2D(uint32_t target);
+int mglRenderFBOReadBufferValid(uint32_t read_buffer, uint32_t max_color,
+                                uint32_t max_attach);
+int mglRenderDirectR32FloatRead(uint32_t pixel_format, uint32_t format,
+                                uint32_t type);
+int mglRenderTraceR8RedUByte(uint32_t internalformat, uint32_t format,
+                             uint32_t type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
