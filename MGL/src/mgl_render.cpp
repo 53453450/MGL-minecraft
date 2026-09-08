@@ -9771,6 +9771,10 @@ int mglRenderTextureTargetIs1DArray(uint32_t target) {
     return target == GL_TEXTURE_1D_ARRAY ? 1 : 0;
 }
 
+int mglRenderBufferHasMapWriteBit(uint32_t access_flags) {
+    return (access_flags & GL_MAP_WRITE_BIT) != 0 ? 1 : 0;
+}
+
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
     uint32_t tmp = 0u;
     return mglRenderBlendOperationFromGL(op, &tmp);

@@ -1458,6 +1458,7 @@ int mglRenderTextureNeedsArrayLengthCheck(uint32_t target);
 int mglRenderPackedDepthStencilFormat(uint32_t internalformat);
 int mglRenderTextureTargetIsLayeredUpload(uint32_t target);
 int mglRenderTextureTargetIs1DArray(uint32_t target);
+int mglRenderBufferHasMapWriteBit(uint32_t access_flags);
 int mglRenderIsValidGLBlendEquation(uint32_t op);
 int mglRenderIsValidGLBlendFactor(uint32_t factor);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);

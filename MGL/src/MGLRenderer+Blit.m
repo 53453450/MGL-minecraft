@@ -3222,11 +3222,12 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         srcAttachment = &fbo->depth;
     } else {
         GLenum readBuffer = glm_ctx->active_state->read_buffer;
-        if (readBuffer < GL_COLOR_ATTACHMENT0 ||
-            readBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+        uint32_t attachmentIndex = 0u;
+        if (!mglRenderDrawBufferIsColorAttachment(
+                (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS,
+                &attachmentIndex)) {
             return NO;
         }
-        GLuint attachmentIndex = (GLuint)(readBuffer - GL_COLOR_ATTACHMENT0);
         if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
             return NO;
         }

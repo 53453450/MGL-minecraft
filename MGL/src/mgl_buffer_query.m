@@ -44,7 +44,7 @@ BOOL mglRendererBufferMayHaveMappedWrites(Buffer *buffer)
         return NO;
     }
 
-    if ((buffer->access_flags & GL_MAP_WRITE_BIT) != 0) {
+    if (mglRenderBufferHasMapWriteBit((uint32_t)buffer->access_flags)) {
         return YES;
     }
 

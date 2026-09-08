@@ -1970,13 +1970,15 @@ static void mglTextureCopyTextureToBuffer(
     ctx = glm_ctx;
     Framebuffer *fbo = glm_ctx ? glm_ctx->active_state->readbuffer : NULL;
     GLenum readBuffer = glm_ctx ? glm_ctx->active_state->read_buffer : GL_NONE;
-    if (!fbo || readBuffer < GL_COLOR_ATTACHMENT0 ||
-        readBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+    uint32_t att = 0u;
+    if (!fbo ||
+        !mglRenderDrawBufferIsColorAttachment(
+            (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS, &att)) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 
-    FBOAttachment *attachment = &fbo->color_attachments[readBuffer - GL_COLOR_ATTACHMENT0];
+    FBOAttachment *attachment = &fbo->color_attachments[att];
     Texture *textureObj = [self framebufferAttachmentTexture:attachment];
     if (!textureObj || ![self bindMTLTexture:textureObj] || !textureObj->mtl_data) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);

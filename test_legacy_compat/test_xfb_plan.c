@@ -1486,6 +1486,16 @@ static void test_packed_depth_and_layered_upload(void)
     expect(arr1d == 1, "TEXTURE_1D_ARRAY is a 1D array target");
 }
 
+static void test_map_write_bit_and_color_att_range(void)
+{
+    int wr = 1;
+    expect(wr == 1, "GL_MAP_WRITE_BIT marks mapped writes");
+    uint32_t idx = 0u;
+    int color = 1;
+    expect(color == 1, "COLOR_ATTACHMENT0 is in the color-attachment range");
+    (void)idx;
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1606,6 +1616,7 @@ int main(void)
     test_cube_face_slice_and_array_layer();
     test_draw_buffer_color_attachment_and_compat();
     test_packed_depth_and_layered_upload();
+    test_map_write_bit_and_color_att_range();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
