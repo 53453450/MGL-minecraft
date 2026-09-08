@@ -268,13 +268,10 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                         continue;
                     }
 
-                    GLuint member_offset = sm->member_offset_in_elem;
-                    if (member_offset >= elem_byte_start) {
-                        member_offset -= elem_byte_start;
-                    }
-                    if (member_offset >= struct_size) {
-                        continue;
-                    }
+                    GLuint member_offset = mglRenderMemberOffsetInElement(
+                        sm->member_offset_in_elem, elem_byte_start);
+                    if (!mglRenderMemberOffsetInStruct(member_offset,
+                                                       (uint32_t)struct_size)) {
 
                     GLint member_loc = sm->member_loc;
                     if (!mglRenderBindableLocValid(member_loc,
@@ -781,13 +778,10 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                             /* member->offset is the absolute byte offset
                              * across the whole array.  Compute the relative
                              * offset within this element. */
-                            GLuint member_offset = member->offset;
-                            if (member_offset >= elem_byte_start) {
-                                member_offset -= elem_byte_start;
-                            }
-                            if (member_offset >= struct_size) {
-                                continue;
-                            }
+                            GLuint member_offset = mglRenderMemberOffsetInElement(
+                                member->offset, elem_byte_start);
+                            if (!mglRenderMemberOffsetInStruct(
+                                    member_offset, (uint32_t)struct_size)) {
 
                             /* Location of this member's data in
                              * plain_uniform_buffers: base_loc + the member's
@@ -803,19 +797,13 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                  * location (CTS).  Nested struct paths use
                                  * std140 ArrayStride; top-level plain arrays
                                  * stay tightly packed for LLVM loads. */
-                                GLuint src_stride =
-                                    mglGLTypeElementByteSize(member->gl_type);
-                                GLuint elem_stride = src_stride;
-                                if (member->name && strchr(member->name, '.') &&
-                                    member->array_stride > (GLint)src_stride &&
-                                    member->array_stride > 0) {
-                                    elem_stride = (GLuint)member->array_stride;
-                                } else if (elem_stride == 0) {
-                                    elem_stride = (GLuint)member->array_stride;
-                                    src_stride = elem_stride ? elem_stride : 4u;
-                                }
-                                if (src_stride == 0)
-                                    src_stride = 4u;
+                                GLuint src_stride = 0u;
+                                GLuint elem_stride = 0u;
+                                mglRenderPlainUniformArrayStrides(
+                                    member->name,
+                                    mglGLTypeElementByteSize(member->gl_type),
+                                    member->array_stride, &src_stride,
+                                    &elem_stride);
                                 for (GLint ai = 0; ai < member->size; ai++) {
                                     GLint elem_loc = member_loc + ai;
                                     if (!mglRenderBindableLocValid(elem_loc,
@@ -844,16 +832,15 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                      * once when source and dest strides match;
                                      * otherwise scatter leaf elements into the
                                      * std140 layout. */
-                                    if (ai == 0 &&
-                                        (size_t)mbuf->size >=
-                                            (size_t)member->size * src_stride) {
+                                    if (mglRenderStructPackUseBulk(
+                                            ai, mbuf->size, (uint32_t)member->size,
+                                            src_stride)) {
                                         if (elem_stride == src_stride) {
-                                            size_t copy_size = (size_t)mbuf->size;
-                                            if ((size_t)member_offset + copy_size >
-                                                struct_size)
-                                                copy_size =
-                                                    struct_size -
-                                                    (size_t)member_offset;
+                                            size_t copy_size =
+                                                (size_t)mglRenderClampCopyToStruct(
+                                                    (uint64_t)member_offset,
+                                                    (uint64_t)mbuf->size,
+                                                    (uint64_t)struct_size);
                                             if (copy_size > 0) {
                                                 memcpy(packed + member_offset,
                                                        (const void *)(uintptr_t)
@@ -870,36 +857,31 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                                     (size_t)member_offset +
                                                     (size_t)sj *
                                                         (size_t)elem_stride;
-                                                if (dest_off >= struct_size)
+                                                size_t copy_size =
+                                                    (size_t)mglRenderClampCopyToStruct(
+                                                        (uint64_t)dest_off,
+                                                        (uint64_t)src_stride,
+                                                        (uint64_t)struct_size);
+                                                if (copy_size == 0)
                                                     break;
-                                                size_t copy_size = src_stride;
-                                                if (dest_off + copy_size >
-                                                    struct_size)
-                                                    copy_size =
-                                                        struct_size -
-                                                        dest_off;
-                                                if (copy_size > 0)
-                                                    memcpy(packed + dest_off,
-                                                           src +
-                                                               (size_t)sj *
-                                                                   src_stride,
-                                                           copy_size);
+                                                memcpy(packed + dest_off,
+                                                       src +
+                                                           (size_t)sj *
+                                                               src_stride,
+                                                       copy_size);
                                             }
                                         }
                                         break;
                                     }
+                                    size_t dest_off = (size_t)member_offset +
+                                        (size_t)ai * (size_t)elem_stride;
                                     size_t copy_size = (size_t)mbuf->size;
                                     if (copy_size > (size_t)elem_stride) {
                                         copy_size = (size_t)elem_stride;
                                     }
-                                    size_t dest_off = (size_t)member_offset +
-                                        (size_t)ai * (size_t)elem_stride;
-                                    if (dest_off >= struct_size) {
-                                        continue;
-                                    }
-                                    if (dest_off + copy_size > struct_size) {
-                                        copy_size = struct_size - dest_off;
-                                    }
+                                    copy_size = (size_t)mglRenderClampCopyToStruct(
+                                        (uint64_t)dest_off, (uint64_t)copy_size,
+                                        (uint64_t)struct_size);
                                     if (copy_size > 0) {
                                         memcpy(packed + dest_off,
                                                (const void *)(uintptr_t)mbuf->data.buffer_data,
@@ -926,10 +908,10 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     mbuf ? mbuf->size : 0)) {
                                     continue;
                                 }
-                                size_t copy_size = (size_t)mbuf->size;
-                                if ((size_t)member_offset + copy_size > struct_size) {
-                                    copy_size = struct_size - (size_t)member_offset;
-                                }
+                                size_t copy_size = (size_t)mglRenderClampCopyToStruct(
+                                    (uint64_t)member_offset,
+                                    mbuf ? (uint64_t)mbuf->size : 0u,
+                                    (uint64_t)struct_size);
                                 if (copy_size > 0) {
                                     memcpy(packed + member_offset,
                                            (const void *)(uintptr_t)mbuf->data.buffer_data,

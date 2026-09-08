@@ -7963,6 +7963,38 @@ int32_t mglRenderPlainUniformBaseLoc(int32_t uniform_location,
     return uniform_location >= 0 ? uniform_location : (int32_t)location;
 }
 
+uint32_t mglRenderMemberOffsetInElement(uint32_t offset,
+                                        uint32_t elem_byte_start) {
+    return offset >= elem_byte_start ? offset - elem_byte_start : offset;
+}
+
+int mglRenderMemberOffsetInStruct(uint32_t offset, uint32_t struct_size) {
+    return offset < struct_size ? 1 : 0;
+}
+
+void mglRenderPlainUniformArrayStrides(const char *name, uint32_t type_bytes,
+                                       int32_t array_stride, uint32_t *src_out,
+                                       uint32_t *elem_out) {
+    uint32_t src = type_bytes;
+    uint32_t elem = type_bytes;
+    if (name && strchr(name, '.') && array_stride > (int32_t)src &&
+        array_stride > 0) {
+        elem = (uint32_t)array_stride;
+    } else if (elem == 0u) {
+        elem = array_stride > 0 ? (uint32_t)array_stride : 0u;
+        src = elem ? elem : 4u;
+    }
+    if (src == 0u) {
+        src = 4u;
+    }
+    if (src_out) {
+        *src_out = src;
+    }
+    if (elem_out) {
+        *elem_out = elem;
+    }
+}
+
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }

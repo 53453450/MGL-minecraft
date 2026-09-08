@@ -1254,6 +1254,12 @@ int mglRenderShouldPackPlainUniformStruct(int spvc_type, int has_members,
                                           uint64_t required, int sampler_like);
 int32_t mglRenderPlainUniformBaseLoc(int32_t uniform_location,
                                      uint32_t location);
+uint32_t mglRenderMemberOffsetInElement(uint32_t offset,
+                                        uint32_t elem_byte_start);
+int mglRenderMemberOffsetInStruct(uint32_t offset, uint32_t struct_size);
+void mglRenderPlainUniformArrayStrides(const char *name, uint32_t type_bytes,
+                                       int32_t array_stride, uint32_t *src_out,
+                                       uint32_t *elem_out);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

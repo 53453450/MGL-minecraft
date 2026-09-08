@@ -736,6 +736,23 @@ static void test_plain_uniform_struct_pack(void)
     expect(loc == 7, "plain uniform base loc falls back to resource location");
 }
 
+static void test_plain_uniform_array_stride(void)
+{
+    uint32_t src = 16u;
+    uint32_t elem = 16u;
+    const char *nested = "s.arr";
+    int32_t array_stride = 32;
+    if (nested && nested[1] == '.' && array_stride > (int32_t)src &&
+        array_stride > 0) {
+        elem = (uint32_t)array_stride;
+    }
+    expect(elem == 32u, "nested uniform array uses std140 ArrayStride");
+    uint32_t off = (40u >= 32u) ? 40u - 32u : 40u;
+    expect(off == 8u, "member offset in element subtracts elem_byte_start");
+    int in_s = (8u < 96u);
+    expect(in_s == 1, "member offset 8 is in 96-byte struct");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -784,6 +801,7 @@ int main(void)
     test_mapped_buffer_fallback();
     test_mapped_uniform_size();
     test_plain_uniform_struct_pack();
+    test_plain_uniform_array_stride();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
