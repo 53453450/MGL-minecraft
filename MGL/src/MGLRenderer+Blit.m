@@ -594,7 +594,7 @@ static id mglLookupAuxRenderPipeline(
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled blit asset pipeline create failed pixelFormat=%lu error=%@",
               (unsigned long)pixelFormat, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
     NSLog(@"MGL INFO: created scaled blit pipeline pixelFormat=%lu (Metal-cpp asset)",
@@ -651,7 +651,7 @@ static id mglLookupAuxRenderPipeline(
               mglTextureDataKindName(dataKind),
               entryName,
               error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
     NSLog(@"MGL INFO: created scaled blit compute pipeline pixelFormat=%lu kind=%s entry=%s (Metal-cpp asset)",
@@ -690,7 +690,7 @@ static id mglLookupAuxRenderPipeline(
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled depth asset pipeline create failed depthPixelFormat=%lu error=%@",
               (unsigned long)pixelFormat, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
     NSLog(@"MGL INFO: created scaled depth blit pipeline depthPixelFormat=%lu (Metal-cpp asset)",
@@ -717,7 +717,7 @@ static id mglLookupAuxRenderPipeline(
     if (!pipeline) {
         NSLog(@"MGL ERROR: MSAA integer resolve asset pipeline create failed signed=%d error=%@",
               signedInteger ? 1 : 0, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
     return pipeline;
@@ -746,7 +746,7 @@ static id mglLookupAuxRenderPipeline(
     }
 
     if (![self ensureWritableCommandBuffer:"blitFramebuffer.msaaIntegerResolve"]) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -800,7 +800,7 @@ static id mglLookupAuxRenderPipeline(
               (unsigned long)sourceSlice,
               (unsigned long)sourceDepthPlane,
               (unsigned long)mglBlitTextureInfo(sourceTexture).texture_type);
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
 
@@ -824,12 +824,12 @@ static id mglLookupAuxRenderPipeline(
               (unsigned long)mglBlitTextureInfo(sourceTexture).width,
               (unsigned long)mglBlitTextureInfo(sourceTexture).height,
               (unsigned long)mglBlitTextureInfo(sourceTexture).sample_count);
-        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return nil;
     }
 
     if (![self ensureWritableCommandBuffer:"readPixels.msaaResolve"]) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
 
@@ -850,7 +850,7 @@ static id mglLookupAuxRenderPipeline(
     }
     NSLog(@"MGL WARNING: readPixels failed to encode MSAA resolve for %s",
           reason ? reason : "unknown");
-    mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+    mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
     return nil;
 }
 
@@ -876,7 +876,7 @@ static id mglLookupAuxRenderPipeline(
     desc.storage_mode = MGLStorageModePrivate;
     id depthTexture = mglBlitCreateTexture(_device, &desc);
     if (!depthTexture) {
-        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return nil;
     }
 
@@ -888,12 +888,12 @@ static id mglLookupAuxRenderPipeline(
               reason ? reason : "unknown",
               pipeline,
               sampler);
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
 
     if (![self ensureWritableCommandBuffer:"readPixels.depthStencilExtract"]) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
 
@@ -911,7 +911,7 @@ static id mglLookupAuxRenderPipeline(
     id encoder =
         mglBlitCreateRenderEncoder(_renderPassManager, &passState);
     if (!encoder) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
 
@@ -1629,7 +1629,7 @@ static id mglLookupAuxRenderPipeline(
         NSLog(@"MGL ERROR: scissored clear asset pipeline create failed color=%lu depth=%lu writesColor=%d writesDepth=%d error=%@",
               (unsigned long)colorFormat, (unsigned long)depthFormat,
               writesColor ? 1 : 0, writesDepth ? 1 : 0, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
     NSLog(@"MGL INFO: created scissored clear pipeline (Metal-cpp asset)");
@@ -3255,7 +3255,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     }
 
     if (level >= mglBlitTextureInfo(destTexture).mipmap_level_count) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         return YES; /* Consumed the call; report an error. */
     }
 
@@ -3265,7 +3265,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         (NSUInteger)yoffset > destLevelHeight ||
         width > destLevelWidth - (NSUInteger)xoffset ||
         height > destLevelHeight - (NSUInteger)yoffset) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         return YES;
     }
 
@@ -3283,7 +3283,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     /* End any active render encoder so the blit encoder can run. */
     [self endRenderEncoding];
     if (![self ensureWritableCommandBuffer:"mtlCopyTexSubImageViaTextureBlit"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return YES;
     }
 
@@ -3307,7 +3307,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         (__bridge id)mglRenderCreateBlitEncoderBorrowed(
             _renderPassManager.state->currentCommandBufferOwner);
     if (!blitEncoder) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return YES;
     }
 
@@ -3325,7 +3325,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         if (!blitEnded) {
             @try { mglBlitEndBlitEncoder(blitEncoder); } @catch (NSException *endException) { }
         }
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return YES;
     }
 
@@ -3355,20 +3355,20 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         return;
     }
     if ((NSInteger)level < 0 || xoffset < 0 || yoffset < 0) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         return;
     }
 
     /* Bind the destination texture so we can inspect its Metal pixel format. */
     if (!tex->mtl_data && ![self bindMTLTexture:tex]) {
         NSLog(@"MGL ERROR: mtlCopyTexSubImage failed to bind destination texture %u", tex->name);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     id destTexture = tex->mtl_data ? (__bridge id)(tex->mtl_data) : nil;
     if (!destTexture) {
         NSLog(@"MGL ERROR: mtlCopyTexSubImage destination texture %u has no Metal texture", tex->name);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -3402,12 +3402,12 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     }
 
     if (width > (NSUInteger)(SIZE_MAX / 4u)) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return;
     }
     size_t bgraRowBytes = (size_t)width * 4u;
     if (height > 0u && bgraRowBytes > SIZE_MAX / (size_t)height) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return;
     }
     size_t bgraSize = bgraRowBytes * (size_t)height;
@@ -3415,7 +3415,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     NSMutableData *bgraReadback = [NSMutableData dataWithLength:bgraSize];
     NSMutableData *uploadData = [NSMutableData dataWithLength:bgraSize];
     if (!bgraReadback || !uploadData) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return;
     }
 
@@ -3434,11 +3434,11 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         NSLog(@"MGL ERROR: mtlCopyTexSubImage unsupported destination Metal format=%lu texture=%u",
               (unsigned long)mglBlitTextureInfo(texture).pixel_format,
               tex->name);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     if (level >= mglBlitTextureInfo(texture).mipmap_level_count) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         return;
     }
 
@@ -3449,7 +3449,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         (NSUInteger)yoffset > levelHeight ||
         width > levelWidth - (NSUInteger)xoffset ||
         height > levelHeight - (NSUInteger)yoffset) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         return;
     }
 
@@ -3459,7 +3459,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     MGLOriginValue destinationOrigin = mglBlitOrigin((NSUInteger)xoffset, 0u, 0u);
     if (textureType == MGLTextureType3D) {
         if (slice >= levelDepth) {
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
             return;
         }
         destinationSlice = 0u;
@@ -3472,7 +3472,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
             maxDestinationSlices = mglBlitTextureInfo(texture).array_length * 6u;
         }
         if (destinationSlice >= maxDestinationSlices) {
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
             return;
         }
     }
@@ -3492,14 +3492,14 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                                               height,
                                                               mglBlitTextureInfo(texture).pixel_format,
                                                               destinationIsRenderTarget)) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     id uploadBuffer = mglBlitCreateBufferWithBytes(
         _device, uploadData.bytes, bgraSize, MGLResourceStorageModeShared);
     if (!uploadBuffer) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return;
     }
 
@@ -3516,7 +3516,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                                      destinationOrigin:destinationOrigin
                                                                 reason:"copy_tex_sub_image"];
     if (!uploaded) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -4109,7 +4109,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         mglBlitTextureInfo(dstTexture).storage_mode != MGLStorageModePrivate) {
         NSUInteger bpp = mglMetalReadbackBytesPerPixel(mglBlitTextureInfo(srcTexture).pixel_format);
         if (bpp == 0u) {
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return YES;
         }
 
@@ -4150,7 +4150,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
 
         void *stagingBytes = malloc(totalBytes);
         if (!stagingBytes) {
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
             return YES;
         }
 
@@ -4259,7 +4259,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                                  bytesPerImage:imageBytes
                                                         reason:"copyImageSubData.3DReadback"]) {
                     free(stagingBytes);
-                    mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                    mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
                     return YES;
                 }
             } else {
@@ -4281,7 +4281,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                             _device, imageBytes, MGLResourceStorageModeShared);
                         if (!sliceBuffer) {
                             free(stagingBytes);
-                            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
                             return YES;
                         }
                         id readEncoder =
@@ -4289,7 +4289,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                 _renderPassManager.state->currentCommandBufferOwner);
                         if (!readEncoder) {
                             free(stagingBytes);
-                            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
                             return YES;
                         }
                         _currentCBHasWork = YES;
@@ -4307,7 +4307,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                 &sliceContents, &sliceLength) != 0 ||
                             !sliceContents || sliceLength < imageBytes) {
                             free(stagingBytes);
-                            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
                             return YES;
                         }
                         memcpy((uint8_t *)stagingBytes + sliceOffset,
@@ -4319,7 +4319,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
             free(stagingBytes);
             NSLog(@"MGL ERROR: mtlCopyImageSubData 3D fallback read failed: %@",
                   exception);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return YES;
         }
         } /* end if (!srcReadFromCPU) */
@@ -4356,7 +4356,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                     } else {
                         free(cpuStaging);
                         free(stagingBytes);
-                        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
                         return YES;
                     }
                 }
@@ -4387,7 +4387,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
             void *fullLevelBytes = malloc(fullTotalBytes);
             if (!fullLevelBytes) {
                 free(stagingBytes);
-                mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
                 return YES;
             }
 
@@ -4454,7 +4454,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                 free(fullLevelBytes);
                 NSLog(@"MGL ERROR: mtlCopyImageSubData 3D replaceRegion failed: %@",
                       exception);
-                mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
                 return YES;
             }
 
@@ -4769,18 +4769,18 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
 
 
     if (![self bindMTLTexture:srcTex]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     if (![self bindMTLTexture:dstTex]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     id srcTexture = (__bridge id)(srcTex->mtl_data);
     id dstTexture = (__bridge id)(dstTex->mtl_data);
     if (!srcTexture || !dstTexture) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -4789,7 +4789,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
 
     if ((NSUInteger)srcLevel >= mglBlitTextureInfo(srcTexture).mipmap_level_count ||
         (NSUInteger)dstLevel >= mglBlitTextureInfo(dstTexture).mipmap_level_count) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidValue());
         return;
     }
 
@@ -4815,7 +4815,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                                       width:width height:height depth:depth]) {
             return;
         }
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -4904,7 +4904,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
             _renderPassManager.state->currentCommandBufferOwner);
     if (!blitEncoder) {
         NSLog(@"MGL ERROR: mtlCopyImageSubData failed to create blit encoder");
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return;
     }
 
@@ -4951,7 +4951,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                   endException);
         }
         NSLog(@"MGL ERROR: mtlCopyImageSubData blit failed: %@", exception);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 

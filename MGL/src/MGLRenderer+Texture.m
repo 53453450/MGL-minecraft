@@ -1252,7 +1252,7 @@ static void mglTextureCopyTextureToBuffer(
         NSLog(@"MGL WARNING: readPixels failed to create %s resources for %s",
               logKind ? logKind : "readback",
               reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return nil;
     }
 
@@ -1279,7 +1279,7 @@ static void mglTextureCopyTextureToBuffer(
               logKind ? logKind : "readback",
               reason ? reason : "unknown",
               exception);
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return nil;
     }
 
@@ -1295,7 +1295,7 @@ static void mglTextureCopyTextureToBuffer(
     if (readbackTransactionResult != 0 || readbackTransaction.has_error) {
         NSLog(@"MGL WARNING: readPixels %s owner transaction failed for %s",
               logKind ? logKind : "readback", reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         if (outSuccess) {
             *outSuccess = NO;
         }
@@ -1308,7 +1308,7 @@ static void mglTextureCopyTextureToBuffer(
               reason ? reason : "unknown",
               mglRenderCommandBufferErrorDescription(
                   &readbackTransaction.completion));
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         if (outSuccess) {
             *outSuccess = NO;
         }
@@ -1349,7 +1349,7 @@ static void mglTextureCopyTextureToBuffer(
                   reason ? reason : "unknown",
                   (unsigned long long)hit);
         }
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1362,7 +1362,7 @@ static void mglTextureCopyTextureToBuffer(
                   reason ? reason : "unknown",
                   (unsigned long long)hit);
         }
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1385,7 +1385,7 @@ static void mglTextureCopyTextureToBuffer(
               (unsigned long)bytesPerRow,
               (unsigned long)region.size.width,
               reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1397,7 +1397,7 @@ static void mglTextureCopyTextureToBuffer(
                   (unsigned long)sourceLevel,
                   (unsigned long)mglTextureInfo(sourceTexture).mipmap_level_count,
                   reason ? reason : "unknown");
-            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return NO;
         }
         levelWidth = MAX((NSUInteger)1u, mglTextureInfo(sourceTexture).width >> sourceLevel);
@@ -1435,12 +1435,12 @@ static void mglTextureCopyTextureToBuffer(
         ((NSUInteger)copyH - 1u) * bytesPerRow + outputBytesPerRow > readSize - dstOffset) {
         NSLog(@"MGL WARNING: readPixels clipped copy exceeds destination storage for %s",
               reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
     if (![self ensureWritableCommandBuffer:"mglReadColorTextureAsBGRA8"]) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1516,7 +1516,7 @@ static void mglTextureCopyTextureToBuffer(
                   reason ? reason : "unknown",
                   (unsigned long long)hit);
         }
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1552,7 +1552,7 @@ static void mglTextureCopyTextureToBuffer(
               (unsigned long)bytesPerRow,
               (unsigned long)region.size.width,
               reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1564,7 +1564,7 @@ static void mglTextureCopyTextureToBuffer(
                   (unsigned long)sourceLevel,
                   (unsigned long)mglTextureInfo(sourceTexture).mipmap_level_count,
                   reason ? reason : "unknown");
-            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return NO;
         }
         levelWidth = MAX((NSUInteger)1u, mglTextureInfo(sourceTexture).width >> sourceLevel);
@@ -1605,12 +1605,12 @@ static void mglTextureCopyTextureToBuffer(
         ((NSUInteger)copyH - 1u) * bytesPerRow + destinationCopyBytesPerRow > readSize - dstOffset) {
         NSLog(@"MGL WARNING: readPixels clipped depth copy exceeds destination storage for %s",
               reason ? reason : "unknown");
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
     if (![self ensureWritableCommandBuffer:"mglReadDepthTextureAsFloat"]) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1677,7 +1677,7 @@ static void mglTextureCopyTextureToBuffer(
     mglRenderIntegerReadbackSourceClassify(
         (uint32_t)mglTextureInfo(sourceTexture).pixel_format, &src);
     if (!src.recognized) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
     NSUInteger componentCount = (NSUInteger)src.component_count;
@@ -1716,7 +1716,7 @@ static void mglTextureCopyTextureToBuffer(
     NSUInteger dstPixelBytes = isPackedType ? packedOutputBytes : (outputComponentBytes * outputComponents);
     NSUInteger readSize = bytesPerImage ? bytesPerImage : bytesPerRow * region.size.height;
     if (!pixelBytes || bytesPerRow < region.size.width * dstPixelBytes) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1741,7 +1741,7 @@ static void mglTextureCopyTextureToBuffer(
     NSUInteger srcBytesPerRow = (NSUInteger)copyW * srcPixelBytes;
     NSUInteger stagingSize = srcBytesPerRow * (NSUInteger)copyH;
     if (![self ensureWritableCommandBuffer:"mglReadIntegerTextureAsRGBA32"]) {
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
 
@@ -1752,7 +1752,7 @@ static void mglTextureCopyTextureToBuffer(
               _renderPassManager.state->currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blit) {
-        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
         return NO;
     }
 
@@ -1900,7 +1900,7 @@ static void mglTextureCopyTextureToBuffer(
         if (!readTextureObject) {
             NSLog(@"MGL WARNING: readPixels FBO has no depth attachment fbo=%u",
                   fbo ? (unsigned)fbo->name : 0u);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -1909,7 +1909,7 @@ static void mglTextureCopyTextureToBuffer(
             NSLog(@"MGL WARNING: readPixels could not bind FBO depth texture fbo=%u tex=%u",
                   fbo ? (unsigned)fbo->name : 0u,
                   (unsigned)readTextureObject->name);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -1919,7 +1919,7 @@ static void mglTextureCopyTextureToBuffer(
 
         [self endRenderEncoding];
         if (![self ensureWritableCommandBuffer:"mtlReadDepthPixels.fbo"]) {
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
         [self mglApplyPendingFBODepthClearForReadback:fbo
@@ -1950,13 +1950,13 @@ static void mglTextureCopyTextureToBuffer(
     if (!texture) {
         NSLog(@"MGL WARNING: readPixels default framebuffer has no depth texture slot=%u",
               (unsigned)drawBufferIndex);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     [self endRenderEncoding];
     if (![self ensureWritableCommandBuffer:"mtlReadDepthPixels.default"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     [self mglApplyPendingDefaultDepthClearToTexture:texture];
@@ -1986,14 +1986,14 @@ static void mglTextureCopyTextureToBuffer(
     if (!fbo ||
         !mglRenderDrawBufferIsColorAttachment(
             (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS, &att)) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     FBOAttachment *attachment = &fbo->color_attachments[att];
     Texture *textureObj = [self framebufferAttachmentTexture:attachment];
     if (!textureObj || ![self bindMTLTexture:textureObj] || !textureObj->mtl_data) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -2003,7 +2003,7 @@ static void mglTextureCopyTextureToBuffer(
 
     [self endRenderEncoding];
     if (![self ensureWritableCommandBuffer:"mtlReadIntegerPixels.fbo"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     [self mglApplyPendingFBOColorClearForReadback:fbo
@@ -2065,7 +2065,7 @@ static void mglTextureCopyTextureToBuffer(
                       (unsigned)glm_ctx->active_state->max_color_attachments,
                       (unsigned long long)hit);
             }
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -2083,7 +2083,7 @@ static void mglTextureCopyTextureToBuffer(
                       (unsigned)fbo->name,
                       (unsigned long long)hit);
             }
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -2093,7 +2093,7 @@ static void mglTextureCopyTextureToBuffer(
             NSLog(@"MGL WARNING: readPixels FBO attachment has no texture fbo=%u attachment=0x%x",
                   (unsigned)fbo->name,
                   (unsigned)readBuffer);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -2103,7 +2103,7 @@ static void mglTextureCopyTextureToBuffer(
                   (unsigned)fbo->name,
                   (unsigned)readBuffer,
                   (unsigned)readTextureObject->name);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -2112,7 +2112,7 @@ static void mglTextureCopyTextureToBuffer(
             mglMetalAttachmentSubresourceForAttachment(attachment);
         [self endRenderEncoding];
         if (![self ensureWritableCommandBuffer:"mtlReadDrawable.fbo"]) {
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
         [self mglApplyPendingFBOColorClearForReadback:fbo
@@ -2140,7 +2140,7 @@ static void mglTextureCopyTextureToBuffer(
             (uint32_t)glm_ctx->active_state->read_buffer, &mappedDraw)) {
         NSLog(@"MGL WARNING: readPixels unsupported default read buffer=0x%x; returning zero data",
               (unsigned)glm_ctx->active_state->read_buffer);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     mgl_drawbuffer = (int)mappedDraw;
@@ -2165,13 +2165,13 @@ static void mglTextureCopyTextureToBuffer(
     {
         NSLog(@"MGL WARNING: readPixels default drawbuffer slot=%u has no texture; returning zero data",
               (unsigned)mgl_drawbuffer);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     [self endRenderEncoding];
     if (![self ensureWritableCommandBuffer:"mtlReadDrawable.default"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
     if (mgl_drawbuffer == _FRONT) {
@@ -2197,7 +2197,7 @@ static void mglTextureCopyTextureToBuffer(
 
     if (!tex) {
         NSLog(@"MGL ERROR: mtlGetTexImage called with NULL texture");
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -2208,25 +2208,25 @@ static void mglTextureCopyTextureToBuffer(
 
     if (!tex->mtl_data && ![self bindMTLTexture:tex]) {
         NSLog(@"MGL ERROR: mtlGetTexImage failed to bind texture %u", tex->name);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     texture = (__bridge id)(tex->mtl_data);
     if (!texture) {
         NSLog(@"MGL ERROR: mtlGetTexImage texture %u has no Metal texture", tex->name);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     if (mglRenderTextureIsFramebufferOnly((__bridge void *)texture)) {
         NSLog(@"MGL ERROR: Cannot read from framebuffer only texture %u\n", tex->name);
-        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
     if (![self synchronizeRenderPassForTextureReadback:texture reason:"mtlGetTexImage"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -2343,21 +2343,21 @@ static void mglTextureCopyTextureToBuffer(
             _device, totalBytes, MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
         if (!stagingBuffer) {
             NSLog(@"MGL ERROR: mtlGetTexImage failed to allocate staging buffer for texture %u", tex->name);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
             return;
         }
 
         id blitCB = mglTextureCreateCommandBuffer(_commandQueue);
         if (!blitCB) {
             NSLog(@"MGL ERROR: mtlGetTexImage failed to create blit command buffer for texture %u", tex->name);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
         id blitEncoder = mglTextureCreateBlitEncoder(blitCB);
         if (!blitEncoder) {
             NSLog(@"MGL ERROR: mtlGetTexImage failed to create blit encoder for texture %u", tex->name);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -2375,7 +2375,7 @@ static void mglTextureCopyTextureToBuffer(
         if (blitState.has_error) {
             NSLog(@"MGL ERROR: mtlGetTexImage blit failed for texture %u: %s",
                   tex->name, mglRenderCommandBufferErrorDescription(&blitState));
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
 
@@ -2394,7 +2394,7 @@ static void mglTextureCopyTextureToBuffer(
 	                      tex->name,
 	                      (unsigned)format,
 	                      (unsigned)type);
-	                mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+	                mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
 	            }
         } else if (flipRenderTargetRows && readRegion.size.depth == 1u) {
             mglMetalCopyRows((const uint8_t *)mglTextureBufferContents(stagingBuffer),
@@ -2456,7 +2456,7 @@ static void mglTextureCopyTextureToBuffer(
 	            NSUInteger totalBytes = (NSUInteger)plan.image_bytes;
             NSMutableData *readback = [NSMutableData dataWithLength:totalBytes];
             if (!readback) {
-                mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
                 return;
             }
             mglTextureGetBytes(
@@ -2477,7 +2477,7 @@ static void mglTextureCopyTextureToBuffer(
 	                          tex->name,
 	                          (unsigned)format,
 	                          (unsigned)type);
-                    mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                    mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
                 }
             } else {
                 mglMetalCopyRows((const uint8_t *)readback.bytes,
@@ -2497,7 +2497,7 @@ static void mglTextureCopyTextureToBuffer(
         NSLog(@"MGL ERROR: mtlGetTexImage texture read failed for texture %u: %@",
               tex->name,
               exception);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
     }
 }
 
@@ -2507,7 +2507,7 @@ static void mglTextureCopyTextureToBuffer(
 
     if (!tex) {
         NSLog(@"MGL ERROR: mtlGenerateMipmaps called with NULL texture");
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -2526,7 +2526,7 @@ static void mglTextureCopyTextureToBuffer(
     texture = (__bridge id)(tex->mtl_data);
     if (!texture) {
         NSLog(@"MGL ERROR: mtlGenerateMipmaps texture %u has no Metal texture after bind", tex->name);
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
 
@@ -2561,7 +2561,7 @@ static void mglTextureCopyTextureToBuffer(
         } @catch (NSException *endException) {
             NSLog(@"MGL WARNING: failed to end mipmap blit encoder after exception: %@", endException);
         }
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
     }
 }
 

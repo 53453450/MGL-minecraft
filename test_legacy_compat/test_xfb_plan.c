@@ -1690,6 +1690,16 @@ static void test_draw_error_codes(void)
            "draw/tess alloc failure is GL_OUT_OF_MEMORY");
 }
 
+static void test_blit_texture_error_codes(void)
+{
+    expect(draw_error_invalid_value() == 0x0501u,
+           "blit/copy invalid size/offset is GL_INVALID_VALUE");
+    expect(draw_error_invalid_operation() == 0x0502u,
+           "blit/texture illegal bind/state is GL_INVALID_OPERATION");
+    expect(draw_error_out_of_memory() == 0x0505u,
+           "blit/texture alloc failure is GL_OUT_OF_MEMORY");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1821,6 +1831,7 @@ int main(void)
     test_rgb_expand_params();
     test_bind_draw_gl_defaults();
     test_draw_error_codes();
+    test_blit_texture_error_codes();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
