@@ -3167,8 +3167,9 @@ after_gs_draws:
         id nativeFactors = mglNativeTessFactorBuffer(
             _device, tessFactorBuffer,
             tesProgram->tess_gen_mode, patchCount);
-        if (!nativeFactors || !tcsOutputBuffer ||
-            _tessellation.tcsOutputStride < MGL_AIR_PER_VERTEX_STRIDE) {
+        if (!mglTessNativeBuffersReady(
+                nativeFactors != nil, tcsOutputBuffer != nil,
+                (uint32_t)_tessellation.tcsOutputStride)) {
             NSLog(@"MGL TESS ERROR: invalid native TES buffers program=%u",
                   (unsigned)tesProgram->name);
             mglDispatchError(drawCtx, label ? label : "tessellationDraw",

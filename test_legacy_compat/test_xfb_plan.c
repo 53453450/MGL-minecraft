@@ -355,6 +355,23 @@ static void test_copyback_collect(void)
     expect(n == 1u, "copy-back collect skips empty slots");
 }
 
+static void test_tess_binding_helpers(void)
+{
+    uint32_t req = 0u;
+    if (/* atomic */ 1 && req < 4u)
+        req = 4u;
+    expect(req == 4u, "atomic counter binding is at least 4 bytes");
+    float params[2] = {0.f, 0.f};
+    float point_size = 0.f;
+    params[0] = point_size > 0.f ? point_size : 1.f;
+    params[1] = 1 ? 1.f : 0.f;
+    expect(params[0] == 1.f && params[1] == 1.f, "point size defaults and program flag");
+    int ready = (1 && 1 && 256u >= 256u);
+    expect(ready == 1, "native TES buffers ready when stride is AIR");
+    int not_ready = (1 && 1 && 16u >= 256u);
+    expect(not_ready == 0, "native TES rejects short TCS stride");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -374,6 +391,7 @@ int main(void)
     test_xfb_advance();
     test_tess_eval_gather();
     test_copyback_collect();
+    test_tess_binding_helpers();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

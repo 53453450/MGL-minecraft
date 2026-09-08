@@ -394,10 +394,8 @@ typedef struct {
             : 0u;
         NSUInteger requiredBytes =
             mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
-        if (map->resource_type == _ATOMIC_COUNTER_RES &&
-            requiredBytes < sizeof(uint32_t)) {
-            requiredBytes = sizeof(uint32_t);
-        }
+        requiredBytes = mglTessRequiredBindingBytes((int)map->resource_type,
+                                                    (uint32_t)requiredBytes);
         if (!mglTessPlanIsolatedBinding(
                 buffer != nil, map->offset, bufferLength,
                 (int64_t)storageRemaining, (uint64_t)availableBytes,
@@ -457,22 +455,9 @@ typedef struct {
         bindings->size_buffer_index =
             mglRuntimeArraySizeBufferIndexForProgram(stageProgram, stage);
         uint32_t sizeConstants[kMGLMaxBufferSlots] = {0};
-        for (GLuint i = 0; i < stageBufferMap.count; i++) {
-            BufferMap *map = &stageBufferMap.buffers[i];
-            if (!map->buf) continue;
-            NSUInteger metalSlot = map->has_metal_binding
-                ? (NSUInteger)map->metal_binding_index
-                : (NSUInteger)map->buffer_base_index;
-            if (metalSlot >= kMGLMaxBufferSlots ||
-                metalSlot == bindings->size_buffer_index) {
-                continue;
-            }
-            GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
-            if (visibleSize > 0) {
-                sizeConstants[metalSlot] = visibleSize > UINT32_MAX
-                    ? UINT32_MAX : (uint32_t)visibleSize;
-            }
-        }
+        mglTessFillRuntimeArraySizeConstants(
+            stageBufferMap.buffers, stageBufferMap.count,
+            bindings->size_buffer_index, sizeConstants, kMGLMaxBufferSlots);
         bindings->size_buffer = mglTessCreateBufferWithBytes(
             _device, sizeConstants, sizeof(sizeConstants),
             MGL_TESS_RESOURCE_STORAGE_SHARED);
@@ -565,10 +550,13 @@ typedef struct {
     if (!program->uses_point_size_params) {
         return;
     }
-    float pointSizeParams[2] = {
-        ctx && MGL_STATE(ctx)->var.point_size > 0.0f ? MGL_STATE(ctx)->var.point_size : 1.0f,
-        ctx && MGL_STATE(ctx)->caps.program_point_size ? 1.0f : 0.0f
-    };
+    float pointSizeParams[2] = {0.f, 0.f};
+    mglTessFillPointSizeParams(
+        ctx && MGL_STATE(ctx)->var.point_size > 0.0f
+            ? MGL_STATE(ctx)->var.point_size
+            : 0.0f,
+        ctx && MGL_STATE(ctx)->caps.program_point_size ? 1 : 0,
+        pointSizeParams);
     (void)mglTessAppendComputeBytesOp(
         executionPlan, temporaries, pointSizeParams,
         sizeof(pointSizeParams), kMGLPointSizeParamBufferIndex);

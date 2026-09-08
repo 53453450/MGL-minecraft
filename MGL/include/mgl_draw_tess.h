@@ -416,6 +416,17 @@ bool mglTessPlanIsolatedBinding(int has_buffer, int64_t offset,
                                 uint64_t available_bytes,
                                 uint32_t required_bytes, int resource_type,
                                 MGLTessIsolatedBindingPlan *out);
+
+uint32_t mglTessRequiredBindingBytes(int resource_type,
+                                     uint32_t required_bytes);
+void mglTessFillRuntimeArraySizeConstants(const BufferMap *maps,
+                                          uint32_t map_count,
+                                          uint32_t size_buffer_index,
+                                          uint32_t *out, uint32_t out_cap);
+void mglTessFillPointSizeParams(float point_size, int program_point_size,
+                                float out[2]);
+int mglTessNativeBuffersReady(int has_factors, int has_tcs_out,
+                              uint32_t tcs_stride);
 void mglTessBindCaptureSlots(void *encoder_owner, void *capture_buffer,
                              const uint32_t params[3]);
 void mglTessEncodeCaptureArray(void *encoder_owner, uint32_t first,

@@ -1642,6 +1642,10 @@ extern "C" bool mglTessPlanIsolatedBinding(
     if (offset < 0) {
         return false;
     }
+    if (resource_type == _ATOMIC_COUNTER_RES &&
+        required_bytes < sizeof(uint32_t)) {
+        required_bytes = sizeof(uint32_t);
+    }
     const int isolated =
         !has_buffer || storage_remaining <= 0 ||
         (uint64_t)offset >= buffer_length || available_bytes == 0u ||
@@ -1660,6 +1664,64 @@ extern "C" bool mglTessPlanIsolatedBinding(
                                : fallback;
     }
     return true;
+}
+
+extern "C" uint32_t mglTessRequiredBindingBytes(int resource_type,
+                                                uint32_t required_bytes)
+{
+    if (resource_type == _ATOMIC_COUNTER_RES &&
+        required_bytes < sizeof(uint32_t)) {
+        return sizeof(uint32_t);
+    }
+    return required_bytes;
+}
+
+extern "C" void mglTessFillRuntimeArraySizeConstants(
+    const BufferMap *maps, uint32_t map_count, uint32_t size_buffer_index,
+    uint32_t *out, uint32_t out_cap)
+{
+    if (!out || out_cap == 0u) {
+        return;
+    }
+    memset(out, 0, sizeof(uint32_t) * out_cap);
+    if (!maps) {
+        return;
+    }
+    for (uint32_t i = 0u; i < map_count; i++) {
+        const BufferMap *map = &maps[i];
+        if (!map->buf) {
+            continue;
+        }
+        const uint32_t slot = map->has_metal_binding
+                                  ? map->metal_binding_index
+                                  : map->buffer_base_index;
+        if (slot >= out_cap || slot == size_buffer_index) {
+            continue;
+        }
+        const GLsizeiptr visible = mglBufferMapVisibleSize(map);
+        if (visible > 0) {
+            out[slot] = visible > (GLsizeiptr)UINT32_MAX ? UINT32_MAX
+                                                         : (uint32_t)visible;
+        }
+    }
+}
+
+extern "C" void mglTessFillPointSizeParams(float point_size,
+                                           int program_point_size,
+                                           float out[2])
+{
+    if (!out) {
+        return;
+    }
+    out[0] = point_size > 0.0f ? point_size : 1.0f;
+    out[1] = program_point_size ? 1.0f : 0.0f;
+}
+
+extern "C" int mglTessNativeBuffersReady(int has_factors, int has_tcs_out,
+                                         uint32_t tcs_stride)
+{
+    return has_factors && has_tcs_out &&
+           tcs_stride >= MGL_AIR_PER_VERTEX_STRIDE;
 }
 
 extern "C" bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode)
