@@ -492,6 +492,9 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                      instanceCount:(GLsizei)instanceCount
                       baseInstance:(GLuint)baseInstance
                              label:(const char *)label;
+- (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
+                        capture:(id)capture
+                         params:(const uint32_t *)params;
 - (id)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
                                                   indexBuffer:(id)indexBuffer
                                                     indexType:(uint64_t)indexType

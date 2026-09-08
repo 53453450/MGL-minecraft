@@ -749,6 +749,41 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     return YES;
 }
 
+- (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
+                        capture:(id)capture
+                         params:(const uint32_t *)params
+{
+    if (!drawCtx || !capture || !params) {
+        return NO;
+    }
+    self->ctx = drawCtx;
+    _tessellation.tessVertexCaptureActive = YES;
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        _tessellation.tessVertexCaptureActive = NO;
+        return NO;
+    }
+    mglTessBindCaptureSlots(
+        _renderPassManager.state->currentRenderEncoderOwner,
+        (__bridge void *)capture, params);
+    /* Re-apply GL bindings after installing the capture buffers at 28/29.
+     * The first capture draw in a context otherwise left VS SSBO/UBO slots
+     * unbound (probe: first GS+SSBO write is 0, second is correct). */
+    drawCtx->active_state->dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        _tessellation.tessVertexCaptureActive = NO;
+        return NO;
+    }
+    mglTessBindCaptureSlots(
+        _renderPassManager.state->currentRenderEncoderOwner,
+        (__bridge void *)capture, params);
+    return YES;
+}
+
 - (id)captureAIRVertexPositionsForTessellation:(GLMContext)drawCtx
                                                     first:(GLint)first
                                                     count:(GLsizei)count
@@ -776,29 +811,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         _device, (NSUInteger)plan.capture_size, 0u);
     if (!capture) return nil;
 
-    self->ctx = drawCtx;
-    _tessellation.tessVertexCaptureActive = YES;
-    drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (![self processGLState:true] ||
-        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
-        _tessellation.tessVertexCaptureActive = NO;
+    if (![self runVertexCaptureSession:drawCtx
+                               capture:capture
+                                params:plan.params]) {
         return nil;
     }
-    mglTessBindCaptureSlots(
-        _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, plan.params);
-    /* Re-apply GL bindings after installing the capture buffers at 28/29.
-     * The first capture draw in a context otherwise left VS SSBO/UBO slots
-     * unbound (probe: first GS+SSBO write is 0, second is correct). */
-    drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (![self processGLState:true] ||
-        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
-        _tessellation.tessVertexCaptureActive = NO;
-        return nil;
-    }
-    mglTessBindCaptureSlots(
-        _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, plan.params);
     if (getenv("MGL_GS_DIAG")) {
         NSLog(@"MGL GS DIAG capture-draw POINT first=%d count=%d instances=%d baseInst=%u stride=%u size=%llu",
               (int)first, (int)count, (int)instanceCount, baseInstance,
@@ -849,28 +866,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     id capture = mglDrawSupportCreateBuffer(
         _device, (NSUInteger)plan.capture_size, 0u);
     if (!capture) return nil;
-    self->ctx = drawCtx;
-    _tessellation.tessVertexCaptureActive = YES;
-    drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (![self processGLState:true] ||
-        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
-        _tessellation.tessVertexCaptureActive = NO;
+    if (![self runVertexCaptureSession:drawCtx
+                               capture:capture
+                                params:plan.params]) {
         return nil;
     }
-    mglTessBindCaptureSlots(
-        _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, plan.params);
-    /* Same re-bind as the non-indexed capture path: first capture draw
-     * otherwise left VS SSBO slots unbound. */
-    drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (![self processGLState:true] ||
-        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
-        _tessellation.tessVertexCaptureActive = NO;
-        return nil;
-    }
-    mglTessBindCaptureSlots(
-        _renderPassManager.state->currentRenderEncoderOwner,
-        (__bridge void *)capture, plan.params);
     /* The capture kernel indexes records by raw vertex_id with no bounds
      * check; a primitive-restart marker (0xFFFFFFFF for UInt32) in the
      * stream would write past the sparse record span and corrupt the

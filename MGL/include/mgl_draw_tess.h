@@ -353,6 +353,9 @@ typedef struct MGLTessTCSStageInPlan {
 bool mglTessPlanTCSStageIn(uint32_t patch_vertices, uint32_t patch_count,
                            GLsizei vertex_count, MGLTessTCSStageInPlan *out);
 
+int mglTessStageInUseCurrentValue(uint32_t enabled_attribs, uint32_t attrib,
+                                  int has_binding);
+
 typedef struct MGLTessIsolatedBindingPlan {
     uint8_t isolated;
     uint8_t writable;

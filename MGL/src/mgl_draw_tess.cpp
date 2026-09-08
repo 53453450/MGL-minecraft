@@ -1460,6 +1460,22 @@ extern "C" bool mglTessPlanTCSStageIn(uint32_t patch_vertices,
     return true;
 }
 
+extern "C" int mglTessStageInUseCurrentValue(uint32_t enabled_attribs,
+                                             uint32_t attrib, int has_binding)
+{
+    if (attrib >= 32u) {
+        return 0;
+    }
+    const uint32_t bit = 0x1u << attrib;
+    if ((enabled_attribs & bit) != 0u) {
+        return 0;
+    }
+    if (enabled_attribs == 0u && has_binding) {
+        return 0;
+    }
+    return 1;
+}
+
 extern "C" bool mglTessPlanIsolatedBinding(
     int has_buffer, int64_t offset, uint64_t buffer_length,
     int64_t storage_remaining, uint64_t available_bytes,

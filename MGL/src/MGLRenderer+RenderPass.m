@@ -5740,22 +5740,9 @@ static GLenum mglPassthroughDeclType(
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     BOOL useFragCoordParams =
         fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE;
-    /* AIR FS slot 30: {num_samples, sample_buffers} for gl_NumSamples /
-     * gl_SampleMask (ignore mask when SAMPLE_BUFFERS==0). */
-    BOOL useSampleParams = NO;
-    if (fragmentProgram) {
-        Shader *fs = fragmentProgram->shader_slots[_FRAGMENT_SHADER];
-        if (fs && fs->src &&
-            (strstr(fs->src, "gl_NumSamples") ||
-             strstr(fs->src, "gl_SampleMask") ||
-             strstr(fs->src, "gl_SamplePosition") ||
-             strstr(fs->src, "gl_SampleID") ||
-             strstr(fs->src, "interpolateAtSample") ||
-             strstr(fs->src, "sample in")))
-            useSampleParams = YES;
-    }
-    if (_mglInMSSampleDrawLoop)
-        useSampleParams = YES;
+    BOOL useSampleParams =
+        (fragmentProgram && fragmentProgram->uses_sample_params == GL_TRUE) ||
+        _mglInMSSampleDrawLoop;
     if (useFragCoordParams || useSampleParams) {
         NSUInteger passHeight = mglRenderPassRenderTargetHeightFor(_renderPassManager.state);
         if (passHeight == 0) {
@@ -5782,18 +5769,9 @@ static GLenum mglPassthroughDeclType(
             else
                 tex = att->buf.tex;
             if (tex) {
-                if (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
-                    tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
-                    tex->target == GL_RENDERBUFFER) {
-                    /* Multisample storage (including samples==1) has a
-                     * sample buffer; plain TEXTURE_2D does not. */
-                    if (tex->samples > 0 ||
-                        tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
-                        tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
-                        sampleBuffers = 1;
-                        numSamples = tex->samples > 0 ? (uint32_t)tex->samples : 1u;
-                    }
-                }
+                (void)mglRenderTextureSampleParams(
+                    (uint32_t)tex->target, tex->samples, &numSamples,
+                    &sampleBuffers);
             }
         } else {
             id rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
@@ -5805,49 +5783,19 @@ static GLenum mglPassthroughDeclType(
                 }
             }
         }
-        if (useSampleParams && !useFragCoordParams) {
-            /* Still use the float4 layout so AIR can share one slot-30
-             * loader: {height=0, lower_left=0, ns_bits, sb_bits}.
-             * sb_bits may include 0x80000000 | (forced_sid << 8). */
-            float zAsFloat, wAsFloat;
-            memcpy(&zAsFloat, &numSamples, sizeof(zAsFloat));
-            uint32_t sbBits = sampleBuffers;
-            if (_mglInMSSampleDrawLoop) {
-                sbBits = 1u | 0x80000000u |
-                         (((uint32_t)_mglForcedMSSampleId & 0xffu) << 8);
-            }
-            memcpy(&wAsFloat, &sbBits, sizeof(wAsFloat));
-            vector_float4 fragCoordParams = {
-                0.0f, 0.0f, zAsFloat, wAsFloat
-            };
-            mglRenderSetRenderBytesForOwner(
-                _renderPassManager.state->currentRenderEncoderOwner,
-                &fragCoordParams, sizeof(fragCoordParams),
-                MGL_RENDER_BINDING_STAGE_FRAGMENT,
-                kMGLFragCoordParamsBufferIndex);
-        } else {
-            uint32_t zBits = numSamples;
-            float zAsFloat;
-            memcpy(&zAsFloat, &zBits, sizeof(zAsFloat));
-            uint32_t wBits = sampleBuffers;
-            if (_mglInMSSampleDrawLoop) {
-                wBits = 1u | 0x80000000u |
-                        (((uint32_t)_mglForcedMSSampleId & 0xffu) << 8);
-            }
-            float wAsFloat;
-            memcpy(&wAsFloat, &wBits, sizeof(wAsFloat));
-            vector_float4 fragCoordParams = {
-                (float)passHeight,
-                MGL_STATE(ctx)->var.clip_origin == GL_LOWER_LEFT ? 1.0f : 0.0f,
-                useSampleParams ? zAsFloat : 0.0f,
-                useSampleParams ? wAsFloat : 0.0f
-            };
-            mglRenderSetRenderBytesForOwner(
-                _renderPassManager.state->currentRenderEncoderOwner,
-                &fragCoordParams, sizeof(fragCoordParams),
-                MGL_RENDER_BINDING_STAGE_FRAGMENT,
-                kMGLFragCoordParamsBufferIndex);
-        }
+        float fragCoordParams[4] = {0.f, 0.f, 0.f, 0.f};
+        mglRenderFillFragCoordSlot(
+            useFragCoordParams ? 1 : 0, useSampleParams ? 1 : 0,
+            (uint32_t)passHeight,
+            MGL_STATE(ctx)->var.clip_origin == GL_LOWER_LEFT ? 1 : 0,
+            numSamples, sampleBuffers,
+            _mglInMSSampleDrawLoop ? 1 : 0,
+            (uint32_t)_mglForcedMSSampleId, fragCoordParams);
+        mglRenderSetRenderBytesForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            fragCoordParams, sizeof(fragCoordParams),
+            MGL_RENDER_BINDING_STAGE_FRAGMENT,
+            kMGLFragCoordParamsBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
 
@@ -5862,15 +5810,10 @@ static GLenum mglPassthroughDeclType(
             Texture *tex = MGL_STATE(ctx)->active_textures[unit];
             Sampler *smp = MGL_STATE(ctx)->texture_samplers[unit];
 
-            float bias = smp ? smp->params.lod_bias
-                             : (tex ? tex->params.lod_bias : 0.0f);
-
-            if (biasmax > 0.0f) {
-                if (bias > biasmax) bias = biasmax;
-                else if (bias < -biasmax) bias = -biasmax;
-            }
-            lodBiasArr[unit] = bias;
+            lodBiasArr[unit] = smp ? smp->params.lod_bias
+                                   : (tex ? tex->params.lod_bias : 0.0f);
         }
+        mglRenderClampLodBiasArray(lodBiasArr, TEXTURE_UNITS, biasmax);
         mglRenderSetRenderBytesForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             lodBiasArr, sizeof(lodBiasArr),

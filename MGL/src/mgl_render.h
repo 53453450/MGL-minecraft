@@ -2455,6 +2455,20 @@ typedef enum {
 
 MGLProcessGLStateClass mglRenderClassifyProcessGLState(
     int has_ctx, int draw_command, int has_vao, int dirty_state);
+
+int mglRenderShaderSourceUsesSampleParams(const char *src);
+
+int mglRenderTextureSampleParams(uint32_t target, int32_t samples,
+                                 uint32_t *num_samples,
+                                 uint32_t *sample_buffers);
+
+void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
+                                uint32_t pass_height, int lower_left,
+                                uint32_t num_samples, uint32_t sample_buffers,
+                                int ms_loop, uint32_t forced_sample_id,
+                                float out[4]);
+
+void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax);
 /* Commit one detached/current command buffer through the C++ owner.  When
  * submission_handle points at a matching C++ submission, that ownership is
  * consumed; otherwise the borrowed command buffer is committed directly.

@@ -756,9 +756,8 @@ typedef struct {
         MGLResolvedVertexAttribBinding resolved = {0};
         bool hasBinding = mglRendererResolveVertexAttribBinding(
             drawCtx, vao, member->attribute, "tcs.stage_in", &resolved);
-        bool useCurrentValue =
-            ((vao->enabled_attribs & (0x1u << member->attribute)) == 0u) &&
-            !(vao->enabled_attribs == 0u && hasBinding);
+        bool useCurrentValue = mglTessStageInUseCurrentValue(
+            vao->enabled_attribs, member->attribute, hasBinding ? 1 : 0) != 0;
         srcs[m].type = attrib->type;
         srcs[m].attrib_size = attrib->size;
         srcs[m].normalized = attrib->normalized;

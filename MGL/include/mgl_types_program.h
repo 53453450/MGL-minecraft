@@ -351,6 +351,7 @@ typedef struct Program_t {
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
     GLboolean usesFragCoordParams;
+    GLboolean uses_sample_params;
     uint32_t vertexAttribUsageMask;
     GLboolean uses_point_size_params;
     GLboolean uses_cull_distance;

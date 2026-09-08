@@ -13328,6 +13328,85 @@ int mglRenderClassifyProcessGLState(
     return MGL_PROCESS_GL_CONTINUE;
 }
 
+int mglRenderShaderSourceUsesSampleParams(const char *src) {
+    if (!src) {
+        return 0;
+    }
+    return strstr(src, "gl_NumSamples") || strstr(src, "gl_SampleMask") ||
+                   strstr(src, "gl_SamplePosition") ||
+                   strstr(src, "gl_SampleID") ||
+                   strstr(src, "interpolateAtSample") ||
+                   strstr(src, "sample in")
+               ? 1
+               : 0;
+}
+
+int mglRenderTextureSampleParams(uint32_t target, int32_t samples,
+                                 uint32_t *num_samples,
+                                 uint32_t *sample_buffers) {
+    if (!num_samples || !sample_buffers) {
+        return -1;
+    }
+    *num_samples = 1u;
+    *sample_buffers = 0u;
+    if (target == GL_TEXTURE_2D_MULTISAMPLE ||
+        target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
+        target == GL_RENDERBUFFER) {
+        if (samples > 0 || target == GL_TEXTURE_2D_MULTISAMPLE ||
+            target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+            *sample_buffers = 1u;
+            *num_samples = samples > 0 ? (uint32_t)samples : 1u;
+        }
+    }
+    return 0;
+}
+
+void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
+                                uint32_t pass_height, int lower_left,
+                                uint32_t num_samples, uint32_t sample_buffers,
+                                int ms_loop, uint32_t forced_sample_id,
+                                float out[4]) {
+    if (!out) {
+        return;
+    }
+    uint32_t sb_bits = sample_buffers;
+    if (ms_loop) {
+        sb_bits = 1u | 0x80000000u | ((forced_sample_id & 0xffu) << 8);
+    }
+    float ns_as_float = 0.f;
+    float sb_as_float = 0.f;
+    memcpy(&ns_as_float, &num_samples, sizeof(ns_as_float));
+    memcpy(&sb_as_float, &sb_bits, sizeof(sb_as_float));
+    if (use_sample && !use_fragcoord) {
+        out[0] = 0.f;
+        out[1] = 0.f;
+        out[2] = ns_as_float;
+        out[3] = sb_as_float;
+        return;
+    }
+    out[0] = (float)pass_height;
+    out[1] = lower_left ? 1.f : 0.f;
+    out[2] = use_sample ? ns_as_float : 0.f;
+    out[3] = use_sample ? sb_as_float : 0.f;
+}
+
+void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax) {
+    if (!bias) {
+        return;
+    }
+    for (uint32_t i = 0u; i < count; i++) {
+        float v = bias[i];
+        if (biasmax > 0.f) {
+            if (v > biasmax) {
+                v = biasmax;
+            } else if (v < -biasmax) {
+                v = -biasmax;
+            }
+        }
+        bias[i] = v;
+    }
+}
+
 namespace {
 
 double commandRecoveryNowSeconds() {

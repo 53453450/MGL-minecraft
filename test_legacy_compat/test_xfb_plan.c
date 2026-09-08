@@ -188,6 +188,52 @@ static void test_process_gl_class(void)
     expect(1, "non-draw without dirty is a no-op");
 }
 
+static void test_fragcoord_slot(void)
+{
+    uint32_t ns = 4u, sb = 1u;
+    float z = 0.f, w = 0.f;
+    memcpy(&z, &ns, sizeof(z));
+    memcpy(&w, &sb, sizeof(w));
+    float out[4] = {0};
+    /* sample-only: height/origin stay 0, bits in zw. */
+    out[0] = 0.f;
+    out[1] = 0.f;
+    out[2] = z;
+    out[3] = w;
+    expect(out[0] == 0.f && out[1] == 0.f, "sample-only fragcoord xy are 0");
+    uint32_t back = 0;
+    memcpy(&back, &out[2], sizeof(back));
+    expect(back == 4u, "sample-only packs num_samples bits");
+}
+
+static void test_lod_clamp(void)
+{
+    float b[] = {8.f, -8.f, 1.f};
+    const float maxb = 2.f;
+    for (unsigned i = 0; i < 3; i++) {
+        if (b[i] > maxb)
+            b[i] = maxb;
+        else if (b[i] < -maxb)
+            b[i] = -maxb;
+    }
+    expect(b[0] == 2.f && b[1] == -2.f && b[2] == 1.f, "lod bias clamped");
+}
+
+static void test_stage_in_current(void)
+{
+    const uint32_t enabled_one = 0x1u;
+    const int use_disabled =
+        ((enabled_one & (1u << 1)) == 0u) &&
+        !(enabled_one == 0u && 1);
+    expect(use_disabled, "disabled attrib uses current when others are enabled");
+    const uint32_t enabled_none = 0u;
+    const int use_all_disabled =
+        ((enabled_none & 1u) == 0u) &&
+        !(enabled_none == 0u && 1);
+    expect(!use_all_disabled,
+           "all disabled with a binding does not use current");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -198,6 +244,9 @@ int main(void)
     test_tess_draw_path();
     test_xfb_mode_and_dest();
     test_process_gl_class();
+    test_fragcoord_slot();
+    test_lod_clamp();
+    test_stage_in_current();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

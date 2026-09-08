@@ -66,6 +66,7 @@ typedef struct MGLSavedLinkExecutable {
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
     GLboolean usesFragCoordParams;
+    GLboolean uses_sample_params;
     uint32_t vertexAttribUsageMask;
     GLboolean uses_point_size_params;
     GLboolean uses_cull_distance;
@@ -110,6 +111,7 @@ static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
     out->uses_vertex_id = pptr->uses_vertex_id;
     out->uses_primitive_id = pptr->uses_primitive_id;
     out->usesFragCoordParams = pptr->usesFragCoordParams;
+    out->uses_sample_params = pptr->uses_sample_params;
     out->vertexAttribUsageMask = pptr->vertexAttribUsageMask;
     out->uses_point_size_params = pptr->uses_point_size_params;
     out->uses_cull_distance = pptr->uses_cull_distance;
@@ -179,6 +181,7 @@ static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable 
     pptr->uses_vertex_id = saved->uses_vertex_id;
     pptr->uses_primitive_id = saved->uses_primitive_id;
     pptr->usesFragCoordParams = saved->usesFragCoordParams;
+    pptr->uses_sample_params = saved->uses_sample_params;
     pptr->vertexAttribUsageMask = saved->vertexAttribUsageMask;
     pptr->uses_point_size_params = saved->uses_point_size_params;
     pptr->uses_cull_distance = saved->uses_cull_distance;
@@ -2148,6 +2151,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* Invalidate MSL query result cache; repopulated from the freshly generated MSL
      * after the stage compile loop succeeds. */
     pptr->usesFragCoordParams = GL_FALSE;
+    pptr->uses_sample_params = GL_FALSE;
     pptr->vertexAttribUsageMask = 0u;
     pptr->uses_point_size_params = GL_FALSE;
     pptr->uses_cull_distance = GL_FALSE;
@@ -2773,10 +2777,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
         pptr->vertexAttribUsageMask = attr_mask;
         pptr->usesFragCoordParams = GL_FALSE;
+        pptr->uses_sample_params = GL_FALSE;
         {
             Shader *fs = pptr->shader_slots[_FRAGMENT_SHADER];
             if (fs && fs->src && strstr(fs->src, "gl_FragCoord"))
                 pptr->usesFragCoordParams = GL_TRUE;
+            if (fs && fs->src &&
+                mglRenderShaderSourceUsesSampleParams(fs->src))
+                pptr->uses_sample_params = GL_TRUE;
         }
         pptr->uses_point_size_params = GL_FALSE;
         pptr->uses_lod_bias = GL_FALSE;
