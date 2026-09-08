@@ -269,6 +269,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                         sm->member_offset_in_elem, elem_byte_start);
                     if (!mglRenderMemberOffsetInStruct(member_offset,
                                                        (uint32_t)struct_size)) {
+                        continue;
+                    }
 
                     GLint member_loc = sm->member_loc;
                     if (!mglRenderBindableLocValid(member_loc,
@@ -779,6 +781,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                 member->offset, elem_byte_start);
                             if (!mglRenderMemberOffsetInStruct(
                                     member_offset, (uint32_t)struct_size)) {
+                                continue;
+                            }
 
                             /* Location of this member's data in
                              * plain_uniform_buffers: base_loc + the member's
