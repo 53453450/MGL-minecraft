@@ -1235,6 +1235,11 @@ int mglRenderStructMemberInElementRange(uint32_t member_loc_off,
                                         uint32_t loc_start, uint32_t loc_end);
 int mglRenderBindableLocValid(int32_t loc, uint32_t max);
 int mglRenderCPUShadowReadable(const void *cpu, int64_t size);
+uint32_t mglRenderStructPackSrcStride(uint32_t src_stride, uint32_t elem_stride);
+int mglRenderStructPackUseBulk(int32_t ai, int64_t buf_size, uint32_t member_size,
+                               uint32_t src_stride);
+uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
+                                    uint64_t struct_size);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

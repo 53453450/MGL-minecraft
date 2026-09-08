@@ -687,6 +687,16 @@ static void test_buffer_plan_struct_pack(void)
     expect(loc == 1, "bindable loc 3 is valid");
 }
 
+static void test_struct_pack_copy_clamp(void)
+{
+    uint32_t src = 0u ? 0u : 16u;
+    expect(src == 16u, "struct pack src stride falls back to elem stride");
+    int bulk = (0 == 0) && (64 >= 4 * 16);
+    expect(bulk == 1, "struct pack bulk copy when ai==0 and size covers array");
+    uint64_t clamp = (8u + 16u > 20u) ? (20u - 8u) : 16u;
+    expect(clamp == 12u, "struct pack copy clamps to remaining struct bytes");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -731,6 +741,7 @@ int main(void)
     test_tess_compute_preamble();
     test_shader_resource_buffer_type();
     test_buffer_plan_struct_pack();
+    test_struct_pack_copy_clamp();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -7878,6 +7878,29 @@ int mglRenderCPUShadowReadable(const void *cpu, int64_t size) {
     return cpu && size > 0 ? 1 : 0;
 }
 
+uint32_t mglRenderStructPackSrcStride(uint32_t src_stride, uint32_t elem_stride) {
+    return src_stride ? src_stride : elem_stride;
+}
+
+int mglRenderStructPackUseBulk(int32_t ai, int64_t buf_size, uint32_t member_size,
+                               uint32_t src_stride) {
+    return ai == 0 && buf_size >= 0 &&
+                   (uint64_t)buf_size >= (uint64_t)member_size * src_stride
+               ? 1
+               : 0;
+}
+
+uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
+                                    uint64_t struct_size) {
+    if (copy_size == 0u || dest_off >= struct_size) {
+        return 0u;
+    }
+    if (dest_off + copy_size > struct_size) {
+        return struct_size - dest_off;
+    }
+    return copy_size;
+}
+
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }

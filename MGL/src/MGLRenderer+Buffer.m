@@ -284,9 +284,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 
                     if (sm->is_array_member) {
                         GLuint elem_stride = sm->member_array_stride;
-                        GLuint src_stride = sm->member_src_stride
-                                                ? sm->member_src_stride
-                                                : elem_stride;
+                        GLuint src_stride = mglRenderStructPackSrcStride(
+                            sm->member_src_stride, elem_stride);
                         for (GLint ai = 0; ai < (GLint)sm->member_size; ai++) {
                             GLint elem_loc = member_loc + ai;
                             if (!mglRenderBindableLocValid(elem_loc,
@@ -310,13 +309,12 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     mbuf ? mbuf->size : 0)) {
                                 continue;
                             }
-                            if (ai == 0 &&
-                                (size_t)mbuf->size >=
-                                    (size_t)sm->member_size * src_stride) {
+                            if (mglRenderStructPackUseBulk(
+                                    ai, mbuf->size, sm->member_size, src_stride)) {
                                 if (elem_stride == src_stride) {
-                                    size_t copy_size = (size_t)mbuf->size;
-                                    if ((size_t)member_offset + copy_size > struct_size)
-                                        copy_size = struct_size - (size_t)member_offset;
+                                    size_t copy_size = (size_t)mglRenderClampCopyToStruct(
+                                        (uint64_t)member_offset, (uint64_t)mbuf->size,
+                                        (uint64_t)struct_size);
                                     if (copy_size > 0) {
                                         memcpy(packed + member_offset,
                                                (const void *)(uintptr_t)mbuf->data.buffer_data,
@@ -331,32 +329,29 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                         size_t dest_off =
                                             (size_t)member_offset +
                                             (size_t)sj * (size_t)elem_stride;
-                                        if (dest_off >= struct_size)
+                                        size_t copy_size =
+                                            (size_t)mglRenderClampCopyToStruct(
+                                                (uint64_t)dest_off,
+                                                (uint64_t)src_stride,
+                                                (uint64_t)struct_size);
+                                        if (copy_size == 0)
                                             break;
-                                        size_t copy_size = src_stride;
-                                        if (dest_off + copy_size > struct_size)
-                                            copy_size =
-                                                struct_size - dest_off;
-                                        if (copy_size > 0)
-                                            memcpy(packed + dest_off,
-                                                   src + (size_t)sj * src_stride,
-                                                   copy_size);
+                                        memcpy(packed + dest_off,
+                                               src + (size_t)sj * src_stride,
+                                               copy_size);
                                     }
                                 }
                                 break;
                             }
+                            size_t dest_off = (size_t)member_offset +
+                                (size_t)ai * (size_t)elem_stride;
                             size_t copy_size = (size_t)mbuf->size;
                             if (copy_size > (size_t)src_stride) {
                                 copy_size = (size_t)src_stride;
                             }
-                            size_t dest_off = (size_t)member_offset +
-                                (size_t)ai * (size_t)elem_stride;
-                            if (dest_off >= struct_size) {
-                                continue;
-                            }
-                            if (dest_off + copy_size > struct_size) {
-                                copy_size = struct_size - dest_off;
-                            }
+                            copy_size = (size_t)mglRenderClampCopyToStruct(
+                                (uint64_t)dest_off, (uint64_t)copy_size,
+                                (uint64_t)struct_size);
                             if (copy_size > 0) {
                                 memcpy(packed + dest_off,
                                        (const void *)(uintptr_t)mbuf->data.buffer_data,
@@ -376,13 +371,15 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                 "mapShaderBufferResourcesViaPlan(struct,scalar,fb)",
                                 (NSUInteger)member_loc);
                         }
-                        if (!mbuf || !mbuf->data.buffer_data || mbuf->size <= 0) {
+                        if (!mglRenderCPUShadowReadable(
+                                mbuf ? mbuf->data.buffer_data : NULL,
+                                mbuf ? mbuf->size : 0)) {
                             continue;
                         }
-                        size_t copy_size = (size_t)mbuf->size;
-                        if ((size_t)member_offset + copy_size > struct_size) {
-                            copy_size = struct_size - (size_t)member_offset;
-                        }
+                        size_t copy_size = (size_t)mglRenderClampCopyToStruct(
+                            (uint64_t)member_offset,
+                            mbuf ? (uint64_t)mbuf->size : 0u,
+                            (uint64_t)struct_size);
                         if (copy_size > 0) {
                             memcpy(packed + member_offset,
                                    (const void *)(uintptr_t)mbuf->data.buffer_data,
