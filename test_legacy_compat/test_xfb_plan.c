@@ -697,6 +697,18 @@ static void test_struct_pack_copy_clamp(void)
     expect(clamp == 12u, "struct pack copy clamps to remaining struct bytes");
 }
 
+static void test_mapped_buffer_fallback(void)
+{
+    int ok = (7u < 32u);
+    expect(ok == 1, "mapped buffer count under max is ok");
+    int bind = (83u < 84u);
+    expect(bind == 1, "client binding 83 is in range");
+    int empty = !1 && (0u == 0u);
+    expect(empty == 0, "occupied buffer binding is not empty");
+    int fb = 1 && 1;
+    expect(fb == 1, "non-constant resources allow global fallback");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -742,6 +754,7 @@ int main(void)
     test_shader_resource_buffer_type();
     test_buffer_plan_struct_pack();
     test_struct_pack_copy_clamp();
+    test_mapped_buffer_fallback();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

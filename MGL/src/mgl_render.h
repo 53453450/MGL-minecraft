@@ -1240,6 +1240,11 @@ int mglRenderStructPackUseBulk(int32_t ai, int64_t buf_size, uint32_t member_siz
                                uint32_t src_stride);
 uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
                                     uint64_t struct_size);
+int mglRenderMappedBufferCountOK(uint32_t count, uint32_t max);
+int mglRenderClientBindingInRange(uint32_t binding, uint32_t max);
+int mglRenderAllowGlobalBufferFallback(int has_fallback, int spvc_type,
+                                       uint32_t flags);
+int mglRenderBufferBindingEmpty(int has_buf, uint32_t name);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

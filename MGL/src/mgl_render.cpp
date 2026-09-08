@@ -7901,6 +7901,29 @@ uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
     return copy_size;
 }
 
+int mglRenderMappedBufferCountOK(uint32_t count, uint32_t max) {
+    return count < max ? 1 : 0;
+}
+
+int mglRenderClientBindingInRange(uint32_t binding, uint32_t max) {
+    return binding < max ? 1 : 0;
+}
+
+int mglRenderAllowGlobalBufferFallback(int has_fallback, int spvc_type,
+                                       uint32_t flags) {
+    if (!has_fallback) {
+        return 0;
+    }
+    if (spvc_type != _UNIFORM_CONSTANT_RES) {
+        return 1;
+    }
+    return (flags & MGL_BP_FLAG_ALLOW_FALLBACK) != 0u ? 1 : 0;
+}
+
+int mglRenderBufferBindingEmpty(int has_buf, uint32_t name) {
+    return !has_buf && name == 0u ? 1 : 0;
+}
+
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }

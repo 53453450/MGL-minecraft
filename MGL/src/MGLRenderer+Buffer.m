@@ -410,7 +410,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     continue;
                 }
 
-                if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+                if (!mglRenderMappedBufferCountOK(
+                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
                     NSLog(@"MGL ERROR: mapShaderBufferResourcesViaPlan struct overflow: count=%d max=%d",
                           buffer_map->count, MAX_MAPPED_BUFFERS);
                     return false;
@@ -435,7 +436,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
         for (GLuint element = 0; element < entry->element_count; element++) {
             GLuint metal_binding = mglBufferPlanMetalBindingForElement(entry, element);
             GLuint spirv_binding = mglBufferPlanClientBindingForElement(entry, resource, element);
-            if (spirv_binding >= MAX_BINDABLE_BUFFERS) {
+            if (!mglRenderClientBindingInRange(spirv_binding,
+                                               MAX_BINDABLE_BUFFERS)) {
                 static uint64_t s_planOverflowHits = 0;
                 uint64_t hit = ++s_planOverflowHits;
                 if (hit <= 16ull || (hit % 4096ull) == 0ull) {
@@ -448,11 +450,11 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 
             BufferBaseTarget *baseBinding = &buffers[spirv_binding];
             bool usedFallbackBinding = false;
-            bool allowGlobalFallback =
-                fallbackBuffers &&
-                (spvc_type != _UNIFORM_CONSTANT_RES ||
-                 (entry->flags & MGL_BP_FLAG_ALLOW_FALLBACK));
-            if (allowGlobalFallback && !baseBinding->buf && baseBinding->buffer == 0) {
+            bool allowGlobalFallback = mglRenderAllowGlobalBufferFallback(
+                fallbackBuffers ? 1 : 0, spvc_type, entry->flags) != 0;
+            if (allowGlobalFallback &&
+                mglRenderBufferBindingEmpty(baseBinding->buf ? 1 : 0,
+                                            baseBinding->buffer)) {
                 BufferBaseTarget *fallbackBinding = &fallbackBuffers[spirv_binding];
                 if (fallbackBinding->buf || fallbackBinding->buffer != 0) {
                     baseBinding = fallbackBinding;
@@ -484,7 +486,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
             NSUInteger reflectedRequiredSize = entry->required_size;
 
             if (buf) {
-                if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+                if (!mglRenderMappedBufferCountOK(
+                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
                     NSLog(@"MGL ERROR: mapShaderBufferResourcesViaPlan overflow: count=%d max=%d",
                           buffer_map->count, MAX_MAPPED_BUFFERS);
                     return false;
@@ -955,7 +958,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                             continue;
                         }
 
-                        if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+                        if (!mglRenderMappedBufferCountOK(
+                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
                             NSLog(@"MGL ERROR: mapGLBuffersToMTLBufferMap struct overflow: count=%d max=%d",
                                   buffer_map->count, MAX_MAPPED_BUFFERS);
                             return false;
@@ -1029,7 +1033,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 
 	                if (buf)
 	                {
-	                    if (buffer_map->count >= MAX_MAPPED_BUFFERS)
+	                    if (!mglRenderMappedBufferCountOK(
+                                (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS))
 	                    {
 	                        NSLog(@"MGL ERROR: mapGLBuffersToMTLBufferMap overflow: count=%d max=%d",
                               buffer_map->count, MAX_MAPPED_BUFFERS);
@@ -1204,7 +1209,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     // vao buffers start after the uniforms and shader buffers
     vao_buffer_start = buffer_map->count;
     // CRITICAL SECURITY FIX: Check against actual map capacity.
-    if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+    if (!mglRenderMappedBufferCountOK((uint32_t)buffer_map->count,
+                                      MAX_MAPPED_BUFFERS)) {
         NSLog(@"MGL SECURITY ERROR: buffer_map count %d exceeds MAX_MAPPED_BUFFERS %d",
               buffer_map->count, MAX_MAPPED_BUFFERS);
         return false;
@@ -1265,7 +1271,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     continue;
                 }
                 // map the buffer object to a metal vertex index
-                if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+                if (!mglRenderMappedBufferCountOK(
+                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
                     NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), skipping attrib %d",
                           buffer_map->count, MAX_MAPPED_BUFFERS, att);
                     continue;
@@ -1339,7 +1346,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                         continue;
                     }
                     // map the next buffer object to a metal vertex index
-                    if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+                    if (!mglRenderMappedBufferCountOK(
+                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
                         NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), cannot append attrib %d",
                               buffer_map->count, MAX_MAPPED_BUFFERS, att);
                         continue;
