@@ -1620,7 +1620,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         free(packed);
         }
     }
-    if (xfbActive && xfbWrittenBytes > 0u) {
+    if (mglXfbShouldAdvanceWriteOffset(xfbActive ? 1 : 0,
+                                       (uint64_t)xfbWrittenBytes)) {
         xfbState->buffer_write_offsets[0] = mglXfbAdvanceWriteOffset(
             xfbState->buffer_write_offsets[0], (uint64_t)xfbWrittenBytes);
     }
@@ -1634,7 +1635,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                            (uint64_t)xfbWrittenBytes,
                            (uint32_t)xfbCompactStride, &query);
     MGLTessEvalAfterComputePlan after = {0};
-    if (!mglTessPlanEvalAfterCompute(hasGeometryStage ? 1 : 0,
+    if (!mglTessPlanEvalAfterCompute(gsProgram ? 1 : 0,
                                      MGL_STATE(glm_ctx)->caps.rasterizer_discard
                                          ? 1
                                          : 0,
@@ -1688,7 +1689,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
               (unsigned)tesProgram->name);
         /* XFB capture already completed above; do not fail the draw and
          * leave transform feedback active when the test only needed feedback. */
-        if (xfbActive) {
+        if (mglTessPassthroughFailIsXFBSuccess(xfbActive ? 1 : 0)) {
             mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
             return YES;
         }
@@ -1713,7 +1714,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
               ctx && MGL_STATE(ctx)->caps.clip_distances[0] ? 1 : 0);
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeProgram = NULL;
-        if (xfbActive) {
+        if (mglTessPassthroughFailIsXFBSuccess(xfbActive ? 1 : 0)) {
             mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
             /* Feedback already landed; returning NO would raise
              * INVALID_OPERATION and skip the test's EndTransformFeedback. */
@@ -1725,8 +1726,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     [self applyPolygonOffsetForDrawMode:tessRasterMode];
     id encoder = nil;
     for (GLsizei i = 0; i < instanceCount; i++) {
-        NSUInteger instanceOffset =
-            (NSUInteger)i * (NSUInteger)itemsPerInstanceU * outStride;
+        NSUInteger instanceOffset = (NSUInteger)mglTessPassthroughInstanceOffset(
+            (uint32_t)i, itemsPerInstanceU, (uint32_t)outStride);
         mglTessSetRenderVertexBuffer(
             encoder, _renderPassManager.state->currentRenderEncoderOwner,
             outBuffer, instanceOffset, 0u);

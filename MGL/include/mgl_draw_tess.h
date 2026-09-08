@@ -110,6 +110,10 @@ uint32_t mglTessPlanEvalXFBSlot(int xfb_active, int size_ok);
 int mglTessEvalXFBDestReady(int has_metal, int has_buf, int dest_valid);
 int mglTessKeepNativeTESOnly(int native_ok, int has_tcs, int has_capture,
                              int has_factors);
+int mglTessPassthroughFailIsXFBSuccess(int xfb_active);
+int mglXfbShouldAdvanceWriteOffset(int xfb_active, uint64_t written);
+uint64_t mglTessPassthroughInstanceOffset(uint32_t instance, uint32_t items,
+                                          uint32_t stride);
 
 bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs);
 

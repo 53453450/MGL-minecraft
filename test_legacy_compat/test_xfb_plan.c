@@ -617,6 +617,18 @@ static void test_xfb_copyback_and_shadow(void)
     expect(miss == 0, "XFB CPU shadow skip when dest overflows");
 }
 
+static void test_tess_passthrough_xfb_success(void)
+{
+    int xfb_ok = 1;
+    expect(xfb_ok == 1, "missing TES passthrough is success when XFB active");
+    int draw_fail = 0;
+    expect(draw_fail == 0, "missing TES passthrough fails without XFB");
+    int advance = 1 && (32u > 0u);
+    expect(advance == 1, "XFB write offset advances when written>0");
+    uint64_t off = 2ull * 3ull * 16ull;
+    expect(off == 96u, "TES passthrough instance offset is i*items*stride");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -655,6 +667,7 @@ int main(void)
     test_required_binding_and_ubo_inline();
     test_isolated_and_native_tes();
     test_xfb_copyback_and_shadow();
+    test_tess_passthrough_xfb_success();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

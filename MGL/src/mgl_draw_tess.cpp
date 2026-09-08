@@ -530,6 +530,23 @@ extern "C" int mglTessKeepNativeTESOnly(int native_ok, int has_tcs,
     return has_capture && has_factors ? 1 : 0;
 }
 
+extern "C" int mglTessPassthroughFailIsXFBSuccess(int xfb_active)
+{
+    return xfb_active ? 1 : 0;
+}
+
+extern "C" int mglXfbShouldAdvanceWriteOffset(int xfb_active, uint64_t written)
+{
+    return xfb_active && written > 0u ? 1 : 0;
+}
+
+extern "C" uint64_t mglTessPassthroughInstanceOffset(uint32_t instance,
+                                                     uint32_t items,
+                                                     uint32_t stride)
+{
+    return (uint64_t)instance * (uint64_t)items * (uint64_t)stride;
+}
+
 extern "C" bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs)
 {
     if (!ctx || !ctx->active_state) {
