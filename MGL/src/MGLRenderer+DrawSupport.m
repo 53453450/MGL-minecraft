@@ -42,69 +42,8 @@ static void *mglDrawSupportBufferContents(id buffer)
 
 /* AIR stage-out / GS scatter slots carry integers as SIToFP/UIToFP floats.
  * GL transform-feedback stores native int/uint bits — decode before the
- * compact XFB image is published to the GL buffer / CPU shadow. */
-static void mglXFBDecodeIntCarrierField(GLenum glType, uint8_t *field,
-                                        GLuint comps)
-{
-    if (glType == GL_INT || glType == GL_INT_VEC2 ||
-        glType == GL_INT_VEC3 || glType == GL_INT_VEC4) {
-        for (GLuint c = 0u; c < comps && c < 4u; c++) {
-            float f = 0.f;
-            memcpy(&f, field + c * 4u, sizeof(f));
-            GLint iv = (GLint)f;
-            memcpy(field + c * 4u, &iv, sizeof(iv));
-        }
-        return;
-    }
-    if (glType == GL_UNSIGNED_INT || glType == GL_UNSIGNED_INT_VEC2 ||
-        glType == GL_UNSIGNED_INT_VEC3 || glType == GL_UNSIGNED_INT_VEC4) {
-        for (GLuint c = 0u; c < comps && c < 4u; c++) {
-            float f = 0.f;
-            memcpy(&f, field + c * 4u, sizeof(f));
-            GLuint uv = (GLuint)f;
-            memcpy(field + c * 4u, &uv, sizeof(uv));
-        }
-    }
-}
-
-static void mglXFBDecodeIntCarriersInBytes(uint8_t *bytes, NSUInteger nbytes,
-                                          NSUInteger stride, Program *program,
-                                          GLuint bufferIndex, GLuint stage)
-{
-    if (!bytes || !program || stride == 0u || nbytes < stride) return;
-    const MGLShaderResourceList *outputs =
-        &program->shader_resources_list[stage][_STAGE_OUTPUT_RES];
-    for (NSUInteger off = 0u; off + stride <= nbytes; off += stride) {
-        uint8_t *record = bytes + off;
-        for (GLsizei vi = 0;
-             vi < program->transform_feedback_varying_count; vi++) {
-            const MGLTransformFeedbackVaryingPlan *plan =
-                &program->transform_feedback_layout[vi];
-            if (plan->buffer_index != bufferIndex ||
-                plan->component_count == 0u) {
-                continue;
-            }
-            const char *name =
-                program->transform_feedback_varying_names[vi];
-            if (!name || !name[0]) continue;
-            char baseName[96];
-            strncpy(baseName, name, sizeof(baseName) - 1);
-            baseName[sizeof(baseName) - 1] = '\0';
-            char *bracket = strchr(baseName, '[');
-            if (bracket) *bracket = '\0';
-            GLenum glType = 0;
-            MGLShaderResource *outRes =
-                mglProgramFindStageOutputForXFBName(program, (int)stage, name);
-            if (outRes) glType = outRes->gl_type;
-            if (!glType) continue;
-            NSUInteger fieldOff = (NSUInteger)plan->component_offset * 4u;
-            NSUInteger fieldBytes = (NSUInteger)plan->component_count * 4u;
-            if (fieldOff + fieldBytes > stride) continue;
-            mglXFBDecodeIntCarrierField(glType, record + fieldOff,
-                                        plan->component_count);
-        }
-    }
-}
+ * compact XFB image is published to the GL buffer / CPU shadow.  Packing
+ * lives in mglTessPackXFBFieldFromCarrier / mglXfbDecodeIntCarriersInBytes. */
 
 static uint64_t mglDrawSupportBufferLength(id buffer)
 {
@@ -1790,8 +1729,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                     if (scatterParams.buffers[b].stride == 0u) continue;
                     NSUInteger region = bufferWritten[b];
                     if (region == 0u) continue;
-                    mglXFBDecodeIntCarriersInBytes(
-                        xfbTempBytes + bufferPhysBase[b], region,
+                    mglXfbDecodeIntCarriersInBytes(
+                        xfbTempBytes + bufferPhysBase[b], (uint64_t)region,
                         scatterParams.buffers[b].stride, program, b,
                         _GEOMETRY_SHADER);
                 }
@@ -1897,10 +1836,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
               (int)[self currentDrawModeIsFullyCulled:gsOutputMode],
               (int)mglRenderEncoderOwnerHasCurrent(
                   _renderPassManager.state->currentRenderEncoderOwner));
-    if (![self processGLState:true] ||
-        mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1 ||
-        [self currentDrawRasterizationIsEmpty] ||
-        [self currentDrawModeIsFullyCulled:gsOutputMode]) {
+    if (!mglDrawGsPassthroughRasterReady(
+            [self processGLState:true] ? 1 : 0,
+            mglRenderEncoderOwnerHasCurrent(
+                _renderPassManager.state->currentRenderEncoderOwner),
+            [self currentDrawRasterizationIsEmpty] ? 1 : 0,
+            [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0)) {
         if (xfbActive || mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
             mglHasActivePrimitiveQuery(drawCtx) ||
             mglHasActiveGeometryShaderQuery(drawCtx)) {

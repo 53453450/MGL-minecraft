@@ -160,6 +160,8 @@ int mglDrawGsNeedCPUVisibility(int xfb_active, int has_query);
 uint64_t mglDrawGsQueryWritten(uint32_t output_primitive, uint32_t buffer0_stride,
                                uint64_t buffer0_written);
 int mglDrawGsSkipRaster(int xfb_active, int rasterizer_discard);
+int mglDrawGsPassthroughRasterReady(int state_ready, int has_encoder,
+                                    int raster_empty, int fully_culled);
 
 void mglDrawGsFillXFBMetaFromDest(const MGLAIRGSXFBScatterParams *params,
                                   const MGLGsXFBDestPlan *dest,

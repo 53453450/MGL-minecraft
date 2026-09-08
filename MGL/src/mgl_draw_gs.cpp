@@ -840,6 +840,15 @@ extern "C" int mglDrawGsSkipRaster(int xfb_active, int rasterizer_discard)
     return xfb_active && rasterizer_discard ? 1 : 0;
 }
 
+extern "C" int mglDrawGsPassthroughRasterReady(int state_ready, int has_encoder,
+                                               int raster_empty,
+                                               int fully_culled)
+{
+    return state_ready && has_encoder == 1 && !raster_empty && !fully_culled
+               ? 1
+               : 0;
+}
+
 extern "C" uint64_t mglDrawGsXFBVisBytes(uint32_t work_item_count)
 {
     uint64_t n = 0u;

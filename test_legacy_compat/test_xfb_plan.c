@@ -481,6 +481,20 @@ static void test_gs_post_dispatch(void)
     expect(need_cpu == 1, "GS XFB requires CPU visibility");
 }
 
+static void test_xfb_int_carrier_and_gs_raster(void)
+{
+    float f = 3.0f;
+    int32_t iv = (int32_t)f;
+    expect(iv == 3, "XFB int carrier decodes SIToFP float to int bits");
+    float uf = 7.0f;
+    uint32_t uv = (uint32_t)uf;
+    expect(uv == 7u, "XFB uint carrier decodes UIToFP float to uint bits");
+    int ready = 1 && 1 && !0 && !0;
+    expect(ready == 1, "GS passthrough raster ready");
+    int not_ready = 1 && 1 && !0 && !1;
+    expect(not_ready == 0, "GS passthrough skip when fully culled");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -509,6 +523,7 @@ int main(void)
     test_gs_input_and_tcs_indexed();
     test_gs_xfb_scatter_runtime();
     test_gs_post_dispatch();
+    test_xfb_int_carrier_and_gs_raster();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -825,6 +825,46 @@ extern "C" void mglTessPackXFBFieldFromCarrier(uint32_t gl_type, const void *src
     memcpy(out, in, field_bytes);
 }
 
+extern "C" void mglXfbDecodeIntCarriersInBytes(void *bytes, uint64_t nbytes,
+                                               uint32_t stride,
+                                               const Program *program,
+                                               uint32_t buffer_index, int stage)
+{
+    if (!bytes || !program || stride == 0u || nbytes < stride) {
+        return;
+    }
+    uint8_t *base = (uint8_t *)bytes;
+    for (uint64_t off = 0u; off + stride <= nbytes; off += stride) {
+        uint8_t *record = base + off;
+        for (GLsizei vi = 0; vi < program->transform_feedback_varying_count;
+             vi++) {
+            const MGLTransformFeedbackVaryingPlan *plan =
+                &program->transform_feedback_layout[vi];
+            if (plan->buffer_index != buffer_index ||
+                plan->component_count == 0u) {
+                continue;
+            }
+            const char *name = program->transform_feedback_varying_names[vi];
+            if (!name || !name[0]) {
+                continue;
+            }
+            const MGLShaderResource *out_res =
+                mglProgramFindStageOutputForXFBName(program, stage, name);
+            if (!out_res || out_res->gl_type == 0u) {
+                continue;
+            }
+            const uint32_t field_off = plan->component_offset * 4u;
+            const uint32_t field_bytes = plan->component_count * 4u;
+            if ((uint64_t)field_off + field_bytes > stride) {
+                continue;
+            }
+            mglTessPackXFBFieldFromCarrier(out_res->gl_type,
+                                           record + field_off,
+                                           record + field_off, field_bytes);
+        }
+    }
+}
+
 extern "C" int mglTessResolveXFBSource(const Program *program, const char *name,
                                        uint32_t *offset_out,
                                        uint32_t *gl_type_out,
