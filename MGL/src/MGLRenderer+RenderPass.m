@@ -2339,7 +2339,8 @@ static GLenum mglPassthroughDeclType(
         _renderPassManager.state->currentRenderEncoderOwner, cull_mode);
     uint32_t _winding =
         mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
-                                 state->var.clip_origin == GL_UPPER_LEFT);
+                                 !mglRenderClipOriginIsLowerLeft(
+                                     (uint32_t)state->var.clip_origin));
     mglRenderBindingSetWindingIfNeededForOwner(
         _bindingStateOwner,
         _renderPassManager.state->currentRenderEncoderOwner,
@@ -3269,8 +3270,8 @@ static GLenum mglPassthroughDeclType(
              * planes so imageLoad(sample) sees the same clear value. */
             if (attachmentTextureForClear &&
                 attachmentTextureForClear->mtl_data &&
-                (attachmentTextureForClear->target == GL_TEXTURE_2D_MULTISAMPLE ||
-                 attachmentTextureForClear->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
+                mglRenderIsMultisampleTextureTarget(
+                    (uint32_t)attachmentTextureForClear->target)) {
                 MGLMetalAttachmentSubresource sub =
                     mglMetalAttachmentSubresourceForAttachment(att);
                 NSUInteger samples =
@@ -5519,9 +5520,11 @@ static GLenum mglPassthroughDeclType(
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     BOOL useFragCoordParams =
-        fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE;
+        fragmentProgram && mglRenderSamplerUnitExplicit(
+                               (uint32_t)fragmentProgram->usesFragCoordParams);
     BOOL useSampleParams =
-        (fragmentProgram && fragmentProgram->uses_sample_params == GL_TRUE) ||
+        (fragmentProgram && mglRenderSamplerUnitExplicit(
+                                (uint32_t)fragmentProgram->uses_sample_params)) ||
         _mglInMSSampleDrawLoop;
     if (useFragCoordParams || useSampleParams) {
         NSUInteger passHeight = mglRenderPassRenderTargetHeightFor(_renderPassManager.state);
@@ -5544,7 +5547,7 @@ static GLenum mglPassthroughDeclType(
         if (fbo && (fbo->color_attachment_bitfield & 1u)) {
             FBOAttachment *att = &fbo->color_attachments[0];
             Texture *tex = NULL;
-            if (att->textarget == GL_RENDERBUFFER && att->buf.rbo)
+            if (mglRenderTargetIsRenderbuffer((uint32_t)att->textarget) && att->buf.rbo)
                 tex = att->buf.rbo->tex;
             else
                 tex = att->buf.tex;
@@ -5567,7 +5570,8 @@ static GLenum mglPassthroughDeclType(
         mglRenderFillFragCoordSlot(
             useFragCoordParams ? 1 : 0, useSampleParams ? 1 : 0,
             (uint32_t)passHeight,
-            MGL_STATE(ctx)->var.clip_origin == GL_LOWER_LEFT ? 1 : 0,
+            mglRenderClipOriginIsLowerLeft(
+                (uint32_t)MGL_STATE(ctx)->var.clip_origin),
             numSamples, sampleBuffers,
             _mglInMSSampleDrawLoop ? 1 : 0,
             (uint32_t)_mglForcedMSSampleId, fragCoordParams);
@@ -5581,7 +5585,7 @@ static GLenum mglPassthroughDeclType(
 
 
     BOOL useLodBias = fragmentProgram &&
-        fragmentProgram->uses_lod_bias == GL_TRUE;
+        mglRenderSamplerUnitExplicit((uint32_t)fragmentProgram->uses_lod_bias);
     if (useLodBias) {
 
         const GLfloat biasmax = STATE(var).max_texture_lod_bias;

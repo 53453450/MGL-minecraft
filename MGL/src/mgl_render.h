@@ -1410,6 +1410,7 @@ int mglRenderTargetIsRenderbuffer(uint32_t target);
 int mglRenderMSSamplePlaneAdjust(int in_ms_loop, uint32_t target,
                                  int32_t offset);
 int mglRenderTextureTargetIsMSOr2DArray(uint32_t target);
+int mglRenderClipOriginIsLowerLeft(uint32_t origin);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

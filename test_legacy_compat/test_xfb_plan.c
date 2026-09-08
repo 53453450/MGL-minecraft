@@ -1318,6 +1318,14 @@ static void test_ms_sample_plane_and_array_targets(void)
     expect(arr == 1, "2D_ARRAY is an MS-or-2D-array target");
 }
 
+static void test_clip_origin_lower_left(void)
+{
+    int ll = 1;
+    expect(ll == 1, "GL_LOWER_LEFT is lower-left clip origin");
+    int ul = 0;
+    expect(ul == 0, "GL_UPPER_LEFT is not lower-left");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1420,6 +1428,7 @@ int main(void)
     test_default_draw_buffer_and_renderbuffer();
     test_tess_isolines_and_point_size();
     test_ms_sample_plane_and_array_targets();
+    test_clip_origin_lower_left();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
