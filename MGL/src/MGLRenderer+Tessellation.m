@@ -1391,9 +1391,6 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 
         id xfbMTL = nil;
         NSUInteger visibleBytes = 0u;
-        NSUInteger remainingVisibleBytes = 0u;
-        NSUInteger destinationOffset = 0u;
-        bool destinationOffsetOK = false;
         if (xfbSlot->buf) {
             if (xfbSlot->buf->size > 0 &&
                 (xfbSlot->buf->data.dirty_bits &
@@ -1422,28 +1419,21 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                 visibleBytes =
                     mglBufferMapVisibleBackingBytes(
                         &xfbMap, (size_t)mglTessBufferLength(xfbMTL));
-                if (xfbSessionOffset <= visibleBytes &&
-                    xfbSlot->offset >= 0 &&
-                    (NSUInteger)xfbSlot->offset <=
-                        NSUIntegerMax - xfbSessionOffset) {
-                    remainingVisibleBytes = visibleBytes - xfbSessionOffset;
-                    destinationOffset =
-                        (NSUInteger)xfbSlot->offset + xfbSessionOffset;
-                    destinationOffsetOK = true;
-                }
             }
         }
 
         if (sizeOK) {
             const GLuint verticesPerPrimitive =
                 mglTessVerticesPerPrimitive(tesProgram);
-            NSUInteger primitiveBytes = 0u;
-            const bool primitiveLayoutOK =
-                mglCheckedNSUIntegerProduct((NSUInteger)verticesPerPrimitive,
-                                            xfbCompactStride, &primitiveBytes) &&
-                primitiveBytes > 0u;
-            const NSUInteger capturePrimitives = primitiveLayoutOK
-                ? captureVertices / (NSUInteger)verticesPerPrimitive : 0u;
+            MGLTessXFBDestPlan destPlan = {0};
+            const int destOK =
+                xfbMTL && xfbSlot->buf &&
+                mglTessPlanXFBDestination(
+                    itemsPerInstanceU, instanceCountU,
+                    (uint32_t)xfbCompactStride, verticesPerPrimitive,
+                    (uint64_t)xfbSessionOffset, (int64_t)xfbSlot->offset,
+                    (uint64_t)visibleBytes, &destPlan) &&
+                destPlan.valid;
             /* The AIR kernel writes full stage records (built-ins followed by
              * location-based user outputs). GL XFB is a compact stream of only
              * the selected varyings, so it can never target the GL range
@@ -1461,14 +1451,11 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                 [self clearStageBindingCopyBacks:&stageCopyBacks];
                 return false;
             }
-            if (primitiveLayoutOK && xfbMTL && destinationOffsetOK) {
-                NSUInteger copiedPrimitives = MIN(
-                    capturePrimitives, remainingVisibleBytes / primitiveBytes);
-                xfbCopiedVertices =
-                    copiedPrimitives * (NSUInteger)verticesPerPrimitive;
-                xfbWrittenBytes = copiedPrimitives * primitiveBytes;
+            if (destOK) {
+                xfbCopiedVertices = destPlan.copied_vertices;
+                xfbWrittenBytes = destPlan.written_bytes;
                 xfbCopyDestination = xfbMTL;
-                xfbCopyDestinationOffset = destinationOffset;
+                xfbCopyDestinationOffset = destPlan.destination_offset;
                 xfbDestination = xfbSlot->buf;
             }
         }

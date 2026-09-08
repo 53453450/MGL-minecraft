@@ -13,6 +13,7 @@
 
 #include "glcorearb.h"
 #include "glm_context.h"
+#include "mgl_air_gs_abi.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -83,6 +84,50 @@ bool mglDrawGsFillXFBScatterPlan(MGLRenderComputeExecutionPlan *plan,
                                  uint32_t params_bytes, void *vis, void *offsets,
                                  void *stage_out, void *xfb, void *written,
                                  uint32_t work_item_count);
+
+typedef struct MGLGsXFBBufferBinding {
+    uint8_t bound;
+    int64_t slot_offset;
+    uint64_t session_offset;
+    uint64_t visible_bytes;
+} MGLGsXFBBufferBinding;
+
+typedef struct MGLGsXFBBufferDest {
+    uint32_t remaining;
+    uint32_t dst_offset;
+    uint32_t cap_bytes;
+    uint32_t phys_base;
+    uint8_t valid;
+} MGLGsXFBBufferDest;
+
+typedef struct MGLGsXFBDestPlan {
+    MGLGsXFBBufferDest buffers[MGL_AIR_GS_MAX_STREAMS];
+    uint32_t phys_total;
+} MGLGsXFBDestPlan;
+
+/* GL 4.6 §13.2.4 store window from the bound offset. Capacity is the
+ * remaining visible bytes, clipped to the expansion's max capture. */
+void mglDrawGsPlanXFBDestinations(MGLAIRGSXFBScatterParams *params,
+                                  uint32_t buffer_count,
+                                  uint32_t work_item_count,
+                                  uint32_t expanded_vertices,
+                                  const MGLGsXFBBufferBinding bindings[MGL_AIR_GS_MAX_STREAMS],
+                                  MGLGsXFBDestPlan *out);
+
+void mglDrawGsFillXFBMetaFromDest(const MGLAIRGSXFBScatterParams *params,
+                                  const MGLGsXFBDestPlan *dest,
+                                  MGLAIRGSXFBMeta *out);
+
+/* PRIMITIVES_GENERATED from kernel emit/meta, not the allocated expansion. */
+uint64_t mglDrawGsReduceGeneratedPrimitives(GLenum output_mode,
+                                            uint32_t work_item_count,
+                                            uint32_t max_vertices,
+                                            const uint32_t *counts,
+                                            const MGLAIRGSXFBMeta *meta);
+
+uint64_t mglDrawGsReduceBufferWritten(const uint32_t *written,
+                                      uint32_t work_item_count,
+                                      uint32_t buffer_index);
 
 #ifdef __cplusplus
 }

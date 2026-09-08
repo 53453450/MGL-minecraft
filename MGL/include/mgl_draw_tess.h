@@ -117,6 +117,21 @@ uint32_t mglTessPackXFBSeparate(const Program *tes, const char *name,
                                 const void *src, uint32_t src_stride,
                                 uint32_t vertex_count, void *dst);
 
+typedef struct MGLTessXFBDestPlan {
+    uint32_t copied_vertices;
+    uint32_t written_bytes;
+    uint32_t destination_offset;
+    uint8_t valid;
+} MGLTessXFBDestPlan;
+
+int mglTessPlanXFBDestination(uint32_t items_per_instance,
+                              uint32_t instance_count,
+                              uint32_t compact_stride,
+                              uint32_t vertices_per_primitive,
+                              uint64_t session_offset, int64_t slot_offset,
+                              uint64_t visible_bytes,
+                              MGLTessXFBDestPlan *out);
+
 typedef struct MGLTessEvalPerPatchDispatchSpec {
     void *gl_in_buffer;
     uint64_t gl_in_offset;

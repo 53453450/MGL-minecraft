@@ -597,3 +597,143 @@ extern "C" bool mglDrawGsFillXFBScatterPlan(
     plan->barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
     return true;
 }
+
+extern "C" void mglDrawGsPlanXFBDestinations(
+    MGLAIRGSXFBScatterParams *params, uint32_t buffer_count,
+    uint32_t work_item_count, uint32_t expanded_vertices,
+    const MGLGsXFBBufferBinding bindings[MGL_AIR_GS_MAX_STREAMS],
+    MGLGsXFBDestPlan *out)
+{
+    if (out) {
+        memset(out, 0, sizeof(*out));
+    }
+    if (!params || !bindings || !out || buffer_count == 0u ||
+        work_item_count == 0u) {
+        return;
+    }
+    if (buffer_count > MGL_AIR_GS_MAX_STREAMS) {
+        buffer_count = MGL_AIR_GS_MAX_STREAMS;
+    }
+    uint64_t phys_total = 0u;
+    for (uint32_t b = 0u; b < buffer_count; b++) {
+        if (params->buffers[b].stride == 0u || !bindings[b].bound) {
+            continue;
+        }
+        if (bindings[b].session_offset > bindings[b].visible_bytes ||
+            bindings[b].slot_offset < 0 ||
+            (uint64_t)bindings[b].slot_offset >
+                UINT64_MAX - bindings[b].session_offset) {
+            continue;
+        }
+        const uint64_t remaining =
+            bindings[b].visible_bytes - bindings[b].session_offset;
+        uint64_t max_cap = 0u;
+        if (__builtin_mul_overflow((uint64_t)work_item_count,
+                                   (uint64_t)expanded_vertices, &max_cap) ||
+            __builtin_mul_overflow(max_cap, (uint64_t)params->buffers[b].stride,
+                                   &max_cap)) {
+            max_cap = UINT32_MAX;
+        }
+        uint64_t cap = remaining < max_cap ? remaining : max_cap;
+        if (cap > UINT32_MAX) {
+            cap = UINT32_MAX;
+        }
+        out->buffers[b].remaining = remaining > UINT32_MAX
+                                        ? UINT32_MAX
+                                        : (uint32_t)remaining;
+        out->buffers[b].dst_offset =
+            (uint32_t)((uint64_t)bindings[b].slot_offset +
+                       bindings[b].session_offset);
+        out->buffers[b].cap_bytes = (uint32_t)cap;
+        out->buffers[b].phys_base =
+            phys_total > UINT32_MAX ? UINT32_MAX : (uint32_t)phys_total;
+        out->buffers[b].valid = 1u;
+        params->buffers[b].capacity_bytes = out->buffers[b].cap_bytes;
+        params->buffers[b].capture_base = out->buffers[b].phys_base;
+        phys_total += cap;
+        if (phys_total > UINT32_MAX) {
+            phys_total = UINT32_MAX;
+        }
+    }
+    out->phys_total = (uint32_t)phys_total;
+}
+
+extern "C" void mglDrawGsFillXFBMetaFromDest(
+    const MGLAIRGSXFBScatterParams *params, const MGLGsXFBDestPlan *dest,
+    MGLAIRGSXFBMeta *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!params || !dest) {
+        return;
+    }
+    for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
+        const int capture = dest->buffers[s].valid &&
+                            dest->buffers[s].cap_bytes > 0u &&
+                            params->buffers[s].stride > 0u;
+        out->stream[s].stride = capture ? params->buffers[s].stride : 0u;
+        out->stream[s].capacity_bytes = dest->buffers[s].cap_bytes;
+        out->stream[s].capture_base = dest->buffers[s].phys_base;
+        out->buffer_stream[s] = params->buffer_stream[s];
+    }
+}
+
+extern "C" uint64_t mglDrawGsReduceGeneratedPrimitives(
+    GLenum output_mode, uint32_t work_item_count, uint32_t max_vertices,
+    const uint32_t *counts, const MGLAIRGSXFBMeta *meta)
+{
+    if (work_item_count == 0u) {
+        return 0u;
+    }
+    const uint32_t max_per =
+        output_mode == GL_POINTS
+            ? max_vertices
+            : output_mode == GL_LINE_STRIP
+                  ? (max_vertices > 1u ? max_vertices - 1u : 0u)
+                  : (max_vertices > 2u ? max_vertices - 2u : 0u);
+    const uint64_t max_generated =
+        (uint64_t)work_item_count * (uint64_t)max_per;
+    if (meta) {
+        const uint64_t meta_gen = (uint64_t)meta->stream[0].generated;
+        if (meta_gen <= max_generated) {
+            return meta_gen;
+        }
+    }
+    if (!counts) {
+        return 0u;
+    }
+    const uint32_t emit_word =
+        MGL_AIR_GS_COUNTS_ARGS_WORDS + (uint32_t)(MGL_AIR_GS_COUNT_EMITTED - 1u);
+    const uint32_t vpp = output_mode == GL_POINTS
+                             ? 1u
+                             : output_mode == GL_LINE_STRIP ? 2u : 3u;
+    uint64_t emit_sum = 0u;
+    uint64_t vertex_sum = 0u;
+    for (uint32_t w = 0u; w < work_item_count; w++) {
+        const uint32_t *row = counts + w * MGL_AIR_GS_COUNTS_RECORD_WORDS;
+        emit_sum += row[emit_word];
+        vertex_sum += row[0];
+    }
+    if (output_mode == GL_POINTS) {
+        return emit_sum <= max_generated ? emit_sum : 0u;
+    }
+    const uint64_t from_verts = vpp ? vertex_sum / vpp : 0u;
+    return from_verts <= max_generated ? from_verts : 0u;
+}
+
+extern "C" uint64_t mglDrawGsReduceBufferWritten(const uint32_t *written,
+                                                 uint32_t work_item_count,
+                                                 uint32_t buffer_index)
+{
+    if (!written || work_item_count == 0u ||
+        buffer_index >= MGL_AIR_GS_MAX_STREAMS) {
+        return 0u;
+    }
+    uint64_t total = 0u;
+    for (uint32_t w = 0u; w < work_item_count; w++) {
+        total += written[w * MGL_AIR_GS_MAX_STREAMS + buffer_index];
+    }
+    return total;
+}

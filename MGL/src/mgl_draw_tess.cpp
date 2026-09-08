@@ -630,6 +630,61 @@ extern "C" uint32_t mglTessPackXFBSeparate(const Program *tes, const char *name,
     return vertex_count;
 }
 
+extern "C" int mglTessPlanXFBDestination(uint32_t items_per_instance,
+                                         uint32_t instance_count,
+                                         uint32_t compact_stride,
+                                         uint32_t vertices_per_primitive,
+                                         uint64_t session_offset,
+                                         int64_t slot_offset,
+                                         uint64_t visible_bytes,
+                                         MGLTessXFBDestPlan *out)
+{
+    if (!out) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    if (items_per_instance == 0u || instance_count == 0u ||
+        compact_stride == 0u || vertices_per_primitive == 0u ||
+        slot_offset < 0) {
+        return 0;
+    }
+    uint64_t capture_vertices = 0u;
+    uint64_t primitive_bytes = 0u;
+    if (__builtin_mul_overflow((uint64_t)items_per_instance,
+                               (uint64_t)instance_count, &capture_vertices) ||
+        __builtin_mul_overflow((uint64_t)vertices_per_primitive,
+                               (uint64_t)compact_stride, &primitive_bytes) ||
+        primitive_bytes == 0u) {
+        return 0;
+    }
+    const uint64_t capture_primitives =
+        capture_vertices / (uint64_t)vertices_per_primitive;
+    if (session_offset > visible_bytes ||
+        (uint64_t)slot_offset > UINT64_MAX - session_offset) {
+        return 0;
+    }
+    const uint64_t remaining = visible_bytes - session_offset;
+    uint64_t copied_primitives = remaining / primitive_bytes;
+    if (copied_primitives > capture_primitives) {
+        copied_primitives = capture_primitives;
+    }
+    uint64_t copied_vertices = 0u;
+    uint64_t written_bytes = 0u;
+    if (__builtin_mul_overflow(copied_primitives,
+                               (uint64_t)vertices_per_primitive,
+                               &copied_vertices) ||
+        __builtin_mul_overflow(copied_primitives, primitive_bytes,
+                               &written_bytes) ||
+        copied_vertices > UINT32_MAX || written_bytes > UINT32_MAX) {
+        return 0;
+    }
+    out->copied_vertices = (uint32_t)copied_vertices;
+    out->written_bytes = (uint32_t)written_bytes;
+    out->destination_offset = (uint32_t)((uint64_t)slot_offset + session_offset);
+    out->valid = 1u;
+    return 1;
+}
+
 static bool mglTessKeepAppend(uint8_t *keep, size_t *used, size_t cap,
                               const void *src, size_t len, const void **out_ptr)
 {
