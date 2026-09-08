@@ -38,6 +38,7 @@
 #include "glm_limits.h"
 #include "mgl_shader_abi.h"
 #include "mgl_buffer_slots.h"
+#include "mgl_buffer_plan.h"
 #include "mgl_tess_domain.h"
 
 #include <algorithm>
@@ -7850,6 +7851,31 @@ int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
                    index < count
                ? 1
                : 0;
+}
+
+int mglRenderBufferPlanEntrySkip(uint32_t flags) {
+    return (flags & MGL_BP_FLAG_SKIP) != 0u ? 1 : 0;
+}
+
+int mglRenderBufferPlanIsStructPacked(uint32_t flags) {
+    return (flags & MGL_BP_FLAG_STRUCT_PACKED) != 0u ? 1 : 0;
+}
+
+int mglRenderBufferPlanAllowFallback(int has_fallback, uint32_t flags) {
+    return has_fallback && (flags & MGL_BP_FLAG_ALLOW_FALLBACK) != 0u ? 1 : 0;
+}
+
+int mglRenderStructMemberInElementRange(uint32_t member_loc_off,
+                                        uint32_t loc_start, uint32_t loc_end) {
+    return member_loc_off >= loc_start && member_loc_off < loc_end ? 1 : 0;
+}
+
+int mglRenderBindableLocValid(int32_t loc, uint32_t max) {
+    return loc >= 0 && (uint32_t)loc < max ? 1 : 0;
+}
+
+int mglRenderCPUShadowReadable(const void *cpu, int64_t size) {
+    return cpu && size > 0 ? 1 : 0;
 }
 
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {

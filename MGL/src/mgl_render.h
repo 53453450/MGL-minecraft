@@ -1228,6 +1228,13 @@ int mglRenderShaderResourceToGLBufferType(int spvc_type);
 int mglRenderUsePlainUniformBuffers(int spvc_type);
 int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
                                       uint32_t count);
+int mglRenderBufferPlanEntrySkip(uint32_t flags);
+int mglRenderBufferPlanIsStructPacked(uint32_t flags);
+int mglRenderBufferPlanAllowFallback(int has_fallback, uint32_t flags);
+int mglRenderStructMemberInElementRange(uint32_t member_loc_off,
+                                        uint32_t loc_start, uint32_t loc_end);
+int mglRenderBindableLocValid(int32_t loc, uint32_t max);
+int mglRenderCPUShadowReadable(const void *cpu, int64_t size);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

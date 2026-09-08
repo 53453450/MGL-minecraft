@@ -194,7 +194,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
         const MGLBufferPlanEntry *entry = &stagePlan->entries[pi];
         int spvc_type = (int)entry->resource_type;
 
-        if (entry->flags & MGL_BP_FLAG_SKIP) {
+        if (mglRenderBufferPlanEntrySkip(entry->flags)) {
             continue;
         }
 
@@ -237,14 +237,14 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
         }
 
         /* ---- Struct packing path (plain uniform structs) ---- */
-        if (entry->flags & MGL_BP_FLAG_STRUCT_PACKED)
+        if (mglRenderBufferPlanIsStructPacked(entry->flags))
         {
             GLuint loc_step = entry->loc_step;
             GLint base_loc = entry->base_loc;
             GLuint struct_size = entry->struct_size;
             GLuint array_size = entry->element_count;
-            bool allowFallback = fallbackBuffers &&
-                (entry->flags & MGL_BP_FLAG_ALLOW_FALLBACK);
+            bool allowFallback = mglRenderBufferPlanAllowFallback(
+                fallbackBuffers ? 1 : 0, entry->flags) != 0;
 
             for (GLuint element = 0; element < array_size; element++) {
                 GLuint metal_binding = mglBufferPlanMetalBindingForElement(entry, element);
@@ -263,8 +263,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     const MGLBufferPlanStructMember *sm = &entry->struct_members[m];
 
                     GLuint member_loc_off = sm->member_loc_off;
-                    if (member_loc_off < elem_loc_start ||
-                        member_loc_off >= elem_loc_end) {
+                    if (!mglRenderStructMemberInElementRange(
+                            member_loc_off, elem_loc_start, elem_loc_end)) {
                         continue;
                     }
 
@@ -277,7 +277,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     }
 
                     GLint member_loc = sm->member_loc;
-                    if (member_loc < 0 || member_loc >= (GLint)MAX_BINDABLE_BUFFERS) {
+                    if (!mglRenderBindableLocValid(member_loc,
+                                                   MAX_BINDABLE_BUFFERS)) {
                         continue;
                     }
 
@@ -288,7 +289,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                                 : elem_stride;
                         for (GLint ai = 0; ai < (GLint)sm->member_size; ai++) {
                             GLint elem_loc = member_loc + ai;
-                            if (elem_loc < 0 || elem_loc >= (GLint)MAX_BINDABLE_BUFFERS) {
+                            if (!mglRenderBindableLocValid(elem_loc,
+                                                           MAX_BINDABLE_BUFFERS)) {
                                 continue;
                             }
                             BufferBaseTarget *mb = &buffers[elem_loc];
@@ -303,7 +305,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     "mapShaderBufferResourcesViaPlan(struct,array,fb)",
                                     (NSUInteger)elem_loc);
                             }
-                            if (!mbuf || !mbuf->data.buffer_data || mbuf->size <= 0) {
+                            if (!mglRenderCPUShadowReadable(
+                                    mbuf ? mbuf->data.buffer_data : NULL,
+                                    mbuf ? mbuf->size : 0)) {
                                 continue;
                             }
                             if (ai == 0 &&
@@ -787,7 +791,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                              * plain_uniform_buffers: base_loc + the member's
                              * absolute location_offset. */
                             GLint member_loc = base_loc + (GLint)member_loc_off;
-                            if (member_loc < 0 || member_loc >= (GLint)MAX_BINDABLE_BUFFERS) {
+                            if (!mglRenderBindableLocValid(member_loc,
+                                                   MAX_BINDABLE_BUFFERS)) {
                                 continue;
                             }
 
@@ -811,7 +816,8 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                     src_stride = 4u;
                                 for (GLint ai = 0; ai < member->size; ai++) {
                                     GLint elem_loc = member_loc + ai;
-                                    if (elem_loc < 0 || elem_loc >= (GLint)MAX_BINDABLE_BUFFERS) {
+                                    if (!mglRenderBindableLocValid(elem_loc,
+                                                           MAX_BINDABLE_BUFFERS)) {
                                         continue;
                                     }
                                     BufferBaseTarget *mb = &buffers[elem_loc];
@@ -826,7 +832,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                             "mapGLBuffersToMTLBufferMap(struct,array,fb)",
                                             (NSUInteger)elem_loc);
                                     }
-                                    if (!mbuf || !mbuf->data.buffer_data || mbuf->size <= 0) {
+                                    if (!mglRenderCPUShadowReadable(
+                                    mbuf ? mbuf->data.buffer_data : NULL,
+                                    mbuf ? mbuf->size : 0)) {
                                         continue;
                                     }
                                     /* glUniform*iv/fv uploads an entire array
@@ -911,7 +919,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                                         "mapGLBuffersToMTLBufferMap(struct,scalar,fb)",
                                         (NSUInteger)member_loc);
                                 }
-                                if (!mbuf || !mbuf->data.buffer_data || mbuf->size <= 0) {
+                                if (!mglRenderCPUShadowReadable(
+                                    mbuf ? mbuf->data.buffer_data : NULL,
+                                    mbuf ? mbuf->size : 0)) {
                                     continue;
                                 }
                                 size_t copy_size = (size_t)mbuf->size;

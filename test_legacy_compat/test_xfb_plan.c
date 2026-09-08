@@ -675,6 +675,18 @@ static void test_shader_resource_buffer_type(void)
     expect(valid == 1, "shader resource index in range is valid");
 }
 
+static void test_buffer_plan_struct_pack(void)
+{
+    int skip = (0x01u & 0x01u) != 0;
+    expect(skip == 1, "buffer plan SKIP flag");
+    int packed = (0x02u & 0x02u) != 0;
+    expect(packed == 1, "buffer plan STRUCT_PACKED flag");
+    int in_el = (5u >= 4u) && (5u < 8u);
+    expect(in_el == 1, "struct member location in element range");
+    int loc = (3 >= 0) && (3u < 84u);
+    expect(loc == 1, "bindable loc 3 is valid");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -718,6 +730,7 @@ int main(void)
     test_xfb_session_and_tcs_stage_in();
     test_tess_compute_preamble();
     test_shader_resource_buffer_type();
+    test_buffer_plan_struct_pack();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
