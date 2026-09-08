@@ -73,6 +73,14 @@ MGLBatchIcbConfig mgl_batch_icb_config(void);
  * when batch ICB path may be selected (still needs OS + other gates). */
 int mgl_batch_icb_support_indirect_command_buffers(void);
 
+
+/* Fill batch-derived select inputs (caller still sets cull/os/env/polygon). */
+void mgl_batch_fill_select_inputs_from_batch_flags(
+    uint32_t command_count, int sampler_snapshots_mixed, int stream_merged,
+    int has_dynamic_uniform_bindings, int has_dynamic_vertex_bindings,
+    int has_dynamic_texture_bindings, int mdi_compatible, int uses_elements,
+    uint8_t primitive_type, MGLBatchSelectInputs *out);
+
 #ifdef __cplusplus
 }
 #endif

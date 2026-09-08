@@ -92,6 +92,59 @@ int mgl_batch_issue_should_apply_stable_sampler(int snapshots_mixed,
                                                 uint32_t snapshot_id,
                                                 uint32_t invalid_id);
 
+
+/* ---- A3 encode-fold: flush / scratch / ICB / cmd-stats plans ---- */
+
+typedef struct MGLBatchFlushPathStats {
+    uint32_t mdi_batches;
+    uint32_t mdi_commands;
+    uint32_t icb_batches;
+    uint32_t icb_commands;
+    uint32_t direct_batches;
+    uint32_t direct_commands;
+    uint32_t stream_batches;
+    uint32_t stream_commands;
+} MGLBatchFlushPathStats;
+
+/* path: MGL_BATCH_SELECT_* / MGLBatchPath values. */
+void mgl_batch_flush_accum_path(MGLBatchFlushPathStats *stats, int path,
+                                uint32_t command_count);
+const char *mgl_batch_flush_path_phase(int path);
+int mgl_batch_flush_should_trace_log(uint64_t hit, uint32_t total_commands,
+                                     int diag_enabled, uint32_t skipped_commands,
+                                     int replay_error_nonzero);
+
+int mgl_batch_issue_scratch_range_ok(uint64_t offset, uint64_t needed,
+                                     uint64_t length);
+
+int mgl_batch_issue_should_apply_cmd_sampler(int snapshots_mixed,
+                                             int has_dynamic_texture_bindings);
+
+typedef struct MGLBatchIcbArrayDrawParams {
+    uint32_t vertex_start;
+    uint32_t vertex_count;
+    uint32_t instance_count;
+    uint32_t base_instance;
+} MGLBatchIcbArrayDrawParams;
+
+void mgl_batch_issue_icb_array_draw_params(uint32_t first, uint32_t count,
+                                           uint32_t instance_count,
+                                           uint32_t base_instance,
+                                           MGLBatchIcbArrayDrawParams *out);
+
+uint32_t mgl_batch_issue_icb_command_types(int indexed);
+
+typedef struct MGLBatchCmdStatDelta {
+    uint32_t array_draws;
+    uint64_t array_vertices;
+    uint32_t element_draws;
+    uint64_t element_indices;
+} MGLBatchCmdStatDelta;
+
+void mgl_batch_issue_cmd_stat_delta(uint32_t cmd_type, int32_t count,
+                                    int uses_elements,
+                                    MGLBatchCmdStatDelta *out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -138,3 +138,52 @@ uint32_t mgl_batch_restore_absolute_contract_dirty(
 {
     return (want_absolute != current_absolute) ? vao_buffer_mask : 0u;
 }
+
+
+/* Keep in sync with mgl_types_state.h dirty* enum / DIRTY_* masks. */
+enum {
+    MGL_BATCH_DIRTY_VAO = 1u << 0,
+    MGL_BATCH_DIRTY_BUFFER = 1u << 2,
+    MGL_BATCH_DIRTY_TEX = 1u << 3,
+    MGL_BATCH_DIRTY_TEX_PARAM = 1u << 4,
+    MGL_BATCH_DIRTY_TEX_BINDING = 1u << 5,
+    MGL_BATCH_DIRTY_SAMPLER = 1u << 6,
+    MGL_BATCH_DIRTY_PROGRAM = 1u << 8,
+    MGL_BATCH_DIRTY_RENDER_STATE = 1u << 11,
+    MGL_BATCH_DIRTY_ALPHA_STATE = 1u << 12,
+    MGL_BATCH_DIRTY_IMAGE_UNIT = 1u << 13,
+    MGL_BATCH_DIRTY_BUFFER_BASE = 1u << 14
+};
+
+uint32_t mgl_batch_restore_full_dirty_bits(void)
+{
+    return (MGL_BATCH_DIRTY_PROGRAM | MGL_BATCH_DIRTY_VAO |
+            MGL_BATCH_DIRTY_RENDER_STATE | MGL_BATCH_DIRTY_TEX_BINDING |
+            MGL_BATCH_DIRTY_TEX | MGL_BATCH_DIRTY_TEX_PARAM |
+            MGL_BATCH_DIRTY_SAMPLER | MGL_BATCH_DIRTY_ALPHA_STATE |
+            MGL_BATCH_DIRTY_BUFFER | MGL_BATCH_DIRTY_BUFFER_BASE |
+            MGL_BATCH_DIRTY_IMAGE_UNIT);
+}
+
+void mgl_batch_restore_default_domain_masks(MGLBatchDirtyDomainMasks *out)
+{
+    if (!out) {
+        return;
+    }
+    out->program = (MGL_BATCH_DIRTY_PROGRAM | MGL_BATCH_DIRTY_BUFFER_BASE |
+                    MGL_BATCH_DIRTY_BUFFER);
+    out->vao = (MGL_BATCH_DIRTY_VAO | MGL_BATCH_DIRTY_BUFFER);
+    out->texture =
+        (MGL_BATCH_DIRTY_TEX | MGL_BATCH_DIRTY_TEX_BINDING |
+         MGL_BATCH_DIRTY_TEX_PARAM | MGL_BATCH_DIRTY_SAMPLER |
+         MGL_BATCH_DIRTY_IMAGE_UNIT);
+    out->render_state =
+        (MGL_BATCH_DIRTY_RENDER_STATE | MGL_BATCH_DIRTY_ALPHA_STATE);
+}
+
+int mgl_batch_restore_can_delta(int dirty_key_delta_enabled, int prev_key_valid,
+                                int has_encoder, int bind_valid)
+{
+    return dirty_key_delta_enabled && prev_key_valid && has_encoder &&
+           bind_valid;
+}

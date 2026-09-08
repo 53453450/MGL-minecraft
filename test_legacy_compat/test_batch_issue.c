@@ -100,6 +100,46 @@ static void test_direct_arrays_and_dyn(void)
            "cull elements");
 }
 
+
+static void test_encode_fold(void)
+{
+    MGLBatchFlushPathStats st;
+    memset(&st, 0, sizeof(st));
+    mgl_batch_flush_accum_path(&st, 2 /* STREAM */, 4);
+    mgl_batch_flush_accum_path(&st, 1 /* MDI */, 3);
+    mgl_batch_flush_accum_path(&st, 3 /* ICB */, 2);
+    mgl_batch_flush_accum_path(&st, 0 /* DIRECT */, 1);
+    expect(st.stream_batches == 1u && st.stream_commands == 4u, "stream stats");
+    expect(st.mdi_batches == 1u && st.mdi_commands == 3u, "mdi stats");
+    expect(st.icb_batches == 1u && st.icb_commands == 2u, "icb stats");
+    expect(st.direct_batches == 1u && st.direct_commands == 1u, "direct stats");
+    expect(strcmp(mgl_batch_flush_path_phase(2), "ISSUE_STREAM_MERGE") == 0,
+           "phase stream");
+    expect(mgl_batch_flush_should_trace_log(1, 10, 1, 0, 0) == 1, "trace hit1");
+    expect(mgl_batch_flush_should_trace_log(100, 10, 1, 0, 0) == 0, "trace skip");
+    expect(mgl_batch_flush_should_trace_log(100, 10, 0, 1, 0) == 1, "skipped");
+    expect(mgl_batch_issue_scratch_range_ok(8, 16, 32) == 1, "scratch ok");
+    expect(mgl_batch_issue_scratch_range_ok(20, 16, 32) == 0, "scratch oob");
+    expect(mgl_batch_issue_should_apply_cmd_sampler(0, 1) == 1, "dyn tex samp");
+    expect(mgl_batch_issue_should_apply_cmd_sampler(0, 0) == 0, "no samp");
+    MGLBatchIcbArrayDrawParams ap;
+    mgl_batch_issue_icb_array_draw_params(1, 2, 3, 4, &ap);
+    expect(ap.vertex_start == 1u && ap.vertex_count == 2u &&
+               ap.instance_count == 3u && ap.base_instance == 4u,
+           "icb array params");
+    expect(mgl_batch_issue_icb_command_types(1) == 2u, "icb indexed types");
+    expect(mgl_batch_issue_icb_command_types(0) == 1u, "icb array types");
+    MGLBatchCmdStatDelta d;
+    mgl_batch_issue_cmd_stat_delta(MGL_BATCH_ISSUE_CMD_DRAW_ARRAYS, 9, 0, &d);
+    expect(d.array_draws == 1u && d.array_vertices == 9ull, "array stats");
+    mgl_batch_issue_cmd_stat_delta(1, 5, 1, &d);
+    expect(d.element_draws == 1u && d.element_indices == 5ull, "elem stats");
+    expect(mgl_batch_rt_should_cross_mark(0, 1) == 1, "cross mark");
+    expect(mgl_batch_rt_should_cross_mark(1, 1) == 0, "already marked");
+    expect(mgl_batch_rt_should_diag_attachment0(0, 1, 1) == 1, "diag0");
+    expect(mgl_batch_rt_should_diag_attachment0(1, 1, 1) == 0, "diag1");
+}
+
 static void test_stream_index_and_sampler(void)
 {
     expect(mgl_batch_issue_stream_index_ready(0, 0, 0) ==
@@ -133,6 +173,7 @@ int main(void)
     test_stream_mdi_gate();
     test_direct_arrays_and_dyn();
     test_stream_index_and_sampler();
+    test_encode_fold();
     if (g_fails) {
         fprintf(stderr, "test_batch_issue: %d fail(s)\n", g_fails);
         return 1;

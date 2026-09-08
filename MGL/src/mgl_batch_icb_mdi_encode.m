@@ -12,121 +12,12 @@
 #include "mgl_batch_replay.h"
 #include "mgl_draw_encode.h"
 #include "mgl_batch_issue.h"
+#include "mgl_batch_mtl_encode.h"
 
 
 static BOOL mglBatchHasActiveEncoder(void *owner)
 {
     return mglRenderEncoderOwnerHasCurrent(owner) != 0;
-}
-
-static void mglBatchDrawIndexedPrimitivesIndirect(
-    void *renderEncoderOwner,
-    uint32_t primitiveType,
-    uint64_t indexType,
-    id indexBuffer,
-    NSUInteger indexBufferOffset,
-    id indirectBuffer,
-    NSUInteger indirectBufferOffset)
-{
-    const MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_INDEXED_INDIRECT,
-            .primitive_type = (uint32_t)primitiveType,
-            .index_type = (uint32_t)indexType,
-            .index_buffer = (__bridge void *)indexBuffer,
-            .index_buffer_offset = indexBufferOffset,
-            .indirect_buffer = (__bridge void *)indirectBuffer,
-            .indirect_buffer_offset = indirectBufferOffset,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
-}
-
-static id mglBatchCreateIndirectCommandBuffer(
-    BOOL indexed,
-    NSUInteger maxCommandCount)
-{
-    void *buffer = NULL;
-    uint32_t commandTypes = indexed
-        ? (uint32_t)2u
-        : (uint32_t)1u;
-    if (mglRenderCreateIndirectCommandBuffer(
-            commandTypes, 1, 1, 0, 0, maxCommandCount,
-            32u, &buffer) == 0 && buffer) {
-        return (__bridge_transfer id)buffer;
-    }
-    return nil;
-}
-
-static void mglBatchResetIndirectCommandBuffer(
-    id indirectBuffer,
-    NSRange range)
-{
-    (void)mglRenderResetIndirectCommandBuffer(
-        (__bridge void *)indirectBuffer, range.location, range.length);
-}
-
-static id mglBatchIndirectRenderCommand(
-    id indirectBuffer,
-    NSUInteger index)
-{
-    void *command = NULL;
-    if (mglRenderGetIndirectRenderCommand(
-            (__bridge void *)indirectBuffer, index, &command) == 0 &&
-        command) {
-        return (__bridge id)command;
-    }
-    return nil;
-}
-
-static void mglBatchSetIndirectDrawIndexed(
-    id command,
-    uint32_t primitiveType,
-    NSUInteger indexCount,
-    uint64_t indexType,
-    id indexBuffer,
-    NSUInteger indexBufferOffset,
-    NSUInteger instanceCount,
-    NSInteger baseVertex,
-    NSUInteger baseInstance)
-{
-    (void)mglRenderSetIndirectDrawIndexed(
-        (__bridge void *)command, (uint32_t)primitiveType, indexCount,
-        (uint32_t)indexType, (__bridge void *)indexBuffer,
-        indexBufferOffset, instanceCount, baseVertex, baseInstance);
-}
-
-static void mglBatchSetIndirectDraw(
-    id command,
-    uint32_t primitiveType,
-    NSUInteger vertexStart,
-    NSUInteger vertexCount,
-    NSUInteger instanceCount,
-    NSUInteger baseInstance)
-{
-    (void)mglRenderSetIndirectDraw(
-        (__bridge void *)command, (uint32_t)primitiveType, vertexStart,
-        vertexCount, instanceCount, baseInstance);
-}
-
-static void mglBatchUseRenderResource(
-    void *renderEncoderOwner,
-    id resource,
-    uint32_t usage,
-    uint32_t stages)
-{
-    (void)mglRenderUseRenderResourceForOwner(
-        renderEncoderOwner, (__bridge void *)resource,
-        (uint32_t)usage, (uint32_t)stages);
-}
-
-static void mglBatchExecuteIndirectCommands(
-    void *renderEncoderOwner,
-    id indirectBuffer,
-    NSRange range)
-{
-    (void)mglRenderExecuteIndirectCommandsForOwner(
-        renderEncoderOwner, (__bridge void *)indirectBuffer,
-        range.location, range.length);
 }
 
 
@@ -219,8 +110,8 @@ static void mglBatchExecuteIndirectCommands(
     if (mglRenderGetBufferContents(
             (__bridge void *)indirectArgsBuffer, &indirectArgsContents,
             &indirectArgsLength) != 0 ||
-        indirectArgsOffset > indirectArgsLength ||
-        neededBytes > indirectArgsLength - indirectArgsOffset) {
+        !mgl_batch_issue_scratch_range_ok(indirectArgsOffset, neededBytes,
+                                          indirectArgsLength)) {
         return NO;
     }
 
@@ -232,10 +123,10 @@ static void mglBatchExecuteIndirectCommands(
     uint32_t primType = (uint32_t)batch->key.primitive_type;
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
-        mglBatchDrawIndexedPrimitivesIndirect(
-            encCtx->render_encoder_owner, primType,
-            MGL_DRAW_INDEX_UINT32, mtlIndexBuffer,
-            (NSUInteger)cmd->indexBufferOffset, indirectArgsBuffer,
+        (void)mgl_batch_mtl_draw_indexed_indirect(
+            encCtx->render_encoder_owner, primType, MGL_DRAW_INDEX_UINT32,
+            (__bridge void *)mtlIndexBuffer, (uint64_t)cmd->indexBufferOffset,
+            (__bridge void *)indirectArgsBuffer,
             indirectArgsOffset + (i * argSize));
         [self traceReplayCommand:batch
                          command:cmd
@@ -282,8 +173,8 @@ static void mglBatchExecuteIndirectCommands(
         BOOL indexed = batch->uses_elements ? YES : NO;
         id icb = nil;
         @try {
-            icb = mglBatchCreateIndirectCommandBuffer(
-                indexed, (NSUInteger)batch->command_count);
+            icb = (__bridge_transfer id)mgl_batch_mtl_create_icb(
+                indexed ? 1 : 0, (uint64_t)batch->command_count);
         } @catch (NSException *exception) {
             static uint64_t s_icbCreateExceptionCount = 0;
             uint64_t hit = ++s_icbCreateExceptionCount;
@@ -312,8 +203,8 @@ static void mglBatchExecuteIndirectCommands(
             return NO;
         }
 
-        mglBatchResetIndirectCommandBuffer(
-            icb, NSMakeRange(0, (NSUInteger)batch->command_count));
+        (void)mgl_batch_mtl_reset_icb(
+            (__bridge void *)icb, 0, (uint64_t)batch->command_count);
 
         uint32_t primType = (uint32_t)batch->key.primitive_type;
         if (indexed) {
@@ -370,7 +261,8 @@ static void mglBatchExecuteIndirectCommands(
                 }
 
                 id indirectCommand =
-                    mglBatchIndirectRenderCommand(icb, (NSUInteger)i);
+                    (__bridge id)mgl_batch_mtl_icb_command(
+                        (__bridge void *)icb, (uint64_t)i);
                 if (!indirectCommand) {
                     [self traceReplayCommand:batch
                                      command:cmd
@@ -383,22 +275,22 @@ static void mglBatchExecuteIndirectCommands(
                     return NO;
                 }
 
-                mglBatchSetIndirectDrawIndexed(
-                    indirectCommand, primType, (NSUInteger)cmd->count,
-                    drawIndexType, drawIndexBuffer, drawIndexOffset,
-                    (NSUInteger)cmd->instanceCount,
-                    (NSInteger)cmd->baseVertex,
-                    (NSUInteger)cmd->baseInstance);
-                mglBatchUseRenderResource(
+                (void)mgl_batch_mtl_set_icb_draw_indexed(
+                    (__bridge void *)indirectCommand, primType,
+                    (uint64_t)cmd->count, (uint32_t)drawIndexType,
+                    (__bridge void *)drawIndexBuffer, drawIndexOffset,
+                    (uint64_t)cmd->instanceCount, (int64_t)cmd->baseVertex,
+                    (uint64_t)cmd->baseInstance);
+                (void)mgl_batch_mtl_use_render_resource(
                     encCtx->render_encoder_owner,
-                    drawIndexBuffer, 1u,
-                    1u);
+                    (__bridge void *)drawIndexBuffer, 1u, 1u);
             }
         } else {
             for (uint32_t i = 0; i < batch->command_count; i++) {
                 MGLDrawCommand *cmd = &batch->commands[i];
                 id indirectCommand =
-                    mglBatchIndirectRenderCommand(icb, (NSUInteger)i);
+                    (__bridge id)mgl_batch_mtl_icb_command(
+                        (__bridge void *)icb, (uint64_t)i);
                 if (!indirectCommand) {
                     [self traceReplayCommand:batch
                                      command:cmd
@@ -410,20 +302,22 @@ static void mglBatchExecuteIndirectCommands(
                                       reason:"icb_command_nil"];
                     return NO;
                 }
-                mglBatchSetIndirectDraw(
-                    indirectCommand, primType, (NSUInteger)cmd->first,
-                    (NSUInteger)cmd->count, (NSUInteger)cmd->instanceCount,
-                    (NSUInteger)cmd->baseInstance);
+                MGLBatchIcbArrayDrawParams ap;
+                mgl_batch_issue_icb_array_draw_params(
+                    (uint32_t)cmd->first, (uint32_t)cmd->count,
+                    (uint32_t)cmd->instanceCount, (uint32_t)cmd->baseInstance,
+                    &ap);
+                (void)mgl_batch_mtl_set_icb_draw(
+                    (__bridge void *)indirectCommand, primType, ap.vertex_start,
+                    ap.vertex_count, ap.instance_count, ap.base_instance);
             }
         }
 
-        mglBatchUseRenderResource(
-            encCtx->render_encoder_owner,
-            icb, 1u,
-            1u);
-        mglBatchExecuteIndirectCommands(
-            encCtx->render_encoder_owner, icb,
-            NSMakeRange(0, (NSUInteger)batch->command_count));
+        (void)mgl_batch_mtl_use_render_resource(
+            encCtx->render_encoder_owner, (__bridge void *)icb, 1u, 1u);
+        (void)mgl_batch_mtl_execute_icb(
+            encCtx->render_encoder_owner, (__bridge void *)icb, 0,
+            (uint64_t)batch->command_count);
         for (uint32_t i = 0; i < batch->command_count; i++) {
             [self traceReplayCommand:batch
                              command:&batch->commands[i]

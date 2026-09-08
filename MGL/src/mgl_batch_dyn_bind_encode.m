@@ -107,10 +107,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             return false;
         }
         const BufferBinding *binding = &vao->bindings[plan.binding_index];
-        if (binding->offset < 0 ||
-            (uint64_t)binding->offset != (uint64_t)dynamic_offset ||
-            (uint64_t)binding->offset >= metalBufferInfo.length ||
-            dynamic_offset >= metalBufferInfo.length) {
+        if (!mgl_batch_replay_dyn_vertex_offset_ok(
+                binding->offset, (uint64_t)dynamic_offset,
+                metalBufferInfo.length)) {
             return false;
         }
 
@@ -374,7 +373,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     for (uint8_t i = 0; i < set->count; i++) {
         const MGLSamplerSnapshotEntry *entry = &set->entries[i];
-        if (entry->metal_slot >= 16u) {
+        if (!mgl_batch_replay_sampler_slot_ok(entry->metal_slot, 16u)) {
             return false;
         }
         id sampler;
@@ -573,13 +572,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         if (mgl_batch_replay_cmd_is_array_draw((uint32_t)cmd->type)) {
             continue;
         }
-        switch (cmd->type) {
-            case MGL_CMD_DRAW_ELEMENTS:
-            case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
-            case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
-            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
-            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
-            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE: {
+        if (!mgl_batch_replay_cmd_is_elements_draw((uint32_t)cmd->type)) {
+            return NO;
+        }
+        {
                 Buffer *glBuf = NULL;
                 id idxBuf = nil;
                 if (![self resolveElementBufferForCommand:cmd
@@ -603,10 +599,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 out->index_type = (uint32_t)mtlIdxType;
                 out->index_buffer_offset = (uint32_t)idxOffset;
                 out->index_buffer = (__bridge void *)prepared;
-                break;
-            }
-            default:
-                return NO;
         }
     }
 

@@ -70,3 +70,26 @@ int mgl_batch_icb_support_indirect_command_buffers(void)
     MGLBatchIcbConfig cfg = mgl_batch_icb_config();
     return (cfg.enable && !cfg.disable) ? 1 : 0;
 }
+
+void mgl_batch_fill_select_inputs_from_batch_flags(
+    uint32_t command_count, int sampler_snapshots_mixed, int stream_merged,
+    int has_dynamic_uniform_bindings, int has_dynamic_vertex_bindings,
+    int has_dynamic_texture_bindings, int mdi_compatible, int uses_elements,
+    uint8_t primitive_type, MGLBatchSelectInputs *out)
+{
+    if (!out) {
+        return;
+    }
+    *out = (MGLBatchSelectInputs){0};
+    out->command_count = command_count;
+    out->sampler_snapshots_mixed = sampler_snapshots_mixed ? 1u : 0u;
+    out->stream_merged = stream_merged ? 1u : 0u;
+    out->has_dynamic_uniform_bindings =
+        has_dynamic_uniform_bindings ? 1u : 0u;
+    out->has_dynamic_vertex_bindings = has_dynamic_vertex_bindings ? 1u : 0u;
+    out->has_dynamic_texture_bindings =
+        has_dynamic_texture_bindings ? 1u : 0u;
+    out->mdi_compatible = mdi_compatible ? 1u : 0u;
+    out->uses_elements = uses_elements ? 1u : 0u;
+    out->primitive_type = primitive_type;
+}

@@ -10,6 +10,8 @@
 
 #include "mgl_batch_issue.h"
 
+#include "mgl_batch_path.h"
+
 #include <limits.h>
 
 int mgl_batch_issue_stream_mdi_gate(const MGLBatchStreamMdiGateIn *in,
@@ -151,4 +153,117 @@ int mgl_batch_issue_should_apply_stable_sampler(int snapshots_mixed,
                                                 uint32_t invalid_id)
 {
     return !snapshots_mixed && snapshot_id != invalid_id;
+}
+
+void mgl_batch_flush_accum_path(MGLBatchFlushPathStats *stats, int path,
+                                uint32_t command_count)
+{
+    if (!stats) {
+        return;
+    }
+    switch (path) {
+    case MGL_BATCH_SELECT_STREAM_MERGE:
+        stats->stream_batches++;
+        stats->stream_commands += command_count;
+        break;
+    case MGL_BATCH_SELECT_MDI:
+        stats->mdi_batches++;
+        stats->mdi_commands += command_count;
+        break;
+    case MGL_BATCH_SELECT_ICB:
+        stats->icb_batches++;
+        stats->icb_commands += command_count;
+        break;
+    default:
+        stats->direct_batches++;
+        stats->direct_commands += command_count;
+        break;
+    }
+}
+
+const char *mgl_batch_flush_path_phase(int path)
+{
+    switch (path) {
+    case MGL_BATCH_SELECT_STREAM_MERGE:
+        return "ISSUE_STREAM_MERGE";
+    case MGL_BATCH_SELECT_MDI:
+        return "ISSUE_MDI";
+    case MGL_BATCH_SELECT_ICB:
+        return "ISSUE_ICB";
+    default:
+        return "ISSUE_DIRECT";
+    }
+}
+
+int mgl_batch_flush_should_trace_log(uint64_t hit, uint32_t total_commands,
+                                     int diag_enabled, uint32_t skipped_commands,
+                                     int replay_error_nonzero)
+{
+    if (skipped_commands > 0u || replay_error_nonzero) {
+        return 1;
+    }
+    if (!diag_enabled) {
+        return 0;
+    }
+    return hit <= 16ull || (hit % 512ull) == 0ull || total_commands >= 128ull;
+}
+
+int mgl_batch_issue_scratch_range_ok(uint64_t offset, uint64_t needed,
+                                     uint64_t length)
+{
+    if (offset > length) {
+        return 0;
+    }
+    return needed <= (length - offset);
+}
+
+int mgl_batch_issue_should_apply_cmd_sampler(int snapshots_mixed,
+                                             int has_dynamic_texture_bindings)
+{
+    return snapshots_mixed || has_dynamic_texture_bindings;
+}
+
+void mgl_batch_issue_icb_array_draw_params(uint32_t first, uint32_t count,
+                                           uint32_t instance_count,
+                                           uint32_t base_instance,
+                                           MGLBatchIcbArrayDrawParams *out)
+{
+    if (!out) {
+        return;
+    }
+    out->vertex_start = first;
+    out->vertex_count = count;
+    out->instance_count = instance_count;
+    out->base_instance = base_instance;
+}
+
+uint32_t mgl_batch_issue_icb_command_types(int indexed)
+{
+    return indexed ? 2u : 1u;
+}
+
+void mgl_batch_issue_cmd_stat_delta(uint32_t cmd_type, int32_t count,
+                                    int uses_elements,
+                                    MGLBatchCmdStatDelta *out)
+{
+    if (!out) {
+        return;
+    }
+    out->array_draws = 0u;
+    out->array_vertices = 0ull;
+    out->element_draws = 0u;
+    out->element_indices = 0ull;
+    const uint64_t n = (count > 0) ? (uint64_t)count : 0ull;
+    /* Array cmd_type values match MGL_BATCH_ISSUE_CMD_DRAW_ARRAYS*. */
+    if (cmd_type == MGL_BATCH_ISSUE_CMD_DRAW_ARRAYS ||
+        cmd_type == MGL_BATCH_ISSUE_CMD_DRAW_ARRAYS_INSTANCED ||
+        cmd_type == MGL_BATCH_ISSUE_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE) {
+        out->array_draws = 1u;
+        out->array_vertices = n;
+        return;
+    }
+    if (uses_elements) {
+        out->element_draws = 1u;
+        out->element_indices = n;
+    }
 }

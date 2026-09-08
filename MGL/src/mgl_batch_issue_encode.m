@@ -11,50 +11,13 @@
 #include "mgl_draw_encode.h"
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"
+#include "mgl_batch_mtl_encode.h"
 
 static BOOL mglBatchReplayHasActiveEncoder(const MGLEncodeContext *encCtx)
 {
     if (!encCtx) return NO;
     return mglRenderEncoderOwnerHasCurrent(
         encCtx->render_encoder_owner) != 0;
-}
-
-static void mglBatchReplayDrawPrimitivesIndirect(
-    void *renderEncoderOwner,
-    uint32_t primitiveType,
-    id indirectBuffer,
-    NSUInteger indirectBufferOffset)
-{
-    const MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_ARRAY_INDIRECT,
-            .primitive_type = (uint32_t)primitiveType,
-            .indirect_buffer = (__bridge void *)indirectBuffer,
-            .indirect_buffer_offset = indirectBufferOffset,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
-}
-
-static void mglBatchReplayDrawIndexedPrimitivesIndirect(
-    void *renderEncoderOwner,
-    uint32_t primitiveType,
-    uint64_t indexType,
-    id indexBuffer,
-    NSUInteger indexBufferOffset,
-    id indirectBuffer,
-    NSUInteger indirectBufferOffset)
-{
-    const MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_INDEXED_INDIRECT,
-            .primitive_type = (uint32_t)primitiveType,
-            .index_type = (uint32_t)indexType,
-            .index_buffer = (__bridge void *)indexBuffer,
-            .index_buffer_offset = indexBufferOffset,
-            .indirect_buffer = (__bridge void *)indirectBuffer,
-            .indirect_buffer_offset = indirectBufferOffset,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
 }
 
 @implementation MGLRenderer (Draw)
@@ -113,8 +76,8 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
     if (mglRenderGetBufferContents(
             (__bridge void *)indirectArgsBuffer, &indirectArgsContents,
             &indirectArgsLength) != 0 ||
-        indirectArgsOffset > indirectArgsLength ||
-        neededBytes > indirectArgsLength - indirectArgsOffset) {
+        !mgl_batch_issue_scratch_range_ok(indirectArgsOffset, neededBytes,
+                                          indirectArgsLength)) {
         [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
@@ -178,10 +141,10 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
                                   reason:"mdi_prepared_index"];
                 continue;
             }
-            mglBatchReplayDrawIndexedPrimitivesIndirect(
+            (void)mgl_batch_mtl_draw_indexed_indirect(
                 encCtx->render_encoder_owner, primType,
-                drawIndexType, drawIndexBuffer,
-                drawIndexOffset, indirectArgsBuffer,
+                (uint32_t)drawIndexType, (__bridge void *)drawIndexBuffer,
+                drawIndexOffset, (__bridge void *)indirectArgsBuffer,
                 indirectArgsOffset + (i * argSize));
             [self traceReplayCommand:batch
                              command:cmd
@@ -199,9 +162,9 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
         mgl_batch_replay_fill_mdi_array_args(batch, args);
 
         for (uint32_t i = 0; i < batch->command_count; i++) {
-            mglBatchReplayDrawPrimitivesIndirect(
+            (void)mgl_batch_mtl_draw_array_indirect(
                 encCtx->render_encoder_owner, primType,
-                indirectArgsBuffer,
+                (__bridge void *)indirectArgsBuffer,
                 indirectArgsOffset + (i * argSize));
             [self traceReplayCommand:batch
                              command:&batch->commands[i]
@@ -302,8 +265,9 @@ static void mglBatchReplayDrawIndexedPrimitivesIndirect(
                               reason:"dynamic_binding"];
             continue;
         }
-        if ((batch->sampler_snapshots_mixed ||
-             batch->has_dynamic_texture_bindings) &&
+        if (mgl_batch_issue_should_apply_cmd_sampler(
+                batch->sampler_snapshots_mixed ? 1 : 0,
+                batch->has_dynamic_texture_bindings ? 1 : 0) &&
             ![self applySamplerSnapshotForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
                              command:cmd

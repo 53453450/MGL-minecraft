@@ -37,3 +37,14 @@ int mgl_batch_rt_should_trace_write_mark(uint64_t hit)
 {
     return hit <= 128ull || (hit % 256ull) == 0ull;
 }
+
+int mgl_batch_rt_should_cross_mark(int already_marked, int attachment_active)
+{
+    return !already_marked && attachment_active;
+}
+
+int mgl_batch_rt_should_diag_attachment0(uint32_t attachment_index,
+                                         int trace_enabled, int can_use_copy)
+{
+    return attachment_index == 0u && trace_enabled && can_use_copy;
+}

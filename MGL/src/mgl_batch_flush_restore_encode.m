@@ -16,58 +16,9 @@
 #include "mgl_batch_replay.h"
 #include "mgl_batch_restore.h"
 #include "mgl_batch_issue.h"
+#include "mgl_batch_mtl_encode.h"
 
 #include <string.h>
-
-static void mglBatchDrawIndexedPrimitives(
-    void *renderEncoderOwner,
-    uint32_t primitiveType,
-    NSUInteger indexCount,
-    uint64_t indexType,
-    id indexBuffer,
-    NSUInteger indexBufferOffset,
-    NSUInteger instanceCount,
-    NSInteger baseVertex,
-    NSUInteger baseInstance)
-{
-    const MGLRenderDrawPlan plan = {
-            .kind = MGL_RENDER_DRAW_INDEXED,
-            .primitive_type = (uint32_t)primitiveType,
-            .index_count = indexCount,
-            .index_type = (uint32_t)indexType,
-            .index_buffer = (__bridge void *)indexBuffer,
-            .index_buffer_offset = indexBufferOffset,
-            .instance_count = instanceCount,
-            .base_vertex = baseVertex,
-            .base_instance = baseInstance,
-        };
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(
-        renderEncoderOwner, &plan, NULL, 0);
-}
-
-static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
-{
-    MGLBatchStateKeyView v;
-    memset(&v, 0, sizeof(v));
-    if (!key) {
-        return v;
-    }
-    v.program_name = key->program_name;
-    v.program_pipeline_name = key->program_pipeline_name;
-    v.vertex_program_name = key->vertex_program_name;
-    v.fragment_program_name = key->fragment_program_name;
-    v.vao_name = key->vao_name;
-    v.vertex_layout_hash = key->vertex_layout_hash;
-    v.texture_hash = key->texture_hash;
-    v.render_state_hash = key->render_state_hash;
-    v.uniform_buffer_hash = key->uniform_buffer_hash;
-    v.caps_flags = key->caps_flags;
-    v.scissor_enabled = key->scissor_enabled;
-    v.primitive_type = key->primitive_type;
-    memcpy(v.viewport, key->viewport, sizeof(v.viewport));
-    memcpy(v.scissor, key->scissor, sizeof(v.scissor));
-    return v;
-}
 
 @implementation MGLRenderer (Batch)
 
@@ -90,17 +41,8 @@ static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
 
     static uint64_t s_flushDrawBufferLogCount = 0;
     uint64_t flushHit = ++s_flushDrawBufferLogCount;
-    BOOL traceFlush = kMGLDiagnosticStateLogs &&
-                      (flushHit <= 16ull || (flushHit % 512ull) == 0ull ||
-                       cb->total_commands >= 128ull);
-    uint32_t mdiBatchCount = 0;
-    uint32_t mdiCommandCount = 0;
-    uint32_t icbBatchCount = 0;
-    uint32_t icbCommandCount = 0;
-    uint32_t directBatchCount = 0;
-    uint32_t directCommandCount = 0;
-    uint32_t streamMergedBatchCount = 0;
-    uint32_t streamMergedCommandCount = 0;
+    MGLBatchFlushPathStats pathStats;
+    memset(&pathStats, 0, sizeof(pathStats));
     uint32_t skippedCommandCount = 0;
 
     GLMState savedState;
@@ -235,59 +177,30 @@ static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
             MGLEncodeContext encCtx = {
                 .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
             };
+            mgl_batch_flush_accum_path(&pathStats, (int)scheduledPath,
+                                       batch->command_count);
+            const char *issuePhase = mgl_batch_flush_path_phase((int)scheduledPath);
+            [self traceReplayBatch:batch context:glm_ctx flushId:flushHit
+                        batchIndex:b phase:issuePhase];
             switch (scheduledPath) {
                 case MGL_BATCH_PATH_STREAM_MERGE:
-                    streamMergedBatchCount++;
-                    streamMergedCommandCount += batch->command_count;
                     MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
                     MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap,
                                  batch->command_count);
-                    [self traceReplayBatch:batch
-                                   context:glm_ctx
-                                   flushId:flushHit
-                                batchIndex:b
-                                     phase:"ISSUE_STREAM_MERGE"];
                     [self issueStreamMergedBatch:batch context:glm_ctx encodeContext:&encCtx];
-                    /* Stream batches bind transient vertex storage that is not
-                     * represented by MGLStateKey, so the next batch must do a
-                     * real restore even when the GL keys are equal.  The
-                     * transient binds went through the recorded bindingSync
-                     * path (cache stays truthful) and only the VAO/buffer
-                     * domains are polluted — keep lastKey for delta narrowing
-                     * and force those domains on the next restore instead of
-                     * dropping the key entirely. */
+                    /* Stream transient VAO/buffer pollution: keep lastKey for
+                     * delta narrowing; force VAO/buffer on next restore. */
                     lastWasStreamBatch = YES;
                     break;
                 case MGL_BATCH_PATH_MDI:
-                    mdiBatchCount++;
-                    mdiCommandCount += batch->command_count;
-                    [self traceReplayBatch:batch
-                                   context:glm_ctx
-                                   flushId:flushHit
-                                batchIndex:b
-                                     phase:"ISSUE_MDI"];
                     [self issueMDIBatch:batch context:glm_ctx encodeContext:&encCtx];
                     break;
                 case MGL_BATCH_PATH_ICB:
-                    icbBatchCount++;
-                    icbCommandCount += batch->command_count;
-                    [self traceReplayBatch:batch
-                                   context:glm_ctx
-                                   flushId:flushHit
-                                batchIndex:b
-                                     phase:"ISSUE_ICB"];
                     [self issueIndirectCommandBufferBatch:batch context:glm_ctx encodeContext:&encCtx];
                     break;
                 default:
-                    directBatchCount++;
-                    directCommandCount += batch->command_count;
                     MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
                     MGL_PERF_ADD(g_mglDrawDirectSinceSwap, batch->command_count);
-                    [self traceReplayBatch:batch
-                                   context:glm_ctx
-                                   flushId:flushHit
-                                batchIndex:b
-                                     phase:"ISSUE_DIRECT"];
                     [self issueDirectBatch:batch context:glm_ctx encodeContext:&encCtx];
                     break;
             }
@@ -297,16 +210,18 @@ static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
         }
     }
     MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglTraceNowSeconds());
-    if (traceFlush || skippedCommandCount > 0 ||
-        !mglRenderErrorIsNone((uint32_t)replayError)) {
+    if (mgl_batch_flush_should_trace_log(
+            flushHit, cb->total_commands, kMGLDiagnosticStateLogs ? 1 : 0,
+            skippedCommandCount,
+            mglRenderErrorIsNone((uint32_t)replayError) ? 0 : 1)) {
         mglTraceLogNSString(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
               (unsigned long long)flushHit,
               cb->batch_count, cb->total_commands,
               cb->array_cmd_count, cb->element_cmd_count,
-              streamMergedBatchCount, streamMergedCommandCount,
-              mdiBatchCount, mdiCommandCount,
-              icbBatchCount, icbCommandCount,
-              directBatchCount, directCommandCount,
+              pathStats.stream_batches, pathStats.stream_commands,
+              pathStats.mdi_batches, pathStats.mdi_commands,
+              pathStats.icb_batches, pathStats.icb_commands,
+              pathStats.direct_batches, pathStats.direct_commands,
               skippedCommandCount);
     }
     } @finally {
@@ -318,30 +233,22 @@ static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
 
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
 {
-    /* O2.1: path decision in pure C (mgl_batch_select_path). ObjC only
-     * materializes context-derived flags + OS ICB gate. */
+    /* A3: batch flags → mgl_batch_fill_select_inputs_*; path in C. */
     MGLBatchSelectInputs in = {0};
     if (!batch) {
         return (MGLBatchPath)mgl_batch_select_path(&in);
     }
-    in.command_count = batch->command_count;
-    in.sampler_snapshots_mixed = batch->sampler_snapshots_mixed ? 1u : 0u;
-    in.stream_merged = batch->stream_merged ? 1u : 0u;
-    in.has_dynamic_uniform_bindings =
-        batch->has_dynamic_uniform_bindings ? 1u : 0u;
-    in.has_dynamic_vertex_bindings =
-        batch->has_dynamic_vertex_bindings ? 1u : 0u;
-    in.has_dynamic_texture_bindings =
-        batch->has_dynamic_texture_bindings ? 1u : 0u;
-    in.mdi_compatible = batch->mdi_compatible ? 1u : 0u;
-    in.uses_elements = batch->uses_elements ? 1u : 0u;
-    in.primitive_type = batch->key.primitive_type;
-    /* O2.4: unified ICB env (ENABLE_ICB / legacy BATCH|PIPELINES). */
-    {
-        MGLBatchIcbConfig icb = mgl_batch_icb_config();
-        in.enable_icb = icb.enable;
-        in.disable_icb = icb.disable;
-    }
+    mgl_batch_fill_select_inputs_from_batch_flags(
+        batch->command_count, batch->sampler_snapshots_mixed ? 1 : 0,
+        batch->stream_merged ? 1 : 0,
+        batch->has_dynamic_uniform_bindings ? 1 : 0,
+        batch->has_dynamic_vertex_bindings ? 1 : 0,
+        batch->has_dynamic_texture_bindings ? 1 : 0,
+        batch->mdi_compatible ? 1 : 0, batch->uses_elements ? 1 : 0,
+        batch->key.primitive_type, &in);
+    MGLBatchIcbConfig icb = mgl_batch_icb_config();
+    in.enable_icb = icb.enable;
+    in.disable_icb = icb.disable;
     in.disable_mdi = mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1u : 0u;
     if (@available(macOS 10.14, *)) {
         in.icb_os_supported = 1u;
@@ -413,30 +320,26 @@ static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
     _activeState = glm_ctx->active_state;
     MGL_STATE(glm_ctx)->dirty_bits = 0;
 
-    static const GLuint kMGLFullReplayDirtyBits =
-        (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_RENDER_STATE |
-         DIRTY_TEX_BINDING | DIRTY_TEX | DIRTY_TEX_PARAM |
-         DIRTY_SAMPLER | DIRTY_ALPHA_STATE | DIRTY_BUFFER |
-         DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
-
+    const GLuint kMGLFullReplayDirtyBits = mgl_batch_restore_full_dirty_bits();
     GLuint replayDirtyBits = kMGLFullReplayDirtyBits;
     BOOL prevKeyValid = (prevKey != NULL);
-    BOOL canDelta = _batching.dirtyKeyDeltaEnabled &&
-                    prevKeyValid &&
-                    mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
-                    mglBindingStateIsValid(_bindingStateOwner);
+    BOOL canDelta = mgl_batch_restore_can_delta(
+                        _batching.dirtyKeyDeltaEnabled ? 1 : 0,
+                        prevKeyValid ? 1 : 0,
+                        mglRenderEncoderOwnerHasCurrent(
+                            _renderPassManager.state->currentRenderEncoderOwner),
+                        mglBindingStateIsValid(_bindingStateOwner) ? 1 : 0)
+                        ? YES
+                        : NO;
 
     if (canDelta) {
         /* A3: dirty-key domain narrowing in mgl_batch_compute_key_delta_dirty_bits. */
-        const MGLBatchDirtyDomainMasks masks = {
-            .program = (DIRTY_PROGRAM | DIRTY_BUFFER_BASE_STATE | DIRTY_BUFFER),
-            .vao = (DIRTY_VAO | DIRTY_BUFFER),
-            .texture = (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM |
-                        DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE),
-            .render_state = (DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE),
-        };
-        MGLBatchStateKeyView prevView = mglBatchStateKeyViewFromKey(prevKey);
-        MGLBatchStateKeyView curView = mglBatchStateKeyViewFromKey(&batch->key);
+        MGLBatchDirtyDomainMasks masks;
+        mgl_batch_restore_default_domain_masks(&masks);
+        MGLBatchStateKeyView prevView;
+        MGLBatchStateKeyView curView;
+        mgl_batch_state_key_view_from_key(prevKey, &prevView);
+        mgl_batch_state_key_view_from_key(&batch->key, &curView);
         MGLBatchDirtyDeltaFlags dflags;
         replayDirtyBits = mgl_batch_compute_key_delta_dirty_bits(
             1, &prevView, &curView, kMGLFullReplayDirtyBits, &masks, &dflags);
@@ -709,11 +612,11 @@ static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
     MGLDrawCommand *firstCmd = &batch->commands[0];
     uint32_t primType = (uint32_t)batch->key.primitive_type;
 
-    mglBatchDrawIndexedPrimitives(
+    (void)mgl_batch_mtl_draw_indexed(
         encCtx->render_encoder_owner, primType,
-        (NSUInteger)batch->stream_index_count,
-        MGL_DRAW_INDEX_UINT32, mtlIndexBuffer, 0, 1, 0,
-        firstCmd->baseInstance);
+        (uint64_t)batch->stream_index_count, MGL_DRAW_INDEX_UINT32,
+        (__bridge void *)mtlIndexBuffer, 0, 1, 0,
+        (uint64_t)firstCmd->baseInstance);
     [self traceReplayCommand:batch
                      command:firstCmd
                      context:glm_ctx

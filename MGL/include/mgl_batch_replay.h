@@ -246,6 +246,14 @@ typedef struct MGLBatchSampledTexPlan {
 int mgl_batch_replay_plan_sampled_texture_candidates(
     GLMContext ctx, MGLBatchSampledTexPlan *out);
 
+
+/* A3 encode-fold: dyn-vertex offset / sampler slot gates. */
+int mgl_batch_replay_dyn_vertex_offset_ok(int64_t binding_offset,
+                                          uint64_t dynamic_offset,
+                                          uint64_t metal_length);
+int mgl_batch_replay_sampler_slot_ok(uint32_t metal_slot, uint32_t max_slots);
+int mgl_batch_replay_cmd_is_elements_draw(uint32_t cmd_type);
+
 #ifdef __cplusplus
 }
 #endif

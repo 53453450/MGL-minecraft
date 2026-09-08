@@ -7,6 +7,7 @@
 #include "mgl_batch_path.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int g_fails;
@@ -100,8 +101,22 @@ static void test_mdi_and_restart(void)
            "DISABLE_MDI→DIRECT");
 }
 
+static void test_fill_select_inputs(void)
+{
+    MGLBatchSelectInputs in;
+    mgl_batch_fill_select_inputs_from_batch_flags(4, 1, 0, 1, 0, 0, 1, 1, 3u,
+                                                  &in);
+    if (in.command_count != 4u || !in.sampler_snapshots_mixed ||
+        !in.has_dynamic_uniform_bindings || !in.mdi_compatible ||
+        !in.uses_elements || in.primitive_type != 3u) {
+        fprintf(stderr, "FAIL: fill_select_inputs\n");
+        exit(1);
+    }
+}
+
 int main(void)
 {
+    test_fill_select_inputs();
     test_empty_and_mixed();
     test_cull_forces_direct();
     test_stream_merge();

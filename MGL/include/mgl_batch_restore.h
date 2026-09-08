@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -115,9 +116,23 @@ uint32_t mgl_batch_restore_fold_fbo_dirty(uint32_t replay_dirty_bits,
 uint32_t mgl_batch_restore_absolute_contract_dirty(
     int want_absolute, int current_absolute, uint32_t vao_buffer_mask);
 
+
+/* ---- A3 encode-fold: restore plan helpers (no Metal) ---- */
+
+/* key is const MGLStateKey * (draw_command.h). Impl in mgl_batch_mtl_encode.cpp. */
+void mgl_batch_state_key_view_from_key(const void *state_key,
+                                       MGLBatchStateKeyView *out);
+
+/* Full replay dirty mask used by restoreStateForBatch. */
+uint32_t mgl_batch_restore_full_dirty_bits(void);
+
+void mgl_batch_restore_default_domain_masks(MGLBatchDirtyDomainMasks *out);
+
+int mgl_batch_restore_can_delta(int dirty_key_delta_enabled, int prev_key_valid,
+                                int has_encoder, int bind_valid);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* MGL_BATCH_RESTORE_H */
-

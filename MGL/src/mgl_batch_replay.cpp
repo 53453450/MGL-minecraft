@@ -725,3 +725,40 @@ extern "C" int mgl_batch_replay_plan_sampled_texture_candidates(
     }
     return 1;
 }
+
+extern "C" int mgl_batch_replay_dyn_vertex_offset_ok(int64_t binding_offset,
+                                                     uint64_t dynamic_offset,
+                                                     uint64_t metal_length)
+{
+    if (binding_offset < 0) {
+        return 0;
+    }
+    if ((uint64_t)binding_offset != dynamic_offset) {
+        return 0;
+    }
+    if ((uint64_t)binding_offset >= metal_length || dynamic_offset >= metal_length) {
+        return 0;
+    }
+    return 1;
+}
+
+extern "C" int mgl_batch_replay_sampler_slot_ok(uint32_t metal_slot,
+                                                uint32_t max_slots)
+{
+    return metal_slot < max_slots;
+}
+
+extern "C" int mgl_batch_replay_cmd_is_elements_draw(uint32_t cmd_type)
+{
+    switch (cmd_type) {
+    case MGL_CMD_DRAW_ELEMENTS:
+    case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+    case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+    case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+    case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+    case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+        return 1;
+    default:
+        return 0;
+    }
+}

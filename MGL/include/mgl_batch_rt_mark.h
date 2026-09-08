@@ -40,6 +40,14 @@ int mgl_batch_rt_yflip_authority(int has_injected_yflip,
 /* Rate-limit RT_SAMPLE_COPY_WRITE_MARK diag (attachment0 + can_use_copy). */
 int mgl_batch_rt_should_trace_write_mark(uint64_t hit);
 
+
+/* Cross-check candidate: active attachment not already marked by draw-buffers. */
+int mgl_batch_rt_should_cross_mark(int already_marked, int attachment_active);
+
+/* Whether attachment0 write-mark should emit RT_SAMPLE_COPY diag. */
+int mgl_batch_rt_should_diag_attachment0(uint32_t attachment_index,
+                                         int trace_enabled, int can_use_copy);
+
 #ifdef __cplusplus
 }
 #endif

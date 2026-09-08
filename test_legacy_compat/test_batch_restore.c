@@ -149,10 +149,22 @@ static void test_fbo_fold(void)
            "absolute contract same");
 }
 
+static void test_restore_encode_fold(void)
+{
+    expect(mgl_batch_restore_full_dirty_bits() != 0u, "full dirty nonzero");
+    MGLBatchDirtyDomainMasks masks;
+    mgl_batch_restore_default_domain_masks(&masks);
+    expect(masks.program != 0u && masks.vao != 0u, "domain masks");
+    expect(mgl_batch_restore_can_delta(1, 1, 1, 1) == 1, "can delta");
+    expect(mgl_batch_restore_can_delta(1, 0, 1, 1) == 0, "no prev");
+    expect(mgl_batch_restore_can_delta(0, 1, 1, 1) == 0, "disabled");
+}
+
 int main(void)
 {
     test_same_key_skip();
     test_dirty_delta();
+    test_restore_encode_fold();
     test_fbo_fold();
     if (g_fails) {
         fprintf(stderr, "test_batch_restore: %d fail(s)\n", g_fails);

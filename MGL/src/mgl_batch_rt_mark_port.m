@@ -48,8 +48,9 @@
         tex->mtl_render_yflip_authority |= 1u;
     }
 
-    if (attachmentIndex == 0u && mglTraceLogIsEnabled() &&
-        mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
+    if (mgl_batch_rt_should_diag_attachment0(
+            attachmentIndex, mglTraceLogIsEnabled() ? 1 : 0,
+            mglTextureCanUseGLSampledRenderTargetCopy(tex) ? 1 : 0)) {
         static uint64_t s_guiRTWriteMarkCount = 0;
         uint64_t hit = ++s_guiRTWriteMarkCount;
         if (mgl_batch_rt_should_trace_write_mark(hit)) {
@@ -69,10 +70,8 @@
         return;
     }
 
-    /* Track which attachments the draw-buffer pass already marked, so the
-     * render-pass-descriptor cross-check below doesn't double-bump
-     * mtl_render_target_write_version (each bump invalidates the sampled
-     * copy and forces an unnecessary Y-flip blit). */
+    /* Draw-buffer marks first; cross-check RP descriptor for misses (no
+     * double-bump via attachmentMarked). See ARCH / GUI Y-flip notes. */
     bool attachmentMarked[MAX_COLOR_ATTACHMENTS] = {false};
     GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
     for (GLsizei slot = 0; slot < drawBufferCount; ++slot) {
@@ -91,29 +90,12 @@
         return;
     }
 
-    /* Cross-check against the active Metal render-pass descriptor.
-     *
-     * MC 1.21.11's render abstraction creates transient FBOs (e.g. the GUI
-     * item atlas) where the GL draw-buffer state can be incomplete or
-     * partially resolved by the time the Metal encoder ends.  The previous
-     * code only fell back to the render-pass descriptor when NO attachment
-     * was marked (markedAnyAttachment == false), which left RTs unmarked
-     * when draw-buffer resolution partially succeeded but missed the actual
-     * Metal color attachment.  An unmarked RT skips its write-version bump,
-     * leaving the sampled Y-flip copy stale — the next sampler bind falls
-     * back to the un-flipped Metal texture and GUI items render upside-down.
-     *
-     * Now: always cross-check.  Any FBO color attachment whose Metal texture
-     * appears in the render-pass descriptor but wasn't covered by the
-     * draw-buffer pass gets marked here.  The attachmentMarked[] guard
-     * prevents double-bumping the write version. */
     for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
-        if (attachmentMarked[attachmentIndex]) {
-            continue;
-        }
-        if (!mgl_batch_rt_attachment_active(fbo->color_attachment_bitfield,
-                                             attachmentIndex,
-                                             MAX_COLOR_ATTACHMENTS)) {
+        if (!mgl_batch_rt_should_cross_mark(
+                attachmentMarked[attachmentIndex] ? 1 : 0,
+                mgl_batch_rt_attachment_active(fbo->color_attachment_bitfield,
+                                               attachmentIndex,
+                                               MAX_COLOR_ATTACHMENTS))) {
             continue;
         }
         Texture *tex = [self framebufferAttachmentTexture:&fbo->color_attachments[attachmentIndex]];

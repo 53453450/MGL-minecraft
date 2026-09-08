@@ -60,12 +60,13 @@ wc -l "${BATCH_OBJC_FILES[@]}" 2>/dev/null || true
 BATCH_CLUSTER=$(wc -l "${BATCH_OBJC_FILES[@]}" 2>/dev/null | tail -1 | awk '{print $1}')
 echo "Batch ObjC cluster total (honest): ${BATCH_CLUSTER}"
 echo "NOTE: O2.5 literal passed iff Batch*.m < 600; ObjC cleanup NOT done while"
-echo "      encode/trace still hold ~3k ObjC in this cluster."
+echo "      encode/trace still hold multi-k ObjC in this cluster."
 
 echo
 echo "(informational) batch domain C/C++ plans (not in ObjC cluster):"
-wc -l mgl_batch_replay.cpp mgl_batch_restore.c mgl_batch_path.c mgl_batch_hazard.c \
-  mgl_batch_issue.c mgl_batch_rt_mark.c 2>/dev/null || true
+wc -l mgl_batch_replay.cpp mgl_batch_mtl_encode.cpp mgl_batch_restore.c \
+  mgl_batch_path.c mgl_batch_hazard.c mgl_batch_issue.c mgl_batch_rt_mark.c \
+  2>/dev/null || true
 
 echo
 TOTAL=$(wc -l MGLRenderer*.m | tail -1 | awk '{print $1}')
