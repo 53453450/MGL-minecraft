@@ -2429,6 +2429,11 @@ static void test_missing_attachment_format(void)
     expect(invalid_fmt() == 0u, "Invalid pixel format sentinel is 0");
 }
 
+static void test_pso_invalid_format_init(void)
+{
+    expect(invalid_fmt() == 0u, "PSO/recovery inits use Invalid sentinel");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2599,6 +2604,7 @@ int main(void)
     test_metal_resource_slot();
     test_pass_unify_packed_ds();
     test_missing_attachment_format();
+    test_pso_invalid_format_init();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

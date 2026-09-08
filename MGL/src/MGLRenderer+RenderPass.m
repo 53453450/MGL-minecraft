@@ -4569,7 +4569,7 @@ static GLenum mglPassthroughDeclType(
          * format: float4 stubs are rejected by integer-format targets.
          * Resolve the format early (read-only; the FBO walk below re-binds
          * the same textures) and pick the matching zero-return variant. */
-        uint32_t stubColor0 = MGLPixelFormatInvalid;
+        uint32_t stubColor0 = mglRenderInvalidPixelFormat();
         if (MGL_STATE(ctx)->framebuffer) {
             Framebuffer *stubFbo = MGL_STATE(ctx)->framebuffer;
             for (int i = 0; i < MGL_STATE(ctx)->max_color_attachments; i++) {
@@ -4743,7 +4743,7 @@ static GLenum mglPassthroughDeclType(
             }
         }
     } else {
-        uint32_t preferredColor0 = MGLPixelFormatInvalid;
+        uint32_t preferredColor0 = mglRenderInvalidPixelFormat();
         if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
             preferredColor0 = mglRenderPassTextureInfo(
                 mglRenderPassColorTextureFor(_renderPassManager.state, 0)).pixel_format;
@@ -4797,7 +4797,7 @@ static GLenum mglPassthroughDeclType(
 
     if (!color0IsIntentionallyDisabled &&
         mglRenderColorFormatNeedsFallback(state->color_format[0])) {
-        uint32_t fallbackColor0 = MGLPixelFormatInvalid;
+        uint32_t fallbackColor0 = mglRenderInvalidPixelFormat();
         if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
             fallbackColor0 = mglRenderPassTextureInfo(
                 mglRenderPassColorTextureFor(_renderPassManager.state, 0)).pixel_format;
@@ -4889,7 +4889,7 @@ static GLenum mglPassthroughDeclType(
     if (kMGLVerbosePipelineLogs) {
         uint32_t activeColorAttachmentCount = 0;
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            if (state->color_format[i] != (uint32_t)MGLPixelFormatInvalid &&
+            if (state->color_format[i] != mglRenderInvalidPixelFormat() &&
                 state->color_format[i] != 0u) {
                 activeColorAttachmentCount++;
             }
@@ -5834,9 +5834,9 @@ static GLenum mglPassthroughDeclType(
         return false;
     }
 
-    uint32_t currentColor0Format = MGLPixelFormatInvalid;
-    uint32_t currentDepthFormat = MGLPixelFormatInvalid;
-    uint32_t currentStencilFormat = MGLPixelFormatInvalid;
+    uint32_t currentColor0Format = mglRenderInvalidPixelFormat();
+    uint32_t currentDepthFormat = mglRenderInvalidPixelFormat();
+    uint32_t currentStencilFormat = mglRenderInvalidPixelFormat();
 
     id rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
     id rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
@@ -6005,9 +6005,9 @@ static GLenum mglPassthroughDeclType(
             MGLRenderPipelineDescriptorState psoState = {0};
             id psoVertexFunction = nil;
             id psoFragmentFunction = nil;
-            uint32_t builtColor0Format = (uint32_t)MGLPixelFormatInvalid;
-            uint32_t builtDepthFormat = (uint32_t)MGLPixelFormatInvalid;
-            uint32_t builtStencilFormat = (uint32_t)MGLPixelFormatInvalid;
+            uint32_t builtColor0Format = mglRenderInvalidPixelFormat();
+            uint32_t builtDepthFormat = mglRenderInvalidPixelFormat();
+            uint32_t builtStencilFormat = mglRenderInvalidPixelFormat();
 
             [self updateBlendStateCache];
             state->dirty_bits &= ~DIRTY_ALPHA_STATE;
@@ -6139,9 +6139,9 @@ static GLenum mglPassthroughDeclType(
 	                    // Mirror successful compile-side breaker resets.
 	                    _gpuRecovery.interfaceMismatchStreak = 0;
 	                    _gpuRecovery.interfaceMismatchProgramName = 0;
-	                    _gpuRecovery.interfaceMismatchColor0Format = (uint32_t)MGLPixelFormatInvalid;
-	                    _gpuRecovery.interfaceMismatchDepthFormat = (uint32_t)MGLPixelFormatInvalid;
-	                    _gpuRecovery.interfaceMismatchStencilFormat = (uint32_t)MGLPixelFormatInvalid;
+	                    _gpuRecovery.interfaceMismatchColor0Format = mglRenderInvalidPixelFormat();
+	                    _gpuRecovery.interfaceMismatchDepthFormat = mglRenderInvalidPixelFormat();
+	                    _gpuRecovery.interfaceMismatchStencilFormat = mglRenderInvalidPixelFormat();
 	                    _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
 	                    if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
 	                        _gpuRecovery.programMismatchProgramName = 0;
@@ -6442,7 +6442,7 @@ static GLenum mglPassthroughDeclType(
                         simpleState.alpha_blend_operation[i] = 0;
                         if (i > 0) {
                             simpleState.color_write_mask[i] = 0;
-                            simpleState.color_format[i] = (uint32_t)MGLPixelFormatInvalid;
+                            simpleState.color_format[i] = mglRenderInvalidPixelFormat();
                         }
                     }
                     psoPtr = NULL;
@@ -6596,9 +6596,9 @@ static GLenum mglPassthroughDeclType(
             // Clear interface-mismatch breaker after a real compile.
             _gpuRecovery.interfaceMismatchStreak = 0;
             _gpuRecovery.interfaceMismatchProgramName = 0;
-            _gpuRecovery.interfaceMismatchColor0Format = (uint32_t)MGLPixelFormatInvalid;
-            _gpuRecovery.interfaceMismatchDepthFormat = (uint32_t)MGLPixelFormatInvalid;
-            _gpuRecovery.interfaceMismatchStencilFormat = (uint32_t)MGLPixelFormatInvalid;
+            _gpuRecovery.interfaceMismatchColor0Format = mglRenderInvalidPixelFormat();
+            _gpuRecovery.interfaceMismatchDepthFormat = mglRenderInvalidPixelFormat();
+            _gpuRecovery.interfaceMismatchStencilFormat = mglRenderInvalidPixelFormat();
             _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
             [_pipelineCache activatePipelineState:compiledPSO
                                    color0Format:(uint32_t)builtColor0Format
