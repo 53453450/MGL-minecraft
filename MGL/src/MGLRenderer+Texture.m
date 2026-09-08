@@ -6732,41 +6732,42 @@ static void mglTextureCopyTextureToBuffer(
      * commonly share binding numbers, and binding-level state can make entity,
      * hand, and text textures bleed into each other.
      */
-    if (sampledResource &&
-        sampledResource->sampler_unit_explicit &&
-        sampledResource->sampler_unit >= 0 &&
-        sampledResource->sampler_unit < TEXTURE_UNITS) {
-        GLuint element = metalBinding >= sampledResource->binding
-            ? metalBinding - sampledResource->binding : 0u;
-        return (GLuint)sampledResource->sampler_unit + element;
+    if (sampledResource) {
+        uint32_t explicitUnit = mglRenderSampledResourceUnit(
+            sampledResource->sampler_unit_explicit ? 1 : 0,
+            sampledResource->sampler_unit, metalBinding,
+            sampledResource->binding, TEXTURE_UNITS);
+        if (explicitUnit != UINT32_MAX) {
+            return explicitUnit;
+        }
     }
 
     if (metalBinding >= TEXTURE_UNITS) {
         return metalBinding;
     }
 
-    bool stageExplicit = (stage >= 0 && stage < _MAX_SHADER_TYPES)
+    bool stageExplicit = mglRenderShaderStageValid(stage)
         ? (program->sampler_units_explicit_by_stage[stage][metalBinding] == GL_TRUE)
         : false;
     bool globalExplicit = (program->sampler_units_explicit[metalBinding] == GL_TRUE);
 
-    GLint unit = (stage >= 0 && stage < _MAX_SHADER_TYPES)
+    GLint unit = mglRenderShaderStageValid(stage)
         ? program->sampler_units_by_stage[stage][metalBinding]
         : program->sampler_units[metalBinding];
 
-    if (stageExplicit && unit >= 0 && unit < TEXTURE_UNITS) {
+    if (stageExplicit && mglRenderSamplerUnitValid(unit, TEXTURE_UNITS)) {
         return (GLuint)unit;
     }
 
     unit = program->sampler_units[metalBinding];
-    if (globalExplicit && unit >= 0 && unit < TEXTURE_UNITS) {
+    if (globalExplicit && mglRenderSamplerUnitValid(unit, TEXTURE_UNITS)) {
         return (GLuint)unit;
     }
 
-    GLint defaultUnit = (stage >= 0 && stage < _MAX_SHADER_TYPES)
+    GLint defaultUnit = mglRenderShaderStageValid(stage)
         ? program->sampler_units_by_stage[stage][metalBinding]
         : program->sampler_units[metalBinding];
-    if (defaultUnit < 0 || defaultUnit >= TEXTURE_UNITS) {
+    if (!mglRenderSamplerUnitValid(defaultUnit, TEXTURE_UNITS)) {
         defaultUnit = program->sampler_units[metalBinding];
     }
 

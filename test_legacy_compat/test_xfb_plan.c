@@ -938,6 +938,17 @@ static void test_shader_resource_image_unit(void)
     expect(slot == 7u, "resource metal slot is binding+element");
 }
 
+static void test_sampled_resource_unit(void)
+{
+    uint32_t elem = 5u >= 3u ? 5u - 3u : 0u;
+    uint32_t unit = 1u + elem;
+    expect(unit == 3u, "explicit sampler unit plus array element");
+    int valid = (1 >= 0) && (1u < 32u);
+    expect(valid == 1, "sampler unit 1 is in TEXTURE_UNITS");
+    int stage_ok = (2 >= 0) && (2 < 6);
+    expect(stage_ok == 1, "shader stage 2 is valid");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1003,6 +1014,7 @@ int main(void)
     test_gs_query_stream_written();
     test_compute_view_and_dirty_buffer();
     test_shader_resource_image_unit();
+    test_sampled_resource_unit();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

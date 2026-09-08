@@ -8230,6 +8230,29 @@ uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
     return has_resource ? binding + element : fallback;
 }
 
+int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units) {
+    return unit >= 0 && (uint32_t)unit < max_units ? 1 : 0;
+}
+
+int mglRenderShaderStageValid(int stage) {
+    return stage >= 0 && stage < _MAX_SHADER_TYPES ? 1 : 0;
+}
+
+uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
+                                      int32_t sampler_unit,
+                                      uint32_t metal_binding,
+                                      uint32_t resource_binding,
+                                      uint32_t max_units) {
+    if (!sampler_unit_explicit ||
+        !mglRenderSamplerUnitValid(sampler_unit, max_units)) {
+        return UINT32_MAX;
+    }
+    uint32_t element = metal_binding >= resource_binding
+                           ? metal_binding - resource_binding
+                           : 0u;
+    return (uint32_t)sampler_unit + element;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

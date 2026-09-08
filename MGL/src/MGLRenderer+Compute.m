@@ -657,21 +657,30 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                                                       ctx, stage, spvc_type, i)];
                         break;
                     case _IMAGE_TEXTURE:
-                        if (computeProgram && metalBinding < TEXTURE_UNITS &&
-                            computeProgram->sampler_units_explicit_by_stage[stage][metalBinding]) {
-                            glUnit = (GLuint)computeProgram
-                                         ->sampler_units_by_stage[stage][metalBinding];
-                        } else if (resource) {
-                            GLuint base = resource->sampler_unit >= 0
-                                ? (GLuint)resource->sampler_unit
-                                : resource->gl_binding;
-                            glUnit = base + resourceElement;
+                        {
+                        const int explicitUnit =
+                            computeProgram && metalBinding < TEXTURE_UNITS &&
+                            computeProgram->sampler_units_explicit_by_stage[stage]
+                                                                          [metalBinding];
+                        if (explicitUnit || resource) {
+                            glUnit = mglRenderImageUnitFromResource(
+                                explicitUnit,
+                                explicitUnit
+                                    ? (uint32_t)computeProgram
+                                          ->sampler_units_by_stage[stage]
+                                                                  [metalBinding]
+                                    : 0u,
+                                resource ? resource->sampler_unit : -1,
+                                resource ? resource->gl_binding : 0u,
+                                resourceElement);
                         } else {
                             glUnit = (GLuint)mglRendererGetProgramGLBinding(
                                 ctx, stage, spvc_type, i);
                         }
-                        if (glUnit >= TEXTURE_UNITS) {
+                        if (!mglRenderImageUnitsInRange(0u, glUnit,
+                                                        TEXTURE_UNITS)) {
                             continue;
+                        }
                         }
                         ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
                         break;

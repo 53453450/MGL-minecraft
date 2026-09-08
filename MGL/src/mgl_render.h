@@ -1288,6 +1288,13 @@ uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
                                         uint32_t gl_binding, uint32_t element);
 uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
                                     uint32_t element, uint32_t fallback);
+int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);
+int mglRenderShaderStageValid(int stage);
+uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
+                                      int32_t sampler_unit,
+                                      uint32_t metal_binding,
+                                      uint32_t resource_binding,
+                                      uint32_t max_units);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

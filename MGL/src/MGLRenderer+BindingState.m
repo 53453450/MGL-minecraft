@@ -1911,7 +1911,7 @@ static bool mglBindingStateFlushResourceBindings(
 
             if (!ptr->data.mtl_data) {
                 [self bindMTLBuffer:ptr];
-            } else if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+            } else if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
                 /* Same first-draw refresh as the vertex path above. */
                 [self updateDirtyBuffer:ptr];
             }
