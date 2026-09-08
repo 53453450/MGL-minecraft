@@ -1249,6 +1249,11 @@ int mglRenderIsUniformBufferResource(int spvc_type);
 int64_t mglRenderMappedUniformSize(int spvc_type, int64_t bound, int64_t buf_size,
                                    int64_t offset, uint64_t reflected);
 int mglRenderBaseBindingTooSmall(int64_t range, uint64_t reflected);
+int mglRenderShouldPackPlainUniformStruct(int spvc_type, int has_members,
+                                          uint32_t member_count,
+                                          uint64_t required, int sampler_like);
+int32_t mglRenderPlainUniformBaseLoc(int32_t uniform_location,
+                                     uint32_t location);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,

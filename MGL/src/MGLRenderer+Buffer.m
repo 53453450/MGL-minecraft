@@ -705,8 +705,10 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 // Use the GL binding point to locate the client's buffer base.
                 // The resource's `binding` may already have been rewritten to the
                 // Metal [[buffer(n)]] slot parsed from generated MSL.
-                if (!program || spvc_type < 0 || spvc_type >= MGL_MAX_SHADER_RESOURCES ||
-                    i >= (int)program->shader_resources_list[stage][spvc_type].count) {
+                if (!program ||
+                    !mglRenderShaderResourceIndexValid(
+                        spvc_type, (uint32_t)i,
+                        program->shader_resources_list[stage][spvc_type].count)) {
                     continue;
                 }
                 MGLShaderResource *resource = &program->shader_resources_list[stage][spvc_type].list[i];
@@ -714,7 +716,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     continue;
                 }
 
-                if (spvc_type == _UNIFORM_CONSTANT_RES &&
+                if (mglRenderUsePlainUniformBuffers(spvc_type) &&
                     getenv("MGL_DEBUG_STRUCT_PACK")) {
                     NSLog(@"MGL STRUCTCHECK program=%u stage=%d name=%s ubo_members=%p count=%u req_size=%lu samplerLike=%d unifLoc=%d",
                           (unsigned)program->name, stage,
@@ -734,16 +736,17 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                  * worth of data.  MGL stores individual uniform member data
                  * per location in plain_uniform_buffers[location].  Pack
                  * the member data into struct-sized Metal buffers here. */
-                if (spvc_type == _UNIFORM_CONSTANT_RES &&
-                    resource->ubo_members && resource->ubo_member_count > 0 &&
-                    resource->required_size > 0 &&
-                    !mglRendererResourceLooksSamplerLike(resource, spvc_type)) {
+                if (mglRenderShouldPackPlainUniformStruct(
+                        spvc_type, resource->ubo_members ? 1 : 0,
+                        (uint32_t)resource->ubo_member_count,
+                        (uint64_t)resource->required_size,
+                        mglRendererResourceLooksSamplerLike(resource, spvc_type)
+                            ? 1
+                            : 0)) {
 
                     GLuint loc_step = mglPlainStructLocStep(resource);
-                    GLint base_loc = resource->uniform_location;
-                    if (base_loc < 0) {
-                        base_loc = (GLint)resource->location;
-                    }
+                    GLint base_loc = mglRenderPlainUniformBaseLoc(
+                        resource->uniform_location, resource->location);
                     GLuint array_size = mglStageBufferResourceElementCount(spvc_type, resource);
                     size_t struct_size = resource->required_size;
                     bool allowFallback = fallbackBuffers &&
@@ -769,8 +772,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                              * resource's base uniform_location (spans all
                              * array elements).  Filter to current element. */
                             GLuint member_loc_off = (GLuint)member->location_offset;
-                            if (member_loc_off < elem_loc_start ||
-                                member_loc_off >= elem_loc_end) {
+                            if (!mglRenderStructMemberInElementRange(
+                                    member_loc_off, elem_loc_start,
+                                    elem_loc_end)) {
                                 continue;
                             }
 

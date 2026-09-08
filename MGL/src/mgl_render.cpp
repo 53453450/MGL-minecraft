@@ -7949,6 +7949,20 @@ int mglRenderBaseBindingTooSmall(int64_t range, uint64_t reflected) {
     return reflected > 0u && range > 0 && (uint64_t)range < reflected ? 1 : 0;
 }
 
+int mglRenderShouldPackPlainUniformStruct(int spvc_type, int has_members,
+                                          uint32_t member_count,
+                                          uint64_t required, int sampler_like) {
+    return spvc_type == _UNIFORM_CONSTANT_RES && has_members &&
+                   member_count > 0u && required > 0u && !sampler_like
+               ? 1
+               : 0;
+}
+
+int32_t mglRenderPlainUniformBaseLoc(int32_t uniform_location,
+                                     uint32_t location) {
+    return uniform_location >= 0 ? uniform_location : (int32_t)location;
+}
+
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }

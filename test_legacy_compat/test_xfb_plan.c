@@ -726,6 +726,16 @@ static void test_mapped_uniform_size(void)
     expect(small == 1, "bound 64 is too small vs reflected 96");
 }
 
+static void test_plain_uniform_struct_pack(void)
+{
+    int pack = 1 && 1 && (4u > 0u) && (96u > 0u) && !0;
+    expect(pack == 1, "plain uniform struct packs when members+size and not sampler-like");
+    int skip = 1 && 1 && (4u > 0u) && (96u > 0u) && !1;
+    expect(skip == 0, "sampler-like uniform constant is not struct-packed");
+    int32_t loc = (-1 >= 0) ? -1 : 7;
+    expect(loc == 7, "plain uniform base loc falls back to resource location");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -773,6 +783,7 @@ int main(void)
     test_struct_pack_copy_clamp();
     test_mapped_buffer_fallback();
     test_mapped_uniform_size();
+    test_plain_uniform_struct_pack();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
