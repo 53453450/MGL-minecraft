@@ -1,7 +1,7 @@
 # C0 — Dependency map: `mgl_air_backend.cpp` & `mgl_render.cpp`
 
 > Track **C0** was docs-only; **C1** started monolith knives (IntegerReadback out).
-> Snapshot: `main` @ C1 O4.1 readback_policy strip (~16.9k air / ~20.5k render LOC). Re-measure with `wc -l` after splits.
+> Snapshot: `main` @ C1b air type helpers (~16.3k air / ~20.5k render LOC). Re-measure with `wc -l` after splits.
 > Purpose: make include / caller / domain boundaries visible before any TU knife.
 
 ---
@@ -10,7 +10,7 @@
 
 | TU | ~LOC | Role | Risk if sink blindly |
 |----|-----:|------|----------------------|
-| `MGL/src/mgl_air_backend.cpp` | ~16905 | GLSL AST → LLVM AIR → `.metallib` | Mixes type model, expr/stmt emit, stage ABI, legacy rewrite, reflect helpers |
+| `MGL/src/mgl_air_backend.cpp` | ~16302 | GLSL AST → LLVM AIR → `.metallib` | Mixes expr/stmt emit, stage ABI, legacy rewrite, reflect helpers; **type model extracted (C1b)** |
 | `MGL/src/mgl_render.cpp` | ~20470 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, …) |
 
 Policy (OBJC TODO / ARCH): **do not grow these**; new sinks land in domain TUs.
@@ -70,9 +70,9 @@ Anonymous `namespace { … }` holds almost all helpers; C API is `extern "C"` af
 
 | Approx lines | Banner / domain |
 |-------------:|-----------------|
-| ~87–289 | GS AST→ABI map; `Codegen` / `MType` bootstrap |
-| ~290–723 | **type helpers** (carriers, LLVM types, uniforms) |
-| ~724–910 | **resource collection** |
+| ~87–147 | GS AST→ABI map; C1b `using mgl::air::*` facade; `storeStageOut` |
+| ~~bootstrap + type helpers~~ | **C1b extracted** → `mgl_air_type.{h,cpp}` + `mgl_air_codegen.h` (`MType`/`Codegen`/carriers/LLVM/mangle/`typeFromIR`) |
+| ~148–~334 | **resource collection** (was ~724–910) |
 | ~911–1526 | **expression codegen** |
 | ~1527–5173 | **matrix builtins** (+ large emitExpr body) |
 | ~5174–9881 | **uniform-block member chains** / related stores |
@@ -241,6 +241,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 
 - `mgl_buffer_plan.*`, `mgl_render_pass_plan.*`, `mgl_tess_domain.*`
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
+- `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_draw_{issue,gs,tess,cull,gs_metal}.*`
 - `mgl_batch_{path,hazard,replay,restore,issue,rt_mark}.*`
 - `mgl_compute_pipeline_cache.*`, `mgl_renderer_backend.*`
@@ -289,7 +290,26 @@ Chose **render readback policy → `mgl_readback_policy.*`** (DXMT / O4.1) over 
 | Not moved | format-convert loops that merely take `flip_y` (`Copy*TextureBytesToGL`, BGRA8 paths) — still entangled with decode tables in the monolith |
 | LOC | `mgl_render.cpp` ~20599→~20470 (−129); `mgl_readback_policy.c` ~468→~606; header ~126→~196 |
 
-**Next strip suggestion:** **C1b** = air type helpers (~290–723) — separate knife. Optional later: more flip-aware format convert into this TU only if a clean boundary appears; do not sink back into `mgl_render.cpp`.
+**Next strip suggestion (render):** Optional later flip-aware format convert into `mgl_readback_policy` only if a clean boundary appears; do not sink back into `mgl_render.cpp`. **C1b (air type helpers) done** — see §4b.
+
+
+---
+
+## 4b. C1b knife log — air type helpers
+
+Chose **air type helpers → `mgl_air_type.*` + `mgl_air_codegen.h`** (DXMT C1b). Narrow strip: former ~290–723 band (+ `typeFromIR`); **not** emitExpr / matrix builtins.
+
+| Item | Detail |
+|------|--------|
+| Moved | `MType`; carrier predicates/encode/decode; `llvmScalar`/`llvmType`/`llvmTypeFromIR`; `coerceScalar`; array-mem helpers; AIR/MSL mangling; `varyingIfaceTag`; `typeFromIR` |
+| Shared state | `Uniform` / `VarSym` / `LoopCtx` / `BreakCtx` / `Codegen` → `mgl_air_codegen.h` (backend-internal; required so type TU can see `Codegen&`) |
+| Residual in monolith | `storeStageOut` (stage-out side effect); resource collection; emitExpr / matrix / stmt / legacy |
+| New files | `MGL/include/mgl_air_type.h`, `MGL/src/mgl_air_type.cpp`, `MGL/include/mgl_air_codegen.h` |
+| Monolith | bodies removed; anon-ns `using mgl::air::*` facade |
+| Build | `Makefile` wildcard `*.cpp` picks up TU; explicit `test_mglair` / `test_mcrepro` / `test_mglair_gtest` lists updated |
+| LOC | `mgl_air_backend.cpp` ~16905→~16302 (−603); new `mgl_air_type.cpp` ~484 |
+
+**Next strip suggestion:** further air domain knives (resource collection, or a later expr facade) — do **not** sink back into `mgl_air_backend.cpp`; keep emitExpr/matrix for a dedicated knife. Trajectory toward &lt;~15k air TU.
 
 ---
 
@@ -299,5 +319,6 @@ Chose **render readback policy → `mgl_readback_policy.*`** (DXMT / O4.1) over 
 - [x] C0 itself: no monolith edits (docs-only)
 - [x] **C1** (first knife): IntegerReadback → `mgl_readback_policy.{h,c}`; `mgl_render.cpp` ~21043→~20599 (−444)
 - [x] **C1** (O4.1 residual knife): Y-flip / depth pack / GetTexImagePlan / MSAA stride → same TU; `mgl_render.cpp` ~20599→~20470 (−129); Metal MSAA encode residual documented
-- [ ] Future knives: continue by domain table above (next: C1b air type helpers, or binding-policy residual); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1b** (air type helpers): `MType`/carriers/LLVM/mangle/`typeFromIR` → `mgl_air_type.*` + `mgl_air_codegen.h`; `mgl_air_backend.cpp` ~16905→~16302 (−603); emitExpr/matrix deferred
+- [ ] Future knives: continue by domain table (air resource collection / later expr facade, or binding-policy residual); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 

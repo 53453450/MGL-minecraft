@@ -220,7 +220,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 18. ~~**A3 encode-fold 本刀（dyn/flush 重心 → ≤2k）**~~：`mgl_batch_mtl_apply_sampler_snapshot`；`mgl_batch_flush_trace_skip_commands` / `mgl_batch_bind_active_textures`；`mgl_batch_rt_run_draw_attachments` + `copy_state_to_rt`；`mgl_batch_restore_apply_from_key`；dyn/flush/issue/rt/Batch 残体压薄；修 `rt_mark_port` 断体。诚实簇 **2366→~1923**（−443）。禁扩 metal_port / trace / `mgl_render.cpp`。`test-batch-issue`/`test-batch-restore` 扩展。**勿宣称 cleanup done**
 19. ~~**C1**~~：`mgl_readback_policy.{h,c}`（O4.1/CTS）— IntegerReadback Convert/Source/Packed/Classify 出 `mgl_render.cpp`（~21043→~20599）；`mgl_render.h` include 域头；禁堆回 monolith
 19b. ~~**C1 O4.1 residual**~~：Y-flip (`CopyRows`) / depth pack (`CopyDepth*`/`DepthReadbackPlan`/`RepackDepthPlanes`) / `GetTexImagePlan` / `MSAAArrayLayerStride` → 同 TU（render ~20599→~20470）；Metal MSAA encode 残量留 monolith；禁堆回
-20. **下一刀**：残量 `dyn`(~366) / `flush`(~380) / `trace`(~374) / `issue`(~200)；C1 已开但勿掩盖 Batch 残量；**C1b**=air type helpers（另刀）；O4.1 Metal resolve encode + flip-aware format convert 可后迁；继续 ensure/resolve/submit 压薄；O3 / O6 可并行
+20. **下一刀**：残量 `dyn`(~366) / `flush`(~380) / `trace`(~374) / `issue`(~200)；C1 已开但勿掩盖 Batch 残量；**C1b done**=air type helpers→`mgl_air_type.*`（另刀已落地）；O4.1 Metal resolve encode + flip-aware format convert 可后迁；继续 ensure/resolve/submit 压薄；O3 / O6 可并行
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
