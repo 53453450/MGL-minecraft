@@ -995,3 +995,16 @@ extern "C" uint32_t mglDrawGsPassthroughDeclType(uint32_t output_type,
     }
     return output_type;
 }
+
+extern "C" int mglDrawGsStageShouldBlockDraw(int stage, uint32_t gs_route,
+                                             const void *metallib_bytes,
+                                             uint32_t metallib_size)
+{
+    if (stage != (int)_GEOMETRY_SHADER) {
+        return 0;
+    }
+    return gs_route == (uint32_t)MGL_GS_ROUTE_COMPUTE && metallib_bytes &&
+                   metallib_size > 0u
+               ? 0
+               : 1;
+}

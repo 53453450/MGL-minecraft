@@ -2318,6 +2318,23 @@ static void test_vertex_capture_load(void)
            "missing blob does not load");
 }
 
+static int gs_stage_blocks(int stage, uint32_t route, const void *bytes,
+                           uint32_t size)
+{
+    if (stage != 3) return 0;
+    return route == 1u && bytes && size > 0u ? 0 : 1;
+}
+
+static void test_gs_air_route_block(void)
+{
+    static const char blob = 1;
+    expect(gs_stage_blocks(0, 0u, NULL, 0u) == 0, "non-GS stages never block");
+    expect(gs_stage_blocks(3, 1u, &blob, 16u) == 0, "compute GS with AIR loads");
+    expect(gs_stage_blocks(3, 1u, NULL, 16u) == 1, "compute GS without blob blocks");
+    expect(gs_stage_blocks(3, 3u, &blob, 16u) == 1, "unsupported GS route blocks");
+    expect(gs_stage_blocks(3, 2u, &blob, 16u) == 1, "mesh GS route blocks here");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2481,6 +2498,7 @@ int main(void)
     test_replay_binding_stage();
     test_array_stage_binding();
     test_vertex_capture_load();
+    test_gs_air_route_block();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

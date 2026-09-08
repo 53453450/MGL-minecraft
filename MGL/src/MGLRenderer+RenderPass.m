@@ -1979,14 +1979,9 @@ static GLenum mglPassthroughDeclType(
 
         if (shader)
         {
-            if (i == _GEOMETRY_SHADER) {
-                if (ptr->gs_route == MGL_GS_ROUTE_COMPUTE &&
-                    ptr->modules[i].metallib_bytes &&
-                    ptr->modules[i].metallib_size > 0u) {
-                    /* The AIR geometry stage is a compute kernel.  Load it
-                     * below like TCS/CS; the draw helper owns dispatch and
-                     * expanded-output rendering. */
-                } else {
+            if (mglDrawGsStageShouldBlockDraw(
+                    i, (uint32_t)ptr->gs_route, ptr->modules[i].metallib_bytes,
+                    (uint32_t)ptr->modules[i].metallib_size)) {
                 static uint64_t s_geometryShaderMetalSkipCount = 0;
                 uint64_t hit = ++s_geometryShaderMetalSkipCount;
                 if (hit <= 16ull || (hit % 512ull) == 0ull) {
@@ -1995,7 +1990,6 @@ static GLenum mglPassthroughDeclType(
                           (unsigned long long)hit);
                 }
                 return false;
-                }
             }
             if (ptr->modules[i].metallib_bytes && ptr->modules[i].metallib_size > 0) {
                 /* AIR path: the stage was compiled by the self-hosted

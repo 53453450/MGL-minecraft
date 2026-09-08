@@ -187,6 +187,9 @@ uint64_t mglDrawGsReduceBufferWritten(const uint32_t *written,
                                       uint32_t buffer_index);
 uint32_t mglDrawGsPassthroughDeclType(uint32_t output_type, uint32_t fs_type,
                                       int names_match);
+int mglDrawGsStageShouldBlockDraw(int stage, uint32_t gs_route,
+                                  const void *metallib_bytes,
+                                  uint32_t metallib_size);
 
 #ifdef __cplusplus
 }
