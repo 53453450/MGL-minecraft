@@ -4939,20 +4939,13 @@ static GLenum mglPassthroughDeclType(
         state->color_format[0] = (uint32_t)preferredColor0;
 
         if (ctx->depth_format.format) {
-            uint32_t depthFormat = ctx->depth_format.mtl_pixel_format;
-            if (depthFormat == MGLPixelFormatInvalid) {
-                depthFormat = MGLPixelFormatDepth32Float;
-            }
-            state->depth_format = (uint32_t)depthFormat;
+            state->depth_format = mglRenderDepthFormatOrFallback(
+                ctx->depth_format.mtl_pixel_format);
         }
 
         if (ctx->stencil_format.format) {
-            uint32_t stencilFormat = ctx->stencil_format.mtl_pixel_format;
-            if (stencilFormat == MGLPixelFormatInvalid ||
-                stencilFormat == MGLPixelFormatDepth32Float_Stencil8) {
-                stencilFormat = MGLPixelFormatStencil8;
-            }
-            state->stencil_format = (uint32_t)stencilFormat;
+            state->stencil_format = mglRenderDefaultFBOStencilFormat(
+                ctx->stencil_format.mtl_pixel_format);
         }
     }
 
@@ -4977,12 +4970,12 @@ static GLenum mglPassthroughDeclType(
     }
 
     BOOL color0IsIntentionallyDisabled =
-        MGL_STATE(ctx)->framebuffer &&
-        mglMetalDrawBufferAt(ctx, 0u) == GL_NONE;
+        mglRenderColor0IntentionallyDisabled(
+            MGL_STATE(ctx)->framebuffer ? 1 : 0,
+            (uint32_t)mglMetalDrawBufferAt(ctx, 0u)) != 0;
 
     if (!color0IsIntentionallyDisabled &&
-        (state->color_format[0] == (uint32_t)MGLPixelFormatInvalid ||
-         state->color_format[0] == 0u)) {
+        mglRenderColorFormatNeedsFallback(state->color_format[0])) {
         uint32_t fallbackColor0 = MGLPixelFormatInvalid;
         if (_renderPassManager.state && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
             fallbackColor0 = mglRenderPassTextureInfo(
@@ -4992,9 +4985,7 @@ static GLenum mglPassthroughDeclType(
         } else {
             fallbackColor0 = ctx->pixel_format.mtl_pixel_format;
         }
-        if (fallbackColor0 == MGLPixelFormatInvalid || fallbackColor0 == 0) {
-            fallbackColor0 = MGLPixelFormatBGRA8Unorm;
-        }
+        fallbackColor0 = mglRenderColorFormatOrBGRA(fallbackColor0);
         if (kMGLVerbosePipelineLogs) {
             NSLog(@"MGL PIPELINE DESC missing color pixel format, fallback pixelFormat=%lu",
                   (unsigned long)fallbackColor0);

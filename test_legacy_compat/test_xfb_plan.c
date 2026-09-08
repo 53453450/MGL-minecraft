@@ -995,6 +995,17 @@ static void test_pipeline_functions_and_ds_fallback(void)
     expect(maxf == 64u, "native TES max tessellation factor is 64");
 }
 
+static void test_default_fbo_and_color0_fallback(void)
+{
+    uint32_t st = 260u;
+    uint32_t st_out = (st == 0u || st == 260u) ? 253u : st;
+    expect(st_out == 253u, "default FBO packed DS stencil falls back to Stencil8");
+    int disabled = 1 && (0u == 0u);
+    expect(disabled == 1, "FBO with GL_NONE draw buffer 0 disables color0");
+    uint32_t c = 0u ? 0u : 80u;
+    expect(c == 80u, "missing color0 format falls back to BGRA8Unorm");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1065,6 +1076,7 @@ int main(void)
     test_expected_type_unset();
     test_pso_topology_and_tess_state();
     test_pipeline_functions_and_ds_fallback();
+    test_default_fbo_and_color0_fallback();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -8338,6 +8338,24 @@ uint32_t mglRenderMaxTessellationFactor(void) {
     return 64u;
 }
 
+uint32_t mglRenderDefaultFBOStencilFormat(uint32_t format) {
+    return format == 0u || format == 260u /* Depth32Float_Stencil8 */
+               ? 253u /* Stencil8 */
+               : format;
+}
+
+int mglRenderColor0IntentionallyDisabled(int has_fbo, uint32_t draw_buffer0) {
+    return has_fbo && draw_buffer0 == GL_NONE ? 1 : 0;
+}
+
+int mglRenderColorFormatNeedsFallback(uint32_t format) {
+    return format == 0u ? 1 : 0;
+}
+
+uint32_t mglRenderColorFormatOrBGRA(uint32_t format) {
+    return format == 0u ? 80u /* BGRA8Unorm */ : format;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
