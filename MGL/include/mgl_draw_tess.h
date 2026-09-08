@@ -439,6 +439,8 @@ int mglTessPlanNativeFactor(uint32_t tess_gen_mode, uint64_t canonical_bytes,
 uint32_t mglTessNativePatchOutStride(int has_tcs, uint32_t tcs_patch_stride);
 int mglTessMultiInstanceTCSReuseWarn(int from_tcs, int32_t instance_count);
 int mglTessMultiInstanceTCSReuseIsError(int from_tcs, int32_t instance_count);
+int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
+                                  uint32_t instance_records);
 void mglTessBindCaptureSlots(void *encoder_owner, void *capture_buffer,
                              const uint32_t params[3]);
 void mglTessEncodeCaptureArray(void *encoder_owner, uint32_t first,

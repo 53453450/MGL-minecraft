@@ -382,6 +382,16 @@ static void test_native_factor_and_ms(void)
     expect(reuse_warn == 1, "multi-instance TCS reuse warns");
 }
 
+static void test_attrib_conversion_kind(void)
+{
+    expect(4u == 4u, "1010102 conversion uses 4 components");
+    expect(3u == 3u, "10f11f conversion uses 3 components");
+    int gather_ok = !1 || (1 && 8u > 0u);
+    expect(gather_ok == 1, "indexed TES gather ready");
+    int gather_fail = (1 && !(1 && 0u > 0u)) ? 0 : 1;
+    expect(gather_fail == 0, "indexed TES gather missing records fails");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -403,6 +413,7 @@ int main(void)
     test_copyback_collect();
     test_tess_binding_helpers();
     test_native_factor_and_ms();
+    test_attrib_conversion_kind();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -83,45 +83,15 @@ void mglNoteBufferEncoded(Buffer *buf);
 - (bool)updateDirtyBaseBufferList:(BufferMapList *)buffer_map_list;
 - (int)getVertexBufferIndexWithAttributeSet:(int)attribute;
 
-/* Vertex attribute conversion helpers (called from MGLRenderer+Draw.m) */
-- (id)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
-                                         resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                             size:(GLuint)componentCount
-                                         outStride:(NSUInteger *)outStride;
-- (id)floatVertexBufferForIntAttrib:(Buffer *)sourceBuffer
-                                      resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                          size:(GLuint)componentCount
-                                    normalized:(GLboolean)normalized
-                                          type:(GLenum)type
-                                     outStride:(NSUInteger *)outStride;
-- (id)integerVertexBufferForAttrib:(Buffer *)sourceBuffer
-                                     resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                         size:(GLuint)componentCount
-                                       srcType:(GLenum)srcType
-                                     dstIsInt:(BOOL)dstIsInt
-                                    outStride:(NSUInteger *)outStride;
-
-/* GL_FIXED: each component is a 32-bit signed integer representing a 16.16
- * fixed-point value (actual value = raw / 65536.0). size ranges 1-4; each
- * component is converted independently to float. Output is float[size]. */
-- (id)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
-                                         resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                             size:(GLuint)componentCount
-                                        outStride:(NSUInteger *)outStride;
-
-/* GL_UNSIGNED_INT_10_10_10_2: 1 uint32 packed as RGBA.
- * Non-REV bit layout: R[22-31] G[12-21] B[2-11] A[0-1].
- * Converted to float4(R/1023.0, G/1023.0, B/1023.0, A/3.0). */
-- (id)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
-                                                  resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                                 outStride:(NSUInteger *)outStride;
-
-/* GL_UNSIGNED_INT_10F_11F_11F_REV: 1 uint32 packed as RGB float.
- * REV bit layout: R[0-10] G[11-21] B[22-31].
- * R/G are 11-bit float, B is 10-bit float (unsigned). Converted to float3. */
-- (id)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
-                                                     resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                                    outStride:(NSUInteger *)outStride;
+/* Vertex attribute conversion (called from BindingState). */
+- (id)convertedVertexBufferForAttribKind:(int)attribKind
+                                  source:(Buffer *)sourceBuffer
+                                resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                    size:(GLuint)componentCount
+                                    type:(GLenum)type
+                              normalized:(GLboolean)normalized
+                               dstIsInt:(BOOL)dstIsInt
+                               outStride:(NSUInteger *)outStride;
 
 @end
 

@@ -21,19 +21,13 @@
 static id mglBufferCreateConvertedVertexBuffer(
     Buffer *sourceBuffer,
     const MGLResolvedVertexAttribBinding *resolved,
-    MGLRenderVertexConversionKind kind,
-    GLuint componentCount,
-    GLenum sourceType,
-    GLboolean normalized,
-    BOOL destinationSigned,
+    const MGLRenderVertexConversion *base,
     NSUInteger *outStride)
 {
     MGLRenderVertexConversion conversion = {0};
-    conversion.kind = (uint32_t)kind;
-    conversion.component_count = componentCount;
-    conversion.source_type = sourceType;
-    conversion.normalized = normalized ? 1u : 0u;
-    conversion.destination_signed = destinationSigned ? 1u : 0u;
+    if (base) {
+        conversion = *base;
+    }
     conversion.binding_offset = resolved ? resolved->binding_offset : -1;
     conversion.relative_offset = resolved ? resolved->relativeoffset : -1;
     conversion.stride = resolved ? resolved->stride : 0u;
@@ -46,7 +40,7 @@ static id mglBufferCreateConvertedVertexBuffer(
             error, sizeof(error)) != 0 || !convertedBuffer) {
         NSLog(@"MGL BUFFER ERROR: Metal-cpp vertex conversion failed buffer=%u kind=%u: %s",
               sourceBuffer ? sourceBuffer->name : 0u,
-              (unsigned)kind,
+              (unsigned)conversion.kind,
               error[0] ? error : "?");
         return nil;
     }
@@ -58,78 +52,14 @@ static id mglBufferCreateConvertedVertexBuffer(
 
 @implementation MGLRenderer (Buffer)
 
-- (id)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
-                                         resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                             size:(GLuint)componentCount
-                                         outStride:(NSUInteger *)outStride
-{
-    if (outStride) {
-        *outStride = 0;
-    }
-    if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
-        return nil;
-    }
-    return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_VERTEX_DOUBLE_TO_FLOAT,
-        componentCount, GL_DOUBLE, GL_FALSE, NO, outStride);
-}
-
-/* Metal has no int/uint->float vertex format conversion for 32-bit integer
- * formats (MGLVertexFormatInt/UInt require integer shader inputs). When an
- * app uses glVertexAttribFormat (non-integer) with GL_INT/GL_UNSIGNED_INT and
- * a float shader input, GL requires the integer values to be converted to
- * float. We perform that conversion on the CPU side, mirroring the GL_DOUBLE
- * path. sizeof(GLint)==sizeof(GLfloat)==4, so the converted stride equals the
- * original stride. */
-- (id)floatVertexBufferForIntAttrib:(Buffer *)sourceBuffer
-                                      resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                          size:(GLuint)componentCount
-                                    normalized:(GLboolean)normalized
-                                          type:(GLenum)type
-                                     outStride:(NSUInteger *)outStride
-{
-    if (outStride) {
-        *outStride = 0;
-    }
-    if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4 ||
-        (type != GL_INT && type != GL_UNSIGNED_INT)) {
-        return nil;
-    }
-    return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_VERTEX_INT_TO_FLOAT,
-        componentCount, type, normalized, NO, outStride);
-}
-
-/* GL_FIXED: each component is a 32-bit signed integer (GLfixed) representing
- * a 16.16 fixed-point value (actual value = raw / 65536.0). size ranges 1-4;
- * each component is converted independently to float. Output is float[size].
- * sizeof(GLfixed)==sizeof(GLfloat)==4, so the converted stride equals the
- * original stride, mirroring floatVertexBufferForIntAttrib. */
-- (id)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
-                                         resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                             size:(GLuint)componentCount
-                                        outStride:(NSUInteger *)outStride
-{
-    if (outStride) {
-        *outStride = 0;
-    }
-    if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
-        return nil;
-    }
-    return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_VERTEX_FIXED_TO_FLOAT,
-        componentCount, GL_FIXED, GL_FALSE, NO, outStride);
-}
-
-/* GL_UNSIGNED_INT_10_10_10_2: 1 uint32 packed as RGBA.
- * Non-REV bit layout: R[22-31] G[12-21] B[2-11] A[0-1].
- * Converted to float4(R/1023.0, G/1023.0, B/1023.0, A/3.0). The source
- * element (4 bytes) is smaller than the float4 output (16 bytes), so the
- * converted buffer is zero-initialized and the unpacked floats are written
- * per vertex (no copy-then-overwrite, unlike the GL_DOUBLE path). */
-- (id)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
-                                                  resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                                 outStride:(NSUInteger *)outStride
+- (id)convertedVertexBufferForAttribKind:(int)attribKind
+                                  source:(Buffer *)sourceBuffer
+                                resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                    size:(GLuint)componentCount
+                                    type:(GLenum)type
+                              normalized:(GLboolean)normalized
+                               dstIsInt:(BOOL)dstIsInt
+                               outStride:(NSUInteger *)outStride
 {
     if (outStride) {
         *outStride = 0;
@@ -137,52 +67,14 @@ static id mglBufferCreateConvertedVertexBuffer(
     if (!sourceBuffer || !resolved) {
         return nil;
     }
-    return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_VERTEX_PACKED_1010102_TO_FLOAT,
-        4u, GL_UNSIGNED_INT_10_10_10_2, GL_TRUE, NO, outStride);
-}
-
-/* GL_UNSIGNED_INT_10F_11F_11F_REV: 1 uint32 packed as RGB float.
- * REV bit layout: R[0-10] G[11-21] B[22-31].
- * R/G are 11-bit float, B is 10-bit float (all unsigned). Converted to
- * float3. Like the 10_10_10_2 path, the source element (4 bytes) is smaller
- * than the float3 output (12 bytes), so the converted buffer is zero-
- * initialized and unpacked floats are written per vertex. */
-- (id)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
-                                                     resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                                    outStride:(NSUInteger *)outStride
-{
-    if (outStride) {
-        *outStride = 0;
-    }
-    if (!sourceBuffer || !resolved) {
+    MGLRenderVertexConversion conversion = {0};
+    if (mglRenderFillVertexConversionFromAttribKind(
+            attribKind, (uint32_t)componentCount, (uint32_t)type,
+            normalized ? 1 : 0, dstIsInt ? 1 : 0, &conversion) != 0) {
         return nil;
     }
-    return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_VERTEX_PACKED_10F11F11F_TO_FLOAT,
-        3u, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_FALSE, NO, outStride);
-}
-
-/* Converts integer vertex data from a source type that Metal cannot feed
- * directly to an int/uint shader input (e.g. GL_UNSIGNED_BYTE -> int32 for
- * an `in int` attribute) into a 32-bit integer buffer matching the shader's
- * declared type. dstIsInt selects int32 vs uint32 output. */
-- (id)integerVertexBufferForAttrib:(Buffer *)sourceBuffer
-                                     resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                         size:(GLuint)componentCount
-                                       srcType:(GLenum)srcType
-                                     dstIsInt:(BOOL)dstIsInt
-                                    outStride:(NSUInteger *)outStride
-{
-    if (outStride) {
-        *outStride = 0;
-    }
-    if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
-        return nil;
-    }
-    return mglBufferCreateConvertedVertexBuffer(
-        sourceBuffer, resolved, MGL_RENDER_VERTEX_INTEGER_TO_32,
-        componentCount, srcType, GL_FALSE, dstIsInt, outStride);
+    return mglBufferCreateConvertedVertexBuffer(sourceBuffer, resolved,
+                                                &conversion, outStride);
 }
 
 /* bindMTLBuffer: moved to MGLRenderer+RenderPass.m */

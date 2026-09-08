@@ -1252,49 +1252,14 @@ static bool mglBindingStateFlushResourceBindings(
 
         if (conversionKind != MGL_ATTRIB_CONV_NONE) {
             NSUInteger convertedStride = 0;
-            id convertedBuffer = nil;
-            switch (conversionKind) {
-                case MGL_ATTRIB_CONV_DOUBLE:
-                    convertedBuffer = [self floatVertexBufferForDoubleAttrib:attribBuffer
-                                                                    resolved:&resolved
-                                                                        size:attribState->size
-                                                                   outStride:&convertedStride];
-                    break;
-                case MGL_ATTRIB_CONV_INT_TO_FLOAT:
-                    convertedBuffer = [self floatVertexBufferForIntAttrib:attribBuffer
+            id convertedBuffer = [self convertedVertexBufferForAttribKind:conversionKind
+                                                                   source:attribBuffer
                                                                  resolved:&resolved
                                                                      size:attribState->size
-                                                               normalized:attribState->normalized
                                                                      type:attribState->type
+                                                               normalized:attribState->normalized
+                                                                dstIsInt:integerConvDstIsInt
                                                                 outStride:&convertedStride];
-                    break;
-                case MGL_ATTRIB_CONV_FIXED:
-                    convertedBuffer = [self floatVertexBufferForFixedAttrib:attribBuffer
-                                                                   resolved:&resolved
-                                                                       size:attribState->size
-                                                                  outStride:&convertedStride];
-                    break;
-                case MGL_ATTRIB_CONV_UINT_1010102:
-                    convertedBuffer = [self floatVertexBufferForPacked1010102Attrib:attribBuffer
-                                                                           resolved:&resolved
-                                                                          outStride:&convertedStride];
-                    break;
-                case MGL_ATTRIB_CONV_UINT_10F11F11F:
-                    convertedBuffer = [self floatVertexBufferForPacked10f11f11fAttrib:attribBuffer
-                                                                             resolved:&resolved
-                                                                            outStride:&convertedStride];
-                    break;
-                case MGL_ATTRIB_CONV_INTEGER_SIGN:
-                    convertedBuffer = [self integerVertexBufferForAttrib:attribBuffer
-                                                                resolved:&resolved
-                                                                    size:attribState->size
-                                                                 srcType:attribState->type
-                                                               dstIsInt:integerConvDstIsInt
-                                                              outStride:&convertedStride];
-                    break;
-                default:
-                    break;
-            }
             if (!convertedBuffer) {
                 NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert vertex attrib kind=%d type=0x%x",
                       attrib, attribBuffer->name, conversionKind,

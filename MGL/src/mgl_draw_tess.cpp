@@ -1780,6 +1780,15 @@ extern "C" int mglTessMultiInstanceTCSReuseIsError(int from_tcs,
            mglEnvFlagEnabled("MGL_TESS_MULTI_INSTANCE_ERROR");
 }
 
+extern "C" int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
+                                             uint32_t instance_records)
+{
+    if (!indexed) {
+        return 1;
+    }
+    return has_gather && instance_records > 0u ? 1 : 0;
+}
+
 extern "C" bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode)
 {
     if (xfb_mode == GL_POINTS) {

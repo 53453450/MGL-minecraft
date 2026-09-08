@@ -234,6 +234,10 @@ typedef struct MGLRenderVertexConversion_t {
     uint64_t stride;
 } MGLRenderVertexConversion;
 
+int mglRenderFillVertexConversionFromAttribKind(
+    int attrib_kind, uint32_t size, uint32_t type, int normalized,
+    int dst_signed, MGLRenderVertexConversion *out);
+
 /* Convert unsupported GL vertex formats and return a +1 MTLBuffer as void*.
  * The caller must consume it with __bridge_transfer or release it through
  * mglRenderDeleteMTLObj. The renderer cache owns a separate reference. */

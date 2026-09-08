@@ -1129,16 +1129,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     id controlPointIndexBuffer =
         (__bridge id)
             mglRendererBackendGetTessControlPointIndexBuffer(_backend);
-    if (_tessellation.tessIndexedDraw) {
-        /* Indexed draws: the capture is a sparse [instance][vertex_id]
-         * stream read through the gather stream in the kernel (slot 30 +
-         * params slot 25); the instance offset math below does not apply. */
-        if (!controlPointIndexBuffer ||
-            _tessellation.tessInstanceRecords == 0u) {
-            NSLog(@"MGL TESS ERROR: indexed TES compute missing gather "
-                  "program=%u", (unsigned)tesProgram->name);
-            return false;
-        }
+    if (!mglTessEvalIndexedGatherReady(
+            _tessellation.tessIndexedDraw ? 1 : 0,
+            controlPointIndexBuffer != nil,
+            (uint32_t)_tessellation.tessInstanceRecords)) {
+        NSLog(@"MGL TESS ERROR: indexed TES compute missing gather "
+              "program=%u", (unsigned)tesProgram->name);
+        return false;
     }
     const BOOL glInFromTCS = glInPlan.from_tcs != 0u;
     /* TCS currently expands one instance of control points / factors.
