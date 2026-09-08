@@ -218,7 +218,8 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 16. ~~**A3 encode-fold 本刀（issue/ICB whole loops）**~~：`mgl_batch_mtl_issue_mdi_batch` / `stream_mdi_batch` / `icb_batch` / `simple_replay`；`mgl_batch_issue_direct_batch` + `apply_dyn_bindings`（C，ObjC 未全接线）；issue 514→~315、icb_mdi 347→~180；诚实簇 **2910→~2509**（−401）。禁扩 metal_port / trace / `mgl_render.cpp`。**勿宣称 cleanup done**
 17. ~~**A3 encode-fold 续（dyn/flush/trace）**~~：接线 `mgl_batch_issue_apply_dyn_bindings`；`mgl_batch_mtl_bind_dyn_vertex/uniforms/sampled`；`mgl_batch_flush_run_batches` + `mgl_batch_check_should_execute`；stream_merged 接线；trace/RT POD formatters（**shrink** replay_trace 456→~374）。诚实簇 **2509→~2366**（−143）。禁扩 metal_port / `mgl_render.cpp`。**勿宣称 cleanup done**
 18. ~~**A3 encode-fold 本刀（dyn/flush 重心 → ≤2k）**~~：`mgl_batch_mtl_apply_sampler_snapshot`；`mgl_batch_flush_trace_skip_commands` / `mgl_batch_bind_active_textures`；`mgl_batch_rt_run_draw_attachments` + `copy_state_to_rt`；`mgl_batch_restore_apply_from_key`；dyn/flush/issue/rt/Batch 残体压薄；修 `rt_mark_port` 断体。诚实簇 **2366→~1923**（−443）。禁扩 metal_port / trace / `mgl_render.cpp`。`test-batch-issue`/`test-batch-restore` 扩展。**勿宣称 cleanup done**
-19. **下一刀**：残量 `dyn`(~366) / `flush`(~380) / `trace`(~374) / `issue`(~200)；可开 **C1**（诚实簇已 ≤2k）但勿掩盖残量；继续把 ensure/resolve/submit 物化压成更薄 ops；O3 / O6 可并行
+19. ~~**C1**~~：`mgl_integer_readback.{h,c}` — IntegerReadback Convert/Source/Packed/Classify 出 `mgl_render.cpp`（~21043→~20599）；`mgl_render.h` include 域头；禁堆回 monolith
+20. **下一刀**：残量 `dyn`(~366) / `flush`(~380) / `trace`(~374) / `issue`(~200)；C1 已开但勿掩盖 Batch 残量；下一 monolith 刀优先 air type helpers 或 render GetTexImagePlan/binding-policy；继续 ensure/resolve/submit 压薄；O3 / O6 可并行
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
