@@ -3035,7 +3035,10 @@ after_gs_draws:
         drawCtx->active_state->dirty_bits = DIRTY_ALL;
 
         BOOL stateReady = [self processGLState:true];
-        if (!stateReady || mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        if (!mglTessNativePipelineReady(
+                stateReady ? 1 : 0,
+                mglRenderEncoderOwnerHasCurrent(
+                    _renderPassManager.state->currentRenderEncoderOwner))) {
             _tessellation.nativeTESActive = NO;
             _tessellation.nativeTESProgram = NULL;
             (void)mglRendererBackendSetTessVertexCaptureBuffer(_backend, NULL);
@@ -3044,8 +3047,9 @@ after_gs_draws:
             return YES;
         }
 
-        if (![self currentDrawRasterizationIsEmpty] &&
-            ![self currentDrawModeIsFullyCulled:GL_TRIANGLES]) {
+        if (mglTessNativeShouldDraw(
+                [self currentDrawRasterizationIsEmpty] ? 1 : 0,
+                [self currentDrawModeIsFullyCulled:GL_TRIANGLES] ? 1 : 0)) {
             [self applyPolygonOffsetForDrawMode:GL_TRIANGLES];
             /* Metal does not advance the post-tessellation control-point
              * pointer correctly for patchStart. Draw each patch separately:

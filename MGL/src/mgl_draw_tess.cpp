@@ -715,6 +715,30 @@ extern "C" int mglTessPassthroughRasterReady(int state_ready, int has_encoder,
     return state_ready && has_encoder == 1 && !raster_empty ? 1 : 0;
 }
 
+extern "C" int mglTessNativePipelineReady(int state_ready, int has_encoder)
+{
+    return state_ready && has_encoder == 1 ? 1 : 0;
+}
+
+extern "C" int mglTessNativeShouldDraw(int raster_empty, int fully_culled)
+{
+    return !raster_empty && !fully_culled ? 1 : 0;
+}
+
+extern "C" int mglTessTextureBindIsStorage(uint32_t kind)
+{
+    return kind == MGL_TESS_BIND_STORAGE_IMAGE ? 1 : 0;
+}
+
+extern "C" int mglTessTextureBindNeedsSampler(uint32_t kind,
+                                              uint32_t combined_slot)
+{
+    return kind == MGL_TESS_BIND_SAMPLED_IMAGE &&
+                   combined_slot != UINT32_MAX
+               ? 1
+               : 0;
+}
+
 extern "C" int mglTessPlanNativeVertexDescriptor(
     const Program *tes, uint32_t tcs_output_stride,
     MGLTessNativeVertexPlan *out)

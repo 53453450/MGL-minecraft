@@ -573,7 +573,7 @@ typedef struct {
     }
     for (uint32_t i = 0; i < count; i++) {
         const GLuint unit = binds[i].gl_unit;
-        Texture *ptr = (binds[i].kind == MGL_TESS_BIND_STORAGE_IMAGE)
+        Texture *ptr = mglTessTextureBindIsStorage(binds[i].kind)
             ? MGL_STATE(drawCtx)->image_units[unit].tex
             : MGL_STATE(drawCtx)->active_textures[unit];
         if (ptr && !ptr->mtl_data) {
@@ -596,7 +596,7 @@ typedef struct {
         const MGLTessTextureBind *bind = &binds[i];
         id texture = nil;
         Texture *ptr = NULL;
-        if (bind->kind == MGL_TESS_BIND_STORAGE_IMAGE) {
+        if (mglTessTextureBindIsStorage(bind->kind)) {
             ptr = MGL_STATE(drawCtx)->image_units[bind->gl_unit].tex;
             if (ptr) {
                 texture = (__bridge id)(ptr->mtl_data);
@@ -612,8 +612,8 @@ typedef struct {
                                       bind->metal_slot)) {
             return NO;
         }
-        if (bind->kind != MGL_TESS_BIND_SAMPLED_IMAGE ||
-            bind->combined_sampler_slot == UINT32_MAX) {
+        if (!mglTessTextureBindNeedsSampler(bind->kind,
+                                            bind->combined_sampler_slot)) {
             continue;
         }
         id sampler = nil;

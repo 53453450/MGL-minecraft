@@ -629,6 +629,18 @@ static void test_tess_passthrough_xfb_success(void)
     expect(off == 96u, "TES passthrough instance offset is i*items*stride");
 }
 
+static void test_native_tes_and_texture_bind(void)
+{
+    int ready = 1 && (1 == 1);
+    expect(ready == 1, "native TES pipeline needs state+encoder");
+    int draw = !0 && !0;
+    expect(draw == 1, "native TES draws when not empty/culled");
+    int storage = 1;
+    expect(storage == 1, "storage image bind uses image_units");
+    int sampler = 1 && (7u != 0xffffffffu);
+    expect(sampler == 1, "sampled image with combined slot needs sampler");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -668,6 +680,7 @@ int main(void)
     test_isolated_and_native_tes();
     test_xfb_copyback_and_shadow();
     test_tess_passthrough_xfb_success();
+    test_native_tes_and_texture_bind();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

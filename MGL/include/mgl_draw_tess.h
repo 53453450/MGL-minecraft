@@ -244,6 +244,10 @@ int mglTessPlanEvalAfterCompute(int has_gs, int rasterizer_discard,
                                 MGLTessEvalAfterComputePlan *out);
 int mglTessPassthroughRasterReady(int state_ready, int has_encoder,
                                   int raster_empty);
+int mglTessNativePipelineReady(int state_ready, int has_encoder);
+int mglTessNativeShouldDraw(int raster_empty, int fully_culled);
+int mglTessTextureBindIsStorage(uint32_t kind);
+int mglTessTextureBindNeedsSampler(uint32_t kind, uint32_t combined_slot);
 
 bool mglXfbPlanVsBufferDestOrUnbacked(uint32_t record_count, uint32_t stride,
                                       int has_metal, int64_t slot_offset,
