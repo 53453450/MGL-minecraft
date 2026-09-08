@@ -1191,44 +1191,25 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     /* Compute per-patch item counts and the per-instance total. */
     const uint16_t *factorBytes =
         (const uint16_t *)mglTessBufferContents(tessFactorBuffer);
-    NSUInteger factorByteCount =
-        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
-    if (!factorBytes || mglTessBufferLength(tessFactorBuffer) < factorByteCount) {
-        NSLog(@"MGL TESS ERROR: factor buffer too small for %u patches",
-              (unsigned)patchCount);
+    MGLTessEvalComputePlan evalPlan = {0};
+    if (!mglTessPlanEvalCompute(tesProgram, factorBytes,
+                                mglTessBufferLength(tessFactorBuffer),
+                                patchCount, (uint32_t)instanceCount,
+                                &evalPlan)) {
+        NSLog(@"MGL TESS ERROR: TES compute plan failed program=%u",
+              (unsigned)tesProgram->name);
         return false;
     }
-    const GLuint instanceCountU = (GLuint)instanceCount;
-    const uint64_t itemsPerInstance = mglTessEvalItemsPerInstance(
-        tesProgram, factorBytes, patchCount);
-    if (itemsPerInstance == 0u) {
+    if (evalPlan.empty) {
         /* Every patch discarded (outer ≤ 0, e.g. CTS isolines with
          * outer=-1).  Empty expansion is success — do not raise
          * GL_INVALID_OPERATION. */
         return true;
     }
-    if (itemsPerInstance > 0xffffffffull) {
-        NSLog(@"MGL TESS ERROR: TES compute item count overflow program=%u",
-              (unsigned)tesProgram->name);
-        return false;
-    }
-    const GLuint itemsPerInstanceU = (GLuint)itemsPerInstance;
-
-    NSUInteger outStride = mglAIRPerVertexStrideForResources(
-        &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
-                                             [_STAGE_OUTPUT_RES]);
-    if (outStride < MGL_AIR_PER_VERTEX_STRIDE) {
-        outStride = MGL_AIR_PER_VERTEX_STRIDE;
-    }
-    NSUInteger instanceBytes = 0u;
-    NSUInteger outSize = 0u;
-    if (!mglCheckedNSUIntegerProduct(itemsPerInstanceU, outStride,
-                                     &instanceBytes) ||
-        !mglCheckedNSUIntegerProduct(instanceBytes, instanceCountU, &outSize)) {
-        NSLog(@"MGL TESS ERROR: TES compute output size overflow program=%u",
-              (unsigned)tesProgram->name);
-        return false;
-    }
+    const GLuint instanceCountU = evalPlan.instance_count;
+    const GLuint itemsPerInstanceU = evalPlan.items_per_instance;
+    NSUInteger outStride = evalPlan.out_stride;
+    NSUInteger outSize = (NSUInteger)evalPlan.out_size;
     id outBuffer = mglTessCreateBuffer(
         _device, outSize, MGL_TESS_RESOURCE_STORAGE_SHARED);
     void *outContents = mglTessBufferContents(outBuffer);
@@ -1334,15 +1315,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     TransformFeedback *xfbState = MGL_STATE(glm_ctx)->transform_feedback;
     Program *gsProgram =
         mglResolveProgramForStageFromState(glm_ctx, _GEOMETRY_SHADER);
-    const bool hasGeometryStage =
-        gsProgram &&
-        (gsProgram->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) != 0u &&
-        gsProgram->shader_slots[_GEOMETRY_SHADER] != NULL;
-    /* XFB varyings come from the last pre-raster stage.  When a GS follows
-     * this TES compute expansion, the GS path owns transform feedback. */
-    const bool xfbActive =
-        !hasGeometryStage &&
-        xfbState && xfbState->active && !xfbState->paused;
+    const bool xfbActive = mglTessEvalOwnsXFB(glm_ctx, gsProgram);
     id xfbTemporary = nil;
     id xfbCopyDestination = nil;
     Buffer *xfbDestination = NULL;

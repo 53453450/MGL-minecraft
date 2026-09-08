@@ -1319,22 +1319,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!program || !geometryShader) {
         return NO;
     }
-    GLenum gsInputMode = program->geometry_input_type;
-    if (gsInputMode != GL_POINTS && gsInputMode != GL_LINES &&
-        gsInputMode != GL_LINES_ADJACENCY &&
-        gsInputMode != GL_TRIANGLES &&
-        gsInputMode != GL_TRIANGLES_ADJACENCY) {
-        gsInputMode = GL_TRIANGLES;
-    }
-    GLenum gsOutputMode = program->geometry_output_type;
-    if (gsOutputMode != GL_POINTS && gsOutputMode != GL_LINE_STRIP &&
-        gsOutputMode != GL_TRIANGLE_STRIP) {
-        gsOutputMode = GL_TRIANGLE_STRIP;
-    }
-    uint32_t outputPrimitive = gsOutputMode == GL_POINTS
-        ? MGL_DRAW_PRIMITIVE_POINT
-        : gsOutputMode == GL_LINE_STRIP ? MGL_DRAW_PRIMITIVE_LINE
-        : MGL_DRAW_PRIMITIVE_TRIANGLE;
+    GLenum gsInputMode = GL_TRIANGLES;
+    GLenum gsOutputMode = GL_TRIANGLE_STRIP;
+    uint32_t outputPrimitive = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    mglDrawGsNormalizeTopology(program, &gsInputMode, &gsOutputMode,
+                               &outputPrimitive);
     const BOOL indexedDraw = (indexType != 0u);
     if (getenv("MGL_GS_DIAG")) {
         NSLog(@"MGL GS DIAG topology mode=0x%x gsIn=0x%x gsOut=0x%x indexed=%d count=%d first=%d vertsOut=%u route=%d",
@@ -3131,19 +3120,22 @@ after_gs_draws:
 
     Program *tcsProgram = mglResolveProgramForStageFromState(drawCtx, _TESS_CONTROL_SHADER);
     Program *tesProgram = mglResolveProgramForStageFromState(drawCtx, _TESS_EVALUATION_SHADER);
-    const MGLTessDrawClass tessClass =
-        mglTessClassifyDraw(drawCtx, *mode, count, instanceCount, tcsProgram,
-                            tesProgram, label);
-    if (tessClass == MGL_TESS_DRAW_NOT_APPLICABLE) {
+    Program *gsProgram = mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER);
+    MGLTessDrawPathPlan path = {0};
+    if (!mglTessPlanDrawPath(drawCtx, *mode, count, instanceCount, tcsProgram,
+                             tesProgram, gsProgram, indexType, label, &path)) {
         return NO;
     }
-    if (tessClass != MGL_TESS_DRAW_ACTIVE) {
+    if (path.classify == MGL_TESS_DRAW_NOT_APPLICABLE) {
+        return NO;
+    }
+    if (path.classify != MGL_TESS_DRAW_ACTIVE) {
         return YES;
     }
-    if (tcsProgram && !tcsProgram->shader_slots[_TESS_CONTROL_SHADER]) {
+    if (!path.has_tcs) {
         tcsProgram = NULL;
     }
-    if (tesProgram && !tesProgram->shader_slots[_TESS_EVALUATION_SHADER]) {
+    if (!path.has_tes) {
         tesProgram = NULL;
     }
 
@@ -3159,16 +3151,8 @@ after_gs_draws:
         }
     }
 
-    const BOOL airTES = tesProgram &&
-        tesProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes != NULL;
-    BOOL nativeTES = mglTessNativeInterfaceSupported(tcsProgram, tesProgram);
-    /* Native Metal post-tess wires TES→FS.  When a GS is present it must
-     * run between them via the AIR TES compute → handleGeometryDrawIfNeeded
-     * handoff (see dispatchAIRTessEvalCompute). */
-    if (mglTessNativeBlockedByGeometry(
-            mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER))) {
-        nativeTES = NO;
-    }
+    const BOOL airTES = path.air_tes != 0u;
+    BOOL nativeTES = path.native_ok != 0u;
 
     Program *vertexProgram =
         mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
@@ -3198,9 +3182,7 @@ after_gs_draws:
      * both the native patch pipeline and the AIR TES compute expansion
      * (isolines / point_mode with no TCS), so they must exist even when
      * nativeTES is unavailable. */
-    if (nativeTES || airTES) {
-        const BOOL indexedDraw = (indexType != 0u);
-        if (indexedDraw && tcsProgram) {
+    if (path.capture == MGL_TESS_CAPTURE_INDEXED_COMPACT) {
             /* TCS reads continuous [patch][control_point] records.  Capture
              * the VS into a sparse [vertex_id] buffer (runs VS atomics /
              * transforms), then compact into patch order for the TCS kernel.
@@ -3278,8 +3260,8 @@ after_gs_draws:
                             _tessellation.tessInstanceRecords =
                                 (NSUInteger)gatherCount;
                             patchCount = gatherPrimitives;
-                            contract.patch_count = patchCount;
-                            contract.vertex_count = gatherCount;
+                            mglTessApplyGatherToContract(&contract, gatherCount,
+                                                         gatherPrimitives);
                             sparseCompactOk = YES;
                         }
                     }
@@ -3300,7 +3282,7 @@ after_gs_draws:
                 drawCtx->active_state->dirty_bits = DIRTY_ALL;
                 return YES;
             }
-        } else if (indexedDraw) {
+    } else if (path.capture == MGL_TESS_CAPTURE_INDEXED_GATHER) {
             /* Indexed native TES (no TCS): capture the VS once into sparse
              * per-vertex records [instance][vertex_id] and let the CPU
              * gather buffer (raw index stream) drive Metal's
@@ -3371,7 +3353,7 @@ after_gs_draws:
                     }
                 }
             }
-        } else {
+    } else if (path.capture == MGL_TESS_CAPTURE_ARRAY) {
             NSUInteger captureOffset = 0u;
             id capture =
                 [self captureAIRVertexPositionsForTessellation:drawCtx
@@ -3388,7 +3370,6 @@ after_gs_draws:
                 _tessellation.tessVertexCaptureOffset = captureOffset;
                 _tessellation.tessInstanceRecords = (NSUInteger)count;
             }
-        }
     }
 
     if (nativeTES && !tcsProgram) {
@@ -3411,7 +3392,7 @@ after_gs_draws:
         }
     }
 
-    if (airTES && !tcsProgram) {
+    if (path.need_default_factors) {
         /* TES-only compute expansion also needs the default levels; the
          * cached buffer is rebuilt only when glPatchParameterfv levels
          * (or the patch count) change between draws. */
@@ -3421,7 +3402,7 @@ after_gs_draws:
             _backend, (__bridge void *)tessFactorBuffer);
     }
 
-    if (tcsProgram) {
+    if (path.need_tcs) {
         if (![self dispatchTessControlShader:drawCtx
                                      program:tcsProgram
                                     contract:&contract]) {

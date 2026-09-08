@@ -24,6 +24,9 @@ extern "C" {
 
 bool mglDrawGsInputModeAccepts(GLenum gsMode, GLenum drawMode);
 
+void mglDrawGsNormalizeTopology(Program *gs, GLenum *in_mode, GLenum *out_mode,
+                                uint32_t *out_primitive);
+
 bool mglDrawGsGatherTopology(const uint8_t *indexBytes, GLenum indexType,
                              GLsizei count, GLint first, bool indexed,
                              bool restartEnabled, uint32_t restartIndex,

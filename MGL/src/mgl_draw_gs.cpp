@@ -41,6 +41,33 @@ extern "C" bool mglDrawGsInputModeAccepts(GLenum gsMode, GLenum drawMode)
     }
 }
 
+extern "C" void mglDrawGsNormalizeTopology(Program *gs, GLenum *in_mode,
+                                           GLenum *out_mode,
+                                           uint32_t *out_primitive)
+{
+    GLenum in = gs ? gs->geometry_input_type : GL_TRIANGLES;
+    GLenum out = gs ? gs->geometry_output_type : GL_TRIANGLE_STRIP;
+    if (in != GL_POINTS && in != GL_LINES && in != GL_LINES_ADJACENCY &&
+        in != GL_TRIANGLES && in != GL_TRIANGLES_ADJACENCY) {
+        in = GL_TRIANGLES;
+    }
+    if (out != GL_POINTS && out != GL_LINE_STRIP && out != GL_TRIANGLE_STRIP) {
+        out = GL_TRIANGLE_STRIP;
+    }
+    if (in_mode) {
+        *in_mode = in;
+    }
+    if (out_mode) {
+        *out_mode = out;
+    }
+    if (out_primitive) {
+        *out_primitive = out == GL_POINTS
+                             ? MGL_DRAW_PRIMITIVE_POINT
+                             : out == GL_LINE_STRIP ? MGL_DRAW_PRIMITIVE_LINE
+                                                    : MGL_DRAW_PRIMITIVE_TRIANGLE;
+    }
+}
+
 extern "C" bool mglDrawGsGatherTopology(const uint8_t *indexBytes,
                                         GLenum indexType, GLsizei count,
                                         GLint first, bool indexed,

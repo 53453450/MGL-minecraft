@@ -141,6 +141,35 @@ static void test_cull_element_range(void)
            "cull capture covers [min+base, max+base]");
 }
 
+static void test_tess_draw_path(void)
+{
+    /* Indexed TCS cannot use Metal tessellator: compact then compute. */
+    const int indexed = 1, has_tcs = 1, native = 1, air = 1, gs = 0;
+    int native_ok = native && !gs;
+    int capture = 0;
+    if (native_ok || air) {
+        if (indexed && has_tcs) {
+            capture = 2; /* COMPACT */
+            native_ok = 0;
+        } else if (indexed) {
+            capture = 3; /* GATHER */
+        } else {
+            capture = 1; /* ARRAY */
+        }
+    }
+    expect(capture == 2 && native_ok == 0, "indexed TCS compact disables native");
+    {
+        const int indexed2 = 1, has_tcs2 = 0;
+        int native2 = 1;
+        int cap = (indexed2 && has_tcs2) ? 2 : indexed2 ? 3 : 1;
+        expect(cap == 3 && native2 == 1, "indexed TES-only gathers");
+    }
+    {
+        const int exec = air && !native_ok ? 2 : 1;
+        expect(exec == 2, "compact falls through to TES compute");
+    }
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -148,6 +177,7 @@ int main(void)
     test_isolated_binding();
     test_tcs_stage_in_size();
     test_cull_element_range();
+    test_tess_draw_path();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

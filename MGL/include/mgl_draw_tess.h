@@ -41,6 +41,59 @@ void mglTessFillDrawContract(MGLAIRTessDrawContract *contract, GLMContext ctx,
 bool mglTessNativeInterfaceSupported(Program *tcs, Program *tes);
 bool mglTessNativeBlockedByGeometry(Program *gs);
 
+typedef enum {
+    MGL_TESS_CAPTURE_NONE = 0,
+    MGL_TESS_CAPTURE_ARRAY = 1,
+    MGL_TESS_CAPTURE_INDEXED_COMPACT = 2,
+    MGL_TESS_CAPTURE_INDEXED_GATHER = 3,
+} MGLTessCaptureKind;
+
+typedef enum {
+    MGL_TESS_EXEC_NONE = 0,
+    MGL_TESS_EXEC_NATIVE = 1,
+    MGL_TESS_EXEC_TES_COMPUTE = 2,
+    MGL_TESS_EXEC_TES_FALLBACK = 3,
+    MGL_TESS_EXEC_UNSUPPORTED = 4,
+} MGLTessExecKind;
+
+typedef struct MGLTessDrawPathPlan {
+    MGLTessDrawClass classify;
+    uint32_t has_tcs;
+    uint32_t has_tes;
+    uint32_t air_tes;
+    uint32_t native_ok;
+    uint32_t indexed;
+    MGLTessCaptureKind capture;
+    MGLTessExecKind exec;
+    uint32_t need_default_factors;
+    uint32_t need_tcs;
+} MGLTessDrawPathPlan;
+
+bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
+                         GLsizei instanceCount, Program *tcs, Program *tes,
+                         Program *gs, GLenum indexType, const char *label,
+                         MGLTessDrawPathPlan *out);
+
+void mglTessApplyGatherToContract(MGLAIRTessDrawContract *contract,
+                                  uint32_t gather_count,
+                                  uint32_t gather_primitives);
+
+typedef struct MGLTessEvalComputePlan {
+    uint32_t empty;
+    uint32_t items_per_instance;
+    uint32_t instance_count;
+    uint32_t out_stride;
+    uint64_t instance_bytes;
+    uint64_t out_size;
+} MGLTessEvalComputePlan;
+
+bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
+                            uint64_t factor_byte_count, uint32_t patch_count,
+                            uint32_t instance_count,
+                            MGLTessEvalComputePlan *out);
+
+bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs);
+
 typedef struct MGLTessNativeEncodeState {
     void *encoder_owner;
     void *tcs_output_buffer;

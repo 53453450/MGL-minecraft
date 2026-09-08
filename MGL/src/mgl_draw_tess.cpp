@@ -156,6 +156,72 @@ extern "C" bool mglTessNativeBlockedByGeometry(Program *gs)
            gs->shader_slots[_GEOMETRY_SHADER];
 }
 
+extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
+                                    GLsizei instanceCount, Program *tcs,
+                                    Program *tes, Program *gs, GLenum indexType,
+                                    const char *label, MGLTessDrawPathPlan *out)
+{
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->classify =
+        mglTessClassifyDraw(ctx, mode, count, instanceCount, tcs, tes, label);
+    if (out->classify != MGL_TESS_DRAW_ACTIVE) {
+        return true;
+    }
+    if (tcs && !tcs->shader_slots[_TESS_CONTROL_SHADER]) {
+        tcs = NULL;
+    }
+    if (tes && !tes->shader_slots[_TESS_EVALUATION_SHADER]) {
+        tes = NULL;
+    }
+    out->has_tcs = tcs ? 1u : 0u;
+    out->has_tes = tes ? 1u : 0u;
+    out->air_tes =
+        tes && tes->modules[_TESS_EVALUATION_SHADER].metallib_bytes ? 1u : 0u;
+    out->indexed = indexType != 0u ? 1u : 0u;
+    out->native_ok =
+        (mglTessNativeInterfaceSupported(tcs, tes) &&
+         !mglTessNativeBlockedByGeometry(gs))
+            ? 1u
+            : 0u;
+    if (out->native_ok || out->air_tes) {
+        if (out->indexed && out->has_tcs) {
+            out->capture = MGL_TESS_CAPTURE_INDEXED_COMPACT;
+            out->native_ok = 0u;
+        } else if (out->indexed) {
+            out->capture = MGL_TESS_CAPTURE_INDEXED_GATHER;
+        } else {
+            out->capture = MGL_TESS_CAPTURE_ARRAY;
+        }
+    }
+    out->need_default_factors =
+        !out->has_tcs && (out->native_ok || out->air_tes) ? 1u : 0u;
+    out->need_tcs = out->has_tcs;
+    if (out->native_ok) {
+        out->exec = MGL_TESS_EXEC_NATIVE;
+    } else if (out->air_tes) {
+        out->exec = tes && tes->tess_eval_compute
+                        ? MGL_TESS_EXEC_TES_COMPUTE
+                        : MGL_TESS_EXEC_UNSUPPORTED;
+    } else if (out->has_tes) {
+        out->exec = MGL_TESS_EXEC_TES_FALLBACK;
+    }
+    return true;
+}
+
+extern "C" void mglTessApplyGatherToContract(MGLAIRTessDrawContract *contract,
+                                             uint32_t gather_count,
+                                             uint32_t gather_primitives)
+{
+    if (!contract) {
+        return;
+    }
+    contract->patch_count = gather_primitives;
+    contract->vertex_count = gather_count;
+}
+
 extern "C" void mglTessEncodeNativePatches(const MGLTessNativeEncodeState *state)
 {
     if (!state || !state->encoder_owner || !state->tcs_output_buffer ||
@@ -383,6 +449,65 @@ extern "C" uint64_t mglTessEvalItemsPerInstance(Program *tes,
             tes, base + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES);
     }
     return total;
+}
+
+extern "C" bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
+                                       uint64_t factor_byte_count,
+                                       uint32_t patch_count,
+                                       uint32_t instance_count,
+                                       MGLTessEvalComputePlan *out)
+{
+    if (!out || !tes || !factor_bytes || patch_count == 0u ||
+        instance_count == 0u) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    const uint64_t need =
+        (uint64_t)patch_count * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+    if (factor_byte_count < need) {
+        return false;
+    }
+    const uint64_t items =
+        mglTessEvalItemsPerInstance(tes, factor_bytes, patch_count);
+    if (items == 0u) {
+        out->empty = 1u;
+        out->instance_count = instance_count;
+        return true;
+    }
+    if (items > 0xffffffffull) {
+        return false;
+    }
+    uint32_t stride = mglAIRPerVertexStrideForResources(
+        &tes->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                   [_STAGE_OUTPUT_RES]);
+    if (stride < MGL_AIR_PER_VERTEX_STRIDE) {
+        stride = MGL_AIR_PER_VERTEX_STRIDE;
+    }
+    uint64_t instance_bytes = 0u;
+    uint64_t out_size = 0u;
+    if (__builtin_mul_overflow(items, (uint64_t)stride, &instance_bytes) ||
+        __builtin_mul_overflow(instance_bytes, (uint64_t)instance_count,
+                               &out_size)) {
+        return false;
+    }
+    out->items_per_instance = (uint32_t)items;
+    out->instance_count = instance_count;
+    out->out_stride = stride;
+    out->instance_bytes = instance_bytes;
+    out->out_size = out_size;
+    return true;
+}
+
+extern "C" bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs)
+{
+    if (!ctx || !ctx->active_state) {
+        return false;
+    }
+    if (mglTessNativeBlockedByGeometry(gs)) {
+        return false;
+    }
+    TransformFeedback *xfb = ctx->active_state->transform_feedback;
+    return xfb && xfb->active && !xfb->paused;
 }
 
 extern "C" bool mglTessFillEvalPatchItemBases(Program *tes,
