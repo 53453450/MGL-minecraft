@@ -9,8 +9,8 @@
  */
 
 // MGLRenderer+DrawStageHost.m
-// O1.4/O1.6: capture/cull/validate ports + GS Metal expansion residual +
-// HostOps fillers. Tess/XFB/GS early orchestration lives in mgl_draw_*.cpp.
+// O1.4 residual: capture/cull/validate + thin GS Metal HostOps.
+// GS Metal expansion orchestration → mgl_draw_gs_metal.cpp.
 
 #import "MGLRenderer_Private.h"
 #import <CoreFoundation/CoreFoundation.h>
@@ -439,873 +439,9 @@ extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated
 }
 
 
-/* O1.4 residual: GS Metal expansion after C++ topology/gather/capture. */
-int mglDrawHostGsExecuteMetalExpansion(
-    void *renderer, GLMContext drawCtx, GLenum mode, GLint first, GLsizei count,
-    GLenum indexType, const void *indices, GLint baseVertex,
-    GLsizei instanceCount, GLuint baseInstance, const char *label,
-    Program *program, GLenum gsInputMode, GLenum gsOutputMode,
-    uint32_t outputPrimitive, int indexedDraw, void *gatherBufPtr,
-    const void *gparamsPtr, uint32_t gparamsBytes,
-    const MGLGsComputeLayout *gsLayoutPtr, void *inputPtr,
-    uint64_t inputOffsetIn, Program *captureVS, Program *captureTES,
-    uint32_t pendingStride)
-{
-    MGLRenderer *self = (__bridge MGLRenderer *)renderer;
-    if (!self || !drawCtx || !program || !gsLayoutPtr || !gparamsPtr) {
-        return 1;
-    }
-    (void)mode; (void)first; (void)count; (void)indexType; (void)indices;
-    (void)baseVertex; (void)baseInstance; (void)gsInputMode;
-    (void)indexedDraw; (void)pendingStride; (void)gparamsBytes;
-    self->ctx = drawCtx;
-    id gatherBuf = (__bridge id)gatherBufPtr;
-    MGLAIRGSGatherParams gparams;
-    memcpy(&gparams, gparamsPtr, sizeof(gparams));
-    MGLGsComputeLayout gsLayout = *gsLayoutPtr;
-    id input = (__bridge id)inputPtr;
-    NSUInteger inputOffset = (NSUInteger)inputOffsetIn;
-    const GLuint workItemCount = gsLayout.work_item_count;
-    const NSUInteger outputStride = gsLayout.output_stride;
-    const NSUInteger expandedVertices = gsLayout.expanded_vertices;
-    const NSUInteger recordsPerPrimitive = gsLayout.records_per_primitive;
-    const uint32_t maxVertices =
-        mglDrawGsMaxVerticesOut(program->geometry_vertices_out);
-    const GLuint primitiveCount = gsLayout.work_item_count / (uint32_t)(instanceCount > 0 ? instanceCount : 1);
-    (void)primitiveCount;
-    (void)captureVS;
-    (void)captureTES;
-
-    void *pipelineHandle = NULL;
-    char pipelineError[2048] = {0};
-    int pipelineResult = mglGetOrCreateProgramComputePipeline(
-        program, _GEOMETRY_SHADER, &pipelineHandle,
-        pipelineError, sizeof(pipelineError));
-    id pipeline =
-        mglTessComputePipelineReady(pipelineResult, pipelineHandle ? 1 : 0)
-            ? (__bridge_transfer id)pipelineHandle
-            : nil;
-    if (!pipeline) {
-        NSLog(@"MGL GS ERROR: compute PSO failed program=%u: %s",
-              (unsigned)program->name,
-              pipelineError[0] ? pipelineError : "unknown error");
-        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-        return YES;
-    }
-    MGLRenderCommandBufferState commandState = {0};
-    const int hasCommandState = mglRenderCommandBufferOwnerHasState(
-        self->_renderPassManager.state->currentCommandBufferOwner, &commandState);
-    if (mglTessCommandBufferNeedsNew(hasCommandState, commandState.status)) {
-        if (![self newCommandBuffer]) {
-            drawCtx->active_state->dirty_bits = DIRTY_ALL;
-            return YES;
-        }
-    }
-    const NSUInteger outputSize = (NSUInteger)gsLayout.output_bytes;
-    id output = mglDrawSupportCreateBuffer(
-        self->_device, outputSize, 0u);
-    if (getenv("MGL_GS_DIAG"))
-        NSLog(@"MGL GS DIAG outputSize=%lu stride=%lu recordsPerPrim=%lu workItems=%u mtlLen=%@",
-              (unsigned long)outputSize, (unsigned long)outputStride,
-              (unsigned long)recordsPerPrimitive, (unsigned)workItemCount,
-              [output valueForKey:@"length"]);
-
-    const NSUInteger countsRecordBytes = MGL_AIR_GS_COUNTS_RECORD_BYTES;
-    id counts = mglDrawSupportCreateBuffer(
-        self->_device, (NSUInteger)gsLayout.counts_bytes,
-        0u);
-    if (!output || !counts || !mglDrawSupportBufferContents(output) || !mglDrawSupportBufferContents(counts)) {
-        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-        mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         (GLenum)mglRenderErrorOutOfMemory());
-        return YES;
-    }
-    memset(mglDrawSupportBufferContents(counts), 0,
-           (size_t)workItemCount * countsRecordBytes);
-    memset(mglDrawSupportBufferContents(output), 0, outputSize);
-    /* Preset the draw parameters the kernel never touches: instance_count=1,
-     * base_vertex=0, base_instance=0 (memset already zeroed the rest). */
-    mglDrawGsPresetCounts(mglDrawSupportBufferContents(counts), workItemCount);
-
-    for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
-        Texture *image = MGL_STATE(drawCtx)->image_units[unit].tex;
-        Texture *sampled = MGL_STATE(drawCtx)->active_textures[unit];
-        if (image && ![self bindMTLTexture:image]) {
-            drawCtx->active_state->dirty_bits = DIRTY_ALL;
-            return YES;
-        }
-        if (sampled && ![self bindMTLTexture:sampled]) {
-            drawCtx->active_state->dirty_bits = DIRTY_ALL;
-            return YES;
-        }
-    }
-
-    MGLStageBindingCopyBackList stageCopyBacks = {0};
-
-    TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
-    const bool xfbActive = mglDrawGsXFBActive(
-        xfbState != NULL, xfbState && xfbState->active,
-        xfbState && xfbState->paused) != 0;
-    const BOOL xfbDiag = getenv("MGL_GS_XFB_DIAG") != NULL;
-
-    /* ---- GL4 ordered multi-buffer XFB (mgl_air_gs_abi.h §5b) ----
-     * Replace the prototype per-stream atomic-cursor capture with a
-     * per-*buffer* layout driven by the link-time scatter plan
-     * (Program.transform_feedback_layout[]).  Records are scattered by the
-     * pass-2 aux kernel in emission order with whole-primitive cross-buffer
-     * truncation. */
-    const bool gsSeparate = mglXfbSeparateAttribs(
-        program->transform_feedback_buffer_mode) != 0;
-
-    /* Per-buffer scatter plan (indexed by transform-feedback buffer 0..3). */
-    MGLAIRGSXFBScatterParams scatterParams;
-    uint32_t xfbBufferCount = mglDrawGsFillXFBScatterParams(
-        xfbActive ? program : NULL, &scatterParams);
-    /* Per-buffer GL binding state for copy-back (indexed by buffer index). */
-    NSUInteger bufferCapBytes[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    NSUInteger bufferPhysBase[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    NSUInteger bufferDstOffset[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    NSUInteger bufferRemaining[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    id bufferDstMTL[MGL_AIR_GS_MAX_STREAMS] = {nil};
-
-    id xfbTemporary = nil;
-    id xfbCaptureBuffer = nil;   /* slot-31 capture (always the temporary) */
-    id xfbVisBuffer = nil;       /* pass-1 per-(work-item, buffer) bytes    */
-    id xfbOffsetBuffer = nil;    /* CPU prefix offsets for pass 2           */
-    id xfbWrittenBuffer = nil;   /* pass-2 per-(work-item, buffer) written  */
-    id scatterPipeline = nil;
-
-    if (xfbActive) {
-        /* Field descriptors, buffer→stream map, and packed record strides
-         * come from the link-time scatter plan. */
-        const uint32_t fieldCount = scatterParams.field_count;
-
-        if (xfbDiag) {
-            fprintf(stderr,
-                    "MGL GS XFB DIAG fields=%u buffers=%u varyings=%d mode=0x%x\n",
-                    fieldCount, xfbBufferCount,
-                    program->transform_feedback_varying_count,
-                  program->transform_feedback_buffer_mode);
-            for (uint32_t f = 0u; f < fieldCount; f++) {
-                NSLog(@"  field[%u] buf=%u src=%u dst=%u bytes=%u", f,
-                      scatterParams.fields[f].buffer_index,
-                      scatterParams.fields[f].src_offset,
-                      scatterParams.fields[f].dst_offset,
-                      scatterParams.fields[f].byte_count);
-            }
-        }
-
-        /* Resolve each active buffer's GL binding, visible capacity and
-         * session write offset.  Always capture into a fresh temporary so the
-         * pass-2 scatter writes ordered records independent of the GL store
-         * address; copy-back moves them afterwards. */
-        MGLGsXFBBufferBinding xfbBindings[MGL_AIR_GS_MAX_STREAMS];
-        memset(xfbBindings, 0, sizeof(xfbBindings));
-        for (uint32_t b = 0u; b < xfbBufferCount; b++) {
-            if (scatterParams.buffers[b].stride == 0u) continue;
-            BufferBaseTarget *slot = &MGL_STATE(drawCtx)
-                ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
-            if (!slot->buf) {
-                if (xfbDiag)
-                    NSLog(@"MGL GS XFB DIAG buffer[%u] no bound GL buffer", b);
-                continue;
-            }
-            if (!slot->buf->data.mtl_data) {
-                [self bindMTLBuffer:slot->buf];
-            }
-            id mtl = (__bridge id)(slot->buf->data.mtl_data);
-            if (!mtl) {
-                if (xfbDiag)
-                    NSLog(@"MGL GS XFB DIAG buffer[%u] no MTL backing", b);
-                continue;
-            }
-            BufferMap map = {0};
-            map.buf = slot->buf;
-            map.offset = slot->offset;
-            map.size = slot->size;
-            NSUInteger visible = mglBufferMapVisibleBackingBytes(
-                &map, (size_t)mglDrawSupportBufferLength(mtl));
-            NSUInteger sessionOffset = (NSUInteger)mglXfbSessionOffsetOr(
-                (uint64_t)xfbState->buffer_write_offsets[b], 0u);
-            xfbBindings[b].bound = 1u;
-            xfbBindings[b].slot_offset = slot->offset;
-            xfbBindings[b].session_offset = (uint64_t)sessionOffset;
-            xfbBindings[b].visible_bytes = (uint64_t)visible;
-            bufferDstMTL[b] = mtl;
-        }
-        MGLGsXFBDestPlan destPlan = {0};
-        mglDrawGsPlanXFBDestinations(&scatterParams, xfbBufferCount,
-                                     (uint32_t)workItemCount,
-                                     (uint32_t)expandedVertices, xfbBindings,
-                                     &destPlan);
-        NSUInteger physTotal = destPlan.phys_total;
-        for (uint32_t b = 0u; b < xfbBufferCount; b++) {
-            if (!destPlan.buffers[b].valid) continue;
-            bufferRemaining[b] = destPlan.buffers[b].remaining;
-            bufferDstOffset[b] = destPlan.buffers[b].dst_offset;
-            bufferCapBytes[b] = destPlan.buffers[b].cap_bytes;
-            bufferPhysBase[b] = destPlan.buffers[b].phys_base;
-        }
-        if (xfbDiag) {
-            for (uint32_t b = 0u; b < xfbBufferCount; b++) {
-                NSLog(@"  buffer[%u] stride=%u cap=%u base=%u physTotal=%lu dstMTL=%@",
-                      b, scatterParams.buffers[b].stride,
-                      scatterParams.buffers[b].capacity_bytes,
-                      scatterParams.buffers[b].capture_base,
-                      (unsigned long)physTotal, bufferDstMTL[b]);
-            }
-        }
-        mglDrawGsFillXFBScatterRuntime(
-            &scatterParams, xfbBufferCount, (uint32_t)workItemCount,
-            (uint32_t)outputStride, (uint32_t)recordsPerPrimitive,
-            outputPrimitive);
-
-        if (physTotal > 0u && xfbBufferCount > 0u) {
-            xfbTemporary = mglDrawSupportCreateBuffer(self->_device, physTotal, 0u);
-            if (xfbTemporary) {
-                memset(mglDrawSupportBufferContents(xfbTemporary), 0,
-                       physTotal);
-                xfbCaptureBuffer = xfbTemporary;
-            }
-            const NSUInteger visBytes =
-                (NSUInteger)mglDrawGsXFBVisBytes((uint32_t)workItemCount);
-            xfbVisBuffer = mglDrawSupportCreateBuffer(self->_device, visBytes, 0u);
-            xfbOffsetBuffer = mglDrawSupportCreateBuffer(self->_device, visBytes, 0u);
-            xfbWrittenBuffer =
-                mglDrawSupportCreateBuffer(self->_device, visBytes, 0u);
-            if (xfbVisBuffer && mglDrawSupportBufferContents(xfbVisBuffer)) {
-                memset(mglDrawSupportBufferContents(xfbVisBuffer), 0,
-                       visBytes);
-            }
-            if (xfbWrittenBuffer &&
-                mglDrawSupportBufferContents(xfbWrittenBuffer)) {
-                memset(mglDrawSupportBufferContents(xfbWrittenBuffer), 0,
-                       visBytes);
-            }
-            const MGLAuxShaderAsset *scatterAsset =
-                mglAuxShaderAssetFind("gs_xfb_scatter");
-            if (scatterAsset && scatterAsset->data) {
-                void *scatterHandle = NULL;
-                char scatterError[256] = {0};
-                if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
-                        scatterAsset->data, scatterAsset->size,
-                        scatterAsset->hash, "mgl_gs_xfb_scatter",
-                        MGL_RENDER_AUX_COMPUTE_GS_XFB_SCATTER, 0u,
-                        &scatterHandle, scatterError,
-                        sizeof(scatterError)) == 0 &&
-                    scatterHandle) {
-                    scatterPipeline = (__bridge_transfer id)scatterHandle;
-                } else {
-                    NSLog(@"MGL GS XFB ERROR: scatter pipeline failed: %s",
-                          scatterError[0] ? scatterError : "unknown");
-                }
-            }
-            if (!xfbTemporary || !xfbVisBuffer || !xfbOffsetBuffer ||
-                !xfbWrittenBuffer || !scatterPipeline) {
-                drawCtx->active_state->dirty_bits = DIRTY_ALL;
-                mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                                 (GLenum)mglRenderErrorOutOfMemory());
-                return YES;
-            }
-        }
-    }
-    /* Back-compat locals referenced by the query/copy-back tail below. */
-    NSUInteger streamStride[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    NSUInteger bufferStride[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    for (uint32_t b = 0u; b < MGL_AIR_GS_MAX_STREAMS; b++) {
-        streamStride[b] = scatterParams.buffers[b].stride;
-        bufferStride[b] = scatterParams.buffers[b].stride;
-    }
-    const uint32_t gsStreamCount =
-        mglDrawGsStreamCount(program->geometry_stream_count);
-    const bool multiStream = gsStreamCount > 1u;
-    (void)gsSeparate;
-    MGLGsXFBDestPlan destForMeta = {0};
-    uint32_t capBytesU32[MGL_AIR_GS_MAX_STREAMS] = {0};
-    uint32_t physBaseU32[MGL_AIR_GS_MAX_STREAMS] = {0};
-    for (uint32_t b = 0u; b < MGL_AIR_GS_MAX_STREAMS; b++) {
-        capBytesU32[b] = (uint32_t)bufferCapBytes[b];
-        physBaseU32[b] = (uint32_t)bufferPhysBase[b];
-    }
-    mglDrawGsFillXFBDestForMeta(capBytesU32, physBaseU32,
-                                MGL_AIR_GS_MAX_STREAMS, &destForMeta);
-    MGLAIRGSXFBMeta xfbMeta;
-    mglDrawGsFillXFBMetaFromDest(&scatterParams, &destForMeta, &xfbMeta);
-    mglDrawGsClearXFBMetaIfNoCapture(xfbCaptureBuffer ? 1 : 0, &xfbMeta);
-    id xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
-        self->_device, &xfbMeta, sizeof(xfbMeta), 0u);
-    if (!xfbMetaBuf) {
-        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-        mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         (GLenum)mglRenderErrorOutOfMemory());
-        return YES;
-    }
-    const BOOL cppDispatch = YES;
-    id compute = nil;
-    MGLRenderComputeExecutionResult executionResult = {0};
-    BOOL gsQueryCountersReady = NO;
-    MGLRenderComputeExecutionPlan executionPlan = {0};
-    NSMutableArray *executionTemporaries = [NSMutableArray array];
-    executionPlan.pipeline = (__bridge void *)pipeline;
-    if (!mglDrawGsAppendCoreBindings(
-            &executionPlan, (__bridge void *)input, (uint64_t)inputOffset,
-            (__bridge void *)output, (__bridge void *)counts,
-            (__bridge void *)(gatherBuf ? gatherBuf : counts),
-            xfbCaptureBuffer ? (__bridge void *)xfbCaptureBuffer : NULL,
-            (__bridge void *)xfbMetaBuf,
-            (__bridge void *)(xfbVisBuffer ? xfbVisBuffer : counts),
-            &gparams, (uint32_t)sizeof(gparams))) {
-        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-        mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                         (GLenum)mglRenderErrorOutOfMemory());
-        return YES;
-    }
-    if (getenv("MGL_GS_DIAG")) {
-        Program *gp = mglResolveProgramForStageFromState(drawCtx, _GEOMETRY_SHADER);
-        NSLog(@"MGL GS DIAG GS uniform-constant resources: %u",
-              gp ? gp->shader_resources_list[_GEOMETRY_SHADER][_UNIFORM_CONSTANT_RES].count : 0u);
-    }
-    if (getenv("MGL_GPU_CAPTURE")) {
-        id desc = [self mglCaptureDescriptorForDevice:self->_device
-                                          outputPath:[NSString stringWithUTF8String:getenv("MGL_GPU_CAPTURE")]];
-        NSError *capErr = nil;
-        if (desc && [self mglStartCaptureWithDescriptor:desc error:&capErr]) {
-            NSLog(@"MGL GPU capture started -> %s", getenv("MGL_GPU_CAPTURE"));
-        } else {
-            NSLog(@"MGL GPU capture start failed: %@", capErr.localizedDescription);
-        }
-    }
-    bool buffersOK = [self bindBuffersToComputeEncoder:compute
-                                                   stage:_GEOMETRY_SHADER
-                                               copyBacks:&stageCopyBacks
-                                           executionPlan:&executionPlan
-                                            temporaries:executionTemporaries];
-    bool texturesOK = buffersOK && [self bindTexturesToComputeEncoder:compute
-                                                                stage:_GEOMETRY_SHADER
-                                                        executionPlan:&executionPlan
-                                                         temporaries:executionTemporaries];
-    if (getenv("MGL_GS_DIAG")) {
-        for (uint32_t bi = 0; bi < executionPlan.binding_op_count; bi++) {
-            const MGLRenderComputeBindingOp *op = &executionPlan.binding_ops[bi];
-            NSLog(@"MGL GS DIAG binding[%u] kind=%u slot=%u offset=%llu buffer=%p",
-                  (unsigned)bi, (unsigned)op->kind, (unsigned)op->index,
-                  (unsigned long long)op->offset, op->buffer);
-            if (op->kind == 0u && op->index == 0u && op->buffer) {
-                const float *f = (const float *)mglDrawSupportBufferContents(
-                    (__bridge id)op->buffer);
-                const int32_t *iw = (const int32_t *)f;
-                NSLog(@"MGL GS DIAG uniform slot0 words: %d %d %d %d %d %d %d %d",
-                      iw[0], iw[1], iw[2], iw[3], iw[4], iw[5], iw[6], iw[7]);
-            }
-        }
-    }
-    if (!buffersOK || !texturesOK) {
-        if (compute) mglDrawSupportEndComputeEncoder(compute);
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-        return YES;
-    }
-    if (cppDispatch) {
-        MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
-        uint32_t copyBackEntryCount = mglRenderCollectCopyBackEntries(
-            (const MGLRenderCopyBackEntry *)stageCopyBacks.slots,
-            kMGLMaxBufferSlots, copyBackEntries, kMGLMaxBufferSlots);
-        executionPlan.dispatch = (MGLRenderComputePlan){
-            .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
-            .groups_x = (uint32_t)workItemCount,
-            .groups_y = 1u,
-            .groups_z = 1u,
-            .local_x = 1u,
-            .local_y = 1u,
-            .local_z = 1u,
-        };
-        executionPlan.barrier_scope = copyBackEntryCount
-            ? MGL_RENDER_COMPUTE_BARRIER_BUFFERS
-            : MGL_RENDER_COMPUTE_BARRIER_NONE;
-        const BOOL requireCPUVisibility = mglDrawGsNeedCPUVisibility(
-            xfbActive ? 1 : 0,
-            (mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
-             mglHasActivePrimitiveQuery(drawCtx) ||
-             mglHasActiveGeometryShaderQuery(drawCtx))
-                ? 1
-                : 0) != 0;
-        const BOOL gsDiagnostic = getenv("MGL_GS_DIAG") != NULL;
-        char executionError[256] = {0};
-        if (mglRenderExecuteComputeExecutionPlan(
-                self->_renderPassManager.state->currentCommandBufferOwner,
-                self->_gpuRecovery.commandRecoveryOwner,
-                &executionPlan, copyBackEntries, copyBackEntryCount,
-                (requireCPUVisibility || gsDiagnostic) ? 1u : 0u, &executionResult,
-                executionError, sizeof(executionError)) != 0) {
-            if (executionResult.transaction.device_reset_requested) {
-                atomic_store_explicit(&self->_deviceResetRequested, true,
-                                      memory_order_release);
-            }
-            NSLog(@"MGL GS ERROR: C++ execution transaction failed: %s",
-                  executionError[0] ? executionError : "unknown error");
-            [self clearStageBindingCopyBacks:&stageCopyBacks];
-            drawCtx->active_state->dirty_bits = DIRTY_ALL;
-            return YES;
-        }
-        gsQueryCountersReady = executionResult.transaction.waited != 0;
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
-    }
-    self->_geometry.expansionActive = YES;
-    self->_geometry.program = program;
-    /* The passthrough pipeline rasterizes the GS output primitive class, so
-     * drive inputPrimitiveTopology from the output mode, not the GL input
-     * mode (e.g. points in -> triangle_strip out). */
-    self->_lastDrawPrimitiveMode = mglDrawGsLastDrawMode(outputPrimitive);
-    drawCtx->active_state->dirty_bits = DIRTY_ALL;
-
-    /* ---- GL4 ordered XFB: CPU prefix-sum + pass-2 scatter ----
-     * pass 1 (above) filled the visibility buffer; compute per-buffer
-     * exclusive prefix offsets and run the ordered scatter kernel.  The
-     * pass-1 transaction already waited for CPU visibility (requireCPUVisibility
-     * includes xfbActive), so the visibility contents are stable here. */
-    NSUInteger bufferWritten[MGL_AIR_GS_MAX_STREAMS] = {0u};
-    if (xfbActive && xfbVisBuffer && xfbOffsetBuffer && xfbWrittenBuffer &&
-        scatterPipeline && xfbCaptureBuffer &&
-        mglDrawSupportBufferContents(xfbVisBuffer) &&
-        mglDrawSupportBufferContents(xfbOffsetBuffer) &&
-        mglDrawSupportBufferContents(xfbWrittenBuffer)) {
-        uint32_t *vis =
-            (uint32_t *)mglDrawSupportBufferContents(xfbVisBuffer);
-        uint32_t *offsets =
-            (uint32_t *)mglDrawSupportBufferContents(xfbOffsetBuffer);
-        if (xfbDiag && counts &&
-            mglDrawSupportBufferContents(counts) && output &&
-            mglDrawSupportBufferContents(output)) {
-            const uint32_t *cw =
-                (const uint32_t *)mglDrawSupportBufferContents(counts);
-            const float *outPos = (const float *)
-                mglDrawSupportBufferContents(output);
-            outPos += (MGL_AIR_GS_HEADER_RECORDS * outputStride) /
-                      sizeof(float);
-            NSLog(@"MGL GS XFB DIAG pass1 vertex_count=%u emit=%u vis[0]=%u "
-                  "out.pos={%g,%g,%g,%g}",
-                  cw[0], cw[MGL_AIR_GS_COUNTS_ARGS_WORDS + 2u], vis[0],
-                  outPos[0], outPos[1], outPos[2], outPos[3]);
-        }
-        /* Exclusive prefix-sum per buffer across work items. */
-        mglDrawGsExclusivePrefixSum(vis, offsets, (uint32_t)workItemCount,
-                                    xfbBufferCount);
-        /* Run pass 2 as its own compute transaction on the scatter PSO. */
-        MGLRenderComputeExecutionPlan scatterPlan = {0};
-        if (!mglDrawGsFillXFBScatterPlan(
-                &scatterPlan, (__bridge void *)scatterPipeline, &scatterParams,
-                (uint32_t)sizeof(scatterParams),
-                (__bridge void *)xfbVisBuffer,
-                (__bridge void *)xfbOffsetBuffer, (__bridge void *)output,
-                (__bridge void *)xfbCaptureBuffer,
-                (__bridge void *)xfbWrittenBuffer, (uint32_t)workItemCount)) {
-            drawCtx->active_state->dirty_bits = DIRTY_ALL;
-            mglDispatchError(drawCtx, label ? label : "geometryDraw",
-                             (GLenum)mglRenderErrorOutOfMemory());
-            return YES;
-        }
-        MGLRenderComputeExecutionResult scatterResult = {0};
-        char scatterError[256] = {0};
-        if (mglRenderExecuteComputeExecutionPlan(
-                self->_renderPassManager.state->currentCommandBufferOwner,
-                self->_gpuRecovery.commandRecoveryOwner,
-                &scatterPlan, NULL, 0u, 1u, &scatterResult,
-                scatterError, sizeof(scatterError)) != 0) {
-            if (scatterResult.transaction.device_reset_requested) {
-                atomic_store_explicit(&self->_deviceResetRequested, true,
-                                      memory_order_release);
-            }
-            NSLog(@"MGL GS XFB ERROR: scatter transaction failed: %s",
-                  scatterError[0] ? scatterError : "unknown error");
-            drawCtx->active_state->dirty_bits = DIRTY_ALL;
-            return YES;
-        }
-        /* Reduce the per-(work-item, buffer) written counters. */
-        const uint32_t *written =
-            (const uint32_t *)mglDrawSupportBufferContents(xfbWrittenBuffer);
-        for (uint32_t b = 0u; b < xfbBufferCount; b++) {
-            bufferWritten[b] = (NSUInteger)mglDrawGsReduceBufferWritten(
-                written, (uint32_t)workItemCount, b);
-        }
-    }
-
-    GLuint64 queryGenerated = 0u;
-    GLuint64 queryWritten = 0u;
-    const MGLAIRGSXFBMeta *queryMeta = NULL;
-    if (xfbActive && xfbMetaBuf && mglDrawSupportBufferContents(xfbMetaBuf)) {
-
-        const MGLAIRGSXFBMeta *meta =
-            (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
-        queryMeta = meta;
-        /* Ordered multi-buffer copy-back: blit each buffer's written segment
-         * (already whole-primitive truncated by the scatter kernel) back to
-         * its GL XFB target and advance the session write offset. */
-        if (xfbTemporary) {
-            id xfbBlit = nil;
-            uint8_t *xfbTempBytes =
-                (uint8_t *)mglDrawSupportBufferContents(xfbTemporary);
-            /* Decode integer float-carriers in the compact temporary before
-             * the GPU blit / CPU shadow mirror (same contract as VS XFB). */
-            if (xfbTempBytes) {
-                for (uint32_t b = 0u; b < xfbBufferCount; b++) {
-                    if (scatterParams.buffers[b].stride == 0u) continue;
-                    NSUInteger region = bufferWritten[b];
-                    if (region == 0u) continue;
-                    mglXfbDecodeIntCarriersInBytes(
-                        xfbTempBytes + bufferPhysBase[b], (uint64_t)region,
-                        scatterParams.buffers[b].stride, program, b,
-                        _GEOMETRY_SHADER);
-                }
-            }
-            for (uint32_t b = 0u; b < xfbBufferCount; b++) {
-                if (!mglDrawGsXFBCopyReady(
-                        bufferDstMTL[b] ? 1 : 0,
-                        scatterParams.buffers[b].stride,
-                        (uint64_t)bufferWritten[b])) {
-                    continue;
-                }
-                NSUInteger copyBytes = (NSUInteger)mglDrawGsClampXFBCopy(
-                    (uint64_t)bufferWritten[b],
-                    (uint64_t)bufferRemaining[b]);
-                if (copyBytes == 0u) continue;
-                if (!xfbBlit) {
-                    xfbBlit = mglDrawSupportCreateBlitEncoder(
-                        self->_renderPassManager.state->currentCommandBufferOwner);
-                    if (!xfbBlit) {
-                        self->_geometry.expansionActive = NO;
-                        self->_geometry.program = NULL;
-                        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-                        return YES;
-                    }
-                }
-                mglDrawSupportBlitCopyBuffer(xfbBlit, xfbTemporary,
-                                             bufferPhysBase[b],
-                                             bufferDstMTL[b],
-                                             bufferDstOffset[b], copyBytes);
-                BufferBaseTarget *slot = &MGL_STATE(drawCtx)
-                    ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
-                if (slot->buf) {
-                    slot->buf->ever_written = (GLboolean)mglRenderGLBoolean(1);
-                    if (xfbTempBytes &&
-                        mglXfbCPUShadowFits(
-                            slot->buf->data.buffer_data ? 1 : 0,
-                            slot->buf->size, (uint64_t)bufferDstOffset[b],
-                            (uint64_t)copyBytes)) {
-                        memcpy((uint8_t *)slot->buf->data.buffer_data +
-                                   bufferDstOffset[b],
-                               xfbTempBytes + bufferPhysBase[b], copyBytes);
-                        mglRenderMarkBufferCPUWrite(
-                            slot->buf, (int64_t)bufferDstOffset[b],
-                            (int64_t)copyBytes);
-                    }
-                    uint8_t *liveBase = (uint8_t *)mglDrawSupportBufferContents(
-                        bufferDstMTL[b]);
-                    if (xfbTempBytes && liveBase) {
-                        MGLRenderBufferInfo liveInfo = {0};
-                        if (mglRenderGetBufferInfo(
-                                (__bridge void *)bufferDstMTL[b],
-                                &liveInfo) == 0 &&
-                            bufferDstOffset[b] + copyBytes <= liveInfo.length) {
-                            memcpy(liveBase + bufferDstOffset[b],
-                                   xfbTempBytes + bufferPhysBase[b],
-                                   copyBytes);
-                        }
-                    }
-                }
-                xfbState->buffer_write_offsets[b] = mglXfbAdvanceWriteOffset(
-                    xfbState->buffer_write_offsets[b], (uint64_t)copyBytes);
-            }
-            if (xfbBlit) mglDrawSupportEndBlitEncoder(xfbBlit);
-        }
-        /* stream 0 (non-indexed) written primitives come from buffer 0's
-         * written bytes; the buffer-0 record stride is the per-primitive
-         * packed size for the captured stream-0 varyings. */
-        queryWritten = mglDrawGsQueryWritten(
-            outputPrimitive, scatterParams.buffers[0].stride,
-            (uint64_t)bufferWritten[0]);
-        /* Indexed stream>0 generated counters stay in the meta. */
-    }
-    if (!queryMeta && xfbMetaBuf && mglDrawSupportBufferContents(xfbMetaBuf) &&
-        (mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
-         mglHasActivePrimitiveQuery(drawCtx) ||
-         mglHasActiveGeometryShaderQuery(drawCtx))) {
-        queryMeta = (const MGLAIRGSXFBMeta *)mglDrawSupportBufferContents(xfbMetaBuf);
-    }
-    if (gsQueryCountersReady && counts &&
-        mglDrawSupportBufferContents(counts)) {
-        queryGenerated = mglDrawGsReduceGeneratedPrimitives(
-            gsOutputMode, (uint32_t)workItemCount, maxVertices,
-            (const uint32_t *)mglDrawSupportBufferContents(counts), queryMeta);
-    } else if (queryMeta) {
-        queryGenerated = mglDrawGsReduceGeneratedPrimitives(
-            gsOutputMode, (uint32_t)workItemCount, maxVertices, NULL,
-            queryMeta);
-    }
-    if (mglDrawGsSkipRaster(xfbActive ? 1 : 0,
-                            MGL_STATE(drawCtx)->caps.rasterizer_discard
-                                ? 1
-                                : 0)) {
-        /* GL_RASTERIZER_DISCARD: no pixels by definition; the compute
-         * expansion already ran and the primitive query must still count
-         * the generated/written primitives (persistent query semantics). */
-        self->_currentCBHasWork = YES;
-        mglRecordGeometryPrimitiveQueries(
-            drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
-            gsStreamCount, bufferWritten, bufferStride, workItemCount);
-        self->_geometry.expansionActive = NO;
-        self->_geometry.program = NULL;
-        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-        return YES;
-    }
-    if (getenv("MGL_GS_DIAG"))
-        NSLog(@"MGL GS DIAG rasterize-check empty=%d culled=%d enc=%d",
-              (int)[self currentDrawRasterizationIsEmpty],
-              (int)[self currentDrawModeIsFullyCulled:gsOutputMode],
-              (int)mglRenderEncoderOwnerHasCurrent(
-                  self->_renderPassManager.state->currentRenderEncoderOwner));
-    if (!mglDrawGsPassthroughRasterReady(
-            [self processGLState:true] ? 1 : 0,
-            mglRenderEncoderOwnerHasCurrent(
-                self->_renderPassManager.state->currentRenderEncoderOwner),
-            [self currentDrawRasterizationIsEmpty] ? 1 : 0,
-            [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0)) {
-        if (xfbActive || mglHasActiveIndexedPrimitiveQuery(drawCtx) ||
-            mglHasActivePrimitiveQuery(drawCtx) ||
-            mglHasActiveGeometryShaderQuery(drawCtx)) {
-            self->_currentCBHasWork = YES;
-            mglRecordGeometryPrimitiveQueries(
-                drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
-                gsStreamCount, bufferWritten, bufferStride, workItemCount);
-        }
-        self->_geometry.expansionActive = NO;
-        self->_geometry.program = NULL;
-        drawCtx->active_state->dirty_bits = DIRTY_ALL;
-        return YES;
-    }
-
-    /* The GS compute dispatch ended the render encoder and processGLState
-     * rebuilt it, but the dirty-domain resource sync may have been marked
-     * done for the *previous* encoder. Rebind fragment-stage buffers
-     * (plain uniforms etc.) and storage images on the fresh encoder before
-     * the indirect draws, or the fragment shader reads unbound slots. */
-    if (!getenv("MGL_ABLATE_GS_REBIND")) {
-        /* The binding-state dedup still reflects the pre-compute encoder;
-         * clear the fragment tables so the rebind below is not skipped. */
-        for (uint32_t slot = 0u; slot < 31u; slot++)
-            mglRenderBindingClearFragmentBuffer(self->_bindingStateOwner, slot);
-        const uint32_t texSlots = (uint32_t)TEXTURE_UNITS;
-        for (uint32_t slot = 0u; slot < texSlots; slot++)
-            mglRenderBindingClearFragmentTexture(self->_bindingStateOwner, slot);
-        MGLEncodeContext gsEncCtx = {
-            .render_encoder_owner =
-                self->_renderPassManager.state->currentRenderEncoderOwner,
-        };
-        [self bindFragmentBuffersToCurrentRenderEncoder:&gsEncCtx];
-        [self bindBufferSizeConstantsForRenderEncoder];
-        Program *gsVertexProgram = mglResolveProgramForStageFromState(
-            drawCtx, _VERTEX_SHADER);
-        Program *gsFragmentProgram = mglResolveProgramForStageFromState(
-            drawCtx, _FRAGMENT_SHADER);
-        if (![self bindStorageImagesForVertexProgram:gsVertexProgram
-                                     fragmentProgram:gsFragmentProgram]) {
-            self->_geometry.expansionActive = NO;
-            self->_geometry.program = NULL;
-            drawCtx->active_state->dirty_bits = DIRTY_ALL;
-            return YES;
-        }
-    }
-    [self applyPolygonOffsetForDrawMode:gsOutputMode];
-    if (getenv("MGL_SYNC_AFTER_GS")) {
-        [self flushCommandBuffer:YES];
-        NSLog(@"MGL GS sync: flushed after compute");
-    }
-    if (getenv("MGL_GS_DIAG")) {
-        const uint32_t *cw = (const uint32_t *)mglDrawSupportBufferContents(counts);
-        NSLog(@"MGL GS DIAG draw counts w0..6: %u %u %u %u %u %u %u outputBuf=%p",
-              cw[0], cw[1], cw[2], cw[3], cw[4], cw[5], cw[6], output);
-        for (NSUInteger w = 0u; w < workItemCount; w++)
-            NSLog(@"MGL GS DIAG counts[%lu] full: %u %u %u %u %u %u %u",
-                  (unsigned long)w,
-                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS],
-                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 1],
-                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 2],
-                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 3],
-                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 4],
-                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 5],
-                  cw[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 6]);
-        {
-            const float *of = (const float *)mglDrawSupportBufferContents(output);
-            NSLog(@"MGL GS DIAG output floats [1040B]=%g,%g,%g,%g [1920B]=%g,%g [2800B]=%g,%g",
-                  of[260], of[261], of[262], of[263],
-                  of[480], of[481], of[700], of[701]);
-        }
-    }
-    if (getenv("MGL_GS_SINGLE_DRAW")) {
-        /* bisect: one draw over all records; header records carry pos=0
-         * and are clipped away by the rasterizer. */
-        const uint32_t totalVerts =
-            (uint32_t)(workItemCount * recordsPerPrimitive) -
-            MGL_AIR_GS_HEADER_RECORDS;
-        uint32_t *cw1 = (uint32_t *)mglDrawSupportBufferContents(counts);
-        cw1[0] = totalVerts;
-        cw1[1] = 1u;
-        mglDrawSupportSetVertexBuffer(
-            self->_renderPassManager.state->currentRenderEncoderOwner, output,
-            MGL_AIR_GS_HEADER_RECORDS * outputStride, 0u);
-        mglDrawSupportDrawPrimitives(
-            self->_renderPassManager.state->currentRenderEncoderOwner,
-            outputPrimitive, 0u, totalVerts, 1u, 0u);
-        goto after_gs_draws;
-    }
-    if (getenv("MGL_GS_COPY_DRAW")) {
-        /* bisect: copy each work item's records to a fresh offset-0 buffer
-         * (CPU readback -> newBufferWithBytes) and draw from that. */
-        const uint8_t *src = (const uint8_t *)mglDrawSupportBufferContents(output);
-        for (GLuint w = 0u; w < workItemCount; w++) {
-            NSUInteger srcOff =
-                ((NSUInteger)w * recordsPerPrimitive +
-                 MGL_AIR_GS_HEADER_RECORDS) * outputStride;
-            NSUInteger bytes = (NSUInteger)9u * outputStride;
-            id sub = mglDrawSupportCreateBufferWithBytes(
-                self->_device, src + srcOff, bytes, 0u);
-            const uint32_t *cwv = (const uint32_t *)mglDrawSupportBufferContents(counts);
-            mglDrawSupportSetVertexBuffer(
-                self->_renderPassManager.state->currentRenderEncoderOwner, sub, 0u, 0u);
-            mglDrawSupportDrawPrimitives(
-                self->_renderPassManager.state->currentRenderEncoderOwner,
-                outputPrimitive, 0u,
-                cwv ? cwv[w * MGL_AIR_GS_COUNTS_RECORD_WORDS] : 0u, 1u, 0u);
-        }
-        goto after_gs_draws;
-    }
-    const bool gsDiagEncode =
-        getenv("MGL_GS_ONLY_PRIM") || getenv("MGL_GS_DRAW_OFFSET") ||
-        getenv("MGL_GS_VSTART_DRAW") || getenv("MGL_GS_BIND_INPUT") ||
-        getenv("MGL_GS_DIRECT_DRAW") || getenv("MGL_GS_DRAW_VCOUNT") ||
-        getenv("MGL_GS_REVERSE_DRAW") || getenv("MGL_GS_DIAG");
-    if (!gsDiagEncode) {
-        const MGLGsPassthroughEncodeState gsEnc = {
-            .encoder_owner =
-                self->_renderPassManager.state->currentRenderEncoderOwner,
-            .output_buffer = (__bridge void *)output,
-            .counts_buffer = (__bridge void *)counts,
-            .output_primitive = outputPrimitive,
-            .work_item_count = (uint32_t)workItemCount,
-            .records_per_primitive = (uint32_t)recordsPerPrimitive,
-            .output_stride = (uint32_t)outputStride,
-            .counts_record_bytes = (uint32_t)countsRecordBytes,
-        };
-        mglDrawGsEncodePassthrough(&gsEnc);
-        goto after_gs_draws;
-    }
-    const char *onlyPrim = getenv("MGL_GS_ONLY_PRIM");
-    for (GLuint iter = 0u; iter < workItemCount; iter++) {
-        GLuint primitive = getenv("MGL_GS_REVERSE_DRAW")
-            ? (workItemCount - 1u - iter) : iter;
-        if (onlyPrim && (GLint)primitive != atoi(onlyPrim)) continue;
-        const char *offOverride = getenv("MGL_GS_DRAW_OFFSET");
-        NSUInteger offset =
-            ((NSUInteger)primitive * recordsPerPrimitive +
-             MGL_AIR_GS_HEADER_RECORDS) * outputStride;
-        if (offOverride) offset = (NSUInteger)atol(offOverride);
-        if (getenv("MGL_GS_VSTART_DRAW")) {
-            /* bisect: bind at 0 and use indirect vertexStart to select the
-             * work item's records (gl_VertexID starts at vertexStart). */
-            static uint32_t *cwStart = NULL;
-            cwStart = (uint32_t *)mglDrawSupportBufferContents(counts);
-            cwStart[primitive * MGL_AIR_GS_COUNTS_RECORD_WORDS + 2] =
-                primitive * (uint32_t)recordsPerPrimitive + 2u;
-            offset = 0u;
-        }
-        id ptvsSource = output;
-        NSUInteger ptvsOffset = offset;
-        if (getenv("MGL_GS_BIND_INPUT")) {
-            /* Diagnostic: point the passthrough VS at the capture buffer
-             * instead of the kernel output so the rendered image shows
-             * what the GPU actually wrote per input vertex.  An explicit
-             * MGL_GS_DRAW_OFFSET still wins, for byte-range scans. */
-            ptvsSource = input;
-            if (!getenv("MGL_GS_DRAW_OFFSET"))
-                ptvsOffset = inputOffset;
-            offset = 0u;
-        }
-        mglDrawSupportSetVertexBuffer(self->_renderPassManager.state->currentRenderEncoderOwner, ptvsSource, ptvsOffset, 0u);
-        if (getenv("MGL_GS_DIRECT_DRAW")) {
-            const uint32_t *cw2 = (const uint32_t *)mglDrawSupportBufferContents(counts);
-            mglDrawSupportDrawPrimitives(
-                self->_renderPassManager.state->currentRenderEncoderOwner, outputPrimitive,
-                0u, cw2 ? cw2[primitive * MGL_AIR_GS_COUNTS_RECORD_WORDS] : 0u,
-                1u, 0u);
-        } else if (getenv("MGL_GS_DRAW_VCOUNT")) {
-            mglDrawSupportDrawPrimitives(
-                self->_renderPassManager.state->currentRenderEncoderOwner, outputPrimitive,
-                0u, (NSUInteger)atol(getenv("MGL_GS_DRAW_VCOUNT")), 1u, 0u);
-        } else
-        mglDrawSupportDrawPrimitivesIndirect(
-            self->_renderPassManager.state->currentRenderEncoderOwner, outputPrimitive, counts,
-            (offOverride ? 0u : (NSUInteger)primitive * countsRecordBytes));
-        if (getenv("MGL_GS_DIAG")) {
-            NSLog(@"MGL GS DIAG pre-draw prim=%u enc=%d",
-                  primitive,
-                  (int)mglRenderEncoderOwnerHasCurrent(
-                      self->_renderPassManager.state->currentRenderEncoderOwner));
-            const float *op = (const float *)((const uint8_t *)mglDrawSupportBufferContents(output) + offset);
-            NSLog(@"MGL GS DIAG draw prim=%u offset=%lu firstRec={%g,%g,%g,%g}",
-                  primitive, (unsigned long)offset,
-                  op[0], op[1], op[2], op[3], 0.0);
-        }
-    }
-after_gs_draws:
-    if (getenv("MGL_GS_POST_DIAG")) {
-        /* Dump the output records after the frame's GPU work completes
-         * (the caller's glFinish/ReadPixels drains the encoders), so the
-         * CPU view reflects what the rasterizing draws actually read. */
-        [self flushCommandBuffer:YES];
-        const uint8_t *outBytes =
-            (const uint8_t *)mglDrawSupportBufferContents(output);
-        NSLog(@"MGL GS POST-DIAG outputStride=%lu recordsPerPrim=%lu",
-              (unsigned long)outputStride, (unsigned long)recordsPerPrimitive);
-        if (input) {
-            const uint8_t *inBytes =
-                (const uint8_t *)mglDrawSupportBufferContents(input);
-            NSUInteger inStride = mglAIRPerVertexStrideForResources(
-                &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
-            for (GLuint vtx = 0u; vtx < MIN((GLuint)count, 6u); vtx++) {
-                const float *p = (const float *)(inBytes +
-                    (NSUInteger)(vtx + (GLuint)first) * inStride);
-                NSLog(@"MGL GS POST-DIAG in.cap[%u] pos={%g,%g,%g,%g} vary@64={%g,%g,%g,%g} @80={%g,%g,%g,%g}",
-                      (unsigned)(vtx + (GLuint)first),
-                      p[0], p[1], p[2], p[3], p[16], p[17], p[18], p[19],
-                      p[20], p[21], p[22], p[23]);
-            }
-        }
-        for (GLuint wi = 0u; wi < MIN(workItemCount, 4u); wi++) {
-            for (GLuint rec = 0u; rec < MIN(recordsPerPrimitive, 9u); rec++) {
-                const float *p = (const float *)(outBytes +
-                    ((NSUInteger)wi * recordsPerPrimitive + rec) * outputStride);
-                NSLog(@"MGL GS POST-DIAG out[%u].rec[%u] pos={%g,%g,%g,%g} ps=%g cull=%g,%g vary={%g,%g,%g,%g}",
-                      (unsigned)wi, (unsigned)rec,
-                      p[0], p[1], p[2], p[3],
-                      p[4], p[5], p[6],
-                      p[16], p[17], p[18], p[19]);
-            }
-        }
-    }
-    self->_currentCBHasWork = YES;
-    if (getenv("MGL_GPU_CAPTURE")) {
-        [self flushCommandBuffer:YES];
-        [self mglStopCapture];
-        NSLog(@"MGL GPU capture stopped");
-    }
-    mglRecordGeometryPrimitiveQueries(
-        drawCtx, queryGenerated, queryWritten, xfbActive, queryMeta,
-        gsStreamCount, bufferWritten, bufferStride, workItemCount);
-    self->_geometry.expansionActive = NO;
-    self->_geometry.program = NULL;
-    drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    return YES;
-    return YES;
-}
+/* GS Metal expansion orchestration → mgl_draw_gs_metal.cpp;
+ * ObjC HostOps ports + mglDrawHostGsExecuteMetalExpansion live below
+ * (after StageHost thin ports). */
 
 - (bool) validateDrawArraysVertexInputs:(GLMContext)drawCtx
                                     mode:(GLenum)mode
@@ -2105,6 +1241,294 @@ static uint32_t mglStagePendingGsStride(void *renderer)
     MGLRenderer *self = mglStageHostSelf(renderer);
     return self ? (uint32_t)self->_tessellation.pendingGSInputStride : 0u;
 }
+
+
+/* ---- O1.4 residual: GS Metal expansion HostOps (thin MTL materialization) ---- */
+
+static void mglGsMetalRelease(void *obj)
+{
+    if (obj) CFRelease(obj);
+}
+
+static uint64_t mglGsMetalBufferLength(void *buffer)
+{
+    return buffer ? (uint64_t)mglDrawSupportBufferLength((__bridge id)buffer) : 0u;
+}
+
+static int mglGsMetalEnsureCB(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    return self && [self newCommandBuffer] ? 1 : 0;
+}
+
+static int mglGsMetalBindDrawTextures(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self || !ctx) return 0;
+    for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
+        Texture *image = MGL_STATE(ctx)->image_units[unit].tex;
+        Texture *sampled = MGL_STATE(ctx)->active_textures[unit];
+        if (image && ![self bindMTLTexture:image]) return 0;
+        if (sampled && ![self bindMTLTexture:sampled]) return 0;
+    }
+    return 1;
+}
+
+static void *mglGsMetalMtlForBuffer(void *renderer, Buffer *buf)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self || !buf) return NULL;
+    if (!buf->data.mtl_data) {
+        [self bindMTLBuffer:buf];
+    }
+    return buf->data.mtl_data;
+}
+
+static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
+                                         MGLRenderComputeExecutionPlan *plan,
+                                         MGLRenderCopyBackEntry *copybacks,
+                                         uint32_t copybacks_cap,
+                                         uint32_t *copybacks_count)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self || !plan || !copybacks || !copybacks_count) return 0;
+    (void)ctx;
+    MGLStageBindingCopyBackList stageCopyBacks = {0};
+    NSMutableArray *temps = [NSMutableArray array];
+    id compute = nil;
+    bool buffersOK = [self bindBuffersToComputeEncoder:compute
+                                                   stage:_GEOMETRY_SHADER
+                                               copyBacks:&stageCopyBacks
+                                           executionPlan:plan
+                                            temporaries:temps];
+    bool texturesOK = buffersOK && [self bindTexturesToComputeEncoder:compute
+                                                                stage:_GEOMETRY_SHADER
+                                                        executionPlan:plan
+                                                         temporaries:temps];
+    if (!buffersOK || !texturesOK) {
+        if (compute) mglDrawSupportEndComputeEncoder(compute);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return 0;
+    }
+    uint32_t n = mglRenderCollectCopyBackEntries(
+        (const MGLRenderCopyBackEntry *)stageCopyBacks.slots,
+        kMGLMaxBufferSlots, copybacks, copybacks_cap);
+    *copybacks_count = n;
+    [self clearStageBindingCopyBacks:&stageCopyBacks];
+    return 1;
+}
+
+static void *mglGsMetalCmdOwner(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    return self ? self->_renderPassManager.state->currentCommandBufferOwner : NULL;
+}
+
+static void *mglGsMetalRecoveryOwner(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    return self ? self->_gpuRecovery.commandRecoveryOwner : NULL;
+}
+
+static void mglGsMetalNoteDeviceReset(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (self) {
+        atomic_store_explicit(&self->_deviceResetRequested, true,
+                              memory_order_release);
+    }
+}
+
+static void mglGsMetalSetExpansion(void *renderer, Program *program, int active,
+                                   GLenum last_draw_mode)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self) return;
+    self->_geometry.expansionActive = active ? YES : NO;
+    self->_geometry.program = active ? program : NULL;
+    if (active && last_draw_mode) {
+        self->_lastDrawPrimitiveMode = last_draw_mode;
+    }
+}
+
+static void *mglGsMetalBeginBlit(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self) return NULL;
+    id blit = mglDrawSupportCreateBlitEncoder(
+        self->_renderPassManager.state->currentCommandBufferOwner);
+    return (__bridge_retained void *)blit;
+}
+
+static void mglGsMetalBlitCopy(void *blit, void *src, uint64_t src_off, void *dst,
+                               uint64_t dst_off, uint64_t bytes)
+{
+    mglDrawSupportBlitCopyBuffer((__bridge id)blit, (__bridge id)src,
+                                 (NSUInteger)src_off, (__bridge id)dst,
+                                 (NSUInteger)dst_off, (NSUInteger)bytes);
+}
+
+static void mglGsMetalEndBlit(void *blit)
+{
+    if (!blit) return;
+    mglDrawSupportEndBlitEncoder((__bridge id)blit);
+    CFRelease(blit);
+}
+
+static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self || !ctx) return 0;
+    for (uint32_t slot = 0u; slot < 31u; slot++)
+        mglRenderBindingClearFragmentBuffer(self->_bindingStateOwner, slot);
+    const uint32_t texSlots = (uint32_t)TEXTURE_UNITS;
+    for (uint32_t slot = 0u; slot < texSlots; slot++)
+        mglRenderBindingClearFragmentTexture(self->_bindingStateOwner, slot);
+    MGLEncodeContext gsEncCtx = {
+        .render_encoder_owner =
+            self->_renderPassManager.state->currentRenderEncoderOwner,
+    };
+    [self bindFragmentBuffersToCurrentRenderEncoder:&gsEncCtx];
+    [self bindBufferSizeConstantsForRenderEncoder];
+    Program *gsVertexProgram =
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    Program *gsFragmentProgram =
+        mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    return [self bindStorageImagesForVertexProgram:gsVertexProgram
+                                   fragmentProgram:gsFragmentProgram]
+               ? 1
+               : 0;
+}
+
+static void mglGsMetalRecordQueries(GLMContext ctx, uint64_t generated,
+                                    uint64_t written, int xfb_active,
+                                    const MGLAIRGSXFBMeta *meta,
+                                    uint32_t stream_count,
+                                    const uint64_t *buffer_written,
+                                    const uint64_t *buffer_stride,
+                                    uint64_t geometry_invocations)
+{
+    NSUInteger bw[MGL_AIR_GS_MAX_STREAMS] = {0};
+    NSUInteger bs[MGL_AIR_GS_MAX_STREAMS] = {0};
+    uint32_t n = stream_count < MGL_AIR_GS_MAX_STREAMS ? stream_count
+                                                       : MGL_AIR_GS_MAX_STREAMS;
+    for (uint32_t i = 0; i < n; i++) {
+        if (buffer_written) bw[i] = (NSUInteger)buffer_written[i];
+        if (buffer_stride) bs[i] = (NSUInteger)buffer_stride[i];
+    }
+    mglRecordGeometryPrimitiveQueries(ctx, generated, written,
+                                      xfb_active ? YES : NO, meta, stream_count,
+                                      bw, bs, geometry_invocations);
+}
+
+static void mglGsMetalGpuCaptureStart(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self || !getenv("MGL_GPU_CAPTURE")) return;
+    id desc = [self mglCaptureDescriptorForDevice:self->_device
+                                       outputPath:[NSString stringWithUTF8String:getenv("MGL_GPU_CAPTURE")]];
+    NSError *capErr = nil;
+    if (desc && [self mglStartCaptureWithDescriptor:desc error:&capErr]) {
+        NSLog(@"MGL GPU capture started -> %s", getenv("MGL_GPU_CAPTURE"));
+    } else {
+        NSLog(@"MGL GPU capture start failed: %@", capErr.localizedDescription);
+    }
+}
+
+static void mglGsMetalGpuCaptureStop(void *renderer)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (self) [self mglStopCapture];
+}
+
+static void mglGsMetalSetVertexBuffer(void *encoder_owner, void *buffer,
+                                      uint64_t offset, uint32_t index)
+{
+    mglDrawSupportSetVertexBuffer(encoder_owner, (__bridge id)buffer,
+                                  (NSUInteger)offset, index);
+}
+
+static void mglGsMetalDrawPrims(void *encoder_owner, uint32_t output_primitive,
+                                uint32_t vertex_start, uint32_t vertex_count,
+                                uint32_t instance_count, uint32_t base_instance)
+{
+    mglDrawSupportDrawPrimitives(encoder_owner, output_primitive, vertex_start,
+                                 vertex_count, instance_count, base_instance);
+}
+
+static void mglGsMetalDrawPrimsIndirect(void *encoder_owner,
+                                        uint32_t output_primitive, void *counts,
+                                        uint64_t offset)
+{
+    mglDrawSupportDrawPrimitivesIndirect(encoder_owner, output_primitive,
+                                         (__bridge id)counts,
+                                         (NSUInteger)offset);
+}
+
+static void mglGsMetalLogDiag(const char *msg)
+{
+    if (msg) NSLog(@"%s", msg);
+}
+
+int mglDrawHostGsExecuteMetalExpansion(
+    void *renderer, GLMContext drawCtx, GLenum mode, GLint first, GLsizei count,
+    GLenum indexType, const void *indices, GLint baseVertex,
+    GLsizei instanceCount, GLuint baseInstance, const char *label,
+    Program *program, GLenum gsInputMode, GLenum gsOutputMode,
+    uint32_t outputPrimitive, int indexedDraw, void *gatherBufPtr,
+    const void *gparamsPtr, uint32_t gparamsBytes,
+    const MGLGsComputeLayout *gsLayoutPtr, void *inputPtr,
+    uint64_t inputOffsetIn, Program *captureVS, Program *captureTES,
+    uint32_t pendingStride)
+{
+    MGLRenderer *self = mglStageHostSelf(renderer);
+    if (!self || !drawCtx || !program || !gsLayoutPtr || !gparamsPtr) {
+        return 1;
+    }
+    self->ctx = drawCtx;
+    MGLGsMetalExpansionHostOps hops = {
+        .renderer = renderer,
+        .create_buffer = mglStageCreateBuffer,
+        .create_buffer_with_bytes = mglStageCreateBufferBytes,
+        .buffer_contents = mglStageBufContents,
+        .buffer_length = mglGsMetalBufferLength,
+        .release = mglGsMetalRelease,
+        .ensure_command_buffer = mglGsMetalEnsureCB,
+        .bind_draw_textures = mglGsMetalBindDrawTextures,
+        .mtl_for_buffer = mglGsMetalMtlForBuffer,
+        .fill_compute_bindings = mglGsMetalFillComputeBindings,
+        .command_buffer_owner = mglGsMetalCmdOwner,
+        .recovery_owner = mglGsMetalRecoveryOwner,
+        .note_device_reset = mglGsMetalNoteDeviceReset,
+        .set_expansion = mglGsMetalSetExpansion,
+        .mark_cb_has_work = mglStageMarkCbHasWork,
+        .begin_blit = mglGsMetalBeginBlit,
+        .blit_copy = mglGsMetalBlitCopy,
+        .end_blit = mglGsMetalEndBlit,
+        .process_gl_state = mglStageProcessGL,
+        .encoder_has_current = mglStageEncoderHasCurrent,
+        .raster_empty = mglStageRasterEmpty,
+        .fully_culled = mglStageFullyCulled,
+        .apply_polygon_offset = mglStageApplyPolygonOffset,
+        .rebind_fragment_after_gs = mglGsMetalRebindFragment,
+        .encoder_owner = mglStageEncoderOwner,
+        .flush_command_buffer = mglStageFlushCB,
+        .record_queries = mglGsMetalRecordQueries,
+        .gpu_capture_start = mglGsMetalGpuCaptureStart,
+        .gpu_capture_stop = mglGsMetalGpuCaptureStop,
+        .set_vertex_buffer = mglGsMetalSetVertexBuffer,
+        .draw_primitives = mglGsMetalDrawPrims,
+        .draw_primitives_indirect = mglGsMetalDrawPrimsIndirect,
+        .log_diag = mglGsMetalLogDiag,
+    };
+    return mglDrawGsExecuteMetalExpansion(
+        drawCtx, mode, first, count, indexType, indices, baseVertex,
+        instanceCount, baseInstance, label, program, gsInputMode, gsOutputMode,
+        outputPrimitive, indexedDraw, gatherBufPtr, gparamsPtr, gparamsBytes,
+        gsLayoutPtr, inputPtr, inputOffsetIn, captureVS, captureTES,
+        pendingStride, &hops);
+}
+
 
 
 

@@ -192,8 +192,74 @@ int mglDrawGsStageShouldBlockDraw(int stage, uint32_t gs_route,
                                   uint32_t metallib_size);
 
 
-/* O1.4: GS draw host runner. Early topology/gather/input in C++; Metal
- * expansion remains an ObjC port until the next knife finishes HostOps. */
+/* O1.4+: GS draw host runner. Topology/gather/input + Metal expansion in C++;
+ * ObjC supplies thin MTL HostOps (PSO materialize / bind / blit / encode). */
+typedef struct MGLRenderCopyBackEntry_t MGLRenderCopyBackEntry;
+typedef struct MGLRenderComputeExecutionResult_t MGLRenderComputeExecutionResult;
+
+typedef struct MGLGsMetalExpansionHostOps {
+    void *renderer;
+    void *(*create_buffer)(void *renderer, uint64_t length);
+    void *(*create_buffer_with_bytes)(void *renderer, const void *bytes,
+                                      uint64_t length);
+    void *(*buffer_contents)(void *buffer);
+    uint64_t (*buffer_length)(void *buffer);
+    void (*release)(void *obj);
+    int (*ensure_command_buffer)(void *renderer);
+    int (*bind_draw_textures)(void *renderer, GLMContext ctx);
+    void *(*mtl_for_buffer)(void *renderer, Buffer *buf);
+    int (*fill_compute_bindings)(void *renderer, GLMContext ctx,
+                                 MGLRenderComputeExecutionPlan *plan,
+                                 MGLRenderCopyBackEntry *copybacks,
+                                 uint32_t copybacks_cap,
+                                 uint32_t *copybacks_count);
+    void *(*command_buffer_owner)(void *renderer);
+    void *(*recovery_owner)(void *renderer);
+    void (*note_device_reset)(void *renderer);
+    void (*set_expansion)(void *renderer, Program *program, int active,
+                          GLenum last_draw_mode);
+    void (*mark_cb_has_work)(void *renderer);
+    void *(*begin_blit)(void *renderer);
+    void (*blit_copy)(void *blit, void *src, uint64_t src_off, void *dst,
+                      uint64_t dst_off, uint64_t bytes);
+    void (*end_blit)(void *blit);
+    int (*process_gl_state)(void *renderer);
+    int (*encoder_has_current)(void *renderer);
+    int (*raster_empty)(void *renderer);
+    int (*fully_culled)(void *renderer, GLenum mode);
+    void (*apply_polygon_offset)(void *renderer, GLenum mode);
+    int (*rebind_fragment_after_gs)(void *renderer, GLMContext ctx);
+    void *(*encoder_owner)(void *renderer);
+    void (*flush_command_buffer)(void *renderer, int wait);
+    void (*record_queries)(GLMContext ctx, uint64_t generated, uint64_t written,
+                           int xfb_active, const MGLAIRGSXFBMeta *meta,
+                           uint32_t stream_count, const uint64_t *buffer_written,
+                           const uint64_t *buffer_stride,
+                           uint64_t geometry_invocations);
+    void (*gpu_capture_start)(void *renderer);
+    void (*gpu_capture_stop)(void *renderer);
+    void (*set_vertex_buffer)(void *encoder_owner, void *buffer, uint64_t offset,
+                              uint32_t index);
+    void (*draw_primitives)(void *encoder_owner, uint32_t output_primitive,
+                            uint32_t vertex_start, uint32_t vertex_count,
+                            uint32_t instance_count, uint32_t base_instance);
+    void (*draw_primitives_indirect)(void *encoder_owner,
+                                     uint32_t output_primitive, void *counts,
+                                     uint64_t offset);
+    void (*log_diag)(const char *msg);
+} MGLGsMetalExpansionHostOps;
+
+/* C++ owns GS Metal expansion; ObjC fills HostOps and forwards. */
+int mglDrawGsExecuteMetalExpansion(
+    GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLenum indexType,
+    const void *indices, GLint baseVertex, GLsizei instanceCount,
+    GLuint baseInstance, const char *label, Program *program,
+    GLenum gs_input_mode, GLenum gs_output_mode, uint32_t output_primitive,
+    int indexed, void *gather_buf, const void *gparams, uint32_t gparams_bytes,
+    const MGLGsComputeLayout *layout, void *input, uint64_t input_offset,
+    Program *capture_vs, Program *capture_tes, uint32_t pending_stride,
+    const MGLGsMetalExpansionHostOps *ops);
+
 typedef struct MGLGsDrawHostOps {
     void *renderer;
     int (*bind_mtl_program)(void *renderer, Program *program);
@@ -214,7 +280,7 @@ typedef struct MGLGsDrawHostOps {
     void *(*pending_gs_input)(void *renderer);
     uint32_t (*pending_gs_input_offset)(void *renderer);
     uint32_t (*pending_gs_input_stride)(void *renderer);
-    /* Residual: bind pipeline through raster/XFB/query (former method body). */
+    /* Thin ObjC forwarder → mglDrawGsExecuteMetalExpansion + HostOps. */
     int (*execute_metal_expansion)(void *renderer, GLMContext ctx, GLenum mode,
                                    GLint first, GLsizei count, GLenum indexType,
                                    const void *indices, GLint baseVertex,
@@ -233,7 +299,7 @@ typedef struct MGLGsDrawHostOps {
 } MGLGsDrawHostOps;
 
 
-/* ObjC residual port implementing the Metal half of mglDrawGsRunDraw. */
+/* ObjC thin HostOps filler → mglDrawGsExecuteMetalExpansion. */
 int mglDrawHostGsExecuteMetalExpansion(
     void *renderer, GLMContext ctx, GLenum mode, GLint first, GLsizei count,
     GLenum indexType, const void *indices, GLint baseVertex,
