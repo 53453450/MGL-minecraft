@@ -657,7 +657,6 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                 }
             }
     }
-    }
     if (!sawRestart) {
         return MGLPrimitiveRestartEncodeNotNeeded;
     }
@@ -763,10 +762,6 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                     }
                     segmentStart = (size_t)i + 1u;
                 }
-        }
-            }
-            default:
-                break;
         }
     }
 
