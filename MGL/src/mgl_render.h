@@ -1298,6 +1298,13 @@ uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
 uint32_t mglRenderDefaultSamplerUnit(int32_t default_unit, uint32_t max_units);
 int mglRenderMetalBindingPastUnits(uint32_t metal_binding, uint32_t max_units);
 int mglRenderExpectedTypeUnset(uint32_t expected_type);
+int mglRenderNeedsExplicitTopology(int geometry_expansion, uint32_t last_draw_mode,
+                                   int vs_writes_layer);
+uint32_t mglRenderPrimitiveTopologyClass(uint32_t gl_mode);
+uint32_t mglRenderTessPartitionMode(uint32_t tess_gen_spacing);
+uint32_t mglRenderTessOutputWinding(uint32_t tess_gen_vertex_order);
+uint32_t mglRenderTessControlPointIndexType(int indexed_draw);
+int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

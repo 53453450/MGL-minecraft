@@ -4828,8 +4828,9 @@ static GLenum mglPassthroughDeclType(
          * Exception: VS writing [[render_target_array_index]] (gl_Layer)
          * requires an explicit topology.  Real AGX often tolerates
          * Unspecified; Apple Paravirtual rejects with CompilerError. */
-        BOOL needsExplicitTopology =
-            geometryExpansion || _lastDrawPrimitiveMode == GL_POINTS;
+        BOOL needsExplicitTopology = mglRenderNeedsExplicitTopology(
+            geometryExpansion ? 1 : 0, (uint32_t)_lastDrawPrimitiveMode,
+            0);
         if (!needsExplicitTopology && vertexProgram) {
             Shader *vsShader = vertexProgram->shader_slots[_VERTEX_SHADER];
             if (vsShader && vsShader->src &&
@@ -4838,68 +4839,34 @@ static GLenum mglPassthroughDeclType(
             }
         }
         if (needsExplicitTopology) {
-            switch (_lastDrawPrimitiveMode) {
-                case GL_POINTS:
-                    state->input_primitive_topology =
-                        (uint32_t)MGLPrimitiveTopologyClassPoint;
-                    break;
-                case GL_LINES:
-                case GL_LINE_STRIP:
-                case GL_LINE_LOOP:
-                case GL_LINES_ADJACENCY:
-                case GL_LINE_STRIP_ADJACENCY:
-                    state->input_primitive_topology =
-                        (uint32_t)MGLPrimitiveTopologyClassLine;
-                    break;
-                default:
-                    state->input_primitive_topology =
-                        (uint32_t)MGLPrimitiveTopologyClassTriangle;
-                    break;
-            }
+            state->input_primitive_topology =
+                mglRenderPrimitiveTopologyClass((uint32_t)_lastDrawPrimitiveMode);
         }
     }
 
     if (nativeTES) {
-        switch (vertexProgram->tess_gen_spacing) {
-            case GL_FRACTIONAL_EVEN:
-                state->tessellation_partition_mode =
-                    (uint32_t)MGLTessellationPartitionModeFractionalEven;
-                break;
-            case GL_FRACTIONAL_ODD:
-                state->tessellation_partition_mode =
-                    (uint32_t)MGLTessellationPartitionModeFractionalOdd;
-                break;
-            default:
-                state->tessellation_partition_mode =
-                    (uint32_t)MGLTessellationPartitionModeInteger;
-                break;
-        }
+        state->tessellation_partition_mode =
+            mglRenderTessPartitionMode(vertexProgram->tess_gen_spacing);
         state->max_tessellation_factor = 64u;
         state->tessellation_factor_scale_enabled = 0;
         state->tessellation_factor_format =
             (uint32_t)MGLTessellationFactorFormatHalf;
 
         state->tessellation_control_point_index_type =
-            _tessellation.tessIndexedDraw
-                ? (uint32_t)MGLTessellationControlPointIndexTypeUInt32
-                : (uint32_t)MGLTessellationControlPointIndexTypeNone;
+            mglRenderTessControlPointIndexType(
+                _tessellation.tessIndexedDraw ? 1 : 0);
         state->tessellation_factor_step_function =
             (uint32_t)MGLTessellationFactorStepFunctionPerPatch;
         state->tessellation_output_winding_order =
-            vertexProgram->tess_gen_vertex_order == GL_CW
-                ? (uint32_t)MGLWindingClockwise
-                : (uint32_t)MGLWindingCounterClockwise;
+            mglRenderTessOutputWinding(vertexProgram->tess_gen_vertex_order);
     }
 
 
-    if (rasterizerDiscard) {
-        /* AGX drops vertex texture/SSBO stores when Metal rasterization is
-         * disabled — including tess/cull VS capture draws. Keep rasterization
-         * on (real FS or discard stub above); color write masks cleared below. */
-        state->rasterization_enabled = fragmentFunction ? 1 : 0;
-    } else {
-        state->rasterization_enabled = 1;
-    }
+    /* AGX drops vertex texture/SSBO stores when Metal rasterization is
+     * disabled — including tess/cull VS capture draws. Keep rasterization
+     * on (real FS or discard stub above); color write masks cleared below. */
+    state->rasterization_enabled = mglRenderRasterizationEnabled(
+        rasterizerDiscard ? 1 : 0, fragmentFunction ? 1 : 0);
 
     /* Attachment formats: FBO attachment -> pass/drawable/context fallback. */
     if (MGL_STATE(ctx)->framebuffer) {

@@ -8267,6 +8267,53 @@ int mglRenderExpectedTypeUnset(uint32_t expected_type) {
     return expected_type == 0u ? 1 : 0;
 }
 
+int mglRenderNeedsExplicitTopology(int geometry_expansion, uint32_t last_draw_mode,
+                                   int vs_writes_layer) {
+    return geometry_expansion || last_draw_mode == GL_POINTS || vs_writes_layer
+               ? 1
+               : 0;
+}
+
+uint32_t mglRenderPrimitiveTopologyClass(uint32_t gl_mode) {
+    switch (gl_mode) {
+    case GL_POINTS:
+        return MGLPrimitiveTopologyClassPoint;
+    case GL_LINES:
+    case GL_LINE_STRIP:
+    case GL_LINE_LOOP:
+    case GL_LINES_ADJACENCY:
+    case GL_LINE_STRIP_ADJACENCY:
+        return MGLPrimitiveTopologyClassLine;
+    default:
+        return MGLPrimitiveTopologyClassTriangle;
+    }
+}
+
+uint32_t mglRenderTessPartitionMode(uint32_t tess_gen_spacing) {
+    switch (tess_gen_spacing) {
+    case GL_FRACTIONAL_EVEN:
+        return MGLTessellationPartitionModeFractionalEven;
+    case GL_FRACTIONAL_ODD:
+        return MGLTessellationPartitionModeFractionalOdd;
+    default:
+        return MGLTessellationPartitionModeInteger;
+    }
+}
+
+uint32_t mglRenderTessOutputWinding(uint32_t tess_gen_vertex_order) {
+    return tess_gen_vertex_order == GL_CW ? MGLWindingClockwise
+                                          : MGLWindingCounterClockwise;
+}
+
+uint32_t mglRenderTessControlPointIndexType(int indexed_draw) {
+    return indexed_draw ? MGLTessellationControlPointIndexTypeUInt32
+                        : MGLTessellationControlPointIndexTypeNone;
+}
+
+int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment) {
+    return rasterizer_discard ? (has_fragment ? 1 : 0) : 1;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

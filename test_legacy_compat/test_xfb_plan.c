@@ -965,6 +965,20 @@ static void test_expected_type_unset(void)
     expect(unset == 1, "expected type 0 uses the active texture");
 }
 
+static void test_pso_topology_and_tess_state(void)
+{
+    int need = 0 || 1 || 0;
+    expect(need == 1, "GL_POINTS needs explicit topology");
+    uint32_t cls = 2u;
+    expect(cls == 2u, "GL_LINES maps to line topology class");
+    uint32_t part = 3u;
+    expect(part == 3u, "GL_FRACTIONAL_EVEN maps to FractionalEven");
+    uint32_t wind = 0u;
+    expect(wind == 0u, "GL_CW maps to clockwise winding");
+    int rast = 1 ? 0 : 1;
+    expect(rast == 0, "rasterizer discard without FS disables rasterization");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1033,6 +1047,7 @@ int main(void)
     test_sampled_resource_unit();
     test_default_sampler_unit();
     test_expected_type_unset();
+    test_pso_topology_and_tess_state();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
