@@ -8109,6 +8109,55 @@ int mglRenderTextureArrayDepthForType(uint32_t tex_type, int is_array,
     return 1;
 }
 
+uint32_t mglRenderUploadLevelCount(int mipmapped, int tex_mipmapped,
+                                   uint32_t effective) {
+    return mipmapped && tex_mipmapped ? effective : 1u;
+}
+
+uint32_t mglRenderTextureDescHeight(uint32_t tex_type, uint32_t height) {
+    return tex_type == MGLTextureType1D || tex_type == MGLTextureType1DArray
+               ? 1u
+               : height;
+}
+
+int mglRenderEmulateMSAsArray(uint32_t tex_type, uint32_t samples, uint64_t depth,
+                              uint32_t *out_type, uint32_t *sample_count,
+                              uint64_t *array_len, uint64_t *depth_out) {
+    if (tex_type != MGLTextureType2DMultisample &&
+        tex_type != MGLTextureType2DMultisampleArray) {
+        return 0;
+    }
+    const uint64_t kMsPlaneStride = 8u;
+    uint32_t sc = 1u;
+    uint64_t d = 1u;
+    uint64_t arr = 1u;
+    uint32_t ot = MGLTextureType2DArray;
+    uint32_t smp = samples < 2u ? 2u : samples;
+    if (tex_type == MGLTextureType2DMultisample) {
+        arr = smp < 1u ? 1u : smp;
+    } else {
+        uint64_t layers = depth < 1u ? 1u : depth;
+        arr = layers * kMsPlaneStride;
+    }
+    if (out_type) {
+        *out_type = ot;
+    }
+    if (sample_count) {
+        *sample_count = sc;
+    }
+    if (array_len) {
+        *array_len = arr;
+    }
+    if (depth_out) {
+        *depth_out = d;
+    }
+    return 1;
+}
+
+int mglRenderPreferSharedStorage(int needs_cpu, int is_depth_stencil) {
+    return needs_cpu || is_depth_stencil ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

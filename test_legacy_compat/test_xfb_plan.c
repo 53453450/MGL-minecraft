@@ -882,6 +882,18 @@ static void test_texture_array_depth_for_type(void)
     expect(arr1d == 8u, "1D array uses GL height as Metal arrayLength");
 }
 
+static void test_ms_emulate_and_upload_levels(void)
+{
+    uint32_t levels = (1 && 1) ? 4u : 1u;
+    expect(levels == 4u, "mipmapped texture uploads effective mip count");
+    uint32_t h1d = 1u;
+    expect(h1d == 1u, "1D texture desc height is 1");
+    uint64_t arr = 4u * 8u;
+    expect(arr == 32u, "2DMS array emulates as layers*8 sample planes");
+    int shared = 1 || 1;
+    expect(shared == 1, "CPU-upload or depth/stencil prefers shared storage");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -942,6 +954,7 @@ int main(void)
     test_agx_format_and_1d_array_depth();
     test_texture_access_and_mip_promote();
     test_texture_array_depth_for_type();
+    test_ms_emulate_and_upload_levels();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

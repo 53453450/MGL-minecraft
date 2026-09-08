@@ -1264,6 +1264,13 @@ int mglRenderTextureArrayDepthForType(uint32_t tex_type, int is_array,
                                       int ms_emulated, uint64_t width,
                                       uint64_t height, uint64_t depth,
                                       uint64_t *array_out, uint64_t *depth_out);
+uint32_t mglRenderUploadLevelCount(int mipmapped, int tex_mipmapped,
+                                   uint32_t effective);
+uint32_t mglRenderTextureDescHeight(uint32_t tex_type, uint32_t height);
+int mglRenderEmulateMSAsArray(uint32_t tex_type, uint32_t samples, uint64_t depth,
+                              uint32_t *out_type, uint32_t *sample_count,
+                              uint64_t *array_len, uint64_t *depth_out);
+int mglRenderPreferSharedStorage(int needs_cpu, int is_depth_stencil);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

@@ -5395,39 +5395,30 @@ static void mglTextureCopyTextureToBuffer(
     mipmapped = storageMipmapped;
     /* GL may allocate num_levels>1 for a single-base-level image; only walk
      * mips that were actually populated unless the texture is mipmapped. */
-    upload_level_count =
-        (mipmapped && tex->mipmapped) ? effective_mipmap_levels : 1u;
+    upload_level_count = mglRenderUploadLevelCount(
+        mipmapped ? 1 : 0, tex->mipmapped ? 1 : 0, effective_mipmap_levels);
 
     tex_desc.texture_type = tex_type;
     tex_desc.pixel_format = pixelFormat;
     tex_desc.width = width;
-    tex_desc.height = (tex_type == MGLTextureType1D ||
-                       tex_type == MGLTextureType1DArray) ? 1 : height;
+    tex_desc.height = mglRenderTextureDescHeight(tex_type, (uint32_t)height);
     bool msEmulatedAsArray = false;
-    if (tex_type == MGLTextureType2DMultisample ||
-        tex_type == MGLTextureType2DMultisampleArray) {
-
+    {
+        uint32_t outType = tex_type;
+        uint32_t sampleCount = 1u;
+        uint64_t arrayLen = 1u;
+        uint64_t descDepth = 1u;
         NSUInteger samples = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
         samples = MGLCapabilityClampSampleCount(&_capability, samples);
-        /* Metal cannot shader-write texture2d_ms, and AIR always lowers
-         * image2DMS / sampler2DMS* to texture2d_array. Emulate all MS
-         * textures (including FBO attachments) as array sample planes so
-         * ClearBuffer → imageLoad (CTS load-ms) shares one backing. */
-        const NSUInteger kMsPlaneStride = 8u;
-        msEmulatedAsArray = true;
-        if (tex_type == MGLTextureType2DMultisample) {
-            tex_type = MGLTextureType2DArray;
+        if (mglRenderEmulateMSAsArray(tex_type, (uint32_t)samples,
+                                      (uint64_t)depth, &outType, &sampleCount,
+                                      &arrayLen, &descDepth)) {
+            msEmulatedAsArray = true;
+            tex_type = outType;
             tex_desc.texture_type = tex_type;
-            tex_desc.sample_count = 1u;
-            tex_desc.array_length = MAX(samples, 1u);
-            tex_desc.depth = 1u;
-        } else {
-            tex_type = MGLTextureType2DArray;
-            tex_desc.texture_type = tex_type;
-            tex_desc.sample_count = 1u;
-            NSUInteger layers = MAX((NSUInteger)depth, 1u);
-            tex_desc.array_length = layers * kMsPlaneStride;
-            tex_desc.depth = 1u;
+            tex_desc.sample_count = sampleCount;
+            tex_desc.array_length = arrayLen;
+            tex_desc.depth = descDepth;
         }
     }
 
@@ -5443,7 +5434,10 @@ static void mglTextureCopyTextureToBuffer(
     bool preferSharedDepthStencil =
         mglMetalPixelFormatIsDepthOrStencil(pixelFormat);
     tex_desc.storage_mode =
-        (needsCpuUpload || preferSharedDepthStencil) ? 0u : MGL_TEXTURE_STORAGE_PRIVATE;
+        mglRenderPreferSharedStorage(needsCpuUpload ? 1 : 0,
+                                     preferSharedDepthStencil ? 1 : 0)
+            ? 0u
+            : MGL_TEXTURE_STORAGE_PRIVATE;
     tex_desc.sample_count = MAX(tex_desc.sample_count, 1u);
     tex_desc.mipmap_level_count = MAX(tex_desc.mipmap_level_count, 1u);
     tex_desc.array_length = MAX(tex_desc.array_length, 1u);
