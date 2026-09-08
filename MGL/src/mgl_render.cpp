@@ -8922,6 +8922,25 @@ int mglRenderDefaultReadBufferIndex(uint32_t read_buffer, uint32_t *out) {
     }
     return known;
 }
+
+int mglRenderDepth32FStencil8NeedsUnpack(uint32_t internalformat,
+                                         uint32_t pixel_format,
+                                         uint32_t src_bpr, uint32_t width) {
+    return internalformat == GL_DEPTH32F_STENCIL8 && pixel_format == 260u &&
+                   src_bpr >= width * 5u && src_bpr < width * 8u
+               ? 1
+               : 0;
+}
+
+int mglRenderTextureTargetIsArrayOr3D(uint32_t target) {
+    return target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_3D ? 1 : 0;
+}
+
+int mglRenderTextureTargetIs2D(uint32_t target) {
+    return target == GL_TEXTURE_2D ? 1 : 0;
+}
+
+void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

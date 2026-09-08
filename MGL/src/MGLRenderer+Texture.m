@@ -472,9 +472,9 @@ static void *mglCreateDepthStencilMetalUpload(
     if (outBytesPerRow) *outBytesPerRow = 0;
     if (outBytesPerImage) *outBytesPerImage = 0;
     if (!tex || !src || width == 0 || height == 0 || srcBytesPerRow == 0 ||
-        tex->internalformat != GL_DEPTH32F_STENCIL8 ||
-        pixelFormat != MGLPixelFormatDepth32Float_Stencil8 ||
-        srcBytesPerRow < width * 5u || srcBytesPerRow >= width * 8u) {
+        !mglRenderDepth32FStencil8NeedsUnpack(
+            (uint32_t)tex->internalformat, (uint32_t)pixelFormat,
+            (uint32_t)srcBytesPerRow, (uint32_t)width)) {
         return NULL;
     }
     NSUInteger logicalBytesPerRow = width * 8u;
@@ -823,7 +823,7 @@ static void mglTextureCopyTextureToBuffer(
     if (mglTraceLogIsEnabled() &&
         (mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth32Float_Stencil8 ||
          mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth24Unorm_Stencil8) &&
-        (texTarget == GL_TEXTURE_2D_ARRAY || texTarget == GL_TEXTURE_3D) &&
+        (mglRenderTextureTargetIsArrayOr3D((uint32_t)texTarget)) &&
         bytesPerRow >= 16) {
         const uint8_t *probe = (const uint8_t *)bytes;
         mglTraceLog("TEXTURE_UPLOAD_DS tex=%u target=0x%x fmt=%lu slice=%lu level=%lu size=%lux%lu bpr=%lu bpi=%lu first=%02x %02x %02x %02x %02x %02x %02x %02x next=%02x %02x %02x %02x %02x %02x %02x %02x",
@@ -1076,7 +1076,7 @@ static void mglTextureCopyTextureToBuffer(
     if (!tex || !texture || !tex->faces[0].levels) {
         return false;
     }
-    if (tex->target != GL_TEXTURE_2D ||
+    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
         mglTextureInfo(texture).texture_type != MGLTextureType2D) {
         return false;
     }

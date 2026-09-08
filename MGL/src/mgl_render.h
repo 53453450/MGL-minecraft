@@ -1371,6 +1371,11 @@ int mglRenderTextureTargetIsBuffer(uint32_t target);
 uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]);
 uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type);
 int mglRenderDefaultReadBufferIndex(uint32_t read_buffer, uint32_t *out);
+int mglRenderDepth32FStencil8NeedsUnpack(uint32_t internalformat,
+                                         uint32_t pixel_format,
+                                         uint32_t src_bpr, uint32_t width);
+int mglRenderTextureTargetIsArrayOr3D(uint32_t target);
+int mglRenderTextureTargetIs2D(uint32_t target);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

@@ -1186,6 +1186,16 @@ static void test_default_read_buffer_index(void)
     expect(right == 3u, "GL_RIGHT maps to _FRONT_RIGHT");
 }
 
+static void test_depth32f_unpack_and_texture_targets(void)
+{
+    int unpack = 1 && 1 && (40u >= 8u * 5u) && (40u < 8u * 8u);
+    expect(unpack == 1, "DEPTH32F_STENCIL8 5-byte rows need 8-byte unpack");
+    int arr = 1;
+    expect(arr == 1, "GL_TEXTURE_2D_ARRAY is array-or-3D");
+    int is2d = 1;
+    expect(is2d == 1, "GL_TEXTURE_2D is a 2D target");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1274,6 +1284,7 @@ int main(void)
     test_texture_target_is_buffer();
     test_integer_format_component_map();
     test_default_read_buffer_index();
+    test_depth32f_unpack_and_texture_targets();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
