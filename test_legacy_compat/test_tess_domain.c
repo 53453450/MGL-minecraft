@@ -321,6 +321,133 @@ static void test_domain_invariants(void)
     }
 }
 
+/* ARB_tessellation_shader: isoline i has v = i/n for i = 0..n-1. */
+static void test_isoline_v_formula(void)
+{
+    MGLTessFactorInput in =
+        make_in(GL_ISOLINES, GL_EQUAL, GL_CCW, 0, 4, 1, 0, 0, 0, 0);
+    MGLTessCoord pts[16];
+    const uint32_t n = mglTessGenerateDomain(&in, pts, 16);
+    expect(n == 8u, "4 isolines x 1 segment = 8 verts");
+    for (unsigned line = 0; line < 4; line++) {
+        const float v = (float)line / 4.f;
+        expect(feq(pts[line * 2u].v, v) && feq(pts[line * 2u + 1u].v, v),
+               "isoline v = i/n");
+        expect(feq(pts[line * 2u].u, 0.f) && feq(pts[line * 2u + 1u].u, 1.f),
+               "isoline spans u=0..1");
+        expect(feq(pts[line * 2u].w, 0.f), "isolines w = 0");
+    }
+}
+
+/* ARB: all-ones triangle is (0,0,1), (1,0,0), (0,1,0). */
+static void test_triangle_all_ones_coords(void)
+{
+    MGLTessFactorInput in =
+        make_in(GL_TRIANGLES, GL_EQUAL, GL_CCW, 0, 1, 1, 1, 1, 1, 1);
+    MGLTessCoord c[3];
+    expect(mglTessGenerateDomain(&in, c, 3) == 3u, "all-ones triangle");
+    expect(feq(c[0].u, 0.f) && feq(c[0].v, 0.f) && feq(c[0].w, 1.f),
+           "triangle corner (0,0,1)");
+    expect(feq(c[1].u, 1.f) && feq(c[1].v, 0.f) && feq(c[1].w, 0.f),
+           "triangle corner (1,0,0)");
+    expect(feq(c[2].u, 0.f) && feq(c[2].v, 1.f) && feq(c[2].w, 0.f),
+           "triangle corner (0,1,0)");
+}
+
+static int on_bottom_edge(const MGLTessCoord *c)
+{
+    return feq(c->v, 0.f) && feq(c->w, 0.f);
+}
+
+/* Appendix A tessellation invariance rules 2–4. */
+static void test_invariance_rules(void)
+{
+    MGLTessFactorInput a =
+        make_in(GL_QUADS, GL_EQUAL, GL_CCW, 1, 3, 5, 3, 3, 4, 4);
+    MGLTessFactorInput b =
+        make_in(GL_QUADS, GL_EQUAL, GL_CCW, 1, 7, 5, 2, 9, 2, 8);
+    MGLTessCoord pa[128], pb[128];
+    const uint32_t na = mglTessGenerateDomain(&a, pa, 128);
+    const uint32_t nb = mglTessGenerateDomain(&b, pb, 128);
+    expect(na > 0 && nb > 0, "invariance domains generated");
+
+    /* Rule 2: v==0 edge depends only on outer[1] and spacing. */
+    unsigned ca = 0, cb = 0;
+    float ua[32], ub[32];
+    for (uint32_t i = 0; i < na && ca < 32; i++)
+        if (on_bottom_edge(&pa[i]))
+            ua[ca++] = pa[i].u;
+    for (uint32_t i = 0; i < nb && cb < 32; i++)
+        if (on_bottom_edge(&pb[i]))
+            ub[cb++] = pb[i].u;
+    expect(ca == cb && ca > 1, "rule 2: same outer[1] → same v=0 count");
+    for (unsigned i = 0; i < ca; i++) {
+        int found = 0;
+        for (unsigned j = 0; j < cb; j++)
+            found |= feq(ua[i], ub[j]);
+        expect(found, "rule 2: v=0 coordinates match as a set");
+    }
+
+    /* Rule 3: outer-edge symmetry, x and 1-x. */
+    for (unsigned i = 0; i < ca; i++) {
+        int found = 0;
+        for (unsigned j = 0; j < ca; j++)
+            found |= feq(ua[i], 1.f - ua[j]);
+        expect(found, "rule 3: v=0 is symmetric around 0.5");
+    }
+
+    /* Rule 4: same level+spacing on two edges → same 1D pattern. */
+    MGLTessFactorInput eq =
+        make_in(GL_QUADS, GL_EQUAL, GL_CCW, 1, 4, 4, 4, 4, 3, 3);
+    MGLTessCoord pe[64];
+    const uint32_t ne = mglTessGenerateDomain(&eq, pe, 64);
+    float bottom[16], left[16];
+    unsigned nbott = 0, nleft = 0;
+    for (uint32_t i = 0; i < ne; i++) {
+        if (feq(pe[i].v, 0.f) && nbott < 16)
+            bottom[nbott++] = pe[i].u;
+        if (feq(pe[i].u, 0.f) && nleft < 16)
+            left[nleft++] = pe[i].v;
+    }
+    expect(nbott == nleft && nbott > 1, "rule 4: equal outer levels, equal counts");
+    for (unsigned i = 0; i < nbott; i++) {
+        int found = 0;
+        for (unsigned j = 0; j < nleft; j++)
+            found |= feq(bottom[i], left[j]);
+        expect(found, "rule 4: u-on-bottom matches v-on-left");
+    }
+}
+
+/* ARB: inner[0] = vertical (u==0/1) subdivisions; inner[1] = horizontal. */
+static void test_quad_inner_axis_mapping(void)
+{
+    MGLTessFactorInput in =
+        make_in(GL_QUADS, GL_EQUAL, GL_CCW, 1, 1, 1, 1, 1, 2, 4);
+    MGLTessNormalizedFactors n;
+    mglTessNormalizeFactors(&in, &n);
+    expect(n.inner_eff[0] == 2u && n.inner_eff[1] == 4u,
+           "unequal inner levels survive normalize");
+    /* inner[1]=4 → 3 interior u samples? nx=4, interior x=1,2,3.
+     * inner[0]=2 → ny=2, interior y=1 only. Point-mode unique verts:
+     * 4 corners + (4-1)*4 wait outer_eff=1 so 4 corners + interiors. */
+    const uint32_t verts = mglTessDomainVertexCount(&in);
+    expect(verts == 7u, "FO/equal outer=1 inner 2x4: 4 corners + 3 interior");
+}
+
+/* point_mode + FO inner=1, outer>1: 1+ε interiors are distinct vertices
+ * even if they sit on the outer edge (ARB point_mode paragraph). */
+static void test_point_mode_fo_distinct_interior(void)
+{
+    MGLTessFactorInput bumped =
+        make_in(GL_QUADS, GL_FRACTIONAL_ODD, GL_CCW, 1, 4, 4, 4, 4, 1, 1);
+    MGLTessFactorInput degenerate =
+        make_in(GL_QUADS, GL_FRACTIONAL_ODD, GL_CCW, 1, 1, 1, 1, 1, 1, 1);
+    const uint32_t n_bump = mglTessDomainVertexCount(&bumped);
+    const uint32_t n_deg = mglTessDomainVertexCount(&degenerate);
+    expect(n_deg == 4u, "all-ones FO point_mode: 4 corners");
+    expect(n_bump > n_deg, "FO 1+ε interiors are extra point_mode vertices");
+}
+
 int main(void)
 {
     test_round_spacing();
@@ -334,6 +461,11 @@ int main(void)
     test_fractional_edge_goldens();
     test_triangle_ring_goldens();
     test_domain_invariants();
+    test_isoline_v_formula();
+    test_triangle_all_ones_coords();
+    test_invariance_rules();
+    test_quad_inner_axis_mapping();
+    test_point_mode_fo_distinct_interior();
     if (g_fails) {
         fprintf(stderr, "test_tess_domain: %d failure(s)\n", g_fails);
         return 1;

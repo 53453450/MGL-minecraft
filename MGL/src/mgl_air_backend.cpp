@@ -3353,6 +3353,50 @@ static bool emitPatchVaryingStore(Codegen &cg, const VarSym &sym,
     return true;
 }
 
+/* GL 4.6 §11.2.1.2 / §11.2.2: any TCS invocation may write gl_TessLevel*.
+ * Unwritten components keep the PATCH_DEFAULT_* fill. Skip undef so a
+ * silent invocation does not clobber another invocation's store. */
+static void flushTCSTessLevels(Codegen &cg)
+{
+    if (!cg.isTessControl || !cg.tessFactorPtr || !cg.patchPos || !cg.b)
+        return;
+    llvm::IRBuilder<> &b = *cg.b;
+    llvm::LLVMContext &ctx = *cg.ctx;
+    llvm::Value *patch =
+        cg.workGroupPos
+            ? b.CreateExtractElement(cg.workGroupPos, b.getInt32(0))
+            : b.CreateExtractElement(cg.patchPos, b.getInt32(0));
+    llvm::Value *factorBase = b.CreateGEP(
+        b.getInt8Ty(), cg.tessFactorPtr,
+        b.CreateMul(b.CreateZExt(patch, b.getInt64Ty()),
+                    b.getInt64(MGL_AIR_TESS_FACTOR_RECORD_BYTES)));
+    llvm::Type *halfTy = llvm::Type::getHalfTy(ctx);
+    llvm::Type *f32Ty = llvm::Type::getFloatTy(ctx);
+    auto storeOne = [&](const char *name, unsigned count, unsigned index,
+                        unsigned halfOff, unsigned exactOff) {
+        if (!cg.lvalues.count(name))
+            return;
+        llvm::Value *v = b.CreateExtractValue(cg.lvalues[name], index);
+        if (llvm::isa<llvm::UndefValue>(v))
+            return;
+        llvm::Value *hp = b.CreateBitCast(
+            b.CreateGEP(b.getInt8Ty(), factorBase, b.getInt64(halfOff)),
+            halfTy->getPointerTo(1));
+        b.CreateAlignedStore(b.CreateFPTrunc(v, halfTy), hp, llvm::Align(2));
+        llvm::Value *ep = b.CreateBitCast(
+            b.CreateGEP(b.getInt8Ty(), factorBase, b.getInt64(exactOff)),
+            f32Ty->getPointerTo(1));
+        b.CreateAlignedStore(v, ep, llvm::Align(4));
+        (void)count;
+    };
+    for (unsigned i = 0; i < 4; i++)
+        storeOne("gl_TessLevelOuter", 4, i, i * 2u,
+                 MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET + i * 4u);
+    for (unsigned i = 0; i < 2; i++)
+        storeOne("gl_TessLevelInner", 2, i, 8u + i * 2u,
+                 MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET + 16u + i * 4u);
+}
+
 /* Indexed patch out/in: patch out T arr[N]; arr[i] = … / TES patch in. */
 static llvm::Value *emitPatchArrayElementLoad(
     Codegen &cg, const VarSym &sym, llvm::Value *index)
@@ -9363,6 +9407,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
              * assembly; indexed writes must update that alloca too. */
             if (cg.outPtrs.count(name))
                 storeStageOut(cg, name, nv);
+            if (cg.isTessControl &&
+                (!strcmp(name, "gl_TessLevelOuter") ||
+                 !strcmp(name, "gl_TessLevelInner")))
+                flushTCSTessLevels(cg);
             return v;
         }
 
@@ -14621,73 +14669,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.tessCoord = coord;
     }
     emitStmt(cg, mainDecl->body, &mod, &locals);
-    if (isTCS && cg.tessFactorPtr && cg.invocationPos && cg.patchPos &&
+    if (isTCS && cg.tessFactorPtr && cg.patchPos &&
         !b.GetInsertBlock()->getTerminator()) {
-        /* Metal's tessellation-factor record is six half values: four edge
-         * factors followed by two inner factors.  Only invocation zero owns
-         * the patch-wide factors; all other TCS invocations skip the write. */
-        llvm::BasicBlock *writeBB = llvm::BasicBlock::Create(
-            ctx, "tcs_write_factors", fn);
-        llvm::BasicBlock *doneBB = llvm::BasicBlock::Create(
-            ctx, "tcs_factors_done", fn);
-        llvm::Value *inv = b.CreateExtractElement(cg.invocationPos,
-                                                   b.getInt32(0));
-        llvm::Value *isZero = b.CreateICmpEQ(
-            inv, llvm::ConstantInt::get(inv->getType(), 0));
-        b.CreateCondBr(isZero, writeBB, doneBB);
-        b.SetInsertPoint(writeBB);
-        llvm::Value *patch =
-            cg.isTessControl && cg.workGroupPos
-                ? cg.b->CreateExtractElement(cg.workGroupPos, cg.b->getInt32(0))
-                : cg.b->CreateExtractElement(cg.patchPos, cg.b->getInt32(0));
-        llvm::Value *factorOff = b.CreateMul(
-            b.CreateZExt(patch, b.getInt64Ty()),
-            b.getInt64(MGL_AIR_TESS_FACTOR_RECORD_BYTES));
-        llvm::Value *factorBase = b.CreateGEP(
-            b.getInt8Ty(), cg.tessFactorPtr, factorOff);
-        llvm::Type *halfTy = llvm::Type::getHalfTy(ctx);
-        llvm::Type *f32Ty = llvm::Type::getFloatTy(ctx);
-        auto factor = [&](const char *name, unsigned count, unsigned index,
-                          float fallback) {
-            llvm::Value *arr = cg.lvalues.count(name)
-                ? cg.lvalues[name]
-                : llvm::UndefValue::get(llvm::ArrayType::get(
-                      f32Ty, count));
-            llvm::Value *v = b.CreateExtractValue(arr, index);
-            if (llvm::isa<llvm::UndefValue>(v))
-                v = llvm::ConstantFP::get(f32Ty, fallback);
-            return v;
-        };
-        for (unsigned i = 0; i < 4; i++) {
-            llvm::Value *fv = factor("gl_TessLevelOuter", 4, i, 1.0f);
-            llvm::Value *p = b.CreateGEP(b.getInt8Ty(), factorBase,
-                                         b.getInt64(i * 2));
-            p = b.CreateBitCast(p, halfTy->getPointerTo(1));
-            b.CreateAlignedStore(b.CreateFPTrunc(fv, halfTy), p,
-                llvm::Align(2));
-            llvm::Value *ep = b.CreateBitCast(
-                b.CreateGEP(b.getInt8Ty(), factorBase,
-                            b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET +
-                                       i * 4)),
-                f32Ty->getPointerTo(1));
-            b.CreateAlignedStore(fv, ep, llvm::Align(4));
-        }
-        for (unsigned i = 0; i < 2; i++) {
-            llvm::Value *fv = factor("gl_TessLevelInner", 2, i, 1.0f);
-            llvm::Value *p = b.CreateGEP(b.getInt8Ty(), factorBase,
-                                         b.getInt64(8 + i * 2));
-            p = b.CreateBitCast(p, halfTy->getPointerTo(1));
-            b.CreateAlignedStore(b.CreateFPTrunc(fv, halfTy), p,
-                llvm::Align(2));
-            llvm::Value *ep = b.CreateBitCast(
-                b.CreateGEP(b.getInt8Ty(), factorBase,
-                            b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET +
-                                       16 + i * 4)),
-                f32Ty->getPointerTo(1));
-            b.CreateAlignedStore(fv, ep, llvm::Align(4));
-        }
-        b.CreateBr(doneBB);
-        b.SetInsertPoint(doneBB);
+        /* Any invocation that wrote gl_TessLevel* stores it. Unwritten
+         * slots keep the PATCH_DEFAULT_* fill (GL 4.6 §11.2.2). */
+        flushTCSTessLevels(cg);
     }
 
     if (isTESCompute && cg.geometryOutputPtr && cg.geometryWorkItemId &&
@@ -16589,6 +16575,10 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->tess_gen_vertex_order =
             tu->layout_winding == MGL_AST_WINDING_CW ? GL_CW : GL_CCW;
         stage_info->tess_gen_point_mode = tu->layout_point_mode ? 1u : 0u;
+        stage_info->uses_tess_level =
+            (mglFrontendBuiltinArrayCount(mod, tu, "gl_TessLevelOuter") > 0u ||
+             mglFrontendBuiltinArrayCount(mod, tu, "gl_TessLevelInner") > 0u)
+                ? 1u : 0u;
     }
     if (stage == MGL_STAGE_GEOMETRY) {
         switch (tu->layout_primitive) {
@@ -16726,11 +16716,19 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
         return -1;
 
     uint32_t tessPatchVertices = 0u;
+    MGLAIRStageInfo filled = {};
     if (stage_info) {
         tessPatchVertices = stage_info->tess_patch_vertices;
         fillStageInfo(sess.tu, &sess.mod, stage, sess.src, stage_info);
         stage_info->tess_patch_vertices = tessPatchVertices;
+        filled = *stage_info;
+    } else if (stage == MGL_STAGE_TESS_EVALUATION) {
+        fillStageInfo(sess.tu, &sess.mod, stage, sess.src, &filled);
     }
+    /* gl_TessLevel* in TES is the exact TCS / PatchParameterfv value
+     * (GL 4.6 §11.2.3). Metal post-tessellation only sees half factors. */
+    if (stage == MGL_STAGE_TESS_EVALUATION && filled.uses_tess_level)
+        force_tes_compute = true;
 
     if (lists) {
         int reflect_rc = mglAirReflectModule(&sess.mod, stage, attrib_names, lists,

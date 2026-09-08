@@ -66,6 +66,10 @@ typedef struct MGLAIRStageInfo {
     uint32_t tess_gen_point_mode;
     /* 1 if TES source declared triangles/quads/isolines (link requires it). */
     uint32_t tess_gen_mode_specified;
+    /* 1 if TES reads gl_TessLevelOuter/Inner (GL 4.6 §11.2.3). Those
+     * builtins need the exact float32 factor record, so the TES is compiled
+     * as compute rather than Metal post-tessellation. */
+    uint32_t uses_tess_level;
     uint32_t geometry_input_type;
     uint32_t geometry_output_type;
     uint32_t geometry_vertices_out;

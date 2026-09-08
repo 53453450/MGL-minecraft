@@ -977,7 +977,15 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(tessFactorContents, 0, (size_t)tcsLayout.factor_bytes);
+    /* GL 4.6 §11.2.2: TCS-unwritten tess levels take PATCH_DEFAULT_*. */
+    if (mglRenderFillDefaultTessFactorBuffer(
+            tessFactorContents, tcsLayout.factor_bytes,
+            MGL_STATE(glm_ctx)->var.patch_default_outer_level,
+            MGL_STATE(glm_ctx)->var.patch_default_inner_level,
+            tcsLayout.patch_count) != 0) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
     [executionTemporaries addObject:tessFactorBuf];
 
     NSUInteger tcsInStride = 0u;

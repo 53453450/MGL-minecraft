@@ -1875,7 +1875,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             (pptr->tess_gen_mode == GL_ISOLINES ||
              pptr->tess_gen_point_mode ||
              pptr->transform_feedback_varying_count > 0 ||
-             pptr->shader_slots[_GEOMETRY_SHADER])
+             pptr->shader_slots[_GEOMETRY_SHADER] ||
+             stage_info.uses_tess_level)
                 ? GL_TRUE : GL_FALSE;
         pptr->tess_uses_cull_distance =
             stage_info.uses_cull_distance ? GL_TRUE : GL_FALSE;
