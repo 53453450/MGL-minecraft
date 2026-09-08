@@ -2469,6 +2469,24 @@ void mglRenderFillFragCoordSlot(int use_fragcoord, int use_sample,
                                 float out[4]);
 
 void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax);
+
+typedef struct MGLDirtyDomainPlan {
+    int has_dirty;
+    int sync_render_pass;
+    int bind_fbo_attachments;
+    int remap_buffers;
+    int defer_buffer_map;
+    int bind_textures;
+    int vao_path;
+    int buffer_path;
+    int render_state_path;
+    int sync_pipeline;
+    int dirty_buffer_data;
+} MGLDirtyDomainPlan;
+
+int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
+                              int has_pipeline, int fbo_binding_dirty,
+                              MGLDirtyDomainPlan *out);
 /* Commit one detached/current command buffer through the C++ owner.  When
  * submission_handle points at a matching C++ submission, that ownership is
  * consumed; otherwise the borrowed command buffer is committed directly.

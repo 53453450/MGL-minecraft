@@ -32,9 +32,6 @@ enum {
     MGL_TESS_COMMAND_STATUS_COMMITTED = 2u,
     MGL_TESS_TEXTURE_TYPE_CUBE = 5u,
     MGL_TESS_TEXTURE_TYPE_CUBE_ARRAY = 6u,
-    MGL_TESS_PRIMITIVE_POINT = 0u,
-    MGL_TESS_PRIMITIVE_LINE = 1u,
-    MGL_TESS_PRIMITIVE_TRIANGLE = 3u,
 };
 
 static id mglTessCreateBuffer(id device,
@@ -1695,13 +1692,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 
     /* Rasterize through the passthrough vertex stage, or hand the expanded
      * records to a following geometry shader (coverage VS+TC+TE+GS path). */
-    const GLenum genMode = tesProgram->tess_gen_mode;
-    const GLboolean pointMode = tesProgram->tess_gen_point_mode;
-    const uint64_t primitivesPerInstance =
-        mglTessPrimitivesFromItems(tesProgram, itemsPerInstanceU);
+    const GLenum tessRasterMode = mglTessRasterGLMode(tesProgram);
+    MGLTessRasterQueryPlan query = {0};
+    mglTessPlanRasterQuery(tesProgram, (uint64_t)instanceCount,
+                           (uint64_t)itemsPerInstanceU, xfbActive ? 1 : 0,
+                           (uint64_t)xfbWrittenBytes,
+                           (uint32_t)xfbCompactStride, &query);
     if (hasGeometryStage) {
-        GLenum gsMode = pointMode ? GL_POINTS
-            : (genMode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES);
         GLsizei gsCount =
             (GLsizei)((uint64_t)itemsPerInstanceU * (uint64_t)instanceCountU);
         if (gsCount <= 0) {
@@ -1715,7 +1712,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         _tessellation.pendingGSInputStride = outStride;
         _tessellation.pendingGSVertexCount = gsCount;
         const BOOL gsOK = [self handleGeometryDrawIfNeeded:glm_ctx
-                                                      mode:gsMode
+                                                      mode:tessRasterMode
                                                      first:0
                                                      count:gsCount
                                                  indexType:0
@@ -1739,16 +1736,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
          * passthrough draw entirely, but the compute expansion already ran
          * and the primitive query must still count the generated
          * primitives (persistent query semantics). */
-        GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
-        GLuint64 written = prims;
-        if (xfbActive) {
-            const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
-            const GLuint64 xfbPrims =
-                xfbWrittenBytes / ((GLuint64)xfbCompactStride * vpp);
-            written = MIN(written, xfbPrims);
-        }
         _currentCBHasWork = YES;
-        mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
+        mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
         return YES;
     }
     if (![self ensureAIRTessEvalPassthroughFunctionForProgram:tesProgram]) {
@@ -1757,18 +1746,12 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         /* XFB capture already completed above; do not fail the draw and
          * leave transform feedback active when the test only needed feedback. */
         if (xfbActive) {
-            const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
-            GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
-            GLuint64 written = MIN(prims,
-                xfbWrittenBytes / ((GLuint64)MAX(xfbCompactStride, 1u) * vpp));
-            mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
+            mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
             return YES;
         }
         return false;
     }
-    uint32_t primType = pointMode ? MGL_TESS_PRIMITIVE_POINT
-        : (genMode == GL_ISOLINES ? MGL_TESS_PRIMITIVE_LINE
-                                  : MGL_TESS_PRIMITIVE_TRIANGLE);
+    uint32_t primType = mglTessRasterPrimitiveType(tesProgram);
 
     _tessellation.tessComputeActive = YES;
     _tessellation.tessComputeProgram = tesProgram;
@@ -1787,11 +1770,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeProgram = NULL;
         if (xfbActive) {
-            const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
-            GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
-            GLuint64 written = MIN(prims,
-                xfbWrittenBytes / ((GLuint64)MAX(xfbCompactStride, 1u) * vpp));
-            mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
+            mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
             /* Feedback already landed; returning NO would raise
              * INVALID_OPERATION and skip the test's EndTransformFeedback. */
             return YES;
@@ -1799,8 +1778,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         return NO;
     }
 
-    [self applyPolygonOffsetForDrawMode:pointMode ? GL_POINTS
-        : (genMode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES)];
+    [self applyPolygonOffsetForDrawMode:tessRasterMode];
     id encoder = nil;
     for (GLsizei i = 0; i < instanceCount; i++) {
         NSUInteger instanceOffset =
@@ -1814,14 +1792,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             (NSUInteger)baseInstance + (NSUInteger)i);
     }
     _currentCBHasWork = YES;
-    GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
-    GLuint64 written = prims;
-    if (xfbActive) {
-        const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
-        written = MIN(written, xfbWrittenBytes /
-                               ((GLuint64)xfbCompactStride * vpp));
-    }
-    mglRecordActivePrimitiveQueryDraw(glm_ctx, prims, written);
+    mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     _tessellation.tessComputeActive = NO;
     _tessellation.tessComputeProgram = NULL;
     return YES;

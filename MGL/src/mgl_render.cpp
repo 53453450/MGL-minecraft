@@ -13407,6 +13407,56 @@ void mglRenderClampLodBiasArray(float *bias, uint32_t count, float biasmax) {
     }
 }
 
+int mglRenderPlanDirtyDomains(uint32_t dirty_bits, int draw_command,
+                              int has_pipeline, int fbo_binding_dirty,
+                              MGLDirtyDomainPlan *out) {
+    if (!out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    if (dirty_bits == 0u) {
+        out->dirty_buffer_data = 1;
+        return 0;
+    }
+    out->has_dirty = 1;
+    uint32_t bits = dirty_bits;
+    if (bits & DIRTY_FBO) {
+        out->sync_render_pass = 1;
+    }
+    if (bits & DIRTY_STATE) {
+        if ((bits & DIRTY_FBO) && fbo_binding_dirty) {
+            out->bind_fbo_attachments = 1;
+        }
+        bits &= ~DIRTY_STATE;
+    }
+    if (bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_BUFFER_BASE_STATE)) {
+        out->remap_buffers = 1;
+        if (draw_command && !has_pipeline && (bits & DIRTY_PROGRAM)) {
+            out->defer_buffer_map = 1;
+        }
+        bits &= ~DIRTY_BUFFER_BASE_STATE;
+    }
+    if (bits & (DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER)) {
+        out->bind_textures = 1;
+        bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
+    }
+    if (bits & DIRTY_VAO) {
+        out->vao_path = 1;
+        bits &= ~DIRTY_RENDER_STATE;
+    } else if (bits & DIRTY_BUFFER) {
+        out->buffer_path = 1;
+        bits &= ~DIRTY_BUFFER;
+    } else if (bits & DIRTY_RENDER_STATE) {
+        out->render_state_path = 1;
+        bits &= ~DIRTY_RENDER_STATE;
+    }
+    if (bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_ALPHA_STATE |
+                DIRTY_RENDER_STATE)) {
+        out->sync_pipeline = 1;
+    }
+    return 0;
+}
+
 namespace {
 
 double commandRecoveryNowSeconds() {

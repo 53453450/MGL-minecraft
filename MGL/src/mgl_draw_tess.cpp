@@ -571,6 +571,67 @@ extern "C" uint64_t mglTessGeneratedPrimitiveCount(Program *tes,
     return prims * (uint64_t)instance_count;
 }
 
+extern "C" GLenum mglTessRasterGLMode(const Program *tes)
+{
+    if (!tes) {
+        return GL_TRIANGLES;
+    }
+    if (tes->tess_gen_point_mode) {
+        return GL_POINTS;
+    }
+    if (tes->tess_gen_mode == GL_ISOLINES) {
+        return GL_LINES;
+    }
+    return GL_TRIANGLES;
+}
+
+extern "C" uint32_t mglTessRasterPrimitiveType(const Program *tes)
+{
+    const GLenum mode = mglTessRasterGLMode(tes);
+    if (mode == GL_POINTS) {
+        return MGL_TESS_PRIMITIVE_POINT;
+    }
+    if (mode == GL_LINES) {
+        return MGL_TESS_PRIMITIVE_LINE;
+    }
+    return MGL_TESS_PRIMITIVE_TRIANGLE;
+}
+
+extern "C" void mglTessPlanRasterQuery(const Program *tes,
+                                       uint64_t instance_count,
+                                       uint64_t items_per_instance,
+                                       int xfb_active,
+                                       uint64_t xfb_written_bytes,
+                                       uint32_t xfb_compact_stride,
+                                       MGLTessRasterQueryPlan *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    const uint64_t prims_per =
+        mglTessPrimitivesFromItems(tes, items_per_instance);
+    uint64_t prims = prims_per;
+    if (instance_count && prims_per > UINT64_MAX / instance_count) {
+        prims = UINT64_MAX;
+    } else {
+        prims = prims_per * instance_count;
+    }
+    uint64_t written = prims;
+    if (xfb_active) {
+        const uint64_t vpp = mglTessVerticesPerPrimitive(tes);
+        const uint64_t stride =
+            xfb_compact_stride > 0u ? (uint64_t)xfb_compact_stride : 1u;
+        const uint64_t denom = stride * (vpp ? vpp : 1u);
+        const uint64_t xfb_prims = denom ? xfb_written_bytes / denom : 0u;
+        if (xfb_prims < written) {
+            written = xfb_prims;
+        }
+    }
+    out->prims = prims;
+    out->written = written;
+}
+
 extern "C" uint32_t mglTessSeedEvalOutputRecords(
     Program *tes, const void *factor_bytes, uint32_t patch_count,
     uint32_t instance_count, void *records, uint64_t records_bytes,

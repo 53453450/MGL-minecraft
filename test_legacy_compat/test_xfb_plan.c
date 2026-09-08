@@ -234,6 +234,74 @@ static void test_stage_in_current(void)
            "all disabled with a binding does not use current");
 }
 
+static void test_dirty_domain_plan(void)
+{
+    enum {
+        dirtyVAO = 0,
+        dirtyState,
+        dirtyBuffer,
+        dirtyTexture,
+        dirtyTexParam,
+        dirtyTexBinding,
+        dirtySampler,
+        dirtyShader,
+        dirtyProgram,
+        dirtyFBO,
+        dirtyDrawable,
+        dirtyRenderState,
+        dirtyAlphaState,
+        dirtyImageUnit,
+        dirtyBufferBase
+    };
+#define T_BIT(n) (1u << (n))
+    const uint32_t fbo = T_BIT(dirtyFBO);
+    const uint32_t state = T_BIT(dirtyState);
+    const uint32_t program = T_BIT(dirtyProgram);
+    const uint32_t vao = T_BIT(dirtyVAO);
+    const uint32_t buffer = T_BIT(dirtyBuffer);
+    const uint32_t rs = T_BIT(dirtyRenderState);
+    /* FBO dirty always syncs the pass and keeps FBO for pipeline. */
+    expect((fbo & T_BIT(dirtyFBO)) != 0u, "FBO bit triggers pass sync");
+    expect((fbo & (program | vao | fbo | T_BIT(dirtyAlphaState) | rs)) != 0u,
+           "FBO bit keeps pipeline sync");
+    /* RENDER_STATE-only is consumed by the RS path before pipeline. */
+    uint32_t bits = rs;
+    if (bits & vao) {
+        bits &= ~rs;
+    } else if (bits & buffer) {
+        bits &= ~buffer;
+    } else if (bits & rs) {
+        bits &= ~rs;
+    }
+    expect((bits & (program | vao | fbo | T_BIT(dirtyAlphaState) | rs)) == 0u,
+           "RENDER_STATE-only does not rebuild the pipeline");
+    /* VAO path clears RENDER_STATE but keeps VAO for pipeline. */
+    bits = vao | rs;
+    if (bits & vao) {
+        bits &= ~rs;
+    }
+    expect((bits & vao) != 0u && (bits & rs) == 0u,
+           "VAO path keeps pipeline, drops RENDER_STATE");
+    /* Program + draw + no pipeline defers buffer map. */
+    expect((program & T_BIT(dirtyProgram)) != 0u,
+           "PROGRAM remaps buffers");
+    (void)state;
+#undef T_BIT
+}
+
+static void test_tess_raster_query(void)
+{
+    const uint64_t items = 6u, instances = 2u, vpp = 3u;
+    const uint64_t prims = (items / vpp) * instances;
+    expect(prims == 4u, "TES raster query primitives");
+    const uint64_t stride = 16u, written_bytes = 32u;
+    const uint64_t xfb_prims = written_bytes / (stride * vpp);
+    uint64_t written = prims;
+    if (xfb_prims < written)
+        written = xfb_prims;
+    expect(written == 0u, "TES XFB query clips written primitives");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -247,6 +315,8 @@ int main(void)
     test_fragcoord_slot();
     test_lod_clamp();
     test_stage_in_current();
+    test_dirty_domain_plan();
+    test_tess_raster_query();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

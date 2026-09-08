@@ -19,6 +19,12 @@
 
 #include <stdbool.h>
 
+enum {
+    MGL_TESS_PRIMITIVE_POINT = 0u,
+    MGL_TESS_PRIMITIVE_LINE = 1u,
+    MGL_TESS_PRIMITIVE_TRIANGLE = 3u,
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -190,6 +196,19 @@ uint64_t mglTessPrimitivesFromItems(const Program *tes, uint64_t items);
 uint64_t mglTessGeneratedPrimitiveCount(Program *tes, const void *factor_bytes,
                                         uint32_t patch_count,
                                         uint32_t instance_count);
+GLenum mglTessRasterGLMode(const Program *tes);
+uint32_t mglTessRasterPrimitiveType(const Program *tes);
+
+typedef struct MGLTessRasterQueryPlan {
+    uint64_t prims;
+    uint64_t written;
+} MGLTessRasterQueryPlan;
+
+void mglTessPlanRasterQuery(const Program *tes, uint64_t instance_count,
+                            uint64_t items_per_instance, int xfb_active,
+                            uint64_t xfb_written_bytes,
+                            uint32_t xfb_compact_stride,
+                            MGLTessRasterQueryPlan *out);
 
 /* Seed TES compute output with domain TessCoords for every live patch,
  * then replicate instance 0. Returns items per instance, or 0 on error. */
