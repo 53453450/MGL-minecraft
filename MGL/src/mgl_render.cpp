@@ -16857,7 +16857,7 @@ int mglRenderClassifyCommandBufferCommit(
     return 0;
 }
 
-int mglRenderClassifyProcessGLState(
+MGLProcessGLStateClass mglRenderClassifyProcessGLState(
     int has_ctx, int draw_command, int has_vao, int dirty_state) {
     if (!has_ctx) {
         return MGL_PROCESS_GL_ABORT;
