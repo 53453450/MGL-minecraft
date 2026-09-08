@@ -8386,6 +8386,29 @@ int mglRenderPlainUniformAllowsGlobalFallback(const char *name) {
     return 1;
 }
 
+uint32_t mglRenderStageBufferResourceElementCount(uint32_t resource_type,
+                                                  int has_res,
+                                                  uint32_t ubo_array_size,
+                                                  int has_ubo_members,
+                                                  int32_t gl_array_size) {
+    if (!has_res) {
+        return 1u;
+    }
+    if ((resource_type == (uint32_t)_UNIFORM_BUFFER_RES ||
+         resource_type == (uint32_t)_STORAGE_BUFFER_RES) &&
+        ubo_array_size > 1u) {
+        return ubo_array_size;
+    }
+    if (resource_type == (uint32_t)_UNIFORM_CONSTANT_RES && has_ubo_members &&
+        gl_array_size > 1) {
+        return (uint32_t)gl_array_size;
+    }
+    if (resource_type == (uint32_t)_STORAGE_BUFFER_RES && gl_array_size > 1) {
+        return (uint32_t)gl_array_size;
+    }
+    return 1u;
+}
+
 int mglRenderSamplerNameLooksSamplerLike(const char *name) {
     return name && (std::strstr(name, "Sampler") != NULL ||
                     std::strcmp(name, "CloudFaces") == 0)

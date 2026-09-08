@@ -2174,6 +2174,28 @@ static void test_iris_uniform_fallback(void)
            "legacy ModelViewMat still allows fallback");
 }
 
+static uint32_t stage_buf_elem_count(uint32_t type, int has, uint32_t ubo_n,
+                                     int members, int gl_n)
+{
+    if (!has) return 1u;
+    if ((type == 1u || type == 3u) && ubo_n > 1u) return ubo_n;
+    if (type == 2u && members && gl_n > 1) return (uint32_t)gl_n;
+    if (type == 3u && gl_n > 1) return (uint32_t)gl_n;
+    return 1u;
+}
+
+static void test_stage_buffer_element_count(void)
+{
+    expect(stage_buf_elem_count(1u, 1, 4u, 0, 0) == 4u, "UBO array expands");
+    expect(stage_buf_elem_count(1u, 1, 1u, 0, 0) == 1u, "scalar UBO is 1");
+    expect(stage_buf_elem_count(2u, 1, 0u, 1, 3) == 3u,
+           "plain-uniform array with members expands");
+    expect(stage_buf_elem_count(2u, 1, 0u, 0, 3) == 1u,
+           "plain-uniform without members stays 1");
+    expect(stage_buf_elem_count(3u, 1, 0u, 0, 2) == 2u, "SSBO gl_array_size expands");
+    expect(stage_buf_elem_count(1u, 0, 4u, 0, 0) == 1u, "null resource is 1");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2327,6 +2349,7 @@ int main(void)
     test_shader_resource_type_name();
     test_plain_uniform_binding();
     test_iris_uniform_fallback();
+    test_stage_buffer_element_count();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
