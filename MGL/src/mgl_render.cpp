@@ -8205,6 +8205,26 @@ int mglRenderHasDirtyBufferBit(uint32_t dirty_bits) {
     return (dirty_bits & DIRTY_BUFFER) ? 1 : 0;
 }
 
+uint32_t mglRenderShaderResourceElementCount(uint32_t gl_array_size) {
+    return gl_array_size > 1u ? gl_array_size : 1u;
+}
+
+int mglRenderImageUnitsInRange(uint32_t metal_slot, uint32_t gl_unit,
+                               uint32_t max_units) {
+    return metal_slot < max_units && gl_unit < max_units ? 1 : 0;
+}
+
+uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
+                                        uint32_t explicit_unit,
+                                        int32_t sampler_unit,
+                                        uint32_t gl_binding, uint32_t element) {
+    if (explicit_by_slot) {
+        return explicit_unit;
+    }
+    uint32_t base = sampler_unit >= 0 ? (uint32_t)sampler_unit : gl_binding;
+    return base + element;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

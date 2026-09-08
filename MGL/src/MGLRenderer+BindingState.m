@@ -723,7 +723,7 @@ static bool mglBindingStateFlushResourceBindings(
 
         if (!ptr->data.mtl_data) {
             [self bindMTLBuffer:ptr];
-        } else if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+        } else if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
             /* A CPU write (map/unmap, BufferSubData) since the Metal backing
              * was created is normally pushed by updateDirtyBaseBufferList.
              * On the first draw the base map list is still empty when that
@@ -2487,8 +2487,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 &currentProgram->shader_resources_list[vertexStage][_SAMPLED_IMAGE_RES];
             GLuint ordinal = i;
             for (GLuint ri = 0; ri < list->count; ri++) {
-                GLuint elements = list->list[ri].gl_array_size > 1
-                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                GLuint elements = mglRenderShaderResourceElementCount(
+                    (uint32_t)list->list[ri].gl_array_size);
                 if (ordinal < elements) {
                     sampledResource = &list->list[ri];
                     break;
@@ -3002,8 +3002,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 &sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES];
             GLuint ordinal = i;
             for (GLuint ri = 0; ri < list->count; ri++) {
-                GLuint elements = list->list[ri].gl_array_size > 1
-                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                GLuint elements = mglRenderShaderResourceElementCount(
+                    (uint32_t)list->list[ri].gl_array_size);
                 if (ordinal < elements) {
                     sampledResource = &list->list[ri];
                     break;
@@ -4232,8 +4232,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES];
             GLuint ordinal = i;
             for (GLuint ri = 0; ri < list->count; ri++) {
-                GLuint elements = list->list[ri].gl_array_size > 1
-                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                GLuint elements = mglRenderShaderResourceElementCount(
+                    (uint32_t)list->list[ri].gl_array_size);
                 if (ordinal < elements) {
                     resource = &list->list[ri];
                     element = ordinal;
@@ -4284,8 +4284,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 &vertexProgram->shader_resources_list[vertexStage][_STORAGE_IMAGE_RES];
             GLuint ordinal = i;
             for (GLuint ri = 0; ri < list->count; ri++) {
-                GLuint elements = list->list[ri].gl_array_size > 1
-                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                GLuint elements = mglRenderShaderResourceElementCount(
+                    (uint32_t)list->list[ri].gl_array_size);
                 if (ordinal < elements) {
                     resource = &list->list[ri];
                     element = ordinal;
@@ -4304,18 +4304,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             ? resource->binding + element
             : (GLuint)mglRendererGetProgramBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
         GLuint glUnit;
-        if (vertexProgram && metalSlot < TEXTURE_UNITS &&
-            vertexProgram->sampler_units_explicit_by_stage[vertexStage][metalSlot]) {
-            glUnit = (GLuint)vertexProgram->sampler_units_by_stage[vertexStage][metalSlot];
-        } else if (resource) {
-            GLuint base = resource->sampler_unit >= 0
-                ? (GLuint)resource->sampler_unit : resource->gl_binding;
-            glUnit = base + element;
+        const int explicitUnit =
+            vertexProgram && metalSlot < TEXTURE_UNITS &&
+            vertexProgram->sampler_units_explicit_by_stage[vertexStage]
+                                                         [metalSlot];
+        if (explicitUnit || resource) {
+            glUnit = mglRenderImageUnitFromResource(
+                explicitUnit,
+                explicitUnit
+                    ? (uint32_t)vertexProgram
+                          ->sampler_units_by_stage[vertexStage][metalSlot]
+                    : 0u,
+                resource ? resource->sampler_unit : -1,
+                resource ? resource->gl_binding : 0u, element);
         } else {
             glUnit = (GLuint)mglRendererGetProgramGLBinding(
                 ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
         }
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
+        if (!mglRenderImageUnitsInRange(metalSlot, glUnit, TEXTURE_UNITS)) {
             continue;
         }
         Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
@@ -4347,8 +4353,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES];
             GLuint ordinal = i;
             for (GLuint ri = 0; ri < list->count; ri++) {
-                GLuint elements = list->list[ri].gl_array_size > 1
-                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                GLuint elements = mglRenderShaderResourceElementCount(
+                    (uint32_t)list->list[ri].gl_array_size);
                 if (ordinal < elements) {
                     resource = &list->list[ri];
                     element = ordinal;
@@ -4406,8 +4412,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 &fragmentProgram->shader_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES];
             GLuint ordinal = i;
             for (GLuint ri = 0; ri < list->count; ri++) {
-                GLuint elements = list->list[ri].gl_array_size > 1
-                    ? (GLuint)list->list[ri].gl_array_size : 1u;
+                GLuint elements = mglRenderShaderResourceElementCount(
+                    (uint32_t)list->list[ri].gl_array_size);
                 if (ordinal < elements) {
                     resource = &list->list[ri];
                     element = ordinal;

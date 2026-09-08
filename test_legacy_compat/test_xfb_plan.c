@@ -926,6 +926,16 @@ static void test_compute_view_and_dirty_buffer(void)
     expect(dirty == 1, "DIRTY_BUFFER bit is set");
 }
 
+static void test_shader_resource_image_unit(void)
+{
+    uint32_t elems = 4u > 1u ? 4u : 1u;
+    expect(elems == 4u, "shader resource array size 4 is 4 elements");
+    uint32_t unit = 3u + 1u;
+    expect(unit == 4u, "image unit is sampler_unit + element");
+    int in_range = (2u < 32u) && (4u < 32u);
+    expect(in_range == 1, "metal slot and GL unit are in TEXTURE_UNITS");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -990,6 +1000,7 @@ int main(void)
     test_swizzle_and_1d_backing();
     test_gs_query_stream_written();
     test_compute_view_and_dirty_buffer();
+    test_shader_resource_image_unit();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

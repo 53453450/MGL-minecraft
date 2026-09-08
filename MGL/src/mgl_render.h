@@ -1279,6 +1279,13 @@ void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
                                    uint64_t height, uint32_t *type,
                                    uint64_t *array_len, uint32_t *height_out);
 int mglRenderHasDirtyBufferBit(uint32_t dirty_bits);
+uint32_t mglRenderShaderResourceElementCount(uint32_t gl_array_size);
+int mglRenderImageUnitsInRange(uint32_t metal_slot, uint32_t gl_unit,
+                               uint32_t max_units);
+uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
+                                        uint32_t explicit_unit,
+                                        int32_t sampler_unit,
+                                        uint32_t gl_binding, uint32_t element);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
