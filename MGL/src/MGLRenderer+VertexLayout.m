@@ -167,58 +167,50 @@
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
         uint32_t srcRgb = (uint32_t)MGL_STATE(ctx)->var.blend_src_rgb[i];
-        if (mglRenderApplyBlendRepair(
-                mglIsValidGLBlendFactor((GLenum)srcRgb) ? 1 : 0, &srcRgb,
-                (uint32_t)GL_ONE)) {
+        if (mglRenderRepairBlendSrcFactor(&srcRgb)) {
             mglLogRenderStateRepair("blend_src_rgb",
-                                    MGL_STATE(ctx)->var.blend_src_rgb[i], GL_ONE);
+                                    MGL_STATE(ctx)->var.blend_src_rgb[i],
+                                    (GLenum)srcRgb);
             MGL_STATE(ctx)->var.blend_src_rgb[i] = (GLenum)srcRgb;
             repairedState = true;
         }
         uint32_t srcAlpha = (uint32_t)MGL_STATE(ctx)->var.blend_src_alpha[i];
-        if (mglRenderApplyBlendRepair(
-                mglIsValidGLBlendFactor((GLenum)srcAlpha) ? 1 : 0, &srcAlpha,
-                (uint32_t)GL_ONE)) {
+        if (mglRenderRepairBlendSrcFactor(&srcAlpha)) {
             mglLogRenderStateRepair("blend_src_alpha",
-                                    MGL_STATE(ctx)->var.blend_src_alpha[i], GL_ONE);
+                                    MGL_STATE(ctx)->var.blend_src_alpha[i],
+                                    (GLenum)srcAlpha);
             MGL_STATE(ctx)->var.blend_src_alpha[i] = (GLenum)srcAlpha;
             repairedState = true;
         }
         uint32_t dstRgb = (uint32_t)MGL_STATE(ctx)->var.blend_dst_rgb[i];
-        if (mglRenderApplyBlendRepair(
-                mglIsValidGLBlendFactor((GLenum)dstRgb) ? 1 : 0, &dstRgb,
-                (uint32_t)GL_ZERO)) {
+        if (mglRenderRepairBlendDstFactor(&dstRgb)) {
             mglLogRenderStateRepair("blend_dst_rgb",
-                                    MGL_STATE(ctx)->var.blend_dst_rgb[i], GL_ZERO);
+                                    MGL_STATE(ctx)->var.blend_dst_rgb[i],
+                                    (GLenum)dstRgb);
             MGL_STATE(ctx)->var.blend_dst_rgb[i] = (GLenum)dstRgb;
             repairedState = true;
         }
         uint32_t dstAlpha = (uint32_t)MGL_STATE(ctx)->var.blend_dst_alpha[i];
-        if (mglRenderApplyBlendRepair(
-                mglIsValidGLBlendFactor((GLenum)dstAlpha) ? 1 : 0, &dstAlpha,
-                (uint32_t)GL_ZERO)) {
+        if (mglRenderRepairBlendDstFactor(&dstAlpha)) {
             mglLogRenderStateRepair("blend_dst_alpha",
-                                    MGL_STATE(ctx)->var.blend_dst_alpha[i], GL_ZERO);
+                                    MGL_STATE(ctx)->var.blend_dst_alpha[i],
+                                    (GLenum)dstAlpha);
             MGL_STATE(ctx)->var.blend_dst_alpha[i] = (GLenum)dstAlpha;
             repairedState = true;
         }
         uint32_t eqRgb = (uint32_t)MGL_STATE(ctx)->var.blend_equation_rgb[i];
-        if (mglRenderApplyBlendRepair(
-                mglIsValidGLBlendEquation((GLenum)eqRgb) ? 1 : 0, &eqRgb,
-                (uint32_t)GL_FUNC_ADD)) {
+        if (mglRenderRepairBlendEquation(&eqRgb)) {
             mglLogRenderStateRepair("blend_equation_rgb",
                                     MGL_STATE(ctx)->var.blend_equation_rgb[i],
-                                    GL_FUNC_ADD);
+                                    (GLenum)eqRgb);
             MGL_STATE(ctx)->var.blend_equation_rgb[i] = (GLenum)eqRgb;
             repairedState = true;
         }
         uint32_t eqAlpha = (uint32_t)MGL_STATE(ctx)->var.blend_equation_alpha[i];
-        if (mglRenderApplyBlendRepair(
-                mglIsValidGLBlendEquation((GLenum)eqAlpha) ? 1 : 0, &eqAlpha,
-                (uint32_t)GL_FUNC_ADD)) {
+        if (mglRenderRepairBlendEquation(&eqAlpha)) {
             mglLogRenderStateRepair("blend_equation_alpha",
                                     MGL_STATE(ctx)->var.blend_equation_alpha[i],
-                                    GL_FUNC_ADD);
+                                    (GLenum)eqAlpha);
             MGL_STATE(ctx)->var.blend_equation_alpha[i] = (GLenum)eqAlpha;
             repairedState = true;
         }

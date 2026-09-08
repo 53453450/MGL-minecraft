@@ -2141,12 +2141,11 @@ static GLenum mglPassthroughDeclType(
 
         if (useDepthState)
         {
-            uint32_t depthFunc = mglRenderCompareFuncOrFallback(
-                (uint32_t)state->var.depth_func,
-                mglIsValidGLCompareFunction(state->var.depth_func) ? 1 : 0,
-                (uint32_t)GL_LESS);
+            uint32_t depthFunc = mglRenderRepairDepthFunc(
+                (uint32_t)state->var.depth_func);
             if (depthFunc != (uint32_t)state->var.depth_func) {
-                mglLogRenderStateRepair("depth_func", state->var.depth_func, GL_LESS);
+                mglLogRenderStateRepair("depth_func", state->var.depth_func,
+                                        (GLenum)depthFunc);
                 state->var.depth_func = (GLenum)depthFunc;
                 mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
             }
@@ -2188,12 +2187,11 @@ static GLenum mglPassthroughDeclType(
                             (int)(MGL_STATE(ctx)->framebuffer ? MGL_STATE(ctx)->framebuffer->stencil.layered : 0));
             }
             {
-                uint32_t stencilFunc = mglRenderCompareFuncOrFallback(
-                    (uint32_t)state->var.stencil_func,
-                    mglIsValidGLCompareFunction(state->var.stencil_func) ? 1 : 0,
-                    (uint32_t)GL_ALWAYS);
+                uint32_t stencilFunc = mglRenderRepairStencilFunc(
+                    (uint32_t)state->var.stencil_func);
                 if (stencilFunc != (uint32_t)state->var.stencil_func) {
-                    mglLogRenderStateRepair("stencil_func", state->var.stencil_func, GL_ALWAYS);
+                    mglLogRenderStateRepair("stencil_func", state->var.stencil_func,
+                                            (GLenum)stencilFunc);
                     state->var.stencil_func = (GLenum)stencilFunc;
                     mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
                 }
@@ -2223,12 +2221,12 @@ static GLenum mglPassthroughDeclType(
             }
 
             {
-                uint32_t stencilBack = mglRenderCompareFuncOrFallback(
-                    (uint32_t)state->var.stencil_back_func,
-                    mglIsValidGLCompareFunction(state->var.stencil_back_func) ? 1 : 0,
-                    (uint32_t)GL_ALWAYS);
+                uint32_t stencilBack = mglRenderRepairStencilFunc(
+                    (uint32_t)state->var.stencil_back_func);
                 if (stencilBack != (uint32_t)state->var.stencil_back_func) {
-                    mglLogRenderStateRepair("stencil_back_func", state->var.stencil_back_func, GL_ALWAYS);
+                    mglLogRenderStateRepair("stencil_back_func",
+                                            state->var.stencil_back_func,
+                                            (GLenum)stencilBack);
                     state->var.stencil_back_func = (GLenum)stencilBack;
                     mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
                 }
@@ -2314,9 +2312,11 @@ static GLenum mglPassthroughDeclType(
     [self updateViewportAndScissorLocked];
 
     if (!mglRenderFrontFaceValid((uint32_t)state->var.front_face)) {
-        mglLogRenderStateRepair("front_face", state->var.front_face, GL_CCW);
-        state->var.front_face = (GLenum)mglRenderFrontFaceOrCCW(
+        uint32_t repaired = mglRenderFrontFaceOrCCW(
             (uint32_t)state->var.front_face);
+        mglLogRenderStateRepair("front_face", state->var.front_face,
+                                (GLenum)repaired);
+        state->var.front_face = (GLenum)repaired;
         mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
 
@@ -2409,9 +2409,11 @@ static GLenum mglPassthroughDeclType(
     uint32_t triangleFillMode = mglRenderTriangleFillMode(
         (uint32_t)state->var.polygon_mode);
     if (!mglRenderPolygonModeValid((uint32_t)state->var.polygon_mode)) {
-        mglLogRenderStateRepair("polygon_mode", state->var.polygon_mode, GL_FILL);
-        state->var.polygon_mode = (GLenum)mglRenderPolygonModeOrFill(
+        uint32_t repaired = mglRenderPolygonModeOrFill(
             (uint32_t)state->var.polygon_mode);
+        mglLogRenderStateRepair("polygon_mode", state->var.polygon_mode,
+                                (GLenum)repaired);
+        state->var.polygon_mode = (GLenum)repaired;
         mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
     [self setTriangleFillModeIfNeeded:triangleFillMode];

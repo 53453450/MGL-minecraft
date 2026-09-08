@@ -9816,6 +9816,40 @@ int mglRenderClearMaskHasAny(uint32_t mask) {
                : 0;
 }
 
+int mglRenderRepairBlendSrcFactor(uint32_t *value) {
+    if (!value) {
+        return 0;
+    }
+    return mglRenderApplyBlendRepair(mglRenderIsValidGLBlendFactor(*value),
+                                     value, GL_ONE);
+}
+
+int mglRenderRepairBlendDstFactor(uint32_t *value) {
+    if (!value) {
+        return 0;
+    }
+    return mglRenderApplyBlendRepair(mglRenderIsValidGLBlendFactor(*value),
+                                     value, GL_ZERO);
+}
+
+int mglRenderRepairBlendEquation(uint32_t *value) {
+    if (!value) {
+        return 0;
+    }
+    return mglRenderApplyBlendRepair(mglRenderIsValidGLBlendEquation(*value),
+                                     value, GL_FUNC_ADD);
+}
+
+uint32_t mglRenderRepairDepthFunc(uint32_t func) {
+    return mglRenderCompareFuncOrFallback(
+        func, mglRenderIsValidGLCompareFunction(func), GL_LESS);
+}
+
+uint32_t mglRenderRepairStencilFunc(uint32_t func) {
+    return mglRenderCompareFuncOrFallback(
+        func, mglRenderIsValidGLCompareFunction(func), GL_ALWAYS);
+}
+
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
     uint32_t tmp = 0u;
     return mglRenderBlendOperationFromGL(op, &tmp);

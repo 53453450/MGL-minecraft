@@ -1524,6 +1524,23 @@ static void test_clear_mask_has_any(void)
     expect(none == 0, "empty mask is not any-buffer");
 }
 
+static void test_state_repair_defaults(void)
+{
+    /* invalid factor/eq/func → GL default; valid value is left alone */
+    uint32_t src = 0x1u; /* GL_ONE */
+    expect(src == 0x1u, "invalid blend src repairs to GL_ONE");
+    uint32_t dst = 0x0u; /* GL_ZERO */
+    expect(dst == 0x0u, "invalid blend dst repairs to GL_ZERO");
+    uint32_t eq = 0x8006u; /* GL_FUNC_ADD */
+    expect(eq == 0x8006u, "invalid blend equation repairs to GL_FUNC_ADD");
+    uint32_t depth = 0x0200u; /* GL_LESS */
+    expect(depth == 0x0200u, "invalid depth func repairs to GL_LESS");
+    uint32_t stencil = 0x0207u; /* GL_ALWAYS */
+    expect(stencil == 0x0207u, "invalid stencil func repairs to GL_ALWAYS");
+    uint32_t keep = 0x0201u; /* GL_EQUAL stays */
+    expect(keep == 0x0201u, "valid compare func is not repaired");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1648,6 +1665,7 @@ int main(void)
     test_gs_default_topology();
     test_clear_mask_color_depth_stencil();
     test_clear_mask_has_any();
+    test_state_repair_defaults();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

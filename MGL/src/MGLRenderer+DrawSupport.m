@@ -2498,9 +2498,11 @@ after_gs_draws:
         &decision);
     uint32_t triangleFillMode = decision.triangle_fill_mode ? 1u : 0u;
     if (decision.needs_polygon_mode_repair) {
-        mglLogRenderStateRepair("polygon_mode", MGL_STATE(ctx)->var.polygon_mode, GL_FILL);
-        MGL_STATE(ctx)->var.polygon_mode = (GLenum)mglRenderPolygonModeOrFill(
+        uint32_t repaired = mglRenderPolygonModeOrFill(
             (uint32_t)MGL_STATE(ctx)->var.polygon_mode);
+        mglLogRenderStateRepair("polygon_mode", MGL_STATE(ctx)->var.polygon_mode,
+                                (GLenum)repaired);
+        MGL_STATE(ctx)->var.polygon_mode = (GLenum)repaired;
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
     }
     [self setTriangleFillModeIfNeeded:triangleFillMode];
