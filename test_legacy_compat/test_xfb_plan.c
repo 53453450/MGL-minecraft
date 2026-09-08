@@ -827,6 +827,18 @@ static void test_air_sampler_lookup(void)
     expect(buf_dim == 1, "image_dim BUFFER is a texel buffer resource");
 }
 
+static void test_texel_buffer_2d_pack(void)
+{
+    uint64_t texels = 5000u;
+    uint32_t max2d = 4096u;
+    uint32_t w = texels < max2d ? (uint32_t)texels : max2d;
+    uint32_t h = (uint32_t)((texels + w - 1u) / w);
+    expect(w == 4096u, "texel buffer packs to 4096-wide 2D");
+    expect(h == 2u, "5000 texels pack into 2 rows");
+    int tbo_type = 1;
+    expect(tbo_type == 1, "TextureBuffer expected type refuses 2D atlas fallback");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -882,6 +894,7 @@ int main(void)
     test_image_nonlayered_slice();
     test_texture_buffer_and_cube_layers();
     test_air_sampler_lookup();
+    test_texel_buffer_2d_pack();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

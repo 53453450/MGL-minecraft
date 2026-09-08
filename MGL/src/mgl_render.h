@@ -1246,6 +1246,10 @@ int mglRenderPrefer1DOverDefault2D(uint32_t expected_type, uint32_t active_targe
 int mglRenderPreferMSOr1DArrayOver2DArray(uint32_t expected_type,
                                           uint32_t active_target);
 int mglRenderImageDimIsBuffer(uint32_t image_dim);
+int mglRenderExpectedTypeIsTextureBuffer(uint32_t expected_type);
+int mglRenderExpectedTypeIsCube(uint32_t expected_type);
+int mglRenderPlanTexelBuffer2DSize(uint64_t texel_count, uint32_t max_texture_size,
+                                   uint32_t *width_out, uint32_t *height_out);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

@@ -7945,6 +7945,38 @@ int mglRenderImageDimIsBuffer(uint32_t image_dim) {
     return image_dim == MGL_IMAGE_DIM_BUFFER ? 1 : 0;
 }
 
+int mglRenderExpectedTypeIsTextureBuffer(uint32_t expected_type) {
+    return expected_type == MGLTextureTypeTextureBuffer ? 1 : 0;
+}
+
+int mglRenderExpectedTypeIsCube(uint32_t expected_type) {
+    return expected_type == MGLTextureTypeCube ? 1 : 0;
+}
+
+int mglRenderPlanTexelBuffer2DSize(uint64_t texel_count, uint32_t max_texture_size,
+                                   uint32_t *width_out, uint32_t *height_out) {
+    const uint32_t kWidth = 4096u;
+    uint32_t max2d = max_texture_size;
+    if (max2d == 0u || max2d > kWidth) {
+        max2d = kWidth;
+    }
+    if (texel_count == 0u) {
+        return 0;
+    }
+    uint32_t w = texel_count < max2d ? (uint32_t)texel_count : max2d;
+    uint32_t h = (uint32_t)((texel_count + w - 1u) / w);
+    if (h == 0u || h > max2d) {
+        return 0;
+    }
+    if (width_out) {
+        *width_out = w;
+    }
+    if (height_out) {
+        *height_out = h;
+    }
+    return 1;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

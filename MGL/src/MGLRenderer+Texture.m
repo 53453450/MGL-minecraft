@@ -5821,25 +5821,21 @@ static void mglTextureCopyTextureToBuffer(
      * spvTexelBufferCoord(tc) using its MSL texel_buffer_texture_width
      * option. Keep this packing width in lockstep with program.c.
      */
-    static const NSUInteger kMGLTexelBufferTextureWidth = 4096u;
-    NSUInteger max2DSize = (NSUInteger)MIN((GLuint)kMGLTexelBufferTextureWidth,
-                                           ctx ? MGL_STATE(ctx)->var.max_texture_size : (GLuint)kMGLTexelBufferTextureWidth);
-    if (max2DSize == 0 || max2DSize > kMGLTexelBufferTextureWidth) {
-        max2DSize = kMGLTexelBufferTextureWidth;
-    }
-
-    NSUInteger texWidth = MIN(texelCount, max2DSize);
-    NSUInteger texHeight = (texelCount + texWidth - 1) / texWidth;
-    if (texHeight == 0 || texHeight > max2DSize) {
-        NSLog(@"MGL TEXBUFFER ERROR: texel buffer too large for 2D fallback tex=%u buffer=%u texels=%lu packed=%lux%lu max=%lu",
+    uint32_t packedW = 0u;
+    uint32_t packedH = 0u;
+    if (!mglRenderPlanTexelBuffer2DSize(
+            (uint64_t)texelCount,
+            ctx ? MGL_STATE(ctx)->var.max_texture_size : 4096u, &packedW,
+            &packedH)) {
+        NSLog(@"MGL TEXBUFFER ERROR: texel buffer too large for 2D fallback tex=%u buffer=%u texels=%lu max=%u",
               tex->name,
               sourceBuffer->name,
               (unsigned long)texelCount,
-              (unsigned long)texWidth,
-              (unsigned long)texHeight,
-              (unsigned long)max2DSize);
+              ctx ? MGL_STATE(ctx)->var.max_texture_size : 4096u);
         return nil;
     }
+    NSUInteger texWidth = packedW;
+    NSUInteger texHeight = packedH;
 
     NSUInteger bytesPerRow = texWidth * bytesPerTexel;
     NSUInteger packedBytes = bytesPerRow * texHeight;
@@ -6698,7 +6694,7 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     uint32_t textureType = expectedType ? expectedType : MGLTextureType2D;
-    if (textureType == MGLTextureTypeTextureBuffer) {
+    if (mglRenderExpectedTypeIsTextureBuffer(textureType)) {
         return [self fallbackTextureBufferSampledTexture];
     }
 
@@ -6780,10 +6776,10 @@ static void mglTextureCopyTextureToBuffer(
 
 - (id)fallbackSampledTextureForExpectedType:(uint32_t)expectedType
 {
-    if (expectedType == MGLTextureTypeCube) {
+    if (mglRenderExpectedTypeIsCube(expectedType)) {
         return [self fallbackCubeSampledTexture];
     }
-    if (expectedType == MGLTextureTypeTextureBuffer) {
+    if (mglRenderExpectedTypeIsTextureBuffer(expectedType)) {
         return [self fallbackTextureBufferSampledTexture];
     }
 
@@ -7030,7 +7026,7 @@ static void mglTextureCopyTextureToBuffer(
         // lowers it to a 1-row texture2d<int> in MSL. If no GL_TEXTURE_BUFFER
         // is bound, using the active 2D atlas here feeds float/RGBA data into a
         // signed integer vertex resource and corrupts the whole frame.
-        if (expectedType == MGLTextureTypeTextureBuffer) {
+        if (mglRenderExpectedTypeIsTextureBuffer(expectedType)) {
             static uint64_t s_missingTextureBufferBindingLogs = 0;
             uint64_t hit = ++s_missingTextureBufferBindingLogs;
             if (hit <= 32ull || (hit % 512ull) == 0ull) {
