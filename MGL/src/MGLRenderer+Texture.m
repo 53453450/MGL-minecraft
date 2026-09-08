@@ -6657,9 +6657,11 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     bool stageExplicit = mglRenderShaderStageValid(stage)
-        ? (program->sampler_units_explicit_by_stage[stage][metalBinding] == GL_TRUE)
+        ? mglRenderSamplerUnitExplicit(
+              (uint32_t)program->sampler_units_explicit_by_stage[stage][metalBinding]) != 0
         : false;
-    bool globalExplicit = (program->sampler_units_explicit[metalBinding] == GL_TRUE);
+    bool globalExplicit = mglRenderSamplerUnitExplicit(
+                              (uint32_t)program->sampler_units_explicit[metalBinding]) != 0;
 
     GLint unit = mglRenderShaderStageValid(stage)
         ? program->sampler_units_by_stage[stage][metalBinding]
@@ -6729,15 +6731,16 @@ static void mglTextureCopyTextureToBuffer(
      * often MGLTextureType2D. Prefer the GL target slot that matches the
      * reflected image_dim before trusting a leftover _TEXTURE_2D binding. */
     if (sampledResource &&
-        sampledResource->image_dim == MGL_IMAGE_DIM_1D &&
-        !sampledResource->image_arrayed) {
+        mglRenderPrefer1DSampler(sampledResource->image_dim,
+                                 sampledResource->image_arrayed ? 1 : 0)) {
         Texture *tex1D =
             MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_1D];
         if (tex1D && tex1D->name != TEX_OBJ_RES_NAME) {
             return tex1D;
         }
         Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
-        if (activeTexture && activeTexture->target == GL_TEXTURE_1D &&
+        if (activeTexture &&
+            mglRenderTextureTargetIs1D((uint32_t)activeTexture->target) &&
             activeTexture->name != TEX_OBJ_RES_NAME) {
             return activeTexture;
         }

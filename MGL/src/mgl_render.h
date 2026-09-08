@@ -1393,6 +1393,9 @@ int mglRenderIs3DReupload(uint32_t target, uint32_t depth);
 int mglRenderIsSmallRGBA8(uint32_t width, uint32_t height, uint32_t internalformat);
 uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
                                                  int *known);
+int mglRenderSamplerUnitExplicit(uint32_t flag);
+int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
+int mglRenderTextureTargetIs1D(uint32_t target);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

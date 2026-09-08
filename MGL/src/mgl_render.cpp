@@ -9104,6 +9104,18 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
     return bpp;
 }
 
+int mglRenderSamplerUnitExplicit(uint32_t flag) {
+    return flag == GL_TRUE ? 1 : 0;
+}
+
+int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed) {
+    return image_dim == MGL_IMAGE_DIM_1D && !arrayed ? 1 : 0;
+}
+
+int mglRenderTextureTargetIs1D(uint32_t target) {
+    return target == GL_TEXTURE_1D ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

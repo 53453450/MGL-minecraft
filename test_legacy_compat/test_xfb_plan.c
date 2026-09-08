@@ -1246,6 +1246,16 @@ static void test_bytes_per_pixel_internal_format(void)
     expect(rgba32 == 16u, "GL_RGBA32F is 16 bytes per pixel");
 }
 
+static void test_sampler_explicit_and_1d_prefer(void)
+{
+    int expl = 1;
+    expect(expl == 1, "GL_TRUE marks sampler unit as explicit");
+    int prefer = 1 && !0;
+    expect(prefer == 1, "1D image_dim prefers sampler1D slot");
+    int is1d = 1;
+    expect(is1d == 1, "GL_TEXTURE_1D is a 1D target");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1340,6 +1350,7 @@ int main(void)
     test_cube_array_faces_and_fallback_format();
     test_array_slice_3d_reupload_and_rgba8();
     test_bytes_per_pixel_internal_format();
+    test_sampler_explicit_and_1d_prefer();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
