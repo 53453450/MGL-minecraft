@@ -3666,13 +3666,14 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     } else {
         GLuint drawBufferIndex = mglDefaultDrawBufferIndexForGL(MGL_STATE(glm_ctx)->draw_buffer);
         if (wantsColor) {
-            if (drawBufferIndex == _FRONT) {
+            if (mglRenderDefaultDrawBufferIsFront(drawBufferIndex)) {
                 if (!_drawable && _layer) {
                     [self mglApplyPendingDrawableSize];
                     _drawable = [self mglNextDrawable];
                 }
                 colorTexture = mglRendererCurrentDrawableTexture(self);
-            } else if (drawBufferIndex < _MAX_DRAW_BUFFERS) {
+            } else if (mglRenderDefaultDrawBufferIsOffscreen(
+                           drawBufferIndex, _MAX_DRAW_BUFFERS)) {
                 colorTexture = (__bridge id)
                     mglRendererBackendGetDefaultDrawBufferAttachment(
                         _backend, drawBufferIndex,

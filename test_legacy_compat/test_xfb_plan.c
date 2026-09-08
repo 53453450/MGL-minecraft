@@ -2227,6 +2227,21 @@ static void test_combined_sampler_slot(void)
     expect(combined_sampler_slot(1, 1, 5u) + 2u == 7u, "element offsets combined slot");
 }
 
+static int default_db_is_front(uint32_t i) { return i == 0u; }
+static int default_db_is_offscreen(uint32_t i, uint32_t max)
+{
+    return i != 0u && i < max;
+}
+
+static void test_default_drawbuffer_front(void)
+{
+    expect(default_db_is_front(0u) == 1, "slot 0 is FRONT drawable");
+    expect(default_db_is_front(1u) == 0, "BACK is not FRONT");
+    expect(default_db_is_offscreen(1u, 6u) == 1, "BACK is an offscreen default buffer");
+    expect(default_db_is_offscreen(0u, 6u) == 0, "FRONT is not offscreen");
+    expect(default_db_is_offscreen(9u, 6u) == 0, "out of range is not offscreen");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2383,6 +2398,7 @@ int main(void)
     test_stage_buffer_element_count();
     test_ubo_array_element_binding();
     test_combined_sampler_slot();
+    test_default_drawbuffer_front();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -2125,7 +2125,7 @@ static void mglTextureCopyTextureToBuffer(
     }
     mgl_drawbuffer = (int)mappedDraw;
 
-    if (mgl_drawbuffer == _FRONT)
+    if (mglRenderDefaultDrawBufferIsFront((uint32_t)mgl_drawbuffer))
     {
         if (!_drawable) {
             (void)[self mglApplyPendingDrawableSize];
@@ -2133,7 +2133,8 @@ static void mglTextureCopyTextureToBuffer(
         }
         texture = _drawable ? [self mglDrawableTexture] : nil;
     }
-    else if (mgl_drawbuffer < _MAX_DRAW_BUFFERS)
+    else if (mglRenderDefaultDrawBufferIsOffscreen((uint32_t)mgl_drawbuffer,
+                                                   _MAX_DRAW_BUFFERS))
     {
         texture = (__bridge id)
             mglRendererBackendGetDefaultDrawBufferAttachment(
@@ -2154,7 +2155,7 @@ static void mglTextureCopyTextureToBuffer(
         mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
-    if (mgl_drawbuffer == _FRONT) {
+    if (mglRenderDefaultDrawBufferIsFront((uint32_t)mgl_drawbuffer)) {
         [self mglApplyPendingDefaultColorClearToTexture:texture];
     }
     [self mglReadColorTextureAsBGRA8:texture

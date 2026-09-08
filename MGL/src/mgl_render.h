@@ -1525,6 +1525,9 @@ int mglRenderTextureTargetIsCubeMap(uint32_t target);
 int mglRenderDrawBufferIsColorAttachment(uint32_t draw_buffer, uint32_t max,
                                          uint32_t *out_index);
 int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer);
+int mglRenderDefaultDrawBufferIsFront(uint32_t mgl_drawbuffer);
+int mglRenderDefaultDrawBufferIsOffscreen(uint32_t mgl_drawbuffer,
+                                          uint32_t max_draw_buffers);
 int mglRenderTextureNeedsArrayLengthCheck(uint32_t target);
 int mglRenderPackedDepthStencilFormat(uint32_t internalformat);
 int mglRenderTextureTargetIsLayeredUpload(uint32_t target);

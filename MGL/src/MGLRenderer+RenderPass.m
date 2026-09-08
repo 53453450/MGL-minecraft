@@ -1507,9 +1507,10 @@ static GLenum mglPassthroughDeclType(
         id actualColor0 = mglRenderPassTextureFromSnapshot(
             &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
 
-        if (mgl_drawbuffer == _FRONT) {
+        if (mglRenderDefaultDrawBufferIsFront(mgl_drawbuffer)) {
             expectedColor0 = _drawable ? [self mglDrawableTexture] : nil;
-        } else if (mgl_drawbuffer < _MAX_DRAW_BUFFERS) {
+        } else if (mglRenderDefaultDrawBufferIsOffscreen(
+                       mgl_drawbuffer, _MAX_DRAW_BUFFERS)) {
             expectedColor0 = mglRenderPassDefaultDrawBufferAttachment(
                 _backend, mgl_drawbuffer,
                 MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
@@ -1695,9 +1696,10 @@ static GLenum mglPassthroughDeclType(
         GLuint mglDefaultDrawbuffer = fbo ? 0u : mglDefaultDrawBufferIndexForGL(MGL_STATE(ctx)->draw_buffer);
         id expectedDefaultColor0 = nil;
         if (!fbo) {
-            expectedDefaultColor0 = (mglDefaultDrawbuffer == _FRONT)
+            expectedDefaultColor0 = mglRenderDefaultDrawBufferIsFront(mglDefaultDrawbuffer)
                 ? (_drawable ? [self mglDrawableTexture] : nil)
-                : ((mglDefaultDrawbuffer < _MAX_DRAW_BUFFERS)
+                : (mglRenderDefaultDrawBufferIsOffscreen(
+                       mglDefaultDrawbuffer, _MAX_DRAW_BUFFERS)
                     ? mglRenderPassDefaultDrawBufferAttachment(
                           _backend, mglDefaultDrawbuffer,
                           MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR)
@@ -2946,7 +2948,7 @@ static GLenum mglPassthroughDeclType(
     }
 
     // attach color buffer
-    if (mgl_drawbuffer == _FRONT)
+    if (mglRenderDefaultDrawBufferIsFront(mgl_drawbuffer))
     {
         // SAFETY: Ensure we have a valid drawable with texture
         if (!_drawable) {

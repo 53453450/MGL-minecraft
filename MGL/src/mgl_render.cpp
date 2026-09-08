@@ -10268,6 +10268,18 @@ int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer) {
     return draw_buffer == GL_FRONT_AND_BACK ? 1 : 0;
 }
 
+int mglRenderDefaultDrawBufferIsFront(uint32_t mgl_drawbuffer) {
+    return mgl_drawbuffer == 0u /* _FRONT */ ? 1 : 0;
+}
+
+int mglRenderDefaultDrawBufferIsOffscreen(uint32_t mgl_drawbuffer,
+                                          uint32_t max_draw_buffers) {
+    return !mglRenderDefaultDrawBufferIsFront(mgl_drawbuffer) &&
+                   mgl_drawbuffer < max_draw_buffers
+               ? 1
+               : 0;
+}
+
 int mglRenderTextureNeedsArrayLengthCheck(uint32_t target) {
     return mglRenderTextureTargetIsArray(target) ||
                    target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
