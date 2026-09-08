@@ -50,17 +50,11 @@ GLuint mglClientBufferBindingForResourceElement(int resourceType,
                                                 const MGLShaderResource *res,
                                                 GLuint element)
 {
-    GLuint baseBinding = mglClientBufferBindingForResource(resourceType, res);
-
-    if ((resourceType == _UNIFORM_BUFFER_RES ||
-         resourceType == _STORAGE_BUFFER_RES) &&
-        res &&
-        res->ubo_array_bindings &&
-        element < res->ubo_array_size) {
-        return res->ubo_array_bindings[element];
-    }
-
-    return baseBinding + element;
+    return mglRenderClientBufferBindingForResourceElement(
+        (uint32_t)resourceType,
+        mglClientBufferBindingForResource(resourceType, res), element,
+        res ? (const uint32_t *)res->ubo_array_bindings : NULL,
+        res ? res->ubo_array_size : 0u);
 }
 
 GLuint mglMetalResourceSlotForElement(const MGLShaderResource *res, GLuint element)

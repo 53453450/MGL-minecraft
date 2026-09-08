@@ -1303,6 +1303,9 @@ uint32_t mglRenderStageBufferResourceElementCount(uint32_t resource_type,
                                                   uint32_t ubo_array_size,
                                                   int has_ubo_members,
                                                   int32_t gl_array_size);
+uint32_t mglRenderClientBufferBindingForResourceElement(
+    uint32_t resource_type, uint32_t base_binding, uint32_t element,
+    const uint32_t *ubo_array_bindings, uint32_t ubo_array_size);
 int mglRenderSamplerNameLooksSamplerLike(const char *name);
 int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim,
                                       int32_t uniform_location, const char *name);

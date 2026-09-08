@@ -8409,6 +8409,17 @@ uint32_t mglRenderStageBufferResourceElementCount(uint32_t resource_type,
     return 1u;
 }
 
+uint32_t mglRenderClientBufferBindingForResourceElement(
+    uint32_t resource_type, uint32_t base_binding, uint32_t element,
+    const uint32_t *ubo_array_bindings, uint32_t ubo_array_size) {
+    if ((resource_type == (uint32_t)_UNIFORM_BUFFER_RES ||
+         resource_type == (uint32_t)_STORAGE_BUFFER_RES) &&
+        ubo_array_bindings && element < ubo_array_size) {
+        return ubo_array_bindings[element];
+    }
+    return base_binding + element;
+}
+
 int mglRenderSamplerNameLooksSamplerLike(const char *name) {
     return name && (std::strstr(name, "Sampler") != NULL ||
                     std::strcmp(name, "CloudFaces") == 0)

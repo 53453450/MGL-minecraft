@@ -2196,6 +2196,24 @@ static void test_stage_buffer_element_count(void)
     expect(stage_buf_elem_count(1u, 0, 4u, 0, 0) == 1u, "null resource is 1");
 }
 
+static uint32_t elem_binding(uint32_t type, uint32_t base, uint32_t elem,
+                             const uint32_t *tbl, uint32_t n)
+{
+    if ((type == 1u || type == 3u) && tbl && elem < n) return tbl[elem];
+    return base + elem;
+}
+
+static void test_ubo_array_element_binding(void)
+{
+    static const uint32_t tbl[3] = {10u, 20u, 30u};
+    expect(elem_binding(1u, 4u, 1u, tbl, 3u) == 20u, "UBO uses bindings table");
+    expect(elem_binding(1u, 4u, 1u, tbl, 1u) == 5u, "OOB element uses base+index");
+    expect(elem_binding(2u, 4u, 1u, tbl, 3u) == 5u,
+           "plain uniform ignores bindings table");
+    expect(elem_binding(3u, 7u, 0u, tbl, 3u) == 10u, "SSBO uses bindings table");
+    expect(elem_binding(1u, 4u, 2u, NULL, 3u) == 6u, "missing table uses base+index");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2350,6 +2368,7 @@ int main(void)
     test_plain_uniform_binding();
     test_iris_uniform_fallback();
     test_stage_buffer_element_count();
+    test_ubo_array_element_binding();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
