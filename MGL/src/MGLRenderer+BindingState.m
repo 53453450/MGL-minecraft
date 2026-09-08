@@ -1770,7 +1770,7 @@ static bool mglBindingStateFlushResourceBindings(
         if (mglRenderUseInlineFragmentBytes(isBaseBinding ? 1 : 0, ptr->size))
         {
             if (ptr->data.buffer_data && ptr->size > 0) {
-                if (mglRenderCPUPointerLooksTagged(ptr->data.buffer_data)) {
+                if (mglRenderCPUPointerLooksTagged((const void *)ptr->data.buffer_data)) {
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: suspicious CPU pointer=%p",
                           ptr->name, i, (void *)ptr->data.buffer_data);
                     MGL_FBIND_EMIT_CLEAR(bindingIndex);
