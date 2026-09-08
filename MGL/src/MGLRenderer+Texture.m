@@ -6856,10 +6856,7 @@ static void mglTextureCopyTextureToBuffer(
     }
     uint32_t fmt = textureInfo.pixel_format;
     BOOL fourByteColor =
-        fmt == MGLPixelFormatRGBA8Unorm ||
-        fmt == MGLPixelFormatRGBA8Unorm_sRGB ||
-        fmt == MGLPixelFormatBGRA8Unorm ||
-        fmt == MGLPixelFormatBGRA8Unorm_sRGB;
+        mglRenderPixelFormatIsUnorm8Color(fmt) != 0;
     if (!fourByteColor) {
         mglTraceLogNSString(@"MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%@ fmt=%lu type=%lu size=%lux%lu hit=%llu",
               (unsigned)program,

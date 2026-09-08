@@ -9877,6 +9877,19 @@ int mglRenderReadbackPixelFormatIsBGRA8(uint32_t pixel_format) {
                : 0;
 }
 
+int mglRenderPixelFormatIsUnorm8Color(uint32_t pixel_format) {
+    return mglRenderReadbackPixelFormatIsRGBA8(pixel_format) ||
+           mglRenderReadbackPixelFormatIsBGRA8(pixel_format);
+}
+
+int mglRenderBlitIsRGBA8BGRA8Pair(uint32_t src_format, uint32_t dst_format) {
+    int src_rgba = src_format == 70u /* RGBA8Unorm */;
+    int src_bgra = src_format == 80u /* BGRA8Unorm */;
+    int dst_rgba = dst_format == 70u;
+    int dst_bgra = dst_format == 80u;
+    return (src_rgba && dst_bgra) || (src_bgra && dst_rgba) ? 1 : 0;
+}
+
 int mglRenderIsValidGLCompareFunction(uint32_t func) {
     switch (func) {
     case GL_NEVER:

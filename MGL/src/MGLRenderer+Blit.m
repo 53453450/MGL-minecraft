@@ -2871,9 +2871,9 @@ static id mglLookupAuxRenderPipeline(
 
     BOOL needsFormatConversionBlit = NO;
     if (mglBlitTextureInfo(readtexid).pixel_format != mglBlitTextureInfo(drawtexid).pixel_format) {
-        BOOL rgbaBgraPair =
-            ((mglBlitTextureInfo(readtexid).pixel_format == MGLPixelFormatRGBA8Unorm && mglBlitTextureInfo(drawtexid).pixel_format == MGLPixelFormatBGRA8Unorm) ||
-             (mglBlitTextureInfo(readtexid).pixel_format == MGLPixelFormatBGRA8Unorm && mglBlitTextureInfo(drawtexid).pixel_format == MGLPixelFormatRGBA8Unorm));
+        BOOL rgbaBgraPair = mglRenderBlitIsRGBA8BGRA8Pair(
+            (uint32_t)mglBlitTextureInfo(readtexid).pixel_format,
+            (uint32_t)mglBlitTextureInfo(drawtexid).pixel_format) != 0;
 
         if (rgbaBgraPair) {
             needsFormatConversionBlit = YES;
@@ -3378,11 +3378,8 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
      * attachment shares the same Metal pixel format as the destination
      * texture. For BGRA8/RGBA8 destinations the CPU path below is sufficient,
      * so we skip the blit attempt to avoid unnecessary encoder churn. */
-    BOOL destIsPlainBGRA8 =
-        (mglBlitTextureInfo(destTexture).pixel_format == MGLPixelFormatBGRA8Unorm ||
-         mglBlitTextureInfo(destTexture).pixel_format == MGLPixelFormatBGRA8Unorm_sRGB ||
-         mglBlitTextureInfo(destTexture).pixel_format == MGLPixelFormatRGBA8Unorm ||
-         mglBlitTextureInfo(destTexture).pixel_format == MGLPixelFormatRGBA8Unorm_sRGB);
+    BOOL destIsPlainBGRA8 = mglRenderPixelFormatIsUnorm8Color(
+        (uint32_t)mglBlitTextureInfo(destTexture).pixel_format) != 0;
     if (!destIsPlainBGRA8) {
         BOOL blitted = [self mtlCopyTexSubImageViaTextureBlit:glm_ctx
                                                           tex:tex

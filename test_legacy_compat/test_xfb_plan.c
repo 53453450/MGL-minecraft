@@ -1921,6 +1921,25 @@ static void test_readback_pixel_format_class(void)
            "BGRA8 readback class");
 }
 
+static int unorm8_color(uint32_t f)
+{
+    return f == 70u || f == 71u || f == 80u || f == 81u;
+}
+
+static int rgba_bgra_pair(uint32_t s, uint32_t d)
+{
+    return (s == 70u && d == 80u) || (s == 80u && d == 70u);
+}
+
+static void test_blit_rgba_bgra_pair(void)
+{
+    expect(rgba_bgra_pair(70u, 80u) == 1, "RGBA8→BGRA8 blit converts");
+    expect(rgba_bgra_pair(80u, 70u) == 1, "BGRA8→RGBA8 blit converts");
+    expect(rgba_bgra_pair(70u, 71u) == 0, "RGBA8→sRGB is not the pair");
+    expect(unorm8_color(70u) && unorm8_color(81u) && !unorm8_color(252u),
+           "8-bit dest skips GPU copy-tex blit");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2063,6 +2082,7 @@ int main(void)
     test_depth_readback_plan();
     test_default_depth_pixel_format();
     test_readback_pixel_format_class();
+    test_blit_rgba_bgra_pair();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
