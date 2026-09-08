@@ -9384,6 +9384,24 @@ uint32_t mglRenderErrorOutOfMemory(void) {
     return GL_OUT_OF_MEMORY;
 }
 
+uint32_t mglRenderGLBoolean(int value) {
+    return value ? (uint32_t)GL_TRUE : (uint32_t)GL_FALSE;
+}
+
+void mglRenderMarkTextureLevelWritten(uint8_t *ever_written,
+                                      uint8_t *has_initialized,
+                                      uint8_t *suspicious_zero) {
+    if (ever_written) {
+        *ever_written = (uint8_t)GL_TRUE;
+    }
+    if (has_initialized) {
+        *has_initialized = (uint8_t)GL_TRUE;
+    }
+    if (suspicious_zero) {
+        *suspicious_zero = (uint8_t)GL_FALSE;
+    }
+}
+
 int mglRenderStopColorAttachmentScan(uint32_t next_index, uint32_t max,
                                      int next_is_none, int has_next_color) {
     return next_index >= max || (next_is_none && !has_next_color) ? 1 : 0;

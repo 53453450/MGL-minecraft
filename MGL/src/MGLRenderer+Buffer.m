@@ -420,7 +420,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 bentry->resource_type = (GLuint)spvc_type;
                 bentry->resource_index = entry->resource_index;
                 bentry->metal_binding_index = metal_binding;
-                bentry->has_metal_binding = GL_TRUE;
+                bentry->has_metal_binding = (GLboolean)mglRenderGLBoolean(1);
                 bentry->buf = packedBuf;
                 bentry->offset = 0;
                 bentry->size = (GLsizeiptr)struct_size;
@@ -496,7 +496,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 bentry->resource_type = (GLuint)spvc_type;
                 bentry->resource_index = entry->resource_index;
                 bentry->metal_binding_index = metal_binding;
-                bentry->has_metal_binding = GL_TRUE;
+                bentry->has_metal_binding = (GLboolean)mglRenderGLBoolean(1);
                 bentry->buf = buf;
                 bentry->offset = baseBinding->offset;
                 bentry->size = baseBinding->size;
@@ -955,7 +955,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                         entry->resource_type = (GLuint)spvc_type;
                         entry->resource_index = (GLuint)i;
                         entry->metal_binding_index = metal_binding;
-                        entry->has_metal_binding = GL_TRUE;
+                        entry->has_metal_binding = (GLboolean)mglRenderGLBoolean(1);
                         entry->buf = packedBuf;
                         entry->offset = 0;
                         entry->size = (GLsizeiptr)struct_size;
@@ -1031,7 +1031,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     entry->resource_type = (GLuint)spvc_type;
                     entry->resource_index = (GLuint)i;
                     entry->metal_binding_index = metal_binding;
-                    entry->has_metal_binding = GL_TRUE;
+                    entry->has_metal_binding = (GLboolean)mglRenderGLBoolean(1);
                     entry->buf = buf;
                     entry->offset = baseBinding->offset;
                     entry->size = baseBinding->size;
@@ -1202,7 +1202,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     buffer_map->buffers[vao_buffer_start].resource_type = 0;
     buffer_map->buffers[vao_buffer_start].resource_index = 0;
     buffer_map->buffers[vao_buffer_start].metal_binding_index = 0;
-    buffer_map->buffers[vao_buffer_start].has_metal_binding = GL_FALSE;
+    buffer_map->buffers[vao_buffer_start].has_metal_binding = (GLboolean)mglRenderGLBoolean(0);
     buffer_map->buffers[vao_buffer_start].buf = NULL;
     buffer_map->buffers[vao_buffer_start].offset = 0;
     buffer_map->buffers[vao_buffer_start].size = 0;
@@ -1262,7 +1262,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                 buffer_map->buffers[vao_buffer_start].attribute_mask |= (0x1 << att);
                 buffer_map->buffers[vao_buffer_start].buf = gl_buffer;
                 buffer_map->buffers[vao_buffer_start].buffer_base_index = next_vertex_binding_index++;
-                buffer_map->buffers[vao_buffer_start].has_metal_binding = GL_FALSE;
+                buffer_map->buffers[vao_buffer_start].has_metal_binding = (GLboolean)mglRenderGLBoolean(0);
                 buffer_map->buffers[vao_buffer_start].offset = resolved.binding_offset;
                 buffer_map->buffers[vao_buffer_start].size = 0;
                 buffer_map->count++;
@@ -1339,7 +1339,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
                     buffer_map->buffers[buffer_map->count].resource_type = 0;
                     buffer_map->buffers[buffer_map->count].resource_index = 0;
                     buffer_map->buffers[buffer_map->count].metal_binding_index = 0;
-                    buffer_map->buffers[buffer_map->count].has_metal_binding = GL_FALSE;
+                    buffer_map->buffers[buffer_map->count].has_metal_binding = (GLboolean)mglRenderGLBoolean(0);
                     buffer_map->buffers[buffer_map->count].buf = gl_buffer;
                     buffer_map->buffers[buffer_map->count].offset = resolved.binding_offset;
                     buffer_map->buffers[buffer_map->count].size = 0;

@@ -945,9 +945,9 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
 
     GLuint oldRenderTargetWriteVersion = tex->mtl_render_target_write_version;
 
-    texLevel->ever_written = GL_TRUE;
-    texLevel->has_initialized_data = GL_TRUE;
-    texLevel->suspicious_zero_upload = GL_FALSE;
+    mglRenderMarkTextureLevelWritten(&texLevel->ever_written,
+                                     &texLevel->has_initialized_data,
+                                     &texLevel->suspicious_zero_upload);
     texLevel->last_init_source = kTexRenderTargetWrite;
     texLevel->last_upload_size = 0u;
     texLevel->last_src_ptr = NULL;
@@ -4084,16 +4084,16 @@ GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
                                                GLenum *outFormat,
                                                GLenum *outType)
 {
-    if (!outFormat || !outType) return GL_FALSE;
+    if (!outFormat || !outType) return (GLboolean)mglRenderGLBoolean(0);
     uint32_t format = 0u;
     uint32_t type = 0u;
     if (!mglRenderCPUFormatTypeForInternalFormat(
             (uint32_t)internalformat, &format, &type)) {
-        return GL_FALSE;
+        return (GLboolean)mglRenderGLBoolean(0);
     }
     *outFormat = (GLenum)format;
     *outType = (GLenum)type;
-    return GL_TRUE;
+    return (GLboolean)mglRenderGLBoolean(1);
 }
 
 

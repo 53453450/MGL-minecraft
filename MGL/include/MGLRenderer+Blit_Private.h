@@ -36,6 +36,7 @@
 #define MGLRenderer_Blit_Private_h
 
 #import "MGLRenderer.h"
+#include "mgl_render.h"
 
 /* === Shader parameter structs ===
  * Used by blit/copy/resolve pipelines in MGLRenderer+Blit.m and MGLRenderer.m.
@@ -83,9 +84,9 @@ static inline void mglMarkTextureLevelMetalFilled(Texture *tex, GLuint level, si
         return;
     }
 
-    texLevel->ever_written = GL_TRUE;
-    texLevel->has_initialized_data = GL_TRUE;
-    texLevel->suspicious_zero_upload = GL_FALSE;
+    mglRenderMarkTextureLevelWritten(&texLevel->ever_written,
+                                     &texLevel->has_initialized_data,
+                                     &texLevel->suspicious_zero_upload);
     texLevel->last_init_source = kTexMetalFill;
     texLevel->last_upload_size = uploadSize;
     texLevel->last_src_ptr = NULL;

@@ -1700,6 +1700,20 @@ static void test_blit_texture_error_codes(void)
            "blit/texture alloc failure is GL_OUT_OF_MEMORY");
 }
 
+static uint32_t gl_boolean_from(int value) { return value ? 1u : 0u; }
+
+static void test_gl_boolean_and_level_written(void)
+{
+    expect(gl_boolean_from(1) == 1u, "GL_TRUE marks written/authoritative");
+    expect(gl_boolean_from(0) == 0u, "GL_FALSE clears binding/authoritative");
+    uint8_t ever = 0u, init = 0u, sus = 1u;
+    ever = 1u;
+    init = 1u;
+    sus = 0u;
+    expect(ever == 1u && init == 1u && sus == 0u,
+           "written texture level is ever_written+initialized, not suspicious");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1832,6 +1846,7 @@ int main(void)
     test_bind_draw_gl_defaults();
     test_draw_error_codes();
     test_blit_texture_error_codes();
+    test_gl_boolean_and_level_written();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

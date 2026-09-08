@@ -3833,7 +3833,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                 if (cpuCopyOK) {
                     /* CPU data is now authoritative for dst level */
                     if (dstTex->faces[0].levels) {
-                        dstTex->faces[0].levels[dstLevel].metal_data_authoritative = GL_FALSE;
+                        dstTex->faces[0].levels[dstLevel].metal_data_authoritative = (GLboolean)mglRenderGLBoolean(0);
                     }
                     return YES;
                 }
@@ -4602,7 +4602,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
 
                         for (int f = 0; f < 6; f++) {
                             if (dstTex->faces[f].levels) {
-                                dstTex->faces[f].levels[dstLevel].metal_data_authoritative = GL_FALSE;
+                                dstTex->faces[f].levels[dstLevel].metal_data_authoritative = (GLboolean)mglRenderGLBoolean(0);
                             }
                         }
                         readbackDone = true;
@@ -4731,7 +4731,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                         if (fmtReadbackOK) {
                             for (int f = 0; f < 6; f++) {
                                 if (dstTex->faces[f].levels) {
-                                    dstTex->faces[f].levels[dstLevel].metal_data_authoritative = GL_FALSE;
+                                    dstTex->faces[f].levels[dstLevel].metal_data_authoritative = (GLboolean)mglRenderGLBoolean(0);
                                 }
                             }
                             readbackDone = true;
@@ -4972,9 +4972,9 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         if (dstType == MGLTextureType3D &&
             dstTex->faces && (NSUInteger)dstLevel < dstTex->num_levels &&
             dstTex->faces[0].levels) {
-            dstTex->faces[0].levels[dstLevel].metal_data_authoritative = GL_TRUE;
+            dstTex->faces[0].levels[dstLevel].metal_data_authoritative = (GLboolean)mglRenderGLBoolean(1);
         } else {
-            dstTex->metal_data_authoritative = GL_TRUE;
+            dstTex->metal_data_authoritative = (GLboolean)mglRenderGLBoolean(1);
         }
     }
 }

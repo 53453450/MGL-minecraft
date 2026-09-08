@@ -1184,11 +1184,11 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
             !mglRenderImageAccessWritable((uint32_t)imageUnit->access)) {
             continue;
         }
-        imageTexture->metal_data_authoritative = GL_TRUE;
+        imageTexture->metal_data_authoritative = (GLboolean)mglRenderGLBoolean(1);
         if (imageTexture->faces[0].levels &&
             imageUnit->level >= 0 &&
             imageUnit->level < (GLint)imageTexture->num_levels) {
-            imageTexture->faces[0].levels[imageUnit->level].metal_data_authoritative = GL_TRUE;
+            imageTexture->faces[0].levels[imageUnit->level].metal_data_authoritative = (GLboolean)mglRenderGLBoolean(1);
         }
     }
 

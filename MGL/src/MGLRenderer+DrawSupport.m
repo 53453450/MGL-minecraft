@@ -1753,7 +1753,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 BufferBaseTarget *slot = &MGL_STATE(drawCtx)
                     ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
                 if (slot->buf) {
-                    slot->buf->ever_written = GL_TRUE;
+                    slot->buf->ever_written = (GLboolean)mglRenderGLBoolean(1);
                     if (xfbTempBytes &&
                         mglXfbCPUShadowFits(
                             slot->buf->data.buffer_data ? 1 : 0,
