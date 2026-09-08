@@ -638,14 +638,15 @@ static bool mglBindingStateFlushResourceBindings(
 
         ptr = mglRendererGetValidatedBuffer(ctx, map->buf, __FUNCTION__, (NSUInteger)i);
         offset = map->offset;
-        isBaseBinding = (map->attribute_mask == 0);
+        isBaseBinding = mglRenderBufferMapIsBaseBinding(map->attribute_mask) != 0;
         GLuint glBindingIndex = map->buffer_base_index;
         bindingIndex = glBindingIndex;
         if (isBaseBinding) {
             NSInteger metalBindingIndex = map->has_metal_binding
                 ? (NSInteger)map->metal_binding_index
                 : mglRendererGetProgramMetalBufferIndexForStage(ctx, vertexStage, glBindingIndex);
-            if (metalBindingIndex < 0) {
+            if (!mglRenderBufferSlotInRange((int32_t)metalBindingIndex,
+                                            (uint32_t)kMGLMaxMetalVertexBufferCount)) {
                 continue;
             }
             bindingIndex = (NSUInteger)metalBindingIndex;
@@ -658,7 +659,8 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (bindingIndex >= kMGLMaxMetalVertexBufferCount) {
+        if (!mglRenderBufferSlotInRange((int32_t)bindingIndex,
+                                        (uint32_t)kMGLMaxMetalVertexBufferCount)) {
             NSLog(@"MGL WARNING: Vertex binding index %lu out of Metal range (max valid=%lu), skipping map[%d]",
                   (unsigned long)bindingIndex, (unsigned long)kMGLMaxMetalVertexBufferIndex, i);
             continue;
@@ -1749,20 +1751,22 @@ static bool mglBindingStateFlushResourceBindings(
 
         ptr = mglRendererGetValidatedBuffer(ctx, map->buf, __FUNCTION__, (NSUInteger)i);
         offset = map->offset;
-        isBaseBinding = (map->attribute_mask == 0);
+        isBaseBinding = mglRenderBufferMapIsBaseBinding(map->attribute_mask) != 0;
         GLuint glBindingIndex = map->buffer_base_index;
         bindingIndex = glBindingIndex;
         if (isBaseBinding) {
             NSInteger metalBindingIndex = map->has_metal_binding
                 ? (NSInteger)map->metal_binding_index
                 : mglRendererGetProgramMetalBufferIndexForStage(ctx, _FRAGMENT_SHADER, glBindingIndex);
-            if (metalBindingIndex < 0) {
+            if (!mglRenderBufferSlotInRange((int32_t)metalBindingIndex,
+                                            (uint32_t)MAX_BINDABLE_BUFFERS)) {
                 continue;
             }
             bindingIndex = (NSUInteger)metalBindingIndex;
         }
 
-        if (bindingIndex >= MAX_BINDABLE_BUFFERS) {
+        if (!mglRenderBufferSlotInRange((int32_t)bindingIndex,
+                                        (uint32_t)MAX_BINDABLE_BUFFERS)) {
             NSLog(@"MGL WARNING: Fragment binding index %lu out of range (max=%d), skipping map[%d]",
                   (unsigned long)bindingIndex, MAX_BINDABLE_BUFFERS, i);
             continue;

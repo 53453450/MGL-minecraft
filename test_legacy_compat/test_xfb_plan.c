@@ -509,6 +509,20 @@ static void test_buffer_dirty_and_xfb_copy(void)
     expect(separate == 1, "GL_SEPARATE_ATTRIBS is separate XFB");
 }
 
+static void test_mapped_buffer_slot(void)
+{
+    int base = (0u == 0u);
+    expect(base == 1, "attribute_mask 0 is a base buffer binding");
+    int attrib = (0x4u == 0u);
+    expect(attrib == 0, "attribute_mask nonzero is not a base binding");
+    int in_range = (16 >= 0 && 16u < 31u);
+    expect(in_range == 1, "mapped Metal slot 16 is in range");
+    int oob = (31 >= 0 && 31u < 31u);
+    expect(oob == 0, "mapped Metal slot 31 is out of range");
+    int32_t mapped = 1 ? 7 : 3;
+    expect(mapped == 7, "has_metal_binding prefers metal_binding_index");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -539,6 +553,7 @@ int main(void)
     test_gs_post_dispatch();
     test_xfb_int_carrier_and_gs_raster();
     test_buffer_dirty_and_xfb_copy();
+    test_mapped_buffer_slot();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -1177,6 +1177,12 @@ void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
 int mglRenderCPUPointerUsable(const void *p);
+int mglRenderBufferMapIsBaseBinding(uint32_t attribute_mask);
+int mglRenderBufferSlotInRange(int32_t slot, uint32_t max_slots);
+int mglRenderResolveMappedBufferSlot(int has_metal_binding,
+                                     int32_t metal_binding_index,
+                                     int32_t buffer_base_index,
+                                     uint32_t max_slots, uint32_t *out_slot);
 
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],

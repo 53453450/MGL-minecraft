@@ -365,10 +365,11 @@ typedef struct {
             continue;
         }
 
-        NSUInteger metalBindingIndex = map->has_metal_binding
-            ? (NSUInteger)map->metal_binding_index
-            : (NSUInteger)map->buffer_base_index;
-        if (metalBindingIndex >= kMGLMaxMetalVertexBufferCount) {
+        uint32_t metalBindingIndex = 0u;
+        if (!mglRenderResolveMappedBufferSlot(
+                map->has_metal_binding ? 1 : 0, (int32_t)map->metal_binding_index,
+                (int32_t)map->buffer_base_index,
+                (uint32_t)kMGLMaxMetalVertexBufferCount, &metalBindingIndex)) {
             continue;
         }
         [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];

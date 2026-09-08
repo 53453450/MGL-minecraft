@@ -268,7 +268,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     {
         BufferMap *map = &bufferMap->buffers[i];
         Buffer *ptr;
-        NSUInteger metalBindingIndex;
+        NSUInteger metalBindingIndex = 0u;
         NSUInteger bindOffset;
 
         ptr = map->buf;
@@ -279,15 +279,16 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
             return false;
         }
 
-        metalBindingIndex = map->has_metal_binding
-            ? (NSUInteger)map->metal_binding_index
-            : (NSUInteger)map->buffer_base_index;
-        if (metalBindingIndex >= kMGLMaxMetalVertexBufferCount) {
-            NSLog(@"MGL COMPUTE WARNING: buffer map[%d] Metal slot %lu out of range, skipping",
-                  i,
-                  (unsigned long)metalBindingIndex);
+        uint32_t resolvedSlot = 0u;
+        if (!mglRenderResolveMappedBufferSlot(
+                map->has_metal_binding ? 1 : 0, (int32_t)map->metal_binding_index,
+                (int32_t)map->buffer_base_index,
+                (uint32_t)kMGLMaxMetalVertexBufferCount, &resolvedSlot)) {
+            NSLog(@"MGL COMPUTE WARNING: buffer map[%d] Metal slot out of range, skipping",
+                  i);
             continue;
         }
+        metalBindingIndex = (NSUInteger)resolvedSlot;
         [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
         if (map->offset < 0) {
             NSLog(@"MGL COMPUTE WARNING: buffer map[%d] negative offset=%lld, skipping",

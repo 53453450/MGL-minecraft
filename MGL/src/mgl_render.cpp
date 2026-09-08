@@ -7680,6 +7680,29 @@ int mglRenderCPUPointerUsable(const void *p) {
     return p && (uintptr_t)p >= 0x1000ull ? 1 : 0;
 }
 
+int mglRenderBufferMapIsBaseBinding(uint32_t attribute_mask) {
+    return attribute_mask == 0u ? 1 : 0;
+}
+
+int mglRenderBufferSlotInRange(int32_t slot, uint32_t max_slots) {
+    return slot >= 0 && (uint32_t)slot < max_slots ? 1 : 0;
+}
+
+int mglRenderResolveMappedBufferSlot(int has_metal_binding,
+                                     int32_t metal_binding_index,
+                                     int32_t buffer_base_index,
+                                     uint32_t max_slots, uint32_t *out_slot) {
+    const int32_t slot =
+        has_metal_binding ? metal_binding_index : buffer_base_index;
+    if (!mglRenderBufferSlotInRange(slot, max_slots)) {
+        return 0;
+    }
+    if (out_slot) {
+        *out_slot = (uint32_t)slot;
+    }
+    return 1;
+}
+
 uint32_t mglRenderBuildCurrentVertexAttribBytes(
     uint32_t type, uint32_t size, const int32_t current_i[4],
     const uint32_t current_u[4], const float current_f[4], uint8_t bytes[16]) {
