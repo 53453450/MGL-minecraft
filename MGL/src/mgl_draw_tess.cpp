@@ -1742,6 +1742,44 @@ extern "C" int mglTessWritePointSize(uint32_t tess_gen_point_mode) {
     return tess_gen_point_mode != GL_FALSE ? 1 : 0;
 }
 
+extern "C" int mglTessArrayCaptureInputsOk(int32_t first, int32_t count,
+                                          int32_t instance_count) {
+    return (first >= 0 && count > 0 && instance_count > 0) ? 1 : 0;
+}
+
+extern "C" int mglTessCaptureSessionHostReady(int process_ok,
+                                             int encoder_has_current) {
+    return (process_ok && encoder_has_current == 1) ? 1 : 0;
+}
+
+extern "C" bool mglTessPlanIndexedCaptureIndexPrep(
+    uint32_t gl_index_type, uint64_t index_offset, uint32_t count,
+    uint64_t index_buffer_length, int contents_readable, int restart_enabled,
+    uint32_t restart_index, MGLTessIndexedCaptureIndexPrep *out) {
+    if (!out || count == 0u) {
+        return false;
+    }
+    std::memset(out, 0, sizeof(*out));
+    const uint32_t elem_bytes = mglRenderGLIndexElementSize((uint64_t)gl_index_type);
+    if (elem_bytes == 0u) {
+        return false;
+    }
+    out->elem_bytes = elem_bytes;
+    out->stream_bytes = (uint64_t)count * (uint64_t)elem_bytes;
+    out->stream_fits =
+        mglRenderIndexStreamFits(index_offset, (uint64_t)count, elem_bytes,
+                                 index_buffer_length)
+            ? 1u
+            : 0u;
+    out->restart_index = restart_index;
+    out->need_sanitize =
+        (restart_enabled && contents_readable && out->stream_fits) ? 1u : 0u;
+    const uint32_t mtl = mglRenderMTLIndexTypeForGLType(gl_index_type);
+    out->mtl_index_type = mtl;
+    out->need_metal_index_prep = (mtl != 0xFFFFFFFFu) ? 1u : 0u;
+    return true;
+}
+
 extern "C" bool mglTessPlanVertexCapture(Program *vs,
                                          uint32_t records_per_instance,
                                          uint32_t instance_count, uint32_t first,

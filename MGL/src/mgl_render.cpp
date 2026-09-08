@@ -20016,6 +20016,33 @@ extern "C" void mglRenderAccumulateCullDistanceAttrib(
     layout->culldist_size++;
 }
 
+extern "C" void mglRenderBuildCullDistanceLayoutFromPorts(
+    MGLRenderCullDistanceLayout* layout,
+    const MGLRenderCullDistanceAttribPort* ports, uint32_t port_count,
+    void* dummy_mtl_buffer) {
+    if (!layout) {
+        return;
+    }
+    std::memset(layout, 0, sizeof(*layout));
+    if (ports) {
+        for (uint32_t i = 0u; i < port_count; i++) {
+            if (!ports[i].valid || !ports[i].mtl_buffer) {
+                continue;
+            }
+            mglRenderAccumulateCullDistanceAttrib(
+                layout, ports[i].mtl_buffer, ports[i].binding_offset,
+                ports[i].stride, ports[i].relativeoffset);
+        }
+    }
+    if (!layout->mtl_buffer || layout->culldist_size == 0u) {
+        layout->mtl_buffer = dummy_mtl_buffer;
+        layout->binding_offset = 0;
+        layout->stride = 4u;
+        layout->first_relative_offset = 0;
+        layout->culldist_size = 0u;
+    }
+}
+
 extern "C" uint32_t mglRenderCullDistanceLayoutOffset(
     const MGLRenderCullDistanceLayout* layout) {
     if (!layout) {

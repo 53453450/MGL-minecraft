@@ -682,15 +682,18 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                         capture:(id)capture
                          params:(const uint32_t *)params
 {
+    /* O1.2: session gate via mglTessCaptureSessionHostReady; processGLState
+     * / MTL bind remain ObjC host ports. */
     if (!drawCtx || !capture || !params) {
         return NO;
     }
     self->ctx = drawCtx;
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (![self processGLState:true] ||
-        mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+    const BOOL process1 = [self processGLState:true];
+    const int enc1 = mglRenderEncoderOwnerHasCurrent(
+        _renderPassManager.state->currentRenderEncoderOwner);
+    if (!mglTessCaptureSessionHostReady(process1 ? 1 : 0, enc1)) {
         _tessellation.tessVertexCaptureActive = NO;
         return NO;
     }
@@ -701,9 +704,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
      * The first capture draw in a context otherwise left VS SSBO/UBO slots
      * unbound (probe: first GS+SSBO write is 0, second is correct). */
     drawCtx->active_state->dirty_bits = DIRTY_ALL;
-    if (![self processGLState:true] ||
-        mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+    const BOOL process2 = [self processGLState:true];
+    const int enc2 = mglRenderEncoderOwnerHasCurrent(
+        _renderPassManager.state->currentRenderEncoderOwner);
+    if (!mglTessCaptureSessionHostReady(process2 ? 1 : 0, enc2)) {
         _tessellation.tessVertexCaptureActive = NO;
         return NO;
     }
@@ -721,7 +725,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                                outOffset:(NSUInteger *)outOffset
 {
     if (outOffset) *outOffset = 0u;
-    if (!drawCtx || first < 0 || count <= 0 || instanceCount <= 0) return nil;
+    if (!drawCtx ||
+        !mglTessArrayCaptureInputsOk(first, count, instanceCount)) {
+        return nil;
+    }
 
     Program *vertexProgram =
         mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
@@ -800,48 +807,45 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                                 params:plan.params]) {
         return nil;
     }
-    /* The capture kernel indexes records by raw vertex_id with no bounds
-     * check; a primitive-restart marker (0xFFFFFFFF for UInt32) in the
-     * stream would write past the sparse record span and corrupt the
-     * next instance's data.  Sanitize the marker away (to vertex 0, whose
-     * record no gathered patch ever references) before drawing. */
+    /* O1.2: restart sanitize + Metal index prep planned in
+     * mglTessPlanIndexedCaptureIndexPrep; ObjC only allocates/copies. */
     id sanitizedIndexBuffer = indexBuffer;
     NSUInteger sanitizedIndexOffset = indexOffset;
     uint32_t restartIndex = 0u;
-    if (mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex)) {
-        const NSUInteger elemBytes =
-            (NSUInteger)mglRenderGLIndexElementSize((uint64_t)indexType);
-        const NSUInteger streamBytes = (NSUInteger)count * elemBytes;
-        if (mglDrawSupportBufferContents(indexBuffer) &&
-            mglRenderIndexStreamFits(
-                (uint64_t)indexOffset, (uint64_t)count, (uint32_t)elemBytes,
-                (uint64_t)mglDrawSupportBufferLength(indexBuffer))) {
-            uint8_t *copy = malloc(streamBytes);
-            if (copy) {
-                if (mglTessSanitizeRestartIndices(
-                        copy,
-                        (const uint8_t *)mglDrawSupportBufferContents(
-                            indexBuffer) +
-                            indexOffset,
-                        (uint32_t)count, (GLenum)indexType, restartIndex)) {
-                    id clean = mglDrawSupportCreateBufferWithBytes(
-                        _device, copy, streamBytes, 0u);
-                    if (clean) {
-                        sanitizedIndexBuffer = clean;
-                        sanitizedIndexOffset = 0u;
-                    }
+    const bool restartEnabled =
+        mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
+    MGLTessIndexedCaptureIndexPrep prep = {0};
+    const int contentsReadable =
+        mglDrawSupportBufferContents(indexBuffer) ? 1 : 0;
+    if (!mglTessPlanIndexedCaptureIndexPrep(
+            (uint32_t)indexType, (uint64_t)indexOffset, (uint32_t)count,
+            (uint64_t)mglDrawSupportBufferLength(indexBuffer), contentsReadable,
+            restartEnabled ? 1 : 0, restartIndex, &prep)) {
+        _tessellation.tessVertexCaptureActive = NO;
+        return nil;
+    }
+    if (prep.need_sanitize) {
+        uint8_t *copy = malloc((size_t)prep.stream_bytes);
+        if (copy) {
+            if (mglTessSanitizeRestartIndices(
+                    copy,
+                    (const uint8_t *)mglDrawSupportBufferContents(indexBuffer) +
+                        indexOffset,
+                    (uint32_t)count, (GLenum)indexType, prep.restart_index)) {
+                id clean = mglDrawSupportCreateBufferWithBytes(
+                    _device, copy, (NSUInteger)prep.stream_bytes, 0u);
+                if (clean) {
+                    sanitizedIndexBuffer = clean;
+                    sanitizedIndexOffset = 0u;
                 }
-                free(copy);
             }
+            free(copy);
         }
     }
-    /* Metal has no UInt8 index type: GL_UNSIGNED_BYTE streams must be
-     * expanded to UInt16 before the indexed capture draw, or Metal reads
-     * byte pairs as garbage indices and every record past index 0 is lost. */
     id drawIndexBuffer = sanitizedIndexBuffer;
     NSUInteger drawIndexOffset = sanitizedIndexOffset;
-    uint64_t mtlIndexType = mglIndexTypeForGLType((GLenum)indexType);
-    if ((GLuint)mtlIndexType != 0xFFFFFFFFu) {
+    uint64_t mtlIndexType = (uint64_t)prep.mtl_index_type;
+    if (prep.need_metal_index_prep) {
         NSUInteger preparedOffset = sanitizedIndexOffset;
         uint64_t preparedType = mtlIndexType;
         id prepared = mglPreparedElementIndexBuffer(
@@ -2645,12 +2649,14 @@ after_gs_draws:
         return;
     }
 
+    /* O1.3: ObjC fills VAO pointer ports; layout (+ dummy) in C++. */
     uint32_t attribs[MAX_ATTRIBS];
     const uint32_t attribCount = mglRenderCollectCullDistanceAttribs(
         activeProgram, attribs, MAX_ATTRIBS);
-    MGLRenderCullDistanceLayout layout;
-    memset(&layout, 0, sizeof(layout));
-    for (uint32_t i = 0u; i < attribCount; i++) {
+    MGLRenderCullDistanceAttribPort ports[MAX_ATTRIBS];
+    memset(ports, 0, sizeof(ports));
+    uint32_t portCount = 0u;
+    for (uint32_t i = 0u; i < attribCount && portCount < MAX_ATTRIBS; i++) {
         MGLResolvedVertexAttribBinding resolved = {0};
         if (!mglRendererResolveVertexAttribBinding(
                 ctx, vao, attribs[i], "bindCullDistanceEmu", &resolved)) {
@@ -2659,24 +2665,20 @@ after_gs_draws:
         if (!resolved.buffer || !resolved.buffer->data.mtl_data) {
             continue;
         }
-        mglRenderAccumulateCullDistanceAttrib(
-            &layout, resolved.buffer->data.mtl_data, resolved.binding_offset,
-            resolved.stride, resolved.relativeoffset);
+        ports[portCount].mtl_buffer = resolved.buffer->data.mtl_data;
+        ports[portCount].binding_offset = resolved.binding_offset;
+        ports[portCount].stride = resolved.stride;
+        ports[portCount].relativeoffset = resolved.relativeoffset;
+        ports[portCount].valid = 1u;
+        portCount++;
     }
-
+    MGLRenderCullDistanceLayout layout;
+    mglRenderBuildCullDistanceLayoutFromPorts(
+        &layout, ports, portCount,
+        mglRendererBackendGetCullDistanceDummyBuffer(_backend));
     void *cullMtlBuffer = layout.mtl_buffer;
     uint32_t cullStride = layout.stride;
     uint32_t cullDistSize = layout.culldist_size;
-    if (!cullMtlBuffer || cullDistSize == 0u) {
-        cullMtlBuffer = mglRendererBackendGetCullDistanceDummyBuffer(_backend);
-        layout.mtl_buffer = cullMtlBuffer;
-        layout.binding_offset = 0;
-        layout.stride = 4u;
-        layout.first_relative_offset = 0;
-        layout.culldist_size = 0u;
-        cullStride = 4u;
-        cullDistSize = 0u;
-    }
 
     MGLCullDistanceEmuParams params;
     mglRenderFillCullDistanceEmuParams(

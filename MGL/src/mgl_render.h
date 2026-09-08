@@ -3881,6 +3881,21 @@ void mglRenderAccumulateCullDistanceAttrib(MGLRenderCullDistanceLayout *layout,
                                            int64_t binding_offset,
                                            uint32_t stride,
                                            int64_t relativeoffset);
+
+/* O1.3: ObjC fills VAO-resolved ports; C++ builds layout (+ optional dummy). */
+typedef struct MGLRenderCullDistanceAttribPort {
+    void *mtl_buffer; /* NULL / invalid → skipped */
+    int64_t binding_offset;
+    uint32_t stride;
+    int64_t relativeoffset;
+    uint8_t valid;
+} MGLRenderCullDistanceAttribPort;
+
+void mglRenderBuildCullDistanceLayoutFromPorts(
+    MGLRenderCullDistanceLayout *layout,
+    const MGLRenderCullDistanceAttribPort *ports, uint32_t port_count,
+    void *dummy_mtl_buffer);
+
 uint32_t mglRenderCullDistanceLayoutOffset(
     const MGLRenderCullDistanceLayout *layout);
 void mglRenderFillCullDistanceEmuParams(

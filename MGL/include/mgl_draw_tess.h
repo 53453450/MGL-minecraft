@@ -563,6 +563,26 @@ void mglTessEncodeCaptureIndexed(void *encoder_owner, void *index_buffer,
 int mglTessGenModeIsIsolines(uint32_t tess_gen_mode);
 int mglTessWritePointSize(uint32_t tess_gen_point_mode);
 
+/* O1.2: pure capture-host planning (ObjC keeps processGLState / MTLBuffer). */
+int mglTessArrayCaptureInputsOk(int32_t first, int32_t count,
+                                int32_t instance_count);
+int mglTessCaptureSessionHostReady(int process_ok, int encoder_has_current);
+
+typedef struct MGLTessIndexedCaptureIndexPrep {
+    uint32_t elem_bytes;
+    uint64_t stream_bytes;
+    uint32_t stream_fits;
+    uint32_t need_sanitize;
+    uint32_t restart_index;
+    uint32_t need_metal_index_prep;
+    uint32_t mtl_index_type;
+} MGLTessIndexedCaptureIndexPrep;
+
+bool mglTessPlanIndexedCaptureIndexPrep(
+    uint32_t gl_index_type, uint64_t index_offset, uint32_t count,
+    uint64_t index_buffer_length, int contents_readable, int restart_enabled,
+    uint32_t restart_index, MGLTessIndexedCaptureIndexPrep *out);
+
 #ifdef __cplusplus
 }
 #endif
