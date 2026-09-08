@@ -1395,6 +1395,7 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
                                                  int *known);
 uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format);
 uint32_t mglRenderMetalPixelFormatValueClass(uint32_t pixel_format);
+uint32_t mglRenderDepthStencilPlaneViewType(uint32_t parent_type);
 int mglRenderSamplerUnitExplicit(uint32_t flag);
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
 int mglRenderTextureTargetIs1D(uint32_t target);

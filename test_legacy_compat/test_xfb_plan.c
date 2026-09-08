@@ -1777,6 +1777,27 @@ static void test_metal_pixel_format_value_class(void)
     expect(metal_pixel_value_class(0u) == 0u, "unknown format stub FS is float");
 }
 
+static uint32_t ds_plane_view_type(uint32_t parent)
+{
+    if (parent == 3u || parent == 5u || parent == 6u || parent == 1u ||
+        parent == 8u || parent == 7u)
+        return 2u;
+    return parent;
+}
+
+static void test_ds_plane_view_type(void)
+{
+    expect(ds_plane_view_type(3u) == 2u, "2DArray DS plane is 2D");
+    expect(ds_plane_view_type(5u) == 2u, "cube DS plane is 2D");
+    expect(ds_plane_view_type(6u) == 2u, "cube-array DS plane is 2D");
+    expect(ds_plane_view_type(1u) == 2u, "1DArray DS plane is 2D");
+    expect(ds_plane_view_type(8u) == 2u, "2DMSArray DS plane is 2D");
+    expect(ds_plane_view_type(7u) == 2u, "3D DS plane is 2D");
+    expect(ds_plane_view_type(2u) == 2u, "2D DS plane stays 2D");
+    expect(ds_plane_view_type(4u) == 4u, "2DMS DS plane stays 2DMS");
+    expect(ds_plane_view_type(0u) == 0u, "1D DS plane stays 1D");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1913,6 +1934,7 @@ int main(void)
     test_batch_replay_error_none();
     test_metal_pixel_format_bpp();
     test_metal_pixel_format_value_class();
+    test_ds_plane_view_type();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

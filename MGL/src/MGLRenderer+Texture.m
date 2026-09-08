@@ -498,21 +498,6 @@ static void *mglCreateDepthStencilMetalUpload(
     return dst;
 }
 
-static uint32_t mglDepthStencilPlaneViewType(uint32_t parentType)
-{
-    switch (parentType) {
-        case MGLTextureType2DArray:
-        case MGLTextureTypeCube:
-        case MGLTextureTypeCubeArray:
-        case MGLTextureType1DArray:
-        case MGLTextureType2DMultisampleArray:
-        case MGLTextureType3D:
-            return MGLTextureType2D;
-        default:
-            return parentType;
-    }
-}
-
 static uint64_t mglTextureBufferLength(id buffer)
 {
     MGLRenderBufferInfo info = {0};
@@ -623,7 +608,7 @@ static void mglTextureCopyTextureToBuffer(
     free(metalUpload);
 
     void *stencilViewRaw = NULL;
-    const uint32_t viewType = mglDepthStencilPlaneViewType(
+    const uint32_t viewType = mglRenderDepthStencilPlaneViewType(
         (uint32_t)mglTextureInfo(texture).texture_type);
     bool uploaded = false;
     const uint32_t stencilViewFormat =

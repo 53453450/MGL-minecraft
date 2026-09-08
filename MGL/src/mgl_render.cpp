@@ -9173,6 +9173,20 @@ uint32_t mglRenderMetalPixelFormatValueClass(uint32_t pixel_format) {
     }
 }
 
+uint32_t mglRenderDepthStencilPlaneViewType(uint32_t parent_type) {
+    switch (parent_type) {
+    case MGLTextureType2DArray:
+    case MGLTextureTypeCube:
+    case MGLTextureTypeCubeArray:
+    case MGLTextureType1DArray:
+    case MGLTextureType2DMultisampleArray:
+    case MGLTextureType3D:
+        return MGLTextureType2D;
+    default:
+        return parent_type;
+    }
+}
+
 int mglRenderSamplerUnitExplicit(uint32_t flag) {
     return flag == GL_TRUE ? 1 : 0;
 }
