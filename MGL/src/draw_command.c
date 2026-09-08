@@ -41,6 +41,8 @@
 #include "mgl_frame_activity.h"
 #include "mgl_trace_log.h"
 #include "mgl_sampler_compat.h"
+#include "mgl_batch_hazard.h"
+#include "mgl_env_flag.h"
 
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
@@ -778,6 +780,33 @@ static inline uint32_t mglBufferRangeBucket(const void *buffer)
     return (uint32_t)h & MGL_BUFFER_RANGE_BUCKET_MASK;
 }
 
+
+/* O2.2: hazard overflow policy lives in mgl_batch_hazard.*; ObjC never chooses. */
+static int mglHazardHasPendingDraws(const MGLCommandBuffer *cb)
+{
+    return cb && cb->batch_count > 0u && cb->total_commands > 0u;
+}
+
+static MGLHazardOverflowPolicy mglHazardPolicyNow(void)
+{
+    return mgl_batch_hazard_overflow_policy(
+        mgl_env_flag_enabled("MGL_HAZARD_OVERFLOW_FLUSH_CONTINUE"));
+}
+
+/* Capacity exhausted: sticky latches overflow (return 0); flush-and-continue
+ * flushes pending draws (tables reset) and returns 1 so the caller can insert. */
+static int mglHazardAllowInsertAfterCapacityFull(GLMContext ctx,
+                                                 MGLCommandBuffer *cb)
+{
+    MGLHazardTrackAction action = mgl_batch_hazard_on_capacity_full(
+        mglHazardPolicyNow(), mglHazardHasPendingDraws(cb));
+    if (action == MGL_HAZARD_TRACK_FLUSH_THEN_RETRY) {
+        mglFlushCommandBuffer(ctx);
+        return 1;
+    }
+    return 0;
+}
+
 static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t start, uint64_t end)
 {
     if (!ctx || !buffer || end <= start) return;
@@ -798,8 +827,11 @@ static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t st
     }
 
     if (cb->buffer_read_range_count >= MGL_MAX_PENDING_BUFFER_RANGES) {
-        cb->buffer_read_range_overflow = true;
-        return;
+        if (!mglHazardAllowInsertAfterCapacityFull(ctx, cb) ||
+            cb->buffer_read_range_count >= MGL_MAX_PENDING_BUFFER_RANGES) {
+            cb->buffer_read_range_overflow = true;
+            return;
+        }
     }
 
     uint32_t index = cb->buffer_read_range_count++;
@@ -881,8 +913,19 @@ static void mglTrackPendingTextureWrite(GLMContext ctx, Texture *texture)
     }
 
     if (cb->texture_write_count >= MGL_MAX_PENDING_TEXTURE_WRITES) {
-        cb->texture_write_overflow = true;
-        return;
+        if (!mglHazardAllowInsertAfterCapacityFull(ctx, cb) ||
+            cb->texture_write_count >= MGL_MAX_PENDING_TEXTURE_WRITES) {
+            cb->texture_write_overflow = true;
+            return;
+        }
+        /* Flush reset the hash index; re-probe for an empty slot. */
+        slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_WRITE_INDEX_MASK);
+        for (;;) {
+            uint32_t entry = cb->texture_write_index[slot];
+            if (entry == 0) break;
+            if (cb->texture_write_objects[entry - 1] == texture) return;
+            slot = (slot + 1) & MGL_TEX_WRITE_INDEX_MASK;
+        }
     }
 
     uint32_t idx = cb->texture_write_count++;
@@ -907,8 +950,18 @@ static void mglTrackPendingTextureRead(GLMContext ctx, Texture *texture)
     }
 
     if (cb->texture_read_count >= MGL_MAX_PENDING_TEXTURE_READS) {
-        cb->texture_read_overflow = true;
-        return;
+        if (!mglHazardAllowInsertAfterCapacityFull(ctx, cb) ||
+            cb->texture_read_count >= MGL_MAX_PENDING_TEXTURE_READS) {
+            cb->texture_read_overflow = true;
+            return;
+        }
+        slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_READ_INDEX_MASK);
+        for (;;) {
+            uint32_t entry = cb->texture_read_index[slot];
+            if (entry == 0) break;
+            if (cb->texture_read_objects[entry - 1] == texture) return;
+            slot = (slot + 1) & MGL_TEX_READ_INDEX_MASK;
+        }
     }
 
     uint32_t idx = cb->texture_read_count++;
@@ -1015,7 +1068,7 @@ static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return;
     if (cb->texture_read_count == 0 && !cb->texture_read_overflow) return;
-    if (cb->texture_read_overflow) {
+    if (mgl_batch_hazard_query_degraded(cb->texture_read_overflow)) {
         mglFlushCommandBuffer(ctx);
         return;
     }
@@ -1106,7 +1159,7 @@ bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
     if (cb->buffer_read_range_count == 0 && !cb->buffer_read_range_overflow) return false;
-    if (cb->buffer_read_range_overflow) {
+    if (mgl_batch_hazard_query_degraded(cb->buffer_read_range_overflow)) {
         MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
         return true;
     }
@@ -1143,7 +1196,7 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
     if (cb->texture_write_count == 0 && !cb->texture_write_overflow) return false;
-    if (cb->texture_write_overflow) {
+    if (mgl_batch_hazard_query_degraded(cb->texture_write_overflow)) {
         MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
         return true;
     }
@@ -1184,7 +1237,7 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
     if (cb->texture_read_count == 0 && !cb->texture_read_overflow) return false;
-    if (cb->texture_read_overflow) {
+    if (mgl_batch_hazard_query_degraded(cb->texture_read_overflow)) {
         MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
         return true;
     }
@@ -1753,7 +1806,7 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return;
     if (cb->texture_write_count == 0 && !cb->texture_write_overflow) return;
-    if (cb->texture_write_overflow) {
+    if (mgl_batch_hazard_query_degraded(cb->texture_write_overflow)) {
         MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
         MGL_PERF_INC(g_mglFlushReasonActiveTexWarSinceSwap);
         mglFlushCommandBuffer(ctx);

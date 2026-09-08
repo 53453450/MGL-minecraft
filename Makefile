@@ -644,6 +644,20 @@ $(build_dir)/test_batch_path: test_legacy_compat/test_batch_path.c \
 test-batch-path: $(build_dir)/test_batch_path
 	$(build_dir)/test_batch_path
 
+$(build_dir)/test_batch_hazard: test_legacy_compat/test_batch_hazard.c \
+	MGL/src/mgl_batch_hazard.c MGL/include/mgl_batch_hazard.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_batch_hazard.c \
+		MGL/src/mgl_batch_hazard.c \
+		-o $@
+
+test-batch-hazard: $(build_dir)/test_batch_hazard
+	$(build_dir)/test_batch_hazard
+
 $(build_dir)/test_process_gl_state_plan: test_legacy_compat/test_process_gl_state_plan.c \
 	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h
 	@mkdir -p $(dir $@)
@@ -931,7 +945,7 @@ test-all:
 	$(MAKE) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
-	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-process-gl-state-plan test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
+	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-process-gl-state-plan test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
