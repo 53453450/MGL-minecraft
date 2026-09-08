@@ -99,6 +99,16 @@ bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
                             uint32_t instance_count,
                             MGLTessEvalComputePlan *out);
 
+enum {
+    MGL_TESS_EVAL_XFB_SKIP = 0,
+    MGL_TESS_EVAL_XFB_CAPTURE = 1,
+    MGL_TESS_EVAL_XFB_DUMMY = 2,
+};
+
+int mglTessEvalInputsReady(int has_gl_in, int has_factors);
+uint32_t mglTessPlanEvalXFBSlot(int xfb_active, int size_ok);
+int mglTessEvalXFBDestReady(int has_metal, int has_buf, int dest_valid);
+
 bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs);
 
 bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode);

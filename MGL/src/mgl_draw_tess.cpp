@@ -499,6 +499,25 @@ extern "C" bool mglTessPlanEvalCompute(Program *tes, const void *factor_bytes,
     return true;
 }
 
+extern "C" int mglTessEvalInputsReady(int has_gl_in, int has_factors)
+{
+    return has_gl_in && has_factors ? 1 : 0;
+}
+
+extern "C" uint32_t mglTessPlanEvalXFBSlot(int xfb_active, int size_ok)
+{
+    if (xfb_active) {
+        return size_ok ? MGL_TESS_EVAL_XFB_CAPTURE : MGL_TESS_EVAL_XFB_SKIP;
+    }
+    return MGL_TESS_EVAL_XFB_DUMMY;
+}
+
+extern "C" int mglTessEvalXFBDestReady(int has_metal, int has_buf,
+                                       int dest_valid)
+{
+    return has_metal && has_buf && dest_valid ? 1 : 0;
+}
+
 extern "C" bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs)
 {
     if (!ctx || !ctx->active_state) {

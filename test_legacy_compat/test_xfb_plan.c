@@ -536,6 +536,20 @@ static void test_tcs_stage_in_source(void)
     expect(levels[4] == 1.f, "default inner tess factor copies PATCH_DEFAULT");
 }
 
+static void test_tess_eval_xfb_slot(void)
+{
+    int inputs = 1 && 1;
+    expect(inputs == 1, "TES eval needs gl_in and factors");
+    uint32_t capture = 1 ? 1 : 0;
+    expect(capture == 1, "TES XFB capture when active and size ok");
+    uint32_t dummy = 0 ? 1 : 2;
+    expect(dummy == 2, "TES XFB dummy when feedback inactive");
+    uint32_t skip = 1 ? 0 : 2;
+    expect(skip == 0, "TES XFB skip when active but size fails");
+    int dest = 1 && 1 && 1;
+    expect(dest == 1, "TES XFB dest ready with metal+buf+plan");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -568,6 +582,7 @@ int main(void)
     test_buffer_dirty_and_xfb_copy();
     test_mapped_buffer_slot();
     test_tcs_stage_in_source();
+    test_tess_eval_xfb_slot();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

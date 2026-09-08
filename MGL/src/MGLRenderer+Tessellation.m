@@ -1120,7 +1120,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     NSUInteger glInOffset = (NSUInteger)glInPlan.gl_in_offset;
     NSUInteger glInStride = (NSUInteger)glInPlan.gl_in_stride;
     GLuint glInVertices = glInPlan.gl_in_vertices;
-    if (!glInBuffer || !tessFactorBuffer) {
+    if (!mglTessEvalInputsReady(glInBuffer != nil, tessFactorBuffer != nil)) {
         NSLog(@"MGL TESS ERROR: missing TES compute inputs program=%u",
               (unsigned)tesProgram->name);
         return false;
@@ -1294,6 +1294,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     NSUInteger xfbCompactStride = 0u;
     NSUInteger xfbCopiedVertices = 0u;
     NSUInteger xfbWrittenBytes = 0u;
+    int xfbSizeOK = 0;
     if (xfbActive) {
         BufferBaseTarget *xfbSlot =
             &MGL_STATE(glm_ctx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
@@ -1310,6 +1311,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                                 itemsPerInstanceU, instanceCountU,
                                 (uint32_t)outStride, (uint32_t)xfbCompactStride,
                                 &captureVertsU, &requiredBytesU) != 0;
+        xfbSizeOK = sizeOK ? 1 : 0;
         captureVertices = captureVertsU;
         requiredBytes = requiredBytesU;
         (void)captureVertices;
@@ -1344,18 +1346,20 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             }
         }
 
-        if (sizeOK) {
+        if (mglTessPlanEvalXFBSlot(xfbActive ? 1 : 0, xfbSizeOK) ==
+            MGL_TESS_EVAL_XFB_CAPTURE) {
             const GLuint verticesPerPrimitive =
                 mglTessVerticesPerPrimitive(tesProgram);
             MGLTessXFBDestPlan destPlan = {0};
-            const int destOK =
-                xfbMTL && xfbSlot->buf &&
+            const int destPlanOK =
                 mglTessPlanXFBDestination(
                     itemsPerInstanceU, instanceCountU,
                     (uint32_t)xfbCompactStride, verticesPerPrimitive,
                     (uint64_t)xfbSessionOffset, (int64_t)xfbSlot->offset,
                     (uint64_t)visibleBytes, &destPlan) &&
                 destPlan.valid;
+            const int destOK = mglTessEvalXFBDestReady(
+                xfbMTL != nil, xfbSlot->buf != NULL, destPlanOK);
             /* The AIR kernel writes full stage records (built-ins followed by
              * location-based user outputs). GL XFB is a compact stream of only
              * the selected varyings, so it can never target the GL range
@@ -1381,7 +1385,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                 xfbDestination = xfbSlot->buf;
             }
         }
-    } else {
+    }
+    if (mglTessPlanEvalXFBSlot(xfbActive ? 1 : 0, xfbSizeOK) ==
+        MGL_TESS_EVAL_XFB_DUMMY) {
         /* The TES compute kernel always declares and writes the XFB stream
          * slot (31); bind a 1-byte dummy so the slot is never dangling when
          * GL feedback is inactive. */
