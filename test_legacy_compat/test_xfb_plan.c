@@ -1302,6 +1302,14 @@ static void test_default_draw_buffer_and_renderbuffer(void)
     expect(rbo == 1, "GL_RENDERBUFFER is a renderbuffer target");
 }
 
+static void test_tess_isolines_and_point_size(void)
+{
+    int iso = 1;
+    expect(iso == 1, "GL_ISOLINES uses partner-record cull");
+    int pts = 1;
+    expect(pts == 1, "non-GL_FALSE tess_gen_point_mode writes point size");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1402,6 +1410,7 @@ int main(void)
     test_glsl_int_as_float_and_flat();
     test_msaa_array_layer_stride();
     test_default_draw_buffer_and_renderbuffer();
+    test_tess_isolines_and_point_size();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

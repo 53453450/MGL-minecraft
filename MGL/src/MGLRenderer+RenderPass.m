@@ -20,6 +20,7 @@
 #include "mgl_byte_hash.h"
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
+#include "mgl_draw_tess.h"
 
 #import <objc/message.h>
 
@@ -1196,7 +1197,8 @@ static GLenum mglPassthroughDeclType(
                            strstr(tesShader->src, "gl_ClipDistance") != NULL;
     /* Isolines rasterize as lines; Metal rejects a vertex stage that writes
      * point size on a non-point topology. */
-    BOOL writePointSize = program->tess_gen_point_mode != GL_FALSE;
+    BOOL writePointSize = mglTessWritePointSize(
+                              (uint32_t)program->tess_gen_point_mode) != 0;
     NSMutableString *source = [NSMutableString stringWithString:
         @"#version 460 core\n"
          "layout(std430, binding = 0) buffer MGLTESOutput {\n"
@@ -1276,7 +1278,7 @@ static GLenum mglPassthroughDeclType(
     }
     if (program->tess_cull_distance_count > 0u) {
 
-        if (program->tess_gen_mode == GL_ISOLINES) {
+        if (mglTessGenModeIsIsolines((uint32_t)program->tess_gen_mode)) {
             /* Both endpoints of an isoline segment share the same v, so the
              * cull condition needs the partner record's distances.  The
              * partner record index is (gl_VertexID ^ 1) -- every patch span
@@ -1295,7 +1297,7 @@ static GLenum mglPassthroughDeclType(
              "    bool mgl_culled = false\n"
              "%s"
              "    if (mgl_culled) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);\n",
-            program->tess_gen_mode == GL_ISOLINES
+            mglTessGenModeIsIsolines((uint32_t)program->tess_gen_mode)
                 ? "        || (mgl_c0.y < 0.0 && mgl_p0.y < 0.0)\n"
                   "        || (mgl_c0.z < 0.0 && mgl_p0.z < 0.0)\n"
                   "        || (mgl_c0.w < 0.0 && mgl_p0.w < 0.0)\n"

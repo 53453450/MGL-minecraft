@@ -559,6 +559,8 @@ void mglTessEncodeCaptureIndexed(void *encoder_owner, void *index_buffer,
                                  uint32_t count, int32_t base_vertex,
                                  uint32_t instance_count,
                                  uint32_t base_instance);
+int mglTessGenModeIsIsolines(uint32_t tess_gen_mode);
+int mglTessWritePointSize(uint32_t tess_gen_point_mode);
 
 #ifdef __cplusplus
 }
