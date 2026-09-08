@@ -583,6 +583,21 @@ bool mglTessPlanIndexedCaptureIndexPrep(
     uint64_t index_buffer_length, int contents_readable, int restart_enabled,
     uint32_t restart_index, MGLTessIndexedCaptureIndexPrep *out);
 
+/* O1.2 continuation: double processGLState session lives in C++; ObjC ports. */
+typedef struct MGLTessCaptureSessionHostOps {
+    void *ctx;
+    void *renderer;
+    void (*mark_dirty_all)(void *ctx);
+    int (*process_gl_state)(void *renderer); /* 1=ok */
+    int (*encoder_has_current)(void *renderer); /* 1=yes */
+    void (*bind_capture_slots)(void *renderer, void *capture,
+                               const uint32_t *params);
+    void (*set_capture_active)(void *renderer, int active);
+} MGLTessCaptureSessionHostOps;
+
+bool mglTessRunCaptureSession(void *capture, const uint32_t *params,
+                              const MGLTessCaptureSessionHostOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

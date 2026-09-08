@@ -16861,25 +16861,7 @@ int mglRenderClassifyCommandBufferCommit(
     return 0;
 }
 
-MGLProcessGLStateClass mglRenderClassifyProcessGLState(
-    int has_ctx, int draw_command, int has_vao, int dirty_state) {
-    if (!has_ctx) {
-        return MGL_PROCESS_GL_ABORT;
-    }
-    if (!has_vao) {
-        if (draw_command) {
-            return MGL_PROCESS_GL_ABORT;
-        }
-        if (dirty_state) {
-            return MGL_PROCESS_GL_NO_VAO_CLEAR;
-        }
-        return MGL_PROCESS_GL_NON_DRAW;
-    }
-    if (!draw_command) {
-        return MGL_PROCESS_GL_NON_DRAW;
-    }
-    return MGL_PROCESS_GL_CONTINUE;
-}
+/* mglRenderClassifyProcessGLState moved to mgl_render_pass_plan.c (O1.1) */
 
 int mglRenderShaderSourceUsesSampleParams(const char *src) {
     if (!src) {

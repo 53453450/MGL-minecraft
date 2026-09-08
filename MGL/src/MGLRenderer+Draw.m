@@ -409,53 +409,25 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
 @implementation MGLRenderer (Draw)
 
+/* O1.5: mtlDraw* are one-line forwards to mglIssue* / MS host guards.
+ * Emulated-MS sample loop stays a DrawSupport host port. */
+
 -(void) mtlDrawArrays: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
 {
-    self->_lastDrawPrimitiveMode = mode;
-
-    METAL_LOCK();
-    if ([self runEmulatedMSSampleDrawLoopIfNeeded:ctx drawOnce:^{
-            [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
-        }]) {
-        METAL_UNLOCK();
-        return;
-    }
-    [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
-    [self broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:ctx];
-    METAL_UNLOCK();
-}
-
--(void) mtlDrawArraysLocked: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
-{
-    mglIssueDrawArrays(ctx, (__bridge void *)self, mode, first, count, 1, 0u, "drawArrays");
+    mglDrawHostGuardIssueArrays((__bridge void *)self, ctx, mode, first, count,
+                                1, 0u, "drawArrays", /*with_ms=*/1);
 }
 
 -(void) mtlDrawElements: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
 {
-    self->_lastDrawPrimitiveMode = mode;
-
-    METAL_LOCK();
-    if ([self runEmulatedMSSampleDrawLoopIfNeeded:glm_ctx drawOnce:^{
-            [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type
-                                indices:indices];
-        }]) {
-        METAL_UNLOCK();
-        return;
-    }
-    [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type indices:indices];
-    [self broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:glm_ctx];
-    METAL_UNLOCK();
-}
-
--(void) mtlDrawElementsLocked: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
-{
-    mglIssueDrawElements(glm_ctx, (__bridge void *)self, mode, count, type, indices, 1, 0, 0u, "drawElements");
+    mglDrawHostGuardIssueElements((__bridge void *)self, glm_ctx, mode, count,
+                                  type, indices, 1, 0, 0u, "drawElements",
+                                  /*with_ms=*/1);
 }
 
 -(void) mtlDrawRangeElements: (GLMContext) glm_ctx mode:(GLenum) mode start:(GLuint) start end:(GLuint) end count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
 {
-    (void)start;
-    (void)end;
+    (void)start; (void)end;
     mglIssueDrawElements(glm_ctx, (__bridge void *)self, mode, count, type, indices, 1, 0, 0u, "drawRangeElements");
 }
 
@@ -476,8 +448,7 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
 -(void) mtlDrawRangeElementsBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode start: (GLuint) start end: (GLuint) end count:(GLsizei) count type: (GLenum) type indices:(const void *)indices basevertex:(GLint) basevertex
 {
-    (void)start;
-    (void)end;
+    (void)start; (void)end;
     mglIssueDrawElements(glm_ctx, (__bridge void *)self, mode, count, type, indices, 1, basevertex, 0u, "drawRangeElementsBaseVertex");
 }
 
@@ -488,14 +459,12 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
 -(void) mtlDrawArraysIndirect: (GLMContext) glm_ctx mode:(GLenum) mode indirect: (const void *) indirect
 {
-    mglIssueDrawArraysIndirect(glm_ctx, (__bridge void *)self, mode, indirect,
-                               "drawArraysIndirect");
+    mglIssueDrawArraysIndirect(glm_ctx, (__bridge void *)self, mode, indirect, "drawArraysIndirect");
 }
 
 -(void) mtlDrawElementsIndirect: (GLMContext) glm_ctx mode:(GLenum) mode type:(GLenum) type indirect: (const void *) indirect
 {
-    mglIssueDrawElementsIndirect(glm_ctx, (__bridge void *)self, mode, type,
-                                 indirect, "drawElementsIndirect");
+    mglIssueDrawElementsIndirect(glm_ctx, (__bridge void *)self, mode, type, indirect, "drawElementsIndirect");
 }
 
 -(void) mtlDrawArraysInstancedBaseInstance: (GLMContext) glm_ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count instancecount:(GLsizei) instancecount baseinstance:(GLuint) baseinstance
@@ -516,35 +485,27 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
 
 -(void) mtlMultiDrawArrays: (GLMContext)glm_ctx mode:(GLenum) mode first:(const GLint *)first count:(const GLsizei *)count drawcount:(GLsizei) drawcount
 {
-    mglIssueMultiDrawArrays(glm_ctx, (__bridge void *)self, mode, first, count,
-                            drawcount, "multiDrawArrays");
+    mglIssueMultiDrawArrays(glm_ctx, (__bridge void *)self, mode, first, count, drawcount, "multiDrawArrays");
 }
 
 -(void) mtlMultiDrawElements: (GLMContext)glm_ctx mode:(GLenum) mode count:(const GLsizei *)count type:(GLenum)type indices:(const void *const*)indices drawcount:(GLsizei) drawcount
 {
-    mglIssueMultiDrawElements(glm_ctx, (__bridge void *)self, mode, count, type,
-                              indices, drawcount, NULL, "multiDrawElements");
+    mglIssueMultiDrawElements(glm_ctx, (__bridge void *)self, mode, count, type, indices, drawcount, NULL, "multiDrawElements");
 }
 
 -(void) mtlMultiDrawElementsBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count: (const GLsizei *) count type: (GLenum) type indices:(const void *const *)indices drawcount:(GLsizei) drawcount basevertex:(const GLint *) basevertex
 {
-    mglIssueMultiDrawElements(glm_ctx, (__bridge void *)self, mode, count, type,
-                              indices, drawcount, basevertex,
-                              "multiDrawElementsBaseVertex");
+    mglIssueMultiDrawElements(glm_ctx, (__bridge void *)self, mode, count, type, indices, drawcount, basevertex, "multiDrawElementsBaseVertex");
 }
 
 -(void) mtlMultiDrawArraysIndirect: (GLMContext)glm_ctx mode:(GLenum) mode indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride
 {
-    mglIssueMultiDrawArraysIndirect(glm_ctx, (__bridge void *)self, mode,
-                                    indirect, drawcount, stride,
-                                    "multiDrawArraysIndirect");
+    mglIssueMultiDrawArraysIndirect(glm_ctx, (__bridge void *)self, mode, indirect, drawcount, stride, "multiDrawArraysIndirect");
 }
 
 -(void) mtlMultiDrawElementsIndirect: (GLMContext)glm_ctx mode:(GLenum) mode type:(GLenum)type indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride
 {
-    mglIssueMultiDrawElementsIndirect(glm_ctx, (__bridge void *)self, mode, type,
-                                      indirect, drawcount, stride,
-                                      "multiDrawElementsIndirect");
+    mglIssueMultiDrawElementsIndirect(glm_ctx, (__bridge void *)self, mode, type, indirect, drawcount, stride, "multiDrawElementsIndirect");
 }
 
 @end

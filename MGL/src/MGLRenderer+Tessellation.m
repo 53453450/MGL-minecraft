@@ -23,6 +23,7 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
 #include "mgl_draw_tess.h"
+#include "mgl_draw_issue.h"
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
 
@@ -1652,16 +1653,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         _tessellation.pendingGSInputOffset = 0u;
         _tessellation.pendingGSInputStride = outStride;
         _tessellation.pendingGSVertexCount = gsCount;
-        const BOOL gsOK = [self handleGeometryDrawIfNeeded:glm_ctx
-                                                      mode:tessRasterMode
-                                                     first:0
-                                                     count:gsCount
-                                                 indexType:0
-                                                   indices:NULL
-                                                baseVertex:0
-                                             instanceCount:1
-                                              baseInstance:baseInstance
-                                                     label:"tessEvalToGeometry"];
+        /* O1.4: single mglIssue/host path — no ObjC dual call. */
+        const BOOL gsOK = mglDrawHostHandleGeometry(
+                              (__bridge void *)self, glm_ctx, tessRasterMode, 0,
+                              gsCount, 0, NULL, 0, 1, baseInstance,
+                              "tessEvalToGeometry")
+                              ? YES
+                              : NO;
         if (_tessellation.pendingGSInput) {
             (void)CFBridgingRelease(_tessellation.pendingGSInput);
             _tessellation.pendingGSInput = NULL;

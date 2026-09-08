@@ -48,15 +48,15 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+Blit.m` | ~4969 | **厚** | 拆：clip/format/DS unify plan → 已有 sink 方向；ObjC 只 blit encoder 端口 |
 | `+BindingState.m` | ~4675 | **厚** | 拆：slot/stage/UBO/SSBO 表 → C++；ObjC 只 `setVertexBuffer` 等绑定口 |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
-| `+DrawSupport.m` | ~3600 | **厚** | **P0**：VS capture host / tess·GS host 残留 → C++（ARCH 下一批） |
+| `+DrawSupport.m` | ~1408 | 中 | O1.6 部分：stage host 已拆到 `+DrawStageHost.m`；余 resolve/MS/host ABI |
 | `+Batch.m` | ~2097 | **厚** | path 决策（MDI/stream/ICB）→ C；ObjC 只 enqueue/flush 端口 |
-| `+Tessellation.m` | ~1768 | 中→薄 | domain 已纯 C；余下 Metal dispatch / buffer 分配继续 sink |
+| `+Tessellation.m` | ~1775 | 中→薄 | O1.4：TES→GS 改走 `mglDrawHostHandleGeometry` |
 | `+BatchReplay.m` | ~1602 | **厚** | replay 绑定与 stage 分支 → C++；ObjC 一行 replay 口 |
 | `+Buffer.m` | ~1575 | 中 | map/CoW/shadow plan → C++；ObjC 只 MTLBuffer 物化 |
 | `+Compute.m` | ~1255 | 中 | dispatch plan → C++；ObjC 只 compute encoder 端口 |
 | `+Lifecycle.m` | ~665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
 | `+SwapDiagnostics.m` | ~555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
-| `+Draw.m` | ~550 | 薄化中 | `mtlDraw*` → `mglIssueDraw*` 一行端口 |
+| `+Draw.m` | ~511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
 | `+Binding.m` | ~408 | 薄化 | 与 BindingState 合并后删除 |
 | `+GPURecovery.m` | ~350 | Keep 薄 | 触发 + 日志；reset 在 C++ |
 | `+VertexLayout.m` | ~332 | 薄化 | descriptor plan 已在 sink；ObjC 删策略 |
@@ -92,10 +92,10 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 | 符号 / 区域 | 文件 | 债因 |
 |-------------|------|------|
-| `runVertexCaptureSession` / `captureAIRVertexPositions*` host | `+DrawSupport.m` | processGLState / MTLBuffer 物化仍在 ObjC（O1.2 已下沉 plan/prep） |
+| `runVertexCaptureSession` / `captureAIRVertexPositions*` host | `+DrawStageHost.m` | O1.2 续：session 双遍在 `mglTessRunCaptureSession`；MTLBuffer 物化仍在 ObjC |
 | `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawSupport.m` | ObjC 只填 port 表；layout 已在 C++（O1.3） |
 | `scheduleDrawBatch` 物化口 | `+Batch.m` | 决策已在 `mgl_batch_select_path`；ObjC 填 inputs（O2.1） |
-| `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1 未做 |
+| `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1：编排在 `mgl_render_pass_plan`；ObjC 物化 MTL* |
 | Texture/Blit/BindingState 巨型 category | 见 §1.1 | O3–O4 |
 
 度量：`scripts/objc_renderer_loc.sh`（目标 `MGLRenderer*.m` 合计 ≤ 8–12k）。
@@ -104,12 +104,12 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 目标：`+DrawSupport` / `+Tessellation` / `+Draw` 不再拥有 session 状态机。
 
-- [ ] **O1.1** `processGLState` / `processGLStateLocked` 从 `+RenderPass` 抽成 C++ `mglRenderProcessGLState(plan*)`；ObjC 只应用 `MTL*` 物化结果
-- [x] **O1.2** VS GPU capture：`runVertexCaptureSession` / `captureAIRVertexPositions*` / buffer 分配 → `mgl_draw_tess` / `mgl_draw_gs`（ARCH 已点名） — **部分**：`mglTessArrayCaptureInputsOk` / `mglTessCaptureSessionHostReady` / `mglTessPlanIndexedCaptureIndexPrep` 已下沉；processGLState 双遍与 MTLBuffer 分配仍在 ObjC host
+- [x] **O1.1** `processGLState` / `processGLStateLocked` → `mglRenderProcessGLState` / `AfterDirty`（`mgl_render_pass_plan.*`）；ObjC 只物化 MTL*；`test-process-gl-state-plan`
+- [x] **O1.2** VS GPU capture — **续完 session**：`mglTessRunCaptureSession` 拥有双遍 processGLState+bind；MTLBuffer 分配仍是 ObjC 物化口
 - [x] **O1.3** VAO cull attrib resolve → C++（ObjC 只提供 VAO 指针表） — `mglRenderBuildCullDistanceLayoutFromPorts`；ObjC 只 resolve→port 表 + last-bound 记账
-- [ ] **O1.4** `handleTessellationPatchDrawIfNeeded` / `handleGeometryDrawIfNeeded` / XFB host → 已有 `mglIssue*` 路径收口；删 ObjC 双路径
-- [ ] **O1.5** `+Draw.m`：`mtlDraw*` 全部一行转发；删 Locked 副本中的策略
-- [ ] **O1.6** 验收：`+DrawSupport.m` &lt; 400 LOC 或删除并入薄 `+Draw.m`；`test-tess-*` / `test_xfb_plan` / arch correctness 绿
+- [x] **O1.4** 双路径收口：**部分** — TES→GS 与 draw 入口均走 `mglDrawHostHandle*` / `mglIssue*`；host 方法体仍在 `+DrawStageHost`（未删，仅去双入口）
+- [x] **O1.5** `+Draw.m`：`mtlDraw*` 一行转发；Locked 删除；MS sample loop 进 `mglDrawHostGuardIssue*`
+- [ ] **O1.6** 验收：`+DrawSupport.m` &lt; 400 LOC — **部分**：3602→~1408（stage host / cull encode / capture 迁出）；残量 resolve+MS+host ABI；下一刀并入薄 `+Draw.m` 或继续 sink GS/tess 体
 
 ### Batch O2 — Batch / Replay 决策下沉【P0】
 
@@ -183,8 +183,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 ## 5. 即时下一刀（建议本周）
 
-1. ~~**O1.2–O1.3**~~：plan/prep + VAO port 表已下沉；**仍开**：capture host 的 processGLState / buffer 分配（O1.2 余量）、O1.1 processGLState 全量、O1.4–O1.6
+1. ~~**O1.1 / O1.2 session / O1.4 入口 / O1.5**~~：已合入；**仍开 O1.6 收口**（DrawSupport &lt;400）与 GS/tess host 方法体继续 sink
 2. ~~**O2.1**~~：`mgl_batch_select_path` + `test-batch-path` 已合入；下一刀 O2.2 hazard / O2.3 replay
 3. ~~**O0**~~：本文与 `scripts/objc_renderer_loc.sh` 已挂进 `docs/` / ARCH / README
+4. **下一刀**：`+DrawStageHost` 内 `handleGeometry` / `handleTessellation` 编排下沉到 `mgl_draw_gs` / `mgl_draw_tess`；DrawSupport 残量并入薄 `+Draw.m`
 
-完成以上三刀后，再大规模继续 sink 也不会失去「薄平台层」方向感。
+完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。

@@ -2416,3 +2416,25 @@ extern "C" uint32_t mglXfbPackVsRecords(const MGLXfbVsPlan *plan, uint32_t buffe
     }
     return record_count;
 }
+
+extern "C" bool mglTessRunCaptureSession(void *capture, const uint32_t *params,
+                                         const MGLTessCaptureSessionHostOps *ops) {
+    if (!capture || !params || !ops || !ops->ctx || !ops->renderer ||
+        !ops->mark_dirty_all || !ops->process_gl_state ||
+        !ops->encoder_has_current || !ops->bind_capture_slots ||
+        !ops->set_capture_active) {
+        return false;
+    }
+    ops->set_capture_active(ops->renderer, 1);
+    for (int pass = 0; pass < 2; ++pass) {
+        ops->mark_dirty_all(ops->ctx);
+        const int process_ok = ops->process_gl_state(ops->renderer);
+        const int enc = ops->encoder_has_current(ops->renderer);
+        if (!mglTessCaptureSessionHostReady(process_ok, enc)) {
+            ops->set_capture_active(ops->renderer, 0);
+            return false;
+        }
+        ops->bind_capture_slots(ops->renderer, capture, params);
+    }
+    return true;
+}

@@ -114,6 +114,17 @@ bool mglDrawHostPrepareIndirectCPURead(void *renderer, GLMContext ctx,
                                        const char *label);
 bool mglDrawHostHasGeometry(GLMContext ctx);
 bool mglDrawHostUsesCullDistance(GLMContext ctx);
+/* O1.5: ObjC mtlDrawArrays/Elements one-liners → lock/MS host then mglIssue*. */
+void mglDrawHostGuardIssueArrays(void *renderer, GLMContext ctx, GLenum mode,
+                                 GLint first, GLsizei count,
+                                 GLsizei instanceCount, GLuint baseInstance,
+                                 const char *label, int with_ms);
+void mglDrawHostGuardIssueElements(void *renderer, GLMContext ctx, GLenum mode,
+                                   GLsizei count, GLenum type,
+                                   const void *indices, GLsizei instanceCount,
+                                   GLint baseVertex, GLuint baseInstance,
+                                   const char *label, int with_ms);
+
 
 #ifdef __cplusplus
 }

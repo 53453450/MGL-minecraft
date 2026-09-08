@@ -333,8 +333,6 @@ typedef struct {
 - (void)setTriangleFillModeIfNeeded:(uint32_t)mode;
 
 // === Locked draw variants ===
-- (void)mtlDrawArraysLocked:(GLMContext)ctx mode:(GLenum)mode first:(GLint)first count:(GLsizei)count;
-- (void)mtlDrawElementsLocked:(GLMContext)glm_ctx mode:(GLenum)mode count:(GLsizei)count type:(GLenum)type indices:(const void *)indices;
 
 // === Methods defined in MGLRenderer.m, called from MGLRenderer+Draw.m ===
 // getVertexBufferIndexWithAttributeSet: and floatVertexBufferFor*Attrib: are

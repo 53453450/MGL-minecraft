@@ -23,6 +23,7 @@
 #include "mgl_draw_tess.h"
 #include "mgl_draw_gs.h"
 #include "mgl_render.h"
+#include "mgl_render_pass_plan.h"
 
 #import <objc/message.h>
 
@@ -5232,26 +5233,19 @@ static GLenum mglPassthroughDeclType(
         return false;
     }
 
-    if (draw_command) {
-        /*
-         * This flag is derived from the current draw's final fragment sampler
-         * binding.  Clear it before any early render-state refresh so the
-         * previous draw cannot disable culling while DIRTY_VAO/FBO is handled.
-         */
-        [_renderPassManager setCurrentDrawUsesRTSampledCopy:NO];
-        MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
-    }
-
     uintptr_t earlyCtxAddr = (uintptr_t)ctx;
-    if (earlyCtxAddr < 0x1000) {
+    const int ctxPtrSane = earlyCtxAddr >= 0x1000 ? 1 : 0;
+    if (!ctxPtrSane) {
         NSLog(@"MGL ERROR: Invalid context pointer detected: 0x%lx", earlyCtxAddr);
         return false;
     }
 
+    /* Metal corruption recovery is platform materialization — try before plan. */
     static int corruption_recovery_count = 0;
     static int max_recovery_attempts = 3;
-    if (!_device || !_commandQueue || ((uintptr_t)_device < 0x1000) ||
-        ((uintptr_t)_commandQueue < 0x1000)) {
+    int deviceOk = (_device && ((uintptr_t)_device >= 0x1000)) ? 1 : 0;
+    int queueOk = (_commandQueue && ((uintptr_t)_commandQueue >= 0x1000)) ? 1 : 0;
+    if (!deviceOk || !queueOk) {
         NSLog(@"MGL CRITICAL: Metal state corruption detected in processGLState!");
         NSLog(@"MGL CRITICAL: device=0x%lx, queue=0x%lx", (uintptr_t)_device,
               (uintptr_t)_commandQueue);
@@ -5261,7 +5255,9 @@ static GLenum mglPassthroughDeclType(
             @try {
                 [self emergencyResetMetalState];
                 corruption_recovery_count++;
-                if (!_device || !_commandQueue) {
+                deviceOk = (_device && ((uintptr_t)_device >= 0x1000)) ? 1 : 0;
+                queueOk = (_commandQueue && ((uintptr_t)_commandQueue >= 0x1000)) ? 1 : 0;
+                if (!deviceOk || !queueOk) {
                     NSLog(@"MGL CRITICAL: Metal recovery failed, aborting operation");
                     return false;
                 }
@@ -5275,28 +5271,76 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    const int hasVao = MGL_STATE(ctx)->vao != NULL;
-    const int dirtyState =
-        (MGL_STATE(ctx)->dirty_bits & DIRTY_STATE) ? 1 : 0;
-    const MGLProcessGLStateClass processClass =
-        mglRenderClassifyProcessGLState(1, draw_command ? 1 : 0, hasVao,
-                                        dirtyState);
-    if (processClass == MGL_PROCESS_GL_ABORT) {
-        if (draw_command && !hasVao) {
+    int quarantineBlocks = 0;
+    if (draw_command) {
+        GLuint blockedProgramKey = mglCurrentRenderProgramKey(ctx);
+        if (blockedProgramKey != 0u &&
+            _gpuRecovery.interfaceMismatchBlockedProgram != 0 &&
+            blockedProgramKey == _gpuRecovery.interfaceMismatchBlockedProgram) {
+            CFTimeInterval now = CFAbsoluteTimeGetCurrent();
+            if (now < _gpuRecovery.interfaceMismatchBlockedUntil) {
+                quarantineBlocks = 1;
+                static uint64_t s_quarantineSkipCount = 0;
+                s_quarantineSkipCount++;
+                if (s_quarantineSkipCount <= 16 || (s_quarantineSkipCount % 1000) == 0) {
+                    double remaining = _gpuRecovery.interfaceMismatchBlockedUntil - now;
+                    if (remaining < 0.0) remaining = 0.0;
+                    NSLog(@"MGL WARNING: Program %u quarantined due to interface mismatch (%.2fs remaining), skipping draw",
+                          (unsigned)_gpuRecovery.interfaceMismatchBlockedProgram, remaining);
+                }
+            }
+        }
+    }
+
+    MGLRenderCommandBufferState processCommandState = {0};
+    int processHasCommand = mglRenderGetCommandBufferOwnerState(
+        _renderPassManager.state->currentCommandBufferOwner,
+        &processCommandState) == 0;
+    const int encoderCurrent = mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1 ? 1 : 0;
+
+    MGLProcessGLStateInputs planIn = {0};
+    planIn.has_ctx = 1u;
+    planIn.draw_command = draw_command ? 1u : 0u;
+    planIn.has_vao = MGL_STATE(ctx)->vao != NULL ? 1u : 0u;
+    planIn.dirty_state =
+        (MGL_STATE(ctx)->dirty_bits & DIRTY_STATE) ? 1u : 0u;
+    planIn.ctx_ptr_sane = 1u;
+    planIn.device_ok = deviceOk ? 1u : 0u;
+    planIn.queue_ok = queueOk ? 1u : 0u;
+    planIn.quarantine_blocks_draw = quarantineBlocks ? 1u : 0u;
+    planIn.has_command_buffer = processHasCommand ? 1u : 0u;
+    planIn.encoder_has_current = encoderCurrent ? 1u : 0u;
+    planIn.command_buffer_status =
+        processHasCommand ? (uint32_t)processCommandState.status : 0u;
+
+    MGLProcessGLStatePlan plan = {0};
+    if (mglRenderProcessGLState(&planIn, &plan) != 0) {
+        return false;
+    }
+
+    if (plan.clear_rt_sampled_copy) {
+        /*
+         * This flag is derived from the current draw's final fragment sampler
+         * binding.  Clear it before any early render-state refresh so the
+         * previous draw cannot disable culling while DIRTY_VAO/FBO is handled.
+         */
+        [_renderPassManager setCurrentDrawUsesRTSampledCopy:NO];
+        MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
+    }
+
+    if (plan.result == MGL_PGL_RESULT_ABORT) {
+        if (draw_command && !planIn.has_vao &&
+            plan.process_class == MGL_PROCESS_GL_ABORT) {
             NSLog(@"Error: No VAO defined for ctx\n");
         }
         return false;
     }
-    if (processClass == MGL_PROCESS_GL_NON_DRAW) {
-        if (!draw_command) {
-            [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
-        }
-        return true;
+
+    if (plan.non_draw_end_pass_if_fbo_changed) {
+        [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
     }
-    if (processClass == MGL_PROCESS_GL_NO_VAO_CLEAR) {
-        if (!draw_command) {
-            [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
-        }
+    if (plan.no_vao_clear_path) {
         [self endRenderEncodingLocked];
         if (![self validateMetalObjects]) {
             NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
@@ -5311,60 +5355,31 @@ static GLenum mglPassthroughDeclType(
         MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
         return true;
     }
+    if (plan.result == MGL_PGL_RESULT_EARLY_OK) {
+        return true;
+    }
 
-    // Early circuit-breaker: if a program is currently quarantined due to repeated
-    // vertex/fragment interface mismatch, skip draw before creating/rotating buffers.
-    GLuint blockedProgramKey = mglCurrentRenderProgramKey(ctx);
-    if (blockedProgramKey != 0u &&
-        _gpuRecovery.interfaceMismatchBlockedProgram != 0 &&
-        blockedProgramKey == _gpuRecovery.interfaceMismatchBlockedProgram)
-    {
-        CFTimeInterval now = CFAbsoluteTimeGetCurrent();
-        if (now < _gpuRecovery.interfaceMismatchBlockedUntil) {
-            static uint64_t s_quarantineSkipCount = 0;
-            s_quarantineSkipCount++;
-            if (s_quarantineSkipCount <= 16 || (s_quarantineSkipCount % 1000) == 0) {
-                double remaining = _gpuRecovery.interfaceMismatchBlockedUntil - now;
-                if (remaining < 0.0) remaining = 0.0;
-                NSLog(@"MGL WARNING: Program %u quarantined due to interface mismatch (%.2fs remaining), skipping draw",
-                      (unsigned)_gpuRecovery.interfaceMismatchBlockedProgram, remaining);
+    if (plan.rotate_finalized_command_buffer) {
+        static uint64_t s_rotateFinalizedCount = 0;
+        uint64_t rotateHit = ++s_rotateFinalizedCount;
+        if (rotateHit <= 16ull || (rotateHit % 500ull) == 0ull) {
+            NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld) hit=%llu",
+                  (long)planIn.command_buffer_status,
+                  (unsigned long long)rotateHit);
+        }
+        if (![self newCommandBufferLocked]) {
+            NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
+            if (traceProcess) {
+                mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
+                                    ctx,
+                                    _renderPassManager.state->currentCommandBufferOwner,
+                                    _renderPassManager.state->currentRenderEncoderOwner,
+                                    _renderPassManager.state->renderPassStateOwner,
+                                    _drawable);
             }
             return false;
         }
-    }
-
-    // Keep command buffer lifecycle healthy: if the active one is already finalized,
-    // rotate to a fresh buffer before any state processing.
-    MGLRenderCommandBufferState processCommandState = {0};
-    int processHasCommand = mglRenderGetCommandBufferOwnerState(
-        _renderPassManager.state->currentCommandBufferOwner,
-        &processCommandState) == 0;
-    if (processHasCommand &&
-        mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
-        uint32_t preStatus =
-            (uint32_t)processCommandState.status;
-        if (preStatus >= MGLCommandBufferStatusCommitted) {
-            static uint64_t s_rotateFinalizedCount = 0;
-            uint64_t rotateHit = ++s_rotateFinalizedCount;
-            if (rotateHit <= 16ull || (rotateHit % 500ull) == 0ull) {
-                NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld) hit=%llu",
-                      (long)preStatus, (unsigned long long)rotateHit);
-            }
-            if (![self newCommandBufferLocked]) {
-                NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
-                if (traceProcess) {
-                    mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
-                                        ctx,
-                                        _renderPassManager.state->currentCommandBufferOwner,
-                                        _renderPassManager.state->currentRenderEncoderOwner,
-                                        _renderPassManager.state->renderPassStateOwner,
-                                        _drawable);
-                }
-                return false;
-            }
-        }
-    } else if (!processHasCommand) {
+    } else if (plan.create_initial_command_buffer) {
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: processGLState found NULL command buffer, creating one");
         }
@@ -5383,12 +5398,46 @@ static GLenum mglPassthroughDeclType(
     }
 
     MGLResourceSyncWork resourceSyncWork = {false, false, false};
-    RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command
-                                                            work:&resourceSyncWork]);
+    if (plan.process_dirty_domains) {
+        RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command
+                                                                work:&resourceSyncWork]);
+    }
 
-    // Ensure a render encoder exists for draw commands.
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+    /* Phase 2: re-sample encoder/pipeline after dirty-domain materialization. */
+    Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    MGLProcessGLStateAfterInputs afterIn = {0};
+    afterIn.draw_command = draw_command ? 1u : 0u;
+    afterIn.encoder_has_current = mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1 ? 1u : 0u;
+    afterIn.has_pipeline_state = _pipelineCache.state->pipelineState ? 1u : 0u;
+    afterIn.frag_needs_fragcoord =
+        fragmentProgram && mglRenderSamplerUnitExplicit(
+                               (uint32_t)fragmentProgram->usesFragCoordParams)
+            ? 1u
+            : 0u;
+    afterIn.frag_needs_sample =
+        ((fragmentProgram && mglRenderSamplerUnitExplicit(
+                                 (uint32_t)fragmentProgram->uses_sample_params)) ||
+         _mglInMSSampleDrawLoop)
+            ? 1u
+            : 0u;
+    afterIn.frag_needs_lod_bias =
+        fragmentProgram && mglRenderSamplerUnitExplicit(
+                               (uint32_t)fragmentProgram->uses_lod_bias)
+            ? 1u
+            : 0u;
+    afterIn.fragment_trace_uses_rt_sampled_copy =
+        mglFragmentTextureTraceBindingsUseRTSampledCopy(
+            _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS)
+            ? 1u
+            : 0u;
+
+    MGLProcessGLStateAfterPlan after = {0};
+    if (mglRenderProcessGLStateAfterDirty(&afterIn, &after) != 0) {
+        return false;
+    }
+
+    if (after.recover_nil_encoder) {
         static uint64_t s_nilEncoderRecoveryCount = 0;
         uint64_t nilHit = ++s_nilEncoderRecoveryCount;
         if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
@@ -5423,7 +5472,7 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    if (draw_command) {
+    if (after.ensure_pass_matches_fbo) {
         RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
         [self updateCurrentRenderEncoder];
     }
@@ -5453,14 +5502,13 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    if (!_pipelineCache.state->pipelineState) {
+    if (after.fail_nil_pipeline) {
         static uint64_t nil_pipeline_count = 0;
         nil_pipeline_count++;
         if (nil_pipeline_count <= 8 || (nil_pipeline_count % 1000) == 0) {
             mglTraceLogNSString(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
                           (unsigned long long)nil_pipeline_count);
         }
-        // Force rebuild on next state processing pass.
         mglMarkRendererDirtyBits(ctx->active_state,
                                  DIRTY_PROGRAM | DIRTY_VAO |
                                  DIRTY_FBO | DIRTY_RENDER_STATE);
@@ -5475,49 +5523,45 @@ static GLenum mglPassthroughDeclType(
         return false;
     }
 
-    RETURN_FALSE_ON_FAILURE([self validateRenderPassAttachmentsAndPipelineFormatsLocked:traceProcess]);
-
-    @try {
-        if (mglRenderBindingSetPipelineIfNeededForOwner(
-                _bindingStateOwner,
-                _renderPassManager.state->currentRenderEncoderOwner,
-                _pipelineCache.state->pipelineState) > 0) {
-            MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
-        } else {
-            MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@", exception.reason);
-        // Force pipeline/state retranslation on next draw instead of crashing this frame.
-        mglMarkRendererDirtyBits(ctx->active_state,
-                                 DIRTY_PROGRAM | DIRTY_VAO |
-                                 DIRTY_FBO | DIRTY_RENDER_STATE);
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.set_pipeline",
-                                ctx,
-                                _renderPassManager.state->currentCommandBufferOwner,
-                                _renderPassManager.state->currentRenderEncoderOwner,
-                                _renderPassManager.state->renderPassStateOwner,
-                                _drawable);
-        }
-        return false;
+    if (after.validate_attachments) {
+        RETURN_FALSE_ON_FAILURE([self validateRenderPassAttachmentsAndPipelineFormatsLocked:traceProcess]);
     }
 
-    // Resource Sync domain (Resource Sync domain): stability rebind before draw. The logic was moved to
-    // syncResourceBindingsForContext:, only the dispatch remains here; steps
-    // the dirty-domain pass already ran this invocation are skipped.
-    RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx
-                                                     alreadyDone:&resourceSyncWork]);
+    if (after.set_pipeline) {
+        @try {
+            if (mglRenderBindingSetPipelineIfNeededForOwner(
+                    _bindingStateOwner,
+                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _pipelineCache.state->pipelineState) > 0) {
+                MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@", exception.reason);
+            mglMarkRendererDirtyBits(ctx->active_state,
+                                     DIRTY_PROGRAM | DIRTY_VAO |
+                                     DIRTY_FBO | DIRTY_RENDER_STATE);
+            if (traceProcess) {
+                mglLogStateSnapshot("processGLState.fail.set_pipeline",
+                                    ctx,
+                                    _renderPassManager.state->currentCommandBufferOwner,
+                                    _renderPassManager.state->currentRenderEncoderOwner,
+                                    _renderPassManager.state->renderPassStateOwner,
+                                    _drawable);
+            }
+            return false;
+        }
+    }
 
-    Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    BOOL useFragCoordParams =
-        fragmentProgram && mglRenderSamplerUnitExplicit(
-                               (uint32_t)fragmentProgram->usesFragCoordParams);
-    BOOL useSampleParams =
-        (fragmentProgram && mglRenderSamplerUnitExplicit(
-                                (uint32_t)fragmentProgram->uses_sample_params)) ||
-        _mglInMSSampleDrawLoop;
-    if (useFragCoordParams || useSampleParams) {
+    if (after.sync_resources) {
+        RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx
+                                                         alreadyDone:&resourceSyncWork]);
+    }
+
+    if (after.bind_frag_coord_slot) {
+        BOOL useFragCoordParams = afterIn.frag_needs_fragcoord ? YES : NO;
+        BOOL useSampleParams = afterIn.frag_needs_sample ? YES : NO;
         NSUInteger passHeight = mglRenderPassRenderTargetHeightFor(_renderPassManager.state);
         if (passHeight == 0) {
             for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
@@ -5574,11 +5618,7 @@ static GLenum mglPassthroughDeclType(
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
 
-
-    BOOL useLodBias = fragmentProgram &&
-        mglRenderSamplerUnitExplicit((uint32_t)fragmentProgram->uses_lod_bias);
-    if (useLodBias) {
-
+    if (after.bind_lod_bias_slot) {
         const GLfloat biasmax = STATE(var).max_texture_lod_bias;
         float lodBiasArr[TEXTURE_UNITS];
         for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
@@ -5596,7 +5636,6 @@ static GLenum mglPassthroughDeclType(
             kMGLLodBiasBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
 
-
         mglRenderSetRenderBytesForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             &biasmax, sizeof(biasmax),
@@ -5605,9 +5644,7 @@ static GLenum mglPassthroughDeclType(
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasMaxBufferIndex];
     }
 
-    if (draw_command &&
-        mglFragmentTextureTraceBindingsUseRTSampledCopy(
-            _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS)) {
+    if (after.maybe_mark_rt_sampled_copy) {
         [_renderPassManager setCurrentDrawUsesRTSampledCopy:YES];
         [self updateCurrentRenderEncoder];
     }
@@ -5628,6 +5665,7 @@ static GLenum mglPassthroughDeclType(
     }
     return true;
 }
+
 /*
  * Dirty state domain processing extracted from processGLStateLocked:.
  * Handles all dirty-bits dispatch: DIRTY_FBO, DIRTY_STATE, DIRTY_PROGRAM/
