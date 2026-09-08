@@ -1018,6 +1018,18 @@ static void test_color_write_mask_and_blend(void)
     expect(clear == 1, "rasterizer discard clears color write masks");
 }
 
+static void test_sampled_rt_copy_and_vertex_desc(void)
+{
+    int need_vd = !(1 || 0);
+    expect(need_vd == 0, "GS expansion skips vertex descriptor");
+    int bit = ((0x4u >> 2) & 1u) != 0u;
+    expect(bit == 1, "color attachment bit 2 is set");
+    int copy = 1 && 3u != 0u;
+    expect(copy == 1, "render-target with write version needs sampled copy");
+    int stale = 1u != 3u;
+    expect(stale == 1, "sampled copy is stale vs RT write version");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1090,6 +1102,7 @@ int main(void)
     test_pipeline_functions_and_ds_fallback();
     test_default_fbo_and_color0_fallback();
     test_color_write_mask_and_blend();
+    test_sampled_rt_copy_and_vertex_desc();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

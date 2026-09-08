@@ -1320,6 +1320,10 @@ int mglRenderDrawBufferIsNone(uint32_t draw_buffer);
 uint32_t mglRenderBlendingEnabledMaskBit(int blend_enabled, int index);
 int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
                                   int cull_capture);
+int mglRenderNeedsVertexDescriptor(int geometry_expansion, int tess_compute);
+int mglRenderColorAttachmentBitSet(uint32_t bitfield, uint32_t index);
+int mglRenderSampledRTNeedsCopy(int is_rt, uint32_t write_version);
+int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

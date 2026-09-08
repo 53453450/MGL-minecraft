@@ -8373,6 +8373,22 @@ int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
     return rasterizer_discard || tess_capture || cull_capture ? 1 : 0;
 }
 
+int mglRenderNeedsVertexDescriptor(int geometry_expansion, int tess_compute) {
+    return !(geometry_expansion || tess_compute) ? 1 : 0;
+}
+
+int mglRenderColorAttachmentBitSet(uint32_t bitfield, uint32_t index) {
+    return ((bitfield >> index) & 1u) != 0u ? 1 : 0;
+}
+
+int mglRenderSampledRTNeedsCopy(int is_rt, uint32_t write_version) {
+    return is_rt && write_version != 0u ? 1 : 0;
+}
+
+int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version) {
+    return sampled_version != rt_version ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -5069,7 +5069,8 @@ static GLenum mglPassthroughDeclType(
     }
 
 
-    if (!(geometryExpansion || tessCompute)) {
+    if (mglRenderNeedsVertexDescriptor(geometryExpansion ? 1 : 0,
+                                       tessCompute ? 1 : 0)) {
         if (![self generateVertexDescriptorState:state]) {
             return NO;
         }
@@ -5114,13 +5115,15 @@ static GLenum mglPassthroughDeclType(
 
     bool anySampledRT = false;
     for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
-        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+        if (!mglRenderColorAttachmentBitSet(
+                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
             continue;
         }
         FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
         Texture *tex = [self framebufferAttachmentTexture:attachment];
-        if (tex && tex->mtl_data && tex->is_render_target &&
-            tex->mtl_render_target_write_version != 0u) {
+        if (tex && tex->mtl_data &&
+            mglRenderSampledRTNeedsCopy(tex->is_render_target ? 1 : 0,
+                                        tex->mtl_render_target_write_version)) {
             anySampledRT = true;
             break;
         }
@@ -5130,7 +5133,8 @@ static GLenum mglPassthroughDeclType(
     }
 
     for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
-        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+        if (!mglRenderColorAttachmentBitSet(
+                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
             continue;
         }
 
@@ -5149,7 +5153,8 @@ static GLenum mglPassthroughDeclType(
 
         if (mglRTWriteAuthorityIsCurrentAndUsesOriginal(tex)) {
             if (tex->mtl_gl_sampled_data &&
-                tex->mtl_gl_sampled_write_version != tex->mtl_render_target_write_version) {
+                mglRenderSampledRTCopyStale(tex->mtl_gl_sampled_write_version,
+                                            tex->mtl_render_target_write_version)) {
                 [self releaseGLSampledRenderTargetCopyForTexture:tex];
                 if (mglTraceLogIsEnabled()) {
                     mglTraceLog("RT_SAMPLE_COPY_SKIP_INJECTED_RENDER tex=%u label=\"%s\" reason=render_yflip_injected_stale_released",
