@@ -5450,42 +5450,27 @@ static void mglTextureCopyTextureToBuffer(
     tex_desc.depth = MAX(tex_desc.depth, 1u);
 
     // Normalize depth/array semantics per Metal texture type.
-    if (tex_type == MGLTextureTypeCube) {
-        if (width != height) {
+    if ((tex_type == MGLTextureTypeCube ||
+         tex_type == MGLTextureTypeCubeArray) &&
+        !mglRenderCubeFaceSizeValid((uint64_t)width, (uint64_t)height)) {
             NSLog(@"MGL ERROR: invalid cube texture size %lux%lu for tex=%u glTarget=0x%x",
                   (unsigned long)width, (unsigned long)height, tex->name, tex->target);
-        }
-        tex_desc.depth = 1;
-    } else if (tex_type == MGLTextureTypeCubeArray) {
-        if (width != height) {
-            NSLog(@"MGL ERROR: invalid cube-array texture size %lux%lu for tex=%u glTarget=0x%x",
-                  (unsigned long)width, (unsigned long)height, tex->name, tex->target);
-        }
-
-        // GL cube-map-array depth is usually layer count (faces), so convert to cube count.
-        // If depth is already cube-count (non-multiple of 6), keep it as-is.
-        NSUInteger cubeCount = depth;
-        if (cubeCount >= 6 && (cubeCount % 6) == 0) {
-            cubeCount = cubeCount / 6;
-        } else if (cubeCount > 1 && (cubeCount % 6) != 0) {
+    }
+    if (tex_type == MGLTextureTypeCubeArray) {
+        uint64_t cubeCount = (uint64_t)depth;
+        if (cubeCount > 1u && (cubeCount % 6u) != 0u) {
             NSLog(@"MGL WARNING: cube-array depth=%lu is not a multiple of 6, treating as cube count",
                   (unsigned long)cubeCount);
         }
-
-        tex_desc.array_length = MAX((NSUInteger)1, cubeCount);
-        tex_desc.depth = 1;
-    } else if (tex_type == MGLTextureType1DArray) {
-        tex_desc.array_length = MAX((NSUInteger)1, height);
-        tex_desc.depth = 1;
-    } else if (is_array && !msEmulatedAsArray) {
-        tex_desc.array_length = MAX((NSUInteger)1, depth);
-        tex_desc.depth = 1;
-    } else if (!msEmulatedAsArray) {
-        /* For 3D and other non-array textures, arrayLength must be 1.
-         * Some Metal drivers report getNumSlices()==0 when arrayLength
-         * is left at its default, causing "slice OOB" assertions. */
-        tex_desc.array_length = 1;
-        tex_desc.depth = MAX((NSUInteger)1, depth);
+    }
+    uint64_t arrayLen = tex_desc.array_length;
+    uint64_t descDepth = tex_desc.depth;
+    if (mglRenderTextureArrayDepthForType(
+            tex_type, is_array ? 1 : 0, msEmulatedAsArray ? 1 : 0,
+            (uint64_t)width, (uint64_t)height, (uint64_t)depth, &arrayLen,
+            &descDepth)) {
+        tex_desc.array_length = arrayLen;
+        tex_desc.depth = descDepth;
     }
 
     if (mipmapped)

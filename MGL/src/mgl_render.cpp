@@ -8071,6 +8071,44 @@ int mglRenderPromoteMipmapped1DArray(uint32_t tex_type) {
     return tex_type == MGLTextureType1DArray ? 1 : 0;
 }
 
+int mglRenderCubeFaceSizeValid(uint64_t width, uint64_t height) {
+    return width == height ? 1 : 0;
+}
+
+int mglRenderTextureArrayDepthForType(uint32_t tex_type, int is_array,
+                                      int ms_emulated, uint64_t width,
+                                      uint64_t height, uint64_t depth,
+                                      uint64_t *array_out, uint64_t *depth_out) {
+    (void)width;
+    uint64_t array_len = 1u;
+    uint64_t d = 1u;
+    if (tex_type == MGLTextureTypeCube) {
+        d = 1u;
+    } else if (tex_type == MGLTextureTypeCubeArray) {
+        array_len = mglRenderExpectedArrayLayers(GL_TEXTURE_CUBE_MAP_ARRAY,
+                                                 (int32_t)depth);
+        d = 1u;
+    } else if (tex_type == MGLTextureType1DArray) {
+        array_len = height < 1u ? 1u : height;
+        d = 1u;
+    } else if (is_array && !ms_emulated) {
+        array_len = depth < 1u ? 1u : depth;
+        d = 1u;
+    } else if (!ms_emulated) {
+        array_len = 1u;
+        d = depth < 1u ? 1u : depth;
+    } else {
+        return 0;
+    }
+    if (array_out) {
+        *array_out = array_len;
+    }
+    if (depth_out) {
+        *depth_out = d;
+    }
+    return 1;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

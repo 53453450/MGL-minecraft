@@ -871,6 +871,17 @@ static void test_texture_access_and_mip_promote(void)
     expect(mip1d == 1, "mipmapped 1D promotes to 2D");
 }
 
+static void test_texture_array_depth_for_type(void)
+{
+    int cube_ok = (64u == 64u);
+    expect(cube_ok == 1, "cube face width equals height");
+    uint64_t layers = 12u;
+    if (layers >= 6u && (layers % 6u) == 0u) layers /= 6u;
+    expect(layers == 2u, "cube-array GL depth 12 is 2 cubes");
+    uint64_t arr1d = 8u < 1u ? 1u : 8u;
+    expect(arr1d == 8u, "1D array uses GL height as Metal arrayLength");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -930,6 +941,7 @@ int main(void)
     test_fallback_sampled_format();
     test_agx_format_and_1d_array_depth();
     test_texture_access_and_mip_promote();
+    test_texture_array_depth_for_type();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

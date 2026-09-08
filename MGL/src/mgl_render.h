@@ -1259,6 +1259,11 @@ int mglRenderTextureUsageForAccess(uint32_t gl_access, uint32_t *usage_out);
 int mglRenderPixelFormatNeedsShaderAtomic(uint32_t pixel_format);
 int mglRenderPromoteMipmapped1D(uint32_t tex_type);
 int mglRenderPromoteMipmapped1DArray(uint32_t tex_type);
+int mglRenderCubeFaceSizeValid(uint64_t width, uint64_t height);
+int mglRenderTextureArrayDepthForType(uint32_t tex_type, int is_array,
+                                      int ms_emulated, uint64_t width,
+                                      uint64_t height, uint64_t depth,
+                                      uint64_t *array_out, uint64_t *depth_out);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
