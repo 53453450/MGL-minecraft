@@ -8282,6 +8282,31 @@ int mglRenderShaderResourceTypeIsSamplerImage(uint32_t res_type) {
     }
 }
 
+const char *mglRenderShaderResourceTypeName(uint32_t res_type) {
+    switch (res_type) {
+    case _UNIFORM_BUFFER_RES:
+        return "uniform_buffer";
+    case _UNIFORM_CONSTANT_RES:
+        return "uniform_constant";
+    case _STORAGE_BUFFER_RES:
+        return "storage_buffer";
+    case _STAGE_INPUT_RES:
+        return "stage_input";
+    case _STAGE_OUTPUT_RES:
+        return "stage_output";
+    case _SAMPLED_IMAGE_RES:
+        return "sampled_image";
+    case _SEPARATE_IMAGE_RES:
+        return "separate_image";
+    case _SEPARATE_SAMPLERS_RES:
+        return "separate_sampler";
+    case _PUSH_CONSTANT_RES:
+        return "push_constant";
+    default:
+        return "resource";
+    }
+}
+
 int mglRenderSamplerNameLooksSamplerLike(const char *name) {
     return name && (std::strstr(name, "Sampler") != NULL ||
                     std::strcmp(name, "CloudFaces") == 0)

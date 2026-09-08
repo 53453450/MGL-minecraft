@@ -2077,6 +2077,30 @@ static void test_sampler_like_resource(void)
            "plain uniform is not sampler-like");
 }
 
+static const char *shader_res_type_name(uint32_t t)
+{
+    switch (t) {
+    case 1u: return "uniform_buffer";
+    case 2u: return "uniform_constant";
+    case 3u: return "storage_buffer";
+    case 4u: return "stage_input";
+    case 5u: return "stage_output";
+    case 8u: return "sampled_image";
+    case 11u: return "separate_image";
+    case 12u: return "separate_sampler";
+    case 10u: return "push_constant";
+    default: return "resource";
+    }
+}
+
+static void test_shader_resource_type_name(void)
+{
+    expect(strcmp(shader_res_type_name(1u), "uniform_buffer") == 0, "UBO type name");
+    expect(strcmp(shader_res_type_name(8u), "sampled_image") == 0, "sampled image type name");
+    expect(strcmp(shader_res_type_name(7u), "resource") == 0, "storage image falls back");
+    expect(strcmp(shader_res_type_name(10u), "push_constant") == 0, "push constant type name");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2227,6 +2251,7 @@ int main(void)
     test_compute_texture_bind_kind();
     test_pipeline_pass_format_mismatch();
     test_sampler_like_resource();
+    test_shader_resource_type_name();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
