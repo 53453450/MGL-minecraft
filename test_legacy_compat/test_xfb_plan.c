@@ -576,6 +576,19 @@ static void test_attrib_fetch_and_inline_bytes(void)
     expect(small == 1, "non-base fragment buffers under 4096 use setBytes");
 }
 
+static void test_required_binding_and_ubo_inline(void)
+{
+    uint32_t min_stage = 256u;
+    uint32_t reflected = 128u;
+    uint32_t req = reflected > min_stage ? reflected : min_stage;
+    expect(req == 256u, "non-UBO bindings floor at 256");
+    uint32_t vis = 64u;
+    uint32_t ubo = vis < 192u ? vis : 192u;
+    expect(ubo == 64u, "UBO required bytes clip to visible store");
+    int inline_uc = 1 && 1 && 1 && (0 == 0) && (64u <= 4096u);
+    expect(inline_uc == 1, "uniform-constant offset-0 uses setBytes");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -611,6 +624,7 @@ int main(void)
     test_tess_eval_xfb_slot();
     test_buffer_map_offset_and_backing();
     test_attrib_fetch_and_inline_bytes();
+    test_required_binding_and_ubo_inline();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

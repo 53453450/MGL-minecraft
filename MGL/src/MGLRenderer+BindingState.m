@@ -66,20 +66,10 @@ static uint32_t mglBindingStateTextureType(id texture)
 static NSUInteger mglRequiredBindingBytesForMap(const BufferMap *map,
                                                 NSUInteger reflectedRequiredBytes)
 {
-    if (map && map->resource_type == _UNIFORM_BUFFER_RES &&
-        reflectedRequiredBytes > 0) {
-        GLsizeiptr visible = mglBufferMapVisibleSize(map);
-        if (visible > 0 &&
-            (NSUInteger)visible < reflectedRequiredBytes) {
-            return (NSUInteger)visible;
-        }
-        return reflectedRequiredBytes;
-    }
-    NSUInteger required = kMGLMinimumStageBindingSize;
-    if (reflectedRequiredBytes > required) {
-        required = reflectedRequiredBytes;
-    }
-    return required;
+    GLsizeiptr vis = map ? mglBufferMapVisibleSize(map) : 0;
+    return (NSUInteger)mglRenderRequiredBindingBytesForMap(
+        map ? (int)map->resource_type : -1, (uint32_t)reflectedRequiredBytes,
+        (int64_t)vis, (uint32_t)kMGLMinimumStageBindingSize);
 }
 
 static uint64_t mglBindingStateTextureWidth(id texture)
@@ -716,11 +706,11 @@ static bool mglBindingStateFlushResourceBindings(
         }
 
 
-        if (isBaseBinding &&
-            map->resource_type == _UNIFORM_CONSTANT_RES &&
-            ptr->data.buffer_data &&
-            offset == 0 &&
-            requiredBindingBytes <= kMGLStageBindingStackScratchSize) {
+        if (mglRenderUseUniformConstantInline(
+                isBaseBinding ? 1 : 0, (int)map->resource_type,
+                ptr->data.buffer_data ? 1 : 0, offset,
+                (uint32_t)requiredBindingBytes,
+                kMGLStageBindingStackScratchSize)) {
             NSUInteger visibleBytes =
                 (NSUInteger)mglBufferMapVisibleBackingBytes(map, ptr->data.buffer_size);
             NSUInteger inlineLength = MAX(visibleBytes, requiredBindingBytes);
@@ -1902,11 +1892,11 @@ static bool mglBindingStateFlushResourceBindings(
             }
 
 
-            if (isBaseBinding &&
-                map->resource_type == _UNIFORM_CONSTANT_RES &&
-                ptr->data.buffer_data &&
-                offset == 0 &&
-                requiredBindingBytes <= kMGLStageBindingStackScratchSize) {
+            if (mglRenderUseUniformConstantInline(
+                    isBaseBinding ? 1 : 0, (int)map->resource_type,
+                    ptr->data.buffer_data ? 1 : 0, offset,
+                    (uint32_t)requiredBindingBytes,
+                    kMGLStageBindingStackScratchSize)) {
                 NSUInteger visibleBytes =
                     (NSUInteger)mglBufferMapVisibleBackingBytes(map, ptr->data.buffer_size);
                 NSUInteger inlineLength = MAX(visibleBytes, requiredBindingBytes);

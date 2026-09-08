@@ -16,6 +16,7 @@
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_draw_tess.h"
 
 enum {
     MGL_COMPUTE_TEXTURE_TYPE_CUBE = 5u,
@@ -345,23 +346,24 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
 
         NSUInteger requiredBytes =
             mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
-        if (map->resource_type == _ATOMIC_COUNTER_RES &&
-            requiredBytes < sizeof(uint32_t)) {
-            requiredBytes = sizeof(uint32_t);
-        }
+        requiredBytes = mglTessRequiredBindingBytes((int)map->resource_type,
+                                                    (uint32_t)requiredBytes);
 
         GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
         NSUInteger availableBytes = hasBufferInfo
             ? mglBufferMapVisibleBackingBytes(map, bufferInfo.length)
             : 0u;
-        BOOL needsIsolatedBinding =
-            !hasBufferInfo ||
-            storageRemaining <= 0 ||
-            bindOffset >= bufferInfo.length ||
-            availableBytes == 0 ||
-            (requiredBytes > 0 && availableBytes < requiredBytes);
-        if (needsIsolatedBinding) {
-            NSUInteger fallbackLength = MAX(requiredBytes, sizeof(uint32_t));
+        MGLTessIsolatedBindingPlan bindPlan = {0};
+        if (!mglTessPlanIsolatedBinding(
+                hasBufferInfo ? 1 : 0, (int64_t)bindOffset,
+                hasBufferInfo ? bufferInfo.length : 0u,
+                (int64_t)storageRemaining, (uint64_t)availableBytes,
+                (uint32_t)requiredBytes, (int)map->resource_type,
+                &bindPlan)) {
+            return false;
+        }
+        if (bindPlan.isolated) {
+            NSUInteger fallbackLength = bindPlan.fallback_length;
             id isolated =
                 [self isolatedStageBindingBufferForMap:map
                                                  source:buffer
@@ -376,10 +378,9 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                 return false;
             }
 
-            BOOL writableResource =
-                map->resource_type == _STORAGE_BUFFER_RES ||
-                map->resource_type == _ATOMIC_COUNTER_RES;
-            if (writableResource && buffer && availableBytes > 0 &&
+            if (mglTessIsolatedNeedsCopyBack(bindPlan.writable ? 1 : 0,
+                                             buffer ? 1 : 0,
+                                             bindPlan.init_length) &&
                 ![self recordStageBindingCopyBack:copyBacks
                                            atIndex:metalBindingIndex
                                          temporary:isolated

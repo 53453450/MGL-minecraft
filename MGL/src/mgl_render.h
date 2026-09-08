@@ -1197,6 +1197,13 @@ int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
 int mglRenderUseInlineFragmentBytes(int is_base_binding, int64_t size);
 int mglRenderCPUPointerLooksTagged(const void *p);
 int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size);
+uint32_t mglRenderRequiredBindingBytesForMap(int resource_type,
+                                             uint32_t reflected,
+                                             int64_t visible,
+                                             uint32_t min_stage);
+int mglRenderUseUniformConstantInline(int is_base, int resource_type,
+                                      int has_cpu, int64_t offset,
+                                      uint32_t required, uint32_t scratch);
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);

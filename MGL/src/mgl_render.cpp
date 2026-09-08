@@ -7724,6 +7724,28 @@ int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size) {
     return (uint64_t)offset < (uint64_t)size ? 1 : 0;
 }
 
+uint32_t mglRenderRequiredBindingBytesForMap(int resource_type,
+                                             uint32_t reflected,
+                                             int64_t visible,
+                                             uint32_t min_stage) {
+    if (resource_type == _UNIFORM_BUFFER_RES && reflected > 0u) {
+        if (visible > 0 && (uint64_t)visible < (uint64_t)reflected) {
+            return (uint32_t)visible;
+        }
+        return reflected;
+    }
+    return reflected > min_stage ? reflected : min_stage;
+}
+
+int mglRenderUseUniformConstantInline(int is_base, int resource_type,
+                                      int has_cpu, int64_t offset,
+                                      uint32_t required, uint32_t scratch) {
+    return is_base && resource_type == _UNIFORM_CONSTANT_RES && has_cpu &&
+                   offset == 0 && required <= scratch
+               ? 1
+               : 0;
+}
+
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
     return shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
                    shader_gl_type == GL_INT_VEC3 ||
