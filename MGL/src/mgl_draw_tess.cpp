@@ -928,7 +928,8 @@ extern "C" void mglXfbDecodeIntCarriersInBytes(void *bytes, uint64_t nbytes,
                 continue;
             }
             const MGLShaderResource *out_res =
-                mglProgramFindStageOutputForXFBName(program, stage, name);
+                mglProgramFindStageOutputForXFBName(
+                    const_cast<Program *>(program), stage, name);
             if (!out_res || out_res->gl_type == 0u) {
                 continue;
             }
@@ -2083,7 +2084,7 @@ extern "C" int mglTessMultiInstanceTCSReuseIsError(int from_tcs,
                                                    int32_t instance_count)
 {
     return mglTessMultiInstanceTCSReuseWarn(from_tcs, instance_count) &&
-           mglEnvFlagEnabled("MGL_TESS_MULTI_INSTANCE_ERROR");
+           mgl_env_flag_enabled("MGL_TESS_MULTI_INSTANCE_ERROR");
 }
 
 extern "C" int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
