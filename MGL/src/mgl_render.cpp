@@ -7657,10 +7657,135 @@ uint32_t mglRenderIntegerAttribConversionFormat(
     return static_cast<uint32_t>(MTL::VertexFormatInvalid);
 }
 
+extern "C" uint32_t mglRenderGLTypeSizeToVertexFormat(uint32_t type,
+                                                      uint32_t size,
+                                                      int normalized) {
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+            if (normalized) {
+                switch (size) {
+                    case 1u: return MGLVertexFormatUCharNormalized;
+                    case 2u: return MGLVertexFormatUChar2Normalized;
+                    case 3u: return MGLVertexFormatUChar3Normalized;
+                    case 4u: return MGLVertexFormatUChar4Normalized;
+                }
+            } else {
+                switch (size) {
+                    case 1u: return MGLVertexFormatUChar;
+                    case 2u: return MGLVertexFormatUChar2;
+                    case 3u: return MGLVertexFormatUChar3;
+                    case 4u: return MGLVertexFormatUChar4;
+                }
+            }
+            break;
+        case GL_BYTE:
+            if (normalized) {
+                switch (size) {
+                    case 1u: return MGLVertexFormatCharNormalized;
+                    case 2u: return MGLVertexFormatChar2Normalized;
+                    case 3u: return MGLVertexFormatChar3Normalized;
+                    case 4u: return MGLVertexFormatChar4Normalized;
+                }
+            } else {
+                switch (size) {
+                    case 1u: return MGLVertexFormatChar;
+                    case 2u: return MGLVertexFormatChar2;
+                    case 3u: return MGLVertexFormatChar3;
+                    case 4u: return MGLVertexFormatChar4;
+                }
+            }
+            break;
+        case GL_UNSIGNED_SHORT:
+            if (normalized) {
+                switch (size) {
+                    case 1u: return MGLVertexFormatUShortNormalized;
+                    case 2u: return MGLVertexFormatUShort2Normalized;
+                    case 3u: return MGLVertexFormatUShort3Normalized;
+                    case 4u: return MGLVertexFormatUShort4Normalized;
+                }
+            } else {
+                switch (size) {
+                    case 1u: return MGLVertexFormatUShort;
+                    case 2u: return MGLVertexFormatUShort2;
+                    case 3u: return MGLVertexFormatUShort3;
+                    case 4u: return MGLVertexFormatUShort4;
+                }
+            }
+            break;
+        case GL_SHORT:
+            if (normalized) {
+                switch (size) {
+                    case 1u: return MGLVertexFormatShortNormalized;
+                    case 2u: return MGLVertexFormatShort2Normalized;
+                    case 3u: return MGLVertexFormatShort3Normalized;
+                    case 4u: return MGLVertexFormatShort4Normalized;
+                }
+            } else {
+                switch (size) {
+                    case 1u: return MGLVertexFormatShort;
+                    case 2u: return MGLVertexFormatShort2;
+                    case 3u: return MGLVertexFormatShort3;
+                    case 4u: return MGLVertexFormatShort4;
+                }
+            }
+            break;
+        case GL_HALF_FLOAT:
+            switch (size) {
+                case 1u: return MGLVertexFormatHalf;
+                case 2u: return MGLVertexFormatHalf2;
+                case 3u: return MGLVertexFormatHalf3;
+                case 4u: return MGLVertexFormatHalf4;
+            }
+            break;
+        case GL_FLOAT:
+            switch (size) {
+                case 1u: return MGLVertexFormatFloat;
+                case 2u: return MGLVertexFormatFloat2;
+                case 3u: return MGLVertexFormatFloat3;
+                case 4u: return MGLVertexFormatFloat4;
+            }
+            break;
+        case GL_INT:
+            switch (size) {
+                case 1u: return MGLVertexFormatInt;
+                case 2u: return MGLVertexFormatInt2;
+                case 3u: return MGLVertexFormatInt3;
+                case 4u: return MGLVertexFormatInt4;
+            }
+            break;
+        case GL_UNSIGNED_INT:
+            switch (size) {
+                case 1u: return MGLVertexFormatUInt;
+                case 2u: return MGLVertexFormatUInt2;
+                case 3u: return MGLVertexFormatUInt3;
+                case 4u: return MGLVertexFormatUInt4;
+            }
+            break;
+        case GL_RGB10:
+        case GL_INT_2_10_10_10_REV:
+            if (normalized) {
+                return MGLVertexFormatInt1010102Normalized;
+            }
+            break;
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+            if (normalized) {
+                return MGLVertexFormatUInt1010102Normalized;
+            }
+            break;
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_FIXED:
+            break;
+        default:
+            break;
+    }
+    return MGLVertexFormatInvalid;
+}
+
 extern "C" void mglRenderPlanVertexAttribFormat(
     uint32_t type, uint32_t size, int integer, int normalized,
     int is_color_input, uint32_t shader_gl_type, uint32_t *format_out,
-    int *needs_conversion_out, int *normalized_out, int *use_generic_out) {
+    int *needs_conversion_out, int *normalized_out, int *conversion_kind_out) {
     int norm = normalized;
     if (!norm && type == GL_UNSIGNED_BYTE && size == 4u && is_color_input) {
         norm = 1;
@@ -7668,46 +7793,42 @@ extern "C" void mglRenderPlanVertexAttribFormat(
     if (normalized_out) {
         *normalized_out = norm;
     }
-    if (needs_conversion_out) {
-        *needs_conversion_out = 0;
-    }
-    if (use_generic_out) {
-        *use_generic_out = 0;
-    }
-    if (format_out) {
-        *format_out = 0u;
-    }
     uint32_t format = 0u;
     int needs_conversion = 0;
-    int use_generic = 0;
+    int kind = MGL_ATTRIB_CONV_NONE;
     if (type == GL_DOUBLE) {
         needs_conversion = 1;
+        kind = MGL_ATTRIB_CONV_DOUBLE;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
     } else if (integer == 0 &&
                (type == GL_INT || type == GL_UNSIGNED_INT)) {
         needs_conversion = 1;
+        kind = MGL_ATTRIB_CONV_INT_TO_FLOAT;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
     } else if (type == GL_FIXED) {
         needs_conversion = 1;
+        kind = MGL_ATTRIB_CONV_FIXED;
         format = mglRenderDoubleVertexAttribFloatFormat(size);
     } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
         needs_conversion = 1;
+        kind = MGL_ATTRIB_CONV_UINT_1010102;
         format = mglRenderDoubleVertexAttribFloatFormat(4u);
     } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
         needs_conversion = 1;
+        kind = MGL_ATTRIB_CONV_UINT_10F11F11F;
         format = mglRenderDoubleVertexAttribFloatFormat(3u);
     } else if (integer == 1) {
         const uint32_t converted = mglRenderIntegerAttribConversionFormat(
             type, shader_gl_type, size);
-        if (converted != 0u &&
-            converted != static_cast<uint32_t>(MTL::VertexFormatInvalid)) {
+        if (converted != 0u && converted != MGLVertexFormatInvalid) {
             needs_conversion = 1;
+            kind = MGL_ATTRIB_CONV_INTEGER_SIGN;
             format = converted;
         } else {
-            use_generic = 1;
+            format = mglRenderGLTypeSizeToVertexFormat(type, size, norm);
         }
     } else {
-        use_generic = 1;
+        format = mglRenderGLTypeSizeToVertexFormat(type, size, norm);
     }
     if (format_out) {
         *format_out = format;
@@ -7715,8 +7836,8 @@ extern "C" void mglRenderPlanVertexAttribFormat(
     if (needs_conversion_out) {
         *needs_conversion_out = needs_conversion;
     }
-    if (use_generic_out) {
-        *use_generic_out = use_generic;
+    if (conversion_kind_out) {
+        *conversion_kind_out = kind;
     }
 }
 

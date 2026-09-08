@@ -1179,12 +1179,26 @@ uint32_t mglRenderIntegerAttribConversionFormat(
     uint64_t shader_gl_type,
     uint32_t size);
 
+enum {
+    MGL_ATTRIB_CONV_NONE = 0,
+    MGL_ATTRIB_CONV_DOUBLE = 1,
+    MGL_ATTRIB_CONV_INT_TO_FLOAT = 2,
+    MGL_ATTRIB_CONV_FIXED = 3,
+    MGL_ATTRIB_CONV_UINT_1010102 = 4,
+    MGL_ATTRIB_CONV_UINT_10F11F11F = 5,
+    MGL_ATTRIB_CONV_INTEGER_SIGN = 6,
+};
+
+uint32_t mglRenderGLTypeSizeToVertexFormat(uint32_t type, uint32_t size,
+                                           int normalized);
+
 void mglRenderPlanVertexAttribFormat(uint32_t type, uint32_t size, int integer,
                                      int normalized, int is_color_input,
                                      uint32_t shader_gl_type,
                                      uint32_t *format_out,
                                      int *needs_conversion_out,
-                                     int *normalized_out, int *use_generic_out);
+                                     int *normalized_out,
+                                     int *conversion_kind_out);
 
 uint32_t mglRenderPlanVertexAttribStride(
     uint32_t type, uint32_t size, int integer, int uses_current,

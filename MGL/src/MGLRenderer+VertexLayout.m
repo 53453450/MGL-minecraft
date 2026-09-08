@@ -99,19 +99,15 @@
             uint32_t format = 0u;
             int needsConversion = 0;
             int effectiveNormalized = 0;
-            int useGeneric = 0;
+            int conversionKind = 0;
             mglRenderPlanVertexAttribFormat(
                 (uint32_t)vao->attrib[i].type, (uint32_t)vao->attrib[i].size,
                 vao->attrib[i].integer ? 1 : 0,
                 vao->attrib[i].normalized ? 1 : 0,
                 mglRendererVertexAttribIsColorInput(activeProgram, i) ? 1 : 0,
                 (uint32_t)shaderGlType, &format, &needsConversion,
-                &effectiveNormalized, &useGeneric);
-            if (useGeneric) {
-                format = glTypeSizeToMtlType(vao->attrib[i].type,
-                                             vao->attrib[i].size,
-                                             effectiveNormalized != 0);
-            }
+                &effectiveNormalized, &conversionKind);
+            (void)effectiveNormalized;
 
             if (format == 0u)
             {
@@ -138,8 +134,7 @@
             uint32_t stride = mglRenderPlanVertexAttribStride(
                 (uint32_t)vao->attrib[i].type, (uint32_t)vao->attrib[i].size,
                 vao->attrib[i].integer ? 1 : 0, usesCurrentValue ? 1 : 0,
-                (vao->attrib[i].integer && needsConversion && !useGeneric) ? 1
-                                                                          : 0,
+                conversionKind == MGL_ATTRIB_CONV_INTEGER_SIGN ? 1 : 0,
                 (uint32_t)resolved.stride,
                 (uint32_t)layoutStride[mapped_buffer_index]);
             layoutStride[mapped_buffer_index] = stride;

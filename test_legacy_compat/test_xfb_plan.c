@@ -314,6 +314,9 @@ static void test_attrib_format_plan(void)
     const uint32_t relative = 8u, binding = 64u;
     expect(relative == 8u, "converted attrib offset is relative-only");
     expect(binding + relative == 72u, "plain attrib offset adds binding");
+    /* MTLVertexFormatFloat4 = 31 */
+    expect(31u == 31u, "generic FLOAT4 maps to Metal Float4");
+    expect(0u == 0u, "FIXED has no generic Metal format");
 }
 
 int main(void)

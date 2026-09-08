@@ -1227,46 +1227,30 @@ static bool mglBindingStateFlushResourceBindings(
                   resolved.uses_binding_table ? 1 : 0);
         }
 
-        bool needsIntToFloatConversion = (attribState->integer == 0 &&
-                                          (attribState->type == GL_INT ||
-                                           attribState->type == GL_UNSIGNED_INT));
+        MGLShaderResource *attrRes =
+            mglRendererProgramVertexAttribResource(activeProgram, attrib);
+        GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
+        uint32_t plannedFormat = 0u;
+        int needsConversion = 0;
+        int effectiveNormalized = 0;
+        int conversionKind = MGL_ATTRIB_CONV_NONE;
+        mglRenderPlanVertexAttribFormat(
+            (uint32_t)attribState->type, (uint32_t)attribState->size,
+            attribState->integer ? 1 : 0, attribState->normalized ? 1 : 0,
+            mglRendererVertexAttribIsColorInput(activeProgram, attrib) ? 1 : 0,
+            (uint32_t)shaderGlType, &plannedFormat, &needsConversion,
+            &effectiveNormalized, &conversionKind);
+        (void)needsConversion;
+        BOOL integerConvDstIsInt =
+            shaderGlType == GL_INT || shaderGlType == GL_INT_VEC2 ||
+            shaderGlType == GL_INT_VEC3 || shaderGlType == GL_INT_VEC4;
 
-        /* GL_FIXED / GL_UNSIGNED_INT_10_10_10_2 / GL_UNSIGNED_INT_10F_11F_11F_REV
-         * have no direct Metal vertex format (see glTypeSizeToMtlType). They
-         * are unpacked to float on the CPU, mirroring the GL_DOUBLE path. */
-        bool needsPackedConversion = (attribState->type == GL_FIXED ||
-                                      attribState->type == GL_UNSIGNED_INT_10_10_10_2 ||
-                                      attribState->type == GL_UNSIGNED_INT_10F_11F_11F_REV);
-
-        /* glVertexAttribIFormat (integer==1): detect signedness mismatch
-         * between source type and shader's declared int/uint input. Metal
-         * rejects e.g. UChar/UShort/UInt feeding `int` shader inputs (and
-         * signed sources feeding `uint` inputs). When mismatched, convert
-         * the data on the CPU to the shader's 32-bit integer type. */
-        bool needsIntegerConversion = false;
-        BOOL integerConvDstIsInt = NO;
-        if (attribState->integer == 1 && attribState->type != GL_DOUBLE) {
-            MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, attrib);
-            GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
-            uint32_t ignored = MGL_BINDING_VERTEX_FORMAT_INVALID;
-            if (mglIntegerAttribNeedsConversion(attribState->type,
-                                                shaderGlType,
-                                                attribState->size,
-                                                &ignored)) {
-                needsIntegerConversion = true;
-                integerConvDstIsInt = (shaderGlType == GL_INT ||
-                                       shaderGlType == GL_INT_VEC2 ||
-                                       shaderGlType == GL_INT_VEC3 ||
-                                       shaderGlType == GL_INT_VEC4);
-            }
-        }
-
-        if (attribState->type != GL_DOUBLE && !needsIntToFloatConversion &&
-            !needsIntegerConversion && !needsPackedConversion && anyBindingPresent[bindingIndex]) {
+        if (conversionKind == MGL_ATTRIB_CONV_NONE &&
+            anyBindingPresent[bindingIndex]) {
             continue;
         }
 
-        if (attribState->type == GL_DOUBLE) {
+        if (conversionKind == MGL_ATTRIB_CONV_DOUBLE) {
             NSUInteger convertedStride = 0;
             id convertedBuffer = [self floatVertexBufferForDoubleAttrib:attribBuffer
                                                                           resolved:&resolved
@@ -1299,7 +1283,7 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (needsIntToFloatConversion) {
+        if (conversionKind == MGL_ATTRIB_CONV_INT_TO_FLOAT) {
             NSUInteger convertedStride = 0;
             id convertedBuffer = [self floatVertexBufferForIntAttrib:attribBuffer
                                                                         resolved:&resolved
@@ -1334,15 +1318,17 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (needsPackedConversion) {
+        if (conversionKind == MGL_ATTRIB_CONV_FIXED ||
+            conversionKind == MGL_ATTRIB_CONV_UINT_1010102 ||
+            conversionKind == MGL_ATTRIB_CONV_UINT_10F11F11F) {
             NSUInteger convertedStride = 0;
             id convertedBuffer = nil;
-            if (attribState->type == GL_FIXED) {
+            if (conversionKind == MGL_ATTRIB_CONV_FIXED) {
                 convertedBuffer = [self floatVertexBufferForFixedAttrib:attribBuffer
                                                                resolved:&resolved
                                                                    size:attribState->size
                                                               outStride:&convertedStride];
-            } else if (attribState->type == GL_UNSIGNED_INT_10_10_10_2) {
+            } else if (conversionKind == MGL_ATTRIB_CONV_UINT_1010102) {
                 convertedBuffer = [self floatVertexBufferForPacked1010102Attrib:attribBuffer
                                                                         resolved:&resolved
                                                                        outStride:&convertedStride];
@@ -1377,7 +1363,7 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (needsIntegerConversion) {
+        if (conversionKind == MGL_ATTRIB_CONV_INTEGER_SIGN) {
             NSUInteger convertedStride = 0;
             id convertedBuffer = [self integerVertexBufferForAttrib:attribBuffer
                                                                        resolved:&resolved
@@ -1471,16 +1457,13 @@ static bool mglBindingStateFlushResourceBindings(
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileVertexAttribBindLogs)) {
                 MGLShaderResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
-                GLboolean effectiveNormalized = attribState->normalized;
-                if (!effectiveNormalized &&
-                    attribState->type == GL_UNSIGNED_BYTE &&
-                    attribState->size == 4 &&
-                    mglRendererVertexAttribIsColorInput(activeProgram, attrib)) {
-                    effectiveNormalized = GL_TRUE;
+                GLboolean effectiveNormalizedLog = effectiveNormalized != 0;
+                uint32_t format = plannedFormat;
+                if (format == 0u) {
+                    format = glTypeSizeToMtlType(attribState->type,
+                                                 attribState->size,
+                                                 effectiveNormalizedLog);
                 }
-                uint32_t format = glTypeSizeToMtlType(attribState->type,
-                                                             attribState->size,
-                                                             effectiveNormalized);
                 mglTraceLog("VATTR_BIND program=%u attrib=%u resource=%s loc=%u metalSlot=%lu glBuffer=%u bindingIndex=%u bindingOffset=%lu relOffset=%lld stride=%u size=%u type=0x%x normalized=%u/%u divisor=%u table=%d metalLen=%lu format=%lu(%s)",
                             activeProgram ? (unsigned)activeProgram->name : 0u,
                             (unsigned)attrib,
