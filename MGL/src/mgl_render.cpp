@@ -9220,6 +9220,12 @@ int mglRenderPixelFormatIsPackedDepthStencil(uint32_t pixel_format) {
                : 0;
 }
 
+uint32_t mglRenderDepthBlitStencilFormat(uint32_t pixel_format) {
+    return mglRenderPixelFormatIsPackedDepthStencil(pixel_format)
+               ? pixel_format
+               : 0u;
+}
+
 uint32_t mglRenderStencilViewFormat(uint32_t parent_format) {
     return parent_format == 255u /* Depth24Unorm_Stencil8 */
                ? 262u /* X24_Stencil8 */

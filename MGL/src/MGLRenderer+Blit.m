@@ -663,9 +663,7 @@ static id mglLookupAuxRenderPipeline(
         return nil;
     }
 
-    uint32_t stencilFormat =
-        mglMetalPixelFormatIsPackedDepthStencil(pixelFormat)
-            ? pixelFormat : MGLPixelFormatInvalid;
+    uint32_t stencilFormat = mglRenderDepthBlitStencilFormat(pixelFormat);
     uint64_t variant = ((uint64_t)pixelFormat << 1) |
                        (!mglRenderPixelFormatIsInvalid(stencilFormat) ? 1u : 0u);
     id cached =
@@ -855,7 +853,8 @@ static id mglLookupAuxRenderPipeline(
 {
     if (!sourceTexture ||
         mglBlitTextureInfo(sourceTexture).sample_count > 1u ||
-        !mglMetalPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(sourceTexture).pixel_format)) {
+        !mglRenderPixelFormatIsPackedDepthStencil(
+            (uint32_t)mglBlitTextureInfo(sourceTexture).pixel_format)) {
         return sourceTexture;
     }
 
@@ -1714,7 +1713,7 @@ static id mglLookupAuxRenderPipeline(
                         resolvedAny = YES;
                     }
                     if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
-                        mglMetalPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
+                        mglRenderPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
                         resolvedAny = YES;
                     }
 
@@ -1736,8 +1735,8 @@ static id mglLookupAuxRenderPipeline(
                                 (uint32_t)MGLMultisampleDepthResolveFilterSample0;
                         }
                         if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
-                            mglMetalPixelFormatIsPackedDepthStencil(
-                                mglBlitTextureInfo(depthReadTexture).pixel_format)) {
+                            mglRenderPixelFormatIsPackedDepthStencil(
+                                (uint32_t)mglBlitTextureInfo(depthReadTexture).pixel_format)) {
                             resolveState.stencil.attachment =
                                 mglBlitRenderPassAttachment(
                                     depthReadTexture, 0u,
@@ -1761,7 +1760,7 @@ static id mglLookupAuxRenderPipeline(
                                 mask = (GLbitfield)mglRenderClearMaskClearDepth((uint32_t)mask);
                             }
                             if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
-                                mglMetalPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
+                                mglRenderPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
                                 mask = (GLbitfield)mglRenderClearMaskClearStencil((uint32_t)mask);
                             }
                         }
@@ -1883,7 +1882,7 @@ static id mglLookupAuxRenderPipeline(
                                  * attachment to the same texture so Metal preserves the
                                  * stencil component during the render pass. */
                                 BOOL isPackedDepthStencil =
-                                    mglMetalPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthDrawTexture).pixel_format);
+                                    mglRenderPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthDrawTexture).pixel_format);
 
                                 MGLRenderPassState scaledDepthState =
                                     mglBlitDefaultRenderPassState();

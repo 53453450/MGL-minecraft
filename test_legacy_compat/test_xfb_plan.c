@@ -1994,6 +1994,21 @@ static void test_invalid_format_skip(void)
     expect(clear_rect_ready(1, 80u, 1, 252u) == 1, "valid color+depth clear is ready");
 }
 
+static uint32_t depth_blit_stencil_fmt(uint32_t f)
+{
+    return (f == 255u || f == 260u) ? f : 0u;
+}
+
+static void test_depth_blit_stencil_format(void)
+{
+    expect(depth_blit_stencil_fmt(260u) == 260u,
+           "packed D32F_S8 blit uses same texture as stencil");
+    expect(depth_blit_stencil_fmt(255u) == 255u,
+           "packed Depth24_S8 blit uses same texture as stencil");
+    expect(depth_blit_stencil_fmt(252u) == 0u,
+           "Depth32F blit has no stencil attachment");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2140,6 +2155,7 @@ int main(void)
     test_default_color_and_pipeline_compat();
     test_texbuffer_format();
     test_invalid_format_skip();
+    test_depth_blit_stencil_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
