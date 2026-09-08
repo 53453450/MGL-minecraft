@@ -85,31 +85,7 @@ typedef NS_ENUM(uint32_t, MGLStubFSValueClass) {
 
 static MGLStubFSValueClass mglPixelFormatValueClass(uint32_t fmt)
 {
-    switch (fmt) {
-        case MGLPixelFormatR8Sint:
-        case MGLPixelFormatR16Sint:
-        case MGLPixelFormatRG8Sint:
-        case MGLPixelFormatR32Sint:
-        case MGLPixelFormatRG16Sint:
-        case MGLPixelFormatRGBA8Sint:
-        case MGLPixelFormatRG32Sint:
-        case MGLPixelFormatRGBA16Sint:
-        case MGLPixelFormatRGBA32Sint:
-            return MGLStubFSInt;
-        case MGLPixelFormatR8Uint:
-        case MGLPixelFormatR16Uint:
-        case MGLPixelFormatRG8Uint:
-        case MGLPixelFormatR32Uint:
-        case MGLPixelFormatRG16Uint:
-        case MGLPixelFormatRGBA8Uint:
-        case MGLPixelFormatRGB10A2Uint:
-        case MGLPixelFormatRG32Uint:
-        case MGLPixelFormatRGBA16Uint:
-        case MGLPixelFormatRGBA32Uint:
-            return MGLStubFSUint;
-        default:
-            return MGLStubFSFloat;
-    }
+    return (MGLStubFSValueClass)mglRenderMetalPixelFormatValueClass(fmt);
 }
 
 static id mglRasterizerDiscardStubFragmentFunctionForClass(

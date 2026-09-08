@@ -9145,6 +9145,34 @@ uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format) {
     }
 }
 
+uint32_t mglRenderMetalPixelFormatValueClass(uint32_t pixel_format) {
+    switch (pixel_format) {
+    case 14u:  /* MGLPixelFormatR8Sint */
+    case 24u:  /* MGLPixelFormatR16Sint */
+    case 34u:  /* MGLPixelFormatRG8Sint */
+    case 54u:  /* MGLPixelFormatR32Sint */
+    case 64u:  /* MGLPixelFormatRG16Sint */
+    case 74u:  /* MGLPixelFormatRGBA8Sint */
+    case 104u: /* MGLPixelFormatRG32Sint */
+    case 114u: /* MGLPixelFormatRGBA16Sint */
+    case 124u: /* MGLPixelFormatRGBA32Sint */
+        return 1u; /* int */
+    case 13u:  /* MGLPixelFormatR8Uint */
+    case 23u:  /* MGLPixelFormatR16Uint */
+    case 33u:  /* MGLPixelFormatRG8Uint */
+    case 53u:  /* MGLPixelFormatR32Uint */
+    case 63u:  /* MGLPixelFormatRG16Uint */
+    case 73u:  /* MGLPixelFormatRGBA8Uint */
+    case 91u:  /* MGLPixelFormatRGB10A2Uint */
+    case 103u: /* MGLPixelFormatRG32Uint */
+    case 113u: /* MGLPixelFormatRGBA16Uint */
+    case 123u: /* MGLPixelFormatRGBA32Uint */
+        return 2u; /* uint */
+    default:
+        return 0u; /* float */
+    }
+}
+
 int mglRenderSamplerUnitExplicit(uint32_t flag) {
     return flag == GL_TRUE ? 1 : 0;
 }

@@ -1394,6 +1394,7 @@ int mglRenderIsSmallRGBA8(uint32_t width, uint32_t height, uint32_t internalform
 uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
                                                  int *known);
 uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format);
+uint32_t mglRenderMetalPixelFormatValueClass(uint32_t pixel_format);
 int mglRenderSamplerUnitExplicit(uint32_t flag);
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
 int mglRenderTextureTargetIs1D(uint32_t target);

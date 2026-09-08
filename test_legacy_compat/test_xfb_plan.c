@@ -1738,6 +1738,45 @@ static void test_metal_pixel_format_bpp(void)
     expect(metal_pixel_bpp(0u) == 4u, "unknown Metal pixel format fill uses 4 bpp");
 }
 
+static uint32_t metal_pixel_value_class(uint32_t fmt)
+{
+    switch (fmt) {
+    case 14u:
+    case 24u:
+    case 34u:
+    case 54u:
+    case 64u:
+    case 74u:
+    case 104u:
+    case 114u:
+    case 124u:
+        return 1u;
+    case 13u:
+    case 23u:
+    case 33u:
+    case 53u:
+    case 63u:
+    case 73u:
+    case 91u:
+    case 103u:
+    case 113u:
+    case 123u:
+        return 2u;
+    default:
+        return 0u;
+    }
+}
+
+static void test_metal_pixel_format_value_class(void)
+{
+    expect(metal_pixel_value_class(14u) == 1u, "R8Sint stub FS is int");
+    expect(metal_pixel_value_class(124u) == 1u, "RGBA32Sint stub FS is int");
+    expect(metal_pixel_value_class(13u) == 2u, "R8Uint stub FS is uint");
+    expect(metal_pixel_value_class(91u) == 2u, "RGB10A2Uint stub FS is uint");
+    expect(metal_pixel_value_class(70u) == 0u, "RGBA8Unorm stub FS is float");
+    expect(metal_pixel_value_class(0u) == 0u, "unknown format stub FS is float");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1873,6 +1912,7 @@ int main(void)
     test_gl_boolean_and_level_written();
     test_batch_replay_error_none();
     test_metal_pixel_format_bpp();
+    test_metal_pixel_format_value_class();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
