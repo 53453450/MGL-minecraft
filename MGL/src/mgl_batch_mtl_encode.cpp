@@ -743,3 +743,33 @@ extern "C" int mgl_batch_mtl_encode_resolved_samplers(
                                                req_count);
 }
 
+extern "C" int mgl_batch_mtl_apply_sampler_snapshot(
+    const MGLBatchSamplerSnapshotApplyOps *ops)
+{
+    if (!ops || !ops->resolve_entry) {
+        return 0;
+    }
+    if (ops->entry_count > MGL_BATCH_MTL_SAMPLER_SNAPSHOT_MAX) {
+        return 0;
+    }
+    MGLBatchResolvedSamplerBind items[MGL_BATCH_MTL_SAMPLER_SNAPSHOT_MAX];
+    uint32_t n = 0u;
+    for (uint32_t i = 0; i < ops->entry_count; i++) {
+        MGLBatchResolvedSamplerBind bind;
+        memset(&bind, 0, sizeof(bind));
+        if (!ops->resolve_entry(ops->ctx, i, &bind) || !bind.sampler) {
+            return 0;
+        }
+        if (!mgl_batch_replay_sampler_slot_ok(bind.metal_slot,
+                                              ops->max_sampler_slots)) {
+            return 0;
+        }
+        if (ops->after_resolved) {
+            ops->after_resolved(ops->ctx, i, &bind);
+        }
+        items[n++] = bind;
+    }
+    return mgl_batch_mtl_encode_resolved_samplers(
+        ops->binding_state_owner, ops->render_encoder_owner, items, n);
+}
+

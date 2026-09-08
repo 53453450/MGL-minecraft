@@ -18,10 +18,8 @@
 #import "mgl_frame_activity.h"
 #import "mgl_sampler_compat.h"
 #include "mgl_render.h"
-
-
-
-
+#include "mgl_batch_issue.h"
+#include "mgl_batch_restore.h"
 
 @implementation MGLRenderer (Batch)
 
@@ -49,44 +47,29 @@
     [self markCurrentFramebufferDrawAttachmentsWritten];
 }
 
+typedef struct { __unsafe_unretained MGLRenderer *r; GLMContext glm; } ActTexCtx;
+static int actBindUnit(void *v, uint32_t unit, int *stale_out)
+{
+    ActTexCtx *c = v; Texture *tex = MGL_STATE(c->glm)->active_textures[unit];
+    if (!tex) { if (stale_out) *stale_out = 1; return 0; }
+    if (stale_out) *stale_out = 0;
+    return [c->r bindMTLTexture:tex] ? 1 : 0;
+}
+static void actClearStale(void *v, uint32_t word, uint32_t bit)
+{
+    ActTexCtx *c = v;
+    MGL_STATE(c->glm)->active_texture_mask[word] &= ~(1u << bit);
+    mglInvalidateStateHashCachesForDirtyBits(c->glm->active_state, DIRTY_TEX_BINDING);
+}
+
 - (bool)bindActiveTexturesToMTL
 {
-    // search through active_texture_mask for enabled bits
-    // 128 bits long.. do it on 4 parts
-    for(int i=0; i<4; i++)
-    {
-        unsigned mask = MGL_STATE(ctx)->active_texture_mask[i];
-
-        if (mask)
-        {
-            for(int bitpos=0; bitpos<32; bitpos++)
-            {
-                if (mask & (0x1 << bitpos))
-                {
-                    Texture *tex;
-                    int unit = i * 32 + bitpos;
-
-                    tex = MGL_STATE(ctx)->active_textures[unit];
-                    if (!tex)
-                    {
-                        // Stale active texture mask bit; clear it and continue.
-                        MGL_STATE(ctx)->active_texture_mask[i] &= ~(0x1u << bitpos);
-                        mglInvalidateStateHashCachesForDirtyBits(ctx->active_state,
-                                                                DIRTY_TEX_BINDING);
-                        continue;
-                    }
-
-                    RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
-                }
-
-                // early out
-                if ((mask >> (bitpos + 1)) == 0)
-                    break;
-            }
-        }
-    }
-
-    return true;
+    ActTexCtx c = {.r = self, .glm = ctx};
+    MGLBatchActiveTexBindOps ops = {
+        .ctx = &c, .mask4 = MGL_STATE(ctx)->active_texture_mask,
+        .bind_unit = actBindUnit, .clear_stale = actClearStale,
+    };
+    return mgl_batch_bind_active_textures(&ops) ? true : false;
 }
 
 - (void)invalidateLastBoundState
@@ -209,51 +192,50 @@
     return true;
 }
 
+typedef struct { GLMContext glm; } KeyRestCtx;
+static void keyRestProg(void *v, uint32_t prog, uint32_t pipe)
+{ mglRestoreProgramPipelinePair(((KeyRestCtx *)v)->glm, prog, pipe); }
+static void keyRestVao(void *v, uint32_t name)
+{
+    GLMContext glm = ((KeyRestCtx *)v)->glm;
+    if (name == (MGL_STATE(glm)->vao ? MGL_STATE(glm)->vao->name : 0)) return;
+    MGL_STATE(glm)->vao = name
+        ? (VertexArray *)searchHashTable(&MGL_STATE(glm)->vao_table, name) : NULL;
+}
+static void keyRestFbo(void *v, uint32_t name)
+{
+    GLMContext glm = ((KeyRestCtx *)v)->glm;
+    uint32_t cur = MGL_STATE(glm)->framebuffer ? MGL_STATE(glm)->framebuffer->name : 0;
+    if (name == cur) return;
+    MGL_STATE(glm)->framebuffer = name
+        ? (Framebuffer *)searchHashTable(&MGL_STATE(glm)->framebuffer_table, name) : NULL;
+}
+static void keyRestSync(void *v) { mglRendererSyncFramebufferBindingNames(((KeyRestCtx *)v)->glm); }
+static void keyRestVpSc(void *v, const int32_t vp[4], int sc_en, const int32_t sc[4])
+{
+    GLMContext glm = ((KeyRestCtx *)v)->glm;
+    for (int i = 0; i < 4; i++) MGL_STATE(glm)->viewport[i] = vp[i];
+    if (sc_en) {
+        MGL_STATE(glm)->caps.scissor_test = true;
+        for (int i = 0; i < 4; i++) MGL_STATE(glm)->var.scissor_box[i] = sc[i];
+    } else {
+        MGL_STATE(glm)->caps.scissor_test = false;
+    }
+}
+
 - (void)restoreStateFromKey:(const MGLStateKey *)key context:(GLMContext)glm_ctx
 {
-    /* Program */
-    mglRestoreProgramPipelinePair(glm_ctx,
-                                  key->program_name,
-                                  key->program_pipeline_name);
-
-    /* VAO */
-    uint32_t vaoName = key->vao_name;
-    if (vaoName != (MGL_STATE(glm_ctx)->vao ? MGL_STATE(glm_ctx)->vao->name : 0)) {
-        VertexArray *vaoInst = NULL;
-        if (vaoName != 0) {
-            vaoInst = (VertexArray *)searchHashTable(&MGL_STATE(glm_ctx)->vao_table, vaoName);
-        }
-        MGL_STATE(glm_ctx)->vao = vaoInst;
-    }
-
-    /* FBO */
-    uint32_t batchFBO = key->fbo_name;
-    uint32_t currentFBO = MGL_STATE(glm_ctx)->framebuffer ? MGL_STATE(glm_ctx)->framebuffer->name : 0;
-    if (batchFBO != currentFBO) {
-        Framebuffer *fbo = NULL;
-        if (batchFBO != 0) {
-            fbo = (Framebuffer *)searchHashTable(&MGL_STATE(glm_ctx)->framebuffer_table, batchFBO);
-        }
-        MGL_STATE(glm_ctx)->framebuffer = fbo;
-    }
-    mglRendererSyncFramebufferBindingNames(glm_ctx);
-
-    /* Viewport */
-    MGL_STATE(glm_ctx)->viewport[0] = key->viewport[0];
-    MGL_STATE(glm_ctx)->viewport[1] = key->viewport[1];
-    MGL_STATE(glm_ctx)->viewport[2] = key->viewport[2];
-    MGL_STATE(glm_ctx)->viewport[3] = key->viewport[3];
-
-    /* Scissor */
-    if (key->scissor_enabled) {
-        MGL_STATE(glm_ctx)->caps.scissor_test = true;
-        MGL_STATE(glm_ctx)->var.scissor_box[0] = key->scissor[0];
-        MGL_STATE(glm_ctx)->var.scissor_box[1] = key->scissor[1];
-        MGL_STATE(glm_ctx)->var.scissor_box[2] = key->scissor[2];
-        MGL_STATE(glm_ctx)->var.scissor_box[3] = key->scissor[3];
-    } else {
-        MGL_STATE(glm_ctx)->caps.scissor_test = false;
-    }
+    KeyRestCtx c = {.glm = glm_ctx};
+    MGLBatchRestoreFromKeyOps ops = {
+        .ctx = &c, .program_name = key->program_name,
+        .program_pipeline_name = key->program_pipeline_name,
+        .vao_name = key->vao_name, .fbo_name = key->fbo_name,
+        .scissor_enabled = key->scissor_enabled,
+        .restore_program = keyRestProg, .set_vao = keyRestVao, .set_fbo = keyRestFbo,
+        .sync_fbo_names = keyRestSync, .apply_viewport_scissor = keyRestVpSc,
+    };
+    for (int i = 0; i < 4; i++) { ops.viewport[i] = key->viewport[i]; ops.scissor[i] = key->scissor[i]; }
+    mgl_batch_restore_apply_from_key(&ops);
 }
 
 - (void)flushDrawBuffer:(GLMContext)glm_ctx

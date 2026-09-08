@@ -149,6 +149,26 @@ uint32_t mgl_batch_restore_plan_delta_dirty(
     const MGLBatchStateKeyView *cur, uint32_t full_bits,
     MGLBatchDirtyDeltaFlags *flags_out);
 
+/* restoreStateFromKey orchestration (lookups stay in ObjC callbacks). */
+typedef struct MGLBatchRestoreFromKeyOps {
+    void *ctx;
+    uint32_t program_name;
+    uint32_t program_pipeline_name;
+    uint32_t vao_name;
+    uint32_t fbo_name;
+    int32_t viewport[4];
+    uint8_t scissor_enabled;
+    int32_t scissor[4];
+    void (*restore_program)(void *ctx, uint32_t program, uint32_t pipeline);
+    void (*set_vao)(void *ctx, uint32_t name);
+    void (*set_fbo)(void *ctx, uint32_t name);
+    void (*sync_fbo_names)(void *ctx);
+    void (*apply_viewport_scissor)(void *ctx, const int32_t viewport[4],
+                                   int scissor_enabled, const int32_t scissor[4]);
+} MGLBatchRestoreFromKeyOps;
+
+void mgl_batch_restore_apply_from_key(const MGLBatchRestoreFromKeyOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

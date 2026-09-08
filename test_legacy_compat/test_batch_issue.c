@@ -295,6 +295,119 @@ static void test_check_exec(void)
     expect(g_check_skip == 1, "skip called");
 }
 
+
+static uint32_t g_skip_traced;
+static void skip_trace_cmd(void *ctx, uint32_t i)
+{
+    (void)ctx;
+    g_skip_traced += i + 1u;
+}
+
+static void test_flush_trace_skip(void)
+{
+    uint32_t skipped = 3u;
+    g_skip_traced = 0u;
+    mgl_batch_flush_trace_skip_commands(3u, skip_trace_cmd, NULL, &skipped);
+    expect(skipped == 6u, "skip accum");
+    expect(g_skip_traced == 6u, "trace 0+1+2");
+}
+
+static unsigned g_mask4[4];
+static int g_bound_units;
+static int g_cleared;
+static int act_bind(void *ctx, uint32_t unit, int *stale_out)
+{
+    (void)ctx;
+    if (unit == 5u) {
+        if (stale_out) *stale_out = 1;
+        return 0;
+    }
+    if (stale_out) *stale_out = 0;
+    g_bound_units += (int)unit;
+    return 1;
+}
+static void act_clear(void *ctx, uint32_t word, uint32_t bit)
+{
+    (void)ctx;
+    g_cleared += 1;
+    g_mask4[word] &= ~(1u << bit);
+}
+
+static void test_active_tex_bind(void)
+{
+    memset(g_mask4, 0, sizeof(g_mask4));
+    g_mask4[0] = (1u << 1) | (1u << 5); /* unit 1 ok, unit 5 stale */
+    g_bound_units = 0;
+    g_cleared = 0;
+    MGLBatchActiveTexBindOps ops = {
+        .ctx = NULL,
+        .mask4 = g_mask4,
+        .bind_unit = act_bind,
+        .clear_stale = act_clear,
+    };
+    expect(mgl_batch_bind_active_textures(&ops) == 1, "active tex ok");
+    expect(g_bound_units == 1, "bound unit1");
+    expect(g_cleared == 1, "cleared stale");
+    expect((g_mask4[0] & (1u << 5)) == 0u, "stale bit cleared");
+}
+
+static uint32_t g_marked;
+static int g_rp_calls;
+static int rt_resolve(void *ctx, uint32_t slot, uint32_t *att_out)
+{
+    (void)ctx;
+    if (slot != 0u) return 0;
+    if (att_out) *att_out = 2u;
+    return 1;
+}
+static void rt_mark(void *ctx, uint32_t att)
+{
+    (void)ctx;
+    g_marked |= (1u << att);
+}
+static void *rt_mtl(void *ctx, uint32_t att)
+{
+    (void)ctx;
+    return att == 1u ? (void *)0x1 : NULL;
+}
+static int rt_rp(void *ctx, void *mtl)
+{
+    (void)ctx;
+    g_rp_calls += 1;
+    return mtl == (void *)0x1;
+}
+
+static void test_rt_draw_attachments(void)
+{
+    g_marked = 0u;
+    g_rp_calls = 0;
+    MGLBatchRtDrawMarkOps ops = {
+        .ctx = NULL,
+        .max_attachments = 4u,
+        .draw_buffer_count = 1u,
+        .color_attachment_bitfield = 0x6u, /* bits 1 and 2 */
+        .resolve_draw_slot = rt_resolve,
+        .mark_attachment = rt_mark,
+        .has_rp_owner = 1,
+        .attachment_mtl = rt_mtl,
+        .rp_has_mtl = rt_rp,
+    };
+    mgl_batch_rt_run_draw_attachments(&ops);
+    expect((g_marked & (1u << 2)) != 0u, "draw-buffer mark att2");
+    expect((g_marked & (1u << 1)) != 0u, "cross mark att1");
+    expect(g_rp_calls >= 1, "rp probed");
+    MGLBatchTraceStatePod s;
+    memset(&s, 0, sizeof(s));
+    s.viewport[0] = 9;
+    s.scissor_test = 1;
+    s.color_mask[3] = 1;
+    MGLBatchTraceRtWriteView v;
+    memset(&v, 0, sizeof(v));
+    mgl_batch_trace_copy_state_to_rt(&v, &s);
+    expect(v.viewport[0] == 9 && v.scissor_en == 1 && v.color_mask[3] == 1,
+           "copy state to rt");
+}
+
 static void test_dyn_apply(void)
 {
     g_dyn_steps = 0;
@@ -337,6 +450,9 @@ int main(void)
     test_dyn_apply();
     test_flush_run();
     test_check_exec();
+    test_flush_trace_skip();
+    test_active_tex_bind();
+    test_rt_draw_attachments();
 
     expect(mgl_batch_flush_scheduled_path_perf_kind(2) ==
                MGL_BATCH_FLUSH_PERF_STREAM,

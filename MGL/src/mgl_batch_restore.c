@@ -213,3 +213,28 @@ uint32_t mgl_batch_restore_plan_delta_dirty(
     return mgl_batch_compute_key_delta_dirty_bits(can_delta, prev, cur,
                                                   full_bits, &masks, flags_out);
 }
+
+void mgl_batch_restore_apply_from_key(const MGLBatchRestoreFromKeyOps *ops)
+{
+    if (!ops) {
+        return;
+    }
+    if (ops->restore_program) {
+        ops->restore_program(ops->ctx, ops->program_name,
+                             ops->program_pipeline_name);
+    }
+    if (ops->set_vao) {
+        ops->set_vao(ops->ctx, ops->vao_name);
+    }
+    if (ops->set_fbo) {
+        ops->set_fbo(ops->ctx, ops->fbo_name);
+    }
+    if (ops->sync_fbo_names) {
+        ops->sync_fbo_names(ops->ctx);
+    }
+    if (ops->apply_viewport_scissor) {
+        ops->apply_viewport_scissor(ops->ctx, ops->viewport,
+                                    ops->scissor_enabled ? 1 : 0, ops->scissor);
+    }
+}
+

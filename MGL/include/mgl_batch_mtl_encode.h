@@ -202,7 +202,24 @@ int mgl_batch_mtl_encode_resolved_samplers(void *binding_state_owner,
                                            const MGLBatchResolvedSamplerBind *items,
                                            uint32_t count);
 
+/* A3: applySamplerSnapshot loop — resolve entries in ObjC, encode in C++. */
+enum { MGL_BATCH_MTL_SAMPLER_SNAPSHOT_MAX = 8 };
 
+typedef struct MGLBatchSamplerSnapshotApplyOps {
+    void *ctx;
+    void *binding_state_owner;
+    void *render_encoder_owner;
+    uint32_t entry_count;
+    uint32_t max_sampler_slots;
+    /* 0 fail; 1 ok. Fills out. */
+    int (*resolve_entry)(void *ctx, uint32_t i, MGLBatchResolvedSamplerBind *out);
+    /* Optional mip-diag hook after a successful resolve. */
+    void (*after_resolved)(void *ctx, uint32_t i,
+                           const MGLBatchResolvedSamplerBind *bind);
+} MGLBatchSamplerSnapshotApplyOps;
+
+int mgl_batch_mtl_apply_sampler_snapshot(
+    const MGLBatchSamplerSnapshotApplyOps *ops);
 
 #ifdef __cplusplus
 }

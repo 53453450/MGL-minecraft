@@ -243,6 +243,20 @@ typedef struct MGLBatchCheckExecOps {
 /* Returns 1 if batch should execute, 0 if skipped. */
 int mgl_batch_check_should_execute(const MGLBatchCheckExecOps *ops);
 
+/* Trace each cmd as SKIP and accumulate skipped_commands. */
+void mgl_batch_flush_trace_skip_commands(
+    uint32_t command_count, void (*trace_cmd)(void *ctx, uint32_t i), void *ctx,
+    uint32_t *skipped_commands_inout);
+
+/* Walk 128-bit active_texture_mask; bind_unit returns 0 fail, sets *stale. */
+typedef struct MGLBatchActiveTexBindOps {
+    void *ctx;
+    const unsigned *mask4; /* 4×32 bits */
+    int (*bind_unit)(void *ctx, uint32_t unit, int *stale_out);
+    void (*clear_stale)(void *ctx, uint32_t word, uint32_t bit);
+} MGLBatchActiveTexBindOps;
+
+int mgl_batch_bind_active_textures(const MGLBatchActiveTexBindOps *ops);
 
 #ifdef __cplusplus
 }

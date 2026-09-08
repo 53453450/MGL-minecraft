@@ -528,3 +528,51 @@ int mgl_batch_check_should_execute(const MGLBatchCheckExecOps *ops)
     }
     return 1;
 }
+
+void mgl_batch_flush_trace_skip_commands(
+    uint32_t command_count, void (*trace_cmd)(void *ctx, uint32_t i), void *ctx,
+    uint32_t *skipped_commands_inout)
+{
+    if (trace_cmd) {
+        for (uint32_t i = 0; i < command_count; i++) {
+            trace_cmd(ctx, i);
+        }
+    }
+    if (skipped_commands_inout) {
+        *skipped_commands_inout += command_count;
+    }
+}
+
+int mgl_batch_bind_active_textures(const MGLBatchActiveTexBindOps *ops)
+{
+    if (!ops || !ops->mask4 || !ops->bind_unit) {
+        return 0;
+    }
+    for (uint32_t w = 0; w < 4u; w++) {
+        unsigned mask = ops->mask4[w];
+        if (!mask) {
+            continue;
+        }
+        for (uint32_t bit = 0; bit < 32u; bit++) {
+            if ((mask & (1u << bit)) == 0u) {
+                continue;
+            }
+            const uint32_t unit = w * 32u + bit;
+            int stale = 0;
+            if (!ops->bind_unit(ops->ctx, unit, &stale)) {
+                if (stale) {
+                    if (ops->clear_stale) {
+                        ops->clear_stale(ops->ctx, w, bit);
+                    }
+                    continue;
+                }
+                return 0;
+            }
+            if ((mask >> (bit + 1u)) == 0u) {
+                break;
+            }
+        }
+    }
+    return 1;
+}
+

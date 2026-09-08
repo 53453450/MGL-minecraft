@@ -280,3 +280,67 @@ int mgl_batch_trace_format_rt_write_mark(char *buf, size_t buflen,
         (unsigned long long)v->fmt, (unsigned long long)v->width,
         (unsigned long long)v->height, v->rp_color, v->rp_depth, v->depth_mtl);
 }
+
+void mgl_batch_trace_copy_state_to_rt(MGLBatchTraceRtWriteView *v,
+                                      const MGLBatchTraceStatePod *s)
+{
+    if (!v || !s) {
+        return;
+    }
+    for (int i = 0; i < 4; i++) {
+        v->viewport[i] = s->viewport[i];
+        v->scissor[i] = s->scissor[i];
+        v->color_mask[i] = s->color_mask[i];
+    }
+    v->scissor_en = s->scissor_test;
+    v->depth_test = s->depth_test;
+    v->depth_write = s->depth_write;
+    v->depth_func = s->depth_func;
+    v->blend = s->blend;
+    v->cull = s->cull;
+}
+
+void mgl_batch_rt_run_draw_attachments(const MGLBatchRtDrawMarkOps *ops)
+{
+    if (!ops || !ops->mark_attachment || ops->max_attachments == 0u) {
+        return;
+    }
+    uint8_t marked[64];
+    if (ops->max_attachments > 64u) {
+        return;
+    }
+    for (uint32_t i = 0; i < ops->max_attachments; i++) {
+        marked[i] = 0u;
+    }
+    if (ops->resolve_draw_slot) {
+        for (uint32_t slot = 0; slot < ops->draw_buffer_count; slot++) {
+            uint32_t att = 0u;
+            if (!ops->resolve_draw_slot(ops->ctx, slot, &att)) {
+                continue;
+            }
+            ops->mark_attachment(ops->ctx, att);
+            if (att < ops->max_attachments) {
+                marked[att] = 1u;
+            }
+        }
+    }
+    if (!ops->has_rp_owner || !ops->attachment_mtl || !ops->rp_has_mtl) {
+        return;
+    }
+    for (uint32_t att = 0; att < ops->max_attachments; att++) {
+        if (!mgl_batch_rt_should_cross_mark(
+                marked[att] ? 1 : 0,
+                mgl_batch_rt_attachment_active(ops->color_attachment_bitfield,
+                                               att, ops->max_attachments))) {
+            continue;
+        }
+        void *mtl = ops->attachment_mtl(ops->ctx, att);
+        if (!mtl) {
+            continue;
+        }
+        if (ops->rp_has_mtl(ops->ctx, mtl)) {
+            ops->mark_attachment(ops->ctx, att);
+        }
+    }
+}
+

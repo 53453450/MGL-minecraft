@@ -160,6 +160,62 @@ static void test_restore_encode_fold(void)
     expect(mgl_batch_restore_can_delta(0, 1, 1, 1) == 0, "disabled");
 }
 
+
+static int g_key_steps;
+static void key_prog(void *ctx, uint32_t program, uint32_t pipeline)
+{
+    (void)ctx;
+    (void)program;
+    (void)pipeline;
+    g_key_steps += 1;
+}
+static void key_vao(void *ctx, uint32_t name)
+{
+    (void)ctx;
+    (void)name;
+    g_key_steps += 2;
+}
+static void key_fbo(void *ctx, uint32_t name)
+{
+    (void)ctx;
+    (void)name;
+    g_key_steps += 4;
+}
+static void key_sync(void *ctx)
+{
+    (void)ctx;
+    g_key_steps += 8;
+}
+static void key_vpsc(void *ctx, const int32_t viewport[4], int scissor_enabled,
+                     const int32_t scissor[4])
+{
+    (void)ctx;
+    (void)viewport;
+    (void)scissor;
+    g_key_steps += scissor_enabled ? 16 : 32;
+}
+
+static void test_restore_from_key(void)
+{
+    g_key_steps = 0;
+    MGLBatchRestoreFromKeyOps ops;
+    memset(&ops, 0, sizeof(ops));
+    ops.program_name = 1;
+    ops.program_pipeline_name = 2;
+    ops.vao_name = 3;
+    ops.fbo_name = 4;
+    ops.scissor_enabled = 1;
+    ops.viewport[0] = 1; ops.viewport[1] = 2; ops.viewport[2] = 3; ops.viewport[3] = 4;
+    ops.scissor[0] = 5; ops.scissor[1] = 6; ops.scissor[2] = 7; ops.scissor[3] = 8;
+    ops.restore_program = key_prog;
+    ops.set_vao = key_vao;
+    ops.set_fbo = key_fbo;
+    ops.sync_fbo_names = key_sync;
+    ops.apply_viewport_scissor = key_vpsc;
+    mgl_batch_restore_apply_from_key(&ops);
+    expect(g_key_steps == (1 + 2 + 4 + 8 + 16), "restore from key steps");
+}
+
 static void test_restore_residual(void)
 {
     expect(mgl_batch_restore_oracle_would_skip(0, 1, 1, 1) == 1, "oracle on");
@@ -188,6 +244,7 @@ int main(void)
     test_restore_encode_fold();
     test_fbo_fold();
     test_restore_residual();
+    test_restore_from_key();
     if (g_fails) {
         fprintf(stderr, "test_batch_restore: %d fail(s)\n", g_fails);
         return 1;

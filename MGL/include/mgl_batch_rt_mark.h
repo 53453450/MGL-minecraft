@@ -260,6 +260,24 @@ typedef struct MGLBatchTraceRtWriteView {
 int mgl_batch_trace_format_rt_write_mark(char *buf, size_t buflen,
                                          const MGLBatchTraceRtWriteView *v);
 
+void mgl_batch_trace_copy_state_to_rt(MGLBatchTraceRtWriteView *v,
+                                      const MGLBatchTraceStatePod *s);
+
+/* Draw-buffer marks + RP cross-check loops (ObjC supplies resolve/mark/mtl). */
+typedef struct MGLBatchRtDrawMarkOps {
+    void *ctx;
+    uint32_t max_attachments;
+    uint32_t draw_buffer_count;
+    uint32_t color_attachment_bitfield;
+    int (*resolve_draw_slot)(void *ctx, uint32_t slot, uint32_t *att_out);
+    void (*mark_attachment)(void *ctx, uint32_t att);
+    int has_rp_owner;
+    void *(*attachment_mtl)(void *ctx, uint32_t att); /* NULL → skip */
+    int (*rp_has_mtl)(void *ctx, void *mtl);
+} MGLBatchRtDrawMarkOps;
+
+void mgl_batch_rt_run_draw_attachments(const MGLBatchRtDrawMarkOps *ops);
+
 #ifdef __cplusplus
 }
 #endif
