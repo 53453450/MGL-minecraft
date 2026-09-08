@@ -876,6 +876,20 @@ extern "C" int mglDrawGsXFBCopyReady(int has_dst, uint32_t stride,
     return has_dst && stride > 0u && written > 0u ? 1 : 0;
 }
 
+extern "C" void mglDrawGsInitDefaultTopology(GLenum *in_mode, GLenum *out_mode,
+                                             uint32_t *out_prim)
+{
+    if (in_mode) {
+        *in_mode = GL_TRIANGLES;
+    }
+    if (out_mode) {
+        *out_mode = GL_TRIANGLE_STRIP;
+    }
+    if (out_prim) {
+        *out_prim = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    }
+}
+
 extern "C" uint64_t mglDrawGsXFBVisBytes(uint32_t work_item_count)
 {
     uint64_t n = 0u;

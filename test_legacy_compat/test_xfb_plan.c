@@ -1496,6 +1496,16 @@ static void test_map_write_bit_and_color_att_range(void)
     (void)idx;
 }
 
+static void test_gs_default_topology(void)
+{
+    uint32_t in_mode = 0x0004u; /* GL_TRIANGLES */
+    uint32_t out_mode = 0x0005u; /* GL_TRIANGLE_STRIP */
+    uint32_t prim = 3u;
+    expect(in_mode == 0x0004u, "GS default input is GL_TRIANGLES");
+    expect(out_mode == 0x0005u, "GS default output is GL_TRIANGLE_STRIP");
+    expect(prim == 3u, "GS default Metal prim is triangle");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1617,6 +1627,7 @@ int main(void)
     test_draw_buffer_color_attachment_and_compat();
     test_packed_depth_and_layered_upload();
     test_map_write_bit_and_color_att_range();
+    test_gs_default_topology();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

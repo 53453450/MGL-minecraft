@@ -168,6 +168,8 @@ int mglDrawGsPassthroughRasterReady(int state_ready, int has_encoder,
                                     int raster_empty, int fully_culled);
 uint64_t mglDrawGsClampXFBCopy(uint64_t written, uint64_t remaining);
 int mglDrawGsXFBCopyReady(int has_dst, uint32_t stride, uint64_t written);
+void mglDrawGsInitDefaultTopology(GLenum *in_mode, GLenum *out_mode,
+                                  uint32_t *out_prim);
 
 void mglDrawGsFillXFBMetaFromDest(const MGLAIRGSXFBScatterParams *params,
                                   const MGLGsXFBDestPlan *dest,

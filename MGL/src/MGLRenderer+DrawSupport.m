@@ -1025,9 +1025,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     if (!program || !geometryShader) {
         return NO;
     }
-    GLenum gsInputMode = GL_TRIANGLES;
-    GLenum gsOutputMode = GL_TRIANGLE_STRIP;
-    uint32_t outputPrimitive = MGL_DRAW_PRIMITIVE_TRIANGLE;
+    GLenum gsInputMode = 0;
+    GLenum gsOutputMode = 0;
+    uint32_t outputPrimitive = 0;
+    mglDrawGsInitDefaultTopology(&gsInputMode, &gsOutputMode, &outputPrimitive);
     mglDrawGsNormalizeTopology(program, &gsInputMode, &gsOutputMode,
                                &outputPrimitive);
     const BOOL indexedDraw = (indexType != 0u);
