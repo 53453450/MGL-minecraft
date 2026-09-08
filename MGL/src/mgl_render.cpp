@@ -9232,6 +9232,19 @@ int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
                : 0;
 }
 
+int mglRenderDepthReadbackPlan(uint32_t pixel_format, int *is_depth16,
+                               int *is_packed_d32f_s8) {
+    int d16 = pixel_format == 250u /* Depth16Unorm */ ? 1 : 0;
+    int ds = mglRenderPixelFormatIsDepth32FloatStencil8(pixel_format);
+    if (is_depth16) {
+        *is_depth16 = d16;
+    }
+    if (is_packed_d32f_s8) {
+        *is_packed_d32f_s8 = ds;
+    }
+    return d16 || ds || pixel_format == 252u /* Depth32Float */ ? 1 : 0;
+}
+
 int mglRenderSamplerUnitExplicit(uint32_t flag) {
     return flag == GL_TRUE ? 1 : 0;
 }

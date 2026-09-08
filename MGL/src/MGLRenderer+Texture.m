@@ -1481,13 +1481,11 @@ static void mglTextureCopyTextureToBuffer(
         return sourceTexture != nil;
     }
 
-    BOOL sourceIsDepthStencil = mglRenderPixelFormatIsDepth32FloatStencil8(
-        (uint32_t)mglTextureInfo(sourceTexture).pixel_format) != 0;
-    BOOL sourceIsDepth16 =
-        mglTextureInfo(sourceTexture).pixel_format == MGLPixelFormatDepth16Unorm;
-    if (mglTextureInfo(sourceTexture).pixel_format != MGLPixelFormatDepth32Float &&
-        mglTextureInfo(sourceTexture).pixel_format != MGLPixelFormatDepth16Unorm &&
-        !sourceIsDepthStencil) {
+    int isDepth16 = 0;
+    int isPackedD32FS8 = 0;
+    if (!mglRenderDepthReadbackPlan(
+            (uint32_t)mglTextureInfo(sourceTexture).pixel_format,
+            &isDepth16, &isPackedD32FS8)) {
         static uint64_t s_unsupportedDepthReadFormatCount = 0;
         uint64_t hit = ++s_unsupportedDepthReadFormatCount;
         if (hit <= 32ull || (hit % 256ull) == 0ull) {
@@ -1499,6 +1497,8 @@ static void mglTextureCopyTextureToBuffer(
         mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return NO;
     }
+    BOOL sourceIsDepthStencil = isPackedD32FS8 != 0;
+    BOOL sourceIsDepth16 = isDepth16 != 0;
 
     if (mglTextureInfo(sourceTexture).sample_count > 1u) {
         sourceTexture = [self resolvedReadbackTextureForMultisampleTexture:sourceTexture

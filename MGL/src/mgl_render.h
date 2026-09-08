@@ -1403,6 +1403,8 @@ uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format);
 int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format);
 int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
                                         uint32_t row_bytes, uint32_t width);
+int mglRenderDepthReadbackPlan(uint32_t pixel_format, int *is_depth16,
+                               int *is_packed_d32f_s8);
 int mglRenderSamplerUnitExplicit(uint32_t flag);
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
 int mglRenderTextureTargetIs1D(uint32_t target);

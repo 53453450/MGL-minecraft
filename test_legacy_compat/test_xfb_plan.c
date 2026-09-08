@@ -1850,6 +1850,28 @@ static void test_ds_format_classification(void)
            "D32F_S8 8-byte rows already Metal packed");
 }
 
+static int depth_readback_plan(uint32_t fmt, int *d16, int *ds)
+{
+    int is16 = fmt == 250u ? 1 : 0;
+    int isds = fmt == 260u ? 1 : 0;
+    if (d16) *d16 = is16;
+    if (ds) *ds = isds;
+    return is16 || isds || fmt == 252u ? 1 : 0;
+}
+
+static void test_depth_readback_plan(void)
+{
+    int d16 = 0, ds = 0;
+    expect(depth_readback_plan(250u, &d16, &ds) == 1 && d16 && !ds,
+           "Depth16 readback is 16-bit");
+    expect(depth_readback_plan(252u, &d16, &ds) == 1 && !d16 && !ds,
+           "Depth32F readback is float");
+    expect(depth_readback_plan(260u, &d16, &ds) == 1 && !d16 && ds,
+           "D32F_S8 readback uses packed DS path");
+    expect(depth_readback_plan(70u, &d16, &ds) == 0,
+           "RGBA8 is not a depth readback format");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1989,6 +2011,7 @@ int main(void)
     test_ds_plane_view_type();
     test_stencil_view_format();
     test_ds_format_classification();
+    test_depth_readback_plan();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
