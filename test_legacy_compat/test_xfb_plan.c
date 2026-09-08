@@ -1975,6 +1975,25 @@ static void test_texbuffer_format(void)
     expect(texbuf_needs_atomic(10u) == 0, "R8Unorm texbuffer does not need atomic");
 }
 
+static int pixel_fmt_invalid(uint32_t f) { return f == 0u; }
+static int clear_rect_ready(int wc, uint32_t cf, int wd, uint32_t df)
+{
+    if (!wc && !wd) return 0;
+    if (wc && cf == 0u) return 0;
+    if (wd && df == 0u) return 0;
+    return 1;
+}
+
+static void test_invalid_format_skip(void)
+{
+    expect(pixel_fmt_invalid(0u) == 1, "Invalid pixel format skips depth blit PSO");
+    expect(pixel_fmt_invalid(252u) == 0, "Depth32F is a valid depth blit format");
+    expect(clear_rect_ready(0, 0u, 0, 0u) == 0, "clear-rect with no writes is skipped");
+    expect(clear_rect_ready(1, 0u, 0, 0u) == 0, "color clear with Invalid is skipped");
+    expect(clear_rect_ready(0, 0u, 1, 0u) == 0, "depth clear with Invalid is skipped");
+    expect(clear_rect_ready(1, 80u, 1, 252u) == 1, "valid color+depth clear is ready");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2120,6 +2139,7 @@ int main(void)
     test_blit_rgba_bgra_pair();
     test_default_color_and_pipeline_compat();
     test_texbuffer_format();
+    test_invalid_format_skip();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

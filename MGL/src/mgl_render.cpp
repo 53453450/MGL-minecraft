@@ -8394,6 +8394,24 @@ int mglRenderSkipInvalidColorAttachment(uint32_t format) {
     return format == 0u ? 1 : 0;
 }
 
+int mglRenderPixelFormatIsInvalid(uint32_t format) {
+    return format == 0u ? 1 : 0;
+}
+
+int mglRenderClearRectPipelineReady(int writes_color, uint32_t color_format,
+                                    int writes_depth, uint32_t depth_format) {
+    if (!writes_color && !writes_depth) {
+        return 0;
+    }
+    if (writes_color && mglRenderPixelFormatIsInvalid(color_format)) {
+        return 0;
+    }
+    if (writes_depth && mglRenderPixelFormatIsInvalid(depth_format)) {
+        return 0;
+    }
+    return 1;
+}
+
 int mglRenderDrawBufferIsNone(uint32_t draw_buffer) {
     return draw_buffer == GL_NONE ? 1 : 0;
 }

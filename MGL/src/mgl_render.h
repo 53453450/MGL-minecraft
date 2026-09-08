@@ -1318,6 +1318,9 @@ uint32_t mglRenderDefaultColorPixelFormat(void);
 uint32_t mglRenderColorFormatOrBGRA(uint32_t format);
 int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built);
 int mglRenderSkipInvalidColorAttachment(uint32_t format);
+int mglRenderPixelFormatIsInvalid(uint32_t format);
+int mglRenderClearRectPipelineReady(int writes_color, uint32_t color_format,
+                                    int writes_depth, uint32_t depth_format);
 int mglRenderDrawBufferIsNone(uint32_t draw_buffer);
 uint32_t mglRenderBlendingEnabledMaskBit(int blend_enabled, int index);
 int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,

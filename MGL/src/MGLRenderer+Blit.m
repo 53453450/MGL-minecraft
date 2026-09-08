@@ -659,7 +659,7 @@ static id mglLookupAuxRenderPipeline(
 
 - (id)scaledDepthBlitPipelineForPixelFormat:(uint32_t)pixelFormat
 {
-    if (pixelFormat == MGLPixelFormatInvalid || pixelFormat == 0) {
+    if (mglRenderPixelFormatIsInvalid(pixelFormat)) {
         return nil;
     }
 
@@ -667,7 +667,7 @@ static id mglLookupAuxRenderPipeline(
         mglMetalPixelFormatIsPackedDepthStencil(pixelFormat)
             ? pixelFormat : MGLPixelFormatInvalid;
     uint64_t variant = ((uint64_t)pixelFormat << 1) |
-                       (stencilFormat != MGLPixelFormatInvalid ? 1u : 0u);
+                       (!mglRenderPixelFormatIsInvalid(stencilFormat) ? 1u : 0u);
     id cached =
         mglLookupAuxRenderPipeline(
             MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
@@ -1590,13 +1590,8 @@ static id mglLookupAuxRenderPipeline(
                                                   writesColor:(BOOL)writesColor
                                                   writesDepth:(BOOL)writesDepth
 {
-    if (!writesColor && !writesDepth) {
-        return nil;
-    }
-    if (writesColor && colorFormat == MGLPixelFormatInvalid) {
-        return nil;
-    }
-    if (writesDepth && depthFormat == MGLPixelFormatInvalid) {
+    if (!mglRenderClearRectPipelineReady(writesColor ? 1 : 0, colorFormat,
+                                         writesDepth ? 1 : 0, depthFormat)) {
         return nil;
     }
 
