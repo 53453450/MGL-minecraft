@@ -231,13 +231,27 @@
             MGL_STATE(ctx)->var.color_writemask[i][3] ? 1 : 0);
         colorMask_i = mglRenderForceDefaultFBOAlphaWrite(
             i, MGL_STATE(ctx)->framebuffer ? 1 : 0, colorMask_i);
+        uint32_t srcRgbF = 0u, srcAlphaF = 0u, dstRgbF = 0u, dstAlphaF = 0u;
+        uint32_t rgbOp = 0u, alphaOp = 0u;
+        (void)mglRenderBlendFactorFromGL(
+            (uint32_t)MGL_STATE(ctx)->var.blend_src_rgb[i], &srcRgbF);
+        (void)mglRenderBlendFactorFromGL(
+            (uint32_t)MGL_STATE(ctx)->var.blend_src_alpha[i], &srcAlphaF);
+        (void)mglRenderBlendFactorFromGL(
+            (uint32_t)MGL_STATE(ctx)->var.blend_dst_rgb[i], &dstRgbF);
+        (void)mglRenderBlendFactorFromGL(
+            (uint32_t)MGL_STATE(ctx)->var.blend_dst_alpha[i], &dstAlphaF);
+        (void)mglRenderBlendOperationFromGL(
+            (uint32_t)MGL_STATE(ctx)->var.blend_equation_rgb[i], &rgbOp);
+        (void)mglRenderBlendOperationFromGL(
+            (uint32_t)MGL_STATE(ctx)->var.blend_equation_alpha[i], &alphaOp);
         [_pipelineCache setBlendFactorsForAttachment:(NSUInteger)i
-                                        srcRgbFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_rgb[i]]
-                                      srcAlphaFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_src_alpha[i]]
-                                        dstRgbFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_dst_rgb[i]]
-                                      dstAlphaFactor:[self blendFactorFromGL:MGL_STATE(ctx)->var.blend_dst_alpha[i]]
-                                        rgbOperation:[self blendOperationFromGL: MGL_STATE(ctx)->var.blend_equation_rgb[i]]
-                                      alphaOperation:[self blendOperationFromGL: MGL_STATE(ctx)->var.blend_equation_alpha[i]]
+                                        srcRgbFactor:srcRgbF
+                                      srcAlphaFactor:srcAlphaF
+                                        dstRgbFactor:dstRgbF
+                                      dstAlphaFactor:dstAlphaF
+                                        rgbOperation:rgbOp
+                                      alphaOperation:alphaOp
                                            colorMask:colorMask_i];
     }
     if (repairedState)

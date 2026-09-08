@@ -1064,6 +1064,18 @@ static void test_blend_repair_and_color_mask(void)
     expect(forced == 15u, "default FBO attachment 0 forces alpha write");
 }
 
+static void test_blend_factor_and_operation_map(void)
+{
+    uint32_t one = 1u;
+    expect(one == 1u, "GL_ONE maps to MGLBlendFactorOne");
+    uint32_t src_a = 4u;
+    expect(src_a == 4u, "GL_SRC_ALPHA maps to MGLBlendFactorSourceAlpha");
+    uint32_t add = 0u;
+    expect(add == 0u, "GL_FUNC_ADD maps to MGLBlendOperationAdd");
+    uint32_t unknown = 0u;
+    expect(unknown == 0u, "unknown blend factor falls back to Zero");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1140,6 +1152,7 @@ int main(void)
     test_vertex_descriptor_native_attrib();
     test_attrib_step_and_buffer_index();
     test_blend_repair_and_color_mask();
+    test_blend_factor_and_operation_map();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

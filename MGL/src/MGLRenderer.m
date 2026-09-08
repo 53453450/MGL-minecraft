@@ -2886,68 +2886,29 @@ void logDirtyBits(GLMContext ctx)
 #pragma mark utility funcs for processGLState
 - (uint32_t) blendFactorFromGL:(GLenum)gl_blend
 {
-    uint32_t factor;
-
-    switch(gl_blend)
-    {
-        case GL_ZERO: factor = MGLBlendFactorZero; break;
-        case GL_ONE: factor = MGLBlendFactorOne; break;
-        case GL_SRC_COLOR: factor = MGLBlendFactorSourceColor; break;
-        case GL_ONE_MINUS_SRC_COLOR: factor = MGLBlendFactorOneMinusSourceColor; break;
-        case GL_DST_COLOR: factor = MGLBlendFactorDestinationColor; break;
-        case GL_ONE_MINUS_DST_COLOR: factor = MGLBlendFactorOneMinusDestinationColor; break;
-        case GL_SRC_ALPHA: factor = MGLBlendFactorSourceAlpha; break;
-        case GL_ONE_MINUS_SRC_ALPHA: factor = MGLBlendFactorOneMinusSourceAlpha; break;
-        case GL_DST_ALPHA: factor = MGLBlendFactorDestinationAlpha; break;
-        case GL_ONE_MINUS_DST_ALPHA: factor = MGLBlendFactorOneMinusDestinationAlpha; break;
-        case GL_CONSTANT_COLOR: factor = MGLBlendFactorBlendColor; break;
-        case GL_ONE_MINUS_CONSTANT_COLOR: factor = MGLBlendFactorOneMinusBlendColor; break;
-        case GL_CONSTANT_ALPHA: factor = MGLBlendFactorBlendAlpha; break;
-        case GL_ONE_MINUS_CONSTANT_ALPHA: factor = MGLBlendFactorOneMinusBlendAlpha; break;
-        case GL_SRC_ALPHA_SATURATE: factor = MGLBlendFactorSourceAlphaSaturated; break;
-        /* Dual-source blend factors (GL 4.0+, requires dualSourceBlendingEnabled) */
-        case GL_SRC1_COLOR: factor = MGLBlendFactorSource1Color; break;
-        case GL_ONE_MINUS_SRC1_COLOR: factor = MGLBlendFactorOneMinusSource1Color; break;
-        case GL_SRC1_ALPHA: factor = MGLBlendFactorSource1Alpha; break;
-        case GL_ONE_MINUS_SRC1_ALPHA: factor = MGLBlendFactorOneMinusSource1Alpha; break;
-
-        default:
-            // CRITICAL FIX: Handle assertion gracefully instead of crashing
-            static uint64_t s_unknownBlendFactorCount = 0;
-            uint64_t hit = ++s_unknownBlendFactorCount;
-            if (hit <= 32 || (hit % 512) == 0) {
-                NSLog(@"MGL ERROR: Unknown blend factor 0x%x hit=%llu",
-                      gl_blend, (unsigned long long)hit);
-            }
-            return MGLBlendFactorZero;
+    uint32_t factor = 0u;
+    if (!mglRenderBlendFactorFromGL((uint32_t)gl_blend, &factor)) {
+        static uint64_t s_unknownBlendFactorCount = 0;
+        uint64_t hit = ++s_unknownBlendFactorCount;
+        if (hit <= 32 || (hit % 512) == 0) {
+            NSLog(@"MGL ERROR: Unknown blend factor 0x%x hit=%llu",
+                  gl_blend, (unsigned long long)hit);
+        }
     }
-
     return factor;
 }
 
 - (uint32_t) blendOperationFromGL:(GLenum)gl_blend_op
 {
-    uint32_t op;
-
-    switch(gl_blend_op)
-    {
-        case GL_FUNC_ADD: op = MGLBlendOperationAdd; break;
-        case GL_FUNC_SUBTRACT: op = MGLBlendOperationSubtract; break;
-        case GL_FUNC_REVERSE_SUBTRACT: op = MGLBlendOperationReverseSubtract; break;
-        case GL_MIN: op = MGLBlendOperationMin; break;
-        case GL_MAX: op = MGLBlendOperationMax; break;
-
-        default:
-            // CRITICAL FIX: Handle assertion gracefully instead of crashing
-            static uint64_t s_unknownBlendOperationCount = 0;
-            uint64_t hit = ++s_unknownBlendOperationCount;
-            if (hit <= 32 || (hit % 512) == 0) {
-                NSLog(@"MGL ERROR: Unknown blend operation 0x%x hit=%llu",
-                      gl_blend_op, (unsigned long long)hit);
-            }
-            return MGLBlendOperationAdd;
+    uint32_t op = 0u;
+    if (!mglRenderBlendOperationFromGL((uint32_t)gl_blend_op, &op)) {
+        static uint64_t s_unknownBlendOperationCount = 0;
+        uint64_t hit = ++s_unknownBlendOperationCount;
+        if (hit <= 32 || (hit % 512) == 0) {
+            NSLog(@"MGL ERROR: Unknown blend operation 0x%x hit=%llu",
+                  gl_blend_op, (unsigned long long)hit);
+        }
     }
-
     return op;
 }
 
