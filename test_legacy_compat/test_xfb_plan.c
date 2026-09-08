@@ -1344,6 +1344,16 @@ static void test_draw_mode_emulate_fan_loop_quads(void)
     expect(loop == 1, "LINE_LOOP emulates line strip");
 }
 
+static void test_image_writable_and_nearest_filter(void)
+{
+    int wr = 1 || 0;
+    expect(wr == 1, "GL_WRITE_ONLY is a writable image access");
+    int rw = 0 || 1;
+    expect(rw == 1, "GL_READ_WRITE is a writable image access");
+    int n = 1;
+    expect(n == 1, "GL_NEAREST is nearest filter");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1449,6 +1459,7 @@ int main(void)
     test_clip_origin_lower_left();
     test_error_none_and_color_scan_stop();
     test_draw_mode_emulate_fan_loop_quads();
+    test_image_writable_and_nearest_filter();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

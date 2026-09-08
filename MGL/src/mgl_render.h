@@ -1418,6 +1418,8 @@ int mglRenderDrawModeNeedsEmulate(uint32_t mode);
 int mglRenderEmulateTriangleFan(uint32_t mode, int polygon_point);
 int mglRenderEmulateLineLoop(uint32_t mode);
 int mglRenderEmulateQuads(uint32_t mode, int polygon_point);
+int mglRenderImageAccessWritable(uint32_t access);
+int mglRenderFilterIsNearest(uint32_t filter);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

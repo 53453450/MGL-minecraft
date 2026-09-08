@@ -545,7 +545,7 @@ static id mglLookupAuxRenderPipeline(
 @implementation MGLRenderer (Blit)
 - (id)scaledBlitSamplerForFilter:(GLuint)filter
 {
-    BOOL wantsNearest = (filter == GL_NEAREST);
+    BOOL wantsNearest = mglRenderFilterIsNearest((uint32_t)filter) != 0;
     MGLRendererBackendBlitCacheKind cacheKind = wantsNearest
         ? MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER
         : MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER;
@@ -1855,7 +1855,7 @@ static id mglLookupAuxRenderPipeline(
                      * Only GL_NEAREST is supported (GL_LINEAR for depth is not allowed
                      * by the GL spec; filter must be GL_NEAREST when depth/stencil is
                      * in the mask). */
-                    if (filter == GL_NEAREST &&
+                    if (mglRenderFilterIsNearest((uint32_t)filter) &&
                         depthReadSubresource.level == 0u &&
                         depthReadSubresource.slice == 0u &&
                         depthReadSubresource.depthPlane == 0u &&

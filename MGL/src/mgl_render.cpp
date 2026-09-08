@@ -9369,6 +9369,14 @@ int mglRenderEmulateQuads(uint32_t mode, int polygon_point) {
     return mode == GL_QUADS && !polygon_point ? 1 : 0;
 }
 
+int mglRenderImageAccessWritable(uint32_t access) {
+    return access == GL_WRITE_ONLY || access == GL_READ_WRITE ? 1 : 0;
+}
+
+int mglRenderFilterIsNearest(uint32_t filter) {
+    return filter == GL_NEAREST ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

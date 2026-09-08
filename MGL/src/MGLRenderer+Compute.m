@@ -1181,7 +1181,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
         ImageUnit *imageUnit = &MGL_STATE(glm_ctx)->image_units[unit];
         Texture *imageTexture = imageUnit->tex;
         if (!imageTexture ||
-            (imageUnit->access != GL_WRITE_ONLY && imageUnit->access != GL_READ_WRITE)) {
+            !mglRenderImageAccessWritable((uint32_t)imageUnit->access)) {
             continue;
         }
         imageTexture->metal_data_authoritative = GL_TRUE;
