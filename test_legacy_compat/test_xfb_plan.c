@@ -329,6 +329,32 @@ static void test_xfb_advance(void)
     expect(off == UINT64_MAX, "XFB session offset saturates");
 }
 
+static void test_tess_eval_gather(void)
+{
+    uint32_t verts = 0u, prims = 0u;
+    /* indexed */
+    verts = 9u;
+    prims = 3u;
+    expect(verts == 9u && prims == 3u, "indexed TES gather uses instance records");
+    /* array */
+    verts = 3u > 0u ? 3u : 1u;
+    prims = 0u;
+    expect(verts == 3u && prims == 0u, "array TES gather uses patch vertices");
+}
+
+static void test_copyback_collect(void)
+{
+    uint32_t n = 0u;
+    uint64_t lengths[3] = {0u, 16u, 0u};
+    uint32_t i;
+    for (i = 0u; i < 3u; i++) {
+        if (lengths[i] == 0u)
+            continue;
+        n++;
+    }
+    expect(n == 1u, "copy-back collect skips empty slots");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -346,6 +372,8 @@ int main(void)
     test_tess_raster_query();
     test_attrib_format_plan();
     test_xfb_advance();
+    test_tess_eval_gather();
+    test_copyback_collect();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

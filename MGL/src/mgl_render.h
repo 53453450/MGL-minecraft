@@ -719,6 +719,11 @@ typedef struct MGLRenderCopyBackEntry_t {
     uint64_t length;
 } MGLRenderCopyBackEntry;
 
+uint32_t mglRenderCollectCopyBackEntries(const MGLRenderCopyBackEntry *slots,
+                                         uint32_t slot_count,
+                                         MGLRenderCopyBackEntry *out,
+                                         uint32_t out_cap);
+
 /* Validate every non-empty entry (bounds vs the Metal buffer lengths) and,
  * when blit_encoder is non-NULL, encode each copy via
  * mglRenderBlitCopyBuffer.  Returns 0 on success, -1 on the first

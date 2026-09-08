@@ -1064,19 +1064,9 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
             .indirect_offset = indirectOffset,
         };
         MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
-        uint32_t copyBackEntryCount = 0;
-        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
-            MGLStageBindingCopyBack *entry = &copyBacks.slots[slot];
-            if (entry->length == 0) continue;
-            copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCopyBackEntry){
-                    .temporary = entry->temporary,
-                    .destination = entry->destination,
-                    .destination_buffer = entry->destination_buffer,
-                    .destination_offset = entry->destination_offset,
-                    .length = entry->length,
-                };
-        }
+        uint32_t copyBackEntryCount = mglRenderCollectCopyBackEntries(
+            (const MGLRenderCopyBackEntry *)copyBacks.slots, kMGLMaxBufferSlots,
+            copyBackEntries, kMGLMaxBufferSlots);
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(

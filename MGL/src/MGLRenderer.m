@@ -4348,6 +4348,9 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     memset(copyBacks, 0, sizeof(*copyBacks));
 }
 
+_Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry),
+               "copy-back slot ABI matches C entry");
+
 - (void)clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
                            atIndex:(NSUInteger)index
 {
@@ -4406,21 +4409,10 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 
     MGLRenderCopyBackEntry entries[kMGLMaxBufferSlots];
     memset(entries, 0, sizeof(entries));
-    uint32_t entryCount = 0;
-    BOOL hasCopies = NO;
-    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
-        MGLStageBindingCopyBack *entry = &copyBacks->slots[i];
-        if (entry->length == 0) {
-            continue;
-        }
-        entries[entryCount].temporary = entry->temporary;
-        entries[entryCount].destination = entry->destination;
-        entries[entryCount].destination_buffer = entry->destination_buffer;
-        entries[entryCount].destination_offset = entry->destination_offset;
-        entries[entryCount].length = entry->length;
-        entryCount++;
-        hasCopies = YES;
-    }
+    uint32_t entryCount = mglRenderCollectCopyBackEntries(
+        (const MGLRenderCopyBackEntry *)copyBacks->slots, kMGLMaxBufferSlots,
+        entries, kMGLMaxBufferSlots);
+    BOOL hasCopies = entryCount > 0u;
 
     if (mglRenderEncodeStageBindingCopyBacks(
             entries, entryCount, NULL) != 0) {

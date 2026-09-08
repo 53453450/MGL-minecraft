@@ -261,6 +261,17 @@ int mglTessPlanXFBDestination(uint32_t items_per_instance,
                               uint64_t visible_bytes,
                               MGLTessXFBDestPlan *out);
 
+int mglTessPlanEvalXfbCapture(uint32_t items_per_instance,
+                              uint32_t instance_count, uint32_t out_stride,
+                              uint32_t compact_stride,
+                              uint32_t *capture_vertices,
+                              uint32_t *required_bytes);
+
+void mglTessPlanEvalGather(int indexed, uint32_t instance_records,
+                           uint32_t patch_vertices, uint32_t patch_count,
+                           uint32_t *verts_per_instance,
+                           uint32_t *prims_per_instance);
+
 typedef struct MGLTessEvalPerPatchDispatchSpec {
     void *gl_in_buffer;
     uint64_t gl_in_offset;

@@ -1005,19 +1005,9 @@ typedef struct {
 
     {
         MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
-        uint32_t copyBackEntryCount = 0u;
-        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
-            MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
-            if (entry->length == 0u) continue;
-            copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCopyBackEntry){
-                    .temporary = entry->temporary,
-                    .destination = entry->destination,
-                    .destination_buffer = entry->destination_buffer,
-                    .destination_offset = entry->destination_offset,
-                    .length = entry->length,
-                };
-        }
+        uint32_t copyBackEntryCount = mglRenderCollectCopyBackEntries(
+            (const MGLRenderCopyBackEntry *)stageCopyBacks.slots,
+            kMGLMaxBufferSlots, copyBackEntries, kMGLMaxBufferSlots);
         executionPlan.barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
@@ -1329,13 +1319,15 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         const NSUInteger xfbSessionOffset =
             sessionOffsetOK ? (NSUInteger)xfbState->buffer_write_offsets[0] : 0u;
         xfbCompactStride = mglTESXFBVertexStride(tesProgram);
-        const bool sizeOK = xfbCompactStride > 0u &&
-            mglCheckedNSUIntegerProduct((NSUInteger)itemsPerInstanceU,
-                                        (NSUInteger)instanceCountU,
-                                        &captureVertices) &&
-            mglCheckedNSUIntegerProduct(captureVertices, outStride,
-                                       &requiredBytes) &&
-            requiredBytes > 0u;
+        uint32_t captureVertsU = 0u;
+        uint32_t requiredBytesU = 0u;
+        const bool sizeOK = mglTessPlanEvalXfbCapture(
+                                itemsPerInstanceU, instanceCountU,
+                                (uint32_t)outStride, (uint32_t)xfbCompactStride,
+                                &captureVertsU, &requiredBytesU) != 0;
+        captureVertices = captureVertsU;
+        requiredBytes = requiredBytesU;
+        (void)captureVertices;
 
         id xfbMTL = nil;
         NSUInteger visibleBytes = 0u;
@@ -1438,6 +1430,12 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     }
 
     const BOOL indexed = _tessellation.tessIndexedDraw;
+    uint32_t gatherVerts = 0u;
+    uint32_t gatherPrims = 0u;
+    mglTessPlanEvalGather(indexed ? 1 : 0,
+                          (uint32_t)_tessellation.tessInstanceRecords,
+                          contract->patch_vertices, patchCount, &gatherVerts,
+                          &gatherPrims);
     MGLTessEvalPerPatchDispatchSpec patchSpec;
     memset(&patchSpec, 0, sizeof(patchSpec));
     patchSpec.gl_in_buffer = (__bridge void *)glInBuffer;
@@ -1445,10 +1443,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     patchSpec.gl_in_instance_stride = (uint64_t)glInInstanceStride;
     patchSpec.gather_buffer =
         indexed ? (__bridge void *)controlPointIndexBuffer : NULL;
-    patchSpec.gather_verts_per_instance =
-        indexed ? (uint32_t)_tessellation.tessInstanceRecords
-                : MAX(1u, contract->patch_vertices);
-    patchSpec.gather_prims_per_instance = indexed ? patchCount : 0u;
+    patchSpec.gather_verts_per_instance = gatherVerts;
+    patchSpec.gather_prims_per_instance = gatherPrims;
     patchSpec.gather_first_vertex = 0u;
     patchSpec.indexed = indexed ? 1u : 0u;
     patchSpec.gl_in_vertices = (uint32_t)glInVertices;
@@ -1480,19 +1476,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     }
     {
         MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
-        uint32_t copyBackEntryCount = 0u;
-        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
-            MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
-            if (entry->length == 0u) continue;
-            copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCopyBackEntry){
-                    .temporary = entry->temporary,
-                    .destination = entry->destination,
-                    .destination_buffer = entry->destination_buffer,
-                    .destination_offset = entry->destination_offset,
-                    .length = entry->length,
-                };
-        }
+        uint32_t copyBackEntryCount = mglRenderCollectCopyBackEntries(
+            (const MGLRenderCopyBackEntry *)stageCopyBacks.slots,
+            kMGLMaxBufferSlots, copyBackEntries, kMGLMaxBufferSlots);
         executionPlan.barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};

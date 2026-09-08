@@ -932,6 +932,48 @@ extern "C" int mglTessPlanXFBDestination(uint32_t items_per_instance,
     return 1;
 }
 
+extern "C" int mglTessPlanEvalXfbCapture(uint32_t items_per_instance,
+                                         uint32_t instance_count,
+                                         uint32_t out_stride,
+                                         uint32_t compact_stride,
+                                         uint32_t *capture_vertices,
+                                         uint32_t *required_bytes)
+{
+    if (!capture_vertices || !required_bytes || compact_stride == 0u ||
+        out_stride == 0u || items_per_instance == 0u || instance_count == 0u) {
+        return 0;
+    }
+    uint64_t verts = 0u;
+    uint64_t bytes = 0u;
+    if (mglRenderCheckedProduct(items_per_instance, instance_count, &verts) !=
+            0 ||
+        mglRenderCheckedProduct(verts, out_stride, &bytes) != 0 || verts == 0u ||
+        bytes == 0u || verts > UINT32_MAX || bytes > UINT32_MAX) {
+        return 0;
+    }
+    *capture_vertices = (uint32_t)verts;
+    *required_bytes = (uint32_t)bytes;
+    return 1;
+}
+
+extern "C" void mglTessPlanEvalGather(int indexed, uint32_t instance_records,
+                                      uint32_t patch_vertices,
+                                      uint32_t patch_count,
+                                      uint32_t *verts_per_instance,
+                                      uint32_t *prims_per_instance)
+{
+    if (verts_per_instance) {
+        if (indexed) {
+            *verts_per_instance = instance_records;
+        } else {
+            *verts_per_instance = patch_vertices > 0u ? patch_vertices : 1u;
+        }
+    }
+    if (prims_per_instance) {
+        *prims_per_instance = indexed ? patch_count : 0u;
+    }
+}
+
 static bool mglTessKeepAppend(uint8_t *keep, size_t *used, size_t cap,
                               const void *src, size_t len, const void **out_ptr)
 {

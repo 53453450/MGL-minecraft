@@ -6534,6 +6534,22 @@ static uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits) {
     return (uint8_t)((value * 255u + (maxv / 2u)) / maxv);
 }
 
+extern "C" uint32_t mglRenderCollectCopyBackEntries(
+    const MGLRenderCopyBackEntry *slots, uint32_t slot_count,
+    MGLRenderCopyBackEntry *out, uint32_t out_cap) {
+    if (!slots || !out || out_cap == 0u) {
+        return 0u;
+    }
+    uint32_t n = 0u;
+    for (uint32_t i = 0u; i < slot_count && n < out_cap; i++) {
+        if (slots[i].length == 0u) {
+            continue;
+        }
+        out[n++] = slots[i];
+    }
+    return n;
+}
+
 /* legacy packed GL formats -> RGBA8 (pure data transform). */
 /* stage-binding copy-back encode + CPU-prefix sync.
  * Pure validation/encode over the caller-bridged entries; the CB

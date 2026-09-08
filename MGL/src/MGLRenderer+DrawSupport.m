@@ -1654,19 +1654,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     }
     if (cppDispatch) {
         MGLRenderCopyBackEntry copyBackEntries[kMGLMaxBufferSlots] = {0};
-        uint32_t copyBackEntryCount = 0u;
-        for (NSUInteger slot = 0; slot < kMGLMaxBufferSlots; slot++) {
-            MGLStageBindingCopyBack *entry = &stageCopyBacks.slots[slot];
-            if (entry->length == 0) continue;
-            copyBackEntries[copyBackEntryCount++] =
-                (MGLRenderCopyBackEntry){
-                    .temporary = entry->temporary,
-                    .destination = entry->destination,
-                    .destination_buffer = entry->destination_buffer,
-                    .destination_offset = entry->destination_offset,
-                    .length = entry->length,
-                };
-        }
+        uint32_t copyBackEntryCount = mglRenderCollectCopyBackEntries(
+            (const MGLRenderCopyBackEntry *)stageCopyBacks.slots,
+            kMGLMaxBufferSlots, copyBackEntries, kMGLMaxBufferSlots);
         executionPlan.dispatch = (MGLRenderComputePlan){
             .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
             .groups_x = (uint32_t)workItemCount,
