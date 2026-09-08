@@ -4583,7 +4583,7 @@ static GLenum mglPassthroughDeclType(
                                             &stubFbo->color_attachments[i]];
                 if (stubTex && stubTex->mtl_data) {
                     stubColor0 = mtlPixelFormatForGLTex(stubTex);
-                    if (stubColor0 != MGLPixelFormatInvalid) {
+                    if (!mglRenderPixelFormatIsInvalid(stubColor0)) {
                         break;
                     }
                 }
@@ -4828,20 +4828,11 @@ static GLenum mglPassthroughDeclType(
 
 
     {
-        uint32_t depthFormat = state->depth_format;
-        uint32_t stencilFormat = state->stencil_format;
-        if (depthFormat != (uint32_t)MGLPixelFormatInvalid &&
-            stencilFormat != (uint32_t)MGLPixelFormatInvalid &&
-            depthFormat != stencilFormat) {
-            bool depthPacked =
-                mglRenderPixelFormatIsPackedDepthStencil(depthFormat) != 0;
-            bool stencilPacked =
-                mglRenderPixelFormatIsPackedDepthStencil(stencilFormat) != 0;
-            if (depthPacked || stencilPacked) {
-                uint32_t packedFormat = stencilPacked ? stencilFormat : depthFormat;
-                state->depth_format = packedFormat;
-                state->stencil_format = packedFormat;
-            }
+        uint32_t packedFormat = 0u;
+        if (mglRenderPassUnifyPackedDS(state->depth_format,
+                                       state->stencil_format, &packedFormat)) {
+            state->depth_format = packedFormat;
+            state->stencil_format = packedFormat;
         }
     }
 

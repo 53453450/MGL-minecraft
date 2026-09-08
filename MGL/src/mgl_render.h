@@ -1361,6 +1361,8 @@ int mglRenderPipelinePassColorMismatch(uint32_t pipeline, uint32_t pass);
 int mglRenderPipelinePassAttachmentMismatch(uint32_t pipeline, uint32_t pass);
 int mglRenderSkipInvalidColorAttachment(uint32_t format);
 int mglRenderPixelFormatIsInvalid(uint32_t format);
+int mglRenderPassUnifyPackedDS(uint32_t depth_format, uint32_t stencil_format,
+                               uint32_t *out_format);
 int mglRenderClearRectPipelineReady(int writes_color, uint32_t color_format,
                                     int writes_depth, uint32_t depth_format);
 int mglRenderDrawBufferIsNone(uint32_t draw_buffer);

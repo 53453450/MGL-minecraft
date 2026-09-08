@@ -2396,6 +2396,26 @@ static void test_metal_resource_slot(void)
     expect(metal_slot(1, 5u, 2u, 0u) == 7u, "element offsets the Metal slot");
 }
 
+static int pass_packed_ds(uint32_t f) { return f == 255u || f == 260u; }
+static int unify_packed_ds(uint32_t d, uint32_t s, uint32_t *out)
+{
+    if (d == 0u || s == 0u || d == s) return 0;
+    if (pass_packed_ds(s)) { *out = s; return 1; }
+    if (pass_packed_ds(d)) { *out = d; return 1; }
+    return 0;
+}
+
+static void test_pass_unify_packed_ds(void)
+{
+    uint32_t out = 0u;
+    expect(unify_packed_ds(260u, 8u, &out) == 1 && out == 260u,
+           "packed depth wins over Stencil8");
+    expect(unify_packed_ds(32u, 260u, &out) == 1 && out == 260u,
+           "packed stencil wins over Depth32Float");
+    expect(unify_packed_ds(0u, 260u, &out) == 0, "Invalid depth skips unify");
+    expect(unify_packed_ds(260u, 260u, &out) == 0, "already matching skips unify");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2564,6 +2584,7 @@ int main(void)
     test_plain_uniform_buffer_table();
     test_renderpass_attachment_class();
     test_metal_resource_slot();
+    test_pass_unify_packed_ds();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

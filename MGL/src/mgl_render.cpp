@@ -8693,6 +8693,28 @@ int mglRenderPixelFormatIsInvalid(uint32_t format) {
     return format == 0u ? 1 : 0;
 }
 
+int mglRenderPassUnifyPackedDS(uint32_t depth_format, uint32_t stencil_format,
+                               uint32_t *out_format) {
+    if (mglRenderPixelFormatIsInvalid(depth_format) ||
+        mglRenderPixelFormatIsInvalid(stencil_format) ||
+        depth_format == stencil_format) {
+        return 0;
+    }
+    if (mglRenderPixelFormatIsPackedDepthStencil(stencil_format)) {
+        if (out_format) {
+            *out_format = stencil_format;
+        }
+        return 1;
+    }
+    if (mglRenderPixelFormatIsPackedDepthStencil(depth_format)) {
+        if (out_format) {
+            *out_format = depth_format;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 int mglRenderClearRectPipelineReady(int writes_color, uint32_t color_format,
                                     int writes_depth, uint32_t depth_format) {
     if (!writes_color && !writes_depth) {
