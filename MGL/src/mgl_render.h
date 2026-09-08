@@ -1287,6 +1287,7 @@ uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
                                         int32_t sampler_unit,
                                         uint32_t gl_binding, uint32_t element);
 int mglRenderComputeTextureBindKind(uint32_t spvc_type);
+int mglRenderComputeTextureListExpandsByElement(uint32_t spvc_type);
 int mglRenderComputeTextureBindIsStorage(uint32_t kind);
 int mglRenderComputeTextureBindNeedsSampler(uint32_t kind, int has_combined);
 int mglRenderShaderResourceTypeIsSamplerImage(uint32_t res_type);

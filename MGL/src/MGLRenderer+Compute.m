@@ -603,8 +603,8 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                     i >= 0) {
                     MGLShaderResourceList *resourceList =
                         &computeProgram->shader_resources_list[stage][spvc_type];
-                    if (spvc_type == _SAMPLED_IMAGE_RES ||
-                        spvc_type == _STORAGE_IMAGE_RES) {
+                    if (mglRenderComputeTextureListExpandsByElement(
+                            (uint32_t)spvc_type)) {
                         GLuint ordinal = (GLuint)i;
                         for (GLuint ri = 0; ri < resourceList->count; ri++) {
                             MGLShaderResource *candidate = &resourceList->list[ri];

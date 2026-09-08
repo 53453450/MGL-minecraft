@@ -8262,6 +8262,10 @@ int mglRenderComputeTextureBindKind(uint32_t spvc_type) {
     return -1;
 }
 
+int mglRenderComputeTextureListExpandsByElement(uint32_t spvc_type) {
+    return mglRenderComputeTextureBindKind(spvc_type) >= 0 ? 1 : 0;
+}
+
 int mglRenderComputeTextureBindIsStorage(uint32_t kind) {
     return kind == 1u ? 1 : 0;
 }

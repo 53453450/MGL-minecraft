@@ -2242,6 +2242,18 @@ static void test_default_drawbuffer_front(void)
     expect(default_db_is_offscreen(9u, 6u) == 0, "out of range is not offscreen");
 }
 
+static int compute_tex_list_expands(uint32_t spvc)
+{
+    return spvc == 8u || spvc == 7u;
+}
+
+static void test_compute_texture_list_expand(void)
+{
+    expect(compute_tex_list_expands(8u) == 1, "sampled image expands by array element");
+    expect(compute_tex_list_expands(7u) == 1, "storage image expands by array element");
+    expect(compute_tex_list_expands(1u) == 0, "UBO uses list index not expansion");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2399,6 +2411,7 @@ int main(void)
     test_ubo_array_element_binding();
     test_combined_sampler_slot();
     test_default_drawbuffer_front();
+    test_compute_texture_list_expand();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
