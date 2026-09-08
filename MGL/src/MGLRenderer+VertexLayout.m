@@ -36,14 +36,15 @@
         }
         for (uint32_t a = 0u; a < nativePlan.n_attribs; a++) {
             const uint32_t attribute = nativePlan.attribs[a].index;
-            if (attribute >= 32u) {
+            if (!mglRenderNativeAttribIndexValid(attribute)) {
                 continue;
             }
             state->attrib_format[attribute] = nativePlan.attribs[a].format;
             state->attrib_offset[attribute] = nativePlan.attribs[a].offset;
             state->attrib_buffer_index[attribute] = 0u;
             state->attrib_stride[attribute] = nativePlan.stride;
-            state->attrib_step_function[attribute] = 4u;
+            state->attrib_step_function[attribute] =
+                mglRenderNativeAttribStepFunction();
             state->attrib_step_rate[attribute] = 1u;
         }
         state->attrib_count = nativePlan.attrib_count;
@@ -80,7 +81,8 @@
                                                                       i,
                                                                       __FUNCTION__,
                                                                       &resolved);
-        if (!usesCurrentValue && !hasAttribBinding) {
+        if (mglRenderSkipUnboundAttrib(usesCurrentValue ? 1 : 0,
+                                       hasAttribBinding ? 1 : 0)) {
             continue;
         }
 
@@ -109,7 +111,7 @@
                 &effectiveNormalized, &conversionKind);
             (void)effectiveNormalized;
 
-            if (format == 0u)
+            if (!mglRenderAttribFormatMapped(format))
             {
                 NSLog(@"MGL PIPELINE DESC fail: unable to map attrib %u type/size/normalize to MTL format", i);
                 return NO;

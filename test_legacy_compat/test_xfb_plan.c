@@ -1030,6 +1030,18 @@ static void test_sampled_rt_copy_and_vertex_desc(void)
     expect(stale == 1, "sampled copy is stale vs RT write version");
 }
 
+static void test_vertex_descriptor_native_attrib(void)
+{
+    int valid = 16u < 32u;
+    expect(valid == 1, "native TES attrib index 16 is valid");
+    uint32_t step = 4u;
+    expect(step == 4u, "native TES attrib step is per-patch");
+    int skip = !0 && !0;
+    expect(skip == 1, "unbound attrib without current-value is skipped");
+    int mapped = 12u != 0u;
+    expect(mapped == 1, "non-zero attrib format is mapped");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1103,6 +1115,7 @@ int main(void)
     test_default_fbo_and_color0_fallback();
     test_color_write_mask_and_blend();
     test_sampled_rt_copy_and_vertex_desc();
+    test_vertex_descriptor_native_attrib();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

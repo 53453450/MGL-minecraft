@@ -8389,6 +8389,22 @@ int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version) {
     return sampled_version != rt_version ? 1 : 0;
 }
 
+int mglRenderNativeAttribIndexValid(uint32_t index) {
+    return index < 32u ? 1 : 0;
+}
+
+uint32_t mglRenderNativeAttribStepFunction(void) {
+    return 4u; /* MTLVertexStepFunctionPerPatch */
+}
+
+int mglRenderSkipUnboundAttrib(int uses_current, int has_binding) {
+    return !uses_current && !has_binding ? 1 : 0;
+}
+
+int mglRenderAttribFormatMapped(uint32_t format) {
+    return format != 0u ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
