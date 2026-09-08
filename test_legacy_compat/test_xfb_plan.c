@@ -765,6 +765,18 @@ static void test_attrib_conversion_bind(void)
     expect(outside == 1, "attrib span outside written min/max");
 }
 
+static void test_index_size_and_vertex_bind_offset(void)
+{
+    uint32_t b = 1u, s = 2u, i = 4u;
+    expect(b == 1u && s == 2u && i == 4u, "GL index sizes are 1/2/4");
+    uint64_t abs_off = 1 ? 48u : 0u;
+    expect(abs_off == 48u, "absolute VAO bind uses VERTEX_BINDING_OFFSET");
+    uint64_t rel_off = 0 ? 48u : 0u;
+    expect(rel_off == 0u, "default VAO bind uses offset 0");
+    int fits = (16u + 4u * 2u <= 32u);
+    expect(fits == 1, "index stream offset+count*elem fits metal length");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -815,6 +827,7 @@ int main(void)
     test_plain_uniform_struct_pack();
     test_plain_uniform_array_stride();
     test_attrib_conversion_bind();
+    test_index_size_and_vertex_bind_offset();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -87,8 +87,7 @@ static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
     if (!outGather || !outGatherCount || !outPrimitiveCount || !outMaxIndex) {
         return false;
     }
-    const uint32_t elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
-        : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    const uint32_t elemBytes = mglRenderGLIndexElementSize((uint64_t)indexType);
     MGLRenderGeometryGatherResult result = {0};
     if (mglRenderGeometryGatherIndices(
             indexBytes, elemBytes, (uint32_t)count,
@@ -527,8 +526,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     uint32_t restartIndex = 0u;
     const bool restartEnabled =
         mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
-    const uint32_t elemWidth = indexType == GL_UNSIGNED_BYTE ? 1u
-        : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    const uint32_t elemWidth = mglRenderGLIndexElementSize((uint64_t)indexType);
     int32_t first = 0;
     uint32_t vertexCount = 0u;
     if (mglRenderPlanCullDistanceElementRange(
@@ -814,11 +812,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     NSUInteger sanitizedIndexOffset = indexOffset;
     uint32_t restartIndex = 0u;
     if (mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex)) {
-        const NSUInteger elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
-            : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+        const NSUInteger elemBytes =
+            (NSUInteger)mglRenderGLIndexElementSize((uint64_t)indexType);
         const NSUInteger streamBytes = (NSUInteger)count * elemBytes;
         if (mglDrawSupportBufferContents(indexBuffer) &&
-            (NSUInteger)indexOffset + streamBytes <= mglDrawSupportBufferLength(indexBuffer)) {
+            mglRenderIndexStreamFits(
+                (uint64_t)indexOffset, (uint64_t)count, (uint32_t)elemBytes,
+                (uint64_t)mglDrawSupportBufferLength(indexBuffer))) {
             uint8_t *copy = malloc(streamBytes);
             if (copy) {
                 if (mglTessSanitizeRestartIndices(

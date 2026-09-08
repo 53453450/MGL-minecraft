@@ -1282,7 +1282,9 @@ static bool mglBindingStateFlushResourceBindings(
         }
 
         NSUInteger attribBindingOffset = (NSUInteger)resolved.binding_offset;
-        if (attribBindingOffset >= mglBindingStateBufferLength(attribMetalBuffer)) {
+        if (!mglRenderBindingOffsetInMetal(
+                (uint64_t)attribBindingOffset,
+                (uint64_t)mglBindingStateBufferLength(attribMetalBuffer))) {
             NSLog(@"MGL VBIND skip attrib=%u buffer=%u: bindingOffset=%lu >= metalLen=%lu",
                   attrib,
                   attribBuffer->name,
@@ -1295,8 +1297,9 @@ static bool mglBindingStateFlushResourceBindings(
          * vertex descriptor (binding_offset + relativeoffset).
          * Absolute mode (BindNoFlush dynamic VAO batches): descriptor has only
          * relativeoffset, so pass VERTEX_BINDING_OFFSET here. */
-        NSUInteger metalBindOffset =
-            _batching.absoluteVertexBindingOffsets ? attribBindingOffset : 0u;
+        NSUInteger metalBindOffset = (NSUInteger)mglRenderVertexMetalBindOffset(
+            _batching.absoluteVertexBindingOffsets ? 1 : 0,
+            (uint64_t)attribBindingOffset);
 	    if (!mglBindingStateIsValid(_bindingStateOwner) ||
                 !mglBindingStateBufferMatches(
                     _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,

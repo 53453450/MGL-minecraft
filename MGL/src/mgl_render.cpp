@@ -7790,6 +7790,30 @@ int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
     return attr_off < written_min || attr_end > written_max ? 1 : 0;
 }
 
+uint64_t mglRenderVertexMetalBindOffset(int absolute_mode,
+                                        uint64_t binding_offset) {
+    return absolute_mode ? binding_offset : 0u;
+}
+
+int mglRenderBindingOffsetInMetal(uint64_t offset, uint64_t metal_len) {
+    return offset < metal_len ? 1 : 0;
+}
+
+int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_bytes,
+                             uint64_t metal_len) {
+    if (elem_bytes == 0u) {
+        return 0;
+    }
+    if (count > UINT64_MAX / elem_bytes) {
+        return 0;
+    }
+    const uint64_t stream = count * elem_bytes;
+    if (offset > UINT64_MAX - stream) {
+        return 0;
+    }
+    return offset + stream <= metal_len ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

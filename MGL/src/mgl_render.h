@@ -1216,6 +1216,11 @@ int mglRenderAttribNeedsConversionBind(int conversion_kind);
 int mglRenderAttribWrittenRangeTracked(int64_t written_min, int64_t written_max);
 int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
                                        int64_t written_min, int64_t written_max);
+uint64_t mglRenderVertexMetalBindOffset(int absolute_mode,
+                                        uint64_t binding_offset);
+int mglRenderBindingOffsetInMetal(uint64_t offset, uint64_t metal_len);
+int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_bytes,
+                             uint64_t metal_len);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
