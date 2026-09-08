@@ -1176,6 +1176,16 @@ static void test_integer_format_component_map(void)
     expect(bytes == 2u, "GL_SHORT integer type is 2 bytes");
 }
 
+static void test_default_read_buffer_index(void)
+{
+    uint32_t front = 0u;
+    expect(front == 0u, "GL_FRONT and GL_BACK map to default _FRONT");
+    uint32_t left = 2u;
+    expect(left == 2u, "GL_LEFT maps to _FRONT_LEFT");
+    uint32_t right = 3u;
+    expect(right == 3u, "GL_RIGHT maps to _FRONT_RIGHT");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1263,6 +1273,7 @@ int main(void)
     test_draw_mode_fully_culled();
     test_texture_target_is_buffer();
     test_integer_format_component_map();
+    test_default_read_buffer_index();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

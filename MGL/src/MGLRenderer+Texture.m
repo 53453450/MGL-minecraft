@@ -2117,22 +2117,15 @@ static void mglTextureCopyTextureToBuffer(
     GLuint mgl_drawbuffer;
     id texture = nil;
 
-    switch(glm_ctx->active_state->read_buffer)
-    {
-        case GL_FRONT: mgl_drawbuffer = _FRONT; break;
-        case GL_BACK: mgl_drawbuffer = _FRONT; break;
-        case GL_FRONT_LEFT: mgl_drawbuffer = _FRONT_LEFT; break;
-        case GL_FRONT_RIGHT: mgl_drawbuffer = _FRONT_RIGHT; break;
-        case GL_BACK_LEFT: mgl_drawbuffer = _FRONT_LEFT; break;
-        case GL_BACK_RIGHT: mgl_drawbuffer = _FRONT_RIGHT; break;
-        case GL_LEFT: mgl_drawbuffer = _FRONT_LEFT; break;
-        case GL_RIGHT: mgl_drawbuffer = _FRONT_RIGHT; break;
-        default:
-            NSLog(@"MGL WARNING: readPixels unsupported default read buffer=0x%x; returning zero data",
-                  (unsigned)glm_ctx->active_state->read_buffer);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
-            return;
+    uint32_t mappedDraw = 0u;
+    if (!mglRenderDefaultReadBufferIndex(
+            (uint32_t)glm_ctx->active_state->read_buffer, &mappedDraw)) {
+        NSLog(@"MGL WARNING: readPixels unsupported default read buffer=0x%x; returning zero data",
+              (unsigned)glm_ctx->active_state->read_buffer);
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
     }
+    mgl_drawbuffer = (int)mappedDraw;
 
     if (mgl_drawbuffer == _FRONT)
     {

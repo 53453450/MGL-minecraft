@@ -8893,6 +8893,35 @@ uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type) {
     }
     return 4u;
 }
+
+int mglRenderDefaultReadBufferIndex(uint32_t read_buffer, uint32_t *out) {
+    uint32_t idx = 0u;
+    int known = 1;
+    switch (read_buffer) {
+    case GL_FRONT:
+    case GL_BACK:
+        idx = 0u; /* _FRONT */
+        break;
+    case GL_FRONT_LEFT:
+    case GL_BACK_LEFT:
+    case GL_LEFT:
+        idx = 2u; /* _FRONT_LEFT */
+        break;
+    case GL_FRONT_RIGHT:
+    case GL_BACK_RIGHT:
+    case GL_RIGHT:
+        idx = 3u; /* _FRONT_RIGHT */
+        break;
+    default:
+        known = 0;
+        idx = 0u;
+        break;
+    }
+    if (out) {
+        *out = idx;
+    }
+    return known;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

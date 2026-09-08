@@ -1370,6 +1370,7 @@ int mglRenderDrawModeFullyCulled(int cull_face, uint32_t cull_face_mode,
 int mglRenderTextureTargetIsBuffer(uint32_t target);
 uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]);
 uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type);
+int mglRenderDefaultReadBufferIndex(uint32_t read_buffer, uint32_t *out);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
