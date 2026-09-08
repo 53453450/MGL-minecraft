@@ -1,9 +1,8 @@
 name: ci
 
+# Automatic CI paused (hosted macos-26 Paravirt differs from physical Apple Silicon).
+# Re-enable push/pull_request triggers when the runner environment is sorted.
 on:
-  push:
-    branches: [main, master]
-  pull_request:
   workflow_dispatch:
     inputs:
       full_gpu:
