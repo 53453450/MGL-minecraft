@@ -2727,13 +2727,15 @@ static void mglTextureCopyTextureToBuffer(
             needsRGBA8Expand = mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, dstPixelFormat);
         }
         if (needsChannelExpand || needsRGBA8Expand) {
-            NSUInteger dstBytesPerPixel = needsChannelExpand
-                ? ((dstPixelFormat == MGLPixelFormatRGBA16Unorm ||
-                    dstPixelFormat == MGLPixelFormatRGBA16Snorm ||
-                    dstPixelFormat == MGLPixelFormatRGBA16Float ||
-                    dstPixelFormat == MGLPixelFormatRGBA16Sint ||
-                    dstPixelFormat == MGLPixelFormatRGBA16Uint) ? 8 : 16)
-                : 4;
+            uint32_t rgbDst = 0u;
+            NSUInteger dstBytesPerPixel = 4u;
+            if (needsChannelExpand &&
+                mglRenderRGBExpandParams(dstPixelFormat, NULL, &rgbDst,
+                                         NULL)) {
+                dstBytesPerPixel = (NSUInteger)rgbDst * 4u;
+            } else if (needsChannelExpand) {
+                dstBytesPerPixel = 16u;
+            }
             NSUInteger cpuBytesPerPixel = (tex->faces[0].levels && level < tex->num_levels &&
                                            tex->faces[0].levels[level].width > 0u &&
                                            tex->faces[0].levels[level].pitch > 0u)
@@ -2893,22 +2895,11 @@ static void mglTextureCopyTextureToBuffer(
                                                               dstPixelFormat);
     NSUInteger dstBytesPerPixel = bytesPerPixel;
     if (needsChannelExpand) {
-        switch (dstPixelFormat) {
-            case MGLPixelFormatRGBA16Unorm:
-            case MGLPixelFormatRGBA16Snorm:
-            case MGLPixelFormatRGBA16Float:
-            case MGLPixelFormatRGBA16Sint:
-            case MGLPixelFormatRGBA16Uint:
-                dstBytesPerPixel = 8;
-                break;
-            case MGLPixelFormatRGBA32Float:
-            case MGLPixelFormatRGBA32Sint:
-            case MGLPixelFormatRGBA32Uint:
-                dstBytesPerPixel = 16;
-                break;
-            default:
-                needsChannelExpand = NO;
-                break;
+        uint32_t rgbDst = 0u;
+        if (mglRenderRGBExpandParams(dstPixelFormat, NULL, &rgbDst, NULL)) {
+            dstBytesPerPixel = (NSUInteger)rgbDst * 4u;
+        } else {
+            needsChannelExpand = NO;
         }
     }
 
@@ -2951,32 +2942,14 @@ static void mglTextureCopyTextureToBuffer(
     uint8_t *packedBytesPtr = (uint8_t *)packedUpload.mutableBytes;
 
     if (needsChannelExpand) {
-        /* Determine component bytes and alpha default for the destination format */
-        NSUInteger srcCompBytes = 0;
-        NSUInteger dstCompBytes = 0;
+        uint32_t srcCompU = 0u, dstCompU = 0u;
         uint64_t alphaDefault = 0;
-        switch (dstPixelFormat) {
-            case MGLPixelFormatRGBA16Unorm:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 65535; break;
-            case MGLPixelFormatRGBA16Snorm:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 32767; break;
-            case MGLPixelFormatRGBA16Float:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 0x3C00; break;
-            case MGLPixelFormatRGBA16Sint:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
-            case MGLPixelFormatRGBA16Uint:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
-            case MGLPixelFormatRGBA32Float:
-                srcCompBytes = 4; dstCompBytes = 4;
-                { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
-                break;
-            case MGLPixelFormatRGBA32Sint:
-                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
-            case MGLPixelFormatRGBA32Uint:
-                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
-            default:
-                return false;
+        if (!mglRenderRGBExpandParams(dstPixelFormat, &srcCompU, &dstCompU,
+                                      &alphaDefault)) {
+            return false;
         }
+        NSUInteger srcCompBytes = srcCompU;
+        NSUInteger dstCompBytes = dstCompU;
         NSUInteger srcPixelBytes = srcCompBytes * 3;  /* 3 channels in source */
         NSUInteger dstPixelBytes = dstCompBytes * 4;  /* 4 channels in destination */
 
@@ -5766,33 +5739,12 @@ static void mglTextureCopyTextureToBuffer(
      * Expand each texel by inserting a default alpha before uploading. */
     NSMutableData *expandedData = nil;
     if (mglTextureNeedsChannelExpansion(tex->internalformat, bufferPixelFormat)) {
-        NSUInteger srcCompBytes = 0;
-        NSUInteger dstCompBytes = 0;
+        uint32_t srcCompU = 0u, dstCompU = 0u;
         uint64_t alphaDefault = 0;
-        switch (bufferPixelFormat) {
-            case MGLPixelFormatRGBA16Unorm:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 65535; break;
-            case MGLPixelFormatRGBA16Snorm:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 32767; break;
-            case MGLPixelFormatRGBA16Float:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 0x3C00; break;
-            case MGLPixelFormatRGBA16Sint:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
-            case MGLPixelFormatRGBA16Uint:
-                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
-            case MGLPixelFormatRGBA32Float:
-                srcCompBytes = 4; dstCompBytes = 4;
-                { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
-                break;
-            case MGLPixelFormatRGBA32Sint:
-                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
-            case MGLPixelFormatRGBA32Uint:
-                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
-            default:
-                break;
-        }
-        if (srcCompBytes > 0) {
-            NSUInteger srcPixelBytes = srcCompBytes * 3;
+        if (mglRenderRGBExpandParams(bufferPixelFormat, &srcCompU, &dstCompU,
+                                     &alphaDefault)) {
+            NSUInteger srcCompBytes = srcCompU;
+            NSUInteger dstCompBytes = dstCompU;
             NSUInteger dstPixelBytes = dstCompBytes * 4;
             NSUInteger expandedBytesPerRow = texWidth * dstPixelBytes;
             NSUInteger expandedPackedBytes = expandedBytesPerRow * texHeight;

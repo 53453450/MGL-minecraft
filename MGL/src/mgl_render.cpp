@@ -6780,6 +6780,63 @@ int mglRenderTextureNeedsChannelExpansion(uint32_t internal_format,
 }
 
 
+extern "C" int mglRenderRGBExpandParams(uint32_t pixel_format,
+                                       uint32_t *src_comp_bytes,
+                                       uint32_t *dst_comp_bytes,
+                                       uint64_t *alpha_default) {
+    uint32_t src = 0u;
+    uint32_t dst = 0u;
+    uint64_t alpha = 0u;
+    switch ((MTL::PixelFormat)pixel_format) {
+    case MTL::PixelFormatRGBA16Unorm:
+        src = 2u;
+        dst = 2u;
+        alpha = 65535u; /* 1.0 in unorm16 */
+        break;
+    case MTL::PixelFormatRGBA16Snorm:
+        src = 2u;
+        dst = 2u;
+        alpha = 32767u; /* 1.0 in snorm16 */
+        break;
+    case MTL::PixelFormatRGBA16Float:
+        src = 2u;
+        dst = 2u;
+        alpha = 0x3C00u; /* 1.0 in half float */
+        break;
+    case MTL::PixelFormatRGBA16Sint:
+    case MTL::PixelFormatRGBA16Uint:
+        src = 2u;
+        dst = 2u;
+        alpha = 1u;
+        break;
+    case MTL::PixelFormatRGBA32Float: {
+        src = 4u;
+        dst = 4u;
+        float f = 1.0f;
+        memcpy(&alpha, &f, sizeof(f));
+        break;
+    }
+    case MTL::PixelFormatRGBA32Sint:
+    case MTL::PixelFormatRGBA32Uint:
+        src = 4u;
+        dst = 4u;
+        alpha = 1u;
+        break;
+    default:
+        return 0;
+    }
+    if (src_comp_bytes) {
+        *src_comp_bytes = src;
+    }
+    if (dst_comp_bytes) {
+        *dst_comp_bytes = dst;
+    }
+    if (alpha_default) {
+        *alpha_default = alpha;
+    }
+    return 1;
+}
+
 extern "C"
 uint8_t* mglRenderCreateChannelExpandedUpload(
     uint32_t internal_format, uint32_t pixel_format, const void* src_data,
@@ -6793,48 +6850,17 @@ uint8_t* mglRenderCreateChannelExpandedUpload(
     }
 
     /* Source and destination parameters (bytes per component / pixel). */
-    size_t src_comp_bytes = 0;
-    size_t dst_comp_bytes = 0;
-    size_t src_pixel_bytes = 0;
-    size_t dst_pixel_bytes = 0;
+    uint32_t src_comp_u = 0u;
+    uint32_t dst_comp_u = 0u;
     uint64_t alpha_default = 0;
-
-    switch ((MTL::PixelFormat)pixel_format) {
-        case MTL::PixelFormatRGBA16Unorm:
-            src_comp_bytes = 2; dst_comp_bytes = 2;
-            src_pixel_bytes = 6; dst_pixel_bytes = 8;
-            alpha_default = 65535; /* 1.0 in unorm16 */
-            break;
-        case MTL::PixelFormatRGBA16Snorm:
-            src_comp_bytes = 2; dst_comp_bytes = 2;
-            src_pixel_bytes = 6; dst_pixel_bytes = 8;
-            alpha_default = 32767; /* 1.0 in snorm16 */
-            break;
-        case MTL::PixelFormatRGBA16Float:
-            src_comp_bytes = 2; dst_comp_bytes = 2;
-            src_pixel_bytes = 6; dst_pixel_bytes = 8;
-            alpha_default = 0x3C00; /* 1.0 in half float */
-            break;
-        case MTL::PixelFormatRGBA16Sint:
-        case MTL::PixelFormatRGBA16Uint:
-            src_comp_bytes = 2; dst_comp_bytes = 2;
-            src_pixel_bytes = 6; dst_pixel_bytes = 8;
-            alpha_default = 1;
-            break;
-        case MTL::PixelFormatRGBA32Float:
-            src_comp_bytes = 4; dst_comp_bytes = 4;
-            src_pixel_bytes = 12; dst_pixel_bytes = 16;
-            { float f = 1.0f; memcpy(&alpha_default, &f, sizeof(f)); }
-            break;
-        case MTL::PixelFormatRGBA32Sint:
-        case MTL::PixelFormatRGBA32Uint:
-            src_comp_bytes = 4; dst_comp_bytes = 4;
-            src_pixel_bytes = 12; dst_pixel_bytes = 16;
-            alpha_default = 1;
-            break;
-        default:
-            return nullptr;
+    if (!mglRenderRGBExpandParams(pixel_format, &src_comp_u, &dst_comp_u,
+                                  &alpha_default)) {
+        return nullptr;
     }
+    size_t src_comp_bytes = src_comp_u;
+    size_t dst_comp_bytes = dst_comp_u;
+    size_t src_pixel_bytes = src_comp_bytes * 3u;
+    size_t dst_pixel_bytes = dst_comp_bytes * 4u;
 
     /* Verify source pixel bytes match the internal format. */
     size_t expected_src_bytes =

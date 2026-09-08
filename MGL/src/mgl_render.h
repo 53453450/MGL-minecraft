@@ -1901,6 +1901,8 @@ uint8_t *mglRenderCreateChannelExpandedUpload(uint32_t internal_format,
                                                  size_t src_bytes_per_row,
                                                  size_t *out_bytes_per_row,
                                                  size_t *out_bytes_per_image);
+int mglRenderRGBExpandParams(uint32_t pixel_format, uint32_t *src_comp_bytes,
+                             uint32_t *dst_comp_bytes, uint64_t *alpha_default);
 uint8_t *mglRenderCreateRGBA8ExpandedUpload(const void *src_data,
                                                size_t width,
                                                size_t height,

@@ -1590,6 +1590,76 @@ static void test_gs_passthrough_decl_type(void)
            "matching same type keeps GS output type");
 }
 
+static int rgb_expand_params(uint32_t fmt, uint32_t *src, uint32_t *dst,
+                             uint64_t *alpha)
+{
+    uint32_t s = 0u, d = 0u;
+    uint64_t a = 0u;
+    switch (fmt) {
+    case 110u: /* RGBA16Unorm */
+        s = 2u;
+        d = 2u;
+        a = 65535u;
+        break;
+    case 112u: /* RGBA16Snorm */
+        s = 2u;
+        d = 2u;
+        a = 32767u;
+        break;
+    case 115u: /* RGBA16Float */
+        s = 2u;
+        d = 2u;
+        a = 0x3C00u;
+        break;
+    case 113u: /* RGBA16Uint */
+    case 114u: /* RGBA16Sint */
+        s = 2u;
+        d = 2u;
+        a = 1u;
+        break;
+    case 125u: { /* RGBA32Float */
+        s = 4u;
+        d = 4u;
+        {
+            float f = 1.0f;
+            memcpy(&a, &f, sizeof(f));
+        }
+        break;
+    }
+    case 123u: /* RGBA32Uint */
+    case 124u: /* RGBA32Sint */
+        s = 4u;
+        d = 4u;
+        a = 1u;
+        break;
+    default:
+        return 0;
+    }
+    if (src)
+        *src = s;
+    if (dst)
+        *dst = d;
+    if (alpha)
+        *alpha = a;
+    return 1;
+}
+
+static void test_rgb_expand_params(void)
+{
+    uint32_t src = 0u, dst = 0u;
+    uint64_t alpha = 0u;
+    expect(rgb_expand_params(110u, &src, &dst, &alpha) && src == 2u &&
+               dst == 2u && alpha == 65535u,
+           "RGBA16Unorm RGB expand is 2-byte unorm 1.0 alpha");
+    expect(rgb_expand_params(125u, &src, &dst, &alpha) && src == 4u &&
+               dst == 4u,
+           "RGBA32Float RGB expand is 4-byte components");
+    expect(rgb_expand_params(110u, NULL, &dst, NULL) && dst * 4u == 8u,
+           "RGBA16 family dst bpp is 8");
+    expect(rgb_expand_params(0u, &src, &dst, &alpha) == 0,
+           "unknown pixel format has no RGB expand params");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1718,6 +1788,7 @@ int main(void)
     test_state_repair_defaults();
     test_native_tes_raster_draw_mode();
     test_gs_passthrough_decl_type();
+    test_rgb_expand_params();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
