@@ -847,6 +847,10 @@ static void test_fallback_sampled_format(void)
     expect(fmt_u == 73u, "uint sampled fallback is RGBA8Uint");
     uint32_t fmt_d = 252u;
     expect(fmt_d == 252u, "depth sampled fallback is Depth32Float");
+    uint32_t fmt_f = 70u;
+    expect(fmt_f == 70u, "float sampled fallback is RGBA8Unorm");
+    uint32_t fmt_s = 74u;
+    expect(fmt_s == 74u, "sint sampled fallback is RGBA8Sint");
     uint64_t key = ((uint64_t)2u << 8u) | 3u;
     expect(key == 0x203u, "fallback cache key packs type+kind");
 }

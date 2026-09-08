@@ -6286,7 +6286,8 @@ static void mglTextureCopyTextureToBuffer(
 
     MGLRenderTextureDescriptorState desc = {
         .texture_type = MGLTextureType2D,
-        .pixel_format = MGLPixelFormatRGBA8Unorm,
+        .pixel_format = mglRenderFallbackSampledPixelFormat(
+            (uint32_t)MGLTextureDataKindFloat),
         .width = 1u, .height = 1u, .depth = 1u,
         .mipmap_level_count = 1u, .sample_count = 1u, .array_length = 1u,
         .usage = MGL_TEXTURE_USAGE_SHADER_READ,
@@ -6323,7 +6324,8 @@ static void mglTextureCopyTextureToBuffer(
 
     MGLRenderTextureDescriptorState desc = {
         .texture_type = MGLTextureTypeCube,
-        .pixel_format = MGLPixelFormatRGBA8Unorm,
+        .pixel_format = mglRenderFallbackSampledPixelFormat(
+            (uint32_t)MGLTextureDataKindFloat),
         .width = 1u, .height = 1u, .depth = 1u,
         .array_length = 1u, .mipmap_level_count = 1u, .sample_count = 1u,
         .usage = MGL_TEXTURE_USAGE_SHADER_READ,
@@ -6389,7 +6391,8 @@ static void mglTextureCopyTextureToBuffer(
 
     MGLRenderTextureDescriptorState desc = {
         .texture_type = MGLTextureTypeTextureBuffer,
-        .pixel_format = MGLPixelFormatRGBA8Sint,
+        .pixel_format = mglRenderFallbackSampledPixelFormat(
+            (uint32_t)MGLTextureDataKindSint),
         .width = kFallbackTexelCount, .height = 1u, .depth = 1u,
         .array_length = 1u, .mipmap_level_count = 1u, .sample_count = 1u,
         .usage = MGL_TEXTURE_USAGE_SHADER_READ,
