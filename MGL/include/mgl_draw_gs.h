@@ -141,6 +141,15 @@ void mglDrawGsPlanXFBDestinations(MGLAIRGSXFBScatterParams *params,
                                   const MGLGsXFBBufferBinding bindings[MGL_AIR_GS_MAX_STREAMS],
                                   MGLGsXFBDestPlan *out);
 
+void mglDrawGsFillXFBScatterRuntime(MGLAIRGSXFBScatterParams *params,
+                                    uint32_t buffer_count,
+                                    uint32_t work_item_count,
+                                    uint32_t output_stride,
+                                    uint32_t records_per_primitive,
+                                    uint32_t output_primitive);
+uint64_t mglDrawGsXFBVisBytes(uint32_t work_item_count);
+int mglDrawGsXFBActive(int has_xfb, int active, int paused);
+
 void mglDrawGsFillXFBMetaFromDest(const MGLAIRGSXFBScatterParams *params,
                                   const MGLGsXFBDestPlan *dest,
                                   MGLAIRGSXFBMeta *out);

@@ -437,7 +437,9 @@ typedef struct {
             binding->initialization_length = bindPlan.init_length;
         }
 
-        if (bindPlan.writable && buffer && bindPlan.init_length > 0u &&
+        if (mglTessIsolatedNeedsCopyBack(bindPlan.writable ? 1 : 0,
+                                         buffer ? 1 : 0,
+                                         bindPlan.init_length) &&
             ![self recordStageBindingCopyBack:copyBacks
                                        atIndex:metalBindingIndex
                                      temporary:isolated

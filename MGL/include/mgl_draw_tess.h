@@ -451,6 +451,8 @@ int mglTessPlanIndexedStageIn(uint32_t index_type, uint64_t index_offset,
                               MGLTessIndexedStageInPlan *out);
 int mglTessCommandBufferNeedsNew(int has_state, uint32_t status);
 int mglTessCommandBufferCanInitBlit(int has_state, uint32_t status);
+int mglTessIsolatedNeedsCopyBack(int writable, int has_source,
+                                 uint32_t init_length);
 
 int mglTessStageInUseCurrentValue(uint32_t enabled_attribs, uint32_t attrib,
                                   int has_binding);

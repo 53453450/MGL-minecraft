@@ -1722,6 +1722,12 @@ extern "C" int mglTessCommandBufferCanInitBlit(int has_state, uint32_t status)
     return has_state && status == 0u ? 1 : 0;
 }
 
+extern "C" int mglTessIsolatedNeedsCopyBack(int writable, int has_source,
+                                            uint32_t init_length)
+{
+    return writable && has_source && init_length > 0u ? 1 : 0;
+}
+
 extern "C" int mglTessStageInUseCurrentValue(uint32_t enabled_attribs,
                                              uint32_t attrib, int has_binding)
 {

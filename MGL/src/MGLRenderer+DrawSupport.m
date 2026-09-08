@@ -1330,10 +1330,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return YES;
     }
     MGLRenderCommandBufferState commandState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
-            &commandState) ||
-        commandState.status >= 2u) {
+    const int hasCommandState = mglRenderCommandBufferOwnerHasState(
+        _renderPassManager.state->currentCommandBufferOwner, &commandState);
+    if (mglTessCommandBufferNeedsNew(hasCommandState, commandState.status)) {
         if (![self newCommandBuffer]) {
             drawCtx->active_state->dirty_bits = DIRTY_ALL;
             return YES;
@@ -1381,7 +1380,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
     MGLStageBindingCopyBackList stageCopyBacks = {0};
 
     TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
-    const bool xfbActive = xfbState && xfbState->active && !xfbState->paused;
+    const bool xfbActive = mglDrawGsXFBActive(
+        xfbState != NULL, xfbState && xfbState->active,
+        xfbState && xfbState->paused) != 0;
     const BOOL xfbDiag = getenv("MGL_GS_XFB_DIAG") != NULL;
 
     /* ---- GL4 ordered multi-buffer XFB (mgl_air_gs_abi.h §5b) ----
@@ -1493,17 +1494,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                       (unsigned long)physTotal, bufferDstMTL[b]);
             }
         }
-        scatterParams.buffer_count = xfbBufferCount;
-        scatterParams.work_item_count = (uint32_t)workItemCount;
-        scatterParams.stage_out_stride = (uint32_t)outputStride;
-        scatterParams.records_per_primitive = (uint32_t)recordsPerPrimitive;
-        scatterParams.vertices_per_primitive =
-            (uint32_t)(outputPrimitive == MGL_DRAW_PRIMITIVE_POINT
-                           ? 1u
-                           : (outputPrimitive == MGL_DRAW_PRIMITIVE_LINE
-                                  ? 2u
-                                  : 3u));
-        scatterParams.expanded_offset_records = MGL_AIR_GS_HEADER_RECORDS;
+        mglDrawGsFillXFBScatterRuntime(
+            &scatterParams, xfbBufferCount, (uint32_t)workItemCount,
+            (uint32_t)outputStride, (uint32_t)recordsPerPrimitive,
+            outputPrimitive);
 
         if (physTotal > 0u && xfbBufferCount > 0u) {
             xfbTemporary = mglDrawSupportCreateBuffer(_device, physTotal, 0u);
@@ -1513,8 +1507,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                 xfbCaptureBuffer = xfbTemporary;
             }
             const NSUInteger visBytes =
-                (NSUInteger)workItemCount * MGL_AIR_GS_MAX_STREAMS *
-                sizeof(uint32_t);
+                (NSUInteger)mglDrawGsXFBVisBytes((uint32_t)workItemCount);
             xfbVisBuffer = mglDrawSupportCreateBuffer(_device, visBytes, 0u);
             xfbOffsetBuffer = mglDrawSupportCreateBuffer(_device, visBytes, 0u);
             xfbWrittenBuffer =

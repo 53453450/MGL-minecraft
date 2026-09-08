@@ -743,6 +743,41 @@ extern "C" void mglDrawGsPlanXFBDestinations(
     out->phys_total = (uint32_t)phys_total;
 }
 
+extern "C" void mglDrawGsFillXFBScatterRuntime(
+    MGLAIRGSXFBScatterParams *params, uint32_t buffer_count,
+    uint32_t work_item_count, uint32_t output_stride,
+    uint32_t records_per_primitive, uint32_t output_primitive)
+{
+    if (!params) {
+        return;
+    }
+    params->buffer_count = buffer_count;
+    params->work_item_count = work_item_count;
+    params->stage_out_stride = output_stride;
+    params->records_per_primitive = records_per_primitive;
+    params->vertices_per_primitive =
+        output_primitive == MGL_DRAW_PRIMITIVE_POINT
+            ? 1u
+            : (output_primitive == MGL_DRAW_PRIMITIVE_LINE ? 2u : 3u);
+    params->expanded_offset_records = MGL_AIR_GS_HEADER_RECORDS;
+}
+
+extern "C" uint64_t mglDrawGsXFBVisBytes(uint32_t work_item_count)
+{
+    uint64_t n = 0u;
+    if (__builtin_mul_overflow((uint64_t)work_item_count,
+                               (uint64_t)MGL_AIR_GS_MAX_STREAMS, &n) ||
+        __builtin_mul_overflow(n, (uint64_t)sizeof(uint32_t), &n)) {
+        return 0u;
+    }
+    return n;
+}
+
+extern "C" int mglDrawGsXFBActive(int has_xfb, int active, int paused)
+{
+    return has_xfb && active && !paused ? 1 : 0;
+}
+
 extern "C" void mglDrawGsFillXFBMetaFromDest(
     const MGLAIRGSXFBScatterParams *params, const MGLGsXFBDestPlan *dest,
     MGLAIRGSXFBMeta *out)

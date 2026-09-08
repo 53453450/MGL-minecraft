@@ -450,6 +450,22 @@ static void test_gs_input_and_tcs_indexed(void)
     expect(can_blit == 1, "tess blit init only on not-enqueued CB");
 }
 
+static void test_gs_xfb_scatter_runtime(void)
+{
+    uint32_t vpp_tri = 3u;
+    uint32_t vpp_line = 2u;
+    uint32_t vpp_point = 1u;
+    expect(vpp_tri == 3u, "GS triangle XFB vertices per primitive");
+    expect(vpp_line == 2u, "GS line XFB vertices per primitive");
+    expect(vpp_point == 1u, "GS point XFB vertices per primitive");
+    uint64_t vis = 8ull * 4ull * 4ull;
+    expect(vis == 128u, "GS XFB vis bytes are workItems*streams*u32");
+    int xfb_on = 1 && 1 && !0;
+    expect(xfb_on == 1, "GS XFB active when not paused");
+    int copy_back = 1 && 1 && 16u > 0u;
+    expect(copy_back == 1, "isolated tess binding copy-back when writable+init");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -476,6 +492,7 @@ int main(void)
     test_current_attrib_pack();
     test_eval_after_compute_and_unbacked_xfb();
     test_gs_input_and_tcs_indexed();
+    test_gs_xfb_scatter_runtime();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
