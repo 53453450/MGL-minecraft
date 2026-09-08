@@ -1210,6 +1210,10 @@ uint32_t mglRenderRequiredBindingBytesForMap(int resource_type,
 int mglRenderUseUniformConstantInline(int is_base, int resource_type,
                                       int has_cpu, int64_t offset,
                                       uint32_t required, uint32_t scratch);
+int mglRenderIsolateUBOPrefersCPUShadow(uint32_t resource_type, int has_buf,
+                                        int has_cpu, int64_t offset);
+int mglRenderIsolateUBOUsesFullStore(uint32_t resource_type);
+uint64_t mglRenderIsolateCopyLength(uint64_t src_bytes, uint64_t required);
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
 int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind, int already_present);
 int mglRenderAttribNeedsConversionBind(int conversion_kind);

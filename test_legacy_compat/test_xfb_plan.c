@@ -2335,6 +2335,26 @@ static void test_gs_air_route_block(void)
     expect(gs_stage_blocks(3, 2u, &blob, 16u) == 1, "mesh GS route blocks here");
 }
 
+static int ubo_prefers_cpu(uint32_t t, int has_buf, int has_cpu, int64_t off)
+{
+    return t == 1u && has_buf && has_cpu && off >= 0;
+}
+static int ubo_uses_full_store(uint32_t t) { return t == 1u; }
+static uint64_t isolate_copy_len(uint64_t src, uint64_t req)
+{
+    return src > req ? req : src;
+}
+
+static void test_ubo_isolate_copy(void)
+{
+    expect(ubo_prefers_cpu(1u, 1, 1, 0) == 1, "UBO with CPU shadow prefers it");
+    expect(ubo_prefers_cpu(3u, 1, 1, 0) == 0, "SSBO does not prefer CPU shadow");
+    expect(ubo_prefers_cpu(1u, 1, 0, 0) == 0, "UBO without CPU data uses Metal");
+    expect(ubo_uses_full_store(1u) == 1, "UBO isolate copies full store");
+    expect(ubo_uses_full_store(3u) == 0, "SSBO isolate copies visible range");
+    expect(isolate_copy_len(64u, 32u) == 32u, "copy clamps to required");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2499,6 +2519,7 @@ int main(void)
     test_array_stage_binding();
     test_vertex_capture_load();
     test_gs_air_route_block();
+    test_ubo_isolate_copy();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

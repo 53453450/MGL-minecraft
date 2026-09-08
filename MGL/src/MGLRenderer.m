@@ -4182,13 +4182,13 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     memset(mglRendererBufferContents(isolated), 0, requiredLength);
     /* For UBOs, prefer the CPU shadow when present: the Metal backing may
      * not yet reflect a recent glBufferData before the first draw bind. */
-    if (map->resource_type == _UNIFORM_BUFFER_RES &&
-        map->buf && map->buf->data.buffer_data && map->offset >= 0) {
+    if (mglRenderIsolateUBOPrefersCPUShadow(
+            (uint32_t)map->resource_type, map->buf != NULL,
+            map->buf && map->buf->data.buffer_data, map->offset)) {
         size_t copyLength = mglBufferMapAvailableBackingBytes(
             map, (size_t)map->buf->size);
-        if (copyLength > requiredLength) {
-            copyLength = requiredLength;
-        }
+        copyLength = (size_t)mglRenderIsolateCopyLength(copyLength,
+                                                        requiredLength);
         if (copyLength > 0) {
             memcpy(mglRendererBufferContents(isolated),
                    ((const uint8_t *)(uintptr_t)map->buf->data.buffer_data) +
@@ -4204,12 +4204,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 
     /* For UBOs, prefer the underlying store over the (possibly short) indexed
      * range so trailing std140 members remain visible after padding. */
-    size_t copyLength = (map->resource_type == _UNIFORM_BUFFER_RES)
+    size_t copyLength = mglRenderIsolateUBOUsesFullStore(
+                            (uint32_t)map->resource_type)
         ? mglBufferMapAvailableBackingBytes(map, mglRendererBufferLength(source))
         : mglBufferMapVisibleBackingBytes(map, mglRendererBufferLength(source));
-    if (copyLength > requiredLength) {
-        copyLength = requiredLength;
-    }
+    copyLength = (size_t)mglRenderIsolateCopyLength(copyLength, requiredLength);
     if (copyLength > 0) {
         memcpy(mglRendererBufferContents(isolated),
                ((const uint8_t *)mglRendererBufferContents(source)) + (size_t)map->offset,

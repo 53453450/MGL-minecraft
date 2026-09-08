@@ -7791,6 +7791,22 @@ int mglRenderUseUniformConstantInline(int is_base, int resource_type,
                : 0;
 }
 
+int mglRenderIsolateUBOPrefersCPUShadow(uint32_t resource_type, int has_buf,
+                                        int has_cpu, int64_t offset) {
+    return resource_type == (uint32_t)_UNIFORM_BUFFER_RES && has_buf &&
+                   has_cpu && offset >= 0
+               ? 1
+               : 0;
+}
+
+int mglRenderIsolateUBOUsesFullStore(uint32_t resource_type) {
+    return resource_type == (uint32_t)_UNIFORM_BUFFER_RES ? 1 : 0;
+}
+
+uint64_t mglRenderIsolateCopyLength(uint64_t src_bytes, uint64_t required) {
+    return src_bytes > required ? required : src_bytes;
+}
+
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
     return shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
                    shader_gl_type == GL_INT_VEC3 ||
