@@ -14,12 +14,7 @@
 #import "MGLRenderer_Private.h"
 #include "mgl_shader_abi.h"
 #include "mgl_air_loader.h"   /* MGLRenderPipelineDescriptorState */
-
-/* GL type -> Metal vertex-format value for TES control-point inputs. */
-static uint32_t mglTessControlPointFormat(GLenum type)
-{
-    return mglRenderTessControlPointFormat((uint64_t)type);
-}
+#include "mgl_draw_tess.h"
 
 @implementation MGLRenderer (VertexLayout)
 
@@ -32,47 +27,26 @@ static uint32_t mglTessControlPointFormat(GLenum type)
     }
     state->attrib_count = 0u;
     if (_tessellation.nativeTESActive) {
-
-        state->attrib_format[0] = mglDoubleVertexAttribFloatFormat(4u);
-        state->attrib_offset[0] = 0u;
-        state->attrib_buffer_index[0] = 0u;
-        state->attrib_stride[0] = (uint32_t)_tessellation.tcsOutputStride;
-        state->attrib_step_function[0] =
-            4u;
-        state->attrib_step_rate[0] = 1u;
-        state->attrib_count = 1u;
-        Program *tesProgram = _tessellation.nativeTESProgram;
-        MGLShaderResourceList *inputs = tesProgram
-            ? &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
-                                                  [_STAGE_INPUT_RES]
-            : NULL;
-        for (GLuint i = 0; inputs && inputs->list && i < inputs->count; i++) {
-            MGLShaderResource *input = &inputs->list[i];
-            if (input->is_per_patch || input->location >= 30u) continue;
-            uint32_t format = mglTessControlPointFormat(input->gl_type);
-            if (format == 0u) {
-                NSLog(@"MGL TESS ERROR: unsupported control-point varying type "
-                      "0x%x for %@", (unsigned)input->gl_type,
-                      input->name ? [NSString stringWithUTF8String:input->name]
-                                  : @"?");
-                return NO;
-            }
-            NSUInteger attribute = (NSUInteger)input->location + 1u;
-            if (attribute >= 32u) continue;
-            state->attrib_format[attribute] = (uint32_t)format;
-            state->attrib_offset[attribute] =
-                (uint32_t)(MGL_AIR_PER_VERTEX_STRIDE +
-                           (NSUInteger)input->location * 16u);
-            state->attrib_buffer_index[attribute] = 0u;
-            state->attrib_stride[attribute] =
-                (uint32_t)_tessellation.tcsOutputStride;
-            state->attrib_step_function[attribute] =
-                4u;
-            state->attrib_step_rate[attribute] = 1u;
-            if (attribute + 1u > state->attrib_count) {
-                state->attrib_count = (uint32_t)(attribute + 1u);
-            }
+        MGLTessNativeVertexPlan nativePlan = {0};
+        if (!mglTessPlanNativeVertexDescriptor(
+                _tessellation.nativeTESProgram,
+                (uint32_t)_tessellation.tcsOutputStride, &nativePlan)) {
+            NSLog(@"MGL TESS ERROR: unsupported native TES control-point layout");
+            return NO;
         }
+        for (uint32_t a = 0u; a < nativePlan.n_attribs; a++) {
+            const uint32_t attribute = nativePlan.attribs[a].index;
+            if (attribute >= 32u) {
+                continue;
+            }
+            state->attrib_format[attribute] = nativePlan.attribs[a].format;
+            state->attrib_offset[attribute] = nativePlan.attribs[a].offset;
+            state->attrib_buffer_index[attribute] = 0u;
+            state->attrib_stride[attribute] = nativePlan.stride;
+            state->attrib_step_function[attribute] = 4u;
+            state->attrib_step_rate[attribute] = 1u;
+        }
+        state->attrib_count = nativePlan.attrib_count;
         return YES;
     }
     VertexArray *vao = mglRendererGetValidatedVAO(ctx, __FUNCTION__);
@@ -111,7 +85,6 @@ static uint32_t mglTessControlPointFormat(GLenum type)
         }
 
         {
-            uint32_t format;
             Buffer *attribBuffer = hasAttribBinding ? resolved.buffer : NULL;
 
             if (!usesCurrentValue && !attribBuffer)
@@ -120,67 +93,24 @@ static uint32_t mglTessControlPointFormat(GLenum type)
                 return NO;
             }
 
-            GLboolean normalized = vao->attrib[i].normalized;
-            if (!normalized &&
-                vao->attrib[i].type == GL_UNSIGNED_BYTE &&
-                vao->attrib[i].size == 4 &&
-                mglRendererVertexAttribIsColorInput(activeProgram, i)) {
-                normalized = GL_TRUE;
-            }
-
-            bool needsConversion = false;
-            if (vao->attrib[i].type == GL_DOUBLE) {
-                needsConversion = true;
-            } else if (vao->attrib[i].integer == 0 &&
-                       (vao->attrib[i].type == GL_INT ||
-                        vao->attrib[i].type == GL_UNSIGNED_INT)) {
-                needsConversion = true;
-            } else if (vao->attrib[i].type == GL_FIXED ||
-                       vao->attrib[i].type == GL_UNSIGNED_INT_10_10_10_2 ||
-                       vao->attrib[i].type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                needsConversion = true;
-            } else if (vao->attrib[i].integer == 1) {
-                MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
-                GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
-                if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
-                                                    shaderGlType,
-                                                    vao->attrib[i].size,
-                                                    NULL)) {
-                    needsConversion = true;
-                }
-            }
-
-            if (vao->attrib[i].type == GL_DOUBLE) {
-                format = mglDoubleVertexAttribFloatFormat(vao->attrib[i].size);
-            } else if (vao->attrib[i].integer == 0 &&
-                       (vao->attrib[i].type == GL_INT ||
-                        vao->attrib[i].type == GL_UNSIGNED_INT)) {
-                format = mglDoubleVertexAttribFloatFormat(vao->attrib[i].size);
-            } else if (vao->attrib[i].type == GL_FIXED) {
-                format = mglDoubleVertexAttribFloatFormat(vao->attrib[i].size);
-            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10_10_10_2) {
-                format = mglDoubleVertexAttribFloatFormat(4u);
-            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                format = mglDoubleVertexAttribFloatFormat(3u);
-            } else if (vao->attrib[i].integer == 1) {
-                uint32_t convertedFormat = 0u;
-                MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
-                GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
-                if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
-                                                    shaderGlType,
-                                                    vao->attrib[i].size,
-                                                    &convertedFormat) &&
-                    convertedFormat != 0u) {
-                    format = convertedFormat;
-                } else {
-                    format = glTypeSizeToMtlType(vao->attrib[i].type,
-                                                 vao->attrib[i].size,
-                                                 normalized);
-                }
-            } else {
+            MGLShaderResource *attrRes =
+                mglRendererProgramVertexAttribResource(activeProgram, i);
+            GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
+            uint32_t format = 0u;
+            int needsConversion = 0;
+            int effectiveNormalized = 0;
+            int useGeneric = 0;
+            mglRenderPlanVertexAttribFormat(
+                (uint32_t)vao->attrib[i].type, (uint32_t)vao->attrib[i].size,
+                vao->attrib[i].integer ? 1 : 0,
+                vao->attrib[i].normalized ? 1 : 0,
+                mglRendererVertexAttribIsColorInput(activeProgram, i) ? 1 : 0,
+                (uint32_t)shaderGlType, &format, &needsConversion,
+                &effectiveNormalized, &useGeneric);
+            if (useGeneric) {
                 format = glTypeSizeToMtlType(vao->attrib[i].type,
                                              vao->attrib[i].size,
-                                             normalized);
+                                             effectiveNormalized != 0);
             }
 
             if (format == 0u)
@@ -198,73 +128,20 @@ static uint32_t mglTessControlPointFormat(GLenum type)
                 return NO;
             }
 
-            uint32_t attribOffset;
-            if (usesCurrentValue) {
-                /* Packed current-value pool (shared Metal slot): attrib i
-                 * reads its 16B value block at the base of its own pool
-                 * segment; the buffer stride is 16 so vertex v lands at
-                 * i*(repeat*16) + v*16 inside the shared buffer.  This
-                 * keeps N current-value attribs on ONE Metal slot instead
-                 * of N (a 16-element attrib array driven by
-                 * glVertexAttrib4f would otherwise overflow slot 30). */
-                attribOffset = (uint32_t)i * kMGLCurrentAttribPoolStride;
-            } else if (needsConversion || _batching.absoluteVertexBindingOffsets) {
-                attribOffset = (uint32_t)resolved.relativeoffset;
-            } else {
-                attribOffset = (uint32_t)(resolved.binding_offset + resolved.relativeoffset);
-            }
+            uint32_t attribOffset = mglRenderPlanVertexAttribOffset(
+                usesCurrentValue ? 1 : 0, needsConversion,
+                _batching.absoluteVertexBindingOffsets ? 1 : 0, i,
+                kMGLCurrentAttribPoolStride,
+                (uint32_t)resolved.relativeoffset,
+                (uint32_t)resolved.binding_offset);
 
-            NSUInteger stride = 0u;
-            if (usesCurrentValue) {
-                stride = 16u;
-            } else if (vao->attrib[i].type == GL_DOUBLE) {
-                NSUInteger doubleStride = resolved.stride > 0
-                    ? (NSUInteger)resolved.stride
-                    : (NSUInteger)(vao->attrib[i].size * sizeof(GLdouble));
-                stride = mglAlignVertexStrideForMetal(doubleStride);
-            } else if (vao->attrib[i].integer == 0 &&
-                       (vao->attrib[i].type == GL_INT ||
-                        vao->attrib[i].type == GL_UNSIGNED_INT)) {
-                NSUInteger intStride = resolved.stride > 0
-                    ? (NSUInteger)resolved.stride
-                    : (NSUInteger)(vao->attrib[i].size * sizeof(GLint));
-                stride = mglAlignVertexStrideForMetal(intStride);
-            } else if (vao->attrib[i].type == GL_FIXED) {
-                NSUInteger fixedStride = resolved.stride > 0
-                    ? (NSUInteger)resolved.stride
-                    : (NSUInteger)(vao->attrib[i].size * sizeof(int32_t));
-                stride = mglAlignVertexStrideForMetal(MAX(fixedStride, (NSUInteger)(vao->attrib[i].size * sizeof(GLfloat))));
-            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10_10_10_2) {
-                NSUInteger packedStride = resolved.stride > 0
-                    ? (NSUInteger)resolved.stride
-                    : (NSUInteger)sizeof(uint32_t);
-                stride = mglAlignVertexStrideForMetal(MAX(packedStride, 4u * sizeof(GLfloat)));
-            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                NSUInteger packedStride = resolved.stride > 0
-                    ? (NSUInteger)resolved.stride
-                    : (NSUInteger)sizeof(uint32_t);
-                stride = mglAlignVertexStrideForMetal(MAX(packedStride, 3u * sizeof(GLfloat)));
-            } else if (vao->attrib[i].integer == 1) {
-                uint32_t convertedFormat = 0u;
-                MGLShaderResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
-                GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
-                if (mglIntegerAttribNeedsConversion(vao->attrib[i].type,
-                                                    shaderGlType,
-                                                    vao->attrib[i].size,
-                                                    &convertedFormat) &&
-                    convertedFormat != 0u) {
-                    stride = mglAlignVertexStrideForMetal(
-                        (NSUInteger)vao->attrib[i].size * sizeof(GLint));
-                } else if (layoutStride[mapped_buffer_index] == 0) {
-                    stride = resolved.stride;
-                } else {
-                    stride = layoutStride[mapped_buffer_index];
-                }
-            } else if (layoutStride[mapped_buffer_index] == 0) {
-                stride = resolved.stride;
-            } else {
-                stride = layoutStride[mapped_buffer_index];
-            }
+            uint32_t stride = mglRenderPlanVertexAttribStride(
+                (uint32_t)vao->attrib[i].type, (uint32_t)vao->attrib[i].size,
+                vao->attrib[i].integer ? 1 : 0, usesCurrentValue ? 1 : 0,
+                (vao->attrib[i].integer && needsConversion && !useGeneric) ? 1
+                                                                          : 0,
+                (uint32_t)resolved.stride,
+                (uint32_t)layoutStride[mapped_buffer_index]);
             layoutStride[mapped_buffer_index] = stride;
 
             state->attrib_format[i] = (uint32_t)format;

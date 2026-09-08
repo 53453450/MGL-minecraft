@@ -1564,34 +1564,39 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                 const bool sessionOffsetOK =
                     xfbState->buffer_write_offsets[varying] <=
                     (GLuint64)NSUIntegerMax;
-                const NSUInteger sessionOffset =
+                const uint64_t sessionOffset =
                     sessionOffsetOK
-                        ? (NSUInteger)xfbState->buffer_write_offsets[varying]
+                        ? (uint64_t)xfbState->buffer_write_offsets[varying]
                         : 0u;
-                NSUInteger destOffset = 0u;
-                NSUInteger maxVerts = xfbCopiedVertices;
+                uint64_t visible = 0u;
                 if (destMTL && slot->offset >= 0) {
                     BufferMap xfbMap = {0};
                     xfbMap.buf = destBuf;
                     xfbMap.offset = slot->offset;
                     xfbMap.size = slot->size;
-                    NSUInteger visible = mglBufferMapVisibleBackingBytes(
+                    visible = (uint64_t)mglBufferMapVisibleBackingBytes(
                         &xfbMap, (size_t)mglTessBufferLength(destMTL));
-                    if (sessionOffset <= visible &&
-                        (NSUInteger)slot->offset <=
-                            NSUIntegerMax - sessionOffset) {
-                        destOffset =
-                            (NSUInteger)slot->offset + sessionOffset;
-                        NSUInteger remain = visible - sessionOffset;
-                        maxVerts = MIN(maxVerts, remain / fieldBytes);
-                    } else {
-                        maxVerts = 0u;
+                }
+                MGLXfbVsBufferDest dest = {0};
+                if (destMTL && slot->offset >= 0) {
+                    if (!mglXfbPlanVsBufferDest(
+                            (uint32_t)xfbCopiedVertices, fieldBytes, 1,
+                            slot->offset, sessionOffset, visible, &dest) ||
+                        dest.skip) {
+                        continue;
+                    }
+                } else {
+                    dest.written_records = (uint32_t)xfbCopiedVertices;
+                    dest.written_bytes =
+                        (uint32_t)xfbCopiedVertices * fieldBytes;
+                    dest.destination_offset = 0u;
+                    if (dest.written_records == 0u) {
+                        continue;
                     }
                 }
-                if (maxVerts == 0u) {
-                    continue;
-                }
-                NSUInteger written = maxVerts * fieldBytes;
+                NSUInteger destOffset = (NSUInteger)dest.destination_offset;
+                NSUInteger maxVerts = dest.written_records;
+                NSUInteger written = dest.written_bytes;
                 uint8_t *packed = (uint8_t *)calloc(1u, written);
                 if (!packed) {
                     NSLog(@"MGL TESS XFB: OOM packing separate attrib %d",

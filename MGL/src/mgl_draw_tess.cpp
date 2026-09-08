@@ -632,6 +632,56 @@ extern "C" void mglTessPlanRasterQuery(const Program *tes,
     out->written = written;
 }
 
+extern "C" int mglTessPlanNativeVertexDescriptor(
+    const Program *tes, uint32_t tcs_output_stride,
+    MGLTessNativeVertexPlan *out)
+{
+    if (!out || tcs_output_stride == 0u) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    out->stride = tcs_output_stride;
+    out->attribs[0].index = 0u;
+    out->attribs[0].format = mglRenderDoubleVertexAttribFloatFormat(4u);
+    out->attribs[0].offset = 0u;
+    out->n_attribs = 1u;
+    out->attrib_count = 1u;
+    const MGLShaderResourceList *inputs =
+        tes ? &tes->shader_resources_list[_TESS_EVALUATION_SHADER]
+                                        [_STAGE_INPUT_RES]
+            : NULL;
+    if (!inputs || !inputs->list) {
+        return 1;
+    }
+    for (GLuint i = 0; i < inputs->count; i++) {
+        const MGLShaderResource *input = &inputs->list[i];
+        if (input->is_per_patch || input->location >= 30u) {
+            continue;
+        }
+        const uint32_t format =
+            mglRenderTessControlPointFormat((uint64_t)input->gl_type);
+        if (format == 0u) {
+            return 0;
+        }
+        const uint32_t attribute = (uint32_t)input->location + 1u;
+        if (attribute >= 32u) {
+            continue;
+        }
+        if (out->n_attribs >= 32u) {
+            return 0;
+        }
+        out->attribs[out->n_attribs].index = attribute;
+        out->attribs[out->n_attribs].format = format;
+        out->attribs[out->n_attribs].offset =
+            MGL_AIR_PER_VERTEX_STRIDE + (uint32_t)input->location * 16u;
+        out->n_attribs++;
+        if (attribute + 1u > out->attrib_count) {
+            out->attrib_count = attribute + 1u;
+        }
+    }
+    return 1;
+}
+
 extern "C" uint32_t mglTessSeedEvalOutputRecords(
     Program *tes, const void *factor_bytes, uint32_t patch_count,
     uint32_t instance_count, void *records, uint64_t records_bytes,

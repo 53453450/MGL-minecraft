@@ -7657,6 +7657,131 @@ uint32_t mglRenderIntegerAttribConversionFormat(
     return static_cast<uint32_t>(MTL::VertexFormatInvalid);
 }
 
+extern "C" void mglRenderPlanVertexAttribFormat(
+    uint32_t type, uint32_t size, int integer, int normalized,
+    int is_color_input, uint32_t shader_gl_type, uint32_t *format_out,
+    int *needs_conversion_out, int *normalized_out, int *use_generic_out) {
+    int norm = normalized;
+    if (!norm && type == GL_UNSIGNED_BYTE && size == 4u && is_color_input) {
+        norm = 1;
+    }
+    if (normalized_out) {
+        *normalized_out = norm;
+    }
+    if (needs_conversion_out) {
+        *needs_conversion_out = 0;
+    }
+    if (use_generic_out) {
+        *use_generic_out = 0;
+    }
+    if (format_out) {
+        *format_out = 0u;
+    }
+    uint32_t format = 0u;
+    int needs_conversion = 0;
+    int use_generic = 0;
+    if (type == GL_DOUBLE) {
+        needs_conversion = 1;
+        format = mglRenderDoubleVertexAttribFloatFormat(size);
+    } else if (integer == 0 &&
+               (type == GL_INT || type == GL_UNSIGNED_INT)) {
+        needs_conversion = 1;
+        format = mglRenderDoubleVertexAttribFloatFormat(size);
+    } else if (type == GL_FIXED) {
+        needs_conversion = 1;
+        format = mglRenderDoubleVertexAttribFloatFormat(size);
+    } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
+        needs_conversion = 1;
+        format = mglRenderDoubleVertexAttribFloatFormat(4u);
+    } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+        needs_conversion = 1;
+        format = mglRenderDoubleVertexAttribFloatFormat(3u);
+    } else if (integer == 1) {
+        const uint32_t converted = mglRenderIntegerAttribConversionFormat(
+            type, shader_gl_type, size);
+        if (converted != 0u &&
+            converted != static_cast<uint32_t>(MTL::VertexFormatInvalid)) {
+            needs_conversion = 1;
+            format = converted;
+        } else {
+            use_generic = 1;
+        }
+    } else {
+        use_generic = 1;
+    }
+    if (format_out) {
+        *format_out = format;
+    }
+    if (needs_conversion_out) {
+        *needs_conversion_out = needs_conversion;
+    }
+    if (use_generic_out) {
+        *use_generic_out = use_generic;
+    }
+}
+
+extern "C" uint32_t mglRenderPlanVertexAttribStride(
+    uint32_t type, uint32_t size, int integer, int uses_current,
+    int integer_converted, uint32_t resolved_stride,
+    uint32_t existing_layout_stride) {
+    if (uses_current) {
+        return 16u;
+    }
+    if (type == GL_DOUBLE) {
+        const uint64_t raw =
+            resolved_stride > 0u ? resolved_stride
+                                 : (uint64_t)size * sizeof(double);
+        return (uint32_t)mglRenderAlignVertexStrideForMetal(raw);
+    }
+    if (integer == 0 && (type == GL_INT || type == GL_UNSIGNED_INT)) {
+        const uint64_t raw =
+            resolved_stride > 0u ? resolved_stride
+                                 : (uint64_t)size * sizeof(int32_t);
+        return (uint32_t)mglRenderAlignVertexStrideForMetal(raw);
+    }
+    if (type == GL_FIXED) {
+        const uint64_t raw =
+            resolved_stride > 0u ? resolved_stride
+                                 : (uint64_t)size * sizeof(int32_t);
+        const uint64_t min_bytes = (uint64_t)size * sizeof(float);
+        return (uint32_t)mglRenderAlignVertexStrideForMetal(
+            raw > min_bytes ? raw : min_bytes);
+    }
+    if (type == GL_UNSIGNED_INT_10_10_10_2) {
+        const uint64_t raw =
+            resolved_stride > 0u ? resolved_stride : sizeof(uint32_t);
+        const uint64_t min_bytes = 4u * sizeof(float);
+        return (uint32_t)mglRenderAlignVertexStrideForMetal(
+            raw > min_bytes ? raw : min_bytes);
+    }
+    if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+        const uint64_t raw =
+            resolved_stride > 0u ? resolved_stride : sizeof(uint32_t);
+        const uint64_t min_bytes = 3u * sizeof(float);
+        return (uint32_t)mglRenderAlignVertexStrideForMetal(
+            raw > min_bytes ? raw : min_bytes);
+    }
+    if (integer == 1 && integer_converted) {
+        return (uint32_t)mglRenderAlignVertexStrideForMetal(
+            (uint64_t)size * sizeof(int32_t));
+    }
+    return existing_layout_stride == 0u ? resolved_stride
+                                        : existing_layout_stride;
+}
+
+extern "C" uint32_t mglRenderPlanVertexAttribOffset(
+    int uses_current, int needs_conversion, int absolute_offsets,
+    uint32_t attrib_index, uint32_t pool_stride, uint32_t relativeoffset,
+    uint32_t binding_offset) {
+    if (uses_current) {
+        return attrib_index * pool_stride;
+    }
+    if (needs_conversion || absolute_offsets) {
+        return relativeoffset;
+    }
+    return binding_offset + relativeoffset;
+}
+
 extern "C"
 uint64_t mglRenderHashStepU64(uint64_t hash, uint64_t value) {
     return (hash ^ value) * 1099511628211ull;

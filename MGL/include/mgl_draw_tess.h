@@ -210,6 +210,23 @@ void mglTessPlanRasterQuery(const Program *tes, uint64_t instance_count,
                             uint32_t xfb_compact_stride,
                             MGLTessRasterQueryPlan *out);
 
+typedef struct MGLTessNativeAttribPlan {
+    uint32_t index;
+    uint32_t format;
+    uint32_t offset;
+} MGLTessNativeAttribPlan;
+
+typedef struct MGLTessNativeVertexPlan {
+    uint32_t attrib_count;
+    uint32_t n_attribs;
+    uint32_t stride;
+    MGLTessNativeAttribPlan attribs[32];
+} MGLTessNativeVertexPlan;
+
+int mglTessPlanNativeVertexDescriptor(const Program *tes,
+                                      uint32_t tcs_output_stride,
+                                      MGLTessNativeVertexPlan *out);
+
 /* Seed TES compute output with domain TessCoords for every live patch,
  * then replicate instance 0. Returns items per instance, or 0 on error. */
 uint32_t mglTessSeedEvalOutputRecords(Program *tes, const void *factor_bytes,

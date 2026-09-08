@@ -1178,6 +1178,25 @@ uint32_t mglRenderIntegerAttribConversionFormat(
     uint64_t src_type,
     uint64_t shader_gl_type,
     uint32_t size);
+
+void mglRenderPlanVertexAttribFormat(uint32_t type, uint32_t size, int integer,
+                                     int normalized, int is_color_input,
+                                     uint32_t shader_gl_type,
+                                     uint32_t *format_out,
+                                     int *needs_conversion_out,
+                                     int *normalized_out, int *use_generic_out);
+
+uint32_t mglRenderPlanVertexAttribStride(
+    uint32_t type, uint32_t size, int integer, int uses_current,
+    int integer_converted, uint32_t resolved_stride,
+    uint32_t existing_layout_stride);
+
+uint32_t mglRenderPlanVertexAttribOffset(int uses_current, int needs_conversion,
+                                         int absolute_offsets,
+                                         uint32_t attrib_index,
+                                         uint32_t pool_stride,
+                                         uint32_t relativeoffset,
+                                         uint32_t binding_offset);
 const char *mglRenderVertexFormatName(uint32_t format);
 uint64_t mglRenderVertexDescriptorSignature(const void *descriptor);
 uint64_t mglRenderPipelineDescriptorSignature(const void *descriptor);

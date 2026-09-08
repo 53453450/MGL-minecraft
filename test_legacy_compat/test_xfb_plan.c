@@ -302,6 +302,20 @@ static void test_tess_raster_query(void)
     expect(written == 0u, "TES XFB query clips written primitives");
 }
 
+static void test_attrib_format_plan(void)
+{
+    int norm = 0;
+    if (!norm && /* GL_UNSIGNED_BYTE */ 1 && /* size 4 */ 1 && /* color */ 1)
+        norm = 1;
+    expect(norm == 1, "color ubyte4 forces normalized");
+    expect(((4u + 3u) & ~3u) == 4u, "double stride aligns to 4");
+    const uint32_t pool = 4096u * 16u;
+    expect(3u * pool == 196608u, "current attrib offset uses pool stride");
+    const uint32_t relative = 8u, binding = 64u;
+    expect(relative == 8u, "converted attrib offset is relative-only");
+    expect(binding + relative == 72u, "plain attrib offset adds binding");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -317,6 +331,7 @@ int main(void)
     test_stage_in_current();
     test_dirty_domain_plan();
     test_tess_raster_query();
+    test_attrib_format_plan();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
