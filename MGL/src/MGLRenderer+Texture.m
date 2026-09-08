@@ -803,8 +803,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (mglTraceLogIsEnabled() &&
-        (mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth32Float_Stencil8 ||
-         mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth24Unorm_Stencil8) &&
+        mglRenderPixelFormatIsPackedDepthStencil(
+            (uint32_t)mglTextureInfo(texture).pixel_format) &&
         (mglRenderTextureTargetIsArrayOr3D((uint32_t)texTarget)) &&
         bytesPerRow >= 16) {
         const uint8_t *probe = (const uint8_t *)bytes;
@@ -842,8 +842,8 @@ static void mglTextureCopyTextureToBuffer(
     /* Shared packed depth/stencil textures can be updated directly for the
      * depth plane.  AGX requires a separate X32_Stencil8 view upload for the
      * stencil plane, using a 2D view over the selected array slice. */
-    if ((mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth32Float_Stencil8 ||
-         mglTextureInfo(texture).pixel_format == MGLPixelFormatDepth24Unorm_Stencil8) &&
+    if (mglRenderPixelFormatIsPackedDepthStencil(
+            (uint32_t)mglTextureInfo(texture).pixel_format) &&
         mglTextureInfo(texture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE) {
         bool uploaded = false;
         @try {
@@ -1032,10 +1032,8 @@ static void mglTextureCopyTextureToBuffer(
               (unsigned long)level, (unsigned long)slice);
         return false;
     }
-    if ((mglTextureInfo(texture).pixel_format ==
-             MGLPixelFormatDepth32Float_Stencil8 ||
-         mglTextureInfo(texture).pixel_format ==
-             MGLPixelFormatDepth24Unorm_Stencil8) &&
+    if (mglRenderPixelFormatIsPackedDepthStencil(
+            (uint32_t)mglTextureInfo(texture).pixel_format) &&
         bytesPerRow >= width * 5u) {
         (void)[self uploadPackedDepthStencilStencilPlane:texture
                                                  texName:texName
@@ -3030,8 +3028,7 @@ static void mglTextureCopyTextureToBuffer(
         metalSlice = zoffset;
     }
 
-    if ((dstPixelFormat == MGLPixelFormatDepth32Float_Stencil8 ||
-         dstPixelFormat == MGLPixelFormatDepth24Unorm_Stencil8) &&
+    if (mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
         mglTextureInfo(dstTexture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE &&
         uploadRowBytes >= width * 5u) {
         bool uploaded = false;
@@ -3086,8 +3083,7 @@ static void mglTextureCopyTextureToBuffer(
                                            zoffset:zoffset
                                             reason:"mtlTexSubImageBytes"];
     if (uploaded &&
-        (dstPixelFormat == MGLPixelFormatDepth32Float_Stencil8 ||
-         dstPixelFormat == MGLPixelFormatDepth24Unorm_Stencil8) &&
+        mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
         uploadRowBytes >= width * 5u) {
         (void)[self uploadPackedDepthStencilStencilPlane:dstTexture
                                                  texName:tex->name

@@ -4838,11 +4838,9 @@ static GLenum mglPassthroughDeclType(
             stencilFormat != (uint32_t)MGLPixelFormatInvalid &&
             depthFormat != stencilFormat) {
             bool depthPacked =
-                depthFormat == (uint32_t)MGLPixelFormatDepth24Unorm_Stencil8 ||
-                depthFormat == (uint32_t)MGLPixelFormatDepth32Float_Stencil8;
+                mglRenderPixelFormatIsPackedDepthStencil(depthFormat) != 0;
             bool stencilPacked =
-                stencilFormat == (uint32_t)MGLPixelFormatDepth24Unorm_Stencil8 ||
-                stencilFormat == (uint32_t)MGLPixelFormatDepth32Float_Stencil8;
+                mglRenderPixelFormatIsPackedDepthStencil(stencilFormat) != 0;
             if (depthPacked || stencilPacked) {
                 uint32_t packedFormat = stencilPacked ? stencilFormat : depthFormat;
                 state->depth_format = packedFormat;

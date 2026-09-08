@@ -1815,6 +1815,8 @@ static void test_stencil_view_format(void)
     expect(packed_ds(252u) == 0, "Depth32F is not packed DS");
     expect(stencil_view_format(255u) == 262u, "Depth24_Stencil8 view is X24");
     expect(stencil_view_format(260u) == 261u, "Depth32F_Stencil8 view is X32");
+    expect(packed_ds(255u) && packed_ds(260u),
+           "upload/copy/renderpass packed-DS gates share one predicate");
 }
 
 int main(void)
