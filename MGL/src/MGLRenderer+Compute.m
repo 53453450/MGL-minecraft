@@ -51,14 +51,12 @@ static id mglComputeCreateTextureLevelView(id texture, NSUInteger level)
     if (mglRenderGetTextureInfo((__bridge void *)texture, &info) != 0) {
         return nil;
     }
-    if (level >= info.mipmap_level_count) {
+    if (!mglRenderImageLevelInRange((uint32_t)level,
+                                    (uint32_t)info.mipmap_level_count)) {
         return nil;
     }
-    uint64_t sliceCount = info.array_length;
-    if (info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE ||
-        info.texture_type == MGL_COMPUTE_TEXTURE_TYPE_CUBE_ARRAY) {
-        sliceCount *= 6u;
-    }
+    uint64_t sliceCount = mglRenderImageViewSliceCount(info.texture_type,
+                                                       info.array_length);
     void *view = NULL;
     if (mglRenderCreateTextureViewRange(
             (__bridge void *)texture, info.pixel_format, info.texture_type,
@@ -257,7 +255,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
         [self mapGLBuffersToMTLBufferMap:bufferMap stage:stage]);
 
     // dirty buffer covers all buffer modifications
-    if (MGL_STATE(ctx)->dirty_bits & DIRTY_BUFFER)
+    if (mglRenderHasDirtyBufferBit(MGL_STATE(ctx)->dirty_bits))
     {
         // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
         [self updateDirtyBaseBufferList:bufferMap];
@@ -318,7 +316,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
         if (!ptr->data.mtl_data) {
             [self bindMTLBuffer:ptr];
         }
-        if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+        if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
             /* Push pending CPU shadow into Metal.  bindMTLBuffer alone does
              * not clear dirty_bits; leaving them set lets a later VBO bind
              * CoW-overlay the CPU shadow and wipe shader SSBO stores

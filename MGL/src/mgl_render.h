@@ -1278,6 +1278,7 @@ uint32_t mglRenderResolveUploadSwizzlePixelFormat(
 void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
                                    uint64_t height, uint32_t *type,
                                    uint64_t *array_len, uint32_t *height_out);
+int mglRenderHasDirtyBufferBit(uint32_t dirty_bits);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

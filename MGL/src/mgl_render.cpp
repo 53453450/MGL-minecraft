@@ -8201,6 +8201,10 @@ void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
     }
 }
 
+int mglRenderHasDirtyBufferBit(uint32_t dirty_bits) {
+    return (dirty_bits & DIRTY_BUFFER) ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

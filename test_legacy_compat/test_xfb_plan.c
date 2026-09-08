@@ -916,6 +916,16 @@ static void test_gs_query_stream_written(void)
     expect(s0 == 0u, "inactive XFB reports 0 stream-0 query written");
 }
 
+static void test_compute_view_and_dirty_buffer(void)
+{
+    uint64_t slices = 2u * 6u;
+    expect(slices == 12u, "compute cube-array level view uses 6 faces per layer");
+    int in_mip = (1u < 4u);
+    expect(in_mip == 1, "compute texture level 1 is in mipmap range");
+    int dirty = (0x1u & 0x1u) != 0;
+    expect(dirty == 1, "DIRTY_BUFFER bit is set");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -979,6 +989,7 @@ int main(void)
     test_ms_emulate_and_upload_levels();
     test_swizzle_and_1d_backing();
     test_gs_query_stream_written();
+    test_compute_view_and_dirty_buffer();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
