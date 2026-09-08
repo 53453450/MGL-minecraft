@@ -7814,6 +7814,25 @@ int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_byte
     return offset + stream <= metal_len ? 1 : 0;
 }
 
+uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
+                                         uint32_t size, int normalized) {
+    return planned != 0u
+               ? planned
+               : mglRenderGLTypeSizeToVertexFormat(type, size, normalized);
+}
+
+uint32_t mglRenderImageBindPixelFormat(uint32_t internalformat,
+                                       uint32_t native_format,
+                                       uint32_t mapped_bind_format) {
+    if (internalformat == 0u) {
+        return native_format;
+    }
+    if (mapped_bind_format == 0u) {
+        return native_format;
+    }
+    return mapped_bind_format;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

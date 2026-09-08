@@ -1221,6 +1221,11 @@ uint64_t mglRenderVertexMetalBindOffset(int absolute_mode,
 int mglRenderBindingOffsetInMetal(uint64_t offset, uint64_t metal_len);
 int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_bytes,
                              uint64_t metal_len);
+uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
+                                         uint32_t size, int normalized);
+uint32_t mglRenderImageBindPixelFormat(uint32_t internalformat,
+                                       uint32_t native_format,
+                                       uint32_t mapped_bind_format);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

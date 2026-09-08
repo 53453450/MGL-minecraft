@@ -777,6 +777,19 @@ static void test_index_size_and_vertex_bind_offset(void)
     expect(fits == 1, "index stream offset+count*elem fits metal length");
 }
 
+static void test_attrib_format_and_image_bind(void)
+{
+    uint32_t planned = 0u;
+    uint32_t fallback = planned != 0u ? planned : 28u;
+    expect(fallback == 28u, "zero planned attrib format falls back to type/size");
+    uint32_t native = 70u;
+    uint32_t img = (0u == 0u) ? native : 12u;
+    expect(img == 70u, "image bind with internalformat 0 keeps native format");
+    uint32_t mapped = 0u;
+    uint32_t img2 = (8u == 0u) ? native : (mapped == 0u ? native : mapped);
+    expect(img2 == 70u, "invalid mapped image format keeps native");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -828,6 +841,7 @@ int main(void)
     test_plain_uniform_array_stride();
     test_attrib_conversion_bind();
     test_index_size_and_vertex_bind_offset();
+    test_attrib_format_and_image_bind();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

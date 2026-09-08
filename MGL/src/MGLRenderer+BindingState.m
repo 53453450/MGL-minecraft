@@ -180,15 +180,13 @@ static id mglBindingStateCacheImageUnitView(ImageUnit *iu, id fallback, void *vi
 static uint32_t mglBindingStateImageBindPixelFormat(const ImageUnit *iu,
                                                     uint32_t native_format)
 {
-    if (!iu || iu->internalformat == 0u) {
+    if (!iu) {
         return native_format;
     }
     const uint32_t bind_format =
         mtlFormatForGLInternalFormat(iu->internalformat);
-    if (bind_format == MGLPixelFormatInvalid || bind_format == 0u) {
-        return native_format;
-    }
-    return bind_format;
+    return mglRenderImageBindPixelFormat(iu->internalformat, native_format,
+                                         bind_format);
 }
 
 /* For non-layered BindImageTexture on array/3D/cube textures, GLSL image2D
@@ -1321,12 +1319,10 @@ static bool mglBindingStateFlushResourceBindings(
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileVertexAttribBindLogs)) {
                 MGLShaderResource *resource = mglRendererProgramVertexAttribResource(activeProgram, attrib);
                 GLboolean effectiveNormalizedLog = effectiveNormalized != 0;
-                uint32_t format = plannedFormat;
-                if (format == 0u) {
-                    format = glTypeSizeToMtlType(attribState->type,
-                                                 attribState->size,
-                                                 effectiveNormalizedLog);
-                }
+                uint32_t format = mglRenderAttribFormatOrFallback(
+                    plannedFormat, (uint32_t)attribState->type,
+                    (uint32_t)attribState->size,
+                    effectiveNormalizedLog ? 1 : 0);
                 mglTraceLog("VATTR_BIND program=%u attrib=%u resource=%s loc=%u metalSlot=%lu glBuffer=%u bindingIndex=%u bindingOffset=%lu relOffset=%lld stride=%u size=%u type=0x%x normalized=%u/%u divisor=%u table=%d metalLen=%lu format=%lu(%s)",
                             activeProgram ? (unsigned)activeProgram->name : 0u,
                             (unsigned)attrib,
