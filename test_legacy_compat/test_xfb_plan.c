@@ -2293,6 +2293,12 @@ static void test_replay_binding_stage(void)
     expect(sampler_bind_stage(5, &st) == 0, "compute sampler is invalid");
 }
 
+static void test_array_stage_binding(void)
+{
+    expect(tex_bind_stage(0) == 0u, "array expansion on VS binds vertex stage");
+    expect(tex_bind_stage(4) == 1u, "array expansion on FS binds fragment stage");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2454,6 +2460,7 @@ int main(void)
     test_writable_storage_class();
     test_vertex_vs_compute_stage();
     test_replay_binding_stage();
+    test_array_stage_binding();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

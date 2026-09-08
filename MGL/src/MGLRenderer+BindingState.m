@@ -4635,49 +4635,25 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                       dataKind:MGLTextureDataKindFloat];
                 }
 
-                if (arrayStage == _VERTEX_SHADER) {
+                uint32_t bindStage =
+                    mglRenderTextureBindingStageForShader(arrayStage);
+                if (!mglBindingStateQueueResourceBinding(
+                        useResourceSnapshot, _bindingStateOwner,
+                        _renderPassManager.state->currentRenderEncoderOwner,
+                        &resourceSnapshot, bindStage,
+                        MGL_RENDER_RESOURCE_BINDING_TEXTURE,
+                        (__bridge void *)metalTexture, metalSlot)) {
+                    return false;
+                }
+                if (resource->has_combined_sampler && metalSampler &&
+                    samplerSlot < kMaxFragmentSamplerSlots) {
                     if (!mglBindingStateQueueResourceBinding(
                             useResourceSnapshot, _bindingStateOwner,
                             _renderPassManager.state->currentRenderEncoderOwner,
-                            &resourceSnapshot,
-                            MGL_RENDER_BINDING_STAGE_VERTEX,
-                            MGL_RENDER_RESOURCE_BINDING_TEXTURE,
-                            (__bridge void *)metalTexture, metalSlot)) {
+                            &resourceSnapshot, bindStage,
+                            MGL_RENDER_RESOURCE_BINDING_SAMPLER,
+                            (__bridge void *)metalSampler, samplerSlot)) {
                         return false;
-                    }
-                    if (resource->has_combined_sampler && metalSampler &&
-                        samplerSlot < kMaxFragmentSamplerSlots) {
-                        if (!mglBindingStateQueueResourceBinding(
-                                useResourceSnapshot, _bindingStateOwner,
-                                _renderPassManager.state->currentRenderEncoderOwner,
-                                &resourceSnapshot,
-                                MGL_RENDER_BINDING_STAGE_VERTEX,
-                                MGL_RENDER_RESOURCE_BINDING_SAMPLER,
-                                (__bridge void *)metalSampler, samplerSlot)) {
-                            return false;
-                        }
-                    }
-                } else {
-                    if (!mglBindingStateQueueResourceBinding(
-                            useResourceSnapshot, _bindingStateOwner,
-                            _renderPassManager.state->currentRenderEncoderOwner,
-                            &resourceSnapshot,
-                            MGL_RENDER_BINDING_STAGE_FRAGMENT,
-                            MGL_RENDER_RESOURCE_BINDING_TEXTURE,
-                            (__bridge void *)metalTexture, metalSlot)) {
-                        return false;
-                    }
-                    if (resource->has_combined_sampler && metalSampler &&
-                        samplerSlot < kMaxFragmentSamplerSlots) {
-                        if (!mglBindingStateQueueResourceBinding(
-                                useResourceSnapshot, _bindingStateOwner,
-                                _renderPassManager.state->currentRenderEncoderOwner,
-                                &resourceSnapshot,
-                                MGL_RENDER_BINDING_STAGE_FRAGMENT,
-                                MGL_RENDER_RESOURCE_BINDING_SAMPLER,
-                                (__bridge void *)metalSampler, samplerSlot)) {
-                            return false;
-                        }
                     }
                 }
             }
