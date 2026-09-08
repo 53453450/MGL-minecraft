@@ -2372,83 +2372,67 @@ static GLenum mglPassthroughDeclType(
 
     [self updateViewportAndScissorLocked];
 
-    if (state->var.front_face != GL_CW && state->var.front_face != GL_CCW) {
+    if (!mglRenderFrontFaceValid((uint32_t)state->var.front_face)) {
         mglLogRenderStateRepair("front_face", state->var.front_face, GL_CCW);
-        state->var.front_face = GL_CCW;
+        state->var.front_face = (GLenum)mglRenderFrontFaceOrCCW(
+            (uint32_t)state->var.front_face);
         mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
 
-    BOOL defaultFramebufferSampledPass =
-        state->framebuffer == NULL &&
-        !state->caps.depth_test &&
-        mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES) > 0;
     BOOL rtSampledCopyDraw = _renderPassManager.state->currentDrawUsesRTSampledCopy;
+    BOOL defaultFramebufferSampledPass =
+        mglRenderSkipCullForSampledPass(
+            state->framebuffer ? 1 : 0, state->caps.depth_test ? 1 : 0,
+            mglRendererGetProgramBindingCount(ctx, _FRAGMENT_SHADER,
+                                              _SAMPLED_IMAGE_RES) > 0
+                ? 1
+                : 0,
+            rtSampledCopyDraw ? 1 : 0) != 0 &&
+        !rtSampledCopyDraw;
 
-    if (state->caps.cull_face && !defaultFramebufferSampledPass && !rtSampledCopyDraw)
-    {
-        uint32_t cull_mode;
+    uint32_t cull_mode = mglRenderCullModeFromGL(
+        (state->caps.cull_face && !defaultFramebufferSampledPass &&
+         !rtSampledCopyDraw)
+            ? 1
+            : 0,
+        (uint32_t)state->var.cull_face_mode);
+    mglRenderBindingSetCullIfNeededForOwner(
+        _bindingStateOwner,
+        _renderPassManager.state->currentRenderEncoderOwner, cull_mode);
+    uint32_t _winding =
+        mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
+                                 state->var.clip_origin == GL_UPPER_LEFT);
+    mglRenderBindingSetWindingIfNeededForOwner(
+        _bindingStateOwner,
+        _renderPassManager.state->currentRenderEncoderOwner,
+        (uint32_t)_winding);
 
-        switch(state->var.cull_face_mode)
-        {
-            case GL_BACK: cull_mode = MGLCullModeBack; break;
-            case GL_FRONT: cull_mode = MGLCullModeFront; break;
-            default:
-                cull_mode = MGLCullModeNone;
+    if (state->caps.cull_face && defaultFramebufferSampledPass) {
+        static uint64_t s_defaultSampledCullBypassCount = 0;
+        uint64_t hit = ++s_defaultSampledCullBypassCount;
+        if (hit <= 32ull || (hit % 256ull) == 0ull) {
+            mglTraceLogNSString(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
+                  (unsigned long long)hit,
+                  (unsigned)(ctx ? state->program_name : 0u),
+                  (unsigned)(ctx ? state->draw_buffer : 0u));
         }
-
-        mglRenderBindingSetCullIfNeededForOwner(
-            _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
-            (uint32_t)cull_mode);
-        uint32_t _winding =
-            mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
-                                     state->var.clip_origin == GL_UPPER_LEFT);
-        mglRenderBindingSetWindingIfNeededForOwner(
-            _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
-            (uint32_t)_winding);
     }
-    else
-    {
-        mglRenderBindingSetCullIfNeededForOwner(
-            _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
-            (uint32_t)MGLCullModeNone);
-        uint32_t _winding =
-            mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
-                                     state->var.clip_origin == GL_UPPER_LEFT);
-        mglRenderBindingSetWindingIfNeededForOwner(
-            _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
-            (uint32_t)_winding);
-
-        if (state->caps.cull_face && defaultFramebufferSampledPass) {
-            static uint64_t s_defaultSampledCullBypassCount = 0;
-            uint64_t hit = ++s_defaultSampledCullBypassCount;
-            if (hit <= 32ull || (hit % 256ull) == 0ull) {
-                mglTraceLogNSString(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
-                      (unsigned long long)hit,
-                      (unsigned)(ctx ? state->program_name : 0u),
-                      (unsigned)(ctx ? state->draw_buffer : 0u));
-            }
-        }
-        if (state->caps.cull_face && rtSampledCopyDraw) {
-            static uint64_t s_rtSampledCopyCullBypassCount = 0;
-            uint64_t hit = ++s_rtSampledCopyCullBypassCount;
-            if (hit <= 64ull || (hit % 256ull) == 0ull) {
-                mglTraceLog("RT_SAMPLE_COPY_CULL_BYPASS hit=%llu program=%u pipelineProgram=%u fbo=%u rpFbo=%u depth(test=%d write=%d func=0x%x) blend=%d cullFace=0x%x frontFace=0x%x",
-                            (unsigned long long)hit,
-                            (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
-                            (unsigned)_pipelineCache.state->pipelineProgramName,
-                            (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
-                            (unsigned)_renderPassManager.state->renderPassFramebufferName,
-                            (ctx && state->caps.depth_test) ? 1 : 0,
-                            (ctx && state->var.depth_writemask) ? 1 : 0,
-                            (unsigned)(ctx ? state->var.depth_func : 0u),
-                            (ctx && state->caps.blend) ? 1 : 0,
-                            (unsigned)(ctx ? state->var.cull_face_mode : 0u),
-                            (unsigned)(ctx ? state->var.front_face : 0u));
-            }
+    if (state->caps.cull_face && rtSampledCopyDraw) {
+        static uint64_t s_rtSampledCopyCullBypassCount = 0;
+        uint64_t hit = ++s_rtSampledCopyCullBypassCount;
+        if (hit <= 64ull || (hit % 256ull) == 0ull) {
+            mglTraceLog("RT_SAMPLE_COPY_CULL_BYPASS hit=%llu program=%u pipelineProgram=%u fbo=%u rpFbo=%u depth(test=%d write=%d func=0x%x) blend=%d cullFace=0x%x frontFace=0x%x",
+                        (unsigned long long)hit,
+                        (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
+                        (unsigned)_pipelineCache.state->pipelineProgramName,
+                        (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
+                        (unsigned)_renderPassManager.state->renderPassFramebufferName,
+                        (ctx && state->caps.depth_test) ? 1 : 0,
+                        (ctx && state->var.depth_writemask) ? 1 : 0,
+                        (unsigned)(ctx ? state->var.depth_func : 0u),
+                        (ctx && state->caps.blend) ? 1 : 0,
+                        (unsigned)(ctx ? state->var.cull_face_mode : 0u),
+                        (unsigned)(ctx ? state->var.front_face : 0u));
         }
     }
 

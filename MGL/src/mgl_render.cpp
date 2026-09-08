@@ -8607,7 +8607,32 @@ int mglRenderStencilOpFromGL(uint32_t gl_op, uint32_t *out) {
     return known;
 }
 
-void mglRenderClearEmptyBufferDirty(Buffer *buf) {
+int mglRenderFrontFaceValid(uint32_t front_face) {
+    return front_face == GL_CW || front_face == GL_CCW ? 1 : 0;
+}
+
+uint32_t mglRenderFrontFaceOrCCW(uint32_t front_face) {
+    return mglRenderFrontFaceValid(front_face) ? front_face : (uint32_t)GL_CCW;
+}
+
+int mglRenderSkipCullForSampledPass(int has_fbo, int depth_test, int fs_sampled,
+                                    int rt_copy) {
+    return (!has_fbo && !depth_test && fs_sampled) || rt_copy ? 1 : 0;
+}
+
+uint32_t mglRenderCullModeFromGL(int cull_enabled, uint32_t cull_face_mode) {
+    if (!cull_enabled) {
+        return MGLCullModeNone;
+    }
+    switch (cull_face_mode) {
+    case GL_BACK:
+        return MGLCullModeBack;
+    case GL_FRONT:
+        return MGLCullModeFront;
+    default:
+        return MGLCullModeNone;
+    }
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

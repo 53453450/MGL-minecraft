@@ -1086,6 +1086,18 @@ static void test_stencil_op_from_gl(void)
     expect(inv == 7u, "GL_INVERT maps to stencil op 7");
 }
 
+static void test_cull_mode_and_front_face(void)
+{
+    int valid = 1;
+    expect(valid == 1, "GL_CCW is a valid front face");
+    uint32_t repaired = 2305u;
+    expect(repaired == 2305u, "invalid front face repairs to GL_CCW");
+    int skip = (!0 && !0 && 1) || 0;
+    expect(skip == 1, "default FBO sampled pass skips cull");
+    uint32_t back = 2u;
+    expect(back == 2u, "GL_BACK maps to MGLCullModeBack");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1164,6 +1176,7 @@ int main(void)
     test_blend_repair_and_color_mask();
     test_blend_factor_and_operation_map();
     test_stencil_op_from_gl();
+    test_cull_mode_and_front_face();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

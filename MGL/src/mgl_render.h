@@ -1340,6 +1340,11 @@ uint32_t mglRenderForceDefaultFBOAlphaWrite(int attachment, int has_fbo,
 int mglRenderBlendFactorFromGL(uint32_t gl_blend, uint32_t *out);
 int mglRenderBlendOperationFromGL(uint32_t gl_op, uint32_t *out);
 int mglRenderStencilOpFromGL(uint32_t gl_op, uint32_t *out);
+int mglRenderFrontFaceValid(uint32_t front_face);
+uint32_t mglRenderFrontFaceOrCCW(uint32_t front_face);
+int mglRenderSkipCullForSampledPass(int has_fbo, int depth_test, int fs_sampled,
+                                    int rt_copy);
+uint32_t mglRenderCullModeFromGL(int cull_enabled, uint32_t cull_face_mode);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
