@@ -2069,8 +2069,12 @@ static void mglTextureCopyTextureToBuffer(
             return;
         }
 
-        GLuint attachmentIndex = (GLuint)(readBuffer - GL_COLOR_ATTACHMENT0);
-        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+        uint32_t attachmentIndex = 0u;
+        if (!mglRenderDrawBufferIsColorAttachment(
+                (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS,
+                &attachmentIndex) ||
+            !mglRenderColorAttachmentBitSet(
+                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
             static uint64_t s_missingReadAttachmentCount = 0;
             uint64_t hit = ++s_missingReadAttachmentCount;
             if (hit <= 32ull || (hit % 256ull) == 0ull) {

@@ -2086,13 +2086,9 @@ static id mglLookupAuxRenderPipeline(
             NSLog(@"MGL WARN: mtlBlitFramebuffer skipped color blit with GL_READ_BUFFER=GL_NONE");
             return NO;
         }
-        if (!mglRenderFBOBlitAttachmentKnown(
-                (uint32_t)readAttachment,
-                isColorAttachment(glm_ctx, readAttachment) ? 1 : 0)) {
-            // OpenGL compatibility enums (e.g. GL_FRONT/GL_BACK) are not valid
-            // FBO attachment enums. For user FBO blits, treat them as COLOR_ATTACHMENT0.
-            readAttachment = GL_COLOR_ATTACHMENT0;
-        }
+        readAttachment = (GLenum)mglRenderFBOBlitAttachmentOrColor0(
+            (uint32_t)readAttachment,
+            isColorAttachment(glm_ctx, readAttachment) ? 1 : 0);
 
         readFBOAttachment = getFBOAttachment(glm_ctx, readfbo, readAttachment);
         if (!readFBOAttachment) {
@@ -2139,11 +2135,9 @@ static id mglLookupAuxRenderPipeline(
             NSLog(@"MGL WARN: mtlBlitFramebuffer skipped color blit with GL_DRAW_BUFFER=GL_NONE");
             return NO;
         }
-        if (!mglRenderFBOBlitAttachmentKnown(
-                (uint32_t)drawAttachment,
-                isColorAttachment(glm_ctx, drawAttachment) ? 1 : 0)) {
-            drawAttachment = GL_COLOR_ATTACHMENT0;
-        }
+        drawAttachment = (GLenum)mglRenderFBOBlitAttachmentOrColor0(
+            (uint32_t)drawAttachment,
+            isColorAttachment(glm_ctx, drawAttachment) ? 1 : 0);
 
         drawFBOAttachment = getFBOAttachment(glm_ctx, drawfbo, drawAttachment);
         if (!drawFBOAttachment) {

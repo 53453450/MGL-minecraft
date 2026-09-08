@@ -1421,6 +1421,7 @@ int mglRenderEmulateQuads(uint32_t mode, int polygon_point);
 int mglRenderImageAccessWritable(uint32_t access);
 int mglRenderFilterIsNearest(uint32_t filter);
 int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color);
+uint32_t mglRenderFBOBlitAttachmentOrColor0(uint32_t attachment, int is_color);
 int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer);
 int mglRenderIndexTypeIsU8(uint32_t type);
 int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer);

@@ -1364,6 +1364,31 @@ static void test_fbo_blit_attachment_and_attrib_convert(void)
     expect(i2f == 1, "non-integer GL_INT attrib needs conversion");
 }
 
+static uint32_t fbo_blit_or_color0(uint32_t attachment, int is_color)
+{
+    /* unknown FRONT/BACK (is_color=0) falls back to COLOR_ATTACHMENT0 */
+    if (is_color)
+        return attachment;
+    if (attachment == 0x8D00u || attachment == 0x8D20u ||
+        attachment == 0x821Au)
+        return attachment;
+    return 0x8CE0u;
+}
+
+static void test_fbo_blit_or_color0(void)
+{
+    expect(fbo_blit_or_color0(0x8D00u, 0) == 0x8D00u,
+           "DEPTH_ATTACHMENT stays a known blit attachment");
+    expect(fbo_blit_or_color0(0x0404u, 0) == 0x8CE0u,
+           "GL_FRONT falls back to COLOR_ATTACHMENT0");
+    expect(fbo_blit_or_color0(0x0405u, 0) == 0x8CE0u,
+           "GL_BACK falls back to COLOR_ATTACHMENT0");
+    expect(fbo_blit_or_color0(0x8CE1u, 1) == 0x8CE1u,
+           "color attachment is left as-is");
+    uint32_t idx = 0x8CE1u - 0x8CE0u;
+    expect(idx == 1u, "COLOR_ATTACHMENT1 index is 1");
+}
+
 static void test_index_type_u8(void)
 {
     int u8 = 1;
@@ -1648,6 +1673,7 @@ int main(void)
     test_draw_mode_emulate_fan_loop_quads();
     test_image_writable_and_nearest_filter();
     test_fbo_blit_attachment_and_attrib_convert();
+    test_fbo_blit_or_color0();
     test_index_type_u8();
     test_attrib_converted_metal_stream();
     test_should_present_draw_buffer();

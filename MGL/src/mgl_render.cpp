@@ -9388,6 +9388,13 @@ int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color) {
                : 0;
 }
 
+uint32_t mglRenderFBOBlitAttachmentOrColor0(uint32_t attachment, int is_color) {
+    if (mglRenderFBOBlitAttachmentKnown(attachment, is_color)) {
+        return attachment;
+    }
+    return GL_COLOR_ATTACHMENT0;
+}
+
 int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer) {
     if (long_attr || type == GL_DOUBLE) {
         return 1;
