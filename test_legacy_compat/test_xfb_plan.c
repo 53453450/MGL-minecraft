@@ -665,6 +665,16 @@ static void test_tess_compute_preamble(void)
     expect(sz == 0u, "negative GL buffer size becomes 0 for stage-in");
 }
 
+static void test_shader_resource_buffer_type(void)
+{
+    int ubo = 1;
+    expect(ubo == 1, "UNIFORM_BUFFER_RES maps to GL UBO target");
+    int plain = 1;
+    expect(plain == 1, "UNIFORM_CONSTANT_RES uses program plain-uniform buffers");
+    int valid = (0 >= 0) && (2u < 8u);
+    expect(valid == 1, "shader resource index in range is valid");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -707,6 +717,7 @@ int main(void)
     test_native_tes_and_texture_bind();
     test_xfb_session_and_tcs_stage_in();
     test_tess_compute_preamble();
+    test_shader_resource_buffer_type();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -1252,7 +1252,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         program, _GEOMETRY_SHADER, &pipelineHandle,
         pipelineError, sizeof(pipelineError));
     id pipeline =
-        pipelineResult == 0 && pipelineHandle
+        mglTessComputePipelineReady(pipelineResult, pipelineHandle ? 1 : 0)
             ? (__bridge_transfer id)pipelineHandle
             : nil;
     if (!pipeline) {

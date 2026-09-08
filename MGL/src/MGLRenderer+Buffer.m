@@ -200,26 +200,23 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 
         /* Validate the resource is still in range (plan was built from the
          * same list, but guard against any unexpected reallocation). */
-        if (spvc_type < 0 || spvc_type >= MGL_MAX_SHADER_RESOURCES ||
-            entry->resource_index >= program->shader_resources_list[stage][spvc_type].count) {
+        if (!mglRenderShaderResourceIndexValid(
+                spvc_type, entry->resource_index,
+                program->shader_resources_list[stage][spvc_type].count)) {
             return false;  /* fall back to original path */
         }
         MGLShaderResource *resource =
             &program->shader_resources_list[stage][spvc_type].list[entry->resource_index];
 
         /* Resolve buffer arrays (same logic as the original path). */
-        int gl_buffer_type = -1;
-        switch (spvc_type) {
-            case _UNIFORM_BUFFER_RES:     gl_buffer_type = _UNIFORM_BUFFER; break;
-            case _UNIFORM_CONSTANT_RES:   gl_buffer_type = _UNIFORM_CONSTANT; break;
-            case _STORAGE_BUFFER_RES:    gl_buffer_type = _SHADER_STORAGE_BUFFER; break;
-            case _ATOMIC_COUNTER_RES:    gl_buffer_type = _ATOMIC_COUNTER_BUFFER; break;
-            default: return false;
+        int gl_buffer_type = mglRenderShaderResourceToGLBufferType(spvc_type);
+        if (gl_buffer_type < 0) {
+            return false;
         }
 
         BufferBaseTarget *buffers;
         BufferBaseTarget *fallbackBuffers = NULL;
-        if (spvc_type == _UNIFORM_CONSTANT_RES) {
+        if (mglRenderUsePlainUniformBuffers(spvc_type)) {
             buffers = program->plain_uniform_buffers;
             fallbackBuffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
         } else {
@@ -227,7 +224,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
         }
 
         /* MGL_DEBUG_STRUCT_PACK diagnostic (gated by getenv). */
-        if (spvc_type == _UNIFORM_CONSTANT_RES &&
+        if (mglRenderUsePlainUniformBuffers(spvc_type) &&
             getenv("MGL_DEBUG_STRUCT_PACK")) {
             NSLog(@"MGL STRUCTCHECK program=%u stage=%d name=%s ubo_members=%p count=%u req_size=%lu samplerLike=%d unifLoc=%d",
                   (unsigned)program->name, stage,

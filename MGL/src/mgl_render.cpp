@@ -7825,6 +7825,33 @@ uint64_t mglRenderBufferSizeOrZero(int64_t size) {
     return size >= 0 ? (uint64_t)size : 0u;
 }
 
+int mglRenderShaderResourceToGLBufferType(int spvc_type) {
+    switch (spvc_type) {
+    case _UNIFORM_BUFFER_RES:
+        return _UNIFORM_BUFFER;
+    case _UNIFORM_CONSTANT_RES:
+        return _UNIFORM_CONSTANT;
+    case _STORAGE_BUFFER_RES:
+        return _SHADER_STORAGE_BUFFER;
+    case _ATOMIC_COUNTER_RES:
+        return _ATOMIC_COUNTER_BUFFER;
+    default:
+        return -1;
+    }
+}
+
+int mglRenderUsePlainUniformBuffers(int spvc_type) {
+    return spvc_type == _UNIFORM_CONSTANT_RES ? 1 : 0;
+}
+
+int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
+                                      uint32_t count) {
+    return spvc_type >= 0 && spvc_type < MGL_MAX_SHADER_RESOURCES &&
+                   index < count
+               ? 1
+               : 0;
+}
+
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }

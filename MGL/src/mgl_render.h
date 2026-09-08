@@ -1224,6 +1224,10 @@ int mglRenderResolveMappedBufferSlot(int has_metal_binding,
 int mglRenderBufferMapOffsetValid(int64_t offset);
 int mglRenderBufferSizeValid(int64_t size);
 uint64_t mglRenderBufferSizeOrZero(int64_t size);
+int mglRenderShaderResourceToGLBufferType(int spvc_type);
+int mglRenderUsePlainUniformBuffers(int spvc_type);
+int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
+                                      uint32_t count);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
 int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,
