@@ -7021,35 +7021,23 @@ uint64_t mglRenderTessPrimitiveCount(
         bytes < (uint64_t)patch_count * MGL_AIR_TESS_FACTOR_RECORD_BYTES) {
         return 0u;
     }
+    /* Shared domain engine: vertex stream / verts-per-primitive.
+     * Callers that know TES spacing/point_mode should use
+     * mglTessGeneratedPrimitiveCount instead of this EQUAL-spacing floor. */
     const uint8_t* base = (const uint8_t*)factors;
-    uint64_t total = 0u;
+    uint64_t items = 0u;
+    const uint32_t point_mode = 0u;
     for (uint32_t patch = 0u; patch < patch_count; patch++) {
-        const uint16_t* record =
-            (const uint16_t*)(base +
-                              (uint64_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES);
-        float edge[4], inside[2];
-        for (int i = 0; i < 4; i++) {
-            edge[i] = *(const __fp16*)&record[i];
-        }
-        for (int i = 0; i < 2; i++) {
-            inside[i] = *(const __fp16*)&record[4 + i];
-        }
-        if (mglRenderTessFactorsDiscardPatch(tess_gen_mode, edge, inside)) {
-            continue;
-        }
-        /* TECH_DEBT(cts-shaped): batch=1 native primitive accounting
-         * symptom: inner-only estimate omits outer rings and spacing
-         * remove-when: native topology counts have independent goldens
-         * tracking: docs/CTS_TECH_DEBT_INVENTORY.md#tess-native-count
-         */
-        float inside0 = fmaxf(inside[0], 1.0f);
-        float inside1 = fmaxf(inside[1], 1.0f);
-        uint64_t per_patch = tess_gen_mode == GL_QUADS
-            ? 2ull * (uint64_t)ceilf(inside0) * (uint64_t)ceilf(inside1)
-            : (uint64_t)ceilf(inside0) * (uint64_t)ceilf(inside0);
-        total += per_patch > 1ull ? per_patch : 1ull;
+        items += mglRenderTessEvalItemsPerPatch(
+            base + (uint64_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES,
+            tess_gen_mode, GL_EQUAL, point_mode);
     }
-    return total * (uint64_t)instance_count;
+    const uint32_t vpp = tess_gen_mode == GL_ISOLINES ? 2u : 3u;
+    const uint64_t prims = vpp ? items / vpp : 0u;
+    if (instance_count && prims > UINT64_MAX / instance_count) {
+        return UINT64_MAX;
+    }
+    return prims * (uint64_t)instance_count;
 }
 
 extern "C"

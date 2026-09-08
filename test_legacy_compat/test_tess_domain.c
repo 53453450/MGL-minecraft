@@ -88,6 +88,32 @@ static void test_inner_eps(void)
     expect(n.inner_eff[0] == 3u, "tri FO inner 1+ε → 3");
 }
 
+static uint32_t inner_only_quad_triangles(float inner0, float inner1)
+{
+    /* Former CTS-shaped native count: 2 * ceil(inner) * ceil(inner). */
+    const uint64_t a = (uint64_t)ceilf(inner0 < 1.f ? 1.f : inner0);
+    const uint64_t b = (uint64_t)ceilf(inner1 < 1.f ? 1.f : inner1);
+    const uint64_t n = 2ull * a * b;
+    return (uint32_t)(n > 1ull ? n : 1ull);
+}
+
+static void test_not_inner_only_mesh(void)
+{
+    /* FO inner=1 outer=4 is 1+ε → inner_eff=3. Outer rings exist, so the
+     * triangle stream is larger than the inner-grid-only estimate. */
+    MGLTessFactorInput in =
+        make_in(GL_QUADS, GL_FRACTIONAL_ODD, GL_CCW, 0, 4, 4, 4, 4, 1, 1);
+    const uint32_t verts = mglTessDomainVertexCount(&in);
+    expect(verts % 3u == 0, "FO bumped quads emit a triangle list");
+    expect(verts / 3u > inner_only_quad_triangles(1.f, 1.f),
+           "domain includes outer rings, not inner-only 2 triangles");
+
+    in = make_in(GL_QUADS, GL_EQUAL, GL_CCW, 0, 4, 4, 4, 4, 2, 2);
+    const uint32_t equal_verts = mglTessDomainVertexCount(&in);
+    expect(equal_verts / 3u > inner_only_quad_triangles(2.f, 2.f),
+           "equal 4/2 quads include boundary strips");
+}
+
 static void test_discard(void)
 {
     MGLTessNormalizedFactors n;
@@ -299,6 +325,7 @@ int main(void)
 {
     test_round_spacing();
     test_inner_eps();
+    test_not_inner_only_mesh();
     test_discard();
     test_point_mode_counts();
     test_equal_quad_grid();

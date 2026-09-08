@@ -6316,15 +6316,15 @@ static int verifyTessFactorTransforms(void) {
         return 1;
     }
 
-    /* Primitive count: patch0 inside {0.5, 0.5} -> clamp to 1 -> TRI 1x1=1,
-     * QUADS 2x1x1=2; patch1 edge0=0 -> discarded.  Instances x3. */
+    /* Primitive count uses exact float32 levels (halfs are Metal topology).
+     * patch0 outer=1 inner=0.5 → clamp/ceil to all-ones → 1 triangle / 2 quads.
+     * patch1 zeros → discarded.  Instances x3. */
     uint8_t factors[2 * MGL_AIR_TESS_FACTOR_RECORD_BYTES];
     memset(factors, 0, sizeof(factors));
-    uint16_t *f0 = (uint16_t *)factors;
-    for (int i = 0; i < 4; i++) f0[i] = 0x3C00; /* __fp16 1.0 */
-    f0[4] = 0x3800; /* __fp16 0.5 */
-    f0[5] = 0x3800;
-    /* patch1 remains zero -> discarded */
+    float *exact0 = (float *)(factors + MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET);
+    for (int i = 0; i < 4; i++) exact0[i] = 1.f;
+    exact0[4] = 0.5f;
+    exact0[5] = 0.5f;
     if (mglRenderTessPrimitiveCount(
             factors, sizeof(factors), 2, GL_TRIANGLES, 3) != 3) {
         fprintf(stderr, "FAIL: tess primcount triangles\n");
@@ -6340,6 +6340,19 @@ static int verifyTessFactorTransforms(void) {
         mglRenderTessPrimitiveCount(
             factors, stride - 1u, 2, GL_TRIANGLES, 1) != 0) {
         fprintf(stderr, "FAIL: tess primcount bad args\n");
+        return 1;
+    }
+    /* EQUAL quads outer=4 inner=1 is 1+ε, so outer rings exist. The old
+     * inner-only estimate was 2 triangles. */
+    uint8_t rings[MGL_AIR_TESS_FACTOR_RECORD_BYTES];
+    memset(rings, 0, sizeof(rings));
+    float *exact_rings =
+        (float *)(rings + MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET);
+    for (int i = 0; i < 4; i++) exact_rings[i] = 4.f;
+    exact_rings[4] = 1.f;
+    exact_rings[5] = 1.f;
+    if (mglRenderTessPrimitiveCount(rings, sizeof(rings), 1, GL_QUADS, 1) <= 2) {
+        fprintf(stderr, "FAIL: tess primcount outer rings\n");
         return 1;
     }
     printf("TESS_FACTOR_TRANSFORMS_OK\n");

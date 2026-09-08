@@ -92,6 +92,31 @@ uint64_t mglTessEvalItemsPerInstance(Program *tes, const void *factor_bytes,
 bool mglTessFillEvalPatchItemBases(Program *tes, const void *factor_bytes,
                                    uint32_t patch_count, uint32_t *bases_out);
 
+uint32_t mglTessVerticesPerPrimitive(const Program *tes);
+uint64_t mglTessPrimitivesFromItems(const Program *tes, uint64_t items);
+uint64_t mglTessGeneratedPrimitiveCount(Program *tes, const void *factor_bytes,
+                                        uint32_t patch_count,
+                                        uint32_t instance_count);
+
+/* Seed TES compute output with domain TessCoords for every live patch,
+ * then replicate instance 0. Returns items per instance, or 0 on error. */
+uint32_t mglTessSeedEvalOutputRecords(Program *tes, const void *factor_bytes,
+                                      uint32_t patch_count,
+                                      uint32_t instance_count, void *records,
+                                      uint64_t records_bytes, uint32_t stride);
+
+int mglTessResolveXFBSource(const Program *program, const char *name,
+                            uint32_t *offset_out, uint32_t *gl_type_out,
+                            uint32_t *bytes_out);
+void mglTessPackXFBFieldFromCarrier(uint32_t gl_type, const void *src,
+                                    void *dst, uint32_t field_bytes);
+uint32_t mglTessPackXFBInterleaved(const Program *tes, const void *src,
+                                   uint32_t src_stride, uint32_t vertex_count,
+                                   void *dst, uint32_t dst_stride);
+uint32_t mglTessPackXFBSeparate(const Program *tes, const char *name,
+                                const void *src, uint32_t src_stride,
+                                uint32_t vertex_count, void *dst);
+
 typedef struct MGLTessEvalPerPatchDispatchSpec {
     void *gl_in_buffer;
     uint64_t gl_in_offset;

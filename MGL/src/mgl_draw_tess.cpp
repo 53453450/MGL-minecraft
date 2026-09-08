@@ -11,6 +11,7 @@
 #include "mgl_draw_tess.h"
 
 #include "error.h"
+#include "glcorearb.h"
 #include "glm_limits.h"
 #include "mgl_draw_encode.h"
 #include "mgl_index_buffer.h"
@@ -405,6 +406,228 @@ extern "C" bool mglTessFillEvalPatchItemBases(Program *tes,
     }
     bases_out[patch_count] = base;
     return true;
+}
+
+extern "C" uint32_t mglTessVerticesPerPrimitive(const Program *tes)
+{
+    if (!tes) {
+        return 3u;
+    }
+    if (tes->tess_gen_point_mode) {
+        return 1u;
+    }
+    if (tes->tess_gen_mode == GL_ISOLINES) {
+        return 2u;
+    }
+    return 3u;
+}
+
+extern "C" uint64_t mglTessPrimitivesFromItems(const Program *tes,
+                                               uint64_t items)
+{
+    const uint32_t vpp = mglTessVerticesPerPrimitive(tes);
+    return vpp ? items / vpp : 0u;
+}
+
+extern "C" uint64_t mglTessGeneratedPrimitiveCount(Program *tes,
+                                                   const void *factor_bytes,
+                                                   uint32_t patch_count,
+                                                   uint32_t instance_count)
+{
+    if (!tes || !factor_bytes || patch_count == 0u || instance_count == 0u) {
+        return 0u;
+    }
+    const uint64_t items =
+        mglTessEvalItemsPerInstance(tes, factor_bytes, patch_count);
+    const uint64_t prims = mglTessPrimitivesFromItems(tes, items);
+    if (instance_count && prims > UINT64_MAX / instance_count) {
+        return UINT64_MAX;
+    }
+    return prims * (uint64_t)instance_count;
+}
+
+extern "C" uint32_t mglTessSeedEvalOutputRecords(
+    Program *tes, const void *factor_bytes, uint32_t patch_count,
+    uint32_t instance_count, void *records, uint64_t records_bytes,
+    uint32_t stride)
+{
+    if (!tes || !factor_bytes || !records || patch_count == 0u ||
+        instance_count == 0u || stride < MGL_AIR_PER_VERTEX_STRIDE) {
+        return 0u;
+    }
+    const uint64_t items =
+        mglTessEvalItemsPerInstance(tes, factor_bytes, patch_count);
+    if (items == 0u || items > UINT32_MAX) {
+        return 0u;
+    }
+    uint64_t instance_bytes = 0u;
+    uint64_t total_bytes = 0u;
+    if (mglRenderCheckedProduct(items, stride, &instance_bytes) != 0 ||
+        mglRenderCheckedProduct(instance_bytes, instance_count, &total_bytes) !=
+            0 ||
+        total_bytes > records_bytes) {
+        return 0u;
+    }
+    uint8_t *base = (uint8_t *)records;
+    memset(base, 0, (size_t)total_bytes);
+    const uint8_t *factors = (const uint8_t *)factor_bytes;
+    uint64_t item_base = 0u;
+    for (uint32_t p = 0u; p < patch_count; p++) {
+        const void *record =
+            factors + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
+        const uint32_t patch_items = mglTessEvalItemsPerPatch(tes, record);
+        if (mglRenderSeedTessDomain(
+                record, (uint32_t)tes->tess_gen_mode,
+                (uint32_t)tes->tess_gen_spacing,
+                (uint32_t)tes->tess_gen_point_mode,
+                (uint32_t)tes->tess_gen_vertex_order,
+                base + item_base * stride, patch_items, stride) != patch_items) {
+            return 0u;
+        }
+        item_base += patch_items;
+    }
+    for (uint32_t inst = 1u; inst < instance_count; inst++) {
+        memcpy(base + (uint64_t)inst * instance_bytes, base,
+               (size_t)instance_bytes);
+    }
+    return (uint32_t)items;
+}
+
+extern "C" void mglTessPackXFBFieldFromCarrier(uint32_t gl_type, const void *src,
+                                               void *dst, uint32_t field_bytes)
+{
+    if (!src || !dst || field_bytes == 0u) {
+        return;
+    }
+    const uint8_t *in = (const uint8_t *)src;
+    uint8_t *out = (uint8_t *)dst;
+    const uint32_t comps = field_bytes / sizeof(uint32_t);
+    if (gl_type == GL_INT || gl_type == GL_INT_VEC2 || gl_type == GL_INT_VEC3 ||
+        gl_type == GL_INT_VEC4) {
+        for (uint32_t c = 0u; c < comps && c < 4u; c++) {
+            float f = 0.f;
+            memcpy(&f, in + c * 4u, sizeof(f));
+            const int32_t iv = (int32_t)f;
+            memcpy(out + c * 4u, &iv, sizeof(iv));
+        }
+        return;
+    }
+    if (gl_type == GL_UNSIGNED_INT || gl_type == GL_UNSIGNED_INT_VEC2 ||
+        gl_type == GL_UNSIGNED_INT_VEC3 || gl_type == GL_UNSIGNED_INT_VEC4) {
+        for (uint32_t c = 0u; c < comps && c < 4u; c++) {
+            float f = 0.f;
+            memcpy(&f, in + c * 4u, sizeof(f));
+            const uint32_t uv = (uint32_t)f;
+            memcpy(out + c * 4u, &uv, sizeof(uv));
+        }
+        return;
+    }
+    if (gl_type == GL_FLOAT_MAT2) {
+        memcpy(out + 0u, in + 0u, 8u);
+        memcpy(out + 8u, in + 16u, 8u);
+        return;
+    }
+    if (gl_type == GL_FLOAT_MAT3) {
+        memcpy(out + 0u, in + 0u, 12u);
+        memcpy(out + 12u, in + 16u, 12u);
+        memcpy(out + 24u, in + 32u, 12u);
+        return;
+    }
+    if (gl_type == GL_FLOAT_MAT4) {
+        memcpy(out + 0u, in + 0u, 16u);
+        memcpy(out + 16u, in + 16u, 16u);
+        memcpy(out + 32u, in + 32u, 16u);
+        memcpy(out + 48u, in + 48u, 16u);
+        return;
+    }
+    memcpy(out, in, field_bytes);
+}
+
+extern "C" int mglTessResolveXFBSource(const Program *program, const char *name,
+                                       uint32_t *offset_out,
+                                       uint32_t *gl_type_out,
+                                       uint32_t *bytes_out)
+{
+    if (!program || !name || !offset_out || !gl_type_out || !bytes_out) {
+        return 0;
+    }
+    if (strcmp(name, "gl_Position") == 0) {
+        *offset_out = 0u;
+        *gl_type_out = GL_FLOAT_VEC4;
+        *bytes_out = 16u;
+        return 1;
+    }
+    if (strcmp(name, "gl_PointSize") == 0) {
+        *offset_out = 16u;
+        *gl_type_out = GL_FLOAT;
+        *bytes_out = 4u;
+        return 1;
+    }
+    const MGLShaderResource *output = mglProgramFindStageOutputForXFBName(
+        const_cast<Program *>(program), _TESS_EVALUATION_SHADER, name);
+    if (!output) {
+        return 0;
+    }
+    const uint32_t field_bytes =
+        (uint32_t)mglRenderTESXFBFieldByteSize((uint64_t)output->gl_type);
+    if (field_bytes == 0u) {
+        return 0;
+    }
+    *offset_out = MGL_AIR_PER_VERTEX_STRIDE + (uint32_t)output->location * 16u;
+    *gl_type_out = (uint32_t)output->gl_type;
+    *bytes_out = field_bytes;
+    return 1;
+}
+
+extern "C" uint32_t mglTessPackXFBInterleaved(const Program *tes, const void *src,
+                                              uint32_t src_stride,
+                                              uint32_t vertex_count, void *dst,
+                                              uint32_t dst_stride)
+{
+    if (!tes || !src || !dst || src_stride == 0u || dst_stride == 0u) {
+        return 0u;
+    }
+    const uint8_t *in = (const uint8_t *)src;
+    uint8_t *out = (uint8_t *)dst;
+    for (uint32_t vertex = 0u; vertex < vertex_count; vertex++) {
+        uint32_t compact = 0u;
+        for (GLsizei varying = 0;
+             varying < tes->transform_feedback_varying_count; varying++) {
+            const char *name = tes->transform_feedback_varying_names[varying];
+            uint32_t record_offset = 0u, gl_type = 0u, field_bytes = 0u;
+            if (!mglTessResolveXFBSource(tes, name, &record_offset, &gl_type,
+                                         &field_bytes) ||
+                compact > dst_stride || field_bytes > dst_stride - compact) {
+                continue;
+            }
+            mglTessPackXFBFieldFromCarrier(
+                gl_type, in + (uint64_t)vertex * src_stride + record_offset,
+                out + (uint64_t)vertex * dst_stride + compact, field_bytes);
+            compact += field_bytes;
+        }
+    }
+    return vertex_count;
+}
+
+extern "C" uint32_t mglTessPackXFBSeparate(const Program *tes, const char *name,
+                                           const void *src, uint32_t src_stride,
+                                           uint32_t vertex_count, void *dst)
+{
+    uint32_t record_offset = 0u, gl_type = 0u, field_bytes = 0u;
+    if (!tes || !name || !src || !dst || src_stride == 0u ||
+        !mglTessResolveXFBSource(tes, name, &record_offset, &gl_type,
+                                 &field_bytes) ||
+        field_bytes == 0u) {
+        return 0u;
+    }
+    const uint8_t *in = (const uint8_t *)src;
+    uint8_t *out = (uint8_t *)dst;
+    for (uint32_t vertex = 0u; vertex < vertex_count; vertex++) {
+        mglTessPackXFBFieldFromCarrier(
+            gl_type, in + (uint64_t)vertex * src_stride + record_offset,
+            out + (uint64_t)vertex * field_bytes, field_bytes);
+    }
+    return vertex_count;
 }
 
 static bool mglTessKeepAppend(uint8_t *keep, size_t *used, size_t cap,

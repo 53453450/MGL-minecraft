@@ -533,10 +533,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
         return 0u;
     }
 
-    return (GLuint64)mglRenderTessPrimitiveCount(
-        (const void *)mglDrawSupportBufferContents(canonical), (uint64_t)mglDrawSupportBufferLength(canonical),
-        patchCount, (uint32_t)tesProgram->tess_gen_mode,
-        instanceCount);
+    return mglTessGeneratedPrimitiveCount(
+        tesProgram, (const void *)mglDrawSupportBufferContents(canonical),
+        patchCount, instanceCount);
 }
 
 @implementation MGLRenderer (Draw)

@@ -92,98 +92,6 @@ static void *mglTessBufferContents(id buffer)
         ? contents : NULL;
 }
 
-/* AIR TES stage-out slots store integer varyings as SIToFP/UIToFP float
- * carriers (same ABI as GS records).  GL transform-feedback expects native
- * int/uint bits — convert here when gathering the compact XFB stream. */
-static void mglTESXFBPackFieldFromCarrier(GLenum glType,
-                                          const uint8_t *src,
-                                          uint8_t *dst,
-                                          NSUInteger fieldBytes)
-{
-    const GLuint comps = (GLuint)(fieldBytes / sizeof(uint32_t));
-    if (glType == GL_INT || glType == GL_INT_VEC2 ||
-        glType == GL_INT_VEC3 || glType == GL_INT_VEC4) {
-        for (GLuint c = 0u; c < comps && c < 4u; c++) {
-            float f = 0.f;
-            memcpy(&f, src + c * 4u, sizeof(f));
-            GLint iv = (GLint)f;
-            memcpy(dst + c * 4u, &iv, sizeof(iv));
-        }
-        return;
-    }
-    if (glType == GL_UNSIGNED_INT || glType == GL_UNSIGNED_INT_VEC2 ||
-        glType == GL_UNSIGNED_INT_VEC3 || glType == GL_UNSIGNED_INT_VEC4) {
-        for (GLuint c = 0u; c < comps && c < 4u; c++) {
-            float f = 0.f;
-            memcpy(&f, src + c * 4u, sizeof(f));
-            GLuint uv = (GLuint)f;
-            memcpy(dst + c * 4u, &uv, sizeof(uv));
-        }
-        return;
-    }
-    /* Matrices occupy one vec4 slot per column in the TES record; XFB wants
-     * tightly packed columns (mat2 → 4 floats). */
-    if (glType == GL_FLOAT_MAT2) {
-        memcpy(dst + 0u, src + 0u, 8u);
-        memcpy(dst + 8u, src + 16u, 8u);
-        return;
-    }
-    if (glType == GL_FLOAT_MAT3) {
-        memcpy(dst + 0u, src + 0u, 12u);
-        memcpy(dst + 12u, src + 16u, 12u);
-        memcpy(dst + 24u, src + 32u, 12u);
-        return;
-    }
-    if (glType == GL_FLOAT_MAT4) {
-        memcpy(dst + 0u, src + 0u, 16u);
-        memcpy(dst + 16u, src + 16u, 16u);
-        memcpy(dst + 32u, src + 32u, 16u);
-        memcpy(dst + 48u, src + 48u, 16u);
-        return;
-    }
-    memcpy(dst, src, fieldBytes);
-}
-
-/* Resolve TES-compute record byte offset + size for one XFB varying name. */
-static BOOL mglTESXFBResolveSource(const Program *program,
-                                   const char *name,
-                                   NSUInteger *outOffsetInRecord,
-                                   GLenum *outType,
-                                   NSUInteger *outFieldBytes)
-{
-    if (!program || !name || !outOffsetInRecord || !outType || !outFieldBytes) {
-        return NO;
-    }
-    if (strcmp(name, "gl_Position") == 0) {
-        *outOffsetInRecord = 0u;
-        *outType = GL_FLOAT_VEC4;
-        *outFieldBytes = 16u;
-        return YES;
-    }
-    if (strcmp(name, "gl_PointSize") == 0) {
-        *outOffsetInRecord = 16u;
-        *outType = GL_FLOAT;
-        *outFieldBytes = 4u;
-        return YES;
-    }
-    const MGLShaderResource *output =
-        mglProgramFindStageOutputForXFBName(
-            (Program *)program, _TESS_EVALUATION_SHADER, name);
-    if (!output) {
-        return NO;
-    }
-    NSUInteger fieldBytes =
-        (NSUInteger)mglRenderTESXFBFieldByteSize((uint64_t)output->gl_type);
-    if (fieldBytes == 0u) {
-        return NO;
-    }
-    *outOffsetInRecord =
-        MGL_AIR_PER_VERTEX_STRIDE + (NSUInteger)output->location * 16u;
-    *outType = output->gl_type;
-    *outFieldBytes = fieldBytes;
-    return YES;
-}
-
 static bool mglTessTextureInfo(id texture, MGLRenderTextureInfo *info)
 {
     return texture && info &&
@@ -1343,24 +1251,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
               (unsigned long)outSize, (unsigned)tesProgram->name);
         return false;
     }
-    memset(outContents, 0, outSize);
-
-    NSUInteger itemBase = 0;
-    for (GLuint p = 0; p < patchCount; p++) {
-        const void *record = (const uint8_t *)factorBytes +
-            (NSUInteger)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES;
-        const uint32_t items = mglTessEvalItemsPerPatch(tesProgram, record);
-        if (mglRenderSeedTessDomain(record, tesProgram->tess_gen_mode,
-                tesProgram->tess_gen_spacing, tesProgram->tess_gen_point_mode,
-                tesProgram->tess_gen_vertex_order,
-                (uint8_t *)outContents + itemBase * outStride,
-                items, (uint32_t)outStride) != items) {
-            return false;
-        }
-        itemBase += items;
+    if (mglTessSeedEvalOutputRecords(tesProgram, factorBytes, patchCount,
+                                     instanceCountU, outContents, outSize,
+                                     (uint32_t)outStride) != itemsPerInstanceU) {
+        NSLog(@"MGL TESS ERROR: TES domain seed failed program=%u",
+              (unsigned)tesProgram->name);
+        return false;
     }
-    for (GLuint inst = 1; inst < instanceCountU; inst++)
-        memcpy((uint8_t *)outContents + inst * instanceBytes, outContents, instanceBytes);
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
     if (mglRenderEncoderOwnerHasCurrent(
@@ -1469,8 +1366,6 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     if (xfbActive) {
         BufferBaseTarget *xfbSlot =
             &MGL_STATE(glm_ctx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
-        const GLenum xfbGenMode = tesProgram->tess_gen_mode;
-        const GLboolean xfbPointMode = tesProgram->tess_gen_point_mode;
         NSUInteger captureVertices = 0u;
         NSUInteger requiredBytes = 0u;
         const bool sessionOffsetOK =
@@ -1533,7 +1428,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 
         if (sizeOK) {
             const GLuint verticesPerPrimitive =
-                xfbPointMode ? 1u : (xfbGenMode == GL_ISOLINES ? 2u : 3u);
+                mglTessVerticesPerPrimitive(tesProgram);
             NSUInteger primitiveBytes = 0u;
             const bool primitiveLayoutOK =
                 mglCheckedNSUIntegerProduct((NSUInteger)verticesPerPrimitive,
@@ -1695,13 +1590,15 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                 }
                 const char *name =
                     tesProgram->transform_feedback_varying_names[varying];
-                NSUInteger recordOffset = 0u;
-                GLenum fieldType = GL_NONE;
-                NSUInteger fieldBytes = 0u;
-                if (!mglTESXFBResolveSource(tesProgram, name, &recordOffset,
-                                            &fieldType, &fieldBytes)) {
+                uint32_t recordOffset = 0u;
+                uint32_t fieldType = 0u;
+                uint32_t fieldBytes = 0u;
+                if (!mglTessResolveXFBSource(tesProgram, name, &recordOffset,
+                                             &fieldType, &fieldBytes)) {
                     continue;
                 }
+                (void)recordOffset;
+                (void)fieldType;
                 BufferBaseTarget *slot =
                     &MGL_STATE(glm_ctx)
                          ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
@@ -1758,13 +1655,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                           (int)varying);
                     return false;
                 }
-                for (NSUInteger vertex = 0u; vertex < maxVerts; vertex++) {
-                    NSUInteger sourceOffset =
-                        vertex * outStride + recordOffset;
-                    mglTESXFBPackFieldFromCarrier(
-                        fieldType, srcBase + sourceOffset,
-                        packed + vertex * fieldBytes, fieldBytes);
-                }
+                mglTessPackXFBSeparate(tesProgram, name, srcBase,
+                                       (uint32_t)outStride, (uint32_t)maxVerts,
+                                       packed);
                 mglRendererBufferSubData(glm_ctx, destBuf, (GLintptr)destOffset,
                                          (GLsizeiptr)written, packed);
                 if (destMTL) {
@@ -1803,29 +1696,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             NSLog(@"MGL TESS XFB: missing temporary contents or OOM");
             return false;
         }
-        for (NSUInteger vertex = 0u; vertex < xfbCopiedVertices; vertex++) {
-            NSUInteger compactOffset = 0u;
-            for (GLsizei varying = 0;
-                 varying < tesProgram->transform_feedback_varying_count;
-                 varying++) {
-                const char *name =
-                    tesProgram->transform_feedback_varying_names[varying];
-                NSUInteger recordOffset = 0u;
-                GLenum fieldType = GL_NONE;
-                NSUInteger fieldBytes = 0u;
-                if (!mglTESXFBResolveSource(tesProgram, name, &recordOffset,
-                                            &fieldType, &fieldBytes)) {
-                    continue;
-                }
-                NSUInteger sourceOffset =
-                    vertex * outStride + recordOffset;
-                mglTESXFBPackFieldFromCarrier(
-                    fieldType, srcBase + sourceOffset,
-                    packed + vertex * xfbCompactStride + compactOffset,
-                    fieldBytes);
-                compactOffset += fieldBytes;
-            }
-        }
+        mglTessPackXFBInterleaved(tesProgram, srcBase, (uint32_t)outStride,
+                                  (uint32_t)xfbCopiedVertices, packed,
+                                  (uint32_t)xfbCompactStride);
         mglRendererBufferSubData(glm_ctx, xfbDestination,
                                  xfbCopyDestinationOffset, xfbWrittenBytes,
                                  packed);
@@ -1879,9 +1752,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     const GLenum genMode = tesProgram->tess_gen_mode;
     const GLboolean pointMode = tesProgram->tess_gen_point_mode;
     const uint64_t primitivesPerInstance =
-        pointMode ? itemsPerInstanceU
-                  : (genMode == GL_ISOLINES ? itemsPerInstanceU / 2u
-                                            : itemsPerInstanceU / 3u);
+        mglTessPrimitivesFromItems(tesProgram, itemsPerInstanceU);
     if (hasGeometryStage) {
         GLenum gsMode = pointMode ? GL_POINTS
             : (genMode == GL_ISOLINES ? GL_LINES : GL_TRIANGLES);
@@ -1925,8 +1796,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
         GLuint64 written = prims;
         if (xfbActive) {
-            const GLuint64 vpp = pointMode ? 1u
-                : (genMode == GL_ISOLINES ? 2u : 3u);
+            const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
             const GLuint64 xfbPrims =
                 xfbWrittenBytes / ((GLuint64)xfbCompactStride * vpp);
             written = MIN(written, xfbPrims);
@@ -1941,8 +1811,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         /* XFB capture already completed above; do not fail the draw and
          * leave transform feedback active when the test only needed feedback. */
         if (xfbActive) {
-            const GLuint64 vpp = pointMode ? 1u
-                : (genMode == GL_ISOLINES ? 2u : 3u);
+            const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
             GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
             GLuint64 written = MIN(prims,
                 xfbWrittenBytes / ((GLuint64)MAX(xfbCompactStride, 1u) * vpp));
@@ -1972,8 +1841,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeProgram = NULL;
         if (xfbActive) {
-            const GLuint64 vpp = pointMode ? 1u
-                : (genMode == GL_ISOLINES ? 2u : 3u);
+            const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
             GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
             GLuint64 written = MIN(prims,
                 xfbWrittenBytes / ((GLuint64)MAX(xfbCompactStride, 1u) * vpp));
@@ -2003,8 +1871,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     GLuint64 prims = (GLuint64)instanceCount * primitivesPerInstance;
     GLuint64 written = prims;
     if (xfbActive) {
-        const GLuint64 vpp = pointMode ? 1u
-            : (genMode == GL_ISOLINES ? 2u : 3u);
+        const GLuint64 vpp = mglTessVerticesPerPrimitive(tesProgram);
         written = MIN(written, xfbWrittenBytes /
                                ((GLuint64)xfbCompactStride * vpp));
     }
