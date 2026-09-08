@@ -9402,6 +9402,21 @@ int mglRenderIndexTypeIsU8(uint32_t type) {
     return type == GL_UNSIGNED_BYTE ? 1 : 0;
 }
 
+int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer) {
+    if (mglRenderAttribNeedsConversion(0, type, integer)) {
+        return 1;
+    }
+    return type == GL_FIXED || type == GL_UNSIGNED_INT_10_10_10_2 ||
+                   type == GL_UNSIGNED_INT_10F_11F_11F_REV
+               ? 1
+               : 0;
+}
+
+int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
+                                            int already_norm) {
+    return !already_norm && type == GL_UNSIGNED_BYTE && size == 4u ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

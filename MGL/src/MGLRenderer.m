@@ -1972,16 +1972,8 @@ static BOOL mglVertexAttribNeedsConvertedMetalStream(Program *program,
         return NO;
     }
     VertexAttrib *a = &vao->attrib[attrib];
-    if (a->type == GL_DOUBLE) {
-        return YES;
-    }
-    if (a->integer == 0 &&
-        (a->type == GL_INT || a->type == GL_UNSIGNED_INT)) {
-        return YES;
-    }
-    if (a->type == GL_FIXED ||
-        a->type == GL_UNSIGNED_INT_10_10_10_2 ||
-        a->type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+    if (mglRenderAttribNeedsConvertedMetalStream((uint32_t)a->type,
+                                                 a->integer ? 1 : 0)) {
         return YES;
     }
     if (a->integer == 1 && program) {
@@ -2344,9 +2336,9 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     size_t elemBytes = mglVertexAttribElementBytes(a->type, a->size);
     GLboolean effectiveNormalized = a->normalized;
     Program *program = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-    if (!effectiveNormalized &&
-        a->type == GL_UNSIGNED_BYTE &&
-        a->size == 4 &&
+    if (mglRenderAttribColorUByteNeedsNormalize(
+            (uint32_t)a->type, (uint32_t)a->size,
+            effectiveNormalized ? 1 : 0) &&
         mglRendererVertexAttribIsColorInput(program, attrib)) {
         effectiveNormalized = GL_TRUE;
     }

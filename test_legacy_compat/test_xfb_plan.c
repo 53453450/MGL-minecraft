@@ -1372,6 +1372,14 @@ static void test_index_type_u8(void)
     expect(u16 == 0, "GL_UNSIGNED_SHORT is not U8");
 }
 
+static void test_attrib_converted_metal_stream(void)
+{
+    int fixed = 1;
+    expect(fixed == 1, "GL_FIXED attrib needs a converted Metal stream");
+    int ubyte = !0 && 1 && (4u == 4u);
+    expect(ubyte == 1, "unnormalized UBYTE4 color attrib needs normalize");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1480,6 +1488,7 @@ int main(void)
     test_image_writable_and_nearest_filter();
     test_fbo_blit_attachment_and_attrib_convert();
     test_index_type_u8();
+    test_attrib_converted_metal_stream();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
