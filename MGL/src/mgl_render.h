@@ -1467,6 +1467,7 @@ uint32_t mglRenderClearMaskDepthStencilBits(uint32_t mask);
 uint32_t mglRenderClearMaskClearColor(uint32_t mask);
 uint32_t mglRenderClearMaskClearDepth(uint32_t mask);
 uint32_t mglRenderClearMaskClearStencil(uint32_t mask);
+int mglRenderClearMaskHasAny(uint32_t mask);
 int mglRenderIsValidGLBlendEquation(uint32_t op);
 int mglRenderIsValidGLBlendFactor(uint32_t factor);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);

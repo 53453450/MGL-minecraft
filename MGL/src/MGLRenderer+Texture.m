@@ -1174,7 +1174,8 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)mglApplyPendingDefaultColorClearToTexture:(id)texture
 {
-    if (!ctx || !texture || !(STATE(default_fbo_clear_bitmask) & GL_COLOR_BUFFER_BIT)) {
+    if (!ctx || !texture ||
+        !mglRenderClearMaskHasColor((uint32_t)STATE(default_fbo_clear_bitmask))) {
         return;
     }
 
@@ -1185,7 +1186,9 @@ static void mglTextureCopyTextureToBuffer(
             STATE(default_clear_color)[1],
             STATE(default_clear_color)[2],
             STATE(default_clear_color)[3]) == 0) {
-        STATE(default_fbo_clear_bitmask) &= ~GL_COLOR_BUFFER_BIT;
+        STATE(default_fbo_clear_bitmask) =
+            (GLbitfield)mglRenderClearMaskClearColor(
+                (uint32_t)STATE(default_fbo_clear_bitmask));
         return;
     }
     NSLog(@"MGL WARNING: C++ default framebuffer color clear failed");
@@ -1198,7 +1201,8 @@ static void mglTextureCopyTextureToBuffer(
                                   attachmentEnum:(GLenum)attachmentEnum
 {
     (void)attachmentEnum;
-    if (!fbo || !attachment || !texture || !(attachment->clear_bitmask & GL_COLOR_BUFFER_BIT)) {
+    if (!fbo || !attachment || !texture ||
+        !mglRenderClearMaskHasColor((uint32_t)attachment->clear_bitmask)) {
         return;
     }
 
@@ -1210,7 +1214,9 @@ static void mglTextureCopyTextureToBuffer(
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0], attachment->clear_color[1],
             attachment->clear_color[2], attachment->clear_color[3]) == 0) {
-        attachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+        attachment->clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearColor(
+                (uint32_t)attachment->clear_bitmask);
         mglMarkTextureLevelRenderTargetWritten(
             textureObj, attachment->level);
         return;
@@ -1829,7 +1835,8 @@ static void mglTextureCopyTextureToBuffer(
                                      textureObj:(Texture *)textureObj
                                      mtlTexture:(id)texture
 {
-    if (!fbo || !attachment || !texture || !(attachment->clear_bitmask & GL_DEPTH_BUFFER_BIT)) {
+    if (!fbo || !attachment || !texture ||
+        !mglRenderClearMaskHasDepth((uint32_t)attachment->clear_bitmask)) {
         return;
     }
 
@@ -1840,7 +1847,9 @@ static void mglTextureCopyTextureToBuffer(
             (__bridge void *)texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0]) == 0) {
-        attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        attachment->clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearDepth(
+                (uint32_t)attachment->clear_bitmask);
         mglMarkTextureLevelRenderTargetWritten(textureObj, attachment->level);
     } else {
         NSLog(@"MGL WARNING: C++ readPixels depth clear failed fbo=%u",
@@ -1850,7 +1859,8 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)mglApplyPendingDefaultDepthClearToTexture:(id)texture
 {
-    if (!ctx || !texture || !(STATE(default_fbo_clear_bitmask) & GL_DEPTH_BUFFER_BIT)) {
+    if (!ctx || !texture ||
+        !mglRenderClearMaskHasDepth((uint32_t)STATE(default_fbo_clear_bitmask))) {
         return;
     }
 
@@ -1858,7 +1868,9 @@ static void mglTextureCopyTextureToBuffer(
             _renderPassManager.state->currentCommandBufferOwner,
             (__bridge void *)texture, 0, 0, 0,
             STATE(var).depth_clear_value) == 0) {
-        STATE(default_fbo_clear_bitmask) &= ~GL_DEPTH_BUFFER_BIT;
+        STATE(default_fbo_clear_bitmask) =
+            (GLbitfield)mglRenderClearMaskClearDepth(
+                (uint32_t)STATE(default_fbo_clear_bitmask));
     } else {
         NSLog(@"MGL WARNING: C++ default depth clear failed");
     }

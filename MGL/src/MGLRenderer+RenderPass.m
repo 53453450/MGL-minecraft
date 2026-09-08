@@ -21,6 +21,7 @@
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
 #include "mgl_draw_tess.h"
+#include "mgl_render.h"
 
 #import <objc/message.h>
 
@@ -3228,7 +3229,7 @@ static GLenum mglPassthroughDeclType(
                 (attachmentTextureForClear->mtl_rt_frame_generation != _renderPassManager.state->dontCareFrameGeneration);
             attachmentTextureForClear->mtl_rt_frame_generation = _renderPassManager.state->dontCareFrameGeneration;
         }
-        if (att->clear_bitmask & GL_COLOR_BUFFER_BIT) {
+        if (mglRenderClearMaskHasColor((uint32_t)att->clear_bitmask)) {
             if (attachmentTextureForClear &&
                 attachmentTextureForClear->name == 8u &&
                 mglTraceLogIsEnabled()) {
@@ -3289,7 +3290,8 @@ static GLenum mglPassthroughDeclType(
                 }
             }
 
-            att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+            att->clear_bitmask =
+                (GLbitfield)mglRenderClearMaskClearColor((uint32_t)att->clear_bitmask);
             mglMarkTextureLevelRenderTargetWritten(attachmentTextureForClear, att->level);
 
             (*outFboColorClearCount)++;
@@ -3312,20 +3314,25 @@ static GLenum mglPassthroughDeclType(
 
 
     for (GLuint ai = 0; ai < MAX_COLOR_ATTACHMENTS; ++ai) {
-        if ((fbo->color_attachments[ai].clear_bitmask & GL_COLOR_BUFFER_BIT) &&
+        if ((mglRenderClearMaskHasColor(
+                 (uint32_t)fbo->color_attachments[ai].clear_bitmask)) &&
             ((fbo->color_attachment_bitfield >> ai) & 1u) == 0u) {
-            fbo->color_attachments[ai].clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+            fbo->color_attachments[ai].clear_bitmask =
+                (GLbitfield)mglRenderClearMaskClearColor(
+                    (uint32_t)fbo->color_attachments[ai].clear_bitmask);
         }
     }
 
-    if (fbo->depth.clear_bitmask & GL_DEPTH_BUFFER_BIT) {
+    if (mglRenderClearMaskHasDepth((uint32_t)fbo->depth.clear_bitmask)) {
         mglRenderPassSetPersistentDepthClear(
             _renderPassManager.state, fbo->depth.clear_color[0]);
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionClear, MGLStoreActionStore);
-        fbo->depth.clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        fbo->depth.clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearDepth(
+                (uint32_t)fbo->depth.clear_bitmask);
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
@@ -3339,7 +3346,7 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    if (fbo->stencil.clear_bitmask & GL_STENCIL_BUFFER_BIT) {
+    if (mglRenderClearMaskHasStencil((uint32_t)fbo->stencil.clear_bitmask)) {
         mglRenderPassSetPersistentStencilClear(
             _renderPassManager.state,
             (uint32_t)fbo->stencil.clear_color[0]);
@@ -3347,7 +3354,9 @@ static GLenum mglPassthroughDeclType(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionClear, MGLStoreActionStore);
-        fbo->stencil.clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
+        fbo->stencil.clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearStencil(
+                (uint32_t)fbo->stencil.clear_bitmask);
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
@@ -3366,7 +3375,7 @@ static GLenum mglPassthroughDeclType(
 {
     Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
     GLbitfield defaultClearMask = MGL_STATE(ctx)->default_fbo_clear_bitmask;
-    if (defaultClearMask & GL_COLOR_BUFFER_BIT) {
+    if (mglRenderClearMaskHasColor((uint32_t)defaultClearMask)) {
         mglRenderPassSetPersistentColorClear(
             _renderPassManager.state, 0,
             (MGLRenderPassClearColorValue){MGL_STATE(ctx)->default_clear_color[0],
@@ -3377,7 +3386,9 @@ static GLenum mglPassthroughDeclType(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
             MGLLoadActionClear, MGLStoreActionStore);
-        MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+        MGL_STATE(ctx)->default_fbo_clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearColor(
+                (uint32_t)MGL_STATE(ctx)->default_fbo_clear_bitmask);
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
@@ -3393,7 +3404,7 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    if (defaultClearMask & GL_DEPTH_BUFFER_BIT) {
+    if (mglRenderClearMaskHasDepth((uint32_t)defaultClearMask)) {
         mglRenderPassSetPersistentDepthClear(
             _renderPassManager.state,
             MGL_STATE(ctx)->var.depth_clear_value);
@@ -3401,7 +3412,9 @@ static GLenum mglPassthroughDeclType(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
             MGLLoadActionClear, MGLStoreActionStore);
-        MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        MGL_STATE(ctx)->default_fbo_clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearDepth(
+                (uint32_t)MGL_STATE(ctx)->default_fbo_clear_bitmask);
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
@@ -3415,7 +3428,7 @@ static GLenum mglPassthroughDeclType(
         }
     }
 
-    if (defaultClearMask & GL_STENCIL_BUFFER_BIT) {
+    if (mglRenderClearMaskHasStencil((uint32_t)defaultClearMask)) {
         mglRenderPassSetPersistentStencilClear(
             _renderPassManager.state,
             MGL_STATE(ctx)->var.stencil_clear_value);
@@ -3423,7 +3436,9 @@ static GLenum mglPassthroughDeclType(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
             MGLLoadActionClear, MGLStoreActionStore);
-        MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
+        MGL_STATE(ctx)->default_fbo_clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearStencil(
+                (uint32_t)MGL_STATE(ctx)->default_fbo_clear_bitmask);
     } else {
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
@@ -3473,8 +3488,8 @@ static GLenum mglPassthroughDeclType(
                 (fboColorClearCount != 0) ||
                 (fboColorAttachment0ClearMask != 0) ||
                 (mglRenderPassLoadActionFor(_renderPassManager.state, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, MGLLoadActionDontCare) == MGLLoadActionClear) ||
-                (fboDepthClearMaskBefore & GL_DEPTH_BUFFER_BIT) ||
-                (!fbo && (defaultClearMask & GL_DEPTH_BUFFER_BIT));
+                mglRenderClearMaskHasDepth((uint32_t)fboDepthClearMaskBefore) ||
+                (!fbo && mglRenderClearMaskHasDepth((uint32_t)defaultClearMask));
             if (clearResolveInteresting) {
                 static uint64_t s_clearResolveDetailLogCount = 0;
                 uint64_t hit = ++s_clearResolveDetailLogCount;

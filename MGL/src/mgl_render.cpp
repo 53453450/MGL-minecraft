@@ -9809,6 +9809,13 @@ uint32_t mglRenderClearMaskClearStencil(uint32_t mask) {
     return mask & ~GL_STENCIL_BUFFER_BIT;
 }
 
+int mglRenderClearMaskHasAny(uint32_t mask) {
+    return mglRenderClearMaskHasColor(mask) ||
+                   mglRenderClearMaskHasDepthStencil(mask)
+               ? 1
+               : 0;
+}
+
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
     uint32_t tmp = 0u;
     return mglRenderBlendOperationFromGL(op, &tmp);

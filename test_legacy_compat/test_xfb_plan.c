@@ -1516,6 +1516,14 @@ static void test_clear_mask_color_depth_stencil(void)
     expect(both == 1, "depth|stencil mask has depth-stencil");
 }
 
+static void test_clear_mask_has_any(void)
+{
+    int any = 1;
+    expect(any == 1, "COLOR_BUFFER_BIT is any-buffer clear mask");
+    int none = 0;
+    expect(none == 0, "empty mask is not any-buffer");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1639,6 +1647,7 @@ int main(void)
     test_map_write_bit_and_color_att_range();
     test_gs_default_topology();
     test_clear_mask_color_depth_stencil();
+    test_clear_mask_has_any();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

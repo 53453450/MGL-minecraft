@@ -3547,7 +3547,7 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
 -(void) mtlClearBuffer:(GLMContext) glm_ctx type:(GLuint) type mask:(GLbitfield) mask
 {
     (void)type;
-    if (!glm_ctx || (mask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) == 0) {
+    if (!glm_ctx || !mglRenderClearMaskHasAny((uint32_t)mask)) {
         return;
     }
 
@@ -3596,8 +3596,9 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     MGLMetalAttachmentSubresource colorSubresource = {0u, 0u, 0u};
     MGLMetalAttachmentSubresource depthSubresource = {0u, 0u, 0u};
 
-    BOOL wantsColor = ((mask & GL_COLOR_BUFFER_BIT) != 0);
-    BOOL wantsDepth = ((mask & GL_DEPTH_BUFFER_BIT) != 0) && MGL_STATE(glm_ctx)->var.depth_writemask;
+    BOOL wantsColor = mglRenderClearMaskHasColor((uint32_t)mask) != 0;
+    BOOL wantsDepth = mglRenderClearMaskHasDepth((uint32_t)mask) != 0 &&
+                      MGL_STATE(glm_ctx)->var.depth_writemask;
 
     if (wantsColor) {
         BOOL colorMaskAllowsWrite =
@@ -3895,11 +3896,15 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
             &clearDraw, NULL, 0);
 
         if (wantsColor && colorTexObj && colorAttachment) {
-            colorAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+            colorAttachment->clear_bitmask =
+                (GLbitfield)mglRenderClearMaskClearColor(
+                    (uint32_t)colorAttachment->clear_bitmask);
             mglMarkTextureLevelRenderTargetWritten(colorTexObj, colorAttachment->level);
         }
         if (wantsDepth && depthTexObj && depthAttachment) {
-            depthAttachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+            depthAttachment->clear_bitmask =
+                (GLbitfield)mglRenderClearMaskClearDepth(
+                    (uint32_t)depthAttachment->clear_bitmask);
             mglMarkTextureLevelRenderTargetWritten(depthTexObj, depthAttachment->level);
         }
 
@@ -3973,11 +3978,15 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     mglRendererEndRenderEncoder(clearEncoder);
 
     if (wantsColor && colorTexObj && colorAttachment) {
-        colorAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+        colorAttachment->clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearColor(
+                (uint32_t)colorAttachment->clear_bitmask);
         mglMarkTextureLevelRenderTargetWritten(colorTexObj, colorAttachment->level);
     }
     if (wantsDepth && depthTexObj && depthAttachment) {
-        depthAttachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        depthAttachment->clear_bitmask =
+            (GLbitfield)mglRenderClearMaskClearDepth(
+                (uint32_t)depthAttachment->clear_bitmask);
         mglMarkTextureLevelRenderTargetWritten(depthTexObj, depthAttachment->level);
     }
 
