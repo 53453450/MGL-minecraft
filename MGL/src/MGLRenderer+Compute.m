@@ -617,8 +617,8 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                         GLuint ordinal = (GLuint)i;
                         for (GLuint ri = 0; ri < resourceList->count; ri++) {
                             MGLShaderResource *candidate = &resourceList->list[ri];
-                            GLuint elements = candidate->gl_array_size > 1
-                                ? (GLuint)candidate->gl_array_size : 1u;
+                            GLuint elements = mglRenderShaderResourceElementCount(
+                                (uint32_t)candidate->gl_array_size);
                             if (ordinal < elements) {
                                 resource = candidate;
                                 resourceElement = ordinal;
@@ -633,7 +633,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                     }
                 }
 
-                if (metalBinding >= TEXTURE_UNITS ||
+                if (mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS) ||
                     mglShouldSkipStageTextureResource(computeProgram,
                                                       stage,
                                                       spvc_type,

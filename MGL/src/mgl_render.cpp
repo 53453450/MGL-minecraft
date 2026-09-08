@@ -8263,6 +8263,10 @@ int mglRenderMetalBindingPastUnits(uint32_t metal_binding, uint32_t max_units) {
     return metal_binding >= max_units ? 1 : 0;
 }
 
+int mglRenderExpectedTypeUnset(uint32_t expected_type) {
+    return expected_type == 0u ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

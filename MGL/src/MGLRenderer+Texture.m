@@ -6803,15 +6803,15 @@ static void mglTextureCopyTextureToBuffer(
                            expectedType:(uint32_t)expectedType
                           textureUnit:(GLuint)textureUnit
 {
-    if (!ctx || metalBinding >= TEXTURE_UNITS) {
+    if (!ctx || mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS)) {
         return NULL;
     }
 
-    if (textureUnit >= TEXTURE_UNITS) {
+    if (mglRenderMetalBindingPastUnits(textureUnit, TEXTURE_UNITS)) {
         return NULL;
     }
 
-    if (expectedType == 0) {
+    if (mglRenderExpectedTypeUnset(expectedType)) {
         return MGL_STATE(ctx)->active_textures[textureUnit];
     }
 
@@ -6976,7 +6976,7 @@ static void mglTextureCopyTextureToBuffer(
                                   stage:(int)stage
                            expectedType:(uint32_t)expectedType
 {
-    if (!ctx || metalBinding >= TEXTURE_UNITS) {
+    if (!ctx || mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS)) {
         return NULL;
     }
     GLuint textureUnit = [self textureUnitForSampledResource:sampledResource

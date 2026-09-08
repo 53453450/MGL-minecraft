@@ -959,6 +959,12 @@ static void test_default_sampler_unit(void)
     expect(past == 1, "metal binding past TEXTURE_UNITS is a unit");
 }
 
+static void test_expected_type_unset(void)
+{
+    int unset = 0u == 0u;
+    expect(unset == 1, "expected type 0 uses the active texture");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1026,6 +1032,7 @@ int main(void)
     test_shader_resource_image_unit();
     test_sampled_resource_unit();
     test_default_sampler_unit();
+    test_expected_type_unset();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
