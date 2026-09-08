@@ -2440,12 +2440,13 @@ static GLenum mglPassthroughDeclType(
     {
         mglRenderSetDepthClipModeForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
-            (uint32_t)MGLDepthClipModeClamp);
+            mglRenderDepthClipMode(state->caps.depth_clamp ? 1 : 0));
     }
 
-    if (state->caps.polygon_offset_fill ||
-        state->caps.polygon_offset_line ||
-        state->caps.polygon_offset_point)
+    if (mglRenderPolygonOffsetEnabled(
+            state->caps.polygon_offset_fill ? 1 : 0,
+            state->caps.polygon_offset_line ? 1 : 0,
+            state->caps.polygon_offset_point ? 1 : 0))
     {
         float _bias = state->var.polygon_offset_units;
         float _slope = state->var.polygon_offset_factor;
@@ -2463,16 +2464,12 @@ static GLenum mglPassthroughDeclType(
             0.0f, 0.0f, 0.0f);
     }
 
-    uint32_t triangleFillMode = 0u;
-    if (state->var.polygon_mode == GL_LINE)
-    {
-        triangleFillMode = 1u;
-    }
-    else if (state->var.polygon_mode != GL_FILL &&
-             state->var.polygon_mode != GL_POINT)
-    {
+    uint32_t triangleFillMode = mglRenderTriangleFillMode(
+        (uint32_t)state->var.polygon_mode);
+    if (!mglRenderPolygonModeValid((uint32_t)state->var.polygon_mode)) {
         mglLogRenderStateRepair("polygon_mode", state->var.polygon_mode, GL_FILL);
-        state->var.polygon_mode = GL_FILL;
+        state->var.polygon_mode = (GLenum)mglRenderPolygonModeOrFill(
+            (uint32_t)state->var.polygon_mode);
         mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
     [self setTriangleFillModeIfNeeded:triangleFillMode];

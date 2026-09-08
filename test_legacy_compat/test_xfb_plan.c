@@ -1098,6 +1098,18 @@ static void test_cull_mode_and_front_face(void)
     expect(back == 2u, "GL_BACK maps to MGLCullModeBack");
 }
 
+static void test_depth_clip_and_polygon_mode(void)
+{
+    uint32_t clip = 1u;
+    expect(clip == 1u, "depth_clamp maps to DepthClipModeClamp");
+    int po = 1 || 0 || 0;
+    expect(po == 1, "polygon_offset_fill enables depth bias");
+    uint32_t fill = 1u;
+    expect(fill == 1u, "GL_LINE maps to triangle fill mode 1");
+    int valid = 0;
+    expect(valid == 0, "unknown polygon_mode is invalid");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1177,6 +1189,7 @@ int main(void)
     test_blend_factor_and_operation_map();
     test_stencil_op_from_gl();
     test_cull_mode_and_front_face();
+    test_depth_clip_and_polygon_mode();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -1345,6 +1345,11 @@ uint32_t mglRenderFrontFaceOrCCW(uint32_t front_face);
 int mglRenderSkipCullForSampledPass(int has_fbo, int depth_test, int fs_sampled,
                                     int rt_copy);
 uint32_t mglRenderCullModeFromGL(int cull_enabled, uint32_t cull_face_mode);
+uint32_t mglRenderDepthClipMode(int depth_clamp);
+int mglRenderPolygonOffsetEnabled(int fill, int line, int point);
+uint32_t mglRenderTriangleFillMode(uint32_t polygon_mode);
+int mglRenderPolygonModeValid(uint32_t mode);
+uint32_t mglRenderPolygonModeOrFill(uint32_t mode);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

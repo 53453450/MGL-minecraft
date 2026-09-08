@@ -8633,6 +8633,26 @@ uint32_t mglRenderCullModeFromGL(int cull_enabled, uint32_t cull_face_mode) {
         return MGLCullModeNone;
     }
 }
+
+uint32_t mglRenderDepthClipMode(int depth_clamp) {
+    return depth_clamp ? MGLDepthClipModeClamp : MGLDepthClipModeClip;
+}
+
+int mglRenderPolygonOffsetEnabled(int fill, int line, int point) {
+    return fill || line || point ? 1 : 0;
+}
+
+uint32_t mglRenderTriangleFillMode(uint32_t polygon_mode) {
+    return polygon_mode == GL_LINE ? 1u : 0u;
+}
+
+int mglRenderPolygonModeValid(uint32_t mode) {
+    return mode == GL_FILL || mode == GL_LINE || mode == GL_POINT ? 1 : 0;
+}
+
+uint32_t mglRenderPolygonModeOrFill(uint32_t mode) {
+    return mglRenderPolygonModeValid(mode) ? mode : (uint32_t)GL_FILL;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }
