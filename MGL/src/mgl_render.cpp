@@ -7654,6 +7654,76 @@ int mglRenderPlanVertexAttribSpan(int64_t binding_offset, int64_t relativeoffset
     return MGL_ATTRIB_SPAN_OK;
 }
 
+int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
+                             int64_t binding_offset, int64_t relativeoffset,
+                             uint32_t divisor, uint64_t first_vertex,
+                             uint64_t last_vertex, int64_t vbo_size,
+                             MGLRenderAttribFetchPlan *out) {
+    if (!out) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    const uint64_t elem = mglRenderVertexAttribElementBytes(gl_type, size);
+    if (elem == 0u) {
+        out->status = MGL_ATTRIB_FETCH_BAD_FORMAT;
+        return 1;
+    }
+    const uint64_t use_stride = stride > 0u ? (uint64_t)stride : elem;
+    if (binding_offset < 0 || relativeoffset < 0) {
+        out->status = MGL_ATTRIB_FETCH_OVERFLOW;
+        return 1;
+    }
+    if ((uint64_t)binding_offset > UINT64_MAX - (uint64_t)relativeoffset) {
+        out->status = MGL_ATTRIB_FETCH_OVERFLOW;
+        return 1;
+    }
+    const uint64_t rel = (uint64_t)binding_offset + (uint64_t)relativeoffset;
+    if (use_stride == 0u) {
+        out->status = MGL_ATTRIB_FETCH_BAD_FORMAT;
+        return 1;
+    }
+    const uint64_t range_first = divisor != 0u ? 0u : first_vertex;
+    const uint64_t range_last = divisor != 0u ? 0u : last_vertex;
+    if (rel > UINT64_MAX - elem) {
+        out->status = MGL_ATTRIB_FETCH_OVERFLOW;
+        return 1;
+    }
+    if (range_last > (UINT64_MAX - rel - elem) / use_stride ||
+        range_first > (UINT64_MAX - rel) / use_stride) {
+        out->status = MGL_ATTRIB_FETCH_OVERFLOW;
+        return 1;
+    }
+    const uint64_t byte_start = rel + range_first * use_stride;
+    const uint64_t byte_end = rel + range_last * use_stride + elem;
+    const uint64_t vbo = vbo_size > 0 ? (uint64_t)vbo_size : 0u;
+    out->elem_bytes = elem;
+    out->stride = use_stride;
+    out->rel_offset = rel;
+    out->byte_start = byte_start;
+    out->byte_end = byte_end;
+    if (byte_end > vbo) {
+        out->status = MGL_ATTRIB_FETCH_OOB;
+        return 1;
+    }
+    out->status = MGL_ATTRIB_FETCH_OK;
+    return 1;
+}
+
+int mglRenderUseInlineFragmentBytes(int is_base_binding, int64_t size) {
+    return !is_base_binding && size < 4096 ? 1 : 0;
+}
+
+int mglRenderCPUPointerLooksTagged(const void *p) {
+    return p && (uintptr_t)p < 0x100000000ULL ? 1 : 0;
+}
+
+int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size) {
+    if (offset < 0 || size <= 0) {
+        return 0;
+    }
+    return (uint64_t)offset < (uint64_t)size ? 1 : 0;
+}
+
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
     return shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
                    shader_gl_type == GL_INT_VEC3 ||

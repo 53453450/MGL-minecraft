@@ -2170,113 +2170,33 @@ after_gs_draws:
             return false;
         }
 
-        size_t compSize = mglVertexAttribComponentSize(a->type);
-        size_t compCount = (size_t)a->size;
-        if (compSize == 0u || compCount == 0u) {
-            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=invalid_attrib_format type=0x%x size=%u",
-                  (unsigned long long)drawCall,
-                  (unsigned)attrib,
-                  (unsigned)vbo->name,
-                  (unsigned)a->type,
-                  (unsigned)a->size);
-            return false;
-        }
-
-        if (compCount > (SIZE_MAX / compSize)) {
-            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=elem_size_overflow compSize=%zu compCount=%zu",
-                  (unsigned long long)drawCall,
-                  (unsigned)attrib,
-                  (unsigned)vbo->name,
-                  compSize,
-                  compCount);
-            return false;
-        }
-
-        uint64_t elemBytes = (uint64_t)(compSize * compCount);
-        uint64_t stride = (resolved.stride > 0u) ? (uint64_t)resolved.stride : elemBytes;
-        uint64_t bindingOffset = (uint64_t)resolved.binding_offset;
-        uint64_t attrRelativeOffset = (uint64_t)resolved.relativeoffset;
-        if (bindingOffset > UINT64_MAX - attrRelativeOffset) {
-            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=offset_overflow bindingOffset=%llu relativeOffset=%llu",
-                  (unsigned long long)drawCall,
-                  (unsigned)attrib,
-                  (unsigned)vbo->name,
-                  (unsigned long long)bindingOffset,
-                  (unsigned long long)attrRelativeOffset);
-            return false;
-        }
-        uint64_t relOffset = bindingOffset + attrRelativeOffset;
-        if (stride == 0u || elemBytes == 0u) {
-            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=zero_stride_or_elem stride=%llu elem=%llu",
-                  (unsigned long long)drawCall,
-                  (unsigned)attrib,
-                  (unsigned)vbo->name,
-                  (unsigned long long)stride,
-                  (unsigned long long)elemBytes);
-            return false;
-        }
-
-        // Per-instance attributes are still consumed by a non-instanced draw for
-        // instance zero, so validate element zero instead of ignoring them.
-        uint64_t rangeFirst = (resolved.divisor != 0u) ? 0u : firstVertex;
-        uint64_t rangeLast = (resolved.divisor != 0u) ? 0u : lastVertex;
-
-        if (relOffset > UINT64_MAX - elemBytes) {
-            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=byte_range_overflow bindingOffset=%llu relOffset=%llu elemBytes=%llu divisor=%u",
-                  (unsigned long long)drawCall,
-                  (unsigned)attrib,
-                  (unsigned)vbo->name,
-                  (unsigned long long)bindingOffset,
-                  (unsigned long long)relOffset,
-                  (unsigned long long)elemBytes,
+        MGLRenderAttribFetchPlan fetch = {0};
+        if (!mglRenderPlanAttribFetch(
+                (uint32_t)a->type, (uint32_t)a->size, resolved.stride,
+                resolved.binding_offset, resolved.relativeoffset,
+                resolved.divisor, firstVertex, lastVertex, vbo->size,
+                &fetch) ||
+            fetch.status != MGL_ATTRIB_FETCH_OK) {
+            const char *reason = "invalid_attrib_format";
+            if (fetch.status == MGL_ATTRIB_FETCH_OVERFLOW) {
+                reason = "byte_range_overflow";
+            } else if (fetch.status == MGL_ATTRIB_FETCH_OOB) {
+                reason = "vbo_oob";
+            }
+            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=%s "
+                  "byteRange=[%llu,%llu) stride=%llu elem=%llu type=0x%x size=%u divisor=%u",
+                  (unsigned long long)drawCall, (unsigned)attrib,
+                  (unsigned)vbo->name, reason,
+                  (unsigned long long)fetch.byte_start,
+                  (unsigned long long)fetch.byte_end,
+                  (unsigned long long)fetch.stride,
+                  (unsigned long long)fetch.elem_bytes,
+                  (unsigned)a->type, (unsigned)a->size,
                   (unsigned)resolved.divisor);
             return false;
         }
-
-        if (rangeLast > (UINT64_MAX - relOffset - elemBytes) / stride ||
-            rangeFirst > (UINT64_MAX - relOffset) / stride) {
-            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=byte_range_overflow "
-                  "range=[%llu,%llu] stride=%llu bindingOffset=%llu relOffset=%llu elemBytes=%llu divisor=%u",
-                  (unsigned long long)drawCall,
-                  (unsigned)attrib,
-                  (unsigned)vbo->name,
-                  (unsigned long long)rangeFirst,
-                  (unsigned long long)rangeLast,
-                  (unsigned long long)stride,
-                  (unsigned long long)bindingOffset,
-                  (unsigned long long)relOffset,
-                  (unsigned long long)elemBytes,
-                  (unsigned)resolved.divisor);
-            return false;
-        }
-
-        uint64_t byteStart = relOffset + (rangeFirst * stride);
-        uint64_t byteEnd = relOffset + (rangeLast * stride) + elemBytes;
-        uint64_t vboSize = (vbo->size > 0) ? (uint64_t)vbo->size : 0u;
-        if (byteEnd > vboSize) {
-            NSLog(@"MGL DRAWARRAYS BLOCK call=%llu attrib=%u buffer=%u reason=vbo_oob "
-                  "vertexRange=[%llu,%llu] byteRange=[%llu,%llu) vboSize=%llu "
-                  "mode=0x%x first=%d count=%d stride=%llu bindingOffset=%llu relOffset=%llu elemBytes=%llu type=0x%x size=%u divisor=%u",
-                  (unsigned long long)drawCall,
-                  (unsigned)attrib,
-                  (unsigned)vbo->name,
-                  (unsigned long long)rangeFirst,
-                  (unsigned long long)rangeLast,
-                  (unsigned long long)byteStart,
-                  (unsigned long long)byteEnd,
-                  (unsigned long long)vboSize,
-                  (unsigned)mode,
-                  (int)first,
-                  (int)count,
-                  (unsigned long long)stride,
-                  (unsigned long long)bindingOffset,
-                  (unsigned long long)relOffset,
-                  (unsigned long long)elemBytes,
-                  (unsigned)a->type,
-                  (unsigned)a->size,
-                  (unsigned)resolved.divisor);
-            return false;
-        }
+        uint64_t byteStart = fetch.byte_start;
+        uint64_t byteEnd = fetch.byte_end;
 
         if (!vbo->data.mtl_data) {
             [self bindMTLBuffer:vbo];

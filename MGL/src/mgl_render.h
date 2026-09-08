@@ -1172,6 +1172,31 @@ int mglRenderPlanVertexAttribSpan(int64_t binding_offset, int64_t relativeoffset
                                   uint32_t type, uint32_t size,
                                   int64_t *offset_out, int64_t *span_out,
                                   int64_t *end_out);
+
+enum {
+    MGL_ATTRIB_FETCH_OK = 0,
+    MGL_ATTRIB_FETCH_BAD_FORMAT = 1,
+    MGL_ATTRIB_FETCH_OVERFLOW = 2,
+    MGL_ATTRIB_FETCH_OOB = 3,
+};
+
+typedef struct MGLRenderAttribFetchPlan {
+    uint32_t status;
+    uint64_t elem_bytes;
+    uint64_t stride;
+    uint64_t rel_offset;
+    uint64_t byte_start;
+    uint64_t byte_end;
+} MGLRenderAttribFetchPlan;
+
+int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
+                             int64_t binding_offset, int64_t relativeoffset,
+                             uint32_t divisor, uint64_t first_vertex,
+                             uint64_t last_vertex, int64_t vbo_size,
+                             MGLRenderAttribFetchPlan *out);
+int mglRenderUseInlineFragmentBytes(int is_base_binding, int64_t size);
+int mglRenderCPUPointerLooksTagged(const void *p);
+int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size);
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);

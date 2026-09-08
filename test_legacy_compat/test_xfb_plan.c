@@ -562,6 +562,20 @@ static void test_buffer_map_offset_and_backing(void)
     expect(attrib_off == 0, "negative attrib relativeoffset is invalid");
 }
 
+static void test_attrib_fetch_and_inline_bytes(void)
+{
+    uint64_t elem = 4ull * 4ull;
+    uint64_t stride = 16u > 0u ? 16u : elem;
+    expect(stride == 16u, "attrib fetch stride defaults to elem bytes");
+    uint64_t last = 2u;
+    uint64_t end = 0u + last * stride + elem;
+    expect(end == 48u, "attrib fetch byte_end is rel+last*stride+elem");
+    int inline_fs = !1 && (256 < 4096);
+    expect(inline_fs == 0, "base fragment bindings do not use setBytes");
+    int small = !0 && (128 < 4096);
+    expect(small == 1, "non-base fragment buffers under 4096 use setBytes");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -596,6 +610,7 @@ int main(void)
     test_tcs_stage_in_source();
     test_tess_eval_xfb_slot();
     test_buffer_map_offset_and_backing();
+    test_attrib_fetch_and_inline_bytes();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

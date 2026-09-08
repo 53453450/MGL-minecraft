@@ -1794,11 +1794,10 @@ static bool mglBindingStateFlushResourceBindings(
             continue;
         }
 
-        if (!isBaseBinding && ptr->size < 4096)
+        if (mglRenderUseInlineFragmentBytes(isBaseBinding ? 1 : 0, ptr->size))
         {
             if (ptr->data.buffer_data && ptr->size > 0) {
-                uintptr_t cpuData = (uintptr_t)ptr->data.buffer_data;
-                if (cpuData < 0x100000000ULL) {
+                if (mglRenderCPUPointerLooksTagged(ptr->data.buffer_data)) {
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: suspicious CPU pointer=%p",
                           ptr->name, i, (void *)ptr->data.buffer_data);
                     MGL_FBIND_EMIT_CLEAR(bindingIndex);
@@ -1809,7 +1808,7 @@ static bool mglBindingStateFlushResourceBindings(
 
                 size_t bindOffset = (size_t)offset;
                 size_t bufferSize = (size_t)ptr->size;
-                if (bindOffset >= bufferSize) {
+                if (!mglRenderBindOffsetInBuffer(offset, ptr->size)) {
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: offset=%lu bufferSize=%lu",
                           ptr->name, i, (unsigned long)bindOffset, (unsigned long)bufferSize);
                     MGL_FBIND_EMIT_CLEAR(bindingIndex);
@@ -1831,7 +1830,7 @@ static bool mglBindingStateFlushResourceBindings(
                 }
                 anyBindingPresent[bindingIndex] = true;
             } else if (ptr->data.mtl_data) {
-                if ((uintptr_t)ptr->data.mtl_data < 0x100000000ULL) {
+                if (mglRenderCPUPointerLooksTagged(ptr->data.mtl_data)) {
                     NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: suspicious mtl_data pointer=%p",
                           ptr->name, i, ptr->data.mtl_data);
                     mglBindingStateSetFragmentBuffer(
