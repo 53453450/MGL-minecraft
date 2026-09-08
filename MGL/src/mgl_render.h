@@ -1430,6 +1430,10 @@ int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer);
 int mglRenderCPUFormatTypeForInternalFormat(uint32_t internalformat,
                                             uint32_t *out_format,
                                             uint32_t *out_type);
+int mglRenderDrawModeIsTriangles(uint32_t mode);
+int mglRenderDrawModeIsTriangleStrip(uint32_t mode);
+int mglRenderQuadsCountTooSmall(uint32_t mode, int32_t count);
+int mglRenderPolygonPointEmulateMode(uint32_t mode);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

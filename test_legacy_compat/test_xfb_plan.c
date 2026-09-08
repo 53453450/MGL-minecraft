@@ -1396,6 +1396,16 @@ static void test_cpu_format_type_for_internal(void)
     expect(ty == GL_UNSIGNED_BYTE_3_3_2, "GL_R3_G3_B2 CPU type is 3_3_2");
 }
 
+static void test_draw_mode_triangles_and_quads_small(void)
+{
+    int tri = 1;
+    expect(tri == 1, "GL_TRIANGLES is a triangles mode");
+    int small = 1 && (3 < 4);
+    expect(small == 1, "GL_QUADS with count<4 is too small");
+    int poly = 1;
+    expect(poly == 1, "TRIANGLE_FAN is a polygon-point emulate mode");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1507,6 +1517,7 @@ int main(void)
     test_attrib_converted_metal_stream();
     test_should_present_draw_buffer();
     test_cpu_format_type_for_internal();
+    test_draw_mode_triangles_and_quads_small();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -317,11 +317,11 @@ static bool mglEncodeArrayPolygonPointTarget(void *renderEncoderOwner,
     if (count < 3) {
         return true;
     }
-    if (mode == GL_QUADS && count < 4) {
+    if (mglRenderQuadsCountTooSmall((uint32_t)mode, (int32_t)count)) {
         return true;
     }
 
-    if (mode == GL_TRIANGLES) {
+    if (mglRenderDrawModeIsTriangles((uint32_t)mode)) {
         size_t drawableCount = ((size_t)count / 3u) * 3u;
         if (drawableCount == 0u) {
             return true;
@@ -334,15 +334,15 @@ static bool mglEncodeArrayPolygonPointTarget(void *renderEncoderOwner,
 
     size_t pointIndexCount = 0u;
     MGLDrawMetalHandle pointIndexBuffer = (MGLDrawMetalHandle)0;
-    if (mode == GL_TRIANGLE_FAN) {
+    if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         pointIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
                                                              (size_t)count,
                                                              &pointIndexCount);
-    } else if (mode == GL_TRIANGLE_STRIP) {
+    } else if (mglRenderDrawModeIsTriangleStrip((uint32_t)mode)) {
         pointIndexBuffer = mglNewTriangleStripArrayIndexBuffer(device,
                                                                (size_t)count,
                                                                &pointIndexCount);
-    } else if (mode == GL_QUADS) {
+    } else if (mglRenderEmulateQuads((uint32_t)mode, 0)) {
         pointIndexBuffer = mglNewQuadArrayIndexBuffer(device,
                                                       (size_t)count,
                                                       &pointIndexCount);
@@ -383,11 +383,11 @@ static bool mglEncodeElementPolygonPointTarget(void *renderEncoderOwner,
     if (count < 3) {
         return true;
     }
-    if (mode == GL_QUADS && count < 4) {
+    if (mglRenderQuadsCountTooSmall((uint32_t)mode, (int32_t)count)) {
         return true;
     }
 
-    if (mode == GL_TRIANGLES) {
+    if (mglRenderDrawModeIsTriangles((uint32_t)mode)) {
         size_t drawableIndexCount = ((size_t)count / 3u) * 3u;
         if (drawableIndexCount == 0u) {
             return true;
@@ -420,19 +420,19 @@ static bool mglEncodeElementPolygonPointTarget(void *renderEncoderOwner,
                                                          count);
     size_t pointIndexCount = 0u;
     MGLDrawMetalHandle pointIndexBuffer = (MGLDrawMetalHandle)0;
-    if (mode == GL_TRIANGLE_FAN) {
+    if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         pointIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
                                                                source,
                                                                glIndexType,
                                                                (size_t)count,
                                                                &pointIndexCount);
-    } else if (mode == GL_TRIANGLE_STRIP) {
+    } else if (mglRenderDrawModeIsTriangleStrip((uint32_t)mode)) {
         pointIndexBuffer = mglNewTriangleStripElementIndexBuffer(device,
                                                                  source,
                                                                  glIndexType,
                                                                  (size_t)count,
                                                                  &pointIndexCount);
-    } else if (mode == GL_QUADS) {
+    } else if (mglRenderEmulateQuads((uint32_t)mode, 0)) {
         pointIndexBuffer = mglNewQuadElementIndexBuffer(device,
                                                         source,
                                                         glIndexType,
@@ -498,7 +498,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
     }
 
     if (primitiveType == MGL_DRAW_PRIMITIVE_POINT &&
-        (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN || mode == GL_QUADS)) {
+        mglRenderPolygonPointEmulateMode((uint32_t)mode)) {
         return mglEncodeElementPolygonPointTarget(renderEncoderOwner,
                                             device,
                                             glElementBuffer,
@@ -514,7 +514,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                             label);
     }
 
-    if (mode == GL_TRIANGLE_FAN) {
+    if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         return mglEncodeElementTriangleFanTarget(renderEncoderOwner,
                                            device,
                                            glElementBuffer,
@@ -528,7 +528,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                            label);
     }
 
-    if (mode == GL_LINE_LOOP) {
+    if (mglRenderEmulateLineLoop((uint32_t)mode)) {
         return mglEncodeElementLineLoopTarget(renderEncoderOwner,
                                         device,
                                         glElementBuffer,
@@ -542,7 +542,7 @@ static bool mglEncodeRestartSegmentTarget(void *renderEncoderOwner,
                                         label);
     }
 
-    if (mode == GL_QUADS) {
+    if (mglRenderEmulateQuads((uint32_t)mode, 0)) {
         return mglEncodeElementQuadsTarget(renderEncoderOwner,
                                      device,
                                      glElementBuffer,
@@ -670,11 +670,10 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
         return MGLPrimitiveRestartEncodeNotNeeded;
     }
 
-    bool emulatedMode = (mode == GL_TRIANGLE_FAN ||
-                         mode == GL_LINE_LOOP ||
-                         mode == GL_QUADS ||
+    bool emulatedMode = (mglRenderDrawModeNeedsEmulate((uint32_t)mode) ||
                          (primitiveType == MGL_DRAW_PRIMITIVE_POINT &&
-                          (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP)));
+                          (mglRenderDrawModeIsTriangles((uint32_t)mode) ||
+                           mglRenderDrawModeIsTriangleStrip((uint32_t)mode))));
     MGLDrawMetalHandle preparedIndexBuffer = metalElementBuffer;
     uint64_t preparedIndexType = metalIndexType;
     if (!emulatedMode) {
@@ -902,17 +901,17 @@ bool mglEncodeDrawArraysForRenderEncoderOwner(
             renderEncoderOwner, device, mode, first, count,
             instanceCount, baseInstance, label);
     }
-    if (mode == GL_TRIANGLE_FAN) {
+    if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         return mglEncodeArrayTriangleFanForRenderEncoderOwner(
             renderEncoderOwner, device, count, first,
             instanceCount, baseInstance, label);
     }
-    if (mode == GL_LINE_LOOP) {
+    if (mglRenderEmulateLineLoop((uint32_t)mode)) {
         return mglEncodeArrayLineLoopForRenderEncoderOwner(
             renderEncoderOwner, ctx, device, count, first,
             instanceCount, baseInstance, label);
     }
-    if (mode == GL_QUADS) {
+    if (mglRenderEmulateQuads((uint32_t)mode, 0)) {
         return mglEncodeArrayQuadsForRenderEncoderOwner(
             renderEncoderOwner, device, count, first,
             instanceCount, baseInstance,
@@ -966,11 +965,11 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
     uint32_t primitiveType;
     if (polygonModePoint) {
         primitiveType = MGL_DRAW_PRIMITIVE_POINT;
-    } else if (mode == GL_TRIANGLE_FAN) {
+    } else if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         primitiveType = MGL_DRAW_PRIMITIVE_TRIANGLE;
-    } else if (mode == GL_LINE_LOOP) {
+    } else if (mglRenderEmulateLineLoop((uint32_t)mode)) {
         primitiveType = MGL_DRAW_PRIMITIVE_LINE_STRIP;
-    } else if (mode == GL_QUADS) {
+    } else if (mglRenderEmulateQuads((uint32_t)mode, 0)) {
         primitiveType = MGL_DRAW_PRIMITIVE_TRIANGLE;
     } else {
         primitiveType = mglRenderMTLPrimitiveTypeForGLMode((uint32_t)mode);
@@ -1002,19 +1001,19 @@ bool mglEncodeDrawElementsForRenderEncoderOwner(
             mode, glIndexType, metalIndexType, indexOffset, count,
             instanceCount, baseVertex, baseInstance, label);
     }
-    if (mode == GL_TRIANGLE_FAN) {
+    if (mglRenderEmulateTriangleFan((uint32_t)mode, 0)) {
         return mglEncodeElementTriangleFanForRenderEncoderOwner(
             renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
             glIndexType, indexOffset, count, instanceCount,
             baseVertex, baseInstance, label);
     }
-    if (mode == GL_LINE_LOOP) {
+    if (mglRenderEmulateLineLoop((uint32_t)mode)) {
         return mglEncodeElementLineLoopForRenderEncoderOwner(
             renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
             glIndexType, indexOffset, count, instanceCount,
             baseVertex, baseInstance, label);
     }
-    if (mode == GL_QUADS) {
+    if (mglRenderEmulateQuads((uint32_t)mode, 0)) {
         return mglEncodeElementQuadsForRenderEncoderOwner(
             renderEncoderOwner, device, glElementBuffer, metalElementBuffer,
             glIndexType, indexOffset, count, instanceCount,

@@ -9467,6 +9467,26 @@ int mglRenderCPUFormatTypeForInternalFormat(uint32_t internalformat,
     return known;
 }
 
+int mglRenderDrawModeIsTriangles(uint32_t mode) {
+    return mode == GL_TRIANGLES ? 1 : 0;
+}
+
+int mglRenderDrawModeIsTriangleStrip(uint32_t mode) {
+    return mode == GL_TRIANGLE_STRIP ? 1 : 0;
+}
+
+int mglRenderQuadsCountTooSmall(uint32_t mode, int32_t count) {
+    return mode == GL_QUADS && count < 4 ? 1 : 0;
+}
+
+int mglRenderPolygonPointEmulateMode(uint32_t mode) {
+    return mglRenderDrawModeIsTriangles(mode) ||
+                   mglRenderDrawModeIsTriangleStrip(mode) ||
+                   mglRenderDrawModeNeedsEmulate(mode)
+               ? 1
+               : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
