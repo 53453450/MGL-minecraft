@@ -1162,6 +1162,19 @@ uint32_t mglRenderVertexAttribComponentSize(uint64_t gl_type);
  * mglVertexAttribElementBytes.  Returns 0 for unknown / zero size. */
 uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 
+enum {
+    MGL_ATTRIB_SPAN_OK = 0,
+    MGL_ATTRIB_SPAN_NEGATIVE_RELATIVE = -1,
+    MGL_ATTRIB_SPAN_OVERFLOW = -2,
+};
+
+int mglRenderPlanVertexAttribSpan(int64_t binding_offset, int64_t relativeoffset,
+                                  uint32_t type, uint32_t size,
+                                  int64_t *offset_out, int64_t *span_out,
+                                  int64_t *end_out);
+int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
+void mglRenderClearEmptyBufferDirty(Buffer *buf);
+
 /* does GL primitive mode produce polygonal primitives
  * (triangles/quads) subject to glPolygonMode point/line emulation?  Matches
  * mglDrawModeProducesPolygons.  Returns 1/0. */

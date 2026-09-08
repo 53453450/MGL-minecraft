@@ -975,6 +975,36 @@ extern "C" void mglTessPlanEvalGather(int indexed, uint32_t instance_records,
     }
 }
 
+extern "C" uint64_t mglTessDummyXfbBytes(uint64_t out_size)
+{
+    return out_size > 0u ? out_size : 1u;
+}
+
+extern "C" void mglTessFillEvalPerPatchSpec(
+    void *gl_in_buffer, uint64_t gl_in_offset, uint64_t gl_in_instance_stride,
+    void *gather_buffer, uint32_t gather_verts, uint32_t gather_prims,
+    int indexed, uint32_t gl_in_vertices, uint32_t patch_count,
+    uint32_t instance_count, uint32_t items_per_instance,
+    MGLTessEvalPerPatchDispatchSpec *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->gl_in_buffer = gl_in_buffer;
+    out->gl_in_offset = gl_in_offset;
+    out->gl_in_instance_stride = gl_in_instance_stride;
+    out->gather_buffer = indexed ? gather_buffer : NULL;
+    out->gather_verts_per_instance = gather_verts;
+    out->gather_prims_per_instance = gather_prims;
+    out->gather_first_vertex = 0u;
+    out->indexed = indexed ? 1u : 0u;
+    out->gl_in_vertices = gl_in_vertices;
+    out->patch_count = patch_count;
+    out->instance_count = instance_count;
+    out->items_per_instance = items_per_instance;
+}
+
 static bool mglTessKeepAppend(uint8_t *keep, size_t *used, size_t cap,
                               const void *src, size_t len, const void **out_ptr)
 {

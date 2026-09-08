@@ -1330,9 +1330,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                     return false;
                 }
             } else if (xfbSlot->buf->size == 0) {
-                /* glBufferData(..., 0, NULL) is legal; nothing to upload. */
-                xfbSlot->buf->data.dirty_bits &=
-                    ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+                mglRenderClearEmptyBufferDirty(xfbSlot->buf);
             }
             if (!xfbSlot->buf->data.mtl_data) {
                 [self bindMTLBuffer:xfbSlot->buf];
@@ -1390,15 +1388,16 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         /* The TES compute kernel always declares and writes the XFB stream
          * slot (31); bind a 1-byte dummy so the slot is never dangling when
          * GL feedback is inactive. */
+        const uint64_t dummyBytes = mglTessDummyXfbBytes((uint64_t)outSize);
         void *cachedDummy = NULL;
         id xfbDummy = nil;
         if (mglRendererBackendGetTessXfbDummyBuffer(
-                _backend, MAX(outSize, 1u), &cachedDummy) == 1) {
+                _backend, dummyBytes, &cachedDummy) == 1) {
             xfbDummy = (__bridge id)cachedDummy;
         }
         if (!xfbDummy) {
             xfbDummy = mglTessCreateBuffer(
-                _device, MAX(outSize, 1u), MGL_TESS_RESOURCE_STORAGE_SHARED);
+                _device, (NSUInteger)dummyBytes, MGL_TESS_RESOURCE_STORAGE_SHARED);
             if (xfbDummy) {
                 (void)mglRendererBackendPutTessXfbDummyBuffer(
                     _backend, (__bridge void *)xfbDummy);
@@ -1424,20 +1423,12 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                           contract->patch_vertices, patchCount, &gatherVerts,
                           &gatherPrims);
     MGLTessEvalPerPatchDispatchSpec patchSpec;
-    memset(&patchSpec, 0, sizeof(patchSpec));
-    patchSpec.gl_in_buffer = (__bridge void *)glInBuffer;
-    patchSpec.gl_in_offset = (uint64_t)glInOffset;
-    patchSpec.gl_in_instance_stride = (uint64_t)glInInstanceStride;
-    patchSpec.gather_buffer =
-        indexed ? (__bridge void *)controlPointIndexBuffer : NULL;
-    patchSpec.gather_verts_per_instance = gatherVerts;
-    patchSpec.gather_prims_per_instance = gatherPrims;
-    patchSpec.gather_first_vertex = 0u;
-    patchSpec.indexed = indexed ? 1u : 0u;
-    patchSpec.gl_in_vertices = (uint32_t)glInVertices;
-    patchSpec.patch_count = patchCount;
-    patchSpec.instance_count = instanceCountU;
-    patchSpec.items_per_instance = itemsPerInstanceU;
+    mglTessFillEvalPerPatchSpec(
+        (__bridge void *)glInBuffer, (uint64_t)glInOffset,
+        (uint64_t)glInInstanceStride,
+        indexed ? (__bridge void *)controlPointIndexBuffer : NULL, gatherVerts,
+        gatherPrims, indexed ? 1 : 0, (uint32_t)glInVertices, patchCount,
+        instanceCountU, itemsPerInstanceU, &patchSpec);
     void *patchKeepAlive = NULL;
     if (!mglTessAppendEvalPerPatchDispatches(&executionPlan, tesProgram,
                                              factorBytes, &patchSpec,

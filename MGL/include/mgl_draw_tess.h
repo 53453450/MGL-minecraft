@@ -272,6 +272,8 @@ void mglTessPlanEvalGather(int indexed, uint32_t instance_records,
                            uint32_t *verts_per_instance,
                            uint32_t *prims_per_instance);
 
+uint64_t mglTessDummyXfbBytes(uint64_t out_size);
+
 typedef struct MGLTessEvalPerPatchDispatchSpec {
     void *gl_in_buffer;
     uint64_t gl_in_offset;
@@ -286,6 +288,13 @@ typedef struct MGLTessEvalPerPatchDispatchSpec {
     uint32_t instance_count;
     uint32_t items_per_instance;
 } MGLTessEvalPerPatchDispatchSpec;
+
+void mglTessFillEvalPerPatchSpec(
+    void *gl_in_buffer, uint64_t gl_in_offset, uint64_t gl_in_instance_stride,
+    void *gather_buffer, uint32_t gather_verts, uint32_t gather_prims,
+    int indexed, uint32_t gl_in_vertices, uint32_t patch_count,
+    uint32_t instance_count, uint32_t items_per_instance,
+    MGLTessEvalPerPatchDispatchSpec *out);
 
 /* Appends per-instance gl_in / gather binds and one dispatch per live patch.
  * Discarded patches (items==0) emit no dispatch. out_keep_alive is a malloc

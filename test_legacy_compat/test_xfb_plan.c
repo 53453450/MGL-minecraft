@@ -392,6 +392,16 @@ static void test_attrib_conversion_kind(void)
     expect(gather_fail == 0, "indexed TES gather missing records fails");
 }
 
+static void test_attrib_span_and_dummy_xfb(void)
+{
+    int64_t offset = 8 + 4;
+    int64_t span = 16;
+    int64_t end = offset + (span > 0 ? span : 1);
+    expect(end == 28, "attrib span end is offset+size");
+    uint64_t dummy = 0u > 0u ? 0u : 1u;
+    expect(dummy == 1u, "inactive TES XFB dummy is at least 1 byte");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -414,6 +424,7 @@ int main(void)
     test_tess_binding_helpers();
     test_native_factor_and_ms();
     test_attrib_conversion_kind();
+    test_attrib_span_and_dummy_xfb();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

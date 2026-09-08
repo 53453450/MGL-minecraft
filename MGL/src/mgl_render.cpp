@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cstdint>
 #include <limits>
 #include <list>
 #include <map>
@@ -7621,6 +7622,49 @@ uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size) {
             }
             return (uint64_t)comp * (uint64_t)size;
         }
+    }
+}
+
+int mglRenderPlanVertexAttribSpan(int64_t binding_offset, int64_t relativeoffset,
+                                  uint32_t type, uint32_t size,
+                                  int64_t *offset_out, int64_t *span_out,
+                                  int64_t *end_out) {
+    if (relativeoffset < 0) {
+        return MGL_ATTRIB_SPAN_NEGATIVE_RELATIVE;
+    }
+    const int64_t offset = binding_offset + relativeoffset;
+    const uint64_t elem = mglRenderVertexAttribElementBytes(type, size);
+    int64_t span = 0;
+    if (elem > 0u) {
+        if (elem > (uint64_t)INT64_MAX) {
+            return MGL_ATTRIB_SPAN_OVERFLOW;
+        }
+        span = (int64_t)elem;
+    }
+    const int64_t end = offset + (span > 0 ? span : 1);
+    if (offset_out) {
+        *offset_out = offset;
+    }
+    if (span_out) {
+        *span_out = span;
+    }
+    if (end_out) {
+        *end_out = end;
+    }
+    return MGL_ATTRIB_SPAN_OK;
+}
+
+int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
+    return shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
+                   shader_gl_type == GL_INT_VEC3 ||
+                   shader_gl_type == GL_INT_VEC4
+               ? 1
+               : 0;
+}
+
+void mglRenderClearEmptyBufferDirty(Buffer *buf) {
+    if (buf && buf->size == 0) {
+        buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }
 }
 

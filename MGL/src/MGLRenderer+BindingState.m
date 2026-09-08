@@ -1175,25 +1175,20 @@ static bool mglBindingStateFlushResourceBindings(
             MGL_VATTR_FLUSH_SNAPSHOT();
             return false;
         }
-        GLintptr attrOffset = resolved.binding_offset +
-                              (GLintptr)(uintptr_t)resolved.relativeoffset;
-        size_t compSize = mglVertexAttribComponentSize(attribState->type);
-        size_t compCount = (size_t)attribState->size;
-        GLintptr attrSpan = 0;
-        if (compSize > 0u && compCount > 0u) {
-            size_t total = compSize * compCount;
-            if (total > (size_t)INTPTR_MAX) {
-                NSLog(@"MGL VBIND BLOCK draw: attrib=%u buffer=%u attr span overflow (compSize=%zu compCount=%zu)",
-                      attrib,
-                      attribBuffer->name,
-                      compSize,
-                      compCount);
-                MGL_VATTR_FLUSH_SNAPSHOT();
-                return false;
-            }
-            attrSpan = (GLintptr)total;
+        int64_t attrOffset = 0;
+        int64_t attrSpan = 0;
+        int64_t attrEnd = 0;
+        const int spanStatus = mglRenderPlanVertexAttribSpan(
+            (int64_t)resolved.binding_offset, (int64_t)resolved.relativeoffset,
+            (uint32_t)attribState->type, (uint32_t)attribState->size,
+            &attrOffset, &attrSpan, &attrEnd);
+        if (spanStatus == MGL_ATTRIB_SPAN_OVERFLOW) {
+            NSLog(@"MGL VBIND BLOCK draw: attrib=%u buffer=%u attr span overflow (type=0x%x size=%u)",
+                  attrib, attribBuffer->name, (unsigned)attribState->type,
+                  (unsigned)attribState->size);
+            MGL_VATTR_FLUSH_SNAPSHOT();
+            return false;
         }
-        GLintptr attrEnd = attrOffset + ((attrSpan > 0) ? attrSpan : 1);
         if (kMGLVerboseBindLogs &&
             attribBuffer->written_min >= 0 && attribBuffer->written_max >= 0) {
             if (attrOffset < attribBuffer->written_min || attrEnd > attribBuffer->written_max) {
@@ -1242,8 +1237,7 @@ static bool mglBindingStateFlushResourceBindings(
             &effectiveNormalized, &conversionKind);
         (void)needsConversion;
         BOOL integerConvDstIsInt =
-            shaderGlType == GL_INT || shaderGlType == GL_INT_VEC2 ||
-            shaderGlType == GL_INT_VEC3 || shaderGlType == GL_INT_VEC4;
+            mglRenderIntegerAttribDstIsInt((uint32_t)shaderGlType) != 0;
 
         if (conversionKind == MGL_ATTRIB_CONV_NONE &&
             anyBindingPresent[bindingIndex]) {
