@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  *
- * Private helpers shared by MGLRenderer+DrawSupport.m and
- * MGLRenderer+DrawStageHost.m (O1.6 split).
+ * Private id/MTL ports implemented in mgl_draw_metal_port.m
+ * (O1.6); used by DrawSupport / DrawStageHost / draw runners.
  */
 #ifndef MGL_RENDERER_DRAW_SUPPORT_UTIL_H
 #define MGL_RENDERER_DRAW_SUPPORT_UTIL_H
@@ -27,18 +27,6 @@ MGLRenderTextureInfo mglDrawSupportTextureInfo(id texture);
 
 BOOL mglDrawSupportEncodeContextIsActive(
     const MGLEncodeContext *encodeContext);
-
-bool mglGeometryGatherIndices(const uint8_t *indexBytes,
-                                     GLenum indexType,
-                                     GLsizei count,
-                                     int32_t baseVertex,
-                                     bool restartEnabled,
-                                     uint32_t restartIndex,
-                                     uint32_t inputVertices,
-                                     uint32_t **outGather,
-                                     uint32_t *outGatherCount,
-                                     uint32_t *outPrimitiveCount,
-                                     uint32_t *outMaxIndex);
 
 id mglDrawSupportCreateBuffer(
     id device,

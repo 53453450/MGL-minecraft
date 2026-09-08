@@ -48,9 +48,11 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+Blit.m` | ~4969 | **厚** | 拆：clip/format/DS unify plan → 已有 sink 方向；ObjC 只 blit encoder 端口 |
 | `+BindingState.m` | ~4675 | **厚** | 拆：slot/stage/UBO/SSBO 表 → C++；ObjC 只 `setVertexBuffer` 等绑定口 |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
-| `+DrawSupport.m` | ~1408 | 中 | O1.6 部分：stage host 已拆到 `+DrawStageHost.m`；余 resolve/MS/host ABI |
+| `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
+| `+DrawStageHost.m` | ~2560 | 中 | O1.4：已无 handle*；余 capture/cull/validate + GS Metal 扩张口 + host ABI |
+| `mgl_draw_metal_port.m` | ~457 | 薄端口 | O1.6：CreateBuffer/DrawPrimitives 等 id 物化 |
 | `+Batch.m` | ~2097 | **厚** | path 决策（MDI/stream/ICB）→ C；ObjC 只 enqueue/flush 端口 |
-| `+Tessellation.m` | ~1775 | 中→薄 | O1.4：TES→GS 改走 `mglDrawHostHandleGeometry` |
+| `+Tessellation.m` | ~1766 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~1602 | **厚** | replay 绑定与 stage 分支 → C++；ObjC 一行 replay 口 |
 | `+Buffer.m` | ~1575 | 中 | map/CoW/shadow plan → C++；ObjC 只 MTLBuffer 物化 |
 | `+Compute.m` | ~1255 | 中 | dispatch plan → C++；ObjC 只 compute encoder 端口 |
@@ -92,8 +94,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 | 符号 / 区域 | 文件 | 债因 |
 |-------------|------|------|
-| `runVertexCaptureSession` / `captureAIRVertexPositions*` host | `+DrawStageHost.m` | O1.2 续：session 双遍在 `mglTessRunCaptureSession`；MTLBuffer 物化仍在 ObjC |
-| `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawSupport.m` | ObjC 只填 port 表；layout 已在 C++（O1.3） |
+| `runVertexCaptureSession` / `captureAIRVertexPositions*` host | `+DrawStageHost.m` | O1.2/O1.4：session 在 C++；capture 仍是 MTL 物化口 |
+| `mglDrawHostGsExecuteMetalExpansion` | `+DrawStageHost.m` | O1.4 残：GS Metal 扩张（PSO/XFB/raster）待继续 HostOps |
+| `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawStageHost.m` | ObjC 只填 port 表；layout 已在 C++（O1.3） |
 | `scheduleDrawBatch` 物化口 | `+Batch.m` | 决策已在 `mgl_batch_select_path`；ObjC 填 inputs（O2.1） |
 | `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1：编排在 `mgl_render_pass_plan`；ObjC 物化 MTL* |
 | Texture/Blit/BindingState 巨型 category | 见 §1.1 | O3–O4 |
@@ -107,9 +110,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [x] **O1.1** `processGLState` / `processGLStateLocked` → `mglRenderProcessGLState` / `AfterDirty`（`mgl_render_pass_plan.*`）；ObjC 只物化 MTL*；`test-process-gl-state-plan`
 - [x] **O1.2** VS GPU capture — **续完 session**：`mglTessRunCaptureSession` 拥有双遍 processGLState+bind；MTLBuffer 分配仍是 ObjC 物化口
 - [x] **O1.3** VAO cull attrib resolve → C++（ObjC 只提供 VAO 指针表） — `mglRenderBuildCullDistanceLayoutFromPorts`；ObjC 只 resolve→port 表 + last-bound 记账
-- [x] **O1.4** 双路径收口：**部分** — TES→GS 与 draw 入口均走 `mglDrawHostHandle*` / `mglIssue*`；host 方法体仍在 `+DrawStageHost`（未删，仅去双入口）
+- [x] **O1.4** 双路径收口：删除 ObjC `handleTessellation*` / `handleGeometry*` / `handleVertexTransformFeedback*`；XFB+TES 编排在 `mglXfbRunVsOnlyDraw` / `mglTessRunPatchDraw`（HostOps）；GS 早段拓扑/gather/capture 在 `mglDrawGsRunDraw`，Metal 扩张残留 `mglDrawHostGsExecuteMetalExpansion`
 - [x] **O1.5** `+Draw.m`：`mtlDraw*` 一行转发；Locked 删除；MS sample loop 进 `mglDrawHostGuardIssue*`
-- [ ] **O1.6** 验收：`+DrawSupport.m` &lt; 400 LOC — **部分**：3602→~1408（stage host / cull encode / capture 迁出）；残量 resolve+MS+host ABI；下一刀并入薄 `+Draw.m` 或继续 sink GS/tess 体
+- [x] **O1.6** 验收：`+DrawSupport.m` &lt; 400 LOC（~350）：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → `+DrawStageHost`；Support 仅 resolve/raster/polygon/ensure
 
 ### Batch O2 — Batch / Replay 决策下沉【P0】
 
@@ -183,9 +186,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 ## 5. 即时下一刀（建议本周）
 
-1. ~~**O1.1 / O1.2 session / O1.4 入口 / O1.5**~~：已合入；**仍开 O1.6 收口**（DrawSupport &lt;400）与 GS/tess host 方法体继续 sink
+1. ~~**O1.1–O1.6**~~：DrawSupport &lt;400；XFB/TES HostOps 已下沉；GS Metal 扩张口 `mglDrawHostGsExecuteMetalExpansion` 仍厚（下一刀继续 HostOps）
 2. ~~**O2.1**~~：`mgl_batch_select_path` + `test-batch-path` 已合入；下一刀 O2.2 hazard / O2.3 replay
 3. ~~**O0**~~：本文与 `scripts/objc_renderer_loc.sh` 已挂进 `docs/` / ARCH / README
-4. **下一刀**：`+DrawStageHost` 内 `handleGeometry` / `handleTessellation` 编排下沉到 `mgl_draw_gs` / `mgl_draw_tess`；DrawSupport 残量并入薄 `+Draw.m`
+4. **下一刀**：把 `mglDrawHostGsExecuteMetalExpansion` 拆成 C++ HostOps（PSO/XFB scatter/passthrough encode）；StageHost 仅留 capture/cull/validate 薄口
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。

@@ -27,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstddef>
+#include <CoreFoundation/CoreFoundation.h>
 
 #ifndef MAX
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -2437,4 +2438,584 @@ extern "C" bool mglTessRunCaptureSession(void *capture, const uint32_t *params,
         ops->bind_capture_slots(ops->renderer, capture, params);
     }
     return true;
+}
+
+#include "mgl_air_tess_abi.h"
+
+extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
+extern "C" Buffer *getElementBuffer(GLMContext ctx);
+extern "C" void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated,
+                                                  GLuint64 written);
+
+extern "C" bool mglGeometryGatherIndices(const uint8_t *indexBytes,
+                                         GLenum indexType, GLsizei count,
+                                         int32_t baseVertex, bool restartEnabled,
+                                         uint32_t restartIndex,
+                                         uint32_t inputVertices,
+                                         uint32_t **outGather,
+                                         uint32_t *outGatherCount,
+                                         uint32_t *outPrimitiveCount,
+                                         uint32_t *outMaxIndex)
+{
+    (void)baseVertex;
+    if (!outGather || !outGatherCount || !outPrimitiveCount || !outMaxIndex) {
+        return false;
+    }
+    const uint32_t elemBytes = mglRenderGLIndexElementSize((uint64_t)indexType);
+    MGLRenderGeometryGatherResult result = {0};
+    if (mglRenderGeometryGatherIndices(
+            indexBytes, elemBytes, (uint32_t)count, restartEnabled ? 1 : 0,
+            restartIndex, inputVertices, &result) != 0) {
+        return false;
+    }
+    *outGather = result.gather;
+    *outGatherCount = result.gather_count;
+    *outPrimitiveCount = result.primitive_count;
+    *outMaxIndex = result.max_index;
+    return true;
+}
+
+extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
+                                   GLsizei count, GLsizei instanceCount,
+                                   GLuint baseInstance,
+                                   const MGLXfbVsDrawHostOps *ops)
+{
+    if (!ops || !ops->renderer || !ops->capture_vs_positions ||
+        !ops->flush_command_buffer || !ops->buffer_contents ||
+        !ops->mark_cb_has_work) {
+        return 0;
+    }
+    if (!ctx || first < 0 || count <= 0 || instanceCount <= 0) {
+        return 0;
+    }
+    TransformFeedback *xfb = MGL_STATE(ctx)->transform_feedback;
+    if (!xfb || !xfb->active || xfb->paused) {
+        return 0;
+    }
+    if (!mglXfbPrimitiveModeAccepts(xfb->primitive_mode, mode)) {
+        return 0;
+    }
+    Program *program =
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    MGLXfbVsPlan plan = {0};
+    if (!mglXfbPlanVsCapture(program, &plan)) {
+        return 0;
+    }
+
+    uint64_t captureOffset = 0u;
+    void *capture = ops->capture_vs_positions(ops->renderer, ctx, first, count,
+                                              instanceCount, baseInstance,
+                                              &captureOffset);
+    if (!capture) {
+        return 0;
+    }
+    ops->mark_cb_has_work(ops->renderer);
+    ops->flush_command_buffer(ops->renderer, 1);
+
+    const uint8_t *captureBytes =
+        (const uint8_t *)ops->buffer_contents(capture);
+    uint64_t recordCount64 =
+        (uint64_t)(uint32_t)count * (uint64_t)(uint32_t)instanceCount;
+    if (!captureBytes || !mglXfbRecordCountFits(recordCount64)) {
+        CFRelease(capture);
+        return 1;
+    }
+    uint32_t recordCount = (uint32_t)recordCount64;
+    uint32_t writtenTotal = recordCount;
+
+    for (GLuint buffer = 0u; buffer < plan.buffer_count; buffer++) {
+        if (plan.buffer_stride[buffer] == 0u) {
+            continue;
+        }
+        BufferBaseTarget *slot =
+            &MGL_STATE(ctx)
+                 ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
+                 .buffers[buffer];
+        BufferMap map = {0};
+        map.buf = slot->buf;
+        map.offset = slot->offset;
+        map.size = slot->size;
+        uint64_t visible =
+            slot->buf ? mglBufferMapVisibleBackingBytes(
+                            &map, slot->buf->size > 0 ? (size_t)slot->buf->size
+                                                     : 0u)
+                      : 0u;
+        uint64_t sessionOffset = mglXfbSessionOffsetOr(
+            (uint64_t)xfb->buffer_write_offsets[buffer], visible);
+        MGLXfbVsBufferDest dest = {0};
+        if (!mglXfbPlanVsBufferDest(recordCount, plan.buffer_stride[buffer],
+                                    slot->buf != NULL, slot->offset,
+                                    sessionOffset, visible, &dest) ||
+            dest.skip) {
+            writtenTotal = 0;
+            continue;
+        }
+        if (dest.written_records < writtenTotal) {
+            writtenTotal = dest.written_records;
+        }
+        uint8_t *packed = (uint8_t *)calloc(1u, dest.written_bytes);
+        if (!packed) {
+            mglDispatchError(ctx, "vertexTransformFeedback",
+                             (GLenum)mglRenderErrorOutOfMemory());
+            CFRelease(capture);
+            return 1;
+        }
+        mglXfbPackVsRecords(&plan, buffer, captureBytes, captureOffset,
+                            plan.capture_stride, dest.written_records, packed,
+                            plan.buffer_stride[buffer]);
+        const uint32_t destinationOffset = dest.destination_offset;
+        const uint32_t writtenBytes = dest.written_bytes;
+        mglRendererBufferSubData(ctx, slot->buf, destinationOffset, writtenBytes,
+                                 packed);
+        if (slot->buf->data.mtl_data) {
+            MGLRenderBufferInfo liveInfo = {0};
+            if (mglRenderGetBufferInfo(slot->buf->data.mtl_data, &liveInfo) ==
+                    0 &&
+                destinationOffset + writtenBytes <= liveInfo.length) {
+                uint8_t *liveBase =
+                    (uint8_t *)ops->buffer_contents(slot->buf->data.mtl_data);
+                if (liveBase) {
+                    memcpy(liveBase + destinationOffset, packed, writtenBytes);
+                }
+            }
+        }
+        if (slot->buf->data.buffer_data &&
+            (size_t)slot->buf->size >= destinationOffset + writtenBytes) {
+            memcpy((uint8_t *)slot->buf->data.buffer_data + destinationOffset,
+                   packed, writtenBytes);
+        }
+        mglRenderMarkBufferCPUWrite(slot->buf, (int64_t)destinationOffset,
+                                    (int64_t)writtenBytes);
+        free(packed);
+        xfb->buffer_write_offsets[buffer] = mglXfbAdvanceWriteOffset(
+            xfb->buffer_write_offsets[buffer], (uint64_t)writtenBytes);
+    }
+
+    xfb->primitives_generated += (GLuint64)recordCount;
+    xfb->primitives_written += (GLuint64)writtenTotal;
+    mglRecordActivePrimitiveQueryDraw(ctx, (GLuint64)recordCount,
+                                      (GLuint64)writtenTotal);
+    ctx->active_state->dirty_bits = DIRTY_ALL;
+    CFRelease(capture);
+    return 1;
+}
+
+extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
+                                   GLsizei count, GLenum indexType,
+                                   const void *indices, GLint baseVertex,
+                                   GLsizei instanceCount, GLuint baseInstance,
+                                   const char *label,
+                                   const MGLTessPatchDrawHostOps *ops)
+{
+    if (!ops || !ops->renderer || !mode || !ctx) {
+        return 0;
+    }
+#define TESS_NEED(fn) if (!ops->fn) return 0
+    TESS_NEED(bind_mtl_program);
+    TESS_NEED(capture_array);
+    TESS_NEED(capture_indexed);
+    TESS_NEED(process_buffer);
+    TESS_NEED(flush_command_buffer);
+    TESS_NEED(mark_cb_has_work);
+    TESS_NEED(create_buffer);
+    TESS_NEED(create_buffer_with_bytes);
+    TESS_NEED(buffer_contents);
+    TESS_NEED(cached_default_factors);
+    TESS_NEED(native_factor_buffer);
+    TESS_NEED(dispatch_tcs);
+    TESS_NEED(dispatch_air_tes);
+    TESS_NEED(dispatch_tes);
+    TESS_NEED(process_gl_state);
+    TESS_NEED(encoder_has_current);
+    TESS_NEED(raster_empty);
+    TESS_NEED(fully_culled);
+    TESS_NEED(apply_polygon_offset);
+    TESS_NEED(end_render_encoding);
+    TESS_NEED(clear_native_copybacks);
+    TESS_NEED(flush_native_copybacks);
+    TESS_NEED(begin_native_tes);
+    TESS_NEED(end_native_tes);
+    TESS_NEED(reset_tess_draw_state);
+    TESS_NEED(set_tess_vertex_capture);
+    TESS_NEED(set_control_point_index_buffer);
+    TESS_NEED(adopt_capture_as_tcs_output);
+    TESS_NEED(set_current_factors);
+    TESS_NEED(get_tess_vertex_capture);
+    TESS_NEED(get_tcs_output);
+    TESS_NEED(get_current_factors);
+    TESS_NEED(get_tcs_patch_out);
+    TESS_NEED(get_control_point_index);
+    TESS_NEED(encoder_owner);
+    TESS_NEED(get_tcs_out_vertices);
+    TESS_NEED(get_tcs_output_stride);
+    TESS_NEED(get_tess_capture_offset);
+    TESS_NEED(get_tess_instance_records);
+    TESS_NEED(get_tess_indexed_draw);
+    TESS_NEED(native_primitive_count);
+    TESS_NEED(record_primitive_query);
+#undef TESS_NEED
+
+    Program *tcsProgram =
+        mglResolveProgramForStageFromState(ctx, _TESS_CONTROL_SHADER);
+    Program *tesProgram =
+        mglResolveProgramForStageFromState(ctx, _TESS_EVALUATION_SHADER);
+    Program *gsProgram =
+        mglResolveProgramForStageFromState(ctx, _GEOMETRY_SHADER);
+    MGLTessDrawPathPlan path = {0};
+    if (!mglTessPlanDrawPath(ctx, *mode, count, instanceCount, tcsProgram,
+                             tesProgram, gsProgram, indexType, label, &path)) {
+        return 0;
+    }
+    if (path.classify == MGL_TESS_DRAW_NOT_APPLICABLE) {
+        return 0;
+    }
+    if (path.classify != MGL_TESS_DRAW_ACTIVE) {
+        return 1;
+    }
+    if (!path.has_tcs) {
+        tcsProgram = NULL;
+    }
+    if (!path.has_tes) {
+        tesProgram = NULL;
+    }
+
+    if (tcsProgram && tcsProgram->dirty_bits) {
+        (void)ops->bind_mtl_program(ops->renderer, tcsProgram);
+    }
+    if (tesProgram && tesProgram->dirty_bits) {
+        (void)ops->bind_mtl_program(ops->renderer, tesProgram);
+    }
+
+    const int airTES = path.air_tes != 0u;
+    int nativeTES = path.native_ok != 0u;
+
+    Program *vertexProgram =
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    MGLAIRTessDrawContract contract;
+    mglTessFillDrawContract(&contract, ctx, tcsProgram, tesProgram,
+                            vertexProgram, first, count, indexType, indices,
+                            baseVertex, instanceCount, baseInstance);
+    GLuint patchVertices = contract.patch_vertices;
+    GLuint patchCount = contract.patch_count;
+    const bool restartEnabled = contract.primitive_restart != 0u;
+    const uint32_t restartIndex = contract.restart_index;
+
+    ops->reset_tess_draw_state(ops->renderer);
+
+    if (path.capture == MGL_TESS_CAPTURE_INDEXED_COMPACT) {
+        nativeTES = 0;
+        int sparseCompactOk = 0;
+        Buffer *ebo = getElementBuffer(ctx);
+        if (ebo && ops->process_buffer(ops->renderer, ebo) &&
+            ebo->data.mtl_data) {
+            void *eboMetal = ebo->data.mtl_data;
+            const uint64_t indexOffsetBytes = (uint64_t)(uintptr_t)indices;
+            const uint8_t *indexBytes = mglElementIndexSourceForDraw(
+                ebo, eboMetal, indexType, indexOffsetBytes, count);
+            uint32_t *gatherArray = NULL;
+            uint32_t gatherCount = 0u;
+            uint32_t gatherPrimitives = 0u;
+            uint32_t gatherMaxIndex = 0u;
+            if (indexBytes &&
+                mglGeometryGatherIndices(indexBytes, indexType, count,
+                                         baseVertex, restartEnabled,
+                                         restartIndex, patchVertices,
+                                         &gatherArray, &gatherCount,
+                                         &gatherPrimitives, &gatherMaxIndex) &&
+                gatherCount > 0u && gatherPrimitives > 0u) {
+                uint64_t captureOffset = 0u;
+                void *sparseCapture = ops->capture_indexed(
+                    ops->renderer, ctx, eboMetal, indexType, indexOffsetBytes,
+                    count, baseVertex, instanceCount, baseInstance,
+                    gatherMaxIndex, &captureOffset);
+                Program *captureVS =
+                    mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+                MGLTessVertexCapturePlan compactPlan = {0};
+                const GLsizei instCount =
+                    instanceCount > 0 ? instanceCount : 1;
+                const uint32_t sparseRecords = gatherMaxIndex + 1u;
+                if (sparseCapture &&
+                    mglTessPlanVertexCapture(captureVS, gatherCount,
+                                             (uint32_t)instCount, 0u, 0u,
+                                             &compactPlan)) {
+                    const uint32_t captureStride = compactPlan.capture_stride;
+                    const uint64_t continuousSize = compactPlan.capture_size;
+                    ops->mark_cb_has_work(ops->renderer);
+                    ops->flush_command_buffer(ops->renderer, 1);
+                    const uint8_t *sparseBytes =
+                        (const uint8_t *)ops->buffer_contents(sparseCapture);
+                    void *continuous =
+                        ops->create_buffer(ops->renderer, continuousSize);
+                    uint8_t *continuousBytes =
+                        continuous
+                            ? (uint8_t *)ops->buffer_contents(continuous)
+                            : NULL;
+                    if (sparseBytes && continuousBytes &&
+                        mglTessCompactSparseCapture(
+                            sparseBytes, captureOffset, sparseRecords,
+                            captureStride, gatherArray, gatherCount,
+                            (uint32_t)instCount, continuousBytes,
+                            continuousSize)) {
+                        ops->set_tess_vertex_capture(ops->renderer, continuous,
+                                                     0u, gatherCount, 0);
+                        CFRelease(continuous);
+                        continuous = NULL;
+                        patchCount = gatherPrimitives;
+                        mglTessApplyGatherToContract(&contract, gatherCount,
+                                                     gatherPrimitives);
+                        sparseCompactOk = 1;
+                    }
+                }
+                free(gatherArray);
+            } else {
+                free(gatherArray);
+            }
+        }
+        if (!sparseCompactOk) {
+            if (ops->log_error) {
+                ops->log_error(
+                    "MGL TESS ERROR: indexed TCS sparse capture failed");
+            }
+            mglDispatchError(ctx, label ? label : "tessellationDraw",
+                             (GLenum)mglRenderErrorInvalidOperation());
+            ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+            ctx->active_state->dirty_bits = DIRTY_ALL;
+            return 1;
+        }
+    } else if (path.capture == MGL_TESS_CAPTURE_INDEXED_GATHER) {
+        Buffer *ebo = getElementBuffer(ctx);
+        if (!ebo || !ops->process_buffer(ops->renderer, ebo) ||
+            !ebo->data.mtl_data) {
+            nativeTES = 0;
+        } else {
+            void *eboMetal = ebo->data.mtl_data;
+            const uint64_t indexOffsetBytes = (uint64_t)(uintptr_t)indices;
+            const uint8_t *indexBytes = mglElementIndexSourceForDraw(
+                ebo, eboMetal, indexType, indexOffsetBytes, count);
+            uint32_t *gatherArray = NULL;
+            uint32_t gatherCount = 0u;
+            uint32_t gatherPrimitives = 0u;
+            uint32_t gatherMaxIndex = 0u;
+            if (!indexBytes ||
+                !mglGeometryGatherIndices(indexBytes, indexType, count,
+                                          baseVertex, restartEnabled,
+                                          restartIndex, patchVertices,
+                                          &gatherArray, &gatherCount,
+                                          &gatherPrimitives,
+                                          &gatherMaxIndex)) {
+                nativeTES = 0;
+            } else {
+                void *gatherBuf = ops->create_buffer_with_bytes(
+                    ops->renderer, gatherArray,
+                    (uint64_t)gatherCount * 4u);
+                free(gatherArray);
+                if (!gatherBuf) {
+                    nativeTES = 0;
+                } else {
+                    uint64_t captureOffset = 0u;
+                    void *capture = ops->capture_indexed(
+                        ops->renderer, ctx, eboMetal, indexType,
+                        indexOffsetBytes, count, baseVertex, instanceCount,
+                        baseInstance, gatherMaxIndex, &captureOffset);
+                    if (!capture) {
+                        nativeTES = 0;
+                    } else {
+                        ops->set_tess_vertex_capture(
+                            ops->renderer, capture, captureOffset,
+                            (uint64_t)gatherMaxIndex + 1u, 1);
+                        CFRelease(capture);
+                        capture = NULL;
+                        ops->set_control_point_index_buffer(ops->renderer,
+                                                            gatherBuf);
+                        CFRelease(gatherBuf);
+                        gatherBuf = NULL;
+                        patchCount = gatherPrimitives;
+                        contract.patch_count = patchCount;
+                    }
+                }
+            }
+        }
+    } else if (path.capture == MGL_TESS_CAPTURE_ARRAY) {
+        uint64_t captureOffset = 0u;
+        void *capture =
+            ops->capture_array(ops->renderer, ctx, first, count, instanceCount,
+                               baseInstance, &captureOffset);
+        if (!capture) {
+            nativeTES = 0;
+        } else {
+            ops->set_tess_vertex_capture(ops->renderer, capture, captureOffset,
+                                         (uint64_t)count, 0);
+            CFRelease(capture);
+            capture = NULL;
+        }
+    }
+
+    if (nativeTES && !tcsProgram) {
+        void *tessVertexCaptureBuffer =
+            ops->get_tess_vertex_capture(ops->renderer);
+        ops->adopt_capture_as_tcs_output(ops->renderer,
+                                         contract.per_vertex_out_stride,
+                                         patchVertices);
+        void *tessFactorBuffer = ops->cached_default_factors(
+            ops->renderer, ctx, patchCount);
+        ops->set_current_factors(ops->renderer, tessFactorBuffer);
+        if (!mglTessKeepNativeTESOnly(nativeTES ? 1 : 0, 0,
+                                      tessVertexCaptureBuffer ? 1 : 0,
+                                      tessFactorBuffer ? 1 : 0)) {
+            nativeTES = 0;
+        }
+    }
+
+    if (path.need_default_factors) {
+        void *tessFactorBuffer =
+            ops->cached_default_factors(ops->renderer, ctx, patchCount);
+        ops->set_current_factors(ops->renderer, tessFactorBuffer);
+    }
+
+    if (path.need_tcs) {
+        if (!ops->dispatch_tcs(ops->renderer, ctx, tcsProgram, &contract)) {
+            ctx->active_state->dirty_bits = DIRTY_ALL;
+            ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+            return 1;
+        }
+    }
+
+    void *tcsOutputBuffer = ops->get_tcs_output(ops->renderer);
+    void *tessFactorBuffer = ops->get_current_factors(ops->renderer);
+
+    if (nativeTES) {
+        void *nativeFactors = ops->native_factor_buffer(
+            ops->renderer, tessFactorBuffer, tesProgram->tess_gen_mode,
+            patchCount);
+        if (!mglTessNativeBuffersReady(
+                nativeFactors != NULL, tcsOutputBuffer != NULL,
+                ops->get_tcs_output_stride(ops->renderer))) {
+            if (ops->log_error) {
+                ops->log_error("MGL TESS ERROR: invalid native TES buffers");
+            }
+            if (nativeFactors) {
+                CFRelease(nativeFactors);
+            }
+            mglDispatchError(ctx, label ? label : "tessellationDraw",
+                             (GLenum)mglRenderErrorOutOfMemory());
+            ctx->active_state->dirty_bits = DIRTY_ALL;
+            ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+            return 1;
+        }
+
+        ops->begin_native_tes(ops->renderer, tesProgram);
+        ops->clear_native_copybacks(ops->renderer);
+        ctx->active_state->dirty_bits = DIRTY_ALL;
+
+        const int stateReady = ops->process_gl_state(ops->renderer);
+        if (!mglTessNativePipelineReady(
+                stateReady, ops->encoder_has_current(ops->renderer))) {
+            ops->end_native_tes(ops->renderer);
+            ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+            ctx->active_state->dirty_bits = DIRTY_ALL;
+            return 1;
+        }
+
+        GLenum nativeRasterMode = (GLenum)mglTessNativeRasterDrawMode();
+        if (mglTessNativeShouldDraw(ops->raster_empty(ops->renderer),
+                                    ops->fully_culled(ops->renderer,
+                                                      nativeRasterMode))) {
+            ops->apply_polygon_offset(ops->renderer, nativeRasterMode);
+            void *tcsPatchOutBuffer = ops->get_tcs_patch_out(ops->renderer);
+            uint32_t patchOutStride = mglTessNativePatchOutStride(
+                tcsProgram != NULL,
+                tcsPatchOutBuffer && tcsProgram
+                    ? mglAIRPatchVaryingStride(
+                          &tcsProgram->shader_resources_list
+                               [_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES])
+                    : 0u);
+            MGLTessNativeEncodeState nativeEncode;
+            memset(&nativeEncode, 0, sizeof(nativeEncode));
+            nativeEncode.encoder_owner = ops->encoder_owner(ops->renderer);
+            nativeEncode.tcs_output_buffer = tcsOutputBuffer;
+            nativeEncode.native_factors = nativeFactors;
+            nativeEncode.control_point_index_buffer =
+                ops->get_control_point_index(ops->renderer);
+            nativeEncode.tcs_patch_out_buffer = tcsPatchOutBuffer;
+            nativeEncode.patch_vertices = patchVertices;
+            nativeEncode.patch_count = patchCount;
+            nativeEncode.instance_count = (uint32_t)instanceCount;
+            nativeEncode.base_instance = baseInstance;
+            nativeEncode.tess_gen_mode = (uint32_t)tesProgram->tess_gen_mode;
+            nativeEncode.tcs_out_vertices =
+                ops->get_tcs_out_vertices(ops->renderer);
+            nativeEncode.tcs_output_stride =
+                ops->get_tcs_output_stride(ops->renderer);
+            nativeEncode.tess_vertex_capture_offset =
+                ops->get_tess_capture_offset(ops->renderer);
+            nativeEncode.tess_instance_records =
+                ops->get_tess_instance_records(ops->renderer);
+            nativeEncode.tess_indexed_draw =
+                ops->get_tess_indexed_draw(ops->renderer) ? 1u : 0u;
+            nativeEncode.patch_out_stride = patchOutStride;
+            mglTessEncodeNativePatches(&nativeEncode);
+            ops->mark_cb_has_work(ops->renderer);
+
+            GLuint64 primitives = ops->native_primitive_count(
+                tessFactorBuffer, tesProgram, patchCount,
+                (uint32_t)instanceCount);
+            ops->record_primitive_query(ctx, primitives, primitives);
+        }
+
+        ops->end_render_encoding(ops->renderer);
+        if (!ops->flush_native_copybacks(ops->renderer)) {
+            if (ops->log_error) {
+                ops->log_error("MGL TESS ERROR: failed to copy isolated native "
+                               "TES writable buffer prefixes");
+            }
+            mglDispatchError(ctx, label ? label : "tessellationDraw",
+                             (GLenum)mglRenderErrorOutOfMemory());
+        }
+
+        if (nativeFactors) {
+            CFRelease(nativeFactors);
+            nativeFactors = NULL;
+        }
+        ops->end_native_tes(ops->renderer);
+        ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+        ops->set_control_point_index_buffer(ops->renderer, NULL);
+        ctx->active_state->dirty_bits = DIRTY_ALL;
+        return 1;
+    }
+
+    if (airTES) {
+        if (tesProgram && tesProgram->tess_eval_compute) {
+            const int dispatched = ops->dispatch_air_tes(
+                ops->renderer, ctx, tesProgram, &contract, patchCount,
+                instanceCount, baseInstance);
+            if (!dispatched) {
+                mglDispatchError(ctx, label ? label : "tessellationDraw",
+                                 (GLenum)mglRenderErrorInvalidOperation());
+            }
+            ctx->active_state->dirty_bits = DIRTY_ALL;
+            ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+            return 1;
+        }
+        if (ops->log_error) {
+            ops->log_error(
+                "MGL TESS ERROR: native AIR TES interface unsupported");
+        }
+        mglDispatchError(ctx, label ? label : "tessellationDraw",
+                         (GLenum)mglRenderErrorInvalidOperation());
+        ctx->active_state->dirty_bits = DIRTY_ALL;
+        ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+        return 1;
+    }
+
+    if (tesProgram) {
+        if (!ops->dispatch_tes(ops->renderer, ctx, tesProgram, &contract)) {
+            ctx->active_state->dirty_bits = DIRTY_ALL;
+            return 1;
+        }
+    }
+
+    ctx->active_state->dirty_bits = DIRTY_ALL;
+    ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+    (void)label;
+    return 1;
 }

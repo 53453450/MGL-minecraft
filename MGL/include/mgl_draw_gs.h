@@ -191,6 +191,65 @@ int mglDrawGsStageShouldBlockDraw(int stage, uint32_t gs_route,
                                   const void *metallib_bytes,
                                   uint32_t metallib_size);
 
+
+/* O1.4: GS draw host runner. Early topology/gather/input in C++; Metal
+ * expansion remains an ObjC port until the next knife finishes HostOps. */
+typedef struct MGLGsDrawHostOps {
+    void *renderer;
+    int (*bind_mtl_program)(void *renderer, Program *program);
+    int (*ensure_passthrough)(void *renderer, Program *program,
+                              uint32_t output_primitive);
+    int (*process_buffer)(void *renderer, Buffer *buf);
+    void *(*capture_array)(void *renderer, GLMContext ctx, GLint first,
+                           GLsizei count, GLsizei instanceCount,
+                           GLuint baseInstance, uint64_t *out_offset);
+    void *(*capture_indexed)(void *renderer, GLMContext ctx, void *index_mtl,
+                             GLenum indexType, uint64_t index_offset,
+                             GLsizei count, GLint baseVertex,
+                             GLsizei instanceCount, GLuint baseInstance,
+                             uint32_t maxIndex, uint64_t *out_offset);
+    void *(*create_buffer_with_bytes)(void *renderer, const void *bytes,
+                                      uint64_t length);
+    int (*pending_gs_input_active)(void *renderer);
+    void *(*pending_gs_input)(void *renderer);
+    uint32_t (*pending_gs_input_offset)(void *renderer);
+    uint32_t (*pending_gs_input_stride)(void *renderer);
+    /* Residual: bind pipeline through raster/XFB/query (former method body). */
+    int (*execute_metal_expansion)(void *renderer, GLMContext ctx, GLenum mode,
+                                   GLint first, GLsizei count, GLenum indexType,
+                                   const void *indices, GLint baseVertex,
+                                   GLsizei instanceCount, GLuint baseInstance,
+                                   const char *label, Program *program,
+                                   GLenum gs_input_mode, GLenum gs_output_mode,
+                                   uint32_t output_primitive, int indexed,
+                                   void *gather_buf, const void *gparams,
+                                   uint32_t gparams_bytes,
+                                   const MGLGsComputeLayout *layout,
+                                   void *input, uint64_t input_offset,
+                                   Program *capture_vs, Program *capture_tes,
+                                   uint32_t pending_stride);
+    void (*dispatch_error)(GLMContext ctx, const char *where, GLenum err);
+    void (*log_diag)(const char *msg);
+} MGLGsDrawHostOps;
+
+
+/* ObjC residual port implementing the Metal half of mglDrawGsRunDraw. */
+int mglDrawHostGsExecuteMetalExpansion(
+    void *renderer, GLMContext ctx, GLenum mode, GLint first, GLsizei count,
+    GLenum indexType, const void *indices, GLint baseVertex,
+    GLsizei instanceCount, GLuint baseInstance, const char *label,
+    Program *program, GLenum gs_input_mode, GLenum gs_output_mode,
+    uint32_t output_primitive, int indexed, void *gather_buf,
+    const void *gparams, uint32_t gparams_bytes,
+    const MGLGsComputeLayout *layout, void *input, uint64_t input_offset,
+    Program *capture_vs, Program *capture_tes, uint32_t pending_stride);
+
+/* Returns 1 if GS handled the draw, 0 if N/A. */
+int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first, GLsizei count,
+                     GLenum indexType, const void *indices, GLint baseVertex,
+                     GLsizei instanceCount, GLuint baseInstance,
+                     const char *label, const MGLGsDrawHostOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

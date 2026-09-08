@@ -1008,3 +1008,195 @@ extern "C" int mglDrawGsStageShouldBlockDraw(int stage, uint32_t gs_route,
                ? 0
                : 1;
 }
+
+#include "error.h"
+#include "mgl_index_buffer.h"
+
+#include <cstdio>
+#include <CoreFoundation/CoreFoundation.h>
+
+extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
+extern "C" Buffer *getElementBuffer(GLMContext ctx);
+
+extern "C" int mglDrawGsRunDraw(GLMContext ctx, GLenum mode, GLint first,
+                                GLsizei count, GLenum indexType,
+                                const void *indices, GLint baseVertex,
+                                GLsizei instanceCount, GLuint baseInstance,
+                                const char *label, const MGLGsDrawHostOps *ops)
+{
+    if (!ops || !ops->renderer || !ctx) {
+        return 0;
+    }
+    if (!ops->bind_mtl_program || !ops->ensure_passthrough ||
+        !ops->process_buffer || !ops->capture_array || !ops->capture_indexed ||
+        !ops->create_buffer_with_bytes || !ops->pending_gs_input_active ||
+        !ops->pending_gs_input || !ops->pending_gs_input_offset ||
+        !ops->pending_gs_input_stride || !ops->execute_metal_expansion) {
+        return 0;
+    }
+
+    Program *program =
+        mglResolveProgramForStageFromState(ctx, _GEOMETRY_SHADER);
+    Shader *geometryShader =
+        program ? program->shader_slots[_GEOMETRY_SHADER] : NULL;
+    if (!program || !geometryShader) {
+        return 0;
+    }
+
+    GLenum gsInputMode = 0;
+    GLenum gsOutputMode = 0;
+    uint32_t outputPrimitive = 0;
+    mglDrawGsInitDefaultTopology(&gsInputMode, &gsOutputMode, &outputPrimitive);
+    mglDrawGsNormalizeTopology(program, &gsInputMode, &gsOutputMode,
+                               &outputPrimitive);
+    const int indexedDraw = (indexType != 0u);
+    if (!mglDrawGsInputModeAccepts(gsInputMode, mode) || count <= 0 ||
+        instanceCount <= 0 || (!indexedDraw && first < 0)) {
+        static uint64_t unsupportedDrawCount = 0;
+        uint64_t hit = ++unsupportedDrawCount;
+        if (hit <= 16ull || (hit % 512ull) == 0ull) {
+            std::fprintf(stderr,
+                         "MGL GS ERROR: blocking unsupported %s draw %s "
+                         "mode=0x%x gsIn=0x%x count=%d instances=%d "
+                         "baseInstance=%u\n",
+                         indexedDraw ? "indexed" : "array",
+                         label ? label : "draw", (unsigned)mode,
+                         (unsigned)gsInputMode, (int)count, (int)instanceCount,
+                         (unsigned)baseInstance);
+        }
+        mglDispatchError(ctx, label ? label : "geometryDraw",
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return 1;
+    }
+
+    if (!ops->bind_mtl_program(ops->renderer, program) ||
+        !program->modules[_GEOMETRY_SHADER].mtl_function) {
+        std::fprintf(stderr,
+                     "MGL GS ERROR: failed to load AIR kernel program=%u\n",
+                     (unsigned)program->name);
+        mglDispatchError(ctx, label ? label : "geometryDraw",
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return 1;
+    }
+
+    if (!ops->ensure_passthrough(ops->renderer, program, outputPrimitive)) {
+        mglDispatchError(ctx, label ? label : "geometryDraw",
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return 1;
+    }
+
+    uint32_t *gatherArray = NULL;
+    uint32_t gatherCount = 0u;
+    uint32_t gatherPrimitives = 0u;
+    uint32_t gatherMaxIndex = 0u;
+    const uint8_t *indexBytes = NULL;
+    void *eboMetal = NULL;
+    uint64_t indexOffsetBytes = 0u;
+    void *gatherBuf = NULL;
+    MGLAIRGSGatherParams gparams;
+    memset(&gparams, 0, sizeof(gparams));
+    {
+        Buffer *ebo = indexedDraw ? getElementBuffer(ctx) : NULL;
+        if (indexedDraw &&
+            (!ebo || !ops->process_buffer(ops->renderer, ebo) ||
+             !ebo->data.mtl_data)) {
+            mglDispatchError(ctx, label ? label : "geometryDraw",
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return 1;
+        }
+        if (indexedDraw) {
+            eboMetal = ebo->data.mtl_data;
+            indexOffsetBytes = (uint64_t)(uintptr_t)indices;
+            indexBytes = mglElementIndexSourceForDraw(
+                ebo, eboMetal, indexType, indexOffsetBytes, count);
+            if (!indexBytes) {
+                mglDispatchError(ctx, label ? label : "geometryDraw",
+                                 (GLenum)mglRenderErrorInvalidOperation());
+                return 1;
+            }
+        }
+        uint32_t restartIndex = 0u;
+        const bool restartEnabled =
+            indexedDraw &&
+            mglPrimitiveRestartIndexForType(ctx, indexType, &restartIndex);
+        if (!mglDrawGsGatherTopology(indexBytes, indexType, count, first,
+                                     indexedDraw, restartEnabled, restartIndex,
+                                     mode, &gatherArray, &gatherCount,
+                                     &gatherPrimitives, &gatherMaxIndex)) {
+            return 1;
+        }
+        gatherBuf = ops->create_buffer_with_bytes(
+            ops->renderer, gatherArray, (uint64_t)gatherCount * 4u);
+        free(gatherArray);
+        gatherArray = NULL;
+        if (!gatherBuf) {
+            mglDispatchError(ctx, label ? label : "geometryDraw",
+                             (GLenum)mglRenderErrorOutOfMemory());
+            return 1;
+        }
+        mglDrawGsFillGatherParams(indexedDraw ? 1 : 0, (uint32_t)count,
+                                  (uint32_t)first, gatherMaxIndex,
+                                  gatherPrimitives, &gparams);
+    }
+
+    MGLGsComputeLayout gsLayout;
+    if (!mglDrawGsComputeLayout(program, gatherPrimitives,
+                                (uint32_t)instanceCount, gsOutputMode,
+                                &gsLayout)) {
+        mglDispatchError(ctx, label ? label : "geometryDraw",
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return 1;
+    }
+
+    uint64_t inputOffset = 0u;
+    void *input = NULL;
+    Program *captureVS =
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    Program *captureTES = NULL;
+    MGLGsInputSourcePlan inputSource = {0};
+    mglDrawGsPlanInputSource(
+        ops->pending_gs_input_active(ops->renderer),
+        ops->pending_gs_input(ops->renderer) ? 1 : 0,
+        ops->pending_gs_input_offset(ops->renderer),
+        ops->pending_gs_input_stride(ops->renderer), indexedDraw ? 1 : 0,
+        &inputSource);
+    if (inputSource.kind == MGL_GS_INPUT_PENDING_TES) {
+        input = ops->pending_gs_input(ops->renderer);
+        inputOffset = inputSource.input_offset;
+        captureTES =
+            mglResolveProgramForStageFromState(ctx, _TESS_EVALUATION_SHADER);
+    } else if (inputSource.kind == MGL_GS_INPUT_CAPTURE_INDEXED) {
+        input = ops->capture_indexed(
+            ops->renderer, ctx, eboMetal, indexType, indexOffsetBytes, count,
+            baseVertex, instanceCount, baseInstance, gatherMaxIndex,
+            &inputOffset);
+    } else {
+        input = ops->capture_array(ops->renderer, ctx, first, count,
+                                   instanceCount, baseInstance, &inputOffset);
+    }
+    if (!input) {
+        mglDispatchError(ctx, label ? label : "geometryDraw",
+                         (GLenum)mglRenderErrorInvalidOperation());
+        ctx->active_state->dirty_bits = DIRTY_ALL;
+        return 1;
+    }
+    gparams.stage_in_stride = mglDrawGsResolveStageInStride(
+        captureVS, captureTES, inputSource.pending_stride);
+    mglDrawGsFillLocationMap(program, captureVS, captureTES, gparams.loc_map);
+
+    const int input_owned =
+        inputSource.kind != MGL_GS_INPUT_PENDING_TES ? 1 : 0;
+    const int rc = ops->execute_metal_expansion(
+        ops->renderer, ctx, mode, first, count, indexType, indices, baseVertex,
+        instanceCount, baseInstance, label, program, gsInputMode, gsOutputMode,
+        outputPrimitive, indexedDraw, gatherBuf, &gparams, sizeof(gparams),
+        &gsLayout, input, inputOffset, captureVS, captureTES,
+        inputSource.pending_stride);
+    if (gatherBuf) {
+        CFRelease(gatherBuf);
+    }
+    if (input_owned && input) {
+        CFRelease(input);
+    }
+    return rc;
+}

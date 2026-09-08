@@ -464,32 +464,6 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                             glBuffer:(Buffer **)glBufferOut
                            mtlBuffer:(id *)mtlBufferOut;
 - (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
-- (BOOL)handleTessellationPatchDrawIfNeeded:(GLMContext)drawCtx
-                                        mode:(GLenum *)mode
-                                       first:(GLint)first
-                                       count:(GLsizei)count
-                                   indexType:(GLenum)indexType
-                                     indices:(const void *)indices
-                                  baseVertex:(GLint)baseVertex
-                               instanceCount:(GLsizei)instanceCount
-                                baseInstance:(GLuint)baseInstance
-                                       label:(const char *)label;
-- (BOOL)handleVertexTransformFeedbackDrawIfNeeded:(GLMContext)drawCtx
-                                               mode:(GLenum)mode
-                                              first:(GLint)first
-                                              count:(GLsizei)count
-                                      instanceCount:(GLsizei)instanceCount
-                                       baseInstance:(GLuint)baseInstance;
-- (BOOL)handleGeometryDrawIfNeeded:(GLMContext)drawCtx
-                              mode:(GLenum)mode
-                             first:(GLint)first
-                             count:(GLsizei)count
-                         indexType:(GLenum)indexType
-                           indices:(const void *)indices
-                        baseVertex:(GLint)baseVertex
-                     instanceCount:(GLsizei)instanceCount
-                      baseInstance:(GLuint)baseInstance
-                             label:(const char *)label;
 - (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
                         capture:(id)capture
                          params:(const uint32_t *)params;

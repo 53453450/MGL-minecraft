@@ -598,6 +598,107 @@ typedef struct MGLTessCaptureSessionHostOps {
 bool mglTessRunCaptureSession(void *capture, const uint32_t *params,
                               const MGLTessCaptureSessionHostOps *ops);
 
+
+bool mglGeometryGatherIndices(const uint8_t *indexBytes, GLenum indexType,
+                              GLsizei count, int32_t baseVertex,
+                              bool restartEnabled, uint32_t restartIndex,
+                              uint32_t inputVertices, uint32_t **outGather,
+                              uint32_t *outGatherCount,
+                              uint32_t *outPrimitiveCount,
+                              uint32_t *outMaxIndex);
+
+/* ---- O1.4: VS-only XFB / tess patch-draw host runners (ObjC = MTL ports) ---- */
+
+typedef struct MGLXfbVsDrawHostOps {
+    void *renderer;
+    void *(*capture_vs_positions)(void *renderer, GLMContext ctx, GLint first,
+                                  GLsizei count, GLsizei instanceCount,
+                                  GLuint baseInstance, uint64_t *out_offset);
+    void (*mark_cb_has_work)(void *renderer);
+    void (*flush_command_buffer)(void *renderer, int wait);
+    void *(*buffer_contents)(void *buffer);
+    void (*dispatch_error)(GLMContext ctx, const char *where, GLenum err);
+} MGLXfbVsDrawHostOps;
+
+/* Returns 1 if XFB handled the draw (caller must skip raster), 0 if N/A. */
+int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first, GLsizei count,
+                        GLsizei instanceCount, GLuint baseInstance,
+                        const MGLXfbVsDrawHostOps *ops);
+
+typedef struct MGLTessPatchDrawHostOps {
+    void *renderer;
+    void *device; /* unused by most ports; kept for factor helpers */
+    int (*bind_mtl_program)(void *renderer, Program *program);
+    void *(*capture_array)(void *renderer, GLMContext ctx, GLint first,
+                           GLsizei count, GLsizei instanceCount,
+                           GLuint baseInstance, uint64_t *out_offset);
+    void *(*capture_indexed)(void *renderer, GLMContext ctx, void *index_mtl,
+                             GLenum indexType, uint64_t index_offset,
+                             GLsizei count, GLint baseVertex,
+                             GLsizei instanceCount, GLuint baseInstance,
+                             uint32_t maxIndex, uint64_t *out_offset);
+    int (*process_buffer)(void *renderer, Buffer *buf);
+    void (*flush_command_buffer)(void *renderer, int wait);
+    void (*mark_cb_has_work)(void *renderer);
+    void *(*create_buffer)(void *renderer, uint64_t length);
+    void *(*create_buffer_with_bytes)(void *renderer, const void *bytes,
+                                      uint64_t length);
+    void *(*buffer_contents)(void *buffer);
+    void *(*cached_default_factors)(void *renderer, GLMContext ctx,
+                                    uint32_t patch_count);
+    void *(*native_factor_buffer)(void *renderer, void *canonical,
+                                  GLenum mode, uint32_t patch_count);
+    int (*dispatch_tcs)(void *renderer, GLMContext ctx, Program *tcs,
+                        MGLAIRTessDrawContract *contract);
+    int (*dispatch_air_tes)(void *renderer, GLMContext ctx, Program *tes,
+                            MGLAIRTessDrawContract *contract,
+                            uint32_t patch_count, GLsizei instanceCount,
+                            GLuint baseInstance);
+    int (*dispatch_tes)(void *renderer, GLMContext ctx, Program *tes,
+                        MGLAIRTessDrawContract *contract);
+    int (*process_gl_state)(void *renderer);
+    int (*encoder_has_current)(void *renderer);
+    int (*raster_empty)(void *renderer);
+    int (*fully_culled)(void *renderer, GLenum mode);
+    void (*apply_polygon_offset)(void *renderer, GLenum mode);
+    void (*end_render_encoding)(void *renderer);
+    void (*clear_native_copybacks)(void *renderer);
+    int (*flush_native_copybacks)(void *renderer);
+    void (*begin_native_tes)(void *renderer, Program *tes);
+    void (*end_native_tes)(void *renderer);
+    void (*reset_tess_draw_state)(void *renderer);
+    void (*set_tess_vertex_capture)(void *renderer, void *buf, uint64_t offset,
+                                    uint64_t instance_records, int indexed);
+    void (*set_control_point_index_buffer)(void *renderer, void *gather);
+    void (*adopt_capture_as_tcs_output)(void *renderer, uint32_t stride,
+                                        uint32_t out_vertices);
+    void (*set_current_factors)(void *renderer, void *factors);
+    void *(*get_tess_vertex_capture)(void *renderer);
+    void *(*get_tcs_output)(void *renderer);
+    void *(*get_current_factors)(void *renderer);
+    void *(*get_tcs_patch_out)(void *renderer);
+    void *(*get_control_point_index)(void *renderer);
+    void *(*encoder_owner)(void *renderer);
+    uint32_t (*get_tcs_out_vertices)(void *renderer);
+    uint64_t (*get_tcs_output_stride)(void *renderer);
+    uint64_t (*get_tess_capture_offset)(void *renderer);
+    uint64_t (*get_tess_instance_records)(void *renderer);
+    int (*get_tess_indexed_draw)(void *renderer);
+    uint64_t (*native_primitive_count)(void *canonical, Program *tes,
+                                       uint32_t patch_count,
+                                       uint32_t instance_count);
+    void (*record_primitive_query)(GLMContext ctx, uint64_t generated,
+                                   uint64_t written);
+    void (*dispatch_error)(GLMContext ctx, const char *where, GLenum err);
+    void (*log_error)(const char *msg);
+} MGLTessPatchDrawHostOps;
+
+/* Returns 1 if tessellation handled the draw, 0 if N/A. */
+int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first, GLsizei count,
+                        GLenum indexType, const void *indices, GLint baseVertex,
+                        GLsizei instanceCount, GLuint baseInstance,
+                        const char *label, const MGLTessPatchDrawHostOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

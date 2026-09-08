@@ -126,7 +126,7 @@ typedef struct MGLTessellationState_t {
     BOOL tessComputeActive;
     Program *tessComputeProgram;
     /* When a GS follows isolines/point-mode TES compute, the expanded
-     * records are handed to handleGeometryDrawIfNeeded instead of the
+     * records are handed to mglDrawHostHandleGeometry / mglDrawGsRunDraw instead of the
      * TES passthrough vertex.  pendingGSInput is a retained MTLBuffer. */
     BOOL pendingGSInputActive;
     void *pendingGSInput;
