@@ -9724,6 +9724,27 @@ int mglRenderTextureTargetIsCubeMap(uint32_t target) {
     return target == GL_TEXTURE_CUBE_MAP ? 1 : 0;
 }
 
+int mglRenderDrawBufferIsColorAttachment(uint32_t draw_buffer, uint32_t max,
+                                         uint32_t *out_index) {
+    if (draw_buffer >= GL_COLOR_ATTACHMENT0 &&
+        draw_buffer < GL_COLOR_ATTACHMENT0 + max &&
+        draw_buffer < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+        if (out_index) {
+            *out_index = draw_buffer - GL_COLOR_ATTACHMENT0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer) {
+    uint32_t idx = 0u;
+    if (mglRenderDefaultReadBufferIndex(draw_buffer, &idx)) {
+        return 1;
+    }
+    return draw_buffer == GL_FRONT_AND_BACK ? 1 : 0;
+}
+
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
     uint32_t tmp = 0u;
     return mglRenderBlendOperationFromGL(op, &tmp);

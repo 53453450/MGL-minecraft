@@ -34,6 +34,7 @@
  */
 
 #import "mgl_sampler_compat.h"
+#include "mgl_render.h"
 #import <Foundation/Foundation.h>
 #import "mgl_trace_log.h"
 #include <string.h>
@@ -231,9 +232,11 @@ GLint mglResolveSamplerResourceUnit(Program *program,
 
     bool stageValid = (stage >= 0 && stage < _MAX_SHADER_TYPES);
     bool stageExplicit = stageValid
-        ? (program->sampler_units_explicit_by_stage[stage][metalBinding] == GL_TRUE)
+        ? (mglRenderSamplerUnitExplicit(
+               (uint32_t)program->sampler_units_explicit_by_stage[stage][metalBinding]) != 0)
         : false;
-    bool globalExplicit = (program->sampler_units_explicit[metalBinding] == GL_TRUE);
+    bool globalExplicit = mglRenderSamplerUnitExplicit(
+        (uint32_t)program->sampler_units_explicit[metalBinding]) != 0;
 
     /* 2. Stage array explicit. */
     GLint unit = stageValid

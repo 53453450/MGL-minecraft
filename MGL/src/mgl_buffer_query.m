@@ -11,6 +11,7 @@
  */
 
 #import "mgl_buffer_query.h"
+#include "mgl_render.h"
 
 BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
                                         GLintptr lhsOffset,
@@ -47,7 +48,7 @@ BOOL mglRendererBufferMayHaveMappedWrites(Buffer *buffer)
         return YES;
     }
 
-    return buffer->access == GL_WRITE_ONLY || buffer->access == GL_READ_WRITE;
+    return mglRenderImageAccessWritable((uint32_t)buffer->access) != 0;
 }
 
 BOOL mglRendererBufferHasDrawableContents(Buffer *buffer)

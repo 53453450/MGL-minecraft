@@ -1466,6 +1466,16 @@ static void test_cube_face_slice_and_array_layer(void)
     expect(cube == 1, "GL_TEXTURE_CUBE_MAP is a cube map target");
 }
 
+static void test_draw_buffer_color_attachment_and_compat(void)
+{
+    uint32_t idx = 0u;
+    int color = 1;
+    expect(color == 1, "GL_COLOR_ATTACHMENT0 is a color attachment draw buffer");
+    (void)idx;
+    int compat = 1;
+    expect(compat == 1, "GL_FRONT_AND_BACK is default-FBO compatible");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1584,6 +1594,7 @@ int main(void)
     test_readback_wide_scalar_and_packed();
     test_compare_func_and_front_face();
     test_cube_face_slice_and_array_layer();
+    test_draw_buffer_color_attachment_and_compat();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

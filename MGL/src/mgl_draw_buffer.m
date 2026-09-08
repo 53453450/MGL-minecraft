@@ -11,6 +11,7 @@
  */
 
 #import "mgl_draw_buffer.h"
+#include "mgl_render.h"
 
 /* Local draw-buffer slot indices (mirrors the enum in MGLRenderer.m used by
  * the default-draw-buffer lookup).  Enumerators have no linkage, so defining
@@ -27,21 +28,9 @@ enum {
 
 GLuint mglDefaultDrawBufferIndexForGL(GLenum drawBuffer)
 {
-    switch (drawBuffer)
-    {
-        case GL_FRONT: return _FRONT;
-        case GL_BACK: return _FRONT;
-        case GL_FRONT_LEFT: return _FRONT_LEFT;
-        case GL_FRONT_RIGHT: return _FRONT_RIGHT;
-        case GL_BACK_LEFT: return _FRONT_LEFT;
-        case GL_BACK_RIGHT: return _FRONT_RIGHT;
-        case GL_LEFT: return _FRONT_LEFT;
-        case GL_RIGHT: return _FRONT_RIGHT;
-        case GL_FRONT_AND_BACK: return _FRONT;
-        case GL_COLOR_ATTACHMENT0: return _FRONT;
-        case GL_NONE: return _FRONT;
-        default: return _FRONT;
-    }
+    uint32_t idx = 0u;
+    (void)mglRenderDefaultDrawBufferIndex((uint32_t)drawBuffer, &idx);
+    return (GLuint)idx;
 }
 
 GLsizei mglMetalDrawBufferCount(GLMContext drawCtx)
@@ -73,37 +62,26 @@ BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
                                                   GLenum drawBuffer,
                                                   GLuint *attachmentIndex)
 {
-    if (!drawCtx || drawBuffer == GL_NONE) {
+    if (!drawCtx || mglRenderDrawBufferIsNone((uint32_t)drawBuffer)) {
         return NO;
     }
 
-    if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
-        drawBuffer < (GL_COLOR_ATTACHMENT0 + drawCtx->active_state->max_color_attachments) &&
-        drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS)) {
+    uint32_t att = 0u;
+    uint32_t maxAtt = (uint32_t)drawCtx->active_state->max_color_attachments;
+    if (mglRenderDrawBufferIsColorAttachment((uint32_t)drawBuffer, maxAtt, &att)) {
         if (attachmentIndex) {
-            *attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
+            *attachmentIndex = att;
         }
         return YES;
     }
 
-    switch (drawBuffer) {
-        case GL_FRONT:
-        case GL_BACK:
-        case GL_FRONT_LEFT:
-        case GL_FRONT_RIGHT:
-        case GL_BACK_LEFT:
-        case GL_BACK_RIGHT:
-        case GL_LEFT:
-        case GL_RIGHT:
-        case GL_FRONT_AND_BACK:
-            if (attachmentIndex) {
-                *attachmentIndex = 0u;
-            }
-            return YES;
-
-        default:
-            return NO;
+    if (mglRenderDrawBufferIsDefaultFBOCompat((uint32_t)drawBuffer)) {
+        if (attachmentIndex) {
+            *attachmentIndex = 0u;
+        }
+        return YES;
     }
+    return NO;
 }
 
 GLuint mglMetalColorSlotForDrawBuffer(GLMContext drawCtx, GLuint drawBufferSlot)

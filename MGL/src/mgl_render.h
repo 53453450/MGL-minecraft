@@ -1451,6 +1451,9 @@ int mglRenderFrontFaceIsCounterClockwise(uint32_t front_face);
 int mglRenderCubeMapFaceSlice(uint32_t textarget, uint32_t *out);
 int mglRenderAttachmentUsesArrayLayer(uint32_t textarget);
 int mglRenderTextureTargetIsCubeMap(uint32_t target);
+int mglRenderDrawBufferIsColorAttachment(uint32_t draw_buffer, uint32_t max,
+                                         uint32_t *out_index);
+int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer);
 int mglRenderIsValidGLBlendEquation(uint32_t op);
 int mglRenderIsValidGLBlendFactor(uint32_t factor);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
