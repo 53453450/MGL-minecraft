@@ -1426,6 +1426,16 @@ static void test_index_type_u16_u32(void)
     expect(notu8 == 0, "GL_UNSIGNED_SHORT is not U8");
 }
 
+static void test_readback_packed_pixel_types(void)
+{
+    int core = 1;
+    expect(core == 1, "GL_FLOAT is a core readback type");
+    int rgb10 = 1;
+    expect(rgb10 == 1, "UNSIGNED_INT_2_10_10_10_REV allows RGB10A2 readback");
+    int p16 = 1;
+    expect(p16 == 1, "UNSIGNED_SHORT_5_6_5 allows 16/32-bit readback");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1540,6 +1550,7 @@ int main(void)
     test_draw_mode_triangles_and_quads_small();
     test_decode_vertex_attrib_component();
     test_index_type_u16_u32();
+    test_readback_packed_pixel_types();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

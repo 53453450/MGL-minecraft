@@ -1438,6 +1438,10 @@ double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
                                             int normalized, uint32_t component);
 int mglRenderIndexTypeIsU16(uint32_t type);
 int mglRenderIndexTypeIsU32(uint32_t type);
+int mglRenderReadbackTypeIsCore(uint32_t type);
+int mglRenderReadbackTypeAllowsRGB10A2(uint32_t type);
+int mglRenderReadbackTypeAllowsRG11B10(uint32_t type);
+int mglRenderReadbackTypeAllows16or32(uint32_t type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
