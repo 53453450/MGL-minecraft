@@ -2355,6 +2355,16 @@ static void test_ubo_isolate_copy(void)
     expect(isolate_copy_len(64u, 32u) == 32u, "copy clamps to required");
 }
 
+static int uses_plain_uniform_bufs(int t) { return t == 2; }
+
+static void test_plain_uniform_buffer_table(void)
+{
+    expect(uses_plain_uniform_bufs(2) == 1,
+           "UNIFORM_CONSTANT uses program plain_uniform_buffers");
+    expect(uses_plain_uniform_bufs(1) == 0, "UBO uses buffer_base");
+    expect(uses_plain_uniform_bufs(3) == 0, "SSBO uses buffer_base");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2520,6 +2530,7 @@ int main(void)
     test_vertex_capture_load();
     test_gs_air_route_block();
     test_ubo_isolate_copy();
+    test_plain_uniform_buffer_table();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

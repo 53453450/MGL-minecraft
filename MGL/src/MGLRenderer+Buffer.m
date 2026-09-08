@@ -683,7 +683,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
             BufferBaseTarget *buffers;
             BufferBaseTarget *fallbackBuffers = NULL;
 
-            if (spvc_type == _UNIFORM_CONSTANT_RES && program) {
+            if (mglRenderUsePlainUniformBuffers(spvc_type) && program) {
                 buffers = program->plain_uniform_buffers;
                 fallbackBuffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
             } else {
