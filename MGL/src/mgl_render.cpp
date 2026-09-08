@@ -8480,6 +8480,28 @@ int mglRenderStageUsesComputeBufferMap(int stage) {
     return stage == (int)_COMPUTE_SHADER ? 1 : 0;
 }
 
+uint32_t mglRenderTextureBindingStageForShader(int shader_stage) {
+    return shader_stage == (int)_VERTEX_SHADER
+               ? (uint32_t)MGL_RENDER_BINDING_STAGE_VERTEX
+               : (uint32_t)MGL_RENDER_BINDING_STAGE_FRAGMENT;
+}
+
+int mglRenderSamplerBindingStageForShader(int shader_stage,
+                                          uint32_t *out_stage) {
+    if (!out_stage) {
+        return 0;
+    }
+    if (shader_stage == (int)_VERTEX_SHADER) {
+        *out_stage = (uint32_t)MGL_RENDER_BINDING_STAGE_VERTEX;
+        return 1;
+    }
+    if (shader_stage == (int)_FRAGMENT_SHADER) {
+        *out_stage = (uint32_t)MGL_RENDER_BINDING_STAGE_FRAGMENT;
+        return 1;
+    }
+    return 0;
+}
+
 uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
                                       int32_t sampler_unit,
                                       uint32_t metal_binding,

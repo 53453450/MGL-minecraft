@@ -591,7 +591,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     return false;
                 }
                 NSUInteger metal_slot = (NSUInteger)resolved_slot;
-                if (stages[stage_index] == _VERTEX_SHADER) {
+                if (mglRenderStageMapsVertexAttribs(stages[stage_index])) {
                     if (!mglBindingStateIsValid(_bindingStateOwner) ||
                         !mglBindingStateBufferMatches(
                             _bindingStateOwner,
@@ -727,9 +727,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 return false;
             }
 
-            uint32_t binding_stage = stage == _VERTEX_SHADER
-                ? MGL_RENDER_BINDING_STAGE_VERTEX
-                : MGL_RENDER_BINDING_STAGE_FRAGMENT;
+            uint32_t binding_stage =
+                mglRenderTextureBindingStageForShader(stage);
             if (!mglBatchReplayCollectResourceBinding(
                     &snapshot, binding_stage,
                     MGL_RENDER_RESOURCE_BINDING_TEXTURE,
@@ -855,11 +854,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
 
         uint32_t bindingStage;
-        if (entry->stage == _VERTEX_SHADER) {
-            bindingStage = MGL_RENDER_BINDING_STAGE_VERTEX;
-        } else if (entry->stage == _FRAGMENT_SHADER) {
-            bindingStage = MGL_RENDER_BINDING_STAGE_FRAGMENT;
-        } else {
+        if (!mglRenderSamplerBindingStageForShader((int)entry->stage,
+                                                   &bindingStage)) {
             return false;
         }
         if (!mglBatchReplayCollectResourceBinding(

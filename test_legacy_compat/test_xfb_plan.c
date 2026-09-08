@@ -2274,6 +2274,25 @@ static void test_vertex_vs_compute_stage(void)
     expect(uses_compute_buf_map(0) == 0, "vertex uses a local buffer map");
 }
 
+static uint32_t tex_bind_stage(int s) { return s == 0 ? 0u : 1u; }
+static int sampler_bind_stage(int s, uint32_t *out)
+{
+    if (s == 0) { *out = 0u; return 1; }
+    if (s == 4) { *out = 1u; return 1; }
+    return 0;
+}
+
+static void test_replay_binding_stage(void)
+{
+    uint32_t st = 99u;
+    expect(tex_bind_stage(0) == 0u, "vertex textures bind vertex stage");
+    expect(tex_bind_stage(4) == 1u, "fragment textures bind fragment stage");
+    expect(tex_bind_stage(5) == 1u, "non-vertex textures default to fragment");
+    expect(sampler_bind_stage(0, &st) == 1 && st == 0u, "vertex sampler ok");
+    expect(sampler_bind_stage(4, &st) == 1 && st == 1u, "fragment sampler ok");
+    expect(sampler_bind_stage(5, &st) == 0, "compute sampler is invalid");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2434,6 +2453,7 @@ int main(void)
     test_compute_texture_list_expand();
     test_writable_storage_class();
     test_vertex_vs_compute_stage();
+    test_replay_binding_stage();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

@@ -1321,6 +1321,9 @@ int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);
 int mglRenderShaderStageValid(int stage);
 int mglRenderStageMapsVertexAttribs(int stage);
 int mglRenderStageUsesComputeBufferMap(int stage);
+uint32_t mglRenderTextureBindingStageForShader(int shader_stage);
+int mglRenderSamplerBindingStageForShader(int shader_stage,
+                                          uint32_t *out_stage);
 uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
                                       int32_t sampler_unit,
                                       uint32_t metal_binding,
