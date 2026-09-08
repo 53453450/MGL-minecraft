@@ -500,6 +500,24 @@ int mglTessMultiInstanceTCSReuseIsError(int from_tcs, int32_t instance_count);
 int mglTessEvalIndexedGatherReady(int indexed, int has_gather,
                                   uint32_t instance_records);
 uint32_t mglTessTCSCaptureStageInStride(Program *tcs);
+
+enum {
+    MGL_TESS_TCS_STAGE_IN_CAPTURE = 0,
+    MGL_TESS_TCS_STAGE_IN_PACK = 1,
+};
+
+typedef struct MGLTessTCSStageInSourcePlan {
+    uint32_t kind;
+    uint32_t stride;
+} MGLTessTCSStageInSourcePlan;
+
+int mglTessPlanTCSStageInSource(int has_capture, Program *tcs,
+                                MGLTessTCSStageInSourcePlan *out);
+void mglTessFillTCSIndirectParams(uint32_t patch_vertices,
+                                  uint32_t instance_count, uint32_t out[2]);
+void mglTessFillDefaultFactorLevels(const float outer[4], const float inner[2],
+                                    float out[6]);
+int mglTessPlanDefaultFactorBytes(uint32_t patch_count, uint64_t *out_bytes);
 void mglTessBindCaptureSlots(void *encoder_owner, void *capture_buffer,
                              const uint32_t params[3]);
 void mglTessEncodeCaptureArray(void *encoder_owner, uint32_t first,

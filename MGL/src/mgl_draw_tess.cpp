@@ -1957,6 +1957,64 @@ extern "C" uint32_t mglTessTCSCaptureStageInStride(Program *tcs)
         &tcs->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_INPUT_RES]);
 }
 
+extern "C" int mglTessPlanTCSStageInSource(int has_capture, Program *tcs,
+                                           MGLTessTCSStageInSourcePlan *out)
+{
+    if (!out) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    if (has_capture) {
+        out->kind = MGL_TESS_TCS_STAGE_IN_CAPTURE;
+        out->stride = mglTessTCSCaptureStageInStride(tcs);
+        return 1;
+    }
+    out->kind = MGL_TESS_TCS_STAGE_IN_PACK;
+    return 1;
+}
+
+extern "C" void mglTessFillTCSIndirectParams(uint32_t patch_vertices,
+                                             uint32_t instance_count,
+                                             uint32_t out[2])
+{
+    if (!out) {
+        return;
+    }
+    out[0] = patch_vertices;
+    out[1] = instance_count;
+}
+
+extern "C" void mglTessFillDefaultFactorLevels(const float outer[4],
+                                               const float inner[2],
+                                               float out[6])
+{
+    if (!out) {
+        return;
+    }
+    out[0] = outer ? outer[0] : 1.f;
+    out[1] = outer ? outer[1] : 1.f;
+    out[2] = outer ? outer[2] : 1.f;
+    out[3] = outer ? outer[3] : 1.f;
+    out[4] = inner ? inner[0] : 1.f;
+    out[5] = inner ? inner[1] : 1.f;
+}
+
+extern "C" int mglTessPlanDefaultFactorBytes(uint32_t patch_count,
+                                             uint64_t *out_bytes)
+{
+    if (!out_bytes || patch_count == 0u) {
+        return 0;
+    }
+    uint64_t bytes = 0u;
+    if (__builtin_mul_overflow((uint64_t)patch_count,
+                               (uint64_t)MGL_AIR_TESS_FACTOR_RECORD_BYTES,
+                               &bytes)) {
+        return 0;
+    }
+    *out_bytes = bytes;
+    return 1;
+}
+
 extern "C" bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode)
 {
     if (xfb_mode == GL_POINTS) {

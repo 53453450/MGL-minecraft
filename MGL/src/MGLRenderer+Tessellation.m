@@ -916,7 +916,8 @@ typedef struct {
     memset(tcsPatchOutContents, 0, (size_t)tcsLayout.patch_out_bytes);
     [executionTemporaries addObject:tcsPatchOutBuffer];
 
-    GLuint indirectParams[2] = { patchVertices, instanceCount };
+    GLuint indirectParams[2] = {0u, 0u};
+    mglTessFillTCSIndirectParams(patchVertices, instanceCount, indirectParams);
     id indirectBuf = mglTessCreateBufferWithBytes(
         _device, indirectParams, sizeof(indirectParams),
         MGL_TESS_RESOURCE_STORAGE_SHARED);
@@ -950,8 +951,11 @@ typedef struct {
         (__bridge id)
             mglRendererBackendGetTessVertexCaptureBuffer(_backend);
     NSUInteger tcsStageInOffset = _tessellation.tessVertexCaptureOffset;
-    if (tcsStageInBuffer) {
-        tcsInStride = mglTessTCSCaptureStageInStride(tcsProgram);
+    MGLTessTCSStageInSourcePlan stageInSource = {0};
+    mglTessPlanTCSStageInSource(tcsStageInBuffer ? 1 : 0, tcsProgram,
+                                &stageInSource);
+    if (stageInSource.kind == MGL_TESS_TCS_STAGE_IN_CAPTURE) {
+        tcsInStride = (NSUInteger)stageInSource.stride;
         [executionTemporaries addObject:tcsStageInBuffer];
     } else {
         tcsStageInBuffer =

@@ -362,16 +362,15 @@ static id mglDefaultTessFactorBuffer(id device,
                                                 GLuint patchCount)
 {
     if (!device || !state || patchCount == 0u) return nil;
-    const NSUInteger stride = MGL_AIR_TESS_FACTOR_RECORD_BYTES;
-    if ((NSUInteger)patchCount > NSUIntegerMax / stride) return nil;
+    uint64_t factorBytes = 0u;
+    if (!mglTessPlanDefaultFactorBytes(patchCount, &factorBytes)) return nil;
     id buffer = mglDrawSupportCreateBuffer(
-        device, (NSUInteger)patchCount * stride,
-        0u);
+        device, (NSUInteger)factorBytes, 0u);
     if (!buffer || !mglDrawSupportBufferContents(buffer)) return nil;
 
     if (mglRenderFillDefaultTessFactorBuffer(
             (void *)mglDrawSupportBufferContents(buffer),
-            (uint64_t)((NSUInteger)patchCount * stride),
+            factorBytes,
             state->var.patch_default_outer_level,
             state->var.patch_default_inner_level,
             patchCount) != 0) {
@@ -388,14 +387,10 @@ static id mglCachedDefaultTessFactorBuffer(
     GLuint patchCount)
 {
     if (!device || !backend || !state || patchCount == 0u) return nil;
-    float levels[6] = {
-        state->var.patch_default_outer_level[0],
-        state->var.patch_default_outer_level[1],
-        state->var.patch_default_outer_level[2],
-        state->var.patch_default_outer_level[3],
-        state->var.patch_default_inner_level[0],
-        state->var.patch_default_inner_level[1],
-    };
+    float levels[6];
+    mglTessFillDefaultFactorLevels(state->var.patch_default_outer_level,
+                                   state->var.patch_default_inner_level,
+                                   levels);
     void *cached = NULL;
     if (mglRendererBackendGetTessFactorBuffer(
             backend, patchCount, levels, &cached) == 1 && cached) {

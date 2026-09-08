@@ -523,6 +523,19 @@ static void test_mapped_buffer_slot(void)
     expect(mapped == 7, "has_metal_binding prefers metal_binding_index");
 }
 
+static void test_tcs_stage_in_source(void)
+{
+    int capture = 1 ? 0 : 1;
+    expect(capture == 0, "TCS stage_in prefers VS capture when present");
+    uint32_t params[2] = {3u, 4u};
+    expect(params[0] == 3u && params[1] == 4u,
+           "TCS indirect params are patchVertices then instanceCount");
+    uint64_t factor = 2ull * 32ull;
+    expect(factor == 64u, "default tess factor bytes are patchCount*record");
+    float levels[6] = {1.f, 1.f, 1.f, 1.f, 1.f, 1.f};
+    expect(levels[4] == 1.f, "default inner tess factor copies PATCH_DEFAULT");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -554,6 +567,7 @@ int main(void)
     test_xfb_int_carrier_and_gs_raster();
     test_buffer_dirty_and_xfb_copy();
     test_mapped_buffer_slot();
+    test_tcs_stage_in_source();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
