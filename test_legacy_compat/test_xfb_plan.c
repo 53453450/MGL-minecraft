@@ -2101,6 +2101,57 @@ static void test_shader_resource_type_name(void)
     expect(strcmp(shader_res_type_name(10u), "push_constant") == 0, "push constant type name");
 }
 
+static int plain_uniform_slot(const char *n)
+{
+    if (!n) return -1;
+    if (!strcmp(n, "ModelViewMat") || !strcmp(n, "u_ProjectionMatrix")) return 0;
+    if (!strcmp(n, "ProjMat") || !strcmp(n, "u_ModelViewMatrix")) return 1;
+    if (!strcmp(n, "TextureMat") || !strcmp(n, "u_RegionOffset")) return 2;
+    if (!strcmp(n, "ColorModulator") || !strcmp(n, "u_TexCoordShrink")) return 3;
+    if (!strcmp(n, "FogStart") || !strcmp(n, "u_FogColor")) return 4;
+    if (!strcmp(n, "FogEnd") || !strcmp(n, "u_EnvironmentFog")) return 5;
+    if (!strcmp(n, "FogColor") || !strcmp(n, "u_RenderFog")) return 6;
+    if (!strcmp(n, "FogShape")) return 7;
+    if (!strcmp(n, "GameTime")) return 8;
+    if (!strcmp(n, "ScreenSize")) return 9;
+    if (!strcmp(n, "LineWidth")) return 10;
+    if (!strcmp(n, "IViewRotMat")) return 11;
+    if (!strcmp(n, "ChunkOffset")) return 12;
+    if (!strcmp(n, "CameraBlockPos")) return 13;
+    if (!strcmp(n, "CameraOffset")) return 14;
+    if (!strcmp(n, "UseRgss")) return 15;
+    if (!strcmp(n, "ChunkVisibility")) return 16;
+    return -1;
+}
+
+static uint32_t client_buf_binding(uint32_t type, const char *n, int uloc,
+                                  uint32_t loc, uint32_t glb)
+{
+    if (type == 2u) {
+        int known = plain_uniform_slot(n);
+        if (known >= 0) return (uint32_t)known;
+        if (uloc >= 0 && uloc < 84) return (uint32_t)uloc;
+        if (loc < 84u) return loc;
+        if (glb < 84u) return glb;
+    }
+    return glb;
+}
+
+static void test_plain_uniform_binding(void)
+{
+    expect(plain_uniform_slot("ModelViewMat") == 0, "ModelViewMat is slot 0");
+    expect(plain_uniform_slot("ProjMat") == 1, "ProjMat is slot 1");
+    expect(plain_uniform_slot("u_RegionOffset") == 2, "Iris u_RegionOffset is slot 2");
+    expect(plain_uniform_slot("ChunkVisibility") == 16, "1.21.11 ChunkVisibility is slot 16");
+    expect(plain_uniform_slot("u_FogColor") == 4, "Iris u_FogColor is slot 4");
+    expect(client_buf_binding(2u, "ProjMat", 99, 0u, 0u) == 1u,
+           "named plain uniform wins over location");
+    expect(client_buf_binding(2u, NULL, 7, 0u, 0u) == 7u,
+           "unknown name uses uniform_location");
+    expect(client_buf_binding(1u, "ModelViewMat", 0, 0u, 3u) == 3u,
+           "UBO uses gl_binding");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2252,6 +2303,7 @@ int main(void)
     test_pipeline_pass_format_mismatch();
     test_sampler_like_resource();
     test_shader_resource_type_name();
+    test_plain_uniform_binding();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

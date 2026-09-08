@@ -28,83 +28,9 @@ GLuint mglClientBufferBindingForResource(int resourceType, const MGLShaderResour
         return 0u;
     }
 
-    GLint knownPlainUniformBinding = -1;
-    if (res->name) {
-        if (!strcmp(res->name, "ModelViewMat")) {
-            knownPlainUniformBinding = 0;
-        } else if (!strcmp(res->name, "ProjMat")) {
-            knownPlainUniformBinding = 1;
-        } else if (!strcmp(res->name, "TextureMat")) {
-            knownPlainUniformBinding = 2;
-        } else if (!strcmp(res->name, "ColorModulator")) {
-            knownPlainUniformBinding = 3;
-        } else if (!strcmp(res->name, "FogStart")) {
-            knownPlainUniformBinding = 4;
-        } else if (!strcmp(res->name, "FogEnd")) {
-            knownPlainUniformBinding = 5;
-        } else if (!strcmp(res->name, "FogColor")) {
-            knownPlainUniformBinding = 6;
-        } else if (!strcmp(res->name, "FogShape")) {
-            knownPlainUniformBinding = 7;
-        } else if (!strcmp(res->name, "GameTime")) {
-            knownPlainUniformBinding = 8;
-        } else if (!strcmp(res->name, "ScreenSize")) {
-            knownPlainUniformBinding = 9;
-        } else if (!strcmp(res->name, "LineWidth")) {
-            knownPlainUniformBinding = 10;
-        } else if (!strcmp(res->name, "IViewRotMat")) {
-            knownPlainUniformBinding = 11;
-        } else if (!strcmp(res->name, "ChunkOffset")) {
-            knownPlainUniformBinding = 12;
-        } else if (!strcmp(res->name, "u_ProjectionMatrix")) {
-            knownPlainUniformBinding = 0;
-        } else if (!strcmp(res->name, "u_ModelViewMatrix")) {
-            knownPlainUniformBinding = 1;
-        } else if (!strcmp(res->name, "u_RegionOffset")) {
-            knownPlainUniformBinding = 2;
-        } else if (!strcmp(res->name, "u_TexCoordShrink")) {
-            knownPlainUniformBinding = 3;
-        } else if (!strcmp(res->name, "u_FogColor")) {
-            knownPlainUniformBinding = 4;
-        } else if (!strcmp(res->name, "u_EnvironmentFog")) {
-            knownPlainUniformBinding = 5;
-        } else if (!strcmp(res->name, "u_RenderFog")) {
-            knownPlainUniformBinding = 6;
-        /* 1.21.11 new plain uniforms */
-        } else if (!strcmp(res->name, "CameraBlockPos")) {
-            knownPlainUniformBinding = 13;
-        } else if (!strcmp(res->name, "CameraOffset")) {
-            knownPlainUniformBinding = 14;
-        } else if (!strcmp(res->name, "UseRgss")) {
-            knownPlainUniformBinding = 15;
-        } else if (!strcmp(res->name, "ChunkVisibility")) {
-            knownPlainUniformBinding = 16;
-        }
-    }
-
-    /*
-     * Plain uniforms are represented internally as one tiny GL buffer per
-     * uniform location. The resource binding starts at descriptor binding 0 for
-     * all of them, while the generated MSL assigns distinct [[buffer(n)]]
-     * slots. Use the GL uniform location to find the client-side buffer, then
-     * map that location to the reflected Metal slot later.
-     */
-    if (resourceType == _UNIFORM_CONSTANT_RES) {
-        if (knownPlainUniformBinding >= 0) {
-            return (GLuint)knownPlainUniformBinding;
-        }
-        if (res->uniform_location >= 0 && res->uniform_location < MAX_BINDABLE_BUFFERS) {
-            return (GLuint)res->uniform_location;
-        }
-        if (res->location < MAX_BINDABLE_BUFFERS) {
-            return res->location;
-        }
-        if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
-            return res->gl_binding;
-        }
-    }
-
-    return res->gl_binding;
+    return mglRenderClientBufferBindingForResource(
+        (uint32_t)resourceType, res->name, res->uniform_location, res->location,
+        res->gl_binding);
 }
 
 GLuint mglMetalResourceSlot(const MGLShaderResource *res)

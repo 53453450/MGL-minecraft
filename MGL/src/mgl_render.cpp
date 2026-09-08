@@ -8307,6 +8307,62 @@ const char *mglRenderShaderResourceTypeName(uint32_t res_type) {
     }
 }
 
+int mglRenderPlainUniformBindingForName(const char *name) {
+    if (!name) {
+        return -1;
+    }
+    if (std::strcmp(name, "ModelViewMat") == 0) return 0;
+    if (std::strcmp(name, "ProjMat") == 0) return 1;
+    if (std::strcmp(name, "TextureMat") == 0) return 2;
+    if (std::strcmp(name, "ColorModulator") == 0) return 3;
+    if (std::strcmp(name, "FogStart") == 0) return 4;
+    if (std::strcmp(name, "FogEnd") == 0) return 5;
+    if (std::strcmp(name, "FogColor") == 0) return 6;
+    if (std::strcmp(name, "FogShape") == 0) return 7;
+    if (std::strcmp(name, "GameTime") == 0) return 8;
+    if (std::strcmp(name, "ScreenSize") == 0) return 9;
+    if (std::strcmp(name, "LineWidth") == 0) return 10;
+    if (std::strcmp(name, "IViewRotMat") == 0) return 11;
+    if (std::strcmp(name, "ChunkOffset") == 0) return 12;
+    if (std::strcmp(name, "u_ProjectionMatrix") == 0) return 0;
+    if (std::strcmp(name, "u_ModelViewMatrix") == 0) return 1;
+    if (std::strcmp(name, "u_RegionOffset") == 0) return 2;
+    if (std::strcmp(name, "u_TexCoordShrink") == 0) return 3;
+    if (std::strcmp(name, "u_FogColor") == 0) return 4;
+    if (std::strcmp(name, "u_EnvironmentFog") == 0) return 5;
+    if (std::strcmp(name, "u_RenderFog") == 0) return 6;
+    /* 1.21.11 new plain uniforms */
+    if (std::strcmp(name, "CameraBlockPos") == 0) return 13;
+    if (std::strcmp(name, "CameraOffset") == 0) return 14;
+    if (std::strcmp(name, "UseRgss") == 0) return 15;
+    if (std::strcmp(name, "ChunkVisibility") == 0) return 16;
+    return -1;
+}
+
+uint32_t mglRenderClientBufferBindingForResource(uint32_t resource_type,
+                                                 const char *name,
+                                                 int32_t uniform_location,
+                                                 uint32_t location,
+                                                 uint32_t gl_binding) {
+    if (resource_type == (uint32_t)_UNIFORM_CONSTANT_RES) {
+        int known = mglRenderPlainUniformBindingForName(name);
+        if (known >= 0) {
+            return (uint32_t)known;
+        }
+        if (uniform_location >= 0 &&
+            (uint32_t)uniform_location < (uint32_t)MAX_BINDABLE_BUFFERS) {
+            return (uint32_t)uniform_location;
+        }
+        if (location < (uint32_t)MAX_BINDABLE_BUFFERS) {
+            return location;
+        }
+        if (gl_binding < (uint32_t)MAX_BINDABLE_BUFFERS) {
+            return gl_binding;
+        }
+    }
+    return gl_binding;
+}
+
 int mglRenderSamplerNameLooksSamplerLike(const char *name) {
     return name && (std::strstr(name, "Sampler") != NULL ||
                     std::strcmp(name, "CloudFaces") == 0)
