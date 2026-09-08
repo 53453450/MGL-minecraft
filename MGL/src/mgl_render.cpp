@@ -8270,6 +8270,40 @@ int mglRenderComputeTextureBindNeedsSampler(uint32_t kind, int has_combined) {
     return kind == 0u && has_combined ? 1 : 0;
 }
 
+int mglRenderShaderResourceTypeIsSamplerImage(uint32_t res_type) {
+    switch (res_type) {
+    case _SAMPLED_IMAGE_RES:
+    case _SEPARATE_IMAGE_RES:
+    case _SEPARATE_SAMPLERS_RES:
+    case _STORAGE_IMAGE_RES:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int mglRenderSamplerNameLooksSamplerLike(const char *name) {
+    return name && (std::strstr(name, "Sampler") != NULL ||
+                    std::strcmp(name, "CloudFaces") == 0)
+               ? 1
+               : 0;
+}
+
+int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim,
+                                      int32_t uniform_location,
+                                      const char *name) {
+    if (mglRenderShaderResourceTypeIsSamplerImage(res_type)) {
+        return 1;
+    }
+    if (res_type == (uint32_t)_UNIFORM_CONSTANT_RES) {
+        return image_dim != 0u || uniform_location >= 0x4000 ||
+                       mglRenderSamplerNameLooksSamplerLike(name)
+                   ? 1
+                   : 0;
+    }
+    return 0;
+}
+
 uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
                                     uint32_t element, uint32_t fallback) {
     return has_resource ? binding + element : fallback;

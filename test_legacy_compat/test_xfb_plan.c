@@ -2045,6 +2045,38 @@ static void test_pipeline_pass_format_mismatch(void)
     expect(pso_attach_mismatch(252u, 252u) == 0, "matching depth is ok");
 }
 
+static int res_type_is_sampler_image(uint32_t t)
+{
+    return t == 8u || t == 11u || t == 12u || t == 7u;
+}
+
+static int sampler_name_like(const char *n)
+{
+    return n && (strstr(n, "Sampler") || !strcmp(n, "CloudFaces"));
+}
+
+static int resource_looks_sampler(uint32_t t, uint32_t dim, int loc, const char *n)
+{
+    if (res_type_is_sampler_image(t)) return 1;
+    if (t == 2u) return dim != 0u || loc >= 0x4000 || sampler_name_like(n);
+    return 0;
+}
+
+static void test_sampler_like_resource(void)
+{
+    expect(res_type_is_sampler_image(8u) == 1, "sampled image is sampler-like");
+    expect(res_type_is_sampler_image(7u) == 1, "storage image is sampler-like");
+    expect(res_type_is_sampler_image(1u) == 0, "UBO is not sampler-like");
+    expect(resource_looks_sampler(2u, 1u, 0, NULL) == 1,
+           "uniform constant with image_dim is sampler-like");
+    expect(resource_looks_sampler(2u, 0u, 0x4000, NULL) == 1,
+           "synthetic sampler location is sampler-like");
+    expect(resource_looks_sampler(2u, 0u, 0, "CloudFaces") == 1,
+           "CloudFaces uniform is sampler-like");
+    expect(resource_looks_sampler(2u, 0u, 0, "u_FogColor") == 0,
+           "plain uniform is not sampler-like");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2194,6 +2226,7 @@ int main(void)
     test_depth_blit_stencil_format();
     test_compute_texture_bind_kind();
     test_pipeline_pass_format_mismatch();
+    test_sampler_like_resource();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

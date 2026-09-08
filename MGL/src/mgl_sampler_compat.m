@@ -146,9 +146,7 @@ bool mglProgramNeedsBindingTrace(Program *program)
 
 bool mglRendererSamplerNameLooksSamplerLike(const char *name)
 {
-    return name &&
-           (strstr(name, "Sampler") ||
-            !strcmp(name, "CloudFaces"));
+    return mglRenderSamplerNameLooksSamplerLike(name) != 0;
 }
 
 bool mglRendererResourceLooksSamplerLike(const MGLShaderResource *res, int resType)
@@ -157,19 +155,9 @@ bool mglRendererResourceLooksSamplerLike(const MGLShaderResource *res, int resTy
         return false;
     }
 
-    switch (resType) {
-        case _SAMPLED_IMAGE_RES:
-        case _SEPARATE_IMAGE_RES:
-        case _SEPARATE_SAMPLERS_RES:
-        case _STORAGE_IMAGE_RES:
-            return true;
-        case _UNIFORM_CONSTANT_RES:
-            return res->image_dim != 0u ||
-                   res->uniform_location >= 0x4000 ||
-                   mglRendererSamplerNameLooksSamplerLike(res->name);
-        default:
-            return false;
-    }
+    return mglRenderResourceLooksSamplerLike((uint32_t)resType, res->image_dim,
+                                             res->uniform_location,
+                                             res->name) != 0;
 }
 
 MGLShaderResource *mglFindSamplerResourceForMetalBinding(Program *program,

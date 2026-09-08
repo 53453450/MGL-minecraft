@@ -1289,6 +1289,10 @@ uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
 int mglRenderComputeTextureBindKind(uint32_t spvc_type);
 int mglRenderComputeTextureBindIsStorage(uint32_t kind);
 int mglRenderComputeTextureBindNeedsSampler(uint32_t kind, int has_combined);
+int mglRenderShaderResourceTypeIsSamplerImage(uint32_t res_type);
+int mglRenderSamplerNameLooksSamplerLike(const char *name);
+int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim,
+                                      int32_t uniform_location, const char *name);
 uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
                                     uint32_t element, uint32_t fallback);
 int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);
