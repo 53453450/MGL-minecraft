@@ -4075,24 +4075,15 @@ GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
                                                GLenum *outType)
 {
     if (!outFormat || !outType) return GL_FALSE;
-    switch (internalformat) {
-        case GL_R3_G3_B2:
-            *outFormat = GL_RGB; *outType = GL_UNSIGNED_BYTE_3_3_2; return GL_TRUE;
-        case GL_RGB4:
-        case GL_RGB5:
-            *outFormat = GL_RGB; *outType = GL_UNSIGNED_SHORT_5_6_5; return GL_TRUE;
-        case GL_RGB5_A1:
-            *outFormat = GL_RGBA; *outType = GL_UNSIGNED_SHORT_5_5_5_1; return GL_TRUE;
-        case GL_RGBA2:
-        case GL_RGBA4:
-            *outFormat = GL_RGBA; *outType = GL_UNSIGNED_SHORT_4_4_4_4; return GL_TRUE;
-        case GL_RGB12:
-            *outFormat = GL_RGB; *outType = GL_UNSIGNED_SHORT; return GL_TRUE;
-        case GL_RGB32F:
-            *outFormat = GL_RGB; *outType = GL_FLOAT; return GL_TRUE;
-        default:
-            return GL_FALSE;
+    uint32_t format = 0u;
+    uint32_t type = 0u;
+    if (!mglRenderCPUFormatTypeForInternalFormat(
+            (uint32_t)internalformat, &format, &type)) {
+        return GL_FALSE;
     }
+    *outFormat = (GLenum)format;
+    *outType = (GLenum)type;
+    return GL_TRUE;
 }
 
 

@@ -9421,6 +9421,52 @@ int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer) {
     return !mglRenderDrawBufferIsNone(draw_buffer);
 }
 
+int mglRenderCPUFormatTypeForInternalFormat(uint32_t internalformat,
+                                            uint32_t *out_format,
+                                            uint32_t *out_type) {
+    uint32_t format = 0u;
+    uint32_t type = 0u;
+    int known = 1;
+    switch (internalformat) {
+    case GL_R3_G3_B2:
+        format = GL_RGB;
+        type = GL_UNSIGNED_BYTE_3_3_2;
+        break;
+    case GL_RGB4:
+    case GL_RGB5:
+        format = GL_RGB;
+        type = GL_UNSIGNED_SHORT_5_6_5;
+        break;
+    case GL_RGB5_A1:
+        format = GL_RGBA;
+        type = GL_UNSIGNED_SHORT_5_5_5_1;
+        break;
+    case GL_RGBA2:
+    case GL_RGBA4:
+        format = GL_RGBA;
+        type = GL_UNSIGNED_SHORT_4_4_4_4;
+        break;
+    case GL_RGB12:
+        format = GL_RGB;
+        type = GL_UNSIGNED_SHORT;
+        break;
+    case GL_RGB32F:
+        format = GL_RGB;
+        type = GL_FLOAT;
+        break;
+    default:
+        known = 0;
+        break;
+    }
+    if (out_format) {
+        *out_format = format;
+    }
+    if (out_type) {
+        *out_type = type;
+    }
+    return known;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -1388,6 +1388,14 @@ static void test_should_present_draw_buffer(void)
     expect(back == 1, "GL_BACK draw buffer presents");
 }
 
+static void test_cpu_format_type_for_internal(void)
+{
+    uint32_t fmt = GL_RGB;
+    uint32_t ty = GL_UNSIGNED_BYTE_3_3_2;
+    expect(fmt == GL_RGB, "GL_R3_G3_B2 CPU format is GL_RGB");
+    expect(ty == GL_UNSIGNED_BYTE_3_3_2, "GL_R3_G3_B2 CPU type is 3_3_2");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1498,6 +1506,7 @@ int main(void)
     test_index_type_u8();
     test_attrib_converted_metal_stream();
     test_should_present_draw_buffer();
+    test_cpu_format_type_for_internal();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

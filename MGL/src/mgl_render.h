@@ -1427,6 +1427,9 @@ int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer);
 int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
                                             int already_norm);
 int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer);
+int mglRenderCPUFormatTypeForInternalFormat(uint32_t internalformat,
+                                            uint32_t *out_format,
+                                            uint32_t *out_type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
