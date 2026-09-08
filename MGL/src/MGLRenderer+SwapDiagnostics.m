@@ -229,7 +229,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
              (sourceInfo.pixel_format == 80u && drawableInfo.pixel_format == 70u));
         if (canShaderCopyToDrawable) {
                 id pipeline = [self scaledBlitPipelineForPixelFormat:drawableInfo.pixel_format];
-                id sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+                id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
                 NSUInteger copyWidth = MIN((NSUInteger)sourceInfo.width, (NSUInteger)drawableInfo.width);
                 NSUInteger copyHeight = MIN((NSUInteger)sourceInfo.height, (NSUInteger)drawableInfo.height);
                 if (pipeline && sampler && copyWidth > 0 && copyHeight > 0) {

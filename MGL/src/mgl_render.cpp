@@ -9403,6 +9403,22 @@ int mglRenderFilterIsNearest(uint32_t filter) {
     return filter == GL_NEAREST ? 1 : 0;
 }
 
+uint32_t mglRenderNearestFilter(void) {
+    return GL_NEAREST;
+}
+
+uint32_t mglRenderSamplerObjectTarget(void) {
+    return GL_TEXTURE_2D;
+}
+
+uint32_t mglRenderEmptyDrawBuffer(void) {
+    return GL_NONE;
+}
+
+uint32_t mglRenderDefaultFrontBuffer(void) {
+    return GL_FRONT;
+}
+
 int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color) {
     if (is_color) {
         return 1;
@@ -9448,6 +9464,10 @@ int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer) {
 int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
                                             int already_norm) {
     return !already_norm && type == GL_UNSIGNED_BYTE && size == 4u ? 1 : 0;
+}
+
+uint32_t mglRenderAttribEffectiveNormalized(uint32_t already, int needs) {
+    return needs ? GL_TRUE : already;
 }
 
 int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer) {

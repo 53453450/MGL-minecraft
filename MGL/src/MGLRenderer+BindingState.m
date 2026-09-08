@@ -4544,7 +4544,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
             }
             if (glSampler->mtl_data == NULL) {
-                glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:GL_TEXTURE_2D]);
+                glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:(GLuint)mglRenderSamplerObjectTarget()]);
                 glSampler->dirty_bits = 0;
             }
             sampler = (__bridge id)(glSampler->mtl_data);

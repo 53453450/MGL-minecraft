@@ -1420,6 +1420,10 @@ int mglRenderEmulateLineLoop(uint32_t mode);
 int mglRenderEmulateQuads(uint32_t mode, int polygon_point);
 int mglRenderImageAccessWritable(uint32_t access);
 int mglRenderFilterIsNearest(uint32_t filter);
+uint32_t mglRenderNearestFilter(void);
+uint32_t mglRenderSamplerObjectTarget(void);
+uint32_t mglRenderEmptyDrawBuffer(void);
+uint32_t mglRenderDefaultFrontBuffer(void);
 int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color);
 uint32_t mglRenderFBOBlitAttachmentOrColor0(uint32_t attachment, int is_color);
 int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer);
@@ -1427,6 +1431,7 @@ int mglRenderIndexTypeIsU8(uint32_t type);
 int mglRenderAttribNeedsConvertedMetalStream(uint32_t type, int integer);
 int mglRenderAttribColorUByteNeedsNormalize(uint32_t type, uint32_t size,
                                             int already_norm);
+uint32_t mglRenderAttribEffectiveNormalized(uint32_t already, int needs);
 int mglRenderShouldPresentDrawBuffer(uint32_t draw_buffer);
 int mglRenderCPUFormatTypeForInternalFormat(uint32_t internalformat,
                                             uint32_t *out_format,

@@ -393,7 +393,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
                options:NSKeyValueObservingOptionInitial
                context:s_kvoViewGeometryContext];
 
-    mglDrawBuffer(glm_ctx, GL_FRONT);
+    mglDrawBuffer(glm_ctx, (GLenum)mglRenderDefaultFrontBuffer());
 
     // Create initial command buffer for AGX safety
     @try {

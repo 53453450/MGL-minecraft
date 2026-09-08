@@ -1981,7 +1981,7 @@ static void mglTextureCopyTextureToBuffer(
 {
     ctx = glm_ctx;
     Framebuffer *fbo = glm_ctx ? glm_ctx->active_state->readbuffer : NULL;
-    GLenum readBuffer = glm_ctx ? glm_ctx->active_state->read_buffer : GL_NONE;
+    GLenum readBuffer = glm_ctx ? glm_ctx->active_state->read_buffer : (GLenum)mglRenderEmptyDrawBuffer();
     uint32_t att = 0u;
     if (!fbo ||
         !mglRenderDrawBufferIsColorAttachment(

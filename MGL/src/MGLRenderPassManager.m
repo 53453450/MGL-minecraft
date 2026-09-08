@@ -12,6 +12,7 @@
 
 #import "mgl_draw_buffer.h"
 #include "mgl_env_flag.h"
+#include "mgl_render.h"
 
 static BOOL mglRenderPassManagerCommandBufferState(
     void *owner, MGLRenderCommandBufferState *stateOut)
@@ -133,7 +134,7 @@ static void mglRenderPassManagerStoreIdentity(
         identity.draw_buffers[index] =
             context && index < identity.draw_buffer_count
                 ? mglMetalDrawBufferAt(context, (GLuint)index)
-                : GL_NONE;
+                : (GLenum)mglRenderEmptyDrawBuffer();
     }
     mglRenderPassManagerStoreIdentity(&_state, &identity);
 }
@@ -144,7 +145,7 @@ static void mglRenderPassManagerStoreIdentity(
     [self clearFboMatchCache];
     MGLRenderPassIdentityState identity = {0};
     for (uint32_t index = 0; index < MAX_COLOR_ATTACHMENTS; index++) {
-        identity.draw_buffers[index] = GL_NONE;
+        identity.draw_buffers[index] = (GLenum)mglRenderEmptyDrawBuffer();
     }
     mglRenderPassManagerStoreIdentity(&_state, &identity);
 }

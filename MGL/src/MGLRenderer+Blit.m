@@ -882,7 +882,7 @@ static id mglLookupAuxRenderPipeline(
 
     id pipeline =
         [self scaledDepthBlitPipelineForPixelFormat:MGLPixelFormatDepth32Float];
-    id sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+    id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
     if (!pipeline || !sampler) {
         NSLog(@"MGL WARNING: readPixels DS depth extract unavailable for %s pipeline=%p sampler=%p",
               reason ? reason : "unknown",
@@ -1302,7 +1302,7 @@ static id mglLookupAuxRenderPipeline(
     }
 
     id destination = (__bridge id)(tex->mtl_gl_sampled_data);
-    id sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+    id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
     if (!destination || !sampler) {
         static uint64_t s_copySetupFailCount = 0;
         uint64_t hit = ++s_copySetupFailCount;
@@ -1884,7 +1884,7 @@ static id mglLookupAuxRenderPipeline(
 
                         id depthPipeline =
                             [self scaledDepthBlitPipelineForPixelFormat:mglBlitTextureInfo(depthDrawTexture).pixel_format];
-                        id sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+                        id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
                         if (depthPipeline && sampler) {
                             [self endRenderEncoding];
                             if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthScaled"]) {
@@ -2801,7 +2801,7 @@ static id mglLookupAuxRenderPipeline(
     memset(&st, 0, sizeof(st));
     st.glm_ctx = glm_ctx;
     st.filter = filter;
-    GLenum readAttachment = GL_NONE;
+    GLenum readAttachment = (GLenum)mglRenderEmptyDrawBuffer();
     if (![self resolveBlitFramebufferAttachments:glm_ctx
                                             srcX0:srcX0 srcY0:srcY0 srcX1:srcX1 srcY1:srcY1
                                             dstX0:dstX0 dstY0:dstY0 dstX1:dstX1 dstY1:dstY1

@@ -2340,7 +2340,8 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
             (uint32_t)a->type, (uint32_t)a->size,
             effectiveNormalized ? 1 : 0) &&
         mglRendererVertexAttribIsColorInput(program, attrib)) {
-        effectiveNormalized = GL_TRUE;
+        effectiveNormalized = (GLboolean)mglRenderAttribEffectiveNormalized(
+            (uint32_t)effectiveNormalized, 1);
     }
 
     if (elemBytes == 0u ||

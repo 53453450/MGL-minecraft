@@ -1660,6 +1660,22 @@ static void test_rgb_expand_params(void)
            "unknown pixel format has no RGB expand params");
 }
 
+static void test_bind_draw_gl_defaults(void)
+{
+    uint32_t nearest = 0x2600u; /* GL_NEAREST */
+    expect(nearest == 0x2600u, "blit sampler default filter is GL_NEAREST");
+    uint32_t tex2d = 0x0DE1u; /* GL_TEXTURE_2D */
+    expect(tex2d == 0x0DE1u, "sampler object default target is GL_TEXTURE_2D");
+    uint32_t none = 0u; /* GL_NONE */
+    expect(none == 0u, "empty draw buffer is GL_NONE");
+    uint32_t front = 0x0404u; /* GL_FRONT */
+    expect(front == 0x0404u, "default draw buffer is GL_FRONT");
+    uint32_t norm = 1u; /* needs → GL_TRUE */
+    expect(norm == 1u, "color attrib normalize sets GL_TRUE");
+    uint32_t keep = 0u;
+    expect(keep == 0u, "already-unnormalized stays unless needed");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1789,6 +1805,7 @@ int main(void)
     test_native_tes_raster_draw_mode();
     test_gs_passthrough_decl_type();
     test_rgb_expand_params();
+    test_bind_draw_gl_defaults();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

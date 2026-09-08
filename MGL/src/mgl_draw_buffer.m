@@ -47,7 +47,7 @@ GLsizei mglMetalDrawBufferCount(GLMContext drawCtx)
 GLenum mglMetalDrawBufferAt(GLMContext drawCtx, GLuint slot)
 {
     if (!drawCtx) {
-        return GL_NONE;
+        return (GLenum)mglRenderEmptyDrawBuffer();
     }
 
     GLsizei count = mglMetalDrawBufferCount(drawCtx);
@@ -55,7 +55,7 @@ GLenum mglMetalDrawBufferAt(GLMContext drawCtx, GLuint slot)
         return drawCtx->active_state->draw_buffers[slot];
     }
 
-    return GL_NONE;
+    return (GLenum)mglRenderEmptyDrawBuffer();
 }
 
 BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
