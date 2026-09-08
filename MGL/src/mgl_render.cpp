@@ -9487,6 +9487,64 @@ int mglRenderPolygonPointEmulateMode(uint32_t mode) {
                : 0;
 }
 
+double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
+                                            int normalized, uint32_t component) {
+    if (!src) {
+        return 0.0;
+    }
+    switch (type) {
+    case GL_FLOAT: {
+        float v = 0.0f;
+        memcpy(&v, src + component * sizeof(float), sizeof(v));
+        return (double)v;
+    }
+    case GL_UNSIGNED_BYTE: {
+        uint8_t v = 0;
+        memcpy(&v, src + component, sizeof(v));
+        return normalized ? ((double)v / 255.0) : (double)v;
+    }
+    case GL_BYTE: {
+        int8_t v = 0;
+        memcpy(&v, src + component, sizeof(v));
+        if (normalized) {
+            double d = (double)v / 127.0;
+            return d < -1.0 ? -1.0 : d;
+        }
+        return (double)v;
+    }
+    case GL_UNSIGNED_SHORT: {
+        uint16_t v = 0;
+        memcpy(&v, src + component * sizeof(uint16_t), sizeof(v));
+        return normalized ? ((double)v / 65535.0) : (double)v;
+    }
+    case GL_SHORT: {
+        int16_t v = 0;
+        memcpy(&v, src + component * sizeof(int16_t), sizeof(v));
+        if (normalized) {
+            double d = (double)v / 32767.0;
+            return d < -1.0 ? -1.0 : d;
+        }
+        return (double)v;
+    }
+    case GL_UNSIGNED_INT: {
+        uint32_t v = 0;
+        memcpy(&v, src + component * sizeof(uint32_t), sizeof(v));
+        return normalized ? ((double)v / 4294967295.0) : (double)v;
+    }
+    case GL_INT: {
+        int32_t v = 0;
+        memcpy(&v, src + component * sizeof(int32_t), sizeof(v));
+        if (normalized) {
+            double d = (double)v / 2147483647.0;
+            return d < -1.0 ? -1.0 : d;
+        }
+        return (double)v;
+    }
+    default:
+        return 0.0;
+    }
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

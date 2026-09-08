@@ -1434,6 +1434,8 @@ int mglRenderDrawModeIsTriangles(uint32_t mode);
 int mglRenderDrawModeIsTriangleStrip(uint32_t mode);
 int mglRenderQuadsCountTooSmall(uint32_t mode, int32_t count);
 int mglRenderPolygonPointEmulateMode(uint32_t mode);
+double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
+                                            int normalized, uint32_t component);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

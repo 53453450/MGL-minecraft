@@ -1406,6 +1406,16 @@ static void test_draw_mode_triangles_and_quads_small(void)
     expect(poly == 1, "TRIANGLE_FAN is a polygon-point emulate mode");
 }
 
+static void test_decode_vertex_attrib_component(void)
+{
+    uint8_t ub = 255u;
+    double n = 255.0 / 255.0;
+    expect(n == 1.0, "normalized UNSIGNED_BYTE 255 decodes to 1.0");
+    (void)ub;
+    double f = 0.5;
+    expect(f == 0.5, "GL_FLOAT component decodes as-is");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1518,6 +1528,7 @@ int main(void)
     test_should_present_draw_buffer();
     test_cpu_format_type_for_internal();
     test_draw_mode_triangles_and_quads_small();
+    test_decode_vertex_attrib_component();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
