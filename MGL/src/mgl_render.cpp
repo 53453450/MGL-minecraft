@@ -8420,6 +8420,19 @@ uint32_t mglRenderClientBufferBindingForResourceElement(
     return base_binding + element;
 }
 
+uint32_t mglRenderCombinedSamplerSlot(int has_res, int has_combined,
+                                      uint32_t combined_binding) {
+    return has_res && has_combined ? combined_binding : 0u;
+}
+
+uint32_t mglRenderCombinedSamplerSlotForElement(int has_res, int has_combined,
+                                                uint32_t combined_binding,
+                                                uint32_t element) {
+    return mglRenderCombinedSamplerSlot(has_res, has_combined,
+                                        combined_binding) +
+           element;
+}
+
 int mglRenderSamplerNameLooksSamplerLike(const char *name) {
     return name && (std::strstr(name, "Sampler") != NULL ||
                     std::strcmp(name, "CloudFaces") == 0)

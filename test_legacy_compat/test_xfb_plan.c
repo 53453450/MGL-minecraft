@@ -2214,6 +2214,19 @@ static void test_ubo_array_element_binding(void)
     expect(elem_binding(1u, 4u, 2u, NULL, 3u) == 6u, "missing table uses base+index");
 }
 
+static uint32_t combined_sampler_slot(int has, int comb, uint32_t bind)
+{
+    return has && comb ? bind : 0u;
+}
+
+static void test_combined_sampler_slot(void)
+{
+    expect(combined_sampler_slot(0, 1, 5u) == 0u, "null resource has no sampler slot");
+    expect(combined_sampler_slot(1, 0, 5u) == 0u, "uncombined image has no sampler slot");
+    expect(combined_sampler_slot(1, 1, 5u) == 5u, "combined sampler uses binding");
+    expect(combined_sampler_slot(1, 1, 5u) + 2u == 7u, "element offsets combined slot");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2369,6 +2382,7 @@ int main(void)
     test_iris_uniform_fallback();
     test_stage_buffer_element_count();
     test_ubo_array_element_binding();
+    test_combined_sampler_slot();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

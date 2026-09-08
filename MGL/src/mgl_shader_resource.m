@@ -64,16 +64,17 @@ GLuint mglMetalResourceSlotForElement(const MGLShaderResource *res, GLuint eleme
 
 GLuint mglMetalCombinedSamplerSlot(const MGLShaderResource *res)
 {
-    if (!res || !res->has_combined_sampler) {
-        return 0u;
-    }
-    return res->combined_sampler_binding;
+    return mglRenderCombinedSamplerSlot(res != NULL,
+                                        res && res->has_combined_sampler,
+                                        res ? res->combined_sampler_binding : 0u);
 }
 
 GLuint mglMetalCombinedSamplerSlotForElement(const MGLShaderResource *res,
                                              GLuint element)
 {
-    return mglMetalCombinedSamplerSlot(res) + element;
+    return mglRenderCombinedSamplerSlotForElement(
+        res != NULL, res && res->has_combined_sampler,
+        res ? res->combined_sampler_binding : 0u, element);
 }
 
 bool mglPlainUniformAllowsGlobalFallback(const MGLShaderResource *res)
