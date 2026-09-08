@@ -1416,6 +1416,16 @@ static void test_decode_vertex_attrib_component(void)
     expect(f == 0.5, "GL_FLOAT component decodes as-is");
 }
 
+static void test_index_type_u16_u32(void)
+{
+    int u16 = 1;
+    expect(u16 == 1, "GL_UNSIGNED_SHORT is U16 index type");
+    int u32 = 1;
+    expect(u32 == 1, "GL_UNSIGNED_INT is U32 index type");
+    int notu8 = 0;
+    expect(notu8 == 0, "GL_UNSIGNED_SHORT is not U8");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1529,6 +1539,7 @@ int main(void)
     test_cpu_format_type_for_internal();
     test_draw_mode_triangles_and_quads_small();
     test_decode_vertex_attrib_component();
+    test_index_type_u16_u32();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

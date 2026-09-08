@@ -626,8 +626,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
     size_t restartPositionCount = 0;  /* total count, may exceed 256 */
     bool sawRestart = false;
 
-    switch (glIndexType) {
-        case GL_UNSIGNED_BYTE: {
+    if (mglRenderIndexTypeIsU8((uint32_t)glIndexType)) {
             const uint8_t *typedSrc = (const uint8_t *)source;
             for (GLsizei i = 0; i < count; i++) {
                 if (typedSrc[i] == (uint8_t)restartIndex) {
@@ -637,9 +636,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                     restartPositionCount++;
                 }
             }
-            break;
-        }
-        case GL_UNSIGNED_SHORT: {
+    } else if (mglRenderIndexTypeIsU16((uint32_t)glIndexType)) {
             const uint16_t *typedSrc = (const uint16_t *)source;
             for (GLsizei i = 0; i < count; i++) {
                 if (typedSrc[i] == (uint16_t)restartIndex) {
@@ -649,9 +646,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                     restartPositionCount++;
                 }
             }
-            break;
-        }
-        case GL_UNSIGNED_INT: {
+    } else if (mglRenderIndexTypeIsU32((uint32_t)glIndexType)) {
             const uint32_t *typedSrc = (const uint32_t *)source;
             for (GLsizei i = 0; i < count; i++) {
                 if (typedSrc[i] == restartIndex) {
@@ -661,10 +656,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                     restartPositionCount++;
                 }
             }
-            break;
-        }
-        default:
-            break;
+    }
     }
     if (!sawRestart) {
         return MGLPrimitiveRestartEncodeNotNeeded;
@@ -720,8 +712,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
         }
     } else {
         /* Fallback: too many restarts for stack array, type-specialized re-scan. */
-        switch (glIndexType) {
-            case GL_UNSIGNED_BYTE: {
+        if (mglRenderIndexTypeIsU8((uint32_t)glIndexType)) {
                 const uint8_t *typedSrc = (const uint8_t *)source;
                 for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
                     if (typedSrc[i] != (uint8_t)restartIndex) continue;
@@ -738,9 +729,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                     }
                     segmentStart = (size_t)i + 1u;
                 }
-                break;
-            }
-            case GL_UNSIGNED_SHORT: {
+        } else if (mglRenderIndexTypeIsU16((uint32_t)glIndexType)) {
                 const uint16_t *typedSrc = (const uint16_t *)source;
                 for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
                     if (typedSrc[i] != (uint16_t)restartIndex) continue;
@@ -757,9 +746,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                     }
                     segmentStart = (size_t)i + 1u;
                 }
-                break;
-            }
-            case GL_UNSIGNED_INT: {
+        } else if (mglRenderIndexTypeIsU32((uint32_t)glIndexType)) {
                 const uint32_t *typedSrc = (const uint32_t *)source;
                 for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
                     if (typedSrc[i] != restartIndex) continue;
@@ -776,7 +763,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDrawTar
                     }
                     segmentStart = (size_t)i + 1u;
                 }
-                break;
+        }
             }
             default:
                 break;

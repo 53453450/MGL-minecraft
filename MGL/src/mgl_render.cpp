@@ -9545,6 +9545,14 @@ double mglRenderDecodeVertexAttribComponent(const uint8_t *src, uint32_t type,
     }
 }
 
+int mglRenderIndexTypeIsU16(uint32_t type) {
+    return type == GL_UNSIGNED_SHORT ? 1 : 0;
+}
+
+int mglRenderIndexTypeIsU32(uint32_t type) {
+    return type == GL_UNSIGNED_INT ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
