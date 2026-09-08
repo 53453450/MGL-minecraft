@@ -561,8 +561,8 @@ static void mglTextureCopyTextureToBuffer(
     NSUInteger srcBytesPerRow = bytesPerRow;
     if (bytesPerRow >= width * 8u) {
         /* Already Metal packed layout. */
-    } else if (bytesPerRow >= width * 5u &&
-               parentFormat == MGLPixelFormatDepth32Float_Stencil8) {
+    } else if (mglRenderPackedD32FNeeds8ByteStride(
+                   parentFormat, (uint32_t)bytesPerRow, (uint32_t)width)) {
         srcBytesPerRow = width * 8u;
         const NSUInteger repackBytes = srcBytesPerRow * height;
         metalUpload = calloc(1u, repackBytes);
@@ -1481,8 +1481,8 @@ static void mglTextureCopyTextureToBuffer(
         return sourceTexture != nil;
     }
 
-    BOOL sourceIsDepthStencil =
-        mglTextureInfo(sourceTexture).pixel_format == MGLPixelFormatDepth32Float_Stencil8;
+    BOOL sourceIsDepthStencil = mglRenderPixelFormatIsDepth32FloatStencil8(
+        (uint32_t)mglTextureInfo(sourceTexture).pixel_format) != 0;
     BOOL sourceIsDepth16 =
         mglTextureInfo(sourceTexture).pixel_format == MGLPixelFormatDepth16Unorm;
     if (mglTextureInfo(sourceTexture).pixel_format != MGLPixelFormatDepth32Float &&
@@ -6192,11 +6192,7 @@ static void mglTextureCopyTextureToBuffer(
             mtlPixelFormatForGLTex(tex), (uint32_t)tex->internalformat);
 
         BOOL isDepthOrStencilFormat =
-            (fallbackFormat == MGLPixelFormatDepth16Unorm ||
-             fallbackFormat == MGLPixelFormatDepth32Float ||
-             fallbackFormat == MGLPixelFormatDepth24Unorm_Stencil8 ||
-             fallbackFormat == MGLPixelFormatDepth32Float_Stencil8 ||
-             fallbackFormat == MGLPixelFormatStencil8);
+            mglRenderPixelFormatIsDepthOrStencil(fallbackFormat) != 0;
 
         MGLRenderTextureDescriptorState fallbackDesc = {
             .texture_type = MGLTextureType2D,

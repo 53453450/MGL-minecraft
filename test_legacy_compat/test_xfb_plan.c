@@ -1819,6 +1819,37 @@ static void test_stencil_view_format(void)
            "upload/copy/renderpass packed-DS gates share one predicate");
 }
 
+static uint32_t repaired_default_stencil(uint32_t fmt)
+{
+    return (fmt == 0u || fmt == 260u) ? 253u : fmt;
+}
+
+static int is_depth_or_stencil(uint32_t fmt)
+{
+    return fmt == 250u || fmt == 252u || fmt == 253u || fmt == 255u ||
+           fmt == 260u;
+}
+
+static int d32f_s8_needs_8byte(uint32_t fmt, uint32_t row, uint32_t w)
+{
+    return fmt == 260u && row >= w * 5u && row < w * 8u ? 1 : 0;
+}
+
+static void test_ds_format_classification(void)
+{
+    expect(repaired_default_stencil(0u) == 253u,
+           "invalid default stencil repairs to Stencil8");
+    expect(repaired_default_stencil(260u) == 253u,
+           "D32F_S8 default stencil repairs to Stencil8");
+    expect(repaired_default_stencil(253u) == 253u, "Stencil8 stays Stencil8");
+    expect(is_depth_or_stencil(250u) == 1, "Depth16 is depth/stencil");
+    expect(is_depth_or_stencil(70u) == 0, "RGBA8 is not depth/stencil");
+    expect(d32f_s8_needs_8byte(260u, 5u, 1u) == 1,
+           "D32F_S8 5-byte rows repack to 8");
+    expect(d32f_s8_needs_8byte(260u, 8u, 1u) == 0,
+           "D32F_S8 8-byte rows already Metal packed");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1957,6 +1988,7 @@ int main(void)
     test_metal_pixel_format_value_class();
     test_ds_plane_view_type();
     test_stencil_view_format();
+    test_ds_format_classification();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

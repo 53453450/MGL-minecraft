@@ -1398,6 +1398,11 @@ uint32_t mglRenderMetalPixelFormatValueClass(uint32_t pixel_format);
 uint32_t mglRenderDepthStencilPlaneViewType(uint32_t parent_type);
 int mglRenderPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
 uint32_t mglRenderStencilViewFormat(uint32_t parent_format);
+int mglRenderPixelFormatIsDepth32FloatStencil8(uint32_t pixel_format);
+uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format);
+int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format);
+int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
+                                        uint32_t row_bytes, uint32_t width);
 int mglRenderSamplerUnitExplicit(uint32_t flag);
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
 int mglRenderTextureTargetIs1D(uint32_t target);

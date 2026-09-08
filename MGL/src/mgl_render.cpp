@@ -9200,6 +9200,38 @@ uint32_t mglRenderStencilViewFormat(uint32_t parent_format) {
                : 261u /* X32_Stencil8 */;
 }
 
+int mglRenderPixelFormatIsDepth32FloatStencil8(uint32_t pixel_format) {
+    return pixel_format == 260u /* Depth32Float_Stencil8 */ ? 1 : 0;
+}
+
+uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format) {
+    return stencil_format == 0u /* Invalid */ ||
+                   stencil_format == 260u /* Depth32Float_Stencil8 */
+               ? 253u /* Stencil8 */
+               : stencil_format;
+}
+
+int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format) {
+    switch (pixel_format) {
+    case 250u: /* Depth16Unorm */
+    case 252u: /* Depth32Float */
+    case 253u: /* Stencil8 */
+    case 255u: /* Depth24Unorm_Stencil8 */
+    case 260u: /* Depth32Float_Stencil8 */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
+                                        uint32_t row_bytes, uint32_t width) {
+    return mglRenderPixelFormatIsDepth32FloatStencil8(pixel_format) &&
+                   row_bytes >= width * 5u && row_bytes < width * 8u
+               ? 1
+               : 0;
+}
+
 int mglRenderSamplerUnitExplicit(uint32_t flag) {
     return flag == GL_TRUE ? 1 : 0;
 }

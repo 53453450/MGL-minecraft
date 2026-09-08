@@ -3041,11 +3041,8 @@ static GLenum mglPassthroughDeclType(
                                    cachedStencil != nil;
     if (defaultPassNeedsStencil)
     {
-        uint32_t stencilFormat = ctx->stencil_format.mtl_pixel_format;
-        if (stencilFormat == MGLPixelFormatInvalid ||
-            stencilFormat == MGLPixelFormatDepth32Float_Stencil8) {
-            stencilFormat = MGLPixelFormatStencil8;
-        }
+        uint32_t stencilFormat = mglRenderRepairedDefaultStencilFormat(
+            ctx->stencil_format.mtl_pixel_format);
 
         if(cachedStencil)
         {
