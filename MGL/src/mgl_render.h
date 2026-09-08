@@ -1391,6 +1391,8 @@ uint32_t mglRenderFallbackPixelFormat(uint32_t mapped, uint32_t internalformat);
 int mglRenderTextureTargetIsArray(uint32_t target);
 int mglRenderIs3DReupload(uint32_t target, uint32_t depth);
 int mglRenderIsSmallRGBA8(uint32_t width, uint32_t height, uint32_t internalformat);
+uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
+                                                 int *known);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

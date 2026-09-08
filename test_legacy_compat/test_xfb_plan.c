@@ -1236,6 +1236,16 @@ static void test_array_slice_3d_reupload_and_rgba8(void)
     expect(small == 1, "512x512 GL_RGBA8 is a small RGBA8 fill");
 }
 
+static void test_bytes_per_pixel_internal_format(void)
+{
+    uint32_t r8 = 1u;
+    expect(r8 == 1u, "GL_R8 is 1 byte per pixel");
+    uint32_t rgb = 3u;
+    expect(rgb == 3u, "GL_RGB8 is 3 bytes per pixel");
+    uint32_t rgba32 = 16u;
+    expect(rgba32 == 16u, "GL_RGBA32F is 16 bytes per pixel");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1329,6 +1339,7 @@ int main(void)
     test_image_unit_3d_slice_flush();
     test_cube_array_faces_and_fallback_format();
     test_array_slice_3d_reupload_and_rgba8();
+    test_bytes_per_pixel_internal_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

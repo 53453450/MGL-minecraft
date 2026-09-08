@@ -9026,6 +9026,84 @@ int mglRenderIsSmallRGBA8(uint32_t width, uint32_t height, uint32_t internalform
     return width <= 512u && height <= 512u && internalformat == GL_RGBA8 ? 1 : 0;
 }
 
+uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
+                                                 int *known) {
+    uint32_t bpp = 4u;
+    int ok = 1;
+    switch (internalformat) {
+    case GL_RED:
+    case GL_R8:
+    case GL_R8I:
+    case GL_R8UI:
+        bpp = 1u;
+        break;
+    case GL_RG:
+    case GL_RG8:
+    case GL_RG8I:
+    case GL_RG8UI:
+    case GL_R16:
+    case GL_R16F:
+    case GL_R16I:
+    case GL_R16UI:
+        bpp = 2u;
+        break;
+    case GL_RGB:
+    case GL_RGB8:
+    case GL_RGB8I:
+    case GL_RGB8UI:
+    case GL_SRGB8:
+    case GL_R11F_G11F_B10F:
+    case GL_RGB9_E5:
+        bpp = 3u;
+        break;
+    case GL_RGBA:
+    case GL_RGBA8:
+    case GL_RGBA8I:
+    case GL_RGBA8UI:
+    case GL_RGB10_A2:
+    case GL_RGB10_A2UI:
+    case GL_SRGB8_ALPHA8:
+    case GL_RG16I:
+    case GL_RG16UI:
+    case GL_R32I:
+    case GL_R32UI:
+    case GL_R32F:
+        bpp = 4u;
+        break;
+    case GL_RGBA16:
+    case GL_RGBA16F:
+    case GL_RG32I:
+    case GL_RG32UI:
+    case GL_RG32F:
+    case GL_RGBA16I:
+    case GL_RGBA16UI:
+        bpp = 8u;
+        break;
+    case GL_RGB16:
+    case GL_RGB16F:
+        bpp = 6u;
+        break;
+    case GL_RGB32F:
+    case GL_RGB32I:
+    case GL_RGB32UI:
+        bpp = 12u;
+        break;
+    case GL_RGBA32F:
+    case GL_RGBA32I:
+    case GL_RGBA32UI:
+        bpp = 16u;
+        break;
+    default:
+        ok = 0;
+        bpp = 4u;
+        break;
+    }
+    if (known) {
+        *known = ok;
+    }
+    return bpp;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

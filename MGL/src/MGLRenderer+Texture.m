@@ -6347,76 +6347,13 @@ static void mglTextureCopyTextureToBuffer(
 // Helper function to calculate bytes per pixel for different OpenGL formats
 - (NSUInteger)bytesPerPixelForFormat:(GLenum)internalformat
 {
-    switch(internalformat) {
-        case GL_RED:
-        case GL_R8:
-        case GL_R8I:
-        case GL_R8UI:
-            return 1;
-
-        case GL_RG:
-        case GL_RG8:
-        case GL_RG8I:
-        case GL_RG8UI:
-        case GL_R16:
-        case GL_R16F:
-        case GL_R16I:
-        case GL_R16UI:
-            return 2;
-
-        case GL_RGB:
-        case GL_RGB8:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-        case GL_SRGB8:
-        case GL_R11F_G11F_B10F:
-        case GL_RGB9_E5:
-            return 3;
-
-        case GL_RGBA:
-        case GL_RGBA8:
-        case GL_RGBA8I:
-        case GL_RGBA8UI:
-        case GL_RGB10_A2:
-        case GL_RGB10_A2UI:
-        case GL_SRGB8_ALPHA8:
-        case GL_RG16I:
-        case GL_RG16UI:
-        case GL_R32I:
-        case GL_R32UI:
-        case GL_R32F:
-            return 4;
-
-        case GL_RGBA16:
-        case GL_RGBA16F:
-        case GL_RG32I:
-        case GL_RG32UI:
-        case GL_RG32F:
-            return 8;
-
-        case GL_RGB16:
-        case GL_RGB16F:
-            return 6;
-
-        case GL_RGBA16I:
-        case GL_RGBA16UI:
-            return 8;
-
-        case GL_RGB32F:
-        case GL_RGB32I:
-        case GL_RGB32UI:
-            return 12;
-
-        case GL_RGBA32F:
-        case GL_RGBA32I:
-        case GL_RGBA32UI:
-            return 16;
-
-        default:
-            // Default to 4 bytes for unknown formats
-            NSLog(@"MGL WARNING: Unknown internal format 0x%x, defaulting to 4 bytes per pixel", internalformat);
-            return 4;
+    int known = 1;
+    uint32_t bpp = mglRenderBytesPerPixelForInternalFormat(
+        (uint32_t)internalformat, &known);
+    if (!known) {
+        NSLog(@"MGL WARNING: Unknown internal format 0x%x, defaulting to 4 bytes per pixel", internalformat);
     }
+    return (NSUInteger)bpp;
 }
 
 - (id) createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target
