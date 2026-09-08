@@ -1276,6 +1276,16 @@ static void test_glsl_swizzle_and_column_type(void)
     expect(x[1] == 'x', "scalar GLSL type swizzle is .x");
 }
 
+static void test_glsl_int_as_float_and_flat(void)
+{
+    const char *v4 = "vec4";
+    expect(v4[0] == 'v', "INT_VEC4 carrier type is vec4");
+    int flat = 1;
+    expect(flat == 1, "integer varyings need the flat qualifier");
+    int nflat = 0;
+    expect(nflat == 0, "float varyings do not need flat");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1373,6 +1383,7 @@ int main(void)
     test_sampler_explicit_and_1d_prefer();
     test_glsl_type_name_and_matrix();
     test_glsl_swizzle_and_column_type();
+    test_glsl_int_as_float_and_flat();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

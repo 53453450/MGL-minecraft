@@ -757,17 +757,7 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
 
 static const char *mglGeometryPassthroughFloatType(GLenum type)
 {
-    switch (type) {
-        case GL_INT:
-        case GL_UNSIGNED_INT: return "float";
-        case GL_INT_VEC2:
-        case GL_UNSIGNED_INT_VEC2: return "vec2";
-        case GL_INT_VEC3:
-        case GL_UNSIGNED_INT_VEC3: return "vec3";
-        case GL_INT_VEC4:
-        case GL_UNSIGNED_INT_VEC4: return "vec4";
-        default: return NULL;
-    }
+    return mglRenderGLSLIntegerAsFloatType((uint32_t)type);
 }
 
 /* Integer varyings are stored as SIToFP/UIToFP float carriers in the
@@ -777,19 +767,7 @@ static const char *mglGeometryPassthroughFloatType(GLenum type)
  * `flat` qualifier on integer varyings. */
 static bool mglGeometryPassthroughNeedsFlat(GLenum type)
 {
-    switch (type) {
-        case GL_INT:
-        case GL_INT_VEC2:
-        case GL_INT_VEC3:
-        case GL_INT_VEC4:
-        case GL_UNSIGNED_INT:
-        case GL_UNSIGNED_INT_VEC2:
-        case GL_UNSIGNED_INT_VEC3:
-        case GL_UNSIGNED_INT_VEC4:
-            return true;
-        default:
-            return false;
-    }
+    return mglRenderGLSLNeedsFlat((uint32_t)type) != 0;
 }
 
 /* MSAA array textures are represented by a 2D array whose physical slices

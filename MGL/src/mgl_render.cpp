@@ -9254,6 +9254,41 @@ const char *mglRenderGLSLTypeSwizzle(uint32_t type) {
     }
 }
 
+const char *mglRenderGLSLIntegerAsFloatType(uint32_t type) {
+    switch (type) {
+    case GL_INT:
+    case GL_UNSIGNED_INT:
+        return "float";
+    case GL_INT_VEC2:
+    case GL_UNSIGNED_INT_VEC2:
+        return "vec2";
+    case GL_INT_VEC3:
+    case GL_UNSIGNED_INT_VEC3:
+        return "vec3";
+    case GL_INT_VEC4:
+    case GL_UNSIGNED_INT_VEC4:
+        return "vec4";
+    default:
+        return NULL;
+    }
+}
+
+int mglRenderGLSLNeedsFlat(uint32_t type) {
+    switch (type) {
+    case GL_INT:
+    case GL_INT_VEC2:
+    case GL_INT_VEC3:
+    case GL_INT_VEC4:
+    case GL_UNSIGNED_INT:
+    case GL_UNSIGNED_INT_VEC2:
+    case GL_UNSIGNED_INT_VEC3:
+    case GL_UNSIGNED_INT_VEC4:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -1402,6 +1402,8 @@ uint32_t mglRenderGLSLMatrixRows(uint32_t type);
 const char *mglRenderGLSLColumnSwizzle(uint32_t rows);
 const char *mglRenderGLSLColumnType(uint32_t rows);
 const char *mglRenderGLSLTypeSwizzle(uint32_t type);
+const char *mglRenderGLSLIntegerAsFloatType(uint32_t type);
+int mglRenderGLSLNeedsFlat(uint32_t type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
