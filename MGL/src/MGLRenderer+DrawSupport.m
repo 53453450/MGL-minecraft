@@ -2498,7 +2498,8 @@ after_gs_draws:
     uint32_t triangleFillMode = decision.triangle_fill_mode ? 1u : 0u;
     if (decision.needs_polygon_mode_repair) {
         mglLogRenderStateRepair("polygon_mode", MGL_STATE(ctx)->var.polygon_mode, GL_FILL);
-        MGL_STATE(ctx)->var.polygon_mode = GL_FILL;
+        MGL_STATE(ctx)->var.polygon_mode = (GLenum)mglRenderPolygonModeOrFill(
+            (uint32_t)MGL_STATE(ctx)->var.polygon_mode);
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
     }
     [self setTriangleFillModeIfNeeded:triangleFillMode];
@@ -2524,9 +2525,10 @@ after_gs_draws:
 - (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode
 {
     return ctx &&
-           MGL_STATE(ctx)->caps.cull_face &&
-           MGL_STATE(ctx)->var.cull_face_mode == GL_FRONT_AND_BACK &&
-           mglDrawModeProducesPolygons(mode);
+           mglRenderDrawModeFullyCulled(
+               MGL_STATE(ctx)->caps.cull_face ? 1 : 0,
+               (uint32_t)MGL_STATE(ctx)->var.cull_face_mode,
+               mglDrawModeProducesPolygons(mode) ? 1 : 0) != 0;
 }
 
 - (BOOL)ensureRasterEncoderForDraw

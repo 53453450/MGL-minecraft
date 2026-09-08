@@ -8792,6 +8792,13 @@ uint32_t mglRenderCompareFuncOrFallback(uint32_t func, int valid,
 uint32_t mglRenderDepthWriteEnabled(int writemask, int suppress) {
     return (!suppress && writemask) ? 1u : 0u;
 }
+
+int mglRenderDrawModeFullyCulled(int cull_face, uint32_t cull_face_mode,
+                                 int produces_polygons) {
+    return cull_face && cull_face_mode == GL_FRONT_AND_BACK && produces_polygons
+               ? 1
+               : 0;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

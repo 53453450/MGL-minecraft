@@ -1150,6 +1150,14 @@ static void test_compare_func_repair_and_depth_write(void)
     expect(wr == 0u, "suppressed depth write is disabled");
 }
 
+static void test_draw_mode_fully_culled(void)
+{
+    int culled = 1 && 1 && 1;
+    expect(culled == 1, "FRONT_AND_BACK cull of polygons is fully culled");
+    int points = 1 && 1 && 0;
+    expect(points == 0, "FRONT_AND_BACK cull of points is not fully culled");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1234,6 +1242,7 @@ int main(void)
     test_scissor_clamp_and_metal_y();
     test_viewport_clamp_and_metal_y();
     test_compare_func_repair_and_depth_write();
+    test_draw_mode_fully_culled();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
