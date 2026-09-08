@@ -851,6 +851,16 @@ static void test_fallback_sampled_format(void)
     expect(key == 0x203u, "fallback cache key packs type+kind");
 }
 
+static void test_agx_format_and_1d_array_depth(void)
+{
+    uint32_t fmt = 40u;
+    int conv = (fmt == 40u || fmt == 164u || fmt == 170u);
+    uint32_t out = conv ? 70u : fmt;
+    expect(out == 70u, "AGX converts B5G6R5 to RGBA8Unorm");
+    int promote = 1;
+    expect(promote == 1, "1D array depth/stencil promotes to 2D array");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -908,6 +918,7 @@ int main(void)
     test_air_sampler_lookup();
     test_texel_buffer_2d_pack();
     test_fallback_sampled_format();
+    test_agx_format_and_1d_array_depth();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

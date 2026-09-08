@@ -5368,58 +5368,18 @@ static void mglTextureCopyTextureToBuffer(
     // Validate format compatibility with AGX, but preserve original intent
     BOOL needsFormatConversion = NO;
     uint32_t originalFormat = pixelFormat;
-
-    // Check for AGX-incompatible formats and only convert when necessary
-    switch(pixelFormat) {
-        case MGLPixelFormatB5G6R5Unorm:
-        case MGLPixelFormatBGR5A1Unorm:
-        case MGLPixelFormatA1BGR5Unorm:
-            // 16-bit formats can cause issues on AGX
-            needsFormatConversion = YES;
-            pixelFormat = MGLPixelFormatRGBA8Unorm;
-            break;
-        case MGLPixelFormatPVRTC_RGBA_2BPP:
-        case MGLPixelFormatPVRTC_RGBA_4BPP:
-        case MGLPixelFormatPVRTC_RGB_2BPP:
-        case MGLPixelFormatPVRTC_RGB_4BPP:
-            // PVRTC compression can cause issues in virtualization
-            needsFormatConversion = YES;
-            pixelFormat = MGLPixelFormatRGBA8Unorm;
-            break;
-        case MGLPixelFormatEAC_R11Unorm:
-        case MGLPixelFormatEAC_RG11Unorm:
-        case MGLPixelFormatEAC_RGBA8:
-        case MGLPixelFormatETC2_RGB8:
-        case MGLPixelFormatETC2_RGB8A1:
-            // ETC/ETC2 compression can cause issues on AGX
-            needsFormatConversion = YES;
-            pixelFormat = MGLPixelFormatRGBA8Unorm;
-            break;
-        default:
-            // Most modern formats should work fine
-            break;
-    }
+    int agxConverted = 0;
+    pixelFormat = mglRenderAGXCompatiblePixelFormat(pixelFormat, &agxConverted);
+    needsFormatConversion = agxConverted != 0;
 
     /* Metal does not allow depth/stencil pixel formats with MGLTextureType1DArray.
      * Promote to MGLTextureType2DArray with height=1, mirroring how mipmapped
      * 1D array textures are already promoted below.  Without this, creating a
      * GL_TEXTURE_1D_ARRAY depth texture (e.g. sampler_1d_array_shadow) triggers
      * a Metal validation assertion crash. */
-    if (tex_type == MGLTextureType1DArray) {
-        switch (pixelFormat) {
-            case MGLPixelFormatDepth16Unorm:
-            case MGLPixelFormatDepth32Float:
-            case MGLPixelFormatStencil8:
-            case MGLPixelFormatDepth24Unorm_Stencil8:
-            case MGLPixelFormatDepth32Float_Stencil8:
-            case MGLPixelFormatX32_Stencil8:
-            case MGLPixelFormatX24_Stencil8:
-                tex_type = MGLTextureType2DArray;
-                texture1DArrayBackedBy2DArray = true;
-                break;
-            default:
-                break;
-        }
+    if (mglRenderPromote1DArrayDepthStencil(tex_type, pixelFormat)) {
+        tex_type = MGLTextureType2DArray;
+        texture1DArrayBackedBy2DArray = true;
     }
 
     width = tex->width;

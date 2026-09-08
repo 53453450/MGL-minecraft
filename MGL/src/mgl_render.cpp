@@ -7997,6 +7997,51 @@ uint32_t mglRenderFallbackSampledPixelFormat(uint32_t data_kind) {
 uint64_t mglRenderFallbackSampledCacheKey(uint32_t texture_type, uint32_t data_kind) {
     return ((uint64_t)texture_type << 8u) | (uint64_t)data_kind;
 }
+
+uint32_t mglRenderAGXCompatiblePixelFormat(uint32_t pixel_format, int *converted) {
+    int conv = 0;
+    switch (pixel_format) {
+    case 40u: /* B5G6R5Unorm */
+    case 41u: /* A1BGR5Unorm */
+    case 43u: /* BGR5A1Unorm */
+    case 160u: /* PVRTC_RGB_2BPP */
+    case 162u: /* PVRTC_RGB_4BPP */
+    case 164u: /* PVRTC_RGBA_2BPP */
+    case 166u: /* PVRTC_RGBA_4BPP */
+    case 170u: /* EAC_R11Unorm */
+    case 174u: /* EAC_RG11Unorm */
+    case 178u: /* EAC_RGBA8 */
+    case 180u: /* ETC2_RGB8 */
+    case 182u: /* ETC2_RGB8A1 */
+        conv = 1;
+        pixel_format = 70u; /* RGBA8Unorm */
+        break;
+    default:
+        break;
+    }
+    if (converted) {
+        *converted = conv;
+    }
+    return pixel_format;
+}
+
+int mglRenderPromote1DArrayDepthStencil(uint32_t tex_type, uint32_t pixel_format) {
+    if (tex_type != MGLTextureType1DArray) {
+        return 0;
+    }
+    switch (pixel_format) {
+    case 250u: /* Depth16Unorm */
+    case 252u: /* Depth32Float */
+    case 253u: /* Stencil8 */
+    case 255u: /* Depth24Unorm_Stencil8 */
+    case 260u: /* Depth32Float_Stencil8 */
+    case 261u: /* X32_Stencil8 */
+    case 262u: /* X24_Stencil8 */
+        return 1;
+    default:
+        return 0;
+    }
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }
