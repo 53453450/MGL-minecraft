@@ -934,6 +934,8 @@ static void test_shader_resource_image_unit(void)
     expect(unit == 4u, "image unit is sampler_unit + element");
     int in_range = (2u < 32u) && (4u < 32u);
     expect(in_range == 1, "metal slot and GL unit are in TEXTURE_UNITS");
+    uint32_t slot = 1 ? 5u + 2u : 9u;
+    expect(slot == 7u, "resource metal slot is binding+element");
 }
 
 int main(void)

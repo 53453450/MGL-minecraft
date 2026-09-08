@@ -8225,6 +8225,11 @@ uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
     return base + element;
 }
 
+uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
+                                    uint32_t element, uint32_t fallback) {
+    return has_resource ? binding + element : fallback;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

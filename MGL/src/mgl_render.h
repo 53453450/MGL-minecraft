@@ -1286,6 +1286,8 @@ uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
                                         uint32_t explicit_unit,
                                         int32_t sampler_unit,
                                         uint32_t gl_binding, uint32_t element);
+uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
+                                    uint32_t element, uint32_t fallback);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

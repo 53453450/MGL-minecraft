@@ -4248,22 +4248,29 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                               resource)) {
             continue;
         }
-        GLuint metalSlot = resource
-            ? resource->binding + element
-            : (GLuint)mglRendererGetProgramBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = mglRenderResourceMetalSlot(
+            resource ? 1 : 0, resource ? resource->binding : 0u, element,
+            (GLuint)mglRendererGetProgramBinding(ctx, vertexStage,
+                                                 _STORAGE_IMAGE_RES, (int)i));
         GLuint glUnit;
-        if (vertexProgram && metalSlot < TEXTURE_UNITS &&
-            vertexProgram->sampler_units_explicit_by_stage[vertexStage][metalSlot]) {
-            glUnit = (GLuint)vertexProgram->sampler_units_by_stage[vertexStage][metalSlot];
-        } else if (resource) {
-            GLuint base = resource->sampler_unit >= 0
-                ? (GLuint)resource->sampler_unit : resource->gl_binding;
-            glUnit = base + element;
+        const int explicitUnit =
+            vertexProgram && metalSlot < TEXTURE_UNITS &&
+            vertexProgram->sampler_units_explicit_by_stage[vertexStage]
+                                                         [metalSlot];
+        if (explicitUnit || resource) {
+            glUnit = mglRenderImageUnitFromResource(
+                explicitUnit,
+                explicitUnit
+                    ? (uint32_t)vertexProgram
+                          ->sampler_units_by_stage[vertexStage][metalSlot]
+                    : 0u,
+                resource ? resource->sampler_unit : -1,
+                resource ? resource->gl_binding : 0u, element);
         } else {
             glUnit = (GLuint)mglRendererGetProgramGLBinding(
                 ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
         }
-        if (glUnit >= TEXTURE_UNITS) {
+        if (!mglRenderImageUnitsInRange(0u, glUnit, TEXTURE_UNITS)) {
             continue;
         }
         Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
@@ -4300,9 +4307,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                               resource)) {
             continue;
         }
-        GLuint metalSlot = resource
-            ? resource->binding + element
-            : (GLuint)mglRendererGetProgramBinding(ctx, vertexStage, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = mglRenderResourceMetalSlot(
+            resource ? 1 : 0, resource ? resource->binding : 0u, element,
+            (GLuint)mglRendererGetProgramBinding(ctx, vertexStage,
+                                                 _STORAGE_IMAGE_RES, (int)i));
         GLuint glUnit;
         const int explicitUnit =
             vertexProgram && metalSlot < TEXTURE_UNITS &&
@@ -4370,24 +4378,29 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
 
-        GLuint metalSlot = resource
-            ? resource->binding + element
-            : (GLuint)mglRendererGetProgramBinding(
-                  ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = mglRenderResourceMetalSlot(
+            resource ? 1 : 0, resource ? resource->binding : 0u, element,
+            (GLuint)mglRendererGetProgramBinding(
+                ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i));
         GLuint glUnit;
-        if (fragmentProgram && metalSlot < TEXTURE_UNITS &&
-            fragmentProgram->sampler_units_explicit_by_stage[_FRAGMENT_SHADER][metalSlot]) {
-            glUnit = (GLuint)fragmentProgram
-                         ->sampler_units_by_stage[_FRAGMENT_SHADER][metalSlot];
-        } else if (resource) {
-            GLuint base = resource->sampler_unit >= 0
-                ? (GLuint)resource->sampler_unit : resource->gl_binding;
-            glUnit = base + element;
+        const int explicitUnit =
+            fragmentProgram && metalSlot < TEXTURE_UNITS &&
+            fragmentProgram->sampler_units_explicit_by_stage[_FRAGMENT_SHADER]
+                                                           [metalSlot];
+        if (explicitUnit || resource) {
+            glUnit = mglRenderImageUnitFromResource(
+                explicitUnit,
+                explicitUnit
+                    ? (uint32_t)fragmentProgram
+                          ->sampler_units_by_stage[_FRAGMENT_SHADER][metalSlot]
+                    : 0u,
+                resource ? resource->sampler_unit : -1,
+                resource ? resource->gl_binding : 0u, element);
         } else {
             glUnit = (GLuint)mglRendererGetProgramGLBinding(
                 ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
         }
-        if (glUnit >= TEXTURE_UNITS) {
+        if (!mglRenderImageUnitsInRange(0u, glUnit, TEXTURE_UNITS)) {
             continue;
         }
 
@@ -4429,24 +4442,29 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
 
-        GLuint metalSlot = resource
-            ? resource->binding + element
-            : (GLuint)mglRendererGetProgramBinding(
-                  ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
+        GLuint metalSlot = mglRenderResourceMetalSlot(
+            resource ? 1 : 0, resource ? resource->binding : 0u, element,
+            (GLuint)mglRendererGetProgramBinding(
+                ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i));
         GLuint glUnit;
-        if (fragmentProgram && metalSlot < TEXTURE_UNITS &&
-            fragmentProgram->sampler_units_explicit_by_stage[_FRAGMENT_SHADER][metalSlot]) {
-            glUnit = (GLuint)fragmentProgram
-                         ->sampler_units_by_stage[_FRAGMENT_SHADER][metalSlot];
-        } else if (resource) {
-            GLuint base = resource->sampler_unit >= 0
-                ? (GLuint)resource->sampler_unit : resource->gl_binding;
-            glUnit = base + element;
+        const int explicitUnit =
+            fragmentProgram && metalSlot < TEXTURE_UNITS &&
+            fragmentProgram->sampler_units_explicit_by_stage[_FRAGMENT_SHADER]
+                                                           [metalSlot];
+        if (explicitUnit || resource) {
+            glUnit = mglRenderImageUnitFromResource(
+                explicitUnit,
+                explicitUnit
+                    ? (uint32_t)fragmentProgram
+                          ->sampler_units_by_stage[_FRAGMENT_SHADER][metalSlot]
+                    : 0u,
+                resource ? resource->sampler_unit : -1,
+                resource ? resource->gl_binding : 0u, element);
         } else {
             glUnit = (GLuint)mglRendererGetProgramGLBinding(
                 ctx, _FRAGMENT_SHADER, _STORAGE_IMAGE_RES, (int)i);
         }
-        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
+        if (!mglRenderImageUnitsInRange(metalSlot, glUnit, TEXTURE_UNITS)) {
             continue;
         }
 
