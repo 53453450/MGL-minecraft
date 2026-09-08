@@ -13,6 +13,7 @@
  */
 
 #include "mgl_batch_replay.h"
+#include "mgl_batch_issue.h"
 
 #include "mgl_render.h"
 #include "mgl_types_texture.h"
@@ -760,5 +761,108 @@ extern "C" int mgl_batch_replay_cmd_is_elements_draw(uint32_t cmd_type)
         return 1;
     default:
         return 0;
+    }
+}
+
+extern "C" int mgl_batch_replay_mtl_ptr_ok(const void *mtl_data)
+{
+    return mtl_data != NULL && (uintptr_t)mtl_data >= 0x10000u;
+}
+
+extern "C" int mgl_batch_replay_dyn_vertex_slot_ok(int resolved_slot,
+                                                  int max_slots)
+{
+    return resolved_slot >= 0 && resolved_slot < max_slots;
+}
+
+extern "C" int mgl_batch_replay_sampled_tex_object_ok(int has_texture,
+                                                     int has_mtl, int dirty,
+                                                     int is_render_target)
+{
+    return has_texture && has_mtl && !dirty && !is_render_target;
+}
+
+extern "C" int mgl_batch_replay_sampled_tex_info_ok(int has_texture_info_ok,
+                                                    uint32_t texture_type,
+                                                    uint32_t expected_type,
+                                                    int pixel_format_compatible)
+{
+    if (!has_texture_info_ok) {
+        return 0;
+    }
+    if (expected_type != 0u && texture_type != expected_type) {
+        return 0;
+    }
+    return pixel_format_compatible ? 1 : 0;
+}
+
+extern "C" void mgl_batch_flush_accum_cmd_frame_stats(
+    const MGLDrawBatch *batch, MGLBatchCmdFrameStats *out)
+{
+    if (!out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!batch) {
+        return;
+    }
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        const MGLDrawCommand *cmd = &batch->commands[i];
+        MGLBatchCmdStatDelta d;
+        const int uses_el = mgl_batch_replay_cmd_is_elements_draw((uint32_t)cmd->type);
+        /* cmd_stat_delta lives in mgl_batch_issue — declare via header. */
+        mgl_batch_issue_cmd_stat_delta((uint32_t)cmd->type, cmd->count, uses_el,
+                                       &d);
+        out->array_draws += d.array_draws;
+        out->array_vertices += d.array_vertices;
+        out->element_draws += d.element_draws;
+        out->element_indices += d.element_indices;
+    }
+}
+
+extern "C" void mgl_batch_issue_stream_merged(const MGLDrawBatch *batch,
+                                              int disable_mdi,
+                                              const MGLBatchStreamMergedOps *ops)
+{
+    if (!ops) {
+        return;
+    }
+    const int streamPath = mgl_batch_replay_stream_path(batch, disable_mdi);
+    if (streamPath == MGL_BATCH_STREAM_EMPTY) {
+        if (ops->trace_cmd0) {
+            ops->trace_cmd0(ops->ctx, "SKIP",
+                            mgl_batch_replay_stream_path_reason(streamPath));
+        }
+        return;
+    }
+    if (streamPath == MGL_BATCH_STREAM_BAD_PRIM) {
+        if (ops->trace_cmd0) {
+            ops->trace_cmd0(ops->ctx, "FALLBACK",
+                            mgl_batch_replay_stream_path_reason(streamPath));
+        }
+        if (ops->issue_direct) {
+            ops->issue_direct(ops->ctx);
+        }
+        return;
+    }
+    if (streamPath == MGL_BATCH_STREAM_TRY_MDI) {
+        if (ops->trace_cmd0) {
+            ops->trace_cmd0(ops->ctx, "ISSUE",
+                            mgl_batch_replay_stream_path_reason(streamPath));
+        }
+        if (ops->try_stream_mdi && ops->try_stream_mdi(ops->ctx)) {
+            return;
+        }
+    }
+    void *mtl_index = NULL;
+    if (!ops->resolve_stream_index ||
+        !ops->resolve_stream_index(ops->ctx, &mtl_index) || !mtl_index) {
+        if (ops->issue_direct) {
+            ops->issue_direct(ops->ctx);
+        }
+        return;
+    }
+    if (ops->draw_stream_indexed) {
+        ops->draw_stream_indexed(ops->ctx, mtl_index);
     }
 }

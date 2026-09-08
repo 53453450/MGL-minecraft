@@ -267,3 +267,16 @@ void mgl_batch_issue_cmd_stat_delta(uint32_t cmd_type, int32_t count,
         out->element_indices = n;
     }
 }
+
+int mgl_batch_flush_scheduled_path_perf_kind(int path)
+{
+    switch (path) {
+    case MGL_BATCH_SELECT_STREAM_MERGE:
+        return MGL_BATCH_FLUSH_PERF_STREAM;
+    case MGL_BATCH_SELECT_MDI:
+    case MGL_BATCH_SELECT_ICB:
+        return MGL_BATCH_FLUSH_PERF_NONE;
+    default:
+        return MGL_BATCH_FLUSH_PERF_DIRECT;
+    }
+}

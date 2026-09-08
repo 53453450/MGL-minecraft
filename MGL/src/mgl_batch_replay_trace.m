@@ -9,14 +9,13 @@
  */
 
 /*
- * A3: Batch replay diagnostic traces split out of MGLRenderer+Batch.m so the
- * Batch cluster metric tracks encode/orchestration thickness, not diag dump
- * volume. Same (Batch) category; no new thick category.
+ * A3: Batch replay diagnostic traces (cluster metric). Same (Batch) category.
  */
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #include "mgl_render.h"
+#include "mgl_batch_rt_mark.h"
 
 static void *mglBatchEncoderTraceToken(void *owner)
 {
@@ -32,6 +31,21 @@ static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
     return info;
 }
 
+static void mglBatchFsFlags(MGLFragmentTextureTraceBinding *b0,
+                            MGLFragmentTextureTraceBinding *b1,
+                            MGLFragmentTextureTraceBinding *b2,
+                            MGLFragmentTextureTraceBinding *b3,
+                            int *has_rt, int *used_copy)
+{
+    const MGLBatchTraceFsSlot slots[4] = {
+        {b0->rt_write_version, b0->used_sampled_copy ? 1u : 0u},
+        {b1->rt_write_version, b1->used_sampled_copy ? 1u : 0u},
+        {b2->rt_write_version, b2->used_sampled_copy ? 1u : 0u},
+        {b3->rt_write_version, b3->used_sampled_copy ? 1u : 0u},
+    };
+    mgl_batch_trace_fs_slot_flags(slots, 4, has_rt, used_copy);
+}
+
 @implementation MGLRenderer (Batch)
 
 - (void)traceReplayBatch:(MGLDrawBatch *)batch
@@ -44,29 +58,17 @@ static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
         return;
     }
 
-    /* Pure diagnostics: with the trace log disabled every downstream sink is
-     * a no-op, so exit before the program resolve. */
     if (!mglTraceLogIsEnabled()) {
         return;
     }
 
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    MGLFragmentTextureTraceBinding *earlyFs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
-    MGLFragmentTextureTraceBinding *earlyFs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
-    MGLFragmentTextureTraceBinding *earlyFs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
-    MGLFragmentTextureTraceBinding *earlyFs3 = &_resourceFallback.fragmentTextureTraceBindings[3];
-    BOOL earlyFsSlotHasRT =
-        earlyFs0->rt_write_version != 0u ||
-        earlyFs1->rt_write_version != 0u ||
-        earlyFs2->rt_write_version != 0u ||
-        earlyFs3->rt_write_version != 0u;
-    BOOL earlyFsSlotUsedCopy =
-        earlyFs0->used_sampled_copy ||
-        earlyFs1->used_sampled_copy ||
-        earlyFs2->used_sampled_copy ||
-        earlyFs3->used_sampled_copy;
-    if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) &&
-        !earlyFsSlotHasRT &&
+    MGLFragmentTextureTraceBinding *earlyFs =
+        &_resourceFallback.fragmentTextureTraceBindings[0];
+    int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
+    mglBatchFsFlags(earlyFs, earlyFs + 1, earlyFs + 2, earlyFs + 3,
+                    &earlyFsSlotHasRT, &earlyFsSlotUsedCopy);
+    if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) && !earlyFsSlotHasRT &&
         !earlyFsSlotUsedCopy) {
         return;
     }
@@ -174,29 +176,19 @@ static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
         return;
     }
 
-    /* Pure diagnostics: with the trace log disabled every downstream sink is
-     * a no-op, so exit before any resolves or string formatting. */
     if (!mglTraceLogIsEnabled()) {
         return;
     }
 
-    MGLFragmentTextureTraceBinding *fs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
-    MGLFragmentTextureTraceBinding *fs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
-    MGLFragmentTextureTraceBinding *fs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
-    MGLFragmentTextureTraceBinding *fs3 = &_resourceFallback.fragmentTextureTraceBindings[3];
-    BOOL earlyFsSlotHasRT =
-        fs0->rt_write_version != 0u ||
-        fs1->rt_write_version != 0u ||
-        fs2->rt_write_version != 0u ||
-        fs3->rt_write_version != 0u;
-    BOOL earlyFsSlotUsedCopy =
-        fs0->used_sampled_copy ||
-        fs1->used_sampled_copy ||
-        fs2->used_sampled_copy ||
-        fs3->used_sampled_copy;
+    MGLFragmentTextureTraceBinding *fs0 =
+        &_resourceFallback.fragmentTextureTraceBindings[0];
+    MGLFragmentTextureTraceBinding *fs1 = fs0 + 1;
+    MGLFragmentTextureTraceBinding *fs2 = fs0 + 2;
+    MGLFragmentTextureTraceBinding *fs3 = fs0 + 3;
+    int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
+    mglBatchFsFlags(fs0, fs1, fs2, fs3, &earlyFsSlotHasRT, &earlyFsSlotUsedCopy);
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) &&
-        !earlyFsSlotHasRT &&
+    if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) && !earlyFsSlotHasRT &&
         !earlyFsSlotUsedCopy) {
         return;
     }
@@ -252,16 +244,8 @@ static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
                                 &dFull,
                                 &dSource);
     BOOL submitPhase = phase && strcmp(phase, "SUBMIT") == 0;
-    BOOL fsSlotHasRT =
-        fs0->rt_write_version != 0u ||
-        fs1->rt_write_version != 0u ||
-        fs2->rt_write_version != 0u ||
-        fs3->rt_write_version != 0u;
-    BOOL fsSlotUsedCopy =
-        fs0->used_sampled_copy ||
-        fs1->used_sampled_copy ||
-        fs2->used_sampled_copy ||
-        fs3->used_sampled_copy;
+    int fsSlotHasRT = 0, fsSlotUsedCopy = 0;
+    mglBatchFsFlags(fs0, fs1, fs2, fs3, &fsSlotHasRT, &fsSlotUsedCopy);
 
     mglTraceLog("REPLAY_CMD_%s flush=%llu batch=%u cmd=%u type=%s reason=%s "
                 "program=%u vs=%u fs=%u mode=0x%x count=%d first=%d indexType=0x%x indexOffset=%u "

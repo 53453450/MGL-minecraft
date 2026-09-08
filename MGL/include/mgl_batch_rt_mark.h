@@ -48,6 +48,16 @@ int mgl_batch_rt_should_cross_mark(int already_marked, int attachment_active);
 int mgl_batch_rt_should_diag_attachment0(uint32_t attachment_index,
                                          int trace_enabled, int can_use_copy);
 
+
+/* Trace early-exit: any of N FS slots has RT write or used sampled copy. */
+typedef struct MGLBatchTraceFsSlot {
+    uint32_t rt_write_version;
+    uint8_t used_sampled_copy;
+} MGLBatchTraceFsSlot;
+
+void mgl_batch_trace_fs_slot_flags(const MGLBatchTraceFsSlot *slots, uint32_t n,
+                                   int *has_rt_out, int *used_copy_out);
+
 #ifdef __cplusplus
 }
 #endif

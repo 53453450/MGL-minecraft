@@ -145,6 +145,18 @@ void mgl_batch_issue_cmd_stat_delta(uint32_t cmd_type, int32_t count,
                                     int uses_elements,
                                     MGLBatchCmdStatDelta *out);
 
+
+/* ---- A3 residual: flush path perf + cmd frame stats + stream driver ---- */
+
+enum {
+    MGL_BATCH_FLUSH_PERF_NONE = 0,
+    MGL_BATCH_FLUSH_PERF_STREAM = 1,
+    MGL_BATCH_FLUSH_PERF_DIRECT = 2
+};
+
+/* Which batch/draw PERF pair to bump after schedule (MDI/ICB: none). */
+int mgl_batch_flush_scheduled_path_perf_kind(int path);
+
 #ifdef __cplusplus
 }
 #endif

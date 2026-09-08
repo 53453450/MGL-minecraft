@@ -131,6 +131,24 @@ void mgl_batch_restore_default_domain_masks(MGLBatchDirtyDomainMasks *out);
 int mgl_batch_restore_can_delta(int dirty_key_delta_enabled, int prev_key_valid,
                                 int has_encoder, int bind_valid);
 
+
+/* ---- A3 residual: flush/restore orchestration plans ---- */
+
+int mgl_batch_restore_oracle_would_skip(int skip_enabled, int last_key_valid,
+                                        int last_execute_ok, int keys_equal);
+
+/* Combine delta bits | forced then FBO fold. */
+uint32_t mgl_batch_restore_finish_dirty(uint32_t delta_bits, uint32_t forced_bits,
+                                        uint32_t full_bits,
+                                        uint32_t dirty_fbo_mask,
+                                        const MGLBatchRestoreFboIn *fbo);
+
+/* Plan delta dirty from views (Linux-testable). */
+uint32_t mgl_batch_restore_plan_delta_dirty(
+    int can_delta, const MGLBatchStateKeyView *prev,
+    const MGLBatchStateKeyView *cur, uint32_t full_bits,
+    MGLBatchDirtyDeltaFlags *flags_out);
+
 #ifdef __cplusplus
 }
 #endif

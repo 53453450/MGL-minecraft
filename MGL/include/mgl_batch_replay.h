@@ -254,6 +254,47 @@ int mgl_batch_replay_dyn_vertex_offset_ok(int64_t binding_offset,
 int mgl_batch_replay_sampler_slot_ok(uint32_t metal_slot, uint32_t max_slots);
 int mgl_batch_replay_cmd_is_elements_draw(uint32_t cmd_type);
 
+
+/* ---- A3 residual: dyn-bind materialize gates ---- */
+
+int mgl_batch_replay_mtl_ptr_ok(const void *mtl_data);
+int mgl_batch_replay_dyn_vertex_slot_ok(int resolved_slot, int max_slots);
+
+/* Texture object ready for direct sampled bind (no Metal types). */
+int mgl_batch_replay_sampled_tex_object_ok(int has_texture, int has_mtl,
+                                           int dirty, int is_render_target);
+
+/* After GetTextureInfo: type/kind gates. expected_type==0 skips type check. */
+int mgl_batch_replay_sampled_tex_info_ok(int has_texture_info_ok,
+                                         uint32_t texture_type,
+                                         uint32_t expected_type,
+                                         int pixel_format_compatible);
+
+
+/* ---- A3 residual: flush cmd stats + stream-merged driver ---- */
+
+typedef struct MGLBatchCmdFrameStats {
+    uint32_t array_draws;
+    uint64_t array_vertices;
+    uint32_t element_draws;
+    uint64_t element_indices;
+} MGLBatchCmdFrameStats;
+
+void mgl_batch_flush_accum_cmd_frame_stats(const MGLDrawBatch *batch,
+                                           MGLBatchCmdFrameStats *out);
+
+typedef struct MGLBatchStreamMergedOps {
+    void *ctx;
+    void (*trace_cmd0)(void *ctx, const char *phase, const char *reason);
+    int (*try_stream_mdi)(void *ctx);
+    void (*issue_direct)(void *ctx);
+    int (*resolve_stream_index)(void *ctx, void **mtl_index_out);
+    void (*draw_stream_indexed)(void *ctx, void *mtl_index);
+} MGLBatchStreamMergedOps;
+
+void mgl_batch_issue_stream_merged(const MGLDrawBatch *batch, int disable_mdi,
+                                   const MGLBatchStreamMergedOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

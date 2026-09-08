@@ -48,3 +48,26 @@ int mgl_batch_rt_should_diag_attachment0(uint32_t attachment_index,
 {
     return attachment_index == 0u && trace_enabled && can_use_copy;
 }
+
+void mgl_batch_trace_fs_slot_flags(const MGLBatchTraceFsSlot *slots, uint32_t n,
+                                   int *has_rt_out, int *used_copy_out)
+{
+    int has_rt = 0;
+    int used_copy = 0;
+    if (slots) {
+        for (uint32_t i = 0; i < n; i++) {
+            if (slots[i].rt_write_version != 0u) {
+                has_rt = 1;
+            }
+            if (slots[i].used_sampled_copy) {
+                used_copy = 1;
+            }
+        }
+    }
+    if (has_rt_out) {
+        *has_rt_out = has_rt;
+    }
+    if (used_copy_out) {
+        *used_copy_out = used_copy;
+    }
+}

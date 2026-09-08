@@ -174,6 +174,23 @@ int main(void)
     test_direct_arrays_and_dyn();
     test_stream_index_and_sampler();
     test_encode_fold();
+
+    expect(mgl_batch_flush_scheduled_path_perf_kind(2) ==
+               MGL_BATCH_FLUSH_PERF_STREAM,
+           "stream perf kind");
+    expect(mgl_batch_flush_scheduled_path_perf_kind(0) ==
+               MGL_BATCH_FLUSH_PERF_DIRECT,
+           "direct perf kind");
+    expect(mgl_batch_flush_scheduled_path_perf_kind(1) ==
+               MGL_BATCH_FLUSH_PERF_NONE,
+           "mdi perf kind none");
+    {
+        MGLBatchTraceFsSlot slots[4] = {{1u, 0u}, {0u, 0u}, {0u, 0u}, {0u, 1u}};
+        int has_rt = 0, used_copy = 0;
+        mgl_batch_trace_fs_slot_flags(slots, 4, &has_rt, &used_copy);
+        expect(has_rt == 1 && used_copy == 1, "fs slot flags");
+    }
+
     if (g_fails) {
         fprintf(stderr, "test_batch_issue: %d fail(s)\n", g_fails);
         return 1;

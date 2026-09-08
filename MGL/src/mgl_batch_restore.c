@@ -187,3 +187,29 @@ int mgl_batch_restore_can_delta(int dirty_key_delta_enabled, int prev_key_valid,
     return dirty_key_delta_enabled && prev_key_valid && has_encoder &&
            bind_valid;
 }
+
+int mgl_batch_restore_oracle_would_skip(int skip_enabled, int last_key_valid,
+                                        int last_execute_ok, int keys_equal)
+{
+    return !skip_enabled && last_key_valid && last_execute_ok && keys_equal;
+}
+
+uint32_t mgl_batch_restore_finish_dirty(uint32_t delta_bits, uint32_t forced_bits,
+                                        uint32_t full_bits,
+                                        uint32_t dirty_fbo_mask,
+                                        const MGLBatchRestoreFboIn *fbo)
+{
+    return mgl_batch_restore_fold_fbo_dirty(delta_bits | forced_bits, full_bits,
+                                            dirty_fbo_mask, fbo);
+}
+
+uint32_t mgl_batch_restore_plan_delta_dirty(
+    int can_delta, const MGLBatchStateKeyView *prev,
+    const MGLBatchStateKeyView *cur, uint32_t full_bits,
+    MGLBatchDirtyDeltaFlags *flags_out)
+{
+    MGLBatchDirtyDomainMasks masks;
+    mgl_batch_restore_default_domain_masks(&masks);
+    return mgl_batch_compute_key_delta_dirty_bits(can_delta, prev, cur,
+                                                  full_bits, &masks, flags_out);
+}

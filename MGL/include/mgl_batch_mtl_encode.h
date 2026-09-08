@@ -1,11 +1,13 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  *
- * A3 encode-fold: C++ MTL draw / ICB ports. ObjC calls these as one-liners.
+ * A3 encode-fold: C++ MTL draw / ICB / dyn-bind ports. ObjC one-liners.
  * Not mgl_render.cpp / mgl_draw_metal_port.m / mgl_batch_replay_trace.m.
  */
 #ifndef MGL_BATCH_MTL_ENCODE_H
 #define MGL_BATCH_MTL_ENCODE_H
+
+#include "mgl_batch_restore.h"
 
 #include <stdint.h>
 
@@ -71,6 +73,50 @@ void mgl_batch_mtl_issue_stream_mdi_draws(
     void *index_buffer, const uint32_t *index_buffer_offsets,
     void *indirect_buffer, uint64_t args_base_offset, uint64_t arg_size,
     uint32_t command_count, const MGLBatchMtlCmdTraceOps *trace);
+
+/* ---- A3 residual: dyn-bind set*Buffer / resource ports ---- */
+
+enum { MGL_BATCH_MTL_BUFFER_BIND_MAX = 64 };
+
+typedef struct MGLBatchBufferBindReq {
+    void *mtl_buffer;
+    void *gl_buffer; /* optional; mglNoteBufferEncoded when encoded */
+    uint64_t offset;
+    uint32_t metal_slot;
+    uint8_t is_vertex_stage; /* 1 = VS, 0 = FS */
+} MGLBatchBufferBindReq;
+
+/* Dedup via binding_state, update owner, encode snapshot, bump set*Buffer
+ * perf counters, note encoded GL buffers. Returns 0 on success. */
+int mgl_batch_mtl_encode_buffer_binds(void *binding_state_owner,
+                                      void *render_encoder_owner,
+                                      const MGLBatchBufferBindReq *reqs,
+                                      uint32_t count);
+
+enum { MGL_BATCH_MTL_RESOURCE_BIND_MAX = 64 };
+
+typedef struct MGLBatchResourceBindReq {
+    void *resource; /* MTLTexture* or MTLSamplerState* */
+    uint32_t metal_slot;
+    uint32_t binding_stage; /* MGL_RENDER_BINDING_STAGE_* */
+    uint32_t kind;          /* MGL_RENDER_RESOURCE_BINDING_* */
+} MGLBatchResourceBindReq;
+
+/* Collect + encode resource binding snapshot. Returns 1 on success. */
+int mgl_batch_mtl_encode_resource_binds(void *binding_state_owner,
+                                        void *render_encoder_owner,
+                                        const MGLBatchResourceBindReq *reqs,
+                                        uint32_t count);
+
+/* Dirty-key delta from MGLStateKey* (renderer). */
+uint32_t mgl_batch_mtl_restore_plan_delta_dirty(int can_delta,
+                                                const void *prev_key,
+                                                const void *cur_key,
+                                                uint32_t full_bits,
+                                                MGLBatchDirtyDeltaFlags *flags_out);
+
+void mgl_batch_mtl_restore_note_delta_perf(const MGLBatchDirtyDeltaFlags *flags);
+void mgl_batch_mtl_restore_note_skip_fail_perf(int skip_dec);
 
 #ifdef __cplusplus
 }

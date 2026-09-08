@@ -160,12 +160,34 @@ static void test_restore_encode_fold(void)
     expect(mgl_batch_restore_can_delta(0, 1, 1, 1) == 0, "disabled");
 }
 
+static void test_restore_residual(void)
+{
+    expect(mgl_batch_restore_oracle_would_skip(0, 1, 1, 1) == 1, "oracle on");
+    expect(mgl_batch_restore_oracle_would_skip(1, 1, 1, 1) == 0, "oracle off when skip on");
+    expect(mgl_batch_restore_oracle_would_skip(0, 0, 1, 1) == 0, "oracle needs last key");
+    MGLBatchStateKeyView a, b;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    b.program_name = 1u;
+    MGLBatchDirtyDeltaFlags flags;
+    uint32_t bits = mgl_batch_restore_plan_delta_dirty(1, &a, &b, 0xFu, &flags);
+    expect(bits != 0u && flags.domain_program == 1u, "plan delta dirty");
+    MGLBatchRestoreFboIn fbo;
+    memset(&fbo, 0, sizeof(fbo));
+    fbo.has_encoder = 1u;
+    fbo.bind_valid = 1u;
+    fbo.pass_matches = 1u;
+    expect(mgl_batch_restore_finish_dirty(0x1u, 0x2u, 0xFu, 0x80u, &fbo) == 0x3u,
+           "finish dirty ors forced");
+}
+
 int main(void)
 {
     test_same_key_skip();
     test_dirty_delta();
     test_restore_encode_fold();
     test_fbo_fold();
+    test_restore_residual();
     if (g_fails) {
         fprintf(stderr, "test_batch_restore: %d fail(s)\n", g_fails);
         return 1;
