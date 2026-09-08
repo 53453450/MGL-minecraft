@@ -8973,6 +8973,23 @@ int mglRenderTraceR8RedUByte(uint32_t internalformat, uint32_t format,
                : 0;
 }
 
+int mglRenderTextureTargetIs3D(uint32_t target) {
+    return target == GL_TEXTURE_3D ? 1 : 0;
+}
+
+int mglRenderImageAccessIsReadOnly(uint32_t access) {
+    return access == GL_READ_ONLY ? 1 : 0;
+}
+
+int mglRenderImageUnitSliceNeedsFlush(int has_tex, int has_view, int layered,
+                                      uint32_t target, uint32_t access) {
+    return has_tex && has_view && !layered &&
+                   mglRenderTextureTargetIs3D(target) &&
+                   !mglRenderImageAccessIsReadOnly(access)
+               ? 1
+               : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);

@@ -5908,11 +5908,10 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
     ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
-    if (!iu->tex || !iu->mtl_image_view || iu->layered ||
-        iu->tex->target != GL_TEXTURE_3D) {
-        return;
-    }
-    if (iu->access == GL_READ_ONLY) {
+    if (!mglRenderImageUnitSliceNeedsFlush(
+            iu->tex ? 1 : 0, iu->mtl_image_view ? 1 : 0, iu->layered ? 1 : 0,
+            iu->tex ? (uint32_t)iu->tex->target : 0u,
+            (uint32_t)iu->access)) {
         return;
     }
     if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {
@@ -5955,7 +5954,8 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
     ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
-    if (!iu->tex || iu->layered || iu->tex->target != GL_TEXTURE_3D) {
+    if (!iu->tex || iu->layered ||
+        !mglRenderTextureTargetIs3D((uint32_t)iu->tex->target)) {
         return;
     }
     if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {

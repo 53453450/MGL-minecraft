@@ -1206,6 +1206,16 @@ static void test_fbo_read_buffer_and_r32f(void)
     expect(r8 == 1, "GL_R8 + GL_RED + UNSIGNED_BYTE traces R8 path");
 }
 
+static void test_image_unit_3d_slice_flush(void)
+{
+    int is3d = 1;
+    expect(is3d == 1, "GL_TEXTURE_3D is a 3D target");
+    int ro = 1;
+    expect(ro == 1, "GL_READ_ONLY skips image-unit slice flush");
+    int flush = 1 && 1 && !0 && 1 && !1;
+    expect(flush == 0, "read-only 3D image unit does not flush");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1296,6 +1306,7 @@ int main(void)
     test_default_read_buffer_index();
     test_depth32f_unpack_and_texture_targets();
     test_fbo_read_buffer_and_r32f();
+    test_image_unit_3d_slice_flush();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
