@@ -303,7 +303,7 @@ static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
         return NULL;
     }
     if (buffer->data.buffer_data &&
-        mglRenderCPUPointerUsable(buffer->data.buffer_data)) {
+        mglRenderCPUPointerUsable((const void *)buffer->data.buffer_data)) {
         return (const uint8_t *)(uintptr_t)buffer->data.buffer_data;
     }
     if (buffer->data.mtl_data) {
