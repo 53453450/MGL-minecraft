@@ -246,10 +246,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* BGRA8/RGBA8 scalar readback in C++. */
-    if (type == GL_BYTE || type == GL_SHORT ||
-        type == GL_INT || type == GL_UNSIGNED_INT ||
-        type == GL_UNSIGNED_SHORT || type == GL_HALF_FLOAT ||
-        type == GL_FLOAT) {
+    if (mglRenderReadbackTypeIsWideScalar((uint32_t)type)) {
         return mglRenderCopyUnorm8ScalarTextureBytesToGL(
                    src, (uint64_t)srcBytesPerRow,
                    dst, (uint64_t)dstBytesPerRow,
@@ -260,20 +257,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
     }
 
     /* BGRA8/RGBA8 packed readback in C++. */
-    if (type == GL_UNSIGNED_BYTE_3_3_2 ||
-        type == GL_UNSIGNED_BYTE_2_3_3_REV ||
-        type == GL_UNSIGNED_SHORT_5_6_5 ||
-        type == GL_UNSIGNED_SHORT_5_6_5_REV ||
-        type == GL_UNSIGNED_SHORT_4_4_4_4 ||
-        type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
-        type == GL_UNSIGNED_SHORT_5_5_5_1 ||
-        type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
-        type == GL_UNSIGNED_INT_8_8_8_8 ||
-        type == GL_UNSIGNED_INT_8_8_8_8_REV ||
-        type == GL_UNSIGNED_INT_10_10_10_2 ||
-        type == GL_UNSIGNED_INT_2_10_10_10_REV ||
-        type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
-        type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+    if (mglRenderReadbackTypeIsPacked((uint32_t)type)) {
         return mglRenderCopyUnorm8PackedTextureBytesToGL(
                    src, (uint64_t)srcBytesPerRow,
                    dst, (uint64_t)dstBytesPerRow,

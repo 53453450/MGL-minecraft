@@ -1436,6 +1436,16 @@ static void test_readback_packed_pixel_types(void)
     expect(p16 == 1, "UNSIGNED_SHORT_5_6_5 allows 16/32-bit readback");
 }
 
+static void test_readback_wide_scalar_and_packed(void)
+{
+    int wide = 1;
+    expect(wide == 1, "GL_FLOAT is a wide scalar readback type");
+    int packed = 1;
+    expect(packed == 1, "UNSIGNED_SHORT_5_6_5 is a packed readback type");
+    int notp = 0;
+    expect(notp == 0, "GL_FLOAT is not a packed readback type");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1551,6 +1561,7 @@ int main(void)
     test_decode_vertex_attrib_component();
     test_index_type_u16_u32();
     test_readback_packed_pixel_types();
+    test_readback_wide_scalar_and_packed();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

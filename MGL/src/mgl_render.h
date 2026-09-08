@@ -1442,6 +1442,8 @@ int mglRenderReadbackTypeIsCore(uint32_t type);
 int mglRenderReadbackTypeAllowsRGB10A2(uint32_t type);
 int mglRenderReadbackTypeAllowsRG11B10(uint32_t type);
 int mglRenderReadbackTypeAllows16or32(uint32_t type);
+int mglRenderReadbackTypeIsWideScalar(uint32_t type);
+int mglRenderReadbackTypeIsPacked(uint32_t type);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

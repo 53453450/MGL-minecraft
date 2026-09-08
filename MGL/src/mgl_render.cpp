@@ -9603,6 +9603,21 @@ int mglRenderReadbackTypeAllows16or32(uint32_t type) {
                : 0;
 }
 
+int mglRenderReadbackTypeIsWideScalar(uint32_t type) {
+    return type == GL_BYTE || type == GL_SHORT || type == GL_INT ||
+                   type == GL_UNSIGNED_INT || type == GL_UNSIGNED_SHORT ||
+                   type == GL_HALF_FLOAT || type == GL_FLOAT
+               ? 1
+               : 0;
+}
+
+int mglRenderReadbackTypeIsPacked(uint32_t type) {
+    return mglRenderReadbackTypeAllows16or32(type) &&
+                   !mglRenderReadbackTypeIsCore(type)
+               ? 1
+               : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
