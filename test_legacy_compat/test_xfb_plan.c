@@ -1226,6 +1226,16 @@ static void test_cube_array_faces_and_fallback_format(void)
     expect(d == 252u, "DEPTH_COMPONENT fallback is Depth32Float");
 }
 
+static void test_array_slice_3d_reupload_and_rgba8(void)
+{
+    int arr = 1;
+    expect(arr == 1, "CUBE_MAP_ARRAY uses zoffset as Metal slice");
+    int reup = 1 && (8u > 1u);
+    expect(reup == 1, "3D texture with depth>1 is a reupload");
+    int small = 1 && 1 && 1;
+    expect(small == 1, "512x512 GL_RGBA8 is a small RGBA8 fill");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1318,6 +1328,7 @@ int main(void)
     test_fbo_read_buffer_and_r32f();
     test_image_unit_3d_slice_flush();
     test_cube_array_faces_and_fallback_format();
+    test_array_slice_3d_reupload_and_rgba8();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

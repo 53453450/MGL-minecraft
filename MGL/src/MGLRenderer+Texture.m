@@ -3037,9 +3037,9 @@ static void mglTextureCopyTextureToBuffer(
     const void *uploadBytesPtr = packedBytesPtr;
     NSUInteger uploadRowBytes = dstRowBytes;
     NSUInteger uploadImageBytes = dstImageBytes;
-    if (tex->internalformat == GL_DEPTH32F_STENCIL8 &&
-        dstPixelFormat == MGLPixelFormatDepth32Float_Stencil8 &&
-        dstRowBytes >= width * 5u && dstRowBytes < width * 8u) {
+    if (mglRenderDepth32FStencil8NeedsUnpack(
+            (uint32_t)tex->internalformat, (uint32_t)dstPixelFormat,
+            (uint32_t)dstRowBytes, (uint32_t)width)) {
         NSUInteger expandedBPR = 0;
         NSUInteger expandedBPI = 0;
         dsMetalUpload = mglCreateDepthStencilMetalUpload(
@@ -3053,8 +3053,7 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     NSUInteger metalSlice = slice;
-    if (tex->target == GL_TEXTURE_2D_ARRAY ||
-        tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) {
+    if (mglRenderTextureTargetIsArray((uint32_t)tex->target)) {
         metalSlice = zoffset;
     }
 
@@ -3226,7 +3225,8 @@ static void mglTextureCopyTextureToBuffer(
             if (fullDataSize == 0) fullDataSize = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
 
 
-            BOOL is3DReupload = (tex->target == GL_TEXTURE_3D && lvlDepth > 1);
+            BOOL is3DReupload = mglRenderIs3DReupload(
+                                    (uint32_t)tex->target, (uint32_t)lvlDepth) != 0;
 
             NSUInteger singleSliceBPI = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
 
@@ -4312,7 +4312,10 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)fillSmallRGBA8TextureWithGradient:(id)texture tex:(Texture *)tex
 {
-                            if (mglTextureInfo(texture).width <= 512 && mglTextureInfo(texture).height <= 512 && tex->internalformat == GL_RGBA8) {
+                            if (mglRenderIsSmallRGBA8(
+                                    (uint32_t)mglTextureInfo(texture).width,
+                                    (uint32_t)mglTextureInfo(texture).height,
+                                    (uint32_t)tex->internalformat)) {
 
                                 NSLog(@"MGL INFO: Attempting simple direct color fill for small RGBA8 texture");
 
@@ -5585,7 +5588,7 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    if (cpuUploadRequired && tex->target == GL_TEXTURE_2D &&
+    if (cpuUploadRequired && mglRenderTextureTargetIs2D((uint32_t)tex->target) &&
         mglTextureInfo(texture).texture_type == MGLTextureType2D &&
         !mglTextureUploadNeedsSwizzleBake(tex)) {
         BOOL fullCPUUploadVerified = [self uploadFullCPUTextureDataIntoTexture:tex

@@ -9012,6 +9012,20 @@ uint32_t mglRenderFallbackPixelFormat(uint32_t mapped, uint32_t internalformat) 
     return 70u; /* RGBA8Unorm */
 }
 
+int mglRenderTextureTargetIsArray(uint32_t target) {
+    return target == GL_TEXTURE_2D_ARRAY || target == GL_TEXTURE_CUBE_MAP_ARRAY
+               ? 1
+               : 0;
+}
+
+int mglRenderIs3DReupload(uint32_t target, uint32_t depth) {
+    return mglRenderTextureTargetIs3D(target) && depth > 1u ? 1 : 0;
+}
+
+int mglRenderIsSmallRGBA8(uint32_t width, uint32_t height, uint32_t internalformat) {
+    return width <= 512u && height <= 512u && internalformat == GL_RGBA8 ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
