@@ -5037,10 +5037,10 @@ static GLenum mglPassthroughDeclType(
 
 
     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        if (state->color_format[i] == (uint32_t)MGLPixelFormatInvalid) {
+        if (mglRenderSkipInvalidColorAttachment(state->color_format[i])) {
             continue;
         }
-        if (mglMetalDrawBufferAt(ctx, (GLuint)i) == GL_NONE) {
+        if (mglRenderDrawBufferIsNone((uint32_t)mglMetalDrawBufferAt(ctx, (GLuint)i))) {
             state->color_write_mask[i] = 0u;
             continue;
         }
@@ -5050,9 +5050,8 @@ static GLenum mglPassthroughDeclType(
             return NO;
         }
         state->color_write_mask[i] = blend.color_write_mask;
-        if (MGL_STATE(ctx)->caps.blendi[i]) {
-            state->blending_enabled_mask |= 1u << i;
-        }
+        state->blending_enabled_mask |= mglRenderBlendingEnabledMaskBit(
+            MGL_STATE(ctx)->caps.blendi[i] ? 1 : 0, i);
         state->source_rgb_blend_factor[i] = blend.source_rgb_factor;
         state->destination_rgb_blend_factor[i] = blend.destination_rgb_factor;
         state->source_alpha_blend_factor[i] = blend.source_alpha_factor;
@@ -5061,8 +5060,9 @@ static GLenum mglPassthroughDeclType(
         state->alpha_blend_operation[i] = blend.alpha_operation;
     }
 
-    if (MGL_STATE(ctx)->caps.rasterizer_discard ||
-        tessVertexCapture || cullDistanceCapture) {
+    if (mglRenderClearColorWriteMasks(
+            MGL_STATE(ctx)->caps.rasterizer_discard ? 1 : 0,
+            tessVertexCapture ? 1 : 0, cullDistanceCapture ? 1 : 0)) {
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
             state->color_write_mask[i] = 0u;
         }

@@ -1315,6 +1315,11 @@ uint32_t mglRenderDefaultFBOStencilFormat(uint32_t format);
 int mglRenderColor0IntentionallyDisabled(int has_fbo, uint32_t draw_buffer0);
 int mglRenderColorFormatNeedsFallback(uint32_t format);
 uint32_t mglRenderColorFormatOrBGRA(uint32_t format);
+int mglRenderSkipInvalidColorAttachment(uint32_t format);
+int mglRenderDrawBufferIsNone(uint32_t draw_buffer);
+uint32_t mglRenderBlendingEnabledMaskBit(int blend_enabled, int index);
+int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
+                                  int cull_capture);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

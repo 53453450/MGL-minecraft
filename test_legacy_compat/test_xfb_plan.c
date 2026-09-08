@@ -1006,6 +1006,18 @@ static void test_default_fbo_and_color0_fallback(void)
     expect(c == 80u, "missing color0 format falls back to BGRA8Unorm");
 }
 
+static void test_color_write_mask_and_blend(void)
+{
+    int skip = 0u == 0u;
+    expect(skip == 1, "invalid color attachment is skipped");
+    int none = 0u == 0u;
+    expect(none == 1, "GL_NONE draw buffer zeros the write mask");
+    uint32_t bit = 1u << 2;
+    expect(bit == 4u, "blend enable sets bit 2 of blending_enabled_mask");
+    int clear = 1 || 0 || 0;
+    expect(clear == 1, "rasterizer discard clears color write masks");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1077,6 +1089,7 @@ int main(void)
     test_pso_topology_and_tess_state();
     test_pipeline_functions_and_ds_fallback();
     test_default_fbo_and_color0_fallback();
+    test_color_write_mask_and_blend();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

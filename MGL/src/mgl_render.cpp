@@ -8356,6 +8356,23 @@ uint32_t mglRenderColorFormatOrBGRA(uint32_t format) {
     return format == 0u ? 80u /* BGRA8Unorm */ : format;
 }
 
+int mglRenderSkipInvalidColorAttachment(uint32_t format) {
+    return format == 0u ? 1 : 0;
+}
+
+int mglRenderDrawBufferIsNone(uint32_t draw_buffer) {
+    return draw_buffer == GL_NONE ? 1 : 0;
+}
+
+uint32_t mglRenderBlendingEnabledMaskBit(int blend_enabled, int index) {
+    return blend_enabled ? (1u << index) : 0u;
+}
+
+int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
+                                  int cull_capture) {
+    return rasterizer_discard || tess_capture || cull_capture ? 1 : 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
