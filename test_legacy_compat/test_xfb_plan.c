@@ -839,6 +839,18 @@ static void test_texel_buffer_2d_pack(void)
     expect(tbo_type == 1, "TextureBuffer expected type refuses 2D atlas fallback");
 }
 
+static void test_fallback_sampled_format(void)
+{
+    uint32_t t = 0u ? 0u : 2u;
+    expect(t == 2u, "zero expected type falls back to 2D");
+    uint32_t fmt_u = 73u;
+    expect(fmt_u == 73u, "uint sampled fallback is RGBA8Uint");
+    uint32_t fmt_d = 252u;
+    expect(fmt_d == 252u, "depth sampled fallback is Depth32Float");
+    uint64_t key = ((uint64_t)2u << 8u) | 3u;
+    expect(key == 0x203u, "fallback cache key packs type+kind");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -895,6 +907,7 @@ int main(void)
     test_texture_buffer_and_cube_layers();
     test_air_sampler_lookup();
     test_texel_buffer_2d_pack();
+    test_fallback_sampled_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

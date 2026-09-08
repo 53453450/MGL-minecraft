@@ -7977,7 +7977,26 @@ int mglRenderPlanTexelBuffer2DSize(uint64_t texel_count, uint32_t max_texture_si
     return 1;
 }
 
-void mglRenderClearEmptyBufferDirty(Buffer *buf) {
+uint32_t mglRenderFallbackSampledTextureType(uint32_t expected_type) {
+    return expected_type ? expected_type : MGLTextureType2D;
+}
+
+uint32_t mglRenderFallbackSampledPixelFormat(uint32_t data_kind) {
+    switch (data_kind) {
+    case 3u: /* MGLTextureDataKindUint */
+        return 73u; /* MGLPixelFormatRGBA8Uint */
+    case 2u: /* MGLTextureDataKindSint */
+        return 74u; /* MGLPixelFormatRGBA8Sint */
+    case 4u: /* MGLTextureDataKindDepth */
+        return 252u; /* MGLPixelFormatDepth32Float */
+    default:
+        return 70u; /* MGLPixelFormatRGBA8Unorm */
+    }
+}
+
+uint64_t mglRenderFallbackSampledCacheKey(uint32_t texture_type, uint32_t data_kind) {
+    return ((uint64_t)texture_type << 8u) | (uint64_t)data_kind;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

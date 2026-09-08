@@ -6693,21 +6693,15 @@ static void mglTextureCopyTextureToBuffer(
         return nil;
     }
 
-    uint32_t textureType = expectedType ? expectedType : MGLTextureType2D;
+    uint32_t textureType = mglRenderFallbackSampledTextureType(expectedType);
     if (mglRenderExpectedTypeIsTextureBuffer(textureType)) {
         return [self fallbackTextureBufferSampledTexture];
     }
 
-    uint32_t pixelFormat = MGLPixelFormatRGBA8Unorm;
-    if (dataKind == MGLTextureDataKindUint) {
-        pixelFormat = MGLPixelFormatRGBA8Uint;
-    } else if (dataKind == MGLTextureDataKindSint) {
-        pixelFormat = MGLPixelFormatRGBA8Sint;
-    } else if (dataKind == MGLTextureDataKindDepth) {
-        pixelFormat = MGLPixelFormatDepth32Float;
-    }
+    uint32_t pixelFormat = mglRenderFallbackSampledPixelFormat((uint32_t)dataKind);
 
-    NSUInteger keyValue = (((NSUInteger)textureType) << 8u) | ((NSUInteger)dataKind);
+    NSUInteger keyValue = (NSUInteger)mglRenderFallbackSampledCacheKey(
+        textureType, (uint32_t)dataKind);
     void *cachedTexture = NULL;
     int cacheResult = mglRendererBackendGetFallbackSampledTexture(
         _backend, keyValue, &cachedTexture);

@@ -1250,6 +1250,9 @@ int mglRenderExpectedTypeIsTextureBuffer(uint32_t expected_type);
 int mglRenderExpectedTypeIsCube(uint32_t expected_type);
 int mglRenderPlanTexelBuffer2DSize(uint64_t texel_count, uint32_t max_texture_size,
                                    uint32_t *width_out, uint32_t *height_out);
+uint32_t mglRenderFallbackSampledTextureType(uint32_t expected_type);
+uint32_t mglRenderFallbackSampledPixelFormat(uint32_t data_kind);
+uint64_t mglRenderFallbackSampledCacheKey(uint32_t texture_type, uint32_t data_kind);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);
