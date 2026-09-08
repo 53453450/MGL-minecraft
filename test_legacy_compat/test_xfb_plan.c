@@ -1158,6 +1158,14 @@ static void test_draw_mode_fully_culled(void)
     expect(points == 0, "FRONT_AND_BACK cull of points is not fully culled");
 }
 
+static void test_texture_target_is_buffer(void)
+{
+    int is_buf = 1;
+    expect(is_buf == 1, "GL_TEXTURE_BUFFER target is a texture buffer");
+    int not_buf = 0;
+    expect(not_buf == 0, "GL_TEXTURE_2D target is not a texture buffer");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1243,6 +1251,7 @@ int main(void)
     test_viewport_clamp_and_metal_y();
     test_compare_func_repair_and_depth_write();
     test_draw_mode_fully_culled();
+    test_texture_target_is_buffer();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

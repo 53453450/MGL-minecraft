@@ -1367,6 +1367,7 @@ uint32_t mglRenderCompareFuncOrFallback(uint32_t func, int valid,
 uint32_t mglRenderDepthWriteEnabled(int writemask, int suppress);
 int mglRenderDrawModeFullyCulled(int cull_face, uint32_t cull_face_mode,
                                  int produces_polygons);
+int mglRenderTextureTargetIsBuffer(uint32_t target);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

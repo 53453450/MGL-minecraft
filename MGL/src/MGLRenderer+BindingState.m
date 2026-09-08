@@ -2867,7 +2867,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         level0 ? (unsigned)level0->has_initialized_data : 0u,
                         level0 ? (unsigned)level0->last_init_source : 0u);
         }
-        if (ptr && ptr->target == GL_TEXTURE_BUFFER) {
+        if (ptr && mglRenderTextureTargetIsBuffer((uint32_t)ptr->target)) {
             static uint64_t s_vertexTexelBufferBindLogs = 0;
             uint64_t hit = ++s_vertexTexelBufferBindLogs;
             if (hit <= 8ull || (hit % 2048ull) == 0ull) {
@@ -2891,7 +2891,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       sampler);
             }
         }
-        if (ptr && ptr->target != GL_TEXTURE_BUFFER) {
+        if (ptr && !mglRenderTextureTargetIsBuffer((uint32_t)ptr->target)) {
             Program *sampleProgram = currentProgram;
             GLuint sampleProgramName = sampleProgram ? sampleProgram->name : vertexProgramName;
             TextureLevel *sampleLevel0 = mglTraceTextureBaseLevel(ptr);

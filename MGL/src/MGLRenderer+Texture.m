@@ -6036,7 +6036,8 @@ static void mglTextureCopyTextureToBuffer(
 
 - (void)syncTextureBufferFromImage:(GLMContext)glm_ctx tex:(Texture *)tex
 {
-    if (!glm_ctx || !tex || tex->target != GL_TEXTURE_BUFFER ||
+    if (!glm_ctx || !tex ||
+        !mglRenderTextureTargetIsBuffer((uint32_t)tex->target) ||
         !tex->mtl_data || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
         return;
     }

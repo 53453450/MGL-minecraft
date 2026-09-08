@@ -8799,6 +8799,10 @@ int mglRenderDrawModeFullyCulled(int cull_face, uint32_t cull_face_mode,
                ? 1
                : 0;
 }
+
+int mglRenderTextureTargetIsBuffer(uint32_t target) {
+    return target == GL_TEXTURE_BUFFER ? 1 : 0;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }
