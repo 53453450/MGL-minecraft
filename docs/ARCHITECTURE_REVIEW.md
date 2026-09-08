@@ -327,6 +327,8 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 
 下一批应把 VS GPU capture 的 processGLState / buffer 分配与 VAO cull resolve 移出巨型 ObjC category，压到薄 layer/drawable/swap 端口，而不是扩 ES。array split、capture POINT encode、cull attrib 扫描与槽 bind 已下沉。
 
+**ObjC 薄平台层拆解**：见 [`docs/OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（O0 政策/度量；O1 draw/tess/GS 宿主；O2 batch path）。度量脚本 `scripts/objc_renderer_loc.sh`，目标 `MGLRenderer*.m` 合计 ≤ 8–12k。即时下一刀：O1.2–O1.3（VS capture plan/prep + VAO cull port 表）与 O2.1（`mgl_batch_select_path`）。
+
 ## 验证矩阵
 
 改造期间最低门禁。下列结果来自落地后本机跑通（macOS，Apple M4）：

@@ -13,6 +13,7 @@ external/ezxml/
 /.claude
 /docs/*
 !/docs/ARCHITECTURE_REVIEW.md
+!/docs/OBJC_CATEGORY_DISMANTLE_TODO.md
 /.work-buddy
 /mgl-ssbo-20260805b/
 build_asan/
