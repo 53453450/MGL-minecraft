@@ -5490,7 +5490,7 @@ static void mglTextureCopyTextureToBuffer(
 
     if (mipmapped)
     {
-        if (tex_type == MGLTextureType1D) {
+        if (mglRenderPromoteMipmapped1D(tex_type)) {
             tex_type = MGLTextureType2D;
             texture1DBackedBy2D = true;
         }
@@ -5498,7 +5498,7 @@ static void mglTextureCopyTextureToBuffer(
          * Promote to MGLTextureType2DArray with height=1 to support mipmapped
          * 1D array textures.  The upload code checks texture1DArrayBackedBy2DArray
          * to treat each slice as 1 pixel tall. */
-        if (tex_type == MGLTextureType1DArray) {
+        if (mglRenderPromoteMipmapped1DArray(tex_type)) {
             tex_type = MGLTextureType2DArray;
             texture1DArrayBackedBy2DArray = true;
         }
@@ -5530,24 +5530,17 @@ static void mglTextureCopyTextureToBuffer(
      * mgl_air_backend.cpp).  Binding a ShaderRead-only texture to that slot
      * yields zeroed imageLoad results on AGX, so READ_ONLY also needs
      * ShaderWrite even though GLSL/GL mark the binding readonly. */
-    switch(tex->access)
-    {
-        case GL_READ_ONLY:
-            tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE; break;
-        case GL_WRITE_ONLY:
-            tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE; break;
-        case GL_READ_WRITE:
-            tex_desc.usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE; break;
-        default:
+    uint32_t accessUsage = 0u;
+    if (!mglRenderTextureUsageForAccess((uint32_t)tex->access, &accessUsage)) {
             NSLog(@"MGL TEXTURE ERROR: invalid texture access 0x%x for tex=%u",
                   tex->access,
                   tex->name);
             return nil;
     }
+    tex_desc.usage = accessUsage;
 
     /* Metal 3.1 imageAtomic* requires ShaderAtomic on R32{U,S}int textures. */
-    if (pixelFormat == MGLPixelFormatR32Uint ||
-        pixelFormat == MGLPixelFormatR32Sint) {
+    if (mglRenderPixelFormatNeedsShaderAtomic(pixelFormat)) {
         tex_desc.usage |= MGL_TEXTURE_USAGE_SHADER_ATOMIC;
     }
 

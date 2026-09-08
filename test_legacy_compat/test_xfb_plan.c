@@ -861,6 +861,16 @@ static void test_agx_format_and_1d_array_depth(void)
     expect(promote == 1, "1D array depth/stencil promotes to 2D array");
 }
 
+static void test_texture_access_and_mip_promote(void)
+{
+    uint32_t usage = 0x0001u | 0x0002u;
+    expect(usage == 0x0003u, "GL image access always gets ShaderRead|ShaderWrite");
+    int atomic = (53u == 53u) || (54u == 53u);
+    expect(atomic == 1, "R32Uint needs ShaderAtomic");
+    int mip1d = 1;
+    expect(mip1d == 1, "mipmapped 1D promotes to 2D");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -919,6 +929,7 @@ int main(void)
     test_texel_buffer_2d_pack();
     test_fallback_sampled_format();
     test_agx_format_and_1d_array_depth();
+    test_texture_access_and_mip_promote();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

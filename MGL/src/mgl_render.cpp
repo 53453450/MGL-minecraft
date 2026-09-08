@@ -8042,6 +8042,36 @@ int mglRenderPromote1DArrayDepthStencil(uint32_t tex_type, uint32_t pixel_format
         return 0;
     }
 }
+
+int mglRenderTextureUsageForAccess(uint32_t gl_access, uint32_t *usage_out) {
+    switch (gl_access) {
+    case GL_READ_ONLY:
+    case GL_WRITE_ONLY:
+    case GL_READ_WRITE:
+        if (usage_out) {
+            *usage_out = MGLTextureUsageShaderRead | MGLTextureUsageShaderWrite;
+        }
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int mglRenderPixelFormatNeedsShaderAtomic(uint32_t pixel_format) {
+    return pixel_format == 53u /* R32Uint */ || pixel_format == 54u /* R32Sint */
+               ? 1
+               : 0;
+}
+
+int mglRenderPromoteMipmapped1D(uint32_t tex_type) {
+    return tex_type == MGLTextureType1D ? 1 : 0;
+}
+
+int mglRenderPromoteMipmapped1DArray(uint32_t tex_type) {
+    return tex_type == MGLTextureType1DArray ? 1 : 0;
+}
+
+void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }
