@@ -688,6 +688,22 @@ $(build_dir)/test_batch_restore: test_legacy_compat/test_batch_restore.c \
 test-batch-restore: $(build_dir)/test_batch_restore
 	$(build_dir)/test_batch_restore
 
+$(build_dir)/test_batch_issue: test_legacy_compat/test_batch_issue.c \
+	MGL/src/mgl_batch_issue.c MGL/include/mgl_batch_issue.h \
+	MGL/src/mgl_batch_rt_mark.c MGL/include/mgl_batch_rt_mark.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_batch_issue.c \
+		MGL/src/mgl_batch_issue.c MGL/src/mgl_batch_rt_mark.c \
+		-o $@
+
+test-batch-issue: $(build_dir)/test_batch_issue
+	$(build_dir)/test_batch_issue
+
+
 
 $(build_dir)/test_process_gl_state_plan: test_legacy_compat/test_process_gl_state_plan.c \
 	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h
@@ -971,6 +987,7 @@ test-all:
 	$(MAKE) test-batch-hazard
 	$(MAKE) test-batch-icb
 	$(MAKE) test-batch-restore
+	$(MAKE) test-batch-issue
 	$(MAKE) test-process-gl-state-plan
 	$(MAKE) test-geometry-gather
 	$(MAKE) test-validate-arrays-early
@@ -979,7 +996,7 @@ test-all:
 	$(MAKE) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
-	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-process-gl-state-plan test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
+	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \

@@ -566,3 +566,162 @@ extern "C" void mgl_batch_replay_sync_hash_tables_from_replay(
     live->sampler_table = replay->sampler_table;
     live->sync_table = replay->sync_table;
 }
+
+#include "mgl_renderer_backend.h"
+
+extern "C" Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
+#include "mgl_program_resource.h"
+#include "mgl_types_buffer.h"
+
+extern "C" int mgl_batch_replay_plan_uniform_binds(
+    GLMContext ctx, const MGLDrawCommand *cmd, const uint64_t *mtl_lengths,
+    uint32_t mtl_lengths_count, uint64_t min_binding_bytes,
+    uint32_t max_buffer_slots, MGLBatchUniformBindPlan *out)
+{
+    if (!ctx || !cmd || !mtl_lengths || !out) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    if (cmd->dynamic_uniform_binding_count > mtl_lengths_count) {
+        return 0;
+    }
+
+    BufferMapList *stage_maps[2] = {
+        &MGL_STATE(ctx)->vertex_buffer_map_list,
+        &MGL_STATE(ctx)->fragment_buffer_map_list,
+    };
+    const int stages[2] = {_VERTEX_SHADER, _FRAGMENT_SHADER};
+
+    for (uint8_t dynamic_index = 0;
+         dynamic_index < cmd->dynamic_uniform_binding_count; dynamic_index++) {
+        const MGLDynamicUniformBinding *override_binding =
+            &cmd->dynamic_uniform_bindings[dynamic_index];
+        BufferBaseTarget *slot =
+            &MGL_STATE(ctx)
+                 ->buffer_base[_UNIFORM_BUFFER]
+                 .buffers[override_binding->binding_index];
+        if (!slot->buf || override_binding->offset < 0 ||
+            override_binding->size <= 0) {
+            return 0;
+        }
+        const uint64_t mtl_len = mtl_lengths[dynamic_index];
+        if (mtl_len == 0) {
+            return 0;
+        }
+        uint64_t start = (uint64_t)override_binding->offset;
+        uint64_t length = (uint64_t)override_binding->size;
+        if (!mgl_batch_replay_uniform_range_fits(start, length, mtl_len)) {
+            return 0;
+        }
+
+        for (int stage_index = 0; stage_index < 2; stage_index++) {
+            BufferMapList *maps = stage_maps[stage_index];
+            GLuint map_count = maps->count < MAX_MAPPED_BUFFERS
+                                   ? maps->count
+                                   : MAX_MAPPED_BUFFERS;
+            for (GLuint map_index = 0; map_index < map_count; map_index++) {
+                BufferMap *map = &maps->buffers[map_index];
+                if (map->attribute_mask != 0u ||
+                    map->buffer_base_index != override_binding->binding_index ||
+                    map->buf != slot->buf) {
+                    continue;
+                }
+                size_t reflected = map->has_metal_binding
+                    ? mglRendererGetProgramBindingRequiredSize(
+                          ctx, stages[stage_index], (int)map->resource_type,
+                          (int)map->resource_index)
+                    : mglRendererGetProgramBindingRequiredSizeForStage(
+                          ctx, stages[stage_index],
+                          override_binding->binding_index);
+                uint64_t required = min_binding_bytes;
+                if (reflected > required) {
+                    required = reflected;
+                }
+                if (length < required) {
+                    return 0;
+                }
+                intptr_t resolved_slot = map->has_metal_binding
+                    ? (intptr_t)map->metal_binding_index
+                    : mglRendererGetProgramMetalBufferIndexForStage(
+                          ctx, stages[stage_index],
+                          override_binding->binding_index);
+                if (resolved_slot < 0 ||
+                    (uint32_t)resolved_slot >= max_buffer_slots) {
+                    return 0;
+                }
+                if (out->count >= MGL_BATCH_UNIFORM_BIND_MAX_OPS) {
+                    return 0;
+                }
+                MGLBatchUniformBindOp *op = &out->ops[out->count++];
+                op->is_vertex_stage =
+                    mglRenderStageMapsVertexAttribs(stages[stage_index]) ? 1u
+                                                                         : 0u;
+                op->metal_slot = (uint32_t)resolved_slot;
+                op->offset = start;
+                op->binding_index = override_binding->binding_index;
+            }
+        }
+    }
+    return 1;
+}
+
+extern "C" int mgl_batch_replay_plan_sampled_texture_candidates(
+    GLMContext ctx, MGLBatchSampledTexPlan *out)
+{
+    if (!ctx || !out) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    const int stages[2] = {_VERTEX_SHADER, _FRAGMENT_SHADER};
+    for (int stage_index = 0; stage_index < 2; stage_index++) {
+        int stage = stages[stage_index];
+        Program *program = mglResolveProgramForStageFromState(ctx, stage);
+        int32_t sampled_count =
+            mglRendererGetProgramBindingCount(ctx, stage, _SAMPLED_IMAGE_RES);
+        if (sampled_count < 0) {
+            continue;
+        }
+        for (int32_t resource_index = 0; resource_index < sampled_count;
+             resource_index++) {
+            int32_t metal_slot = mglRendererGetProgramBinding(
+                ctx, stage, _SAMPLED_IMAGE_RES, resource_index);
+            if (metal_slot < 0 || (uint32_t)metal_slot >= TEXTURE_UNITS) {
+                continue;
+            }
+            MGLShaderResource *resource = nullptr;
+            if (program &&
+                (GLuint)resource_index <
+                    program->shader_resources_list[stage][_SAMPLED_IMAGE_RES]
+                        .count) {
+                resource = &program->shader_resources_list[stage]
+                                [_SAMPLED_IMAGE_RES]
+                                .list[resource_index];
+            }
+            if (mglShouldSkipStageTextureResource(program, stage,
+                                                  _SAMPLED_IMAGE_RES,
+                                                  resource)) {
+                continue;
+            }
+            if (resource && resource->is_array) {
+                return 0;
+            }
+            if (out->count >= MGL_BATCH_SAMPLED_TEX_MAX) {
+                return 0;
+            }
+            MGLBatchSampledTexCandidate *e = &out->entries[out->count++];
+            e->stage = stage;
+            e->resource_index = (uint32_t)resource_index;
+            e->metal_slot = (uint32_t)metal_slot;
+            e->expected_type = mglRendererGetProgramExpectedTextureType(
+                ctx, stage, _SAMPLED_IMAGE_RES, resource_index);
+            e->lookup_type = mglRendererGetProgramDeclaredTextureType(
+                ctx, stage, _SAMPLED_IMAGE_RES, resource_index);
+            e->expected_kind = mglRendererGetProgramExpectedTextureDataKind(
+                ctx, stage, _SAMPLED_IMAGE_RES, resource_index);
+            e->needs_combined_sampler =
+                (!resource || resource->has_combined_sampler) ? 1u : 0u;
+            e->resource = resource;
+        }
+    }
+    return 1;
+}

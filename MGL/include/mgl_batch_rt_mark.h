@@ -1,0 +1,47 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ *
+ * This file contains material from the Apache-2.0-licensed MGL baseline.
+ * Copyrightable modifications made after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c are licensed under
+ * LGPL-3.0-only by their respective copyright holders.
+ * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ */
+
+/*
+ * mgl_batch_rt_mark.h — A3 / O2.5: framebuffer RT-write mark plans (no Metal).
+ *
+ * ObjC markCurrentFramebuffer* fills POD flags and applies mtl_data bumps.
+ */
+
+#ifndef MGL_BATCH_RT_MARK_H
+#define MGL_BATCH_RT_MARK_H
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* True when color attachment index is in-range and present in the bitfield. */
+int mgl_batch_rt_attachment_active(uint32_t bitfield, uint32_t index,
+                                   uint32_t max_attachments);
+
+/*
+ * Minecraft GUI/mesh RT Y-flip authority: VS framebuffer Y-flip injection
+ * wrote GL-visible orientation, so RT_SAMPLE_COPY must not flip again —
+ * unless the program samples InSampler / DiffuseSampler (true FB inputs).
+ */
+int mgl_batch_rt_yflip_authority(int has_injected_yflip,
+                                 int yflip_sampler_explicit,
+                                 int has_in_sampler_named,
+                                 int has_diffuse_sampler_named);
+
+/* Rate-limit RT_SAMPLE_COPY_WRITE_MARK diag (attachment0 + can_use_copy). */
+int mgl_batch_rt_should_trace_write_mark(uint64_t hit);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MGL_BATCH_RT_MARK_H */

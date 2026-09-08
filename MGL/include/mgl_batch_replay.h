@@ -193,8 +193,62 @@ void mgl_batch_replay_copy_object_hash_tables(GLMState *dst,
 void mgl_batch_replay_sync_hash_tables_from_replay(GLMState *live,
                                                    const GLMState *replay);
 
+
+/* ---- A3 residual: uniform / sampled-texture materialize plans ---- */
+
+enum { MGL_BATCH_UNIFORM_BIND_MAX_OPS = 64 };
+
+typedef struct MGLBatchUniformBindOp {
+    uint8_t is_vertex_stage;
+    uint32_t metal_slot;
+    uint64_t offset;
+    uint32_t binding_index; /* UBO binding index for buf re-resolve */
+} MGLBatchUniformBindOp;
+
+typedef struct MGLBatchUniformBindPlan {
+    uint32_t count;
+    MGLBatchUniformBindOp ops[MGL_BATCH_UNIFORM_BIND_MAX_OPS];
+} MGLBatchUniformBindPlan;
+
+/* Plan VS/FS set*Buffer ops for dynamic UBO ranges.
+ * mtl_lengths[i] is Metal buffer length for dynamic_uniform_bindings[i]
+ * (0 = missing/invalid → fail). min_binding_bytes is kMGLMinimumStageBindingSize.
+ * Returns 1 on success, 0 on fail (out may be partially filled). */
+int mgl_batch_replay_plan_uniform_binds(GLMContext ctx,
+                                        const MGLDrawCommand *cmd,
+                                        const uint64_t *mtl_lengths,
+                                        uint32_t mtl_lengths_count,
+                                        uint64_t min_binding_bytes,
+                                        uint32_t max_buffer_slots,
+                                        MGLBatchUniformBindPlan *out);
+
+enum { MGL_BATCH_SAMPLED_TEX_MAX = 64 };
+
+typedef struct MGLBatchSampledTexCandidate {
+    int32_t stage;
+    uint32_t resource_index;
+    uint32_t metal_slot;
+    uint32_t expected_type;
+    uint32_t lookup_type;
+    uint32_t expected_kind;
+    uint8_t needs_combined_sampler;
+    struct MGLShaderResource_t *resource;
+} MGLBatchSampledTexCandidate;
+
+typedef struct MGLBatchSampledTexPlan {
+    uint32_t count;
+    MGLBatchSampledTexCandidate entries[MGL_BATCH_SAMPLED_TEX_MAX];
+} MGLBatchSampledTexPlan;
+
+/* Enumerate non-skipped sampled-image resources for VS/FS.
+ * Returns 0 if any non-skipped resource is an array (ObjC must fail),
+ * 1 on success (possibly empty). */
+int mgl_batch_replay_plan_sampled_texture_candidates(
+    GLMContext ctx, MGLBatchSampledTexPlan *out);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* MGL_BATCH_REPLAY_H */
+
