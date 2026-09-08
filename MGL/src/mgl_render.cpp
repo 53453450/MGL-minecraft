@@ -7717,6 +7717,24 @@ int mglRenderCPUPointerLooksTagged(const void *p) {
     return p && (uintptr_t)p < 0x100000000ULL ? 1 : 0;
 }
 
+int mglRenderMetalDataPointerUsable(const void *p) {
+    return p && (uintptr_t)p >= 0x10000u ? 1 : 0;
+}
+
+int mglRenderNeedsIsolatedStageBinding(int has_buffer, int64_t offset,
+                                       uint64_t metal_len, uint64_t available,
+                                       uint32_t required) {
+    return !has_buffer || offset < 0 || (uint64_t)offset >= metal_len ||
+                   available < required
+               ? 1
+               : 0;
+}
+
+int mglRenderAllowIsolateGPUWriteTarget(int gpu_write_target,
+                                        int allow_when_gpu) {
+    return !gpu_write_target || allow_when_gpu ? 1 : 0;
+}
+
 int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size) {
     if (offset < 0 || size <= 0) {
         return 0;

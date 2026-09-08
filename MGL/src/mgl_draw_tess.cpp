@@ -518,6 +518,18 @@ extern "C" int mglTessEvalXFBDestReady(int has_metal, int has_buf,
     return has_metal && has_buf && dest_valid ? 1 : 0;
 }
 
+extern "C" int mglTessKeepNativeTESOnly(int native_ok, int has_tcs,
+                                        int has_capture, int has_factors)
+{
+    if (!native_ok) {
+        return 0;
+    }
+    if (has_tcs) {
+        return 1;
+    }
+    return has_capture && has_factors ? 1 : 0;
+}
+
 extern "C" bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs)
 {
     if (!ctx || !ctx->active_state) {

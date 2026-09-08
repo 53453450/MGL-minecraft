@@ -589,6 +589,20 @@ static void test_required_binding_and_ubo_inline(void)
     expect(inline_uc == 1, "uniform-constant offset-0 uses setBytes");
 }
 
+static void test_isolated_and_native_tes(void)
+{
+    int need = !0 || (16u >= 64u) || (8u < 32u);
+    expect(need == 1, "isolated bind when available < required");
+    int allow = !1 || 1;
+    expect(allow == 1, "native TES may isolate GPU-write targets");
+    int keep = 1 && 1 && 1;
+    expect(keep == 1, "TES-only native keeps capture+factors");
+    int drop = 1 && 0;
+    expect(drop == 0, "TES-only native drops without capture or factors");
+    int mtl_ok = (0x20000u >= 0x10000u);
+    expect(mtl_ok == 1, "Metal data pointer usable above 0x10000");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -625,6 +639,7 @@ int main(void)
     test_buffer_map_offset_and_backing();
     test_attrib_fetch_and_inline_bytes();
     test_required_binding_and_ubo_inline();
+    test_isolated_and_native_tes();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

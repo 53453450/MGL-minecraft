@@ -108,6 +108,8 @@ enum {
 int mglTessEvalInputsReady(int has_gl_in, int has_factors);
 uint32_t mglTessPlanEvalXFBSlot(int xfb_active, int size_ok);
 int mglTessEvalXFBDestReady(int has_metal, int has_buf, int dest_valid);
+int mglTessKeepNativeTESOnly(int native_ok, int has_tcs, int has_capture,
+                             int has_factors);
 
 bool mglTessEvalOwnsXFB(GLMContext ctx, Program *gs);
 

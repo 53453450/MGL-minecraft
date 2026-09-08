@@ -2976,8 +2976,10 @@ after_gs_draws:
             _device, _backend, MGL_STATE(drawCtx), patchCount);
         (void)mglRendererBackendSetCurrentTessFactorBuffer(
             _backend, (__bridge void *)tessFactorBuffer);
-        if (!tessVertexCaptureBuffer ||
-            !tessFactorBuffer) {
+        if (!mglTessKeepNativeTESOnly(
+                nativeTES ? 1 : 0, tcsProgram ? 1 : 0,
+                tessVertexCaptureBuffer ? 1 : 0,
+                tessFactorBuffer ? 1 : 0)) {
             nativeTES = NO;
         }
     }

@@ -1196,6 +1196,12 @@ int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
                              MGLRenderAttribFetchPlan *out);
 int mglRenderUseInlineFragmentBytes(int is_base_binding, int64_t size);
 int mglRenderCPUPointerLooksTagged(const void *p);
+int mglRenderMetalDataPointerUsable(const void *p);
+int mglRenderNeedsIsolatedStageBinding(int has_buffer, int64_t offset,
+                                       uint64_t metal_len, uint64_t available,
+                                       uint32_t required);
+int mglRenderAllowIsolateGPUWriteTarget(int gpu_write_target,
+                                        int allow_when_gpu);
 int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size);
 uint32_t mglRenderRequiredBindingBytesForMap(int resource_type,
                                              uint32_t reflected,

@@ -753,7 +753,7 @@ static bool mglBindingStateFlushResourceBindings(
         }
         id buffer = nil;
         if (ptr->data.mtl_data &&
-            (uintptr_t)ptr->data.mtl_data >= 0x10000u) {
+            mglRenderMetalDataPointerUsable(ptr->data.mtl_data)) {
             buffer = (__bridge id)(ptr->data.mtl_data);
         }
 
@@ -762,11 +762,12 @@ static bool mglBindingStateFlushResourceBindings(
             ? mglBufferMapVisibleBackingBytes(map, metalLen)
             : 0u;
 
-        BOOL needsIsolatedBinding =
-            !buffer || bindOffset >= metalLen ||
-            availableBytes < requiredBindingBytes;
-        if (needsIsolatedBinding &&
-            (!ptr->gpu_write_target || _tessellation.nativeTESActive)) {
+        if (mglRenderNeedsIsolatedStageBinding(
+                buffer ? 1 : 0, (int64_t)bindOffset, (uint64_t)metalLen,
+                (uint64_t)availableBytes, (uint32_t)requiredBindingBytes) &&
+            mglRenderAllowIsolateGPUWriteTarget(
+                ptr->gpu_write_target ? 1 : 0,
+                _tessellation.nativeTESActive ? 1 : 0)) {
             id isolated =
                 [self isolatedStageBindingBufferForMap:map
                                                  source:buffer
@@ -1265,7 +1266,7 @@ static bool mglBindingStateFlushResourceBindings(
                   attrib, attribBuffer->name);
             continue;
         }
-        if ((uintptr_t)attribBuffer->data.mtl_data < 0x10000u) {
+        if (!mglRenderMetalDataPointerUsable(attribBuffer->data.mtl_data)) {
             NSLog(@"MGL VBIND skip attrib=%u buffer=%u: suspicious mtl_data=%p",
                   attrib, attribBuffer->name, attribBuffer->data.mtl_data);
             continue;
@@ -1943,9 +1944,12 @@ static bool mglBindingStateFlushResourceBindings(
                 ? mglBufferMapVisibleBackingBytes(map, metalLen)
                 : 0u;
 
-            if (!ptr->gpu_write_target &&
-                (!buffer || bindOffset >= metalLen ||
-                 availableBytes < requiredBindingBytes)) {
+            if (mglRenderAllowIsolateGPUWriteTarget(
+                    ptr->gpu_write_target ? 1 : 0, 0) &&
+                mglRenderNeedsIsolatedStageBinding(
+                    buffer ? 1 : 0, (int64_t)bindOffset, (uint64_t)metalLen,
+                    (uint64_t)availableBytes,
+                    (uint32_t)requiredBindingBytes)) {
                 id isolated =
                     [self isolatedStageBindingBufferForMap:map
                                                      source:buffer
