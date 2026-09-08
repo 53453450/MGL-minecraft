@@ -2025,6 +2025,26 @@ static void test_compute_texture_bind_kind(void)
     expect(compute_tex_bind_kind(7u) == 1, "storage bind skips sampler");
 }
 
+static int pso_color_mismatch(uint32_t p, uint32_t c)
+{
+    return p != 0u && c != 0u && p != c;
+}
+
+static int pso_attach_mismatch(uint32_t p, uint32_t c)
+{
+    if (p == 0u && c == 0u) return 0;
+    return p != c;
+}
+
+static void test_pipeline_pass_format_mismatch(void)
+{
+    expect(pso_color_mismatch(70u, 80u) == 1, "RGBA vs BGRA color PSO mismatch");
+    expect(pso_color_mismatch(0u, 80u) == 0, "Invalid pipeline color is not a mismatch");
+    expect(pso_attach_mismatch(0u, 0u) == 0, "both-absent depth is ok");
+    expect(pso_attach_mismatch(0u, 252u) == 1, "missing vs present depth mismatches");
+    expect(pso_attach_mismatch(252u, 252u) == 0, "matching depth is ok");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -2173,6 +2193,7 @@ int main(void)
     test_invalid_format_skip();
     test_depth_blit_stencil_format();
     test_compute_texture_bind_kind();
+    test_pipeline_pass_format_mismatch();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

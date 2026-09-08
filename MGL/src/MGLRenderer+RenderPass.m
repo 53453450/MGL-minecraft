@@ -5860,9 +5860,9 @@ static GLenum mglPassthroughDeclType(
     // and changing attachments after encoder creation does not make that encoder compatible.
     // We must instead reject mismatched pipeline/pass combinations and rebuild safely.
 
-    if (_pipelineCache.state->pipelineColor0Format != MGLPixelFormatInvalid &&
-        currentColor0Format != MGLPixelFormatInvalid &&
-        _pipelineCache.state->pipelineColor0Format != currentColor0Format) {
+    if (mglRenderPipelinePassColorMismatch(
+            (uint32_t)_pipelineCache.state->pipelineColor0Format,
+            currentColor0Format)) {
         static uint64_t s_colorFormatMismatchCount = 0;
         s_colorFormatMismatchCount++;
 	        if (s_colorFormatMismatchCount <= 16 || (s_colorFormatMismatchCount % 250) == 0) {
@@ -5876,49 +5876,37 @@ static GLenum mglPassthroughDeclType(
 	        return false;
 	    }
 
-    if (_pipelineCache.state->pipelineDepthFormat != currentDepthFormat) {
-        BOOL pipelineHasDepth = (_pipelineCache.state->pipelineDepthFormat != MGLPixelFormatInvalid);
-        BOOL passHasDepth = (currentDepthFormat != MGLPixelFormatInvalid);
-        if (!pipelineHasDepth && !passHasDepth) {
-            goto depth_format_ok;
-	        }
-	        {
+    if (mglRenderPipelinePassAttachmentMismatch(
+            (uint32_t)_pipelineCache.state->pipelineDepthFormat,
+            currentDepthFormat)) {
 	            static uint64_t s_depthFormatMismatchCount = 0;
 	            s_depthFormatMismatchCount++;
 	            if (s_depthFormatMismatchCount <= 16 || (s_depthFormatMismatchCount % 250) == 0) {
 	                NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
 	                      (unsigned long)_pipelineCache.state->pipelineDepthFormat, (unsigned long)currentDepthFormat);
 	            }
-	        }
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass depth format mismatch"];
 	        mglMarkRendererDirtyBits(ctx->active_state,
 	                                 DIRTY_PROGRAM | DIRTY_VAO |
 	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
-depth_format_ok:;
 
-    if (_pipelineCache.state->pipelineStencilFormat != currentStencilFormat) {
-        BOOL pipelineHasStencil = (_pipelineCache.state->pipelineStencilFormat != MGLPixelFormatInvalid);
-        BOOL passHasStencil = (currentStencilFormat != MGLPixelFormatInvalid);
-        if (!pipelineHasStencil && !passHasStencil) {
-            goto stencil_format_ok;
-	        }
-	        {
+    if (mglRenderPipelinePassAttachmentMismatch(
+            (uint32_t)_pipelineCache.state->pipelineStencilFormat,
+            currentStencilFormat)) {
 	            static uint64_t s_stencilFormatMismatchCount = 0;
 	            s_stencilFormatMismatchCount++;
 	            if (s_stencilFormatMismatchCount <= 16 || (s_stencilFormatMismatchCount % 250) == 0) {
 	                NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
 	                      (unsigned long)_pipelineCache.state->pipelineStencilFormat, (unsigned long)currentStencilFormat);
 	            }
-	        }
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass stencil format mismatch"];
 	        mglMarkRendererDirtyBits(ctx->active_state,
 	                                 DIRTY_PROGRAM | DIRTY_VAO |
 	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
-stencil_format_ok:;
     return true;
 }
 

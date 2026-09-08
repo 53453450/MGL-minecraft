@@ -8409,6 +8409,21 @@ int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built) {
     return cached == 0u || built == 0u || cached == built ? 1 : 0;
 }
 
+int mglRenderPipelinePassColorMismatch(uint32_t pipeline, uint32_t pass) {
+    return !mglRenderPixelFormatIsInvalid(pipeline) &&
+                   !mglRenderPixelFormatIsInvalid(pass) && pipeline != pass
+               ? 1
+               : 0;
+}
+
+int mglRenderPipelinePassAttachmentMismatch(uint32_t pipeline, uint32_t pass) {
+    if (mglRenderPixelFormatIsInvalid(pipeline) &&
+        mglRenderPixelFormatIsInvalid(pass)) {
+        return 0;
+    }
+    return pipeline != pass ? 1 : 0;
+}
+
 int mglRenderSkipInvalidColorAttachment(uint32_t format) {
     return format == 0u ? 1 : 0;
 }
