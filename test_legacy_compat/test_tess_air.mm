@@ -7,6 +7,7 @@
 #include "mgl_tess_domain.h"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -36,17 +37,28 @@ static int checkStream(id<MTLDevice> device, id<MTLCommandQueue> queue,
         options:MTLResourceStorageModeShared];
     id<MTLBuffer> scratch = [device newBufferWithLength:1024
         options:MTLResourceStorageModeShared];
-    if (!factorBuffer || !output || !xfb || !scratch) return 1;
+    if (!factorBuffer || !output || !xfb || !scratch) {
+        fprintf(stderr, "TES buffer alloc failed count=%u\n", count);
+        return 1;
+    }
     memset(output.contents, 0xa5, output.length);
     memset(xfb.contents, 0xa5, xfb.length);
     memset(scratch.contents, 0, scratch.length);
     std::vector<MGLTessCoord> expectedPoints(count);
-    if (count && mglTessGenerateDomain(&in, expectedPoints.data(), count) != count) return 1;
+    if (count && mglTessGenerateDomain(&in, expectedPoints.data(), count) != count) {
+        fprintf(stderr, "TES domain generate count mismatch mode=%u count=%u\n",
+                in.gen_mode, count);
+        return 1;
+    }
     for (uint32_t i = 0; i < count; i++)
         memcpy((char *)output.contents + (base + i) * stride, &expectedPoints[i], sizeof(MGLTessCoord));
     const uint32_t contract[4] = {1, 1, count, base};
     id<MTLCommandBuffer> command = [queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+    if (!command || !encoder) {
+        fprintf(stderr, "TES command encoder alloc failed\n");
+        return 1;
+    }
     [encoder setComputePipelineState:pipeline];
     [encoder setBuffer:scratch offset:0 atIndex:MGL_AIR_TESS_SLOT_TCS_STAGE_IN];
     [encoder setBuffer:factorBuffer offset:0 atIndex:MGL_AIR_TESS_SLOT_TESS_FACTOR];
@@ -80,7 +92,11 @@ static int checkStream(id<MTLDevice> device, id<MTLCommandQueue> queue,
                     expected.u, expected.v, expected.w);
             return 1;
         }
-        if (memcmp(actual, (const char *)xfb.contents + (base + i) * stride, 16)) return 1;
+        if (memcmp(actual, (const char *)xfb.contents + (base + i) * stride, 16)) {
+            fprintf(stderr, "TES XFB mismatch mode=%u spacing=%u point=%u winding=%u index=%u\n",
+                    in.gen_mode, in.spacing, in.point_mode, in.winding, i);
+            return 1;
+        }
     }
     for (id<MTLBuffer> buffer in @[output, xfb]) {
         const unsigned char *bytes = (const unsigned char *)buffer.contents;
@@ -96,10 +112,25 @@ static int checkStream(id<MTLDevice> device, id<MTLCommandQueue> queue,
 
 int main(void)
 {
+    setvbuf(stderr, NULL, _IONBF, 0);
+    setvbuf(stdout, NULL, _IONBF, 0);
     @autoreleasepool {
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
         if (!device) { fprintf(stderr, "No Metal device\n"); return 2; }
+        const int force = getenv("MGL_FORCE_PARAVIRT_TESTS") != NULL;
+        const int skip_env = getenv("MGL_SKIP_PARAVIRT_UNRELIABLE") != NULL;
+        const int paravirt = [device.name rangeOfString:@"Paravirtual"
+            options:NSCaseInsensitiveSearch].location != NSNotFound;
+        /* Hosted macos-26 AIR TES compute PSOs fail with CompilerError, the
+         * same class as the existing GS/compute skip in test_regression. */
+        if (!force && (skip_env || paravirt)) {
+            fprintf(stderr,
+                    "test_tess_air: SKIP (paravirt TES compute PSO; "
+                    "set MGL_FORCE_PARAVIRT_TESTS=1 to run)\n");
+            return 0;
+        }
         id<MTLCommandQueue> queue = [device newCommandQueue];
+        if (!queue) { fprintf(stderr, "No Metal command queue\n"); return 1; }
         const uint32_t modes[] = {GL_TRIANGLES, GL_QUADS, GL_ISOLINES};
         const char *modeNames[] = {"triangles", "quads", "isolines"};
         const uint32_t spacings[] = {GL_EQUAL, GL_FRACTIONAL_ODD, GL_FRACTIONAL_EVEN};
@@ -126,8 +157,10 @@ int main(void)
             id<MTLLibrary> library = [device newLibraryWithData:data error:&metalError];
             mglShaderFree(bytes);
             if (!library) { fprintf(stderr, "TES library: %s\n", metalError.localizedDescription.UTF8String); return 1; }
-            id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:
-                [library newFunctionWithName:@"main"] error:&metalError];
+            id<MTLFunction> function = [library newFunctionWithName:@"main"];
+            if (!function) { fprintf(stderr, "TES function 'main' missing\n"); return 1; }
+            id<MTLComputePipelineState> pipeline = [device newComputePipelineStateWithFunction:function
+                error:&metalError];
             if (!pipeline) { fprintf(stderr, "TES pipeline: %s\n", metalError.localizedDescription.UTF8String); return 1; }
             for (unsigned vector = 0; vector < 5; vector++) {
                 MGLTessFactorInput in = {{1,1,1,1}, {1,1}, modes[m], spacings[s],
