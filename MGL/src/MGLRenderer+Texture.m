@@ -552,8 +552,7 @@ static void mglTextureCopyTextureToBuffer(
     }
     const uint32_t parentFormat =
         (uint32_t)mglTextureInfo(texture).pixel_format;
-    if (parentFormat != MGLPixelFormatDepth32Float_Stencil8 &&
-        parentFormat != MGLPixelFormatDepth24Unorm_Stencil8) {
+    if (!mglRenderPixelFormatIsPackedDepthStencil(parentFormat)) {
         return false;
     }
 
@@ -612,9 +611,7 @@ static void mglTextureCopyTextureToBuffer(
         (uint32_t)mglTextureInfo(texture).texture_type);
     bool uploaded = false;
     const uint32_t stencilViewFormat =
-        parentFormat == MGLPixelFormatDepth24Unorm_Stencil8
-            ? MGLPixelFormatX24_Stencil8
-            : MGLPixelFormatX32_Stencil8;
+        mglRenderStencilViewFormat(parentFormat);
     if (mglRenderCreateTextureViewRange(
             (__bridge void *)texture,
             stencilViewFormat, viewType,

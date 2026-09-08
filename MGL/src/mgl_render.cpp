@@ -9187,6 +9187,19 @@ uint32_t mglRenderDepthStencilPlaneViewType(uint32_t parent_type) {
     }
 }
 
+int mglRenderPixelFormatIsPackedDepthStencil(uint32_t pixel_format) {
+    return pixel_format == 255u /* Depth24Unorm_Stencil8 */ ||
+                   pixel_format == 260u /* Depth32Float_Stencil8 */
+               ? 1
+               : 0;
+}
+
+uint32_t mglRenderStencilViewFormat(uint32_t parent_format) {
+    return parent_format == 255u /* Depth24Unorm_Stencil8 */
+               ? 262u /* X24_Stencil8 */
+               : 261u /* X32_Stencil8 */;
+}
+
 int mglRenderSamplerUnitExplicit(uint32_t flag) {
     return flag == GL_TRUE ? 1 : 0;
 }

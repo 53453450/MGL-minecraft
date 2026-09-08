@@ -1798,6 +1798,25 @@ static void test_ds_plane_view_type(void)
     expect(ds_plane_view_type(0u) == 0u, "1D DS plane stays 1D");
 }
 
+static int packed_ds(uint32_t fmt)
+{
+    return fmt == 255u || fmt == 260u ? 1 : 0;
+}
+
+static uint32_t stencil_view_format(uint32_t parent)
+{
+    return parent == 255u ? 262u : 261u;
+}
+
+static void test_stencil_view_format(void)
+{
+    expect(packed_ds(255u) == 1, "Depth24_Stencil8 is packed DS");
+    expect(packed_ds(260u) == 1, "Depth32F_Stencil8 is packed DS");
+    expect(packed_ds(252u) == 0, "Depth32F is not packed DS");
+    expect(stencil_view_format(255u) == 262u, "Depth24_Stencil8 view is X24");
+    expect(stencil_view_format(260u) == 261u, "Depth32F_Stencil8 view is X32");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1935,6 +1954,7 @@ int main(void)
     test_metal_pixel_format_bpp();
     test_metal_pixel_format_value_class();
     test_ds_plane_view_type();
+    test_stencil_view_format();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
