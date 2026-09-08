@@ -145,9 +145,10 @@ static bool mglDynamicVertexAttribCanBindDirectly(Program *active_program,
                                                    GLuint attrib_index,
                                                    const VertexAttrib *attrib)
 {
-    if (!attrib || attrib->long_attribute || attrib->type == GL_DOUBLE ||
-        (!attrib->integer &&
-         (attrib->type == GL_INT || attrib->type == GL_UNSIGNED_INT))) {
+    if (!attrib ||
+        mglRenderAttribNeedsConversion(attrib->long_attribute ? 1 : 0,
+                                       (uint32_t)attrib->type,
+                                       attrib->integer ? 1 : 0)) {
         return false;
     }
     if (!attrib->integer) {

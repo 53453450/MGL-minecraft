@@ -2080,15 +2080,13 @@ static id mglLookupAuxRenderPipeline(
         readtexid = [self mglDrawableTexture];
     } else {
         readAttachment = glm_ctx->active_state->read_buffer;
-        if (readAttachment == GL_NONE) {
+        if (mglRenderDrawBufferIsNone((uint32_t)readAttachment)) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer skipped color blit with GL_READ_BUFFER=GL_NONE");
             return NO;
         }
-        if (!isColorAttachment(glm_ctx, readAttachment) &&
-            readAttachment != GL_DEPTH_ATTACHMENT &&
-            readAttachment != GL_STENCIL_ATTACHMENT &&
-            readAttachment != GL_DEPTH_STENCIL_ATTACHMENT)
-        {
+        if (!mglRenderFBOBlitAttachmentKnown(
+                (uint32_t)readAttachment,
+                isColorAttachment(glm_ctx, readAttachment) ? 1 : 0)) {
             // OpenGL compatibility enums (e.g. GL_FRONT/GL_BACK) are not valid
             // FBO attachment enums. For user FBO blits, treat them as COLOR_ATTACHMENT0.
             readAttachment = GL_COLOR_ATTACHMENT0;

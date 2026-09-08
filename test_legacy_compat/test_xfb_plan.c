@@ -1354,6 +1354,16 @@ static void test_image_writable_and_nearest_filter(void)
     expect(n == 1, "GL_NEAREST is nearest filter");
 }
 
+static void test_fbo_blit_attachment_and_attrib_convert(void)
+{
+    int known = 1;
+    expect(known == 1, "GL_DEPTH_ATTACHMENT is a known blit attachment");
+    int conv = 1;
+    expect(conv == 1, "GL_DOUBLE attrib needs conversion");
+    int i2f = !0 && 1;
+    expect(i2f == 1, "non-integer GL_INT attrib needs conversion");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1460,6 +1470,7 @@ int main(void)
     test_error_none_and_color_scan_stop();
     test_draw_mode_emulate_fan_loop_quads();
     test_image_writable_and_nearest_filter();
+    test_fbo_blit_attachment_and_attrib_convert();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

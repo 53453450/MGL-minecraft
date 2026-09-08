@@ -9377,6 +9377,27 @@ int mglRenderFilterIsNearest(uint32_t filter) {
     return filter == GL_NEAREST ? 1 : 0;
 }
 
+int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color) {
+    if (is_color) {
+        return 1;
+    }
+    return attachment == GL_DEPTH_ATTACHMENT ||
+                   attachment == GL_STENCIL_ATTACHMENT ||
+                   attachment == GL_DEPTH_STENCIL_ATTACHMENT
+               ? 1
+               : 0;
+}
+
+int mglRenderAttribNeedsConversion(int long_attr, uint32_t type, int integer) {
+    if (long_attr || type == GL_DOUBLE) {
+        return 1;
+    }
+    if (!integer && (type == GL_INT || type == GL_UNSIGNED_INT)) {
+        return 1;
+    }
+    return 0;
+}
+
 void mglRenderClearEmptyBufferDirty(Buffer *buf) {
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
