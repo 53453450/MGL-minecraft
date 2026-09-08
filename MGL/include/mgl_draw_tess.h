@@ -210,6 +210,31 @@ void mglTessPlanRasterQuery(const Program *tes, uint64_t instance_count,
                             uint32_t xfb_compact_stride,
                             MGLTessRasterQueryPlan *out);
 
+enum {
+    MGL_TESS_AFTER_COMPUTE_GS = 0,
+    MGL_TESS_AFTER_COMPUTE_DISCARD = 1,
+    MGL_TESS_AFTER_COMPUTE_PASSTHROUGH = 2,
+};
+
+typedef struct MGLTessEvalAfterComputePlan {
+    uint32_t action;
+    uint32_t gs_vertex_count;
+    uint8_t gs_empty;
+} MGLTessEvalAfterComputePlan;
+
+int mglTessPlanEvalAfterCompute(int has_gs, int rasterizer_discard,
+                                uint32_t items_per_instance,
+                                uint32_t instance_count,
+                                MGLTessEvalAfterComputePlan *out);
+int mglTessPassthroughRasterReady(int state_ready, int has_encoder,
+                                  int raster_empty);
+
+bool mglXfbPlanVsBufferDestOrUnbacked(uint32_t record_count, uint32_t stride,
+                                      int has_metal, int64_t slot_offset,
+                                      uint64_t session_offset,
+                                      uint64_t visible_bytes,
+                                      MGLXfbVsBufferDest *out);
+
 typedef struct MGLTessNativeAttribPlan {
     uint32_t index;
     uint32_t format;

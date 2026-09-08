@@ -633,6 +633,40 @@ extern "C" void mglTessPlanRasterQuery(const Program *tes,
     out->written = written;
 }
 
+extern "C" int mglTessPlanEvalAfterCompute(int has_gs, int rasterizer_discard,
+                                           uint32_t items_per_instance,
+                                           uint32_t instance_count,
+                                           MGLTessEvalAfterComputePlan *out)
+{
+    if (!out) {
+        return 0;
+    }
+    memset(out, 0, sizeof(*out));
+    if (has_gs) {
+        const uint64_t n =
+            (uint64_t)items_per_instance * (uint64_t)instance_count;
+        out->action = MGL_TESS_AFTER_COMPUTE_GS;
+        if (n == 0u || n > (uint64_t)INT32_MAX) {
+            out->gs_empty = 1u;
+            return 1;
+        }
+        out->gs_vertex_count = (uint32_t)n;
+        return 1;
+    }
+    if (rasterizer_discard) {
+        out->action = MGL_TESS_AFTER_COMPUTE_DISCARD;
+        return 1;
+    }
+    out->action = MGL_TESS_AFTER_COMPUTE_PASSTHROUGH;
+    return 1;
+}
+
+extern "C" int mglTessPassthroughRasterReady(int state_ready, int has_encoder,
+                                             int raster_empty)
+{
+    return state_ready && has_encoder == 1 && !raster_empty ? 1 : 0;
+}
+
 extern "C" int mglTessPlanNativeVertexDescriptor(
     const Program *tes, uint32_t tcs_output_stride,
     MGLTessNativeVertexPlan *out)
@@ -1979,6 +2013,32 @@ extern "C" bool mglXfbPlanVsBufferDest(uint32_t record_count, uint32_t stride,
     out->written_records = (uint32_t)written;
     out->written_bytes = (uint32_t)written * stride;
     out->destination_offset = (uint32_t)dest;
+    return true;
+}
+
+extern "C" bool mglXfbPlanVsBufferDestOrUnbacked(uint32_t record_count,
+                                                uint32_t stride, int has_metal,
+                                                int64_t slot_offset,
+                                                uint64_t session_offset,
+                                                uint64_t visible_bytes,
+                                                MGLXfbVsBufferDest *out)
+{
+    if (has_metal && slot_offset >= 0) {
+        return mglXfbPlanVsBufferDest(record_count, stride, 1, slot_offset,
+                                      session_offset, visible_bytes, out);
+    }
+    if (!out) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (record_count == 0u || stride == 0u ||
+        record_count > UINT32_MAX / stride) {
+        out->skip = 1u;
+        return true;
+    }
+    out->written_records = record_count;
+    out->written_bytes = record_count * stride;
+    out->destination_offset = 0u;
     return true;
 }
 

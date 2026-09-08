@@ -1540,21 +1540,12 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                         &xfbMap, (size_t)mglTessBufferLength(destMTL));
                 }
                 MGLXfbVsBufferDest dest = {0};
-                if (destMTL && slot->offset >= 0) {
-                    if (!mglXfbPlanVsBufferDest(
-                            (uint32_t)xfbCopiedVertices, fieldBytes, 1,
-                            slot->offset, sessionOffset, visible, &dest) ||
-                        dest.skip) {
-                        continue;
-                    }
-                } else {
-                    dest.written_records = (uint32_t)xfbCopiedVertices;
-                    dest.written_bytes =
-                        (uint32_t)xfbCopiedVertices * fieldBytes;
-                    dest.destination_offset = 0u;
-                    if (dest.written_records == 0u) {
-                        continue;
-                    }
+                if (!mglXfbPlanVsBufferDestOrUnbacked(
+                        (uint32_t)xfbCopiedVertices, fieldBytes,
+                        destMTL ? 1 : 0, slot->offset, sessionOffset, visible,
+                        &dest) ||
+                    dest.skip) {
+                    continue;
                 }
                 NSUInteger destOffset = (NSUInteger)dest.destination_offset;
                 NSUInteger maxVerts = dest.written_records;
@@ -1633,14 +1624,22 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                            (uint64_t)itemsPerInstanceU, xfbActive ? 1 : 0,
                            (uint64_t)xfbWrittenBytes,
                            (uint32_t)xfbCompactStride, &query);
-    if (hasGeometryStage) {
-        GLsizei gsCount =
-            (GLsizei)((uint64_t)itemsPerInstanceU * (uint64_t)instanceCountU);
-        if (gsCount <= 0) {
+    MGLTessEvalAfterComputePlan after = {0};
+    if (!mglTessPlanEvalAfterCompute(hasGeometryStage ? 1 : 0,
+                                     MGL_STATE(glm_ctx)->caps.rasterizer_discard
+                                         ? 1
+                                         : 0,
+                                     itemsPerInstanceU, instanceCountU,
+                                     &after)) {
+        return false;
+    }
+    if (after.action == MGL_TESS_AFTER_COMPUTE_GS) {
+        if (after.gs_empty) {
             NSLog(@"MGL TESS ERROR: TES→GS empty expansion program=%u",
                   (unsigned)tesProgram->name);
             return false;
         }
+        GLsizei gsCount = (GLsizei)after.gs_vertex_count;
         _tessellation.pendingGSInputActive = YES;
         _tessellation.pendingGSInput = (__bridge_retained void *)outBuffer;
         _tessellation.pendingGSInputOffset = 0u;
@@ -1666,7 +1665,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         _tessellation.pendingGSVertexCount = 0;
         return gsOK;
     }
-    if (MGL_STATE(glm_ctx)->caps.rasterizer_discard) {
+    if (after.action == MGL_TESS_AFTER_COMPUTE_DISCARD) {
         /* GL_RASTERIZER_DISCARD: no pixels by definition, so skip the
          * passthrough draw entirely, but the compute expansion already ran
          * and the primitive query must still count the generated
@@ -1691,10 +1690,11 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     _tessellation.tessComputeActive = YES;
     _tessellation.tessComputeProgram = tesProgram;
     BOOL stateReady = [self processGLState:true];
-    if (!stateReady ||
-        mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1 ||
-        [self currentDrawRasterizationIsEmpty]) {
+    if (!mglTessPassthroughRasterReady(
+            stateReady ? 1 : 0,
+            mglRenderEncoderOwnerHasCurrent(
+                _renderPassManager.state->currentRenderEncoderOwner),
+            [self currentDrawRasterizationIsEmpty] ? 1 : 0)) {
         NSLog(@"MGL TESS ERROR: TES compute raster skip program=%u stateReady=%d encoder=%d empty=%d clip0=%d",
               (unsigned)tesProgram->name,
               (int)stateReady,

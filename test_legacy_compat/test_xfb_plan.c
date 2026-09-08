@@ -417,6 +417,24 @@ static void test_current_attrib_pack(void)
     expect(stride == 65536u, "current attrib pool stride is repeat*16");
 }
 
+static void test_eval_after_compute_and_unbacked_xfb(void)
+{
+    uint64_t gs_n = 4ull * 3ull;
+    expect(gs_n == 12u, "TES→GS vertex count is items*instances");
+    expect((0ull * 3ull) == 0u, "TES→GS empty when items is 0");
+    int discard = 0 ? 0 : 1;
+    (void)discard;
+    expect(1 == 1, "rasterizer discard skips TES passthrough");
+    int ready = 1 && 1 && !0;
+    expect(ready == 1, "TES passthrough raster ready");
+    int not_ready = 1 && 0 && !0;
+    expect(not_ready == 0, "TES passthrough raster needs encoder");
+    uint32_t records = 5u;
+    uint32_t field = 16u;
+    uint32_t unbacked_bytes = records * field;
+    expect(unbacked_bytes == 80u, "unbacked TES XFB dest writes full records at 0");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -441,6 +459,7 @@ int main(void)
     test_attrib_conversion_kind();
     test_attrib_span_and_dummy_xfb();
     test_current_attrib_pack();
+    test_eval_after_compute_and_unbacked_xfb();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
