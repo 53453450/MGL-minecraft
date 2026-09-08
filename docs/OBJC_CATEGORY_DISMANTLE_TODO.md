@@ -51,9 +51,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
 | `+DrawStageHost.m` | ~363 | 薄 | A1：保留（非空）；bindCull/MS + 一行包装；GS 扩张已无策略 |
 | `mgl_draw_metal_port.m` | ~1938 | 薄端口+HostOps | A1：删 `mglDrawHostGsExecuteMetalExpansion`；嵌套 `metal_ops`；id 物化 + HostOps 表 |
-| `+Batch.m` | ~2083 | **厚** | path 决策（MDI/stream/ICB）→ C；ObjC 只 enqueue/flush 端口 |
+| `+Batch.m` | ~1615 | **厚** | A3：same-key/dirty-delta/stream/hash sync 已下沉；仍厚于 flush/ICB/mark-FBO |
 | `+Tessellation.m` | ~1766 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
-| `+BatchReplay.m` | ~1446 | **厚** | O2.3/O2.5：stage/bind + MDI/simple/direct plan 在 `mgl_batch_replay`；ObjC 仍厚于 Metal encode |
+| `+BatchReplay.m` | ~1234 | **厚** | A3：dyn-vertex plan/sampler params/simple fill/DrawArrays 合并；仍厚于 bind materialize + element/cull encode |
 | `+Buffer.m` | ~1575 | 中 | map/CoW/shadow plan → C++；ObjC 只 MTLBuffer 物化 |
 | `+Compute.m` | ~1255 | 中 | dispatch plan → C++；ObjC 只 compute encoder 端口 |
 | `+Lifecycle.m` | ~665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
@@ -98,6 +98,8 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | ~~`mglDrawHostGsExecuteMetalExpansion`~~ | — | **A1 DONE**：已删除；`RunDraw` 经嵌套 `metal_ops` 直调 `mglDrawGsExecuteMetalExpansion`；fragment clear 在 C++ |
 | `bindCullDistanceEmulationBuffers` VAO resolve 口 | `+DrawStageHost.m` | ObjC 只填 port 表；layout 已在 C++（O1.3）；cull encode 在 `mgl_draw_cull.cpp` |
 | `scheduleDrawBatch` 物化口 | `+Batch.m` | 决策已在 `mgl_batch_select_path`；ObjC 填 inputs（O2.1） |
+| `flushDrawBufferLocked` / ICB·MDI encode | `+Batch.m` | A3 residual：编排仍在 ObjC |
+| `bindDynamic*Directly` / element·cull encode | `+BatchReplay.m` | A3 residual：plan 已下沉；MTL 物化环仍厚 |
 | `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1：编排在 `mgl_render_pass_plan`；ObjC 物化 MTL* |
 | Texture/Blit/BindingState 巨型 category | 见 §1.1 | O3–O4 |
 
@@ -123,7 +125,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [x] **O2.2** hazard overflow 策略（sticky vs flush-and-continue）→ C；ObjC 不设语义 — `mgl_batch_hazard_*` + `test-batch-hazard`；`draw_command` 只执行 action；默认 sticky，`MGL_HAZARD_OVERFLOW_FLUSH_CONTINUE` 选 flush-and-continue
 - [x] **O2.3** `+BatchReplay` stage/bind 展开 → C++；ObjC 只 `set*Bytes` / `draw*` 端口 — `mgl_batch_replay.*`（dynamic VAO / UBO·texture override / resource binding collect / attrib can-bind）
 - [x] **O2.4** ICB：batch 与 `supportIndirectCommandBuffers` 门闩同层配置 — `mgl_batch_icb_config` / `mgl_batch_icb_support_indirect_command_buffers`；ObjC Batch/Blit + `mgl_air_loader` 同用；`test-batch-icb`；legacy ENABLE_ICB_BATCH|PIPELINES / DISABLE_ICB(_BATCH) 仍识别
-- [ ] **O2.5 / A3** 验收：`+Batch*.m` 合计 &lt; 600 LOC；MC 路径可用 env 金样 / benchmark 回归 — *进行中*：MDI/simple/direct/stream/ICB plan 已进 `mgl_batch_replay`；ObjC 仍厚于 Metal encode（~2083+~1446≈3529）
+- [ ] **O2.5 / A3** 验收：`+Batch*.m` 合计 &lt; 600 LOC；MC 路径可用 env 金样 / benchmark 回归 — *进行中（本刀）*：3529→**~2849**；`mgl_batch_restore` + replay stream/dyn-vertex/sampler/hash sync；diag → `mgl_batch_replay_trace.m`；`test-batch-restore`。仍远高于 600，见 §5 residual
 
 ### Batch O3 — RenderPass / PSO / Binding【P1】
 
@@ -197,6 +199,16 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 6. ~~**O2.2 / O2.3**~~：`mgl_batch_hazard` + `mgl_batch_replay` stage/bind
 7. ~~**O2.4**~~：`mgl_batch_icb_*` 统一 batch path + `supportIndirectCommandBuffers`；`test-batch-icb`
 8. ~~**A1**~~：删 `mglDrawHostGsExecuteMetalExpansion`；`metal_ops` 嵌套；StageHost ~363 保留
-9. **下一刀（A3 / O2.5）**：继续压 `+Batch*.m` Metal encode（合计仍 ~3529，目标 &lt;600）；勿再开厚 Draw category
+9. ~~**A3 本刀**~~：`mgl_batch_restore`（same-key/dirty-delta）+ replay stream/dyn-vertex/sampler/hash；DrawArrays 三合一；diag 拆出；Batch 簇 3529→~2849；`test-batch-restore`
+10. **下一刀（A3 residual / O2.5）**：继续压 `+Batch*.m`（目标 &lt;600）。residual 厚符号：
+    - `flushDrawBufferLocked` 编排环 + path dispatch
+    - `issueIndirectCommandBufferBatch` Metal ICB 物化/encode 环
+    - `issueMDIBatch` / `issueStreamMergedMDIBatch` scratch+encode
+    - `bindDynamicUniformRangesDirectly` / `bindDynamicSampledTexturesDirectly*` map 展开
+    - `applyDynamicBindingsForCommand` encoder-rotate 回退
+    - `issueDirectBatch` / `issueDirectBatchElementDraw` cull-distance + element resolve
+    - `markCurrentFramebuffer*Written` RT-sample 记账
+    - `traceReplay*`（已在 `mgl_batch_replay_trace.m`，下刀可再 POD 化）
+    - 勿再开厚 Draw category；新逻辑进 `mgl_batch_*` 域文件，禁止堆进 `mgl_render.cpp`
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。

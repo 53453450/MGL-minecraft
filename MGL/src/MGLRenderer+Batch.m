@@ -20,15 +20,11 @@
 #include "mgl_render.h"
 #include "mgl_batch_path.h"
 #include "mgl_batch_replay.h"
+#include "mgl_batch_restore.h"
 
 static BOOL mglBatchHasActiveEncoder(void *owner)
 {
     return mglRenderEncoderOwnerHasCurrent(owner) != 0;
-}
-
-static void *mglBatchEncoderTraceToken(void *owner)
-{
-    return owner;
 }
 
 static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
@@ -174,6 +170,31 @@ static void mglBatchExecuteIndirectCommands(
     (void)mglRenderExecuteIndirectCommandsForOwner(
         renderEncoderOwner, (__bridge void *)indirectBuffer,
         range.location, range.length);
+}
+
+
+static MGLBatchStateKeyView mglBatchStateKeyViewFromKey(const MGLStateKey *key)
+{
+    MGLBatchStateKeyView v;
+    memset(&v, 0, sizeof(v));
+    if (!key) {
+        return v;
+    }
+    v.program_name = key->program_name;
+    v.program_pipeline_name = key->program_pipeline_name;
+    v.vertex_program_name = key->vertex_program_name;
+    v.fragment_program_name = key->fragment_program_name;
+    v.vao_name = key->vao_name;
+    v.vertex_layout_hash = key->vertex_layout_hash;
+    v.texture_hash = key->texture_hash;
+    v.render_state_hash = key->render_state_hash;
+    v.uniform_buffer_hash = key->uniform_buffer_hash;
+    v.caps_flags = key->caps_flags;
+    v.scissor_enabled = key->scissor_enabled;
+    v.primitive_type = key->primitive_type;
+    memcpy(v.viewport, key->viewport, sizeof(v.viewport));
+    memcpy(v.scissor, key->scissor, sizeof(v.scissor));
+    return v;
 }
 
 @implementation MGLRenderer (Batch)
@@ -590,440 +611,6 @@ static void mglBatchExecuteIndirectCommands(
     }
 }
 
-- (void)traceReplayBatch:(MGLDrawBatch *)batch
-                 context:(GLMContext)glm_ctx
-                  flushId:(uint64_t)flushId
-               batchIndex:(uint32_t)batchIndex
-                    phase:(const char *)phase
-{
-    if (!batch || !glm_ctx) {
-        return;
-    }
-
-    /* Pure diagnostics: with the trace log disabled every downstream sink is
-     * a no-op, so exit before the program resolve. */
-    if (!mglTraceLogIsEnabled()) {
-        return;
-    }
-
-    Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    MGLFragmentTextureTraceBinding *earlyFs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
-    MGLFragmentTextureTraceBinding *earlyFs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
-    MGLFragmentTextureTraceBinding *earlyFs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
-    MGLFragmentTextureTraceBinding *earlyFs3 = &_resourceFallback.fragmentTextureTraceBindings[3];
-    BOOL earlyFsSlotHasRT =
-        earlyFs0->rt_write_version != 0u ||
-        earlyFs1->rt_write_version != 0u ||
-        earlyFs2->rt_write_version != 0u ||
-        earlyFs3->rt_write_version != 0u;
-    BOOL earlyFsSlotUsedCopy =
-        earlyFs0->used_sampled_copy ||
-        earlyFs1->used_sampled_copy ||
-        earlyFs2->used_sampled_copy ||
-        earlyFs3->used_sampled_copy;
-    if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) &&
-        !earlyFsSlotHasRT &&
-        !earlyFsSlotUsedCopy) {
-        return;
-    }
-
-    VertexArray *vao = mglRendererGetValidatedVAO(glm_ctx, "replay.batch.trace");
-    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
-    GLuint fboName = 0u;
-    if (fbo &&
-        mglRendererObjectPointerLikelyValid(fbo) &&
-        mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
-        fboName = fbo->name;
-    }
-    id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-    GLMState *snapshot = batch->state_snapshot ? (GLMState *)batch->state_snapshot : NULL;
-    GLuint snapshotFBOName = 0u;
-    if (snapshot &&
-        snapshot->framebuffer &&
-        mglRendererObjectPointerLikelyValid(snapshot->framebuffer) &&
-        mglPointerRangeIsReadable(snapshot->framebuffer, sizeof(*snapshot->framebuffer))) {
-        snapshotFBOName = snapshot->framebuffer->name;
-    }
-    Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-    Program *fragmentProgram = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
-    GLuint currentProgramKey = mglCurrentRenderProgramKey(glm_ctx);
-
-    mglTraceLog("REPLAY_BATCH_%s flush=%llu batch=%u commands=%u stream=%d mdiCompat=%d usesElements=%d "
-                "key(program=%u pipeline=%u vs=%u fs=%u fbo=%u vao=%u prim=%u) "
-                "snapshot(program=%u pipeline=%u current=%u fbo=%u vao=%p) "
-                "restored(program=%u current=%u pipeline=%u vs=%u fs=%u fbo=%u vao=%p enabled=0x%x) "
-                "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d) "
-                "drawBuf=0x%x readBuf=0x%x colorMask=%d%d%d%d depth(test=%d write=%d func=0x%x) "
-                "blend=%d cull=%d cullFace=0x%x frontFace=0x%x dirty=0x%x encoder=%p pipelineState=%p rpFbo=%u rpColor=%p rpDepth=%p",
-                phase ? phase : "STATE",
-                (unsigned long long)flushId,
-                (unsigned)batchIndex,
-                (unsigned)batch->command_count,
-                batch->stream_merged ? 1 : 0,
-                batch->mdi_compatible ? 1 : 0,
-                batch->uses_elements ? 1 : 0,
-                (unsigned)batch->key.program_name,
-                (unsigned)batch->key.program_pipeline_name,
-                (unsigned)batch->key.vertex_program_name,
-                (unsigned)batch->key.fragment_program_name,
-                (unsigned)batch->key.fbo_name,
-                (unsigned)batch->key.vao_name,
-                (unsigned)batch->key.primitive_type,
-                snapshot ? (unsigned)snapshot->program_name : 0u,
-                snapshot ? (unsigned)snapshot->var.program_pipeline_binding : 0u,
-                snapshot ? (unsigned)snapshot->program_name : 0u,
-                (unsigned)snapshotFBOName,
-                snapshot ? snapshot->vao : NULL,
-                (unsigned)currentProgramKey,
-                (unsigned)MGL_STATE(glm_ctx)->program_name,
-                (unsigned)MGL_STATE(glm_ctx)->var.program_pipeline_binding,
-                vertexProgram ? (unsigned)vertexProgram->name : 0u,
-                fragmentProgram ? (unsigned)fragmentProgram->name : 0u,
-                (unsigned)fboName,
-                vao,
-                vao ? (unsigned)vao->enabled_attribs : 0u,
-                (int)MGL_STATE(glm_ctx)->viewport[0],
-                (int)MGL_STATE(glm_ctx)->viewport[1],
-                (int)MGL_STATE(glm_ctx)->viewport[2],
-                (int)MGL_STATE(glm_ctx)->viewport[3],
-                MGL_STATE(glm_ctx)->caps.scissor_test ? 1 : 0,
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[0],
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[1],
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[2],
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[3],
-                (unsigned)MGL_STATE(glm_ctx)->draw_buffer,
-                (unsigned)MGL_STATE(glm_ctx)->read_buffer,
-                MGL_STATE(glm_ctx)->var.color_writemask[0][0] ? 1 : 0,
-                MGL_STATE(glm_ctx)->var.color_writemask[0][1] ? 1 : 0,
-                MGL_STATE(glm_ctx)->var.color_writemask[0][2] ? 1 : 0,
-                MGL_STATE(glm_ctx)->var.color_writemask[0][3] ? 1 : 0,
-                MGL_STATE(glm_ctx)->caps.depth_test ? 1 : 0,
-                MGL_STATE(glm_ctx)->var.depth_writemask ? 1 : 0,
-                (unsigned)MGL_STATE(glm_ctx)->var.depth_func,
-                MGL_STATE(glm_ctx)->caps.blend ? 1 : 0,
-                MGL_STATE(glm_ctx)->caps.cull_face ? 1 : 0,
-                (unsigned)MGL_STATE(glm_ctx)->var.cull_face_mode,
-                (unsigned)MGL_STATE(glm_ctx)->var.front_face,
-                (unsigned)MGL_STATE(glm_ctx)->dirty_bits,
-                mglBatchEncoderTraceToken(_renderPassManager.state->currentRenderEncoderOwner),
-                _pipelineCache.state->pipelineState,
-                (unsigned)_renderPassManager.state->renderPassFramebufferName,
-                rpColor0,
-                rpDepth);
-}
-
-- (void)traceReplayCommand:(MGLDrawBatch *)batch
-                   command:(MGLDrawCommand *)cmd
-                   context:(GLMContext)glm_ctx
-                   flushId:(uint64_t)flushId
-                batchIndex:(uint32_t)batchIndex
-              commandIndex:(uint32_t)commandIndex
-                     phase:(const char *)phase
-                    reason:(const char *)reason
-{
-    if (!batch || !cmd || !glm_ctx) {
-        return;
-    }
-
-    /* Pure diagnostics: with the trace log disabled every downstream sink is
-     * a no-op, so exit before any resolves or string formatting. */
-    if (!mglTraceLogIsEnabled()) {
-        return;
-    }
-
-    MGLFragmentTextureTraceBinding *fs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
-    MGLFragmentTextureTraceBinding *fs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
-    MGLFragmentTextureTraceBinding *fs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
-    MGLFragmentTextureTraceBinding *fs3 = &_resourceFallback.fragmentTextureTraceBindings[3];
-    BOOL earlyFsSlotHasRT =
-        fs0->rt_write_version != 0u ||
-        fs1->rt_write_version != 0u ||
-        fs2->rt_write_version != 0u ||
-        fs3->rt_write_version != 0u;
-    BOOL earlyFsSlotUsedCopy =
-        fs0->used_sampled_copy ||
-        fs1->used_sampled_copy ||
-        fs2->used_sampled_copy ||
-        fs3->used_sampled_copy;
-    Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) &&
-        !earlyFsSlotHasRT &&
-        !earlyFsSlotUsedCopy) {
-        return;
-    }
-
-    Buffer *ebo = NULL;
-    if (mglDrawCommandUsesElements(cmd)) {
-        ebo = mglDrawCommandElementBuffer(glm_ctx, cmd);
-    }
-    GLuint eboName = 0u;
-    if (ebo &&
-        mglRendererObjectPointerLikelyValid(ebo) &&
-        mglPointerRangeIsReadable(ebo, sizeof(*ebo))) {
-        eboName = ebo->name;
-    }
-    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
-    GLuint fboName = 0u;
-    if (fbo &&
-        mglRendererObjectPointerLikelyValid(fbo) &&
-        mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
-        fboName = fbo->name;
-    }
-    id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-                _renderPassManager.state->renderPassStateOwner,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-    MGLRenderTextureInfo rpColorInfo = mglBatchTextureInfo(rpColor0);
-    MGLRenderTextureInfo rpDepthInfo = mglBatchTextureInfo(rpDepth);
-    Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-    Program *fragmentProgram = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
-    FBOAttachment *color0Attachment = (fbo && (fbo->color_attachment_bitfield & 1u))
-        ? &fbo->color_attachments[0]
-        : NULL;
-    Texture *color0Texture = mglTraceFramebufferAttachmentTexture(glm_ctx, color0Attachment);
-    Texture *depthTexture = fbo ? mglTraceFramebufferAttachmentTexture(glm_ctx, &fbo->depth) : NULL;
-    Texture *unit0Active = MGL_STATE(glm_ctx)->active_textures[0];
-    Texture *unit0Tex2D = MGL_STATE(glm_ctx)->texture_units[0].textures[_TEXTURE_2D];
-    Texture *unit1Active = MGL_STATE(glm_ctx)->active_textures[1];
-    Texture *unit1Tex2D = MGL_STATE(glm_ctx)->texture_units[1].textures[_TEXTURE_2D];
-    Texture *unit2Active = MGL_STATE(glm_ctx)->active_textures[2];
-    Texture *unit2Tex2D = MGL_STATE(glm_ctx)->texture_units[2].textures[_TEXTURE_2D];
-    GLuint cEver = 0u, cFull = 0u, cSource = 0u;
-    GLuint dEver = 0u, dFull = 0u, dSource = 0u;
-    mglTraceTextureLevelSummary(color0Texture,
-                                color0Attachment ? color0Attachment->level : 0u,
-                                &cEver,
-                                &cFull,
-                                &cSource);
-    mglTraceTextureLevelSummary(depthTexture,
-                                fbo ? fbo->depth.level : 0u,
-                                &dEver,
-                                &dFull,
-                                &dSource);
-    BOOL submitPhase = phase && strcmp(phase, "SUBMIT") == 0;
-    BOOL fsSlotHasRT =
-        fs0->rt_write_version != 0u ||
-        fs1->rt_write_version != 0u ||
-        fs2->rt_write_version != 0u ||
-        fs3->rt_write_version != 0u;
-    BOOL fsSlotUsedCopy =
-        fs0->used_sampled_copy ||
-        fs1->used_sampled_copy ||
-        fs2->used_sampled_copy ||
-        fs3->used_sampled_copy;
-
-    mglTraceLog("REPLAY_CMD_%s flush=%llu batch=%u cmd=%u type=%s reason=%s "
-                "program=%u vs=%u fs=%u mode=0x%x count=%d first=%d indexType=0x%x indexOffset=%u "
-                "instances=%d baseVertex=%d baseInstance=%u ebo=%u eboPtr=%p "
-                "encoder=%p pipelineState=%p fbo=%u rpFbo=%u rpColor=%p rpDepth=%p "
-                "rpColorSize=%lux%lu rpDepthSize=%lux%lu rpLA/SA=%s/%s depthLA/SA=%s/%s "
-                "fboColor0(tex=%u target=0x%x level=%u ptr=%p size=%ux%u mtl=%p init=%u/%u/%u rtVer=%u sampledVer=%u) "
-                "fboDepth(tex=%u target=0x%x level=%u ptr=%p size=%ux%u mtl=%p init=%u/%u/%u rtVer=%u sampledVer=%u) "
-                "units(u0 active=%u tex2D=%u u1 active=%u tex2D=%u u2 active=%u tex2D=%u) "
-                "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d) drawBuf=0x%x readBuf=0x%x "
-                "depth(test=%d write=%d func=0x%x clear=%.6f) blend=%d cull=%d colorMask=%d%d%d%d",
-                phase ? phase : "STATE",
-                (unsigned long long)flushId,
-                (unsigned)batchIndex,
-                (unsigned)commandIndex,
-                mglDrawCommandTypeName(cmd->type),
-                reason ? reason : "",
-                (unsigned)mglCurrentRenderProgramKey(glm_ctx),
-                vertexProgram ? (unsigned)vertexProgram->name : 0u,
-                fragmentProgram ? (unsigned)fragmentProgram->name : 0u,
-                (unsigned)cmd->mode,
-                (int)cmd->count,
-                (int)cmd->first,
-                (unsigned)cmd->indexType,
-                (unsigned)cmd->indexBufferOffset,
-                (int)cmd->instanceCount,
-                (int)cmd->baseVertex,
-                (unsigned)cmd->baseInstance,
-                (unsigned)eboName,
-                ebo,
-                mglBatchEncoderTraceToken(_renderPassManager.state->currentRenderEncoderOwner),
-                _pipelineCache.state->pipelineState,
-                (unsigned)fboName,
-                (unsigned)_renderPassManager.state->renderPassFramebufferName,
-                rpColor0,
-                rpDepth,
-                (unsigned long)rpColorInfo.width,
-                (unsigned long)rpColorInfo.height,
-                (unsigned long)rpDepthInfo.width,
-                (unsigned long)rpDepthInfo.height,
-                mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                    0u)),
-                mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
-                    0u)),
-                mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-                    0u)),
-                mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
-                    _renderPassManager.state->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-                    0u)),
-                color0Attachment ? (unsigned)color0Attachment->texture : 0u,
-                color0Attachment ? (unsigned)color0Attachment->textarget : 0u,
-                color0Attachment ? (unsigned)color0Attachment->level : 0u,
-                color0Texture,
-                color0Texture ? (unsigned)color0Texture->width : 0u,
-                color0Texture ? (unsigned)color0Texture->height : 0u,
-                color0Texture ? color0Texture->mtl_data : NULL,
-                (unsigned)cEver,
-                (unsigned)cFull,
-                (unsigned)cSource,
-                color0Texture ? (unsigned)color0Texture->mtl_render_target_write_version : 0u,
-                color0Texture ? (unsigned)color0Texture->mtl_gl_sampled_write_version : 0u,
-                fbo ? (unsigned)fbo->depth.texture : 0u,
-                fbo ? (unsigned)fbo->depth.textarget : 0u,
-                fbo ? (unsigned)fbo->depth.level : 0u,
-                depthTexture,
-                depthTexture ? (unsigned)depthTexture->width : 0u,
-                depthTexture ? (unsigned)depthTexture->height : 0u,
-                depthTexture ? depthTexture->mtl_data : NULL,
-                (unsigned)dEver,
-                (unsigned)dFull,
-                (unsigned)dSource,
-                depthTexture ? (unsigned)depthTexture->mtl_render_target_write_version : 0u,
-                depthTexture ? (unsigned)depthTexture->mtl_gl_sampled_write_version : 0u,
-                unit0Active ? (unsigned)unit0Active->name : 0u,
-                unit0Tex2D ? (unsigned)unit0Tex2D->name : 0u,
-                unit1Active ? (unsigned)unit1Active->name : 0u,
-                unit1Tex2D ? (unsigned)unit1Tex2D->name : 0u,
-                unit2Active ? (unsigned)unit2Active->name : 0u,
-                unit2Tex2D ? (unsigned)unit2Tex2D->name : 0u,
-                (int)MGL_STATE(glm_ctx)->viewport[0],
-                (int)MGL_STATE(glm_ctx)->viewport[1],
-                (int)MGL_STATE(glm_ctx)->viewport[2],
-                (int)MGL_STATE(glm_ctx)->viewport[3],
-                MGL_STATE(glm_ctx)->caps.scissor_test ? 1 : 0,
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[0],
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[1],
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[2],
-                (int)MGL_STATE(glm_ctx)->var.scissor_box[3],
-                (unsigned)MGL_STATE(glm_ctx)->draw_buffer,
-                (unsigned)MGL_STATE(glm_ctx)->read_buffer,
-                MGL_STATE(glm_ctx)->caps.depth_test ? 1 : 0,
-                MGL_STATE(glm_ctx)->var.depth_writemask ? 1 : 0,
-                (unsigned)MGL_STATE(glm_ctx)->var.depth_func,
-                (double)MGL_STATE(glm_ctx)->var.depth_clear_value,
-                MGL_STATE(glm_ctx)->caps.blend ? 1 : 0,
-                MGL_STATE(glm_ctx)->caps.cull_face ? 1 : 0,
-	                MGL_STATE(glm_ctx)->var.color_writemask[0][0] ? 1 : 0,
-		                MGL_STATE(glm_ctx)->var.color_writemask[0][1] ? 1 : 0,
-		                MGL_STATE(glm_ctx)->var.color_writemask[0][2] ? 1 : 0,
-		                MGL_STATE(glm_ctx)->var.color_writemask[0][3] ? 1 : 0);
-
-    if (submitPhase && (fsSlotHasRT || fsSlotUsedCopy || mglProgramNeedsBindingTrace(fragmentProgram))) {
-        mglTraceLog("REPLAY_CMD_TEXSLOTS flush=%llu batch=%u cmd=%u program=%u vs=%u fs=%u pipelineProgram=%u "
-                    "s0(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu) "
-                    "s1(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu) "
-                    "s2(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu) "
-                    "s3(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu)",
-                    (unsigned long long)flushId,
-                    (unsigned)batchIndex,
-                    (unsigned)commandIndex,
-                    (unsigned)mglCurrentRenderProgramKey(glm_ctx),
-                    vertexProgram ? (unsigned)vertexProgram->name : 0u,
-                    fragmentProgram ? (unsigned)fragmentProgram->name : 0u,
-                    (unsigned)_pipelineCache.state->pipelineProgramName,
-                    (unsigned)fs0->gl_texture_name,
-                    (unsigned)fs0->sampler_unit,
-                    (unsigned)fs0->program_name,
-                    fs0->mtl_texture_ptr,
-                    fs0->direct_mtl_texture_ptr,
-                    fs0->sampled_copy_ptr,
-                    (unsigned)fs0->used_sampled_copy,
-                    (unsigned)fs0->used_fallback,
-                    (unsigned)fs0->rt_write_version,
-                    (unsigned)fs0->sampled_write_version,
-                    (unsigned long)fs0->width,
-                    (unsigned long)fs0->height,
-                    (unsigned long)fs0->pixel_format,
-                    (unsigned long)fs0->texture_type,
-                    (unsigned)fs1->gl_texture_name,
-                    (unsigned)fs1->sampler_unit,
-                    (unsigned)fs1->program_name,
-                    fs1->mtl_texture_ptr,
-                    fs1->direct_mtl_texture_ptr,
-                    fs1->sampled_copy_ptr,
-                    (unsigned)fs1->used_sampled_copy,
-                    (unsigned)fs1->used_fallback,
-                    (unsigned)fs1->rt_write_version,
-                    (unsigned)fs1->sampled_write_version,
-                    (unsigned long)fs1->width,
-                    (unsigned long)fs1->height,
-                    (unsigned long)fs1->pixel_format,
-                    (unsigned long)fs1->texture_type,
-                    (unsigned)fs2->gl_texture_name,
-                    (unsigned)fs2->sampler_unit,
-                    (unsigned)fs2->program_name,
-                    fs2->mtl_texture_ptr,
-                    fs2->direct_mtl_texture_ptr,
-                    fs2->sampled_copy_ptr,
-                    (unsigned)fs2->used_sampled_copy,
-                    (unsigned)fs2->used_fallback,
-                    (unsigned)fs2->rt_write_version,
-                    (unsigned)fs2->sampled_write_version,
-                    (unsigned long)fs2->width,
-                    (unsigned long)fs2->height,
-                    (unsigned long)fs2->pixel_format,
-                    (unsigned long)fs2->texture_type,
-                    (unsigned)fs3->gl_texture_name,
-                    (unsigned)fs3->sampler_unit,
-                    (unsigned)fs3->program_name,
-                    fs3->mtl_texture_ptr,
-                    fs3->direct_mtl_texture_ptr,
-                    fs3->sampled_copy_ptr,
-                    (unsigned)fs3->used_sampled_copy,
-                    (unsigned)fs3->used_fallback,
-                    (unsigned)fs3->rt_write_version,
-                    (unsigned)fs3->sampled_write_version,
-                    (unsigned long)fs3->width,
-                    (unsigned long)fs3->height,
-                    (unsigned long)fs3->pixel_format,
-                    (unsigned long)fs3->texture_type);
-        if ((fsSlotHasRT || fsSlotUsedCopy) && fragmentProgram) {
-            mglWriteProgramMSLDump(fragmentProgram,
-                                   [NSString stringWithFormat:@"texslot-submit-fs-%u-flush-%llu-cmd-%u",
-                                                              (unsigned)fragmentProgram->name,
-                                                              (unsigned long long)flushId,
-                                                              (unsigned)commandIndex]);
-        } else if ((fsSlotHasRT || fsSlotUsedCopy) && drawProgram) {
-            mglWriteProgramMSLDump(drawProgram,
-                                   [NSString stringWithFormat:@"texslot-submit-program-%u-flush-%llu-cmd-%u",
-                                                              (unsigned)drawProgram->name,
-                                                              (unsigned long long)flushId,
-                                                              (unsigned)commandIndex]);
-        }
-    }
-
-    if (phase && strcmp(phase, "SUBMIT") == 0 && ebo) {
-        Program *attribProgram = vertexProgram ? vertexProgram : drawProgram;
-        bool forceRTSampledCopyAttribTrace = fsSlotHasRT || fsSlotUsedCopy;
-        mglTraceReplayCommandVertexAttribSamples(glm_ctx,
-                                                 attribProgram,
-                                                 cmd,
-                                                 ebo,
-                                                 flushId,
-                                                 batchIndex,
-                                                 commandIndex,
-                                                 forceRTSampledCopyAttribTrace);
-    }
-}
-
 - (void)flushDrawBuffer:(GLMContext)glm_ctx
 {
     /* Unlocked entry point: acquire METAL_LOCK and delegate to Locked variant.
@@ -1123,33 +710,37 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                 batch->has_dynamic_vertex_bindings ? YES : NO;
 
             {
-            /* Same-key skip: only when the previous sequential batch fully
-             * executed, the same encoder is still open with valid bind
-             * cache, and keys match. Never skip across FBO/pass changes. */
-            BOOL canSkipRestore = NO;
-            if (_batching.skipSameKeyRestoreEnabled &&
-                lastKeyValid &&
-                lastExecuteOk &&
-                !lastWasStreamBatch &&
-                mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 0 &&
-                mglBindingStateIsValid(_bindingStateOwner) &&
-                mglStateKeysEqual(&batch->key, &lastKey) &&
-                wantAbsoluteVertexOffsets == _batching.absoluteVertexBindingOffsets &&
-                [self currentRenderPassMatchesCurrentFramebuffer]) {
-                canSkipRestore = YES;
-            } else if (_batching.skipSameKeyRestoreEnabled &&
-                       lastKeyValid && lastExecuteOk && !lastWasStreamBatch) {
-                /* Attribute the skip failure to its first breaking condition
-                 * (in evaluation order) so Plan-B can target the real cause. */
-                if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0) {
-                    MGL_PERF_INC(g_mglSkipFailNoEncoderSinceSwap);
-                } else if (!mglBindingStateIsValid(_bindingStateOwner)) {
-                    MGL_PERF_INC(g_mglSkipFailBindInvalidSinceSwap);
-                } else if (!mglStateKeysEqual(&batch->key, &lastKey)) {
-                    MGL_PERF_INC(g_mglSkipFailKeyDifferSinceSwap);
-                } else {
-                    MGL_PERF_INC(g_mglSkipFailPassMismatchSinceSwap);
-                }
+            /* A3: same-key skip decision in mgl_batch_same_key_skip_decision. */
+            MGLBatchSameKeySkipIn skipIn = {
+                .skip_enabled = _batching.skipSameKeyRestoreEnabled ? 1u : 0u,
+                .last_key_valid = lastKeyValid ? 1u : 0u,
+                .last_execute_ok = lastExecuteOk ? 1u : 0u,
+                .last_was_stream = lastWasStreamBatch ? 1u : 0u,
+                .has_encoder =
+                    mglRenderEncoderOwnerHasCurrent(
+                        _renderPassManager.state->currentRenderEncoderOwner)
+                        ? 1u
+                        : 0u,
+                .bind_valid = mglBindingStateIsValid(_bindingStateOwner) ? 1u : 0u,
+                .keys_equal = mglStateKeysEqual(&batch->key, &lastKey) ? 1u : 0u,
+                .absolute_offsets_match =
+                    (wantAbsoluteVertexOffsets ==
+                     _batching.absoluteVertexBindingOffsets)
+                        ? 1u
+                        : 0u,
+                .pass_matches =
+                    [self currentRenderPassMatchesCurrentFramebuffer] ? 1u : 0u,
+            };
+            const int skipDec = mgl_batch_same_key_skip_decision(&skipIn);
+            BOOL canSkipRestore = (skipDec == MGL_BATCH_SAME_KEY_SKIP);
+            if (skipDec == MGL_BATCH_SAME_KEY_FAIL_NO_ENCODER) {
+                MGL_PERF_INC(g_mglSkipFailNoEncoderSinceSwap);
+            } else if (skipDec == MGL_BATCH_SAME_KEY_FAIL_BIND) {
+                MGL_PERF_INC(g_mglSkipFailBindInvalidSinceSwap);
+            } else if (skipDec == MGL_BATCH_SAME_KEY_FAIL_KEY) {
+                MGL_PERF_INC(g_mglSkipFailKeyDifferSinceSwap);
+            } else if (skipDec == MGL_BATCH_SAME_KEY_FAIL_PASS) {
+                MGL_PERF_INC(g_mglSkipFailPassMismatchSinceSwap);
             }
 
             if (!_batching.skipSameKeyRestoreEnabled &&
@@ -1378,16 +969,7 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
          * may have been reallocated since the snapshot was taken, making the
          * snapshot's copies stale (use-after-free risk).  Preserve the live
          * HashTables from savedState so lookups during replay remain valid. */
-        MGL_STATE(glm_ctx)->vao_table                 = savedState->vao_table;
-        MGL_STATE(glm_ctx)->buffer_table              = savedState->buffer_table;
-        MGL_STATE(glm_ctx)->texture_table             = savedState->texture_table;
-        MGL_STATE(glm_ctx)->shader_table              = savedState->shader_table;
-        MGL_STATE(glm_ctx)->program_table             = savedState->program_table;
-        MGL_STATE(glm_ctx)->program_pipeline_table    = savedState->program_pipeline_table;
-        MGL_STATE(glm_ctx)->transform_feedback_table  = savedState->transform_feedback_table;
-        MGL_STATE(glm_ctx)->renderbuffer_table        = savedState->renderbuffer_table;
-        MGL_STATE(glm_ctx)->framebuffer_table         = savedState->framebuffer_table;
-        MGL_STATE(glm_ctx)->sampler_table             = savedState->sampler_table;
+        mgl_batch_replay_copy_object_hash_tables(MGL_STATE(glm_ctx), savedState);
         /* The 11 cold buffer_base types need no restore: the hot copy above
          * skips them and nothing in replay writes them, so active_state still
          * holds the pre-flush live values (== savedState). */
@@ -1415,50 +997,34 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                     mglBindingStateIsValid(_bindingStateOwner);
 
     if (canDelta) {
-        const MGLStateKey *a = prevKey;
-        const MGLStateKey *b = &batch->key;
-        replayDirtyBits = 0;
-        if (a->program_name != b->program_name ||
-            a->program_pipeline_name != b->program_pipeline_name ||
-            a->vertex_program_name != b->vertex_program_name ||
-            a->fragment_program_name != b->fragment_program_name) {
-            replayDirtyBits |= DIRTY_PROGRAM | DIRTY_BUFFER_BASE_STATE | DIRTY_BUFFER;
+        /* A3: dirty-key domain narrowing in mgl_batch_compute_key_delta_dirty_bits. */
+        const MGLBatchDirtyDomainMasks masks = {
+            .program = (DIRTY_PROGRAM | DIRTY_BUFFER_BASE_STATE | DIRTY_BUFFER),
+            .vao = (DIRTY_VAO | DIRTY_BUFFER),
+            .texture = (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM |
+                        DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE),
+            .render_state = (DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE),
+        };
+        MGLBatchStateKeyView prevView = mglBatchStateKeyViewFromKey(prevKey);
+        MGLBatchStateKeyView curView = mglBatchStateKeyViewFromKey(&batch->key);
+        MGLBatchDirtyDeltaFlags dflags;
+        replayDirtyBits = mgl_batch_compute_key_delta_dirty_bits(
+            1, &prevView, &curView, kMGLFullReplayDirtyBits, &masks, &dflags);
+        if (dflags.domain_program) {
             MGL_PERF_INC(g_mglDeltaDomainProgramSinceSwap);
         }
-        if (a->vao_name != b->vao_name ||
-            a->vertex_layout_hash != b->vertex_layout_hash) {
-            replayDirtyBits |= DIRTY_VAO | DIRTY_BUFFER;
+        if (dflags.domain_vao) {
             MGL_PERF_INC(g_mglDeltaDomainVAOSinceSwap);
         }
-        if (a->texture_hash != b->texture_hash) {
-            replayDirtyBits |= DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM |
-                               DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE;
+        if (dflags.domain_texture) {
             MGL_PERF_INC(g_mglDeltaDomainTextureSinceSwap);
         }
-        if (a->render_state_hash != b->render_state_hash ||
-            a->caps_flags != b->caps_flags ||
-            a->scissor_enabled != b->scissor_enabled ||
-            a->primitive_type != b->primitive_type ||
-            memcmp(a->viewport, b->viewport, sizeof(a->viewport)) != 0 ||
-            memcmp(a->scissor, b->scissor, sizeof(a->scissor)) != 0) {
-            replayDirtyBits |= DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE;
-            /* Distinguish pure UBO-offset noise (per-draw dynamic-transforms
-             * rebinds change render_state_hash via uniform_buffer_hash alone)
-             * from real render-state churn, so this counter stays readable
-             * under the MC 1.21.11 workload. */
-            if ((a->render_state_hash ^ a->uniform_buffer_hash) ==
-                    (b->render_state_hash ^ b->uniform_buffer_hash) &&
-                a->caps_flags == b->caps_flags &&
-                a->scissor_enabled == b->scissor_enabled &&
-                a->primitive_type == b->primitive_type &&
-                memcmp(a->viewport, b->viewport, sizeof(a->viewport)) == 0 &&
-                memcmp(a->scissor, b->scissor, sizeof(a->scissor)) == 0) {
-                MGL_PERF_INC(g_mglDeltaDomainRenderStateUboOnlySinceSwap);
-            } else {
-                MGL_PERF_INC(g_mglDeltaDomainRenderStateSinceSwap);
-            }
+        if (dflags.domain_render_state_ubo_only) {
+            MGL_PERF_INC(g_mglDeltaDomainRenderStateUboOnlySinceSwap);
+        } else if (dflags.domain_render_state) {
+            MGL_PERF_INC(g_mglDeltaDomainRenderStateSinceSwap);
         }
-        if (replayDirtyBits != kMGLFullReplayDirtyBits) {
+        if (dflags.narrowed) {
             MGL_PERF_INC(g_mglDirtyKeyDeltaNarrowSinceSwap);
         }
     }
@@ -1501,21 +1067,8 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
     const BOOL usedReplayWorkspace =
         (glm_ctx->active_state == &glm_ctx->replay_state);
     if (usedReplayWorkspace) {
-        glm_ctx->state.vao_table = glm_ctx->replay_state.vao_table;
-        glm_ctx->state.buffer_table = glm_ctx->replay_state.buffer_table;
-        glm_ctx->state.texture_table = glm_ctx->replay_state.texture_table;
-        glm_ctx->state.shader_table = glm_ctx->replay_state.shader_table;
-        glm_ctx->state.program_table = glm_ctx->replay_state.program_table;
-        glm_ctx->state.program_pipeline_table =
-            glm_ctx->replay_state.program_pipeline_table;
-        glm_ctx->state.transform_feedback_table =
-            glm_ctx->replay_state.transform_feedback_table;
-        glm_ctx->state.renderbuffer_table =
-            glm_ctx->replay_state.renderbuffer_table;
-        glm_ctx->state.framebuffer_table =
-            glm_ctx->replay_state.framebuffer_table;
-        glm_ctx->state.sampler_table = glm_ctx->replay_state.sampler_table;
-        glm_ctx->state.sync_table = glm_ctx->replay_state.sync_table;
+        mgl_batch_replay_sync_hash_tables_from_replay(&glm_ctx->state,
+                                                      &glm_ctx->replay_state);
     }
     [self mglRestoreLiveActiveStateForContext:glm_ctx];
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
@@ -1540,6 +1093,26 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
     (void)savedState;
 }
 
+- (void)mglTraceSkipBatchCommands:(MGLDrawBatch *)batch
+                          context:(GLMContext)glm_ctx
+                          flushId:(uint64_t)flushId
+                       batchIndex:(uint32_t)batchIndex
+                            phase:(const char *)phase
+                           reason:(const char *)reason
+                  skippedCommands:(uint32_t *)skippedCommands
+{
+    [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                batchIndex:batchIndex phase:phase];
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        [self traceReplayCommand:batch command:&batch->commands[i]
+                         context:glm_ctx flushId:flushId
+                      batchIndex:batchIndex commandIndex:i
+                           phase:"SKIP" reason:reason];
+    }
+    *skippedCommands += batch->command_count;
+    MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+}
+
 - (BOOL)checkBatchShouldExecute:(MGLDrawBatch *)batch
                         context:(GLMContext)glm_ctx
                         flushId:(uint64_t)flushId
@@ -1552,16 +1125,10 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                 batchIndex:batchIndex phase:"RESTORE"];
 
     if (![self prepareRenderPassIfFBOChanged:batch context:glm_ctx replayError:replayError]) {
-        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
-                    batchIndex:batchIndex phase:"SKIP_FBO_ROTATION"];
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            [self traceReplayCommand:batch command:&batch->commands[i]
-                             context:glm_ctx flushId:flushId
-                          batchIndex:batchIndex commandIndex:i
-                               phase:"SKIP" reason:"fbo_rotation"];
-        }
-        *skippedCommands += batch->command_count;
-        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
+                             batchIndex:batchIndex phase:"SKIP_FBO_ROTATION"
+                                 reason:"fbo_rotation"
+                        skippedCommands:skippedCommands];
         return NO;
     }
 
@@ -1569,16 +1136,10 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
         if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(glm_ctx)->error)) {
             *replayError = MGL_STATE(glm_ctx)->error;
         }
-        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
-                    batchIndex:batchIndex phase:"SKIP_PROCESS_STATE"];
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            [self traceReplayCommand:batch command:&batch->commands[i]
-                             context:glm_ctx flushId:flushId
-                          batchIndex:batchIndex commandIndex:i
-                               phase:"SKIP" reason:"processGLState"];
-        }
-        *skippedCommands += batch->command_count;
-        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
+                             batchIndex:batchIndex phase:"SKIP_PROCESS_STATE"
+                                 reason:"processGLState"
+                        skippedCommands:skippedCommands];
         return NO;
     }
 
@@ -1593,16 +1154,10 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
         ![self applySamplerSnapshotForCommand:&batch->commands[0]
                                       context:glm_ctx
                                 encodeContext:&samplerEncCtx]) {
-        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
-                    batchIndex:batchIndex phase:"SKIP_SAMPLER_SNAPSHOT"];
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            [self traceReplayCommand:batch command:&batch->commands[i]
-                             context:glm_ctx flushId:flushId
-                          batchIndex:batchIndex commandIndex:i
-                               phase:"SKIP" reason:"sampler_snapshot"];
-        }
-        *skippedCommands += batch->command_count;
-        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
+                             batchIndex:batchIndex phase:"SKIP_SAMPLER_SNAPSHOT"
+                                 reason:"sampler_snapshot"
+                        skippedCommands:skippedCommands];
         return NO;
     }
 
@@ -1610,31 +1165,19 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                 batchIndex:batchIndex phase:"READY"];
 
     if ([self currentDrawRasterizationIsEmpty]) {
-        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
-                    batchIndex:batchIndex phase:"SKIP_EMPTY_RASTER"];
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            [self traceReplayCommand:batch command:&batch->commands[i]
-                             context:glm_ctx flushId:flushId
-                          batchIndex:batchIndex commandIndex:i
-                               phase:"SKIP" reason:"empty_rasterization"];
-        }
-        *skippedCommands += batch->command_count;
-        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
+                             batchIndex:batchIndex phase:"SKIP_EMPTY_RASTER"
+                                 reason:"empty_rasterization"
+                        skippedCommands:skippedCommands];
         return NO;
     }
 
     GLenum mode = batch->commands[0].mode;
     if ([self currentDrawModeIsFullyCulled:mode]) {
-        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
-                    batchIndex:batchIndex phase:"SKIP_FULLY_CULLED"];
-        for (uint32_t i = 0; i < batch->command_count; i++) {
-            [self traceReplayCommand:batch command:&batch->commands[i]
-                             context:glm_ctx flushId:flushId
-                          batchIndex:batchIndex commandIndex:i
-                               phase:"SKIP" reason:"front_and_back_culled"];
-        }
-        *skippedCommands += batch->command_count;
-        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        [self mglTraceSkipBatchCommands:batch context:glm_ctx flushId:flushId
+                             batchIndex:batchIndex phase:"SKIP_FULLY_CULLED"
+                                 reason:"front_and_back_culled"
+                        skippedCommands:skippedCommands];
         return NO;
     }
 
@@ -1646,26 +1189,14 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 {
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
-        switch (cmd->type) {
-        case MGL_CMD_DRAW_ARRAYS:
-        case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+        if (mgl_batch_replay_cmd_is_array_draw((uint32_t)cmd->type)) {
             MGL_FRAME_INC(g_mglDrawArraysSinceSwap);
             MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap,
                           (uint64_t)(cmd->count > 0 ? cmd->count : 0));
-            break;
-        case MGL_CMD_DRAW_ELEMENTS:
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
-        case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+        } else if (mglDrawCommandUsesElements(cmd)) {
             MGL_FRAME_INC(g_mglDrawElementsSinceSwap);
             MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap,
                           (uint64_t)(cmd->count > 0 ? cmd->count : 0));
-            break;
-        default:
-            break;
         }
     }
     [self markCurrentFramebufferDrawAttachmentsWritten];
@@ -1675,7 +1206,10 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 - (void)issueStreamMergedBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
                  encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!batch || !batch->stream_merged || batch->stream_index_count == 0) {
+    /* A3: stream path plan in mgl_batch_replay_stream_path. */
+    const int streamPath = mgl_batch_replay_stream_path(
+        batch, mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1 : 0);
+    if (streamPath == MGL_BATCH_STREAM_EMPTY) {
         if (batch && batch->command_count > 0) {
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
@@ -1684,12 +1218,11 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                           batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"SKIP"
-                              reason:"stream_empty"];
+                              reason:mgl_batch_replay_stream_path_reason(streamPath)];
         }
         return;
     }
-
-    if (batch->key.primitive_type == 0xFFu) {
+    if (streamPath == MGL_BATCH_STREAM_BAD_PRIM) {
         if (batch->command_count > 0) {
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
@@ -1698,13 +1231,12 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                           batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
-                              reason:"stream_unsupported_primitive"];
+                              reason:mgl_batch_replay_stream_path_reason(streamPath)];
         }
         [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
-
-    if (!mglEnvFlagEnabled("MGL_DISABLE_MDI")) {
+    if (streamPath == MGL_BATCH_STREAM_TRY_MDI) {
         if (batch->command_count > 0) {
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
@@ -1713,7 +1245,7 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
                           batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"ISSUE"
-                              reason:"stream_merge_to_mdi"];
+                              reason:mgl_batch_replay_stream_path_reason(streamPath)];
         }
         if ([self issueStreamMergedMDIBatch:batch context:glm_ctx encodeContext:encCtx]) {
             return;

@@ -35,6 +35,11 @@ echo "Draw cluster total: ${DRAW_CLUSTER}"
 echo
 echo "==> Batch cluster (A3 / O2.5 target Batch*.m < 600)"
 wc -l MGLRenderer+Batch.m MGLRenderer+BatchReplay.m 2>/dev/null || true
+BATCH_CLUSTER=$(wc -l MGLRenderer+Batch.m MGLRenderer+BatchReplay.m 2>/dev/null | tail -1 | awk '{print $1}')
+echo "Batch cluster total: ${BATCH_CLUSTER}"
+echo "(informational) batch domain C/C++ + diag split:"
+wc -l mgl_batch_replay.cpp mgl_batch_restore.c mgl_batch_path.c mgl_batch_hazard.c \
+  mgl_batch_replay_trace.m 2>/dev/null || true
 
 echo
 TOTAL=$(wc -l MGLRenderer*.m | tail -1 | awk '{print $1}')

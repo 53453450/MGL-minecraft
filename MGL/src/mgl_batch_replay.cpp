@@ -352,3 +352,217 @@ extern "C" const char *mgl_batch_replay_icb_gate_reason(int gate)
         return "icb_ok";
     }
 }
+
+extern "C" int mgl_batch_replay_stream_path(const MGLDrawBatch *batch,
+                                            int disable_mdi)
+{
+    if (!batch || !batch->stream_merged || batch->stream_index_count == 0) {
+        return MGL_BATCH_STREAM_EMPTY;
+    }
+    if (batch->key.primitive_type == 0xFFu) {
+        return MGL_BATCH_STREAM_BAD_PRIM;
+    }
+    if (!disable_mdi) {
+        return MGL_BATCH_STREAM_TRY_MDI;
+    }
+    return MGL_BATCH_STREAM_DIRECT;
+}
+
+extern "C" const char *mgl_batch_replay_stream_path_reason(int path)
+{
+    switch (path) {
+    case MGL_BATCH_STREAM_EMPTY:
+        return "stream_empty";
+    case MGL_BATCH_STREAM_BAD_PRIM:
+        return "stream_unsupported_primitive";
+    case MGL_BATCH_STREAM_TRY_MDI:
+        return "stream_merge_to_mdi";
+    case MGL_BATCH_STREAM_DIRECT:
+        return "stream_direct_merged";
+    default:
+        return "stream_unknown";
+    }
+}
+
+extern "C" void mgl_batch_replay_fill_sampler_params(
+    const MGLSamplerSnapshotKey *key, TextureParameter *out)
+{
+    if (!key || !out) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->min_filter = key->min_filter;
+    out->mag_filter = key->mag_filter;
+    out->wrap_s = key->wrap_s;
+    out->wrap_t = key->wrap_t;
+    out->wrap_r = key->wrap_r;
+    out->compare_mode = key->compare_mode;
+    out->compare_func = key->compare_func;
+    out->max_anisotropy = key->max_anisotropy;
+    out->min_lod = key->min_lod;
+    out->max_lod = key->max_lod;
+    memcpy(out->border_color, key->border_color, sizeof(out->border_color));
+}
+
+extern "C" int mgl_batch_replay_plan_dyn_vertex_streams(
+    GLMContext ctx, const VertexArray *vao, Program *active_program,
+    const MGLDynamicVertexBinding *override_binding,
+    MGLBatchDynVertexStreamPlan *out)
+{
+    if (!ctx || !vao || !override_binding || !out) {
+        return MGL_BATCH_DYN_VERTEX_FAIL;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!override_binding->buffer_name ||
+        override_binding->binding_index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        return MGL_BATCH_DYN_VERTEX_FAIL;
+    }
+    Buffer *resolved = mglNamedBuffer(ctx, override_binding->buffer_name);
+    if (!resolved) {
+        return MGL_BATCH_DYN_VERTEX_FAIL;
+    }
+    const BufferBinding *binding = &vao->bindings[override_binding->binding_index];
+    if (binding->buffer != resolved) {
+        return MGL_BATCH_DYN_VERTEX_FAIL;
+    }
+    out->binding_index = override_binding->binding_index;
+    out->buffer = resolved;
+    out->dynamic_offset = (uint64_t)override_binding->offset;
+
+    for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
+        if ((vao->enabled_attribs & (1u << attrib)) == 0u ||
+            vao->attrib[attrib].buffer_bindingindex !=
+                override_binding->binding_index ||
+            !mglRendererProgramUsesVertexAttrib(active_program, attrib)) {
+            continue;
+        }
+        GLuint effective_stride = binding->stride > 0
+                                      ? (GLuint)binding->stride
+                                      : vao->attrib[attrib].stride;
+        bool known_stream = false;
+        for (uint32_t stream = 0; stream < out->stream_count; stream++) {
+            if (out->representative_strides[stream] == effective_stride) {
+                known_stream = true;
+                break;
+            }
+        }
+        if (!known_stream) {
+            if (out->stream_count >= MGL_BATCH_DYN_VERTEX_MAX_STREAMS) {
+                return MGL_BATCH_DYN_VERTEX_FAIL;
+            }
+            out->representative_attribs[out->stream_count] = attrib;
+            out->representative_strides[out->stream_count] = effective_stride;
+            out->stream_count++;
+        }
+    }
+    if (out->stream_count == 0u) {
+        return MGL_BATCH_DYN_VERTEX_UNUSED;
+    }
+    return MGL_BATCH_DYN_VERTEX_OK;
+}
+
+extern "C" int mgl_batch_replay_dyn_vertex_stream_can_bind_directly(
+    Program *active_program, const VertexArray *vao,
+    const MGLBatchDynVertexStreamPlan *plan, uint32_t stream_index)
+{
+    if (!vao || !plan || stream_index >= plan->stream_count ||
+        plan->binding_index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        return 0;
+    }
+    const BufferBinding *binding = &vao->bindings[plan->binding_index];
+    const uint32_t want_stride = plan->representative_strides[stream_index];
+    for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
+        if ((vao->enabled_attribs & (1u << attrib)) == 0u ||
+            vao->attrib[attrib].buffer_bindingindex != plan->binding_index ||
+            !mglRendererProgramUsesVertexAttrib(active_program, attrib)) {
+            continue;
+        }
+        GLuint effective_stride = binding->stride > 0
+                                      ? (GLuint)binding->stride
+                                      : vao->attrib[attrib].stride;
+        if (effective_stride == want_stride &&
+            !mgl_batch_replay_attrib_can_bind_directly(active_program, attrib,
+                                                       &vao->attrib[attrib])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+extern "C" int mgl_batch_replay_uniform_range_fits(uint64_t offset,
+                                                   uint64_t size,
+                                                   uint64_t buffer_length)
+{
+    if (offset > buffer_length || size > buffer_length - offset) {
+        return 0;
+    }
+    return 1;
+}
+
+extern "C" int mgl_batch_replay_cmd_is_array_draw(uint32_t cmd_type)
+{
+    switch (cmd_type) {
+    case MGL_CMD_DRAW_ARRAYS:
+    case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+    case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+extern "C" void mgl_batch_replay_fill_simple_cmd_common(
+    const MGLDrawCommand *cmd, MGLRenderReplayBatchCommand *out) /* struct tag OK */
+{
+    if (!cmd || !out) {
+        return;
+    }
+    *out = MGLRenderReplayBatchCommand{
+        .cmd_type = (uint32_t)cmd->type,
+        .first = cmd->first,
+        .count = (uint32_t)cmd->count,
+        .instance_count = (uint32_t)cmd->instanceCount,
+        .base_vertex = cmd->baseVertex,
+        .base_instance = cmd->baseInstance,
+        .index_type = 0u,
+        .index_buffer_offset = 0u,
+        .index_buffer = nullptr,
+    };
+}
+
+extern "C" void mgl_batch_replay_copy_object_hash_tables(GLMState *dst,
+                                                         const GLMState *src)
+{
+    if (!dst || !src) {
+        return;
+    }
+    dst->vao_table = src->vao_table;
+    dst->buffer_table = src->buffer_table;
+    dst->texture_table = src->texture_table;
+    dst->shader_table = src->shader_table;
+    dst->program_table = src->program_table;
+    dst->program_pipeline_table = src->program_pipeline_table;
+    dst->transform_feedback_table = src->transform_feedback_table;
+    dst->renderbuffer_table = src->renderbuffer_table;
+    dst->framebuffer_table = src->framebuffer_table;
+    dst->sampler_table = src->sampler_table;
+}
+
+extern "C" void mgl_batch_replay_sync_hash_tables_from_replay(
+    GLMState *live, const GLMState *replay)
+{
+    if (!live || !replay) {
+        return;
+    }
+    live->vao_table = replay->vao_table;
+    live->buffer_table = replay->buffer_table;
+    live->texture_table = replay->texture_table;
+    live->shader_table = replay->shader_table;
+    live->program_table = replay->program_table;
+    live->program_pipeline_table = replay->program_pipeline_table;
+    live->transform_feedback_table = replay->transform_feedback_table;
+    live->renderbuffer_table = replay->renderbuffer_table;
+    live->framebuffer_table = replay->framebuffer_table;
+    live->sampler_table = replay->sampler_table;
+    live->sync_table = replay->sync_table;
+}

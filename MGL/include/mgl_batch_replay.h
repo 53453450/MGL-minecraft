@@ -13,8 +13,9 @@
  *
  * Dynamic VAO / UBO range / texture-unit override expansion, resource
  * binding snapshot collection, MDI arg packing, simple-replay eligibility,
- * and direct-path primitive plans. ObjC only materializes MTL* and calls
- * set*Bytes / draw* encode ports.
+ * direct-path primitive plans, stream path, sampler params, dyn-vertex
+ * stream plans, and GLMState HashTable sync (A3). ObjC only materializes
+ * MTL* and calls set*Bytes / draw* encode ports.
  */
 
 #ifndef MGL_BATCH_REPLAY_H
@@ -35,6 +36,9 @@ extern "C" {
 struct MGLRenderResourceBindingSnapshot_t;
 struct Program_t;
 struct VertexAttrib_t;
+struct Buffer_t;
+struct TextureParameter_t;
+struct MGLRenderReplayBatchCommand_t;
 
 /* Append one texture/sampler op to a stage's snapshot list. Returns false if
  * stage/kind invalid or the stage op table is full. */
@@ -125,6 +129,69 @@ enum {
 int mgl_batch_replay_icb_gate(const MGLDrawBatch *batch, int has_device,
                               int has_encoder, int icb_enable, int icb_disable);
 const char *mgl_batch_replay_icb_gate_reason(int gate);
+
+/* ---- A3 / O2.5: stream path, sampler params, dyn-vertex streams, simple cmd ---- */
+
+enum {
+    MGL_BATCH_STREAM_EMPTY = 1,
+    MGL_BATCH_STREAM_BAD_PRIM = 2,
+    MGL_BATCH_STREAM_TRY_MDI = 3,
+    MGL_BATCH_STREAM_DIRECT = 4
+};
+
+/* Decide stream-merge issue path before Metal materialize. */
+int mgl_batch_replay_stream_path(const MGLDrawBatch *batch, int disable_mdi);
+const char *mgl_batch_replay_stream_path_reason(int path);
+
+/* Fill TextureParameter fields from an immutable sampler snapshot key. */
+void mgl_batch_replay_fill_sampler_params(const MGLSamplerSnapshotKey *key,
+                                          struct TextureParameter_t *out);
+
+enum {
+    MGL_BATCH_DYN_VERTEX_UNUSED = 0, /* no streams used by shader — skip bind */
+    MGL_BATCH_DYN_VERTEX_OK = 1,
+    MGL_BATCH_DYN_VERTEX_FAIL = -1
+};
+
+#define MGL_BATCH_DYN_VERTEX_MAX_STREAMS 16u
+
+typedef struct MGLBatchDynVertexStreamPlan {
+    uint32_t binding_index;
+    uint32_t stream_count;
+    uint32_t representative_attribs[MGL_BATCH_DYN_VERTEX_MAX_STREAMS];
+    uint32_t representative_strides[MGL_BATCH_DYN_VERTEX_MAX_STREAMS];
+    struct Buffer_t *buffer;
+    uint64_t dynamic_offset;
+} MGLBatchDynVertexStreamPlan;
+
+/* Plan stream representatives for one dynamic vertex binding (no Metal). */
+int mgl_batch_replay_plan_dyn_vertex_streams(
+    GLMContext ctx, const VertexArray *vao, struct Program_t *active_program,
+    const MGLDynamicVertexBinding *override_binding,
+    MGLBatchDynVertexStreamPlan *out);
+
+/* True when every attrib on stream_index can bind via setVertexBuffer. */
+int mgl_batch_replay_dyn_vertex_stream_can_bind_directly(
+    struct Program_t *active_program, const VertexArray *vao,
+    const MGLBatchDynVertexStreamPlan *plan, uint32_t stream_index);
+
+/* Validate UBO override against Metal buffer length (no Metal types). */
+int mgl_batch_replay_uniform_range_fits(uint64_t offset, uint64_t size,
+                                        uint64_t buffer_length);
+
+int mgl_batch_replay_cmd_is_array_draw(uint32_t cmd_type);
+
+/* Fill common fields of a simple-replay command (index buffer still ObjC). */
+void mgl_batch_replay_fill_simple_cmd_common(
+    const MGLDrawCommand *cmd, struct MGLRenderReplayBatchCommand_t *out);
+
+/* Copy the 10 replay HashTables (not sync_table) from src → dst. */
+void mgl_batch_replay_copy_object_hash_tables(GLMState *dst,
+                                              const GLMState *src);
+
+/* Teardown: sync HashTable structs that may have grown via shared storage. */
+void mgl_batch_replay_sync_hash_tables_from_replay(GLMState *live,
+                                                   const GLMState *replay);
 
 #ifdef __cplusplus
 }

@@ -244,6 +244,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                        context:(GLMContext)glm_ctx
                                  encodeContext:(const MGLEncodeContext *)encCtx
 {
+    /* A3: stream plan in mgl_batch_replay_plan_dyn_vertex_streams; ObjC
+     * resolves Metal slots + materializes dirty buffers. */
     Program *active_program =
         mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     for (uint8_t binding_index = 0;
@@ -251,93 +253,42 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
          binding_index++) {
         const MGLDynamicVertexBinding *override =
             &cmd->dynamic_vertex_bindings[binding_index];
-        if (!override->buffer_name ||
-            override->binding_index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        MGLBatchDynVertexStreamPlan plan;
+        const int planRc = mgl_batch_replay_plan_dyn_vertex_streams(
+            glm_ctx, vao, active_program, override, &plan);
+        if (planRc == MGL_BATCH_DYN_VERTEX_FAIL) {
             return false;
         }
-
-        Buffer *resolved = mglNamedBuffer(glm_ctx, override->buffer_name);
-        if (!resolved) {
-            return false;
+        if (planRc == MGL_BATCH_DYN_VERTEX_UNUSED) {
+            continue;
         }
 
-        const BufferBinding *binding = &vao->bindings[override->binding_index];
-        if (binding->buffer != resolved) {
-            return false;
-        }
-
-        /* Slot assignment depends on the effective stream, not on attribute
-         * format or relative offset. Attributes sharing a DSA binding almost
-         * always share one stream, so resolve that stream once per draw. */
-        GLuint representative_attribs[MAX_ATTRIBS];
-        GLuint representative_strides[MAX_ATTRIBS];
-        GLuint representative_count = 0u;
-        for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
-            if ((vao->enabled_attribs & (1u << attrib)) == 0u ||
-                vao->attrib[attrib].buffer_bindingindex !=
-                    override->binding_index ||
-                !mglRendererProgramUsesVertexAttrib(active_program, attrib)) {
-                continue;
-            }
-
-            GLuint effective_stride = binding->stride > 0
-                ? (GLuint)binding->stride : vao->attrib[attrib].stride;
-            bool known_stream = false;
-            for (GLuint stream = 0; stream < representative_count; stream++) {
-                if (representative_strides[stream] == effective_stride) {
-                    known_stream = true;
-                    break;
-                }
-            }
-            if (!known_stream) {
-                representative_attribs[representative_count] = attrib;
-                representative_strides[representative_count] = effective_stride;
-                representative_count++;
-            }
-        }
-
-        int resolved_slots[MAX_ATTRIBS];
+        int resolved_slots[MGL_BATCH_DYN_VERTEX_MAX_STREAMS];
         GLuint resolved_slot_count = 0u;
-        for (GLuint stream = 0; stream < representative_count; stream++) {
-            GLuint representative = representative_attribs[stream];
+        for (uint32_t stream = 0; stream < plan.stream_count; stream++) {
             int resolved_slot = mglRendererResolveVertexAttributeBufferIndex(
-                glm_ctx, vao, representative, __FUNCTION__);
+                glm_ctx, vao, plan.representative_attribs[stream], __FUNCTION__);
             if (resolved_slot < 0) {
                 continue;
             }
             if (resolved_slot >= (int)kMGLMaxMetalVertexBufferCount) {
                 return false;
             }
-
-            for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
-                if ((vao->enabled_attribs & (1u << attrib)) == 0u ||
-                    vao->attrib[attrib].buffer_bindingindex !=
-                        override->binding_index ||
-                    !mglRendererProgramUsesVertexAttrib(active_program, attrib)) {
-                    continue;
-                }
-                GLuint effective_stride = binding->stride > 0
-                    ? (GLuint)binding->stride : vao->attrib[attrib].stride;
-                if (effective_stride == representative_strides[stream] &&
-                    !mgl_batch_replay_attrib_can_bind_directly(active_program,
-                                                          attrib,
-                                                          &vao->attrib[attrib])) {
-                    return false;
-                }
+            if (!mgl_batch_replay_dyn_vertex_stream_can_bind_directly(
+                    active_program, vao, &plan, stream)) {
+                return false;
             }
             resolved_slots[resolved_slot_count++] = resolved_slot;
         }
-
-        /* A captured binding may be unused by this shader. */
         if (resolved_slot_count == 0u) {
             continue;
         }
 
-        Buffer *draw_buffer = mglNamedBuffer(glm_ctx, override->buffer_name);
+        Buffer *draw_buffer = plan.buffer;
         if (!draw_buffer) {
             return false;
         }
-        NSUInteger dynamic_offset = (NSUInteger)override->offset;
+        NSUInteger dynamic_offset = (NSUInteger)plan.dynamic_offset;
         if (draw_buffer->data.dirty_bits) {
             BufferMapList upload = {0};
             upload.count = 1;
@@ -361,6 +312,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                       &metalBufferInfo) != 0) {
             return false;
         }
+        const BufferBinding *binding = &vao->bindings[plan.binding_index];
         if (binding->offset < 0 ||
             (uint64_t)binding->offset != (uint64_t)dynamic_offset ||
             (uint64_t)binding->offset >= metalBufferInfo.length ||
@@ -441,8 +393,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
         uint64_t start = (uint64_t)override->offset;
         uint64_t length = (uint64_t)override->size;
-        if (start > metalBufferInfo.length ||
-            length > metalBufferInfo.length - start) {
+        if (!mgl_batch_replay_uniform_range_fits(start, length,
+                                                 metalBufferInfo.length)) {
             return false;
         }
 
@@ -670,19 +622,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
 
     TextureParameter params;
-    memset(&params, 0, sizeof(params));
-    params.min_filter = key->min_filter;
-    params.mag_filter = key->mag_filter;
-    params.wrap_s = key->wrap_s;
-    params.wrap_t = key->wrap_t;
-    params.wrap_r = key->wrap_r;
-    params.compare_mode = key->compare_mode;
-    params.compare_func = key->compare_func;
-    params.max_anisotropy = key->max_anisotropy;
-    params.min_lod = key->min_lod;
-    params.max_lod = key->max_lod;
-    memcpy(params.border_color, key->border_color, sizeof(params.border_color));
-
+    mgl_batch_replay_fill_sampler_params(key, &params);
     id state =
         [self createMTLSamplerForTexParam:&params target:key->target];
     if (!state) return nil;
@@ -904,19 +844,11 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
         MGLRenderReplayBatchCommand *out = &cmds[i];
-        *out = (MGLRenderReplayBatchCommand){
-            .cmd_type = (uint32_t)cmd->type,
-            .first = cmd->first,
-            .count = (uint32_t)cmd->count,
-            .instance_count = (uint32_t)cmd->instanceCount,
-            .base_vertex = cmd->baseVertex,
-            .base_instance = cmd->baseInstance,
-        };
+        mgl_batch_replay_fill_simple_cmd_common(cmd, out);
+        if (mgl_batch_replay_cmd_is_array_draw((uint32_t)cmd->type)) {
+            continue;
+        }
         switch (cmd->type) {
-            case MGL_CMD_DRAW_ARRAYS:
-            case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-            case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-                break;
             case MGL_CMD_DRAW_ELEMENTS:
             case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
             case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
@@ -987,9 +919,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
         BOOL capturedCullDistances = NO;
         if (batchProgram && batchProgram->uses_cull_distance &&
-            (cmd->type == MGL_CMD_DRAW_ARRAYS ||
-             cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED ||
-             cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE)) {
+            mgl_batch_replay_cmd_is_array_draw((uint32_t)cmd->type)) {
             capturedCullDistances =
                 [self captureAIRCullDistancesForArrayDraw:glm_ctx
                                                     first:cmd->first
@@ -1089,65 +1019,66 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         const BOOL emulateQuads = primPlan.emulate_quads ? YES : NO;
         const uint32_t primType = primPlan.prim_type;
 
-        switch (cmd->type) {
-            case MGL_CMD_DRAW_ARRAYS:
-                [self issueDirectBatchDrawArrays:batch
-                                         command:cmd
-                                          context:glm_ctx
-                                       batchIndex:i
-                                             mode:mode
-                                            count:count
-                               polygonModePoint:polygonModePoint
-                              emulateTriangleFan:emulateTriangleFan
-                                 emulateLineLoop:emulateLineLoop
-                                   emulateQuads:emulateQuads
-                                        primType:primType
-                                   encodeContext:&liveEncCtx];
-                break;
-
-            case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-                [self issueDirectBatchDrawArraysInstanced:batch
-                                                  command:cmd
-                                                   context:glm_ctx
-                                                batchIndex:i
-                                                      mode:mode
-                                                    count:count
-                                            instanceCount:instanceCount
-                                       polygonModePoint:polygonModePoint
-                              emulateTriangleFan:emulateTriangleFan
-                                 emulateLineLoop:emulateLineLoop
-                                   emulateQuads:emulateQuads
-                                        primType:primType
-                                   encodeContext:&liveEncCtx];
-                break;
-
-            case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-                [self issueDirectBatchDrawArraysInstancedBaseInstance:batch
-                                                              command:cmd
-                                                               context:glm_ctx
-                                                            batchIndex:i
-                                                                  mode:mode
-                                                                count:count
-                                                        instanceCount:instanceCount
-                                                   polygonModePoint:polygonModePoint
-                                                  emulateTriangleFan:emulateTriangleFan
-                                                     emulateLineLoop:emulateLineLoop
-                                                       emulateQuads:emulateQuads
-                                                            primType:primType
-                                                       encodeContext:&liveEncCtx];
-                break;
-
-            default:
-                [self issueDirectBatchElementDraw:batch
-                                          command:cmd
+        if (mgl_batch_replay_cmd_is_array_draw((uint32_t)cmd->type)) {
+            const GLsizei ic =
+                (cmd->type == MGL_CMD_DRAW_ARRAYS) ? 1 : instanceCount;
+            const GLuint bi = (cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE)
+                                  ? cmd->baseInstance
+                                  : 0u;
+            const char *reason =
+                (cmd->type == MGL_CMD_DRAW_ARRAYS)
+                    ? "direct_arrays"
+                    : ((cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED)
+                           ? "direct_arrays_instanced"
+                           : "direct_arrays_base_instance");
+            const char *cullReason =
+                (cmd->type == MGL_CMD_DRAW_ARRAYS)
+                    ? "direct_arrays_cull_distance_split"
+                    : ((cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED)
+                           ? "direct_arrays_instanced_cull_distance_split"
+                           : "direct_arrays_base_instance_cull_distance_split");
+            (void)emulateTriangleFan;
+            (void)emulateLineLoop;
+            (void)emulateQuads;
+            (void)primType;
+            if (!polygonModePoint &&
+                [self issueDirectBatchCullDistanceArrayDraw:mode
+                                                      first:cmd->first
+                                                      count:count
+                                              instanceCount:ic
+                                               baseInstance:bi
+                                              encodeContext:&liveEncCtx]) {
+                [self traceReplayCommand:batch
+                                 command:cmd
+                                 context:glm_ctx
+                                 flushId:_renderPassManager.state->traceReplayFlushId
+                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                            commandIndex:i
+                                   phase:"SUBMIT"
+                                  reason:cullReason];
+            } else {
+                [self submitDirectBatchArrayEncode:batch
+                                           command:cmd
                                            context:glm_ctx
                                         batchIndex:i
                                               mode:mode
-                                            count:count
-                                    instanceCount:instanceCount
-                               polygonModePoint:polygonModePoint
-                                   encodeContext:&liveEncCtx];
-                break;
+                                             count:count
+                                     instanceCount:ic
+                                      baseInstance:bi
+                                 polygonModePoint:polygonModePoint
+                                    encodeContext:&liveEncCtx
+                                           reason:reason];
+            }
+        } else {
+            [self issueDirectBatchElementDraw:batch
+                                      command:cmd
+                                       context:glm_ctx
+                                    batchIndex:i
+                                          mode:mode
+                                        count:count
+                                instanceCount:instanceCount
+                           polygonModePoint:polygonModePoint
+                               encodeContext:&liveEncCtx];
         }
     }
 }
@@ -1205,149 +1136,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 commandIndex:i
                        phase:(ok ? "SUBMIT" : "SKIP")
                       reason:reason];
-}
-
-- (void)issueDirectBatchDrawArrays:(MGLDrawBatch *)batch
-                           command:(MGLDrawCommand *)cmd
-                            context:(GLMContext)glm_ctx
-                         batchIndex:(uint32_t)i
-                               mode:(GLenum)mode
-                              count:(GLsizei)count
-                  polygonModePoint:(BOOL)polygonModePoint
-                 emulateTriangleFan:(BOOL)emulateTriangleFan
-                    emulateLineLoop:(BOOL)emulateLineLoop
-                      emulateQuads:(BOOL)emulateQuads
-                           primType:(uint32_t)primType
-                      encodeContext:(const MGLEncodeContext *)encCtx
-{
-    (void)emulateTriangleFan;
-    (void)emulateLineLoop;
-    (void)emulateQuads;
-    (void)primType;
-    if (!polygonModePoint &&
-        [self issueDirectBatchCullDistanceArrayDraw:mode
-                                              first:cmd->first
-                                              count:count
-                                      instanceCount:1
-                                       baseInstance:0u
-                                      encodeContext:encCtx]) {
-        [self traceReplayCommand:batch
-                         command:cmd
-                         context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                    commandIndex:i
-                           phase:"SUBMIT"
-                          reason:"direct_arrays_cull_distance_split"];
-        return;
-    }
-    [self submitDirectBatchArrayEncode:batch
-                               command:cmd
-                               context:glm_ctx
-                            batchIndex:i
-                                  mode:mode
-                                 count:count
-                         instanceCount:1
-                          baseInstance:0u
-                     polygonModePoint:polygonModePoint
-                        encodeContext:encCtx
-                               reason:"direct_arrays"];
-}
-
-- (void)issueDirectBatchDrawArraysInstanced:(MGLDrawBatch *)batch
-                                      command:(MGLDrawCommand *)cmd
-                                       context:(GLMContext)glm_ctx
-                                    batchIndex:(uint32_t)i
-                                          mode:(GLenum)mode
-                                        count:(GLsizei)count
-                                instanceCount:(GLsizei)instanceCount
-                           polygonModePoint:(BOOL)polygonModePoint
-                          emulateTriangleFan:(BOOL)emulateTriangleFan
-                             emulateLineLoop:(BOOL)emulateLineLoop
-                               emulateQuads:(BOOL)emulateQuads
-                                    primType:(uint32_t)primType
-                               encodeContext:(const MGLEncodeContext *)encCtx
-{
-    (void)emulateTriangleFan;
-    (void)emulateLineLoop;
-    (void)emulateQuads;
-    (void)primType;
-    if (!polygonModePoint &&
-        [self issueDirectBatchCullDistanceArrayDraw:mode
-                                              first:cmd->first
-                                              count:count
-                                      instanceCount:instanceCount
-                                       baseInstance:0u
-                                      encodeContext:encCtx]) {
-        [self traceReplayCommand:batch
-                         command:cmd
-                         context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                    commandIndex:i
-                           phase:"SUBMIT"
-                          reason:"direct_arrays_instanced_cull_distance_split"];
-        return;
-    }
-    [self submitDirectBatchArrayEncode:batch
-                               command:cmd
-                               context:glm_ctx
-                            batchIndex:i
-                                  mode:mode
-                                 count:count
-                         instanceCount:instanceCount
-                          baseInstance:0u
-                     polygonModePoint:polygonModePoint
-                        encodeContext:encCtx
-                               reason:"direct_arrays_instanced"];
-}
-
-- (void)issueDirectBatchDrawArraysInstancedBaseInstance:(MGLDrawBatch *)batch
-                                                   command:(MGLDrawCommand *)cmd
-                                                    context:(GLMContext)glm_ctx
-                                                 batchIndex:(uint32_t)i
-                                                       mode:(GLenum)mode
-                                                     count:(GLsizei)count
-                                             instanceCount:(GLsizei)instanceCount
-                                        polygonModePoint:(BOOL)polygonModePoint
-                                       emulateTriangleFan:(BOOL)emulateTriangleFan
-                                          emulateLineLoop:(BOOL)emulateLineLoop
-                                            emulateQuads:(BOOL)emulateQuads
-                                                 primType:(uint32_t)primType
-                                            encodeContext:(const MGLEncodeContext *)encCtx
-{
-    (void)emulateTriangleFan;
-    (void)emulateLineLoop;
-    (void)emulateQuads;
-    (void)primType;
-    if (!polygonModePoint &&
-        [self issueDirectBatchCullDistanceArrayDraw:mode
-                                              first:cmd->first
-                                              count:count
-                                      instanceCount:instanceCount
-                                       baseInstance:cmd->baseInstance
-                                      encodeContext:encCtx]) {
-        [self traceReplayCommand:batch
-                         command:cmd
-                         context:glm_ctx
-                         flushId:_renderPassManager.state->traceReplayFlushId
-                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                    commandIndex:i
-                           phase:"SUBMIT"
-                          reason:"direct_arrays_base_instance_cull_distance_split"];
-        return;
-    }
-    [self submitDirectBatchArrayEncode:batch
-                               command:cmd
-                               context:glm_ctx
-                            batchIndex:i
-                                  mode:mode
-                                 count:count
-                         instanceCount:instanceCount
-                          baseInstance:cmd->baseInstance
-                     polygonModePoint:polygonModePoint
-                        encodeContext:encCtx
-                               reason:"direct_arrays_base_instance"];
 }
 
 - (void)issueDirectBatchElementDraw:(MGLDrawBatch *)batch
