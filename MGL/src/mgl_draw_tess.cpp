@@ -901,6 +901,29 @@ extern "C" int mglXfbSeparateAttribs(uint32_t buffer_mode)
     return buffer_mode == GL_SEPARATE_ATTRIBS ? 1 : 0;
 }
 
+extern "C" int mglTessXFBCopyBackReady(uint64_t written, int has_temp,
+                                       int has_dest)
+{
+    return written > 0u && has_temp && has_dest ? 1 : 0;
+}
+
+extern "C" int mglXfbVaryingSlotValid(uint32_t varying)
+{
+    return varying < MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS ? 1 : 0;
+}
+
+extern "C" int mglXfbCPUShadowFits(int has_cpu, int64_t buf_size,
+                                   uint64_t dest_offset, uint64_t written)
+{
+    if (!has_cpu || buf_size <= 0 || written == 0u) {
+        return 0;
+    }
+    if (dest_offset > (uint64_t)buf_size) {
+        return 0;
+    }
+    return dest_offset + written <= (uint64_t)buf_size ? 1 : 0;
+}
+
 extern "C" int mglTessResolveXFBSource(const Program *program, const char *name,
                                        uint32_t *offset_out,
                                        uint32_t *gl_type_out,

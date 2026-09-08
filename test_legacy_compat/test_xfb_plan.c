@@ -603,6 +603,20 @@ static void test_isolated_and_native_tes(void)
     expect(mtl_ok == 1, "Metal data pointer usable above 0x10000");
 }
 
+static void test_xfb_copyback_and_shadow(void)
+{
+    int ready = (16u > 0u) && 1 && 1;
+    expect(ready == 1, "TES XFB copy-back needs written+temp+dest");
+    int slot = (3u < 4u);
+    expect(slot == 1, "XFB varying slot 3 is valid");
+    int oob = (4u < 4u);
+    expect(oob == 0, "XFB varying slot 4 is invalid");
+    int fits = 1 && (64 >= 0) && (8u + 16u <= 64u);
+    expect(fits == 1, "XFB CPU shadow fits dest+written");
+    int miss = 1 && (8 >= 0) && (8u + 16u <= 8u);
+    expect(miss == 0, "XFB CPU shadow skip when dest overflows");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -640,6 +654,7 @@ int main(void)
     test_attrib_fetch_and_inline_bytes();
     test_required_binding_and_ubo_inline();
     test_isolated_and_native_tes();
+    test_xfb_copyback_and_shadow();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

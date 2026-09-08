@@ -1481,7 +1481,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         [self clearStageBindingCopyBacks:&stageCopyBacks];
     }
 
-    if (xfbWrittenBytes > 0u && xfbTemporary && xfbDestination) {
+    if (mglTessXFBCopyBackReady((uint64_t)xfbWrittenBytes,
+                                xfbTemporary ? 1 : 0,
+                                xfbDestination ? 1 : 0)) {
         const uint8_t *srcBase =
             (const uint8_t *)mglTessBufferContents(xfbTemporary);
         if (!srcBase) {
@@ -1496,7 +1498,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             for (GLsizei varying = 0;
                  varying < tesProgram->transform_feedback_varying_count;
                  varying++) {
-                if ((GLuint)varying >= MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS) {
+                if (!mglXfbVaryingSlotValid((uint32_t)varying)) {
                     break;
                 }
                 const char *name =
@@ -1573,8 +1575,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                         memcpy(live + destOffset, packed, written);
                     }
                 }
-                if (destBuf->data.buffer_data &&
-                    (size_t)destBuf->size >= destOffset + written) {
+                if (mglXfbCPUShadowFits(destBuf->data.buffer_data ? 1 : 0,
+                                        destBuf->size, (uint64_t)destOffset,
+                                        (uint64_t)written)) {
                     memcpy((uint8_t *)destBuf->data.buffer_data + destOffset,
                            packed, written);
                 }
@@ -1603,9 +1606,10 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                        xfbWrittenBytes);
             }
         }
-        if (xfbDestination->data.buffer_data &&
-            (size_t)xfbDestination->size >=
-                xfbCopyDestinationOffset + xfbWrittenBytes) {
+        if (mglXfbCPUShadowFits(xfbDestination->data.buffer_data ? 1 : 0,
+                                xfbDestination->size,
+                                (uint64_t)xfbCopyDestinationOffset,
+                                (uint64_t)xfbWrittenBytes)) {
             memcpy((uint8_t *)xfbDestination->data.buffer_data +
                        xfbCopyDestinationOffset,
                    packed, xfbWrittenBytes);

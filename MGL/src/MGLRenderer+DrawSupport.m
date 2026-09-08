@@ -1759,9 +1759,11 @@ static GLuint64 mglNativeTessPrimitiveCount(id canonical,
                     ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
                 if (slot->buf) {
                     slot->buf->ever_written = GL_TRUE;
-                    if (xfbTempBytes && slot->buf->data.buffer_data &&
-                        (size_t)slot->buf->size >=
-                            bufferDstOffset[b] + copyBytes) {
+                    if (xfbTempBytes &&
+                        mglXfbCPUShadowFits(
+                            slot->buf->data.buffer_data ? 1 : 0,
+                            slot->buf->size, (uint64_t)bufferDstOffset[b],
+                            (uint64_t)copyBytes)) {
                         memcpy((uint8_t *)slot->buf->data.buffer_data +
                                    bufferDstOffset[b],
                                xfbTempBytes + bufferPhysBase[b], copyBytes);
