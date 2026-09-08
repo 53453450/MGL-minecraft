@@ -1454,6 +1454,10 @@ int mglRenderTextureTargetIsCubeMap(uint32_t target);
 int mglRenderDrawBufferIsColorAttachment(uint32_t draw_buffer, uint32_t max,
                                          uint32_t *out_index);
 int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer);
+int mglRenderTextureNeedsArrayLengthCheck(uint32_t target);
+int mglRenderPackedDepthStencilFormat(uint32_t internalformat);
+int mglRenderTextureTargetIsLayeredUpload(uint32_t target);
+int mglRenderTextureTargetIs1DArray(uint32_t target);
 int mglRenderIsValidGLBlendEquation(uint32_t op);
 int mglRenderIsValidGLBlendFactor(uint32_t factor);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);

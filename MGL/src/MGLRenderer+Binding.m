@@ -76,9 +76,7 @@ static id mglBindingCreateDefaultSampler(void)
     }
 
     if (tex->mtl_data &&
-        (tex->target == GL_TEXTURE_2D_ARRAY ||
-         tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
-         tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)) {
+        mglRenderTextureNeedsArrayLengthCheck((uint32_t)tex->target)) {
         MGLRenderTextureInfo existingInfo = {0};
         if (mglRenderGetTextureInfo(tex->mtl_data, &existingInfo) == 0) {
             /* Metal cube-array arrayLength is cube count; GL depth is usually
@@ -115,7 +113,7 @@ static id mglBindingCreateDefaultSampler(void)
          * Capacity-only sizing recreated MC atlases as 11-level Metal textures
          * when only 2 GL levels were uploaded. */
         NSUInteger requiredMipLevels =
-            (tex->target == GL_RENDERBUFFER || tex->samples > 1u)
+            (mglRenderTargetIsRenderbuffer((uint32_t)tex->target) || tex->samples > 1u)
                 ? 1u
                 : (tex->num_levels > 1u
                        ? (NSUInteger)tex->num_levels
@@ -156,15 +154,12 @@ static id mglBindingCreateDefaultSampler(void)
             if (oldTexture && dimensionsMatch) {
                 tex->mtl_data = (void *)CFBridgingRetain(newTexture);
                 const BOOL packedDepthStencil =
-                    tex->internalformat == GL_DEPTH32F_STENCIL8 ||
-                    tex->internalformat == GL_DEPTH24_STENCIL8;
+                    mglRenderPackedDepthStencilFormat(
+                        (uint32_t)tex->internalformat) != 0;
                 if (packedDepthStencil) {
                     const BOOL isArray =
-                        tex->target == GL_TEXTURE_2D_ARRAY ||
-                        tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
-                        tex->target == GL_TEXTURE_1D_ARRAY ||
-                        tex->target == GL_TEXTURE_CUBE_MAP ||
-                        tex->target == GL_TEXTURE_3D;
+                        mglRenderTextureTargetIsLayeredUpload(
+                            (uint32_t)tex->target) != 0;
                     BOOL allLevelsUploaded = YES;
                     const GLuint levelCount = (GLuint)MIN(
                         newInfo.mipmap_level_count,
@@ -175,8 +170,10 @@ static id mglBindingCreateDefaultSampler(void)
                                                numFaces:1
                                        uploadLevelCount:levelCount
                                                 isArray:isArray
-                                     texture1DBackedBy2D:(tex->target == GL_TEXTURE_1D)
-                               texture1DArrayBackedBy2DArray:(tex->target == GL_TEXTURE_1D_ARRAY)
+                                     texture1DBackedBy2D:mglRenderTextureTargetIs1D(
+                                                              (uint32_t)tex->target)
+                               texture1DArrayBackedBy2DArray:mglRenderTextureTargetIs1DArray(
+                                                                  (uint32_t)tex->target)
                                                 texType:(uint32_t)newInfo.texture_type
                                     outAllLevelsUploaded:&allLevelsUploaded] &&
                         allLevelsUploaded) {
@@ -227,7 +224,7 @@ static id mglBindingCreateDefaultSampler(void)
             id existingTexture = (__bridge id)(tex->mtl_data);
             BOOL uploadedDirty = NO;
             if (existingTexture && !tex->metal_data_authoritative) {
-                if (tex->target == GL_TEXTURE_2D) {
+                if (mglRenderTextureTargetIs2D((uint32_t)tex->target)) {
                     MGLRenderTextureInfo metalInfo = {0};
                     if (mglRenderGetTextureInfo((__bridge void *)existingTexture,
                                                    &metalInfo) == 0 &&
@@ -244,15 +241,12 @@ static id mglBindingCreateDefaultSampler(void)
                     if (mglRenderGetTextureInfo((__bridge void *)existingTexture,
                                                    &metalInfo) == 0) {
                         const BOOL isArray =
-                            tex->target == GL_TEXTURE_2D_ARRAY ||
-                            tex->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
-                            tex->target == GL_TEXTURE_1D_ARRAY ||
-                            tex->target == GL_TEXTURE_CUBE_MAP ||
-                            tex->target == GL_TEXTURE_3D;
+                            mglRenderTextureTargetIsLayeredUpload(
+                                (uint32_t)tex->target) != 0;
                         const BOOL texture1DBackedBy2D =
-                            tex->target == GL_TEXTURE_1D;
+                            mglRenderTextureTargetIs1D((uint32_t)tex->target) != 0;
                         const BOOL texture1DArrayBackedBy2DArray =
-                            tex->target == GL_TEXTURE_1D_ARRAY;
+                            mglRenderTextureTargetIs1DArray((uint32_t)tex->target) != 0;
                         BOOL allLevelsUploaded = YES;
                         const GLuint levelCount = (GLuint)MIN(
                             metalInfo.mipmap_level_count,

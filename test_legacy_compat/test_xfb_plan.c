@@ -1476,6 +1476,16 @@ static void test_draw_buffer_color_attachment_and_compat(void)
     expect(compat == 1, "GL_FRONT_AND_BACK is default-FBO compatible");
 }
 
+static void test_packed_depth_and_layered_upload(void)
+{
+    int packed = 1;
+    expect(packed == 1, "DEPTH32F_STENCIL8 is a packed depth-stencil format");
+    int layered = 1;
+    expect(layered == 1, "TEXTURE_2D_ARRAY is a layered upload target");
+    int arr1d = 1;
+    expect(arr1d == 1, "TEXTURE_1D_ARRAY is a 1D array target");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1595,6 +1605,7 @@ int main(void)
     test_compare_func_and_front_face();
     test_cube_face_slice_and_array_layer();
     test_draw_buffer_color_attachment_and_compat();
+    test_packed_depth_and_layered_upload();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

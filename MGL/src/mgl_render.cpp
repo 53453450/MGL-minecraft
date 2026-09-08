@@ -9745,6 +9745,32 @@ int mglRenderDrawBufferIsDefaultFBOCompat(uint32_t draw_buffer) {
     return draw_buffer == GL_FRONT_AND_BACK ? 1 : 0;
 }
 
+int mglRenderTextureNeedsArrayLengthCheck(uint32_t target) {
+    return mglRenderTextureTargetIsArray(target) ||
+                   target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
+               ? 1
+               : 0;
+}
+
+int mglRenderPackedDepthStencilFormat(uint32_t internalformat) {
+    return internalformat == GL_DEPTH32F_STENCIL8 ||
+                   internalformat == GL_DEPTH24_STENCIL8
+               ? 1
+               : 0;
+}
+
+int mglRenderTextureTargetIsLayeredUpload(uint32_t target) {
+    return mglRenderAttachmentUsesArrayLayer(target) ||
+                   mglRenderTextureTargetIsCubeMap(target) ||
+                   mglRenderTextureTargetIs3D(target)
+               ? 1
+               : 0;
+}
+
+int mglRenderTextureTargetIs1DArray(uint32_t target) {
+    return target == GL_TEXTURE_1D_ARRAY ? 1 : 0;
+}
+
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
     uint32_t tmp = 0u;
     return mglRenderBlendOperationFromGL(op, &tmp);
