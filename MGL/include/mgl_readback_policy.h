@@ -9,15 +9,18 @@
  */
 
 /*
- * mgl_integer_readback.h
+ * mgl_readback_policy.h
  *
- * C1 domain strip from mgl_render.cpp: integer texture readback
- * classification + CPU conversion. Pure data transforms / tables —
- * no Metal-cpp, no renderer instance. pixel_format arguments use the
+ * C1 / O4.1 domain strip from mgl_render.cpp — IntegerReadback classify +
+ * CPU convert (CTS ReadbackPolicy alignment). Pure data transforms /
+ * tables; no Metal-cpp, no renderer instance. pixel_format uses the
  * MGLPixelFormat / MTL::PixelFormat numeric ABI (see pixel_utils.h).
  *
- * Callers historically went through mgl_render.h; that header now
- * includes this one so Texture.m keeps its existing call sites.
+ * Future O4.1 residents (Y-flip / MSAA resolve / depth pack) land here;
+ * do not sink back into mgl_render.cpp.
+ *
+ * Callers historically went through mgl_render.h; that header includes
+ * this one so Texture.m keeps its existing call sites.
  */
 
 #ifndef MGL_INTEGER_READBACK_H

@@ -2081,7 +2081,7 @@ triangles-in `[0,1,R,2,3,4]` 会错误跨段组成 `[0,1,2]`。现于 restart �
 的 10 项 GL packed 类型表（3_3_2 / 2_3_3_REV / 5_6_5(+REV) /
 4_4_4_4(+REV) / 5_5_5_1 / 1_5_5_5_REV / 8_8_8_8(+REV) /
 10_10_10_2 / 2_10_10_10_REV）迁入
-> **C1 note:** IntegerReadback Convert/Source/Packed/Classify now live in `mgl_integer_readback.{h,c}` (included via `mgl_render.h`). Do not re-sink into `mgl_render.cpp`.
+> **C1 note:** IntegerReadback Convert/Source/Packed/Classify now live in `mgl_readback_policy.{h,c}` (included via `mgl_render.h`). Do not re-sink into `mgl_render.cpp`.
 
 `mglRenderIntegerReadbackPackedTypeClassify`（纯分类，两门共用）：
 - ObjC 方法保留喂给转换参数的局部量（位宽/移位/输出字节）与 packed 的

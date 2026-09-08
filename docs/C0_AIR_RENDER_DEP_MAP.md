@@ -173,7 +173,7 @@ ObjC runtime / Mach / Block headers are also included for Metal object class pro
 | ~3280–3800 | Buffer/texture create & views | `CreateTexture*`, `CreateBuffer*` |
 | ~3808–6700 | Texture upload / format / readback copy | `TextureSubUploadPlan`, `Copy*ToGL` |
 | ~6638–7200 | Stage binding / tess factor helpers | `EncodeStageBindingCopyBacks`, tess factor |
-| ~~7238–7549~~ | ~~Integer readback classify~~ | **C1 extracted** → `mgl_integer_readback.{h,c}` (`Convert` + `Source`/`Packed`/`Classify`) |
+| ~~7238–7549~~ | ~~Integer readback classify~~ | **C1 extracted** → `mgl_readback_policy.{h,c}` (`Convert` + `Source`/`Packed`/`Classify`) |
 | ~7550–8500 | Binding policy / residual near former readback | sampler/slot maps |
 | ~8509–9400 | PSO / pass / blend / stencil / viewport | `PipelinePass*`, `Blend*FromGL` |
 | ~9400–11200 | Format tables / clear mask / UBO pack | pixel-format class, plain-uniform pack |
@@ -239,7 +239,7 @@ rg -l '#include "mgl_render.h"' MGL/
 Prefer extending these instead of growing `mgl_render.cpp`:
 
 - `mgl_buffer_plan.*`, `mgl_render_pass_plan.*`, `mgl_tess_domain.*`
-- `mgl_integer_readback.*` (**C1** — Convert + Source/Packed/Classify)
+- `mgl_readback_policy.*` (**C1** — Convert + Source/Packed/Classify)
 - `mgl_draw_{issue,gs,tess,cull,gs_metal}.*`
 - `mgl_batch_{path,hazard,replay,restore,issue,rt_mark}.*`
 - `mgl_compute_pipeline_cache.*`, `mgl_renderer_backend.*`
@@ -266,17 +266,17 @@ flowchart LR
 
 ## 4. C1 knife log — IntegerReadback
 
-Chose **render IntegerReadback** over air type/expr: four pure `extern "C"` helpers with no `Codegen` / Metal-cpp owner coupling; air type+expr is tangled through `emitExpr` / `MType` across multi-kLOC.
+Chose **render IntegerReadback → `mgl_readback_policy.*`** (DXMT / O4.1) over air type/expr (**C1b**): four pure `extern "C"` helpers with no `Codegen` / Metal-cpp owner coupling; air type+expr is tangled through `emitExpr` / `MType` across multi-kLOC.
 
 | Item | Detail |
 |------|--------|
 | Moved | `mglRenderConvertIntegerReadback`, `mglRenderIntegerReadbackSourceClassify`, `mglRenderIntegerReadbackPackedTypeClassify`, `mglRenderIntegerReadbackClassify` |
-| New files | `MGL/include/mgl_integer_readback.h`, `MGL/src/mgl_integer_readback.c` |
+| New files | `MGL/include/mgl_readback_policy.h`, `MGL/src/mgl_readback_policy.c` |
 | Monolith | bodies removed; `mgl_render.h` includes the domain header (Texture.m call sites unchanged) |
 | Build | `Makefile` wildcard `*.c` picks up the TU; `test_metalcpp_smoke` explicit list updated |
 | Pixel format | domain TU uses `MGLPixelFormat` numeric ABI (no metal-cpp) |
 
-**Next strip suggestion:** air **type helpers** (~290–723) if boundaries can be cut without dragging `Codegen`; else render **GetTexImagePlan / binding-policy** residual that sat next to IntegerReadback, or tess-factor CPU helpers already clustered mid-file.
+**Next strip suggestion (C1b / O4.1 residual):** more readback policy into this TU (Y-flip / MSAA resolve / depth pack; `GetTexImagePlan` if clean); **C1b** = air type helpers (~290–723) — separate knife, do not start from this strip.
 
 ---
 
@@ -284,6 +284,6 @@ Chose **render IntegerReadback** over air type/expr: four pure `extern "C"` help
 
 - [x] Includes / callers / domains documented for **only** these two TUs
 - [x] C0 itself: no monolith edits (docs-only)
-- [x] **C1** (first knife): IntegerReadback → `mgl_integer_readback.{h,c}`; `mgl_render.cpp` ~21043→~20599 (−444)
+- [x] **C1** (first knife): IntegerReadback → `mgl_readback_policy.{h,c}`; `mgl_render.cpp` ~21043→~20599 (−444)
 - [ ] Future knives: continue by domain table above (next: binding-policy residual near former readback, or air type helpers); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 

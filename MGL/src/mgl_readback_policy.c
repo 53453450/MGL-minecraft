@@ -9,12 +9,12 @@
  */
 
 /*
- * mgl_integer_readback.c — C1 strip from mgl_render.cpp.
- * Integer readback source/packed/classify tables + CPU convert loop.
- * Pure C; pixel_format uses MGLPixelFormat numeric ABI.
+ * mgl_readback_policy.c — C1 / O4.1 strip from mgl_render.cpp.
+ * IntegerReadback source/packed/classify tables + CPU convert loop
+ * (CTS ReadbackPolicy). Pure C; pixel_format uses MGLPixelFormat ABI.
  */
 
-#include "mgl_integer_readback.h"
+#include "mgl_readback_policy.h"
 
 #include "glcorearb.h"
 

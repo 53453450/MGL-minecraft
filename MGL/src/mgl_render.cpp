@@ -6925,7 +6925,7 @@ uint8_t* mglRenderCreateChannelExpandedUpload(
 }
 
 
-/* C1: mglRenderConvertIntegerReadback → mgl_integer_readback.c */
+/* C1: mglRenderConvertIntegerReadback → mgl_readback_policy.c */
 
 
 /* GL 4.6 section 11.2.2.2 patch discard predicate.
@@ -7101,7 +7101,7 @@ int mglRenderRasterizationIsEmpty(
     return 0;
 }
 
-/* C1: IntegerReadback Source/Packed/Classify → mgl_integer_readback.c */
+/* C1: IntegerReadback Source/Packed/Classify → mgl_readback_policy.c */
 
 
 extern "C"

@@ -19,7 +19,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "mgl_render_values.h"
-#include "mgl_integer_readback.h"
+#include "mgl_readback_policy.h"
 
 /* Forward decl (mgl_types_texture.h pulls in GLMContext-typed state). */
 typedef struct TextureLevel_t TextureLevel;
@@ -769,7 +769,7 @@ int mglRenderBuildRuntimeArraySizes(
     uint32_t *out_sizes,
     uint32_t out_capacity);
 
-/* C1: IntegerReadback types/API → mgl_integer_readback.h */
+/* C1: IntegerReadback types/API → mgl_readback_policy.h */
 
 /* tess-factor buffer CPU transforms — the default
  * canonical factor fill (RECORD_BYTES/patch: 12B half + 24B exact f32),
