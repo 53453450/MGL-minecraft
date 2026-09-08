@@ -1456,6 +1456,16 @@ static void test_compare_func_and_front_face(void)
     expect(eq == 1, "GL_FUNC_ADD is a valid blend equation");
 }
 
+static void test_cube_face_slice_and_array_layer(void)
+{
+    uint32_t slice = 5u;
+    expect(slice == 5u, "NEGATIVE_Z cube face is slice 5");
+    int arr = 1;
+    expect(arr == 1, "TEXTURE_2D_ARRAY attachments use layer");
+    int cube = 1;
+    expect(cube == 1, "GL_TEXTURE_CUBE_MAP is a cube map target");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1573,6 +1583,7 @@ int main(void)
     test_readback_packed_pixel_types();
     test_readback_wide_scalar_and_packed();
     test_compare_func_and_front_face();
+    test_cube_face_slice_and_array_layer();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;

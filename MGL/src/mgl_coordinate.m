@@ -33,6 +33,7 @@
  */
 
 #import "mgl_coordinate.h"
+#include "mgl_render.h"
 
 bool mglProgramHasExistingFramebufferSampleYFlip(Program *program)
 {
@@ -45,7 +46,8 @@ bool mglProgramHasExistingFramebufferSampleYFlip(Program *program)
      * Y-flip for fullscreen sampled-framebuffer shaders.  This avoids false
      * negatives when the shader uses a different Y-flip expression that
      * wasn't in the hardcoded string list. */
-    return program->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
+    return mglRenderSamplerUnitExplicit(
+        (uint32_t)program->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip) != 0;
 }
 
 MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex, Program *samplingProgram)
@@ -66,7 +68,9 @@ MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex, Program *samplingProgr
     }
 
     bool sample_yflip_injected = samplingProgram &&
-        samplingProgram->modules[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
+        mglRenderSamplerUnitExplicit(
+            (uint32_t)samplingProgram->modules[_VERTEX_SHADER]
+                .mgl_injected_framebuffer_yflip) != 0;
 
     if (render_uses_original && !sample_yflip_injected) {
         return MGL_YFLIP_USE_ORIGINAL;

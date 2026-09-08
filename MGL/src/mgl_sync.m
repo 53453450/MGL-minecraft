@@ -46,27 +46,10 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
 
     subresource.level = attachment->level;
 
-    switch (attachment->textarget) {
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
-            subresource.slice = 0u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
-            subresource.slice = 1u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
-            subresource.slice = 2u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
-            subresource.slice = 3u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
-            subresource.slice = 4u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
-            subresource.slice = 5u;
-            break;
-
-        case GL_TEXTURE_CUBE_MAP:
+    uint32_t cubeSlice = 0u;
+    if (mglRenderCubeMapFaceSlice((uint32_t)attachment->textarget, &cubeSlice)) {
+        subresource.slice = cubeSlice;
+    } else if (mglRenderTextureTargetIsCubeMap((uint32_t)attachment->textarget)) {
             /* glFramebufferTextureLayer stores the texture object's cube
              * target plus the selected face in layer.  Whole-level layered
              * cube attachments also use this target, but always carry layer
@@ -74,26 +57,15 @@ MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const F
             if (attachment->layer < _CUBE_MAP_MAX_FACE) {
                 subresource.slice = attachment->layer;
             }
-            break;
-
-        case GL_TEXTURE_1D_ARRAY:
-        case GL_TEXTURE_2D_ARRAY:
-        case GL_TEXTURE_CUBE_MAP_ARRAY:
+    } else if (mglRenderAttachmentUsesArrayLayer((uint32_t)attachment->textarget)) {
             subresource.slice = attachment->layer;
-            break;
-
-        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+    } else if (mglRenderMSAAArrayLayerStride(
+                   1, (uint32_t)attachment->textarget) > 1u) {
             /* Emulated as texture2d_array with flat = layer * 8 + sample.
              * FBO attaches one GL layer at the base sample plane. */
             subresource.slice = (uint32_t)attachment->layer * 8u;
-            break;
-
-        case GL_TEXTURE_3D:
+    } else if (mglRenderTextureTargetIs3D((uint32_t)attachment->textarget)) {
             subresource.depthPlane = attachment->layer;
-            break;
-
-        default:
-            break;
     }
 
     return subresource;

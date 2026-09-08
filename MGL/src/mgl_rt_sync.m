@@ -19,6 +19,7 @@
  */
 
 #import "mgl_rt_sync.h"
+#include "mgl_render.h"
 
 /* findTexture is implemented in textures.c and resolves a GL texture name to
  * a Texture *.  Declared here so this module does not need to include the
@@ -68,7 +69,7 @@ bool mglFramebufferLooksLikeGLSampledCopyRenderTarget(GLMContext glctx,
 
     FBOAttachment *color0 = &fbo->color_attachments[0];
     Texture *color = NULL;
-    if (color0->textarget == GL_RENDERBUFFER) {
+    if (mglRenderTargetIsRenderbuffer((uint32_t)color0->textarget)) {
         color = color0->buf.rbo ? color0->buf.rbo->tex : NULL;
     } else {
         color = color0->buf.tex;
@@ -82,7 +83,7 @@ bool mglFramebufferLooksLikeGLSampledCopyRenderTarget(GLMContext glctx,
 
     Texture *depth = NULL;
     if (fbo->depth.texture) {
-        if (fbo->depth.textarget == GL_RENDERBUFFER) {
+        if (mglRenderTargetIsRenderbuffer((uint32_t)fbo->depth.textarget)) {
             depth = fbo->depth.buf.rbo ? fbo->depth.buf.rbo->tex : NULL;
         } else {
             depth = fbo->depth.buf.tex;

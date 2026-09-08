@@ -9680,6 +9680,50 @@ int mglRenderFrontFaceIsCounterClockwise(uint32_t front_face) {
     return front_face == GL_CCW ? 1 : 0;
 }
 
+int mglRenderCubeMapFaceSlice(uint32_t textarget, uint32_t *out) {
+    uint32_t slice = 0u;
+    int known = 1;
+    switch (textarget) {
+    case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+        slice = 0u;
+        break;
+    case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+        slice = 1u;
+        break;
+    case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+        slice = 2u;
+        break;
+    case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+        slice = 3u;
+        break;
+    case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+        slice = 4u;
+        break;
+    case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+        slice = 5u;
+        break;
+    default:
+        known = 0;
+        break;
+    }
+    if (out) {
+        *out = slice;
+    }
+    return known;
+}
+
+int mglRenderAttachmentUsesArrayLayer(uint32_t textarget) {
+    return textarget == GL_TEXTURE_1D_ARRAY ||
+                   textarget == GL_TEXTURE_2D_ARRAY ||
+                   textarget == GL_TEXTURE_CUBE_MAP_ARRAY
+               ? 1
+               : 0;
+}
+
+int mglRenderTextureTargetIsCubeMap(uint32_t target) {
+    return target == GL_TEXTURE_CUBE_MAP ? 1 : 0;
+}
+
 int mglRenderIsValidGLBlendEquation(uint32_t op) {
     uint32_t tmp = 0u;
     return mglRenderBlendOperationFromGL(op, &tmp);
