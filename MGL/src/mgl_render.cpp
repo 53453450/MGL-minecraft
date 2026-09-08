@@ -8653,6 +8653,23 @@ int mglRenderPolygonModeValid(uint32_t mode) {
 uint32_t mglRenderPolygonModeOrFill(uint32_t mode) {
     return mglRenderPolygonModeValid(mode) ? mode : (uint32_t)GL_FILL;
 }
+
+int mglRenderUseDepthState(int depth_test, int pass_has_depth) {
+    return depth_test && pass_has_depth ? 1 : 0;
+}
+
+int mglRenderUseStencilState(int stencil_test, int pass_has_stencil) {
+    return stencil_test && pass_has_stencil ? 1 : 0;
+}
+
+int mglRenderSuppressDepthStencilWrites(int rasterizer_discard, int tess_capture,
+                                        int cull_capture) {
+    return rasterizer_discard || tess_capture || cull_capture ? 1 : 0;
+}
+
+uint32_t mglRenderStencilWriteMask(int suppress, uint32_t mask) {
+    return suppress ? 0u : mask;
+}
     if (buf && buf->size == 0) {
         buf->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
     }

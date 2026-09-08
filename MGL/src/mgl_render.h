@@ -1350,6 +1350,11 @@ int mglRenderPolygonOffsetEnabled(int fill, int line, int point);
 uint32_t mglRenderTriangleFillMode(uint32_t polygon_mode);
 int mglRenderPolygonModeValid(uint32_t mode);
 uint32_t mglRenderPolygonModeOrFill(uint32_t mode);
+int mglRenderUseDepthState(int depth_test, int pass_has_depth);
+int mglRenderUseStencilState(int stencil_test, int pass_has_stencil);
+int mglRenderSuppressDepthStencilWrites(int rasterizer_discard, int tess_capture,
+                                        int cull_capture);
+uint32_t mglRenderStencilWriteMask(int suppress, uint32_t mask);
 void mglRenderClearEmptyBufferDirty(Buffer *buf);
 int mglRenderBufferNeedsCPUUpload(int64_t size, uint32_t dirty_bits);
 int mglRenderBufferHasCPUDirty(uint32_t dirty_bits);

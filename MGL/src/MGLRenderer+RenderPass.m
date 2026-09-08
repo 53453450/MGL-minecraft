@@ -2189,8 +2189,12 @@ static GLenum mglPassthroughDeclType(
     BOOL passHasStencilAttachment =
         (hasConfiguredRenderPass &&
          mglRenderPassStencilTextureFor(_renderPassManager.state) != nil);
-    BOOL useDepthState = state->caps.depth_test && passHasDepthAttachment;
-    BOOL useStencilState = state->caps.stencil_test && passHasStencilAttachment;
+    BOOL useDepthState = mglRenderUseDepthState(
+                             state->caps.depth_test ? 1 : 0,
+                             passHasDepthAttachment ? 1 : 0) != 0;
+    BOOL useStencilState = mglRenderUseStencilState(
+                               state->caps.stencil_test ? 1 : 0,
+                               passHasStencilAttachment ? 1 : 0) != 0;
 
     if (state->caps.depth_test && !passHasDepthAttachment) {
         static uint64_t s_missingDepthAttachmentCount = 0;
@@ -2241,9 +2245,10 @@ static GLenum mglPassthroughDeclType(
          * depth/stencil writes must not mutate attachments (color masks are
          * cleared separately in the pipeline descriptor path). */
         const BOOL suppressDepthStencilWrites =
-            state->caps.rasterizer_discard ||
-            _tessellation.tessVertexCaptureActive ||
-            _tessellation.cullDistanceCaptureActive;
+            mglRenderSuppressDepthStencilWrites(
+                state->caps.rasterizer_discard ? 1 : 0,
+                _tessellation.tessVertexCaptureActive ? 1 : 0,
+                _tessellation.cullDistanceCaptureActive ? 1 : 0) != 0;
         if (suppressDepthStencilWrites) {
             dsDesc.depth_write_enabled = 0u;
         }
@@ -2278,15 +2283,19 @@ static GLenum mglPassthroughDeclType(
                 if (mglEnvFlagEnabled("MGL_FORCE_STENCIL_ALWAYS")) {
                     dsDesc.front.compare_function = MGLCompareFunctionAlways;
                 }
-                dsDesc.front.stencil_failure_operation =
-                    [self mtlStencilOpForGLOp:state->var.stencil_fail];
-                dsDesc.front.depth_failure_operation =
-                    [self mtlStencilOpForGLOp:state->var.stencil_pass_depth_fail];
-                dsDesc.front.depth_stencil_pass_operation =
-                    [self mtlStencilOpForGLOp:state->var.stencil_pass_depth_pass];
-                dsDesc.front.write_mask =
-                    suppressDepthStencilWrites ? 0u
-                                               : state->var.stencil_writemask;
+                uint32_t failOp = 0u, depthFailOp = 0u, passOp = 0u;
+                (void)mglRenderStencilOpFromGL((uint32_t)state->var.stencil_fail,
+                                               &failOp);
+                (void)mglRenderStencilOpFromGL(
+                    (uint32_t)state->var.stencil_pass_depth_fail, &depthFailOp);
+                (void)mglRenderStencilOpFromGL(
+                    (uint32_t)state->var.stencil_pass_depth_pass, &passOp);
+                dsDesc.front.stencil_failure_operation = failOp;
+                dsDesc.front.depth_failure_operation = depthFailOp;
+                dsDesc.front.depth_stencil_pass_operation = passOp;
+                dsDesc.front.write_mask = mglRenderStencilWriteMask(
+                    suppressDepthStencilWrites ? 1 : 0,
+                    (uint32_t)state->var.stencil_writemask);
                 dsDesc.front.read_mask = state->var.stencil_value_mask;
             }
 
@@ -2305,16 +2314,21 @@ static GLenum mglPassthroughDeclType(
                 if (mglEnvFlagEnabled("MGL_FORCE_STENCIL_ALWAYS")) {
                     dsDesc.back.compare_function = MGLCompareFunctionAlways;
                 }
-                dsDesc.back.stencil_failure_operation =
-                    [self mtlStencilOpForGLOp:state->var.stencil_back_fail];
-                dsDesc.back.depth_failure_operation =
-                    [self mtlStencilOpForGLOp:state->var.stencil_back_pass_depth_fail];
-                dsDesc.back.depth_stencil_pass_operation =
-                    [self mtlStencilOpForGLOp:state->var.stencil_back_pass_depth_pass];
-                dsDesc.back.write_mask =
-                    suppressDepthStencilWrites
-                        ? 0u
-                        : state->var.stencil_back_writemask;
+                uint32_t backFail = 0u, backDepthFail = 0u, backPass = 0u;
+                (void)mglRenderStencilOpFromGL(
+                    (uint32_t)state->var.stencil_back_fail, &backFail);
+                (void)mglRenderStencilOpFromGL(
+                    (uint32_t)state->var.stencil_back_pass_depth_fail,
+                    &backDepthFail);
+                (void)mglRenderStencilOpFromGL(
+                    (uint32_t)state->var.stencil_back_pass_depth_pass,
+                    &backPass);
+                dsDesc.back.stencil_failure_operation = backFail;
+                dsDesc.back.depth_failure_operation = backDepthFail;
+                dsDesc.back.depth_stencil_pass_operation = backPass;
+                dsDesc.back.write_mask = mglRenderStencilWriteMask(
+                    suppressDepthStencilWrites ? 1 : 0,
+                    (uint32_t)state->var.stencil_back_writemask);
                 dsDesc.back.read_mask = state->var.stencil_back_value_mask;
             }
         }

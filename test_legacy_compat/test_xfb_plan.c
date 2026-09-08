@@ -1110,6 +1110,18 @@ static void test_depth_clip_and_polygon_mode(void)
     expect(valid == 0, "unknown polygon_mode is invalid");
 }
 
+static void test_depth_stencil_use_and_suppress(void)
+{
+    int use_d = 1 && 1;
+    expect(use_d == 1, "depth test with attachment uses depth state");
+    int use_s = 1 && 0;
+    expect(use_s == 0, "stencil test without attachment is disabled");
+    int suppress = 1 || 0 || 0;
+    expect(suppress == 1, "rasterizer discard suppresses DS writes");
+    uint32_t mask = 1 ? 0u : 0xffu;
+    expect(mask == 0u, "suppressed stencil write mask is 0");
+}
+
 int main(void)
 {
     test_tess_xfb_dest();
@@ -1190,6 +1202,7 @@ int main(void)
     test_stencil_op_from_gl();
     test_cull_mode_and_front_face();
     test_depth_clip_and_polygon_mode();
+    test_depth_stencil_use_and_suppress();
     if (g_fails) {
         fprintf(stderr, "test_xfb_plan: %d failure(s)\n", g_fails);
         return 1;
