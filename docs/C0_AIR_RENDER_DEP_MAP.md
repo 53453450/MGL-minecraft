@@ -1,7 +1,7 @@
 # C0 — Dependency map: `mgl_air_backend.cpp` & `mgl_render.cpp`
 
 > Track **C0** was docs-only; **C1** started monolith knives (IntegerReadback out).
-> Snapshot: `main` @ C1d air math builtins (~15.2k air / ~20.5k render LOC). Re-measure with `wc -l` after splits.
+> Snapshot: `main` @ C1e air VarSym classify/location (~15.0k air / ~20.5k render LOC). Re-measure with `wc -l` after splits.
 > Purpose: make include / caller / domain boundaries visible before any TU knife.
 
 ---
@@ -10,7 +10,7 @@
 
 | TU | ~LOC | Role | Risk if sink blindly |
 |----|-----:|------|----------------------|
-| `MGL/src/mgl_air_backend.cpp` | ~15216 | GLSL AST → LLVM AIR → `.metallib` | Mixes expr/stmt emit, stage ABI, legacy rewrite, reflect helpers; **type (C1b) + resource (C1c) + math builtins (C1d) extracted** |
+| `MGL/src/mgl_air_backend.cpp` | ~14998 | GLSL AST → LLVM AIR → `.metallib` | Mixes expr/stmt emit, stage ABI, legacy rewrite, reflect helpers; **type (C1b) + resource (C1c) + math (C1d) + VarSym classify/location (C1e) extracted** |
 | `MGL/src/mgl_render.cpp` | ~20470 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, …) |
 
 Policy (OBJC TODO / ARCH): **do not grow these**; new sinks land in domain TUs.
@@ -70,7 +70,7 @@ Anonymous `namespace { … }` holds almost all helpers; C API is `extern "C"` af
 
 | Approx lines | Banner / domain |
 |-------------:|-----------------|
-| ~87–170 | GS AST→ABI map; C1b/C1c/C1d facades; `storeStageOut` |
+| ~87–170 | GS AST→ABI map; C1b/C1c/C1d/C1e facades; `storeStageOut` |
 | ~~bootstrap + type helpers~~ | **C1b extracted** → `mgl_air_type.{h,cpp}` + `mgl_air_codegen.h` (`MType`/`Codegen`/carriers/LLVM/mangle/`typeFromIR`) |
 | ~~resource collection~~ | **C1c extracted** → `mgl_air_resource.{h,cpp}` (`uniformBlock*` / `collectUniforms` / opaque leaves / sampler path) |
 | ~162–… | **expression codegen** (`findSymbol` / swizzle / … → emitExpr) |
@@ -79,7 +79,7 @@ Anonymous `namespace { … }` holds almost all helpers; C API is `extern "C"` af
 | ~~math builtins~~ | **C1d extracted** → `mgl_air_math.{h,cpp}` (`emitMathBuiltin` + float-intrinsic helpers; thin `AirMathDeps` facade) |
 | … | **statements** (`emitStmt` / compound) |
 | … | **AIR metadata** (`addModuleFlags`) |
-| … | **module assembly** (VarSym stage classify / location assign residual) |
+| ~~module-assembly VarSym classify/location~~ | **C1e extracted** → `mgl_air_varsym.{h,cpp}` (`collectStageVarSyms` / `assignStageVarSymLocations` / `varyingLocationSpan` / attrib / stride); residual module assembly + compileGLSLImpl remain |
 | … | **legacy GLSL wiring** + `compileGLSLImpl` |
 | …–EOF | **exported C ABI** (compile / reflect / interface check) |
 
@@ -244,6 +244,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_air_resource.*` (**C1c** — uniform/opaque resource collection)
 - `mgl_air_math.*` (**C1d** — math/pack/bitfield builtins; not emitExpr/matrix)
+- `mgl_air_varsym.*` (**C1e** — VarSym stage classify / location assign / stride; not emitExpr/matrix)
 - `mgl_draw_{issue,gs,tess,cull,gs_metal}.*`
 - `mgl_batch_{path,hazard,replay,restore,issue,rt_mark}.*`
 - `mgl_compute_pipeline_cache.*`, `mgl_renderer_backend.*`
@@ -342,15 +343,34 @@ Chose **air math builtins → `mgl_air_math.*`** (DXMT C1d). Coherent strip: `em
 |------|--------|
 | Moved | `emitMathBuiltin` (trig/exp/rounding/geometric/pack/bitfield); float-intrinsic helpers |
 | Shared state | `AirMathDeps` hooks into monolith `emitExpr` / `callAirFn` / `dotProduct` / `broadcastTo` / `exprType` / SSBO lvalue path — backend keeps thin static facade |
-| Residual in monolith | emitExpr / matrix / stmt / module-assembly VarSym / legacy |
+| Residual in monolith | emitExpr / matrix / stmt / ~~module-assembly VarSym~~ → **C1e**; legacy |
 | New files | `MGL/include/mgl_air_math.h`, `MGL/src/mgl_air_math.cpp` |
 | Monolith | body removed; anon-ns static `emitMathBuiltin` → `mgl::air::emitMathBuiltin` + `AirMathDeps` |
 | Build | `Makefile` wildcard `*.cpp` picks up TU; explicit `test_mglair` / `test_mcrepro` / `test_mglair_gtest` lists updated |
 | LOC | `mgl_air_backend.cpp` ~16157→~15216 (−941); new `mgl_air_math.cpp` ~1009 |
 
-**Next strip suggestion:** module-assembly VarSym classify/location, or later expr facade — still defer emitExpr/matrix bodies. Do **not** sink back into `mgl_air_backend.cpp`. Trajectory under ~15k air TU.
+**Next strip suggestion:** ~~module-assembly VarSym~~ → **C1e done** (§4e). Later expr facade — still defer emitExpr/matrix bodies. Do **not** sink back into `mgl_air_backend.cpp`.
 
 ---
+
+
+---
+
+## 4e. C1e knife log — air VarSym classify / location
+
+Chose **module-assembly VarSym classify/location → `mgl_air_varsym.*`** (DXMT C1e). Coherent strip: `collectStageVarSyms` + `assignStageVarSymLocations` + `varyingLocationSpan` / `airAttribLocation` / `stageRecordStride`; **not** emitExpr / matrix / emitStmt.
+
+| Item | Detail |
+|------|--------|
+| Moved | Stage VarSym classify from IR symbols; input/output/patch location assign (+ attrib preference + iface peer remap); location span; record/patch stride helpers |
+| Shared state | Uses `typeFromIR` / `appendOpaqueUniformLeaves` via `mgl_air_type` + `mgl_air_resource`; thin `AirIfaceLocationPeer` avoids Mach/GL in the new TU |
+| Residual in monolith | emitExpr / matrix / stmt / remaining module assembly + legacy `compileGLSLImpl` |
+| New files | `MGL/include/mgl_air_varsym.h`, `MGL/src/mgl_air_varsym.cpp` |
+| Monolith | bodies removed; `using mgl::air::*` facade + call site in `compileGLSLImpl` |
+| Build | `Makefile` wildcard `*.cpp` picks up TU; explicit `test_mglair` / `test_mcrepro` / `test_mglair_gtest` lists updated |
+| LOC | `mgl_air_backend.cpp` ~15216→~14998 (−223); new `mgl_air_varsym.cpp` ~312; air TU now &lt;15k |
+
+**Next strip suggestion:** later expr facade (still defer emitExpr/matrix bodies), or stmt strip if a clean boundary appears. Do **not** sink back into `mgl_air_backend.cpp`.
 
 ## 5. C0 / C1 exit criteria
 
@@ -361,5 +381,6 @@ Chose **air math builtins → `mgl_air_math.*`** (DXMT C1d). Coherent strip: `em
 - [x] **C1b** (air type helpers): `MType`/carriers/LLVM/mangle/`typeFromIR` → `mgl_air_type.*` + `mgl_air_codegen.h`; `mgl_air_backend.cpp` ~16905→~16302 (−603); emitExpr/matrix deferred; non-Metal golden `test_mgl_air_type`
 - [x] **C1c** (air resource collection): `uniformBlock*`/`collectUniforms`/opaque leaves/sampler path → `mgl_air_resource.*`; `mgl_air_backend.cpp` ~16302→~16157 (−145); emitExpr/matrix deferred
 - [x] **C1d** (air math builtins): `emitMathBuiltin` → `mgl_air_math.*`; `mgl_air_backend.cpp` ~16157→~15216 (−941); emitExpr/matrix deferred; Linux smoke `mgl_air_math.cpp` + llvm-19
-- [ ] Future knives: continue by domain table (module-assembly VarSym / later expr facade, or binding-policy residual); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1e** (air VarSym classify/location): → `mgl_air_varsym.*`; `mgl_air_backend.cpp` ~15216→~14998 (−223); air TU &lt;15k; emitExpr/matrix deferred; Linux smoke `mgl_air_varsym.cpp` + llvm-19
+- [ ] Future knives: continue by domain table (later expr facade / stmt, or binding-policy residual); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 

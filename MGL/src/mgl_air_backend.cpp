@@ -83,6 +83,7 @@
 #include "mgl_air_codegen.h"
 #include "mgl_air_resource.h"
 #include "mgl_air_math.h"
+#include "mgl_air_varsym.h"
 
 namespace {
 
@@ -137,9 +138,23 @@ using mgl::air::uniformBlockIsInstanceArray;
 using mgl::air::collectUniforms;
 using mgl::air::appendOpaqueUniformLeaves;
 using mgl::air::resolveSamplerAccessName;
+using mgl::air::varyingLocationSpan;
+using mgl::air::airAttribLocation;
+using mgl::air::collectStageVarSyms;
+using mgl::air::assignStageVarSymLocations;
+using mgl::air::stageRecordStride;
+using mgl::air::AirIfaceLocationPeer;
+
 
 static_assert(MGL_AIR_CODEGEN_PER_VERTEX_STRIDE == MGL_AIR_PER_VERTEX_STRIDE,
               "mgl_air_codegen.h stride default must match mgl_shader_abi.h");
+static_assert((int)MGL_STAGE_VERTEX == (int)mgl::air::AIR_STAGE_VERTEX &&
+              (int)MGL_STAGE_FRAGMENT == (int)mgl::air::AIR_STAGE_FRAGMENT &&
+              (int)MGL_STAGE_COMPUTE == (int)mgl::air::AIR_STAGE_COMPUTE &&
+              (int)MGL_STAGE_TESS_CONTROL == (int)mgl::air::AIR_STAGE_TESS_CONTROL &&
+              (int)MGL_STAGE_TESS_EVALUATION == (int)mgl::air::AIR_STAGE_TESS_EVALUATION &&
+              (int)MGL_STAGE_GEOMETRY == (int)mgl::air::AIR_STAGE_GEOMETRY,
+              "AirStageId must match MGL_STAGE_*");
 
 
 /* ---- type helpers (C1b) ----------------------------------------------- */
@@ -3760,19 +3775,9 @@ static llvm::Value *geometryPrimitiveCulled(
     return culled;
 }
 
-/* GLSL matrix varyings consume one location per column (GL 4.6 §4.4.1).
- * Stage-out records store each column in its own 16-byte slot so the
- * GS/TES passthrough VS can rebuild `matCxR` without Metal matrix
- * attribute types. */
-static uint32_t varyingLocationSpan(const MType &t)
-{
-    /* GL 4.6 §4.4.1: a matrix consumes one location per column; an array
-     * of matrices consumes cols*N.  Non-matrix arrays consume one per
-     * element (each element is one location / record slot). */
-    uint32_t elem = (t.isMatrix() && t.cols > 0) ? t.cols : 1u;
-    if (t.isArray() && t.arr > 0) return elem * (uint32_t)t.arr;
-    return elem;
-}
+/* ---- varying location span (C1e) ----------------------------------- */
+/* Body in mgl_air_varsym.cpp; using-facade above. */
+
 
 static void storeVaryingValueAtLocation(Codegen &cg, llvm::Value *record,
                                         const VarSym &varying,
@@ -10589,36 +10594,12 @@ void addModuleFlags(llvm::Module *m) {
     flags->addOperand(flag("air.max_device_buffers", 7, 31));
 }
 
-/* ---- module assembly ---------------------------------------------------- */
+/* ---- module assembly (C1e VarSym → mgl_air_varsym.*; residual) ---------- */
 
 } /* namespace */
 
-/* Desired vertex attribute location: explicit glBindAttribLocation
- * bindings first, then the Mojang stable names (mirroring the legacy
- * mglDesiredAttribLocationForName default table).  UINT32_MAX means no
- * preference (declaration order applies). */
-static uint32_t airAttribLocation(const char *name,
-                                  const char *const *attrib_names) {
-    if (name && attrib_names) {
-        for (int i = 0; i < MAX_ATTRIBS; i++) {
-            if (attrib_names[i] && strcmp(attrib_names[i], name) == 0) {
-                return (uint32_t)i;
-            }
-        }
-    }
-    if (name) {
-        static const struct { const char *n; uint32_t l; } def[] = {
-            {"Position", 0}, {"Color", 1}, {"UV0", 2},
-            {"UV1", 3}, {"UV2", 4}, {"Normal", 5},
-        };
-        for (const auto &d : def) {
-            if (strcmp(d.n, name) == 0) {
-                return d.l;
-            }
-        }
-    }
-    return UINT32_MAX;
-}
+/* ---- attrib location preference (C1e) ----------------------------- */
+/* Body in mgl_air_varsym.cpp; using-facade above. */
 
 static bool exprUsesRuntimeArrayLength(const MGLExpr *e,
                                        const MGLIRModule *mod) {
@@ -10901,208 +10882,28 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     /* Find main and the stage's interface symbols. */
     MGLDecl *mainDecl = nullptr;
     std::vector<VarSym> syms;
-    for (uint32_t i = 0; i < mod.symbol_count; i++) {
-        MGLIRSymbol *s = mod.symbols[i];
-        if (s->is_function) {
-            continue;
-        }
-        /* Builtin interface-block shells/members are lowered through the
-         * dedicated gl_Position/gl_PointSize/gl_CullDistance paths below,
-         * never as user varyings.  EXCEPTIONS (must become real kernel
-         * parameters, mirroring mgl_air_reflect.c's refined skip):
-         * uniform-qualified gl_ symbols (legacy fixed-function matrix
-         * uniforms injected verbatim) and explicitly-located gl_ symbols
-         * (legacy gl_Vertex injected with layout(location = 0)). */
-        if (s->name && strncmp(s->name, "gl_", 3) == 0 &&
-            !(s->qualifiers & MGL_AST_Q_UNIFORM) &&
-            s->location == UINT32_MAX) {
-            continue;
-        }
-        /* GS interface-block instances flatten into per-member VARYING
-         * symbols (block_name set); the struct-typed instance symbol
-         * itself carries no interface storage. */
-        {
-            const MGLIRType *it = s->type;
-            bool structShaped =
-                it->kind == MGLIR_TYPE_STRUCT ||
-                (it->kind == MGLIR_TYPE_ARRAY && it->elem_type &&
-                 it->elem_type->kind == MGLIR_TYPE_STRUCT);
-            if (!s->block_name && structShaped &&
-                (s->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
-                !(s->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
-                continue;
-            }
-        }
-        /* Flattened anonymous UBO/SSBO members (block_name set) are not
-         * Metal buffer arguments — only the owning block instance is.
-         * Emitting a slot per member shifts bindings and leaves the
-         * member buffers unbound (CTS unnamed `buffer Data {…};`). */
-        if (s->block_name &&
-            (s->qualifiers & (MGL_AST_Q_UNIFORM | MGL_AST_Q_BUFFER))) {
-            continue;
-        }
-        VarSym v;
-        v.name = s->name;
-        v.type = typeFromIR(s->type);
-        v.location = s->location;
-        v.locationExplicit = (s->location != UINT32_MAX);
-        v.stream = s->stream;
-        v.blockName = s->block_name ? s->block_name : "";
-        uint32_t q = s->qualifiers;
-        v.isPatch = (q & MGL_AST_Q_PATCH) != 0;
-        v.isSample = (q & MGL_AST_Q_SAMPLE) != 0;
-        if (q & MGL_AST_Q_UNIFORM) {
-            const MGLIRType *ut = s->type;
-            if (ut->kind == MGLIR_TYPE_ARRAY && ut->elem_type)
-                ut = ut->elem_type; /* UBO instance array */
-            if (ut->kind == MGLIR_TYPE_SAMPLER) {
-                v.kind = VarSym::TEXTURE;
-            } else if (ut->kind == MGLIR_TYPE_IMAGE) {
-                v.kind = VarSym::IMAGE;
-            } else if (ut->kind == MGLIR_TYPE_ATOMIC_COUNTER ||
-                       (ut->kind == MGLIR_TYPE_ARRAY && ut->elem_type &&
-                        ut->elem_type->kind == MGLIR_TYPE_ATOMIC_COUNTER)) {
-                v.kind = VarSym::ATOMIC_COUNTER;
-            } else if (ut->kind == MGLIR_TYPE_STRUCT &&
-                       ut->member_count > 0 &&
-                       s->is_interface_block) {
-                v.kind = VarSym::UBO;
-            } else {
-                v.kind = VarSym::BUFFER;
-            }
-        } else if (q & MGL_AST_Q_BUFFER) {
-            v.kind = VarSym::SSBO;
-        } else if (isTCS && (q & MGL_AST_Q_IN)) {
-            v.kind = VarSym::VARYING;
-            if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type) {
-                v.type = typeFromIR(s->type->elem_type);
-            }
-        } else if (isTCS && (q & MGL_AST_Q_OUT)) {
-            v.kind = VarSym::OUTPUT;
-            if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type) {
-                v.type = typeFromIR(s->type->elem_type);
-            }
-        } else if (isGS && (q & MGL_AST_Q_IN)) {
-            v.kind = VarSym::VARYING;
-            /* Plain gl_in-style input arrays index by input vertex; keep
-             * the element type.  Interface-block members (block_name set)
-             * keep their array shape: indexing selects the element slot
-             * at base location + index. */
-            if (!s->block_name &&
-                s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type) {
-                v.type = typeFromIR(s->type->elem_type);
-            }
-        } else if (isGS && (q & MGL_AST_Q_OUT)) {
-            v.kind = VarSym::OUTPUT;
-            if (v.stream < 0) {
-                v.stream = tu->layout_stream >= 0
-                    ? tu->layout_stream : 0;
-            }
-            if (v.stream < 0 || v.stream >= MGL_AIR_GS_MAX_STREAMS) {
-                v.stream = 0;
-            }
-        } else if (isTES && (q & MGL_AST_Q_IN)) {
-            v.kind = VarSym::CONTROL_POINT_INPUT;
-            if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type) {
-                v.type = typeFromIR(s->type->elem_type);
-            }
-        } else if (isVS && (q & MGL_AST_Q_IN)) {
-            v.kind = VarSym::ATTR;
-        } else if ((isVS || isTES) && (q & MGL_AST_Q_OUT)) {
-            v.kind = VarSym::VARYING;
-        } else if (!isVS && (q & MGL_AST_Q_IN)) {
-            v.kind = VarSym::VARYING;
-        } else if (!isVS && (q & MGL_AST_Q_OUT)) {
-            v.kind = VarSym::OUTPUT;
-        }
-        syms.push_back(v);
-        if (v.kind == VarSym::BUFFER && (q & MGL_AST_Q_UNIFORM)) {
-            const MGLIRType *bt = s->type;
-            const MGLIRType *base = bt;
-            while (base && base->kind == MGLIR_TYPE_ARRAY)
-                base = base->elem_type;
-            if (base && base->kind == MGLIR_TYPE_STRUCT)
-                appendOpaqueUniformLeaves(syms, bt, s->name);
-        }
-    }
+    /* C1e: classify/location/stride → mgl_air_varsym.*; thin facade. */
+    collectStageVarSyms(&mod, tu, stage, &syms);
     {
-        uint32_t nextInputLocation = 0;
-        uint32_t nextOutputLocation = 0;
-        uint32_t nextPatchInputLocation = 0;
-        uint32_t nextPatchOutputLocation = 0;
-        for (VarSym &v : syms) {
-            bool input = ((isTCS || isGS) && v.kind == VarSym::VARYING) ||
-                         (isTES && v.kind == VarSym::CONTROL_POINT_INPUT) ||
-                         /* Fragment inputs are VARYING on the FS; assign
-                          * locations so has_gs location tags (mgl_loc_N)
-                          * can pair with the GS passthrough VS. */
-                         (!isVS && !isTES && !isTCS && !isGS && !isKernel &&
-                          v.kind == VarSym::VARYING);
-            bool output = ((isVS || isTES) && v.kind == VarSym::VARYING) ||
-                          ((isTCS || isGS) && v.kind == VarSym::OUTPUT) ||
-                          (!isVS && !isTES && !isKernel &&
-                           v.kind == VarSym::OUTPUT);
-            if (input) {
-                uint32_t &next = v.isPatch
-                    ? nextPatchInputLocation : nextInputLocation;
-                /* VS ATTR: prefer glBindAttribLocation (attrib_names) over
-                 * declaration-order auto-assign, matching mgl_air_reflect.c.
-                 * Sparse binds (CTS enable_disable even/odd locations) must
-                 * put [[attribute(N)]] at the bound N; the vertex descriptor
-                 * is driven by reflection of those same binds. */
-                if (isVS && v.kind == VarSym::ATTR && !v.locationExplicit &&
-                    attrib_names) {
-                    uint32_t want =
-                        airAttribLocation(v.name.c_str(), attrib_names);
-                    if (want != UINT32_MAX)
-                        v.location = want;
-                }
-                if (v.location == UINT32_MAX) v.location = next;
-                next = std::max(next, v.location + varyingLocationSpan(v.type));
-            }
-            if (output) {
-                uint32_t &next = v.isPatch
-                    ? nextPatchOutputLocation : nextOutputLocation;
-                if (v.location == UINT32_MAX) v.location = next;
-                next = std::max(next, v.location + varyingLocationSpan(v.type));
-            }
-        }
-        /* GS-expansion passthrough VS tags outputs as mgl_loc_N using the
-         * GS reflection locations.  FS with has_gs must use the same N for
-         * each varying; declaration-order auto-assign can disagree when GS
-         * and FS list the same names in different order (CTS utf8_characters
-         * gs_fs_tex_coord before/after gs_fs_result).  Remap by name.
-         * TES←TCS uses the same peer list: a TES that omits some TCS outs
-         * (e.g. only `test_vector2`) must still read the producer location. */
+        std::vector<AirIfaceLocationPeer> peers;
         if (iface_location_peers && iface_location_peers->list &&
             ((has_gs && stage == MGL_STAGE_FRAGMENT) ||
              stage == MGL_STAGE_TESS_EVALUATION)) {
-            for (VarSym &v : syms) {
-                const bool fsVarying =
-                    stage == MGL_STAGE_FRAGMENT && v.kind == VarSym::VARYING;
-                const bool tesCpIn =
-                    stage == MGL_STAGE_TESS_EVALUATION &&
-                    v.kind == VarSym::CONTROL_POINT_INPUT;
-                if ((!fsVarying && !tesCpIn) || v.locationExplicit)
-                    continue;
-                for (GLuint i = 0; i < iface_location_peers->count; i++) {
-                    const MGLShaderResource *peer =
-                        &iface_location_peers->list[i];
-                    if (!peer->name)
-                        continue;
-                    if ((peer->is_per_patch != GL_FALSE) != v.isPatch)
-                        continue;
-                    if (strcmp(peer->name, v.name.c_str()) != 0)
-                        continue;
-                    if (peer->location != UINT32_MAX)
-                        v.location = peer->location;
-                    break;
-                }
+            peers.reserve(iface_location_peers->count);
+            for (GLuint i = 0; i < iface_location_peers->count; i++) {
+                const MGLShaderResource *peer =
+                    &iface_location_peers->list[i];
+                AirIfaceLocationPeer p;
+                p.name = peer->name;
+                p.location = peer->location;
+                p.isPerPatch = (peer->is_per_patch != GL_FALSE);
+                peers.push_back(p);
             }
         }
+        assignStageVarSymLocations(
+            syms, stage, isKernel, has_gs, attrib_names, MAX_ATTRIBS,
+            peers.empty() ? nullptr : peers.data(),
+            (uint32_t)peers.size());
     }
     uint32_t ssboCount = 0, uboCount = 0, acCount = 0, texCount = 0, imageCount = 0;
     for (VarSym &v : syms) {
@@ -11120,45 +10921,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             imageCount += v.type.arr > 0 ? (uint32_t)v.type.arr : 1u;
         }
     }
-    auto recordStrideFor = [&](VarSym::Kind kind) -> uint32_t {
-        uint32_t stride = MGL_AIR_PER_VERTEX_STRIDE;
-        for (const VarSym &v : syms) {
-            if (v.kind != kind || v.isPatch ||
-                v.location == UINT32_MAX) continue;
-            uint64_t end = (uint64_t)MGL_AIR_PER_VERTEX_STRIDE +
-                           ((uint64_t)v.location +
-                            varyingLocationSpan(v.type)) * 16u;
-            if (end > UINT32_MAX) return 0u;
-            stride = std::max(stride, (uint32_t)end);
-        }
-        return stride;
-    };
-    auto patchStrideFor = [&](VarSym::Kind kind) -> uint32_t {
-        uint32_t stride = 16u;
-        for (const VarSym &v : syms) {
-            if (v.kind != kind || !v.isPatch ||
-                v.location == UINT32_MAX) continue;
-            uint64_t end = ((uint64_t)v.location +
-                            varyingLocationSpan(v.type)) * 16u;
-            if (end > UINT32_MAX) return 0u;
-            stride = std::max(stride, (uint32_t)end);
-        }
-        return stride;
-    };
     const uint32_t stageInputStride = (isTCS || isGS)
-        ? recordStrideFor(VarSym::VARYING)
-        : isTES ? recordStrideFor(VarSym::CONTROL_POINT_INPUT)
+        ? stageRecordStride(syms, VarSym::VARYING, false,
+                            MGL_AIR_PER_VERTEX_STRIDE)
+        : isTES ? stageRecordStride(syms, VarSym::CONTROL_POINT_INPUT, false,
+                                    MGL_AIR_PER_VERTEX_STRIDE)
                 : MGL_AIR_PER_VERTEX_STRIDE;
     const uint32_t stageOutputStride = (isTCS || isGS || isTESCompute)
-        ? recordStrideFor(isTESCompute ? VarSym::VARYING : VarSym::OUTPUT)
+        ? stageRecordStride(syms,
+                            isTESCompute ? VarSym::VARYING : VarSym::OUTPUT,
+                            false, MGL_AIR_PER_VERTEX_STRIDE)
         : MGL_AIR_PER_VERTEX_STRIDE;
     const uint32_t tessCaptureStride = isTessCapture
-        ? recordStrideFor(VarSym::VARYING)
+        ? stageRecordStride(syms, VarSym::VARYING, false,
+                            MGL_AIR_PER_VERTEX_STRIDE)
         : MGL_AIR_PER_VERTEX_STRIDE;
     const uint32_t patchInputStride = isTES
-        ? patchStrideFor(VarSym::CONTROL_POINT_INPUT) : 16u;
+        ? stageRecordStride(syms, VarSym::CONTROL_POINT_INPUT, true, 16u)
+        : 16u;
     const uint32_t patchOutputStride = isTCS
-        ? patchStrideFor(VarSym::OUTPUT) : 16u;
+        ? stageRecordStride(syms, VarSym::OUTPUT, true, 16u) : 16u;
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         if (tu->decls[i]->body && tu->decls[i]->name &&
             strcmp(tu->decls[i]->name, "main") == 0) {
@@ -13396,7 +13178,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             uint32_t attrLoc = v.location;
             if (!v.locationExplicit) {
                 uint32_t want = airAttribLocation(v.name.c_str(),
-                                                  attrib_names);
+                                                  attrib_names, MAX_ATTRIBS);
                 if (want != UINT32_MAX)
                     attrLoc = want;
                 else if (attrLoc == UINT32_MAX)
@@ -13871,7 +13653,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (v.kind != VarSym::ATTR) continue;
             /* Prefer bindAttribLocation, then explicit/IR location, then
              * declaration order — same priority as non-capture + reflector. */
-            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
+            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names, MAX_ATTRIBS);
             if (want == UINT32_MAX)
                 want = v.location;
             if (want == UINT32_MAX)
