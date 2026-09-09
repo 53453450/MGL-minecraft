@@ -43,9 +43,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 | 文件 | 约 LOC | 判定 | 终态 |
 |------|-------:|------|------|
-| `+Texture.m` | ~6993 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口 |
+| `+Texture.m` | ~6993 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
 | `+RenderPass.m` | ~6997 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（O3.1 待启动）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
-| `+Blit.m` | ~4970 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口 |
+| `+Blit.m` | ~4970 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
 | `+BindingState.m` | ~2940 | **厚**（C1 多刀已从 ~4523 降下，见 O3.3） | 拆：attrib/texture/image apply 残留 → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口（口仍 ≫300，O3.3 residual） |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
 | `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
@@ -161,6 +161,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 ### Batch O4 — Texture / Blit / Readback【P1】（对齐 CTS ReadbackPolicy）
 
 - [x] **O4.1** Y-flip / MSAA resolve policy / integer·depth pack → `mgl_readback_policy.*`（CTS Batch 2）；**C1 已落** IntegerReadback + CopyRows/depth pack/GetTexImagePlan/MSAA stride；**残量** Metal `EncodeMultisampleResolve*` + flip-aware format convert 仍在 monolith
+- [x] **O4.0** value-geometry 类型（MGLSizeValue/MGLOriginValue/MGLRegionValue）+ 构造器去重 → `mgl_region_value.{h,cpp}`（C++-safe，纯 C 无 Metal/ObjC）；原 `MGLRenderer_Private.h`/`+Texture_Private.h` 重复 typedef 与 `+Texture.m`/`+Blit.m` 重复 static 簇（`mglTexture*`/`mglBlit*`）删除，改 `static inline` 别名转发 `mglRegionOrigin/Size/1D/2D/3D`；**unblock** O3/O4 plan 层（须纯 C++ 构造 `MGLRegionValue` 而不引 ObjC 头）
 - [ ] **O4.2** upload dirty / 3D / array / texel buffer plan → C++；ObjC 只 `replaceRegion` / blit
 - [ ] **O4.3** fallback sampled texture 选择 → format/type class 表，禁止散落 `if`
 - [ ] **O4.4** `+Blit` 剩余 format/DS unify（延续 sink）→ `mgl_blit_plan.*`
