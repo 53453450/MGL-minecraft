@@ -160,6 +160,86 @@ static void test_warmup_gates(void)
            "combined");
 }
 
+static void test_depth_recover_plan(void)
+{
+    expect(mglBindingTextureSampledNameIsInSampler("InSampler") == 1, "in name");
+    expect(mglBindingTextureSampledNameIsInSampler("Diffuse") == 0, "not in");
+    uint64_t ctr = 0;
+    expect(mglBindingTextureDepthRecoverLogHit(&ctr) == 1, "log first");
+    expect(ctr == 1ull, "ctr1");
+
+    MGLDepthRecoverInput in;
+    MGLDepthRecoverPlan plan;
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_GATE;
+    in.has_texture = 1;
+    in.is_depth_or_stencil = 1;
+    in.is_insampler = 1;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "gate in");
+    expect(plan.action == MGL_DR_ACTION_ENTER_INSAMPLER, "enter in");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_GATE;
+    in.has_texture = 1;
+    in.is_depth_or_stencil = 1;
+    in.is_render_target = 1;
+    in.level0_ever_written = 0;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "gate rt");
+    expect(plan.action == MGL_DR_ACTION_ENTER_RT, "enter rt");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_INSAMPLER;
+    in.paired_is_current_draw = 1;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "in cur");
+    expect(plan.action == MGL_DR_ACTION_PROBE_PAIRED_COPY, "probe copy");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_COPY;
+    in.paired_copy_usable = 0;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "no copy");
+    expect(plan.action == MGL_DR_ACTION_NIL_SUPPRESS, "nil suppress");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_INSAMPLER;
+    in.has_paired_color = 1;
+    in.has_paired_mtl = 1;
+    in.paired_is_depth_or_stencil = 0;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "paired");
+    expect(plan.action == MGL_DR_ACTION_USE_PAIRED_DIRECT, "paired direct");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_HISTORY;
+    in.candidate_valid = 1;
+    in.candidate_is_rt = 1;
+    in.candidate_copy_usable = 1;
+    in.candidate_is_current_draw = 1;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "hist");
+    expect(plan.action == MGL_DR_ACTION_HISTORY_USE_COPY, "hist copy");
+    expect(plan.reason_tag && strcmp(plan.reason_tag, "history-current-copy") == 0,
+           "hist tag");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_HISTORY;
+    in.candidate_valid = 1;
+    in.candidate_has_mtl = 1;
+    in.candidate_type_ok = 1;
+    in.candidate_kind_ok = 1;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "hist dir");
+    expect(plan.action == MGL_DR_ACTION_HISTORY_USE_DIRECT, "hist direct");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_DR_PHASE_RT;
+    in.rt_sub = 0;
+    in.has_paired_color = 1;
+    in.has_paired_mtl = 1;
+    in.candidate_type_ok = 1;
+    in.candidate_kind_ok = 1;
+    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "rt paired");
+    expect(plan.action == MGL_DR_ACTION_RT_USE_PAIRED, "rt use paired");
+    expect(plan.reason_tag && strcmp(plan.reason_tag, "paired-color") == 0,
+           "rt tag");
+}
+
 int main(void)
 {
     test_image_helpers();
@@ -167,6 +247,7 @@ int main(void)
     test_sampled_plan();
     test_attrib_plan();
     test_warmup_gates();
+    test_depth_recover_plan();
     if (g_fails) {
         fprintf(stderr, "%d failure(s)\n", g_fails);
         return 1;

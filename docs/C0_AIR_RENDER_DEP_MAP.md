@@ -245,7 +245,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
 - `mgl_binding_policy.*` (**C1 / O3.3** — slot/sampler/stage/plain-uniform)
 - `mgl_binding_stage.*` (**C1 / O3.3 residual** — stage UBO/SSBO + attrib bind plan + helpers)
-- `mgl_binding_texture.*` (**C1 / O3.3 residual** — sampled/storage image plans + image-view helpers)
+- `mgl_binding_texture.*` (**C1 / O3.3 residual** — sampled/storage/depth-recover plans + image-view helpers; log ports in `mgl_binding_texture_log.m`)
 - `mgl_pso_format_class.*` (**C1 / O3.2** — topology / format-class / blend·stencil·cull / viewport)
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_air_resource.*` (**C1c** — uniform/opaque resource collection)
@@ -481,12 +481,29 @@ Chose **+BindingState attrib + sampled/storage-image orchestration → `mgl_bind
 | Moved | ImageBindPixelFormat / ImageTargetIsMultisample / ImageLevelInRange / ImageNeeds* / ImageViewSliceCount → texture TU |
 | Added | `mglBindingStagePlanAttribEntry`; `mglBindingTexturePlanStorageImage` / `PlanSampled` (GATE/COMPAT/RT/FINAL); sampler warmup/separate/array gates |
 | ObjC | attrib loop → plan@C; storage V/F → shared stage ring; vertex sampled GATE/COMPAT/FINAL; shared `applySampledRenderTargetCopyPlan`; fragment GATE/COMPAT |
-| Residual | InSampler depth recover still thick; Y-flip/sampler materialize + verbose TBIND logs remain; binding ports still ≫300 |
+| Residual | InSampler depth recover → plan@C (this knife); Y-flip/sampler materialize + verbose TBIND logs remain; binding ports still ≫300 |
 | Build | wildcard `*.c`; `test_metalcpp_smoke` list; `make test-binding-stage` runs stage+texture |
 | LOC | `mgl_render.cpp` ~19484→~19398 (−86); `+BindingState.m` ~4523→~4302 (−221); `+Binding.m` unchanged (488) |
 | Smoke | Linux `cc -std=c11` stage+texture units + `test_binding_stage` / `test_binding_texture` |
 
-**Next strip suggestion (render/ObjC):** InSampler depth-recover plan; BindingState apply masks; or O3.1 pass plan toward &lt;300 binding ports. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+**Next strip suggestion (render/ObjC):** BindingState apply masks / Y-flip·sampler materialize; or O3.1 pass plan toward &lt;300 binding ports. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+
+
+## 4l. C1 knife log — InSampler depth-recover plan (O3.3 residual)
+
+Chose **+BindingState `recoverFragmentSampledDepthTexture` orchestration → `mgl_binding_texture` depth-recover plan** (DXMT O3.3 residual) over leaving the InSampler/history/RT decision tree in ObjC: pure `extern "C"` GATE/INSAMPLER/COPY/HISTORY/RT plan; rate-limited NSLog ports in `mgl_binding_texture_log.m`. ObjC stays plan@C + thin bindMTLTexture / copy-probe / apply. Do **not** thicken `+Binding.m`; do **not** sink into `mgl_render.cpp`.
+
+| Item | Detail |
+|------|--------|
+| Extended | `mgl_binding_texture.{h,c}` — `mglBindingTexturePlanDepthRecover` + InSampler name/log-hit helpers |
+| New | `MGL/src/mgl_binding_texture_log.m` — rate-limited depth-recover NSLog ports |
+| ObjC | `recoverFragmentSampledDepthTexture` → GATE/INSAMPLER/COPY/HISTORY/RT plan@C + thin apply |
+| Residual | Y-flip/sampler materialize + verbose TBIND logs; binding ports still ≫300 |
+| Build | wildcard `*.m` picks up log TU; `make test-binding-stage` runs texture tests |
+| LOC | `mgl_render.cpp` unchanged (~19398); `+BindingState.m` ~4302→~4240 (−62); `+Binding.m` unchanged (488) |
+| Smoke | Linux `cc -std=c11` `test_binding_texture` (+ depth-recover cases) |
+
+**Next strip suggestion (render/ObjC):** BindingState apply masks / Y-flip·sampler materialize; O3.1 pass plan toward &lt;300 ports. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
 
 ## 5. C0 / C1 exit criteria
 
@@ -504,5 +521,6 @@ Chose **+BindingState attrib + sampled/storage-image orchestration → `mgl_bind
 - [x] **C1** (O3.2 format-class PSO): topology / format-class / blend·stencil·cull / viewport → `mgl_pso_format_class.{h,c}`; `mgl_render.cpp` ~20165→~19558 (−607); Linux smoke `mgl_pso_format_class.c`; `+Binding.m`/`+RenderPass.m` not grown
 - [x] **C1** (O3.3 residual stage bind plan): V/F UBO·SSBO plan + helpers → `mgl_binding_stage.{h,c}`; `mgl_render.cpp` ~19558→~19484 (−74); `+BindingState.m` ~4675→~4523; `test-binding-stage`; `+Binding.m` not grown
 - [x] **C1** (O3.3 residual attrib/texture/image): attrib plan → stage; sampled/storage → `mgl_binding_texture.*`; `mgl_render.cpp` ~19484→~19398 (−86); `+BindingState.m` ~4523→~4302 (−221); `test-binding-texture`; `+Binding.m` not grown
-- [ ] Future knives: InSampler depth-recover / BindingState apply masks / O3.1 pass plan toward &lt;300 ports; later expr facade; keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1** (O3.3 residual InSampler depth-recover): depth-recover plan → `mgl_binding_texture.*` + log ports; `+BindingState.m` ~4302→~4240 (−62); `test-binding-texture` depth cases; `+Binding.m` not grown; `mgl_render.cpp` unchanged
+- [ ] Future knives: BindingState apply masks / Y-flip·sampler materialize / O3.1 pass plan toward &lt;300 ports; later expr facade; keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 
