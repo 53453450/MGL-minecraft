@@ -11,7 +11,7 @@
  * mgl_air_math.cpp
  * C1d — AIR math builtins extracted from mgl_air_backend.cpp
  * (emitMathBuiltin + float-intrinsic helpers).  Backend keeps a thin
- * AirMathDeps facade; emitExpr / matrix stay in the monolith.
+ * AirMathDeps facade; emitExpr stays in the monolith (matrix → C1f).
  */
 
 #include "mgl_air_math.h"

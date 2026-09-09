@@ -13,8 +13,8 @@
  * C1e domain strip from mgl_air_backend.cpp — module-assembly VarSym stage
  * classify + location assign (plus varyingLocationSpan / attrib preference /
  * record stride helpers).  Backend keeps a thin call-site facade.
- * Do not sink these back into mgl_air_backend.cpp; do not move emitExpr or
- * matrix builtins here.
+ * Do not sink these back into mgl_air_backend.cpp; do not move emitExpr
+ * here (matrix builtins → mgl_air_matrix / C1f).
  */
 
 #ifndef MGL_AIR_VARSYM_H

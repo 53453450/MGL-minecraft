@@ -12,8 +12,9 @@
  *
  * C1d domain strip from mgl_air_backend.cpp — GLSL math / pack / bitfield
  * builtins (emitMathBuiltin).  Backend keeps a thin AirMathDeps facade so
- * emitExpr / matrix stay in the monolith.  Do not sink these back into
- * mgl_air_backend.cpp; do not move emitExpr or matrix builtins here.
+ * emitExpr stays in the monolith; matrix builtins live in mgl_air_matrix
+ * (C1f).  Do not sink these back into mgl_air_backend.cpp; do not move
+ * emitExpr or matrix builtins here.
  */
 
 #ifndef MGL_AIR_MATH_H
