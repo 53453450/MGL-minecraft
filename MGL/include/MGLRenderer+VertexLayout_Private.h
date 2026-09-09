@@ -40,6 +40,17 @@
 typedef struct MGLRenderPipelineDescriptorState
     MGLRenderPipelineDescriptorState;
 
+/* O5.3: C ABI sink of +VertexLayout generateVertexDescriptorState:. The ObjC
+ * method extracts the two renderer ivars (_tessellation / _batching) and
+ * forwards here. Pure vertex-descriptor plan assembly — no Metal / id. */
+bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
+                                           MGLRenderPipelineDescriptorState *state,
+                                           int nativeTESActive,
+                                           const Program *nativeTESProgram,
+                                           uint32_t tcsOutputStride,
+                                           int absoluteVertexBindingOffsets,
+                                           const char *where);
+
 @interface MGLRenderer ()
 
 - (BOOL)generateVertexDescriptorState:(MGLRenderPipelineDescriptorState *)state;

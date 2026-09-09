@@ -51,6 +51,8 @@
 #include <dispatch/dispatch.h>
 
 #import "MGLRenderer_Private.h"
+#include "mgl_draw_tess.h"
+#include "mgl_air_loader.h"
 #import "mgl.h"
 #include "mgl_buffer_slots.h"
 #import "mgl_sampler_compat.h"
@@ -2090,6 +2092,152 @@ bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_ma
             buffer_map_list->buffers[i].buf = NULL;
         }
     }
+
+    return true;
+}
+
+bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
+                                           MGLRenderPipelineDescriptorState *state,
+                                           int nativeTESActive,
+                                           const Program *nativeTESProgram,
+                                           uint32_t tcsOutputStride,
+                                           int absoluteVertexBindingOffsets,
+                                           const char *where)
+{
+    if (!state) {
+        return false;
+    }
+    state->attrib_count = 0u;
+    if (nativeTESActive) {
+        MGLTessNativeVertexPlan nativePlan = {0};
+        if (!mglTessPlanNativeVertexDescriptor(
+                nativeTESProgram,
+                (uint32_t)tcsOutputStride, &nativePlan)) {
+            fprintf(stderr, "MGL TESS ERROR: unsupported native TES control-point layout\n");
+            return false;
+        }
+        for (uint32_t a = 0u; a < nativePlan.n_attribs; a++) {
+            const uint32_t attribute = nativePlan.attribs[a].index;
+            if (!mglRenderNativeAttribIndexValid(attribute)) {
+                continue;
+            }
+            state->attrib_format[attribute] = nativePlan.attribs[a].format;
+            state->attrib_offset[attribute] = nativePlan.attribs[a].offset;
+            state->attrib_buffer_index[attribute] = 0u;
+            state->attrib_stride[attribute] = nativePlan.stride;
+            state->attrib_step_function[attribute] =
+                mglRenderNativeAttribStepFunction();
+            state->attrib_step_rate[attribute] = 1u;
+        }
+        state->attrib_count = nativePlan.attrib_count;
+        return true;
+    }
+    VertexArray *vao = mglRendererGetValidatedVAO(ctx, where);
+    Program *activeProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    GLuint activeProgramName = activeProgram ? activeProgram->name : (ctx ? mglCurrentRenderProgramKey(ctx) : 0);
+    GLuint maxAttribs;
+
+    if (!vao) {
+        fprintf(stderr, "MGL PIPELINE DESC fail: cannot build vertex descriptor without a valid VAO\n");
+        return false;
+    }
+
+    if (kMGLVerbosePipelineLogs) {
+        fprintf(stderr, "MGL VERTEX DESC begin program=%u vao=%p enabledMask=0x%x\n",
+                (unsigned)activeProgramName, (void *)vao, vao->enabled_attribs);
+    }
+
+    maxAttribs = MAX_ATTRIBS;
+
+    NSUInteger layoutStride[31] = {0};
+    for (GLuint i = 0; i < maxAttribs; i++)
+    {
+        if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
+            continue;
+        }
+        BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
+        MGLResolvedVertexAttribBinding resolved = {0};
+        bool hasAttribBinding = mglRendererResolveVertexAttribBinding(ctx,
+                                                                      vao,
+                                                                      i,
+                                                                      where,
+                                                                      &resolved);
+        if (mglRenderSkipUnboundAttrib(usesCurrentValue ? 1 : 0,
+                                       hasAttribBinding ? 1 : 0)) {
+            continue;
+        }
+
+        {
+            Buffer *attribBuffer = hasAttribBinding ? resolved.buffer : NULL;
+
+            if (!usesCurrentValue && !attribBuffer)
+            {
+                fprintf(stderr, "MGL PIPELINE DESC fail: attrib %u enabled but buffer is invalid\n", (unsigned)i);
+                return false;
+            }
+
+            MGLShaderResource *attrRes =
+                mglRendererProgramVertexAttribResource(activeProgram, i);
+            GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
+            uint32_t format = 0u;
+            int needsConversion = 0;
+            int effectiveNormalized = 0;
+            int conversionKind = 0;
+            mglRenderPlanVertexAttribFormat(
+                (uint32_t)vao->attrib[i].type, (uint32_t)vao->attrib[i].size,
+                vao->attrib[i].integer ? 1 : 0,
+                vao->attrib[i].normalized ? 1 : 0,
+                mglRendererVertexAttribIsColorInput(activeProgram, i) ? 1 : 0,
+                (uint32_t)shaderGlType, &format, &needsConversion,
+                &effectiveNormalized, &conversionKind);
+            (void)effectiveNormalized;
+
+            if (!mglRenderAttribFormatMapped(format))
+            {
+                fprintf(stderr, "MGL PIPELINE DESC fail: unable to map attrib %u type/size/normalize to MTL format\n", (unsigned)i);
+                return false;
+            }
+
+            int mapped_buffer_index;
+
+            mapped_buffer_index = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, i, where);
+            if (!mglRenderVertexBufferIndexValid(
+                    mapped_buffer_index,
+                    (uint32_t)kMGLMaxMetalVertexBufferCount)) {
+                fprintf(stderr, "MGL ERROR: Invalid vertex buffer index %d for attribute %d (max valid=%lu)\n",
+                        mapped_buffer_index, (unsigned)i, (unsigned long)kMGLMaxMetalVertexBufferIndex);
+                return false;
+            }
+
+            uint32_t attribOffset = mglRenderPlanVertexAttribOffset(
+                usesCurrentValue ? 1 : 0, needsConversion,
+                absoluteVertexBindingOffsets ? 1 : 0, i,
+                kMGLCurrentAttribPoolStride,
+                (uint32_t)resolved.relativeoffset,
+                (uint32_t)resolved.binding_offset);
+
+            uint32_t stride = mglRenderPlanVertexAttribStride(
+                (uint32_t)vao->attrib[i].type, (uint32_t)vao->attrib[i].size,
+                vao->attrib[i].integer ? 1 : 0, usesCurrentValue ? 1 : 0,
+                conversionKind == MGL_ATTRIB_CONV_INTEGER_SIGN ? 1 : 0,
+                (uint32_t)resolved.stride,
+                (uint32_t)layoutStride[mapped_buffer_index]);
+            layoutStride[mapped_buffer_index] = stride;
+
+            state->attrib_format[i] = (uint32_t)format;
+            state->attrib_offset[i] = attribOffset;
+            state->attrib_buffer_index[i] = (uint32_t)mapped_buffer_index;
+            state->attrib_stride[i] = (uint32_t)stride;
+            mglRenderAttribStepFromDivisor(
+                usesCurrentValue ? 1 : 0, (uint32_t)resolved.divisor,
+                &state->attrib_step_function[i], &state->attrib_step_rate[i]);
+            state->attrib_count =
+                mglRenderAttribCountAfter(state->attrib_count, i);
+        }
+    }
+
+    // clear all dirty bits as they have been translated into a vertex descriptor
+    vao->dirty_bits = 0;
 
     return true;
 }

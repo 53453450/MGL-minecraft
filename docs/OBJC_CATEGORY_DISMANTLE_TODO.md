@@ -61,7 +61,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+Draw.m` | ~511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
 | `+Binding.m` | ~488 | 薄化（实测较基线 +80；与 BindingState 合并后删除） | 与 BindingState 合并后删除 |
 | `+GPURecovery.m` | ~350 | Keep 薄 | 触发 + 日志；reset 在 C++ |
-| `+VertexLayout.m` | ~332 | 薄化 | `generateVertexDescriptorState`/`updateBlendStateCache` 为 plan 装配（C++ helper 已下沉）；`bindFramebufferAttachmentTextures` 实为 FBO 绑定，应归 RenderPass 域 |
+| `+VertexLayout.m` | ~193 | 薄化（O5.3 本刀：`generateVertexDescriptorState` 已沉 C 函数 `mglRenderGenerateVertexDescriptorState`，ObjC 仅薄转发） | `updateBlendStateCache` 写 `_pipelineCache`（ObjC 物化，留）；`bindFramebufferAttachmentTextures` 实为 FBO 绑定，应归 RenderPass 域 |
 
 ### 1.2 其它 `.m`（非 category，但同边界）
 
@@ -173,6 +173,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
   - [x] **O5.1 续刀**：`checkForDirtyBufferData:` / `updateDirtyBaseBufferList:`（纯 `BufferMapList` 迭代 + dirty 上传决策，零 Metal）下沉为 `mglRenderCheckForDirtyBufferData` / `mglRenderUpdateDirtyBaseBufferList`（`MGLRenderer.m` 兄弟函数，`MGLRenderer+Draw_Private.h` 声明）；ObjC 方法仅一行转发。原 `[self updateDirtyBuffer:]` 调用改为直调 `mglRenderUpdateDirtyBuffer`，逻辑等价；所有调用方（`+RenderPass`/`+Compute`/`+Binding`/`mgl_batch_dyn_bind_encode`）经 ObjC 薄壳不变。`+Buffer.m` 两入口合计 −75 行。`test-regression` [01]–[15] 全 PASS（[16] `air_geometry_resources` 仍是已知上游 SIGSEGV，与本改动无关）。
 - [ ] **O5.2** Compute binding expansion → C++；ObjC 只 dispatch
 - [ ] **O5.3** `+VertexLayout` 删除或 &lt; 100 LOC
+  - [x] **O5.3 本刀**：`generateVertexDescriptorState:` 整段 plan 装配（读 GL VAO/Program + 写 `MGLRenderPipelineDescriptorState`，零 Metal/`id`）沉为 C 函数 `mglRenderGenerateVertexDescriptorState(ctx, state, nativeTESActive, nativeTESProgram, tcsOutputStride, absoluteVertexBindingOffsets, where)`（`MGLRenderer.m` 兄弟函数，声明于 `MGLRenderer+VertexLayout_Private.h`）；ObjC 方法仅提取 `_tessellation`/`_batching` 两 ivar 标量 + 一行转发。逻辑逐行等价（`NSLog`→`fprintf(stderr,...)`）。`+VertexLayout.m` 332→~193。`test-frontends` 67/67；`test-regression` [01]–[15] PASS（[16] 已知上游 SIGSEGV 不变）。**剩余**：`updateBlendStateCache`（写 `_pipelineCache` ObjC 物化，留）、`bindFramebufferAttachmentTextures`（FBO 绑定，归 RenderPass/O6）。
 - [ ] **O5.4** `mgl_draw_encode.m` 迁空或删除
   - [x] **O5.4 本刀**：纯 C 的 indirect-skip 谓词 `mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled` / `mglSkipIndirectDrawWhenPolygonPointEmulationNeeded`（零 Metal、零 ObjC，仅被 `mgl_draw_issue.cpp` 调用）从 `mgl_draw_encode.m`（1225→1186，−39）迁至 `mgl_draw_issue.cpp`；声明仍留 `mgl_draw_encode.h` 不变，`mgl_draw_issue.cpp` 加 `#include "mgl_draw_mode.h"`；`MGLRenderer.m` 旧注释同步修正。仍含 `mglEncode*ForRenderEncoderOwner` 等带 `MGLDrawMetalHandle`/`__bridge` 的薄端口，需将 handle 改 `void*` 并在调用方 bridge 后才能整文件迁 C++。
 - [ ] **O5.5** compat `.m`（sampler/texture/state）变纯转发
