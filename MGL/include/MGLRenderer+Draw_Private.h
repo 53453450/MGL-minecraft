@@ -82,6 +82,8 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  GLuint attribute,
                                                  const char *where);
 int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int attribute, const char *where);
+bool mglRenderCheckForDirtyBufferData(GLMContext ctx, BufferMapList *buffer_map_list, const char *where);
+bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_map_list, const char *where);
 
 /* Cull distance emulation params live in mgl_render.h. */
 

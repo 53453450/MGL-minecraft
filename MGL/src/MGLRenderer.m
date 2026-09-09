@@ -2026,6 +2026,74 @@ int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int 
     return -1;
 }
 
+bool mglRenderCheckForDirtyBufferData(GLMContext ctx, BufferMapList *buffer_map_list, const char *where)
+{
+    if (!buffer_map_list) {
+        return false;
+    }
+
+    GLuint mapCount = buffer_map_list->count;
+    if (mapCount > MAX_MAPPED_BUFFERS) {
+        NSLog(@"MGL WARNING: checkForDirtyBufferData mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
+              mapCount, MAX_MAPPED_BUFFERS);
+        mapCount = MAX_MAPPED_BUFFERS;
+    }
+
+    for (GLuint i = 0; i < mapCount; i++)
+    {
+        Buffer *gl_buffer = mglRendererGetValidatedBuffer(ctx,
+                                                          buffer_map_list->buffers[i].buf,
+                                                          where,
+                                                          (NSUInteger)i);
+        if (gl_buffer) {
+            if (gl_buffer->data.dirty_bits) {
+                return true;
+            }
+        } else if (buffer_map_list->buffers[i].buf) {
+            buffer_map_list->buffers[i].buf = NULL;
+        }
+    }
+
+    return false;
+}
+
+bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_map_list, const char *where)
+{
+    if (!buffer_map_list) {
+        return true;
+    }
+
+    GLuint mapCount = buffer_map_list->count;
+    if (mapCount > MAX_MAPPED_BUFFERS) {
+        NSLog(@"MGL WARNING: updateDirtyBaseBufferList mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
+              mapCount, MAX_MAPPED_BUFFERS);
+        mapCount = MAX_MAPPED_BUFFERS;
+    }
+
+    for (GLuint i = 0; i < mapCount; i++)
+    {
+        Buffer *gl_buffer = mglRendererGetValidatedBuffer(ctx,
+                                                          buffer_map_list->buffers[i].buf,
+                                                          where,
+                                                          (NSUInteger)i);
+        if (gl_buffer) {
+            if (gl_buffer->data.dirty_bits) {
+                char error[256] = {0};
+                int result = mglRenderUpdateDirtyBuffer(gl_buffer, error, sizeof(error));
+                if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
+                    NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty update failed buffer=%u: %s",
+                          gl_buffer ? gl_buffer->name : 0u, error[0] ? error : "?");
+                    return false;
+                }
+            }
+        } else if (buffer_map_list->buffers[i].buf) {
+            buffer_map_list->buffers[i].buf = NULL;
+        }
+    }
+
+    return true;
+}
+
 int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  VertexArray *vao,
                                                  GLuint attribute,

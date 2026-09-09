@@ -1458,76 +1458,12 @@ BOOL mglSnapshotSharedBufferRange(Buffer *ptr,
 
 - (bool) checkForDirtyBufferData:  (BufferMapList *)buffer_map_list
 {
-    GLuint mapCount;
-
-    if (!buffer_map_list) {
-        return false;
-    }
-
-    mapCount = buffer_map_list->count;
-    if (mapCount > MAX_MAPPED_BUFFERS) {
-        NSLog(@"MGL WARNING: checkForDirtyBufferData mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
-              mapCount, MAX_MAPPED_BUFFERS);
-        mapCount = MAX_MAPPED_BUFFERS;
-    }
-
-    // update vbos, some vbos may not have metal buffers yet
-    for (GLuint i = 0; i < mapCount; i++)
-    {
-        Buffer *gl_buffer = mglRendererGetValidatedBuffer(ctx,
-                                                          buffer_map_list->buffers[i].buf,
-                                                          __FUNCTION__,
-                                                          (NSUInteger)i);
-
-        if (gl_buffer)
-        {
-            if (gl_buffer->data.dirty_bits)
-            {
-                return true;
-            }
-        } else if (buffer_map_list->buffers[i].buf) {
-            buffer_map_list->buffers[i].buf = NULL;
-        }
-    }
-
-    return false;
+    return mglRenderCheckForDirtyBufferData(ctx, buffer_map_list, __FUNCTION__);
 }
 
 - (bool) updateDirtyBaseBufferList: (BufferMapList *)buffer_map_list
 {
-    GLuint mapCount;
-
-    if (!buffer_map_list) {
-        return true;
-    }
-
-    mapCount = buffer_map_list->count;
-    if (mapCount > MAX_MAPPED_BUFFERS) {
-        NSLog(@"MGL WARNING: updateDirtyBaseBufferList mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
-              mapCount, MAX_MAPPED_BUFFERS);
-        mapCount = MAX_MAPPED_BUFFERS;
-    }
-
-    // update vbos, some vbos may not have metal buffers yet
-    for (GLuint i = 0; i < mapCount; i++)
-    {
-        Buffer *gl_buffer = mglRendererGetValidatedBuffer(ctx,
-                                                          buffer_map_list->buffers[i].buf,
-                                                          __FUNCTION__,
-                                                          (NSUInteger)i);
-
-        if (gl_buffer)
-        {
-            if (gl_buffer->data.dirty_bits)
-            {
-                RETURN_FALSE_ON_FAILURE([self updateDirtyBuffer: gl_buffer]);
-            }
-        } else if (buffer_map_list->buffers[i].buf) {
-            buffer_map_list->buffers[i].buf = NULL;
-        }
-    }
-
-    return true;
+    return mglRenderUpdateDirtyBaseBufferList(ctx, buffer_map_list, __FUNCTION__);
 }
 
 /* bindVertexBuffersToCurrentRenderEncoder moved to MGLRenderer+Draw.m */
