@@ -27,8 +27,8 @@ static void mglIssueTrace(void *v, uint32_t i, const char *phase, const char *re
     MGLIssueEncCtx *c = v;
     if (!c->batch || i >= c->batch->command_count) return;
     [c->r traceReplayCommand:c->batch command:&c->batch->commands[i] context:c->ctx
-                     flushId:c->r->_renderPassManager.state->traceReplayFlushId
-                  batchIndex:c->r->_renderPassManager.state->traceReplayBatchIndex
+                     flushId:mglRendererRenderPassManager(c->r).state->traceReplayFlushId
+                  batchIndex:mglRendererRenderPassManager(c->r).state->traceReplayBatchIndex
                 commandIndex:i phase:phase reason:reason];
 }
 static void mglMdiDirect(void *v)
@@ -51,14 +51,14 @@ static int mglMdiResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
         return 0;
     NSUInteger drawOff = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
     uint64_t drawType = mglIndexTypeForGLType((GLenum)gl_itype);
-    id prepared = mglPreparedElementIndexBuffer((__bridge id)mglRendererBackendGetDevice(c->r->_backend), glBuf, idxBuf, (GLenum)gl_itype,
+    id prepared = mglPreparedElementIndexBuffer((__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), glBuf, idxBuf, (GLenum)gl_itype,
                                                 &drawOff, &drawType);
     if (ioff) *ioff = (uint64_t)drawOff; if (mtype) *mtype = (uint32_t)drawType;
     if (mtl) *mtl = (__bridge void *)prepared; return 1;
 }
 static void mglDirRefresh(void *v)
 { MGLIssueEncCtx *c = v; c->enc->render_encoder_owner =
-      c->r->_renderPassManager.state->currentRenderEncoderOwner; }
+      mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner; }
 static int mglDirSimple(void *v)
 { MGLIssueEncCtx *c = v; return [c->r tryReplaySimpleBatch:c->batch context:c->ctx
       encodeContext:c->enc] ? 1 : 0; }
@@ -98,7 +98,7 @@ static int mglDirCullCap(void *v, uint32_t i, int cullPath)
 }
 static int mglDirAfterCull(void *v)
 { MGLIssueEncCtx *c = v; return ([c->r processGLState:true] &&
-      mglRenderEncoderOwnerHasCurrent(c->r->_renderPassManager.state->currentRenderEncoderOwner))
+      mglRenderEncoderOwnerHasCurrent(mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner))
       ? 1 : 0; }
 static int mglDirDyn(void *v, uint32_t i)
 { MGLIssueEncCtx *c = v; return [c->r applyDynamicBindingsForCommand:&c->batch->commands[i]
@@ -118,7 +118,7 @@ static int mglDirTryCullArr(void *v, uint32_t i, uint32_t mode, int32_t first, i
     Program *p = mglResolveProgramForStageFromState(c->ctx, _VERTEX_SHADER);
     if (!p || !p->uses_cull_distance) return 0;
     return mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
-        c->enc->render_encoder_owner, (__bridge id)mglRendererBackendGetDevice(c->r->_backend), (GLenum)mode, first, count, (size_t)ic,
+        c->enc->render_encoder_owner, (__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), (GLenum)mode, first, count, (size_t)ic,
         (size_t)bi, (__bridge void *)c->r, c->enc, mglRendererBindCullDistanceEmu) ? 1 : 0;
 }
 static void mglDirBindCullEmu(void *v, uint32_t mode, int32_t first)
@@ -134,7 +134,7 @@ static int mglDirEncArr(void *v, uint32_t mode, int32_t first, int32_t count, in
 {
     MGLIssueEncCtx *c = v;
     return mglEncodeDrawArraysForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->ctx, (__bridge id)mglRendererBackendGetDevice(c->r->_backend), (GLenum)mode, first, count,
+        c->enc->render_encoder_owner, c->ctx, (__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), (GLenum)mode, first, count,
         (size_t)ic, (size_t)bi, "batch") ? 1 : 0;
 }
 static int mglDirPrepEl(void *v, uint32_t i, MGLBatchDirectElementPrep *out)
@@ -170,7 +170,7 @@ static int mglDirEncEl(void *v, uint32_t mode, const MGLBatchDirectElementPrep *
 {
     MGLIssueEncCtx *c = v;
     return mglEncodeDrawElementsForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->ctx, (__bridge id)mglRendererBackendGetDevice(c->r->_backend), (Buffer *)prep->gl_buffer,
+        c->enc->render_encoder_owner, c->ctx, (__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), (Buffer *)prep->gl_buffer,
         (__bridge id)prep->mtl_buffer, (GLenum)mode, (GLenum)prep->gl_index_type,
         (NSUInteger)prep->index_offset, count, ic, prep->base_vertex, prep->base_instance,
         "directBatch") ? 1 : 0;

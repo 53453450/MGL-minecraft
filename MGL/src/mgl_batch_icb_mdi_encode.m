@@ -31,8 +31,8 @@ static void mglIcbTrace(void *v, uint32_t i, const char *phase, const char *reas
     if (!c->batch || i >= c->batch->command_count) return;
     [c->r traceReplayCommand:c->batch command:&c->batch->commands[i]
                      context:c->ctx
-                     flushId:c->r->_renderPassManager.state->traceReplayFlushId
-                  batchIndex:c->r->_renderPassManager.state->traceReplayBatchIndex
+                     flushId:mglRendererRenderPassManager(c->r).state->traceReplayFlushId
+                  batchIndex:mglRendererRenderPassManager(c->r).state->traceReplayBatchIndex
                 commandIndex:i phase:phase reason:reason];
 }
 
@@ -64,7 +64,7 @@ static int mglIcbResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
     NSUInteger drawOff = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
     uint64_t drawType = mglIndexTypeForGLType((GLenum)gl_itype);
     id prepared = mglPreparedElementIndexBuffer(
-        (__bridge id)mglRendererBackendGetDevice(c->r->_backend), glBuf, idxBuf, (GLenum)gl_itype, &drawOff, &drawType);
+        (__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), glBuf, idxBuf, (GLenum)gl_itype, &drawOff, &drawType);
     if (ioff) *ioff = (uint64_t)drawOff;
     if (mtype) *mtype = (uint32_t)drawType;
     if (mtl) *mtl = (__bridge void *)prepared;

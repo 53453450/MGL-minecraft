@@ -87,7 +87,7 @@ typedef struct {
 } MGLDynApplyCtx;
 static void mglDynApplyRefresh(void *v)
 { MGLDynApplyCtx *c = v; if (c->enc)
-      c->enc->render_encoder_owner = c->r->_renderPassManager.state->currentRenderEncoderOwner; }
+      c->enc->render_encoder_owner = mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner; }
 static int mglDynApplyHasEnc(void *v)
 { return mglBatchReplayHasActiveEncoder(((MGLDynApplyCtx *)v)->enc) ? 1 : 0; }
 static int mglDynApplyBuildVao(void *v)
@@ -223,7 +223,7 @@ static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
         return 0;
     NSUInteger off = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
     uint64_t itype = mglIndexTypeForGLType((GLenum)gl_itype);
-    id prepared = mglPreparedElementIndexBuffer((__bridge id)mglRendererBackendGetDevice(c->r->_backend), glBuf, idxBuf, (GLenum)gl_itype,
+    id prepared = mglPreparedElementIndexBuffer((__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), glBuf, idxBuf, (GLenum)gl_itype,
                                                 &off, &itype);
     if (ioff) *ioff = (uint64_t)off; if (mtype) *mtype = (uint32_t)itype;
     if (mtl) *mtl = (__bridge void *)prepared; return prepared ? 1 : 0;

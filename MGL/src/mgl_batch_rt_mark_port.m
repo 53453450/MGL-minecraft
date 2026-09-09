@@ -32,7 +32,7 @@ static int rtRpHas(void *v, void *mtl)
     RtMarkCtx *c = v;
     for (GLuint slot = 0u; slot < MAX_COLOR_ATTACHMENTS; slot++) {
         if (mglRenderGetRenderPassAttachmentTextureOwner(
-                c->r->_renderPassManager.state->renderPassStateOwner,
+                mglRendererRenderPassManager(c->r).state->renderPassStateOwner,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, slot) == mtl)
             return 1;
     }

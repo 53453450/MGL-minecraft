@@ -441,7 +441,7 @@ int mglDrawSupportCaptureEncoderReady(void *renderer)
     MGLRenderer *host = (__bridge MGLRenderer *)renderer;
     if (!host) return 0;
     return mglRenderEncoderOwnerHasCurrent(
-               host->_renderPassManager.state->currentRenderEncoderOwner) == 1
+               mglRendererRenderPassManager(host).state->currentRenderEncoderOwner) == 1
                ? 1
                : 0;
 }
@@ -452,7 +452,7 @@ void mglDrawSupportCaptureBindSlots(void *renderer, void *capture,
     MGLRenderer *host = (__bridge MGLRenderer *)renderer;
     if (!host || !capture || !params) return;
     mglTessBindCaptureSlots(
-        host->_renderPassManager.state->currentRenderEncoderOwner, capture,
+        mglRendererRenderPassManager(host).state->currentRenderEncoderOwner, capture,
         params);
 }
 
@@ -469,6 +469,20 @@ void mglDrawSupportCaptureSetActive(void *renderer, int active)
 static MGLRenderer *mglStageHostSelf(void *renderer)
 {
     return renderer ? (__bridge MGLRenderer *)renderer : nil;
+}
+
+/* C-ABI accessors for the Metal-facing sub-objects (see declarations in
+ * MGLRenderer_Private.h). Defined here so they compile with full knowledge of
+ * the MGLRenderer class extension; consumed by file-scope C functions in this
+ * and the other encode ports. */
+MGLRenderPassManager *mglRendererRenderPassManager(MGLRenderer *r)
+{
+    return r ? r->_renderPassManager : nil;
+}
+
+MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r)
+{
+    return r ? r->_backend : NULL;
 }
 
 static void mglStageMarkCbHasWork(void *renderer)
@@ -1494,7 +1508,7 @@ bool mglDrawHostHandleTessellation(void *renderer, GLMContext ctx,
     host->ctx = ctx;
     MGLTessPatchDrawHostOps ops = {
         .renderer = renderer,
-        .device = (__bridge void *)((__bridge id)mglRendererBackendGetDevice(host->_backend)),
+        .device = (__bridge void *)((__bridge id)mglRendererBackendGetDevice(mglRendererBackend(host))),
         .bind_mtl_program = mglStageBindProgram,
         .capture_array = mglStageCaptureArray,
         .capture_indexed = mglStageCaptureIndexed,
@@ -1751,7 +1765,7 @@ bool mglDrawHostEncodeCullDistanceArray(void *renderer, GLenum mode,
     }
     MGLEncodeContext encCtx = {
         .render_encoder_owner =
-            host->_renderPassManager.state->currentRenderEncoderOwner,
+            mglRendererRenderPassManager(host).state->currentRenderEncoderOwner,
     };
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawEncodeCullDistanceArray(host->ctx, mode, first, count,
@@ -1762,14 +1776,14 @@ bool mglDrawHostEncodeCullDistanceArray(void *renderer, GLenum mode,
 void *mglDrawHostEncoderOwner(void *renderer)
 {
     MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host ? host->_renderPassManager.state->currentRenderEncoderOwner
+    return host ? mglRendererRenderPassManager(host).state->currentRenderEncoderOwner
                 : NULL;
 }
 
 void *mglDrawHostDevice(void *renderer)
 {
     MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host ? mglRendererBackendGetDevice(host->_backend) : NULL;
+    return host ? mglRendererBackendGetDevice(mglRendererBackend(host)) : NULL;
 }
 
 void mglDrawHostRecordArraySubmitted(void *renderer, GLenum mode,
@@ -1789,9 +1803,9 @@ void mglDrawHostWatchdogArrays(void *renderer, GLMContext ctx)
     }
     mglLogDrawWithoutSwapWatchdog(
         "arrays", 0, ctx,
-        host->_renderPassManager.state->currentCommandBufferOwner,
-        host->_renderPassManager.state->currentRenderEncoderOwner,
-        host->_renderPassManager.state->renderPassStateOwner);
+        mglRendererRenderPassManager(host).state->currentCommandBufferOwner,
+        mglRendererRenderPassManager(host).state->currentRenderEncoderOwner,
+        mglRendererRenderPassManager(host).state->renderPassStateOwner);
 }
 
 
@@ -1888,9 +1902,9 @@ void mglDrawHostWatchdogElements(void *renderer, GLMContext ctx)
     }
     mglLogDrawWithoutSwapWatchdog(
         "elements", 0, ctx,
-        host->_renderPassManager.state->currentCommandBufferOwner,
-        host->_renderPassManager.state->currentRenderEncoderOwner,
-        host->_renderPassManager.state->renderPassStateOwner);
+        mglRendererRenderPassManager(host).state->currentCommandBufferOwner,
+        mglRendererRenderPassManager(host).state->currentRenderEncoderOwner,
+        mglRendererRenderPassManager(host).state->renderPassStateOwner);
 }
 
 bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,

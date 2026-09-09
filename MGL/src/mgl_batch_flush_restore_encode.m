@@ -30,7 +30,7 @@ static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
     FCtx *c = v; MGLDrawBatch *batch = FB(c, b);
     int want = batch->has_dynamic_vertex_bindings ? 1 : 0; if (wa) *wa = want;
     in->has_encoder = mglRenderEncoderOwnerHasCurrent(
-        c->r->_renderPassManager.state->currentRenderEncoderOwner) ? 1u : 0u;
+        mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner) ? 1u : 0u;
     in->bind_valid = mglBindingStateIsValid(c->r->_bindingStateOwner) ? 1u : 0u;
     in->keys_equal = mglStateKeysEqual(&batch->key, &c->key) ? 1u : 0u;
     in->absolute_offsets_match =
@@ -62,7 +62,7 @@ static void fPerfS(void *v, uint32_t n)
 static void fPerfD(void *v, uint32_t n)
 { (void)v; MGL_PERF_INC(g_mglBatchesDirectSinceSwap); MGL_PERF_ADD(g_mglDrawDirectSinceSwap, n); }
 static void fEnc(FCtx *c)
-{ c->enc.render_encoder_owner = c->r->_renderPassManager.state->currentRenderEncoderOwner; }
+{ c->enc.render_encoder_owner = mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner; }
 static void fIssS(void *v, uint32_t b)
 { FCtx *c = v; fEnc(c); [c->r issueStreamMergedBatch:FB(c, b) context:c->ctx encodeContext:&c->enc]; }
 static void fIssM(void *v, uint32_t b)
@@ -79,7 +79,7 @@ typedef struct {
     uint64_t hit; uint32_t bi; GLenum *err; uint32_t *skipped; GLenum mode;
 } CCtx;
 static void cBegin(void *v)
-{ CCtx *c = v; [c->r->_renderPassManager setTraceReplayFlushId:c->hit batchIndex:c->bi];
+{ CCtx *c = v; [mglRendererRenderPassManager(c->r) setTraceReplayFlushId:c->hit batchIndex:c->bi];
   [c->r traceReplayBatch:c->batch context:c->ctx flushId:c->hit batchIndex:c->bi phase:"RESTORE"]; }
 static int cFbo(void *v)
 { CCtx *c = v; return [c->r prepareRenderPassIfFBOChanged:c->batch context:c->ctx
@@ -94,7 +94,7 @@ static int cShouldS(void *v)
       MGL_INVALID_SAMPLER_SNAPSHOT_ID); }
 static int cApplyS(void *v)
 { CCtx *c = v; MGLEncodeContext e = {.render_encoder_owner =
-      c->r->_renderPassManager.state->currentRenderEncoderOwner};
+      mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner};
   return [c->r applySamplerSnapshotForCommand:&c->batch->commands[0] context:c->ctx
       encodeContext:&e] ? 1 : 0; }
 static void cReady(void *v)

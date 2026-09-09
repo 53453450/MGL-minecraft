@@ -227,10 +227,23 @@ static inline double mglTraceNowSeconds(void)
  * extremely hard to debug. */
 #define MGL_STATE(context)  (_activeState ? _activeState : (context)->active_state)
 
+/* C-ABI accessors that return the Metal-facing sub-objects of a MGLRenderer for
+ * use by file-scope C functions in the encode ports (mgl_draw_metal_port.m,
+ * mgl_batch_*_encode.m, ...).  These replace the direct `host->_renderPassManager`
+ * / `host->_backend` ivar pokes that previously required a broad `@public` on this
+ * class extension.  Routing the Metal-typed members through accessors preserves
+ * the M3 invariant that the C ABI never exposes MTL::* internals; plain-C
+ * internal state (core/geometry/tessellation/batching fields) stays @package. */
+MGLRenderPassManager *mglRendererRenderPassManager(MGLRenderer *r);
+MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
+
 @interface MGLRenderer () {
-    /* @public: C-function encode ports (mgl_draw_metal_port.m etc.) access
-     * these via the host MGLRenderer* pointer. */
-    @public
+    /* @package (not @public): visible within the MGL dylib only, so file-scope
+     * C encode-port functions can reach internal state, but external API
+     * consumers cannot.  Metal-facing sub-objects are still surfaced through
+     * the mglRendererRenderPassManager / mglRendererBackend accessors below to
+     * satisfy the M3 "C ABI never exposes MTL::*" invariant. */
+    @package
     /* Keep this ivar named `ctx`: C GLM macros and older helper code expect
      * that identifier to exist inside MGLRenderer methods. */
     GLMContext  ctx;    // context macros need this exact name
