@@ -24,6 +24,7 @@
 #include <map>
 #include <string>
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/IR/Value.h"
 
 #include "mgl_air_codegen.h"
@@ -59,6 +60,12 @@ llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e, const char *name,
  * matrix, so the caller falls back to the scalar/vector path. */
 llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
                              llvm::Value *r, const AirMatrixDeps &deps);
+
+/* Call a named AIR function (e.g. air.pack.unorm2x16.v2f32); the module
+ * declaration is created on first use.  Definition in mgl_air_matrix.cpp
+ * (relocated here from mgl_air_backend.cpp by C1f). */
+llvm::Value *callAirFn(Codegen &cg, const char *fn, llvm::Type *retTy,
+                       llvm::ArrayRef<llvm::Value *> args);
 
 } /* namespace air */
 } /* namespace mgl */

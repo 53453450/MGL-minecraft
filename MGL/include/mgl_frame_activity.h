@@ -36,7 +36,20 @@
 #include "glcorearb.h"
 
 #include <stdint.h>
+
+#ifdef __cplusplus
+/* C++ TUs cannot use libc++ <stdatomic.h> + C11 atomic_* functions on
+ * bare _Atomic-qualified globals (no overload matches _Atomic(T)*).
+ * Use std::atomic<T> instead — ABI/layout-compatible with the
+ * _Atomic-qualified definitions in the C/ObjC TU that owns the
+ * globals (same mapping libc++ <stdatomic.h> applies on C++23). */
+#include <atomic>
+#define MGL_ATOMIC(T) std::atomic<T>
+#else
 #include <stdatomic.h>
+#define MGL_ATOMIC(T) _Atomic T
+#endif
+
 #include <os/signpost.h>
 
 #ifdef __cplusplus
@@ -45,31 +58,31 @@ extern "C" {
 
 /* === Last draw-call metadata (written by draw path, read by swap path) === */
 
-extern _Atomic uint64_t g_mglLastDrawArraysCall;
-extern _Atomic double   g_mglLastDrawArraysSeconds;
-extern _Atomic uint64_t g_mglLastDrawElementsCall;
-extern _Atomic double   g_mglLastDrawElementsSeconds;
-extern _Atomic GLuint   g_mglLastDrawArraysProgram;
-extern _Atomic GLuint   g_mglLastDrawArraysMode;
-extern _Atomic GLsizei  g_mglLastDrawArraysCount;
-extern _Atomic GLuint   g_mglLastDrawElementsProgram;
-extern _Atomic GLuint   g_mglLastDrawElementsMode;
-extern _Atomic GLsizei  g_mglLastDrawElementsCount;
+extern MGL_ATOMIC(uint64_t) g_mglLastDrawArraysCall;
+extern MGL_ATOMIC(double)   g_mglLastDrawArraysSeconds;
+extern MGL_ATOMIC(uint64_t) g_mglLastDrawElementsCall;
+extern MGL_ATOMIC(double)   g_mglLastDrawElementsSeconds;
+extern MGL_ATOMIC(GLuint)   g_mglLastDrawArraysProgram;
+extern MGL_ATOMIC(GLuint)   g_mglLastDrawArraysMode;
+extern MGL_ATOMIC(GLsizei)  g_mglLastDrawArraysCount;
+extern MGL_ATOMIC(GLuint)   g_mglLastDrawElementsProgram;
+extern MGL_ATOMIC(GLuint)   g_mglLastDrawElementsMode;
+extern MGL_ATOMIC(GLsizei)  g_mglLastDrawElementsCount;
 
 /* === Per-frame counters (reset to 0 by swap path after snapshot) === */
 
-extern _Atomic uint64_t g_mglDrawArraysSinceSwap;
-extern _Atomic uint64_t g_mglDrawElementsSinceSwap;
-extern _Atomic uint64_t g_mglDrawArrayVerticesSinceSwap;
-extern _Atomic uint64_t g_mglDrawElementIndicesSinceSwap;
-extern _Atomic uint64_t g_mglDrawArraysSkippedSinceSwap;
-extern _Atomic uint64_t g_mglDrawElementsSkippedSinceSwap;
-extern _Atomic uint64_t g_mglProcessDrawCallsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDrawArraysSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDrawElementsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDrawArrayVerticesSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDrawElementIndicesSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDrawArraysSkippedSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDrawElementsSkippedSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglProcessDrawCallsSinceSwap;
 
 /* === Swap path metadata === */
 
-extern _Atomic uint64_t g_mglSwapCallCount;
-extern _Atomic double   g_mglLastSwapSeconds;
+extern MGL_ATOMIC(uint64_t) g_mglSwapCallCount;
+extern MGL_ATOMIC(double)   g_mglLastSwapSeconds;
 
 /* === Performance counters (reset to 0 by swap path after snapshot) ===
  *
@@ -78,38 +91,38 @@ extern _Atomic double   g_mglLastSwapSeconds;
  * assumption: these are written from the render thread only. */
 
 /* Draw path classification */
-extern _Atomic uint64_t g_mglDrawDirectSinceSwap;        /* direct (per-cmd) draws */
-extern _Atomic uint64_t g_mglDrawMDISinceSwap;           /* MDI batch draws */
-extern _Atomic uint64_t g_mglDrawStreamMergedSinceSwap;  /* stream-merged draws */
-extern _Atomic uint64_t g_mglDrawSkippedSinceSwap;       /* skipped (no-op) draws */
+extern MGL_ATOMIC(uint64_t) g_mglDrawDirectSinceSwap;        /* direct (per-cmd) draws */
+extern MGL_ATOMIC(uint64_t) g_mglDrawMDISinceSwap;           /* MDI batch draws */
+extern MGL_ATOMIC(uint64_t) g_mglDrawStreamMergedSinceSwap;  /* stream-merged draws */
+extern MGL_ATOMIC(uint64_t) g_mglDrawSkippedSinceSwap;       /* skipped (no-op) draws */
 
 /* Batch counts */
-extern _Atomic uint64_t g_mglBatchesDirectSinceSwap;
-extern _Atomic uint64_t g_mglBatchesMDISinceSwap;
-extern _Atomic uint64_t g_mglBatchesStreamMergedSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglBatchesDirectSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglBatchesMDISinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglBatchesStreamMergedSinceSwap;
 
 /* Pipeline cache */
-extern _Atomic uint64_t g_mglPipelineCacheHitsSinceSwap;
-extern _Atomic uint64_t g_mglPipelineCacheMissesSinceSwap;
-extern _Atomic uint64_t g_mglPipelineCacheEvictionsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglPipelineCacheHitsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglPipelineCacheMissesSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglPipelineCacheEvictionsSinceSwap;
 
 /* Shader compile */
-extern _Atomic uint64_t g_mglShaderCompilesSinceSwap;
-extern _Atomic double   g_mglShaderCompileTimeSinceSwap;  /* seconds */
+extern MGL_ATOMIC(uint64_t) g_mglShaderCompilesSinceSwap;
+extern MGL_ATOMIC(double)   g_mglShaderCompileTimeSinceSwap;  /* seconds */
 
 /* Encoder state calls (total setXxx calls issued) */
-extern _Atomic uint64_t g_mglSetVertexBufferCallsSinceSwap;
-extern _Atomic uint64_t g_mglSetFragmentBufferCallsSinceSwap;
-extern _Atomic uint64_t g_mglSetRenderPipelineStateCallsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSetVertexBufferCallsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSetFragmentBufferCallsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSetRenderPipelineStateCallsSinceSwap;
 
 /* Encoder state skips (setXxx calls avoided by dedup) */
-extern _Atomic uint64_t g_mglSetVertexBufferSkipsSinceSwap;
-extern _Atomic uint64_t g_mglSetFragmentBufferSkipsSinceSwap;
-extern _Atomic uint64_t g_mglSetRenderPipelineStateSkipsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSetVertexBufferSkipsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSetFragmentBufferSkipsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSetRenderPipelineStateSkipsSinceSwap;
 
 /* Render encoder lifecycle (RenderPass Manager) */
-extern _Atomic uint64_t g_mglEncoderCreationsSinceSwap;   /* newRenderEncoderLocked calls */
-extern _Atomic uint64_t g_mglEncoderFBORotationsSinceSwap; /* FBO-change driven rotations */
+extern MGL_ATOMIC(uint64_t) g_mglEncoderCreationsSinceSwap;   /* newRenderEncoderLocked calls */
+extern MGL_ATOMIC(uint64_t) g_mglEncoderFBORotationsSinceSwap; /* FBO-change driven rotations */
 
 /* Why newRenderEncoderLocked ran. Sum of reasons == encoder_creations.
  * fboRot is a subset of reason_fbo (rotate path); reason_fbo may also
@@ -126,83 +139,83 @@ typedef enum MGLEncoderCreateReason {
     MGL_ENC_REASON_COUNT
 } MGLEncoderCreateReason;
 
-extern _Atomic uint64_t g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_COUNT];
+extern MGL_ATOMIC(uint64_t) g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_COUNT];
 /* FBO rotate attachment identity (subset of fboRot). */
-extern _Atomic uint64_t g_mglEncoderFboRotDefaultSinceSwap; /* draw FBO name == 0 */
-extern _Atomic uint64_t g_mglEncoderFboRotNamedSinceSwap;   /* draw FBO name != 0 */
+extern MGL_ATOMIC(uint64_t) g_mglEncoderFboRotDefaultSinceSwap; /* draw FBO name == 0 */
+extern MGL_ATOMIC(uint64_t) g_mglEncoderFboRotNamedSinceSwap;   /* draw FBO name != 0 */
 
 /* Batch merge rejection reasons */
-extern _Atomic uint64_t g_mglMergeRejectStateDiffersSinceSwap;
-extern _Atomic uint64_t g_mglMergeRejectBufferHazardSinceSwap;
-extern _Atomic uint64_t g_mglMergeRejectUnsafeBuiltinSinceSwap;
-extern _Atomic uint64_t g_mglMergeRejectExcludedLayoutSinceSwap;
-extern _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglMergeRejectStateDiffersSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglMergeRejectBufferHazardSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglMergeRejectUnsafeBuiltinSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglMergeRejectExcludedLayoutSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglMergeRejectAppendFailedSinceSwap;
 /* BindNoFlush path: IgnoringDynamicBindings matched but capture failed. */
-extern _Atomic uint64_t g_mglMergeRejectDynamicCaptureSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglMergeRejectDynamicCaptureSinceSwap;
 
 /* Lock timing (seconds) */
 /* Stored as _Atomic uint64_t nanoseconds (lock-free on all platforms)
  * instead of _Atomic double (non-lock-free CAS loop).  Snapshot converts
  * to double seconds for display. */
-extern _Atomic uint64_t g_mglLockWaitTimeSinceSwap;   /* ns waiting to acquire lock */
-extern _Atomic uint64_t g_mglLockHoldTimeSinceSwap;   /* ns holding lock */
+extern MGL_ATOMIC(uint64_t) g_mglLockWaitTimeSinceSwap;   /* ns waiting to acquire lock */
+extern MGL_ATOMIC(uint64_t) g_mglLockHoldTimeSinceSwap;   /* ns holding lock */
 
 /* Depth/stencil state */
-extern _Atomic uint64_t g_mglDepthStencilStateCreatesSinceSwap;  /* newDepthStencilStateWithDescriptor: calls */
-extern _Atomic uint64_t g_mglDepthStencilStateSkipsSinceSwap;    /* setDepthStencilState: skipped by dedup */
+extern MGL_ATOMIC(uint64_t) g_mglDepthStencilStateCreatesSinceSwap;  /* newDepthStencilStateWithDescriptor: calls */
+extern MGL_ATOMIC(uint64_t) g_mglDepthStencilStateSkipsSinceSwap;    /* setDepthStencilState: skipped by dedup */
 
 /* Snapshot allocation */
-extern _Atomic uint64_t g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes malloc'd for state+vao snapshots */
-extern _Atomic uint64_t g_mglSnapshotAllocationCountSinceSwap;   /* snapshot malloc count */
+extern MGL_ATOMIC(uint64_t) g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes malloc'd for state+vao snapshots */
+extern MGL_ATOMIC(uint64_t) g_mglSnapshotAllocationCountSinceSwap;   /* snapshot malloc count */
 
 /* Buffer copy-on-write (MTLBuffer reallocation on dirty Shared uploads) */
-extern _Atomic uint64_t g_mglBufferCowCountSinceSwap;            /* newBufferWithLength snapshots */
-extern _Atomic uint64_t g_mglBufferCowBytesSinceSwap;            /* bytes of those new MTLBuffers */
+extern MGL_ATOMIC(uint64_t) g_mglBufferCowCountSinceSwap;            /* newBufferWithLength snapshots */
+extern MGL_ATOMIC(uint64_t) g_mglBufferCowBytesSinceSwap;            /* bytes of those new MTLBuffers */
 
 /* State replay */
-extern _Atomic uint64_t g_mglReplayMemcpyCountSinceSwap;         /* memcpy calls in restoreStateForBatch: */
+extern MGL_ATOMIC(uint64_t) g_mglReplayMemcpyCountSinceSwap;         /* memcpy calls in restoreStateForBatch: */
 
 /* Hazard tracking */
-extern _Atomic uint64_t g_mglHazardActiveBindingsSinceSwap;      /* sampled active base-buffer binding count per draw */
-extern _Atomic uint64_t g_mglHazardRangeCountSinceSwap;          /* sampled buffer_read_range_count per draw */
-extern _Atomic uint64_t g_mglHazardOverflowFlushesSinceSwap;     /* overflow-triggered full flushes */
+extern MGL_ATOMIC(uint64_t) g_mglHazardActiveBindingsSinceSwap;      /* sampled active base-buffer binding count per draw */
+extern MGL_ATOMIC(uint64_t) g_mglHazardRangeCountSinceSwap;          /* sampled buffer_read_range_count per draw */
+extern MGL_ATOMIC(uint64_t) g_mglHazardOverflowFlushesSinceSwap;     /* overflow-triggered full flushes */
 
 /* PSO dedup */
-extern _Atomic uint64_t g_mglPSODedupHitsSinceSwap;              /* PSO dedup fast path hits */
-extern _Atomic uint64_t g_mglPSODedupMissesSinceSwap;            /* PSO dedup fast path misses */
+extern MGL_ATOMIC(uint64_t) g_mglPSODedupHitsSinceSwap;              /* PSO dedup fast path hits */
+extern MGL_ATOMIC(uint64_t) g_mglPSODedupMissesSinceSwap;            /* PSO dedup fast path misses */
 
 /* Flush reasons + same-key restore instrumentation (100ms encoder kill path) */
-extern _Atomic uint64_t g_mglFlushTotalSinceSwap;
-extern _Atomic uint64_t g_mglFlushReasonBindTextureSinceSwap;
-extern _Atomic uint64_t g_mglFlushReasonBindBufferSinceSwap;
-extern _Atomic uint64_t g_mglFlushReasonTexWriteSinceSwap;
-extern _Atomic uint64_t g_mglFlushReasonBufferRangeSinceSwap;
-extern _Atomic uint64_t g_mglFlushReasonActiveTexWarSinceSwap;
-extern _Atomic uint64_t g_mglFlushReasonCapacitySinceSwap;
-extern _Atomic uint64_t g_mglFlushReasonOtherSinceSwap;
-extern _Atomic uint64_t g_mglSameKeyRestoreSkipsSinceSwap;
-extern _Atomic uint64_t g_mglSameKeyOracleWouldSkipSinceSwap;
-extern _Atomic uint64_t g_mglDirtyKeyDeltaNarrowSinceSwap;
-extern _Atomic uint64_t g_mglBatchesReplayedSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushTotalSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushReasonBindTextureSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushReasonBindBufferSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushReasonTexWriteSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushReasonBufferRangeSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushReasonActiveTexWarSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushReasonCapacitySinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglFlushReasonOtherSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSameKeyRestoreSkipsSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglSameKeyOracleWouldSkipSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDirtyKeyDeltaNarrowSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglBatchesReplayedSinceSwap;
 /* Same-key-skip failure attribution: which condition broke first, blocking
  * the bind-cache reuse.  Only counted when lastKeyValid && lastExecuteOk (a
  * skip was otherwise possible). */
-extern _Atomic uint64_t g_mglSkipFailKeyDifferSinceSwap;     /* state keys not equal */
-extern _Atomic uint64_t g_mglSkipFailBindInvalidSinceSwap;   /* lastBoundValid == NO */
-extern _Atomic uint64_t g_mglSkipFailNoEncoderSinceSwap;     /* currentRenderEncoder == nil */
-extern _Atomic uint64_t g_mglSkipFailPassMismatchSinceSwap;
-extern _Atomic uint64_t g_mglDeltaDomainProgramSinceSwap;
-extern _Atomic uint64_t g_mglDeltaDomainVAOSinceSwap;
-extern _Atomic uint64_t g_mglDeltaDomainTextureSinceSwap;
-extern _Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap;  /* render pass != current FBO */
+extern MGL_ATOMIC(uint64_t) g_mglSkipFailKeyDifferSinceSwap;     /* state keys not equal */
+extern MGL_ATOMIC(uint64_t) g_mglSkipFailBindInvalidSinceSwap;   /* lastBoundValid == NO */
+extern MGL_ATOMIC(uint64_t) g_mglSkipFailNoEncoderSinceSwap;     /* currentRenderEncoder == nil */
+extern MGL_ATOMIC(uint64_t) g_mglSkipFailPassMismatchSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainProgramSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainVAOSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainTextureSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainRenderStateSinceSwap;  /* render pass != current FBO */
 /* rs-domain delta where the difference vanishes after XOR-ing out
  * uniform_buffer_hash and all other rs sub-fields match: pure per-draw UBO
  * offset noise (MC 1.21.11 dynamic transforms), not real render-state churn. */
-extern _Atomic uint64_t g_mglDeltaDomainRenderStateUboOnlySinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainRenderStateUboOnlySinceSwap;
 /* Stream-merge candidates demoted to direct draws because their key differs
  * from the last batch only by uniform-range identity — the tolerant merge
  * path can absorb them, a stream batch cannot. */
-extern _Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglStreamDemotedToDirectSinceSwap;
 
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
@@ -235,12 +248,18 @@ int mglSignpostEnabled(void);
 #define MGL_SIGNPOST_END(name) \
     if (mglSignpostEnabled()) os_signpost_interval_end(mglSignpostLog, OS_SIGNPOST_ID_EXCLUSIVE, #name)
 
+#ifdef __cplusplus
+#define MGL_FRAME_LOAD(var) ((var).load(std::memory_order_relaxed))
+#define MGL_FRAME_STORE(var, value) ((var).store((value), std::memory_order_relaxed))
+#define MGL_FRAME_ADD(var, value) ((void)(var).fetch_add((value), std::memory_order_relaxed))
+#else
 #define MGL_FRAME_LOAD(var) \
     atomic_load_explicit(&(var), memory_order_relaxed)
 #define MGL_FRAME_STORE(var, value) \
     atomic_store_explicit(&(var), (value), memory_order_relaxed)
 #define MGL_FRAME_ADD(var, value) \
     ((void)atomic_fetch_add_explicit(&(var), (value), memory_order_relaxed))
+#endif
 #define MGL_FRAME_INC(var) \
     MGL_FRAME_ADD((var), 1)
 #define MGL_PERF_ADD(var, value) \

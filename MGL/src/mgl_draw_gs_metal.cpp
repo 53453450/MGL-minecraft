@@ -214,7 +214,10 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
         return 1;
     }
 
-    TransformFeedback *xfbState = MGL_STATE(ctx)->transform_feedback;
+    /* NOTE: ObjC callers use MGL_STATE(ctx) (renderer ivar _activeState);
+     * this C++ port reads ctx->active_state directly, matching the
+     * surrounding encode-path code. */
+    TransformFeedback *xfbState = ctx->active_state->transform_feedback;
     const bool xfbActive =
         mglDrawGsXFBActive(xfbState != NULL, xfbState && xfbState->active,
                            xfbState && xfbState->paused) != 0;
@@ -265,7 +268,8 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
                 continue;
             }
             BufferBaseTarget *slot =
-                &MGL_STATE(ctx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[b];
+                &ctx->active_state->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
+                     .buffers[b];
             if (!slot->buf) {
                 if (xfbDiag) {
                     gs_logf(ops, "MGL GS XFB DIAG buffer[%u] no bound GL buffer",
@@ -609,7 +613,7 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
                 ops->blit_copy(xfbBlit, xfbTemporary, bufferPhysBase[b],
                                bufferDstMTL[b], bufferDstOffset[b], copyBytes);
                 BufferBaseTarget *slot =
-                    &MGL_STATE(ctx)
+                    &ctx->active_state
                          ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
                          .buffers[b];
                 if (slot->buf) {
@@ -679,7 +683,7 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
 
     if (mglDrawGsSkipRaster(
             xfbActive ? 1 : 0,
-            MGL_STATE(ctx)->caps.rasterizer_discard ? 1 : 0)) {
+            ctx->active_state->caps.rasterizer_discard ? 1 : 0)) {
         ops->mark_cb_has_work(ops->renderer);
         finish_queries_and_clear();
         return 1;

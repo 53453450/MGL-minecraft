@@ -4,9 +4,12 @@
  */
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "MGLRenderer+BatchPorts_Private.h"
 #include "mgl_render.h"
 #include "mgl_batch_rt_mark.h"
 #include <string.h>
+
+@implementation MGLRenderer (BatchRtMark)
 
 typedef struct { __unsafe_unretained MGLRenderer *r; GLMContext glm; Framebuffer *fbo; } RtMarkCtx;
 static int rtResolveSlot(void *v, uint32_t slot, uint32_t *att_out)
@@ -35,6 +38,8 @@ static int rtRpHas(void *v, void *mtl)
     }
     return 0;
 }
+
+/* Interface declared in MGLRenderer+Draw_Private.h (BatchRtMark). */
 
 - (void)markCurrentFramebufferColorAttachmentWrittenAtIndex:(GLuint)attachmentIndex
 {

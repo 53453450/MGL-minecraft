@@ -294,6 +294,9 @@ LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/i
 LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
 # The *.cpp sources (GLSL->metallib compiler + Metal-cpp renderer/loader) build
 # with LLVM headers and metal-cpp (header-only).
+# NOTE: keep C++20 — LLVM 15 headers (APFloat.h unique_ptr<APFloat[]>) do not
+# survive C++23.  The <stdatomic.h>/<atomic> clash is instead resolved inside
+# mgl_types_sync.h / mgl_frame_activity.h (C++ branches use <atomic>).
 M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
 	-IMGL/src \
 	-IMGL/include/GL \
@@ -724,7 +727,7 @@ test-process-gl-state-plan: $(build_dir)/test_process_gl_state_plan
 $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -Werror -g -O0 -std=c11 \
+	$(CC) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -g -O0 -std=c11 \
 		-IMGL/include -IMGL/src \
 		test_legacy_compat/test_binding_stage.c \
 		MGL/src/mgl_binding_stage.c \
@@ -735,7 +738,7 @@ $(build_dir)/test_binding_texture: test_legacy_compat/test_binding_texture.c \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -Werror -g -O0 -std=c11 \
+	$(CC) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -g -O0 -std=c11 \
 		-IMGL/include -IMGL/src \
 		test_legacy_compat/test_binding_texture.c \
 		MGL/src/mgl_binding_texture.c \
@@ -831,10 +834,14 @@ test-mglir: $(build_dir)/test_mglir
 $(build_dir)/test_mgl_air_type: test_legacy_compat/test_mgl_air_type.cpp \
 	MGL/src/mgl_air_type.cpp MGL/include/mgl_air_type.h \
 	MGL/include/mgl_air_codegen.h MGL/src/mgl_ir.c
+	@mkdir -p $(build_dir)
+	# clang rejects -std=c++* for C inputs, so compile mgl_ir.c separately.
+	$(CC) -isysroot $(SDK_ROOT) -IMGL/include -IMGL/src -c MGL/src/mgl_ir.c \
+		-o $(build_dir)/test_mgl_air_type_ir.o
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mgl_air_type.cpp \
-		MGL/src/mgl_air_type.cpp \
-		-x c MGL/src/mgl_ir.c \
+		MGL/src/mgl_air_type.cpp -x none \
+		$(build_dir)/test_mgl_air_type_ir.o \
 		-o $@
 
 test-mgl-air-type: $(build_dir)/test_mgl_air_type

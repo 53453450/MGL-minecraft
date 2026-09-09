@@ -497,7 +497,8 @@ static void test_xfb_int_carrier_and_gs_raster(void)
 
 static void test_buffer_dirty_and_xfb_copy(void)
 {
-    int needs = (16 > 0) && ((0x1 | 0x2) != 0);
+    int dirty_bits = 0x1 | 0x2; /* DATA | ADDR */
+    int needs = (16 > 0) && (dirty_bits != 0);
     expect(needs == 1, "CPU upload when size>0 and DATA/ADDR dirty");
     int empty = (0 > 0) && 1;
     expect(empty == 0, "empty buffer does not CPU-upload");

@@ -4,6 +4,7 @@
  */
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "MGLRenderer+BatchPorts_Private.h"
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
@@ -13,6 +14,8 @@
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
 #include <string.h>
+
+@implementation MGLRenderer (Batch)
 
 typedef struct {
     __unsafe_unretained MGLRenderer *r; GLMContext ctx; const GLMState *saved;
@@ -38,9 +41,9 @@ static void fNote(void *v, int d) { (void)v; mgl_batch_mtl_restore_note_skip_fai
 static int fOracleEq(void *v, uint32_t b) { return mglStateKeysEqual(&FB(v, b)->key, &((FCtx *)v)->key); }
 static void fOracle(void *v) { (void)v; MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap); }
 static void fApplySkip(void *v, uint32_t b)
-{ (void)b; FCtx *c = v; if (c->r->_activeState != c->ctx->active_state)
-      c->r->_activeState = c->ctx->active_state;
-  MGL_STATE(c->ctx)->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
+{ (void)b; FCtx *c = v; if (c->r->_core.activeState != c->ctx->active_state)
+      c->r->_core.activeState = c->ctx->active_state;
+  c->ctx->active_state->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w) { ((FCtx *)v)->r->_batching.absoluteVertexBindingOffsets = w ? YES : NO; }
 static void fRestore(void *v, uint32_t b, uint32_t forced)
 { FCtx *c = v; [c->r restoreStateForBatch:FB(c, b) context:c->ctx savedState:c->saved
@@ -83,8 +86,8 @@ static int cFbo(void *v)
       replayError:c->err] ? 1 : 0; }
 static int cProc(void *v) { return [((CCtx *)v)->r processGLState:true] ? 1 : 0; }
 static void cErr(void *v)
-{ CCtx *c = v; if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(c->ctx)->error))
-      *c->err = MGL_STATE(c->ctx)->error; }
+{ CCtx *c = v; if (!mglRenderErrorIsNone((uint32_t)c->ctx->active_state->error))
+      *c->err = c->ctx->active_state->error; }
 static int cShouldS(void *v)
 { CCtx *c = v; return mgl_batch_issue_should_apply_stable_sampler(
       c->batch->sampler_snapshots_mixed ? 1 : 0, c->batch->sampler_snapshot_id,
@@ -149,7 +152,6 @@ static void skipTraceCmd(void *v, uint32_t i)
       context:c->ctx flushId:c->hit batchIndex:c->bi commandIndex:i phase:"SKIP" reason:c->reason]; }
 
 
-@implementation MGLRenderer (Batch)
 
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx
 {
@@ -251,13 +253,13 @@ static void skipTraceCmd(void *v, uint32_t i)
     if (batch->state_snapshot) {
         mglCopyHotStateFields(glm_ctx->active_state, (const GLMState *)batch->state_snapshot);
         MGL_PERF_INC(g_mglReplayMemcpyCountSinceSwap);
-        mgl_batch_replay_copy_object_hash_tables(MGL_STATE(glm_ctx), savedState);
-        mglRestoreProgramPipelinePair(glm_ctx, MGL_STATE(glm_ctx)->program_name,
-                                      MGL_STATE(glm_ctx)->var.program_pipeline_binding);
+        mgl_batch_replay_copy_object_hash_tables(glm_ctx->active_state, savedState);
+        mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
+                                      glm_ctx->active_state->var.program_pipeline_binding);
     } else {
         [self restoreStateFromKey:&batch->key context:glm_ctx];
     }
-    _activeState = glm_ctx->active_state; MGL_STATE(glm_ctx)->dirty_bits = 0;
+    _activeState = glm_ctx->active_state; glm_ctx->active_state->dirty_bits = 0;
     const GLuint kFull = mgl_batch_restore_full_dirty_bits();
     GLuint replayDirtyBits = kFull;
     BOOL prevKeyValid = (prevKey != NULL);
@@ -272,7 +274,7 @@ static void skipTraceCmd(void *v, uint32_t i)
             1, prevKey, &batch->key, kFull, &dflags);
         mgl_batch_mtl_restore_note_delta_perf(&dflags);
     }
-    Framebuffer *replayFBO = MGL_STATE(glm_ctx)->framebuffer;
+    Framebuffer *replayFBO = glm_ctx->active_state->framebuffer;
     const MGLBatchRestoreFboIn fboIn = {
         .fbo_binding_dirty =
             (replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ? 1u : 0u,
@@ -304,11 +306,11 @@ static void skipTraceCmd(void *v, uint32_t i)
     if (_batching.arenaSnapshotEnabled) mglResetBatchArena(&_batching.batchArena);
     if (!usedReplayWorkspace) memcpy(glm_ctx->active_state, savedState, sizeof(GLMState));
     mglClearStateDirtyBitsPreservingHashInvalidation(glm_ctx->active_state);
-    mglRestoreProgramPipelinePair(glm_ctx, MGL_STATE(glm_ctx)->program_name,
-                                  MGL_STATE(glm_ctx)->var.program_pipeline_binding);
+    mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
+                                  glm_ctx->active_state->var.program_pipeline_binding);
     if (mglRenderErrorIsNone((uint32_t)savedError) &&
         !mglRenderErrorIsNone((uint32_t)replayError))
-        MGL_STATE(glm_ctx)->error = replayError;
+        glm_ctx->active_state->error = replayError;
     (void)savedState;
 }
 

@@ -594,7 +594,7 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
 
 
 
-/* O3.3: thin set*/queue/flush + attrib emit ports (BindingState). */
+/* O3.3: thin set/queue/flush + attrib emit ports (BindingState). */
 static inline void mglBindingStateSetVertexBuffer(
     void *renderEncoderOwner,
     id buffer,
@@ -757,6 +757,12 @@ static inline bool mglBindingStateFlushResourceBindings(
         else { mglRenderBindingClearVertexBuffer(owner, (uint32_t)(slot)); } \
     } while (0)
 #endif /* MGL_BIND_STAGE_EMIT_BUFFER */
+
+/* O3.3 RT-write mark port (impl: mgl_batch_rt_mark_port.m).  Declared here
+ * so Batch/draw-path callers see the selector. */
+@interface MGLRenderer (BatchRtMark)
+- (void)markCurrentFramebufferDrawAttachmentsWritten;
+@end
 
 
 #endif /* MGLRenderer_Draw_Private_h */

@@ -2410,7 +2410,10 @@ done:
                                   binding:spirvBinding
                                     stage:stageIsFragment ? @"fragment"
                                                           : @"vertex"
-                                   reason:eres.readback_reason
+                                   reason:(eres.readback_reason
+                                               ? [NSString stringWithUTF8String:
+                                                      eres.readback_reason]
+                                               : @"")
                                       hit:eres.readback_hit];
     }
 }

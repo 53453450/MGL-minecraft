@@ -589,8 +589,8 @@ extern "C" int mgl_batch_replay_plan_uniform_binds(
     }
 
     BufferMapList *stage_maps[2] = {
-        &MGL_STATE(ctx)->vertex_buffer_map_list,
-        &MGL_STATE(ctx)->fragment_buffer_map_list,
+        &ctx->active_state->vertex_buffer_map_list,
+        &ctx->active_state->fragment_buffer_map_list,
     };
     const int stages[2] = {_VERTEX_SHADER, _FRAGMENT_SHADER};
 
@@ -599,7 +599,7 @@ extern "C" int mgl_batch_replay_plan_uniform_binds(
         const MGLDynamicUniformBinding *override_binding =
             &cmd->dynamic_uniform_bindings[dynamic_index];
         BufferBaseTarget *slot =
-            &MGL_STATE(ctx)
+            &ctx->active_state
                  ->buffer_base[_UNIFORM_BUFFER]
                  .buffers[override_binding->binding_index];
         if (!slot->buf || override_binding->offset < 0 ||

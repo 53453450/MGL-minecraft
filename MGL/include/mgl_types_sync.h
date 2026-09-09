@@ -32,7 +32,16 @@
 #ifndef mgl_types_sync_h
 #define mgl_types_sync_h
 
+#ifdef __cplusplus
+/* C++: include <atomic> instead of <stdatomic.h>.  libc++'s
+ * <stdatomic.h> sets _LIBCPP_STDATOMIC_H even on C++20, which makes a
+ * later <atomic> (via <algorithm> etc.) hard-error.  The _Atomic
+ * fields below still parse via Clang's C++ _Atomic extension, and no
+ * C++ TU calls the C11 atomic function API on them. */
+#include <atomic>
+#else
 #include <stdatomic.h>
+#endif
 #include "glm_params.h"
 
 typedef struct __GLsync {

@@ -2675,7 +2675,7 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
     if (!ctx || first < 0 || count <= 0 || instanceCount <= 0) {
         return 0;
     }
-    TransformFeedback *xfb = MGL_STATE(ctx)->transform_feedback;
+    TransformFeedback *xfb = ctx->active_state->transform_feedback;
     if (!xfb || !xfb->active || xfb->paused) {
         return 0;
     }
@@ -2715,7 +2715,7 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
             continue;
         }
         BufferBaseTarget *slot =
-            &MGL_STATE(ctx)
+            &ctx->active_state
                  ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
                  .buffers[buffer];
         BufferMap map = {0};
@@ -2848,7 +2848,7 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
         mglResolveProgramForStageFromState(ctx, _TESS_EVALUATION_SHADER);
     Program *gsProgram =
         mglResolveProgramForStageFromState(ctx, _GEOMETRY_SHADER);
-    MGLTessDrawPathPlan path = {0};
+    MGLTessDrawPathPlan path = {};  /* C++: {} value-init (first member is an enum) */
     if (!mglTessPlanDrawPath(ctx, *mode, count, instanceCount, tcsProgram,
                              tesProgram, gsProgram, indexType, label, &path)) {
         return 0;

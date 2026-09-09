@@ -4,6 +4,7 @@
  */
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "MGLRenderer+BatchPorts_Private.h"
 #import "mgl_byte_hash.h"
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
@@ -13,6 +14,8 @@
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
 #include <string.h>
+
+@implementation MGLRenderer (Draw)
 
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 static BOOL mglBatchReplayHasActiveEncoder(const MGLEncodeContext *e)
@@ -59,7 +62,7 @@ static int mglDynUniformGather(void *v, uint64_t *lens, uint32_t count)
 {
     MGLDynUniformCtx *c = v;
     for (uint32_t i = 0; i < count; i++) {
-        BufferBaseTarget *slot = &MGL_STATE(c->ctx)->buffer_base[_UNIFORM_BUFFER]
+        BufferBaseTarget *slot = &c->ctx->active_state->buffer_base[_UNIFORM_BUFFER]
                                       .buffers[c->cmd->dynamic_uniform_bindings[i].binding_index];
         if (!slot->buf || !mgl_batch_replay_mtl_ptr_ok(slot->buf->data.mtl_data)) return 0;
         MGLRenderBufferInfo info = {0};
@@ -72,7 +75,7 @@ static int mglDynUniformResolve(void *v, const MGLBatchUniformBindOp *op, void *
 {
     MGLDynUniformCtx *c = v;
     BufferBaseTarget *slot =
-        &MGL_STATE(c->ctx)->buffer_base[_UNIFORM_BUFFER].buffers[op->binding_index];
+        &c->ctx->active_state->buffer_base[_UNIFORM_BUFFER].buffers[op->binding_index];
     if (!slot->buf || !mgl_batch_replay_mtl_ptr_ok(slot->buf->data.mtl_data)) return 0;
     if (mtl) *mtl = slot->buf->data.mtl_data; if (gl) *gl = slot->buf; return 1;
 }
@@ -112,8 +115,8 @@ static int mglDynApplyBindUniform(void *v)
       encodeContext:c->enc] ? 1 : 0; }
 static int mglDynApplyMapperFallback(void *v)
 {
-    MGLDynApplyCtx *c = v; c->saved_vao = MGL_STATE(c->ctx)->vao;
-    if (c->cmd->dynamic_vertex_binding_count > 0) MGL_STATE(c->ctx)->vao = c->draw_vao;
+    MGLDynApplyCtx *c = v; c->saved_vao = c->ctx->active_state->vao;
+    if (c->cmd->dynamic_vertex_binding_count > 0) c->ctx->active_state->vao = c->draw_vao;
     mglDynApplyRefresh(v);
     int ok = ([c->r mapBuffersToMTL] && [c->r bindVertexBuffersToCurrentRenderEncoder:c->enc]) ? 1 : 0;
     mglDynApplyRefresh(v);
@@ -121,7 +124,7 @@ static int mglDynApplyMapperFallback(void *v)
         ok = [c->r bindFragmentBuffersToCurrentRenderEncoder:c->enc] ? 1 : 0;
         mglDynApplyRefresh(v);
     }
-    MGL_STATE(c->ctx)->vao = c->saved_vao; return ok;
+    c->ctx->active_state->vao = c->saved_vao; return ok;
 }
 
 typedef struct {
@@ -143,7 +146,7 @@ static int mglDynSampledResolve(void *v, const MGLBatchSampledTexCandidate *e,
         ? (__bridge id)mglSampledTextureViewForBaseLevel(tex_obj, tex_obj->mtl_data) : nil;
     MGLRenderTextureInfo info = {0};
     int info_ok = texture && mglRenderGetTextureInfo((__bridge void *)texture, &info) == 0;
-    Sampler *bound = (unit < TEXTURE_UNITS) ? MGL_STATE(c->ctx)->texture_samplers[unit] : NULL;
+    Sampler *bound = (unit < TEXTURE_UNITS) ? c->ctx->active_state->texture_samplers[unit] : NULL;
     id sampler = nil;
     if (bound && !bound->dirty_bits && bound->mtl_data) sampler = (__bridge id)bound->mtl_data;
     else if (tex_obj && tex_obj->params.mtl_data) sampler = (__bridge id)tex_obj->params.mtl_data;
@@ -220,13 +223,12 @@ static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
         return 0;
     NSUInteger off = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
     uint64_t itype = mglIndexTypeForGLType((GLenum)gl_itype);
-    id prepared = mglPreparedElementIndexBuffer(c->r->_device, glBuf, idxBuf, (GLenum)gl_itype,
+    id prepared = mglPreparedElementIndexBuffer((__bridge id)mglRendererBackendGetDevice(c->r->_backend), glBuf, idxBuf, (GLenum)gl_itype,
                                                 &off, &itype);
     if (ioff) *ioff = (uint64_t)off; if (mtype) *mtype = (uint32_t)itype;
     if (mtl) *mtl = (__bridge void *)prepared; return prepared ? 1 : 0;
 }
 
-@implementation MGLRenderer (Draw)
 
 - (bool)bindDynamicVertexArrayBuffersDirectly:(VertexArray *)vao
                                       command:(const MGLDrawCommand *)cmd
@@ -323,8 +325,8 @@ static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
     if (!glm_ctx || !encCtx) return false;
     encCtx->render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner;
     MGLDynApplyCtx c = {.r = self, .cmd = cmd, .ctx = glm_ctx, .enc = encCtx,
-                        .base_vao = MGL_STATE(glm_ctx)->vao,
-                        .draw_vao = MGL_STATE(glm_ctx)->vao};
+                        .base_vao = glm_ctx->active_state->vao,
+                        .draw_vao = glm_ctx->active_state->vao};
     MGLBatchDynApplyOps ops = {
         .ctx = &c, .refresh_owner = mglDynApplyRefresh, .has_encoder = mglDynApplyHasEnc,
         .build_dyn_vao = mglDynApplyBuildVao, .apply_ubo = mglDynApplyUbo,
@@ -351,7 +353,7 @@ static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
             batch, MGL_RENDER_REPLAY_BATCH_MAX_COMMANDS,
             mglBatchReplayHasActiveEncoder(encCtx) ? 1 : 0,
             (batchProgram && batchProgram->uses_cull_distance) ? 1 : 0,
-            MGL_STATE(glm_ctx)->caps.primitive_restart ? 1 : 0,
+            glm_ctx->active_state->caps.primitive_restart ? 1 : 0,
             mglPolygonModePointForDrawMode(glm_ctx, batchMode) ? 1 : 0,
             mglRenderDrawModeNeedsEmulate((uint32_t)batchMode) ? 1 : 0))
         return NO;

@@ -4,6 +4,7 @@
  */
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "MGLRenderer+BatchPorts_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_batch_path.h"
@@ -13,6 +14,8 @@
 #include "mgl_batch_mtl_encode.h"
 #include "mgl_batch_encode_shared.h"
 #include <CoreFoundation/CoreFoundation.h>
+
+@implementation MGLRenderer (Batch)
 
 typedef struct {
     MGLRenderer *r;
@@ -61,7 +64,7 @@ static int mglIcbResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
     NSUInteger drawOff = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
     uint64_t drawType = mglIndexTypeForGLType((GLenum)gl_itype);
     id prepared = mglPreparedElementIndexBuffer(
-        c->r->_device, glBuf, idxBuf, (GLenum)gl_itype, &drawOff, &drawType);
+        (__bridge id)mglRendererBackendGetDevice(c->r->_backend), glBuf, idxBuf, (GLenum)gl_itype, &drawOff, &drawType);
     if (ioff) *ioff = (uint64_t)drawOff;
     if (mtype) *mtype = (uint32_t)drawType;
     if (mtl) *mtl = (__bridge void *)prepared;
@@ -111,7 +114,6 @@ static void *mglStreamIdx(void *v)
     return (__bridge void *)mtl;
 }
 
-@implementation MGLRenderer (Batch)
 
 - (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
                     encodeContext:(const MGLEncodeContext *)encCtx

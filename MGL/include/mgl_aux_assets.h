@@ -24,9 +24,17 @@ typedef struct MGLAuxShaderAsset {
     const char *functions[4];
 } MGLAuxShaderAsset;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 const MGLAuxShaderAsset *mglAuxShaderAssetFind(const char *name);
 extern const MGLAuxShaderAsset mglAuxShaderAssets[];
 extern const size_t mglAuxShaderAssetCount;
+
+#ifdef __cplusplus
+}
+#endif
 
 /* FNV-1a-64 used by both the generator and the runtime verifier. */
 static inline uint64_t mglAuxAssetHash(const unsigned char *bytes, size_t size) {

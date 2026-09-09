@@ -4,9 +4,12 @@
  */
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "MGLRenderer+BatchPorts_Private.h"
 #include "mgl_render.h"
 #include "mgl_batch_rt_mark.h"
 #include <string.h>
+
+@implementation MGLRenderer (Batch)
 
 static void *mglBatchEncoderTraceToken(void *owner) { return owner; }
 static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
@@ -28,7 +31,7 @@ static void mglBatchFsFlags(MGLFragmentTextureTraceBinding *b0,
 }
 static void mglBatchFillStatePod(GLMContext glm_ctx, MGLBatchTraceStatePod *s)
 {
-    memset(s, 0, sizeof(*s)); GLMState *st = MGL_STATE(glm_ctx);
+    memset(s, 0, sizeof(*s)); GLMState *st = glm_ctx->active_state;
     for (int i = 0; i < 4; i++) s->viewport[i] = (int32_t)st->viewport[i];
     s->scissor_test = st->caps.scissor_test ? 1 : 0;
     for (int i = 0; i < 4; i++) s->scissor[i] = (int32_t)st->var.scissor_box[i];
@@ -69,7 +72,6 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
     };
 }
 
-@implementation MGLRenderer (Batch)
 
 - (void)traceReplayBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
                   flushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex
@@ -86,7 +88,7 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
             earlyFsSlotHasRT, earlyFsSlotUsedCopy))
         return;
     VertexArray *vao = mglRendererGetValidatedVAO(glm_ctx, "replay.batch.trace");
-    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
+    Framebuffer *fbo = glm_ctx->active_state->framebuffer;
     GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
     id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
         _renderPassManager.state->renderPassStateOwner,
@@ -114,8 +116,8 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
     v.snap_current = snapshot ? snapshot->program_name : 0u;
     v.snap_fbo = snapshotFBOName; v.snap_vao = snapshot ? snapshot->vao : NULL;
     v.restored_current = mglCurrentRenderProgramKey(glm_ctx);
-    v.restored_program = MGL_STATE(glm_ctx)->program_name;
-    v.restored_pipeline = MGL_STATE(glm_ctx)->var.program_pipeline_binding;
+    v.restored_program = glm_ctx->active_state->program_name;
+    v.restored_pipeline = glm_ctx->active_state->var.program_pipeline_binding;
     v.restored_vs = vertexProgram ? vertexProgram->name : 0u;
     v.restored_fs = fragmentProgram ? fragmentProgram->name : 0u;
     v.restored_fbo = fboName; v.restored_vao = vao;
@@ -146,7 +148,7 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
         return;
     Buffer *ebo = mglDrawCommandUsesElements(cmd) ? mglDrawCommandElementBuffer(glm_ctx, cmd) : NULL;
     GLuint eboName = mglBatchSafeName(ebo, sizeof(*ebo), ebo ? ebo->name : 0u);
-    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
+    Framebuffer *fbo = glm_ctx->active_state->framebuffer;
     GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
     id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
         _renderPassManager.state->renderPassStateOwner,
@@ -204,12 +206,12 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
         fbo ? fbo->depth.texture : 0u, fbo ? fbo->depth.textarget : 0u,
         fbo ? fbo->depth.level : 0u, depthTexture, dEver, dFull, dSource);
     mgl_batch_trace_cmd_set_color0(&v, &c0); mgl_batch_trace_cmd_set_depth(&v, &dp);
-    Texture *u0a = MGL_STATE(glm_ctx)->active_textures[0];
-    Texture *u0t = MGL_STATE(glm_ctx)->texture_units[0].textures[_TEXTURE_2D];
-    Texture *u1a = MGL_STATE(glm_ctx)->active_textures[1];
-    Texture *u1t = MGL_STATE(glm_ctx)->texture_units[1].textures[_TEXTURE_2D];
-    Texture *u2a = MGL_STATE(glm_ctx)->active_textures[2];
-    Texture *u2t = MGL_STATE(glm_ctx)->texture_units[2].textures[_TEXTURE_2D];
+    Texture *u0a = glm_ctx->active_state->active_textures[0];
+    Texture *u0t = glm_ctx->active_state->texture_units[0].textures[_TEXTURE_2D];
+    Texture *u1a = glm_ctx->active_state->active_textures[1];
+    Texture *u1t = glm_ctx->active_state->texture_units[1].textures[_TEXTURE_2D];
+    Texture *u2a = glm_ctx->active_state->active_textures[2];
+    Texture *u2t = glm_ctx->active_state->texture_units[2].textures[_TEXTURE_2D];
     mgl_batch_trace_cmd_set_units(&v, u0a ? u0a->name : 0u, u0t ? u0t->name : 0u,
                                   u1a ? u1a->name : 0u, u1t ? u1t->name : 0u,
                                   u2a ? u2a->name : 0u, u2t ? u2t->name : 0u);

@@ -228,6 +228,9 @@ static inline double mglTraceNowSeconds(void)
 #define MGL_STATE(context)  (_activeState ? _activeState : (context)->active_state)
 
 @interface MGLRenderer () {
+    /* @public: C-function encode ports (mgl_draw_metal_port.m etc.) access
+     * these via the host MGLRenderer* pointer. */
+    @public
     /* Keep this ivar named `ctx`: C GLM macros and older helper code expect
      * that identifier to exist inside MGLRenderer methods. */
     GLMContext  ctx;    // context macros need this exact name

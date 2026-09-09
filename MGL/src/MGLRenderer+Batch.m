@@ -15,6 +15,7 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "MGLRenderer+BatchPorts_Private.h"
 #import "mgl_frame_activity.h"
 #import "mgl_sampler_compat.h"
 #include "mgl_render.h"
@@ -50,7 +51,7 @@
 typedef struct { __unsafe_unretained MGLRenderer *r; GLMContext glm; } ActTexCtx;
 static int actBindUnit(void *v, uint32_t unit, int *stale_out)
 {
-    ActTexCtx *c = v; Texture *tex = MGL_STATE(c->glm)->active_textures[unit];
+    ActTexCtx *c = v; Texture *tex = c->glm->active_state->active_textures[unit];
     if (!tex) { if (stale_out) *stale_out = 1; return 0; }
     if (stale_out) *stale_out = 0;
     return [c->r bindMTLTexture:tex] ? 1 : 0;
@@ -58,7 +59,7 @@ static int actBindUnit(void *v, uint32_t unit, int *stale_out)
 static void actClearStale(void *v, uint32_t word, uint32_t bit)
 {
     ActTexCtx *c = v;
-    MGL_STATE(c->glm)->active_texture_mask[word] &= ~(1u << bit);
+    c->glm->active_state->active_texture_mask[word] &= ~(1u << bit);
     mglInvalidateStateHashCachesForDirtyBits(c->glm->active_state, DIRTY_TEX_BINDING);
 }
 
@@ -99,28 +100,28 @@ static void keyRestProg(void *v, uint32_t prog, uint32_t pipe)
 static void keyRestVao(void *v, uint32_t name)
 {
     GLMContext glm = ((KeyRestCtx *)v)->glm;
-    if (name == (MGL_STATE(glm)->vao ? MGL_STATE(glm)->vao->name : 0)) return;
-    MGL_STATE(glm)->vao = name
-        ? (VertexArray *)searchHashTable(&MGL_STATE(glm)->vao_table, name) : NULL;
+    if (name == (glm->active_state->vao ? glm->active_state->vao->name : 0)) return;
+    glm->active_state->vao = name
+        ? (VertexArray *)searchHashTable(&glm->active_state->vao_table, name) : NULL;
 }
 static void keyRestFbo(void *v, uint32_t name)
 {
     GLMContext glm = ((KeyRestCtx *)v)->glm;
-    uint32_t cur = MGL_STATE(glm)->framebuffer ? MGL_STATE(glm)->framebuffer->name : 0;
+    uint32_t cur = glm->active_state->framebuffer ? glm->active_state->framebuffer->name : 0;
     if (name == cur) return;
-    MGL_STATE(glm)->framebuffer = name
-        ? (Framebuffer *)searchHashTable(&MGL_STATE(glm)->framebuffer_table, name) : NULL;
+    glm->active_state->framebuffer = name
+        ? (Framebuffer *)searchHashTable(&glm->active_state->framebuffer_table, name) : NULL;
 }
 static void keyRestSync(void *v) { mglRendererSyncFramebufferBindingNames(((KeyRestCtx *)v)->glm); }
 static void keyRestVpSc(void *v, const int32_t vp[4], int sc_en, const int32_t sc[4])
 {
     GLMContext glm = ((KeyRestCtx *)v)->glm;
-    for (int i = 0; i < 4; i++) MGL_STATE(glm)->viewport[i] = vp[i];
+    for (int i = 0; i < 4; i++) glm->active_state->viewport[i] = vp[i];
     if (sc_en) {
-        MGL_STATE(glm)->caps.scissor_test = true;
-        for (int i = 0; i < 4; i++) MGL_STATE(glm)->var.scissor_box[i] = sc[i];
+        glm->active_state->caps.scissor_test = true;
+        for (int i = 0; i < 4; i++) glm->active_state->var.scissor_box[i] = sc[i];
     } else {
-        MGL_STATE(glm)->caps.scissor_test = false;
+        glm->active_state->caps.scissor_test = false;
     }
 }
 

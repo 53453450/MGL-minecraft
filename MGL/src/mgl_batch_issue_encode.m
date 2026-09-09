@@ -4,6 +4,7 @@
  */
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "MGLRenderer+BatchPorts_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_draw_encode.h"
@@ -11,6 +12,8 @@
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
 #include "mgl_batch_encode_shared.h"
+
+@implementation MGLRenderer (Draw)
 
 typedef struct {
     MGLRenderer *r; MGLDrawBatch *batch; GLMContext ctx;
@@ -48,7 +51,7 @@ static int mglMdiResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
         return 0;
     NSUInteger drawOff = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
     uint64_t drawType = mglIndexTypeForGLType((GLenum)gl_itype);
-    id prepared = mglPreparedElementIndexBuffer(c->r->_device, glBuf, idxBuf, (GLenum)gl_itype,
+    id prepared = mglPreparedElementIndexBuffer((__bridge id)mglRendererBackendGetDevice(c->r->_backend), glBuf, idxBuf, (GLenum)gl_itype,
                                                 &drawOff, &drawType);
     if (ioff) *ioff = (uint64_t)drawOff; if (mtype) *mtype = (uint32_t)drawType;
     if (mtl) *mtl = (__bridge void *)prepared; return 1;
@@ -115,7 +118,7 @@ static int mglDirTryCullArr(void *v, uint32_t i, uint32_t mode, int32_t first, i
     Program *p = mglResolveProgramForStageFromState(c->ctx, _VERTEX_SHADER);
     if (!p || !p->uses_cull_distance) return 0;
     return mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->r->_device, (GLenum)mode, first, count, (size_t)ic,
+        c->enc->render_encoder_owner, (__bridge id)mglRendererBackendGetDevice(c->r->_backend), (GLenum)mode, first, count, (size_t)ic,
         (size_t)bi, (__bridge void *)c->r, c->enc, mglRendererBindCullDistanceEmu) ? 1 : 0;
 }
 static void mglDirBindCullEmu(void *v, uint32_t mode, int32_t first)
@@ -131,7 +134,7 @@ static int mglDirEncArr(void *v, uint32_t mode, int32_t first, int32_t count, in
 {
     MGLIssueEncCtx *c = v;
     return mglEncodeDrawArraysForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->ctx, c->r->_device, (GLenum)mode, first, count,
+        c->enc->render_encoder_owner, c->ctx, (__bridge id)mglRendererBackendGetDevice(c->r->_backend), (GLenum)mode, first, count,
         (size_t)ic, (size_t)bi, "batch") ? 1 : 0;
 }
 static int mglDirPrepEl(void *v, uint32_t i, MGLBatchDirectElementPrep *out)
@@ -167,13 +170,12 @@ static int mglDirEncEl(void *v, uint32_t mode, const MGLBatchDirectElementPrep *
 {
     MGLIssueEncCtx *c = v;
     return mglEncodeDrawElementsForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->ctx, c->r->_device, (Buffer *)prep->gl_buffer,
+        c->enc->render_encoder_owner, c->ctx, (__bridge id)mglRendererBackendGetDevice(c->r->_backend), (Buffer *)prep->gl_buffer,
         (__bridge id)prep->mtl_buffer, (GLenum)mode, (GLenum)prep->gl_index_type,
         (NSUInteger)prep->index_offset, count, ic, prep->base_vertex, prep->base_instance,
         "directBatch") ? 1 : 0;
 }
 
-@implementation MGLRenderer (Draw)
 
 - (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
         encodeContext:(const MGLEncodeContext *)encCtx

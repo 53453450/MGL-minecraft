@@ -199,10 +199,13 @@ extern "C" int mglDrawEncodeCullDistanceElement(
 
     void *encoder = nullptr;
     if (enc_ctx) {
-        encoder = ((const struct {
-                       void *render_encoder_owner;
-                   } *)enc_ctx)
-                      ->render_encoder_owner;
+        /* C++ forbids defining a struct type inside a cast (C allowed the
+         * anonymous-struct trick); use a named layout-compatible view of
+         * the caller's encode context (first member: renderer owner). */
+        struct CullEncodeCtxView {
+            void *render_encoder_owner;
+        };
+        encoder = ((const CullEncodeCtxView *)enc_ctx)->render_encoder_owner;
     }
     if (!encoder) {
         encoder = ops->encoder_owner(ops->renderer);

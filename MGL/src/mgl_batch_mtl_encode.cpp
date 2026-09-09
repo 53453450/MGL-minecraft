@@ -11,6 +11,9 @@
 #include "mgl_index_buffer.h"
 
 #include "mgl_batch_restore.h"
+/* draw_command.h expects GL base types (GLenum/GLuint/...) to already be
+ * declared; pull in the canonical dispatch chain first. */
+#include "glm_dispatch.h"
 #include "draw_command.h"
 #include "mgl_render.h"
 
@@ -501,9 +504,9 @@ extern "C" int mgl_batch_mtl_issue_stream_mdi_batch(
     }
     size_t neededBytesRaw = 0;
     MGLBatchStreamMdiGateIn gateIn = {
-        .stream_merged = batch->stream_merged ? 1u : 0u,
-        .has_encoder = render_encoder_owner ? 1u : 0u,
-        .disable_mdi = disable_mdi ? 1u : 0u,
+        .stream_merged = (uint8_t)(batch->stream_merged ? 1u : 0u),
+        .has_encoder = (uint8_t)(render_encoder_owner ? 1u : 0u),
+        .disable_mdi = (uint8_t)(disable_mdi ? 1u : 0u),
         .primitive_type = batch->key.primitive_type,
         .command_count = batch->command_count,
         .stream_index_count = (uint32_t)batch->stream_index_count,

@@ -537,7 +537,7 @@ static void *mglStageCreateBuffer(void *renderer, uint64_t length)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return NULL;
-    id buf = mglDrawSupportCreateBuffer(self->_device, (NSUInteger)length, 0u);
+    id buf = mglDrawSupportCreateBuffer(((__bridge id)mglRendererBackendGetDevice(self->_backend)), (NSUInteger)length, 0u);
     return (__bridge_retained void *)buf;
 }
 
@@ -546,7 +546,7 @@ static void *mglStageCreateBufferBytes(void *renderer, const void *bytes,
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return NULL;
-    id buf = mglDrawSupportCreateBufferWithBytes(self->_device, bytes,
+    id buf = mglDrawSupportCreateBufferWithBytes(((__bridge id)mglRendererBackendGetDevice(self->_backend)), bytes,
                                                  (NSUInteger)length, 0u);
     return (__bridge_retained void *)buf;
 }
@@ -556,8 +556,8 @@ static void *mglStageCachedFactors(void *renderer, GLMContext ctx,
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !ctx) return NULL;
-    id buf = mglCachedDefaultTessFactorBuffer(self->_device, self->_backend,
-                                              MGL_STATE(ctx), patch_count);
+    id buf = mglCachedDefaultTessFactorBuffer(((__bridge id)mglRendererBackendGetDevice(self->_backend)), self->_backend,
+                                              ctx->active_state, patch_count);
     /* Cached on backend — borrow only. */
     return (__bridge void *)buf;
 }
@@ -567,7 +567,7 @@ static void *mglStageNativeFactors(void *renderer, void *canonical, GLenum mode,
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return NULL;
-    id buf = mglNativeTessFactorBuffer(self->_device, (__bridge id)canonical,
+    id buf = mglNativeTessFactorBuffer(((__bridge id)mglRendererBackendGetDevice(self->_backend)), (__bridge id)canonical,
                                        mode, patch_count);
     return (__bridge_retained void *)buf;
 }
@@ -889,8 +889,8 @@ static int mglGsMetalBindDrawTextures(void *renderer, GLMContext ctx)
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !ctx) return 0;
     for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
-        Texture *image = MGL_STATE(ctx)->image_units[unit].tex;
-        Texture *sampled = MGL_STATE(ctx)->active_textures[unit];
+        Texture *image = ctx->active_state->image_units[unit].tex;
+        Texture *sampled = ctx->active_state->active_textures[unit];
         if (image && ![self bindMTLTexture:image]) return 0;
         if (sampled && ![self bindMTLTexture:sampled]) return 0;
     }
@@ -957,7 +957,7 @@ static void mglGsMetalNoteDeviceReset(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (self) {
-        atomic_store_explicit(&self->_deviceResetRequested, true,
+        atomic_store_explicit(&self->_core.deviceResetRequested, true,
                               memory_order_release);
     }
 }
@@ -1050,7 +1050,7 @@ static void mglGsMetalGpuCaptureStart(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !getenv("MGL_GPU_CAPTURE")) return;
-    id desc = [self mglCaptureDescriptorForDevice:self->_device
+    id desc = [self mglCaptureDescriptorForDevice:((__bridge id)mglRendererBackendGetDevice(self->_backend))
                                        outputPath:[NSString stringWithUTF8String:getenv("MGL_GPU_CAPTURE")]];
     NSError *capErr = nil;
     if (desc && [self mglStartCaptureWithDescriptor:desc error:&capErr]) {
@@ -1160,7 +1160,7 @@ static void *mglStagePrepareElementIndex(void *renderer, void *index_buffer,
     NSUInteger off = (NSUInteger)*inout_offset;
     uint64_t typ = *inout_mtl_type;
     id prepared = mglPreparedElementIndexBuffer(
-        self->_device, NULL, (__bridge id)index_buffer, gl_index_type, &off,
+        ((__bridge id)mglRendererBackendGetDevice(self->_backend)), NULL, (__bridge id)index_buffer, gl_index_type, &off,
         &typ);
     if (!prepared) return NULL;
     *inout_offset = (uint64_t)off;
@@ -1210,7 +1210,7 @@ static void *mglStageLoadCullCapture(void *renderer)
 static void *mglStageDevicePtr(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (__bridge void *)self->_device : NULL;
+    return self ? (__bridge void *)((__bridge id)mglRendererBackendGetDevice(self->_backend)) : NULL;
 }
 
 static void mglStageBindCullEmu(void *renderer, GLenum mode, GLuint first_vertex,
@@ -1235,7 +1235,8 @@ static int mglStageTryArraySplitEncode(void *renderer, void *device,
                                        const void *enc_ctx)
 {
     return mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
-               encoder_owner, device, mode, first, count, (size_t)instance_count,
+               encoder_owner, (__bridge MGLDrawMetalHandle)device, mode, first,
+               count, (size_t)instance_count,
                (size_t)base_instance, renderer, enc_ctx,
                mglRendererBindCullDistanceEmu)
                ? 1
@@ -1493,7 +1494,7 @@ bool mglDrawHostHandleTessellation(void *renderer, GLMContext ctx,
     host->ctx = ctx;
     MGLTessPatchDrawHostOps ops = {
         .renderer = renderer,
-        .device = (__bridge void *)host->_device,
+        .device = (__bridge void *)((__bridge id)mglRendererBackendGetDevice(host->_backend)),
         .bind_mtl_program = mglStageBindProgram,
         .capture_array = mglStageCaptureArray,
         .capture_indexed = mglStageCaptureIndexed,

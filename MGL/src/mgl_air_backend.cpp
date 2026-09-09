@@ -89,6 +89,12 @@
 
 namespace {
 
+/* C1f moved callAirFn's definition into mgl_air_matrix.cpp (namespace
+ * mgl::air) without leaving a visible declaration for the bare call
+ * sites in this file; re-expose it here. */
+using mgl::air::callAirFn;
+
+
 /* Map the frontend's GS output primitive enum to the backend-neutral
  * ABI enum used by the fixed record-layout helpers. */
 static MGLAIRGSOutputPrimitive airGSOutputFromAST(uint32_t ast)
@@ -129,6 +135,27 @@ using mgl::air::ensureArrayMem;
 using mgl::air::arrayMemGEP;
 using mgl::air::llvmTypeFromIR;
 using mgl::air::coerceScalar;
+
+/* Restore helpers deleted by C1f without being relocated: resolve a
+ * sampler argument (global sampler2D uniform in cg.texValues, or a
+ * user-function parameter bound in cg.lvalues). */
+static llvm::Value *samplerTexValue(Codegen &cg, const char *name) {
+    auto t = cg.texValues.find(name);
+    if (t != cg.texValues.end()) return t->second;
+    auto l = cg.lvalues.find(name);
+    if (l != cg.lvalues.end()) return l->second;
+    return nullptr;
+}
+
+/* Scalar base for an LLVM type, used to coerce call arguments. */
+static MGLIRScalar scalarFromType(llvm::Type *t) {
+    if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(t))
+        t = fv->getElementType();
+    if (t->isFloatingPointTy()) return MGLIR_SCALAR_FLOAT;
+    if (t->isIntegerTy(1)) return MGLIR_SCALAR_BOOL;
+    if (t->isIntegerTy(32)) return MGLIR_SCALAR_INT;
+    return MGLIR_SCALAR_FLOAT;
+}
 using mgl::air::airTypeMangle;
 using mgl::air::airGenerated;
 using mgl::air::varyingIfaceTag;

@@ -21,10 +21,12 @@
 #ifndef MGL_BATCH_REPLAY_H
 #define MGL_BATCH_REPLAY_H
 
+/* glm_context.h must precede draw_command.h: the latter expects GL base
+ * types (GLenum/GLuint/GLintptr/...) to already be declared. */
+#include "glm_context.h"
 #include "draw_command.h"
 #include "mgl_batch_issue.h"
 #include "mgl_draw_encode.h"
-#include "glm_context.h"
 #include "mgl_types_vertex.h"
 
 #include <stdbool.h>
