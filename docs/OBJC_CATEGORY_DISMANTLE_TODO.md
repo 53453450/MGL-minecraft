@@ -151,6 +151,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
   - [x] **C1 本刀**：stage fallback unify / residual snap — V/F fallback → shared stage 环 + `PlanFallbackSlot`/`InlineBytesSrc`/`BuildPresentMask`；VATTR/VFB/VPS/FFB 残量宏塌到 `MGL_BIND_SNAP_*`；texture_log **hold** 327；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~3855→~3648 (−207)；残量口仍 ≫300
   - [x] **C1 本刀**：stage map-entry unify / present-mask finalize — V/F map 环 → shared `bindStageBufferMapEntriesForStage` + `ClampMapCount`/`PostMtlUsable`；present-mask/sparse/diag → `finalizeStageBufferPresentMask`；resource ordinal helper；texture_log **hold** 327；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~3648→~3476 (−172)；残量口仍 ≫300
   - [x] **C1 本刀**：sampled V/F stage unify / FINAL ports — shared `bindSampledTexturesForStage` + `FillSampledFinalInput`/`ForceDefaultSampler`；SNAP/EMIT macros → headers；dead CreateBuffer/RequiredBytes/LevelView 删；texture_log **hold** 327；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~3476→~3313 (−163)；残量口仍 ≫300
+  - [x] **C1 本刀**：stage-fill / emit ports / attrib SELECT — FillMapEntry/Attrib/GATE/COMPAT @C；Set*/Queue/Flush + STAGE emit → Draw_Private；attrib emit helper；inline V/F fallback wrappers；texture_log **hold** 327；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~3313→~3094 (−219)；残量口仍 ≫300
 - [ ] **O3.4** `MGLPipelineCache.m` → C++ LRU cache（兼 FPS 掉帧 P0）
 - [ ] **O3.5** 验收：`+RenderPass.m` &lt; 800 LOC；PSO miss 行为有非 CTS 单测
 

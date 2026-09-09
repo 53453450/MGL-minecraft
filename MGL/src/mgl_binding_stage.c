@@ -602,3 +602,94 @@ int mglBindingStagePostMtlUsable(int is_fragment, const void *mtl_ptr,
     return mglRenderMetalDataPointerUsable(mtl_ptr);
 }
 
+
+void mglBindingStageFillMapEntryInput(
+    MGLStageBufferBindInput *in, int is_fragment, int phase,
+    int is_base_binding, int has_metal_binding, int32_t metal_binding_index,
+    int32_t gl_binding_index, uint32_t resource_type, int64_t offset,
+    int64_t buffer_size, int has_buffer, int has_cpu_data, int has_mtl_data,
+    const void *cpu_ptr, const void *mtl_ptr, int cpu_dirty, int gpu_write_target,
+    int allow_isolate_when_gpu, int attrib_reserved, uint32_t max_metal_slots,
+    uint32_t max_gl_bindings, uint32_t reflected, uint32_t min_stage_bytes,
+    uint32_t scratch_cap, uint64_t visible_cpu, int64_t visible_range)
+{
+    if (!in) {
+        return;
+    }
+    memset(in, 0, sizeof(*in));
+    in->phase = phase;
+    in->is_fragment = is_fragment ? 1 : 0;
+    in->is_base_binding = is_base_binding ? 1 : 0;
+    in->has_metal_binding = has_metal_binding ? 1 : 0;
+    in->metal_binding_index = metal_binding_index;
+    in->gl_binding_index = gl_binding_index;
+    in->resource_type = resource_type;
+    in->offset = offset;
+    in->buffer_size = buffer_size;
+    in->has_buffer = has_buffer ? 1 : 0;
+    in->has_cpu_data = has_cpu_data ? 1 : 0;
+    in->has_mtl_data = has_mtl_data ? 1 : 0;
+    in->cpu_ptr = cpu_ptr;
+    in->mtl_ptr = mtl_ptr;
+    in->cpu_dirty = cpu_dirty ? 1 : 0;
+    in->gpu_write_target = gpu_write_target ? 1 : 0;
+    in->allow_isolate_when_gpu = allow_isolate_when_gpu ? 1 : 0;
+    in->attrib_slot_reserved = attrib_reserved ? 1 : 0;
+    in->max_metal_slots = max_metal_slots;
+    in->max_gl_bindings = max_gl_bindings;
+    in->reflected_required = reflected;
+    in->min_stage_bytes = min_stage_bytes;
+    in->scratch_cap = scratch_cap;
+    in->visible_cpu = visible_cpu;
+    in->visible_range = visible_range;
+    if (is_fragment) {
+        in->mtl_usable =
+            mtl_ptr && (uintptr_t)mtl_ptr >= 0x100000000ULL ? 1 : 0;
+    } else {
+        in->mtl_usable = mglRenderMetalDataPointerUsable(mtl_ptr);
+    }
+}
+
+void mglBindingStageFillAttribSelectInput(
+    MGLAttribBindInput *in, int program_uses_attrib, int uses_current_value,
+    int has_attrib_binding, int32_t mapped_index, uint32_t max_metal_slots,
+    int offsets_valid, int span_status, int conversion_kind, int already_present,
+    uint64_t binding_offset, int absolute_vertex_offsets)
+{
+    if (!in) {
+        return;
+    }
+    memset(in, 0, sizeof(*in));
+    in->phase = MGL_ATTR_PHASE_SELECT;
+    in->program_uses_attrib = program_uses_attrib ? 1 : 0;
+    in->uses_current_value = uses_current_value ? 1 : 0;
+    in->has_attrib_binding = has_attrib_binding ? 1 : 0;
+    in->mapped_index = mapped_index;
+    in->max_metal_slots = max_metal_slots;
+    in->offsets_valid = offsets_valid ? 1 : 0;
+    in->span_status = span_status;
+    in->conversion_kind = conversion_kind;
+    in->already_present = already_present ? 1 : 0;
+    in->binding_offset = binding_offset;
+    in->absolute_vertex_offsets = absolute_vertex_offsets ? 1 : 0;
+}
+
+void mglBindingStageFillAttribPostMtlInput(
+    MGLAttribBindInput *in, int has_mtl_data, int mtl_usable, uint64_t metal_len,
+    int binding_state_valid, int buffer_matches)
+{
+    if (!in) {
+        return;
+    }
+    in->phase = MGL_ATTR_PHASE_POST_MTL;
+    in->has_mtl_data = has_mtl_data ? 1 : 0;
+    in->mtl_usable = mtl_usable ? 1 : 0;
+    in->metal_len = metal_len;
+    in->binding_state_valid = binding_state_valid ? 1 : 0;
+    in->buffer_matches = buffer_matches ? 1 : 0;
+}
+
+int mglBindingStageAttribNeedsEmit(int binding_state_valid, int buffer_matches)
+{
+    return (!binding_state_valid || !buffer_matches) ? 1 : 0;
+}

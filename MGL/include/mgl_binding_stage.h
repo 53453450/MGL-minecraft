@@ -288,6 +288,34 @@ typedef struct MGLAttribBindPlan {
 int mglBindingStagePlanAttribEntry(const MGLAttribBindInput *in,
                                    MGLAttribBindPlan *out);
 
+/* ---- Fill helpers (ObjC BindingState thin ports) ---- */
+
+/* Fill PRE_MTL / base map-entry POD from scalar facts (no Buffer* types). */
+void mglBindingStageFillMapEntryInput(
+    MGLStageBufferBindInput *in, int is_fragment, int phase,
+    int is_base_binding, int has_metal_binding, int32_t metal_binding_index,
+    int32_t gl_binding_index, uint32_t resource_type, int64_t offset,
+    int64_t buffer_size, int has_buffer, int has_cpu_data, int has_mtl_data,
+    const void *cpu_ptr, const void *mtl_ptr, int cpu_dirty, int gpu_write_target,
+    int allow_isolate_when_gpu, int attrib_reserved, uint32_t max_metal_slots,
+    uint32_t max_gl_bindings, uint32_t reflected, uint32_t min_stage_bytes,
+    uint32_t scratch_cap, uint64_t visible_cpu, int64_t visible_range);
+
+/* SELECT-phase attrib POD fill (facts gathered by ObjC). */
+void mglBindingStageFillAttribSelectInput(
+    MGLAttribBindInput *in, int program_uses_attrib, int uses_current_value,
+    int has_attrib_binding, int32_t mapped_index, uint32_t max_metal_slots,
+    int offsets_valid, int span_status, int conversion_kind, int already_present,
+    uint64_t binding_offset, int absolute_vertex_offsets);
+
+/* POST_MTL attrib POD fill. */
+void mglBindingStageFillAttribPostMtlInput(
+    MGLAttribBindInput *in, int has_mtl_data, int mtl_usable, uint64_t metal_len,
+    int binding_state_valid, int buffer_matches);
+
+/* 1 if encoder should setVertexBuffer (not matched). */
+int mglBindingStageAttribNeedsEmit(int binding_state_valid, int buffer_matches);
+
 #ifdef __cplusplus
 }
 #endif

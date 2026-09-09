@@ -185,6 +185,15 @@ void mglBindingTextureFillSampledFinalInput(
     int used_type_fallback, int has_combined_sampler, uint32_t sampler_binding,
     uint32_t max_sampler_slots, int has_sampler, int force_default_sampler);
 
+/* GATE-phase sampled POD fill. */
+void mglBindingTextureFillSampledGateInput(
+    MGLSampledTextureBindInput *in, uint32_t spirv_binding, uint32_t gl_binding,
+    uint32_t max_units, int skip_resource, int has_resource);
+
+/* COMPAT-phase sampled POD fill. */
+void mglBindingTextureFillSampledCompatInput(
+    MGLSampledTextureBindInput *in, int has_mtl_texture, uint32_t mtl_type,
+    uint32_t expected_type, int format_kind_ok);
 
 /* Sampler warmup: 1 if slot bit set in 128-bit mask (4×uint32). */
 int mglBindingTextureSamplerWarmupSlotActive(const uint32_t mask[4],

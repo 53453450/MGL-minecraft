@@ -201,9 +201,36 @@ static void test_plan_fs_small(void)
     expect(plan.inline_length == 112u, "fs length");
 }
 
+
+static void test_fill_helpers(void)
+{
+    MGLStageBufferBindInput bin;
+    mglBindingStageFillMapEntryInput(
+        &bin, 0, MGL_SB_PHASE_PRE_MTL, 1, 1, 3, 1, 1u, 0, 256, 1, 1, 0,
+        (const void *)(uintptr_t)0x200000000ULL, NULL, 0, 0, 0, 0, 31u, 84u,
+        256u, 256u, 4096u, 256u, 256);
+    expect(bin.phase == MGL_SB_PHASE_PRE_MTL, "fill phase");
+    expect(bin.is_base_binding == 1, "fill base");
+    expect(bin.metal_binding_index == 3, "fill metal");
+    expect(bin.has_cpu_data == 1 && bin.mtl_usable == 0, "fill cpu/mtl");
+
+    MGLAttribBindInput ain;
+    mglBindingStageFillAttribSelectInput(&ain, 1, 0, 1, 2, 31u, 1, 0, 0, 0,
+                                         16u, 1);
+    expect(ain.phase == MGL_ATTR_PHASE_SELECT, "attr select phase");
+    expect(ain.mapped_index == 2 && ain.binding_offset == 16u, "attr select");
+    mglBindingStageFillAttribPostMtlInput(&ain, 1, 1, 1024u, 1, 0);
+    expect(ain.phase == MGL_ATTR_PHASE_POST_MTL, "attr post phase");
+    expect(ain.metal_len == 1024u && ain.buffer_matches == 0, "attr post");
+    expect(mglBindingStageAttribNeedsEmit(1, 1) == 0, "no emit matched");
+    expect(mglBindingStageAttribNeedsEmit(1, 0) == 1, "emit mismatch");
+    expect(mglBindingStageAttribNeedsEmit(0, 1) == 1, "emit invalid");
+}
+
 int main(void)
 {
     test_helpers();
+    test_fill_helpers();
     test_fallback_table();
     test_plan_skip_and_clear();
     test_plan_uc_inline_and_need_mtl();

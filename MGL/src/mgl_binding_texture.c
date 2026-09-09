@@ -279,6 +279,38 @@ void mglBindingTextureFillSampledFinalInput(
     in->force_default_sampler = force_default_sampler ? 1 : 0;
 }
 
+
+void mglBindingTextureFillSampledGateInput(
+    MGLSampledTextureBindInput *in, uint32_t spirv_binding, uint32_t gl_binding,
+    uint32_t max_units, int skip_resource, int has_resource)
+{
+    if (!in) {
+        return;
+    }
+    memset(in, 0, sizeof(*in));
+    in->phase = MGL_ST_PHASE_GATE;
+    in->spirv_binding = spirv_binding;
+    in->gl_binding = gl_binding;
+    in->max_units = max_units;
+    in->skip_resource = skip_resource ? 1 : 0;
+    in->has_resource = has_resource ? 1 : 0;
+}
+
+void mglBindingTextureFillSampledCompatInput(
+    MGLSampledTextureBindInput *in, int has_mtl_texture, uint32_t mtl_type,
+    uint32_t expected_type, int format_kind_ok)
+{
+    if (!in) {
+        return;
+    }
+    memset(in, 0, sizeof(*in));
+    in->phase = MGL_ST_PHASE_COMPAT;
+    in->has_mtl_texture = has_mtl_texture ? 1 : 0;
+    in->mtl_type = mtl_type;
+    in->expected_type = expected_type;
+    in->format_kind_ok = format_kind_ok ? 1 : 0;
+}
+
 int mglBindingTextureSamplerWarmupSlotActive(const uint32_t mask[4],
                                              uint32_t slot) {
     if (!mask) {

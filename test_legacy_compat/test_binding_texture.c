@@ -338,6 +338,27 @@ static void test_sampled_final_helpers(void)
     expect(plan.action == MGL_ST_ACTION_SUPPRESS_FALLBACK, "suppress act");
 }
 
+
+static void test_sampled_gate_compat_fill(void)
+{
+    MGLSampledTextureBindInput in;
+    mglBindingTextureFillSampledGateInput(&in, 3u, 1u, 32u, 0, 1);
+    expect(in.phase == MGL_ST_PHASE_GATE, "gate phase");
+    expect(in.spirv_binding == 3u && in.has_resource == 1, "gate fields");
+    MGLSampledTextureBindPlan plan;
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "gate plan");
+    expect(plan.action == MGL_ST_ACTION_PROCEED, "gate proceed");
+
+    mglBindingTextureFillSampledCompatInput(&in, 1, 2u, 2u, 1);
+    expect(in.phase == MGL_ST_PHASE_COMPAT, "compat phase");
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "compat plan");
+    expect(plan.action == MGL_ST_ACTION_PROCEED, "compat ok");
+
+    mglBindingTextureFillSampledCompatInput(&in, 1, 1u, 2u, 1);
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "compat type");
+    expect(plan.action == MGL_ST_ACTION_TYPE_FALLBACK, "type fb");
+}
+
 static void test_apply_masks(void)
 {
     MGLSamplerWarmupPlan warm;
@@ -376,6 +397,7 @@ int main(void)
     test_sampler_materialize_plan();
     test_sampled_diag_and_rt_ports();
     test_sampled_final_helpers();
+    test_sampled_gate_compat_fill();
     test_apply_masks();
     if (g_fails) {
         fprintf(stderr, "%d failure(s)\n", g_fails);

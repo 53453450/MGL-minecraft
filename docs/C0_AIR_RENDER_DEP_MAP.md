@@ -582,6 +582,21 @@ Chose **+BindingState V/F sampled-texture apply unify + FINAL ports** (DXMT O3.3
 | Forbidden | did **not** grow `+Binding.m` (488); did **not** sink into `mgl_render.cpp`; texture_log held at 327 |
 | LOC | `+BindingState.m` ~3476→~3313 (−163); texture_log 327→327 (0); **honest combined** ~3803→~3640 (−163) |
 
+**Next strip suggestion (render/ObjC):** (superseded by 4r) BindingState residual toward &lt;300 ports.
+
+
+## 4r. C1 knife log — stage-fill / emit ports / attrib SELECT (O3.3 residual)
+
+Chose **+BindingState stage-fill + shared emit ports + attrib SELECT/POST** (DXMT O3.3 residual): `FillMapEntryInput`/`FillAttribSelect|PostMtl`/`AttribNeedsEmit` @C; GATE/COMPAT sampled fills @C; SMB/SFB emit → `Draw_Private` stage macros + Set*/Queue/Flush ports; attrib CURRENT/CONVERT/BIND → shared emit helper; inline V/F fallback wrappers. Honest metric = BindingState + texture_log. Do **not** thicken `+Binding.m`; do **not** sink into `mgl_render.cpp`; **freeze** log shell.
+
+| Item | Detail |
+|------|--------|
+| New C | `mglBindingStageFillMapEntryInput` / `FillAttribSelectInput` / `FillAttribPostMtlInput` / `AttribNeedsEmit`; `mglBindingTextureFillSampledGateInput` / `FillSampledCompatInput` |
+| Headers | Set*/Queue/Flush + `MGL_BIND_STAGE_*` emit macros → `MGLRenderer+Draw_Private.h` |
+| ObjC | attrib emit helper; delete thin V/F fallback wrappers (inline shared stage fallback) |
+| Forbidden | did **not** grow `+Binding.m` (488); did **not** sink into `mgl_render.cpp`; texture_log held at 327 |
+| LOC | `+BindingState.m` ~3313→~3094 (−219); texture_log 327→327 (0); **honest combined** ~3640→~3421 (−219) |
+
 **Next strip suggestion (render/ObjC):** BindingState residual toward &lt;300 ports; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m` or `texture_log.m`.
 
 
@@ -606,5 +621,6 @@ Chose **+BindingState V/F sampled-texture apply unify + FINAL ports** (DXMT O3.3
 - [x] **C1** (O3.3 residual stage fallback unify): V/F fallback shared + residual snap + present-mask/inline; `+BindingState.m` ~3855→~3648 (−207); texture_log held 327; `+Binding.m` not grown
 - [x] **C1** (O3.3 residual stage map-entry unify): V/F map apply shared + present-mask finalize + ClampMapCount/PostMtlUsable; `+BindingState.m` ~3648→~3476 (−172); texture_log held 327; `+Binding.m` not grown
 - [x] **C1** (O3.3 residual sampled V/F stage unify): shared sampled stage + FINAL ports; `+BindingState.m` ~3476→~3313 (−163); texture_log held 327; `+Binding.m` not grown
+- [x] **C1** (O3.3 residual stage-fill / emit ports): FillMapEntry/Attrib/GATE/COMPAT @C + Set*/Queue/Flush ports; `+BindingState.m` ~3313→~3094 (−219); texture_log held 327; `+Binding.m` not grown
 - [ ] Future knives: BindingState residual / O3.1 pass plan toward &lt;300 ports; later expr facade; keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted; **do not grow texture_log.m**
 

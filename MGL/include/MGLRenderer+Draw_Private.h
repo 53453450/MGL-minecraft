@@ -592,4 +592,171 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
     } while (0)
 #endif /* MGL_BIND_SNAP_FLUSH */
 
+
+
+/* O3.3: thin set*/queue/flush + attrib emit ports (BindingState). */
+static inline void mglBindingStateSetVertexBuffer(
+    void *renderEncoderOwner,
+    id buffer,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    (void)mglRenderSetRenderBufferForOwner(
+        renderEncoderOwner, (__bridge void *)buffer, offset,
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
+}
+
+static inline void mglBindingStateSetVertexBytes(
+    void *renderEncoderOwner,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    (void)mglRenderSetRenderBytesForOwner(
+        renderEncoderOwner, bytes, length,
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
+}
+
+static inline void mglBindingStateSetFragmentBuffer(
+    void *renderEncoderOwner,
+    id buffer,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    (void)mglRenderSetRenderBufferForOwner(
+        renderEncoderOwner, (__bridge void *)buffer, offset,
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, (uint32_t)index);
+}
+
+static inline void mglBindingStateSetFragmentBytes(
+    void *renderEncoderOwner,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    (void)mglRenderSetRenderBytesForOwner(
+        renderEncoderOwner, bytes, length,
+        MGL_RENDER_BINDING_STAGE_FRAGMENT, (uint32_t)index);
+}
+
+static inline bool mglBindingStateCollectResourceBinding(
+    MGLRenderResourceBindingSnapshot *snapshot,
+    uint32_t stage,
+    uint32_t kind,
+    void *resource,
+    uint32_t index)
+{
+    if (!snapshot || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
+        kind > MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
+        return false;
+    }
+    uint32_t *count = stage == MGL_RENDER_BINDING_STAGE_VERTEX
+        ? &snapshot->vertex_op_count : &snapshot->fragment_op_count;
+    MGLRenderResourceBindingOp *ops =
+        stage == MGL_RENDER_BINDING_STAGE_VERTEX
+            ? snapshot->vertex_ops : snapshot->fragment_ops;
+    if (*count >= MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
+        return false;
+    }
+    ops[(*count)++] = (MGLRenderResourceBindingOp){
+        .kind = kind,
+        .index = index,
+        .resource = resource,
+    };
+    return true;
+}
+
+static inline bool mglBindingStateQueueResourceBinding(
+    BOOL collect,
+    void *bindingStateOwner,
+    void *renderEncoderOwner,
+    MGLRenderResourceBindingSnapshot *snapshot,
+    uint32_t stage,
+    uint32_t kind,
+    void *resource,
+    uint32_t index)
+{
+    if (collect) {
+        return mglBindingStateCollectResourceBinding(
+            snapshot, stage, kind, resource, index);
+    }
+    if (kind == MGL_RENDER_RESOURCE_BINDING_TEXTURE) {
+        return mglRenderBindingSetTextureForOwner(
+            bindingStateOwner, renderEncoderOwner,
+            resource, stage, index) >= 0;
+    }
+    if (kind == MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
+        return mglRenderBindingSetSamplerForOwner(
+            bindingStateOwner, renderEncoderOwner,
+            resource, stage, index) >= 0;
+    }
+    return false;
+}
+
+static inline bool mglBindingStateFlushResourceBindings(
+    void *bindingStateOwner,
+    void *renderEncoderOwner,
+    MGLRenderResourceBindingSnapshot *snapshot)
+{
+    if (!snapshot ||
+        (snapshot->vertex_op_count == 0 &&
+         snapshot->fragment_op_count == 0)) {
+        return true;
+    }
+    if (mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
+            bindingStateOwner, renderEncoderOwner, snapshot, NULL, 0) != 0) {
+        return false;
+    }
+    *snapshot = (MGLRenderResourceBindingSnapshot){0};
+    return true;
+}
+
+/* O3.3: shared V/F stage-buffer emit ports for map-entry / fallback.
+ * Requires encCtx; static mglBindingStateSet*Buffer/Bytes in TU; frag=0/1. */
+#ifndef MGL_BIND_STAGE_EMIT_BUFFER
+#define MGL_BIND_STAGE_EMIT_BUFFER(frag, snap, scratchUsed, useSnap, isFrag, slot, bufPtr, off) \
+    do { \
+        if (useSnap) { \
+            MGL_BIND_SNAP_COLLECT_BUFFER(snap, frag, scratchUsed, slot, bufPtr, off); \
+        } else if (isFrag) { \
+            mglBindingStateSetFragmentBuffer(encCtx->render_encoder_owner, \
+                (__bridge id)(bufPtr), (off), (slot)); \
+        } else { \
+            mglBindingStateSetVertexBuffer(encCtx->render_encoder_owner, \
+                (__bridge id)(bufPtr), (off), (slot)); \
+        } \
+    } while (0)
+#define MGL_BIND_STAGE_EMIT_BYTES(frag, snap, scratch, scratchUsed, scratchCap, useSnap, isFrag, slot, src, len) \
+    do { \
+        if (useSnap) { \
+            MGL_BIND_SNAP_COLLECT_BYTES(snap, frag, scratch, scratchUsed, scratchCap, slot, src, len); \
+        } else if (isFrag) { \
+            mglBindingStateSetFragmentBytes(encCtx->render_encoder_owner, (src), (len), (slot)); \
+        } else { \
+            mglBindingStateSetVertexBytes(encCtx->render_encoder_owner, (src), (len), (slot)); \
+        } \
+    } while (0)
+#define MGL_BIND_STAGE_UPDATE(frag, owner, buf, off, slot) \
+    do { \
+        if (frag) { \
+            mglRenderBindingUpdateFragmentBuffer(owner, (buf), (off), (uint32_t)(slot)); \
+            MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap); \
+        } else { \
+            mglRenderBindingUpdateVertexBuffer(owner, (buf), (off), (uint32_t)(slot)); \
+            MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap); \
+        } \
+    } while (0)
+#define MGL_BIND_STAGE_PERF_SKIP(frag) \
+    do { \
+        if (frag) { MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap); } \
+        else { MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap); } \
+    } while (0)
+#define MGL_BIND_STAGE_CLEAR_BINDING(frag, owner, slot) \
+    do { \
+        if (frag) { mglRenderBindingClearFragmentBuffer(owner, (uint32_t)(slot)); } \
+        else { mglRenderBindingClearVertexBuffer(owner, (uint32_t)(slot)); } \
+    } while (0)
+#endif /* MGL_BIND_STAGE_EMIT_BUFFER */
+
+
 #endif /* MGLRenderer_Draw_Private_h */

@@ -218,168 +218,9 @@ static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
         (__bridge void *)texture, iu);
 }
 
-static void mglBindingStateSetVertexBuffer(
-    void *renderEncoderOwner,
-    id buffer,
-    NSUInteger offset,
-    NSUInteger index)
-{
-    (void)mglRenderSetRenderBufferForOwner(
-        renderEncoderOwner, (__bridge void *)buffer, offset,
-        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
-}
+/* O3.3: Set*/Queue/Flush ports → Draw_Private.h. */
 
-static void mglBindingStateSetVertexBytes(
-    void *renderEncoderOwner,
-    const void *bytes,
-    NSUInteger length,
-    NSUInteger index)
-{
-    (void)mglRenderSetRenderBytesForOwner(
-        renderEncoderOwner, bytes, length,
-        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
-}
-
-static void mglBindingStateSetFragmentBuffer(
-    void *renderEncoderOwner,
-    id buffer,
-    NSUInteger offset,
-    NSUInteger index)
-{
-    (void)mglRenderSetRenderBufferForOwner(
-        renderEncoderOwner, (__bridge void *)buffer, offset,
-        MGL_RENDER_BINDING_STAGE_FRAGMENT, (uint32_t)index);
-}
-
-static void mglBindingStateSetFragmentBytes(
-    void *renderEncoderOwner,
-    const void *bytes,
-    NSUInteger length,
-    NSUInteger index)
-{
-    (void)mglRenderSetRenderBytesForOwner(
-        renderEncoderOwner, bytes, length,
-        MGL_RENDER_BINDING_STAGE_FRAGMENT, (uint32_t)index);
-}
-
-static bool mglBindingStateCollectResourceBinding(
-    MGLRenderResourceBindingSnapshot *snapshot,
-    uint32_t stage,
-    uint32_t kind,
-    void *resource,
-    uint32_t index)
-{
-    if (!snapshot || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
-        kind > MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
-        return false;
-    }
-    uint32_t *count = stage == MGL_RENDER_BINDING_STAGE_VERTEX
-        ? &snapshot->vertex_op_count : &snapshot->fragment_op_count;
-    MGLRenderResourceBindingOp *ops =
-        stage == MGL_RENDER_BINDING_STAGE_VERTEX
-            ? snapshot->vertex_ops : snapshot->fragment_ops;
-    if (*count >= MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
-        return false;
-    }
-    ops[(*count)++] = (MGLRenderResourceBindingOp){
-        .kind = kind,
-        .index = index,
-        .resource = resource,
-    };
-    return true;
-}
-
-static bool mglBindingStateQueueResourceBinding(
-    BOOL collect,
-    void *bindingStateOwner,
-    void *renderEncoderOwner,
-    MGLRenderResourceBindingSnapshot *snapshot,
-    uint32_t stage,
-    uint32_t kind,
-    void *resource,
-    uint32_t index)
-{
-    if (collect) {
-        return mglBindingStateCollectResourceBinding(
-            snapshot, stage, kind, resource, index);
-    }
-    if (kind == MGL_RENDER_RESOURCE_BINDING_TEXTURE) {
-        return mglRenderBindingSetTextureForOwner(
-            bindingStateOwner, renderEncoderOwner,
-            resource, stage, index) >= 0;
-    }
-    if (kind == MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
-        return mglRenderBindingSetSamplerForOwner(
-            bindingStateOwner, renderEncoderOwner,
-            resource, stage, index) >= 0;
-    }
-    return false;
-}
-
-static bool mglBindingStateFlushResourceBindings(
-    void *bindingStateOwner,
-    void *renderEncoderOwner,
-    MGLRenderResourceBindingSnapshot *snapshot)
-{
-    if (!snapshot ||
-        (snapshot->vertex_op_count == 0 &&
-         snapshot->fragment_op_count == 0)) {
-        return true;
-    }
-    if (mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
-            bindingStateOwner, renderEncoderOwner, snapshot, NULL, 0) != 0) {
-        return false;
-    }
-    *snapshot = (MGLRenderResourceBindingSnapshot){0};
-    return true;
-}
-
-/* O3.3: fill POD input for mglBindingStagePlanMapEntry (thin set*Buffer ports). */
-static void mglBindingStateFillStageBindInput(
-    MGLStageBufferBindInput *in, int is_fragment, int phase,
-    const BufferMap *map, Buffer *ptr, int is_base_binding,
-    int attrib_reserved, uint32_t max_metal_slots, uint32_t reflected,
-    uint64_t visible_cpu, int64_t visible_range, int allow_isolate_when_gpu)
-{
-    memset(in, 0, sizeof(*in));
-    in->phase = phase;
-    in->is_fragment = is_fragment ? 1 : 0;
-    in->is_base_binding = is_base_binding ? 1 : 0;
-    in->has_metal_binding = map && map->has_metal_binding ? 1 : 0;
-    in->metal_binding_index =
-        map ? (int32_t)map->metal_binding_index : -1;
-    in->gl_binding_index = map ? (int32_t)map->buffer_base_index : -1;
-    in->resource_type = map ? (uint32_t)map->resource_type : 0u;
-    in->offset = map ? map->offset : 0;
-    in->buffer_size = ptr ? ptr->size : -1;
-    in->has_buffer = ptr ? 1 : 0;
-    in->has_cpu_data = ptr && ptr->data.buffer_data ? 1 : 0;
-    in->has_mtl_data = ptr && ptr->data.mtl_data ? 1 : 0;
-    in->cpu_ptr = ptr ? (const void *)(uintptr_t)ptr->data.buffer_data : NULL;
-    in->mtl_ptr = ptr ? ptr->data.mtl_data : NULL;
-    in->cpu_dirty =
-        ptr && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits) ? 1 : 0;
-    in->gpu_write_target = ptr && ptr->gpu_write_target ? 1 : 0;
-    in->allow_isolate_when_gpu = allow_isolate_when_gpu ? 1 : 0;
-    in->attrib_slot_reserved = attrib_reserved ? 1 : 0;
-    in->max_metal_slots = max_metal_slots;
-    in->max_gl_bindings = (uint32_t)MAX_BINDABLE_BUFFERS;
-    in->reflected_required = reflected;
-    in->min_stage_bytes = (uint32_t)kMGLMinimumStageBindingSize;
-    in->scratch_cap = (uint32_t)kMGLStageBindingStackScratchSize;
-    in->visible_cpu = visible_cpu;
-    in->visible_range = visible_range;
-    if (is_fragment) {
-        in->mtl_usable =
-            ptr && ptr->data.mtl_data &&
-                    (uintptr_t)ptr->data.mtl_data >= 0x100000000ULL
-                ? 1
-                : 0;
-    } else {
-        in->mtl_usable =
-            ptr && mglRenderMetalDataPointerUsable(ptr->data.mtl_data) ? 1 : 0;
-    }
-}
+/* O3.3: map-entry POD fill → mglBindingStageFillMapEntryInput. */
 
 /* O3.3: resolve shader-resource list ordinal → resource (+ optional element). */
 static MGLShaderResource *mglBindingStateResourceAtOrdinal(
@@ -406,6 +247,50 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
         rem -= elements;
     }
     return NULL;
+}
+
+
+
+/* O3.3: shared attrib setVertexBuffer emit (CURRENT/CONVERT/BIND). */
+static BOOL mglBindingStateEmitAttribBuffer(
+    void *bindingStateOwner,
+    const MGLEncodeContext *encCtx,
+    MGLRenderBindingSnapshot *snapshot,
+    BOOL useSnapshot,
+    size_t *scratchUsed,
+    NSUInteger slot,
+    void *buffer,
+    NSUInteger offset,
+    bool *anyBindingPresent)
+{
+    int valid = mglBindingStateIsValid(bindingStateOwner) ? 1 : 0;
+    int matches =
+        valid &&
+                mglBindingStateBufferMatches(
+                    bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX, buffer,
+                    offset, (uint32_t)slot)
+            ? 1
+            : 0;
+    BOOL emitted = NO;
+    if (mglBindingStageAttribNeedsEmit(valid, matches)) {
+        if (useSnapshot && snapshot) {
+            MGL_BIND_SNAP_COLLECT_BUFFER(*snapshot, 0, *scratchUsed, slot, buffer,
+                                         offset);
+        } else {
+            mglBindingStateSetVertexBuffer(encCtx->render_encoder_owner,
+                                           (__bridge id)buffer, offset, slot);
+        }
+        mglRenderBindingUpdateVertexBuffer(bindingStateOwner, buffer, offset,
+                                           (uint32_t)slot);
+        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+        emitted = YES;
+    } else {
+        MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+    }
+    if (anyBindingPresent) {
+        anyBindingPresent[slot] = true;
+    }
+    return emitted;
 }
 
 @implementation MGLRenderer (Draw)
@@ -565,12 +450,16 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
     }
 
     if (mapCount > 0) {
-        [self bindVertexFallbackBuffersToCurrentRenderEncoder:activeProgram
-                                          anyBindingPresent:anyBindingPresent
-                                          baseBindingPresent:baseBindingPresent
-                                              encodeContext:encCtx
-                                           bindingSnapshot:&vbindSnapshot
-                                               useSnapshot:useVertexBindingSnapshot];
+        [self bindStageFallbackBuffersForStage:vertexStage
+                               isFragmentStage:NO
+                                       program:activeProgram
+                             anyBindingPresent:anyBindingPresent
+                            baseBindingPresent:baseBindingPresent
+                                 encodeContext:encCtx
+                               bindingSnapshot:&vbindSnapshot
+                                   useSnapshot:useVertexBindingSnapshot
+                                  maxMetalSlots:kMGLMaxMetalVertexBufferCount
+                               enableAllSlotFill:kMGLEnableVertexAllSlotFallback];
     }
 
     [self bindPointSizeParamsIfNeeded:anyBindingPresent
@@ -615,7 +504,6 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
     const BOOL vattrUseSnapshot = useSnapshot && vattrSnapshot != NULL;
     size_t vattrScratchDummy = 0;
 #define MGL_VATTR_FLUSH_SNAPSHOT() do { if (vattrUseSnapshot) MGL_BIND_SNAP_FLUSH(*vattrSnapshot, 0, vattrScratchDummy); } while (0)
-#define MGL_VATTR_EMIT_BUFFER(slot, bufPtr, off) do { if (vattrUseSnapshot) { MGL_BIND_SNAP_COLLECT_BUFFER(*vattrSnapshot, 0, vattrScratchDummy, slot, bufPtr, off); } else { mglBindingStateSetVertexBuffer(encCtx->render_encoder_owner, (__bridge id)(bufPtr), (off), (slot)); } } while (0)
 
     // Attribute bindings must use the same mapping as generateVertexDescriptorState.
     // Do this pass directly from the VAO so pipeline creation does not depend on map list timing.
@@ -634,22 +522,15 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
         int effectiveNormalized = 0;
         int conversionKind = MGL_ATTRIB_CONV_NONE;
 
-        MGLAttribBindInput ain = {0};
-        ain.phase = MGL_ATTR_PHASE_SELECT;
-        ain.program_uses_attrib =
-            mglRendererProgramUsesVertexAttrib(activeProgram, attrib) ? 1 : 0;
-        ain.uses_current_value = usesCurrentValue ? 1 : 0;
-        ain.has_attrib_binding = hasAttribBinding ? 1 : 0;
-        ain.mapped_index = mappedIndex;
-        ain.max_metal_slots = (uint32_t)kMGLMaxMetalVertexBufferCount;
+        int offsetsValid = 0, spanStatus = 0, alreadyPresent = 0;
+        uint64_t bindingOffset = 0;
         if (hasAttribBinding && resolved.buffer) {
-            ain.offsets_valid = mglRenderAttribOffsetsValid(
-                                    resolved.binding_offset,
-                                    resolved.relativeoffset)
-                                    ? 1
-                                    : 0;
+            offsetsValid = mglRenderAttribOffsetsValid(
+                               resolved.binding_offset, resolved.relativeoffset)
+                               ? 1
+                               : 0;
             int64_t attrOffset = 0, attrSpan = 0, attrEnd = 0;
-            ain.span_status = mglRenderPlanVertexAttribSpan(
+            spanStatus = mglRenderPlanVertexAttribSpan(
                 (int64_t)resolved.binding_offset,
                 (int64_t)resolved.relativeoffset,
                 (uint32_t)resolved.attrib->type,
@@ -688,17 +569,21 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
                 (uint32_t)shaderGlType, &plannedFormat, &needsConversion,
                 &effectiveNormalized, &conversionKind);
             (void)needsConversion;
-            ain.conversion_kind = conversionKind;
-            ain.already_present =
+            alreadyPresent =
                 (mappedIndex >= 0 &&
                  mappedIndex < (int)kMGLMaxMetalVertexBufferCount &&
                  anyBindingPresent[mappedIndex])
                     ? 1
                     : 0;
-            ain.binding_offset = (uint64_t)resolved.binding_offset;
-            ain.absolute_vertex_offsets =
-                _batching.absoluteVertexBindingOffsets ? 1 : 0;
+            bindingOffset = (uint64_t)resolved.binding_offset;
         }
+        MGLAttribBindInput ain = {0};
+        mglBindingStageFillAttribSelectInput(
+            &ain, mglRendererProgramUsesVertexAttrib(activeProgram, attrib) ? 1 : 0,
+            usesCurrentValue ? 1 : 0, hasAttribBinding ? 1 : 0, mappedIndex,
+            (uint32_t)kMGLMaxMetalVertexBufferCount, offsetsValid, spanStatus,
+            conversionKind, alreadyPresent, bindingOffset,
+            _batching.absoluteVertexBindingOffsets ? 1 : 0);
 
         MGLAttribBindPlan plan = {0};
         if (mglBindingStagePlanAttribEntry(&ain, &plan) != 0) {
@@ -782,21 +667,10 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
                     continue;
                 }
             }
-            if (!mglBindingStateIsValid(_bindingStateOwner) ||
-                !mglBindingStateBufferMatches(
-                    _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
-                    (__bridge void *)currentAttribBuffer, 0,
-                    (uint32_t)bindingIndex)) {
-                MGL_VATTR_EMIT_BUFFER(bindingIndex,
-                                      (__bridge void *)currentAttribBuffer, 0);
-                mglRenderBindingUpdateVertexBuffer(
-                    _bindingStateOwner, (__bridge void *)currentAttribBuffer, 0,
-                    (uint32_t)bindingIndex);
-                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-            } else {
-                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
-            }
-            anyBindingPresent[bindingIndex] = true;
+            mglBindingStateEmitAttribBuffer(
+                _bindingStateOwner, encCtx, vattrSnapshot, vattrUseSnapshot,
+                &vattrScratchDummy, bindingIndex,
+                (__bridge void *)currentAttribBuffer, 0, anyBindingPresent);
             static uint64_t s_traceFileCurrentAttribBindLogs = 0;
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(
@@ -851,22 +725,12 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
                 continue;
             }
             (void)convertedStride;
-            if (!mglBindingStateIsValid(_bindingStateOwner) ||
-                !mglBindingStateBufferMatches(
-                    _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
-                    (__bridge void *)convertedBuffer, 0,
-                    (uint32_t)bindingIndex)) {
-                MGL_VATTR_EMIT_BUFFER(bindingIndex,
-                                      (__bridge void *)convertedBuffer, 0);
+            if (mglBindingStateEmitAttribBuffer(
+                    _bindingStateOwner, encCtx, vattrSnapshot, vattrUseSnapshot,
+                    &vattrScratchDummy, bindingIndex,
+                    (__bridge void *)convertedBuffer, 0, anyBindingPresent)) {
                 MGL_VATTR_FLUSH_SNAPSHOT();
-                mglRenderBindingUpdateVertexBuffer(
-                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
-                    (uint32_t)bindingIndex);
-                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-            } else {
-                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
             }
-            anyBindingPresent[bindingIndex] = true;
             continue;
         }
 
@@ -891,21 +755,17 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
             continue;
         }
         NSUInteger attribBindingOffset = (NSUInteger)resolved.binding_offset;
-        ain.phase = MGL_ATTR_PHASE_POST_MTL;
-        ain.has_mtl_data = 1;
-        ain.mtl_usable = 1;
-        ain.metal_len = (uint64_t)mglBindingStateBufferLength(attribMetalBuffer);
-        ain.binding_state_valid =
-            mglBindingStateIsValid(_bindingStateOwner) ? 1 : 0;
         uint64_t provisionalOff = mglRenderVertexMetalBindOffset(
             ain.absolute_vertex_offsets, ain.binding_offset);
-        ain.buffer_matches =
+        mglBindingStageFillAttribPostMtlInput(
+            &ain, 1, 1, (uint64_t)mglBindingStateBufferLength(attribMetalBuffer),
+            mglBindingStateIsValid(_bindingStateOwner) ? 1 : 0,
             mglBindingStateBufferMatches(
                 _bindingStateOwner, MGL_RENDER_BINDING_STAGE_VERTEX,
                 (__bridge void *)attribMetalBuffer, provisionalOff,
                 (uint32_t)bindingIndex)
                 ? 1
-                : 0;
+                : 0);
         if (mglBindingStagePlanAttribEntry(&ain, &plan) != 0) {
             continue;
         }
@@ -924,14 +784,12 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
             anyBindingPresent[bindingIndex] = true;
             continue;
         }
-        MGL_VATTR_EMIT_BUFFER(bindingIndex, (__bridge void *)attribMetalBuffer,
-                              metalBindOffset);
-        mglRenderBindingUpdateVertexBuffer(
-            _bindingStateOwner, (__bridge void *)attribMetalBuffer,
-            metalBindOffset, (uint32_t)bindingIndex);
-        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+        mglBindingStateEmitAttribBuffer(
+            _bindingStateOwner, encCtx, vattrSnapshot, vattrUseSnapshot,
+            &vattrScratchDummy, bindingIndex,
+            (__bridge void *)attribMetalBuffer, metalBindOffset,
+            anyBindingPresent);
         mglNoteBufferEncoded(attribBuffer);
-        anyBindingPresent[bindingIndex] = true;
         static uint64_t s_traceFileVertexAttribBindLogs = 0;
         if (mglProgramNeedsTraceLog(activeProgram) &&
             mglShouldLogTraceFileBindingForProgram(
@@ -975,30 +833,8 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
     }
 
     MGL_VATTR_FLUSH_SNAPSHOT();
-#undef MGL_VATTR_EMIT_BUFFER
 #undef MGL_VATTR_FLUSH_SNAPSHOT
     return true;
-}
-
-- (void)bindVertexFallbackBuffersToCurrentRenderEncoder:(Program *)activeProgram
-                                     anyBindingPresent:(bool *)anyBindingPresent
-                                     baseBindingPresent:(bool *)baseBindingPresent
-                                         encodeContext:(const MGLEncodeContext *)encCtx
-                                     bindingSnapshot:(MGLRenderBindingSnapshot *)bindingSnapshot
-                                         useSnapshot:(BOOL)useSnapshot
-{
-    const int vertexStage = _tessellation.nativeTESActive
-        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
-    [self bindStageFallbackBuffersForStage:vertexStage
-                           isFragmentStage:NO
-                                   program:activeProgram
-                         anyBindingPresent:anyBindingPresent
-                        baseBindingPresent:baseBindingPresent
-                             encodeContext:encCtx
-                           bindingSnapshot:bindingSnapshot
-                               useSnapshot:useSnapshot
-                              maxMetalSlots:kMGLMaxMetalVertexBufferCount
-                           enableAllSlotFill:kMGLEnableVertexAllSlotFallback];
 }
 
 - (void)bindPointSizeParamsIfNeeded:(bool *)anyBindingPresent
@@ -1121,12 +957,16 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
     }
 
     if (mapCount > 0) {
-        [self bindFragmentFallbackBuffersToCurrentRenderEncoder:activeProgram
-                                             anyBindingPresent:anyBindingPresent
-                                             baseBindingPresent:baseBindingPresent
-                                                 encodeContext:encCtx
-                                             bindingSnapshot:&snapshot
-                                                 useSnapshot:useBindingSnapshot];
+        [self bindStageFallbackBuffersForStage:_FRAGMENT_SHADER
+                               isFragmentStage:YES
+                                       program:activeProgram
+                             anyBindingPresent:anyBindingPresent
+                            baseBindingPresent:baseBindingPresent
+                                 encodeContext:encCtx
+                               bindingSnapshot:&snapshot
+                                   useSnapshot:useBindingSnapshot
+                                  maxMetalSlots:MAX_BINDABLE_BUFFERS
+                               enableAllSlotFill:YES];
     }
 
     /* Fallback bindings are real Metal slots and must be included in the
@@ -1144,25 +984,6 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
      * binds can be skipped when the resource and offset are unchanged. */
     mglRenderBindingSetValid(_bindingStateOwner, 1);
     return true;
-}
-
-- (void)bindFragmentFallbackBuffersToCurrentRenderEncoder:(Program *)activeProgram
-                                       anyBindingPresent:(bool *)anyBindingPresent
-                                       baseBindingPresent:(bool *)baseBindingPresent
-                                           encodeContext:(const MGLEncodeContext *)encCtx
-                                       bindingSnapshot:(MGLRenderBindingSnapshot *)bindingSnapshot
-                                           useSnapshot:(BOOL)useSnapshot
-{
-    [self bindStageFallbackBuffersForStage:_FRAGMENT_SHADER
-                           isFragmentStage:YES
-                                   program:activeProgram
-                         anyBindingPresent:anyBindingPresent
-                        baseBindingPresent:baseBindingPresent
-                             encodeContext:encCtx
-                           bindingSnapshot:bindingSnapshot
-                               useSnapshot:useSnapshot
-                              maxMetalSlots:MAX_BINDABLE_BUFFERS
-                           enableAllSlotFill:YES];
 }
 
 /* O3.3: shared V/F present-mask + sparse/diag ports after map/fallback apply. */
@@ -1249,45 +1070,14 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
                                            : MGL_RENDER_BINDING_STAGE_VERTEX;
     MGLRenderBindingSnapshot *snap = bindingSnapshot;
     size_t scratchUsedLocal = *byteScratchUsed;
-#define MGL_SMB_FLUSH() do { \
-    if (useSnap) { MGL_BIND_SNAP_FLUSH(*snap, frag, scratchUsedLocal); *byteScratchUsed = scratchUsedLocal; } \
-} while (0)
-#define MGL_SMB_EMIT_BUFFER(slot, bufPtr, off) do { \
-    if (useSnap) { MGL_BIND_SNAP_COLLECT_BUFFER(*snap, frag, scratchUsedLocal, slot, bufPtr, off); *byteScratchUsed = scratchUsedLocal; } \
-    else if (isFragment) { mglBindingStateSetFragmentBuffer(encCtx->render_encoder_owner, (__bridge id)(bufPtr), (off), (slot)); } \
-    else { mglBindingStateSetVertexBuffer(encCtx->render_encoder_owner, (__bridge id)(bufPtr), (off), (slot)); } \
-} while (0)
-#define MGL_SMB_EMIT_BYTES(slot, src, len) do { \
-    if (useSnap) { MGL_BIND_SNAP_COLLECT_BYTES(*snap, frag, byteScratch, scratchUsedLocal, byteScratchCapacity, slot, src, len); *byteScratchUsed = scratchUsedLocal; } \
-    else if (isFragment) { mglBindingStateSetFragmentBytes(encCtx->render_encoder_owner, (src), (len), (slot)); } \
-    else { mglBindingStateSetVertexBytes(encCtx->render_encoder_owner, (src), (len), (slot)); } \
-} while (0)
-#define MGL_SMB_EMIT_CLEAR(slot) MGL_SMB_EMIT_BUFFER(slot, NULL, 0)
-#define MGL_SMB_CLEAR_SLOT(slot) do { \
-    MGL_SMB_EMIT_CLEAR(slot); \
-    if (isFragment) { mglRenderBindingClearFragmentBuffer(_bindingStateOwner, (uint32_t)(slot)); } \
-    else { mglRenderBindingClearVertexBuffer(_bindingStateOwner, (uint32_t)(slot)); } \
-} while (0)
-#define MGL_SMB_UPDATE(buf, off, slot) do { \
-    if (isFragment) { \
-        mglRenderBindingUpdateFragmentBuffer(_bindingStateOwner, (buf), (off), (uint32_t)(slot)); \
-        MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap); \
-    } else { \
-        mglRenderBindingUpdateVertexBuffer(_bindingStateOwner, (buf), (off), (uint32_t)(slot)); \
-        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap); \
-    } \
-} while (0)
-#define MGL_SMB_PERF_SKIP() do { \
-    if (isFragment) { MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap); } \
-    else { MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap); } \
-} while (0)
-#define MGL_SMB_INVALIDATE(slot) do { \
-    if (isFragment) { [self invalidateLastBoundFragmentBufferAtIndex:(slot)]; } \
-    else { [self invalidateLastBoundVertexBufferAtIndex:(slot)]; } \
-} while (0)
-#define MGL_SMB_CLEAR_DIRTY() do { \
-    if (plan.clear_cpu_dirty && ptr) { ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA; } \
-} while (0)
+#define MGL_SMB_FLUSH() do { if (useSnap) { MGL_BIND_SNAP_FLUSH(*snap, frag, scratchUsedLocal); *byteScratchUsed = scratchUsedLocal; } } while (0)
+#define MGL_SMB_EMIT_BUFFER(slot, bufPtr, off) do { MGL_BIND_STAGE_EMIT_BUFFER(frag, *snap, scratchUsedLocal, useSnap, isFragment, slot, bufPtr, off); if (useSnap) *byteScratchUsed = scratchUsedLocal; } while (0)
+#define MGL_SMB_EMIT_BYTES(slot, src, len) do { MGL_BIND_STAGE_EMIT_BYTES(frag, *snap, byteScratch, scratchUsedLocal, byteScratchCapacity, useSnap, isFragment, slot, src, len); if (useSnap) *byteScratchUsed = scratchUsedLocal; } while (0)
+#define MGL_SMB_CLEAR_SLOT(slot) do { MGL_SMB_EMIT_BUFFER(slot, NULL, 0); MGL_BIND_STAGE_CLEAR_BINDING(frag, _bindingStateOwner, slot); } while (0)
+#define MGL_SMB_UPDATE(buf, off, slot) MGL_BIND_STAGE_UPDATE(frag, _bindingStateOwner, buf, off, slot)
+#define MGL_SMB_PERF_SKIP() MGL_BIND_STAGE_PERF_SKIP(frag)
+#define MGL_SMB_INVALIDATE(slot) do { if (isFragment) { [self invalidateLastBoundFragmentBufferAtIndex:(slot)]; } else { [self invalidateLastBoundVertexBufferAtIndex:(slot)]; } } while (0)
+#define MGL_SMB_CLEAR_DIRTY() do { if (plan.clear_cpu_dirty && ptr) { ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA; } } while (0)
 
     GLuint mapCount = (GLuint)mglBindingStageClampMapCount(
         (uint32_t)mapList->count, (uint32_t)MAX_MAPPED_BUFFERS, NULL);
@@ -1323,12 +1113,24 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
             : 0u;
 
         MGLStageBufferBindInput bin = {0};
-        mglBindingStateFillStageBindInput(
-            &bin, frag, MGL_SB_PHASE_PRE_MTL, map, ptr, isBaseBinding ? 1 : 0,
-            /*attrib_reserved=*/0, maxMetalSlots,
-            (uint32_t)reflectedRequiredBytes, visibleCpu,
-            map ? mglBufferMapVisibleSize(map) : 0,
-            allowIsolateWhenGpu ? 1 : 0);
+        mglBindingStageFillMapEntryInput(
+            &bin, frag, MGL_SB_PHASE_PRE_MTL, isBaseBinding ? 1 : 0,
+            map && map->has_metal_binding ? 1 : 0,
+            map ? (int32_t)map->metal_binding_index : -1,
+            map ? (int32_t)map->buffer_base_index : -1,
+            map ? (uint32_t)map->resource_type : 0u,
+            map ? map->offset : 0, ptr ? ptr->size : -1, ptr ? 1 : 0,
+            ptr && ptr->data.buffer_data ? 1 : 0,
+            ptr && ptr->data.mtl_data ? 1 : 0,
+            ptr ? (const void *)(uintptr_t)ptr->data.buffer_data : NULL,
+            ptr ? ptr->data.mtl_data : NULL,
+            ptr && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits) ? 1 : 0,
+            ptr && ptr->gpu_write_target ? 1 : 0,
+            allowIsolateWhenGpu ? 1 : 0, 0, maxMetalSlots,
+            (uint32_t)MAX_BINDABLE_BUFFERS, (uint32_t)reflectedRequiredBytes,
+            (uint32_t)kMGLMinimumStageBindingSize,
+            (uint32_t)kMGLStageBindingStackScratchSize, visibleCpu,
+            map ? mglBufferMapVisibleSize(map) : 0);
         if (!isFragment && isBaseBinding &&
             mglRenderBufferSlotInRange((int32_t)metalResolved, maxMetalSlots) &&
             attribBindingReserved &&
@@ -1471,7 +1273,6 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
 #undef MGL_SMB_PERF_SKIP
 #undef MGL_SMB_UPDATE
 #undef MGL_SMB_CLEAR_SLOT
-#undef MGL_SMB_EMIT_CLEAR
 #undef MGL_SMB_EMIT_BYTES
 #undef MGL_SMB_EMIT_BUFFER
 #undef MGL_SMB_FLUSH
@@ -1498,24 +1299,9 @@ static MGLShaderResource *mglBindingStateResourceAtOrdinal(
     const uint32_t metalStage = isFragment ? MGL_RENDER_BINDING_STAGE_FRAGMENT
                                            : MGL_RENDER_BINDING_STAGE_VERTEX;
 #define MGL_SFB_FLUSH() do { if (useSnap) MGL_BIND_SNAP_FLUSH(*snap, frag, scratchDummy); } while (0)
-#define MGL_SFB_EMIT_BUFFER(slot, bufPtr, off) do { \
-    if (useSnap) { MGL_BIND_SNAP_COLLECT_BUFFER(*snap, frag, scratchDummy, slot, bufPtr, off); } \
-    else if (isFragment) { mglBindingStateSetFragmentBuffer(encCtx->render_encoder_owner, (__bridge id)(bufPtr), (off), (slot)); } \
-    else { mglBindingStateSetVertexBuffer(encCtx->render_encoder_owner, (__bridge id)(bufPtr), (off), (slot)); } \
-} while (0)
-#define MGL_SFB_UPDATE(buf, slot) do { \
-    if (isFragment) { \
-        mglRenderBindingUpdateFragmentBuffer(_bindingStateOwner, (buf), 0, (uint32_t)(slot)); \
-        MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap); \
-    } else { \
-        mglRenderBindingUpdateVertexBuffer(_bindingStateOwner, (buf), 0, (uint32_t)(slot)); \
-        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap); \
-    } \
-} while (0)
-#define MGL_SFB_PERF_SKIP() do { \
-    if (isFragment) { MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap); } \
-    else { MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap); } \
-} while (0)
+#define MGL_SFB_EMIT_BUFFER(slot, bufPtr, off) MGL_BIND_STAGE_EMIT_BUFFER(frag, *snap, scratchDummy, useSnap, isFragment, slot, bufPtr, off)
+#define MGL_SFB_UPDATE(buf, slot) MGL_BIND_STAGE_UPDATE(frag, _bindingStateOwner, buf, 0, slot)
+#define MGL_SFB_PERF_SKIP() MGL_BIND_STAGE_PERF_SKIP(frag)
 
     void *fallbackBindingBuffer = mglRendererBackendGetFallbackBindingBuffer(
         _backend, kMGLDefaultStageFallbackBufferSize);
@@ -1848,16 +1634,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                      _SAMPLED_IMAGE_RES, (int32_t)i)
             : 0u;
         MGLSampledTextureBindInput sin = {0};
-        sin.phase = MGL_ST_PHASE_GATE;
-        sin.spirv_binding = spirvBinding;
-        sin.gl_binding = glBinding;
-        sin.max_units = TEXTURE_UNITS;
-        sin.skip_resource = mglShouldSkipStageTextureResource(
-                                sampleProgram, shaderStage, _SAMPLED_IMAGE_RES,
-                                sampledResource)
-                                ? 1
-                                : 0;
-        sin.has_resource = sampledResource ? 1 : 0;
+        mglBindingTextureFillSampledGateInput(
+            &sin, spirvBinding, glBinding, TEXTURE_UNITS,
+            mglShouldSkipStageTextureResource(sampleProgram, shaderStage,
+                                              _SAMPLED_IMAGE_RES, sampledResource)
+                ? 1
+                : 0,
+            sampledResource ? 1 : 0);
         MGLSampledTextureBindPlan splan = {0};
         if (mglBindingTexturePlanSampled(&sin, &splan) != 0 ||
             splan.action == MGL_ST_ACTION_SKIP) {
@@ -2782,16 +2565,14 @@ done:
                     usedFallbackOut:(BOOL *)usedFallbackOut
 {
     MGLSampledTextureBindInput cin = {0};
-    cin.phase = MGL_ST_PHASE_COMPAT;
-    cin.has_mtl_texture = texture ? 1 : 0;
-    cin.mtl_type = texture ? mglBindingStateTextureType(texture) : 0u;
-    cin.expected_type = expectedType;
-    cin.format_kind_ok =
+    mglBindingTextureFillSampledCompatInput(
+        &cin, texture ? 1 : 0,
+        texture ? mglBindingStateTextureType(texture) : 0u, expectedType,
         !texture ||
                 mglTexturePixelFormatCompatibleWithExpectedDataKind(
                     mglBindingStateTexturePixelFormat(texture), expectedKind)
             ? 1
-            : 0;
+            : 0);
     MGLSampledTextureBindPlan cplan = {0};
     if (mglBindingTexturePlanSampled(&cin, &cplan) != 0 ||
         (cplan.action != MGL_ST_ACTION_TYPE_FALLBACK &&
