@@ -174,6 +174,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [ ] **O5.2** Compute binding expansion → C++；ObjC 只 dispatch
 - [ ] **O5.3** `+VertexLayout` 删除或 &lt; 100 LOC
 - [ ] **O5.4** `mgl_draw_encode.m` 迁空或删除
+  - [x] **O5.4 本刀**：纯 C 的 indirect-skip 谓词 `mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled` / `mglSkipIndirectDrawWhenPolygonPointEmulationNeeded`（零 Metal、零 ObjC，仅被 `mgl_draw_issue.cpp` 调用）从 `mgl_draw_encode.m`（1225→1186，−39）迁至 `mgl_draw_issue.cpp`；声明仍留 `mgl_draw_encode.h` 不变，`mgl_draw_issue.cpp` 加 `#include "mgl_draw_mode.h"`；`MGLRenderer.m` 旧注释同步修正。仍含 `mglEncode*ForRenderEncoderOwner` 等带 `MGLDrawMetalHandle`/`__bridge` 的薄端口，需将 handle 改 `void*` 并在调用方 bridge 后才能整文件迁 C++。
 - [ ] **O5.5** compat `.m`（sampler/texture/state）变纯转发
 
 ### Batch O6 — Category 物理删除与壳收口【P2】
@@ -245,6 +246,10 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 21. **O5.1 本刀**：`getVertexBufferIndexWithAttributeSet:` → C 函数 `mglRenderVertexBufferIndexForAttribute(ctx,state,attribute,where)`（`MGLRenderer.m` 兄弟函数，`MGLRenderer+Draw_Private.h:84` 声明）；ObjC 仅 `MGL_STATE(ctx)` + 一行转发；零 Metal 耦合，C1 模式范本；`+Buffer.m` −33 行、唯一调用方 `+BindingState.m:356` 不变
     - **O5.1 续刀（已落）**：`checkForDirtyBufferData:` / `updateDirtyBaseBufferList:` → C 函数 `mglRenderCheckForDirtyBufferData` / `mglRenderUpdateDirtyBaseBufferList`（`MGLRenderer+Draw_Private.h` 声明）；ObjC 两入口合计 −75 行。`test-regression` [01]–[15] 全 PASS。
     - **下一刀候选**（O5）：`+Buffer.m` 的 map/CoW/shadow plan、`+Compute.m` dispatch plan（O5.2）、`mgl_draw_encode.m`（O5.4）迁空；**O3.1（`+RenderPass` load/store/clear）风险高，留待带 clear-value 回归保护时再做**
+    - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
+
+22. **O5.4 本刀（已落）**：`mgl_draw_encode.m` 的两枚纯 C indirect-skip 谓词迁至 `mgl_draw_issue.cpp`（O5.4 第一步：`mgl_draw_encode.m` −39 行、零 Metal/ObjC 逻辑移出 ObjC TU）。`test-regression` [01]–[15] 仍全 PASS；[16] `air_geometry_resources` 已知上游 SIGSEGV 不变。
+    - **下一刀候选**（O5）：`mgl_draw_encode.m` 余下 `mglEncode*ForRenderEncoderOwner` 需把 `MGLDrawMetalHandle` 改 `void*` + 调用方 `__bridge` 后方可整文件迁 C++；或转 O5.2（`+Compute.m` dispatch plan）。
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。

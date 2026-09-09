@@ -2331,10 +2331,11 @@ bool mglShouldInspectDrawCall(uint64_t drawCall, GLuint programName)
 /* Draw encode helpers (mglEncodeArrayLineLoop, mglEncodeArrayTriangleFan,
  * mglEncodeElementLineLoop, mglEncodeElementTriangleFan, mglEncodeArrayQuads,
  * mglEncodeElementQuads, mglEncodeArrayPolygonPoint, mglEncodeElementPolygonPoint,
- * mglEncodeRestartSegment, mglEncodePrimitiveRestartedElementDraw,
- * mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled,
- * mglSkipIndirectDrawWhenPolygonPointEmulationNeeded) moved to
- * mgl_draw_encode.h/.m. */
+ * mglEncodeRestartSegment, mglEncodePrimitiveRestartedElementDraw) moved to
+ * mgl_draw_encode.h/.m.  The two indirect-skip predicates
+ * (mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled,
+ * mglSkipIndirectDrawWhenPolygonPointEmulationNeeded) are pure C and were
+ * relocated to mgl_draw_issue.cpp (O5.4: no encode logic left in ObjC). */
 
 /* mglHashStepU64 moved to mgl_byte_hash.h as static inline. */
 

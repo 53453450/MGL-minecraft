@@ -11,6 +11,7 @@
 #include "mgl_draw_issue.h"
 
 #include "mgl_draw_encode.h"
+#include "mgl_draw_mode.h"
 #include "mgl_draw_tess.h"
 #include "mgl_frame_activity.h"
 #include "mgl_index_buffer.h"
@@ -878,3 +879,46 @@ extern "C" int mglDrawValidateArraysVertexInputs(
     return 1;
 }
 
+
+/* === Indirect-draw skip checks (relocated from mgl_draw_encode.m, O5.4) ===
+ * Pure GL-state policy: no Metal types, no ObjC. Callers live in this TU. */
+
+bool mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,
+                                                          GLenum glIndexType,
+                                                          const char *label)
+{
+    uint32_t restartIndex = 0u;
+    if (!mglPrimitiveRestartIndexForType(ctx, glIndexType, &restartIndex)) {
+        return false;
+    }
+
+    static uint64_t s_indirectRestartSkipCount = 0;
+    s_indirectRestartSkipCount++;
+    if (s_indirectRestartSkipCount <= 8u || (s_indirectRestartSkipCount % 1000u) == 0u) {
+        fprintf(stderr, "MGL WARNING: %s primitive restart with indirect indexed draw is not emulated yet type=0x%x restart=%u occurrence=%llu; skipping draw",
+              label ? label : "drawElementsIndirect",
+              (unsigned)glIndexType,
+              (unsigned)restartIndex,
+              (unsigned long long)s_indirectRestartSkipCount);
+    }
+    return true;
+}
+
+bool mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(GLMContext ctx,
+                                                       GLenum mode,
+                                                       const char *label)
+{
+    if (!mglPolygonModePointForDrawMode(ctx, mode)) {
+        return false;
+    }
+
+    static uint64_t s_indirectPolygonPointSkipCount = 0;
+    s_indirectPolygonPointSkipCount++;
+    if (s_indirectPolygonPointSkipCount <= 8u || (s_indirectPolygonPointSkipCount % 1000u) == 0u) {
+        fprintf(stderr, "MGL WARNING: %s GL_POLYGON_MODE=GL_POINT requires triangle expansion for indirect draw mode=0x%x occurrence=%llu; skipping draw",
+              label ? label : "drawIndirect",
+              (unsigned)mode,
+              (unsigned long long)s_indirectPolygonPointSkipCount);
+    }
+    return true;
+}
