@@ -58,10 +58,10 @@ static void mglDrawEncodeIndexed(void *renderEncoderOwner,
             .primitive_type = (uint32_t)primitiveType,
             .index_count = indexCount,
             .index_type = (uint32_t)indexType,
-            .index_buffer = (__bridge void *)indexBuffer,
+            .index_buffer = (void *)indexBuffer,
             .index_buffer_offset = indexBufferOffset,
-            .instance_count = instanceCount,
             .base_vertex = baseVertex,
+            .instance_count = instanceCount,
             .base_instance = baseInstance,
         };
     if (!renderEncoderOwner) return;
@@ -1071,7 +1071,7 @@ bool mglEncodeDrawArraysIndirectForRenderEncoderOwner(
     const MGLRenderDrawPlan plan = {
         .kind = MGL_RENDER_DRAW_ARRAY_INDIRECT,
         .primitive_type = primitiveType,
-        .indirect_buffer = (__bridge void *)indirectBuffer,
+        .indirect_buffer = (void *)indirectBuffer,
         .indirect_buffer_offset = indirectOffset,
     };
     return mglRenderEncodeDrawForRenderEncoderOwner(
@@ -1123,9 +1123,9 @@ bool mglEncodeDrawElementsIndirectForRenderEncoderOwner(
         .kind = MGL_RENDER_DRAW_INDEXED_INDIRECT,
         .primitive_type = primitiveType,
         .index_type = (uint32_t)drawIndexType,
-        .index_buffer = (__bridge void *)prepared,
+        .index_buffer = (void *)prepared,
         .index_buffer_offset = indexOffset,
-        .indirect_buffer = (__bridge void *)indirectBuffer,
+        .indirect_buffer = (void *)indirectBuffer,
         .indirect_buffer_offset = indirectOffset,
     };
     return mglRenderEncodeDrawForRenderEncoderOwner(
@@ -1146,7 +1146,7 @@ bool mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
     void *indexBufferHandle = NULL;
     uint64_t primitiveCount = 0u;
     const int rc = mglRenderCreateCullDistanceArrayPlan(
-        (__bridge void *)device, (uint32_t)mode, first, (uint64_t)count,
+        (void *)device, (uint32_t)mode, first, (uint64_t)count,
         &planOwner, &indexBufferHandle, &primitiveCount);
     if (rc == 1) {
         return false;
@@ -1154,7 +1154,7 @@ bool mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
     if (rc != 0 || !planOwner) {
         return true;
     }
-    MGLDrawMetalHandle indexBuffer = (__bridge id)indexBufferHandle;
+    MGLDrawMetalHandle indexBuffer = indexBufferHandle;
     for (uint64_t i = 0u; i < primitiveCount; i++) {
         MGLRenderCullDistancePrimitive prim = {0};
         if (mglRenderGetCullDistanceIndexPrimitive(planOwner, i, &prim) != 0) {

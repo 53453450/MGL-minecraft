@@ -67,7 +67,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 | 文件 | 约 LOC | 判定 |
 |------|-------:|------|
-| `mgl_draw_encode.m` | ~1225 | **迁出**（O5.4）：应并入 / 对齐 `mgl_draw_encode` C++，ObjC 不留 encode |
+| `mgl_draw_encode.cpp` | ~1187 | **已迁出 ObjC**（O5.4 DONE）：原 `.m` 整文件重命名为 `.cpp`，剥除 6 处 `__bridge`，经 Makefile `wildcard MGL/src/*.cpp` 自动纳 non-ARC C++；draw-encode 决策不再属 ObjC 边界 |
 | `mgl_batch_flush_restore_encode.m` | ~381 | **Batch 簇残量**：flush/restore/stream；`flush_run_batches` / check / trace-skip 已接线；**已呈 ops-callback 薄形**（C++ driver + ObjC 回调接线） |
 | `mgl_batch_dyn_bind_encode.m` | ~366 | **Batch 簇残量**：dyn-bind/sampler；`mgl_batch_mtl_bind_dyn_*` / `apply_sampler_snapshot` 已接线 |
 | `mgl_batch_issue_encode.m` | ~217 | **Batch 簇残量**：issue/direct；MDI+direct loops → `mgl_batch_mtl_issue_mdi_batch` / `mgl_batch_issue_direct_batch` |
