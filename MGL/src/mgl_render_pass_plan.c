@@ -9,6 +9,7 @@
  */
 
 #include "mgl_render_pass_plan.h"
+#include "mgl_render_pass_clear.h"   /* MGLRenderPassState + O3.1 clear-value plan */
 
 #include <string.h>
 
@@ -136,4 +137,68 @@ int mglRenderProcessGLStateAfterDirty(const MGLProcessGLStateAfterInputs *in,
     }
     out->result = MGL_PGL_RESULT_CONTINUE;
     return 0;
+}
+
+/* O3.1: attachment-kind classification (moved out of mgl_render.cpp).
+ * COLOR -> 1, DEPTH -> 2, STENCIL -> 3, anything else -> 0. */
+int mglRenderPassAttachmentClass(uint32_t kind)
+{
+    if (kind == (uint32_t)MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR) {
+        return 1;
+    }
+    if (kind == (uint32_t)MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH) {
+        return 2;
+    }
+    if (kind == (uint32_t)MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL) {
+        return 3;
+    }
+    return 0;
+}
+
+int mglRenderPassColorAttachmentIndexValid(uint32_t color_index,
+                                           uint32_t max_color)
+{
+    return color_index < max_color ? 1 : 0;
+}
+
+/* O3.1: pure clear-value resolution for one attachment.
+ * Line-for-line port of the body that used to live inline in
+ * MGLRenderer+RenderPass.m's mglRenderPassClearValuesFor.  The caller (ObjC)
+ * still owns fetching the persistent MGLRenderPassState, so this stays free of
+ * MGLCommandState / renderPassStateOwner and is directly unit-testable. */
+int mglRenderPassPlanClearValues(const MGLRenderPassState *state,
+                                 uint32_t attachmentKind,
+                                 uint32_t colorIndex,
+                                 double clearColorOut[4],
+                                 double *clearDepthOut,
+                                 uint32_t *clearStencilOut)
+{
+    if (!state) {
+        return 0;
+    }
+    switch (mglRenderPassAttachmentClass(attachmentKind)) {
+        case 1: {
+            if (!mglRenderPassColorAttachmentIndexValid(
+                    colorIndex,
+                    (uint32_t)MGL_RENDER_MAX_COLOR_ATTACHMENTS)) {
+                return 0;
+            }
+            const MGLRenderPassColorState *color = &state->color[colorIndex];
+            if (clearColorOut) {
+                clearColorOut[0] = color->clear_red;
+                clearColorOut[1] = color->clear_green;
+                clearColorOut[2] = color->clear_blue;
+                clearColorOut[3] = color->clear_alpha;
+            }
+            return 1;
+        }
+        case 2:
+            if (clearDepthOut) *clearDepthOut = state->depth.clear_depth;
+            return 1;
+        case 3:
+            if (clearStencilOut) *clearStencilOut = state->stencil.clear_stencil;
+            return 1;
+        default:
+            return 0;
+    }
 }

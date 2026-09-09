@@ -44,7 +44,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | 文件 | 约 LOC | 判定 | 终态 |
 |------|-------:|------|------|
 | `+Texture.m` | ~6993 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
-| `+RenderPass.m` | ~6997 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（O3.1 待启动）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
+| `+RenderPass.m` | ~6997 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（**O3.1 已启动**：clear-value 首刀已沉 + harness 就位；残量 load/store + attachment match 待补 golden 后再沉）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
 | `+Blit.m` | ~4970 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
 | `+BindingState.m` | ~2940 | **厚**（C1 多刀已从 ~4523 降下，见 O3.3） | 拆：attrib/texture/image apply 残留 → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口（口仍 ≫300，O3.3 residual） |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
@@ -141,6 +141,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 ### Batch O3 — RenderPass / PSO / Binding【P1】
 
 - [ ] **O3.1** load/store / clear / attachment match → `mgl_render_pass_plan.*`
+  - [x] **clear-value 首刀**（O3.1 启动 + 回归保护就位）：`mglRenderPassPlanClearValues` 沉入 plan 层（`mgl_render_pass_plan.c`），配套新头 `mgl_render_pass_clear.h`（**必须**与 `mgl_render_pass_plan.h` 分开——后者被 `glm_context.h:96` 引入，若再 include `mgl_render.h` 会成环）；`mglRenderPassAttachmentClass` / `mglRenderPassColorAttachmentIndexValid` 从 `mgl_render.cpp` 迁入 plan 层（纯值谓词，C linkage，顺带压薄 monolith），使 plan 层自包含、**harness 可独立链接不拖 Metal/LLVM**；`+RenderPass.m` 的 `mglRenderPassClearValuesFor` 变薄转发（只取 persistent state 再转发）
+  - [x] **clear-value 回归保护 harness**：`make test-render-pass-clear-plan`（`test_legacy_compat/test_render_pass_clear_plan.c`，已挂 `test-all`）；golden 覆盖 color[0]/color[3]/depth/stencil 取值、非法 color index(8/100)、未知 attachment kind、NULL state、NULL out params；**已做变异测试验证能捕获回归**（故意交换 blue/alpha → harness exit 2、2 failures）
+  - [ ] **残量**：load/store（`mglRenderPassActionsFor` 等）与 attachment match（draw buffer → Metal color attachment 映射）仍待沉，需先把对应 golden 补进 harness 再动手（勿无 oracle 下刀）
 - [ ] **O3.2** `generatePipelineDescriptorState` → format-class PSO builder（CTS Batch 4）
   - [x] **C1 本刀**：topology / tess modes / format-class / blend·stencil·cull / scissor·viewport → `mgl_pso_format_class.*`（render ~20165→~19558）；`+Binding.m`/`+RenderPass.m` 未增厚；残量 generatePipeline apply + BindingState
 - [ ] **O3.3** `+BindingState` / `+Binding` 合并下沉 slot 表；ObjC 绑定口 &lt; 300 LOC

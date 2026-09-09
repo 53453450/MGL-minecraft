@@ -724,6 +724,21 @@ $(build_dir)/test_process_gl_state_plan: test_legacy_compat/test_process_gl_stat
 test-process-gl-state-plan: $(build_dir)/test_process_gl_state_plan
 	$(build_dir)/test_process_gl_state_plan
 
+$(build_dir)/test_render_pass_clear_plan: test_legacy_compat/test_render_pass_clear_plan.c \
+	MGL/src/mgl_render_pass_plan.c MGL/include/mgl_render_pass_plan.h \
+	MGL/include/mgl_render_pass_clear.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_render_pass_clear_plan.c \
+		MGL/src/mgl_render_pass_plan.c \
+		-o $@
+
+test-render-pass-clear-plan: $(build_dir)/test_render_pass_clear_plan
+	$(build_dir)/test_render_pass_clear_plan
+
 $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
 	@mkdir -p $(dir $@)
@@ -1049,6 +1064,7 @@ test-all:
 	$(MAKE) test-batch-restore
 	$(MAKE) test-batch-issue
 	$(MAKE) test-process-gl-state-plan
+	$(MAKE) test-render-pass-clear-plan
 	$(MAKE) test-binding-stage
 	$(MAKE) test-geometry-gather
 	$(MAKE) test-validate-arrays-early

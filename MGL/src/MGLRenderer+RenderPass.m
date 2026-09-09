@@ -24,6 +24,7 @@
 #include "mgl_draw_gs.h"
 #include "mgl_render.h"
 #include "mgl_render_pass_plan.h"
+#include "mgl_render_pass_clear.h"   /* O3.1 clear-value plan (mglRenderPassPlanClearValues) */
 
 #import <objc/message.h>
 
@@ -415,30 +416,14 @@ static BOOL mglRenderPassClearValuesFor(
 {
     MGLRenderPassState state = {0};
     if (!mglRenderPassGetPersistentState(commandState, &state)) return NO;
-    switch (mglRenderPassAttachmentClass(attachmentKind)) {
-        case 1: {
-            if (!mglRenderPassColorAttachmentIndexValid(
-                    (uint32_t)colorIndex, MAX_COLOR_ATTACHMENTS))
-                return NO;
-            const MGLRenderPassColorState *color =
-                &state.color[colorIndex];
-            if (clearColorOut) {
-                clearColorOut[0] = color->clear_red;
-                clearColorOut[1] = color->clear_green;
-                clearColorOut[2] = color->clear_blue;
-                clearColorOut[3] = color->clear_alpha;
-            }
-            return YES;
-        }
-        case 2:
-            if (clearDepthOut) *clearDepthOut = state.depth.clear_depth;
-            return YES;
-        case 3:
-            if (clearStencilOut) *clearStencilOut = state.stencil.clear_stencil;
-            return YES;
-        default:
-            return NO;
-    }
+    /* O3.1: the class/index/clear-resolution decision now lives in the pure-C
+     * plan layer (mgl_render_pass_plan.c); ObjC only fetches persistent state
+     * and forwards.  Covered by the clear-value harness
+     * (test-render-pass-clear-plan). */
+    return mglRenderPassPlanClearValues(&state, attachmentKind,
+                                        (uint32_t)colorIndex,
+                                        clearColorOut, clearDepthOut,
+                                        clearStencilOut) ? YES : NO;
 }
 
 static BOOL mglRenderPassRenderTargetSizeFor(
