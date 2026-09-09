@@ -386,6 +386,104 @@ static void test_apply_masks(void)
     expect(mglBindingStageCountPresent(present, 8) == 4u, "present count");
 }
 
+
+/* Stubs for log ports referenced by EmitSampledDiag / EmitMipDiag (texture_log.m). */
+void mglBindingLogTBINDFocused(const char *a, uint32_t b, const char *c, uint32_t d,
+    uint32_t e, uint32_t f, uint32_t g, const void *h, uint64_t i, uint64_t j,
+    uint64_t k, uint32_t l, uint32_t m, uint32_t n, uint32_t o, uint32_t p)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p; }
+void mglBindingLogTBINDTraceFile(const char *a, uint32_t b, const char *c, uint32_t d,
+    uint32_t e, int f, int g, uint32_t h, uint32_t i, int j, uint64_t k, uint64_t l,
+    int m, uint32_t n, uint32_t o, uint32_t p, uint32_t q, const void *r, uint64_t s,
+    uint64_t t, uint64_t u, uint32_t v, uint32_t w, uint32_t x, uint32_t y, uint32_t z)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v;(void)w;(void)x;(void)y;(void)z; }
+void mglBindingLogSampleDetail(uint64_t a, uint64_t b, const char *c, uint32_t d,
+    const char *e, uint32_t f, uint32_t g, uint64_t h, int i, uint32_t j, const void *k,
+    uint32_t l, int m, const void *n, uint64_t o, uint64_t p, uint64_t q, uint32_t r,
+    uint32_t s, uint32_t t, uint32_t u, uint32_t v, uint32_t w, uint32_t x, uint64_t y,
+    uint32_t z, uint32_t aa, uint32_t ab, uint32_t ac, uint64_t ad, const void *ae,
+    uint64_t af, uint64_t ag)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v;(void)w;(void)x;(void)y;(void)z;(void)aa;(void)ab;(void)ac;(void)ad;(void)ae;(void)af;(void)ag; }
+void mglBindingLogTexBufferBind(uint64_t a, uint32_t b, uint32_t c, uint32_t d,
+    uint32_t e, uint32_t f, uint32_t g, uint64_t h, uint64_t i, const void *j,
+    uint64_t k, uint64_t l, uint64_t m, uint64_t n, const void *o)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o; }
+void mglBindingLogRTSampleCopySample(uint64_t a, uint64_t b, uint32_t c, uint32_t d,
+    uint32_t e, const char *f, uint32_t g, uint32_t h, uint32_t i, const char *j,
+    int k, int l, const void *m, const void *n, const void *o, const void *p,
+    uint64_t q, uint64_t r, uint64_t s, uint64_t t, uint32_t u, uint32_t v,
+    const void *w, const void *x)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v;(void)w;(void)x; }
+void mglBindingLogMipDiagFrag(uint32_t a, uint32_t b, uint32_t c, uint32_t d,
+    const char *e, uint32_t f, uint32_t g, double h, double i, double j, uint32_t k,
+    uint32_t l, uint32_t m, uint64_t n, uint64_t o, uint64_t p, const void *q, int r,
+    int s, uint32_t t, uint32_t u, uint32_t v, uint32_t w)
+{ (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;(void)j;(void)k;(void)l;(void)m;(void)n;(void)o;(void)p;(void)q;(void)r;(void)s;(void)t;(void)u;(void)v;(void)w; }
+
+static void test_o33_fill_emit_ports(void)
+{
+    MGLDepthRecoverInput din;
+    MGLDepthRecoverPlan dplan;
+    mglBindingTextureFillDepthRecoverGateInput(&din, 1, 1, 1, 0, 1, 1);
+    expect(din.phase == MGL_DR_PHASE_GATE && din.is_insampler == 1, "dr gate fill");
+    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr gate plan");
+    expect(dplan.action == MGL_DR_ACTION_ENTER_INSAMPLER, "dr enter in");
+
+    mglBindingTextureFillDepthRecoverRTInput(&din, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0);
+    expect(din.phase == MGL_DR_PHASE_RT && din.rt_sub == 0, "dr rt0 fill");
+    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr rt0 plan");
+    expect(dplan.action == MGL_DR_ACTION_RT_USE_PAIRED, "dr rt paired");
+
+    mglBindingTextureFillDepthRecoverRTInput(&din, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0);
+    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr rt1");
+    expect(dplan.action == MGL_DR_ACTION_RT_APPLY, "dr rt apply");
+
+    mglBindingTextureFillDepthRecoverRTInput(&din, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
+    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr rt2");
+    expect(dplan.action == MGL_DR_ACTION_USE_RECOVER, "dr rt recover");
+
+    MGLSamplerMaterializeInput sm;
+    mglBindingTextureFillSamplerMaterializeInput(&sm, 0, 1, 1, 0, 1, 0, 0);
+    expect(sm.has_gl_sampler == 1 && sm.unit_in_range == 1, "sm fill");
+
+    MGLSampledTextureBindInput rt;
+    mglBindingTextureFillSampledRTInput(&rt, 0, 1, 1, 1, 1, 1, 1, 1, 1);
+    expect(rt.phase == MGL_ST_PHASE_RT && rt.copy_fresh == 1, "rt fill");
+
+    MGLStorageImageBindInput si;
+    mglBindingTextureFillStorageImageInput(&si, MGL_SI_PASS_BIND, 0, 1, 2, 1, 9,
+                                           1, 0, 0, 3, 4, 5, 32);
+    expect(si.pass == MGL_SI_PASS_BIND && si.element == 1u, "si fill");
+
+    uint8_t frag[128];
+    memset(frag, 0xab, sizeof(frag));
+    mglBindingTextureWriteFragTrace(frag, 7, 3, 2, 11, 100, 200, (void *)1,
+                                    (void *)2, (void *)3, (void *)4, 64, 32, 9, 2,
+                                    1, 0);
+    expect(frag[0] != 0xab, "frag trace wrote");
+
+    MGLSampledDiagEmitInput ein;
+    memset(&ein, 0, sizeof(ein));
+    mglBindingTextureFillSampledDiagEmitCore(
+        &ein, "fragment", 1, 2, 3, "InSampler", 0, 1, -1, 0, 13, 0xde1, 1, 2, 2,
+        0, 0, 0, 0, 0, 2, 16, 16, 0, 4, 4, 1, 16, 1, 1, 0, 0, 0, 0, 0, 13, 1, 0, 0,
+        0, 0, 0, 1, 0, 1, 10, 0, 0, 0, 0);
+    expect(ein.stage_is_fragment == 1 && ein.gl_tex == 13u, "diag core");
+    MGLSampledDiagEmitResult eres;
+    mglBindingTextureEmitSampledDiagPorts(&ein, &eres);
+    expect(eres.want_readback == 0 || eres.want_readback == 1, "diag emit");
+
+    uint64_t mip_state = 0;
+    expect(mglBindingTextureEmitMipDiagFragIfChanged(
+               &mip_state, 0xabcull, 0, 0, 1, 2, "tex", 1, 1, 0.0, 1.0, 1.0, 0, 0,
+               1, 1, 16, 16, NULL, 0, 0, 0, 0, 0, 0) == 1,
+           "mip first");
+    expect(mglBindingTextureEmitMipDiagFragIfChanged(
+               &mip_state, 0xabcull, 0, 0, 1, 2, "tex", 1, 1, 0.0, 1.0, 1.0, 0, 0,
+               1, 1, 16, 16, NULL, 0, 0, 0, 0, 0, 0) == 0,
+           "mip same");
+}
+
 int main(void)
 {
     test_image_helpers();
@@ -399,6 +497,7 @@ int main(void)
     test_sampled_final_helpers();
     test_sampled_gate_compat_fill();
     test_apply_masks();
+    test_o33_fill_emit_ports();
     if (g_fails) {
         fprintf(stderr, "%d failure(s)\n", g_fails);
         return 1;

@@ -313,6 +313,12 @@ void mglBindingStageFillAttribPostMtlInput(
     MGLAttribBindInput *in, int has_mtl_data, int mtl_usable, uint64_t metal_len,
     int binding_state_valid, int buffer_matches);
 
+/* POST_MTL map-entry POD fill after ensure/update. */
+void mglBindingStageFillMapEntryPostMtl(
+    MGLStageBufferBindInput *in, int has_mtl_data, const void *mtl_ptr,
+    int mtl_usable, uint64_t metal_len, uint64_t visible_mtl,
+    int binding_state_valid, int buffer_matches);
+
 /* 1 if encoder should setVertexBuffer (not matched). */
 int mglBindingStageAttribNeedsEmit(int binding_state_valid, int buffer_matches);
 

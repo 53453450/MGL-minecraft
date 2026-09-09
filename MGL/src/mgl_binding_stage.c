@@ -693,3 +693,22 @@ int mglBindingStageAttribNeedsEmit(int binding_state_valid, int buffer_matches)
 {
     return (!binding_state_valid || !buffer_matches) ? 1 : 0;
 }
+
+
+void mglBindingStageFillMapEntryPostMtl(
+    MGLStageBufferBindInput *in, int has_mtl_data, const void *mtl_ptr,
+    int mtl_usable, uint64_t metal_len, uint64_t visible_mtl,
+    int binding_state_valid, int buffer_matches)
+{
+    if (!in) {
+        return;
+    }
+    in->phase = MGL_SB_PHASE_POST_MTL;
+    in->has_mtl_data = has_mtl_data ? 1 : 0;
+    in->mtl_ptr = mtl_ptr;
+    in->mtl_usable = mtl_usable ? 1 : 0;
+    in->metal_len = metal_len;
+    in->visible_mtl = visible_mtl;
+    in->binding_state_valid = binding_state_valid ? 1 : 0;
+    in->buffer_matches = buffer_matches ? 1 : 0;
+}

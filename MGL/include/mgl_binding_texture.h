@@ -418,6 +418,164 @@ int mglBindingTextureDepthRecoverLogHit(uint64_t *counter);
 int mglBindingTexturePlanDepthRecover(const MGLDepthRecoverInput *in,
                                       MGLDepthRecoverPlan *out);
 
+/* ---- Fill helpers (ObjC BindingState thin ports; plans stay @C) ---- */
+
+void mglBindingTextureFillDepthRecoverGateInput(
+    MGLDepthRecoverInput *in, int has_texture, int is_insampler,
+    int is_depth_or_stencil, int is_render_target, int level0_ever_written,
+    int level0_has_init);
+
+void mglBindingTextureFillDepthRecoverInSamplerInput(
+    MGLDepthRecoverInput *in, int has_paired_color, int paired_is_current_draw,
+    int has_paired_mtl, int paired_is_depth_or_stencil, int unit_in_range);
+
+void mglBindingTextureFillDepthRecoverCopyInput(
+    MGLDepthRecoverInput *in, int paired_copy_usable);
+
+void mglBindingTextureFillDepthRecoverHistoryInput(
+    MGLDepthRecoverInput *in, int candidate_valid, int candidate_is_rt,
+    int candidate_is_current_draw, int candidate_has_mtl,
+    int candidate_copy_usable, int candidate_is_depth_or_stencil,
+    int candidate_type_ok, int candidate_kind_ok);
+
+void mglBindingTextureFillDepthRecoverRTInput(
+    MGLDepthRecoverInput *in, int rt_sub, int has_paired_color,
+    int has_paired_mtl, int paired_is_current_draw,
+    int paired_is_depth_or_stencil, int candidate_type_ok,
+    int candidate_kind_ok, int has_recover, int last2d_recoverable,
+    int still_depth_or_stencil, int recover_mtl_ok);
+
+void mglBindingTextureFillSamplerMaterializeInput(
+    MGLSamplerMaterializeInput *in, int force_default, int unit_in_range,
+    int has_gl_sampler, int gl_sampler_dirty, int has_gl_sampler_mtl,
+    int has_tex_params_mtl, int require_tex_params_mtl);
+
+void mglBindingTextureFillSampledRTInput(
+    MGLSampledTextureBindInput *in, int used_type_fallback, int is_render_target,
+    int yflip, int has_sampled_copy, int copy_fresh, int can_use_rt_copy,
+    int want_base_level_on_original, int copy_type_ok, int copy_kind_ok);
+
+void mglBindingTextureFillStorageImageInput(
+    MGLStorageImageBindInput *in, int pass, int skip_resource, int has_resource,
+    uint32_t resource_binding, uint32_t element, uint32_t fallback_metal_slot,
+    int use_resource_unit, int explicit_by_slot, uint32_t explicit_unit,
+    int32_t sampler_unit, uint32_t resource_gl_binding,
+    uint32_t fallback_gl_binding, uint32_t max_units);
+
+void mglBindingTextureFillSampledDiagGateInput(
+    MGLSampledDiagGateInput *in, int stage_is_fragment, int used_fallback,
+    int is_gui_rt_copy_eligible, int focused_loading_window,
+    int vertex_focus_program, int level0_suspicious_zero,
+    int level0_never_written, int level0_uninit, int has_bound_texture,
+    int is_texel_buffer);
+
+/* Compact fragment-trace POD writer (layout matches
+ * MGLFragmentTextureTraceBinding on LP64). */
+void mglBindingTextureWriteFragTrace(
+    void *out, uint32_t gl_texture_name, uint32_t sampler_unit,
+    uint32_t metal_binding, uint32_t program_name, uint32_t rt_write_version,
+    uint32_t sampled_write_version, void *gl_texture_ptr, void *mtl_texture_ptr,
+    void *direct_mtl_texture_ptr, void *sampled_copy_ptr, uint64_t width,
+    uint64_t height, uint64_t pixel_format, uint64_t texture_type,
+    int used_sampled_copy, int used_fallback);
+
+/* Sampled diag emit ports @C (calls existing log helpers; texture_log frozen). */
+typedef struct MGLSampledDiagEmitInput {
+    const char *stage;
+    uint32_t program_name;
+    uint32_t vertex_program_name;
+    uint32_t fragment_program_name;
+    const char *sampled_name;
+    uint32_t spirv_binding;
+    uint32_t texture_unit;
+    int res_unit;
+    int explicit_unit;
+    uint32_t gl_tex;
+    uint32_t target;
+    int used_fallback;
+    uint64_t expected_type;
+    uint64_t lookup_type;
+    int expected_index;
+    uint32_t unit_active;
+    uint32_t unit_expected;
+    uint32_t unit_2d;
+    uint32_t unit_cube;
+    const void *mtl;
+    uint64_t mtl_type;
+    uint64_t mtl_w;
+    uint64_t mtl_h;
+    uint32_t l0w, l0h, l0d;
+    uint64_t l0_bytes;
+    uint32_t l0_ever, l0_full, l0_zero, l0_source;
+    uint64_t l0_upload;
+    const void *l0_src;
+    uint64_t l0_hash;
+    uint64_t l0_data_hash;
+    const void *ptr;
+    uint32_t ptr_tex;
+    const void *sampler;
+    uint64_t mtl_format;
+    int stage_is_fragment;
+    int is_gui_rt_copy_eligible;
+    int focused_loading_window;
+    int vertex_focus_program;
+    int is_texel_buffer;
+    int level0_suspicious_zero;
+    int level0_never_written;
+    int level0_uninit;
+    int has_bound_texture;
+    int do_focused;
+    int do_trace_file;
+    uint64_t bind_call;
+    int used_sampled_copy_trace;
+    const void *direct_for_trace;
+    const void *copy_for_trace;
+    const char *rt_label;
+    uint32_t draw_fbo;
+    uint32_t rp_fbo;
+    const void *rp_color;
+    const void *rp_depth;
+    uint32_t unit_buffer_tex;
+} MGLSampledDiagEmitInput;
+
+typedef struct MGLSampledDiagEmitResult {
+    int want_readback;
+    const char *readback_reason; /* static */
+    uint64_t readback_hit;
+} MGLSampledDiagEmitResult;
+
+/* Fill common diag-emit scalars; caller sets pointers / do_* flags. */
+void mglBindingTextureFillSampledDiagEmitCore(
+    MGLSampledDiagEmitInput *in, const char *stage, uint32_t program_name,
+    uint32_t vertex_program_name, uint32_t fragment_program_name,
+    const char *sampled_name, uint32_t spirv_binding, uint32_t texture_unit,
+    int res_unit, int explicit_unit, uint32_t gl_tex, uint32_t target,
+    int used_fallback, uint64_t expected_type, uint64_t lookup_type,
+    int expected_index, uint32_t unit_active, uint32_t unit_expected,
+    uint32_t unit_2d, uint32_t unit_cube, uint64_t mtl_type, uint64_t mtl_w,
+    uint64_t mtl_h, uint64_t mtl_format, uint32_t l0w, uint32_t l0h, uint32_t l0d,
+    uint64_t l0_bytes, uint32_t l0_ever, uint32_t l0_full, uint32_t l0_zero,
+    uint32_t l0_source, uint64_t l0_upload, uint64_t l0_hash, uint64_t l0_data_hash,
+    uint32_t ptr_tex, int stage_is_fragment, int is_gui_rt_copy_eligible,
+    int focused_loading_window, int vertex_focus_program, int is_texel_buffer,
+    int level0_suspicious_zero, int level0_never_written, int level0_uninit,
+    int has_bound_texture, uint64_t bind_call, int used_sampled_copy_trace,
+    uint32_t draw_fbo, uint32_t rp_fbo, uint32_t unit_buffer_tex);
+
+/* MIP_DIAG: rate on signature change; returns 1 if logged. */
+int mglBindingTextureEmitMipDiagFragIfChanged(
+    uint64_t *state_slot, uint64_t signature, uint32_t unit, uint32_t binding,
+    uint32_t program, uint32_t gl_tex, const char *source, uint32_t min_filter,
+    uint32_t mag_filter, double min_lod, double max_lod, double aniso,
+    uint32_t base, uint32_t max_level, uint32_t gl_levels, uint64_t mtl_levels,
+    uint64_t mtl_w, uint64_t mtl_h, const void *mtl, int render_target,
+    int via_copy, uint32_t copy_levels, uint32_t dirty_mips, uint32_t rt_ver,
+    uint32_t copy_ver);
+
+void mglBindingTextureEmitSampledDiagPorts(
+    const MGLSampledDiagEmitInput *in, MGLSampledDiagEmitResult *out);
+
+
 /* Rate-limited NSLog helpers (implemented in mgl_binding_texture_log.m).
  * Extend this shell only — do not spawn another log TU. */
 

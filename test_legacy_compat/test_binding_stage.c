@@ -225,6 +225,12 @@ static void test_fill_helpers(void)
     expect(mglBindingStageAttribNeedsEmit(1, 1) == 0, "no emit matched");
     expect(mglBindingStageAttribNeedsEmit(1, 0) == 1, "emit mismatch");
     expect(mglBindingStageAttribNeedsEmit(0, 1) == 1, "emit invalid");
+
+    mglBindingStageFillMapEntryPostMtl(&bin, 1, (const void *)(uintptr_t)0x200000000ULL,
+                                       1, 512u, 256u, 1, 0);
+    expect(bin.phase == MGL_SB_PHASE_POST_MTL, "post phase");
+    expect(bin.metal_len == 512u && bin.visible_mtl == 256u, "post lens");
+    expect(bin.buffer_matches == 0 && bin.mtl_usable == 1, "post flags");
 }
 
 int main(void)
