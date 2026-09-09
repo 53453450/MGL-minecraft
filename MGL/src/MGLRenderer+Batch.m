@@ -11,7 +11,7 @@
 // MGLRenderer+Batch.m — thin Batch category shell (A3 / O2.5).
 // Flush/restore/check/stream/schedule encode → mgl_batch_flush_restore_encode.m
 // ICB/MDI → mgl_batch_icb_mdi_encode.m; RT-mark → mgl_batch_rt_mark_port.m;
-// traces → mgl_batch_replay_trace.m. Keep: unlocked flush ABI, binding helpers.
+// traces → mgl_batch_replay_trace.m. Keep: unlocked flush ABI, dual-proxy, restore-from-key, active-tex.
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
@@ -72,26 +72,7 @@ static void actClearStale(void *v, uint32_t word, uint32_t bit)
     return mgl_batch_bind_active_textures(&ops) ? true : false;
 }
 
-- (void)invalidateLastBoundState
-{
-    mglRenderBindingInvalidate(_bindingStateOwner);
-}
-
-/* DUAL-PROXY INVARIANT HELPERS: see MGLRenderer_Private.h.
- *
- * These centralize all writes to _core.activeState and ctx->active_state so
- * that the invariant ("MGL_STATE(ctx) and MGL_STATE(ctx)->ctx) return the same
- * GLMState") cannot be broken by a caller forgetting to update one side.
- *
- * Valid invariant configurations:
- *   (A) _activeState == NULL  -> MGL_STATE falls through to ctx->active_state
- *                                (the "deactivated" / default mode)
- *   (B) _activeState != NULL  -> _activeState MUST equal ctx->active_state
- *                                (the "activated" mode used during batch replay)
- *
- * Configuration (A) is the teardown target; (B) is the batch-replay target. */
-/* Configuration (A) is the teardown target; (B) is batch-replay via
- * replay_state (ARCHITECTURE_AUDIT R3). */
+/* Dual-proxy: (A) _activeState NULL → live; (B) equals ctx->active_state (replay). */
 - (void)mglActivateReplayStateForContext:(GLMContext)glm_ctx
 {
     memcpy(&glm_ctx->replay_state, &glm_ctx->state, sizeof(glm_ctx->replay_state));
@@ -101,95 +82,15 @@ static void actClearStale(void *v, uint32_t word, uint32_t bit)
 
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx
 {
-    /* Configuration (A): ctx->active_state points to live embedded state,
-     * _activeState is NULL so MGL_STATE() falls through. */
     glm_ctx->active_state = &glm_ctx->state;
     _core.activeState = NULL;
 }
 
 - (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx
 {
-    /* Invariant checkpoint.  NSCAssert is compiled out in release builds,
-     * so this is zero-cost in shipping binaries.  In debug builds it catches
-     * desync at the earliest observation point (function entry/exit) instead
-     * of letting it manifest as wrong binds/dirty bits later. */
     NSCAssert(_core.activeState == NULL || _core.activeState == glm_ctx->active_state,
               @"DUAL-PROXY DESYNC: _activeState != ctx->active_state — "
               @"MGL_STATE() and STATE() would read different GLMState objects");
-}
-
-- (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
-{
-    mglRenderBindingRecordVertexBuffer(
-        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
-}
-
-- (void)recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
-{
-    mglRenderBindingRecordFragmentBuffer(
-        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
-}
-
-- (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
-{
-    mglRenderBindingInvalidateVertexBuffer(
-        _bindingStateOwner, (uint32_t)index);
-}
-
-- (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
-{
-    mglRenderBindingInvalidateFragmentBuffer(
-        _bindingStateOwner, (uint32_t)index);
-}
-
-- (void)setViewportIfNeeded:(MGLViewportValue)viewport
-{
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderBindingSetViewportForOwner(
-        _bindingStateOwner, owner, viewport.origin_x, viewport.origin_y,
-        viewport.width, viewport.height, viewport.znear, viewport.zfar);
-}
-
-- (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect
-{
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderBindingSetScissorForOwner(
-        _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
-}
-
-- (void)setTriangleFillModeIfNeeded:(uint32_t)mode
-{
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderBindingSetTriangleFillForOwner(
-        _bindingStateOwner, owner, (uint32_t)mode);
-}
-
-- (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
-                           alreadyDone:(const MGLResourceSyncWork *)done
-{
-    GLMState *state = MGL_STATE(glm_ctx);
-    if (!done || !done->mappedBuffers) {
-        RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
-    }
-    if (!done || !done->updatedBaseLists) {
-        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]);
-        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
-    }
-    MGLEncodeContext encCtx = {
-        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
-    };
-    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
-    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
-    RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
-    if (!done || !done->boundActiveTextures) {
-        RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
-    }
-    RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
-    if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {
-        RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
-        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder:&encCtx]);
-    }
-    return true;
 }
 
 typedef struct { GLMContext glm; } KeyRestCtx;
@@ -240,9 +141,6 @@ static void keyRestVpSc(void *v, const int32_t vp[4], int sc_en, const int32_t s
 
 - (void)flushDrawBuffer:(GLMContext)glm_ctx
 {
-    /* Unlocked entry point: acquire METAL_LOCK and delegate to Locked variant.
-     * Locked callers (mtlSwapBuffersLocked:, flushCommandBufferLocked:) call
-     * flushDrawBufferLocked: directly to avoid recursive lock re-entry. */
     METAL_LOCK();
     @try {
         [self flushDrawBufferLocked:glm_ctx];

@@ -22,6 +22,7 @@
 #define MGL_BATCH_REPLAY_H
 
 #include "draw_command.h"
+#include "mgl_batch_issue.h"
 #include "mgl_draw_encode.h"
 #include "glm_context.h"
 #include "mgl_types_vertex.h"
@@ -271,6 +272,24 @@ int mgl_batch_replay_sampled_tex_info_ok(int has_texture_info_ok,
                                          int pixel_format_compatible);
 
 
+/* Dyn sampled resolve gate: 0 skip, 1 ok no-samp, 2 ok needs-samp, -1 fail. */
+typedef struct MGLBatchSampledResolveGateIn {
+    int unit_ok; /* unit in range + touched */
+    int has_tex;
+    int has_mtl;
+    int dirty;
+    int is_rt;
+    int info_ok;
+    uint64_t texture_type;
+    uint32_t expected_type;
+    int format_compat;
+    int needs_combined_sampler;
+    int has_sampler_mtl;
+} MGLBatchSampledResolveGateIn;
+
+int mgl_batch_replay_sampled_resolve_gate(const MGLBatchSampledResolveGateIn *in);
+
+
 /* ---- A3 residual: flush cmd stats + stream-merged driver ---- */
 
 typedef struct MGLBatchCmdFrameStats {
@@ -301,6 +320,7 @@ typedef struct MGLBatchDirectCmdView {
     uint32_t type;
     uint32_t mode;
     int32_t count;
+    int32_t first;
     int32_t instance_count;
     uint32_t base_instance;
 } MGLBatchDirectCmdView;
@@ -321,13 +341,9 @@ typedef struct MGLBatchDirectIssueOps {
     int (*apply_cmd_sampler)(void *ctx, uint32_t cmd_index);
     int (*polygon_mode_point)(void *ctx, uint32_t mode);
     void (*trace_skip)(void *ctx, uint32_t cmd_index, const char *reason);
-    void (*submit_arrays)(void *ctx, uint32_t cmd_index, uint32_t mode,
-                          int32_t count, int32_t instance_count,
-                          uint32_t base_instance, int polygon_mode_point,
-                          const char *reason, const char *cull_reason);
-    void (*submit_elements)(void *ctx, uint32_t cmd_index, uint32_t mode,
-                            int32_t count, int32_t instance_count,
-                            int polygon_mode_point);
+    /* Finer MTL hooks; submit decision trees in mgl_batch_issue_*. */
+    MGLBatchDirectArraySubmitOps array_submit;
+    MGLBatchDirectElementSubmitOps element_submit;
 } MGLBatchDirectIssueOps;
 
 void mgl_batch_issue_direct_batch(const MGLBatchDirectIssueOps *ops);

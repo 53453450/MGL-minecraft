@@ -440,6 +440,189 @@ static void test_dyn_apply(void)
            "fallback fail");
 }
 
+
+static int g_sub_trace;
+static int g_sub_enc;
+static int g_sub_cull;
+static void sub_trace(void *v, uint32_t i, const char *ph, const char *rs)
+{
+    (void)v;
+    (void)i;
+    (void)rs;
+    if (ph && ph[0] == 'S') g_sub_trace++;
+}
+static int sub_cull_arr(void *v, uint32_t i, uint32_t mode, int32_t first,
+                        int32_t count, int32_t ic, uint32_t bi)
+{
+    (void)v;
+    (void)i;
+    (void)mode;
+    (void)first;
+    (void)count;
+    (void)ic;
+    (void)bi;
+    return g_sub_cull;
+}
+static void sub_bind_emu(void *v, uint32_t mode, int32_t first)
+{
+    (void)v;
+    (void)mode;
+    (void)first;
+    g_sub_enc |= 1;
+}
+static int sub_enc_arr(void *v, uint32_t mode, int32_t first, int32_t count,
+                       int32_t ic, uint32_t bi)
+{
+    (void)v;
+    (void)mode;
+    (void)first;
+    (void)count;
+    (void)ic;
+    (void)bi;
+    g_sub_enc |= 2;
+    return 1;
+}
+static int sub_prep_ok(void *v, uint32_t i, MGLBatchDirectElementPrep *out)
+{
+    (void)v;
+    (void)i;
+    memset(out, 0, sizeof(*out));
+    out->mtl_index_type = 1u;
+    return 1;
+}
+static int sub_prep_bad_type(void *v, uint32_t i, MGLBatchDirectElementPrep *out)
+{
+    (void)v;
+    (void)i;
+    memset(out, 0, sizeof(*out));
+    out->mtl_index_type = 0xFFFFFFFFu;
+    return 1;
+}
+static int sub_poly_line(void *v, uint32_t mode)
+{
+    (void)v;
+    (void)mode;
+    return 0;
+}
+static int sub_cull_el(void *v, uint32_t i, uint32_t mode,
+                       const MGLBatchDirectElementPrep *prep, int32_t count,
+                       int32_t ic, int poly_line)
+{
+    (void)v;
+    (void)i;
+    (void)mode;
+    (void)prep;
+    (void)count;
+    (void)ic;
+    (void)poly_line;
+    return 0;
+}
+static int sub_enc_el(void *v, uint32_t mode, const MGLBatchDirectElementPrep *prep,
+                      int32_t count, int32_t ic)
+{
+    (void)v;
+    (void)mode;
+    (void)prep;
+    (void)count;
+    (void)ic;
+    g_sub_enc |= 4;
+    return 1;
+}
+
+static void test_submit_direct(void)
+{
+    g_sub_trace = 0;
+    g_sub_enc = 0;
+    g_sub_cull = 1;
+    MGLBatchDirectArraySubmitOps a = {
+        .ctx = NULL,
+        .try_cull_array_split = sub_cull_arr,
+        .bind_cull_emu_arrays = sub_bind_emu,
+        .encode_arrays = sub_enc_arr,
+        .on_trace = sub_trace,
+    };
+    mgl_batch_issue_submit_direct_arrays(0, 4, 0, 3, 1, 0, 0, 1, "arr", "cull",
+                                         &a);
+    expect(g_sub_trace == 1 && g_sub_enc == 0, "arrays cull split");
+    g_sub_cull = 0;
+    g_sub_trace = 0;
+    g_sub_enc = 0;
+    mgl_batch_issue_submit_direct_arrays(0, 4, 0, 3, 1, 0, 0, 1, "arr", "cull",
+                                         &a);
+    expect(g_sub_trace == 1 && (g_sub_enc & 3) == 3, "arrays emu+encode");
+    g_sub_trace = 0;
+    g_sub_enc = 0;
+    MGLBatchDirectElementSubmitOps e = {
+        .ctx = NULL,
+        .prepare_element = sub_prep_ok,
+        .polygon_mode_line = sub_poly_line,
+        .try_cull_element_split = sub_cull_el,
+        .encode_elements = sub_enc_el,
+        .on_trace = sub_trace,
+    };
+    mgl_batch_issue_submit_direct_elements(0, 4, 3, 1, 0, &e);
+    expect(g_sub_trace == 1 && (g_sub_enc & 4), "elements encode");
+    e.prepare_element = sub_prep_bad_type;
+    g_sub_trace = 0;
+    mgl_batch_issue_submit_direct_elements(0, 4, 3, 1, 0, &e);
+    expect(g_sub_trace == 1, "elements bad index type traces skip");
+}
+
+static int g_sync_steps;
+static int sync_ok(void *v)
+{
+    (void)v;
+    g_sync_steps++;
+    return 1;
+}
+static int sync_fail(void *v)
+{
+    (void)v;
+    return 0;
+}
+static void test_sync_resource(void)
+{
+    g_sync_steps = 0;
+    MGLBatchSyncResourceOps ops = {
+        .ctx = NULL,
+        .map_buffers = sync_ok,
+        .update_vertex_base = sync_ok,
+        .update_fragment_base = sync_ok,
+        .bind_vertex_buffers = sync_ok,
+        .bind_fragment_buffers = sync_ok,
+        .bind_buffer_size_constants = sync_ok,
+        .bind_active_textures = sync_ok,
+        .restore_after_active_tex = sync_ok,
+        .bind_textures = sync_ok,
+        .restore_after_sampled = sync_fail,
+    };
+    expect(mgl_batch_sync_resource_bindings(&ops) == 1, "sync ok");
+    ops.bind_textures = sync_fail;
+    expect(mgl_batch_sync_resource_bindings(&ops) == 0, "sync fail sampled");
+}
+
+static void test_trace_helpers(void)
+{
+    expect(mgl_batch_trace_should_emit(0, 1, 1, 1) == 0, "trace off");
+    expect(mgl_batch_trace_should_emit(1, 0, 0, 0) == 0, "no reason");
+    expect(mgl_batch_trace_should_emit(1, 1, 0, 0) == 1, "log replay");
+    expect(mgl_batch_trace_is_submit_phase("SUBMIT") == 1, "submit phase");
+    expect(mgl_batch_trace_is_submit_phase("READY") == 0, "ready not submit");
+    MGLBatchTraceBatchView bv;
+    memset(&bv, 0, sizeof(bv));
+    mgl_batch_trace_batch_fill_key_flags(&bv, 3, 1, 0, 1, 10, 11, 12, 13, 14, 15,
+                                         4);
+    expect(bv.command_count == 3 && bv.stream_merged == 1 && bv.key_program == 10,
+           "batch fill key");
+    MGLBatchTraceCmdView cv;
+    memset(&cv, 0, sizeof(cv));
+    mgl_batch_trace_cmd_fill_draw(&cv, "DRAW", 4, 9, 1, 0x1403, 8, 2, 0, 0);
+    expect(cv.count == 9 && cv.first == 1 && cv.index_offset == 8, "cmd fill");
+    MGLBatchTraceAttPod att = {.tex = 7, .w = 64, .h = 32};
+    mgl_batch_trace_cmd_set_color0(&cv, &att);
+    expect(cv.color0_tex == 7 && cv.color0_w == 64, "color0 att");
+}
+
 int main(void)
 {
     test_rt_mark();
@@ -453,6 +636,9 @@ int main(void)
     test_flush_trace_skip();
     test_active_tex_bind();
     test_rt_draw_attachments();
+    test_submit_direct();
+    test_sync_resource();
+    test_trace_helpers();
 
     expect(mgl_batch_flush_scheduled_path_perf_kind(2) ==
                MGL_BATCH_FLUSH_PERF_STREAM,

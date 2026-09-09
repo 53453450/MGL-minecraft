@@ -9,6 +9,7 @@
  */
 
 #include "mgl_batch_rt_mark.h"
+#include <string.h>
 
 #include <stdio.h>
 
@@ -340,6 +341,138 @@ void mgl_batch_rt_run_draw_attachments(const MGLBatchRtDrawMarkOps *ops)
         }
         if (ops->rp_has_mtl(ops->ctx, mtl)) {
             ops->mark_attachment(ops->ctx, att);
+        }
+    }
+}
+
+int mgl_batch_trace_should_emit(int log_enabled, int should_log_replay,
+                                int fs_has_rt, int fs_used_copy)
+{
+    return log_enabled && (should_log_replay || fs_has_rt || fs_used_copy);
+}
+
+int mgl_batch_trace_is_submit_phase(const char *phase)
+{
+    return phase && strcmp(phase, "SUBMIT") == 0;
+}
+
+void mgl_batch_trace_batch_fill_key_flags(
+    MGLBatchTraceBatchView *v, uint32_t command_count, int stream_merged,
+    int mdi_compatible, int uses_elements, uint32_t key_program,
+    uint32_t key_pipeline, uint32_t key_vs, uint32_t key_fs, uint32_t key_fbo,
+    uint32_t key_vao, uint32_t key_prim)
+{
+    if (!v) {
+        return;
+    }
+    v->command_count = command_count;
+    v->stream_merged = stream_merged ? 1u : 0u;
+    v->mdi_compatible = mdi_compatible ? 1u : 0u;
+    v->uses_elements = uses_elements ? 1u : 0u;
+    v->key_program = key_program;
+    v->key_pipeline = key_pipeline;
+    v->key_vs = key_vs;
+    v->key_fs = key_fs;
+    v->key_fbo = key_fbo;
+    v->key_vao = key_vao;
+    v->key_prim = key_prim;
+}
+
+void mgl_batch_trace_cmd_fill_draw(MGLBatchTraceCmdView *v,
+                                   const char *type_name, uint32_t mode,
+                                   int32_t count, int32_t first,
+                                   uint32_t index_type, uint32_t index_offset,
+                                   int32_t instances, int32_t base_vertex,
+                                   uint32_t base_instance)
+{
+    if (!v) {
+        return;
+    }
+    v->type_name = type_name;
+    v->mode = mode;
+    v->count = count;
+    v->first = first;
+    v->index_type = index_type;
+    v->index_offset = index_offset;
+    v->instances = instances;
+    v->base_vertex = base_vertex;
+    v->base_instance = base_instance;
+}
+
+void mgl_batch_trace_cmd_set_color0(MGLBatchTraceCmdView *v,
+                                    const MGLBatchTraceAttPod *p)
+{
+    if (!v || !p) {
+        return;
+    }
+    v->color0_tex = p->tex;
+    v->color0_target = p->target;
+    v->color0_level = p->level;
+    v->color0_ptr = p->ptr;
+    v->color0_w = p->w;
+    v->color0_h = p->h;
+    v->color0_mtl = p->mtl;
+    v->color0_ever = p->ever;
+    v->color0_full = p->full;
+    v->color0_source = p->source;
+    v->color0_rt_ver = p->rt_ver;
+    v->color0_sampled_ver = p->sampled_ver;
+}
+
+void mgl_batch_trace_cmd_set_depth(MGLBatchTraceCmdView *v,
+                                   const MGLBatchTraceAttPod *p)
+{
+    if (!v || !p) {
+        return;
+    }
+    v->depth_tex = p->tex;
+    v->depth_target = p->target;
+    v->depth_level = p->level;
+    v->depth_ptr = p->ptr;
+    v->depth_w = p->w;
+    v->depth_h = p->h;
+    v->depth_mtl = p->mtl;
+    v->depth_ever = p->ever;
+    v->depth_full = p->full;
+    v->depth_source = p->source;
+    v->depth_rt_ver = p->rt_ver;
+    v->depth_sampled_ver = p->sampled_ver;
+}
+
+void mgl_batch_trace_cmd_set_units(MGLBatchTraceCmdView *v, uint32_t u0a,
+                                   uint32_t u0t, uint32_t u1a, uint32_t u1t,
+                                   uint32_t u2a, uint32_t u2t)
+{
+    if (!v) {
+        return;
+    }
+    v->u0_active = u0a;
+    v->u0_tex2d = u0t;
+    v->u1_active = u1a;
+    v->u1_tex2d = u1t;
+    v->u2_active = u2a;
+    v->u2_tex2d = u2t;
+}
+
+void mgl_batch_rt_mark_one_attachment(uint32_t attachment_index,
+                                      uint32_t bitfield, uint32_t max_attachments,
+                                      uint64_t *diag_hit_inout,
+                                      const MGLBatchRtMarkOneOps *ops)
+{
+    if (!ops || !mgl_batch_rt_attachment_active(bitfield, attachment_index,
+                                                max_attachments)) {
+        return;
+    }
+    if (ops->mark_level) {
+        ops->mark_level(ops->ctx);
+    }
+    if (ops->yflip && ops->apply_yflip) {
+        ops->apply_yflip(ops->ctx);
+    }
+    if (ops->should_diag && diag_hit_inout && ops->emit_diag) {
+        const uint64_t hit = ++(*diag_hit_inout);
+        if (mgl_batch_rt_should_trace_write_mark(hit)) {
+            ops->emit_diag(ops->ctx, hit);
         }
     }
 }

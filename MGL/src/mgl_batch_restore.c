@@ -238,3 +238,75 @@ void mgl_batch_restore_apply_from_key(const MGLBatchRestoreFromKeyOps *ops)
     }
 }
 
+void mgl_batch_restore_run_for_batch(const MGLBatchRestoreForBatchOps *ops)
+{
+    if (!ops) {
+        return;
+    }
+    if (ops->has_snapshot) {
+        if (ops->apply_snapshot) {
+            ops->apply_snapshot(ops->ctx);
+        }
+    } else if (ops->apply_from_key) {
+        ops->apply_from_key(ops->ctx);
+    }
+    if (ops->after_apply) {
+        ops->after_apply(ops->ctx);
+    }
+    const uint32_t full = mgl_batch_restore_full_dirty_bits();
+    uint32_t replay = full;
+    MGLBatchDirtyDeltaFlags flags;
+    memset(&flags, 0, sizeof(flags));
+    const int can = ops->can_delta && ops->can_delta(ops->ctx);
+    if (can && ops->plan_delta_dirty) {
+        replay = ops->plan_delta_dirty(ops->ctx, full, &flags);
+        if (ops->note_delta_perf) {
+            ops->note_delta_perf(ops->ctx, &flags);
+        }
+    }
+    MGLBatchRestoreFboIn fbo;
+    memset(&fbo, 0, sizeof(fbo));
+    if (ops->fill_fbo) {
+        ops->fill_fbo(ops->ctx, &fbo);
+    }
+    replay = mgl_batch_restore_finish_dirty(replay, ops->forced_bits, full,
+                                            ops->dirty_fbo_mask, &fbo);
+    if (ops->mark_dirty) {
+        ops->mark_dirty(ops->ctx, replay);
+    }
+}
+
+void mgl_batch_teardown_run(const MGLBatchTeardownOps *ops)
+{
+    if (!ops) {
+        return;
+    }
+    if (ops->used_replay_workspace && ops->sync_hash_from_replay) {
+        ops->sync_hash_from_replay(ops->ctx);
+    }
+    if (ops->restore_live_active) {
+        ops->restore_live_active(ops->ctx);
+    }
+    if (ops->clear_absolute_offsets) {
+        ops->clear_absolute_offsets(ops->ctx);
+    }
+    if (ops->reset_command_buffer) {
+        ops->reset_command_buffer(ops->ctx);
+    }
+    if (ops->arena_snapshot_enabled && ops->reset_arena) {
+        ops->reset_arena(ops->ctx);
+    }
+    if (!ops->used_replay_workspace && ops->restore_saved_state) {
+        ops->restore_saved_state(ops->ctx);
+    }
+    if (ops->clear_dirty_preserve_hash) {
+        ops->clear_dirty_preserve_hash(ops->ctx);
+    }
+    if (ops->restore_program_pair) {
+        ops->restore_program_pair(ops->ctx);
+    }
+    if (ops->propagate_replay_error) {
+        ops->propagate_replay_error(ops->ctx);
+    }
+}
+

@@ -258,6 +258,76 @@ typedef struct MGLBatchActiveTexBindOps {
 
 int mgl_batch_bind_active_textures(const MGLBatchActiveTexBindOps *ops);
 
+/* ---- A3: direct submit decision trees (MTL hooks via ops) ---- */
+
+typedef struct MGLBatchDirectElementPrep {
+    void *gl_buffer;
+    void *mtl_buffer;
+    uint64_t index_offset;
+    uint32_t gl_index_type;
+    uint32_t mtl_index_type;
+    int32_t base_vertex;
+    uint32_t base_instance;
+    const uint8_t *cull_index_bytes;
+} MGLBatchDirectElementPrep;
+
+typedef struct MGLBatchDirectArraySubmitOps {
+    void *ctx;
+    int (*try_cull_array_split)(void *ctx, uint32_t cmd_index, uint32_t mode,
+                                int32_t first, int32_t count, int32_t ic,
+                                uint32_t base_instance);
+    void (*bind_cull_emu_arrays)(void *ctx, uint32_t mode, int32_t first);
+    int (*encode_arrays)(void *ctx, uint32_t mode, int32_t first, int32_t count,
+                         int32_t ic, uint32_t base_instance);
+    void (*on_trace)(void *ctx, uint32_t cmd_index, const char *phase,
+                     const char *reason);
+} MGLBatchDirectArraySubmitOps;
+
+typedef struct MGLBatchDirectElementSubmitOps {
+    void *ctx;
+    int (*prepare_element)(void *ctx, uint32_t cmd_index,
+                           MGLBatchDirectElementPrep *out);
+    int (*polygon_mode_line)(void *ctx, uint32_t mode);
+    int (*try_cull_element_split)(void *ctx, uint32_t cmd_index, uint32_t mode,
+                                  const MGLBatchDirectElementPrep *prep,
+                                  int32_t count, int32_t ic, int poly_line);
+    int (*encode_elements)(void *ctx, uint32_t mode,
+                           const MGLBatchDirectElementPrep *prep, int32_t count,
+                           int32_t ic);
+    void (*on_trace)(void *ctx, uint32_t cmd_index, const char *phase,
+                     const char *reason);
+} MGLBatchDirectElementSubmitOps;
+
+void mgl_batch_issue_submit_direct_arrays(
+    uint32_t cmd_index, uint32_t mode, int32_t first, int32_t count, int32_t ic,
+    uint32_t base_instance, int poly_pt, int uses_cull, const char *reason,
+    const char *cull_reason, const MGLBatchDirectArraySubmitOps *ops);
+
+void mgl_batch_issue_submit_direct_elements(uint32_t cmd_index, uint32_t mode,
+                                            int32_t count, int32_t ic,
+                                            int poly_pt,
+                                            const MGLBatchDirectElementSubmitOps *ops);
+
+/* syncResourceBindingsForContext sequence. */
+typedef struct MGLBatchSyncResourceOps {
+    void *ctx;
+    int mapped_buffers_done;
+    int updated_base_lists_done;
+    int bound_active_textures_done;
+    int (*map_buffers)(void *ctx);
+    int (*update_vertex_base)(void *ctx);
+    int (*update_fragment_base)(void *ctx);
+    int (*bind_vertex_buffers)(void *ctx);
+    int (*bind_fragment_buffers)(void *ctx);
+    int (*bind_buffer_size_constants)(void *ctx);
+    int (*bind_active_textures)(void *ctx);
+    int (*restore_after_active_tex)(void *ctx);
+    int (*bind_textures)(void *ctx);
+    int (*restore_after_sampled)(void *ctx);
+} MGLBatchSyncResourceOps;
+
+int mgl_batch_sync_resource_bindings(const MGLBatchSyncResourceOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

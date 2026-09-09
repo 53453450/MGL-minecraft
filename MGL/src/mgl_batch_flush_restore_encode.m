@@ -148,6 +148,7 @@ static void skipTraceCmd(void *v, uint32_t i)
 { SkipCtx *c = v; [c->r traceReplayCommand:c->batch command:&c->batch->commands[i]
       context:c->ctx flushId:c->hit batchIndex:c->bi commandIndex:i phase:"SKIP" reason:c->reason]; }
 
+
 @implementation MGLRenderer (Batch)
 
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx
@@ -264,8 +265,7 @@ static void skipTraceCmd(void *v, uint32_t i)
                         _batching.dirtyKeyDeltaEnabled ? 1 : 0, prevKeyValid ? 1 : 0,
                         mglRenderEncoderOwnerHasCurrent(
                             _renderPassManager.state->currentRenderEncoderOwner),
-                        mglBindingStateIsValid(_bindingStateOwner) ? 1 : 0)
-                        ? YES : NO;
+                        mglBindingStateIsValid(_bindingStateOwner) ? 1 : 0) ? YES : NO;
     MGLBatchDirtyDeltaFlags dflags; memset(&dflags, 0, sizeof(dflags));
     if (canDelta) {
         replayDirtyBits = mgl_batch_mtl_restore_plan_delta_dirty(
@@ -279,8 +279,7 @@ static void skipTraceCmd(void *v, uint32_t i)
         .prev_fbo_differs =
             (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ? 1u : 0u,
         .has_encoder = mglRenderEncoderOwnerHasCurrent(
-                           _renderPassManager.state->currentRenderEncoderOwner)
-                           ? 1u : 0u,
+                           _renderPassManager.state->currentRenderEncoderOwner) ? 1u : 0u,
         .bind_valid = mglBindingStateIsValid(_bindingStateOwner) ? 1u : 0u,
         .pass_matches = [self currentRenderPassMatchesCurrentFramebuffer] ? 1u : 0u,
     };

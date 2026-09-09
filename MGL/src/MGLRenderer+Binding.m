@@ -405,4 +405,84 @@ static id mglBindingCreateDefaultSampler(void)
     return true;
 }
 
+- (void)invalidateLastBoundState
+{
+    mglRenderBindingInvalidate(_bindingStateOwner);
+}
+
+- (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{
+    mglRenderBindingRecordVertexBuffer(
+        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
+}
+
+- (void)recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{
+    mglRenderBindingRecordFragmentBuffer(
+        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
+}
+
+- (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
+{
+    mglRenderBindingInvalidateVertexBuffer(
+        _bindingStateOwner, (uint32_t)index);
+}
+
+- (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
+{
+    mglRenderBindingInvalidateFragmentBuffer(
+        _bindingStateOwner, (uint32_t)index);
+}
+
+- (void)setViewportIfNeeded:(MGLViewportValue)viewport
+{
+    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+    mglRenderBindingSetViewportForOwner(
+        _bindingStateOwner, owner, viewport.origin_x, viewport.origin_y,
+        viewport.width, viewport.height, viewport.znear, viewport.zfar);
+}
+
+- (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect
+{
+    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+    mglRenderBindingSetScissorForOwner(
+        _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
+}
+
+- (void)setTriangleFillModeIfNeeded:(uint32_t)mode
+{
+    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+    mglRenderBindingSetTriangleFillForOwner(
+        _bindingStateOwner, owner, (uint32_t)mode);
+}
+
+- (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
+                           alreadyDone:(const MGLResourceSyncWork *)done
+{
+    GLMState *state = MGL_STATE(glm_ctx);
+    if (!done || !done->mappedBuffers) {
+        RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+    }
+    if (!done || !done->updatedBaseLists) {
+        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]);
+        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
+    }
+    MGLEncodeContext encCtx = {
+        .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
+    };
+    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
+    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
+    RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
+    if (!done || !done->boundActiveTextures) {
+        RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+    }
+    RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
+    if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {
+        RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
+        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder:&encCtx]);
+    }
+    return true;
+}
+
+
 @end

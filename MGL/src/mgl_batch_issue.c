@@ -576,3 +576,121 @@ int mgl_batch_bind_active_textures(const MGLBatchActiveTexBindOps *ops)
     return 1;
 }
 
+void mgl_batch_issue_submit_direct_arrays(
+    uint32_t cmd_index, uint32_t mode, int32_t first, int32_t count, int32_t ic,
+    uint32_t base_instance, int poly_pt, int uses_cull, const char *reason,
+    const char *cull_reason, const MGLBatchDirectArraySubmitOps *ops)
+{
+    if (!ops) {
+        return;
+    }
+    if (!poly_pt && ops->try_cull_array_split &&
+        ops->try_cull_array_split(ops->ctx, cmd_index, mode, first, count, ic,
+                                  base_instance)) {
+        if (ops->on_trace) {
+            ops->on_trace(ops->ctx, cmd_index, "SUBMIT",
+                          cull_reason ? cull_reason : "cull_distance_split");
+        }
+        return;
+    }
+    if (!poly_pt && uses_cull && ops->bind_cull_emu_arrays) {
+        ops->bind_cull_emu_arrays(ops->ctx, mode, first);
+    }
+    const int ok =
+        ops->encode_arrays &&
+        ops->encode_arrays(ops->ctx, mode, first, count, ic, base_instance);
+    if (ops->on_trace) {
+        ops->on_trace(ops->ctx, cmd_index, ok ? "SUBMIT" : "SKIP",
+                      reason ? reason : (ok ? "direct_arrays" : "direct_arrays_fail"));
+    }
+}
+
+void mgl_batch_issue_submit_direct_elements(
+    uint32_t cmd_index, uint32_t mode, int32_t count, int32_t ic, int poly_pt,
+    const MGLBatchDirectElementSubmitOps *ops)
+{
+    if (!ops || !ops->prepare_element) {
+        return;
+    }
+    MGLBatchDirectElementPrep prep;
+    memset(&prep, 0, sizeof(prep));
+    if (!ops->prepare_element(ops->ctx, cmd_index, &prep)) {
+        if (ops->on_trace) {
+            ops->on_trace(ops->ctx, cmd_index, "SKIP", "direct_resolve_element");
+        }
+        return;
+    }
+    if (prep.mtl_index_type == 0xFFFFFFFFu) {
+        if (ops->on_trace) {
+            ops->on_trace(ops->ctx, cmd_index, "SKIP", "direct_index_type");
+        }
+        return;
+    }
+    const int poly_line =
+        ops->polygon_mode_line ? ops->polygon_mode_line(ops->ctx, mode) : 0;
+    if (!poly_pt && ops->try_cull_element_split &&
+        ops->try_cull_element_split(ops->ctx, cmd_index, mode, &prep, count, ic,
+                                    poly_line)) {
+        if (ops->on_trace) {
+            ops->on_trace(ops->ctx, cmd_index, "SUBMIT",
+                          "direct_elements_cull_distance_split");
+        }
+        return;
+    }
+    const int ok =
+        ops->encode_elements &&
+        ops->encode_elements(ops->ctx, mode, &prep, count, ic);
+    if (ops->on_trace) {
+        ops->on_trace(ops->ctx, cmd_index, ok ? "SUBMIT" : "SKIP",
+                      ok ? "direct_elements" : "direct_elements_encode_failed");
+    }
+}
+
+int mgl_batch_sync_resource_bindings(const MGLBatchSyncResourceOps *ops)
+{
+    if (!ops) {
+        return 0;
+    }
+    if (!ops->mapped_buffers_done) {
+        if (!ops->map_buffers || !ops->map_buffers(ops->ctx)) {
+            return 0;
+        }
+    }
+    if (!ops->updated_base_lists_done) {
+        if (!ops->update_vertex_base || !ops->update_vertex_base(ops->ctx)) {
+            return 0;
+        }
+        if (!ops->update_fragment_base || !ops->update_fragment_base(ops->ctx)) {
+            return 0;
+        }
+    }
+    if (!ops->bind_vertex_buffers || !ops->bind_vertex_buffers(ops->ctx)) {
+        return 0;
+    }
+    if (!ops->bind_fragment_buffers || !ops->bind_fragment_buffers(ops->ctx)) {
+        return 0;
+    }
+    if (!ops->bind_buffer_size_constants ||
+        !ops->bind_buffer_size_constants(ops->ctx)) {
+        return 0;
+    }
+    if (!ops->bound_active_textures_done) {
+        if (!ops->bind_active_textures || !ops->bind_active_textures(ops->ctx)) {
+            return 0;
+        }
+    }
+    if (ops->restore_after_active_tex &&
+        !ops->restore_after_active_tex(ops->ctx)) {
+        return 0;
+    }
+    if (!ops->bind_textures || !ops->bind_textures(ops->ctx)) {
+        if (!ops->restore_after_sampled || !ops->restore_after_sampled(ops->ctx)) {
+            return 0;
+        }
+        if (!ops->bind_textures || !ops->bind_textures(ops->ctx)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+

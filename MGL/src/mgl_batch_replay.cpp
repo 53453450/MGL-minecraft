@@ -797,6 +797,31 @@ extern "C" int mgl_batch_replay_sampled_tex_info_ok(int has_texture_info_ok,
     return pixel_format_compatible ? 1 : 0;
 }
 
+extern "C" int mgl_batch_replay_sampled_resolve_gate(
+    const MGLBatchSampledResolveGateIn *in)
+{
+    if (!in || !in->unit_ok) {
+        return 0;
+    }
+    if (!mgl_batch_replay_sampled_tex_object_ok(in->has_tex, in->has_mtl,
+                                                in->dirty, in->is_rt)) {
+        return -1;
+    }
+    if (!mgl_batch_replay_sampled_tex_info_ok(in->info_ok, in->texture_type,
+                                              in->expected_type,
+                                              in->format_compat)) {
+        return -1;
+    }
+    if (!in->needs_combined_sampler) {
+        return 1;
+    }
+    if (!in->has_sampler_mtl) {
+        return -1;
+    }
+    return 2;
+}
+
+
 extern "C" void mgl_batch_flush_accum_cmd_frame_stats(
     const MGLDrawBatch *batch, MGLBatchCmdFrameStats *out)
 {
@@ -944,13 +969,20 @@ extern "C" void mgl_batch_issue_direct_batch(const MGLBatchDirectIssueOps *ops)
             mgl_batch_issue_direct_arrays_params(cmd.type, cmd.instance_count,
                                                  cmd.base_instance, &ic, &bi,
                                                  &reason, &cullReason);
-            if (ops->submit_arrays) {
-                ops->submit_arrays(ctx, i, cmd.mode, cmd.count, ic, bi, poly_pt,
-                                   reason, cullReason);
+            MGLBatchDirectArraySubmitOps asub = ops->array_submit;
+            if (!asub.ctx) {
+                asub.ctx = ctx;
             }
-        } else if (ops->submit_elements) {
-            ops->submit_elements(ctx, i, cmd.mode, cmd.count, cmd.instance_count,
-                                 poly_pt);
+            mgl_batch_issue_submit_direct_arrays(
+                i, cmd.mode, cmd.first, cmd.count, ic, bi, poly_pt, uses_cull,
+                reason, cullReason, &asub);
+        } else {
+            MGLBatchDirectElementSubmitOps esub = ops->element_submit;
+            if (!esub.ctx) {
+                esub.ctx = ctx;
+            }
+            mgl_batch_issue_submit_direct_elements(
+                i, cmd.mode, cmd.count, cmd.instance_count, poly_pt, &esub);
         }
     }
 }

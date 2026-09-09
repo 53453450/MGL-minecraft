@@ -278,6 +278,59 @@ typedef struct MGLBatchRtDrawMarkOps {
 
 void mgl_batch_rt_run_draw_attachments(const MGLBatchRtDrawMarkOps *ops);
 
+/* ---- A3: trace fill helpers (shrink replay_trace ObjC) ---- */
+
+int mgl_batch_trace_should_emit(int log_enabled, int should_log_replay,
+                                int fs_has_rt, int fs_used_copy);
+int mgl_batch_trace_is_submit_phase(const char *phase);
+
+void mgl_batch_trace_batch_fill_key_flags(
+    MGLBatchTraceBatchView *v, uint32_t command_count, int stream_merged,
+    int mdi_compatible, int uses_elements, uint32_t key_program,
+    uint32_t key_pipeline, uint32_t key_vs, uint32_t key_fs, uint32_t key_fbo,
+    uint32_t key_vao, uint32_t key_prim);
+
+void mgl_batch_trace_cmd_fill_draw(MGLBatchTraceCmdView *v,
+                                   const char *type_name, uint32_t mode,
+                                   int32_t count, int32_t first,
+                                   uint32_t index_type, uint32_t index_offset,
+                                   int32_t instances, int32_t base_vertex,
+                                   uint32_t base_instance);
+
+typedef struct MGLBatchTraceAttPod {
+    uint32_t tex;
+    uint32_t target;
+    uint32_t level;
+    const void *ptr;
+    uint32_t w, h;
+    const void *mtl;
+    uint32_t ever, full, source;
+    uint32_t rt_ver, sampled_ver;
+} MGLBatchTraceAttPod;
+
+void mgl_batch_trace_cmd_set_color0(MGLBatchTraceCmdView *v,
+                                    const MGLBatchTraceAttPod *p);
+void mgl_batch_trace_cmd_set_depth(MGLBatchTraceCmdView *v,
+                                   const MGLBatchTraceAttPod *p);
+void mgl_batch_trace_cmd_set_units(MGLBatchTraceCmdView *v, uint32_t u0a,
+                                   uint32_t u0t, uint32_t u1a, uint32_t u1t,
+                                   uint32_t u2a, uint32_t u2t);
+
+/* Single color-attachment mark orchestration. */
+typedef struct MGLBatchRtMarkOneOps {
+    void *ctx;
+    void (*mark_level)(void *ctx);
+    int yflip;
+    void (*apply_yflip)(void *ctx);
+    int should_diag;
+    void (*emit_diag)(void *ctx, uint64_t hit);
+} MGLBatchRtMarkOneOps;
+
+void mgl_batch_rt_mark_one_attachment(uint32_t attachment_index,
+                                      uint32_t bitfield, uint32_t max_attachments,
+                                      uint64_t *diag_hit_inout,
+                                      const MGLBatchRtMarkOneOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

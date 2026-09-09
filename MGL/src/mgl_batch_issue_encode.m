@@ -64,8 +64,8 @@ static void mglDirFill(void *v, uint32_t i, MGLBatchDirectCmdView *out)
 {
     MGLDrawCommand *cmd = &((MGLIssueEncCtx *)v)->batch->commands[i];
     out->type = (uint32_t)cmd->type; out->mode = (uint32_t)cmd->mode;
-    out->count = cmd->count; out->instance_count = cmd->instanceCount;
-    out->base_instance = cmd->baseInstance;
+    out->count = cmd->count; out->first = cmd->first;
+    out->instance_count = cmd->instanceCount; out->base_instance = cmd->baseInstance;
 }
 static int mglDirCullUse(void *v)
 { Program *p = mglResolveProgramForStageFromState(((MGLIssueEncCtx *)v)->ctx, _VERTEX_SHADER);
@@ -107,61 +107,70 @@ static int mglDirPolyPt(void *v, uint32_t mode)
 { return mglPolygonModePointForDrawMode(((MGLIssueEncCtx *)v)->ctx, (GLenum)mode) ? 1 : 0; }
 static void mglDirSkip(void *v, uint32_t i, const char *reason) { mglIssueTrace(v, i, "SKIP", reason); }
 
-static BOOL mglDirCullArrayDraw(MGLIssueEncCtx *c, GLenum mode, GLint first, GLsizei count,
-                                GLsizei ic, GLuint bi)
+static int mglDirTryCullArr(void *v, uint32_t i, uint32_t mode, int32_t first, int32_t count,
+                            int32_t ic, uint32_t bi)
 {
+    (void)i; MGLIssueEncCtx *c = v;
+    if (!mglBatchHasEnc(c->enc)) return 0;
     Program *p = mglResolveProgramForStageFromState(c->ctx, _VERTEX_SHADER);
-    if (!p || !p->uses_cull_distance || !mglBatchHasEnc(c->enc)) return NO;
+    if (!p || !p->uses_cull_distance) return 0;
     return mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->r->_device, mode, first, count, (size_t)ic,
-        (size_t)bi, (__bridge void *)c->r, c->enc, mglRendererBindCullDistanceEmu);
+        c->enc->render_encoder_owner, c->r->_device, (GLenum)mode, first, count, (size_t)ic,
+        (size_t)bi, (__bridge void *)c->r, c->enc, mglRendererBindCullDistanceEmu) ? 1 : 0;
 }
-
-static void mglDirSubmitArrays(void *v, uint32_t i, uint32_t mode, int32_t count, int32_t ic,
-                               uint32_t bi, int poly, const char *reason, const char *cullReason)
+static void mglDirBindCullEmu(void *v, uint32_t mode, int32_t first)
 {
-    MGLIssueEncCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[i];
-    if (!poly && mglDirCullArrayDraw(c, (GLenum)mode, cmd->first, count, ic, bi)) {
-        mglIssueTrace(v, i, "SUBMIT", cullReason); return;
-    }
-    if (!poly) {
-        Program *p = mglResolveProgramForStageFromState(c->ctx, _VERTEX_SHADER);
-        if (p && p->uses_cull_distance)
-            [c->r bindCullDistanceEmulationBuffers:(GLenum)mode firstVertex:(GLuint)cmd->first
-                                   explicitVertices:NULL explicitVertexCount:0u encodeContext:c->enc];
-    }
-    const bool ok = mglEncodeDrawArraysForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->ctx, c->r->_device, (GLenum)mode, cmd->first, count,
-        (size_t)ic, (size_t)bi, "batch");
-    mglIssueTrace(v, i, ok ? "SUBMIT" : "SKIP", reason);
+    MGLIssueEncCtx *c = v;
+    Program *p = mglResolveProgramForStageFromState(c->ctx, _VERTEX_SHADER);
+    if (p && p->uses_cull_distance)
+        [c->r bindCullDistanceEmulationBuffers:(GLenum)mode firstVertex:(GLuint)first
+                               explicitVertices:NULL explicitVertexCount:0u encodeContext:c->enc];
 }
-
-static void mglDirSubmitElements(void *v, uint32_t i, uint32_t mode, int32_t count, int32_t ic,
-                                 int poly)
+static int mglDirEncArr(void *v, uint32_t mode, int32_t first, int32_t count, int32_t ic,
+                        uint32_t bi)
+{
+    MGLIssueEncCtx *c = v;
+    return mglEncodeDrawArraysForRenderEncoderOwner(
+        c->enc->render_encoder_owner, c->ctx, c->r->_device, (GLenum)mode, first, count,
+        (size_t)ic, (size_t)bi, "batch") ? 1 : 0;
+}
+static int mglDirPrepEl(void *v, uint32_t i, MGLBatchDirectElementPrep *out)
 {
     MGLIssueEncCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[i];
     Buffer *glBuf = NULL; id idxBuf = nil;
     if (![c->r resolveElementBufferForCommand:cmd label:"directBatch" context:c->ctx
-                                     glBuffer:&glBuf mtlBuffer:&idxBuf]) {
-        mglIssueTrace(v, i, "SKIP", "direct_resolve_element"); return;
-    }
+                                     glBuffer:&glBuf mtlBuffer:&idxBuf])
+        return 0;
     NSUInteger idxOffset = cmd->indexBufferOffset;
     uint64_t mtlIdxType = mglIndexTypeForGLType(cmd->indexType);
-    if ((GLuint)mtlIdxType == 0xFFFFFFFF) { mglIssueTrace(v, i, "SKIP", "direct_index_type"); return; }
-    const uint8_t *cullSrc = mglElementIndexSourceForDraw(glBuf, idxBuf, cmd->indexType,
-                                                          idxOffset, count);
-    if (!poly && [c->r encodeCullDistanceElementDraw:(GLenum)mode indexBytes:cullSrc
-        indexType:cmd->indexType count:count baseVertex:cmd->baseVertex instanceCount:ic
-        baseInstance:cmd->baseInstance
-        polygonLineMode:mglPolygonModeLineForDrawMode(c->ctx, (GLenum)mode)
-        encodeContext:c->enc]) {
-        mglIssueTrace(v, i, "SUBMIT", "direct_elements_cull_distance_split"); return;
-    }
-    const bool encoded = mglEncodeDrawElementsForRenderEncoderOwner(
-        c->enc->render_encoder_owner, c->ctx, c->r->_device, glBuf, idxBuf, (GLenum)mode,
-        cmd->indexType, idxOffset, count, ic, cmd->baseVertex, cmd->baseInstance, "directBatch");
-    mglIssueTrace(v, i, encoded ? "SUBMIT" : "SKIP",
-                  encoded ? "direct_elements" : "direct_elements_encode_failed");
+    out->gl_buffer = glBuf; out->mtl_buffer = (__bridge void *)idxBuf;
+    out->index_offset = (uint64_t)idxOffset; out->gl_index_type = (uint32_t)cmd->indexType;
+    out->mtl_index_type = (uint32_t)mtlIdxType; out->base_vertex = cmd->baseVertex;
+    out->base_instance = cmd->baseInstance;
+    out->cull_index_bytes = mglElementIndexSourceForDraw(glBuf, idxBuf, cmd->indexType,
+                                                         idxOffset, cmd->count);
+    return 1;
+}
+static int mglDirPolyLine(void *v, uint32_t mode)
+{ return mglPolygonModeLineForDrawMode(((MGLIssueEncCtx *)v)->ctx, (GLenum)mode) ? 1 : 0; }
+static int mglDirTryCullEl(void *v, uint32_t i, uint32_t mode, const MGLBatchDirectElementPrep *prep,
+                           int32_t count, int32_t ic, int poly_line)
+{
+    (void)i; MGLIssueEncCtx *c = v;
+    return [c->r encodeCullDistanceElementDraw:(GLenum)mode indexBytes:prep->cull_index_bytes
+        indexType:(GLenum)prep->gl_index_type count:count baseVertex:prep->base_vertex
+        instanceCount:ic baseInstance:prep->base_instance polygonLineMode:poly_line
+        encodeContext:c->enc] ? 1 : 0;
+}
+static int mglDirEncEl(void *v, uint32_t mode, const MGLBatchDirectElementPrep *prep,
+                       int32_t count, int32_t ic)
+{
+    MGLIssueEncCtx *c = v;
+    return mglEncodeDrawElementsForRenderEncoderOwner(
+        c->enc->render_encoder_owner, c->ctx, c->r->_device, (Buffer *)prep->gl_buffer,
+        (__bridge id)prep->mtl_buffer, (GLenum)mode, (GLenum)prep->gl_index_type,
+        (NSUInteger)prep->index_offset, count, ic, prep->base_vertex, prep->base_instance,
+        "directBatch") ? 1 : 0;
 }
 
 @implementation MGLRenderer (Draw)
@@ -191,8 +200,14 @@ static void mglDirSubmitElements(void *v, uint32_t i, uint32_t mode, int32_t cou
         .has_dyn_texture = mglDirDynTex, .cull_capture = mglDirCullCap,
         .after_cull_ok = mglDirAfterCull, .apply_dyn_bindings = mglDirDyn,
         .apply_cmd_sampler = mglDirSamp, .polygon_mode_point = mglDirPolyPt,
-        .trace_skip = mglDirSkip, .submit_arrays = mglDirSubmitArrays,
-        .submit_elements = mglDirSubmitElements,
+        .trace_skip = mglDirSkip,
+        .array_submit = {.ctx = &ctx, .try_cull_array_split = mglDirTryCullArr,
+                         .bind_cull_emu_arrays = mglDirBindCullEmu,
+                         .encode_arrays = mglDirEncArr, .on_trace = mglIssueTrace},
+        .element_submit = {.ctx = &ctx, .prepare_element = mglDirPrepEl,
+                           .polygon_mode_line = mglDirPolyLine,
+                           .try_cull_element_split = mglDirTryCullEl,
+                           .encode_elements = mglDirEncEl, .on_trace = mglIssueTrace},
     };
     mgl_batch_issue_direct_batch(&ops);
 }

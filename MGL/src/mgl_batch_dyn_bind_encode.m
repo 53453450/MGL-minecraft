@@ -131,41 +131,39 @@ static int mglDynSampledResolve(void *v, const MGLBatchSampledTexCandidate *e,
                                 const bool *touched, void **tex_out, uint32_t *stage_out,
                                 int *needs_samp, void **samp_out, uint32_t *samp_slot)
 {
-    MGLDynSampledCtx *c = v;
-    MGLShaderResource *resource = e->resource;
+    MGLDynSampledCtx *c = v; MGLShaderResource *resource = e->resource;
     GLuint unit = [c->r textureUnitForSampledResource:resource metalBinding:e->metal_slot
                                                 stage:(int)e->stage];
-    if (unit >= TEXTURE_UNITS || !touched[unit]) return 0;
-    Texture *tex_obj = [c->r textureForSampledResource:resource metalBinding:e->metal_slot
-                                                  stage:(int)e->stage
-                                           expectedType:(e->lookup_type ? e->lookup_type
-                                                                        : e->expected_type)];
-    if (!mgl_batch_replay_sampled_tex_object_ok(
-            tex_obj ? 1 : 0, tex_obj && tex_obj->mtl_data ? 1 : 0,
-            tex_obj && tex_obj->dirty_bits ? 1 : 0,
-            tex_obj && tex_obj->is_render_target ? 1 : 0))
-        return -1;
-    id texture = (__bridge id)mglSampledTextureViewForBaseLevel(tex_obj, tex_obj->mtl_data);
+    Texture *tex_obj = (unit < TEXTURE_UNITS && touched[unit])
+        ? [c->r textureForSampledResource:resource metalBinding:e->metal_slot
+              stage:(int)e->stage expectedType:(e->lookup_type ? e->lookup_type
+                                                               : e->expected_type)]
+        : NULL;
+    id texture = (tex_obj && tex_obj->mtl_data)
+        ? (__bridge id)mglSampledTextureViewForBaseLevel(tex_obj, tex_obj->mtl_data) : nil;
     MGLRenderTextureInfo info = {0};
     int info_ok = texture && mglRenderGetTextureInfo((__bridge void *)texture, &info) == 0;
-    if (!mgl_batch_replay_sampled_tex_info_ok(
-            info_ok, info.texture_type, e->expected_type,
-            mglTexturePixelFormatCompatibleWithExpectedDataKind(
-                info.pixel_format, (MGLTextureDataKind)e->expected_kind)))
-        return -1;
+    Sampler *bound = (unit < TEXTURE_UNITS) ? MGL_STATE(c->ctx)->texture_samplers[unit] : NULL;
+    id sampler = nil;
+    if (bound && !bound->dirty_bits && bound->mtl_data) sampler = (__bridge id)bound->mtl_data;
+    else if (tex_obj && tex_obj->params.mtl_data) sampler = (__bridge id)tex_obj->params.mtl_data;
+    MGLBatchSampledResolveGateIn gin = {
+        .unit_ok = (unit < TEXTURE_UNITS && touched[unit]) ? 1 : 0,
+        .has_tex = tex_obj ? 1 : 0, .has_mtl = (tex_obj && tex_obj->mtl_data) ? 1 : 0,
+        .dirty = (tex_obj && tex_obj->dirty_bits) ? 1 : 0,
+        .is_rt = (tex_obj && tex_obj->is_render_target) ? 1 : 0,
+        .info_ok = info_ok, .texture_type = info.texture_type,
+        .expected_type = e->expected_type,
+        .format_compat = mglTexturePixelFormatCompatibleWithExpectedDataKind(
+            info.pixel_format, (MGLTextureDataKind)e->expected_kind),
+        .needs_combined_sampler = e->needs_combined_sampler ? 1 : 0,
+        .has_sampler_mtl = sampler ? 1 : 0,
+    };
+    int gate = mgl_batch_replay_sampled_resolve_gate(&gin);
+    if (gate <= 0) return gate;
     if (stage_out) *stage_out = mglRenderTextureBindingStageForShader((int)e->stage);
     if (tex_out) *tex_out = (__bridge void *)texture;
-    if (!e->needs_combined_sampler) { if (needs_samp) *needs_samp = 0; return 1; }
-    id sampler = nil;
-    Sampler *bound = MGL_STATE(c->ctx)->texture_samplers[unit];
-    if (bound) {
-        if (bound->dirty_bits || !bound->mtl_data) return -1;
-        sampler = (__bridge id)bound->mtl_data;
-    } else if (tex_obj->params.mtl_data) {
-        sampler = (__bridge id)tex_obj->params.mtl_data;
-    } else {
-        return -1;
-    }
+    if (gate == 1) { if (needs_samp) *needs_samp = 0; return 1; }
     if (needs_samp) *needs_samp = 1;
     if (samp_out) *samp_out = (__bridge void *)sampler;
     if (samp_slot) *samp_slot = resource ? mglMetalCombinedSamplerSlot(resource) : e->metal_slot;

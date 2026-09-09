@@ -169,6 +169,46 @@ typedef struct MGLBatchRestoreFromKeyOps {
 
 void mgl_batch_restore_apply_from_key(const MGLBatchRestoreFromKeyOps *ops);
 
+/* ---- A3: restoreStateForBatch whole-sequence driver ---- */
+
+typedef struct MGLBatchRestoreForBatchOps {
+    void *ctx;
+    int has_snapshot;
+    uint32_t forced_bits;
+    uint32_t dirty_fbo_mask; /* DIRTY_FBO */
+    void (*apply_snapshot)(void *ctx);
+    void (*apply_from_key)(void *ctx);
+    void (*after_apply)(void *ctx); /* set active + clear dirty_bits */
+    /* Return 1 if delta path allowed (encoder/bind/env). */
+    int (*can_delta)(void *ctx);
+    /* Plan delta dirty bits; may note perf. Return bits (or full). */
+    uint32_t (*plan_delta_dirty)(void *ctx, uint32_t full_bits,
+                                 MGLBatchDirtyDeltaFlags *flags_out);
+    void (*note_delta_perf)(void *ctx, const MGLBatchDirtyDeltaFlags *flags);
+    void (*fill_fbo)(void *ctx, MGLBatchRestoreFboIn *fbo_out);
+    void (*mark_dirty)(void *ctx, uint32_t replay_dirty_bits);
+} MGLBatchRestoreForBatchOps;
+
+void mgl_batch_restore_run_for_batch(const MGLBatchRestoreForBatchOps *ops);
+
+/* Teardown after flushDrawBufferLocked @finally. */
+typedef struct MGLBatchTeardownOps {
+    void *ctx;
+    int used_replay_workspace;
+    int arena_snapshot_enabled;
+    void (*sync_hash_from_replay)(void *ctx);
+    void (*restore_live_active)(void *ctx);
+    void (*clear_absolute_offsets)(void *ctx);
+    void (*reset_command_buffer)(void *ctx);
+    void (*reset_arena)(void *ctx);
+    void (*restore_saved_state)(void *ctx); /* only if !used_replay */
+    void (*clear_dirty_preserve_hash)(void *ctx);
+    void (*restore_program_pair)(void *ctx);
+    void (*propagate_replay_error)(void *ctx);
+} MGLBatchTeardownOps;
+
+void mgl_batch_teardown_run(const MGLBatchTeardownOps *ops);
+
 #ifdef __cplusplus
 }
 #endif

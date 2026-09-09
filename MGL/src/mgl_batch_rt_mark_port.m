@@ -36,8 +36,6 @@ static int rtRpHas(void *v, void *mtl)
     return 0;
 }
 
-@implementation MGLRenderer (Batch)
-
 - (void)markCurrentFramebufferColorAttachmentWrittenAtIndex:(GLuint)attachmentIndex
 {
     Framebuffer *fbo = ctx ? MGL_STATE(ctx)->framebuffer : NULL;
