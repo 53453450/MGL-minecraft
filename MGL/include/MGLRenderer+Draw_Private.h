@@ -81,6 +81,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  VertexArray *vao,
                                                  GLuint attribute,
                                                  const char *where);
+int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int attribute, const char *where);
 
 /* Cull distance emulation params live in mgl_render.h. */
 

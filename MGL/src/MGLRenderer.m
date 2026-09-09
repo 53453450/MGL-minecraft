@@ -52,6 +52,7 @@
 
 #import "MGLRenderer_Private.h"
 #import "mgl.h"
+#include "mgl_buffer_slots.h"
 #import "mgl_sampler_compat.h"
 #import "mgl_state_log.h"
 #import "mgl_trace_log.h"
@@ -1985,6 +1986,44 @@ static BOOL mglVertexAttribNeedsConvertedMetalStream(Program *program,
         }
     }
     return NO;
+}
+
+int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int attribute, const char *where)
+{
+    if (attribute < 0 || attribute >= MAX_ATTRIBS) {
+        NSLog(@"MGL ERROR: getVertexBufferIndexWithAttributeSet invalid attribute=%d", attribute);
+        return -1;
+    }
+
+    VertexArray *vao = mglRendererGetValidatedVAO(ctx, where);
+    if (vao) {
+        int resolved = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, (GLuint)attribute, where);
+        if (resolved >= 0) {
+            return resolved;
+        }
+    }
+
+    /* Legacy fallback: use cached map list if available. */
+    GLuint mapCount = state->vertex_buffer_map_list.count;
+    if (mapCount > MAX_MAPPED_BUFFERS) {
+        mapCount = MAX_MAPPED_BUFFERS;
+    }
+
+    for (GLuint i = 0; i < mapCount; i++)
+    {
+        if (state->vertex_buffer_map_list.buffers[i].attribute_mask & (0x1u << attribute)) {
+            GLuint baseIndex = state->vertex_buffer_map_list.buffers[i].buffer_base_index;
+            if (baseIndex >= kMGLMaxMetalVertexBufferCount) {
+                NSLog(@"MGL ERROR: getVertexBufferIndexWithAttributeSet mapped base index out of Metal range=%u (max valid=%lu)",
+                      baseIndex, (unsigned long)kMGLMaxMetalVertexBufferIndex);
+                return -1;
+            }
+            return (int)baseIndex;
+        }
+    }
+
+    NSLog(@"MGL ERROR: No vertex buffer mapping found for attribute %d", attribute);
+    return -1;
 }
 
 int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
