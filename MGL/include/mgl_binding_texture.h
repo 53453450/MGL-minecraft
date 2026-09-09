@@ -11,9 +11,10 @@
 /*
  * mgl_binding_texture.h
  *
- * O3.3 residual — sampled-texture / storage-image / depth-recover BindingState
- * plans + image-view helpers. Pure C plans; optional ObjC log helpers in
- * mgl_binding_texture_log.m. No Metal-cpp, no renderer instance.
+ * O3.3 residual — sampled-texture / storage-image / depth-recover /
+ * Y-flip RT / sampler-materialize BindingState plans + image-view helpers.
+ * Pure C plans; optional ObjC log helpers in mgl_binding_texture_log.m
+ * (do not spawn new log shells). No Metal-cpp, no renderer instance.
  * Texture-type integers match mgl_render_values.h (MGLTextureType*).
  * Y-flip decision integers match mgl_coordinate.h (MGL_YFLIP_*).
  *
@@ -145,6 +146,8 @@ typedef struct MGLSampledTextureBindInput {
     int copy_kind_ok;
     int repaired_available;
     int repaired_fresh; /* after repair: content fresh → RETRY else USE_COPY */
+    /* Fragment ORIGINAL path wants base-level view on live RT. */
+    int want_base_level_on_original;
     /* FINAL */
     int has_bound_texture;
     int suppress_missing_fallback;
@@ -165,6 +168,9 @@ typedef struct MGLSampledTextureBindPlan {
     int mark_bound;
     int mark_fallback;
     int mark_nil;
+    /* RT apply ports (ObjC thin set*). */
+    int apply_base_level_view; /* viewForBaseLevel on chosen MTL texture */
+    int force_default_sampler; /* FINAL: depth-fallback → default sampler */
 } MGLSampledTextureBindPlan;
 
 int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
@@ -182,6 +188,93 @@ int mglBindingTextureArrayElementSlotOk(uint32_t metal_slot, uint32_t max_units)
 int mglBindingTextureShouldBindCombinedSampler(int has_combined, int has_sampler,
                                                uint32_t sampler_slot,
                                                uint32_t max_sampler_slots);
+
+/* ---- Sampler materialize plan (V/F shared) ---- */
+
+enum {
+    MGL_SM_ACTION_KEEP = 0,          /* leave sampler as caller default/nil */
+    MGL_SM_ACTION_USE_GL_SAMPLER,    /* unit-bound Sampler object */
+    MGL_SM_ACTION_USE_TEX_PARAMS,    /* TextureParameter.mtl_data */
+    MGL_SM_ACTION_USE_DEFAULT        /* force renderer default sampler */
+};
+
+enum {
+    MGL_SM_REASON_OK = 0,
+    MGL_SM_REASON_FORCE_DEFAULT,
+    MGL_SM_REASON_GL_SAMPLER,
+    MGL_SM_REASON_TEX_PARAMS,
+    MGL_SM_REASON_KEEP
+};
+
+typedef struct MGLSamplerMaterializeInput {
+    int force_default;           /* depth type/kind fallback */
+    int unit_in_range;
+    int has_gl_sampler;
+    int gl_sampler_dirty;
+    int has_gl_sampler_mtl;
+    int has_tex_params_mtl;
+    /* Vertex requires tex-params MTL; fragment assigns even if NULL. */
+    int require_tex_params_mtl;
+} MGLSamplerMaterializeInput;
+
+typedef struct MGLSamplerMaterializePlan {
+    uint32_t action; /* MGL_SM_ACTION_* */
+    uint32_t reason; /* MGL_SM_REASON_* */
+    int recreate_gl_sampler_mtl; /* release dirty + createMTLSampler */
+    int clear_gl_sampler_dirty;
+    /* Static tag for traces; never heap. */
+    const char *source_tag;
+} MGLSamplerMaterializePlan;
+
+int mglBindingTexturePlanSamplerMaterialize(const MGLSamplerMaterializeInput *in,
+                                            MGLSamplerMaterializePlan *out);
+
+/* ---- Sampled bind diagnostic gates (TBIND / sample-detail) ---- */
+
+enum {
+    MGL_SD_ACTION_SKIP = 0,
+    MGL_SD_ACTION_LOG_DETAIL,
+    MGL_SD_ACTION_LOG_GUI_RT,   /* fragment atlas RT path */
+    MGL_SD_ACTION_LOG_READBACK  /* suspicious level readback */
+};
+
+typedef struct MGLSampledDiagGateInput {
+    int stage_is_fragment;
+    int used_fallback;
+    int is_gui_rt_copy_eligible;
+    int focused_loading_window; /* fragment focus program + bindCall window */
+    int vertex_focus_program;   /* historical program==34 */
+    int level0_suspicious_zero;
+    int level0_never_written;
+    int level0_uninit;
+    int has_bound_texture;
+    int is_texel_buffer;
+} MGLSampledDiagGateInput;
+
+typedef struct MGLSampledDiagGatePlan {
+    uint32_t action; /* primary */
+    int log_detail;
+    int log_gui_rt;
+    int log_readback;
+    int log_texel_buffer;
+} MGLSampledDiagGatePlan;
+
+int mglBindingTexturePlanSampledDiag(const MGLSampledDiagGateInput *in,
+                                     MGLSampledDiagGatePlan *out);
+
+
+/* Generic rate-limit helper (early N hits, then every period). */
+int mglBindingTextureRateLogHit(uint64_t *counter, uint64_t early,
+                                uint64_t period);
+
+/* FNV-offset mix for MIP_DIAG sampler-state change detection. */
+uint64_t mglBindingTextureMipDiagMix(uint64_t sig, uint64_t value);
+uint64_t mglBindingTextureMipDiagSignature(
+    uint32_t tex_name, uint32_t min_filter, uint32_t mag_filter,
+    uint32_t base_level, uint32_t max_level, uint64_t mtl_levels,
+    uint64_t mtl_ptr_bits, int via_copy, uint32_t sampled_levels,
+    uint32_t dirty_mip_mask, int version_mismatch);
+
 
 /* ---- Depth-recover plan (InSampler + uninitialized depth RT) ---- */
 
@@ -278,7 +371,90 @@ int mglBindingTextureDepthRecoverLogHit(uint64_t *counter);
 int mglBindingTexturePlanDepthRecover(const MGLDepthRecoverInput *in,
                                       MGLDepthRecoverPlan *out);
 
-/* Rate-limited NSLog helpers (implemented in mgl_binding_texture_log.m). */
+/* Rate-limited NSLog helpers (implemented in mgl_binding_texture_log.m).
+ * Extend this shell only — do not spawn another log TU. */
+
+void mglBindingLogTBINDFocused(
+    const char *stage, uint32_t program, const char *resource,
+    uint32_t metal_slot, uint32_t sampler_unit, uint32_t gl_tex, uint32_t target,
+    const void *mtl, uint64_t mtl_type, uint64_t w, uint64_t h,
+    uint32_t l0w, uint32_t l0h, uint32_t ever, uint32_t init, uint32_t source);
+
+void mglBindingLogTBINDTraceFile(
+    const char *stage, uint32_t program, const char *resource,
+    uint32_t metal_slot, uint32_t sampler_unit, int res_unit, int explicit_unit,
+    uint32_t gl_tex, uint32_t target, int fallback, uint64_t expected_type,
+    uint64_t lookup_type, int expected_index, uint32_t unit_active,
+    uint32_t unit_expected, uint32_t unit_2d, uint32_t unit_cube,
+    const void *mtl, uint64_t mtl_type, uint64_t w, uint64_t h, uint32_t l0w,
+    uint32_t l0h, uint32_t ever, uint32_t init, uint32_t source);
+
+void mglBindingLogSampleDetail(
+    uint64_t bind_call, uint64_t hit, const char *stage, uint32_t program,
+    const char *name, uint32_t binding, uint32_t unit, uint64_t expected_type,
+    int expected_index, uint32_t ptr_tex, const void *ptr, uint32_t target,
+    int fallback, const void *mtl, uint64_t mtl_type, uint64_t mtl_w,
+    uint64_t mtl_h, uint32_t unit_active, uint32_t unit_expected,
+    uint32_t unit_2d, uint32_t unit_cube, uint32_t l0w, uint32_t l0h,
+    uint32_t l0d, uint64_t bytes, uint32_t ever, uint32_t full, uint32_t zero,
+    uint32_t source, uint64_t upload, const void *src, uint64_t hash,
+    uint64_t data_hash);
+
+void mglBindingLogTexCompatMismatch(
+    const char *kind, const char *stage, uint32_t binding, uint32_t program,
+    uint32_t gl_tex, uint64_t mtl_type, uint64_t expected, uint64_t hit);
+void mglBindingLogTexBufferBind(
+    uint64_t hit, uint32_t program, uint32_t binding, uint32_t unit,
+    uint32_t ptr_tex, uint32_t active, uint32_t buffer_slot,
+    uint64_t expected_type, uint64_t lookup_type, const void *mtl,
+    uint64_t mtl_type, uint64_t w, uint64_t h, uint64_t format,
+    const void *sampler);
+void mglBindingLogRTYFlipDecision(
+    const char *stage, uint32_t program, const char *name, uint32_t binding,
+    uint32_t unit, uint32_t tex, const char *label, const char *decision_name,
+    int decision, uint32_t authority, uint32_t rt_ver, uint32_t copy_ver,
+    int has_copy, int sample_yflip);
+void mglBindingLogRTSampleCopyBind(
+    const char *stage, uint32_t program, const char *name, uint32_t binding,
+    uint32_t unit, uint32_t tex, const char *label, const void *original,
+    const void *copy);
+void mglBindingLogRTSampleCopyGateMiss(
+    const char *stage, uint32_t program, const char *name, uint32_t binding,
+    uint32_t unit, uint32_t tex, const char *label, int is_rt, int has_copy,
+    int can_use, uint64_t expected_type);
+void mglBindingLogRTSampleCopySkipYFlip(
+    uint64_t hit, const char *stage, uint32_t program, const char *name,
+    uint32_t binding, uint32_t tex, const char *decision_name, int decision);
+void mglBindingLogRTSampleCopySample(
+    uint64_t hit, uint64_t bind_call, uint32_t program, uint32_t vs,
+    uint32_t fs, const char *name, uint32_t binding, uint32_t unit,
+    uint32_t rt_tex, const char *label, int fallback, int use_copy,
+    const void *ptr, const void *mtl, const void *direct, const void *copy,
+    uint64_t fmt, uint64_t type, uint64_t w, uint64_t h, uint32_t draw_fbo,
+    uint32_t rp_fbo, const void *rp_color, const void *rp_depth);
+
+void mglBindingLogSamplerResolve(
+    const char *stage_tag, uint32_t program, uint32_t binding, uint32_t unit,
+    const char *source, uint32_t sampler_name, uint32_t min_filter,
+    uint32_t mag_filter, uint32_t wrap_s, uint32_t wrap_t, double min_lod,
+    double max_lod, uint32_t gl_tex, uint32_t base, uint32_t max_level,
+    uint32_t tex_w, uint32_t tex_h, uint64_t bound_w, uint64_t bound_h,
+    uint64_t bound_levels);
+void mglBindingLogMipDiagFrag(
+    uint32_t unit, uint32_t binding, uint32_t program, uint32_t gl_tex,
+    const char *source, uint32_t min_filter, uint32_t mag_filter, double min_lod,
+    double max_lod, double aniso, uint32_t base, uint32_t max_level,
+    uint32_t gl_levels, uint64_t mtl_levels, uint64_t mtl_w, uint64_t mtl_h,
+    const void *mtl, int render_target, int via_copy, uint32_t copy_levels,
+    uint32_t dirty_mips, uint32_t rt_ver, uint32_t copy_ver);
+
+void mglBindingLogTexFallback(
+    uint64_t hit, uint32_t binding, uint32_t program, uint32_t gl_tex);
+void mglBindingLogTexFallbackSuppressed(
+    uint64_t hit, uint32_t binding, uint32_t program, const char *name,
+    uint32_t gl_tex, uint32_t unit);
+
+/* Depth-recover NSLog helpers: */
 void mglBindingLogInSamplerDepthHistorySuppressed(
     uint64_t hit, uint32_t program, uint32_t binding, uint32_t unit,
     uint32_t fbo, uint64_t color_att, uint32_t depth_tex, uint32_t paired_color);

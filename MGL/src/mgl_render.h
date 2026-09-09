@@ -1141,7 +1141,7 @@ void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
 int mglRenderHasDirtyBufferBit(uint32_t dirty_bits);
 /* C1: binding slot/sampler/stage/plain-uniform -> mgl_binding_policy.h */
 /* O3.3: stage UBO/SSBO/attrib bind plan + helpers -> mgl_binding_stage.h */
-/* O3.3: sampled/storage/depth-recover plans + image helpers -> mgl_binding_texture.h */
+/* O3.3: sampled/storage/depth-recover/Y-flip/sampler-materialize -> mgl_binding_texture.h */
 /* C1: format-class PSO topology/blend/stencil/viewport -> mgl_pso_format_class.h */
 int mglRenderTextureTargetIsBuffer(uint32_t target);
 uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]);

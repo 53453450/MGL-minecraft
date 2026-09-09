@@ -245,7 +245,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
 - `mgl_binding_policy.*` (**C1 / O3.3** — slot/sampler/stage/plain-uniform)
 - `mgl_binding_stage.*` (**C1 / O3.3 residual** — stage UBO/SSBO + attrib bind plan + helpers)
-- `mgl_binding_texture.*` (**C1 / O3.3 residual** — sampled/storage/depth-recover plans + image-view helpers; log ports in `mgl_binding_texture_log.m`)
+- `mgl_binding_texture.*` (**C1 / O3.3 residual** — sampled/storage/depth-recover/Y-flip RT/sampler-materialize/diag plans + image-view helpers; log ports in `mgl_binding_texture_log.m`)
 - `mgl_pso_format_class.*` (**C1 / O3.2** — topology / format-class / blend·stencil·cull / viewport)
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_air_resource.*` (**C1c** — uniform/opaque resource collection)
@@ -498,12 +498,30 @@ Chose **+BindingState `recoverFragmentSampledDepthTexture` orchestration → `mg
 | Extended | `mgl_binding_texture.{h,c}` — `mglBindingTexturePlanDepthRecover` + InSampler name/log-hit helpers |
 | New | `MGL/src/mgl_binding_texture_log.m` — rate-limited depth-recover NSLog ports |
 | ObjC | `recoverFragmentSampledDepthTexture` → GATE/INSAMPLER/COPY/HISTORY/RT plan@C + thin apply |
-| Residual | Y-flip/sampler materialize + verbose TBIND logs; binding ports still ≫300 |
+| Residual | ~~Y-flip/sampler materialize~~ (see 4m); binding ports still ≫300 |
 | Build | wildcard `*.m` picks up log TU; `make test-binding-stage` runs texture tests |
 | LOC | `mgl_render.cpp` unchanged (~19398); `+BindingState.m` ~4302→~4240 (−62); `+Binding.m` unchanged (488) |
 | Smoke | Linux `cc -std=c11` `test_binding_texture` (+ depth-recover cases) |
 
 **Next strip suggestion (render/ObjC):** BindingState apply masks / Y-flip·sampler materialize; O3.1 pass plan toward &lt;300 ports. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+
+
+## 4m. C1 knife log — Y-flip / sampler materialize (O3.3 residual)
+
+Chose **+BindingState Y-flip RT apply ports + sampler materialize + sampled-diag gates → `mgl_binding_texture`** (DXMT O3.3 residual) over leaving V/F duplicate trees in ObjC: pure `extern "C"` sampler-materialize / RT base-level / diag plans; extend existing `mgl_binding_texture_log.m` (no new log shell). ObjC stays plan@C + thin createMTLSampler / view / queue. Do **not** thicken `+Binding.m`; do **not** sink into `mgl_render.cpp`.
+
+| Item | Detail |
+|------|--------|
+| Extended | `mgl_binding_texture.{h,c}` — `PlanSamplerMaterialize`, RT `apply_base_level_view`, `PlanSampledDiag`, mip-diag signature, rate-log helper |
+| Extended | `mgl_binding_texture_log.m` — TBIND / sample-detail / RT Y-flip / sampler-resolve / fallback ports |
+| ObjC | V/F shared materialize + COMPAT + TBIND emit; `resolveFragmentSampledYFlipAndSampler` / `applySampledRenderTargetCopyPlan` thin apply |
+| Residual | binding ports still ≫300; verbose diag remain behind log ports |
+| Forbidden | did **not** grow `+Binding.m`; did **not** sink into `mgl_render.cpp`; no new log TU |
+| LOC | `mgl_render.cpp` unchanged; `+BindingState.m` ~4240→~4152 (−88); `+Binding.m` unchanged (488) |
+| Smoke | Linux `cc -std=c11` `test_binding_texture` (+ sampler/RT/diag cases) |
+
+**Next strip suggestion (render/ObjC):** BindingState apply masks / further port collapse toward &lt;300; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+
 
 ## 5. C0 / C1 exit criteria
 

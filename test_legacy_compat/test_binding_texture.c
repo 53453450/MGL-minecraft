@@ -240,6 +240,74 @@ static void test_depth_recover_plan(void)
            "rt tag");
 }
 
+
+static void test_sampler_materialize_plan(void)
+{
+    MGLSamplerMaterializeInput in;
+    MGLSamplerMaterializePlan plan;
+    memset(&in, 0, sizeof(in));
+    in.force_default = 1;
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "sm force");
+    expect(plan.action == MGL_SM_ACTION_USE_DEFAULT, "sm default");
+
+    memset(&in, 0, sizeof(in));
+    in.unit_in_range = 1;
+    in.has_gl_sampler = 1;
+    in.gl_sampler_dirty = 1;
+    in.has_gl_sampler_mtl = 1;
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "sm gl");
+    expect(plan.action == MGL_SM_ACTION_USE_GL_SAMPLER, "sm gl act");
+    expect(plan.recreate_gl_sampler_mtl == 1, "sm recreate");
+
+    memset(&in, 0, sizeof(in));
+    in.require_tex_params_mtl = 1;
+    in.has_tex_params_mtl = 1;
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "sm tex");
+    expect(plan.action == MGL_SM_ACTION_USE_TEX_PARAMS, "sm tex act");
+
+    memset(&in, 0, sizeof(in));
+    in.require_tex_params_mtl = 0; /* fragment style */
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "sm frag");
+    expect(plan.action == MGL_SM_ACTION_USE_TEX_PARAMS, "sm frag tex");
+}
+
+static void test_sampled_diag_and_rt_ports(void)
+{
+    MGLSampledTextureBindInput in;
+    MGLSampledTextureBindPlan plan;
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_ST_PHASE_RT;
+    in.is_render_target = 1;
+    in.yflip = 0; /* ORIGINAL */
+    in.want_base_level_on_original = 1;
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt orig");
+    expect(plan.action == MGL_ST_ACTION_RT_ORIGINAL, "rt orig act");
+    expect(plan.apply_base_level_view == 1, "base view");
+
+    memset(&in, 0, sizeof(in));
+    in.phase = MGL_ST_PHASE_RT;
+    in.is_render_target = 1;
+    in.yflip = 1;
+    in.has_sampled_copy = 1;
+    in.copy_fresh = 1;
+    in.can_use_rt_copy = 1;
+    in.copy_type_ok = 1;
+    in.copy_kind_ok = 1;
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "rt copy");
+    expect(plan.apply_base_level_view == 1, "copy view");
+
+    MGLSampledDiagGateInput din;
+    MGLSampledDiagGatePlan dplan;
+    memset(&din, 0, sizeof(din));
+    din.stage_is_fragment = 1;
+    din.used_fallback = 1;
+    expect(mglBindingTexturePlanSampledDiag(&din, &dplan) == 0, "diag");
+    expect(dplan.log_detail == 1, "diag detail");
+
+    uint64_t ctr = 0;
+    expect(mglBindingTextureRateLogHit(&ctr, 1ull, 10ull) == 1, "rate1");
+    expect(mglBindingTextureMipDiagMix(1ull, 2ull) != 0ull, "mix");
+}
 int main(void)
 {
     test_image_helpers();
@@ -248,6 +316,8 @@ int main(void)
     test_attrib_plan();
     test_warmup_gates();
     test_depth_recover_plan();
+    test_sampler_materialize_plan();
+    test_sampled_diag_and_rt_ports();
     if (g_fails) {
         fprintf(stderr, "%d failure(s)\n", g_fails);
         return 1;

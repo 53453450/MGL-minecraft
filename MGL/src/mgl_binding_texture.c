@@ -9,7 +9,8 @@
  */
 
 /*
- * mgl_binding_texture.c — O3.3 residual sampled/storage/depth-recover plans.
+ * mgl_binding_texture.c — O3.3 residual sampled/storage/depth-recover /
+ * Y-flip RT / sampler-materialize plans.
  * Pure C; do not grow +Binding.m / mgl_render.cpp.
  */
 
@@ -188,6 +189,7 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
         if (in->yflip != MGL_BT_YFLIP_SAMPLED_COPY) {
             out->action = MGL_ST_ACTION_RT_ORIGINAL;
             out->reason = MGL_ST_REASON_RT_ORIGINAL;
+            out->apply_base_level_view = in->want_base_level_on_original ? 1 : 0;
             return 0;
         }
         /* Prefer an already-fresh usable copy. */
@@ -195,6 +197,7 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
             in->copy_type_ok && in->copy_kind_ok) {
             out->action = MGL_ST_ACTION_RT_USE_COPY;
             out->reason = MGL_ST_REASON_RT_COPY;
+            out->apply_base_level_view = 1;
             return 0;
         }
         /* Repair attempt results (ObjC filled after freshGLSampled*). */
@@ -202,6 +205,7 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
             if (!in->repaired_fresh) {
                 out->action = MGL_ST_ACTION_RT_USE_COPY;
                 out->reason = MGL_ST_REASON_RT_REPAIR;
+                out->apply_base_level_view = 1;
                 return 0;
             }
             out->action = MGL_ST_ACTION_RT_RETRY;
@@ -240,12 +244,14 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
     if (in->used_type_fallback) {
         out->mark_fallback = 1;
     }
+    if (in->force_default_sampler) {
+        out->force_default_sampler = 1;
+    }
     /* Historical: (!resource || has_combined) && sampler && slot < max */
     if (in->has_sampler && in->sampler_binding < in->max_sampler_slots &&
         (!in->has_resource || in->has_combined_sampler)) {
         out->queue_sampler = 1;
     }
-    (void)in->force_default_sampler;
     return 0;
 }
 
@@ -283,16 +289,141 @@ int mglBindingTextureShouldBindCombinedSampler(int has_combined, int has_sampler
                                                                            : 0;
 }
 
+int mglBindingTexturePlanSamplerMaterialize(const MGLSamplerMaterializeInput *in,
+                                            MGLSamplerMaterializePlan *out) {
+    if (!in || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    out->source_tag = NULL;
+
+    if (in->force_default) {
+        out->action = MGL_SM_ACTION_USE_DEFAULT;
+        out->reason = MGL_SM_REASON_FORCE_DEFAULT;
+        out->source_tag = "default";
+        return 0;
+    }
+    if (in->unit_in_range && in->has_gl_sampler) {
+        out->action = MGL_SM_ACTION_USE_GL_SAMPLER;
+        out->reason = MGL_SM_REASON_GL_SAMPLER;
+        out->source_tag = "glSampler";
+        if (in->gl_sampler_dirty && in->has_gl_sampler_mtl) {
+            out->recreate_gl_sampler_mtl = 1;
+        } else if (!in->has_gl_sampler_mtl) {
+            out->recreate_gl_sampler_mtl = 1;
+        }
+        out->clear_gl_sampler_dirty = 1;
+        return 0;
+    }
+    if (in->require_tex_params_mtl) {
+        if (!in->has_tex_params_mtl) {
+            out->action = MGL_SM_ACTION_KEEP;
+            out->reason = MGL_SM_REASON_KEEP;
+            return 0;
+        }
+        out->action = MGL_SM_ACTION_USE_TEX_PARAMS;
+        out->reason = MGL_SM_REASON_TEX_PARAMS;
+        out->source_tag = "texParamsFallback";
+        return 0;
+    }
+    /* Fragment: assign tex-params MTL even when NULL. */
+    out->action = MGL_SM_ACTION_USE_TEX_PARAMS;
+    out->reason = MGL_SM_REASON_TEX_PARAMS;
+    out->source_tag = "texParamsFallback";
+    return 0;
+}
+
+int mglBindingTextureRateLogHit(uint64_t *counter, uint64_t early,
+                                uint64_t period) {
+    if (!counter) {
+        return 0;
+    }
+    uint64_t hit = ++(*counter);
+    if (early == 0ull) {
+        early = 1ull;
+    }
+    if (period == 0ull) {
+        return hit <= early ? 1 : 0;
+    }
+    return hit <= early || (hit % period) == 0ull ? 1 : 0;
+}
+
 int mglBindingTextureSampledNameIsInSampler(const char *sampled_name) {
     return sampled_name && strcmp(sampled_name, "InSampler") == 0 ? 1 : 0;
 }
 
 int mglBindingTextureDepthRecoverLogHit(uint64_t *counter) {
-    if (!counter) {
+    return mglBindingTextureRateLogHit(counter, 64ull, 512ull);
+}
+
+
+uint64_t mglBindingTextureMipDiagMix(uint64_t sig, uint64_t value) {
+    sig ^= value;
+    sig *= 1099511628211ULL;
+    return sig;
+}
+
+uint64_t mglBindingTextureMipDiagSignature(
+    uint32_t tex_name, uint32_t min_filter, uint32_t mag_filter,
+    uint32_t base_level, uint32_t max_level, uint64_t mtl_levels,
+    uint64_t mtl_ptr_bits, int via_copy, uint32_t sampled_levels,
+    uint32_t dirty_mip_mask, int version_mismatch) {
+    uint64_t signature = 1469598103934665603ULL;
+    signature = mglBindingTextureMipDiagMix(signature, tex_name);
+    signature = mglBindingTextureMipDiagMix(signature, min_filter);
+    signature = mglBindingTextureMipDiagMix(signature, mag_filter);
+    signature = mglBindingTextureMipDiagMix(signature, base_level);
+    signature = mglBindingTextureMipDiagMix(signature, max_level);
+    signature = mglBindingTextureMipDiagMix(signature, mtl_levels);
+    signature = mglBindingTextureMipDiagMix(signature, mtl_ptr_bits);
+    signature = mglBindingTextureMipDiagMix(signature, via_copy ? 1u : 0u);
+    signature = mglBindingTextureMipDiagMix(signature, sampled_levels);
+    signature = mglBindingTextureMipDiagMix(signature, dirty_mip_mask);
+    signature = mglBindingTextureMipDiagMix(signature, version_mismatch ? 1u : 0u);
+    return signature;
+}
+
+int mglBindingTexturePlanSampledDiag(const MGLSampledDiagGateInput *in,
+                                     MGLSampledDiagGatePlan *out) {
+    if (!in || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    if (in->is_texel_buffer) {
+        out->log_texel_buffer = 1;
+        out->action = MGL_SD_ACTION_LOG_DETAIL;
         return 0;
     }
-    uint64_t hit = ++(*counter);
-    return hit <= 64ull || (hit % 512ull) == 0ull ? 1 : 0;
+    int level_bad = in->level0_suspicious_zero || in->level0_never_written ||
+                    in->level0_uninit;
+    if (in->stage_is_fragment) {
+        int suspicious = in->used_fallback || in->is_gui_rt_copy_eligible ||
+                         in->focused_loading_window || level_bad;
+        /* historical also flags glTex name==13; caller ORs into used_fallback
+         * or focused window before calling. */
+        if (!suspicious) {
+            out->action = MGL_SD_ACTION_SKIP;
+            return 0;
+        }
+        out->log_detail = 1;
+        out->action = MGL_SD_ACTION_LOG_DETAIL;
+        if (in->is_gui_rt_copy_eligible) {
+            out->log_gui_rt = 1;
+            out->action = MGL_SD_ACTION_LOG_GUI_RT;
+        }
+        if (in->has_bound_texture && level_bad) {
+            out->log_readback = 1;
+        }
+        return 0;
+    }
+    /* vertex: focus program 34 or bad level0 */
+    if (in->vertex_focus_program || level_bad) {
+        out->log_detail = 1;
+        out->action = MGL_SD_ACTION_LOG_DETAIL;
+        return 0;
+    }
+    out->action = MGL_SD_ACTION_SKIP;
+    return 0;
 }
 
 int mglBindingTexturePlanDepthRecover(const MGLDepthRecoverInput *in,
