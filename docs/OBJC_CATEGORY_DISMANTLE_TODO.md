@@ -46,7 +46,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+Texture.m` | ~6990 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口 |
 | `+RenderPass.m` | ~6959 | **厚** | 拆：`processGLState` / load-store / PSO desc 填表 → C++；ObjC 只 `MTLRenderPassDescriptor` 物化 |
 | `+Blit.m` | ~4969 | **厚** | 拆：clip/format/DS unify plan → 已有 sink 方向；ObjC 只 blit encoder 端口 |
-| `+BindingState.m` | ~4523 | **厚** | 拆：slot/stage/UBO/SSBO 表 → C++；ObjC 只 `setVertexBuffer` 等绑定口 |
+| `+BindingState.m` | ~4302 | **厚** | 拆：slot/stage/UBO/SSBO/attrib/texture/image → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口 |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
 | `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
 | `+DrawStageHost.m` | ~363 | 薄 | A1：保留（非空）；bindCull/MS + 一行包装；GS 扩张已无策略 |
@@ -144,6 +144,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [ ] **O3.3** `+BindingState` / `+Binding` 合并下沉 slot 表；ObjC 绑定口 &lt; 300 LOC
   - [x] **C1 本刀**：slot/sampler/stage/plain-uniform policy → `mgl_binding_policy.*`（render ~20470→~20165）；`+Binding.m` 未增厚；残量 BindingState apply（仍厚）
   - [x] **C1 续刀**：stage UBO/SSBO/UC/atomic bind plan + helpers → `mgl_binding_stage.*`；V/F map 环 → plan@C + 薄 set*Buffer 口；fallback 资源类型表；`test-binding-stage`；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；残量 attrib/texture/image BindingState 仍厚（口远未 &lt;300）
+  - [x] **C1 本刀**：attrib plan + helpers → `mgl_binding_stage.*`；sampled/storage/image-view plans + helpers → `mgl_binding_texture.*`；V sampled GATE/COMPAT/FINAL + shared RT copy helper；storage V/F 合并 stage 环；`test-binding-texture`；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~4523→~4302；残量 depth-recover / 厚 logging / 口仍 ≫300
 - [ ] **O3.4** `MGLPipelineCache.m` → C++ LRU cache（兼 FPS 掉帧 P0）
 - [ ] **O3.5** 验收：`+RenderPass.m` &lt; 800 LOC；PSO miss 行为有非 CTS 单测
 

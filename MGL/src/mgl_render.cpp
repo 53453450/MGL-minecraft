@@ -7220,39 +7220,7 @@ int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
 
 /* O3.3: UseInlineFragmentBytes..IsolateCopyLength -> mgl_binding_stage.c */
 
-int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
-    return shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
-                   shader_gl_type == GL_INT_VEC3 ||
-                   shader_gl_type == GL_INT_VEC4
-               ? 1
-               : 0;
-}
-
-int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind, int already_present) {
-    return conversion_kind == MGL_ATTRIB_CONV_NONE && already_present ? 1 : 0;
-}
-
-int mglRenderAttribNeedsConversionBind(int conversion_kind) {
-    return conversion_kind != MGL_ATTRIB_CONV_NONE ? 1 : 0;
-}
-
-int mglRenderAttribWrittenRangeTracked(int64_t written_min, int64_t written_max) {
-    return written_min >= 0 && written_max >= 0 ? 1 : 0;
-}
-
-int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
-                                       int64_t written_min, int64_t written_max) {
-    return attr_off < written_min || attr_end > written_max ? 1 : 0;
-}
-
-uint64_t mglRenderVertexMetalBindOffset(int absolute_mode,
-                                        uint64_t binding_offset) {
-    return absolute_mode ? binding_offset : 0u;
-}
-
-int mglRenderBindingOffsetInMetal(uint64_t offset, uint64_t metal_len) {
-    return offset < metal_len ? 1 : 0;
-}
+/* O3.3: IntegerAttribDstIsInt..BindingOffsetInMetal -> mgl_binding_stage.c */
 
 int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_bytes,
                              uint64_t metal_len) {
@@ -7276,61 +7244,7 @@ uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
                : mglRenderGLTypeSizeToVertexFormat(type, size, normalized);
 }
 
-uint32_t mglRenderImageBindPixelFormat(uint32_t internalformat,
-                                       uint32_t native_format,
-                                       uint32_t mapped_bind_format) {
-    if (internalformat == 0u) {
-        return native_format;
-    }
-    if (mapped_bind_format == 0u) {
-        return native_format;
-    }
-    return mapped_bind_format;
-}
-
-int mglRenderImageTargetIsMultisample(uint32_t gl_target) {
-    return gl_target == GL_TEXTURE_2D_MULTISAMPLE ||
-                   gl_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY
-               ? 1
-               : 0;
-}
-
-int mglRenderImageLevelInRange(uint32_t level, uint32_t mipmap_count) {
-    return level < mipmap_count ? 1 : 0;
-}
-
-int mglRenderImageNeedsNonLayeredSlice(int layered, int is_ms, uint32_t src_type,
-                                       uint32_t *dst_type_out) {
-    if (layered || is_ms) {
-        return 0;
-    }
-    uint32_t dst = 0u;
-    if (src_type == MGLTextureType2DArray || src_type == MGLTextureType3D ||
-        src_type == MGLTextureTypeCube || src_type == MGLTextureTypeCubeArray) {
-        dst = MGLTextureType2D;
-    } else if (src_type == MGLTextureType1DArray) {
-        dst = MGLTextureType1D;
-    } else {
-        return 0;
-    }
-    if (dst_type_out) {
-        *dst_type_out = dst;
-    }
-    return 1;
-}
-
-int mglRenderImageNeedsFormatOrMipView(uint32_t level, uint32_t bind_format,
-                                       uint32_t native_format) {
-    return level > 0u || bind_format != native_format ? 1 : 0;
-}
-
-uint64_t mglRenderImageViewSliceCount(uint32_t src_type, uint64_t array_length) {
-    uint64_t slices = array_length;
-    if (src_type == MGLTextureTypeCube || src_type == MGLTextureTypeCubeArray) {
-        slices = array_length * 6u;
-    }
-    return slices < 1u ? 1u : slices;
-}
+/* O3.3: ImageBindPixelFormat..ImageViewSliceCount -> mgl_binding_texture.c */
 
 int mglRenderIsTextureBufferTarget(uint32_t gl_target) {
     return gl_target == GL_TEXTURE_BUFFER ? 1 : 0;

@@ -318,8 +318,25 @@ typedef struct {
                            alreadyDone:(const MGLResourceSyncWork *)done;
 - (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
+- (bool)bindStorageImagesForStage:(int)shaderStage
+                          program:(Program *)program
+                        bindStage:(uint32_t)metalBindStage;
 - (bool)bindStorageImagesForVertexProgram:(Program *)vertexProgram
                           fragmentProgram:(Program *)fragmentProgram;
+- (bool)applySampledRenderTargetCopyPlan:(Texture *)ptr
+                                 texture:(id *)texturePtr
+                             sampleProgram:(Program *)sampleProgram
+                              expectedType:(uint32_t)expectedType
+                              expectedKind:(MGLTextureDataKind)expectedKind
+                         usedTypeFallback:(BOOL)usedTypeFallback
+                                   stage:(const char *)stage
+                            programName:(GLuint)programName
+                            spirvBinding:(GLuint)spirvBinding
+                              textureUnit:(GLuint)textureUnit
+                              sampledName:(const char *)sampledName
+                     usedSampledCopyOut:(BOOL *)usedSampledCopyOut
+                   directTextureForTrace:(id *)directTextureForTrace
+                   sampledCopyForTrace:(id *)sampledCopyForTrace;
 - (bool)bindActiveTexturesToMTL;
 
 // === Dedup state management ===

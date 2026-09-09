@@ -362,3 +362,151 @@ int mglBindingStagePlanMapEntry(const MGLStageBufferBindInput *in,
     out->mark_any_present = 1;
     return 0;
 }
+
+/* ---- Attrib helpers + plan (O3.3 attrib BindingState) ---- */
+
+enum {
+    MGL_SB_GL_INT = 0x1404,
+    MGL_SB_GL_INT_VEC2 = 0x8B53,
+    MGL_SB_GL_INT_VEC3 = 0x8B54,
+    MGL_SB_GL_INT_VEC4 = 0x8B55,
+    MGL_SB_ATTRIB_CONV_NONE = 0,
+    MGL_SB_ATTRIB_SPAN_OVERFLOW = -2
+};
+
+int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
+    return shader_gl_type == MGL_SB_GL_INT ||
+                   shader_gl_type == MGL_SB_GL_INT_VEC2 ||
+                   shader_gl_type == MGL_SB_GL_INT_VEC3 ||
+                   shader_gl_type == MGL_SB_GL_INT_VEC4
+               ? 1
+               : 0;
+}
+
+int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind,
+                                         int already_present) {
+    return conversion_kind == MGL_SB_ATTRIB_CONV_NONE && already_present ? 1
+                                                                        : 0;
+}
+
+int mglRenderAttribNeedsConversionBind(int conversion_kind) {
+    return conversion_kind != MGL_SB_ATTRIB_CONV_NONE ? 1 : 0;
+}
+
+int mglRenderAttribWrittenRangeTracked(int64_t written_min,
+                                       int64_t written_max) {
+    return written_min >= 0 && written_max >= 0 ? 1 : 0;
+}
+
+int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
+                                       int64_t written_min,
+                                       int64_t written_max) {
+    return attr_off < written_min || attr_end > written_max ? 1 : 0;
+}
+
+uint64_t mglRenderVertexMetalBindOffset(int absolute_mode,
+                                        uint64_t binding_offset) {
+    return absolute_mode ? binding_offset : 0u;
+}
+
+int mglRenderBindingOffsetInMetal(uint64_t offset, uint64_t metal_len) {
+    return offset < metal_len ? 1 : 0;
+}
+
+int mglBindingStagePlanAttribEntry(const MGLAttribBindInput *in,
+                                   MGLAttribBindPlan *out) {
+    if (!in || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    if (!in->program_uses_attrib) {
+        out->action = MGL_ATTR_ACTION_SKIP;
+        out->reason = MGL_ATTR_REASON_UNUSED;
+        return 0;
+    }
+    if (!in->uses_current_value && !in->has_attrib_binding) {
+        out->action = MGL_ATTR_ACTION_SKIP;
+        out->reason = MGL_ATTR_REASON_NO_BINDING;
+        return 0;
+    }
+    if (in->mapped_index < 0 ||
+        (uint32_t)in->mapped_index >= in->max_metal_slots) {
+        out->action = MGL_ATTR_ACTION_SKIP;
+        out->reason = MGL_ATTR_REASON_BAD_MAP;
+        return 0;
+    }
+    out->metal_slot = (uint32_t)in->mapped_index;
+
+    if (in->uses_current_value) {
+        out->action = MGL_ATTR_ACTION_CURRENT;
+        out->reason = MGL_ATTR_REASON_CURRENT;
+        out->metal_bind_offset = 0u;
+        out->mark_present = 1;
+        return 0;
+    }
+
+    if (!in->has_attrib_binding) {
+        out->action = MGL_ATTR_ACTION_SKIP;
+        out->reason = MGL_ATTR_REASON_NO_BINDING;
+        return 0;
+    }
+
+    if (!in->offsets_valid) {
+        out->action = MGL_ATTR_ACTION_BLOCK;
+        out->reason = MGL_ATTR_REASON_BAD_OFFSET;
+        return 0;
+    }
+    if (in->span_status == MGL_SB_ATTRIB_SPAN_OVERFLOW) {
+        out->action = MGL_ATTR_ACTION_BLOCK;
+        out->reason = MGL_ATTR_REASON_SPAN_OVERFLOW;
+        return 0;
+    }
+
+    if (mglRenderSkipAlreadyBoundUnconverted(in->conversion_kind,
+                                             in->already_present)) {
+        out->action = MGL_ATTR_ACTION_SKIP_ALREADY;
+        out->reason = MGL_ATTR_REASON_ALREADY;
+        return 0;
+    }
+
+    if (mglRenderAttribNeedsConversionBind(in->conversion_kind)) {
+        out->action = MGL_ATTR_ACTION_CONVERT;
+        out->reason = MGL_ATTR_REASON_CONVERT;
+        out->metal_bind_offset = 0u;
+        out->mark_present = 1;
+        return 0;
+    }
+
+    if (in->phase == MGL_ATTR_PHASE_SELECT) {
+        out->action = MGL_ATTR_ACTION_NEED_MTL;
+        out->reason = MGL_ATTR_REASON_NEED_ENSURE;
+        return 0;
+    }
+
+    if (!in->has_mtl_data || !in->mtl_usable) {
+        out->action = MGL_ATTR_ACTION_SKIP;
+        out->reason = MGL_ATTR_REASON_BAD_MTL;
+        return 0;
+    }
+
+    out->metal_bind_offset = mglRenderVertexMetalBindOffset(
+        in->absolute_vertex_offsets, in->binding_offset);
+    if (!mglRenderBindingOffsetInMetal(in->binding_offset, in->metal_len)) {
+        /* Historical: check binding_offset against metal_len (not bind offset). */
+        out->action = MGL_ATTR_ACTION_SKIP;
+        out->reason = MGL_ATTR_REASON_BAD_MTL;
+        return 0;
+    }
+
+    if (in->binding_state_valid && in->buffer_matches) {
+        out->action = MGL_ATTR_ACTION_SKIP_MATCHED;
+        out->reason = MGL_ATTR_REASON_MATCHED;
+        out->mark_present = 1;
+        return 0;
+    }
+
+    out->action = MGL_ATTR_ACTION_BIND;
+    out->reason = MGL_ATTR_REASON_BIND;
+    out->mark_present = 1;
+    return 0;
+}

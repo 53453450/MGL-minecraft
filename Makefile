@@ -730,8 +730,22 @@ $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 		MGL/src/mgl_binding_stage.c \
 		-o $@
 
-test-binding-stage: $(build_dir)/test_binding_stage
+$(build_dir)/test_binding_texture: test_legacy_compat/test_binding_texture.c \
+	MGL/src/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
+	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
+	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -Werror -g -O0 -std=c11 \
+		-IMGL/include -IMGL/src \
+		test_legacy_compat/test_binding_texture.c \
+		MGL/src/mgl_binding_texture.c \
+		MGL/src/mgl_binding_stage.c \
+		MGL/src/mgl_binding_policy.c \
+		-o $@
+
+test-binding-stage: $(build_dir)/test_binding_stage $(build_dir)/test_binding_texture
 	$(build_dir)/test_binding_stage
+	$(build_dir)/test_binding_texture
 
 $(build_dir)/test_geometry_gather: test_legacy_compat/test_geometry_gather.c
 	@mkdir -p $(dir $@)
@@ -905,6 +919,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
+	MGL/src/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
 	MGL/src/mgl_pso_format_class.c MGL/include/mgl_pso_format_class.h \
 	MGL/src/mgl_tess_factor_normalize.c MGL/src/mgl_tess_domain_gen.c \
 	MGL/include/mgl_tess_domain.h \
@@ -921,6 +936,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_readback_policy.c \
 		MGL/src/mgl_binding_policy.c \
 		MGL/src/mgl_binding_stage.c \
+		MGL/src/mgl_binding_texture.c \
 		MGL/src/mgl_pso_format_class.c \
 		MGL/src/mgl_tess_factor_normalize.c \
 		MGL/src/mgl_tess_domain_gen.c \

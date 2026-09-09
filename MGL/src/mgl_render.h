@@ -22,6 +22,7 @@
 #include "mgl_readback_policy.h"
 #include "mgl_binding_policy.h"
 #include "mgl_binding_stage.h"
+#include "mgl_binding_texture.h"
 #include "mgl_pso_format_class.h"
 
 /* Forward decl (mgl_types_texture.h pulls in GLMContext-typed state). */
@@ -1086,29 +1087,12 @@ int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
                              uint32_t divisor, uint64_t first_vertex,
                              uint64_t last_vertex, int64_t vbo_size,
                              MGLRenderAttribFetchPlan *out);
-int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
-int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind, int already_present);
-int mglRenderAttribNeedsConversionBind(int conversion_kind);
-int mglRenderAttribWrittenRangeTracked(int64_t written_min, int64_t written_max);
-int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
-                                       int64_t written_min, int64_t written_max);
-uint64_t mglRenderVertexMetalBindOffset(int absolute_mode,
-                                        uint64_t binding_offset);
-int mglRenderBindingOffsetInMetal(uint64_t offset, uint64_t metal_len);
+/* O3.3: IntegerAttribDstIsInt..BindingOffsetInMetal -> mgl_binding_stage.h */
 int mglRenderIndexStreamFits(uint64_t offset, uint64_t count, uint32_t elem_bytes,
                              uint64_t metal_len);
 uint32_t mglRenderAttribFormatOrFallback(uint32_t planned, uint32_t type,
                                          uint32_t size, int normalized);
-uint32_t mglRenderImageBindPixelFormat(uint32_t internalformat,
-                                       uint32_t native_format,
-                                       uint32_t mapped_bind_format);
-int mglRenderImageTargetIsMultisample(uint32_t gl_target);
-int mglRenderImageLevelInRange(uint32_t level, uint32_t mipmap_count);
-int mglRenderImageNeedsNonLayeredSlice(int layered, int is_ms, uint32_t src_type,
-                                       uint32_t *dst_type_out);
-int mglRenderImageNeedsFormatOrMipView(uint32_t level, uint32_t bind_format,
-                                       uint32_t native_format);
-uint64_t mglRenderImageViewSliceCount(uint32_t src_type, uint64_t array_length);
+/* O3.3: ImageBindPixelFormat..ImageViewSliceCount -> mgl_binding_texture.h */
 int mglRenderIsTextureBufferTarget(uint32_t gl_target);
 int mglRenderTextureDimsValid(uint32_t gl_target, int32_t width, int32_t height,
                               int32_t depth);
@@ -1156,7 +1140,8 @@ void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
                                    uint64_t *array_len, uint32_t *height_out);
 int mglRenderHasDirtyBufferBit(uint32_t dirty_bits);
 /* C1: binding slot/sampler/stage/plain-uniform -> mgl_binding_policy.h */
-/* O3.3: stage UBO/SSBO bind plan + helpers -> mgl_binding_stage.h */
+/* O3.3: stage UBO/SSBO/attrib bind plan + helpers -> mgl_binding_stage.h */
+/* O3.3: sampled/storage image plans + image helpers -> mgl_binding_texture.h */
 /* C1: format-class PSO topology/blend/stencil/viewport -> mgl_pso_format_class.h */
 int mglRenderTextureTargetIsBuffer(uint32_t target);
 uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]);

@@ -11,13 +11,14 @@
 /*
  * mgl_binding_stage.h
  *
- * O3.3 residual — stage buffer (UBO / SSBO / plain-uniform / atomic)
- * bind plan + helpers extracted for +BindingState. Pure C; no Metal-cpp,
+ * O3.3 residual — stage buffer (UBO / SSBO / plain-uniform / atomic) +
+ * vertex-attrib bind plan + helpers for +BindingState. Pure C; no Metal-cpp,
  * no renderer instance. Resource-type integers use mgl_types_program ABI
  * (_UNIFORM_BUFFER_RES=1, _UNIFORM_CONSTANT_RES=2, _STORAGE_BUFFER_RES=3,
- * _ATOMIC_COUNTER_RES=9).
+ * _ATOMIC_COUNTER_RES=9). Attrib conversion kinds match mgl_render.h
+ * (MGL_ATTRIB_CONV_*).
  *
- * ObjC +BindingState stays a thin set*Buffer / set*Bytes port over the plan.
+ * ObjC +BindingState stays a thin set*Buffer / set*Bytes / set*Texture port.
  * Do not sink these helpers into mgl_render.cpp.
  * Do not grow +Binding.m into a thick shell.
  *
@@ -174,6 +175,84 @@ int mglBindingStageResolveSlot(int is_base_binding, int has_metal_binding,
 /* Fallback slot bind: 1 if missing any_present and fallback buffer exists. */
 int mglBindingStageFallbackNeedsBind(int any_present_at_slot,
                                      int has_fallback_buffer);
+
+
+/* ---- Attrib bind helpers (ex-mgl_render.cpp) ---- */
+
+int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
+int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind, int already_present);
+int mglRenderAttribNeedsConversionBind(int conversion_kind);
+int mglRenderAttribWrittenRangeTracked(int64_t written_min, int64_t written_max);
+int mglRenderAttribOutsideWrittenRange(int64_t attr_off, int64_t attr_end,
+                                       int64_t written_min, int64_t written_max);
+uint64_t mglRenderVertexMetalBindOffset(int absolute_mode,
+                                        uint64_t binding_offset);
+int mglRenderBindingOffsetInMetal(uint64_t offset, uint64_t metal_len);
+
+/* ---- Vertex-attrib bind plan ---- */
+
+enum {
+    MGL_ATTR_PHASE_SELECT = 0, /* before MTL ensure */
+    MGL_ATTR_PHASE_POST_MTL = 1
+};
+
+enum {
+    MGL_ATTR_ACTION_SKIP = 0,
+    MGL_ATTR_ACTION_CURRENT,       /* packed current-value pool */
+    MGL_ATTR_ACTION_BLOCK,         /* abort draw */
+    MGL_ATTR_ACTION_SKIP_ALREADY,  /* unconverted + already present */
+    MGL_ATTR_ACTION_CONVERT,       /* converted stream @0 */
+    MGL_ATTR_ACTION_NEED_MTL,      /* ensure MTL then POST */
+    MGL_ATTR_ACTION_BIND,          /* setVertexBuffer */
+    MGL_ATTR_ACTION_SKIP_MATCHED   /* already bound */
+};
+
+enum {
+    MGL_ATTR_REASON_OK = 0,
+    MGL_ATTR_REASON_UNUSED,
+    MGL_ATTR_REASON_NO_BINDING,
+    MGL_ATTR_REASON_BAD_MAP,
+    MGL_ATTR_REASON_CURRENT,
+    MGL_ATTR_REASON_BAD_OFFSET,
+    MGL_ATTR_REASON_SPAN_OVERFLOW,
+    MGL_ATTR_REASON_ALREADY,
+    MGL_ATTR_REASON_CONVERT,
+    MGL_ATTR_REASON_NEED_ENSURE,
+    MGL_ATTR_REASON_BAD_MTL,
+    MGL_ATTR_REASON_BIND,
+    MGL_ATTR_REASON_MATCHED
+};
+
+typedef struct MGLAttribBindInput {
+    int phase;
+    int program_uses_attrib;
+    int uses_current_value;
+    int has_attrib_binding;
+    int32_t mapped_index;
+    uint32_t max_metal_slots;
+    int offsets_valid;          /* mglRenderAttribOffsetsValid */
+    int span_status;            /* MGL_ATTRIB_SPAN_* (0=ok, -2=overflow) */
+    int conversion_kind;        /* MGL_ATTRIB_CONV_* */
+    int already_present;
+    int has_mtl_data;
+    int mtl_usable;
+    uint64_t binding_offset;
+    uint64_t metal_len;
+    int absolute_vertex_offsets;
+    int binding_state_valid;
+    int buffer_matches; /* last-bound matches candidate @ metal_bind_offset */
+} MGLAttribBindInput;
+
+typedef struct MGLAttribBindPlan {
+    uint32_t action;
+    uint32_t reason;
+    uint32_t metal_slot;
+    uint64_t metal_bind_offset;
+    int mark_present;
+} MGLAttribBindPlan;
+
+int mglBindingStagePlanAttribEntry(const MGLAttribBindInput *in,
+                                   MGLAttribBindPlan *out);
 
 #ifdef __cplusplus
 }
