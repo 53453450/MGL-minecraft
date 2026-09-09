@@ -15,6 +15,7 @@
 #import "MGLRenderer+Texture_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
 
 enum {
     MGL_TEXTURE_RESOURCE_STORAGE_SHARED = 0u,
@@ -71,19 +72,6 @@ static MGLRegionValue mglRendererCompatRegion(int32_t x, int32_t y,
         .size = {(uint64_t)width, (uint64_t)height, 1u},
     };
 }
-
-static MGLOriginValue mglTextureOrigin(uint64_t x, uint64_t y, uint64_t z)
-{ return (MGLOriginValue){(int64_t)x, (int64_t)y, (int64_t)z}; }
-static MGLSizeValue mglTextureSize(uint64_t width, uint64_t height, uint64_t depth)
-{ return (MGLSizeValue){width, height, depth}; }
-static MGLRegionValue mglTextureRegion1D(uint64_t x, uint64_t width)
-{ return (MGLRegionValue){mglTextureOrigin(x, 0, 0), mglTextureSize(width, 1, 1)}; }
-static MGLRegionValue mglTextureRegion2D(uint64_t x, uint64_t y,
-                                         uint64_t width, uint64_t height)
-{ return (MGLRegionValue){mglTextureOrigin(x, y, 0), mglTextureSize(width, height, 1)}; }
-static MGLRegionValue mglTextureRegion3D(uint64_t x, uint64_t y, uint64_t z,
-                                         uint64_t width, uint64_t height, uint64_t depth)
-{ return (MGLRegionValue){mglTextureOrigin(x, y, z), mglTextureSize(width, height, depth)}; }
 
 void mglRendererReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,

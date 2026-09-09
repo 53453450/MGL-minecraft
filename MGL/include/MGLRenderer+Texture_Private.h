@@ -36,15 +36,9 @@
 
 #import "MGLRenderer.h"
 
-#ifndef MGL_VALUE_GEOMETRY_TYPES
-#define MGL_VALUE_GEOMETRY_TYPES 1
-typedef struct MGLSizeValue_t { uint64_t width, height, depth; } MGLSizeValue;
-typedef struct MGLOriginValue_t { int64_t x, y, z; } MGLOriginValue;
-typedef struct MGLRegionValue_t {
-    MGLOriginValue origin;
-    MGLSizeValue size;
-} MGLRegionValue;
-#endif
+/* Value geometry types + constructors now live in mgl_region_value.h
+ * (C++-safe, O4 dedup sink).  MGL_VALUE_GEOMETRY_TYPES guard is defined there. */
+#include "mgl_region_value.h"
 
 /* === Texture upload diagnostic constants === */
 static const BOOL kMGLSynchronizeTextureUploads = NO;

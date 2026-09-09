@@ -18,6 +18,7 @@
 #include "mgl_batch_path.h"
 #include "mgl_aux_assets.h"
 #include <stdio.h>
+#include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
 
 /* Shared state for mtlBlitFramebuffer color blit helpers.
  * Filled after attachment resolution and clip computation, then
@@ -57,32 +58,6 @@ static MGLRenderTextureInfo mglBlitTextureInfo(id texture)
         (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
     }
     return info;
-}
-
-static MGLSizeValue mglBlitSize(NSUInteger width, NSUInteger height,
-                                NSUInteger depth)
-{
-    return (MGLSizeValue){width, height, depth};
-}
-
-static MGLOriginValue mglBlitOrigin(NSUInteger x, NSUInteger y, NSUInteger z)
-{
-    return (MGLOriginValue){(int64_t)x, (int64_t)y, (int64_t)z};
-}
-
-static MGLRegionValue mglBlitRegion2D(NSUInteger x, NSUInteger y,
-                                      NSUInteger width, NSUInteger height)
-{
-    return (MGLRegionValue){mglBlitOrigin(x, y, 0),
-                            mglBlitSize(width, height, 1)};
-}
-
-static MGLRegionValue mglBlitRegion3D(NSUInteger x, NSUInteger y,
-                                      NSUInteger z, NSUInteger width,
-                                      NSUInteger height, NSUInteger depth)
-{
-    return (MGLRegionValue){mglBlitOrigin(x, y, z),
-                            mglBlitSize(width, height, depth)};
 }
 
 static id mglBlitCreateBuffer(id device,
