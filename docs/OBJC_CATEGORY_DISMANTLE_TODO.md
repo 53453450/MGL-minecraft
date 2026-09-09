@@ -257,4 +257,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
     - **下一刀候选**（O5）：`mgl_draw_encode.m` 余下 `mglEncode*ForRenderEncoderOwner` 需把 `MGLDrawMetalHandle` 改 `void*` + 调用方 `__bridge` 后方可整文件迁 C++；或转 O5.2（`+Compute.m` dispatch plan）。
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
+23. **上游 SIGSEGV 已修（6f53544，2026-09-09）**：[16/93] `air_geometry_resources` 的 `EXC_BAD_ACCESS`（`objc_retain` ← AGX `setBuffer_impl` ← `mglDrawGsExecuteMetalExpansion`）根因是 **GS compute-binding 计划的 temporaries 生命周期**：`mglGsMetalFillComputeBindings` 用局部 `NSMutableArray` 保活 plan 里的借用 MTL 指针，ARC 在函数返回时释放数组，而 C++ 侧在其后才 encode/dispatch。修复：`fill_compute_bindings` 新增 `void **temporaries_out` 出参，以 +1 CF 引用交还 keep-alive 集，C++ 侧用既有 `OwnedList` 追踪（作用域覆盖 expansion + XFB scatter 两次 execute）。compute-dispatch 与 tessellation 路径 temps/execute 同作用域，无同类问题。
+    - **回归基线变化**：`test-regression` 首次跑完 93 项：**PASS 80 / FAIL 11 / SKIP 2**。11 个失败为此前被 [16] 崩溃掩盖的既有失败：10× `air_tessellation_*`（accumulation、isolines_point_mode/variants/indexed/multidraw/rasterdiscard/tripoint_instanced/xfb、factors_spacing、cull_distance，均 rc=1）+ `legacy_glsl_frontend`（rc=31）。**这些不在本次修复引入范围内，需独立排查**（嫌疑：tess-domain 重构 5d81d98 行为变化）。
+    - **另**：`test-mglair` `TCS_FACTOR_FAIL (patch=0 factor=5 bits=0x0000)` 经 stash 基线法确认为既有失败（与 GS temporaries 修复无关）。
+    - **诊断教训**：旧 "+Compute.m temporaries" 定位已失效（BSD grep `\|` 转义不生效静默漏配）；真实栈以 `.ips` 崩溃报告为准，先做泄漏对照实验确认生命周期根因再改码。
+
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
