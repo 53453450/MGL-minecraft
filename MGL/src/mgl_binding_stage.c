@@ -510,3 +510,31 @@ int mglBindingStagePlanAttribEntry(const MGLAttribBindInput *in,
     out->mark_present = 1;
     return 0;
 }
+
+uint32_t mglBindingStageBuildPresentMask(const uint8_t *present, uint32_t count)
+{
+    uint32_t mask = 0u;
+    uint32_t i;
+    if (!present)
+        return 0u;
+    if (count > 32u)
+        count = 32u;
+    for (i = 0; i < count; i++) {
+        if (present[i])
+            mask |= (1u << i);
+    }
+    return mask;
+}
+
+uint32_t mglBindingStageCountPresent(const uint8_t *present, uint32_t count)
+{
+    uint32_t n = 0u;
+    uint32_t i;
+    if (!present)
+        return 0u;
+    for (i = 0; i < count; i++) {
+        if (present[i])
+            n++;
+    }
+    return n;
+}

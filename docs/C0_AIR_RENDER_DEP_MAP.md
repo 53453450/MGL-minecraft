@@ -245,7 +245,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
 - `mgl_binding_policy.*` (**C1 / O3.3** — slot/sampler/stage/plain-uniform)
 - `mgl_binding_stage.*` (**C1 / O3.3 residual** — stage UBO/SSBO + attrib bind plan + helpers)
-- `mgl_binding_texture.*` (**C1 / O3.3 residual** — sampled/storage/depth-recover/Y-flip RT/sampler-materialize/diag plans + image-view helpers; log ports in `mgl_binding_texture_log.m`)
+- `mgl_binding_texture.*` (**C1 / O3.3 residual** — sampled/storage/depth-recover/Y-flip RT/sampler-materialize/diag/apply-mask plans + image-view helpers; log ports in `mgl_binding_texture_log.m` freeze/shrink)
 - `mgl_pso_format_class.*` (**C1 / O3.2** — topology / format-class / blend·stencil·cull / viewport)
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_air_resource.*` (**C1c** — uniform/opaque resource collection)
@@ -520,7 +520,24 @@ Chose **+BindingState Y-flip RT apply ports + sampler materialize + sampled-diag
 | LOC | `mgl_render.cpp` unchanged; `+BindingState.m` ~4240→~4152 (−88); `+Binding.m` unchanged (488) |
 | Smoke | Linux `cc -std=c11` `test_binding_texture` (+ sampler/RT/diag cases) |
 
-**Next strip suggestion (render/ObjC):** BindingState apply masks / further port collapse toward &lt;300; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+**Next strip suggestion (render/ObjC):** (superseded by 4n) further BindingState residual / O3.1 pass plan.
+
+
+## 4n. C1 knife log — port collapse / apply-masks (O3.3 residual)
+
+Chose **+BindingState apply-masks + port collapse** (DXMT O3.3 residual; after 5bc4a20 texture_log growth review): sampler-warmup plan, V/F snapshot shared emit macros, collapsed TBIND/sample-detail/gui/readback diag ports, merged depth/RT/fallback log POD entry points (**shrink** `mgl_binding_texture_log.m`). Honest metric = BindingState + texture_log. Do **not** thicken `+Binding.m`; do **not** sink into `mgl_render.cpp`; **freeze/shrink** log shell only.
+
+| Item | Detail |
+|------|--------|
+| Extended | `mgl_binding_texture.{h,c}` — `PlanSamplerWarmup`, `SampledMarkKind`; stage `BuildPresentMask`/`CountPresent` |
+| Shrunk | `mgl_binding_texture_log.m` — merged DepthRecover / RTSampleCopy / TexFallbackEx (345→~327) |
+| ObjC | warmup single loop; shared snap emit; `emitSampledDiagPorts` V/F; deleted `resolveFragmentSampledYFlipAndSampler` wrapper |
+| Forbidden | did **not** grow `+Binding.m` (488); did **not** sink into `mgl_render.cpp`; no new log TU; log shell not grown |
+| LOC | `+BindingState.m` ~4152→~3855 (−297); texture_log 345→~327 (−18); **honest combined** ~4497→~4182 (−315) |
+| Smoke | Linux `cc -std=c11` `test_binding_texture` (+ apply-mask cases) |
+
+**Next strip suggestion (render/ObjC):** BindingState residual toward &lt;300 ports; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m` or `texture_log.m`.
+
 
 
 ## 5. C0 / C1 exit criteria
@@ -540,5 +557,6 @@ Chose **+BindingState Y-flip RT apply ports + sampler materialize + sampled-diag
 - [x] **C1** (O3.3 residual stage bind plan): V/F UBO·SSBO plan + helpers → `mgl_binding_stage.{h,c}`; `mgl_render.cpp` ~19558→~19484 (−74); `+BindingState.m` ~4675→~4523; `test-binding-stage`; `+Binding.m` not grown
 - [x] **C1** (O3.3 residual attrib/texture/image): attrib plan → stage; sampled/storage → `mgl_binding_texture.*`; `mgl_render.cpp` ~19484→~19398 (−86); `+BindingState.m` ~4523→~4302 (−221); `test-binding-texture`; `+Binding.m` not grown
 - [x] **C1** (O3.3 residual InSampler depth-recover): depth-recover plan → `mgl_binding_texture.*` + log ports; `+BindingState.m` ~4302→~4240 (−62); `test-binding-texture` depth cases; `+Binding.m` not grown; `mgl_render.cpp` unchanged
-- [ ] Future knives: BindingState apply masks / Y-flip·sampler materialize / O3.1 pass plan toward &lt;300 ports; later expr facade; keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1** (O3.3 residual port collapse / apply-masks): warmup/snap/diag ports + shrink texture_log; `+BindingState.m` ~4152→~3855; honest combined −315; `+Binding.m` not grown
+- [ ] Future knives: BindingState residual / O3.1 pass plan toward &lt;300 ports; later expr facade; keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted; **do not grow texture_log.m**
 

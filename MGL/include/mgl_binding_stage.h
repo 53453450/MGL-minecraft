@@ -177,6 +177,13 @@ int mglBindingStageFallbackNeedsBind(int any_present_at_slot,
                                      int has_fallback_buffer);
 
 
+/* ---- Present-slot apply masks (V/F buffer bind end) ---- */
+
+/* Build uint32 mask from present[0..count) where present[i]!=0 → bit i. */
+uint32_t mglBindingStageBuildPresentMask(const uint8_t *present, uint32_t count);
+/* Count non-zero entries in present[0..count). */
+uint32_t mglBindingStageCountPresent(const uint8_t *present, uint32_t count);
+
 /* ---- Attrib bind helpers (ex-mgl_render.cpp) ---- */
 
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);

@@ -12,9 +12,10 @@
  * mgl_binding_texture.h
  *
  * O3.3 residual — sampled-texture / storage-image / depth-recover /
- * Y-flip RT / sampler-materialize BindingState plans + image-view helpers.
- * Pure C plans; optional ObjC log helpers in mgl_binding_texture_log.m
- * (do not spawn new log shells). No Metal-cpp, no renderer instance.
+ * Y-flip RT / sampler-materialize / apply-masks BindingState plans +
+ * image-view helpers. Pure C plans; optional ObjC log helpers in
+ * mgl_binding_texture_log.m (freeze/shrink only — never grow). No Metal-cpp,
+ * no renderer instance.
  * Texture-type integers match mgl_render_values.h (MGLTextureType*).
  * Y-flip decision integers match mgl_coordinate.h (MGL_YFLIP_*).
  *
@@ -180,6 +181,34 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
 int mglBindingTextureSamplerWarmupSlotActive(const uint32_t mask[4],
                                              uint32_t slot);
 int mglBindingTextureSamplerMaskEmpty(const uint32_t mask[4]);
+
+/* Warmup apply-mask: OR V/F sampled_texture_unit_mask → mode + count. */
+enum {
+    MGL_SW_MODE_NONE = 0, /* no default sampler to warm */
+    MGL_SW_MODE_MASK = 1, /* warm only slots set in mask */
+    MGL_SW_MODE_ALL = 2   /* no program or empty mask → warm all */
+};
+
+typedef struct MGLSamplerWarmupPlan {
+    uint32_t mode; /* MGL_SW_MODE_* */
+    uint32_t warmup_count;
+    uint32_t mask[4];
+} MGLSamplerWarmupPlan;
+
+/* vertex_mask/fragment_mask may be NULL (treated as empty). */
+void mglBindingTexturePlanSamplerWarmup(
+    int has_default_sampler, int has_vertex_program, int has_fragment_program,
+    const uint32_t vertex_mask[4], const uint32_t fragment_mask[4],
+    uint32_t max_units, uint32_t max_sampler_slots, MGLSamplerWarmupPlan *out);
+
+/* Sampled bind mark apply-mask (FINAL counters). */
+enum {
+    MGL_ST_MARK_NONE = 0,
+    MGL_ST_MARK_BOUND = 1,
+    MGL_ST_MARK_FALLBACK = 2,
+    MGL_ST_MARK_NIL = 3
+};
+uint32_t mglBindingTextureSampledMarkKind(int has_texture, int used_fallback);
 
 /* Separate-sampler / array-element gates. */
 int mglBindingTextureSeparateSamplerInRange(uint32_t spirv, uint32_t gl,
@@ -414,17 +443,6 @@ void mglBindingLogRTYFlipDecision(
     uint32_t unit, uint32_t tex, const char *label, const char *decision_name,
     int decision, uint32_t authority, uint32_t rt_ver, uint32_t copy_ver,
     int has_copy, int sample_yflip);
-void mglBindingLogRTSampleCopyBind(
-    const char *stage, uint32_t program, const char *name, uint32_t binding,
-    uint32_t unit, uint32_t tex, const char *label, const void *original,
-    const void *copy);
-void mglBindingLogRTSampleCopyGateMiss(
-    const char *stage, uint32_t program, const char *name, uint32_t binding,
-    uint32_t unit, uint32_t tex, const char *label, int is_rt, int has_copy,
-    int can_use, uint64_t expected_type);
-void mglBindingLogRTSampleCopySkipYFlip(
-    uint64_t hit, const char *stage, uint32_t program, const char *name,
-    uint32_t binding, uint32_t tex, const char *decision_name, int decision);
 void mglBindingLogRTSampleCopySample(
     uint64_t hit, uint64_t bind_call, uint32_t program, uint32_t vs,
     uint32_t fs, const char *name, uint32_t binding, uint32_t unit,
@@ -448,52 +466,93 @@ void mglBindingLogMipDiagFrag(
     const void *mtl, int render_target, int via_copy, uint32_t copy_levels,
     uint32_t dirty_mips, uint32_t rt_ver, uint32_t copy_ver);
 
-void mglBindingLogTexFallback(
-    uint64_t hit, uint32_t binding, uint32_t program, uint32_t gl_tex);
-void mglBindingLogTexFallbackSuppressed(
-    uint64_t hit, uint32_t binding, uint32_t program, const char *name,
-    uint32_t gl_tex, uint32_t unit);
 
-/* Depth-recover NSLog helpers: */
-void mglBindingLogInSamplerDepthHistorySuppressed(
-    uint64_t hit, uint32_t program, uint32_t binding, uint32_t unit,
-    uint32_t fbo, uint64_t color_att, uint32_t depth_tex, uint32_t paired_color);
-void mglBindingLogInSamplerDepthNoCopy(
-    uint64_t hit, uint32_t program, uint32_t binding, uint32_t unit,
-    uint32_t fbo, uint64_t color_att, uint32_t depth_tex, uint32_t color_tex,
-    uint64_t depth_fmt, uint32_t sampled_ver, uint32_t rt_ver);
-void mglBindingLogInSamplerDepthPairedDirect(
-    uint64_t hit, uint32_t program, uint32_t binding, uint32_t unit,
-    uint32_t fbo, uint32_t depth_tex, uint32_t color_tex, uint64_t depth_fmt,
-    uint64_t color_fmt, uint64_t w, uint64_t h);
-void mglBindingLogInSamplerDepthUnpaired(
-    uint64_t hit, uint32_t program, uint32_t binding, uint32_t unit,
-    uint32_t depth_tex, uint64_t fmt, uint64_t w, uint64_t h);
-void mglBindingLogInSamplerDepthHistoryRecovery(
-    uint64_t hit, const char *reason, uint32_t program, uint32_t binding,
-    uint32_t unit, uint32_t fbo, uint64_t color_att, uint32_t depth_tex,
-    uint32_t recover_tex, uint64_t depth_fmt, uint64_t recover_fmt,
-    uint64_t w, uint64_t h, int copy, int prev_ver, uint32_t sampled_ver,
-    uint32_t rt_ver, uint32_t paired_color, int paired_current);
-void mglBindingLogSampledDepthRtSkip(
-    uint64_t hit, uint32_t program, const char *name, uint32_t binding,
-    uint32_t unit, uint32_t fbo, uint64_t color_att, uint32_t depth_tex,
-    uint32_t color_tex);
-void mglBindingLogSampledDepthRtSuppressLast2D(
-    uint64_t hit, uint32_t program, const char *name, uint32_t binding,
-    uint32_t unit, uint32_t depth_tex, uint32_t last2d);
-void mglBindingLogSampledDepthRtRecover(
-    uint64_t hit, const char *reason, uint32_t program, const char *name,
-    uint32_t binding, uint32_t unit, uint32_t depth_tex, uint32_t recover_tex,
-    uint64_t fmt, uint64_t recover_fmt, uint64_t w, uint64_t h,
-    const void *level, uint32_t ever, uint32_t init, uint32_t unit_active,
-    uint32_t unit_tex2d, uint32_t unit_last2d, uint32_t recover_fbo,
-    uint32_t current_fbo, uint32_t color_tex, uint32_t fbo_depth_tex);
-void mglBindingLogSampledDepthRtFallback(
-    uint64_t hit, uint32_t program, const char *name, uint32_t binding,
-    uint32_t unit, uint32_t depth_tex, uint64_t fmt, uint64_t w, uint64_t h,
-    const void *level, uint32_t ever, uint32_t init, uint32_t unit_active,
-    uint32_t unit_tex2d, uint32_t unit_last2d);
+/* Depth-recover / RT-sample-copy / fallback log ports (merged — shrink shell).
+ * Prefer these over the old per-message wrappers (removed). */
+
+enum {
+    MGL_DR_LOG_NONE = 0,
+    MGL_DR_LOG_HIST_SUPPRESSED,
+    MGL_DR_LOG_NO_COPY,
+    MGL_DR_LOG_PAIRED_DIRECT,
+    MGL_DR_LOG_UNPAIRED,
+    MGL_DR_LOG_HISTORY_RECOVERY,
+    MGL_DR_LOG_RT_SKIP,
+    MGL_DR_LOG_RT_SUPPRESS_LAST2D,
+    MGL_DR_LOG_RT_RECOVER,
+    MGL_DR_LOG_RT_FALLBACK
+};
+
+typedef struct MGLBindingDepthLog {
+    uint32_t kind; /* MGL_DR_LOG_* */
+    uint64_t hit;
+    uint32_t program;
+    uint32_t binding;
+    uint32_t unit;
+    uint32_t fbo;
+    uint64_t color_att;
+    uint32_t depth_tex;
+    uint32_t color_tex;
+    uint32_t recover_tex;
+    uint32_t paired_color;
+    uint32_t last2d;
+    uint64_t depth_fmt;
+    uint64_t color_fmt;
+    uint64_t recover_fmt;
+    uint64_t w;
+    uint64_t h;
+    uint32_t sampled_ver;
+    uint32_t rt_ver;
+    int copy;
+    int prev_ver;
+    int paired_current;
+    const char *reason;
+    const char *name;
+    const void *level;
+    uint32_t ever;
+    uint32_t init;
+    uint32_t unit_active;
+    uint32_t unit_tex2d;
+    uint32_t unit_last2d;
+    uint32_t recover_fbo;
+    uint32_t current_fbo;
+    uint32_t fbo_depth_tex;
+} MGLBindingDepthLog;
+
+void mglBindingLogDepthRecover(const MGLBindingDepthLog *log);
+
+enum {
+    MGL_RT_LOG_BIND = 1,
+    MGL_RT_LOG_GATE_MISS = 2,
+    MGL_RT_LOG_SKIP_YFLIP = 3
+};
+
+typedef struct MGLBindingRTCopyLog {
+    uint32_t kind; /* MGL_RT_LOG_* */
+    uint64_t hit;
+    const char *stage;
+    uint32_t program;
+    const char *name;
+    uint32_t binding;
+    uint32_t unit;
+    uint32_t tex;
+    const char *label;
+    const void *original;
+    const void *copy;
+    int is_rt;
+    int has_copy;
+    int can_use;
+    uint64_t expected_type;
+    const char *decision_name;
+    int decision;
+} MGLBindingRTCopyLog;
+
+void mglBindingLogRTSampleCopy(const MGLBindingRTCopyLog *log);
+
+/* Fallback: suppressed!=0 → SUPPRESSED path. */
+void mglBindingLogTexFallbackEx(uint64_t hit, uint32_t binding, uint32_t program,
+                                uint32_t gl_tex, int suppressed, const char *name,
+                                uint32_t unit);
 
 #ifdef __cplusplus
 }

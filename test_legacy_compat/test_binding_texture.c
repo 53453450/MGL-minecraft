@@ -308,6 +308,34 @@ static void test_sampled_diag_and_rt_ports(void)
     expect(mglBindingTextureRateLogHit(&ctr, 1ull, 10ull) == 1, "rate1");
     expect(mglBindingTextureMipDiagMix(1ull, 2ull) != 0ull, "mix");
 }
+
+static void test_apply_masks(void)
+{
+    MGLSamplerWarmupPlan warm;
+    uint32_t vmask[4] = {0x3u, 0, 0, 0};
+    uint32_t fmask[4] = {0x4u, 0, 0, 0};
+    mglBindingTexturePlanSamplerWarmup(1, 1, 1, vmask, fmask, 32, 16, &warm);
+    expect(warm.mode == MGL_SW_MODE_MASK, "warm mask mode");
+    expect(warm.mask[0] == 0x7u, "warm or mask");
+    expect(warm.warmup_count == 16u, "warm count capped");
+    expect(mglBindingTextureSamplerWarmupSlotActive(warm.mask, 0) == 1, "slot0");
+    expect(mglBindingTextureSamplerWarmupSlotActive(warm.mask, 3) == 0, "slot3");
+
+    mglBindingTexturePlanSamplerWarmup(1, 0, 0, NULL, NULL, 32, 16, &warm);
+    expect(warm.mode == MGL_SW_MODE_ALL, "warm all no prog");
+
+    mglBindingTexturePlanSamplerWarmup(0, 1, 1, vmask, fmask, 32, 16, &warm);
+    expect(warm.mode == MGL_SW_MODE_NONE, "warm none");
+
+    expect(mglBindingTextureSampledMarkKind(1, 0) == MGL_ST_MARK_BOUND, "mark bound");
+    expect(mglBindingTextureSampledMarkKind(1, 1) == MGL_ST_MARK_FALLBACK, "mark fb");
+    expect(mglBindingTextureSampledMarkKind(0, 0) == MGL_ST_MARK_NIL, "mark nil");
+
+    uint8_t present[8] = {1, 0, 1, 1, 0, 0, 0, 1};
+    expect(mglBindingStageBuildPresentMask(present, 8) == 0x8Du, "present mask");
+    expect(mglBindingStageCountPresent(present, 8) == 4u, "present count");
+}
+
 int main(void)
 {
     test_image_helpers();
@@ -318,6 +346,7 @@ int main(void)
     test_depth_recover_plan();
     test_sampler_materialize_plan();
     test_sampled_diag_and_rt_ports();
+    test_apply_masks();
     if (g_fails) {
         fprintf(stderr, "%d failure(s)\n", g_fails);
         return 1;

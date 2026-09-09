@@ -270,6 +270,60 @@ int mglBindingTextureSamplerMaskEmpty(const uint32_t mask[4]) {
     return (mask[0] | mask[1] | mask[2] | mask[3]) == 0u ? 1 : 0;
 }
 
+void mglBindingTexturePlanSamplerWarmup(
+    int has_default_sampler, int has_vertex_program, int has_fragment_program,
+    const uint32_t vertex_mask[4], const uint32_t fragment_mask[4],
+    uint32_t max_units, uint32_t max_sampler_slots, MGLSamplerWarmupPlan *out)
+{
+    uint32_t i;
+    if (!out) {
+        return;
+    }
+    out->mode = MGL_SW_MODE_NONE;
+    out->warmup_count = 0u;
+    out->mask[0] = out->mask[1] = out->mask[2] = out->mask[3] = 0u;
+    if (!has_default_sampler) {
+        return;
+    }
+    if (vertex_mask) {
+        for (i = 0; i < 4u; i++) {
+            out->mask[i] |= vertex_mask[i];
+        }
+    }
+    if (fragment_mask) {
+        for (i = 0; i < 4u; i++) {
+            out->mask[i] |= fragment_mask[i];
+        }
+    }
+    out->warmup_count = max_units;
+    if (out->warmup_count > max_sampler_slots) {
+        out->warmup_count = max_sampler_slots;
+    }
+    {
+        int has_prog = has_vertex_program || has_fragment_program;
+        int empty = mglBindingTextureSamplerMaskEmpty(out->mask);
+        if (has_prog && !empty) {
+            out->mode = MGL_SW_MODE_MASK;
+        } else {
+            out->mode = MGL_SW_MODE_ALL;
+        }
+    }
+}
+
+uint32_t mglBindingTextureSampledMarkKind(int has_texture, int used_fallback)
+{
+    if (has_texture && !used_fallback) {
+        return MGL_ST_MARK_BOUND;
+    }
+    if (used_fallback) {
+        return MGL_ST_MARK_FALLBACK;
+    }
+    if (!has_texture) {
+        return MGL_ST_MARK_NIL;
+    }
+    return MGL_ST_MARK_NIL;
+}
+
 int mglBindingTextureSeparateSamplerInRange(uint32_t spirv, uint32_t gl,
                                             uint32_t max_units) {
     return !mglRenderMetalBindingPastUnits(spirv, max_units) &&
