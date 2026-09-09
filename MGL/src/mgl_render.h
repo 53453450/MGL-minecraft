@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include "mgl_render_values.h"
 #include "mgl_readback_policy.h"
+#include "mgl_binding_policy.h"
 
 /* Forward decl (mgl_types_texture.h pulls in GLMContext-typed state). */
 typedef struct TextureLevel_t TextureLevel;
@@ -1172,61 +1173,7 @@ void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
                                    uint64_t height, uint32_t *type,
                                    uint64_t *array_len, uint32_t *height_out);
 int mglRenderHasDirtyBufferBit(uint32_t dirty_bits);
-uint32_t mglRenderShaderResourceElementCount(uint32_t gl_array_size);
-int mglRenderImageUnitsInRange(uint32_t metal_slot, uint32_t gl_unit,
-                               uint32_t max_units);
-uint32_t mglRenderImageUnitFromResource(int explicit_by_slot,
-                                        uint32_t explicit_unit,
-                                        int32_t sampler_unit,
-                                        uint32_t gl_binding, uint32_t element);
-int mglRenderComputeTextureBindKind(uint32_t spvc_type);
-int mglRenderComputeTextureListExpandsByElement(uint32_t spvc_type);
-int mglRenderComputeTextureBindIsStorage(uint32_t kind);
-int mglRenderComputeTextureBindNeedsSampler(uint32_t kind, int has_combined);
-int mglRenderShaderResourceTypeIsSamplerImage(uint32_t res_type);
-const char *mglRenderShaderResourceTypeName(uint32_t res_type);
-int mglRenderPlainUniformBindingForName(const char *name);
-uint32_t mglRenderClientBufferBindingForResource(uint32_t resource_type,
-                                                 const char *name,
-                                                 int32_t uniform_location,
-                                                 uint32_t location,
-                                                 uint32_t gl_binding);
-int mglRenderPlainUniformAllowsGlobalFallback(const char *name);
-uint32_t mglRenderStageBufferResourceElementCount(uint32_t resource_type,
-                                                  int has_res,
-                                                  uint32_t ubo_array_size,
-                                                  int has_ubo_members,
-                                                  int32_t gl_array_size);
-uint32_t mglRenderClientBufferBindingForResourceElement(
-    uint32_t resource_type, uint32_t base_binding, uint32_t element,
-    const uint32_t *ubo_array_bindings, uint32_t ubo_array_size);
-uint32_t mglRenderCombinedSamplerSlot(int has_res, int has_combined,
-                                      uint32_t combined_binding);
-uint32_t mglRenderCombinedSamplerSlotForElement(int has_res, int has_combined,
-                                                uint32_t combined_binding,
-                                                uint32_t element);
-int mglRenderSamplerNameLooksSamplerLike(const char *name);
-int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim,
-                                      int32_t uniform_location, const char *name);
-uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
-                                    uint32_t element, uint32_t fallback);
-int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);
-int mglRenderShaderStageValid(int stage);
-int mglRenderStageMapsVertexAttribs(int stage);
-int mglRenderVertexCaptureNeedsLoad(int stage, const void *bytes,
-                                    const void *library, const void *function);
-int mglRenderStageUsesComputeBufferMap(int stage);
-uint32_t mglRenderTextureBindingStageForShader(int shader_stage);
-int mglRenderSamplerBindingStageForShader(int shader_stage,
-                                          uint32_t *out_stage);
-uint32_t mglRenderSampledResourceUnit(int sampler_unit_explicit,
-                                      int32_t sampler_unit,
-                                      uint32_t metal_binding,
-                                      uint32_t resource_binding,
-                                      uint32_t max_units);
-uint32_t mglRenderDefaultSamplerUnit(int32_t default_unit, uint32_t max_units);
-int mglRenderMetalBindingPastUnits(uint32_t metal_binding, uint32_t max_units);
-int mglRenderExpectedTypeUnset(uint32_t expected_type);
+/* C1: binding slot/sampler/stage/plain-uniform -> mgl_binding_policy.h */
 int mglRenderNeedsExplicitTopology(int geometry_expansion, uint32_t last_draw_mode,
                                    int vs_writes_layer);
 uint32_t mglRenderPrimitiveTopologyClass(uint32_t gl_mode);

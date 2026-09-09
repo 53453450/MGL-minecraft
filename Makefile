@@ -891,6 +891,7 @@ test-mcrepro: $(build_dir)/test_mcrepro
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
 	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h \
+	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_tess_factor_normalize.c MGL/src/mgl_tess_domain_gen.c \
 	MGL/include/mgl_tess_domain.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
@@ -904,6 +905,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render.cpp \
 		MGL/src/mgl_readback_policy.c \
+		MGL/src/mgl_binding_policy.c \
 		MGL/src/mgl_tess_factor_normalize.c \
 		MGL/src/mgl_tess_domain_gen.c \
 		MGL/src/mgl_renderer_backend.cpp \

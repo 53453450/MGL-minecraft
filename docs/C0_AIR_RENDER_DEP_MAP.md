@@ -1,7 +1,7 @@
 # C0 — Dependency map: `mgl_air_backend.cpp` & `mgl_render.cpp`
 
 > Track **C0** was docs-only; **C1** started monolith knives (IntegerReadback out).
-> Snapshot: `main` @ C1g air stmt emit (~13.8k air / ~20.5k render LOC). Re-measure with `wc -l` after splits.
+> Snapshot: `main` @ C1 binding-policy strip (~13.8k air / ~20.2k render LOC). Re-measure with `wc -l` after splits.
 > Purpose: make include / caller / domain boundaries visible before any TU knife.
 
 ---
@@ -11,7 +11,7 @@
 | TU | ~LOC | Role | Risk if sink blindly |
 |----|-----:|------|----------------------|
 | `MGL/src/mgl_air_backend.cpp` | ~13762 | GLSL AST → LLVM AIR → `.metallib` | Mixes expr emit, stage ABI, legacy rewrite, reflect helpers; **type (C1b) + resource (C1c) + math (C1d) + VarSym (C1e) + matrix builtins (C1f) + stmt emit (C1g) extracted** |
-| `MGL/src/mgl_render.cpp` | ~20470 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, …) |
+| `MGL/src/mgl_render.cpp` | ~20165 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, binding, …) |
 
 Policy (OBJC TODO / ARCH): **do not grow these**; new sinks land in domain TUs.
 
@@ -175,7 +175,8 @@ ObjC runtime / Mach / Block headers are also included for Metal object class pro
 | ~6638–7200 | Stage binding / tess factor helpers | `EncodeStageBindingCopyBacks`, tess factor |
 | ~~7238–7549~~ | ~~Integer readback classify~~ | **C1 extracted** → `mgl_readback_policy.{h,c}` (`Convert` + `Source`/`Packed`/`Classify`) |
 | ~~CopyRows / depth / GetTexImagePlan / MSAA stride~~ | ~~Y-flip / depth pack / plan~~ | **C1 extracted** → same TU; Metal `EncodeMultisampleResolve*` residual in monolith |
-| ~7550–8500 | Binding policy / residual near former readback | sampler/slot maps |
+| ~~7550–~8038 slot/sampler/stage/plain-uniform~~ | ~~Binding policy~~ | **C1 extracted** → `mgl_binding_policy.{h,c}` (O3.3); residual PSO topology from `NeedsExplicitTopology` |
+| ~8040–8500 | Binding/PSO residual after binding-policy knife | topology / blend prelude |
 | ~8509–9400 | PSO / pass / blend / stencil / viewport | `PipelinePass*`, `Blend*FromGL` |
 | ~9400–11200 | Format tables / clear mask / UBO pack | pixel-format class, plain-uniform pack |
 | ~11214–12000 | Index expand / gather / blit plan | fan/strip/quad expand, `BlitFramebufferPlan` |
@@ -241,6 +242,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 
 - `mgl_buffer_plan.*`, `mgl_render_pass_plan.*`, `mgl_tess_domain.*`
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
+- `mgl_binding_policy.*` (**C1** / O3.3 — slot/sampler/stage/plain-uniform binding policy)
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_air_resource.*` (**C1c** — uniform/opaque resource collection)
 - `mgl_air_math.*` (**C1d** — math/pack/bitfield builtins; not emitExpr/matrix)
@@ -412,6 +414,23 @@ Chose **air statement emit → `mgl_air_stmt.*`** (DXMT C1g). Coherent strip: `e
 
 **Next strip suggestion:** later expr facade (still defer whole emitExpr body), or remaining module-assembly residual. Do **not** sink back into `mgl_air_backend.cpp`. Parallel: Batch honest cluster still ~1923; `mgl_render` ~20.5k — not claimed done.
 
+
+## 4h. C1 knife log — binding policy (O3.3)
+
+Chose **render binding slot/sampler/stage/plain-uniform policy → `mgl_binding_policy.*`** (DXMT C1 / O3.3) over further readback format-convert: pure `extern "C"` tables with no Metal-cpp owner coupling; aligns BindingState callers without growing `+Binding.m`.
+
+| Item | Detail |
+|------|--------|
+| New files | `MGL/include/mgl_binding_policy.h`, `MGL/src/mgl_binding_policy.c` |
+| Moved | `ShaderResourceElementCount` / `ImageUnits*` / `ComputeTextureBind*` / `ShaderResourceType*` / `PlainUniform*` / `ClientBufferBinding*` / `StageBufferResourceElementCount` / `CombinedSamplerSlot*` / `SamplerNameLooks*` / `ResourceLooksSamplerLike` / `ResourceMetalSlot` / `SamplerUnitValid` / `ShaderStageValid` / `StageMapsVertexAttribs` / `VertexCaptureNeedsLoad` / `StageUsesComputeBufferMap` / `TextureBindingStageForShader` / `SamplerBindingStageForShader` / `SampledResourceUnit` / `DefaultSamplerUnit` / `MetalBindingPastUnits` / `ExpectedTypeUnset` |
+| Residual | PSO topology (`NeedsExplicitTopology` / `PrimitiveTopologyClass` / blend·stencil maps) and Metal binding-state apply (~15056+) stay in monolith; **do not** thicken `+Binding.m` |
+| Build | `Makefile` wildcard `*.c` picks up TU; `test_metalcpp_smoke` explicit list updated |
+| ABI | resource-type / shader-stage numeric (`mgl_types_program.h`); binding stage 0/1 |
+| LOC | `mgl_render.cpp` ~20470→~20165 (−305); new `mgl_binding_policy.c` ~329; header ~98 |
+| Smoke | Linux `cc -c -std=c11` `mgl_binding_policy.c` |
+
+**Next strip suggestion (render):** format-class PSO / blend·stencil maps (O3.2) into a domain TU; or remaining binding-state apply masks. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+
 ## 5. C0 / C1 exit criteria
 
 - [x] Includes / callers / domains documented for **only** these two TUs
@@ -424,5 +443,6 @@ Chose **air statement emit → `mgl_air_stmt.*`** (DXMT C1g). Coherent strip: `e
 - [x] **C1e** (air VarSym classify/location): → `mgl_air_varsym.*`; `mgl_air_backend.cpp` ~15216→~14998 (−223); air TU &lt;15k; emitExpr/matrix deferred; Linux smoke `mgl_air_varsym.cpp` + llvm-19
 - [x] **C1f** (air matrix builtins): `emitMatrixBuiltin`/`emitMatrixBinOp` → `mgl_air_matrix.*`; `mgl_air_backend.cpp` ~14998→~14594 (−404); emitExpr deferred; Linux smoke `mgl_air_matrix.cpp` + llvm-19
 - [x] **C1g** (air statement emit): `emitStmt`/`emitCompound` → `mgl_air_stmt.*`; `mgl_air_backend.cpp` ~14594→~13762 (−832); emitExpr deferred; Linux smoke `mgl_air_stmt.cpp` + llvm-19
-- [ ] Future knives: continue by domain table (later expr facade, or binding-policy residual); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1** (O3.3 binding policy): slot/sampler/stage/plain-uniform → `mgl_binding_policy.{h,c}`; `mgl_render.cpp` ~20470→~20165 (−305); Linux smoke `mgl_binding_policy.c`; `+Binding.m` not grown
+- [ ] Future knives: continue by domain table (format-class PSO / O3.2, later expr facade); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 
