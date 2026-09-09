@@ -139,6 +139,43 @@ int mglBindingStageFallbackNeedsBind(int any_present_at_slot,
     return !any_present_at_slot && has_fallback_buffer ? 1 : 0;
 }
 
+uint32_t mglBindingStagePlanFallbackSlot(int any_present_at_slot,
+                                         int has_fallback_buffer,
+                                         int binding_state_valid,
+                                         int buffer_matches) {
+    if (!mglBindingStageFallbackNeedsBind(any_present_at_slot,
+                                          has_fallback_buffer)) {
+        return MGL_FB_SLOT_SKIP;
+    }
+    if (binding_state_valid && buffer_matches) {
+        return MGL_FB_SLOT_MATCHED;
+    }
+    return MGL_FB_SLOT_EMIT;
+}
+
+const void *mglBindingStageInlineBytesSrc(void *dst, uint32_t dst_cap,
+                                          const void *src, uint32_t visible,
+                                          uint32_t length) {
+    uint8_t *d;
+    if (!src || length == 0u) {
+        return src;
+    }
+    if (length <= visible) {
+        return src;
+    }
+    if (!dst || dst_cap < length) {
+        return src;
+    }
+    d = (uint8_t *)dst;
+    if (visible > 0u) {
+        memcpy(d, src, visible);
+    }
+    if (length > visible) {
+        memset(d + visible, 0, length - visible);
+    }
+    return d;
+}
+
 static void mglBindingStagePlanClear(MGLStageBufferBindPlan *out) {
     memset(out, 0, sizeof(*out));
 }

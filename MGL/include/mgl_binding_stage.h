@@ -176,10 +176,27 @@ int mglBindingStageResolveSlot(int is_base_binding, int has_metal_binding,
 int mglBindingStageFallbackNeedsBind(int any_present_at_slot,
                                      int has_fallback_buffer);
 
+/* Fallback slot apply plan (resource + all-slot fill). */
+enum {
+    MGL_FB_SLOT_SKIP = 0,    /* already present or no fallback buffer */
+    MGL_FB_SLOT_EMIT = 1,    /* set*Buffer fallback @0 */
+    MGL_FB_SLOT_MATCHED = 2  /* already bound same fallback @0 */
+};
+uint32_t mglBindingStagePlanFallbackSlot(int any_present_at_slot,
+                                         int has_fallback_buffer,
+                                         int binding_state_valid,
+                                         int buffer_matches);
+
+/* Inline-bytes pad: if length>visible, copy+zero into dst; else return src.
+ * dst_cap must be >= length when padding. Returns bytes pointer for set*Bytes. */
+const void *mglBindingStageInlineBytesSrc(void *dst, uint32_t dst_cap,
+                                          const void *src, uint32_t visible,
+                                          uint32_t length);
 
 /* ---- Present-slot apply masks (V/F buffer bind end) ---- */
 
-/* Build uint32 mask from present[0..count) where present[i]!=0 → bit i. */
+/* Build uint32 mask from present[0..count) where present[i]!=0 → bit i.
+ * Also safe for bool/uint8 present arrays (non-zero byte → bit). */
 uint32_t mglBindingStageBuildPresentMask(const uint8_t *present, uint32_t count);
 /* Count non-zero entries in present[0..count). */
 uint32_t mglBindingStageCountPresent(const uint8_t *present, uint32_t count);

@@ -148,6 +148,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
   - [x] **C1 本刀**：InSampler / depth-RT recover plan → `mgl_binding_texture.*` + `mgl_binding_texture_log.m`；ObjC = plan@C + thin bind/apply + log ports；`test-binding-texture` 扩 depth-recover；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~4302→~4240；残量 Y-flip/sampler materialize + 口仍 ≫300
   - [x] **C1 本刀**：Y-flip RT ports + sampler materialize + sampled-diag gates → `mgl_binding_texture.*`；TBIND/sample-detail/RT log ports 扩既有 `mgl_binding_texture_log.m`（不新裂 log 壳）；ObjC = plan@C + thin set*/createMTLSampler；`test-binding-texture` 扩 sampler/RT/diag；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~4240→~4152；残量口仍 ≫300
   - [x] **C1 本刀**：port collapse / apply-masks — sampler warmup + V/F snapshot emit + sampled diag ports@C；`texture_log.m` 合并 depth/RT/fallback（**shrink** 345→~327，禁再涨）；诚实度量 BindingState+texture_log；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~4152→~3855；残量口仍 ≫300
+  - [x] **C1 本刀**：stage fallback unify / residual snap — V/F fallback → shared stage 环 + `PlanFallbackSlot`/`InlineBytesSrc`/`BuildPresentMask`；VATTR/VFB/VPS/FFB 残量宏塌到 `MGL_BIND_SNAP_*`；texture_log **hold** 327；`+Binding.m` 未增厚；**未**灌进 `mgl_render.cpp`；BindingState ~3855→~3648 (−207)；残量口仍 ≫300
 - [ ] **O3.4** `MGLPipelineCache.m` → C++ LRU cache（兼 FPS 掉帧 P0）
 - [ ] **O3.5** 验收：`+RenderPass.m` &lt; 800 LOC；PSO miss 行为有非 CTS 单测
 

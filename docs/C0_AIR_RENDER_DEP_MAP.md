@@ -244,7 +244,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 - `mgl_buffer_plan.*`, `mgl_render_pass_plan.*`, `mgl_tess_domain.*`
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
 - `mgl_binding_policy.*` (**C1 / O3.3** — slot/sampler/stage/plain-uniform)
-- `mgl_binding_stage.*` (**C1 / O3.3 residual** — stage UBO/SSBO + attrib bind plan + helpers)
+- `mgl_binding_stage.*` (**C1 / O3.3 residual** — stage UBO/SSBO + attrib + fallback-slot/present-mask/inline plans + helpers)
 - `mgl_binding_texture.*` (**C1 / O3.3 residual** — sampled/storage/depth-recover/Y-flip RT/sampler-materialize/diag/apply-mask plans + image-view helpers; log ports in `mgl_binding_texture_log.m` freeze/shrink)
 - `mgl_pso_format_class.*` (**C1 / O3.2** — topology / format-class / blend·stencil·cull / viewport)
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
@@ -536,6 +536,20 @@ Chose **+BindingState apply-masks + port collapse** (DXMT O3.3 residual; after 5
 | LOC | `+BindingState.m` ~4152→~3855 (−297); texture_log 345→~327 (−18); **honest combined** ~4497→~4182 (−315) |
 | Smoke | Linux `cc -std=c11` `test_binding_texture` (+ apply-mask cases) |
 
+**Next strip suggestion (render/ObjC):** (superseded by 4o) BindingState residual toward &lt;300 ports.
+
+## 4o. C1 knife log — stage fallback unify / residual snap (O3.3 residual)
+
+Chose **+BindingState V/F stage-buffer fallback unify + residual snap macros + present-mask/inline apply** (DXMT O3.3 residual): shared `bindStageFallbackBuffersForStage` (plan@C `PlanFallbackSlot` + thin snap emit); collapse VATTR/VFB/VPS/FFB fat macros onto `MGL_BIND_SNAP_*`; wire `BuildPresentMask`/`CountPresent`/`InlineBytesSrc`. Honest metric = BindingState + texture_log. Do **not** thicken `+Binding.m`; do **not** sink into `mgl_render.cpp`; **freeze** log shell.
+
+| Item | Detail |
+|------|--------|
+| Extended | `mgl_binding_stage.{h,c}` — `PlanFallbackSlot`, `InlineBytesSrc`; present-mask apply |
+| ObjC | unified stage fallback; residual snap wrappers; V/F mask/count/inline thin ports |
+| Forbidden | did **not** grow `+Binding.m` (488); did **not** sink into `mgl_render.cpp`; texture_log held at 327 |
+| LOC | `+BindingState.m` ~3855→~3648 (−207); texture_log 327→327 (0); **honest combined** ~4182→~3975 (−207) |
+| Smoke | Linux `cc -std=c11` `test_binding_stage` (+ fallback-slot/inline/present) |
+
 **Next strip suggestion (render/ObjC):** BindingState residual toward &lt;300 ports; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m` or `texture_log.m`.
 
 
@@ -558,5 +572,6 @@ Chose **+BindingState apply-masks + port collapse** (DXMT O3.3 residual; after 5
 - [x] **C1** (O3.3 residual attrib/texture/image): attrib plan → stage; sampled/storage → `mgl_binding_texture.*`; `mgl_render.cpp` ~19484→~19398 (−86); `+BindingState.m` ~4523→~4302 (−221); `test-binding-texture`; `+Binding.m` not grown
 - [x] **C1** (O3.3 residual InSampler depth-recover): depth-recover plan → `mgl_binding_texture.*` + log ports; `+BindingState.m` ~4302→~4240 (−62); `test-binding-texture` depth cases; `+Binding.m` not grown; `mgl_render.cpp` unchanged
 - [x] **C1** (O3.3 residual port collapse / apply-masks): warmup/snap/diag ports + shrink texture_log; `+BindingState.m` ~4152→~3855; honest combined −315; `+Binding.m` not grown
+- [x] **C1** (O3.3 residual stage fallback unify): V/F fallback shared + residual snap + present-mask/inline; `+BindingState.m` ~3855→~3648 (−207); texture_log held 327; `+Binding.m` not grown
 - [ ] Future knives: BindingState residual / O3.1 pass plan toward &lt;300 ports; later expr facade; keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted; **do not grow texture_log.m**
 

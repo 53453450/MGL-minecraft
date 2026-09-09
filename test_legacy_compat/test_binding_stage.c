@@ -64,11 +64,31 @@ static void test_fallback_table(void)
 {
     uint32_t types[8];
     uint32_t n = mglBindingStageFallbackResourceTypes(types, 8);
+    uint8_t present[8] = {1, 0, 0, 1, 0, 0, 0, 1};
+    uint8_t pad[64];
+    const char *src = "abcd";
+    const void *out;
     expect(n == 4u, "fallback count");
     expect(types[0] == 1u && types[1] == 2u && types[2] == 3u && types[3] == 9u,
            "fallback types UBO/UC/SSBO/atomic");
     expect(mglBindingStageFallbackNeedsBind(0, 1) == 1, "needs fallback");
     expect(mglBindingStageFallbackNeedsBind(1, 1) == 0, "already present");
+    expect(mglBindingStagePlanFallbackSlot(1, 1, 1, 0) == MGL_FB_SLOT_SKIP,
+           "present skip");
+    expect(mglBindingStagePlanFallbackSlot(0, 0, 1, 0) == MGL_FB_SLOT_SKIP,
+           "no buf skip");
+    expect(mglBindingStagePlanFallbackSlot(0, 1, 1, 1) == MGL_FB_SLOT_MATCHED,
+           "matched");
+    expect(mglBindingStagePlanFallbackSlot(0, 1, 1, 0) == MGL_FB_SLOT_EMIT,
+           "emit");
+    expect(mglBindingStagePlanFallbackSlot(0, 1, 0, 0) == MGL_FB_SLOT_EMIT,
+           "invalid emit");
+    expect(mglBindingStageBuildPresentMask(present, 8) == 0x89u, "present mask");
+    expect(mglBindingStageCountPresent(present, 8) == 3u, "present count");
+    out = mglBindingStageInlineBytesSrc(pad, 64, src, 4, 4);
+    expect(out == src, "inline no pad");
+    out = mglBindingStageInlineBytesSrc(pad, 64, src, 2, 8);
+    expect(out == pad && pad[0] == 'a' && pad[1] == 'b' && pad[7] == 0, "inline pad");
 }
 
 static void test_plan_skip_and_clear(void)
