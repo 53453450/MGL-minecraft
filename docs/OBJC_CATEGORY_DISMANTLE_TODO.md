@@ -43,42 +43,44 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 | 文件 | 约 LOC | 判定 | 终态 |
 |------|-------:|------|------|
-| `+Texture.m` | ~6990 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口 |
-| `+RenderPass.m` | ~6959 | **厚** | 拆：`processGLState` / load-store / PSO desc 填表 → C++；ObjC 只 `MTLRenderPassDescriptor` 物化 |
-| `+Blit.m` | ~4969 | **厚** | 拆：clip/format/DS unify plan → 已有 sink 方向；ObjC 只 blit encoder 端口 |
-| `+BindingState.m` | ~4302 | **厚** | 拆：slot/stage/UBO/SSBO/attrib/texture/image → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口 |
+| `+Texture.m` | ~6993 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口 |
+| `+RenderPass.m` | ~6997 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（O3.1 待启动）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
+| `+Blit.m` | ~4970 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口 |
+| `+BindingState.m` | ~2940 | **厚**（C1 多刀已从 ~4523 降下，见 O3.3） | 拆：attrib/texture/image apply 残留 → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口（口仍 ≫300，O3.3 residual） |
 | `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
 | `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
 | `+DrawStageHost.m` | ~363 | 薄 | A1：保留（非空）；bindCull/MS + 一行包装；GS 扩张已无策略 |
-| `mgl_draw_metal_port.m` | ~1938 | 薄端口+HostOps | A1：删 `mglDrawHostGsExecuteMetalExpansion`；嵌套 `metal_ops`；id 物化 + HostOps 表 |
-| `+Batch.m` | ~169 | 薄 category / **簇仍厚** | O2.5 字面达标；encode 仍在 `mgl_batch_*_encode.m`（见 §1.2 / Track B） |
+| `mgl_draw_metal_port.m` | ~1953 | 薄端口+HostOps | A1：id 物化 + HostOps 表；`metal_ops` 嵌套 |
+| `+Batch.m` | ~170 | 薄 category / **簇仍厚** | O2.5 字面达标；encode 仍在 `mgl_batch_*_encode.m`（见 §1.2 / Track B） |
 | `+Tessellation.m` | ~1766 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~21 | 薄占位 | O2.5：dyn-bind → `mgl_batch_dyn_bind_encode.m`；待 O6 删空 category |
-| `+Buffer.m` | ~1575 | 中 | map/CoW/shadow plan → C++；ObjC 只 MTLBuffer 物化 |
-| `+Compute.m` | ~1255 | 中 | dispatch plan → C++；ObjC 只 compute encoder 端口 |
+| `+Buffer.m` | ~1575 | 中 | map/CoW/shadow plan → C++（O5.1 待启动）；ObjC 只 MTLBuffer 物化 |
+| `+Compute.m` | ~1255 | 中 | dispatch plan → C++（O5.2 待启动）；ObjC 只 compute encoder 端口 |
 | `+Lifecycle.m` | ~665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
 | `+SwapDiagnostics.m` | ~555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
 | `+Draw.m` | ~511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
-| `+Binding.m` | ~408 | 薄化 | 与 BindingState 合并后删除 |
+| `+Binding.m` | ~488 | 薄化（实测较基线 +80；与 BindingState 合并后删除） | 与 BindingState 合并后删除 |
 | `+GPURecovery.m` | ~350 | Keep 薄 | 触发 + 日志；reset 在 C++ |
-| `+VertexLayout.m` | ~332 | 薄化 | descriptor plan 已在 sink；ObjC 删策略 |
+| `+VertexLayout.m` | ~332 | 薄化 | `generateVertexDescriptorState`/`updateBlendStateCache` 为 plan 装配（C++ helper 已下沉）；`bindFramebufferAttachmentTextures` 实为 FBO 绑定，应归 RenderPass 域 |
 
 ### 1.2 其它 `.m`（非 category，但同边界）
 
 | 文件 | 约 LOC | 判定 |
 |------|-------:|------|
-| `mgl_draw_encode.m` | ~1225 | **迁出**：应并入 / 对齐 `mgl_draw_encode` C++，ObjC 不留 encode |
-| `mgl_batch_flush_restore_encode.m` | ~379 | **Batch 簇残量**：flush/restore/stream；`flush_run_batches` / check / trace-skip 已接线 |
-| `mgl_batch_dyn_bind_encode.m` | ~364 | **Batch 簇残量**：dyn-bind/sampler；whole-loop → `mgl_batch_mtl_bind_dyn_*` / `apply_sampler_snapshot` |
-| `mgl_batch_issue_encode.m` | ~215 | **Batch 簇残量**：issue/direct；MDI+direct loops → `mgl_batch_mtl_issue_mdi_batch` / `mgl_batch_issue_direct_batch` |
-| `mgl_batch_replay_trace.m` | ~254 | **Batch 簇残量**：trace；FS-slot POD 已抽；**禁止再扩** |
-| `mgl_batch_icb_mdi_encode.m` | ~175 | **Batch 簇残量**：ICB/stream-MDI；whole loops → `mgl_batch_mtl_issue_*_batch` |
-| `mgl_batch_rt_mark_port.m` | ~134 | **Batch 簇残量**：RT-mark；draw-attachments → `mgl_batch_rt_run_draw_attachments` |
+| `mgl_draw_encode.m` | ~1225 | **迁出**（O5.4）：应并入 / 对齐 `mgl_draw_encode` C++，ObjC 不留 encode |
+| `mgl_batch_flush_restore_encode.m` | ~381 | **Batch 簇残量**：flush/restore/stream；`flush_run_batches` / check / trace-skip 已接线；**已呈 ops-callback 薄形**（C++ driver + ObjC 回调接线） |
+| `mgl_batch_dyn_bind_encode.m` | ~366 | **Batch 簇残量**：dyn-bind/sampler；`mgl_batch_mtl_bind_dyn_*` / `apply_sampler_snapshot` 已接线 |
+| `mgl_batch_issue_encode.m` | ~217 | **Batch 簇残量**：issue/direct；MDI+direct loops → `mgl_batch_mtl_issue_mdi_batch` / `mgl_batch_issue_direct_batch` |
+| `mgl_batch_replay_trace.m` | ~270 | **Batch 簇残量**：trace；FS-slot POD 已抽；**禁止再扩** |
+| `mgl_batch_icb_mdi_encode.m` | ~177 | **Batch 簇残量**：ICB/stream-MDI；whole loops → `mgl_batch_mtl_issue_*_batch` |
+| `mgl_batch_rt_mark_port.m` | ~139 | **Batch 簇残量**：RT-mark；draw-attachments → `mgl_batch_rt_run_draw_attachments` |
 | `hash_table.m` | ~854 | 平台资源表；可保留或 C++ owner |
 | `MGLRenderPassManager.m` | ~523 | 并入 RenderPass 下沉 |
-| `MGLPipelineCache.m` | ~445 | 并入 PSO builder（CTS Batch 4） |
+| `MGLPipelineCache.m` | ~445 | **已薄端口（O3.4 实质完成）**：LRU/archive 策略在 C++ owner（`mglRenderLookupPipeline`/`StorePipeline`）；ObjC 仅 `id`↔`void*` 桥 + archive URL 路径；可按 O3.4 收口标记 [x] |
 | `MGLPlatformRendererShell.m` | ~229 | **Keep 样板** |
 | `mgl_readback.m` 等 compat | 小 | 策略进 ReadbackPolicy；`.m` 变转发 |
+
+> **实测（2026-09-09）**：`MGLRenderer+*.m` categories 合计 ≈ **34.8k** LOC（基线 ~59k；O1/O2/C1 已降 ~24k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 ≈ **19.0k**，是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
 
 **Batch ObjC 诚实合计（Track B）**：categories ~190 + encode/trace/port ~1521 = **~1711**（`scripts/objc_renderer_loc.sh`）。A3 本刀 1923→~1711（−212；direct-submit C 决策树、trace fill helpers、binding helpers→`+Binding`、sampled resolve gate）；**勿宣称 cleanup done**（残量仍 ~1.7k）。
 
