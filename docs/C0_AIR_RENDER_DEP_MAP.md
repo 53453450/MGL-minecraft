@@ -1,7 +1,7 @@
 # C0 — Dependency map: `mgl_air_backend.cpp` & `mgl_render.cpp`
 
 > Track **C0** was docs-only; **C1** started monolith knives (IntegerReadback out).
-> Snapshot: `main` @ C1 binding-policy strip (~13.8k air / ~20.2k render LOC). Re-measure with `wc -l` after splits.
+> Snapshot: `main` @ C1 format-class PSO strip (~13.8k air / ~19.6k render LOC). Re-measure with `wc -l` after splits.
 > Purpose: make include / caller / domain boundaries visible before any TU knife.
 
 ---
@@ -175,9 +175,9 @@ ObjC runtime / Mach / Block headers are also included for Metal object class pro
 | ~6638–7200 | Stage binding / tess factor helpers | `EncodeStageBindingCopyBacks`, tess factor |
 | ~~7238–7549~~ | ~~Integer readback classify~~ | **C1 extracted** → `mgl_readback_policy.{h,c}` (`Convert` + `Source`/`Packed`/`Classify`) |
 | ~~CopyRows / depth / GetTexImagePlan / MSAA stride~~ | ~~Y-flip / depth pack / plan~~ | **C1 extracted** → same TU; Metal `EncodeMultisampleResolve*` residual in monolith |
-| ~~7550–~8038 slot/sampler/stage/plain-uniform~~ | ~~Binding policy~~ | **C1 extracted** → `mgl_binding_policy.{h,c}` (O3.3); residual PSO topology from `NeedsExplicitTopology` |
-| ~8040–8500 | Binding/PSO residual after binding-policy knife | topology / blend prelude |
-| ~8509–9400 | PSO / pass / blend / stencil / viewport | `PipelinePass*`, `Blend*FromGL` |
+| ~~7550–~8038 slot/sampler/stage/plain-uniform~~ | ~~Binding policy~~ | **C1 extracted** → `mgl_binding_policy.{h,c}` (O3.3) |
+| ~~NeedsExplicitTopology–DrawModeFullyCulled + packed-DS/default-depth~~ | ~~format-class PSO~~ | **C1 extracted** → `mgl_pso_format_class.{h,c}` (O3.2); residual generatePipeline apply / BindingState |
+| ~7740+ (post-O3.2) | Texture/integer/format tables residual | integer map, GLSL type names, … |
 | ~9400–11200 | Format tables / clear mask / UBO pack | pixel-format class, plain-uniform pack |
 | ~11214–12000 | Index expand / gather / blit plan | fan/strip/quad expand, `BlitFramebufferPlan` |
 | ~12001–13600 | Tess / XFB size / texture swizzle bake | `SeedTessDomain`, swizzle upload bake |
@@ -242,7 +242,8 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 
 - `mgl_buffer_plan.*`, `mgl_render_pass_plan.*`, `mgl_tess_domain.*`
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
-- `mgl_binding_policy.*` (**C1** / O3.3 — slot/sampler/stage/plain-uniform binding policy)
+- `mgl_binding_policy.*` (**C1 / O3.3** — slot/sampler/stage/plain-uniform)
+- `mgl_pso_format_class.*` (**C1 / O3.2** — topology / format-class / blend·stencil·cull / viewport)
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_air_resource.*` (**C1c** — uniform/opaque resource collection)
 - `mgl_air_math.*` (**C1d** — math/pack/bitfield builtins; not emitExpr/matrix)
@@ -423,13 +424,30 @@ Chose **render binding slot/sampler/stage/plain-uniform policy → `mgl_binding_
 |------|--------|
 | New files | `MGL/include/mgl_binding_policy.h`, `MGL/src/mgl_binding_policy.c` |
 | Moved | `ShaderResourceElementCount` / `ImageUnits*` / `ComputeTextureBind*` / `ShaderResourceType*` / `PlainUniform*` / `ClientBufferBinding*` / `StageBufferResourceElementCount` / `CombinedSamplerSlot*` / `SamplerNameLooks*` / `ResourceLooksSamplerLike` / `ResourceMetalSlot` / `SamplerUnitValid` / `ShaderStageValid` / `StageMapsVertexAttribs` / `VertexCaptureNeedsLoad` / `StageUsesComputeBufferMap` / `TextureBindingStageForShader` / `SamplerBindingStageForShader` / `SampledResourceUnit` / `DefaultSamplerUnit` / `MetalBindingPastUnits` / `ExpectedTypeUnset` |
-| Residual | PSO topology (`NeedsExplicitTopology` / `PrimitiveTopologyClass` / blend·stencil maps) and Metal binding-state apply (~15056+) stay in monolith; **do not** thicken `+Binding.m` |
+| Residual | ~~PSO topology~~ → **O3.2 / §4i**; Metal binding-state apply (~15056+) stays in monolith; **do not** thicken `+Binding.m` |
 | Build | `Makefile` wildcard `*.c` picks up TU; `test_metalcpp_smoke` explicit list updated |
 | ABI | resource-type / shader-stage numeric (`mgl_types_program.h`); binding stage 0/1 |
 | LOC | `mgl_render.cpp` ~20470→~20165 (−305); new `mgl_binding_policy.c` ~329; header ~98 |
 | Smoke | Linux `cc -c -std=c11` `mgl_binding_policy.c` |
 
-**Next strip suggestion (render):** format-class PSO / blend·stencil maps (O3.2) into a domain TU; or remaining binding-state apply masks. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+**Next strip suggestion (render):** (superseded by 4i) BindingState apply masks or generatePipeline apply residual.
+
+
+## 4i. C1 knife log — format-class PSO (O3.2)
+
+Chose **render format-class PSO builder → `mgl_pso_format_class.*`** (DXMT C1 / O3.2 / CTS Batch 4) over BindingState apply masks: pure `extern "C"` topology / format-class / blend·stencil maps with no Metal-cpp owner coupling; aligns RenderPass / PipelineCache without growing `+Binding.m` or `+RenderPass.m`.
+
+| Item | Detail |
+|------|--------|
+| New files | `MGL/include/mgl_pso_format_class.h`, `MGL/src/mgl_pso_format_class.c` |
+| Moved | `NeedsExplicitTopology` / `PrimitiveTopologyClass` / tess partition·winding·cpi / rasterization·pipeline-ready / VSWritesLayer / depth·stencil·color format-class + pass mismatch / attrib step helpers / blend factor·op / stencil op / cull·fill·depth-clip / scissor·viewport clamps / `PixelFormatIsPackedDepthStencil` / `DefaultDepthPixelFormat` |
+| Residual | generatePipeline apply / Metal PSO create and BindingState apply (~15056+) stay in monolith; **do not** thicken `+Binding.m` / `+RenderPass.m` |
+| Build | `Makefile` wildcard `*.c` picks up TU; `test_metalcpp_smoke` explicit list updated |
+| ABI | GL enums via `glcorearb.h`; Metal value enums via `mgl_render_values.h` |
+| LOC | `mgl_render.cpp` ~20165→~19558 (−607); new `mgl_pso_format_class.c` ~641; header ~127 |
+| Smoke | Linux `cc -c -std=c11` `mgl_pso_format_class.c` |
+
+**Next strip suggestion (render):** BindingState apply masks (finish O3.3) or generatePipeline apply residual; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
 
 ## 5. C0 / C1 exit criteria
 
@@ -444,5 +462,6 @@ Chose **render binding slot/sampler/stage/plain-uniform policy → `mgl_binding_
 - [x] **C1f** (air matrix builtins): `emitMatrixBuiltin`/`emitMatrixBinOp` → `mgl_air_matrix.*`; `mgl_air_backend.cpp` ~14998→~14594 (−404); emitExpr deferred; Linux smoke `mgl_air_matrix.cpp` + llvm-19
 - [x] **C1g** (air statement emit): `emitStmt`/`emitCompound` → `mgl_air_stmt.*`; `mgl_air_backend.cpp` ~14594→~13762 (−832); emitExpr deferred; Linux smoke `mgl_air_stmt.cpp` + llvm-19
 - [x] **C1** (O3.3 binding policy): slot/sampler/stage/plain-uniform → `mgl_binding_policy.{h,c}`; `mgl_render.cpp` ~20470→~20165 (−305); Linux smoke `mgl_binding_policy.c`; `+Binding.m` not grown
-- [ ] Future knives: continue by domain table (format-class PSO / O3.2, later expr facade); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1** (O3.2 format-class PSO): topology / format-class / blend·stencil·cull / viewport → `mgl_pso_format_class.{h,c}`; `mgl_render.cpp` ~20165→~19558 (−607); Linux smoke `mgl_pso_format_class.c`; `+Binding.m`/`+RenderPass.m` not grown
+- [ ] Future knives: continue by domain table (BindingState apply / O3.3 residual, O3.1 pass plan, later expr facade); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 

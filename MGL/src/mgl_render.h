@@ -21,6 +21,7 @@
 #include "mgl_render_values.h"
 #include "mgl_readback_policy.h"
 #include "mgl_binding_policy.h"
+#include "mgl_pso_format_class.h"
 
 /* Forward decl (mgl_types_texture.h pulls in GLMContext-typed state). */
 typedef struct TextureLevel_t TextureLevel;
@@ -1174,86 +1175,7 @@ void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
                                    uint64_t *array_len, uint32_t *height_out);
 int mglRenderHasDirtyBufferBit(uint32_t dirty_bits);
 /* C1: binding slot/sampler/stage/plain-uniform -> mgl_binding_policy.h */
-int mglRenderNeedsExplicitTopology(int geometry_expansion, uint32_t last_draw_mode,
-                                   int vs_writes_layer);
-uint32_t mglRenderPrimitiveTopologyClass(uint32_t gl_mode);
-uint32_t mglRenderTessPartitionMode(uint32_t tess_gen_spacing);
-uint32_t mglRenderTessOutputWinding(uint32_t tess_gen_vertex_order);
-uint32_t mglRenderTessControlPointIndexType(int indexed_draw);
-int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment);
-int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_discard);
-int mglRenderVSWritesLayer(const char *src);
-uint32_t mglRenderDepthFormatOrFallback(uint32_t format);
-uint32_t mglRenderStencilFormatOrFallback(uint32_t format);
-int mglRenderColorAttachmentBitfieldDone(uint32_t bitfield, int index);
-uint32_t mglRenderMaxTessellationFactor(void);
-uint32_t mglRenderDefaultFBOStencilFormat(uint32_t format);
-int mglRenderColor0IntentionallyDisabled(int has_fbo, uint32_t draw_buffer0);
-int mglRenderColorFormatNeedsFallback(uint32_t format);
-uint32_t mglRenderDefaultColorPixelFormat(void);
-uint32_t mglRenderColorFormatOrBGRA(uint32_t format);
-int mglRenderPipelineFormatCompatible(uint32_t cached, uint32_t built);
-int mglRenderPipelinePassColorMismatch(uint32_t pipeline, uint32_t pass);
-int mglRenderPipelinePassAttachmentMismatch(uint32_t pipeline, uint32_t pass);
-int mglRenderSkipInvalidColorAttachment(uint32_t format);
-int mglRenderPixelFormatIsInvalid(uint32_t format);
-uint32_t mglRenderInvalidPixelFormat(void);
-uint32_t mglRenderAttachmentFormatOrInvalid(int has_metal, uint32_t mapped);
-int mglRenderPassUnifyPackedDS(uint32_t depth_format, uint32_t stencil_format,
-                               uint32_t *out_format);
-int mglRenderClearRectPipelineReady(int writes_color, uint32_t color_format,
-                                    int writes_depth, uint32_t depth_format);
-int mglRenderDrawBufferIsNone(uint32_t draw_buffer);
-uint32_t mglRenderBlendingEnabledMaskBit(int blend_enabled, int index);
-int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
-                                  int cull_capture);
-int mglRenderNeedsVertexDescriptor(int geometry_expansion, int tess_compute);
-int mglRenderColorAttachmentBitSet(uint32_t bitfield, uint32_t index);
-int mglRenderSampledRTNeedsCopy(int is_rt, uint32_t write_version);
-int mglRenderSampledRTCopyStale(uint32_t sampled_version, uint32_t rt_version);
-int mglRenderNativeAttribIndexValid(uint32_t index);
-uint32_t mglRenderNativeAttribStepFunction(void);
-int mglRenderSkipUnboundAttrib(int uses_current, int has_binding);
-int mglRenderAttribFormatMapped(uint32_t format);
-int mglRenderVertexBufferIndexValid(int index, uint32_t max);
-void mglRenderAttribStepFromDivisor(int uses_current, uint32_t divisor,
-                                    uint32_t *step_fn, uint32_t *step_rate);
-uint32_t mglRenderAttribCountAfter(uint32_t current, uint32_t index);
-int mglRenderApplyBlendRepair(int valid, uint32_t *value, uint32_t fallback);
-uint32_t mglRenderColorWriteMaskFromChannels(int use_mask, int r, int g, int b,
-                                            int a);
-uint32_t mglRenderForceDefaultFBOAlphaWrite(int attachment, int has_fbo,
-                                           uint32_t mask);
-int mglRenderBlendFactorFromGL(uint32_t gl_blend, uint32_t *out);
-int mglRenderBlendOperationFromGL(uint32_t gl_op, uint32_t *out);
-int mglRenderStencilOpFromGL(uint32_t gl_op, uint32_t *out);
-int mglRenderFrontFaceValid(uint32_t front_face);
-uint32_t mglRenderFrontFaceOrCCW(uint32_t front_face);
-int mglRenderSkipCullForSampledPass(int has_fbo, int depth_test, int fs_sampled,
-                                    int rt_copy);
-uint32_t mglRenderCullModeFromGL(int cull_enabled, uint32_t cull_face_mode);
-uint32_t mglRenderDepthClipMode(int depth_clamp);
-int mglRenderPolygonOffsetEnabled(int fill, int line, int point);
-uint32_t mglRenderTriangleFillMode(uint32_t polygon_mode);
-int mglRenderPolygonModeValid(uint32_t mode);
-uint32_t mglRenderPolygonModeOrFill(uint32_t mode);
-int mglRenderUseDepthState(int depth_test, int pass_has_depth);
-int mglRenderUseStencilState(int stencil_test, int pass_has_stencil);
-int mglRenderSuppressDepthStencilWrites(int rasterizer_discard, int tess_capture,
-                                        int cull_capture);
-uint32_t mglRenderStencilWriteMask(int suppress, uint32_t mask);
-void mglRenderClampScissorRect(int32_t *x, int32_t *y, int32_t *w, int32_t *h,
-                               uint32_t pass_w, uint32_t pass_h);
-int32_t mglRenderMetalScissorY(int32_t y, int32_t h, uint32_t pass_h,
-                               uint32_t clip_origin);
-void mglRenderClampViewport(double *x, double *y, double *w, double *h,
-                            uint32_t pass_w, uint32_t pass_h);
-double mglRenderMetalViewportY(double y, double h, uint32_t pass_h);
-uint32_t mglRenderCompareFuncOrFallback(uint32_t func, int valid,
-                                        uint32_t fallback);
-uint32_t mglRenderDepthWriteEnabled(int writemask, int suppress);
-int mglRenderDrawModeFullyCulled(int cull_face, uint32_t cull_face_mode,
-                                 int produces_polygons);
+/* C1: format-class PSO topology/blend/stencil/viewport -> mgl_pso_format_class.h */
 int mglRenderTextureTargetIsBuffer(uint32_t target);
 uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]);
 uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type);
@@ -1283,7 +1205,7 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
 uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format);
 uint32_t mglRenderMetalPixelFormatValueClass(uint32_t pixel_format);
 uint32_t mglRenderDepthStencilPlaneViewType(uint32_t parent_type);
-int mglRenderPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
+/* C1: PixelFormatIsPackedDepthStencil -> mgl_pso_format_class.h */
 uint32_t mglRenderDepthBlitStencilFormat(uint32_t pixel_format);
 uint32_t mglRenderStencilViewFormat(uint32_t parent_format);
 int mglRenderPixelFormatIsDepth32FloatStencil8(uint32_t pixel_format);
@@ -1292,7 +1214,7 @@ int mglRenderPixelFormatIsDepthOrStencil(uint32_t pixel_format);
 int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
                                         uint32_t row_bytes, uint32_t width);
 /* C1: DepthReadbackPlan -> mgl_readback_policy.h */
-uint32_t mglRenderDefaultDepthPixelFormat(void);
+/* C1: DefaultDepthPixelFormat -> mgl_pso_format_class.h */
 int mglRenderSamplerUnitExplicit(uint32_t flag);
 int mglRenderPrefer1DSampler(uint32_t image_dim, int arrayed);
 int mglRenderTextureTargetIs1D(uint32_t target);

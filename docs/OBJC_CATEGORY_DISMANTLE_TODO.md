@@ -140,8 +140,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 - [ ] **O3.1** load/store / clear / attachment match → `mgl_render_pass_plan.*`
 - [ ] **O3.2** `generatePipelineDescriptorState` → format-class PSO builder（CTS Batch 4）
+  - [x] **C1 本刀**：topology / tess modes / format-class / blend·stencil·cull / scissor·viewport → `mgl_pso_format_class.*`（render ~20165→~19558）；`+Binding.m`/`+RenderPass.m` 未增厚；残量 generatePipeline apply + BindingState
 - [ ] **O3.3** `+BindingState` / `+Binding` 合并下沉 slot 表；ObjC 绑定口 &lt; 300 LOC
-  - [x] **C1 本刀**：slot/sampler/stage/plain-uniform policy → `mgl_binding_policy.*`（render ~20470→~20165）；`+Binding.m` 未增厚；残量 PSO topology + BindingState apply
+  - [x] **C1 本刀**：slot/sampler/stage/plain-uniform policy → `mgl_binding_policy.*`（render ~20470→~20165）；`+Binding.m` 未增厚；残量 BindingState apply（仍厚）
 - [ ] **O3.4** `MGLPipelineCache.m` → C++ LRU cache（兼 FPS 掉帧 P0）
 - [ ] **O3.5** 验收：`+RenderPass.m` &lt; 800 LOC；PSO miss 行为有非 CTS 单测
 
@@ -221,9 +222,10 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 18. ~~**A3 encode-fold 本刀（dyn/flush 重心 → ≤2k）**~~：`mgl_batch_mtl_apply_sampler_snapshot`；`mgl_batch_flush_trace_skip_commands` / `mgl_batch_bind_active_textures`；`mgl_batch_rt_run_draw_attachments` + `copy_state_to_rt`；`mgl_batch_restore_apply_from_key`；dyn/flush/issue/rt/Batch 残体压薄；修 `rt_mark_port` 断体。诚实簇 **2366→~1923**（−443）。禁扩 metal_port / trace / `mgl_render.cpp`。`test-batch-issue`/`test-batch-restore` 扩展。**勿宣称 cleanup done**
 19. ~~**C1**~~：`mgl_readback_policy.{h,c}`（O4.1/CTS）— IntegerReadback Convert/Source/Packed/Classify 出 `mgl_render.cpp`（~21043→~20599）；`mgl_render.h` include 域头；禁堆回 monolith
 19b. ~~**C1 O4.1 residual**~~：Y-flip (`CopyRows`) / depth pack (`CopyDepth*`/`DepthReadbackPlan`/`RepackDepthPlanes`) / `GetTexImagePlan` / `MSAAArrayLayerStride` → 同 TU（render ~20599→~20470）；Metal MSAA encode 残量留 monolith；禁堆回
-19c. ~~**C1 binding-policy (O3.3)**~~：slot/sampler/stage/plain-uniform → `mgl_binding_policy.{h,c}`（render ~20470→~20165，−305）；禁增厚 `+Binding.m`；PSO topology / BindingState apply 残量留 monolith
+19c. ~~**C1 binding-policy (O3.3)**~~：slot/sampler/stage/plain-uniform → `mgl_binding_policy.{h,c}`（render ~20470→~20165，−305）；禁增厚 `+Binding.m`；BindingState apply 残量留 monolith（仍厚）
+19d. ~~**C1 format-class PSO (O3.2)**~~：NeedsExplicitTopology / PrimitiveTopologyClass / format-class / Blend·Stencil·Cull / scissor·viewport → `mgl_pso_format_class.{h,c}`（render ~20165→~19558，−607）；禁增厚 `+Binding.m`/`+RenderPass.m`；generatePipeline apply 残量留 monolith
 19. ~~**A3 encode-fold 本刀（submit/trace/Binding）**~~：`mgl_batch_issue_submit_direct_*` 决策树；trace fill/gate helpers（**shrink** replay_trace 374→~254）；binding dedup/sync → `+Binding.m`；sampled resolve gate；restore/teardown/sync C drivers + tests。诚实簇 **1923→~1711**（−212）。禁扩 metal_port / trace / `mgl_render.cpp`。**勿宣称 cleanup done**
-20. **下一刀**：残量 `dyn`(~364) / `flush`(~379) / `trace`(~254) / `issue`(~215)；C1 已开但勿掩盖 Batch 残量；**C1b–C1g done**（见上）；Batch 诚实簇仍~1711、`mgl_render`~20.5k 勿宣称 done；继续 ensure/resolve/submit 与 flush callback 压薄；O3 / O6 可并行
+20. **下一刀**：残量 `dyn`(~364) / `flush`(~379) / `trace`(~254) / `issue`(~215)；C1 已开但勿掩盖 Batch 残量；**C1b–C1g done**（见上）；Batch 诚实簇仍~1711、`mgl_render`~19.6k 勿宣称 done；BindingState 仍厚；继续 ensure/resolve/submit 与 flush callback 压薄；O3 / O6 可并行
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
