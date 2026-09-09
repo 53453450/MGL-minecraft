@@ -21,6 +21,7 @@
 #include "mgl_render_values.h"
 #include "mgl_readback_policy.h"
 #include "mgl_binding_policy.h"
+#include "mgl_binding_stage.h"
 #include "mgl_pso_format_class.h"
 
 /* Forward decl (mgl_types_texture.h pulls in GLMContext-typed state). */
@@ -1085,26 +1086,6 @@ int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
                              uint32_t divisor, uint64_t first_vertex,
                              uint64_t last_vertex, int64_t vbo_size,
                              MGLRenderAttribFetchPlan *out);
-int mglRenderUseInlineFragmentBytes(int is_base_binding, int64_t size);
-int mglRenderCPUPointerLooksTagged(const void *p);
-int mglRenderMetalDataPointerUsable(const void *p);
-int mglRenderNeedsIsolatedStageBinding(int has_buffer, int64_t offset,
-                                       uint64_t metal_len, uint64_t available,
-                                       uint32_t required);
-int mglRenderAllowIsolateGPUWriteTarget(int gpu_write_target,
-                                        int allow_when_gpu);
-int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size);
-uint32_t mglRenderRequiredBindingBytesForMap(int resource_type,
-                                             uint32_t reflected,
-                                             int64_t visible,
-                                             uint32_t min_stage);
-int mglRenderUseUniformConstantInline(int is_base, int resource_type,
-                                      int has_cpu, int64_t offset,
-                                      uint32_t required, uint32_t scratch);
-int mglRenderIsolateUBOPrefersCPUShadow(uint32_t resource_type, int has_buf,
-                                        int has_cpu, int64_t offset);
-int mglRenderIsolateUBOUsesFullStore(uint32_t resource_type);
-uint64_t mglRenderIsolateCopyLength(uint64_t src_bytes, uint64_t required);
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);
 int mglRenderSkipAlreadyBoundUnconverted(int conversion_kind, int already_present);
 int mglRenderAttribNeedsConversionBind(int conversion_kind);
@@ -1175,6 +1156,7 @@ void mglRenderApply1DBackingToDesc(int backed_1d, int backed_1d_array,
                                    uint64_t *array_len, uint32_t *height_out);
 int mglRenderHasDirtyBufferBit(uint32_t dirty_bits);
 /* C1: binding slot/sampler/stage/plain-uniform -> mgl_binding_policy.h */
+/* O3.3: stage UBO/SSBO bind plan + helpers -> mgl_binding_stage.h */
 /* C1: format-class PSO topology/blend/stencil/viewport -> mgl_pso_format_class.h */
 int mglRenderTextureTargetIsBuffer(uint32_t target);
 uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]);
@@ -1373,7 +1355,6 @@ void mglRenderPlainUniformArrayStrides(const char *name, uint32_t type_bytes,
                                        int32_t array_stride, uint32_t *src_out,
                                        uint32_t *elem_out);
 int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length);
-int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type);
 int mglRenderAttribOffsetsValid(int64_t binding_offset,
                                 int64_t relativeoffset);
 void mglRenderClearCPUWriteRange(Buffer *buf);

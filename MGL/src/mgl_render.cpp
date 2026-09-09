@@ -7218,76 +7218,7 @@ int mglRenderPlanAttribFetch(uint32_t gl_type, uint32_t size, uint32_t stride,
     return 1;
 }
 
-int mglRenderUseInlineFragmentBytes(int is_base_binding, int64_t size) {
-    return !is_base_binding && size < 4096 ? 1 : 0;
-}
-
-int mglRenderCPUPointerLooksTagged(const void *p) {
-    return p && (uintptr_t)p < 0x100000000ULL ? 1 : 0;
-}
-
-int mglRenderMetalDataPointerUsable(const void *p) {
-    return p && (uintptr_t)p >= 0x10000u ? 1 : 0;
-}
-
-int mglRenderNeedsIsolatedStageBinding(int has_buffer, int64_t offset,
-                                       uint64_t metal_len, uint64_t available,
-                                       uint32_t required) {
-    return !has_buffer || offset < 0 || (uint64_t)offset >= metal_len ||
-                   available < required
-               ? 1
-               : 0;
-}
-
-int mglRenderAllowIsolateGPUWriteTarget(int gpu_write_target,
-                                        int allow_when_gpu) {
-    return !gpu_write_target || allow_when_gpu ? 1 : 0;
-}
-
-int mglRenderBindOffsetInBuffer(int64_t offset, int64_t size) {
-    if (offset < 0 || size <= 0) {
-        return 0;
-    }
-    return (uint64_t)offset < (uint64_t)size ? 1 : 0;
-}
-
-uint32_t mglRenderRequiredBindingBytesForMap(int resource_type,
-                                             uint32_t reflected,
-                                             int64_t visible,
-                                             uint32_t min_stage) {
-    if (resource_type == _UNIFORM_BUFFER_RES && reflected > 0u) {
-        if (visible > 0 && (uint64_t)visible < (uint64_t)reflected) {
-            return (uint32_t)visible;
-        }
-        return reflected;
-    }
-    return reflected > min_stage ? reflected : min_stage;
-}
-
-int mglRenderUseUniformConstantInline(int is_base, int resource_type,
-                                      int has_cpu, int64_t offset,
-                                      uint32_t required, uint32_t scratch) {
-    return is_base && resource_type == _UNIFORM_CONSTANT_RES && has_cpu &&
-                   offset == 0 && required <= scratch
-               ? 1
-               : 0;
-}
-
-int mglRenderIsolateUBOPrefersCPUShadow(uint32_t resource_type, int has_buf,
-                                        int has_cpu, int64_t offset) {
-    return resource_type == (uint32_t)_UNIFORM_BUFFER_RES && has_buf &&
-                   has_cpu && offset >= 0
-               ? 1
-               : 0;
-}
-
-int mglRenderIsolateUBOUsesFullStore(uint32_t resource_type) {
-    return resource_type == (uint32_t)_UNIFORM_BUFFER_RES ? 1 : 0;
-}
-
-uint64_t mglRenderIsolateCopyLength(uint64_t src_bytes, uint64_t required) {
-    return src_bytes > required ? required : src_bytes;
-}
+/* O3.3: UseInlineFragmentBytes..IsolateCopyLength -> mgl_binding_stage.c */
 
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type) {
     return shader_gl_type == GL_INT || shader_gl_type == GL_INT_VEC2 ||
@@ -9270,12 +9201,7 @@ int mglRenderMetalBackingTooSmall(int64_t gl_size, uint64_t metal_length) {
     return gl_size > 0 && metal_length < (uint64_t)gl_size ? 1 : 0;
 }
 
-int mglRenderWritableStorageNeedsGPUAuthoritative(int resource_type) {
-    return resource_type == _STORAGE_BUFFER_RES ||
-                   resource_type == _ATOMIC_COUNTER_RES
-               ? 1
-               : 0;
-}
+/* O3.3: WritableStorageNeedsGPUAuthoritative -> mgl_binding_stage.c */
 
 int mglRenderAttribOffsetsValid(int64_t binding_offset,
                                 int64_t relativeoffset) {

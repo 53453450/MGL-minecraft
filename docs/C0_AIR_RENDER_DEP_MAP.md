@@ -11,7 +11,7 @@
 | TU | ~LOC | Role | Risk if sink blindly |
 |----|-----:|------|----------------------|
 | `MGL/src/mgl_air_backend.cpp` | ~13762 | GLSL AST → LLVM AIR → `.metallib` | Mixes expr emit, stage ABI, legacy rewrite, reflect helpers; **type (C1b) + resource (C1c) + math (C1d) + VarSym (C1e) + matrix builtins (C1f) + stmt emit (C1g) extracted** |
-| `MGL/src/mgl_render.cpp` | ~20165 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, binding, …) |
+| `MGL/src/mgl_render.cpp` | ~19484 | Metal-cpp runtime + ~800 `mglRender*` C ABI helpers | Catch-all for plans that belong in domain files (`mgl_buffer_plan`, tess, readback, binding, …) |
 
 Policy (OBJC TODO / ARCH): **do not grow these**; new sinks land in domain TUs.
 
@@ -176,6 +176,7 @@ ObjC runtime / Mach / Block headers are also included for Metal object class pro
 | ~~7238–7549~~ | ~~Integer readback classify~~ | **C1 extracted** → `mgl_readback_policy.{h,c}` (`Convert` + `Source`/`Packed`/`Classify`) |
 | ~~CopyRows / depth / GetTexImagePlan / MSAA stride~~ | ~~Y-flip / depth pack / plan~~ | **C1 extracted** → same TU; Metal `EncodeMultisampleResolve*` residual in monolith |
 | ~~7550–~8038 slot/sampler/stage/plain-uniform~~ | ~~Binding policy~~ | **C1 extracted** → `mgl_binding_policy.{h,c}` (O3.3) |
+| ~~7221–~7290 + WritableStorage~~ | ~~stage-bind helpers~~ | **C1 extracted** → `mgl_binding_stage.{h,c}` (O3.3 residual) |
 | ~~NeedsExplicitTopology–DrawModeFullyCulled + packed-DS/default-depth~~ | ~~format-class PSO~~ | **C1 extracted** → `mgl_pso_format_class.{h,c}` (O3.2); residual generatePipeline apply / BindingState |
 | ~7740+ (post-O3.2) | Texture/integer/format tables residual | integer map, GLSL type names, … |
 | ~9400–11200 | Format tables / clear mask / UBO pack | pixel-format class, plain-uniform pack |
@@ -243,6 +244,7 @@ Prefer extending these instead of growing `mgl_render.cpp`:
 - `mgl_buffer_plan.*`, `mgl_render_pass_plan.*`, `mgl_tess_domain.*`
 - `mgl_readback_policy.*` (**C1** — IntegerReadback + Y-flip/depth/GetTexImagePlan/MSAA stride)
 - `mgl_binding_policy.*` (**C1 / O3.3** — slot/sampler/stage/plain-uniform)
+- `mgl_binding_stage.*` (**C1 / O3.3 residual** — stage UBO/SSBO bind plan + helpers)
 - `mgl_pso_format_class.*` (**C1 / O3.2** — topology / format-class / blend·stencil·cull / viewport)
 - `mgl_air_type.*` + `mgl_air_codegen.h` (**C1b** — MType / type helpers; not emitExpr)
 - `mgl_air_resource.*` (**C1c** — uniform/opaque resource collection)
@@ -447,7 +449,25 @@ Chose **render format-class PSO builder → `mgl_pso_format_class.*`** (DXMT C1 
 | LOC | `mgl_render.cpp` ~20165→~19558 (−607); new `mgl_pso_format_class.c` ~641; header ~127 |
 | Smoke | Linux `cc -c -std=c11` `mgl_pso_format_class.c` |
 
-**Next strip suggestion (render):** BindingState apply masks (finish O3.3) or generatePipeline apply residual; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
+**Next strip suggestion (render):** (superseded by 4j) BindingState V/F stage-buffer plan.
+
+
+## 4j. C1 knife log — stage-buffer bind plan (O3.3 residual)
+
+Chose **+BindingState V/F UBO·SSBO map orchestration → `mgl_binding_stage.*`** (DXMT O3.3 residual) over BindingState apply masks in monolith: pure `extern "C"` plan + helpers; ObjC keeps thin set*Buffer / set*Bytes ports. Do **not** thicken `+Binding.m`; do **not** sink into `mgl_render.cpp`.
+
+| Item | Detail |
+|------|--------|
+| New files | `MGL/include/mgl_binding_stage.h`, `MGL/src/mgl_binding_stage.c`, `test_legacy_compat/test_binding_stage.c` |
+| Moved | `UseInlineFragmentBytes` / `CPUPointerLooksTagged` / `MetalDataPointerUsable` / `NeedsIsolatedStageBinding` / `AllowIsolateGPUWriteTarget` / `BindOffsetInBuffer` / `RequiredBindingBytesForMap` / `UseUniformConstantInline` / `IsolateUBO*` / `IsolateCopyLength` / `WritableStorageNeedsGPUAuthoritative` |
+| Added | `mglBindingStagePlanMapEntry` (PRE/POST phases) / fallback resource-type table / `FallbackNeedsBind` / `ResolveSlot` |
+| ObjC | `+BindingState` V/F map loops → plan@C + thin emit ports; fallback tables via `mglBindingStageFallbackResourceTypes` |
+| Residual | attrib / texture / storage-image / Y-flip BindingState still thick; binding ports still ≫300 LOC; BindingState apply masks (~record/update) remain in monolith |
+| Build | wildcard `*.c`; `test_metalcpp_smoke` list; `make test-binding-stage` |
+| LOC | `mgl_render.cpp` ~19558→~19484 (−74 helpers); `+BindingState.m` ~4675→~4523 (−152); new `mgl_binding_stage.c` ~plan+helpers; `+Binding.m` unchanged |
+| Smoke | Linux `cc -std=c11` `mgl_binding_stage.c` + `test_binding_stage` |
+
+**Next strip suggestion (render/ObjC):** continue BindingState attrib/texture/image → domain plans toward &lt;300 binding ports; or BindingState apply masks; or O3.1 pass plan. Do **not** sink back into `mgl_render.cpp`; do **not** grow `+Binding.m`.
 
 ## 5. C0 / C1 exit criteria
 
@@ -463,5 +483,6 @@ Chose **render format-class PSO builder → `mgl_pso_format_class.*`** (DXMT C1 
 - [x] **C1g** (air statement emit): `emitStmt`/`emitCompound` → `mgl_air_stmt.*`; `mgl_air_backend.cpp` ~14594→~13762 (−832); emitExpr deferred; Linux smoke `mgl_air_stmt.cpp` + llvm-19
 - [x] **C1** (O3.3 binding policy): slot/sampler/stage/plain-uniform → `mgl_binding_policy.{h,c}`; `mgl_render.cpp` ~20470→~20165 (−305); Linux smoke `mgl_binding_policy.c`; `+Binding.m` not grown
 - [x] **C1** (O3.2 format-class PSO): topology / format-class / blend·stencil·cull / viewport → `mgl_pso_format_class.{h,c}`; `mgl_render.cpp` ~20165→~19558 (−607); Linux smoke `mgl_pso_format_class.c`; `+Binding.m`/`+RenderPass.m` not grown
-- [ ] Future knives: continue by domain table (BindingState apply / O3.3 residual, O3.1 pass plan, later expr facade); keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
+- [x] **C1** (O3.3 residual stage bind plan): V/F UBO·SSBO plan + helpers → `mgl_binding_stage.{h,c}`; `mgl_render.cpp` ~19558→~19484 (−74); `+BindingState.m` ~4675→~4523; `test-binding-stage`; `+Binding.m` not grown
+- [ ] Future knives: continue BindingState attrib/texture/image toward &lt;300 ports; BindingState apply masks; O3.1 pass plan; later expr facade; keep golden before large moves (ARCH); do not re-enable CI until Paravirt sorted
 

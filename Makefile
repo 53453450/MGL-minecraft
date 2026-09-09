@@ -721,6 +721,18 @@ $(build_dir)/test_process_gl_state_plan: test_legacy_compat/test_process_gl_stat
 test-process-gl-state-plan: $(build_dir)/test_process_gl_state_plan
 	$(build_dir)/test_process_gl_state_plan
 
+$(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
+	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -Werror -g -O0 -std=c11 \
+		-IMGL/include -IMGL/src \
+		test_legacy_compat/test_binding_stage.c \
+		MGL/src/mgl_binding_stage.c \
+		-o $@
+
+test-binding-stage: $(build_dir)/test_binding_stage
+	$(build_dir)/test_binding_stage
+
 $(build_dir)/test_geometry_gather: test_legacy_compat/test_geometry_gather.c
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
@@ -892,6 +904,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
 	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
+	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
 	MGL/src/mgl_pso_format_class.c MGL/include/mgl_pso_format_class.h \
 	MGL/src/mgl_tess_factor_normalize.c MGL/src/mgl_tess_domain_gen.c \
 	MGL/include/mgl_tess_domain.h \
@@ -907,6 +920,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render.cpp \
 		MGL/src/mgl_readback_policy.c \
 		MGL/src/mgl_binding_policy.c \
+		MGL/src/mgl_binding_stage.c \
 		MGL/src/mgl_pso_format_class.c \
 		MGL/src/mgl_tess_factor_normalize.c \
 		MGL/src/mgl_tess_domain_gen.c \
@@ -1012,6 +1026,7 @@ test-all:
 	$(MAKE) test-batch-restore
 	$(MAKE) test-batch-issue
 	$(MAKE) test-process-gl-state-plan
+	$(MAKE) test-binding-stage
 	$(MAKE) test-geometry-gather
 	$(MAKE) test-validate-arrays-early
 	$(MAKE) test-tess-air
@@ -1019,7 +1034,7 @@ test-all:
 	$(MAKE) test-regression
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
-	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
+	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
