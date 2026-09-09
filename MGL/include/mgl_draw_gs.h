@@ -209,11 +209,19 @@ typedef struct MGLGsMetalExpansionHostOps {
     int (*ensure_command_buffer)(void *renderer);
     int (*bind_draw_textures)(void *renderer, GLMContext ctx);
     void *(*mtl_for_buffer)(void *renderer, Buffer *buf);
+    /* Fills `plan` with *borrowed* MTL pointers.  Objects created purely to
+     * fill the plan (isolated stage-binding buffers, runtime-array-size
+     * constant buffers, fallback samplers, storage-image views) are kept alive
+     * by a host-owned keep-alive set, which is handed back through
+     * `temporaries_out` as a +1 CF reference (NULL when nothing was needed).
+     * The caller MUST retain it until the plan has been encoded+dispatched and
+     * then release it; otherwise the plan encodes dangling pointers. */
     int (*fill_compute_bindings)(void *renderer, GLMContext ctx,
                                  MGLRenderComputeExecutionPlan *plan,
                                  MGLRenderCopyBackEntry *copybacks,
                                  uint32_t copybacks_cap,
-                                 uint32_t *copybacks_count);
+                                 uint32_t *copybacks_count,
+                                 void **temporaries_out);
     void *(*command_buffer_owner)(void *renderer);
     void *(*recovery_owner)(void *renderer);
     void (*note_device_reset)(void *renderer);

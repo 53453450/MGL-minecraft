@@ -447,9 +447,20 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
 
     MGLRenderCopyBackEntry copyBackEntries[31] = {{0}};
     uint32_t copyBackEntryCount = 0u;
-    if (!ops->fill_compute_bindings(ops->renderer, ctx, &executionPlan,
-                                    copyBackEntries, 31u,
-                                    &copyBackEntryCount)) {
+    /* `fill_compute_bindings` stores only borrowed MTL pointers in the plan and
+     * returns before we encode it, so it hands back a +1 keep-alive set for the
+     * temporaries it created while filling (isolated buffers, runtime-array-size
+     * constants, fallback samplers, storage-image views).  Track it so the set
+     * (and hence every borrowed pointer below) stays alive until the plan has
+     * been encoded and dispatched; releasing it earlier made setBuffer: retain
+     * a deallocated buffer. */
+    void *gsBindingTemporaries = NULL;
+    const int fillOK =
+        ops->fill_compute_bindings(ops->renderer, ctx, &executionPlan,
+                                   copyBackEntries, 31u, &copyBackEntryCount,
+                                   &gsBindingTemporaries);
+    owned.track(gsBindingTemporaries);
+    if (!fillOK) {
         ctx->active_state->dirty_bits = DIRTY_ALL;
         return 1;
     }

@@ -925,11 +925,13 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
                                          MGLRenderComputeExecutionPlan *plan,
                                          MGLRenderCopyBackEntry *copybacks,
                                          uint32_t copybacks_cap,
-                                         uint32_t *copybacks_count)
+                                         uint32_t *copybacks_count,
+                                         void **temporaries_out)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !plan || !copybacks || !copybacks_count) return 0;
     (void)ctx;
+    if (temporaries_out) *temporaries_out = NULL;
     MGLStageBindingCopyBackList stageCopyBacks = {0};
     NSMutableArray *temps = [NSMutableArray array];
     id compute = nil;
@@ -952,6 +954,15 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
         kMGLMaxBufferSlots, copybacks, copybacks_cap);
     *copybacks_count = n;
     [self clearStageBindingCopyBacks:&stageCopyBacks];
+    /* The plan only stores borrowed MTL pointers, and this function returns
+     * before the C++ side encodes/dispatches it.  Hand the keep-alive set back
+     * as a +1 CF reference so the caller can hold it across the encode; ARC
+     * would otherwise drop `temps` (and every temporary it retains) here, and
+     * setBuffer: would retain a deallocated buffer (EXC_BAD_ACCESS /
+     * "message sent to deallocated instance"). */
+    if (temporaries_out && temps.count) {
+        *temporaries_out = (__bridge_retained void *)temps;
+    }
     return 1;
 }
 
