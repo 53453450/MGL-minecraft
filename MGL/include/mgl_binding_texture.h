@@ -177,6 +177,15 @@ typedef struct MGLSampledTextureBindPlan {
 int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
                                  MGLSampledTextureBindPlan *out);
 
+/* FINAL apply helpers (V/F shared sampled spine). */
+int mglBindingTextureForceDefaultSampler(int used_fallback,
+                                         int expected_kind_is_depth);
+void mglBindingTextureFillSampledFinalInput(
+    MGLSampledTextureBindInput *in, int has_bound_texture, int suppress_missing,
+    int used_type_fallback, int has_combined_sampler, uint32_t sampler_binding,
+    uint32_t max_sampler_slots, int has_sampler, int force_default_sampler);
+
+
 /* Sampler warmup: 1 if slot bit set in 128-bit mask (4×uint32). */
 int mglBindingTextureSamplerWarmupSlotActive(const uint32_t mask[4],
                                              uint32_t slot);
@@ -553,6 +562,23 @@ void mglBindingLogRTSampleCopy(const MGLBindingRTCopyLog *log);
 void mglBindingLogTexFallbackEx(uint64_t hit, uint32_t binding, uint32_t program,
                                 uint32_t gl_tex, int suppressed, const char *name,
                                 uint32_t unit);
+
+
+/* O3.3: ObjC BindingState emit wrappers for merged depth/RT log PODs. */
+#ifndef MGL_EMIT_DR_LOG
+#define MGL_EMIT_DR_LOG(...) \
+    do { \
+        MGLBindingDepthLog _mgl_dr_log = {__VA_ARGS__}; \
+        mglBindingLogDepthRecover(&_mgl_dr_log); \
+    } while (0)
+#endif
+#ifndef MGL_EMIT_RT_LOG
+#define MGL_EMIT_RT_LOG(...) \
+    do { \
+        MGLBindingRTCopyLog _mgl_rt_log = {__VA_ARGS__}; \
+        mglBindingLogRTSampleCopy(&_mgl_rt_log); \
+    } while (0)
+#endif
 
 #ifdef __cplusplus
 }

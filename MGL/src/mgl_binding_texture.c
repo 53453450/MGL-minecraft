@@ -255,6 +255,30 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
     return 0;
 }
 
+
+int mglBindingTextureForceDefaultSampler(int used_fallback,
+                                         int expected_kind_is_depth) {
+    return (used_fallback && expected_kind_is_depth) ? 1 : 0;
+}
+
+void mglBindingTextureFillSampledFinalInput(
+    MGLSampledTextureBindInput *in, int has_bound_texture, int suppress_missing,
+    int used_type_fallback, int has_combined_sampler, uint32_t sampler_binding,
+    uint32_t max_sampler_slots, int has_sampler, int force_default_sampler) {
+    if (!in) {
+        return;
+    }
+    in->phase = MGL_ST_PHASE_FINAL;
+    in->has_bound_texture = has_bound_texture ? 1 : 0;
+    in->suppress_missing_fallback = suppress_missing ? 1 : 0;
+    in->used_type_fallback = used_type_fallback ? 1 : 0;
+    in->has_combined_sampler = has_combined_sampler ? 1 : 0;
+    in->sampler_binding = sampler_binding;
+    in->max_sampler_slots = max_sampler_slots;
+    in->has_sampler = has_sampler ? 1 : 0;
+    in->force_default_sampler = force_default_sampler ? 1 : 0;
+}
+
 int mglBindingTextureSamplerWarmupSlotActive(const uint32_t mask[4],
                                              uint32_t slot) {
     if (!mask) {

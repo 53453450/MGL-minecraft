@@ -402,6 +402,20 @@ typedef struct {
                                 context:(GLMContext)glm_ctx
                           encodeContext:(const MGLEncodeContext *)encCtx;
 - (bool)bindTexturesToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
+- (bool)bindSampledTexturesForStage:(int)shaderStage
+                    isFragmentStage:(BOOL)isFragment
+                            program:(Program *)program
+                        programName:(GLuint)programName
+                   vertexProgramName:(GLuint)vertexProgramName
+                 fragmentProgramName:(GLuint)fragmentProgramName
+                     defaultSampler:(id)defaultSampler
+                            bindCall:(uint64_t)bindCall
+                          traceBind:(bool)traceBind
+                         boundCount:(GLuint *)boundCount
+                      fallbackCount:(GLuint *)fallbackCount
+                           nilCount:(GLuint *)nilCount
+                        samplerCount:(GLuint *)samplerCount
+                        sampledCount:(GLuint *)sampledCountOut;
 - (BOOL)currentDrawRasterizationIsEmpty;
 - (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode;
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode;
@@ -520,5 +534,62 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
 - (void)broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:(GLMContext)glm_ctx;
 
 @end
+
+
+#include <string.h>
+
+/* O3.3: shared V/F binding-snapshot apply ports (frag=0 vertex, 1 fragment).
+ * Requires encCtx in the enclosing scope (MGLEncodeContext *). */
+#ifndef MGL_BIND_SNAP_FLUSH
+#define MGL_BIND_SNAP_FLUSH(snap, frag, scratchUsed)                             \
+    do {                                                                         \
+        uint32_t *_mgl_cnt = (frag) ? &(snap).fragment_op_count                   \
+                                    : &(snap).vertex_op_count;                   \
+        if (*_mgl_cnt > 0) {                                                     \
+            mglRenderEncodeBindingSnapshotForRenderEncoderOwner(                 \
+                encCtx->render_encoder_owner, &(snap), NULL, 0);                 \
+            (snap) = (MGLRenderBindingSnapshot){0};                              \
+            (scratchUsed) = 0;                                                   \
+        }                                                                        \
+    } while (0)
+#define MGL_BIND_SNAP_COLLECT_BUFFER(snap, frag, scratchUsed, slot, bufPtr, off)  \
+    do {                                                                         \
+        uint32_t *_mgl_cnt = (frag) ? &(snap).fragment_op_count                   \
+                                    : &(snap).vertex_op_count;                   \
+        MGLRenderBindingOp *_mgl_ops =                                           \
+            (frag) ? (snap).fragment_ops : (snap).vertex_ops;                    \
+        if (*_mgl_cnt >= MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS) {                  \
+            MGL_BIND_SNAP_FLUSH(snap, frag, scratchUsed);                        \
+            _mgl_cnt = (frag) ? &(snap).fragment_op_count                        \
+                              : &(snap).vertex_op_count;                         \
+            _mgl_ops = (frag) ? (snap).fragment_ops : (snap).vertex_ops;         \
+        }                                                                        \
+        _mgl_ops[(*_mgl_cnt)++] =                                                \
+            (MGLRenderBindingOp){0u, (uint32_t)(slot), (uint64_t)(off),          \
+                                 (void *)(bufPtr), NULL, 0u};                    \
+    } while (0)
+#define MGL_BIND_SNAP_COLLECT_BYTES(snap, frag, scratch, scratchUsed, scratchCap, slot, src, len) \
+    do {                                                                         \
+        const void *src_ = (src);                                                \
+        size_t len_ = (len);                                                     \
+        uint32_t *_mgl_cnt = (frag) ? &(snap).fragment_op_count                   \
+                                    : &(snap).vertex_op_count;                   \
+        MGLRenderBindingOp *_mgl_ops =                                           \
+            (frag) ? (snap).fragment_ops : (snap).vertex_ops;                    \
+        if ((scratchUsed) + len_ > (scratchCap) ||                               \
+            *_mgl_cnt >= MGL_RENDER_BINDING_SNAPSHOT_MAX_OPS) {                  \
+            MGL_BIND_SNAP_FLUSH(snap, frag, scratchUsed);                        \
+            _mgl_cnt = (frag) ? &(snap).fragment_op_count                        \
+                              : &(snap).vertex_op_count;                         \
+            _mgl_ops = (frag) ? (snap).fragment_ops : (snap).vertex_ops;         \
+        }                                                                        \
+        uint8_t *dst_ = (scratch) + (scratchUsed);                               \
+        memcpy(dst_, src_, len_);                                                \
+        (scratchUsed) += len_;                                                   \
+        _mgl_ops[(*_mgl_cnt)++] =                                                \
+            (MGLRenderBindingOp){1u, (uint32_t)(slot), 0, NULL, dst_,            \
+                                 (uint32_t)len_};                                \
+    } while (0)
+#endif /* MGL_BIND_SNAP_FLUSH */
 
 #endif /* MGLRenderer_Draw_Private_h */

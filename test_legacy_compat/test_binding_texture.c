@@ -309,6 +309,35 @@ static void test_sampled_diag_and_rt_ports(void)
     expect(mglBindingTextureMipDiagMix(1ull, 2ull) != 0ull, "mix");
 }
 
+
+static void test_sampled_final_helpers(void)
+{
+    expect(mglBindingTextureForceDefaultSampler(1, 1) == 1, "force depth fb");
+    expect(mglBindingTextureForceDefaultSampler(1, 0) == 0, "no force color");
+    expect(mglBindingTextureForceDefaultSampler(0, 1) == 0, "no force clean");
+
+    MGLSampledTextureBindInput in;
+    memset(&in, 0, sizeof(in));
+    in.spirv_binding = 3u;
+    in.has_resource = 1;
+    mglBindingTextureFillSampledFinalInput(&in, 1, 0, 0, 1, 5u, 16u, 1, 0);
+    expect(in.phase == MGL_ST_PHASE_FINAL, "final phase");
+    expect(in.has_bound_texture == 1, "final bound");
+    expect(in.sampler_binding == 5u, "final samp slot");
+    expect(in.max_sampler_slots == 16u, "final max");
+    expect(in.has_combined_sampler == 1, "final combined");
+
+    MGLSampledTextureBindPlan plan;
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "final plan");
+    expect(plan.action == MGL_ST_ACTION_QUEUE, "final queue");
+    expect(plan.queue_texture == 1, "final q tex");
+    expect(plan.queue_sampler == 1, "final q samp");
+
+    mglBindingTextureFillSampledFinalInput(&in, 0, 1, 0, 0, 0u, 16u, 0, 0);
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "suppress plan");
+    expect(plan.action == MGL_ST_ACTION_SUPPRESS_FALLBACK, "suppress act");
+}
+
 static void test_apply_masks(void)
 {
     MGLSamplerWarmupPlan warm;
@@ -346,6 +375,7 @@ int main(void)
     test_depth_recover_plan();
     test_sampler_materialize_plan();
     test_sampled_diag_and_rt_ports();
+    test_sampled_final_helpers();
     test_apply_masks();
     if (g_fails) {
         fprintf(stderr, "%d failure(s)\n", g_fails);
