@@ -201,6 +201,16 @@ uint32_t mglBindingStageBuildPresentMask(const uint8_t *present, uint32_t count)
 /* Count non-zero entries in present[0..count). */
 uint32_t mglBindingStageCountPresent(const uint8_t *present, uint32_t count);
 
+/* Clamp map-list count to max; *overflow_out=1 when truncated (may be NULL). */
+uint32_t mglBindingStageClampMapCount(uint32_t count, uint32_t max_count,
+                                      int *overflow_out);
+
+/* POST_MTL usable pointer: VS uses MetalDataPointerUsable; FS prefers
+ * canonical high ptr (>=4GiB), else MetalDataPointerUsable unless
+ * use_mtl_as_inline_src (historical FS small-MTL inline path). */
+int mglBindingStagePostMtlUsable(int is_fragment, const void *mtl_ptr,
+                                 int use_mtl_as_inline_src);
+
 /* ---- Attrib bind helpers (ex-mgl_render.cpp) ---- */
 
 int mglRenderIntegerAttribDstIsInt(uint32_t shader_gl_type);

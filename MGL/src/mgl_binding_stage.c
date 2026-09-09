@@ -575,3 +575,30 @@ uint32_t mglBindingStageCountPresent(const uint8_t *present, uint32_t count)
     }
     return n;
 }
+
+uint32_t mglBindingStageClampMapCount(uint32_t count, uint32_t max_count,
+                                      int *overflow_out) {
+    int overflow = count > max_count ? 1 : 0;
+    if (overflow_out) {
+        *overflow_out = overflow;
+    }
+    return overflow ? max_count : count;
+}
+
+int mglBindingStagePostMtlUsable(int is_fragment, const void *mtl_ptr,
+                                 int use_mtl_as_inline_src) {
+    if (!mtl_ptr) {
+        return 0;
+    }
+    if (is_fragment) {
+        if ((uintptr_t)mtl_ptr >= 0x100000000ULL) {
+            return 1;
+        }
+        if (use_mtl_as_inline_src) {
+            return 0;
+        }
+        return mglRenderMetalDataPointerUsable(mtl_ptr);
+    }
+    return mglRenderMetalDataPointerUsable(mtl_ptr);
+}
+

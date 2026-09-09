@@ -7,6 +7,7 @@
 #include "mgl_binding_stage.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 static int g_fails;
@@ -89,6 +90,26 @@ static void test_fallback_table(void)
     expect(out == src, "inline no pad");
     out = mglBindingStageInlineBytesSrc(pad, 64, src, 2, 8);
     expect(out == pad && pad[0] == 'a' && pad[1] == 'b' && pad[7] == 0, "inline pad");
+    {
+        int overflow = 0;
+        expect(mglBindingStageClampMapCount(3, 8, &overflow) == 3u && overflow == 0,
+               "clamp ok");
+        expect(mglBindingStageClampMapCount(12, 8, &overflow) == 8u && overflow == 1,
+               "clamp overflow");
+        expect(mglBindingStagePostMtlUsable(0, (const void *)(uintptr_t)0x10000u, 0) == 1,
+               "vs usable");
+        expect(mglBindingStagePostMtlUsable(0, (const void *)(uintptr_t)0x100u, 0) == 0,
+               "vs unusable");
+        expect(mglBindingStagePostMtlUsable(
+                   1, (const void *)(uintptr_t)0x100000000ULL, 0) == 1,
+               "fs high usable");
+        expect(mglBindingStagePostMtlUsable(
+                   1, (const void *)(uintptr_t)0x10000u, 1) == 0,
+               "fs inline suppresses mid");
+        expect(mglBindingStagePostMtlUsable(
+                   1, (const void *)(uintptr_t)0x10000u, 0) == 1,
+               "fs mid usable when not inline");
+    }
 }
 
 static void test_plan_skip_and_clear(void)
