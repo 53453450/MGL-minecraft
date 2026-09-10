@@ -99,7 +99,7 @@ static void generate_quads(const MGLTessFactorInput *in,
     const unsigned levels[4] = {1, 2, 3, 0};
     uint32_t outer[4][65], lengths[4];
     uint32_t grid[63][63];
-    const uint32_t nx = n->inner_eff[1], ny = n->inner_eff[0];
+    const uint32_t nx = n->inner_eff[0], ny = n->inner_eff[1];
     for (unsigned edge = 0; edge < 4; edge++) {
         lengths[edge] = n->outer_eff[levels[edge]];
         for (uint32_t i = 0; i < lengths[edge]; i++) {
@@ -118,9 +118,9 @@ static void generate_quads(const MGLTessFactorInput *in,
         return;
     }
     for (uint32_t y = 1; y < ny; y++) {
-        const float v = edge_position(n->inner_clamped[0], ny, in->spacing, y);
+        const float v = edge_position(n->inner_clamped[1], ny, in->spacing, y);
         for (uint32_t x = 1; x < nx; x++) {
-            const float u = edge_position(n->inner_clamped[1], nx, in->spacing, x);
+            const float u = edge_position(n->inner_clamped[0], nx, in->spacing, x);
             grid[y - 1][x - 1] = vertex(mesh, u, v, 0.f);
         }
     }
