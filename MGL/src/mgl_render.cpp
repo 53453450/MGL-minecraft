@@ -13362,12 +13362,40 @@ int mglGetOrCreateProgramComputePipeline(Program* program,
         return -1;
     }
     MGLShaderModule* spirv = &program->modules[stage];
-    if (!spirv->mtl_function) {
+    /* TES render-vertex / compute dual emit: when the TES carries a separate
+     * compute expansion kernel (metallib_bytes_tes_compute) for the
+     * indexed-fallback route, build the compute pipeline from that kernel
+     * rather than the render-vertex mtl_function.  The kernel function is
+     * loaded lazily here because the program may have been bound (and its
+     * stages loaded) before the kernel blob was published at link time. */
+    const bool hasComputeVariant =
+        (stage == _TESS_EVALUATION_SHADER) &&
+        spirv->metallib_bytes_tes_compute != nullptr &&
+        spirv->metallib_size_tes_compute > 0u;
+    if (hasComputeVariant && !spirv->mtl_function_compute) {
+        void *kernelLibrary = nullptr;
+        void *loadedFunction = nullptr;
+        if (mglRenderLoadAIRMainFunction(
+                spirv->metallib_bytes_tes_compute,
+                spirv->metallib_size_tes_compute,
+                &kernelLibrary, &loadedFunction, err, errcap) == 0 &&
+            kernelLibrary && loadedFunction) {
+            spirv->mtl_function_compute = loadedFunction;
+            mgl::releaseBridgedObject(&kernelLibrary);
+        } else {
+            if (kernelLibrary) mgl::releaseBridgedObject(&kernelLibrary);
+            if (loadedFunction) mgl::releaseBridgedObject(&loadedFunction);
+            return -1;
+        }
+    }
+    void *kernelFunction =
+        hasComputeVariant ? spirv->mtl_function_compute : spirv->mtl_function;
+    if (!kernelFunction) {
         if (err && errcap) snprintf(err, errcap, "compiled compute function is unavailable");
         return -1;
     }
     return mglRenderGetOrCreateComputePipeline(
-        spirv->mtl_function,
+        kernelFunction,
         program->pipeline_cache_instance_id,
         program->pipeline_cache_generation,
         static_cast<uint32_t>(stage), 1, pipeline_out, err, errcap);
