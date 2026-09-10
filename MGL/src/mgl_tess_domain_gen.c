@@ -53,6 +53,15 @@ static void emit(TessSink *sink, MGLTessCoord point)
 static uint32_t vertex(TessMesh *mesh, float u, float v, float w)
 {
     const uint32_t index = mesh->point_count++;
+    /* GL 4.6 Rule 8: every defined component of gl_TessCoord is in [0, 1].
+     * Barycentric reconstruction (w = 1 - u - v) and the fractional-spacing
+     * edge positions accumulate rounding error, which publishes a w of about
+     * -2e-8 for triangles (e.g. u = 57/58, v = 1/58).  KHR-GL46.tessellation_
+     * shader.tessellation_shader_tessellation rejects that, so clamp before
+     * the point leaves the generator. */
+    if (u < 0.f) u = 0.f; else if (u > 1.f) u = 1.f;
+    if (v < 0.f) v = 0.f; else if (v > 1.f) v = 1.f;
+    if (w < 0.f) w = 0.f; else if (w > 1.f) w = 1.f;
     mesh->points[index] = (MGLTessCoord){u, v, w};
     if (mesh->point_mode) emit(mesh->sink, mesh->points[index]);
     return index;
