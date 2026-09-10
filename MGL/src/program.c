@@ -1583,7 +1583,7 @@ static int mglCompileCaptureVariant(const char *src,
     MGLCompileArtifact art;
     mglCompileArtifactInit(&art);
     int rc = mglCompileArtifactFromGLSLEx(src, MGL_STAGE_VERTEX, attrib_names,
-                                          flags, NULL, &art, err, err_cap);
+                                          flags, NULL, 0u, &art, err, err_cap);
     if (rc == 0 && art.complete && art.metallib_bytes && art.metallib_size) {
         *bytes = art.metallib_bytes;
         *size = art.metallib_size;
@@ -1748,7 +1748,9 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         mglCompileArtifactInit(&art);
         air_rc = mglCompileArtifactFromGLSLEx(shader->src, air_stage,
                                               attrib_snapshot, air_flags,
-                                              iface_peers, &art, err,
+                                              iface_peers,
+                                              stage_info.tess_patch_vertices,
+                                              &art, err,
                                               sizeof err);
         if (air_rc == 0 && art.complete) {
             bytes = art.metallib_bytes;
@@ -1868,7 +1870,8 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         char compute_err[512] = {0};
         int compute_rc = mglCompileArtifactFromGLSLEx(
             shader->src, air_stage, attrib_snapshot, compute_flags,
-            iface_peers, &compute_art, compute_err, sizeof compute_err);
+            iface_peers, stage_info.tess_patch_vertices, &compute_art,
+            compute_err, sizeof compute_err);
         if (compute_rc == 0 && compute_art.complete) {
             pptr->modules[stage].metallib_bytes_tes_compute =
                 compute_art.metallib_bytes;

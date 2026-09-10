@@ -85,11 +85,19 @@ void mglCompileArtifactFree(MGLCompileArtifact *art);
 
 /* Compile one GLSL stage into a temporary artifact. Returns 0 on full
  * success (complete!=0); on failure *art is cleaned and complete==0.
- * Variant flags/peers still go through CompileArtifact so link stays atomic. */
+ * Variant flags/peers still go through CompileArtifact so link stays atomic.
+ *
+ * tess_patch_vertices is the per-patch control-point count the TES metallib
+ * must encode (the TCS layout(vertices = N), or the GL default when there is
+ * no TCS).  It is an input to codegen -- the tessellation tag Metal reads to
+ * size the per-patch control-point offset -- so it has to be passed in, not
+ * recovered from reflection afterwards.  0 means "unspecified" and keeps the
+ * GL default of 3. */
 int mglCompileArtifactFromGLSLEx(const char *src, int stage,
                                  const char *const *attrib_names,
                                  uint32_t air_flags,
                                  const void *iface_peers,
+                                 uint32_t tess_patch_vertices,
                                  MGLCompileArtifact *art_out,
                                  char *err_buf, size_t err_cap);
 int mglCompileArtifactFromGLSL(const char *src, int stage,

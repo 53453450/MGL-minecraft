@@ -85,6 +85,7 @@ int mglCompileArtifactFromGLSLEx(const char *src, int stage,
                                  const char *const *attrib_names,
                                  uint32_t air_flags,
                                  const void *iface_peers,
+                                 uint32_t tess_patch_vertices,
                                  MGLCompileArtifact *art_out,
                                  char *err_buf, size_t err_cap)
 {
@@ -101,6 +102,17 @@ int mglCompileArtifactFromGLSLEx(const char *src, int stage,
                      "CompileArtifact: invalid source or stage");
         }
         return -1;
+    }
+
+    /* Seed the TES patch size before codegen: mglAirCompileGLSLWithReflectInfoEx
+     * treats stage_info.tess_patch_vertices as an input, reads it ahead of
+     * reflection and restores it afterwards.  Leaving it 0 makes the backend
+     * fall back to the GL default of 3, which silently mis-sizes the metallib
+     * tessellation tag for any TCS that does not declare layout(vertices = 3)
+     * -- a TCS with vertices = 1 then fails the native-interface check at
+     * draw time and the whole draw is dropped. */
+    if (tess_patch_vertices > 0u) {
+        art_out->stage_info.tess_patch_vertices = tess_patch_vertices;
     }
 
     art_out->frontend.source = src;
@@ -141,5 +153,5 @@ int mglCompileArtifactFromGLSL(const char *src, int stage,
                                char *err_buf, size_t err_cap)
 {
     return mglCompileArtifactFromGLSLEx(src, stage, attrib_names, 0u, NULL,
-                                        art_out, err_buf, err_cap);
+                                        0u, art_out, err_buf, err_cap);
 }
