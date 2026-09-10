@@ -2165,7 +2165,8 @@ static llvm::Value *tessStageRecordIndex(Codegen &cg, llvm::Value *index,
  * stamps the global patch index in mgl_patch_info[2] (slot 28). */
 static llvm::Value *tessPatchIndexForStageIn(Codegen &cg)
 {
-    if (cg.isTessEval && !cg.isTESCompute && cg.indirectPtr) {
+    if (cg.isTessEval && !cg.isTESCompute && !cg.isTESVertex &&
+        cg.indirectPtr) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
         llvm::Value *info = cg.b->CreateBitCast(
             cg.indirectPtr, i32->getPointerTo(1));
@@ -2870,7 +2871,10 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
         return cg.b->CreateAlignedLoad(ty, p, llvm::Align(4));
     }
     if (cg.isTessEval && !strcmp(root, "gl_in")) {
-        if (!cg.isTESCompute &&
+        /* TES-vertex reads gl_in from the same per-patch control-point
+         * record stream as the compute expansion (slot 30); only native
+         * post-tessellation goes through the patch control-point function. */
+        if (!cg.isTESCompute && !cg.isTESVertex &&
             (!cg.patchControlPtr || !cg.controlPointGetter)) {
             cg.err = 1;
             cg.errmsg = "codegen: TES patch control points are unavailable";
@@ -2879,13 +2883,14 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
         llvm::Value *iv = emitExpr(cg, index, mod, locals);
         if (!iv) return nullptr;
         iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
-        if (!strcmp(field, "gl_Position") && !cg.isTESCompute) {
+        if (!strcmp(field, "gl_Position") && !cg.isTESCompute &&
+            !cg.isTESVertex) {
             llvm::Value *record = cg.b->CreateCall(
                 cg.controlPointGetter, {iv, cg.patchControlPtr});
             return cg.b->CreateExtractValue(record, 0);
         }
         if (!cg.stageInPtr || !cg.indirectPtr ||
-            (cg.isTESCompute && !cg.patchId)) {
+            ((cg.isTESCompute || cg.isTESVertex) && !cg.patchId)) {
             cg.err = 1;
             cg.errmsg = "TES AIR codegen: shared control-point buffer is unavailable";
             return nullptr;
@@ -9515,6 +9520,7 @@ static char *airPrepareLegacySource(const char *src, int air_stage) {
 
 static int compileGLSLImpl(const char *src, int stage, int capture,
                            bool has_gs, bool force_tes_compute,
+                           bool tes_vertex_render,
                            const char *const *attrib_names,
                            uint32_t tessPatchVertices,
                            const MGLShaderResourceList *iface_location_peers,
@@ -9571,12 +9577,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         translationUnitUsesRuntimeArrayLength(tu, &mod);
     /* Metal post-tessellation only supports triangle/quad patches (no
      * isolines patch type, no point output topology).  isolines and
-     * point-mode TES compile to a compute kernel that enumerates the
-     * expanded line/point stream instead (see the isTESCompute paths).
-     * XFB and a following geometry shader also force this path: native
-     * post-tess feeds FS directly and cannot insert GS or capture XFB,
-     * so triangles/quads with either share the same compute ABI. */
-    const bool isTESCompute = isTES &&
+     * point-mode TES compile either to a compute kernel that enumerates the
+     * expanded line/point stream (the isTESCompute paths), or — when nothing
+     * forces a compute record (no XFB, no following GS) — to an ordinary
+     * render vertex function that rasterizes the CPU-seeded domain stream
+     * directly (isTESVertex).  XFB and a following geometry shader still
+     * force the compute path: native post-tess feeds FS directly and cannot
+     * insert GS or capture XFB, so triangles/quads with either share the
+     * same compute ABI. */
+    const bool isTESVertex = isTES && tes_vertex_render &&
+        (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
+         tu->layout_point_mode != 0) &&
+        !force_tes_compute && !has_gs;
+    const bool isTESCompute = isTES && !isTESVertex &&
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
          tu->layout_point_mode != 0 ||
          force_tes_compute ||
@@ -9585,7 +9598,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesCullDistance = isVS && !isCapture &&
                                   sourceUsesCullDistance;
     const bool usesPatchCullDistance =
-        isTES && !isTESCompute && !isCapture &&
+        isTES && !isTESCompute && !isTESVertex && !isCapture &&
         sourceUsesCullDistance;
     const uint32_t activeCullCount = sourceUsesCullDistance
         ? irCullCount
@@ -9604,7 +9617,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool usesFragmentClipDistance =
         sourceUsesClipDistanceRead && activeClipCount > 0;
     const uint32_t runtimeArraySizeBufferIndex =
-        (isGS || isTESCompute)
+        (isGS || isTESCompute || isTESVertex)
             ? MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX
             : MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
 
@@ -9718,9 +9731,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         : isTES ? stageRecordStride(syms, VarSym::CONTROL_POINT_INPUT, false,
                                     MGL_AIR_PER_VERTEX_STRIDE)
                 : MGL_AIR_PER_VERTEX_STRIDE;
-    const uint32_t stageOutputStride = (isTCS || isGS || isTESCompute)
+    const uint32_t stageOutputStride = (isTCS || isGS || isTESCompute || isTESVertex)
         ? stageRecordStride(syms,
-                            isTESCompute ? VarSym::VARYING : VarSym::OUTPUT,
+                            (isTESCompute || isTESVertex) ? VarSym::VARYING
+                                                          : VarSym::OUTPUT,
                             false, MGL_AIR_PER_VERTEX_STRIDE)
         : MGL_AIR_PER_VERTEX_STRIDE;
     const uint32_t tessCaptureStride = isTessCapture
@@ -9866,17 +9880,28 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * rejects Triangle + point_size.  Capture / TES stages keep the
      * historical "only if written" gate. */
     const bool isStagePassthrough =
-        isVS && (strstr(esrc, "mgl_gs_output") != nullptr ||
-                 strstr(esrc, "mgl_tes_output") != nullptr);
+        (isVS && !isTESVertex &&
+         (strstr(esrc, "mgl_gs_output") != nullptr ||
+          strstr(esrc, "mgl_tes_output") != nullptr));
     const bool usesLayerViewport =
         isVS && (strstr(esrc, "gl_Layer") != nullptr ||
                  strstr(esrc, "gl_ViewportIndex") != nullptr);
+    /* TES-vertex point_mode draws rasterize MTLPrimitiveTypePoint and must
+     * declare [[point_size]]; isolines (line topology) must not. */
     const bool usesPointSize =
-        (isVS && !isCapture && !isStagePassthrough && !usesLayerViewport) ||
-        ((isVS || isTES) && strstr(esrc, "gl_PointSize") != nullptr);
+        ((isVS && !isCapture && !isStagePassthrough && !usesLayerViewport) ||
+         (isTESVertex && tu->layout_point_mode != 0) ||
+         ((isVS || (isTES && !isTESVertex)) &&
+          strstr(esrc, "gl_PointSize") != nullptr));
     const bool usesClipDistance =
         (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
         irClipCount > 0;
+    /* TES-vertex keeps the isoline partner-endpoint cull rule (a line is
+     * culled when both endpoints' distance < 0 for the same axis; a point
+     * when any distance < 0) that the passthrough VS used to apply, so the
+     * record buffer stays bound at slot 29 for the partner read. */
+    const bool usesTesVertexCull =
+        isTESVertex && sourceUsesCullDistance;
     const uint32_t userBufferLocationBase = isTES ? 1u : 0u;
     if (isVS || isTES) {
         /* retElems always carries the output record (capture variants
@@ -9954,7 +9979,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Type::getFloatTy(ctx), 4);
         } else if (isKernel || isCapture) {
             retTy = llvm::Type::getVoidTy(ctx);
-        } else if (isTES) {
+        } else if (isTES && !isTESVertex) {
             /* Apple's post-tessellation ABI returns a packed output record,
              * even when position is its only member. */
             retTy = llvm::StructType::get(ctx, retElems, true);
@@ -10238,6 +10263,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * transform-feedback stream(31). */
         for (int i = 0; i < 8; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+    } else if (isTESVertex) {
+        /* TES-vertex ABI: gl_in control points(30) seed TessCoord
+         * records(28) factors(26) patch inputs(27) contract(29). */
+        for (int i = 0; i < 5; i++)
+            paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isTES) {
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -10250,10 +10280,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
         cullParamsArgIdx = (uint32_t)paramTys.size();
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+    } else if (isTESVertex && usesTesVertexCull) {
+        /* TES-vertex cull reads the seeded record stream (slot 28) for the
+         * partner endpoint's distances; it reuses the same buffer param so
+         * the draw binds the record buffer once. */
+        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isCullCapture || isTessCapture) {
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
-    if (isVS) {
+    if (isVS || isTESVertex) {
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
@@ -10315,7 +10350,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         ft, llvm::Function::ExternalLinkage, "main", &module);
     fn->setDoesNotThrow();
     llvm::Function *controlPointGetter = nullptr;
-    if (isTES && !isTESCompute) {
+    if (isTES && !isTESCompute && !isTESVertex) {
         std::vector<llvm::Type *> cpRecordElems = {
             llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4)};
         for (VarSym &v : syms)
@@ -10410,6 +10445,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.isTessEval = isTES;
     cg.isGeometry = isGS;
     cg.isTESCompute = isTESCompute;
+    cg.isTESVertex = isTESVertex;
+    cg.isolinesTopology = tu->layout_primitive == MGL_AST_TES_ISOLINES;
     if (isCompute && tu) {
         cg.hasWorkGroupSize = true;
         cg.workGroupSizeX =
@@ -10719,10 +10756,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::UndefValue::get(llvmType(v.type, ctx));
         }
     }
-    if (isTES && !isTESCompute) {
+    if (isTES && !isTESCompute && !isTESVertex) {
         cg.stageInPtr = fn->getArg(argSlot++);
         cg.indirectPtr = fn->getArg(argSlot++);
         cg.captureBuf = fn->getArg(argSlot++);
+    }
+    if (isTESVertex) {
+        cg.stageInPtr = fn->getArg(argSlot++);       /* gl_in (slot 30) */
+        cg.geometryOutputPtr = fn->getArg(argSlot++); /* seed records (28) */
+        cg.tessFactorPtr = fn->getArg(argSlot++);    /* factors (26) */
+        cg.captureBuf = fn->getArg(argSlot++);       /* patch inputs (27) */
+        cg.indirectPtr = fn->getArg(argSlot++);      /* contract (29) */
+        if (usesTesVertexCull)
+            cg.cullBuffer = fn->getArg(argSlot++);   /* records (28) cull read */
     }
     if (isTCS || isTESCompute) {
         cg.stageInPtr = fn->getArg(argSlot++);
@@ -10755,7 +10801,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
         cg.cullParams = fn->getArg(argSlot++);
     }
-    if (isVS) {
+    if (isVS || isTESVertex) {
         if (usesCullDistance) {
             cg.cullBuffer = fn->getArg(argSlot++);
             cg.cullParams = fn->getArg(argSlot++);
@@ -11552,6 +11598,70 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         cg.tessCoord = coord;
     }
+    if (isTESVertex && cg.vertexId && cg.tessFactorPtr && cg.indirectPtr) {
+        /* TES-vertex: the record index is gl_VertexID (Metal vertex_id
+         * already carries the per-patch vertexStart).  The contract buffer
+         * (slot 29) carries {patch_id, vertices_per_patch, items, 0}. */
+        llvm::Type *f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value *contract = b.CreateBitCast(
+            cg.indirectPtr, b.getInt32Ty()->getPointerTo(1));
+        llvm::Value *patchId = b.CreateAlignedLoad(
+            b.getInt32Ty(),
+            b.CreateGEP(b.getInt32Ty(), contract, b.getInt32(0)),
+            llvm::Align(4));
+        cg.patchId = patchId;
+        cg.geometryWorkItemId = cg.vertexId;
+        /* gl_TessLevel* must be the exact float32 levels (TCS outs or
+         * glPatchParameterfv), not the Metal half factors — half round-trip
+         * fails CTS 1e-5 (gl_tessLevel). */
+        llvm::Value *factorBase = b.CreateGEP(
+            b.getInt8Ty(), cg.tessFactorPtr,
+            b.CreateMul(b.CreateZExt(patchId, b.getInt64Ty()),
+                        b.getInt64(MGL_AIR_TESS_FACTOR_RECORD_BYTES)));
+        {
+            llvm::Type *arr4 = llvm::ArrayType::get(f32, 4);
+            llvm::Type *arr2 = llvm::ArrayType::get(f32, 2);
+            llvm::Value *outer = llvm::UndefValue::get(arr4);
+            llvm::Value *inner = llvm::UndefValue::get(arr2);
+            llvm::Value *exactBase = b.CreateGEP(
+                b.getInt8Ty(), factorBase,
+                b.getInt64(MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET));
+            for (unsigned i = 0; i < 4; i++) {
+                llvm::Value *p = b.CreateBitCast(
+                    b.CreateGEP(b.getInt8Ty(), exactBase,
+                                b.getInt64(4 * i)),
+                    f32->getPointerTo(1));
+                outer = b.CreateInsertValue(
+                    outer, b.CreateAlignedLoad(f32, p, llvm::Align(4)), i);
+            }
+            for (unsigned i = 0; i < 2; i++) {
+                llvm::Value *p = b.CreateBitCast(
+                    b.CreateGEP(b.getInt8Ty(), exactBase,
+                                b.getInt64(16 + 4 * i)),
+                    f32->getPointerTo(1));
+                inner = b.CreateInsertValue(
+                    inner, b.CreateAlignedLoad(f32, p, llvm::Align(4)), i);
+            }
+            cg.lvalues["gl_TessLevelOuter"] = outer;
+            cg.lvalues["gl_TessLevelInner"] = inner;
+        }
+        /* The CPU domain expansion seeded this record's position.xyz with
+         * TessCoord; read it back from slot 28. */
+        llvm::Value *coordBase = b.CreateGEP(
+            b.getInt8Ty(), cg.geometryOutputPtr,
+            b.CreateMul(b.CreateZExt(cg.geometryWorkItemId, b.getInt64Ty()),
+                        b.getInt64(cg.stageOutStride)));
+        llvm::Value *coord = llvm::UndefValue::get(
+            llvm::FixedVectorType::get(f32, 3));
+        for (unsigned axis = 0; axis < 3; axis++) {
+            llvm::Value *p = b.CreateBitCast(
+                b.CreateGEP(b.getInt8Ty(), coordBase, b.getInt64(axis * 4)),
+                f32->getPointerTo(1));
+            coord = b.CreateInsertElement(coord,
+                b.CreateAlignedLoad(f32, p, llvm::Align(4)), b.getInt32(axis));
+        }
+        cg.tessCoord = coord;
+    }
     emitStmt(cg, mainDecl->body, &mod, &locals);
     if (isTCS && cg.tessFactorPtr && cg.patchPos &&
         !b.GetInsertBlock()->getTerminator()) {
@@ -11560,7 +11670,57 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         flushTCSTessLevels(cg);
     }
 
-    if (isTESCompute && cg.geometryOutputPtr && cg.geometryWorkItemId &&
+    if (isTESVertex) {
+        /* TES-vertex: the TES is the raster vertex stage, so it returns the
+         * ordinary VS output record instead of writing the slot-28 record
+         * buffer.  gl_CullDistance for point/line topologies is applied
+         * here (the passthrough VS used to do it from the record buffer). */
+        if (usesTesVertexCull) {
+            llvm::Type *f32 = llvm::Type::getFloatTy(ctx);
+            llvm::Value *cullArr = cg.lvalues.count("gl_CullDistance")
+                ? cg.lvalues["gl_CullDistance"]
+                : defaultCullDistances(cg);
+            /* gl_CullDistance (GL 4.6 §13.6.1): a vertex is culled when its
+             * own distance is negative.  The rasterizer then clips any
+             * primitive whose endpoints straddle the plane and discards a
+             * primitive only when all of its vertices are negative.  Per-
+             * vertex culling (criterion = own) yields exactly that for both
+             * point_mode (points) and isolines (line segments).  The previous
+             * isolines partner rule (criterion = own * partner, which fired
+             * only on a sign straddle) left rows whose vertices all shared
+             * one sign (e.g. d = 0.5 - v culling a whole v row) fully visible
+             * — repro: air_tessellation_cull_distance. */
+            llvm::Value *shouldCull = b.getFalse();
+            for (uint32_t d = 0; d < MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT; d++) {
+                llvm::Value *own = b.CreateExtractValue(cullArr, d);
+                llvm::Value *criterion = own;
+                shouldCull = b.CreateOr(
+                    shouldCull,
+                    b.CreateFCmpOLT(criterion,
+                                    llvm::ConstantFP::get(f32, 0.0)));
+            }
+            llvm::Value *culled = llvm::ConstantVector::get({
+                llvm::ConstantFP::get(f32, 2.0),
+                llvm::ConstantFP::get(f32, 2.0),
+                llvm::ConstantFP::get(f32, 2.0),
+                llvm::ConstantFP::get(f32, 1.0)});
+            llvm::Value *pos = cg.lvalues.count("gl_Position")
+                ? cg.lvalues["gl_Position"]
+                : llvm::UndefValue::get(llvm::FixedVectorType::get(f32, 4));
+            if (pos->getType() != llvm::FixedVectorType::get(f32, 4)) {
+                if (pos->getType()->isVectorTy())
+                    pos = b.CreateBitCast(pos, llvm::FixedVectorType::get(f32, 4));
+                else
+                    pos = b.CreateVectorSplat(4, pos);
+            }
+            cg.lvalues["gl_Position"] =
+                b.CreateSelect(shouldCull, culled, pos);
+        }
+        /* Fall through to the common epilogue return at the end of codegen
+         * (b.CreateRet(assembleReturn(cg))), which is also used by the plain
+         * VS/FS paths.  Emitting the return here would place two terminators
+         * in the same block and make the AIR module invalid. */
+    } else if (isTESCompute && cg.geometryOutputPtr && cg.geometryWorkItemId &&
         !b.GetInsertBlock()->getTerminator()) {
         /* Each work item writes one expanded vertex record into the
          * stage-out buffer (slot 28); see storeTessComputeVaryings for the
@@ -12477,6 +12637,59 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             nextFreeAttrLoc = std::max(nextFreeAttrLoc, attrLoc);
         }
     }
+    if (isTESVertex) {
+        /* TES-vertex ABI (render encoder): gl_in control points(30), seed
+         * TessCoord records(28, read-only), tess factors(26), patch
+         * inputs(27), contract(29, {patch_id, vertices_per_patch, items, 0}).
+         * All are read-only; the expanded vertex is returned as the VS
+         * output record.  The cull-record buffer param(28) reuses the seed
+         * stream and is only declared when the shader uses gl_CullDistance. */
+        uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
+                       (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
+                       imageCount;
+        const uint32_t locs[5] = {30u, 28u, 26u, 27u, 29u};
+        const char *names[5] = {"tes_gl_in", "tes_seed_records",
+                                "tess_factors", "tes_patch_inputs",
+                                "tes_contract"};
+        for (int i = 0; i < 5; i++) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), arg++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), locs[i])),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.read"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uchar*"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, names[i])}));
+        }
+        if (usesTesVertexCull) {
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), arg++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 28u)),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.read"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uchar*"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "tes_cull_records")}));
+        }
+    }
     if (isTCS) {
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
@@ -12582,9 +12795,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (isTCS) mArgSlot += 5;
     else if (isGS) mArgSlot += 8;  /* input/output/counts/gather/params/xfb/xfb-meta/xfb-vis */
     else if (isTESCompute) mArgSlot += 8; /* stage_in/factors/patches/out/indirect/gather/params/xfb */
+    else if (isTESVertex) mArgSlot += usesTesVertexCull ? 6 : 5; /* gl_in/seed/factors/patch/contract[/cull] */
     if (isVS) {
         /* Vertex attribute metadata already emitted above. */
-    } else if (isTES && !isTESCompute) {
+    } else if (isTES && !isTESCompute && !isTESVertex) {
+        /* Native post-tessellation only: TES-vertex declares its own five
+         * buffers above and carries no patch-control-point hidden args. */
         uint32_t hiddenArg = mArgSlot;
         const uint32_t locations[3] = {30u, 28u, 27u};
         const char *names[3] = {"mgl_control_points", "mgl_patch_info",
@@ -12658,7 +12874,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "uint"),
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "patchId")}));
-    } else if (!isKernel) {
+    } else if (!isKernel && !isTESVertex) {
         auto emitFSVarying = [&](const std::string &tagName,
                                  const MType &mt, uint32_t argIdx,
                                  bool forceFlat = false) {
@@ -12945,7 +13161,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "float4"),
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "position")}));
-    } else if ((isVS || (isTES && !isTESCompute)) && !isCapture) {
+    } else if ((isVS || (isTES && !isTESCompute) || isTESVertex) && !isCapture) {
         outNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::MDString::get(ctx, "air.position"),
             llvm::MDString::get(ctx, "air.arg_type_name"),
@@ -13207,7 +13423,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 ? "mgl_cull_capture_params" : "mgl_tess_capture_params")}));
     }
 
-    if (isVS) {
+    if (isVS || isTESVertex) {
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),
@@ -13264,7 +13480,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         stageElems.push_back(llvm::MDNode::get(ctx, argNodes));
     else
         stageElems.push_back(llvm::MDNode::get(ctx, {}));
-    if (isTES && !isTESCompute) {
+    if (isTES && !isTESCompute && !isTESVertex) {
         stageElems.push_back(llvm::MDNode::get(ctx, {
             llvm::MDString::get(ctx, "air.patch"),
             llvm::MDString::get(
@@ -13344,7 +13560,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     f.type = isKernel ? mgl::MTLB_FN_KERNEL
                        : ((isVS || isTES) ? mgl::MTLB_FN_VERTEX
                                          : mgl::MTLB_FN_FRAGMENT);
-    if (isTES && !isTESCompute) {
+    if (isTES && !isTESCompute && !isTESVertex) {
         /* The metallib TESS tag is 4 * controlPointCount + patchKind; it is
          * how Metal computes the per-patch control-point offset on the CPU
          * side (patchStart * controlPointCount).  Encoding only the patch
@@ -13373,6 +13589,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     *metallib_out = out;
     *size_out = mlib.size();
 
+    if (mgl_env_flag_enabled("MGL_DUMP_METALLIB")) {
+        static unsigned s_dumpSeq = 0u;
+        char path[128];
+        snprintf(path, sizeof(path), "/tmp/mgl_mlib_s%d_%u.metallib", stage,
+                 s_dumpSeq++);
+        FILE *f = fopen(path, "wb");
+        if (f) {
+            fwrite(mlib.data(), 1, mlib.size(), f);
+            fclose(f);
+        }
+    }
+
     if (own_session)
         mglFrontendSessionDestroy(sess);
     return 0;
@@ -13383,7 +13611,8 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap) {
     return compileGLSLImpl(src, stage, 0, /*has_gs=*/false,
-                           /*force_tes_compute=*/false, nullptr, 0u,
+                           /*force_tes_compute=*/false,
+                           /*tes_vertex_render=*/false, nullptr, 0u,
                            /*iface_location_peers=*/nullptr, metallib_out,
                            size_out, err_buf, err_cap);
 }
@@ -13398,7 +13627,8 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            size_t *size_out, char *err_buf,
                                            size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, /*has_gs=*/false,
-                           /*force_tes_compute=*/false, attrib_names,
+                           /*force_tes_compute=*/false,
+                           /*tes_vertex_render=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -13408,7 +13638,8 @@ extern "C" int mglShaderCompileGLSLTessCapture(
     unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 2, /*has_gs=*/false,
-                           /*force_tes_compute=*/false, attrib_names,
+                           /*force_tes_compute=*/false,
+                           /*tes_vertex_render=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -13418,7 +13649,8 @@ extern "C" int mglShaderCompileGLSLCullDistanceCapture(
     unsigned char **metallib_out, size_t *size_out,
     char *err_buf, size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 3, /*has_gs=*/false,
-                           /*force_tes_compute=*/false, attrib_names,
+                           /*force_tes_compute=*/false,
+                           /*tes_vertex_render=*/false, attrib_names,
                            0u, /*iface_location_peers=*/nullptr,
                            metallib_out, size_out, err_buf, err_cap);
 }
@@ -13633,8 +13865,11 @@ extern "C" int mglAirCompileGLSLWithReflectInfoEx(
         capture = 2;
     else if (flags & MGL_AIR_COMPILE_VS_CAPTURE)
         capture = 1;
+    const bool tes_vertex_render =
+        (flags & MGL_AIR_COMPILE_TES_VERTEX) != 0;
 
     int rc = compileGLSLImpl(sess.src, stage, capture, has_gs, force_tes_compute,
+                             tes_vertex_render,
                              attrib_names, tessPatchVertices,
                              iface_location_peers, metallib_out, size_out,
                              err_buf, err_cap, &sess);
