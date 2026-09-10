@@ -4460,9 +4460,13 @@ static GLenum mglPassthroughDeclType(
         _tessellation.cullDistanceCaptureActive;
     const BOOL geometryExpansion = _geometry.expansionActive;
     const BOOL tessCompute = _tessellation.tessComputeActive;
+    const BOOL tessVertexRender = tessCompute &&
+        _tessellation.tessVertexRenderActive;
+    const BOOL tessVertex = tessVertexRender;
     const int vertexStage = nativeTES ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
     Program *vertexProgram = nativeTES
         ? _tessellation.nativeTESProgram
+        : tessVertex ? _tessellation.tessComputeProgram
         : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *fragmentProgram = (tessVertexCapture || cullDistanceCapture)
         ? NULL : mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
@@ -4527,10 +4531,19 @@ static GLenum mglPassthroughDeclType(
     }
     void *tessPassthroughFunction = NULL;
     if (tessCompute && _tessellation.tessComputeProgram) {
-        (void)mglRendererBackendGetPassthroughFunction(
-            _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
-            _tessellation.tessComputeProgram->pipeline_cache_instance_id,
-            &tessPassthroughFunction);
+        /* A TES-vertex program is its own vertex function (the expanded
+         * stream rasterizes directly); only the record-passthrough of the
+         * compute expansion uses the generated slot-28 reader. */
+        if (_tessellation.tessVertexRenderActive) {
+            tessPassthroughFunction =
+                _tessellation.tessComputeProgram->modules[_TESS_EVALUATION_SHADER]
+                    .mtl_function;
+        } else {
+            (void)mglRendererBackendGetPassthroughFunction(
+                _backend, MGL_RENDERER_BACKEND_PASSTHROUGH_TESS_EVALUATION,
+                _tessellation.tessComputeProgram->pipeline_cache_instance_id,
+                &tessPassthroughFunction);
+        }
     }
     void *vertexFunctionPtr = geometryExpansion
         ? geometryPassthroughFunction
@@ -4641,6 +4654,15 @@ static GLenum mglPassthroughDeclType(
         if (needsExplicitTopology) {
             state->input_primitive_topology =
                 mglRenderPrimitiveTopologyClass((uint32_t)_lastDrawPrimitiveMode);
+        }
+        /* TES-vertex (isolines / point_mode) rasterizes the expanded point /
+         * line stream with the TES as its vertex function.  Force the
+         * matching topology class so Metal links and validates the PSO. */
+        if (tessCompute && _tessellation.tessVertexRenderActive) {
+            state->input_primitive_topology =
+                mglRenderPrimitiveTopologyClass(
+                    (uint32_t)mglTessRasterGLMode(
+                        _tessellation.tessComputeProgram));
         }
     }
 

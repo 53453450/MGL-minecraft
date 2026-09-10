@@ -125,6 +125,40 @@ static void mglTessSetRenderVertexBuffer(id encoder,
         MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
 }
 
+static void mglTessSetRenderVertexBytes(id encoder,
+                                        void *renderEncoderOwner,
+                                        const void *bytes,
+                                        NSUInteger length,
+                                        NSUInteger index)
+{
+    (void)encoder;
+    (void)mglRenderSetRenderBytesForOwner(
+        renderEncoderOwner, bytes, length,
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
+}
+
+static void mglTessSetRenderVertexTexture(id encoder,
+                                          void *renderEncoderOwner,
+                                          id texture,
+                                          NSUInteger index)
+{
+    (void)encoder;
+    (void)mglRenderSetRenderTextureForOwner(
+        renderEncoderOwner, (__bridge void *)texture,
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
+}
+
+static void mglTessSetRenderVertexSampler(id encoder,
+                                          void *renderEncoderOwner,
+                                          id sampler,
+                                          NSUInteger index)
+{
+    (void)encoder;
+    (void)mglRenderSetRenderSamplerForOwner(
+        renderEncoderOwner, (__bridge void *)sampler,
+        MGL_RENDER_BINDING_STAGE_VERTEX, (uint32_t)index);
+}
+
 static void mglTessDrawPrimitives(id encoder,
                                   void *renderEncoderOwner,
                                   uint32_t type,
@@ -406,6 +440,19 @@ typedef struct {
             return false;
         }
 
+        /* A TES-vertex stage reads its SSBO/UBO resources inside the render
+         * encoder, so it never writes them and never needs a copy-back.
+         * Follows the per-draw path: a program that also carries the compute
+         * kernel (indexed draws) must keep isolated bindings on the compute
+         * path. */
+        const BOOL stageReadsOnly =
+            (stage == _TESS_EVALUATION_SHADER &&
+             _tessellation.tessVertexRenderActive)
+                ? YES : NO;
+        if (stageReadsOnly) {
+            bindPlan.isolated = NO;
+        }
+
         MGLTessStageBufferBinding *binding = &bindings->slots[metalBindingIndex];
         binding->buffer = nil;
         binding->offset = 0u;
@@ -470,6 +517,28 @@ typedef struct {
         }
     }
 
+    /* A TES-vertex stage binds its resources into the render encoder; the
+     * GPU copy that initializes an isolated binding must land before that
+     * encoder (it is encoded into the command buffer, not the render pass). */
+    const BOOL tessVertexRenderStage =
+        (stage == _TESS_EVALUATION_SHADER &&
+         _tessellation.tessVertexRenderActive)
+            ? YES : NO;
+    if (tessVertexRenderStage) {
+        BOOL needsInitializationBlit = NO;
+        for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+            if (bindings->slots[i].initialization_length > 0) {
+                needsInitializationBlit = YES;
+                break;
+            }
+        }
+        if (needsInitializationBlit) {
+            if (![self flushTessStageBindingInitializationBlit:bindings]) {
+                return false;
+            }
+        }
+    }
+
     BOOL needsInitializationBlit = NO;
     for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
         if (bindings->slots[i].initialization_length > 0) {
@@ -505,6 +574,68 @@ typedef struct {
     return mglTessEncodeBufferCopiesForOwner(
         _renderPassManager.state->currentCommandBufferOwner,
         copyEntries, copyEntryCount);
+}
+
+/* Encode the isolated-binding initialization copies into the command buffer
+ * now (used by the TES-vertex path, which binds resources into a render
+ * encoder rather than a compute plan). */
+- (bool)flushTessStageBindingInitializationBlit:
+    (MGLTessStageBufferBindingList *)bindings
+{
+    MGL_ASSERT_GL_THREAD();
+    if (!bindings) {
+        return false;
+    }
+    MGLRenderBufferCopyEntry copyEntries[kMGLMaxBufferSlots] = {0};
+    uint32_t copyEntryCount = 0u;
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        MGLTessStageBufferBinding *binding = &bindings->slots[i];
+        if (binding->initialization_length == 0) {
+            continue;
+        }
+        copyEntries[copyEntryCount++] = (MGLRenderBufferCopyEntry){
+            .source_buffer = (__bridge void *)binding->initialization_source,
+            .source_offset = binding->initialization_source_offset,
+            .destination_buffer = (__bridge void *)binding->buffer,
+            .destination_offset = 0u,
+            .length = binding->initialization_length,
+        };
+    }
+    if (copyEntryCount == 0u) {
+        return true;
+    }
+    if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner))) {
+        [self endRenderEncoding];
+    }
+    return mglTessEncodeBufferCopiesForOwner(
+        _renderPassManager.state->currentCommandBufferOwner,
+        copyEntries, copyEntryCount);
+}
+
+/* Bind the prepared TES stage buffers (SSBO/UBO/atomic/runtime-size) into the
+ * render encoder for the TES-vertex path.  These are read-only in the vertex
+ * stage; no copy-back is recorded. */
+- (bool)bindTessStageBufferBindingsToRenderEncoderOwner:(void *)renderEncoderOwner
+                                            bindings:(const MGLTessStageBufferBindingList *)bindings
+{
+    MGL_ASSERT_GL_THREAD();
+    if (!bindings) {
+        return false;
+    }
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        const MGLTessStageBufferBinding *binding = &bindings->slots[i];
+        if (binding->valid && binding->buffer) {
+            mglTessSetRenderVertexBuffer(nil, renderEncoderOwner,
+                                         binding->buffer, binding->offset, i);
+        }
+    }
+    if (bindings->size_buffer) {
+        mglTessSetRenderVertexBuffer(nil, renderEncoderOwner,
+                                     bindings->size_buffer, 0u,
+                                     bindings->size_buffer_index);
+    }
+    return true;
 }
 
 - (bool)bindPreparedTessStageBufferBindings:(const MGLTessStageBufferBindingList *)bindings
@@ -643,6 +774,296 @@ typedef struct {
             return NO;
         }
     }
+    return YES;
+}
+
+/* Isolines / point_mode TES as a render vertex function: the CPU domain
+ * expansion seeds TessCoord records once, then the render encoder replays a
+ * per-patch drawPrimitives with the TES compiled as the vertex stage.  This
+ * removes the per-patch TES compute dispatch and the compute→render encoder
+ * switch of the compute expansion path. */
+- (BOOL)dispatchAIRTessEvalVertexRender:(GLMContext)glm_ctx
+                                program:(Program *)tesProgram
+                               contract:(const MGLAIRTessDrawContract *)contract
+                             patchCount:(GLuint)patchCount
+                          instanceCount:(GLsizei)instanceCount
+                           baseInstance:(GLuint)baseInstance
+{
+    MGL_ASSERT_GL_THREAD();
+    if (!tesProgram || !glm_ctx || !contract || patchCount == 0u ||
+        instanceCount <= 0) {
+        return NO;
+    }
+    /* This draw takes the render-vertex path: the TES stage binds its
+     * resources read-only into the render encoder (no isolated copies). */
+    _tessellation.tessVertexRenderActive = YES;
+    Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
+    if (!mglTessStageHasCompiledFunction(
+            tesShader ? 1 : 0,
+            tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function ? 1 : 0)) {
+        NSLog(@"MGL TESS ERROR: TES-vertex program %u has no compiled function",
+              (unsigned)tesProgram->name);
+        return NO;
+    }
+
+    id tcsOutputBuffer = (__bridge id)
+        mglRendererBackendGetTcsOutputBuffer(_backend);
+    id tessFactorBuffer = (__bridge id)
+        mglRendererBackendGetCurrentTessFactorBuffer(_backend);
+    id captureBuffer = (__bridge id)
+        mglRendererBackendGetTessVertexCaptureBuffer(_backend);
+    MGLTessEvalGlInPlan glInPlan = {0};
+    if (!mglTessResolveEvalGlIn(
+            contract, tcsOutputBuffer != nil,
+            (uint64_t)_tessellation.tcsOutputOffset,
+            (uint64_t)_tessellation.tcsOutputStride,
+            _tessellation.tcsOutVertices, captureBuffer != nil,
+            (uint64_t)_tessellation.tessVertexCaptureOffset,
+            _tessellation.tessIndexedDraw ? 1 : 0,
+            (uint32_t)_tessellation.tessInstanceRecords,
+            (uint32_t)instanceCount, &glInPlan)) {
+        NSLog(@"MGL TESS ERROR: missing TES-vertex inputs program=%u",
+              (unsigned)tesProgram->name);
+        return NO;
+    }
+    id glInBuffer = glInPlan.from_tcs ? tcsOutputBuffer : captureBuffer;
+    const NSUInteger glInOffset = (NSUInteger)glInPlan.gl_in_offset;
+    const NSUInteger glInInstanceStride =
+        (NSUInteger)glInPlan.gl_in_instance_stride;
+    const GLuint glInVertices = glInPlan.gl_in_vertices;
+    if (!mglTessEvalInputsReady(glInBuffer != nil, tessFactorBuffer != nil)) {
+        NSLog(@"MGL TESS ERROR: missing TES-vertex inputs program=%u",
+              (unsigned)tesProgram->name);
+        return NO;
+    }
+    if (mglTessMultiInstanceTCSReuseWarn(glInPlan.from_tcs ? 1 : 0,
+                                         (int32_t)instanceCount)) {
+        static BOOL s_tesVertexMultiInstanceLogged = NO;
+        if (!s_tesVertexMultiInstanceLogged) {
+            NSLog(@"MGL TESS ERROR: multi-instance TES-vertex with TCS reuses "
+                  "instance-0 control points (program=%u instances=%d)",
+                  (unsigned)tesProgram->name, (int)instanceCount);
+            s_tesVertexMultiInstanceLogged = YES;
+        }
+        if (mglTessMultiInstanceTCSReuseIsError(glInPlan.from_tcs ? 1 : 0,
+                                                (int32_t)instanceCount)) {
+            return NO;
+        }
+    }
+
+    const uint16_t *factorBytes =
+        (const uint16_t *)mglTessBufferContents(tessFactorBuffer);
+    MGLTessEvalComputePlan evalPlan = {0};
+    if (!mglTessPlanEvalCompute(tesProgram, factorBytes,
+                                mglTessBufferLength(tessFactorBuffer),
+                                patchCount, (uint32_t)instanceCount,
+                                &evalPlan)) {
+        NSLog(@"MGL TESS ERROR: TES-vertex plan failed program=%u",
+              (unsigned)tesProgram->name);
+        return NO;
+    }
+    if (evalPlan.empty) {
+        return YES;
+    }
+    const GLuint instanceCountU = evalPlan.instance_count;
+    const GLuint itemsPerInstanceU = evalPlan.items_per_instance;
+    const NSUInteger outStride = evalPlan.out_stride;
+    const NSUInteger outSize = (NSUInteger)evalPlan.out_size;
+
+    id outBuffer = mglTessCreateBuffer(
+        _device, outSize, MGL_TESS_RESOURCE_STORAGE_SHARED);
+    void *outContents = mglTessBufferContents(outBuffer);
+    if (!outContents) {
+        NSLog(@"MGL TESS ERROR: failed to allocate TES-vertex domain stream "
+              "(%lu bytes) program=%u",
+              (unsigned long)outSize, (unsigned)tesProgram->name);
+        return NO;
+    }
+    if (mglTessSeedEvalOutputRecords(tesProgram, factorBytes, patchCount,
+                                     instanceCountU, outContents, outSize,
+                                     (uint32_t)outStride) != itemsPerInstanceU) {
+        NSLog(@"MGL TESS ERROR: TES-vertex domain seed failed program=%u",
+              (unsigned)tesProgram->name);
+        return NO;
+    }
+
+    /* The render-vertex path never writes its resources; only the isolated
+     * binding *initialization* copy is relevant, and that lands on the command
+     * buffer before the render pass.  Since the copy is flushed eagerly, the
+     * copy-back list is discarded. */
+    MGLTessStageBufferBindingList stageBufferBindings = {0};
+    MGLStageBindingCopyBackList stageCopyBacks = {0};
+    if (![self prepareTessStageBufferBindings:&stageBufferBindings
+                                         stage:_TESS_EVALUATION_SHADER
+                                     copyBacks:&stageCopyBacks]) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return NO;
+    }
+    [self clearStageBindingCopyBacks:&stageCopyBacks];
+
+    MGLTessTextureBind tesTextureBinds[TEXTURE_UNITS * 2u];
+    const uint32_t tesTextureBindCount = mglTessCollectTextureBinds(
+        glm_ctx, tesProgram, _TESS_EVALUATION_SHADER, tesTextureBinds,
+        (uint32_t)(sizeof(tesTextureBinds) / sizeof(tesTextureBinds[0])));
+    if (![self ensureTessTextureMetalData:tesTextureBinds
+                                    count:tesTextureBindCount
+                                      ctx:glm_ctx]) {
+        return NO;
+    }
+
+    const GLenum tessRasterMode = mglTessRasterGLMode(tesProgram);
+    MGLTessRasterQueryPlan query = {0};
+    mglTessPlanRasterQuery(tesProgram, (uint64_t)instanceCount,
+                           (uint64_t)itemsPerInstanceU, 0, 0u, 0u, &query);
+    if (MGL_STATE(glm_ctx)->caps.rasterizer_discard) {
+        _currentCBHasWork = YES;
+        mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
+        return YES;
+    }
+
+    _tessellation.tessComputeActive = YES;
+    _tessellation.tessComputeProgram = tesProgram;
+    BOOL stateReady = [self processGLState:true];
+    if (!mglTessPassthroughRasterReady(
+            stateReady ? 1 : 0,
+            mglRenderEncoderOwnerHasCurrent(
+                _renderPassManager.state->currentRenderEncoderOwner),
+            [self currentDrawRasterizationIsEmpty] ? 1 : 0)) {
+        NSLog(@"MGL TESS ERROR: TES-vertex raster skip program=%u",
+              (unsigned)tesProgram->name);
+        _tessellation.tessComputeActive = NO;
+        _tessellation.tessComputeProgram = NULL;
+        return NO;
+    }
+    MGLTessEvalVertexPatch *patches = (MGLTessEvalVertexPatch *)calloc(
+        patchCount, sizeof(MGLTessEvalVertexPatch));
+    uint32_t *contracts = (uint32_t *)calloc(patchCount, 4u * sizeof(uint32_t));
+    if (!patches || !contracts) {
+        free(patches);
+        free(contracts);
+        _tessellation.tessComputeActive = NO;
+        _tessellation.tessComputeProgram = NULL;
+        return NO;
+    }
+    const uint32_t livePatches = mglTessBuildEvalVertexPatches(
+        tesProgram, factorBytes, patchCount, patches, contracts);
+    for (uint32_t p = 0; p < livePatches; p++) {
+        contracts[p * 4u + 1u] = glInVertices;
+    }
+    if (mgl_env_flag_enabled("MGL_TES_VERTEX_TRACE")) {
+        NSLog(@"MGL TESS-vertex draw program=%u patches=%u live=%u "
+              "itemsPerInstance=%u instances=%d point=%d",
+              (unsigned)tesProgram->name, (unsigned)patchCount,
+              (unsigned)livePatches, (unsigned)itemsPerInstanceU,
+              (int)instanceCount, (int)(tesProgram->tess_gen_point_mode != 0));
+    }
+    [self applyPolygonOffsetForDrawMode:tessRasterMode];
+    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+
+    [self bindTessStageBufferBindingsToRenderEncoderOwner:owner
+                                               bindings:&stageBufferBindings];
+    if (tesProgram->uses_point_size_params) {
+        float pointSizeParams[2] = {0.f, 0.f};
+        mglTessFillPointSizeParams(
+            MGL_STATE(glm_ctx)->var.point_size > 0.0f
+                ? MGL_STATE(glm_ctx)->var.point_size : 0.0f,
+            MGL_STATE(glm_ctx)->caps.program_point_size ? 1 : 0,
+            pointSizeParams);
+        mglTessSetRenderVertexBytes(nil, owner, pointSizeParams,
+                                    sizeof(pointSizeParams),
+                                    kMGLPointSizeParamBufferIndex);
+    }
+    for (uint32_t i = 0; i < tesTextureBindCount; i++) {
+        const MGLTessTextureBind *bind = &tesTextureBinds[i];
+        id texture = nil;
+        Texture *ptr = NULL;
+        if (mglTessTextureBindIsStorage(bind->kind)) {
+            ptr = MGL_STATE(glm_ctx)->image_units[bind->gl_unit].tex;
+            if (ptr) {
+                texture = (__bridge id)(ptr->mtl_data);
+                texture = (__bridge id)mglRendererStorageImageTexture(
+                    (__bridge void *)texture,
+                    &MGL_STATE(glm_ctx)->image_units[bind->gl_unit]);
+            }
+        } else {
+            ptr = MGL_STATE(glm_ctx)->active_textures[bind->gl_unit];
+            texture = ptr ? (__bridge id)(ptr->mtl_data) : nil;
+        }
+        mglTessSetRenderVertexTexture(nil, owner, texture, bind->metal_slot);
+        if (!mglTessTextureBindNeedsSampler(bind->kind,
+                                            bind->combined_sampler_slot)) {
+            continue;
+        }
+        id sampler = nil;
+        if (MGL_STATE(glm_ctx)->texture_samplers[bind->gl_unit]) {
+            Sampler *glSampler =
+                MGL_STATE(glm_ctx)->texture_samplers[bind->gl_unit];
+            if (glSampler->dirty_bits && glSampler->mtl_data) {
+                mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
+            }
+            if (!glSampler->mtl_data && ptr) {
+                glSampler->mtl_data = (void *)CFBridgingRetain(
+                    [self createMTLSamplerForTexParam:&glSampler->params
+                                               target:ptr->target]);
+                glSampler->dirty_bits = 0;
+            }
+            sampler = (__bridge id)(glSampler->mtl_data);
+        } else if (ptr && ptr->params.mtl_data) {
+            sampler = (__bridge id)(ptr->params.mtl_data);
+        }
+        if (!sampler) {
+            sampler = mglTessCreateSampler(_device);
+        }
+        if (sampler) {
+            mglTessSetRenderVertexSampler(nil, owner, sampler,
+                                          bind->combined_sampler_slot);
+        }
+    }
+
+    id patchInputs = (__bridge id)
+        mglRendererBackendGetTcsPatchOutBuffer(_backend);
+    const uint32_t primType = mglTessRasterPrimitiveType(tesProgram);
+
+    for (GLsizei i = 0; i < instanceCount; i++) {
+        const NSUInteger seedOffset =
+            (NSUInteger)mglTessPassthroughInstanceOffset(
+                (uint32_t)i, itemsPerInstanceU, (uint32_t)outStride);
+        mglTessSetRenderVertexBuffer(nil, owner, outBuffer, seedOffset,
+                                     MGL_AIR_TESS_SLOT_TCS_OUTPUT);
+        if (tesProgram->tess_cull_distance_count > 0u) {
+            /* Cull partner read reuses the seed record stream at slot 28. */
+            mglTessSetRenderVertexBuffer(nil, owner, outBuffer, seedOffset, 28u);
+        }
+        mglTessSetRenderVertexBuffer(nil, owner, glInBuffer,
+                                     glInOffset + (NSUInteger)i * glInInstanceStride,
+                                     MGL_AIR_TESS_SLOT_GL_IN);
+        for (uint32_t p = 0; p < livePatches; p++) {
+            mglTessSetRenderVertexBuffer(nil, owner, tessFactorBuffer,
+                                         (NSUInteger)contracts[p * 4u + 0u] *
+                                             MGL_AIR_TESS_FACTOR_RECORD_BYTES,
+                                         MGL_AIR_TESS_SLOT_TESS_FACTOR);
+            if (patchInputs) {
+                mglTessSetRenderVertexBuffer(
+                    nil, owner, patchInputs,
+                    (NSUInteger)(contracts[p * 4u + 0u]) *
+                        contract->patch_out_stride,
+                    MGL_AIR_TESS_SLOT_PATCH_OUT);
+            }
+            mglTessSetRenderVertexBytes(nil, owner, &contracts[p * 4u],
+                                        4u * sizeof(uint32_t),
+                                        MGL_AIR_TESS_SLOT_INDIRECT);
+            mglTessDrawPrimitives(nil, owner, primType,
+                                  (NSUInteger)patches[p].base,
+                                  (NSUInteger)patches[p].items, 1u,
+                                  (NSUInteger)baseInstance + (NSUInteger)i);
+        }
+    }
+    free(patches);
+    free(contracts);
+    _currentCBHasWork = YES;
+    mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
+    _tessellation.tessComputeActive = NO;
+    _tessellation.tessComputeProgram = NULL;
     return YES;
 }
 
@@ -1072,6 +1493,11 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         return false;
     }
 
+    /* This draw takes the compute expansion path: the TES stage needs
+     * isolated bindings and copy-backs (the kernel writes its outputs), even
+     * when the program also carries the render-vertex function. */
+    _tessellation.tessVertexRenderActive = NO;
+
     Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
     if (!mglTessStageHasCompiledFunction(
             tesShader ? 1 : 0,
@@ -1291,6 +1717,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     TransformFeedback *xfbState = MGL_STATE(glm_ctx)->transform_feedback;
     Program *gsProgram =
         mglResolveProgramForStageFromState(glm_ctx, _GEOMETRY_SHADER);
+    /* A monolithic VS+TCS+TES program resolves to itself for the GS stage
+     * even with no GS attached.  Guard on the shader slot (same pattern as
+     * mglTessClassifyDraw for tcs/tes) so has_gs / the TES→GS handoff and
+     * mglTessPlanEvalAfterCompute only see a real geometry stage. */
+    if (gsProgram && !gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        gsProgram = NULL;
+    }
     const bool xfbActive = mglTessEvalOwnsXFB(glm_ctx, gsProgram);
     id xfbTemporary = nil;
     id xfbCopyDestination = nil;
@@ -1736,31 +2169,6 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     _tessellation.tessComputeActive = NO;
     _tessellation.tessComputeProgram = NULL;
     return YES;
-}
-
-/* Dispatch a TES (Tessellation Evaluation Shader) when there is no TCS and
- * GL_RASTERIZER_DISCARD is active.  The AIR backend lowers the TES to a Metal
- * post-tessellation vertex function (`[[patch(quad, 0)]] vertex ...`), but
- * macOS 26.5 SDK removed postTessellationVertexFunction / isTessellationEnabled
- * from MTLRenderPipelineDescriptor.  We therefore rewrite the TES MSL to a
- * plain compute kernel (mglFixMSLTesAsComputeKernel in program.c) and dispatch
- * it with a compute pipeline, exactly like TCS.
- *
- * The TES kernel uses gl_PrimitiveID (mapped to threadgroup_position_in_grid)
- * as the patch index.  We dispatch one threadgroup per patch with 1 thread
- * per threadgroup, so each invocation handles one patch. */
--(bool) dispatchTessEvaluationShader:(GLMContext)glm_ctx
-                            program:(Program *)tesProgram
-                           contract:(const MGLAIRTessDrawContract *)contract
-{
-    if (!tesProgram || !glm_ctx || !contract || !tesProgram->tess_eval_compute)
-        return false;
-    return [self dispatchAIRTessEvalCompute:glm_ctx
-                                   program:tesProgram
-                                  contract:contract
-                                patchCount:contract->patch_count
-                             instanceCount:(GLsizei)contract->instance_count
-                              baseInstance:contract->base_instance];
 }
 
 @end

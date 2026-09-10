@@ -202,6 +202,9 @@ int mglRenderClearColorWriteMasks(int rasterizer_discard, int tess_capture,
 }
 
 int mglRenderNeedsVertexDescriptor(int geometry_expansion, int tess_compute) {
+    /* tess_compute suppresses the vertex descriptor for BOTH the compute
+     * expansion (records bound at slot 28) and the TES-vertex render path
+     * (which takes no [[attribute]] inputs and binds its streams by slot). */
     return !(geometry_expansion || tess_compute) ? 1 : 0;
 }
 

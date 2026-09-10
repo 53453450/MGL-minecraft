@@ -155,7 +155,8 @@ GLuint mglRuntimeArraySizeBufferIndexForProgram(const Program *program,
 {
     if (program &&
         (stage == _GEOMETRY_SHADER ||
-         (stage == _TESS_EVALUATION_SHADER && program->tess_eval_compute))) {
+         (stage == _TESS_EVALUATION_SHADER &&
+          (program->tess_eval_compute || program->tess_eval_render_vertex)))) {
         return MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
     }
     return MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX;
@@ -201,7 +202,15 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
             break;
 
         case _TESS_EVALUATION_SHADER:
-            if (program->tess_eval_compute) {
+            if (program->tess_eval_render_vertex) {
+                /* TES-vertex (isolines / point_mode as a render vertex
+                 * function) binds slot 26/27/28/30 in the render encoder and
+                 * keeps the runtime-array size table at the compute-ABI slot
+                 * 23 (render slot 25 is the TES-compute gather params). */
+                if (slot == 23u || (slot >= 26u && slot <= 30u)) {
+                    return GL_TRUE;
+                }
+            } else if (program->tess_eval_compute) {
                 /* Compute TES (isolines / point_mode / XFB-forced) occupies
                  * every slot in [24, 31]. */
                 if (slot >= 24u && slot <= 31u) {
