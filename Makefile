@@ -934,6 +934,21 @@ $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
 test-mcrepro: $(build_dir)/test_mcrepro
 	$(build_dir)/test_mcrepro
 
+# The binding/trace diagnostics TUs are Objective-C, not Objective-C++: they
+# rely on C implicit conversions from void* that C++ rejects (see
+# mgl_trace_log.m).  Compile them with the library's ObjC rule and link the
+# objects with -x none, the same shape MCREPRO_COBJ uses for its C sources.
+METALCPP_OBJC_SRC := MGL/src/mgl_binding_texture_log.m MGL/src/mgl_trace_log.m
+METALCPP_OBJC_OBJ := $(patsubst MGL/src/%.m,$(build_dir)/metalcpp_%.o,$(METALCPP_OBJC_SRC))
+
+$(build_dir)/metalcpp_%.o: MGL/src/%.m
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -fobjc-arc -fmodules -MMD $(CFLAGS_GL_CORE) \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-c $< -o $@
+
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
@@ -942,6 +957,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
 	MGL/src/mgl_binding_texture.c MGL/include/mgl_binding_texture.h \
+	MGL/include/mgl_trace_log.h \
 	MGL/src/mgl_pso_format_class.c MGL/include/mgl_pso_format_class.h \
 	MGL/src/mgl_tess_factor_normalize.c MGL/src/mgl_tess_domain_gen.c \
 	MGL/include/mgl_tess_domain.h \
@@ -950,7 +966,8 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
 	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
-	MGL/src/mgl_sync.m
+	MGL/src/mgl_sync.m \
+	$(METALCPP_OBJC_OBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
@@ -967,6 +984,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \
 		MGL/src/mgl_sync.m \
+		-x none $(METALCPP_OBJC_OBJ) \
 		-o $@
 
 test-metalcpp: $(build_dir)/test_metalcpp_smoke
