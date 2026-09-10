@@ -321,6 +321,12 @@ enum {
     MGL_AIR_COMPILE_VS_CAPTURE = 1u << 2,
     MGL_AIR_COMPILE_TESS_CAPTURE = 1u << 3,
     MGL_AIR_COMPILE_CULL_CAPTURE = 1u << 4,
+    /* Compile an isolines/point-mode TES as an ordinary vertex function that
+     * rasterizes the expanded point/line stream directly (no compute kernel,
+     * no passthrough record buffer).  Only meaningful for the TES stage; it
+     * must NOT be OR-ed in for XFB / GS-after-TES / uses_tess_level programs
+     * (those keep the compute expansion). */
+    MGL_AIR_COMPILE_TES_VERTEX = 1u << 5,
 };
 
 /* Same as above plus stage-composition flags (bit0: a geometry shader is

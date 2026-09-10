@@ -30,8 +30,8 @@
  * (MGLRenderer+Tessellation.m).  The tessellation compute path (TCS/TES
  * dispatch) runs GL_PATCHES draws as consecutive Metal compute encoders.
  *
- * dispatchTessControlShader:/dispatchTessEvaluationShader: are the entry
- * points called from MGLRenderer+Draw.m; the remaining methods are internal
+ * dispatchTessControlShader: is the entry point called from MGLRenderer+Draw.m;
+ * the remaining methods are internal
  * helpers used only within the category.
  *
  * Imports MGLRenderer.h for the MGLRenderer interface;
@@ -58,6 +58,18 @@ typedef struct MGLAIRTessDrawContract MGLAIRTessDrawContract;
                        patchCount:(GLuint)patchCount
                     instanceCount:(GLsizei)instanceCount
                      baseInstance:(GLuint)baseInstance;
+
+/* Isolines / point_mode TES as a render vertex function: the CPU domain
+ * expansion seeds TessCoord records once, then the render encoder replays a
+ * per-patch drawPrimitives with the TES compiled as the vertex stage.  This
+ * removes the per-patch TES compute dispatch and the compute→render encoder
+ * switch of the compute expansion path. */
+- (BOOL)dispatchAIRTessEvalVertexRender:(GLMContext)glm_ctx
+                                program:(Program *)tesProgram
+                               contract:(const MGLAIRTessDrawContract *)contract
+                             patchCount:(GLuint)patchCount
+                          instanceCount:(GLsizei)instanceCount
+                           baseInstance:(GLuint)baseInstance;
 
 @end
 

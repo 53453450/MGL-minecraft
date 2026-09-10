@@ -159,12 +159,21 @@ typedef struct MGLShaderModule_t {
     size_t metallib_tess_capture_size;
     unsigned char *metallib_cull_capture_bytes;
     size_t metallib_cull_capture_size;
+    /* TES render-vertex / compute dual-emit: when the TES is an isolines or
+     * point_mode program eligible for the render-vertex path, the compute
+     * expansion kernel is also stored here so indexed draws (glDrawElements /
+     * glMultiDrawElements) can fall back to the verified compute path, which
+     * carries the gather ABI the render-vertex ABI lacks. */
+    unsigned char *metallib_bytes_tes_compute;
+    size_t metallib_size_tes_compute;
     void *mtl_function;
     void *mtl_library;
     void *mtl_tess_capture_function;
     void *mtl_tess_capture_library;
     void *mtl_cull_capture_function;
     void *mtl_cull_capture_library;
+    /* Cached Metal function for metallib_bytes_tes_compute (TES kernel). */
+    void *mtl_function_compute;
     void *mtl_compute_pipeline;
     GLboolean mgl_injected_framebuffer_yflip; /* true if MGL injected a
                                                * texCoord Y-flip for sampled
@@ -320,6 +329,12 @@ typedef struct Program_t {
     /* TES compiled as AIR compute expansion (isolines, point_mode, or
      * forced for XFB).  Draw/bind paths must use the compute ABI. */
     GLboolean tess_eval_compute;
+    /* TES compiled as a Metal render vertex function that rasterizes the
+     * expanded isolines / point_mode stream directly (no compute kernel, no
+     * passthrough record buffer).  Mutually exclusive with
+     * tess_eval_compute; the draw path binds slot 26/27/28/30 in the render
+     * encoder and draws with a per-patch drawPrimitives. */
+    GLboolean tess_eval_render_vertex;
     /* 1 if the TES compilation unit declared an input primitive mode. */
     GLboolean tess_gen_mode_specified;
     GLint sampler_units[TEXTURE_UNITS];

@@ -146,6 +146,10 @@ struct Codegen {
     bool isTESCompute = false;   /* isolines/point-mode TES kernel: gl_in
                                   * reads come from the stage_in buffer
                                   * instead of the Metal control-point fn */
+    bool isTESVertex = false;    /* isolines/point-mode TES compiled as a
+                                  * render vertex function that rasterizes
+                                  * the seeded domain stream directly. */
+    bool isolinesTopology = false; /* TES-vertex: isolines (line) vs point. */
     llvm::Value *captureBuf = nullptr;   /* capture variant: output buffer */
     llvm::Value *vertexId = nullptr;     /* capture variant: vertex_id */
     llvm::Value *instanceId = nullptr;   /* vertex: instance_id */

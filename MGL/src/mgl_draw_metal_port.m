@@ -612,12 +612,19 @@ static int mglStageDispatchAirTES(void *renderer, GLMContext ctx, Program *tes,
                : 0;
 }
 
-static int mglStageDispatchTES(void *renderer, GLMContext ctx, Program *tes,
-                               MGLAIRTessDrawContract *contract)
+static int mglStageDispatchAirTESVertex(void *renderer, GLMContext ctx,
+                                        Program *tes,
+                                        MGLAIRTessDrawContract *contract,
+                                        uint32_t patch_count, GLsizei instanceCount,
+                                        GLuint baseInstance)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self dispatchTessEvaluationShader:ctx program:tes
-                                             contract:contract]
+    return self && [self dispatchAIRTessEvalVertexRender:ctx
+                                                program:tes
+                                               contract:contract
+                                             patchCount:patch_count
+                                          instanceCount:instanceCount
+                                           baseInstance:baseInstance]
                ? 1
                : 0;
 }
@@ -1533,7 +1540,7 @@ bool mglDrawHostHandleTessellation(void *renderer, GLMContext ctx,
         .native_factor_buffer = mglStageNativeFactors,
         .dispatch_tcs = mglStageDispatchTCS,
         .dispatch_air_tes = mglStageDispatchAirTES,
-        .dispatch_tes = mglStageDispatchTES,
+        .dispatch_air_tes_vertex = mglStageDispatchAirTESVertex,
         .process_gl_state = mglStageProcessGL,
         .encoder_has_current = mglStageEncoderHasCurrent,
         .raster_empty = mglStageRasterEmpty,
@@ -1959,6 +1966,5 @@ bool mglDrawHostUsesCullDistance(GLMContext ctx)
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     return vertexProgram && vertexProgram->uses_cull_distance;
 }
-
 
 

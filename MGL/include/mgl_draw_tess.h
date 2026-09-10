@@ -59,8 +59,11 @@ typedef enum {
     MGL_TESS_EXEC_NONE = 0,
     MGL_TESS_EXEC_NATIVE = 1,
     MGL_TESS_EXEC_TES_COMPUTE = 2,
-    MGL_TESS_EXEC_TES_FALLBACK = 3,
-    MGL_TESS_EXEC_UNSUPPORTED = 4,
+    MGL_TESS_EXEC_UNSUPPORTED = 3,
+    /* isolines / point_mode compiled as a render vertex function: rasterize
+     * the CPU-seeded domain stream directly (no TES compute kernel, no
+     * passthrough record round-trip). */
+    MGL_TESS_EXEC_TES_VERTEX = 4,
 } MGLTessExecKind;
 
 typedef struct MGLTessDrawPathPlan {
@@ -206,6 +209,19 @@ uint64_t mglTessEvalItemsPerInstance(Program *tes, const void *factor_bytes,
                                      uint32_t patch_count);
 bool mglTessFillEvalPatchItemBases(Program *tes, const void *factor_bytes,
                                    uint32_t patch_count, uint32_t *bases_out);
+
+/* Per-patch draw records for the TES-vertex render path.  Each live patch
+ * appends one {patch_id, gl_in_vertices, items, 0} contract (slot 29) and one
+ * drawPrimitives whose vertexStart is the patch's item base. */
+typedef struct MGLTessEvalVertexPatch {
+    uint32_t items;       /* vertices drawn for this patch */
+    uint32_t base;        /* first vertex (vertexStart) for this patch */
+} MGLTessEvalVertexPatch;
+
+uint32_t mglTessBuildEvalVertexPatches(Program *tes, const void *factor_bytes,
+                                       uint32_t patch_count,
+                                       MGLTessEvalVertexPatch *patches_out,
+                                       uint32_t *contract_words);
 
 uint32_t mglTessVerticesPerPrimitive(const Program *tes);
 uint64_t mglTessPrimitivesFromItems(const Program *tes, uint64_t items);
@@ -693,8 +709,10 @@ typedef struct MGLTessPatchDrawHostOps {
                             MGLAIRTessDrawContract *contract,
                             uint32_t patch_count, GLsizei instanceCount,
                             GLuint baseInstance);
-    int (*dispatch_tes)(void *renderer, GLMContext ctx, Program *tes,
-                        MGLAIRTessDrawContract *contract);
+    int (*dispatch_air_tes_vertex)(void *renderer, GLMContext ctx, Program *tes,
+                                   MGLAIRTessDrawContract *contract,
+                                   uint32_t patch_count, GLsizei instanceCount,
+                                   GLuint baseInstance);
     int (*process_gl_state)(void *renderer);
     int (*encoder_has_current)(void *renderer);
     int (*raster_empty)(void *renderer);

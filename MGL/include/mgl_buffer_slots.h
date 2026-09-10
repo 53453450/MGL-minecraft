@@ -190,8 +190,8 @@ GLboolean mglBufferSlotIsReservedForFragCoordFixup(GLuint slot);
 struct Program_t;
 
 /* Returns the hidden runtime-array size-table slot emitted for this program's
- * stage.  GS and isolines/point-mode TES use the compute-ABI slot 23; all
- * other stages use the ordinary slot 25. */
+ * stage.  GS and isolines/point-mode TES (compute or render-vertex) use the
+ * compute-ABI slot 23; all other stages use the ordinary slot 25. */
 GLuint mglRuntimeArraySizeBufferIndexForProgram(
     const struct Program_t *program, int stage);
 

@@ -54,6 +54,7 @@
 #include "mgl_shader_resource.h"
 #include "mgl_compile_artifact.h"
 #include "mgl_render.h"
+#include "mgl_env_flag.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_ast.h"
 
@@ -90,6 +91,7 @@ typedef struct MGLSavedLinkExecutable {
     GLenum tess_gen_vertex_order;
     GLboolean tess_gen_point_mode;
     GLboolean tess_eval_compute;
+    GLboolean tess_eval_render_vertex;
     GLboolean tess_gen_mode_specified;
     struct { unsigned x, y, z; } local_workgroup_size;
     GLint legacy_clip_plane_loc;
@@ -137,6 +139,7 @@ static void mglCaptureLinkExecutable(Program *pptr, MGLSavedLinkExecutable *out)
     out->tess_gen_vertex_order = pptr->tess_gen_vertex_order;
     out->tess_gen_point_mode = pptr->tess_gen_point_mode;
     out->tess_eval_compute = pptr->tess_eval_compute;
+    out->tess_eval_render_vertex = pptr->tess_eval_render_vertex;
     out->tess_gen_mode_specified = pptr->tess_gen_mode_specified;
     out->local_workgroup_size.x = pptr->local_workgroup_size.x;
     out->local_workgroup_size.y = pptr->local_workgroup_size.y;
@@ -207,6 +210,7 @@ static void mglRestoreSavedLinkExecutable(Program *pptr, MGLSavedLinkExecutable 
     pptr->tess_gen_vertex_order = saved->tess_gen_vertex_order;
     pptr->tess_gen_point_mode = saved->tess_gen_point_mode;
     pptr->tess_eval_compute = saved->tess_eval_compute;
+    pptr->tess_eval_render_vertex = saved->tess_eval_render_vertex;
     pptr->tess_gen_mode_specified = saved->tess_gen_mode_specified;
     pptr->local_workgroup_size.x = saved->local_workgroup_size.x;
     pptr->local_workgroup_size.y = saved->local_workgroup_size.y;
@@ -821,6 +825,11 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             ptr->modules[i].metallib_bytes = NULL;
             ptr->modules[i].metallib_size = 0;
         }
+        if (ptr->modules[i].metallib_bytes_tes_compute) {
+            free(ptr->modules[i].metallib_bytes_tes_compute);
+            ptr->modules[i].metallib_bytes_tes_compute = NULL;
+            ptr->modules[i].metallib_size_tes_compute = 0;
+        }
         if (ptr->modules[i].metallib_tess_capture_bytes) {
             free(ptr->modules[i].metallib_tess_capture_bytes);
             ptr->modules[i].metallib_tess_capture_bytes = NULL;
@@ -837,6 +846,7 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
         }
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_compute_pipeline);
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function);
+        mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function_compute);
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_library);
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_tess_capture_function);
         mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_tess_capture_library);
@@ -1661,26 +1671,48 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
          pptr->shader_slots[_GEOMETRY_SHADER])) {
         air_flags |= MGL_AIR_COMPILE_FORCE_TES_COMPUTE;
     }
-    /* TES-compute passthrough VS (isolines / point_mode) also tags outs as
+    /* Isolines / point_mode without XFB or a GS rasterize the expanded
+     * stream directly through a render vertex function.  The default-on
+     * MGL_TES_VERTEX_RENDER gate lets the draw path fall back to the
+     * compute expansion for risk containment and A/B comparison.
+     *
+     * This must be decidable BEFORE the TES is compiled: the flag is an
+     * input to the TES codegen, while pptr->tess_eval_render_vertex is an
+     * output of it (set from stage_info below).  Gating on the field here
+     * made the flag always absent on the pass that produced the function,
+     * so the TES fell back to the compute kernel while the draw path still
+     * routed to EXEC_TES_VERTEX and fed that kernel to a render PSO.
+     * primitive mode / point_mode are re-checked by the backend from the
+     * parsed TU (mgl_air_backend.cpp isTESVertex), so the two conditions
+     * that are only known post-parse stay owned by codegen. */
+    if (stage == _TESS_EVALUATION_SHADER &&
+        pptr->transform_feedback_varying_count == 0 &&
+        !pptr->shader_slots[_GEOMETRY_SHADER] &&
+        mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER")) {
+        air_flags |= MGL_AIR_COMPILE_TES_VERTEX;
+    }
+    /* TES-compute and TES-vertex (isolines / point_mode) both tag outs as
      * mgl_loc_N — same ABI as the GS passthrough.  Without this flag the FS
      * keeps name tags and Metal rejects the pipeline
      * (point_rendering: result_color).  Stages compile VS→…→TES→GS→FS, so
-     * tess_eval_compute is already known when the FS is compiled. */
+     * both tess_eval_compute and tess_eval_render_vertex are already known
+     * when the FS is compiled. */
     if (stage == _FRAGMENT_SHADER &&
         !pptr->shader_slots[_GEOMETRY_SHADER] &&
-        pptr->tess_eval_compute) {
+        (pptr->tess_eval_compute || pptr->tess_eval_render_vertex)) {
         air_flags |= MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER;
     }
     /* When a GS is present, FS mgl_loc_N tags must follow GS output
      * locations (passthrough VS).  Remap by name at compile time.
-     * TES-compute (no GS) remaps FS inputs to TES outs the same way.
-     * Same for TES←TCS: declaration-order locations diverge when the TES
-     * omits some TCS per-vertex outs (barrier_guarded_read_calls). */
+     * TES-compute / TES-vertex (no GS) remap FS inputs to TES outs the same
+     * way.  Same for TES←TCS: declaration-order locations diverge when the
+     * TES omits some TCS per-vertex outs (barrier_guarded_read_calls). */
     const MGLShaderResourceList *iface_peers = NULL;
     if (stage == _FRAGMENT_SHADER && pptr->shader_slots[_GEOMETRY_SHADER]) {
         iface_peers =
             &pptr->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
-    } else if (stage == _FRAGMENT_SHADER && pptr->tess_eval_compute &&
+    } else if (stage == _FRAGMENT_SHADER &&
+               (pptr->tess_eval_compute || pptr->tess_eval_render_vertex) &&
                pptr->shader_slots[_TESS_EVALUATION_SHADER]) {
         iface_peers =
             &pptr->shader_resources_list[_TESS_EVALUATION_SHADER]
@@ -1817,6 +1849,42 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             }
         }
     }
+    /* TES render-vertex / compute dual emit: when the TES is an isolines or
+     * point_mode program eligible for the render-vertex path, also emit the
+     * compute expansion kernel so indexed draws (glDrawElements /
+     * glMultiDrawElements) can fall back to the verified compute path, which
+     * carries the gather ABI the render-vertex ABI lacks.  metallib_bytes
+     * above stays the render-vertex function; the kernel lives in
+     * metallib_bytes_tes_compute.  attrib_snapshot is still valid here
+     * (freed just below). */
+    if (stage == _TESS_EVALUATION_SHADER &&
+        pptr->transform_feedback_varying_count == 0 &&
+        !pptr->shader_slots[_GEOMETRY_SHADER] &&
+        mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER")) {
+        uint32_t compute_flags =
+            air_flags & (uint32_t)(~MGL_AIR_COMPILE_TES_VERTEX);
+        MGLCompileArtifact compute_art;
+        mglCompileArtifactInit(&compute_art);
+        char compute_err[512] = {0};
+        int compute_rc = mglCompileArtifactFromGLSLEx(
+            shader->src, air_stage, attrib_snapshot, compute_flags,
+            iface_peers, &compute_art, compute_err, sizeof compute_err);
+        if (compute_rc == 0 && compute_art.complete) {
+            pptr->modules[stage].metallib_bytes_tes_compute =
+                compute_art.metallib_bytes;
+            pptr->modules[stage].metallib_size_tes_compute =
+                compute_art.metallib_size;
+            compute_art.metallib_bytes = NULL;
+            compute_art.metallib_size = 0;
+            mglCompileArtifactDestroy(&compute_art);
+        } else {
+            mglCompileArtifactDestroy(&compute_art);
+            fprintf(stderr,
+                    "MGL WARNING: TES compute-kernel emit failed program %u: %s\n",
+                    pptr->name, compute_err);
+        }
+    }
+
     for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
         free((void *)attrib_snapshot[ai]);
     }
@@ -1874,12 +1942,41 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             stage_info.tess_gen_point_mode ? GL_TRUE : GL_FALSE;
         pptr->tess_gen_mode_specified =
             stage_info.tess_gen_mode_specified ? GL_TRUE : GL_FALSE;
+        /* Split the TES execution mode.  The Metal tessellator has no
+         * isolines patch type or point output topology, so those compile to
+         * the AIR compute expansion — or, when nothing forces a compute
+         * record (no XFB, no following GS), to a render vertex function that
+         * rasterizes the expanded point/line stream directly.  uses_tess_level
+         * stays on the compute path: it needs the exact float32 factors the
+         * compute ABI reads, and triangles/quads fill has its own native
+         * post-tessellation route. */
+        /* Must agree with the MGL_AIR_COMPILE_TES_VERTEX decision above,
+         * including the env gate: the draw path picks EXEC_TES_VERTEX from
+         * this field, and only a TES compiled with that flag produces the
+         * render vertex function it needs.  With the gate off the field
+         * clears, tess_eval_compute stays set, and the draw falls back to
+         * the compute expansion instead of MGL_TESS_EXEC_UNSUPPORTED. */
+        pptr->tess_eval_render_vertex =
+            ((pptr->tess_gen_mode == GL_ISOLINES ||
+              pptr->tess_gen_point_mode) &&
+             pptr->transform_feedback_varying_count == 0 &&
+             !pptr->shader_slots[_GEOMETRY_SHADER] &&
+             mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER"))
+                ? GL_TRUE : GL_FALSE;
+        /* Both can be set for isolines / point_mode under the render-vertex
+         * gate: the TES metallib then carries the render-vertex function
+         * (metallib_bytes) and the compute expansion kernel
+         * (metallib_bytes_tes_compute).  Non-indexed draws use the vertex
+         * path; indexed draws fall back to the compute kernel, which owns
+         * the gather ABI.  For triangles/quads / XFB / GS / uses_tess_level
+         * only tess_eval_compute is set and the kernel lives in
+         * metallib_bytes as before. */
         pptr->tess_eval_compute =
-            (pptr->tess_gen_mode == GL_ISOLINES ||
-             pptr->tess_gen_point_mode ||
-             pptr->transform_feedback_varying_count > 0 ||
-             pptr->shader_slots[_GEOMETRY_SHADER] ||
-             stage_info.uses_tess_level)
+            ((pptr->tess_gen_mode == GL_ISOLINES ||
+              pptr->tess_gen_point_mode ||
+              pptr->transform_feedback_varying_count > 0 ||
+              pptr->shader_slots[_GEOMETRY_SHADER] ||
+              stage_info.uses_tess_level))
                 ? GL_TRUE : GL_FALSE;
         pptr->tess_uses_cull_distance =
             stage_info.uses_cull_distance ? GL_TRUE : GL_FALSE;

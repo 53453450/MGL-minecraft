@@ -393,9 +393,6 @@ typedef struct {
 - (bool)dispatchTessControlShader:(GLMContext)glm_ctx
                           program:(Program *)tcsProgram
                          contract:(const MGLAIRTessDrawContract *)contract;
-- (bool)dispatchTessEvaluationShader:(GLMContext)glm_ctx
-                            program:(Program *)tesProgram
-                           contract:(const MGLAIRTessDrawContract *)contract;
 
 - (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
         encodeContext:(const MGLEncodeContext *)encCtx;

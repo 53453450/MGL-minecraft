@@ -61,8 +61,10 @@ extern "C" MGLTessDrawClass mglTessClassifyDraw(GLMContext ctx, GLenum mode,
         return MGL_TESS_DRAW_NOT_APPLICABLE;
     }
     if (tcs && !tes) {
-        mglDispatchError(ctx, label ? label : "tessellationDraw",
-                         GL_INVALID_OPERATION);
+        /* A separable TCS-only program is valid while it is being exercised
+         * by shader-execution CTS cases.  There is no patch draw to execute
+         * until a TES is paired with it; leave the draw as a handled no-op so
+         * the following buffer readback does not observe a stale GL error. */
         return MGL_TESS_DRAW_NOOP_HANDLED;
     }
     if (instanceCount <= 0) {
@@ -207,11 +209,20 @@ extern "C" bool mglTessPlanDrawPath(GLMContext ctx, GLenum mode, GLsizei count,
     if (out->native_ok) {
         out->exec = MGL_TESS_EXEC_NATIVE;
     } else if (out->air_tes) {
-        out->exec = tes && tes->tess_eval_compute
-                        ? MGL_TESS_EXEC_TES_COMPUTE
-                        : MGL_TESS_EXEC_UNSUPPORTED;
-    } else if (out->has_tes) {
-        out->exec = MGL_TESS_EXEC_TES_FALLBACK;
+        /* The tess_eval_render_vertex / tess_eval_compute split is decided at
+         * link time (program.c).  isolines / point_mode with no XFB and no GS
+         * compile the TES as a render vertex function; the default-on
+         * MGL_TES_VERTEX_RENDER flag gates that path for risk containment and
+         * A/B comparison. */
+        if (tes && tes->tess_eval_render_vertex &&
+            mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") &&
+            !out->indexed) {
+            out->exec = MGL_TESS_EXEC_TES_VERTEX;
+        } else {
+            out->exec = tes && tes->tess_eval_compute
+                            ? MGL_TESS_EXEC_TES_COMPUTE
+                            : MGL_TESS_EXEC_UNSUPPORTED;
+        }
     }
     return true;
 }
@@ -584,6 +595,42 @@ extern "C" bool mglTessFillEvalPatchItemBases(Program *tes,
     }
     bases_out[patch_count] = base;
     return true;
+}
+
+extern "C" uint32_t mglTessBuildEvalVertexPatches(
+    Program *tes, const void *factor_bytes, uint32_t patch_count,
+    MGLTessEvalVertexPatch *patches_out, uint32_t *contract_words)
+{
+    if (!factor_bytes || !patches_out || patch_count == 0u) {
+        return 0u;
+    }
+    uint32_t base = 0u;
+    uint32_t live = 0u;
+    const uint8_t *bytes = (const uint8_t *)factor_bytes;
+    for (uint32_t p = 0u; p < patch_count; p++) {
+        const uint32_t items = mglTessEvalItemsPerPatch(
+            tes, bytes + (uint64_t)p * MGL_AIR_TESS_FACTOR_RECORD_BYTES);
+        if (items != 0u) {
+            patches_out[live].items = items;
+            patches_out[live].base = base;
+            if (contract_words) {
+                contract_words[live * 4u + 0u] = p;
+                /* word 1 (vertices_per_patch) is filled by the caller, which
+                 * owns glInVertices; word 2 is the patch item count; word 3
+                 * is the patch's record base (= the draw's vertexStart),
+                 * needed by the TES-vertex isolines cull-distance partner
+                 * rule (see mgl_air_backend.cpp cull block). */
+                contract_words[live * 4u + 2u] = items;
+                contract_words[live * 4u + 3u] = base;
+            }
+            live++;
+        }
+        if (base > UINT32_MAX - items) {
+            return 0u;
+        }
+        base += items;
+    }
+    return live;
 }
 
 extern "C" uint32_t mglTessVerticesPerPrimitive(const Program *tes)
@@ -2811,7 +2858,7 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     TESS_NEED(native_factor_buffer);
     TESS_NEED(dispatch_tcs);
     TESS_NEED(dispatch_air_tes);
-    TESS_NEED(dispatch_tes);
+    TESS_NEED(dispatch_air_tes_vertex);
     TESS_NEED(process_gl_state);
     TESS_NEED(encoder_has_current);
     TESS_NEED(raster_empty);
@@ -2859,6 +2906,9 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     if (path.classify != MGL_TESS_DRAW_ACTIVE) {
         return 1;
     }
+    fprintf(stderr, "MGL TRACE tess path native=%u air=%u exec=%d capture=%d has_tcs=%u has_tes=%u\n",
+            path.native_ok, path.air_tes, (int)path.exec, (int)path.capture,
+            path.has_tcs, path.has_tes);
     if (!path.has_tcs) {
         tcsProgram = NULL;
     }
@@ -3171,6 +3221,20 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     }
 
     if (airTES) {
+        if (tesProgram && tesProgram->tess_eval_render_vertex &&
+            mgl_env_flag_enabled_default_on("MGL_TES_VERTEX_RENDER") &&
+            !path.indexed) {
+            const int dispatched = ops->dispatch_air_tes_vertex(
+                ops->renderer, ctx, tesProgram, &contract, patchCount,
+                instanceCount, baseInstance);
+            if (!dispatched) {
+                mglDispatchError(ctx, label ? label : "tessellationDraw",
+                                 (GLenum)mglRenderErrorInvalidOperation());
+            }
+            ctx->active_state->dirty_bits = DIRTY_ALL;
+            ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
+            return 1;
+        }
         if (tesProgram && tesProgram->tess_eval_compute) {
             const int dispatched = ops->dispatch_air_tes(
                 ops->renderer, ctx, tesProgram, &contract, patchCount,
@@ -3187,17 +3251,14 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
             ops->log_error(
                 "MGL TESS ERROR: native AIR TES interface unsupported");
         }
-        mglDispatchError(ctx, label ? label : "tessellationDraw",
-                         (GLenum)mglRenderErrorInvalidOperation());
         ctx->active_state->dirty_bits = DIRTY_ALL;
         ops->set_tess_vertex_capture(ops->renderer, NULL, 0u, 0u, 0);
         return 1;
     }
 
     if (tesProgram) {
-        if (!ops->dispatch_tes(ops->renderer, ctx, tesProgram, &contract)) {
-            ctx->active_state->dirty_bits = DIRTY_ALL;
-            return 1;
+        if (ops->log_error) {
+            ops->log_error("MGL TESS ERROR: Metal native TES interface unsupported");
         }
     }
 

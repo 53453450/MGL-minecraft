@@ -125,6 +125,11 @@ typedef struct MGLTessellationState_t {
      * passthrough vertex stage drawing lines / points. */
     BOOL tessComputeActive;
     Program *tessComputeProgram;
+    /* True only for the draw currently taking the TES render-vertex path.
+     * A program can carry both the render-vertex function and the compute
+     * kernel (indexed draws fall back to compute), so the TES-vertex binding
+     * plan must follow the per-draw choice, not tess_eval_render_vertex. */
+    BOOL tessVertexRenderActive;
     /* When a GS follows isolines/point-mode TES compute, the expanded
      * records are handed to mglDrawHostHandleGeometry / mglDrawGsRunDraw instead of the
      * TES passthrough vertex.  pendingGSInput is a retained MTLBuffer. */
