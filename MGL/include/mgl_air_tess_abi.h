@@ -92,7 +92,15 @@ typedef struct MGLAIRTessDrawContract {
  * Each patch record is half factors (Metal / topology) followed by the
  * exact float32 levels TCS wrote (or glPatchParameterfv defaults).  TES
  * must expose the float32 copy as gl_TessLevel* — half round-trip fails
- * CTS epsilon 1e-5 (e.g. 2.7 → 2.69922). */
+ * CTS epsilon 1e-5 (e.g. 2.7 → 2.69922).
+ *
+ * The HOST owns the defaults: it seeds every record from
+ * GL_PATCH_DEFAULT_OUTER_LEVEL / GL_PATCH_DEFAULT_INNER_LEVEL
+ * (mglRenderFillDefaultTessFactorBuffer) before the TCS dispatch, and the
+ * TCS kernel stores only the components the shader actually writes — an
+ * undef level is skipped so a silent invocation cannot clobber a peer's
+ * store (GL 4.6 §11.2.1.2).  A caller that hands the kernel a raw zeroed
+ * buffer therefore observes zeros for the unwritten levels. */
 #define MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES 12u /* 4 edge + 2 inner halves */
 #define MGL_AIR_TESS_FACTOR_EXACT_FLOAT_BYTES 24u /* outer[4]+inner[2] f32 */
 #define MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET \

@@ -1034,7 +1034,8 @@ int main(int argc, const char *argv[]) {
         }
 
         /* TCS compute kernel: copy two patches of fixed gl_PerVertex records
-         * and let invocation zero write six half factors per patch. */
+         * and let the shader's gl_TessLevel* stores land on a factor record
+         * the host has already seeded with the patch defaults. */
         {
             unsigned char *tcsBytes = NULL;
             size_t tcsSize = 0;
@@ -1075,6 +1076,36 @@ int main(int argc, const char *argv[]) {
             id<MTLBuffer> factors = [dev newBufferWithLength:
                 2u * MGL_AIR_TESS_FACTOR_RECORD_BYTES
                                                      options:MTLResourceStorageModeShared];
+            /* The host owns the patch default levels: GL 4.6 §11.2.2 seeds
+             * every record from GL_PATCH_DEFAULT_OUTER_LEVEL /
+             * GL_PATCH_DEFAULT_INNER_LEVEL, and the TCS kernel only stores
+             * the components the shader actually writes (the codegen skips
+             * undef so a silent invocation cannot clobber a peer's store).
+             * The renderer pre-fills through mglRenderFillDefaultTessFactorBuffer;
+             * this gate deliberately does not link libmgl, so lay the same
+             * record down here.  kTCS never writes inner[1], so seeding it
+             * with a non-default value proves the host fill survives the
+             * kernel instead of decaying to zero. */
+            {
+                const float outerDefault[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+                const float innerDefault[2] = {1.0f, 7.0f};
+                uint8_t *record = (uint8_t *)factors.contents;
+                for (int patch = 0; patch < 2; patch++) {
+                    __fp16 *halfs = (__fp16 *)(record +
+                        (size_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES);
+                    float *exact = (float *)(record +
+                        (size_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES +
+                        MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET);
+                    for (int i = 0; i < 4; i++) {
+                        halfs[i] = (__fp16)outerDefault[i];
+                        exact[i] = outerDefault[i];
+                    }
+                    for (int i = 0; i < 2; i++) {
+                        halfs[4 + i] = (__fp16)innerDefault[i];
+                        exact[4 + i] = innerDefault[i];
+                    }
+                }
+            }
             id<MTLBuffer> patchOut = [dev newBufferWithLength:32
                                                       options:MTLResourceStorageModeShared];
             id<MTLBuffer> stageOut = [dev newBufferWithLength:sizeof stageIn
@@ -1118,10 +1149,13 @@ int main(int argc, const char *argv[]) {
                     }
                 }
             }
-            /* Six half factors at the start of each 36-byte factor record. */
+            /* Six half factors at the start of each 36-byte factor record:
+             * outer[0..3] then inner[0..1].  kTCS writes outer[3] =
+             * gl_PatchVerticesIn + gl_PrimitiveID (3 + patch) and inner[0];
+             * outer[0..2] are 1.0 and inner[1] keeps the host default (7). */
             const uint16_t expectedHalf[2][6] = {
-                {0x3c00u, 0x3c00u, 0x3c00u, 0x4200u, 0x3c00u, 0x3c00u},
-                {0x3c00u, 0x3c00u, 0x3c00u, 0x4400u, 0x3c00u, 0x3c00u},
+                {0x3c00u, 0x3c00u, 0x3c00u, 0x4200u, 0x3c00u, 0x4700u},
+                {0x3c00u, 0x3c00u, 0x3c00u, 0x4400u, 0x3c00u, 0x4700u},
             };
             for (int patch = 0; patch < 2; patch++) {
                 const uint16_t *halfFactors = (const uint16_t *)(
@@ -1132,6 +1166,27 @@ int main(int argc, const char *argv[]) {
                         fprintf(stderr,
                                 "TCS_FACTOR_FAIL: patch=%d factor=%d bits=0x%04x\n",
                                 patch, i, halfFactors[i]);
+                        return 1;
+                    }
+                }
+            }
+            /* The exact float32 copy trails the halves and is what TES reads
+             * as gl_TessLevel* (a half round-trip misses the CTS 1e-5
+             * epsilon).  It must carry the same values, unwritten ones
+             * included. */
+            for (int patch = 0; patch < 2; patch++) {
+                const float *exact = (const float *)(
+                    (const uint8_t *)factors.contents +
+                    (size_t)patch * MGL_AIR_TESS_FACTOR_RECORD_BYTES +
+                    MGL_AIR_TESS_FACTOR_EXACT_FLOAT_OFFSET);
+                const float expectedExact[6] = {
+                    1.0f, 1.0f, 1.0f, patch == 0 ? 3.0f : 4.0f, 1.0f, 7.0f};
+                for (int i = 0; i < 6; i++) {
+                    if (fabsf(exact[i] - expectedExact[i]) > 1e-6f) {
+                        fprintf(stderr,
+                                "TCS_EXACT_FACTOR_FAIL: patch=%d factor=%d "
+                                "got=%f expected=%f\n",
+                                patch, i, exact[i], expectedExact[i]);
                         return 1;
                     }
                 }
