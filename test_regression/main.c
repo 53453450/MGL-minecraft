@@ -346,6 +346,15 @@ static void resetGLState(void)
     glDisable(GL_STENCIL_TEST);
     glDisable(GL_RASTERIZER_DISCARD);
 
+    /* --- Rasterization cull / winding defaults ---
+     * Must restore GL_CULL_FACE, cull face mode and front-face winding:
+     * tests that fail mid-way (goto cleanup before their paired glDisable)
+     * would otherwise leak an enabled cull into later tests (e.g. the
+     * legacy_glsl_frontend glFrontFace(GL_CW) back-face probe). */
+    glDisable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    glFrontFace(GL_CCW);
+
     /* --- Depth state defaults --- */
     glDepthFunc(GL_LESS);
     glDepthMask(GL_TRUE);
@@ -10354,7 +10363,11 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
     /* Segment 1: native triangles, layout(ccw) vs layout(cw) under back-face
      * culling.  The tessellated triangle is CCW in NDC; ccw-front + cull
      * back keeps it visible, cw-front culls it.  The query still counts the
-     * generated primitives either way. */
+     * generated primitives either way.  Equal spacing, outer=(2,2,2),
+     * inner=2: GL 4.6 §11.2.2.1 concentric-ring algorithm — inner level 2
+     * degenerates to the center point and the outer edges' 6 vertices fan
+     * to it, producing 6 triangles (the stale pre-domain-refactor count
+     * used the n*n grid formula that only matched the compute expansion). */
     glPatchParameteri(GL_PATCH_VERTICES, 3);
     {
         const GLfloat outer[4] = {2.0f, 2.0f, 2.0f, 1.0f};
@@ -10377,12 +10390,12 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
         glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
         {
             const unsigned char *c = &pixels[(51 * REG_W + 64) * 4];
-            if (prims != 4u ||
+            if (prims != 6u ||
                 (i == 0 && (c[0] > 20u || c[1] < 220u || c[2] > 20u)) ||
                 (i == 1 && (c[0] > 20u || c[1] > 20u || c[2] > 20u))) {
                 fprintf(stderr,
                         "air_tessellation_factors_spacing: %s cull expected "
-                        "4 prims + %s, got %u prims pixel=(%u,%u,%u)\n",
+                        "6 prims + %s, got %u prims pixel=(%u,%u,%u)\n",
                         i == 0 ? "ccw" : "cw",
                         i == 0 ? "visible" : "culled",
                         prims, c[0], c[1], c[2]);
@@ -10482,6 +10495,9 @@ static int test_air_tessellation_factors_spacing(unsigned char *pixels,
     result = 0;
 
 cleanup:
+    /* Segment 1 enables GL_CULL_FACE; its early goto-cleanup path skips
+     * the paired glDisable, so restore the cap on every exit path. */
+    glDisable(GL_CULL_FACE);
     if (q) glDeleteQueries(1, &q);
     if (vbo) glDeleteBuffers(1, &vbo);
     if (vao) glDeleteVertexArrays(1, &vao);
