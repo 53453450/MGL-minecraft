@@ -1087,6 +1087,15 @@ test-all:
 	$(MAKE) test-geometry-gather
 	$(MAKE) test-validate-arrays-early
 	$(MAKE) test-tess-air
+# The self-contained ObjC / AIR gates below were previously reachable only by
+# naming them individually.  A tessellation-factor contract change (3a979a0)
+# stayed red for two days because test-mglair -- the only consumer that
+# caught it -- was not in any aggregate target.  They need llvm@15, which
+# test-tess-air above already requires.
+	$(MAKE) test-mglair
+	$(MAKE) test-mcrepro
+	$(MAKE) test-metalcpp
+	$(MAKE) test-legacy-compat
 	$(MAKE) test-es-smoke
 	$(MAKE) test-regression
 
