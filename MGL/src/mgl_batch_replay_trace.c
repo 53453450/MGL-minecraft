@@ -1,20 +1,23 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
- * A3: Batch replay diagnostic traces (cluster metric). Same (Batch) category.
+ * A3: Batch replay diagnostic traces (cluster metric). Formerly
+ * mgl_batch_replay_trace.m; the two trace entry points are plain C drivers now.
  */
-#import "MGLRenderer_Private.h"
-#import "MGLRenderer+Draw_Private.h"
-#import "MGLRenderer+BatchPorts_Private.h"
+#include "mgl_renderer_ports.h"   /* C ports: trace state + pass owner */
+#include "mgl_trace_strategy.h"   /* trace gates, binding records */
+#include "mgl_texture_compat.h"   /* mglTraceTextureLevelSummary */
+#include "mgl_vertex_attrib_query.h" /* mglRendererGetValidatedVAO */
+#include "mgl_safety.h"           /* mglObjectPointerLooksPlausible */
 #include "mgl_render.h"
 #include "mgl_batch_rt_mark.h"
+#include "mgl_sync.h"             /* mglLoadActionName / mglStoreActionName */
+#include <stdio.h>
 #include <string.h>
 
-@implementation MGLRenderer (Batch)
-
 static void *mglBatchEncoderTraceToken(void *owner) { return owner; }
-static MGLRenderTextureInfo mglBatchTextureInfo(id texture)
+static MGLRenderTextureInfo mglBatchTextureInfo(void *texture)
 { MGLRenderTextureInfo info = {0};
-  if (texture) (void)mglRenderGetTextureInfo((__bridge void *)texture, &info); return info; }
+  if (texture) (void)mglRenderGetTextureInfo(texture, &info); return info; }
 static void mglBatchFsFlags(MGLFragmentTextureTraceBinding *b0,
                             MGLFragmentTextureTraceBinding *b1,
                             MGLFragmentTextureTraceBinding *b2,
@@ -44,7 +47,7 @@ static void mglBatchFillStatePod(GLMContext glm_ctx, MGLBatchTraceStatePod *s)
     s->dirty = (uint32_t)st->dirty_bits;
 }
 static GLuint mglBatchSafeName(void *obj, size_t sz, GLuint name)
-{ return (obj && mglRendererObjectPointerLikelyValid(obj) && mglPointerRangeIsReadable(obj, sz))
+{ return (obj && mglObjectPointerLooksPlausible(obj) && mglPointerRangeIsReadable(obj, sz))
       ? name : 0u; }
 static MGLBatchTraceTexSlotView mglBatchTexSlotView(const MGLFragmentTextureTraceBinding *b)
 {
@@ -73,13 +76,13 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
 }
 
 
-- (void)traceReplayBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
-                  flushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex
-                    phase:(const char *)phase
+void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
+                              GLMContext glm_ctx, uint64_t flush_id,
+                              uint32_t batch_index, const char *phase)
 {
     if (!batch || !glm_ctx) return;
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    MGLFragmentTextureTraceBinding *earlyFs = &_resourceFallback.fragmentTextureTraceBindings[0];
+    MGLFragmentTextureTraceBinding *earlyFs = mglRendererFragmentTraceBindingsPort(renderer);
     int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
     mglBatchFsFlags(earlyFs, earlyFs + 1, earlyFs + 2, earlyFs + 3,
                     &earlyFsSlotHasRT, &earlyFsSlotUsedCopy);
@@ -90,12 +93,11 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
     VertexArray *vao = mglRendererGetValidatedVAO(glm_ctx, "replay.batch.trace");
     Framebuffer *fbo = glm_ctx->active_state->framebuffer;
     GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
-    id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+    void *rpStateOwner = mglRendererRenderPassStateOwnerPort(renderer);
+    void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+    void *rpDepth = mglRenderGetRenderPassAttachmentTextureOwner(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     GLMState *snapshot = batch->state_snapshot ? (GLMState *)batch->state_snapshot : NULL;
     GLuint snapshotFBOName = 0u;
     if (snapshot && snapshot->framebuffer)
@@ -104,7 +106,7 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
     Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     Program *fragmentProgram = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
     MGLBatchTraceBatchView v; memset(&v, 0, sizeof(v));
-    v.phase = phase; v.flush_id = flushId; v.batch_index = batchIndex;
+    v.phase = phase; v.flush_id = flush_id; v.batch_index = batch_index;
     mgl_batch_trace_batch_fill_key_flags(&v, batch->command_count,
         batch->stream_merged ? 1 : 0, batch->mdi_compatible ? 1 : 0,
         batch->uses_elements ? 1 : 0, batch->key.program_name,
@@ -124,21 +126,22 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
     v.enabled_attribs = vao ? (uint32_t)vao->enabled_attribs : 0u;
     MGLBatchTraceStatePod state; mglBatchFillStatePod(glm_ctx, &state);
     mgl_batch_trace_copy_state_to_batch(&v, &state);
-    v.encoder = mglBatchEncoderTraceToken(_renderPassManager.state->currentRenderEncoderOwner);
-    v.pipeline_state = _pipelineCache.state->pipelineState;
-    v.rp_fbo = _renderPassManager.state->renderPassFramebufferName;
-    v.rp_color = (__bridge void *)rpColor0; v.rp_depth = (__bridge void *)rpDepth;
+    v.encoder = mglBatchEncoderTraceToken(mglRendererCurrentRenderEncoderOwnerPort(renderer));
+    v.pipeline_state = mglRendererPipelineStatePort(renderer);
+    v.rp_fbo = mglRendererRenderPassFramebufferNamePort(renderer);
+    v.rp_color = rpColor0; v.rp_depth = rpDepth;
     char line[2048];
     if (mgl_batch_trace_format_batch_line(line, sizeof(line), &v) > 0) mglTraceLog("%s", line);
 }
 
-- (void)traceReplayCommand:(MGLDrawBatch *)batch command:(MGLDrawCommand *)cmd
-                   context:(GLMContext)glm_ctx flushId:(uint64_t)flushId
-                batchIndex:(uint32_t)batchIndex commandIndex:(uint32_t)commandIndex
-                     phase:(const char *)phase reason:(const char *)reason
+void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
+                                MGLDrawCommand *cmd, GLMContext glm_ctx,
+                                uint64_t flush_id, uint32_t batch_index,
+                                uint32_t command_index, const char *phase,
+                                const char *reason)
 {
     if (!batch || !cmd || !glm_ctx) return;
-    MGLFragmentTextureTraceBinding *fs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
+    MGLFragmentTextureTraceBinding *fs0 = mglRendererFragmentTraceBindingsPort(renderer);
     int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
     mglBatchFsFlags(fs0, fs0 + 1, fs0 + 2, fs0 + 3, &earlyFsSlotHasRT, &earlyFsSlotUsedCopy);
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
@@ -150,12 +153,11 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
     GLuint eboName = mglBatchSafeName(ebo, sizeof(*ebo), ebo ? ebo->name : 0u);
     Framebuffer *fbo = glm_ctx->active_state->framebuffer;
     GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
-    id rpColor0 = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
-    id rpDepth = (__bridge id)mglRenderGetRenderPassAttachmentTextureOwner(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+    void *rpStateOwner = mglRendererRenderPassStateOwnerPort(renderer);
+    void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+    void *rpDepth = mglRenderGetRenderPassAttachmentTextureOwner(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     MGLRenderTextureInfo rpColorInfo = mglBatchTextureInfo(rpColor0);
     MGLRenderTextureInfo rpDepthInfo = mglBatchTextureInfo(rpDepth);
     Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
@@ -171,8 +173,8 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
     int fsSlotHasRT = 0, fsSlotUsedCopy = 0;
     mglBatchFsFlags(fs0, fs0 + 1, fs0 + 2, fs0 + 3, &fsSlotHasRT, &fsSlotUsedCopy);
     MGLBatchTraceCmdView v; memset(&v, 0, sizeof(v));
-    v.phase = phase; v.reason = reason; v.flush_id = flushId;
-    v.batch_index = batchIndex; v.command_index = commandIndex;
+    v.phase = phase; v.reason = reason; v.flush_id = flush_id;
+    v.batch_index = batch_index; v.command_index = command_index;
     v.program = mglCurrentRenderProgramKey(glm_ctx);
     v.vs = vertexProgram ? vertexProgram->name : 0u;
     v.fs = fragmentProgram ? fragmentProgram->name : 0u;
@@ -180,24 +182,20 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
                                   cmd->first, cmd->indexType, (uint32_t)cmd->indexBufferOffset,
                                   cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
     v.ebo_name = eboName; v.ebo = ebo;
-    v.encoder = mglBatchEncoderTraceToken(_renderPassManager.state->currentRenderEncoderOwner);
-    v.pipeline_state = _pipelineCache.state->pipelineState;
-    v.fbo_name = fboName; v.rp_fbo = _renderPassManager.state->renderPassFramebufferName;
-    v.rp_color = (__bridge void *)rpColor0; v.rp_depth = (__bridge void *)rpDepth;
+    v.encoder = mglBatchEncoderTraceToken(mglRendererCurrentRenderEncoderOwnerPort(renderer));
+    v.pipeline_state = mglRendererPipelineStatePort(renderer);
+    v.fbo_name = fboName; v.rp_fbo = mglRendererRenderPassFramebufferNamePort(renderer);
+    v.rp_color = rpColor0; v.rp_depth = rpDepth;
     v.rp_color_w = rpColorInfo.width; v.rp_color_h = rpColorInfo.height;
     v.rp_depth_w = rpDepthInfo.width; v.rp_depth_h = rpDepthInfo.height;
-    v.rp_la = mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, 0u));
-    v.rp_sa = mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, 0u));
-    v.depth_la = mglLoadActionName((uint32_t)mglRenderPassLoadActionForTrace(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, 0u));
-    v.depth_sa = mglStoreActionName((uint32_t)mglRenderPassStoreActionForTrace(
-        _renderPassManager.state->renderPassStateOwner,
-        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, 0u));
+    v.rp_la = mglLoadActionName(mglRenderPassLoadActionForTrace(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, 0u));
+    v.rp_sa = mglStoreActionName(mglRenderPassStoreActionForTrace(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, 0u));
+    v.depth_la = mglLoadActionName(mglRenderPassLoadActionForTrace(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, 0u));
+    v.depth_sa = mglStoreActionName(mglRenderPassStoreActionForTrace(
+        rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, 0u));
     MGLBatchTraceAttPod c0 = mglBatchAttPod(
         color0Attachment ? color0Attachment->texture : 0u,
         color0Attachment ? color0Attachment->textarget : 0u,
@@ -227,30 +225,30 @@ static MGLBatchTraceAttPod mglBatchAttPod(uint32_t tex, uint32_t target, uint32_
         };
         char texline[2048];
         if (mgl_batch_trace_format_texslots_line(
-                texline, sizeof(texline), flushId, batchIndex, commandIndex,
+                texline, sizeof(texline), flush_id, batch_index, command_index,
                 mglCurrentRenderProgramKey(glm_ctx),
                 vertexProgram ? vertexProgram->name : 0u,
                 fragmentProgram ? fragmentProgram->name : 0u,
-                _pipelineCache.state->pipelineProgramName, slots) > 0)
+                mglRendererPipelineProgramNamePort(renderer), slots) > 0)
             mglTraceLog("%s", texline);
         if ((fsSlotHasRT || fsSlotUsedCopy) && fragmentProgram) {
-            mglWriteProgramMSLDump(fragmentProgram,
-                [NSString stringWithFormat:@"texslot-submit-fs-%u-flush-%llu-cmd-%u",
-                    (unsigned)fragmentProgram->name, (unsigned long long)flushId,
-                    (unsigned)commandIndex]);
+            char dumpReason[128];
+            snprintf(dumpReason, sizeof(dumpReason), "texslot-submit-fs-%u-flush-%llu-cmd-%u",
+                     (unsigned)fragmentProgram->name, (unsigned long long)flush_id,
+                     (unsigned)command_index);
+            mglWriteProgramMSLDump(fragmentProgram, dumpReason);
         } else if ((fsSlotHasRT || fsSlotUsedCopy) && drawProgram) {
-            mglWriteProgramMSLDump(drawProgram,
-                [NSString stringWithFormat:@"texslot-submit-program-%u-flush-%llu-cmd-%u",
-                    (unsigned)drawProgram->name, (unsigned long long)flushId,
-                    (unsigned)commandIndex]);
+            char dumpReason[128];
+            snprintf(dumpReason, sizeof(dumpReason), "texslot-submit-program-%u-flush-%llu-cmd-%u",
+                     (unsigned)drawProgram->name, (unsigned long long)flush_id,
+                     (unsigned)command_index);
+            mglWriteProgramMSLDump(drawProgram, dumpReason);
         }
     }
     if (mgl_batch_trace_is_submit_phase(phase) && ebo) {
         Program *attribProgram = vertexProgram ? vertexProgram : drawProgram;
         mglTraceReplayCommandVertexAttribSamples(
-            glm_ctx, attribProgram, cmd, ebo, flushId, batchIndex, commandIndex,
+            glm_ctx, attribProgram, cmd, ebo, flush_id, batch_index, command_index,
             fsSlotHasRT || fsSlotUsedCopy);
     }
 }
-
-@end

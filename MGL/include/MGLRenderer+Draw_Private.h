@@ -409,14 +409,8 @@ typedef struct {
                                glBuffer:(Buffer **)glBufferOut
                               mtlBuffer:(id *)mtlBufferOut;
 
-- (void)traceReplayCommand:(MGLDrawBatch *)batch
-                   command:(MGLDrawCommand *)cmd
-                   context:(GLMContext)glm_ctx
-                   flushId:(uint64_t)flushId
-                batchIndex:(uint32_t)batchIndex
-              commandIndex:(uint32_t)commandIndex
-                     phase:(const char *)phase
-                    reason:(const char *)reason;
+/* traceReplayCommand:... is now the C driver mglBatchTraceReplayCommand
+ * (mgl_batch_rt_mark.h, implemented in mgl_batch_replay_trace.c). */
 - (void)recordArrayDrawSubmittedMode:(GLenum)mode vertexCount:(uint64_t)vertexCount;
 - (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount;
 - (void)bindCullDistanceEmulationBuffers:(GLenum)mode

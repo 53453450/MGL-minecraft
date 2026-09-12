@@ -19,6 +19,7 @@
 #include "mgl_types_framebuffer.h" /* FBOAttachment */
 #include "mgl_types_texture.h"     /* Texture */
 #include "mgl_types_buffer.h"      /* Buffer */
+#include "mgl_trace_strategy.h"    /* MGLFragmentTextureTraceBinding */
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,13 +51,6 @@ int mglRendererResolveElementBufferPort(void *renderer, const void *command,
                                         Buffer **gl_buffer_out,
                                         void **mtl_buffer_out);
 
-/* Batch replay tracing for one command. */
-void mglRendererTraceReplayCommandPort(void *renderer, void *batch,
-                                       void *command, GLMContext ctx,
-                                       uint64_t flush_id, uint32_t batch_index,
-                                       uint32_t command_index,
-                                       const char *phase, const char *reason);
-
 /* Simple-replay fast path for a whole batch. */
 int mglRendererTryReplaySimpleBatchPort(void *renderer, void *batch,
                                         GLMContext ctx,
@@ -82,6 +76,15 @@ int mglRendererCaptureCullElementPort(void *renderer, GLMContext ctx,
 
 /* Renderer state processing (1 = a draw command). */
 int mglRendererProcessGLStatePort(void *renderer, int draw_command);
+
+/* Batch-replay diagnostic trace state: the renderer's fragment texture trace
+ * binding records (TEXTURE_UNITS entries, `MGLFragmentTextureTraceBinding`),
+ * the pipeline cache's current pipeline state / program name, and the render
+ * pass framebuffer name the trace line reports. */
+MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindingsPort(void *renderer);
+void *mglRendererPipelineStatePort(void *renderer);
+uint32_t mglRendererPipelineProgramNamePort(void *renderer);
+uint32_t mglRendererRenderPassFramebufferNamePort(void *renderer);
 
 /* Batch-replay trace identity of the current flush / batch. */
 uint64_t mglRendererBatchTraceFlushIdPort(void *renderer);

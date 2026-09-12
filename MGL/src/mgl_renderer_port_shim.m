@@ -60,22 +60,6 @@ int mglRendererResolveElementBufferPort(void *renderer, const void *command,
     return 1;
 }
 
-void mglRendererTraceReplayCommandPort(void *renderer, void *batch,
-                                       void *command, GLMContext ctx,
-                                       uint64_t flush_id, uint32_t batch_index,
-                                       uint32_t command_index,
-                                       const char *phase, const char *reason)
-{
-    [(__bridge MGLRenderer *)renderer traceReplayCommand:(MGLDrawBatch *)batch
-                                                 command:(MGLDrawCommand *)command
-                                                 context:ctx
-                                                 flushId:flush_id
-                                              batchIndex:batch_index
-                                            commandIndex:command_index
-                                                   phase:phase
-                                                  reason:reason];
-}
-
 int mglRendererTryReplaySimpleBatchPort(void *renderer, void *batch,
                                         GLMContext ctx,
                                         const void *encode_context)
@@ -149,6 +133,30 @@ int mglRendererProcessGLStatePort(void *renderer, int draw_command)
     return [(__bridge MGLRenderer *)renderer processGLState:draw_command ? true : false]
                ? 1
                : 0;
+}
+
+MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindingsPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? &r->_resourceFallback.fragmentTextureTraceBindings[0] : NULL;
+}
+
+void *mglRendererPipelineStatePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? r->_pipelineCache.state->pipelineState : NULL;
+}
+
+uint32_t mglRendererPipelineProgramNamePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? (uint32_t)r->_pipelineCache.state->pipelineProgramName : 0u;
+}
+
+uint32_t mglRendererRenderPassFramebufferNamePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? (uint32_t)mglRendererRenderPassManager(r).state->renderPassFramebufferName : 0u;
 }
 
 uint64_t mglRendererBatchTraceFlushIdPort(void *renderer)

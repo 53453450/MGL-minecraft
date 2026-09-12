@@ -6439,11 +6439,12 @@ static GLenum mglPassthroughDeclType(
                 [errDesc containsString:@"not written by vertex shader"];
 
             if (isInterfaceMismatch) {
-                mglWriteProgramMSLDump(currentVertexProgram, errDesc);
+                const char *errText = cppError[0] ? cppError : "";
+                mglWriteProgramMSLDump(currentVertexProgram, errText);
                 if (currentFragmentProgram && currentFragmentProgram != currentVertexProgram) {
-                    mglWriteProgramMSLDump(currentFragmentProgram, errDesc);
+                    mglWriteProgramMSLDump(currentFragmentProgram, errText);
                 } else if (!currentVertexProgram) {
-                    mglWriteProgramMSLDump(currentProgram, errDesc);
+                    mglWriteProgramMSLDump(currentProgram, errText);
                 }
                 BOOL sameProgram =
                 (_pipelineCache.state->pipelineProgramName != 0 &&

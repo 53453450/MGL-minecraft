@@ -759,7 +759,7 @@ static void mglLogProgramResourceInterface(Program *program, int stage, int type
     }
 }
 
-void mglWriteProgramMSLDump(Program *program, NSString *reason)
+void mglWriteProgramMSLDump(Program *program, const char *reason)
 {
 
     if (!mglTraceLogIsEnabled()) {
@@ -770,11 +770,10 @@ void mglWriteProgramMSLDump(Program *program, NSString *reason)
         return;
     }
 
-    BOOL forceDump = false;
-    if (reason) {
-        NSString *lowerReason = [reason lowercaseString];
-        forceDump = [lowerReason containsString:@"tex"];
-    }
+    /* Reasons containing "tex" (any case) force the dump past the "dump once
+     * per program" gate: they name a texture-binding mismatch the caller wants
+     * to see in full. */
+    BOOL forceDump = reason && strcasestr(reason, "tex") != NULL;
 
     static GLuint s_dumpedPrograms[64] = {0};
     static GLuint s_forcedDumpedPrograms[64] = {0};
@@ -806,7 +805,7 @@ void mglWriteProgramMSLDump(Program *program, NSString *reason)
 
     mglTraceLog("MGL IFACE DUMP begin program=%u reason=%s generation=%u",
                   (unsigned)program->name,
-                  reason ? [reason UTF8String] : "(none)",
+                  reason ? reason : "(none)",
                   (unsigned)s_dumpGeneration);
 
     mglLogProgramResourceInterface(program, _VERTEX_SHADER, _STAGE_OUTPUT_RES);

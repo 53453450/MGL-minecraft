@@ -133,6 +133,37 @@ bool mglShouldLogFocusedBinding(uint64_t *counter);
  * or the focus counter says it's time to log. */
 bool mglShouldLogTraceFileBindingForProgram(Program *program, uint64_t *counter);
 
+/* === Trace helpers that live in MGLRenderer.m (renderer-state readers) ===
+ * Both are plain C functions whose only "ObjC" trait was where they were
+ * declared; the declarations moved here so C translation units (the batch
+ * replay trace driver) can call them. */
+
+/* Which Program a replay trace line should report (focused/loading program
+ * resolution); NULL when nothing is bound. */
+Program *mglTraceResolveDrawProgram(GLMContext traceCtx);
+
+/* Whether replay tracing applies to this draw program (env allow-list plus the
+ * focus heuristic). */
+bool mglTraceShouldLogReplay(GLMContext traceCtx, Program *program);
+
+/* Dump a Program's MSL once (or once per force-reason), when trace logging is
+ * on.  `reason` is a C string; reasons mentioning "tex" force the dump. */
+void mglWriteProgramMSLDump(Program *program, const char *reason);
+
+/* Texture an attachment renders into, for the trace log. */
+Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx,
+                                              FBOAttachment *attachment);
+
+/* Per-vertex attribute sample dump for one replay command.  forceTrace
+ * overrides the rate limit. */
+void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
+                                              Program *program,
+                                              const MGLDrawCommand *cmd,
+                                              Buffer *ebo, uint64_t flushId,
+                                              uint32_t batchIndex,
+                                              uint32_t commandIndex,
+                                              bool forceTrace);
+
 #ifdef __cplusplus
 }
 #endif

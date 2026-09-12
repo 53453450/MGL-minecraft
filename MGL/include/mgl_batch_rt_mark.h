@@ -347,6 +347,19 @@ void mgl_batch_rt_mark_one_attachment(uint32_t attachment_index,
                                       uint64_t *diag_hit_inout,
                                       const MGLBatchRtMarkOneOps *ops);
 
+/* === Replay trace drivers (former -[MGLRenderer traceReplayBatch:...] /
+ * -[MGLRenderer traceReplayCommand:...]; defined in mgl_batch_replay_trace.c) ===
+ * They read renderer state through mgl_renderer_ports.h and only emit when the
+ * trace gates in mgl_trace_strategy.h say so. */
+void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
+                              GLMContext glm_ctx, uint64_t flush_id,
+                              uint32_t batch_index, const char *phase);
+void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
+                                MGLDrawCommand *cmd, GLMContext glm_ctx,
+                                uint64_t flush_id, uint32_t batch_index,
+                                uint32_t command_index, const char *phase,
+                                const char *reason);
+
 #ifdef __cplusplus
 }
 #endif

@@ -62,7 +62,7 @@ void mglLogRenderPassLifecycle(const char *tag,
                                GLenum renderPassDrawBuffer,
                                GLsizei renderPassDrawBufferCount);
 GLuint mglCurrentRenderProgramKey(GLMContext ctx);
-void mglWriteProgramMSLDump(Program *program, NSString *reason);
+void mglWriteProgramMSLDump(Program *program, const char *reason);
 GLuint mglRendererSafeFramebufferName(GLMContext ctx);
 id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx);
 Program *mglResolveProgramFromState(GLMContext ctx);

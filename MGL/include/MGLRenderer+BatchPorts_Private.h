@@ -33,11 +33,8 @@
 - (void)restoreStateFromKey:(const MGLStateKey *)key context:(GLMContext)glm_ctx;
 
 /* replay tracing (impl: mgl_batch_replay_trace.m) */
-- (void)traceReplayBatch:(MGLDrawBatch *)batch
-                  context:(GLMContext)glm_ctx
-                  flushId:(uint64_t)flushId
-               batchIndex:(uint32_t)batchIndex
-                    phase:(const char *)phase;
+/* traceReplayBatch:... is now the C driver mglBatchTraceReplayBatch
+ * (mgl_batch_rt_mark.h, implemented in mgl_batch_replay_trace.c). */
 
 /* dyn-bind / simple replay (impl: mgl_batch_dyn_bind_encode.m) */
 - (bool)applyDynamicBindingsForCommand:(const MGLDrawCommand *)cmd

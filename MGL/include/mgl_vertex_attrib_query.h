@@ -59,6 +59,12 @@ bool mglRendererVertexAttribIsColorInput(Program *program, GLuint attribute);
  * fallback (no bound vertex buffer, relies on ctx current attrib state). */
 bool mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute);
 
+/* The VAO bound to the context, after the pointer-plausibility / hashtable
+ * checks; drops the binding and returns NULL when it looks invalid.  Defined in
+ * MGLRenderer.m (it owns the drop path) and declared here so C translation
+ * units can use it; `where` is a label for the drop diagnostic. */
+VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where);
+
 #ifdef __cplusplus
 }
 #endif

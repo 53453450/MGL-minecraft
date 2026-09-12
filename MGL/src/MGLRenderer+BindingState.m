@@ -2446,13 +2446,11 @@ done:
             expectedType, s_compatMismatchLogCount);
     }
     if (sampleProgram) {
-        mglWriteProgramMSLDump(
-            sampleProgram,
-            [NSString stringWithFormat:@"tex-%s-mismatch-%s-binding-%u",
-                                       cplan.action == MGL_ST_ACTION_TYPE_FALLBACK
-                                           ? "type"
-                                           : "data",
-                                       stage ? stage : "x", spirvBinding]);
+        char dumpReason[128];
+        snprintf(dumpReason, sizeof(dumpReason), "tex-%s-mismatch-%s-binding-%u",
+                 cplan.action == MGL_ST_ACTION_TYPE_FALLBACK ? "type" : "data",
+                 stage ? stage : "x", spirvBinding);
+        mglWriteProgramMSLDump(sampleProgram, dumpReason);
     }
     texture = [self fallbackSampledTextureForExpectedType:expectedType
                                                  dataKind:expectedKind];

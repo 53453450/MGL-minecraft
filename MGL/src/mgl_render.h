@@ -132,6 +132,9 @@ void mglRenderBindProgram(GLMContext glm_ctx, Program *program);
  * declared here so C / C++ translation units stop hand-declaring it (they did
  * before this header carried it). */
 Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
+/* Identity of the program the current draw would use (restored/scheduled), as
+ * the trace log and pipeline-cache keys see it.  Defined in MGLRenderer.m. */
+GLuint mglCurrentRenderProgramKey(GLMContext ctx);
 void mglRenderGetSync(GLMContext glm_ctx, Sync *sync);
 void mglRenderWaitForSync(GLMContext glm_ctx, Sync *sync);
 unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync *sync);

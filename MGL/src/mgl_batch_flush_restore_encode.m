@@ -57,7 +57,7 @@ static void fMark(void *v, uint32_t b)
 static int fSched(void *v, uint32_t b)
 { return (int)[((FCtx *)v)->r scheduleDrawBatch:FB(v, b) context:((FCtx *)v)->ctx]; }
 static void fTrace(void *v, uint32_t b, const char *ph)
-{ FCtx *c = v; [c->r traceReplayBatch:FB(c, b) context:c->ctx flushId:c->hit batchIndex:b phase:ph]; }
+{ FCtx *c = v; mglBatchTraceReplayBatch((__bridge void *)c->r, FB(c, b), c->ctx, c->hit, b, ph); }
 static void fPerfS(void *v, uint32_t n)
 { (void)v; MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap); MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap, n); }
 static void fPerfD(void *v, uint32_t n)
@@ -81,7 +81,7 @@ typedef struct {
 } CCtx;
 static void cBegin(void *v)
 { CCtx *c = v; [mglRendererRenderPassManager(c->r) setTraceReplayFlushId:c->hit batchIndex:c->bi];
-  [c->r traceReplayBatch:c->batch context:c->ctx flushId:c->hit batchIndex:c->bi phase:"RESTORE"]; }
+  mglBatchTraceReplayBatch((__bridge void *)c->r, c->batch, c->ctx, c->hit, c->bi, "RESTORE"); }
 static int cFbo(void *v)
 { CCtx *c = v; return [c->r prepareRenderPassIfFBOChanged:c->batch context:c->ctx
       replayError:c->err] ? 1 : 0; }
@@ -99,8 +99,8 @@ static int cApplyS(void *v)
   return [c->r applySamplerSnapshotForCommand:&c->batch->commands[0] context:c->ctx
       encodeContext:&e] ? 1 : 0; }
 static void cReady(void *v)
-{ CCtx *c = v; [c->r traceReplayBatch:c->batch context:c->ctx flushId:c->hit batchIndex:c->bi
-      phase:"READY"]; }
+{ CCtx *c = v; mglBatchTraceReplayBatch((__bridge void *)c->r, c->batch, c->ctx, c->hit,
+      c->bi, "READY"); }
 static int cEmpty(void *v) { return [((CCtx *)v)->r currentDrawRasterizationIsEmpty] ? 1 : 0; }
 static int cCull(void *v)
 { CCtx *c = v; c->mode = c->batch->commands[0].mode;
@@ -149,8 +149,8 @@ typedef struct {
     uint64_t hit; uint32_t bi; const char *reason;
 } SkipCtx;
 static void skipTraceCmd(void *v, uint32_t i)
-{ SkipCtx *c = v; [c->r traceReplayCommand:c->batch command:&c->batch->commands[i]
-      context:c->ctx flushId:c->hit batchIndex:c->bi commandIndex:i phase:"SKIP" reason:c->reason]; }
+{ SkipCtx *c = v; mglBatchTraceReplayCommand((__bridge void *)c->r, c->batch,
+      &c->batch->commands[i], c->ctx, c->hit, c->bi, i, "SKIP", c->reason); }
 
 
 
@@ -320,8 +320,8 @@ static void skipTraceCmd(void *v, uint32_t i)
                             phase:(const char *)phase reason:(const char *)reason
                   skippedCommands:(uint32_t *)skippedCommands
 {
-    [self traceReplayBatch:batch context:glm_ctx flushId:flushId batchIndex:batchIndex
-                     phase:phase];
+    mglBatchTraceReplayBatch((__bridge void *)self, batch, glm_ctx, flushId, batchIndex,
+                             phase);
     SkipCtx sc = {.r = self, .batch = batch, .ctx = glm_ctx, .hit = flushId, .bi = batchIndex,
                   .reason = reason};
     mgl_batch_flush_trace_skip_commands(batch->command_count, skipTraceCmd, &sc,
@@ -362,10 +362,10 @@ static void skipTraceCmd(void *v, uint32_t i)
                      phase:(const char *)phase reason:(const char *)reason
 {
     if (!batch || batch->command_count == 0) return;
-    [self traceReplayCommand:batch command:&batch->commands[0] context:glm_ctx
-                     flushId:_renderPassManager.state->traceReplayFlushId
-                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
-                commandIndex:0 phase:phase reason:reason];
+    mglBatchTraceReplayCommand((__bridge void *)self, batch, &batch->commands[0], glm_ctx,
+                               _renderPassManager.state->traceReplayFlushId,
+                               _renderPassManager.state->traceReplayBatchIndex,
+                               0, phase, reason);
 }
 
 - (void)issueStreamMergedBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx

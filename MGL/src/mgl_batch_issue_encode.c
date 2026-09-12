@@ -11,6 +11,7 @@
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
+#include "mgl_batch_rt_mark.h"    /* mglBatchTraceReplayCommand */
 #include "mgl_batch_encode_shared.h"
 
 
@@ -25,7 +26,7 @@ static void mglIssueTrace(void *v, uint32_t i, const char *phase, const char *re
 {
     MGLIssueEncCtx *c = v;
     if (!c->batch || i >= c->batch->command_count) return;
-    mglRendererTraceReplayCommandPort(
+    mglBatchTraceReplayCommand(
         c->r, c->batch, &c->batch->commands[i], c->ctx,
         mglRendererBatchTraceFlushIdPort(c->r),
         mglRendererBatchTraceBatchIndexPort(c->r), i, phase, reason);

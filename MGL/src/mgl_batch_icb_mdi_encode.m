@@ -12,6 +12,7 @@
 #include "mgl_draw_encode.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
+#include "mgl_batch_rt_mark.h"  /* mglBatchTraceReplayCommand */
 #include "mgl_batch_encode_shared.h"
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -29,11 +30,11 @@ static void mglIcbTrace(void *v, uint32_t i, const char *phase, const char *reas
 {
     MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
     if (!c->batch || i >= c->batch->command_count) return;
-    [c->r traceReplayCommand:c->batch command:&c->batch->commands[i]
-                     context:c->ctx
-                     flushId:mglRendererRenderPassManager(c->r).state->traceReplayFlushId
-                  batchIndex:mglRendererRenderPassManager(c->r).state->traceReplayBatchIndex
-                commandIndex:i phase:phase reason:reason];
+    mglBatchTraceReplayCommand((__bridge void *)c->r, c->batch, &c->batch->commands[i],
+                               c->ctx,
+                               mglRendererRenderPassManager(c->r).state->traceReplayFlushId,
+                               mglRendererRenderPassManager(c->r).state->traceReplayBatchIndex,
+                               i, phase, reason);
 }
 
 static void *mglIcbScratch(void *v, uint64_t len, uint64_t *off)
