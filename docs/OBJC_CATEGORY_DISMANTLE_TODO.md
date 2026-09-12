@@ -617,7 +617,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
        （`mglShaderInterfaceCheck` 复用 `frontend_tu`，属 O5 类）。
   - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
 
-37. **smoke 死桩与 stdio/stdlib include 清理（`<commit>`）**：三件事：
+37. **smoke 死桩与 stdio/stdlib include 清理（`12a2671`）**：三件事：
     ① **修好 `test_metalcpp_smoke` 的链接**——O7.4 把 `mglProgramStageBuiltinMask` 移到
     `mgl_program_resource.c`（头里是 `static inline mglProgramStageUsesBuiltin` 的转发），该 harness 编译
     `mgl_render.cpp` 却没编这个文件 ⇒ 链接失败。按"补真实现而非补桩"的原则把
