@@ -269,6 +269,62 @@ static void test_sampler_materialize_plan(void)
     in.require_tex_params_mtl = 0; /* fragment style */
     expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "sm frag");
     expect(plan.action == MGL_SM_ACTION_USE_TEX_PARAMS, "sm frag tex");
+
+    /* The compute texture loop (O5.2) uses the same table with the fragment
+     * shape (require_tex_params_mtl = 0): it assigns the texture parameters
+     * even when they carry no Metal object and falls back to the default
+     * sampler itself.  These cases pin what that loop depends on. */
+    memset(&in, 0, sizeof(in));
+    in.unit_in_range = 1;
+    in.has_gl_sampler = 1; /* dirty, no Metal object yet */
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "cd sm new");
+    expect(plan.action == MGL_SM_ACTION_USE_GL_SAMPLER, "cd sm gl act");
+    expect(plan.recreate_gl_sampler_mtl == 1,
+           "cd a GL sampler without Metal is created");
+    expect(plan.clear_gl_sampler_dirty == 1,
+           "cd creating clears the dirty bit");
+
+    memset(&in, 0, sizeof(in));
+    in.unit_in_range = 1;
+    in.has_gl_sampler = 1;
+    in.has_gl_sampler_mtl = 1; /* clean and already materialized */
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "cd sm warm");
+    expect(plan.action == MGL_SM_ACTION_USE_GL_SAMPLER, "cd sm warm act");
+    expect(plan.recreate_gl_sampler_mtl == 0,
+           "cd a materialized clean GL sampler is reused");
+
+    memset(&in, 0, sizeof(in));
+    in.unit_in_range = 1; /* texture parameters carry no Metal object */
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "cd sm nil");
+    expect(plan.action == MGL_SM_ACTION_USE_TEX_PARAMS,
+           "cd compute still picks the texture parameters");
+    expect(plan.recreate_gl_sampler_mtl == 0, "cd nothing to recreate");
+
+    memset(&in, 0, sizeof(in));
+    in.unit_in_range = 1;
+    in.require_tex_params_mtl = 1; /* vertex style: keep whatever is bound */
+    expect(mglBindingTexturePlanSamplerMaterialize(&in, &plan) == 0, "cd sm keep");
+    expect(plan.action == MGL_SM_ACTION_KEEP,
+           "cd vertex keeps its sampler when the texture has none");
+
+    /* The trace tag helper the materialize callers share. */
+    expect(strcmp(mglBindingTextureSamplerStageTag("vert"), "VERT") == 0,
+           "cd tag vertex");
+    expect(strcmp(mglBindingTextureSamplerStageTag("compute"), "COMP") == 0,
+           "cd tag compute");
+    expect(strcmp(mglBindingTextureSamplerStageTag("frag"), "FRAG") == 0,
+           "cd tag fragment");
+    expect(strcmp(mglBindingTextureSamplerStageTag(NULL), "FRAG") == 0,
+           "cd tag unknown defaults to fragment");
+
+    /* The fill helper is what the callers use. */
+    MGLSamplerMaterializeInput filled;
+    mglBindingTextureFillSamplerMaterializeInput(&filled, 0, 1, 1, 1, 1, 0, 0);
+    expect(filled.unit_in_range == 1 && filled.has_gl_sampler == 1 &&
+               filled.gl_sampler_dirty == 1 && filled.has_gl_sampler_mtl == 1 &&
+               filled.has_tex_params_mtl == 0 &&
+               filled.require_tex_params_mtl == 0,
+           "cd fill copies every fact");
 }
 
 static void test_sampled_diag_and_rt_ports(void)

@@ -1126,3 +1126,13 @@ void mglBindingTextureEmitSampledDiagPorts(
         }
     }
 }
+
+const char *mglBindingTextureSamplerStageTag(const char *stage) {
+    if (stage && (stage[0] == 'v' || stage[0] == 'V')) {
+        return "VERT";
+    }
+    if (stage && (stage[0] == 'c' || stage[0] == 'C')) {
+        return "COMP";
+    }
+    return "FRAG";
+}

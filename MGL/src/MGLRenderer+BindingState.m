@@ -2517,7 +2517,7 @@ done:
     }
     if (params && mglTraceLogIsEnabled()) {
         mglBindingLogSamplerResolve(
-            (stage && stage[0] == 'v') ? "VERT" : "FRAG", programName,
+            mglBindingTextureSamplerStageTag(stage), programName,
             spirvBinding, textureUnit, plan.source_tag ? plan.source_tag : "?",
             samplerName, params->min_filter, params->mag_filter, params->wrap_s,
             params->wrap_t, params->min_lod, params->max_lod,

@@ -195,6 +195,10 @@ void mglBindingTextureFillSampledCompatInput(
     MGLSampledTextureBindInput *in, int has_mtl_texture, uint32_t mtl_type,
     uint32_t expected_type, int format_kind_ok);
 
+/* Trace tag for the stage string the sampler materialize callers pass
+ * ("vert…" → VERT, "comp…" → COMP, anything else → FRAG). */
+const char *mglBindingTextureSamplerStageTag(const char *stage);
+
 /* Sampler warmup: 1 if slot bit set in 128-bit mask (4×uint32). */
 int mglBindingTextureSamplerWarmupSlotActive(const uint32_t mask[4],
                                              uint32_t slot);

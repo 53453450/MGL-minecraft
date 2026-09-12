@@ -13,6 +13,7 @@
 // These methods do not depend on any file-scope static functions in MGLRenderer.m.
 
 #import "MGLRenderer_Private.h"
+#import "MGLRenderer+Binding_Private.h"
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
@@ -715,38 +716,23 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                             &MGL_STATE(ctx)->image_units[glUnit]);
                     }
 
-                    id sampler;
-
-                    // late binding of texture samplers.. but its better than scanning the entire texture_samplers
-                    if (!mglRenderComputeTextureBindIsStorage(
-                            (uint32_t)gl_texture_type) &&
-                        MGL_STATE(ctx)->texture_samplers[glUnit])
-                    {
-                        Sampler *gl_sampler;
-
-                        gl_sampler = MGL_STATE(ctx)->texture_samplers[glUnit];
-
-                        // delete existing sampler if dirty
-                        if (gl_sampler->dirty_bits)
-                        {
-                            if (gl_sampler->mtl_data)
-                            {
-                                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
-                            }
-                        }
-
-                        if (gl_sampler->mtl_data == NULL)
-                        {
-                            gl_sampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&gl_sampler->params target:ptr->target]);
-                            gl_sampler->dirty_bits = 0;
-                        }
-
-                        sampler = (__bridge id)(gl_sampler->mtl_data);
-                    }
-                    else
-                    {
-                        sampler = (__bridge id)(ptr->params.mtl_data);
-                    }
+                    /* Sampler cascade (GL sampler object → texture parameters
+                     * → default) is the shared materialize port the
+                     * vertex / fragment spine uses. */
+                    id sampler = [self
+                        materializeSampledSamplerForTexture:ptr
+                                                textureUnit:glUnit
+                                            defaultSampler:nil
+                                              forceDefault:NO
+                                             samplerTarget:ptr->target
+                                               programName:computeProgram
+                                                               ? computeProgram->name
+                                                               : 0u
+                                              spirvBinding:resource
+                                                               ? mglMetalResourceSlot(resource)
+                                                               : metalBinding
+                                                     stage:"compute"
+                                                   texture:texture];
 
                     if (!sampler) {
                         id fallbackSampler = mglComputeCreateDefaultSampler();
@@ -817,18 +803,23 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                 }
 
                 id texture = (__bridge id)(ptr->mtl_data);
-                id sampler = nil;
-                if (glUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[glUnit]) {
-                    Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[glUnit];
-                    if (glSampler->mtl_data == NULL) {
-                        glSampler->mtl_data = (void *)CFBridgingRetain(
-                            [self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
-                        glSampler->dirty_bits = 0;
-                    }
-                    sampler = (__bridge id)(glSampler->mtl_data);
-                } else if (ptr->params.mtl_data) {
-                    sampler = (__bridge id)(ptr->params.mtl_data);
-                }
+                /* Same shared port as the loop above.  This path used to
+                 * skip the "dirty sampler" release the others do, so a
+                 * re-parameterized sampler could keep its old Metal object;
+                 * going through the port makes it consistent. */
+                id sampler = [self
+                    materializeSampledSamplerForTexture:ptr
+                                            textureUnit:glUnit
+                                        defaultSampler:nil
+                                          forceDefault:NO
+                                         samplerTarget:ptr->target
+                                           programName:computeProgram
+                                                           ? computeProgram->name
+                                                           : 0u
+                                          spirvBinding:metalSlot
+                                                 stage:"compute"
+                                               texture:texture];
+
                 if (!sampler) {
                     sampler = mglComputeCreateDefaultSampler();
                     /* Keep the fallback alive until the end replay. */
