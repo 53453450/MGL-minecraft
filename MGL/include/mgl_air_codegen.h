@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -198,6 +199,10 @@ struct Codegen {
     std::map<std::string, llvm::Type *> arrayMemTypes;
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
+    /* Block-qualified keys of per-vertex varying arrays whose elements a
+     * shader stored straight into the stage-out record (TES compute path).
+     * storeTessComputeVaryings must not overwrite those slots with undef. */
+    std::set<std::string> directRecordVaryings;
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
     std::vector<VarSym *> fragOutputs;   /* fragment outputs, return-field order */
     bool has_gs = false;                 /* fragment fed by GS passthrough VS */

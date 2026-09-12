@@ -147,14 +147,22 @@ void collectStageVarSyms(const MGLIRModule *mod, const MGLTranslationUnit *tu,
             v.kind = VarSym::SSBO;
         } else if (isTCS && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::VARYING;
-            if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type) {
+            /* A plain per-vertex input array is indexed by the invocation, so
+             * the per-vertex dimension is consumed by the record index and
+             * the element type is what the shader reads.  Interface-block
+             * members (block_name set) are different: the *instance* array
+             * carries the invocation dimension, so an array-typed member
+             * (e.g. `vec4 value[31];`) must keep its array shape -- its
+             * elements occupy consecutive record slots and a trailing index
+             * selects among them (see emitTessBlockArrayLoad). */
+            if (!s->block_name && !v.isPatch &&
+                s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
             }
         } else if (isTCS && (q & MGL_AST_Q_OUT)) {
             v.kind = VarSym::OUTPUT;
-            if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type) {
+            if (!s->block_name && !v.isPatch &&
+                s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
             }
         } else if (isGS && (q & MGL_AST_Q_IN)) {
@@ -178,8 +186,11 @@ void collectStageVarSyms(const MGLIRModule *mod, const MGLTranslationUnit *tu,
             }
         } else if (isTES && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::CONTROL_POINT_INPUT;
-            if (!v.isPatch && s->type->kind == MGLIR_TYPE_ARRAY &&
-                s->type->elem_type) {
+            /* Same distinction as the TCS branches above: for a plain
+             * per-vertex input array the invocation dimension is the array,
+             * but an interface-block member array keeps its own shape. */
+            if (!s->block_name && !v.isPatch &&
+                s->type->kind == MGLIR_TYPE_ARRAY && s->type->elem_type) {
                 v.type = typeFromIR(s->type->elem_type);
             }
         } else if (isVS && (q & MGL_AST_Q_IN)) {

@@ -2424,6 +2424,34 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                        "gl_MaxCombinedImageUnitsAndFragmentOutputs") == 0) {
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
+            /* GLSL 4.60 §7.3 varying / patch / transform-feedback limits.
+             * Values come from glm_params and are folded by the AIR backend;
+             * the sema only needs their type.  Without these the array extents
+             * KHR-GL46.tessellation_shader ....max_in_out_attributes uses are
+             * "undeclared identifier". */
+            {
+                static const char *const limits[] = {
+                    "gl_MaxVertexOutputComponents",
+                    "gl_MaxFragmentInputComponents",
+                    "gl_MaxTessControlInputComponents",
+                    "gl_MaxTessControlOutputComponents",
+                    "gl_MaxTessEvaluationInputComponents",
+                    "gl_MaxTessEvaluationOutputComponents",
+                    "gl_MaxTessPatchComponents",
+                    "gl_MaxPatchVertices",
+                    "gl_MaxTessGenLevel",
+                    "gl_MaxTransformFeedbackInterleavedComponents",
+                    "gl_MaxTransformFeedbackSeparateComponents",
+                    "gl_MaxTransformFeedbackSeparateAttribs",
+                    "gl_MaxTransformFeedbackBuffers",
+                    "gl_MaxVertexStreams",
+                    "gl_MaxViewports",
+                };
+                for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++)
+                    if (strcmp(e->u.var_ref.name, limits[i]) == 0)
+                        return scratch_type(s,
+                            mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
             if (strncmp(e->u.var_ref.name, "gl_MaxGeometry", 14) == 0) {
                 /* Geometry limits are compile-time integer constants in
                  * GLSL.  Keep them scalar ints for expression typing; the

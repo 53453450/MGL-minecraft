@@ -855,6 +855,27 @@ static int lookup_builtin_const_int(const char *name, int64_t *value)
         { "gl_MaxCombinedImageUniforms", 40 },
         { "gl_MaxCombinedShaderOutputResources", 8 },
         { "gl_MaxCombinedImageUnitsAndFragmentOutputs", 8 },
+        /* GLSL 4.60 §7.3 implementation-dependent constants that gate varying
+         * and patch extents.  Values mirror glm_params (and the AIR backend's
+         * builtin folding); KHR-GL46.tessellation_shader ....max_in_out_
+         * attributes sizes its arrays from the tessellation ones. */
+        { "gl_MaxVertexOutputComponents", 128 },
+        { "gl_MaxFragmentInputComponents", 128 },
+        { "gl_MaxGeometryInputComponents", 64 },
+        { "gl_MaxGeometryOutputComponents", 128 },
+        { "gl_MaxTessControlInputComponents", 128 },
+        { "gl_MaxTessControlOutputComponents", 128 },
+        { "gl_MaxTessEvaluationInputComponents", 128 },
+        { "gl_MaxTessEvaluationOutputComponents", 128 },
+        { "gl_MaxTessPatchComponents", 120 },
+        { "gl_MaxPatchVertices", 32 },
+        { "gl_MaxTessGenLevel", 64 },
+        { "gl_MaxTransformFeedbackInterleavedComponents", 128 },
+        { "gl_MaxTransformFeedbackSeparateComponents", 4 },
+        { "gl_MaxTransformFeedbackSeparateAttribs", 4 },
+        { "gl_MaxTransformFeedbackBuffers", 4 },
+        { "gl_MaxVertexStreams", 4 },
+        { "gl_MaxViewports", 16 },
     };
     if (!name || !value) return 0;
     for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {

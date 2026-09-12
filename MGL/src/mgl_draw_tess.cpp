@@ -1075,7 +1075,19 @@ extern "C" int mglTessResolveXFBSource(const Program *program, const char *name,
     if (field_bytes == 0u) {
         return 0;
     }
-    *offset_out = MGL_AIR_PER_VERTEX_STRIDE + (uint32_t)output->location * 16u;
+    /* Array members and array varyings name one element: each element owns a
+     * record slot, so the slot is (base location + element).  Dropping the
+     * element made every `Block.member[i]` resolve to element 0, which
+     * KHR-GL46.tessellation_shader.tessellation_shader_tessellation.
+     * max_in_out_attributes caught by comparing field 1 onwards. */
+    GLuint element = 0u;
+    GLboolean isElement = GL_FALSE;
+    if (!mglTransformFeedbackArrayElement(name, &isElement, &element))
+        return 0;
+    if (isElement && !output->is_array)
+        return 0;
+    *offset_out = MGL_AIR_PER_VERTEX_STRIDE +
+                  (uint32_t)(output->location + element) * 16u;
     *gl_type_out = (uint32_t)output->gl_type;
     *bytes_out = field_bytes;
     return 1;

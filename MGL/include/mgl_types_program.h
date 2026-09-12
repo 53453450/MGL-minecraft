@@ -464,6 +464,15 @@ extern "C" {
 /* Resolve a glTransformFeedbackVaryings name against stage outputs.
  * Accepts bare member names and BlockType.member for named interface
  * blocks (GL 4.6 §11.1.2.1); reflection keeps bare Metal identifiers. */
+/* Parse the trailing `[n]` of a transform-feedback varying name: an array
+ * element of a varying, or of an arrayed interface-block member (the names
+ * CTS uses are `Block.member[n]`).  Callers that turn an XFB name into a
+ * per-vertex record slot must add the element index, or every field of the
+ * array resolves to the same slot.  Returns false for a malformed name. */
+GLboolean mglTransformFeedbackArrayElement(const char *name,
+                                           GLboolean *isElement,
+                                           GLuint *elementIndex);
+
 MGLShaderResource *mglProgramFindStageOutputForXFBName(Program *program,
                                                        int stage,
                                                        const char *xfb_name);

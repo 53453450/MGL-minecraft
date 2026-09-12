@@ -621,8 +621,13 @@ apply_gl46_defaults:
 
     glm_ctx->active_state->var.max_cull_distances = 8;
     glm_ctx->active_state->var.max_combined_clip_and_cull_distances = 8;
-    if (glm_ctx->active_state->var.max_vertex_output_components < 64) {
-        glm_ctx->active_state->var.max_vertex_output_components = 64;
+    /* GL 4.6 requires at least 64; the tessellation limits below are already
+     * 128, and KHR-GL46.tessellation_shader.tessellation_shader_tessellation.
+     * max_in_out_attributes only runs when the vertex output budget can carry
+     * what the TCS may read (it drives 124 components through VS -> TCS ->
+     * TES -> transform feedback).  Report the same 128 so the stages agree. */
+    if (glm_ctx->active_state->var.max_vertex_output_components < 128) {
+        glm_ctx->active_state->var.max_vertex_output_components = 128;
     }
     glm_ctx->active_state->var.max_tess_gen_level = 64;
     glm_ctx->active_state->var.max_patch_vertices = 32;
@@ -672,7 +677,11 @@ apply_gl46_defaults:
     glm_ctx->active_state->var.max_fragment_image_uniforms = 8;
     glm_ctx->active_state->var.max_combined_image_uniforms = 40;
     glm_ctx->active_state->var.max_compute_image_uniforms = 8;
-    glm_ctx->active_state->var.max_transform_feedback_interleaved_components = 64;
+    /* Interleaved capture must be able to hold a whole TES/GS output set:
+     * GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS is 128 (the spec minimum), and
+     * a configuration may only name as many varyings as the component budget
+     * admits (see MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS). */
+    glm_ctx->active_state->var.max_transform_feedback_interleaved_components = 128;
     glm_ctx->active_state->var.max_transform_feedback_separate_attribs = 4;
     glm_ctx->active_state->var.max_transform_feedback_separate_components = 4;
     glm_ctx->active_state->var.max_transform_feedback_buffers = 4;

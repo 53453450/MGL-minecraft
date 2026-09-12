@@ -471,7 +471,18 @@ extern "C" uint32_t mglDrawGsFillXFBScatterParams(Program *gs,
             MGLShaderResource *gsOut = mglProgramFindStageOutputForXFBName(
                 gs, _GEOMETRY_SHADER, name);
             if (gsOut) {
-                location = gsOut->location;
+                GLuint element = 0u;
+                GLboolean isElement = GL_FALSE;
+                if (!mglTransformFeedbackArrayElement(name, &isElement,
+                                                      &element)) {
+                    continue;
+                }
+                if (isElement && gsOut->is_array)
+                    location = gsOut->location + element;
+                else if (!isElement)
+                    location = gsOut->location;
+                else
+                    continue;
             }
             uint32_t srcOffset;
             if (strcmp(baseName, "gl_Position") == 0 && plan->builtin) {

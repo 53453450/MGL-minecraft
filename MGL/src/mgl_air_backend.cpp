@@ -2815,6 +2815,206 @@ static llvm::Value *emitTessBlockMemberLoad(
     return nullptr;
 }
 
+/* TCS/TES: instance[k].field[e] -- a flattened interface-block member that
+ * is itself an array or matrix.  Each element consumes one location, so the
+ * record slot is (member location + element); the element index may be
+ * dynamic.  Distinguished from tessBlockMemberPath by the trailing index. */
+static bool tessBlockArrayPath(const MGLExpr *e, const char **instOut,
+                               const MGLExpr **vertexOut,
+                               const char **fieldOut,
+                               const MGLExpr **elemOut)
+{
+    if (!e || e->kind != MGL_EXPR_INDEX || !e->u.index.index) return false;
+    const MGLExpr *memberE = e->u.index.object;
+    if (!memberE || memberE->kind != MGL_EXPR_MEMBER || !memberE->u.member.object)
+        return false;
+    const MGLExpr *instE = memberE->u.member.object;
+    if (instE->kind != MGL_EXPR_INDEX || !instE->u.index.object ||
+        instE->u.index.object->kind != MGL_EXPR_VAR_REF)
+        return false;
+    const char *inst = instE->u.index.object->u.var_ref.name;
+    if (!inst || !strcmp(inst, "gl_in") || !strcmp(inst, "gl_out"))
+        return false;
+    const char *field = memberE->u.member.field;
+    if (field) {
+        std::vector<uint32_t> swz;
+        if (swizzleIndices(field, &swz)) return false;
+    }
+    if (instOut) *instOut = inst;
+    if (vertexOut) *vertexOut = instE->u.index.index;
+    if (fieldOut) *fieldOut = field;
+    if (elemOut) *elemOut = e->u.index.index;
+    return true;
+}
+
+/* Shared by the array load/store: resolve the member symbol for the current
+ * stage and report whether it lives in the stage-out record (TCS writes,
+ * TES outputs) instead of the stage-in record. */
+static VarSym *tessBlockArrayMember(Codegen &cg, const char *inst,
+                                    const char *field, bool *fromOutputOut)
+{
+    if (fromOutputOut) *fromOutputOut = false;
+    if (!inst || !field) return nullptr;
+    VarSym *member = nullptr;
+    if (cg.isTessControl) {
+        member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+        if (member && member->location != UINT32_MAX) {
+            if (fromOutputOut) *fromOutputOut = true;
+            return member;
+        }
+        return codegenBlockMember(cg, inst, field, VarSym::VARYING);
+    }
+    if (cg.isTessEval) {
+        member = codegenBlockMember(cg, inst, field,
+                                    VarSym::CONTROL_POINT_INPUT);
+        if (!member)
+            member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+        return member;
+    }
+    return nullptr;
+}
+
+/* TCS/TES load of instance[k].field[e]. */
+static llvm::Value *emitTessBlockArrayLoad(
+    Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    const char *inst = nullptr, *field = nullptr;
+    const MGLExpr *vertexE = nullptr, *elemE = nullptr;
+    if (!tessBlockArrayPath(e, &inst, &vertexE, &field, &elemE))
+        return nullptr;
+    bool fromOutput = false;
+    VarSym *member = tessBlockArrayMember(cg, inst, field, &fromOutput);
+    if (!member || member->location == UINT32_MAX) return nullptr;
+    /* Per-patch members live in the patch buffer; that is the patch-array
+     * path's job (emitPatchArrayElementLoad). */
+    if (member->isPatch) return nullptr;
+    if (!member->type.isArray() && !member->type.isMatrix()) return nullptr;
+    llvm::Value *element = emitExpr(cg, elemE, mod, locals);
+    if (!element) return nullptr;
+    llvm::Value *index = emitExpr(cg, vertexE, mod, locals);
+    if (!index) return nullptr;
+    element = coerceScalar(cg, element, MGLIR_SCALAR_UINT);
+    index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
+    const uint32_t span = member->type.isMatrix()
+        ? member->type.cols : (uint32_t)member->type.arr;
+    if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(element)) {
+        if (span != 0u && ci->getZExtValue() >= span) {
+            cg.err = 1;
+            cg.errmsg = "codegen: interface-block array index out of range";
+            return nullptr;
+        }
+    }
+    llvm::Value *base = nullptr;
+    llvm::Value *record = nullptr;
+    uint64_t stride = 0;
+    if (cg.isTessControl) {
+        if (fromOutput) {
+            if (!cg.stageOutPtr || !cg.patchPos) return nullptr;
+            record = tessStageRecordIndex(cg, index, false);
+            base = cg.stageOutPtr;
+            stride = cg.stageOutStride;
+        } else {
+            if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr)
+                return nullptr;
+            record = tessStageRecordIndex(cg, index, true);
+            base = cg.stageInPtr;
+            stride = cg.stageInStride;
+        }
+    } else if (cg.isTESCompute) {
+        if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) return nullptr;
+        llvm::Value *patchInfo = cg.b->CreateBitCast(
+            cg.indirectPtr, cg.b->getInt32Ty()->getPointerTo(1));
+        llvm::Value *verticesPerPatch = cg.b->CreateAlignedLoad(
+            cg.b->getInt32Ty(),
+            cg.b->CreateGEP(cg.b->getInt32Ty(), patchInfo,
+                            cg.b->getInt32(1)),
+            llvm::Align(4));
+        record = cg.b->CreateAdd(
+            cg.b->CreateMul(cg.patchId, verticesPerPatch), index);
+        base = cg.stageInPtr;
+        stride = cg.stageInStride;
+    } else {
+        /* Native post-tessellation reads members one at a time through the
+         * control-point function, which has no element addressing. */
+        return nullptr;
+    }
+    MType elemTy = member->type;
+    elemTy.arr = 0;
+    if (member->type.isMatrix()) elemTy = matrixColumnType(member->type);
+    llvm::Type *ty = llvmType(elemTy, *cg.ctx);
+    llvm::Type *loadTy = ty;
+    if (varyingNeedsFloatRecordCarrier(elemTy))
+        loadTy = llvmType(floatCarrierType(elemTy), *cg.ctx);
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(member->location), element);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                        cg.b->getInt64(stride)),
+        cg.b->CreateAdd(
+            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE),
+            cg.b->CreateMul(
+                cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
+                cg.b->getInt64(16))));
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
+    p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
+    llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
+    if (varyingNeedsFloatRecordCarrier(elemTy))
+        v = decodeFloatCarrier(cg, v, elemTy.scalar, ty);
+    return v;
+}
+
+/* TCS store of instance[k].field[e] (stage-out record). */
+static bool emitTessBlockArrayStore(
+    Codegen &cg, const MGLExpr *lhs, llvm::Value *value,
+    const MGLIRModule *mod, const std::map<std::string, MType> &locals)
+{
+    const char *inst = nullptr, *field = nullptr;
+    const MGLExpr *vertexE = nullptr, *elemE = nullptr;
+    if (!cg.isTessControl || !cg.stageOutPtr || !cg.patchPos ||
+        !tessBlockArrayPath(lhs, &inst, &vertexE, &field, &elemE))
+        return false;
+    VarSym *member = codegenBlockMember(cg, inst, field, VarSym::OUTPUT);
+    if (!member || member->location == UINT32_MAX || member->isPatch)
+        return false;
+    if (!member->type.isArray() && !member->type.isMatrix()) return false;
+    llvm::Value *element = emitExpr(cg, elemE, mod, locals);
+    if (!element) return true;
+    llvm::Value *index = emitExpr(cg, vertexE, mod, locals);
+    if (!index) return true;
+    element = coerceScalar(cg, element, MGLIR_SCALAR_UINT);
+    llvm::Value *record = tessStageRecordIndex(cg, index, false);
+    MType elemTy = member->type;
+    elemTy.arr = 0;
+    if (member->type.isMatrix()) elemTy = matrixColumnType(member->type);
+    llvm::Type *ty = llvmType(elemTy, *cg.ctx);
+    llvm::Value *storeVal = value;
+    llvm::Type *storeTy = ty;
+    if (varyingNeedsFloatRecordCarrier(elemTy)) {
+        storeVal = encodeFloatCarrier(cg, value, elemTy.scalar);
+        storeTy = storeVal->getType();
+    } else if (value->getType() != ty) {
+        if (ty->isIntOrIntVectorTy() && value->getType()->isIntOrIntVectorTy())
+            storeVal = cg.b->CreateBitCast(value, ty);
+        else
+            storeVal = coerceScalar(cg, value, elemTy.scalar);
+    }
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(member->location), element);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
+                        cg.b->getInt64(cg.stageOutStride)),
+        cg.b->CreateAdd(
+            cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE),
+            cg.b->CreateMul(
+                cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
+                cg.b->getInt64(16))));
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(storeVal, p, llvm::Align(4));
+    return true;
+}
+
 static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
                                       const MGLIRModule *mod,
                                       const std::map<std::string, MType> &locals)
@@ -3153,6 +3353,94 @@ static llvm::Value *geometryRecordPtr(Codegen &cg, llvm::Value *record)
         cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
         cg.b->getInt64(cg.stageOutStride));
     return cg.b->CreateGEP(cg.b->getInt8Ty(), cg.geometryOutputPtr, off);
+}
+
+/* Block-qualified storage key: two interface blocks in one shader may both
+ * declare a member called `value` (e.g. the TES input and output blocks of
+ * KHR-GL46 tardiness ...max_in_out_attributes), so name-keyed storage
+ * (lvalues / arrayMem / the direct-record set) must include the block. */
+static std::string blockStorageKey(const VarSym &v)
+{
+    if (v.blockName.empty()) return v.name;
+    return v.blockName + "." + v.name;
+}
+
+/* TES compute: `outBlock.field[e]` for an output array member writes one
+ * element into this invocation's stage-out record at (location + e).  The
+ * record store happens right here instead of going through lvalues/arrayMem
+ * because the member array's elements are exactly the record slots, and the
+ * generic record assembly reads lvalues only. */
+static llvm::Value *tessEvalOutputArrayElementPtr(Codegen &cg, VarSym &member,
+                                                  llvm::Value *element)
+{
+    llvm::Value *slot = cg.b->CreateAdd(
+        cg.b->getInt32(member.location), element);
+    llvm::Value *off = cg.b->CreateAdd(
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE),
+        cg.b->CreateMul(
+            cg.b->CreateZExt(slot, cg.b->getInt64Ty()),
+            cg.b->getInt64(16)));
+    return cg.b->CreateGEP(cg.b->getInt8Ty(),
+                           geometryRecordPtr(cg, cg.b->getInt32(0)), off);
+}
+
+static bool emitTessEvalOutputArrayStore(
+    Codegen &cg, VarSym &member, const MGLExpr *elemE, llvm::Value *value,
+    uint32_t binop, const MGLExpr *vertexE, const MGLIRModule *mod,
+    const std::map<std::string, MType> &locals)
+{
+    if (!cg.isTessEval || !cg.isTESCompute || !cg.geometryOutputPtr ||
+        member.location == UINT32_MAX)
+        return false;
+    /* An arrayed output block (`out Block { … } outBlocks[];`) would carry the
+     * instance dimension in vertexE.  This invocation owns exactly one output
+     * record -- the one geometryRecordPtr selects -- so only index 0 maps to
+     * it; anything else falls back to the generic paths. */
+    if (vertexE) {
+        llvm::Value *vi = emitExpr(cg, vertexE, mod, locals);
+        if (!vi) return false;
+        auto *ci = llvm::dyn_cast<llvm::ConstantInt>(vi);
+        if (!ci || ci->getZExtValue() != 0u) return false;
+    }
+    llvm::Value *element = emitExpr(cg, elemE, mod, locals);
+    if (!element) return true; /* error already recorded */
+    element = coerceScalar(cg, element, MGLIR_SCALAR_UINT);
+    MType elemTy = member.type;
+    elemTy.arr = 0;
+    if (member.type.isMatrix()) elemTy = matrixColumnType(member.type);
+    llvm::Type *ty = llvmType(elemTy, *cg.ctx);
+    llvm::Type *storeTy = ty;
+    llvm::Value *storeVal = value;
+    if (varyingNeedsFloatRecordCarrier(elemTy)) {
+        storeVal = encodeFloatCarrier(cg, value, elemTy.scalar);
+        storeTy = storeVal->getType();
+    } else if (value->getType() != ty) {
+        if (ty->isIntOrIntVectorTy() && value->getType()->isIntOrIntVectorTy())
+            storeVal = cg.b->CreateBitCast(value, ty);
+        else
+            storeVal = coerceScalar(cg, value, elemTy.scalar);
+    }
+    llvm::Value *p = tessEvalOutputArrayElementPtr(cg, member, element);
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    if (binop != 0u) {
+        /* Compound form: read the current element back out of the record, so
+         * `outVariables.value[j] += …` accumulates in the same storage. */
+        llvm::Value *cur = cg.b->CreateAlignedLoad(storeTy, p, llvm::Align(4));
+        if (varyingNeedsFloatRecordCarrier(elemTy))
+            cur = decodeFloatCarrier(cg, cur, elemTy.scalar, ty);
+        storeVal = emitNumericBinOp(cg, binop, cur, storeVal, elemTy, elemTy);
+        if (!storeVal) return true;
+        if (storeVal->getType() != storeTy) {
+            if (storeTy->isIntOrIntVectorTy() &&
+                storeVal->getType()->isIntOrIntVectorTy())
+                storeVal = cg.b->CreateBitCast(storeVal, storeTy);
+            else
+                storeVal = coerceScalar(cg, storeVal, elemTy.scalar);
+        }
+    }
+    cg.b->CreateAlignedStore(storeVal, p, llvm::Align(4));
+    cg.directRecordVaryings.insert(blockStorageKey(member));
+    return true;
 }
 
 static void storeGeometryPosition(Codegen &cg, llvm::Value *record,
@@ -3504,6 +3792,35 @@ static void storeTessComputeVaryings(Codegen &cg, llvm::Value *record)
     for (VarSym &varying : *cg.auxSyms) {
         if (varying.kind != VarSym::VARYING ||
             varying.location == UINT32_MAX) continue;
+        if (cg.directRecordVaryings.count(blockStorageKey(varying)))
+            continue;
+        /* A memory-backed array varying (arrayMem) has no lvalues aggregate:
+         * its elements live one per record slot, so read each of them back and
+         * store it at its own location.  Without this the whole array member
+         * was written as undef -- KHR-GL46.tessellation_shader.tessellation_
+         * shader_tessellation.max_in_out_attributes captured zeros for all 31
+         * `Vertex.value[i]` fields. */
+        if (varying.type.isArray() && cg.arrayMem.count(varying.name)) {
+            auto memIt = cg.arrayMemTypes.find(varying.name);
+            if (memIt == cg.arrayMemTypes.end()) continue;
+            auto *aty = llvm::dyn_cast<llvm::ArrayType>(memIt->second);
+            if (!aty) continue;
+            MType elTy = varying.type;
+            elTy.arr = 0;
+            VarSym elem = varying;
+            elem.type = elTy;
+            const uint32_t n = (uint32_t)varying.type.arr;
+            for (uint32_t k = 0; k < n; k++) {
+                llvm::Value *ep = arrayMemGEP(cg, varying.name,
+                                              cg.arrayMem[varying.name],
+                                              cg.b->getInt32(k));
+                llvm::Value *el = cg.b->CreateAlignedLoad(
+                    aty->getElementType(), ep, llvm::Align(4));
+                elem.location = varying.location + k;
+                storeVaryingValueAtLocation(cg, record, elem, el);
+            }
+            continue;
+        }
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(varying.name)
             ? cg.lvalues[varying.name] : llvm::UndefValue::get(ty);
@@ -4419,6 +4736,45 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                    "gl_MaxCombinedImageUnitsAndFragmentOutputs") == 0)
             return cg.b->getInt32(8);
         /* Match glm_params floors / glGet (GLSL 4.60 §7.3). */
+        /* GLSL 4.60 §7.3 varying / patch / transform-feedback limits.  These
+         * must equal what glGetIntegerv reports (glm_params) -- shaders size
+         * arrays and loop bounds from them. */
+        if (strcmp(e->u.var_ref.name, "gl_MaxVertexOutputComponents") == 0)
+            return cg.b->getInt32(128);
+        if (strcmp(e->u.var_ref.name, "gl_MaxFragmentInputComponents") == 0)
+            return cg.b->getInt32(128);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryInputComponents") == 0)
+            return cg.b->getInt32(64);
+        if (strcmp(e->u.var_ref.name, "gl_MaxGeometryOutputComponents") == 0)
+            return cg.b->getInt32(128);
+        if (strcmp(e->u.var_ref.name, "gl_MaxTessControlInputComponents") == 0 ||
+            strcmp(e->u.var_ref.name, "gl_MaxTessControlOutputComponents") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationInputComponents") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTessEvaluationOutputComponents") == 0)
+            return cg.b->getInt32(128);
+        if (strcmp(e->u.var_ref.name, "gl_MaxTessPatchComponents") == 0)
+            return cg.b->getInt32(120);
+        if (strcmp(e->u.var_ref.name, "gl_MaxPatchVertices") == 0)
+            return cg.b->getInt32(32); /* glm_params max_patch_vertices */
+        if (strcmp(e->u.var_ref.name, "gl_MaxTessGenLevel") == 0)
+            return cg.b->getInt32(64);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxTransformFeedbackInterleavedComponents") == 0)
+            return cg.b->getInt32(128);
+        if (strcmp(e->u.var_ref.name,
+                   "gl_MaxTransformFeedbackSeparateComponents") == 0 ||
+            strcmp(e->u.var_ref.name,
+                   "gl_MaxTransformFeedbackSeparateAttribs") == 0)
+            return cg.b->getInt32(4);
+        if (strcmp(e->u.var_ref.name, "gl_MaxTransformFeedbackBuffers") == 0)
+            return cg.b->getInt32(
+                (int)MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS);
+        if (strcmp(e->u.var_ref.name, "gl_MaxVertexStreams") == 0)
+            return cg.b->getInt32(4);
+        if (strcmp(e->u.var_ref.name, "gl_MaxViewports") == 0)
+            return cg.b->getInt32(MGL_MAX_VIEWPORTS);
         if (strcmp(e->u.var_ref.name, "gl_MaxClipDistances") == 0)
             return cg.b->getInt32(MGL_MAX_CLIP_DISTANCES);
         if (strcmp(e->u.var_ref.name, "gl_MaxCullDistances") == 0)
@@ -5034,6 +5390,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     case MGL_EXPR_INDEX: {
         /* Matrix[i] yields a column vector (GLSL 4.60 5.5), vector[i] a
          * component; the index may be a constant or a runtime value. */
+        if (llvm::Value *tessBlockElem =
+                emitTessBlockArrayLoad(cg, e, mod, locals))
+            return tessBlockElem;
+        if (cg.err) return nullptr;
         if (llvm::Value *blockElem =
                 emitGeometryBlockArrayLoad(cg, e, mod, locals))
             return blockElem;
@@ -8058,6 +8418,59 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
         }
 
+        /* Named interface-block array member: outVertex[i].field[e] */
+        {
+            const char *inst = nullptr, *field = nullptr;
+            const MGLExpr *vertexE = nullptr, *elemE = nullptr;
+            if (tessBlockArrayPath(lhs, &inst, &vertexE, &field, &elemE)) {
+                if (cg.isTessEval) {
+                    VarSym *om = codegenBlockMember(cg, inst, field,
+                                                    VarSym::VARYING);
+                    if (om && om->type.isArray()) {
+                        uint32_t vbinop = 0;
+                        switch (e->u.assign.op) {
+                        case MGL_OP_ADD_ASSIGN: vbinop = MGL_OP_ADD; break;
+                        case MGL_OP_SUB_ASSIGN: vbinop = MGL_OP_SUB; break;
+                        case MGL_OP_MUL_ASSIGN: vbinop = MGL_OP_MUL; break;
+                        case MGL_OP_DIV_ASSIGN: vbinop = MGL_OP_DIV; break;
+                        default: break;
+                        }
+                        if (emitTessEvalOutputArrayStore(cg, *om, elemE, v,
+                                                         vbinop, vertexE, mod,
+                                                         locals))
+                            return v;
+                    }
+                }
+                if (e->u.assign.op != MGL_OP_ASSIGN) {
+                    llvm::Value *old =
+                        emitTessBlockArrayLoad(cg, lhs, mod, locals);
+                    if (!old) return nullptr;
+                    uint32_t binop = 0;
+                    switch (e->u.assign.op) {
+                    case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                    case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                    case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                    case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    default: break;
+                    }
+                    if (!binop) {
+                        cg.err = 1;
+                        cg.errmsg =
+                            "codegen: compound TCS interface-block array "
+                            "member assignment is not implemented";
+                        return nullptr;
+                    }
+                    v = emitNumericBinOp(
+                        cg, binop, old, rhsV,
+                        exprType(cg, lhs, mod, locals),
+                        exprType(cg, e->u.assign.rhs, mod, locals));
+                    if (!v) return nullptr;
+                }
+                if (emitTessBlockArrayStore(cg, lhs, v, mod, locals))
+                    return v;
+            }
+        }
+
         /* Interface-block member write: instance.field = v (VS/TES/GS out
          * blocks flatten to per-member VARYING symbols, so this is an
          * ordinary varying lvalue store keyed by the member name).  TCS
@@ -8154,8 +8567,39 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 if (!bmem)
                     bmem = codegenBlockMember(cg, inst, field,
                                               VarSym::OUTPUT);
+                if (bmem && bmem->type.isArray() && cg.isTessEval) {
+                    /* TES output block member array: elements are record
+                     * slots (see emitTessEvalOutputArrayStore). */
+                    uint32_t vbinop = 0;
+                    switch (e->u.assign.op) {
+                    case MGL_OP_ADD_ASSIGN: vbinop = MGL_OP_ADD; break;
+                    case MGL_OP_SUB_ASSIGN: vbinop = MGL_OP_SUB; break;
+                    case MGL_OP_MUL_ASSIGN: vbinop = MGL_OP_MUL; break;
+                    case MGL_OP_DIV_ASSIGN: vbinop = MGL_OP_DIV; break;
+                    default: break;
+                    }
+                    if (emitTessEvalOutputArrayStore(cg, *bmem,
+                                                     lhs->u.index.index, v,
+                                                     vbinop, nullptr, mod,
+                                                     locals))
+                        return v;
+                }
                 if (bmem && bmem->type.isArray()) {
-                    if (e->u.assign.op != MGL_OP_ASSIGN) {
+                    /* Compound forms (+=, -=, …) read the current element
+                     * from whichever storage backs the member: arrayMem for
+                     * memory-backed arrays, the lvalues aggregate otherwise.
+                     * KHR-GL46.tessellation_shader.tessellation_shader_
+                     * tessellation.max_in_out_attributes accumulates into
+                     * `outVariables.value[j] += inVariables[0].value[i];`. */
+                    uint32_t binop = 0;
+                    switch (e->u.assign.op) {
+                    case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                    case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                    case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                    case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                    default: break;
+                    }
+                    if (e->u.assign.op != MGL_OP_ASSIGN && !binop) {
                         cg.err = 1;
                         cg.errmsg = "codegen: compound assign into block "
                                     "array member not supported";
@@ -8164,10 +8608,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     llvm::Value *idx =
                         emitExpr(cg, lhs->u.index.index, mod, locals);
                     if (!idx) return nullptr;
+                    MType elemTy = bmem->type;
+                    elemTy.arr = 0;
                     if (cg.arrayMem.count(bmem->name)) {
                         llvm::Value *ep = arrayMemGEP(cg, bmem->name,
                                                       cg.arrayMem[bmem->name],
                                                       idx);
+                        if (binop) {
+                            llvm::Type *ety = llvmType(elemTy, *cg.ctx);
+                            llvm::Value *cur = cg.b->CreateAlignedLoad(
+                                ety, ep, llvm::Align(4));
+                            v = emitNumericBinOp(cg, binop, cur, v,
+                                                 elemTy, elemTy);
+                            if (!v) return nullptr;
+                        }
                         cg.b->CreateAlignedStore(v, ep, llvm::Align(4));
                         return v;
                     }
@@ -8178,6 +8632,19 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         cg.lvalues[bmem->name] = llvm::UndefValue::get(
                             llvmType(bmem->type, *cg.ctx));
                     llvm::Value *agg = cg.lvalues[bmem->name];
+                    if (binop) {
+                        llvm::Value *cur =
+                            emitIndexValue(cg, agg, bmem->type, idx);
+                        if (!cur) {
+                            cg.err = 1;
+                            cg.errmsg = "codegen: cannot read block array "
+                                        "member element";
+                            return nullptr;
+                        }
+                        v = emitNumericBinOp(cg, binop, cur, v, elemTy,
+                                             elemTy);
+                        if (!v) return nullptr;
+                    }
                     llvm::Value *nv = insertIndexValue(cg, agg, bmem->type,
                                                        idx, v);
                     if (!nv) {

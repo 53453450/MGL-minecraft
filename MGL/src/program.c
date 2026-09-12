@@ -1309,17 +1309,17 @@ static bool mglTransformFeedbackBaseName(const char *name,
     return true;
 }
 
-static bool mglTransformFeedbackArrayElement(const char *name,
-                                             GLboolean *isElement,
-                                             GLuint *elementIndex)
+GLboolean mglTransformFeedbackArrayElement(const char *name,
+                                           GLboolean *isElement,
+                                           GLuint *elementIndex)
 {
     if (!name || !isElement || !elementIndex)
-        return false;
+        return GL_FALSE;
     const char *bracket = strchr(name, '[');
     if (!bracket) {
         *isElement = GL_FALSE;
         *elementIndex = 0u;
-        return strchr(name, ']') == NULL;
+        return strchr(name, ']') == NULL ? GL_TRUE : GL_FALSE;
     }
     char *end = NULL;
     unsigned long element = strtoul(bracket + 1, &end, 10);
@@ -1328,7 +1328,7 @@ static bool mglTransformFeedbackArrayElement(const char *name,
         return false;
     *isElement = GL_TRUE;
     *elementIndex = (GLuint)element;
-    return true;
+    return GL_TRUE;
 }
 
 MGLShaderResource *mglProgramFindStageOutputForXFBName(Program *program,
