@@ -128,7 +128,19 @@ static inline uint32_t mglAIRPatchVaryingStride(const MGLShaderResourceList *res
         const MGLShaderResource *resource = &resources->list[i];
         if (!resource->is_per_patch) continue;
         if (resource->location >= 0x0fffffffu) continue;
-        uint32_t end = (resource->location + 1u) * 16u;
+        /* One 16-byte slot per location the resource spans, exactly like the
+         * per-vertex helper above: `patch out int x[16]` needs 16 slots, not
+         * one.  Using the base location alone sized the patch record at 16
+         * bytes while the TCS kernel (stageRecordStride, which does count the
+         * span) stored at 256-byte stride -- so every patch but the first was
+         * written past the end of the patch-out buffer and the TES, reading
+         * its patch inputs at that same spanned stride, picked up memory the
+         * TCS never wrote.  KHR-GL46.tessellation_shader.tessellation_shader_
+         * tc_barriers.barrier_guarded_read_write_calls then saw garbage patch
+         * results for whole patches, a different set on every run. */
+        uint32_t span = mglAIRVaryingLocationSpan(resource->gl_type,
+                                                  resource->gl_array_size);
+        uint32_t end = (resource->location + span) * 16u;
         if (end > stride) stride = end;
     }
     return stride;
