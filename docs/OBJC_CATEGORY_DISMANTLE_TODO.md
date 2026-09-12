@@ -11,6 +11,11 @@
 > 基线：`53453450/MGL-minecraft` @ `8e64afb`（2026-09-12；本目标重定前的 HEAD）
 > 对齐：`docs/ARCHITECTURE_REVIEW.md`（层规模与依赖域）
 > 并列：`CTS_FIX_POLICY.md` / `CTS_REFACTOR_SPLIT.md`（禁则与域拆分不冲突；本文件管 **ObjC 归零**）
+>
+> **联合审计（已签，docs-only 吸收）**：[`OBJC_LLVM_JOINT_AUDIT_2026-09-14.md`](OBJC_LLVM_JOINT_AUDIT_2026-09-14.md)
+> （coding · DXMT 讲述者 · DannyFeng-bot；审计基线 tip `4ed1d54`＝**23** 文件；交付 2026-09-13，截止由周一改到 **周日 08:00 Asia/Shanghai**）。
+> 当前 tip `88ac73d`（`+Batch.m` 删除后 `objc_zero`＝**22**）。BindingState stash@{0} **仍暂停、禁止 pop/入库**。
+> **禁「薄平台 ≤8–12k 即终态」**——终态是清零（T5 唯一平台壳除外）；文件数降权，三厚块 LOC + BindingState + metal_port + air LOC + shim wrapper Δ 升权。
 
 ---
 
@@ -25,7 +30,7 @@
 | **T2 ✅** | 无 ObjC 语法但有词汇：`BOOL`/`YES`/`NO`/`nil`/`NSUInteger`/`NSLog` 换成 C 等价物后改名 | 同上 + 该文件 ObjC 词汇清零 | 10 个文件 / 1,709 行（**已完成**） |
 | **T3** | 决策下沉：category 里的 policy / plan / enum 映射 / 分类搬进 C 模块（**沿用 §2 的 Batch O1–O7**） | 每个 domain：决策在 C、有 golden harness、ObjC 只剩物化端口 | `MGLRenderer*.m` 34,610 → 逐批下降 |
 | **T4** | 端口 C++ 化：`.m` 端口改 C++（Metal-cpp），`id` → `void*`，`MTL*` ObjC 类型 → Metal-cpp 类型 | `MGL/src` 内不再有 `.m`（平台壳除外） | 剩余 category + `MGLRenderer.m` + `mgl_draw_metal_port.m` 等 |
-| **T5** | 平台壳：`NSWindow`/`CAMetalLayer`/drawable/present/主线程同步 | 二选一并记录：**(a)** 用 ObjC runtime C API（`objc_msgSend`）在 C++ 内实现，`MGL/` 内 0 个 `.m`；**(b)** 移交消费方，`MGL/` 内 0 个 `.m` | 现 `MGLPlatformRendererShell.m` 230 行 + `+Lifecycle` 666 行 |
+| **T5** | 平台壳：`NSWindow`/`CAMetalLayer`/drawable/present/主线程同步 | **唯一平台壳 TU**（`MGLPlatformRendererShell` + `+Lifecycle` **合并**；O6.1 双文件歧义结束）。另可二选一：**(a)** ObjC runtime C API（`objc_msgSend`）在 C++ 内实现使 `MGL/` 0 个 `.m`；**(b)** 移交消费方。**禁止**把 AppKit 沉进 `mgl_render.cpp` | 现 Shell **230** + Lifecycle **666** → 合并为一 TU |
 
 **禁则（加严）**：除 T5 允许的那一个平台壳 TU 外，**任何新代码不得新增 ObjC**；不得以"先加后清"为由在 `.m` 里加逻辑；
 新增策略/plan/映射一律进 C/C++ 模块并配 harness。
@@ -50,7 +55,7 @@
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
 并**整文件删除** `MGLRenderer+Batch.m`（其 ObjC 成员进 shim，循环进 C）；
-`mglTraceLogNSString`（429 行 ObjC 面）已彻底移除；剩余 26 个真 ObjC 文件。）
+`mglTraceLogNSString`（429 行 ObjC 面）已彻底移除；**当前 `objc_zero.sh`＝22 个 `.m`**（联合报告基线 tip `4ed1d54` 为 **23**；勿再写「26 文件」）。）
 
 **口径提醒**：上表数字全部由同一脚本在同一天测得，但 **2,223 那一格是端口 shim 建立之前**的数字
 （shim 新增 176 行 / 19 语法 / 3 词汇），本行以重测为准：`2,223 + 19(shim) + 3(桥接) − 14(issue_encode 转 C) − 1(shim 收窄) = 2,230`；
@@ -64,14 +69,88 @@ shim 现在是 **26 个包装 / 314 行 / 49 语法**，它就是"下一刀要�
 shim 是**唯一**允许新增的 ObjC 面（逐函数一行包装，把 batch/draw 端口集中到一处），它随实现文件逐个转 C
 而缩小，终态删除或并入 T5 平台壳。
 
+**T4 硬规（联合报告 §1/§2 P0-2，已签）**：**无 shim 净减 = 拒收**。下一 Batch PR 必须净减 Port wrappers；
+「语法持平 / rename-only / 只转扩展名」= 假进度。`flush_restore→C` **alone** 退休 **0** 个 Port（flush_restore-only bucket = 0）——禁止当进度。
+优先杀 multi/shared 桶；全 encode/trace 停用 Port → 26/26 退休。
+
+### 0.05 联合分类总表（Delete / Rewrite / Keep-thin / Keep-product-dual / Keep-A/B-temporary）
+
+> 源：[`OBJC_LLVM_JOINT_AUDIT_2026-09-14.md`](OBJC_LLVM_JOINT_AUDIT_2026-09-14.md) §2（三方已签）。审计 tip `4ed1d54`；当前 tip 见文首。
+
+#### Delete（可立即排队，小）
+
+| 项 | 证据 | 动作 |
+|---|---|---|
+| `shouldUseDontCareLoadForColorTexture:` 死声明 | `_Private.h`；无实现；`MGLRenderer.m` 过期注释 | 删声明+注释 |
+| 文档过期计数（「26 文件」等） | `objc_zero.sh`：联合报告时 **23**，当前 tip **22** | **已对齐脚本；禁再写 26** |
+| 「薄平台 ≤8–12k 即终态」旧目标句 | 掩护三厚块 | **已禁**；改清零叙事（T5 唯一壳除外） |
+| `esrc` 文本侧 ×24（oracle-equal 后） | `mgl_air_backend.cpp` ~10457–10552 | 删 strstr，只留 mask/IR |
+| `MGL_USE_METALCPP` 生产 A/B | 树内无生产读取 | **死透 — 禁止复活** |
+
+#### Rewrite（真债）
+
+| Pri | 项 | 要点 |
+|---|---|---|
+| **P0-0** | air `esrc`→`builtin_mask`/IR | LLVM 特异最高优先；`emitTessBlock*` 外提；**禁再胀** `mgl_air_backend.cpp`（尤其为 tess） |
+| **P0-1** | 三厚块 materialize/upload | **禁止整文件 Delete**；抽 C++ 域+金样；禁新增 ObjC 行 |
+| **P0-2** | T4 纪律 | 每 Batch PR **净减 shim wrappers**；否则拒收 |
+| **P1** | BindingState 二次决策 | 一口 plan（stash `PlanAttribSelect` **仅作形状参考**）；`spirvBinding` 改名；≪300 DoD 仍开 |
+| **P1** | `mgl_draw_metal_port` HostOps | 假薄 ~1982；禁扩；HostOps 外迁 |
+| **P1** | 名字启发式 | `DefaultAttribLocation*` / `LooksLikeSampledColor2D`：探针 `gl_type==0`/命中率后 Delete 或收表 |
+| **P1** | TES ObjC 编排 | 下沉 `mgl_draw_tess`；**路径本身 Keep-product-dual** |
+| **P2** | Compute 绑定环 | 等 BindingState 端口定型再共享 apply |
+
+#### Keep-thin
+
+StageHost / Draw 一行 issue / DrawSupport / PipelineCache id 桥 / GPURecovery 触发口。
+**T5 终态钉死：** `MGLPlatformRendererShell` + `+Lifecycle` **合并为唯一平台壳 TU**。禁止把 AppKit 沉进 `mgl_render.cpp`。
+
+#### Keep-product-dual（非临时）
+
+**TES compute expansion vs TES-vertex render** — AIR/Metal ABI 分叉；删任一路径 = 产品错误。只允许编排下沉，不允许「选边删除」。
+
+#### Keep-A/B-temporary（必须带退休条件）
+
+| 双轨 | 退休门禁 |
+|---|---|
+| **ICB / MDI / DIRECT env** | `make test-batch-icb`；`MGL_ENABLE_ICB=1` 下 regression **92/0/2**（现状 **82/10/2**）；日志 **0** 条 `Fragment/Vertex shader cannot be used with indirect command buffer`；tess/GS/hotspot **非通过集 diff 空**；窗口内禁 `MGL AGX RECOVERY/ERROR` / sustained recovery；无 OOM。达标后 env 收成单一 plan 输入。 |
+| **C driver + ObjC shim** | 每 PR wrapper 数净减；全 encode/trace 停用 Port → **26/26** 退休 |
+| **`esrc` vs mask** | 临时至 Delete 文本侧（P0-0），非开放式 A/B |
+| 诊断旗（`MGL_SKIP_SAME_KEY_ORACLE` 等） | Keep with debt note；**不是**行为分叉。`MGL_ENABLE_DONTCARE_LOAD` = plan **输入**，Keep |
+
+#### Do-not-delete-yet
+
+三厚块 / BindingState / TES 双路径 / ICB flags（门禁前）/ shim（短期）/ Compute 环 / **未审 BindingState stash**。
+
+### 0.06 过誉 / 过程债（联合报告 §5 — 不得软化）
+
+1. **plan@C ≠ 域清完**（贴皮）：O3.1 / O4.4 / O3.3 切片把决策碎片沉进 C，但 materialize/upload/二次编排仍在 ObjC；LOC 几乎不动。
+2. **T4 shim 会计魔术**：转走的消息发送搬进 shim，语法可持平；**无 shim 净减 = 拒收**。
+3. **O7 `esrc` 未阻断**：清了 ObjC/program 源扫描，codegen 文本侧 ×24 未关——审计共谋过誉；现升 **P0-0**。
+4. **格式串机械门禁缺失**：`mglTraceLog` 改 `vsnprintf` 后 `mgl_byte_hash` 的 `%@` 漏网（`da51b1c` 才修）。
+5. 度量政策：**文件数降权**；三厚块 LOC + BindingState + metal_port + **air LOC** + **shim wrapper Δ** 升权。tip 盯梢通知应附 `shimΔ/airLOC/triadLOC`。
+
+### 0.07 报告后 backlog（联合 §7，与 §2 标签对齐）
+
+| Pri | Item |
+|---|---|
+| **P0-0** | air `esrc`→mask（oracle-equal 后删 24 strstr）+ `emitTessBlock*` 外提；**停止**为 tess 胀 `mgl_air_backend` |
+| **P0-1** | 三厚块 materialize 设计+金样起跑（禁止整文件 Delete） |
+| **P0-2** | 下一 Batch 刀：**必须** shim 净减（优先 multi/shared）；flush_restore alone 不够 |
+| **P1** | BindingState 一口 plan；名字启发式探针；metal_port 禁扩+HostOps 外迁 |
+| chore | DontCare 死声明；Lifecycle→唯一壳；计数对齐 `objc_zero`；tip 通知附 `shimΔ/airLOC/triadLOC` |
+
+**暂停期诚实选项**：只出设计/spike 笔记，或等解除暂停后再动刀；**禁止**再开 rename-only T4。联合建议：先 **P0-0** 设计/spike（LLVM 特异、不碰三厚块巨石），Batch 仅在能证明 wrapper Δ&lt;0 时动。
+
 ---
 
 ## 0.1 文档地图（2026-09-12 整理）
 
 | 文档 | 入库 | 作用 |
 |---|---|---|
-| [`OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（本文） | ✅ | 薄 ObjC 边界：政策/度量/批次清单 + §5 落地日志（连续编号；最新可执行清单见第 29 条与 Batch O7） |
-| [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | ✅ | 总架构审查与分层规模；ObjC 厚度数字以本文度量为准 |
+| [`OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（本文） | ✅ | ObjC 清零：政策/度量/批次清单 + §0.05 联合分类 + §5 落地日志；最新 backlog 见 §0.07 |
+| [`OBJC_LLVM_JOINT_AUDIT_2026-09-14.md`](OBJC_LLVM_JOINT_AUDIT_2026-09-14.md) | ✅ | 已签联合报告（Delete/Rewrite/Keep-* 政策；tip `4ed1d54` 基线） |
+| [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | ✅ | 总架构审查与分层规模；ObjC 厚度数字以本文度量为准；**禁 ≤8–12k 终态句** |
 | [`C0_AIR_RENDER_DEP_MAP.md`](C0_AIR_RENDER_DEP_MAP.md) | ✅ | `mgl_air_backend.cpp` / `mgl_render.cpp` 的依赖与调用域地图 |
 | `TESS_NATIVE_RENDER_VERTEX_PATH.md`（本地） | ❌ | TES-vertex / compute 双路线设计 + §10.4 的 PSO 键修复记录（2026-09-12）；按文件名引用，不入库 |
 | `CTS_TESS_REMAINING_2026-09-10.md`（本地） | ❌ | tess 簇逐轮排查日志 + 单例 ground-truth 复现方法（顶部有当前状态横幅：139/1/0）；按文件名引用，不入库 |
@@ -149,7 +228,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | `+BatchReplay.m` | ~21 | 薄占位 | O2.5：dyn-bind → `mgl_batch_dyn_bind_encode.m`；待 O6 删空 category |
 | `+Buffer.m` | 826 | 薄化中 | map/CoW/shadow plan → C++（O5.1：vertex-index + dirty-buffer 决策已沉 C 函数；vertex-attrib buffer map 已整段沉 `mgl_vertex_attrib_plan.*` + harness；**reflection fallback 已删——plan 成为唯一映射路径**）；ObjC 只 MTLBuffer 物化与逐 attribute resolve |
 | `+Compute.m` | 1267 | 中 | buffer 绑定环复用 `mgl_binding_stage` plan 形态（PRE/POST + 三个 opt-in 开关 + C 侧判决表）；采样器级联与图形侧收敛为同一 port（复用 `mglBindingTexturePlanSamplerMaterialize`）；**剩余**＝整段纹理循环迁 C++（需物化回调 vtable）；ObjC 只 compute encoder 端口 |
-| `+Lifecycle.m` | 665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
+| `+Lifecycle.m` | 665 | **Keep-thin → T5 唯一壳** | 与 `MGLPlatformRendererShell` **合并为唯一平台壳 TU**（init/bind/view/lease/dealloc）；O6.1 双文件歧义结束 |
 | `+SwapDiagnostics.m` | 555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
 | `+Draw.m` | 511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
 | `+Binding.m` | 488 | 薄化（实测较基线 +80；与 BindingState 合并后删除） | 与 BindingState 合并后删除 |
@@ -170,10 +249,10 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | `hash_table.m` | ~854 | 平台资源表；可保留或 C++ owner |
 | `MGLRenderPassManager.m` | ~523 | 并入 RenderPass 下沉 |
 | `MGLPipelineCache.m` | ~445 | **已薄端口（O3.4 实质完成）**：LRU/archive 策略在 C++ owner（`mglRenderLookupPipeline`/`StorePipeline`）；ObjC 仅 `id`↔`void*` 桥 + archive URL 路径；可按 O3.4 收口标记 [x] |
-| `MGLPlatformRendererShell.m` | ~229 | **Keep 样板** |
+| `MGLPlatformRendererShell.m` | ~229 | **Keep-thin → T5 唯一壳**（与 `+Lifecycle` 合并为一 TU） |
 | `mgl_readback.m` 等 compat | 小 | 策略进 ReadbackPolicy；`.m` 变转发 |
 
-> **实测（2026-09-12）**：`MGLRenderer+*.m` categories 合计 **34.5k** LOC（基线 ~59k；O1/O2/C1 已降 ~24.5k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 = **19.0k**（6981+7058+4945），仍是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
+> **实测（2026-09-12；联合报告后口径）**：`MGLRenderer+*.m` categories 合计 **34.5k** LOC（基线 ~59k；O1/O2/C1 已降 ~24.5k）。**终态是清零**（T5 唯一壳除外）——**禁止**再以「薄平台 ≤8–12k 即终态」当目标。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 = **~19.0k**（联合报告 ≈19,021 / 约占 `MGLRenderer*.m` 的 55%），仍是 P0-1 Rewrite 主体（**禁止整文件 Delete**）。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
 >
 > 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34555`，`+Buffer.m` 822）。
 
@@ -211,7 +290,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | `processGLState` / `processGLStateLocked` | `+RenderPass.m` | O1.1：编排在 `mgl_render_pass_plan`；ObjC 物化 MTL* |
 | Texture/Blit/BindingState 巨型 category | 见 §1.1 | O3–O4 |
 
-度量：`scripts/objc_renderer_loc.sh`（目标 `MGLRenderer*.m` 合计 ≤ 8–12k；Batch 簇按 Track B 诚实口径，含 encode/trace）。
+度量：`scripts/objc_renderer_loc.sh` + `scripts/objc_zero.sh`（**清零**为终态，非 ≤8–12k；Batch 簇按 Track B 诚实口径，含 encode/trace；升权指标见 §0.06）。
 
 ### Batch O1 — Draw / Tess / GS 宿主清空（对齐 ARCH「下一批」）【P0】
 
@@ -360,14 +439,13 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 
 ### Batch O6 — Category 物理删除与壳收口【P2】
 
-- [ ] **O6.1** 合并剩余端口到少量文件：
-  - `MGLPlatformRendererShell.m`（layer/drawable/swap/view）
-  - `MGLRenderer+Lifecycle.m`（create/bind/lease/dealloc）
+- [ ] **O6.1** 合并剩余端口（联合报告钉死）：
+  - **`MGLPlatformRendererShell` + `+Lifecycle` → 唯一平台壳 TU**（layer/drawable/swap/view + create/bind/lease/dealloc；不再「双文件压缩一下」）
   - `MGLRenderer+MetalPort.m`（可选：所有 `id` 物化一行口）
   - `MGLRenderer+GPURecovery.m`（薄）
 - [ ] **O6.2** 删除空 category：`+DrawSupport` / `+BatchReplay` / `+Binding` / `+VertexLayout` / …
 - [ ] **O6.3** `MGLRenderer.m` 降到入口表 + 文档化 C ABI
-- [ ] **O6.4** 总 LOC 达标；ARCH 表格更新为「薄平台壳」
+- [ ] **O6.4** ObjC 清零达标（T5 唯一壳除外）；ARCH 表格更新为「唯一平台壳」——**禁**再写「≤8–12k 即终态」
 
 ### Batch O7 — SPIRV→LLVM IR 兼容层清理【P0，2026-09-12 新开】
 
@@ -468,9 +546,10 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
   **留待下一批**：`mgl_uniform_reflection.c` / `mgl_gl_extensions.c` 的"名字→类型/location"启发式
   （`Color`/`UV`/`Normal`/`Position`…）与 `mglDefaultAttribLocationForName()`——属 O7.3 名字启发式家族，
   需先探针测 `gl_type == 0` / 默认 location 的命中率。
-- [ ] **O7.4 剩余候选（按收益排序）**：
-  1. 名字启发式一批（见上条末段）；2. 链接期重复 parse 去重（`mglShaderInterfaceCheck` 复用
-     `frontend_tu`，属 O5 类）。
+- [ ] **O7.4 剩余候选（联合报告升 P1）**：
+  1. **P1 名字启发式**：`mglDefaultAttribLocationForName` / `mglContextualDefaultAttribLocationForName` /
+     `mglRendererTextureLooksLikeSampledColor2D`——先探针 `gl_type==0` / 命中率，再 Delete 或收表（禁止无 oracle 盲删）；
+  2. 链接期重复 parse 去重（`mglShaderInterfaceCheck` 复用 `frontend_tu`，属 O5 类）。
 - [ ] **O7.5 验收口径**：每刀必须给 `local 全量（94 项）` + `CTS tess 140 / GS 136 / hotspot 1328`
   三套数字，hotspot 要求**非通过集合逐条 diff 为空**；退役的判据要在文档里留下 oracle 说明（探针名 +
   样本量 + 结论），否则不得删。
@@ -670,14 +749,13 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     验证：本地 92/0/2；`test-render-pass-load-store` 53/53 及其余 harness 全绿；hotspot 非通过集合 diff 为空；
     tess 139/1/0；GS 136/0；refq/piq 逐例 diff 为空。
 
-36. **当前下一刀（按推荐顺序）**：
-    1. **O5.2 续刀**：`+Compute.m` 的纹理/采样器环（约 470 行，含 "late binding" 启发式）复用
-       `mglBindingTexturePlanSampled`；整段迁 C++ 需物化回调 vtable。
-    2. **O3.1 续刀**：attachment 物化（texture 解析 / MS 平面）做成回调注入以真正压 LOC；
-       `configureUserFBOAttachmentsLocked` / `configureDefaultFramebufferAttachmentsLocked`。
-    3. **O7.4 残条（下一批）**：名字→类型/location 启发式（`gl_type == 0` 命中率需探针）；链接期重复 parse 去重
-       （`mglShaderInterfaceCheck` 复用 `frontend_tu`，属 O5 类）。
-  - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
+36. **当前下一刀（联合报告 §7 对齐后；暂停期 / BindingState stash 未解除前优先设计）**：
+    1. **P0-0**：air `esrc`×24 → `builtin_mask`/IR（oracle-equal 后删）；`emitTessBlock*` 外提；**停止**为 tess 胀 `mgl_air_backend`。
+    2. **P0-1**：三厚块 materialize/upload 设计+金样（禁止整文件 Delete；禁新增 ObjC 行）。
+    3. **P0-2**：下一 Batch 必须 shim 净减（优先 multi/shared）；`flush_restore→C` alone = 拒收假进度。
+    4. **P1**：BindingState 一口 plan（stash 仅形状参考）；名字启发式探针；metal_port 禁扩。
+    5. chore：DontCare 死声明；Lifecycle→唯一壳；`objc_zero` 计数对齐。
+  - **禁则（加严）**：无 shim 净减 = 拒收；扩 `mgl_draw_metal_port.m`、胀 `mgl_air_backend.cpp`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle；**禁**「≤8–12k 即终态」叙事。
 
 37. **smoke 死桩与 stdio/stdlib include 清理（`12a2671`）**：三件事：
     ① **修好 `test_metalcpp_smoke` 的链接**——O7.4 把 `mglProgramStageBuiltinMask` 移到
@@ -955,3 +1033,12 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     下一批：`mgl_batch_flush_restore_encode`(383)——Batch 簇最后一个 `mgl_batch_*_encode`；它的
     `@try/@finally` 主体、`teardownBatchReplayForContext:`（已有 `MGLBatchTeardownOps` 计划可复用）与
     ops 回调是主体工作。
+
+48. **联合报告吸收（docs-only，2026-09-13）**：三方已签
+    [`OBJC_LLVM_JOINT_AUDIT_2026-09-14.md`](OBJC_LLVM_JOINT_AUDIT_2026-09-14.md)
+    （审计 tip `4ed1d54`＝23 文件 / ~38.5k LOC；交付日用户把截止从周一改到 **周日 08:00**；当前 tip `88ac73d`＝**22**）。
+    本文新增 §0.05–§0.07：Delete/Rewrite/Keep-thin/Keep-product-dual/Keep-A/B-temporary 总表
+    （ICB 门禁 **92/0/2** vs 现状 **82/10/2**；禁 Fragment/Vertex+ICB reject + AGX RECOVERY 日志；
+    TES=Keep-product-dual；Metal-cpp A/B 死透）；T4 **无 shim 净减=拒收**；P0-0 `esrc`；
+    T5 唯一壳 TU；名字启发式升 P1；过誉笔记（plan@C 贴皮 / shim 会计 / O7 esrc 未阻断 / 缺格式串门禁）；
+    禁「薄平台 ≤8–12k 即终态」。**BindingState stash@{0} 未动**。无 `.m/.c/.cpp` 代码刀。

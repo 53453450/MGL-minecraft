@@ -327,7 +327,7 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 
 下一批应把 VS GPU capture 的 processGLState / buffer 分配与 VAO cull resolve 移出巨型 ObjC category，压到薄 layer/drawable/swap 端口，而不是扩 ES。array split、capture POINT encode、cull attrib 扫描与槽 bind 已下沉。
 
-**ObjC 薄平台层拆解**：见 [`docs/OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（O0 政策/度量；O1 draw/tess/GS 宿主；O2 batch path）。度量脚本 `scripts/objc_renderer_loc.sh`，目标 `MGLRenderer*.m` 合计 ≤ 8–12k。即时下一刀：见该文档 §5 第 29 条（当前为 O7.4 的 SPIRV 兼容清理残项与 O5.2 `+Compute.m` / O4.4 `+Blit.m` 下沉）。Batch O7 专管「SPIRV→LLVM IR 兼容层清理」：先用探针/逐条 diff 建 oracle，再删源码文本判定与名字启发式（已清 10 处文本判定 + 3 份 sampler 启发式）。
+**ObjC 清零拆解**：见 [`docs/OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（政策/度量；§0.05 联合分类；O1–O7 批次）。度量：`scripts/objc_zero.sh` + `scripts/objc_renderer_loc.sh`；**终态是清零**（T5 唯一平台壳除外）——**禁**「薄平台 ≤8–12k 即终态」。已签联合报告 [`OBJC_LLVM_JOINT_AUDIT_2026-09-14.md`](OBJC_LLVM_JOINT_AUDIT_2026-09-14.md)。即时 backlog：§0.07（P0-0 air `esrc`→mask；P0-1 三厚块 Rewrite；P0-2 T4 无 shim 净减=拒收；P1 名字启发式）。Batch O7：先探针/逐条 diff 建 oracle，再删源码文本判定与名字启发式。
 
 ## 验证矩阵
 
