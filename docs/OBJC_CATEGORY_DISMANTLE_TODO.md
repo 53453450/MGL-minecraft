@@ -51,7 +51,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | 其余 `docs/*.md` | ❌（`.gitignore` 的 `/docs/*`） | 阶段性审计/审查稿与逐轮工作日志，**一律留在本地**；入库文档引用它们时只用文件名（标注"本地"），不随引用一起入库 |
 
 度量脚本：[`scripts/objc_renderer_loc.sh`](../scripts/objc_renderer_loc.sh)（`MGLRenderer*.m` 合计、Batch 诚实簇、
-Draw 簇；当前输出 `MGLRenderer*.m total: 34525`）。
+Draw 簇；当前输出 `MGLRenderer*.m total: 34617`）。
 
 ## 0.2 验证口径（本周期每刀都按这三套语料报数）
 
@@ -93,7 +93,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | 文件 | 约 LOC | 判定 | 终态 |
 |------|-------:|------|------|
 | `+Texture.m` | 6981 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
-| `+RenderPass.m` | 7074 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（**O3.1 进行中**：clear-value 首刀 + load/store 动作与默认帧缓冲 match 已沉、各有 golden；**残量**＝用户 FBO 那一半的 match（与 subresource/scan-stop 交织）与 attachment 物化）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
+| `+RenderPass.m` | 7125 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（**O3.1 进行中**：clear-value、load/store 动作表、stale-clear 规则、**两半** attachment match 均已沉、各有 golden；**残量**＝attachment 物化/解析回调化以压 LOC）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
 | `+Blit.m` | 4945 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
 | `+BindingState.m` | 2940 | **厚**（C1 多刀已从 ~4523 降下，见 O3.3） | 拆：attrib/texture/image apply 残留 → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口（口仍 ≫300，O3.3 residual） |
 | `MGLRenderer.m` | 4693 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
@@ -131,7 +131,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 
 > **实测（2026-09-12）**：`MGLRenderer+*.m` categories 合计 **34.5k** LOC（基线 ~59k；O1/O2/C1 已降 ~24.5k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 = **19.0k**（6981+7058+4945），仍是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
 >
-> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34525`，`+Buffer.m` 822）。
+> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34617`，`+Buffer.m` 822）。
 
 **Batch ObjC 诚实合计（Track B）**：categories ~190 + encode/trace/port ~1521 = **~1711**（`scripts/objc_renderer_loc.sh`）。A3 本刀 1923→~1711（−212；direct-submit C 决策树、trace fill helpers、binding helpers→`+Binding`、sampled resolve gate）；**勿宣称 cleanup done**（残量仍 ~1.7k）。
 
@@ -199,13 +199,17 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     本帧首次使用 / 是否开混合；输出＝load action + 是否改写 store + store action）与
     `mglRenderPassDropsStaleColorClear()`；`shouldUseDontCareLoadForColorTexture:firstUseThisFrame:` 整个谓词删除
     （其判据成为 plan 输入）。同时把**默认帧缓冲**那一半的附着匹配移入
-    `mglRenderPassAttachmentsMatch()`（identity / 逐 color slot 的 actual-vs-expected / 深度模板对 /
-    "required 但缺失 ⇒ 不匹配"）；用户 FBO 那一半仍留在 ObjC（其循环与 subresource 比对、扫描提前停止规则交织，
-    留作下一刀——subresource/scan-stop 两条规则本身已是 C 谓词）。
-    golden＝新增 `make test-render-pass-load-store`（44 例，纯 C：颜色 8 组决策、深度/模板 5 组、
-    stale clear 4 组、匹配 9 组，含"未参与的 slot 不比较"与"required 缺失即不匹配"）；golden 是**先照 ObjC
-    现有语义写死**再改实现（文档要求的"先补 golden"）。
-    规模：`+RenderPass.m` 7058 → 7074（+16：三处输入结构填充；决策面已移出），`MGLRenderer*.m` 34525 → 34566。
+    `mglRenderPassAttachmentsMatch()`：输入是**逐附着条目**（identity + 每条目的纹理对 / required 缺失即不匹配 /
+    可选 subresource 三元组比对），配套 `mglRenderPassFillMatchEntry()` 填充口。**两半都接了**——默认帧缓冲
+    （3 条目：color0 / depth / stencil，深度与模板的 required 由 caps 决定）与用户 FBO（每个 draw slot 一条目 +
+    深度/模板条目，逐条目调用以保持原短路顺序）；`mglRenderPassSnapshotAttachmentMatchesSubresource` 因此失效删除
+    （subresource 规则进 plan，由 harness 固化）；subresource/scan-stop 中 scan-stop 本就是 C 谓词。
+    golden＝新增 `make test-render-pass-load-store`（**53 例**，纯 C：颜色 8 组决策、深度/模板 5 组、
+    stale clear 4 组、匹配含 subresource 与填充口 14 组，含"未参与的条目不比较"、"required 缺失即不匹配"、
+    "两侧无纹理时不比 subresource"）；golden 是**先照 ObjC 现有语义写死**再改实现（文档要求的"先补 golden"）。
+    规模（如实）：`+RenderPass.m` 7058 → **7125（+67）**，`MGLRenderer*.m` 34525 → 34617。
+    这一段 LOC 反增的原因是：该半段的实质是**解析**（texture / subresource 取值）而非决策，解析必须留在 ObjC，
+    规则合并后调用点反而更长；要真正压 LOC 需把 texture 解析做成回调注入（仿 O5.1 的 resolver），列入下一刀。
     验证：本地 92/0/2；`test-render-pass-load-store` 44/44；`test-render-pass-clear-plan`、
     `test-binding-stage`、`test-buffer-plan`、`test-reference-query` 30/30、`test-per-vertex-signature` 23/23、
     `test-legacy-compat` 193/193、`test-frontends`、`test-tess-domain`、`test-tess-air`(180)；
@@ -578,9 +582,24 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     GS 簇 136/0（含回归单例 `KHR-GL46.geometry_shader.api.max_shader_storage_blocks` 1/0）；
     hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
 
-35. **当前下一刀（按推荐顺序）**：
-    1. **O5.2** `+Compute.m`（1251）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
-    2. **O3.1 残量**（load/store + attachment match → `mgl_render_pass_plan.*`）：风险高，需先补 harness golden。
+35. **O3.1 load/store + attachment match 下沉（`dbfe9d9`）**：三段动作决策（颜色/深度/模板）与
+    "未附着却挂着 clear 位"的清理规则进 `mglRenderPassPlanLoadStore()` / `mglRenderPassDropsStaleColorClear()`，
+    `shouldUseDontCareLoadForColorTexture:` 谓词删除；附着匹配的两半（默认帧缓冲 + 用户 FBO）统一走
+    `mglRenderPassAttachmentsMatch()` 的**逐附着条目**（纹理相等 / required 缺失即不匹配 / 可选 subresource
+    三元组比对），配套 `mglRenderPassFillMatchEntry()` 填充口；objc 侧失效谓词
+    `mglRenderPassSnapshotAttachmentMatchesSubresource` 删除。golden 先行：`make test-render-pass-load-store`
+    53 例（颜色 8 组、深度/模板 5 组、stale clear 4 组、匹配含 subresource 与填充口共 14 组）。
+    **LOC 如实记录**：`+RenderPass.m` 7058 → 7125（+67）。原因是这半段的实质是**解析**（texture / subresource
+    取值）而非决策，分辨率代码无法下沉，规则合并后调用点反而更长；若要继续压 LOC，方向是把 texture 解析做成
+    回调注入（仿 O5.1 的 resolver 形态），另开一刀。
+    验证：本地 92/0/2；`test-render-pass-load-store` 53/53 及其余 harness 全绿；hotspot 非通过集合 diff 为空；
+    tess 139/1/0；GS 136/0；refq/piq 逐例 diff 为空。
+
+36. **当前下一刀（按推荐顺序）**：
+    1. **O5.2 续刀**：`+Compute.m` 的纹理/采样器环（约 470 行，含 "late binding" 启发式）复用
+       `mglBindingTexturePlanSampled`；整段迁 C++ 需物化回调 vtable。
+    2. **O3.1 续刀**：attachment 物化（texture 解析 / MS 平面）做成回调注入以真正压 LOC；
+       `configureUserFBOAttachmentsLocked` / `configureDefaultFramebufferAttachmentsLocked`。
     3. **O7.4 残条（下一批）**：名字→类型/location 启发式（`gl_type == 0` 命中率需探针）；链接期重复 parse 去重
        （`mglShaderInterfaceCheck` 复用 `frontend_tu`，属 O5 类）。
   - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
