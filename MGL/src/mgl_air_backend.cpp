@@ -5247,10 +5247,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 llvm::Value *idx = emitExpr(cg, idxE, mod, locals);
                 if (!idx) return nullptr;
                 idx = coerceScalar(cg, idx, MGLIR_SCALAR_UINT);
-                if (cg.isTESCompute) {
-                    /* isolines/point-mode kernel: control-point varying
-                     * fields live in the stage_in records (VS output
-                     * layout), not the Metal control-point function. */
+                if (cg.isTESCompute || cg.isTESVertex) {
+                    /* isolines/point-mode kernel and the render-vertex
+                     * expansion: control-point varying fields live in the
+                     * stage_in records (VS/TCS output layout), not in the
+                     * Metal control-point function.  The render-vertex path
+                     * receives that same record stream in slot 30 (gl_in) and
+                     * its patch id from the contract buffer, exactly like the
+                     * compute expansion. */
                     if (!cg.stageInPtr || !cg.indirectPtr || !cg.patchId) {
                         cg.err = 1;
                         cg.errmsg = "TES AIR codegen: shared control-point "
@@ -9603,6 +9607,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
          tu->layout_point_mode != 0) &&
         !force_tes_compute && !has_gs;
+    /* A TES compiled as a render vertex publishes its outputs to the
+     * fragment stage directly, and program.c compiles that fragment shader
+     * with the GS-passthrough interface rules
+     * (MGL_AIR_COMPILE_HAS_GEOMETRY_SHADER) because TES outputs ride as
+     * mgl_loc_N there.  The pipeline only links if the vertex-side function
+     * uses the same interface tags and carriers, so the render-vertex TES
+     * takes the same interface mode as a GS passthrough.  For every other
+     * stage this is just has_gs. */
+    const bool ifaceGs = has_gs || isTESVertex;
     const bool isTESCompute = isTES && !isTESVertex &&
         (tu->layout_primitive == MGL_AST_TES_ISOLINES ||
          tu->layout_point_mode != 0 ||
@@ -9956,7 +9969,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     if (v.type.isArray()) {
                         MType el = v.type;
                         el.arr = 0;
-                        if (varyingUsesFloatCarrier(el, has_gs))
+                        if (varyingUsesFloatCarrier(el, ifaceGs))
                             el = floatCarrierType(el);
                         for (uint32_t i = 0; i < (uint32_t)v.type.arr; i++)
                             retElems.push_back(llvmType(el, ctx));
@@ -9964,17 +9977,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         /* Metal forbids matrix stage-out members; emit one
                          * vector field per column (GL location = base+c). */
                         MType col = matrixColumnType(v.type);
-                        if (varyingUsesFloatCarrier(col, has_gs))
+                        if (varyingUsesFloatCarrier(col, ifaceGs))
                             col = floatCarrierType(col);
                         for (uint32_t c = 0; c < v.type.cols; c++)
                             retElems.push_back(llvmType(col, ctx));
                     } else {
                         MType outTy = v.type;
-                        if (uintUsesSplitFloatCarrier(outTy, has_gs)) {
+                        if (uintUsesSplitFloatCarrier(outTy, ifaceGs)) {
                             retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
                             retElems.push_back(llvmType(floatCarrierType(outTy), ctx));
                         } else {
-                            if (varyingUsesFloatCarrier(outTy, has_gs))
+                            if (varyingUsesFloatCarrier(outTy, ifaceGs))
                                 outTy = floatCarrierType(outTy);
                             retElems.push_back(llvmType(outTy, ctx));
                         }
@@ -10458,7 +10471,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.mod = &module;
     cg.isVS = isVS || isTES;
     cg.pointSize = usesPointSize;
-    cg.has_gs = has_gs;
+    cg.has_gs = ifaceGs;
     cg.isCompute = isCompute || isTCS || isGS;
     cg.isTessControl = isTCS;
     cg.isTessEval = isTES;
@@ -13264,8 +13277,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 el.arr = 0;
                 uint32_t n = (uint32_t)v->type.arr;
                 for (uint32_t k = 0; k < n; k++) {
-                    std::string elName = varyingIfaceTag(*v, k, has_gs);
-                    MType outTy = varyingUsesFloatCarrier(el, has_gs)
+                    std::string elName = varyingIfaceTag(*v, k, ifaceGs);
+                    MType outTy = varyingUsesFloatCarrier(el, ifaceGs)
                         ? floatCarrierType(el) : el;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
@@ -13279,8 +13292,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             } else if (v->type.isMatrix()) {
                 MType col = matrixColumnType(v->type);
                 for (uint32_t c = 0; c < v->type.cols; c++) {
-                    std::string colName = varyingIfaceTag(*v, c, has_gs);
-                    MType outTy = varyingUsesFloatCarrier(col, has_gs)
+                    std::string colName = varyingIfaceTag(*v, c, ifaceGs);
+                    MType outTy = varyingUsesFloatCarrier(col, ifaceGs)
                         ? floatCarrierType(col) : col;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
@@ -13292,8 +13305,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         llvm::MDString::get(ctx, colName)}));
                 }
             } else {
-                std::string tag = varyingIfaceTag(*v, 0, has_gs);
-                if (uintUsesSplitFloatCarrier(v->type, has_gs)) {
+                std::string tag = varyingIfaceTag(*v, 0, ifaceGs);
+                if (uintUsesSplitFloatCarrier(v->type, ifaceGs)) {
                     MType outTy = floatCarrierType(v->type);
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
@@ -13312,7 +13325,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                         llvm::MDString::get(ctx, "air.arg_name"),
                         llvm::MDString::get(ctx, tag + "_hi")}));
                 } else {
-                    MType outTy = varyingUsesFloatCarrier(v->type, has_gs)
+                    MType outTy = varyingUsesFloatCarrier(v->type, ifaceGs)
                         ? floatCarrierType(v->type) : v->type;
                     outNodes.push_back(llvm::MDNode::get(ctx, {
                         llvm::MDString::get(ctx, "air.vertex_output"),
