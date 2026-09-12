@@ -6140,7 +6140,17 @@ static GLenum mglPassthroughDeclType(
 
                 /* Keep descriptor signatures and linked Program identities
                  * lossless. GL names can be reused and a Program can relink
-                 * without changing its name. */
+                 * without changing its name.
+                 *
+                 * tessVertexRenderActive must be part of the key: it decides
+                 * whether the raster vertex function is the TES render-vertex
+                 * function itself or the generated slot-28 record passthrough
+                 * (see the tessPassthroughFunction selection in the pipeline
+                 * descriptor), so an isolines/point-mode program that is drawn
+                 * through both paths -- non-indexed draws take the vertex path,
+                 * indexed ones fall back to the compute expansion -- would
+                 * otherwise reuse the first pipeline for the second draw and
+                 * rasterize the record stream with the wrong ABI. */
                 uint64_t primaryKey = (((uint64_t)currentProgramName << 32)
                                      | (((uint64_t)state->var.clip_origin & 0xFu) << 28)
                                      | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24)
@@ -6148,7 +6158,8 @@ static GLenum mglPassthroughDeclType(
                                      | (_tessellation.tessVertexCaptureActive ? (1ull << 22) : 0ull)
                                      | (_geometry.expansionActive ? (1ull << 21) : 0ull)
                                      | (_tessellation.cullDistanceCaptureActive ? (1ull << 20) : 0ull)
-                                     | (_tessellation.tessComputeActive ? (1ull << 19) : 0ull));
+                                     | (_tessellation.tessComputeActive ? (1ull << 19) : 0ull)
+                                     | (_tessellation.tessVertexRenderActive ? (1ull << 18) : 0ull));
                 uint64_t vertexInstance = currentVertexProgram
                     ? currentVertexProgram->pipeline_cache_instance_id : 0u;
                 if (_geometry.expansionActive && _geometry.program) {
