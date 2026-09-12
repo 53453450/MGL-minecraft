@@ -6728,7 +6728,7 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
 	ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
 	ERROR_CHECK_RETURN(bufferMode == GL_INTERLEAVED_ATTRIBS || bufferMode == GL_SEPARATE_ATTRIBS, GL_INVALID_ENUM);
-	ERROR_CHECK_RETURN(count <= MAX_ATTRIBS, GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(count <= (GLsizei)MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS, GL_INVALID_VALUE);
 
 	Program *pptr = findProgram(ctx, program);
 	ERROR_CHECK_RETURN(pptr, GL_INVALID_VALUE);
@@ -6774,7 +6774,7 @@ void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count,
 			pptr->transform_feedback_varying_names[i][sizeof(pptr->transform_feedback_varying_names[i]) - 1] = '\0';
 		}
 	}
-	for (GLsizei i = count; i < MAX_ATTRIBS; i++) {
+	for (GLsizei i = count; i < (GLsizei)MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS; i++) {
 		pptr->transform_feedback_varying_names[i][0] = '\0';
 	}
 	pptr->dirty_bits |= DIRTY_PROGRAM;

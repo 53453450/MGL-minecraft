@@ -2292,7 +2292,8 @@ extern "C" bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out)
     out->capture_stride = mglAIRPerVertexStrideForResources(
         &program->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
     const GLsizei varying_count = program->transform_feedback_varying_count;
-    if (varying_count < 0 || (uint32_t)varying_count > MAX_ATTRIBS) {
+    if (varying_count < 0 ||
+        (uint32_t)varying_count > MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS) {
         return false;
     }
     out->field_count = (uint32_t)varying_count;

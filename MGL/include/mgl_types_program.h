@@ -279,6 +279,17 @@ typedef struct MGLBufferBindingPlan MGLBufferBindingPlan;
 
 #define MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS 4u
 
+/* GL 4.6 §11.1.1 bounds a transform-feedback configuration only through the
+ * component budgets: GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS is
+ * reported as 128, so one configuration may legitimately name 32 vec4
+ * varyings (KHR-GL46.tessellation_shader.tessellation_shader_tessellation.
+ * max_in_out_attributes names exactly that many).  These tables therefore
+ * need their own bound and must not share MAX_ATTRIBS, which is the *vertex
+ * attribute* budget (30) reported as GL_MAX_VERTEX_ATTRIBS and tied to
+ * Metal's vertex descriptor layout.  64 leaves headroom for scalar varyings
+ * packed into the same 128 components. */
+#define MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS 64u
+
 /* Link-time transform-feedback scatter plan.  The plan is populated even for
  * the currently unsupported GS SEPARATE_ATTRIBS execution route so that link
  * validation and the eventual capture backend share one authoritative layout. */
@@ -413,8 +424,8 @@ typedef struct Program_t {
     GLuint frag_data_location_count;
     GLsizei transform_feedback_varying_count;
     GLenum transform_feedback_buffer_mode;
-    char transform_feedback_varying_names[MAX_ATTRIBS][96];
-    MGLTransformFeedbackVaryingPlan transform_feedback_layout[MAX_ATTRIBS];
+    char transform_feedback_varying_names[MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS][96];
+    MGLTransformFeedbackVaryingPlan transform_feedback_layout[MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS];
     GLuint transform_feedback_layout_buffer_count;
     GLuint transform_feedback_layout_component_count;
     GLboolean transform_feedback_layout_valid;

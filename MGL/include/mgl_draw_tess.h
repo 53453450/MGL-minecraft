@@ -137,7 +137,7 @@ typedef struct MGLXfbVsPlan {
     uint32_t field_count;
     uint32_t capture_stride;
     uint32_t buffer_stride[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS];
-    MGLXfbVsField fields[MAX_ATTRIBS];
+    MGLXfbVsField fields[MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS];
 } MGLXfbVsPlan;
 
 bool mglXfbPlanVsCapture(const Program *program, MGLXfbVsPlan *out);

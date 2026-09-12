@@ -37,6 +37,7 @@
 
 #include "mgl_buffer_slots.h" /* compute physical buffer-index boundary */
 #include "mgl_shader_abi.h" /* MGLAIRPerVertexRecord, MGL_AIR_PER_VERTEX_* */
+#include "mgl_types_program.h" /* MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS */
 
 #if defined(__cplusplus)
 #define MGL_AIR_STATIC_ASSERT(c, m) static_assert((c), m)
@@ -350,8 +351,11 @@ MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 80u,
 #define MGL_AIR_GS_XFB_SCATTER_XFB_SLOT    4u
 #define MGL_AIR_GS_XFB_SCATTER_WRITTEN_SLOT 5u
 
-/* Maximum captured varyings one program may scatter (matches MAX_ATTRIBS). */
-#define MGL_AIR_GS_XFB_MAX_FIELDS 30u
+/* Maximum captured varyings one program may scatter.  Bounded by the
+ * transform-feedback varying budget, not by MAX_ATTRIBS (the vertex attribute
+ * budget): a single interleaved configuration may name up to 32 vec4
+ * varyings within the reported 128-component limit. */
+#define MGL_AIR_GS_XFB_MAX_FIELDS MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS
 
 /* Per-buffer control block for the ordered scatter. */
 typedef struct MGLAIRGSXFBBufferMeta {

@@ -985,7 +985,8 @@ static bool mglCPUFeedbackIsPassthroughProgram(Program *program)
 {
     if (!program ||
         program->transform_feedback_varying_count <= 0 ||
-        program->transform_feedback_varying_count > MAX_ATTRIBS) {
+        program->transform_feedback_varying_count >
+            (GLsizei)MGL_MAX_TRANSFORM_FEEDBACK_VARYINGS) {
         return false;
     }
 
