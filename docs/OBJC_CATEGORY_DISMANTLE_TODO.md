@@ -632,6 +632,11 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     ③ **清未使用的 stdio/stdlib include**（10 个文件，逐个以构建验证）：`mgl.h`、`gl_core.c`、
     `mgl_draw_encode.cpp`、`mgl_legacy_compat.c`、`mgl_program_reflection.c`、`mgl_program_resource.c`、
     `mgl_texture_transfer.c`、`test_legacy_compat/main.c`、`test_mcrepro.mm`、`test_mglir.c`。
+    影响面实测（`-H` 追 include 链 + 逐头探针）：`mgl.h` 仍经 `glm_context.h` 提供 **stdio**，被切断的只有
+    **stdlib**；仓库内没有 TU 依赖这条传递链（`program.c`/`mgl_gl_extensions.c`/`rendering.c` 自带
+    `<stdlib.h>`；`state.c` 的"free"只是注释）。唯一靠传递拿 stdlib 的是 `draw_buffers.c`（`calloc`/`getenv`），
+    它走 `mgl_trace_log.h` → `objc/objc.h` → `<stdlib.h>` 的 **ObjC 链**——**不是本次切断的**、但属既有脆弱点，
+    故按"谁用谁 include"给它补上显式 `#include <stdlib.h>`（`-H` 复核 stdlib 改为深度 1 由自身提供）。
     验证：**`make test-all` 返回 0**（含 smoke 系列：`SMOKE_DONE`、`es-smoke: ok`、legacy-compat 193/193、
     test_regression 92/0/2、各 plan harness 全绿）；CTS hotspot 非通过集合 diff 为空。
 
