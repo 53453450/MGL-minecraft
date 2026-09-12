@@ -14,7 +14,7 @@
 >
 > **联合审计（已签，docs-only 吸收）**：[`OBJC_LLVM_JOINT_AUDIT_2026-09-14.md`](OBJC_LLVM_JOINT_AUDIT_2026-09-14.md)
 > （coding · DXMT 讲述者 · DannyFeng-bot；审计基线 tip `4ed1d54`＝**23** 文件；交付 2026-09-13，截止由周一改到 **周日 08:00 Asia/Shanghai**）。
-> 当前 tip `88ac73d`（`+Batch.m` 删除后 `objc_zero`＝**22**）。BindingState stash@{0} **仍暂停、禁止 pop/入库**。
+> 当前 tip 见文首（`objc_zero` ＝ **21**；`+Batch.m` 与 `mgl_batch_flush_restore_encode.m` 删除后）。BindingState stash@{0} **仍暂停、禁止 pop/入库**。
 > **禁「薄平台 ≤8–12k 即终态」**——终态是清零（T5 唯一平台壳除外）；文件数降权，三厚块 LOC + BindingState + metal_port + air LOC + shim wrapper Δ 升权。
 
 ---
@@ -49,13 +49,14 @@
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,555**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 七切片 + trace 清零 后）**：文件 **53 → 22**、空 TU **3 → 0**、
-行数 **43,989 → 38,352**、ObjC 语法 **2,268 → 2,204**、词汇 **4,353 → 4,152**。
+**当前进度（2026-09-13，T0–T2′ + T4 八切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 38,099**、ObjC 语法 **2,268 → 2,190**、词汇 **4,353 → 4,141**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
-并**整文件删除** `MGLRenderer+Batch.m`（其 ObjC 成员进 shim，循环进 C）；
-`mglTraceLogNSString`（429 行 ObjC 面）已彻底移除；**当前 `objc_zero.sh`＝22 个 `.m`**（联合报告基线 tip `4ed1d54` 为 **23**；勿再写「26 文件」）。）
+并**整文件删除** `MGLRenderer+Batch.m` 与 `mgl_batch_flush_restore_encode.m`（成员按域落 C，ObjC 壳进 shim）——
+**Batch 簇的 `mgl_batch_*_encode` 已全部不是 ObjC**；
+`mglTraceLogNSString`（429 行 ObjC 面）已彻底移除；**当前 `objc_zero.sh`＝21 个 `.m`**（联合报告基线 tip `4ed1d54` 为 **23**；勿再写「26 文件」）。）
 
 **口径提醒**：上表数字全部由同一脚本在同一天测得，但 **2,223 那一格是端口 shim 建立之前**的数字
 （shim 新增 176 行 / 19 语法 / 3 词汇），本行以重测为准：`2,223 + 19(shim) + 3(桥接) − 14(issue_encode 转 C) − 1(shim 收窄) = 2,230`；
@@ -63,9 +64,11 @@ replay_trace 一刀：`2,230 − 16(文件转 C) − 2(MGLRenderer.m 去 NSStrin
 + 3(shim 端口) + 4(flush_restore 桥接) = 2,218`；
 icb_mdi 一刀：`2,218 − 17(文件转 C) + 3(shim 的 @try/@catch 端口 + processBuffer 端口) + 2(flush_restore 桥接) = 2,207`；
 dyn_bind 一刀：`2,207 − 22(文件转 C) − 6(退掉三个已无用的 shim 端口) + 30(12 个新 shim 包装 × 桥接+消息发送) ≈ 2,209`；
-批次 shell 一刀：`2,209 − 16(+Batch.m 删除) − 4(三处调用点改直调) + 15(shim 的 category + bindMTLTexture 端口) = 2,204`——
-**这一刀语法基本持平**：被转掉的 22 处 ObjC 只是搬到 shim 变成包装，文件/行数才是收益（−272 行）；
-shim 现在是 **26 个包装 / 314 行 / 49 语法**，它就是"下一刀要还的债"（见第 46 条）。
+批次 shell 一刀：`2,209 − 16(+Batch.m 删除) − 4(三处调用点改直调) + 15(shim 的 category + bindMTLTexture 端口) = 2,204`；
+flush_restore 一刀：`2,204 − 34(文件转 C) + 14(shim 的 14 个新端口 × 桥接+消息发送) + 6(调用点桥接) = 2,190`。
+**按联合报告 §0.04 的 T4 硬规（无 shim 净减＝拒收），dyn_bind 与 flush_restore 两刀都不算 T4 进度**：
+它们把被转走的消息发送搬进了 shim（26 → 40 个包装），语法只小幅下降、文件/行数才是收益。
+shim 现在是 **40 端口 + 5 方法 / 511 行 / 61 语法**，**净减它才是下一刀的验收条件**（见第 49 条）。
 shim 是**唯一**允许新增的 ObjC 面（逐函数一行包装，把 batch/draw 端口集中到一处），它随实现文件逐个转 C
 而缩小，终态删除或并入 T5 平台壳。
 
@@ -206,7 +209,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | **T0 空 TU ✅ 已删** | 3 / 48 | ~~`MGLBindingSync.m`~~ · ~~`MGLQueryManager.m`~~ · ~~`MGLTextures.m`~~ |
 | **T1 仅 `#import` ✅ 已改名** | 10 / 2,188 | `hash_table.m`(855) · `mgl_texture_compat.m`(331) · `mgl_sampler_compat.m`(324) · `mgl_sync.m`(108) · `mgl_rt_sync.m`(104) · `mgl_capability.m`(100) · `mgl_coordinate.m`(99) · `mgl_focus_program.m`(97) · `mgl_shader_resource.m`(94) · `mgl_state_log.m`(76) |
 | **T2 有词汇无语法 ✅ 已改名** | 10 / 1,709 | `mgl_binding_texture_log.m`(328,v16) · `mgl_frame_activity.m`(288,v8) · `mgl_trace_strategy.m`(229,v16) · `mgl_state_compat.m`(184,v10) · `mgl_vertex_format.m`(147,v1) · `mgl_byte_hash.m`(142,v1) · `mgl_vertex_attrib_query.m`(133,v8) · `mgl_draw_buffer.m`(94,v5) · `mgl_blit_clip.m`(90,v9) · `mgl_buffer_query.m`(74,v8) |
-| **T3/T4 真 ObjC（当前唯一剩余）** | 22 / 38,352 | `+RenderPass`(426 语法/556 词汇) · `+Texture`(316/1103) · `+Blit`(244/880) · `MGLRenderer`(170/280) · `+BindingState`(135/197) · `+Tessellation`(153/292) · `mgl_draw_metal_port`(117/100) · `+Compute`(90/104) · … |
+| **T3/T4 真 ObjC（当前唯一剩余）** | 21 / 38,099 | `+RenderPass`(426 语法/556 词汇) · `+Texture`(316/1103) · `+Blit`(244/880) · `MGLRenderer`(170/280) · `+BindingState`(135/197) · `+Tessellation`(153/292) · `mgl_draw_metal_port`(117/100) · `+Compute`(90/104) · … |
 | **T5 平台壳** | 1 / 229 | `MGLPlatformRendererShell.m`（归 T4/T5 处理） |
 
 ### 1.1 现状库存（按厚度）
@@ -240,7 +243,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | 文件 | 约 LOC | 判定 |
 |------|-------:|------|
 | `mgl_draw_encode.cpp` | ~1187 | **已迁出 ObjC**（O5.4 DONE）：原 `.m` 整文件重命名为 `.cpp`，剥除 6 处 `__bridge`，经 Makefile `wildcard MGL/src/*.cpp` 自动纳 non-ARC C++；draw-encode 决策不再属 ObjC 边界 |
-| `mgl_batch_flush_restore_encode.m` | ~381 | **Batch 簇残量**：flush/restore/stream；`flush_run_batches` / check / trace-skip 已接线；**已呈 ops-callback 薄形**（C++ driver + ObjC 回调接线） |
+| `mgl_batch_flush_restore_encode.c`（原 `.m`） | ~380 | **已迁出 ObjC**（T4）：flush/restore/check/stream/schedule 六个 driver 变 C；`@try/@finally` 帧留在 shim（`mglRendererFlushDrawBufferLockedPort`） |
 | `mgl_batch_dyn_bind_encode.c`（原 `.m`） | ~330 | **已迁出 ObjC**（T4）：六个 driver 变 C（`mglBatchDynBind*` / `mglBatchApplySamplerSnapshot` / `mglBatchApplyDynamicBindings` / `mglBatchTryReplaySimpleBatch`） |
 | `mgl_batch_issue_encode.c`（原 `.m`） | ~213 | **已迁出 ObjC**（T4，`mgl_batch_issue_encode` 转 C）：MDI/direct loops → `mgl_batch_mtl_issue_mdi_batch` / `mgl_batch_issue_direct_batch`；driver 变成 C 函数 `mglBatchIssueMDIBatch` / `mglBatchIssueDirectBatch` |
 | `mgl_batch_replay_trace.c`（原 `.m`） | ~258 | **已迁出 ObjC**（T4）：trace 两个入口变 C driver `mglBatchTraceReplayBatch` / `mglBatchTraceReplayCommand`（声明在 `mgl_batch_rt_mark.h`）；**禁止再扩** |
@@ -1042,3 +1045,48 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     TES=Keep-product-dual；Metal-cpp A/B 死透）；T4 **无 shim 净减=拒收**；P0-0 `esrc`；
     T5 唯一壳 TU；名字启发式升 P1；过誉笔记（plan@C 贴皮 / shim 会计 / O7 esrc 未阻断 / 缺格式串门禁）；
     禁「薄平台 ≤8–12k 即终态」。**BindingState stash@{0} 未动**。无 `.m/.c/.cpp` 代码刀。
+
+49. **`mgl_batch_flush_restore_encode` 转 C：Batch 簇收尾（本轮第六刀，但按新规不计 T4 进度）**：
+    ① **六个 driver 变 C**（声明分落 `mgl_batch_restore.h` / `mgl_batch_issue.h`）：`mglBatchFlushBegin` /
+    `mglBatchFlushRunBatches` / `mglBatchTeardownReplay` / `mglBatchScheduleDrawBatch` /
+    `mglBatchCheckShouldExecute` / `mglBatchRecordCommandStats` / `mglBatchTraceSkipCommands` /
+    `mglBatchTraceStreamCmd0` / `mglBatchIssueStreamMergedBatch` / `mglBatchRestoreStateForBatch`，
+    以及全部 `f*`/`c*`/`s*` ops 回调（原为方法内 static 回调）。
+    ② **`@try/@finally` 处置（与 ICB 同套路）**：`flushDrawBufferLocked:` 拆成 Begin（绑定 ctx、快照 live state、
+    切 replay workspace，返回"有无 batch"）/ RunBatches（原 `@try` 体：flush 循环 + 每轮汇总日志）/ TeardownReplay
+    （原 `@finally` 体），由 shim 的 `mglRendererFlushDrawBufferLockedPort` 用 `@try/@finally` 夹住——
+    "异常时 teardown 一定跑"原样保留；`MGLBatchFlushPass` 在两侧传 hit/skipped/saved/saved_error/replay_error。
+    ③ **新端口 14 个**：dual-proxy 断言、replay/live 切换、`_activeState` 直写、`_currentCBHasWork`、
+    absolute-offset 读写、三个 batching 开关、batch arena 复位、trace-replay id、binding-state 有效性、
+    render-pass 匹配与 `prepareRenderPassIfFBOChanged:`。
+    ④ **两次失败（`make test-all` 抓到）**：`mglBindingStateIsValid` 搬进 `mgl_binding_stage.{h,c}` →
+    `test_binding_stage`/`test_metalcpp_smoke` 链接失败（该 TU 被 harness 单独链接，且 smoke 里按 C++ 编译）→
+    **结论：它必须留在 ObjC inline，C 侧走端口** `mglRendererBindingStateIsValidPort`；
+    `kMGLDiagnosticStateLogs`（`static const BOOL = NO`）→ C 安全头 `mgl_trace_log.h` 的 `#define`（单一定义）。
+    ⑤ **发现（未改行为）**：`mgl_batch_restore.h` 的两个"A3 整段 driver"计划
+    （`mgl_batch_restore_run_for_batch` / `mgl_batch_teardown_run`）**只有 `test_batch_restore` 在用**，
+    生产路径当初没接上；本刀按逐行等价转写，故它们仍是 harness-only —— 要么把新 driver 改成填 ops 调计划
+    （推荐，消灭第二实现），要么删计划。**T3 决策债**。
+    ⑥ **oracle**：trace 语料 374/296 行、`MGL_MIP_DIAG` 语料 529/212 条与旧 ObjC 库逐字段一致；回归 92/0/2 与
+    ICB 轮 82/10/2 相同；flush 是每次绘制必经路径，CTS 七簇覆盖。
+    度量：文件 **22 → 21**、行数 **38,352 → 38,099**、语法 **2,204 → 2,190**、词汇 **4,152 → 4,141**；
+    `MGLRenderer*.m` **34,386 → 34,387**。**shim：26 → 40 个端口（+14），511 行 / 61 语法 ⚠️ 违反 §0.04 的
+    「无 shim 净减＝拒收」，本刀只算"Batch 簇 ObjC 面清零 + 端口面集中"，不算 T4 净减。**
+    验证：两个库构建无错；**`make test-all` 返回 0**；CTS 七簇非通过集合 diff 全为空（hotspot 1270/52/4/1+1cw ·
+    tess 139/1 · GS 136/0 · refq 164/54/5 · piq 17/12/1 · compute 113/38/1ns · pp 1/3/1ns）。
+
+### 0.08 下一刀的验收条件：shim 净减（按 §0.04 硬规）
+
+Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 511 行 / 61 语法）** 与 **21 个 `.m`**。
+下一刀**只接受净减**，候选（按"能真删掉端口"排序）：
+
+| 候选 | 现在的端口 | 净减路径 | 风险 |
+|---|---|---|---|
+| **`_batching` 状态域** | `AbsoluteVertexBindingOffsets`(读写) / `SetCurrentCBHasWork` / `SetActiveState` / `SkipSameKeyRestoreEnabled` / `DirtyKeyDeltaEnabled` / `ArenaSnapshotEnabled` / `ResetBatchArena` 共 **7** | 把这组标志 + batchArena 指针搬进 C 侧状态（`GLMContext` 或 `MGLRendererCore` 的 C 结构），shim 端口整批消失，C driver 直接读写 | 中：涉及 ivar 所有权与 `+Lifecycle` 初始化/销毁；需 CTS + trace A/B |
+| **flush 帧** | `mglRendererFlushDrawBufferLockedPort` | 若确认 Metal 不会在 flush 内抛异常（探针：`MGL_ENABLE_ICB=1` 的 reject 路径 + AGX RECOVERY 场景），可去掉 `@try/@finally` 整段 | 高：异常时 teardown 语义改变，需明确证据 |
+| **trace / pass 端口** | `TraceReplaySet` / `CurrentRenderPassMatchesFramebuffer` / `PrepareRenderPassIfFBOChanged` | 后两者属 `+RenderPass` 厚块；随 P0-1 的 materialize 下沉一起转 C++ | 中（绑定 P0-1） |
+| **sampler / dyn-bind 端口** | `SamplerStateForSnapshotKey` / `FallbackSamplerState` / 采样资源两个 | 方法体已在端口内，下一步把 `createMTLSamplerForTexParam:` 与 backend 快照缓存的物化改 C++（metal-cpp） | 中 |
+| **`+Batch.m` 留下的 category 5 方法** | dual-proxy 三件套 + `flushDrawBuffer:` + C 入口 | `mglRendererFlushDrawBuffer` 的 lease/autoreleasepool + `@try/@catch` 可保留为**唯一壳 TU** 的一部分（T5），dual-proxy 断言是 debug 检查 | 低-中 |
+
+**纪律**：下一 PR 必须给出 `shim wrappers: 40 → N (<40)` 与 `shim LOC` 的**净减数字**，否则按 §0.04 拒收；
+「再转一个 `.m`、端口照搬」不再算进度。
