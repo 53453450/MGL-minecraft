@@ -283,11 +283,17 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
   `location == UINT32_MAX` 的 stage input 及兜底是否命中 → 本地全量 94 项 + CTS hotspot 1328 例
   **零观察**；结构上 `assignStageVarSymLocations` 保证每个 VS stage input 都有 location（explicit →
   `glBindAttribLocation` 名字表 → 声明序），`applyVertexInputLocations` 只覆盖被绑定名字。两处一起删。
+- [x] **O7.4.3 三个"跳过该 stage 资源"谓词全部退休（`5372d0c`）**：
+  `mglShouldSkipStageTextureResource` / `mglShouldSkipStageSamplerResource` 早已是恒 `false` 死桩，
+  连调用点一起删（sampled-texture / storage-image plan 现传 `skip=0`；binding-state、draw_tess、compute、
+  batch-replay 的 `continue` 守卫消失）；最后一条真规则 `mglShouldSkipStageBufferResource`
+  （`_UNIFORM_CONSTANT_RES` 且 sampler-like）先用探针测量：本地全量 94 项 + CTS hotspot 1328 例
+  **零次 TRUE**，与 sampler 启发式那刀的结论一致（plain-uniform 资源在 IR 链下不带 texture dim），
+  随后删除并简化 5 处调用点。`MGL_BP_FLAG_SKIP` 因此失去生产者，标志位、`mglRenderBufferPlanEntrySkip()`
+  与 buffer-map fast path 的守卫一并退休（plan 层仍保留 skip action 供 harness 使用）。
 - [ ] **O7.4 剩余候选（按收益排序）**：
-  1. `mglShouldSkipStageTextureResource` / `mglShouldSkipStageSamplerResource`（`mgl_program_resource.c`）
-     恒返回 `false` 的死桩 → 连调用点判断一起删；
-  2. `mgl_gl_extensions.c` 的 `strstr(shader->src, "void main")` → 查询/校验路径，需单独评估；
-  3. `mgl_draw_encode` / `program.c` 中其余 `->src` 文本判定（如 legacy 翻译标记）→ 逐条判定，凡属
+  1. `mgl_gl_extensions.c` 的 `strstr(shader->src, "void main")` → 查询/校验路径，需单独评估；
+  2. `mgl_draw_encode` / `program.c` 中其余 `->src` 文本判定（如 legacy 翻译标记）→ 逐条判定，凡属
      「解析器本体需要」的保留并在此处标注。
 - [ ] **O7.5 验收口径**：每刀必须给 `local 全量（94 项）` + `CTS tess 140 / GS 136 / hotspot 1328`
   三套数字，hotspot 要求**非通过集合逐条 diff 为空**；退役的判据要在文档里留下 oracle 说明（探针名 +
@@ -418,10 +424,18 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     绑定名字，故该分支不可达。验证：本地 92/0/2；`test-legacy-compat` 193/193；`test-frontends` 67/67；
     `make test-buffer-plan`；GS 簇 136/0；tess 簇 139/1/0；hotspot 1270/52/4 ns/1 crash 且非共识集合 diff 为空。
 
-31. **当前下一刀（2026-09-12 收口，按推荐顺序）**：
-    1. **O7.4.3** `mglShouldSkipStageTextureResource` / `mglShouldSkipStageSamplerResource` 恒 `false` 死桩：连调用点判断一起删（`mgl_buffer_plan.c` 的 `MGL_BP_FLAG_SKIP` 语义需同步核对）。
-    2. **O7.4.4** `mgl_gl_extensions.c` 的 `strstr(shader->src, "void main")`：查询/校验路径，需单独评估（是否可用反射的 `main` 存在性代替）。
-    3. **O5.2** `+Compute.m`（1255）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
+31. **O7.4.3 三个 stage-resource skip 谓词退休（`5372d0c`）**：两个恒 `false` 死桩
+    （`mglShouldSkipStageTextureResource` / `mglShouldSkipStageSamplerResource`）连调用点删除；
+    `mglShouldSkipStageBufferResource` 先探针测量（本地 94 项 + CTS hotspot 1328 例零次 TRUE，与
+    "plain-uniform 资源在 IR 链下不带 texture dim"一致）再删，5 处调用点简化。`MGL_BP_FLAG_SKIP`
+    失去生产者 → 标志位 + `mglRenderBufferPlanEntrySkip()` + buffer-map fast path 守卫一并退休。
+    验证：本地 92/0/2；`test-legacy-compat` 193/193；`test-frontends` 67/67；`make test-buffer-plan`；
+    GS 簇 136/0；tess 簇 139/1/0；hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
+
+32. **当前下一刀（2026-09-12 收口，按推荐顺序）**：
+    1. **O7.4.4** `mgl_gl_extensions.c` 的 `strstr(shader->src, "void main")`：查询/校验路径，需单独评估（是否可用反射的"是否存在 main"代替）；这是 O7 清单里最后一条非解析器本体的文本判定。
+    2. **O5.2** `+Compute.m`（1255）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
+    3. **O3.1 残量**（load/store + attachment match → `mgl_render_pass_plan.*`）：风险高，需先补 harness golden。
   - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
