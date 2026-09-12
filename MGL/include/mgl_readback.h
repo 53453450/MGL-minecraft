@@ -36,22 +36,24 @@
 #define MGL_READBACK_H
 
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include "glcorearb.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-BOOL mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat);
-BOOL mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat);
-BOOL mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat);
-NSUInteger mglMetalReadbackBytesPerPixel(uint32_t pixelFormat);
+bool mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat);
+bool mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat);
+bool mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat);
+size_t mglMetalReadbackBytesPerPixel(uint32_t pixelFormat);
 uint8_t mglMetalFloatToUnorm8(float value);
 float mglMetalSnorm16ToFloat(int16_t value);
 float mglMetalSnorm8ToFloat(int8_t value);
-void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, uint32_t pixelFormat, BOOL flipY);
-BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, uint32_t pixelFormat, GLenum format, GLenum type, BOOL flipY);
-BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src, NSUInteger srcBytesPerRow, uint8_t *dst, NSUInteger dstBytesPerRow, NSUInteger width, NSUInteger height, uint32_t pixelFormat, BOOL flipY);
+void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src, size_t srcBytesPerRow, uint8_t *dst, size_t dstBytesPerRow, size_t width, size_t height, uint32_t pixelFormat, bool flipY);
+bool mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src, size_t srcBytesPerRow, uint8_t *dst, size_t dstBytesPerRow, size_t width, size_t height, uint32_t pixelFormat, GLenum format, GLenum type, bool flipY);
+bool mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src, size_t srcBytesPerRow, uint8_t *dst, size_t dstBytesPerRow, size_t width, size_t height, uint32_t pixelFormat, bool flipY);
 
 #ifdef __cplusplus
 }

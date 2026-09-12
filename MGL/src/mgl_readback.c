@@ -32,42 +32,44 @@
  * externally visible.
  */
 
-#import <Foundation/Foundation.h>
-#import "pixel_utils.h"
-#import "mgl_readback.h"
+#include "pixel_utils.h"
+#include "mgl_readback.h"
+#include <stdbool.h>
+#include <stdlib.h> /* calloc / free: scratch readback buffer */
+#include <stddef.h>
 #include "mgl_render.h"
 #include <stdint.h>
 
-BOOL mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat)
+bool mglMetalReadbackFormatIsBGRA8Compatible(uint32_t pixelFormat)
 {
     /* thin delegate — single source of truth in C++
      * (mglRenderReadbackFormatIsBGRA8Compatible), shared by both gates. */
     return mglRenderReadbackFormatIsBGRA8Compatible(
-               (uint32_t)pixelFormat) ? YES : NO;
+               (uint32_t)pixelFormat) ? true : false;
 }
 
-BOOL mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat)
+bool mglMetalPixelFormatIsIntegerColor(uint32_t pixelFormat)
 {
     /* thin delegate — single source of truth in C++
      * (mglRenderPixelFormatIsIntegerColor), shared by both gates. */
     return mglRenderPixelFormatIsIntegerColor(
-               (uint32_t)pixelFormat) ? YES : NO;
+               (uint32_t)pixelFormat) ? true : false;
 }
 
-BOOL mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat)
+bool mglMetalPixelFormatIsSignedIntegerColor(uint32_t pixelFormat)
 {
     /* thin delegate — single source of truth in C++
      * (mglRenderPixelFormatIsSignedIntegerColor), shared by both gates. */
     return mglRenderPixelFormatIsSignedIntegerColor(
-               (uint32_t)pixelFormat) ? YES : NO;
+               (uint32_t)pixelFormat) ? true : false;
 }
 
-NSUInteger mglMetalReadbackBytesPerPixel(uint32_t pixelFormat)
+size_t mglMetalReadbackBytesPerPixel(uint32_t pixelFormat)
 {
     /* thin delegate — single source of truth in C++
      * (mglRenderReadbackBytesPerPixel, pixel format as its Apple ABI
      * value), shared by both gates. */
-    return (NSUInteger)mglRenderReadbackBytesPerPixel(
+    return (size_t)mglRenderReadbackBytesPerPixel(
         (uint32_t)pixelFormat);
 }
 
@@ -93,13 +95,13 @@ float mglMetalSnorm8ToFloat(int8_t value)
 }
 
 void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
-                                            NSUInteger srcBytesPerRow,
+                                            size_t srcBytesPerRow,
                                             uint8_t *dst,
-                                            NSUInteger dstBytesPerRow,
-                                            NSUInteger width,
-                                            NSUInteger height,
+                                            size_t dstBytesPerRow,
+                                            size_t width,
+                                            size_t height,
                                             uint32_t pixelFormat,
-                                            BOOL flipY)
+                                            bool flipY)
 {
     /* thin delegate — single source of truth in C++
      * (mglRenderCopyTextureBytesToBGRA8), shared by both gates. */
@@ -110,24 +112,24 @@ void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
         (uint32_t)pixelFormat, flipY ? 1 : 0);
 }
 
-BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
-                                                        NSUInteger srcBytesPerRow,
+bool mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
+                                                        size_t srcBytesPerRow,
                                                         uint8_t *dst,
-                                                        NSUInteger dstBytesPerRow,
-                                                        NSUInteger width,
-                                                        NSUInteger height,
+                                                        size_t dstBytesPerRow,
+                                                        size_t width,
+                                                        size_t height,
                                                         uint32_t pixelFormat,
                                                         GLenum format,
                                                         GLenum type,
-                                                        BOOL flipY)
+                                                        bool flipY)
 {
     if (!src || !dst || width == 0u || height == 0u) {
-        return NO;
+        return false;
     }
 
     /* type-accept table in C++. */
     if (!mglRenderReadbackGLTypeAccepted((uint32_t)type)) {
-        return NO;
+        return false;
     }
 
     /* SNORM8 direct path in C++ (bypass lossy BGRA8). */
@@ -138,7 +140,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                    (uint64_t)width, (uint64_t)height,
                    (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
                    flipY ? 1 : 0)
-            ? YES : NO;
+            ? true : false;
     }
 
     /* RGB10A2 direct path in C++ (bypass lossy BGRA8). */
@@ -151,7 +153,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                    (uint64_t)width, (uint64_t)height,
                    (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
                    flipY ? 1 : 0)
-            ? YES : NO;
+            ? true : false;
     }
 
     /* RG11B10Float direct path in C++ (bypass lossy BGRA8). */
@@ -164,7 +166,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                    (uint64_t)width, (uint64_t)height,
                    (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
                    flipY ? 1 : 0)
-            ? YES : NO;
+            ? true : false;
     }
 
     /* 16/32-bit direct path in C++ (bypass lossy BGRA8). */
@@ -177,44 +179,48 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                    (uint64_t)width, (uint64_t)height,
                    (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
                    flipY ? 1 : 0)
-            ? YES : NO;
+            ? true : false;
     }
 
     if (!mglRenderReadbackPixelFormatIsRGBA8((uint32_t)pixelFormat) &&
         !mglRenderReadbackPixelFormatIsBGRA8((uint32_t)pixelFormat)) {
         if (!mglMetalReadbackFormatIsBGRA8Compatible(pixelFormat) ||
-            width > NSUIntegerMax / 4u ||
-            height > NSUIntegerMax / (width * 4u)) {
-            return NO;
+            width > SIZE_MAX / 4u ||
+            height > SIZE_MAX / (width * 4u)) {
+            return false;
         }
-        NSUInteger bgraBytesPerRow = width * 4u;
-        NSMutableData *bgra = [NSMutableData dataWithLength:bgraBytesPerRow * height];
+        const size_t bgraBytesPerRow = width * 4u;
+        /* Zero-filled scratch, like the NSMutableData this replaced. */
+        uint8_t *bgra = (uint8_t *)calloc(bgraBytesPerRow * height, 1u);
         if (!bgra) {
-            return NO;
+            return false;
         }
         mglMetalCopyTextureBytesToBGRA8(src,
                                         srcBytesPerRow,
-                                        (uint8_t *)bgra.mutableBytes,
+                                        bgra,
                                         bgraBytesPerRow,
                                         width,
                                         height,
                                         pixelFormat,
-                                        NO);
-        return mglMetalCopyBGRA8CompatibleTextureBytesToGL((const uint8_t *)bgra.bytes,
-                                                           bgraBytesPerRow,
-                                                           dst,
-                                                           dstBytesPerRow,
-                                                           width,
-                                                           height,
-                                                           mglRenderReadbackBGRA8CarrierFormat(),
-                                                           format,
-                                                           type,
-                                                           flipY);
+                                        false);
+        const bool copied =
+            mglMetalCopyBGRA8CompatibleTextureBytesToGL(bgra,
+                                                        bgraBytesPerRow,
+                                                        dst,
+                                                        dstBytesPerRow,
+                                                        width,
+                                                        height,
+                                                        mglRenderReadbackBGRA8CarrierFormat(),
+                                                        format,
+                                                        type,
+                                                        flipY);
+        free(bgra);
+        return copied;
     }
 
-    NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
+    size_t dstPixelBytes = (size_t)sizeForFormatType(format, type);
     if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-        return NO;
+        return false;
     }
 
     /* BGRA8/RGBA8 scalar readback in C++. */
@@ -225,7 +231,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                    (uint64_t)width, (uint64_t)height,
                    (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
                    flipY ? 1 : 0)
-            ? YES : NO;
+            ? true : false;
     }
 
     /* BGRA8/RGBA8 packed readback in C++. */
@@ -236,7 +242,7 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                    (uint64_t)width, (uint64_t)height,
                    (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
                    flipY ? 1 : 0)
-            ? YES : NO;
+            ? true : false;
     }
 
     /* UNSIGNED_BYTE channel-swizzle tail in C++. */
@@ -246,17 +252,17 @@ BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                (uint64_t)width, (uint64_t)height,
                (uint32_t)pixelFormat, (uint32_t)format, (uint32_t)type,
                flipY ? 1 : 0)
-        ? YES : NO;
+        ? true : false;
 }
 
-BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,
-                                                                 NSUInteger srcBytesPerRow,
+bool mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,
+                                                                 size_t srcBytesPerRow,
                                                                  uint8_t *dst,
-                                                                 NSUInteger dstBytesPerRow,
-                                                                 NSUInteger width,
-                                                                 NSUInteger height,
+                                                                 size_t dstBytesPerRow,
+                                                                 size_t width,
+                                                                 size_t height,
                                                                  uint32_t pixelFormat,
-                                                                 BOOL flipY)
+                                                                 bool flipY)
 {
     /* thin delegate — single source of truth in C++
      * (mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes), shared by
@@ -266,5 +272,5 @@ BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,
                dst, (uint64_t)dstBytesPerRow,
                (uint64_t)width, (uint64_t)height,
                (uint32_t)pixelFormat, flipY ? 1 : 0)
-        ? YES : NO;
+        ? true : false;
 }
