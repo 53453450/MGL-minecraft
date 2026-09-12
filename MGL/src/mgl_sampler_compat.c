@@ -33,10 +33,9 @@
  *   - TEXTURE_UNITS (glm_limits.h).
  */
 
-#import "mgl_sampler_compat.h"
+#include "mgl_sampler_compat.h"
 #include "mgl_render.h"
-#import <Foundation/Foundation.h>
-#import "mgl_trace_log.h"
+#include "mgl_trace_log.h"
 #include <string.h>
 
 /* === Program shader resource queries === */

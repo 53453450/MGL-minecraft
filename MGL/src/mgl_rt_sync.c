@@ -18,7 +18,7 @@
  * state without dragging in the full renderer.
  */
 
-#import "mgl_rt_sync.h"
+#include "mgl_rt_sync.h"
 #include "mgl_render.h"
 
 /* findTexture is implemented in textures.c and resolves a GL texture name to

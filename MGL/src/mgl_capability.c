@@ -17,7 +17,7 @@
 
 #include "mgl_capability.h"
 #include "mgl_render.h"
-#import <string.h>
+#include <string.h>
 
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
 {

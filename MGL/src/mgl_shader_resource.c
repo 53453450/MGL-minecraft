@@ -15,10 +15,8 @@
  * See mgl_shader_resource.h for the API contract.
  */
 
-#import "mgl_shader_resource.h"
+#include "mgl_shader_resource.h"
 #include "mgl_render.h"
-
-#import <Foundation/Foundation.h>
 
 #include <string.h>
 

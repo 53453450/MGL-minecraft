@@ -32,8 +32,8 @@
  *     MGLLoadAction / MGLStoreAction.
  */
 
-#import "mgl_sync.h"
-#import "mgl_render.h"
+#include "mgl_sync.h"
+#include "mgl_render.h"
 
 /* === Render-pass attachment subresource === */
 

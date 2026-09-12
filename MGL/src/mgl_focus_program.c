@@ -10,9 +10,9 @@
  * paths can read the list without a function call.
  */
 
-#import "mgl_focus_program.h"
+#include "mgl_focus_program.h"
 
-#import "mgl_trace_log.h"
+#include "mgl_trace_log.h"
 
 #include <stddef.h>
 

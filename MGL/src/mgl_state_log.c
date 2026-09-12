@@ -6,7 +6,7 @@
  * See mgl_state_log.h for the API contract.
  */
 
-#import "mgl_state_log.h"
+#include "mgl_state_log.h"
 
 #include <stdio.h>
 #include <string.h>

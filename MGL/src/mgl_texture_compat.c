@@ -10,7 +10,7 @@
 
 
 
-#import "mgl_texture_compat.h"
+#include "mgl_texture_compat.h"
 #include "mgl_render.h"
 
 MGLTextureDataKind mglTextureDataKindForPixelFormat(uint32_t pixelFormat)

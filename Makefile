@@ -1049,7 +1049,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
 	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
-	MGL/src/mgl_sync.m \
+	MGL/src/mgl_sync.c \
 	$(METALCPP_OBJC_OBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
@@ -1067,7 +1067,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/MGLPlatformRendererShell.m \
 		MGL/src/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \
-		MGL/src/mgl_sync.m \
+		MGL/src/mgl_sync.c \
 		-x none $(METALCPP_OBJC_OBJ) \
 		-o $@
 

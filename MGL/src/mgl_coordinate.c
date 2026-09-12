@@ -32,7 +32,7 @@
  * 4-quadrant matrix at each binding site.
  */
 
-#import "mgl_coordinate.h"
+#include "mgl_coordinate.h"
 #include "mgl_render.h"
 
 bool mglProgramHasExistingFramebufferSampleYFlip(Program *program)
