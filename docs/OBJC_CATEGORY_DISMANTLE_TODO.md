@@ -1,39 +1,51 @@
-# MGL ObjC Category 拆解 TODO
+# MGL ObjC 清零 TODO
 
-> 目标：**ObjC 只保留薄平台层**（CAMetalLayer / drawable / present / view 几何 / 主线程同步 / 少量 `id` 物化端口）。
-> 编排、策略、enum 映射、plan、encode、hazard、PSO 决策一律在 C / C++（`mgl_render*`、`mgl_draw_*`、`mgl_tess_*`）。
+> **目标（2026-09-12 重定）：MGL 内 ObjC 清零。**
+> 终态 = `MGL/` 下**不存在** `.m` / `.mm` 文件，也不存在 ObjC 语法与 ObjC 词汇
+> （`@interface` / 消息发送 / `#import` / `__bridge` / `NS*` / `MTL*` ObjC 类型 / `BOOL`·`YES`·`NO`·`nil`·
+> `NSUInteger`）；引擎全部为 **C 或 C++（Metal-cpp）**。
 >
-> 基线：`53453450/MGL-minecraft` @ `25b9338`（2026-09-08；docs/O0 合入时 HEAD）
-> 对齐：`docs/ARCHITECTURE_REVIEW.md`（目标「薄 ObjC 端口：layer / drawable / swap」）
-> 并列：`CTS_FIX_POLICY.md` / `CTS_REFACTOR_SPLIT.md`（禁则与域拆分不冲突；本文件管 **边界厚度**）
+> 允许的**唯一**例外是平台壳（`NSWindow` / `CAMetalLayer` / drawable / 主线程同步）：若确实无法移出，
+> 只允许存在**一个**平台壳 TU，且必须写明行数上限与移除路径（见 T5）；除此之外任何新代码不得引入 ObjC。
+>
+> 基线：`53453450/MGL-minecraft` @ `8e64afb`（2026-09-12；本目标重定前的 HEAD）
+> 对齐：`docs/ARCHITECTURE_REVIEW.md`（层规模与依赖域）
+> 并列：`CTS_FIX_POLICY.md` / `CTS_REFACTOR_SPLIT.md`（禁则与域拆分不冲突；本文件管 **ObjC 归零**）
 
 ---
 
-## 0. 薄平台层定义（Keep 清单）
+## 0. 终态定义与分层（T0–T5）
 
-ObjC **允许**保留的职责（理想终态每个入口 ≤ ~50–150 行）：
+「清零」不是一次性动作，按"改动风险 × 可验证性"分五层推进，每层都要过 §0.2 的验证口径。
 
-| 职责 | 现有落点 | 说明 |
-|------|----------|------|
-| `CAMetalLayer` / drawable 获取与 present | `MGLPlatformRendererShell`、Lifecycle / Swap | vsync、`displaySyncEnabled`、unlocked skip-present |
-| View / window 几何与主线程 sync | `+Lifecycle` | KVO / notification → 回写 framebuffer size |
-| Device / queue 生命周期 glue | `+Lifecycle` + lease | 只调 `mglRendererBackend*`；不缓存无 lease borrowed 指针 |
-| GPU recovery **触发口** | `+GPURecovery` | 检测 + 调 C++ reset；策略在 C++ |
-| `id` 物化端口（薄） | 若干 category 入口 | `createMTLTexture` / `createMTLSampler` / `newCommandBuffer` 等：**参数由 C++ plan，ObjC 只 new/retain** |
-| C ABI → ObjC 一行转发 | `mtlDraw*` 等 | 已部分完成；继续压成一行 `mglIssue*` |
+| 层 | 内容 | 判据（DoD） | 规模（2026-09-12 实测） |
+|---|---|---|---|
+| **T0 ✅** | 空 TU 删除：只有注释的 `.m` | 文件消失；构建 + `make test-all` 通过 | 3 个文件 / 48 行（**已完成**） |
+| **T1 ✅** | 仅 `#import` 算 ObjC 语法的 `.m` → `.c`（改 `#include`，去掉无用 `<Foundation/Foundation.h>`） | 全部为 `.c`；构建 + `make test-all` + hotspot 非通过集合 diff 为空 | 10 个文件 / 2,188 行（**已完成**） |
+| **T2** | 无 ObjC 语法但有词汇：`BOOL`/`YES`/`NO`/`nil`/`NSUInteger`/`NSLog` 换成 C 等价物后改名 | 同上 + 该文件 ObjC 词汇清零 | **10 个文件 / 1,709 行** |
+| **T3** | 决策下沉：category 里的 policy / plan / enum 映射 / 分类搬进 C 模块（**沿用 §2 的 Batch O1–O7**） | 每个 domain：决策在 C、有 golden harness、ObjC 只剩物化端口 | `MGLRenderer*.m` 34,610 → 逐批下降 |
+| **T4** | 端口 C++ 化：`.m` 端口改 C++（Metal-cpp），`id` → `void*`，`MTL*` ObjC 类型 → Metal-cpp 类型 | `MGL/src` 内不再有 `.m`（平台壳除外） | 剩余 category + `MGLRenderer.m` + `mgl_draw_metal_port.m` 等 |
+| **T5** | 平台壳：`NSWindow`/`CAMetalLayer`/drawable/present/主线程同步 | 二选一并记录：**(a)** 用 ObjC runtime C API（`objc_msgSend`）在 C++ 内实现，`MGL/` 内 0 个 `.m`；**(b)** 移交消费方，`MGL/` 内 0 个 `.m` | 现 `MGLPlatformRendererShell.m` 229 行 + `+Lifecycle` 665 行 |
 
-ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
+**禁则（加严）**：除 T5 允许的那一个平台壳 TU 外，**任何新代码不得新增 ObjC**；不得以"先加后清"为由在 `.m` 里加逻辑；
+新增策略/plan/映射一律进 C/C++ 模块并配 harness。
 
-- 巨型 category 当 encoder / state machine
-- GL enum ↔ Metal 映射、readback 分类、PSO format-class 选择
-- tess/GS/XFB/cull plan、batch path 决策、hazard overflow 策略
-- CTS-shaped 特判、环境变量污染 Core 语义（见 CTS 禁则 B1–B6）
+### 0.0 清零度量（可复现）
 
-**验收口径（整体）**
+`scripts/objc_zero.sh` 输出四组数字：`.m/.mm` 文件数、空 TU 数、ObjC 语法出现次数、ObjC 词汇出现次数，
+外加 `MGLRenderer*.m` 合计（历史指标，保留以便对照）。基线（2026-09-12 @ `8e64afb`）：
 
-- `MGLRenderer+*.m` 合计从 ~59k → **目标 ≤ 8–12k**（平台壳 + 薄物化）
-- 每个 domain category 要么删除，要么降到「调用 C ABI + 物化 `id`」
-- 新增逻辑默认进 C/C++；ObjC PR 必须证明属于 Keep 清单
+| 指标 | 基线 | 终态 |
+|---|---|---|
+| `MGL/` 内 `.m` 文件数 | **53** | 0（或 T5 的 1 个平台壳） |
+| 其中空 TU | **3** | 0 |
+| ObjC 文件行数 | **43,989** | ≈ 平台壳 |
+| ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
+| ObjC 词汇出现次数 | **4,353** | 0 |
+| `MGLRenderer*.m` total | **34,604** | 0 |
+
+**当前进度（2026-09-12，T0+T1 完成后）**：文件 **53 → 40**、空 TU **3 → 0**、行数 **43,989 → 41,753**、
+ObjC 语法 **2,268 → 2,254**、词汇 **4,353（未动）**。
 
 ---
 
@@ -87,7 +99,21 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 单例复跑（定位单个 case，含打开 CTS 侧 trace 的方法）见
 本地日志 `docs/CTS_TESS_REMAINING_2026-09-10.md` 的「复现 ground truth 的方法」。
 
-## 1. 现状库存（按厚度）
+## 1. 清零库存
+
+### 1.0 ObjC 文件分层清单（2026-09-12 实测，脚本口径见 §0.0）
+
+（口径：`scripts/objc_zero.sh`；`语法`含 `#import`，`词汇`＝`BOOL/YES/NO/nil/NSUInteger/NSLog/NS*/MTL*`）
+
+| 层 | 文件数 / 行数 | 文件 |
+|---|---|---|
+| **T0 空 TU ✅ 已删** | 3 / 48 | ~~`MGLBindingSync.m`~~ · ~~`MGLQueryManager.m`~~ · ~~`MGLTextures.m`~~ |
+| **T1 仅 `#import` ✅ 已改名** | 10 / 2,188 | `hash_table.m`(855) · `mgl_texture_compat.m`(331) · `mgl_sampler_compat.m`(324) · `mgl_sync.m`(108) · `mgl_rt_sync.m`(104) · `mgl_capability.m`(100) · `mgl_coordinate.m`(99) · `mgl_focus_program.m`(97) · `mgl_shader_resource.m`(94) · `mgl_state_log.m`(76) |
+| **T2 有词汇无语法** | 10 / 1,709 | `mgl_binding_texture_log.m`(328,v16) · `mgl_frame_activity.m`(288,v8) · `mgl_trace_strategy.m`(229,v16) · `mgl_state_compat.m`(184,v10) · `mgl_vertex_format.m`(147,v1) · `mgl_byte_hash.m`(142,v1) · `mgl_vertex_attrib_query.m`(133,v8) · `mgl_draw_buffer.m`(94,v5) · `mgl_blit_clip.m`(90,v9) · `mgl_buffer_query.m`(74,v8) |
+| **T3/T4 真 ObjC** | 30 / 40,044 | `+RenderPass`(426 语法/558 词汇) · `+Texture`(312/1103) · `+Blit`(244/880) · `MGLRenderer`(172/282) · `+BindingState`(136/198) · `+Tessellation`(153/292) · `mgl_draw_metal_port`(116/100) · `+Compute`(90/104) · … |
+| **T5 平台壳** | 1 / 229 | `MGLPlatformRendererShell.m`（归 T4/T5 处理） |
+
+### 1.1 现状库存（按厚度）
 
 ### 1.1 `MGLRenderer` categories（2026-09-12 实测 **34.5k**；基线 ~59k）
 
@@ -139,6 +165,9 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 ---
 
 ## 2. 拆解批次 TODO（执行顺序）
+
+> 本节 O0–O7 是 **T3（决策下沉）** 的批次清单：把 category / port 里的决策搬进 C 模块。
+> T0–T2（文件级清零）在 §0 的层表里逐项勾选；T4/T5（端口与平台壳 C++ 化）在 O6 之后单独立项。
 
 原则：**先拔编排宿主，再拔物化策略，最后收口 category 文件删除**。与正在进行的 `refactor(*): sink` 同向，但要 **按域落文件**，避免只堆进 `mgl_render.cpp` 神文件。
 
@@ -656,4 +685,17 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     验证：**`make test-all` 返回 0**（含 smoke 系列：`SMOKE_DONE`、`es-smoke: ok`、legacy-compat 193/193、
     test_regression 92/0/2、各 plan harness 全绿）；CTS hotspot 非通过集合 diff 为空。
 
-完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
+38. **目标重定为「ObjC 清零」+ T0/T1 首批（`c5429c2`）**：把本文的目标从"薄平台层（≤8–12k）"改为
+    **`MGL/` 内 ObjC 清零**，并给出可复现度量 `scripts/objc_zero.sh`（文件数 / 空 TU / 行数 / ObjC 语法次数 /
+    ObjC 词汇次数 / `MGLRenderer*.m` 合计）与基线（53 文件 · 43,989 行 · 语法 2,268 · 词汇 4,353）。
+    分层 T0–T5（空 TU → 仅 `#import` → 有词汇无语法 → 决策下沉（沿用 O1–O7）→ 端口 C++ 化 → 平台壳），
+    并加严禁则：除 T5 允许的**唯一**平台壳外，任何新代码不得引入 ObjC。
+    **首批 T0/T1 已落地**：删掉 3 个只有注释的空 TU（`MGLBindingSync.m` / `MGLQueryManager.m` / `MGLTextures.m`），
+    10 个"仅 `#import` 是 ObjC 语法"的文件改名为 `.c`（`hash_table` / `mgl_texture_compat` / `mgl_sampler_compat` /
+    `mgl_sync` / `mgl_rt_sync` / `mgl_capability` / `mgl_coordinate` / `mgl_focus_program` / `mgl_shader_resource` /
+    `mgl_state_log`），`#import` → `#include`，并去掉 `mgl_shader_resource.c` / `mgl_sampler_compat.c` 里**未被使用**的
+    `<Foundation/Foundation.h>`；Makefile 中 `test_metalcpp_smoke` 对 `mgl_sync.m` 的两处显式引用同步改为 `.c`。
+    度量：文件 **53 → 40**、空 TU **3 → 0**、ObjC 行数 **43,989 → 41,753**、ObjC 语法 **2,268 → 2,254**。
+    验证：两个库构建无错；**`make test-all` 返回 0**（smoke / es-smoke / legacy-compat 193/193 / test_regression
+    92/0/2 / 各 plan harness）；CTS 整轮见下（hotspot 非通过集合 diff 为空）。
+    下一批：**T2**（10 个"有词汇无语法"文件：`BOOL/YES/NO/nil/NSUInteger/NSLog` → C 等价物后改名）。
