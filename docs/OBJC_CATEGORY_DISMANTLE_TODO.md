@@ -85,7 +85,7 @@ shim 是**唯一**允许新增的 ObjC 面（逐函数一行包装，把 batch/d
 | 项 | 证据 | 动作 |
 |---|---|---|
 | `shouldUseDontCareLoadForColorTexture:` 死声明 | `_Private.h`；无实现；`MGLRenderer.m` 过期注释 | 删声明+注释 |
-| 文档过期计数（「26 文件」等） | `objc_zero.sh`：联合报告时 **23**，当前 tip **22** | **已对齐脚本；禁再写 26** |
+| 文档过期计数（「26 文件」等） | `objc_zero.sh`：联合报告时 **23**，当前 tip **21** | **已对齐脚本；禁再写 26** |
 | 「薄平台 ≤8–12k 即终态」旧目标句 | 掩护三厚块 | **已禁**；改清零叙事（T5 唯一壳除外） |
 | `esrc` 文本侧 ×24（oracle-equal 后） | `mgl_air_backend.cpp` ~10457–10552 | 删 strstr，只留 mask/IR |
 | `MGL_USE_METALCPP` 生产 A/B | 树内无生产读取 | **死透 — 禁止复活** |
