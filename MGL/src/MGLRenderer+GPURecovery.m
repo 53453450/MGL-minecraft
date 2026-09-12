@@ -195,7 +195,7 @@
         (void)mglRenderGetCommandBufferLabel(
             (__bridge const void *)commandBuffer,
             commandBufferLabel, sizeof(commandBufferLabel));
-        mglTraceLogNSString(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%s",
+        mglTraceLog("MGL TRACE commit.begin call=%llu cb=%p status=%s label=%s",
               (unsigned long long)commitCall,
               commandBuffer,
               mglCommandBufferStatusName(
@@ -214,7 +214,7 @@
             MGL_RENDER_COMMAND_BUFFER_TRANSACTION_NESTED) {
             NSLog(@"MGL AGX WARNING: Commit already in progress, skipping nested commit");
             if (traceCommit) {
-                mglTraceLogNSString(@"MGL TRACE commit.skip.nested call=%llu",
+                mglTraceLog("MGL TRACE commit.skip.nested call=%llu",
                       (unsigned long long)commitCall);
             }
             return;
@@ -262,7 +262,7 @@
         }
     } @finally {
         if (traceCommit) {
-            mglTraceLogNSString(@"MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
+            mglTraceLog("MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
                   (unsigned long long)commitCall,
                   commandBuffer,
                   mglCommandBufferStatusName(

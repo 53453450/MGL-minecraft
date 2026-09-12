@@ -190,11 +190,11 @@ static void skipTraceCmd(void *v, uint32_t i)
         if (mgl_batch_flush_should_trace_log(
                 hit, cb->total_commands, kMGLDiagnosticStateLogs ? 1 : 0, skipped,
                 mglRenderErrorIsNone((uint32_t)replayError) ? 0 : 1)) {
-            mglTraceLogNSString(
-                @"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u "
-                @"arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u "
-                @"mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u "
-                @"directBatches=%u directCommands=%u skippedCommands=%u",
+            mglTraceLog(
+                "MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u "
+                "arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u "
+                "mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u "
+                "directBatches=%u directCommands=%u skippedCommands=%u",
                 (unsigned long long)hit, cb->batch_count, cb->total_commands,
                 cb->array_cmd_count, cb->element_cmd_count,
                 st.path_stats.stream_batches, st.path_stats.stream_commands,

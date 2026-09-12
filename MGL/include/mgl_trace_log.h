@@ -20,9 +20,9 @@
  *     counter for the fid= prefix field.
  *   - mglTraceLogIsEnabled()         — gate check (also lazily initializes
  *     the log file via dispatch_once).
- *   - mglTraceLogNSString(fmt, ...)  — ObjC NSString-format wrapper gated
+ *   - (the ObjC NSString-format wrapper is gone: call mglTraceLog with a C format)
  *     by trace enabled state.  Despite the legacy name similarity, it
- *     writes to the trace log, not NSLog, unless stderr mirroring is
+ *     writes to the trace log, not stderr, unless stderr mirroring is
  *     explicitly enabled.
  *
  * Design notes:
@@ -72,10 +72,6 @@ typedef enum {
     MGL_TRACE_CAT_PERF        /* PERF* counters / elapsed lines */
 } MGLTraceCategory;
 
-#ifdef __OBJC__
-#import <Foundation/Foundation.h>
-#endif
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -114,14 +110,6 @@ bool mglTraceEnvFlagEnabled(const char *name);
  * mglTraceLogIsEnabled(); exposed for the constructor attribute in
  * MGLRenderer.m. */
 void mglInitTraceLogIfNeeded(void);
-
-#ifdef __OBJC__
-/* ObjC NSString-format wrapper gated by trace-enabled state.  The write
- * path (mglTraceLogV) adds the same [mono_ns seq tid fid cat] prefix as
- * mglTraceLog, so NSString call sites are indistinguishable in the log. */
-void mglTraceLogNSStringV(NSString *format, va_list args);
-void mglTraceLogNSString(NSString *format, ...);
-#endif
 
 #ifdef __cplusplus
 }

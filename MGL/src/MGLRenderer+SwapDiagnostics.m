@@ -211,7 +211,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
             (kMGLSwapPresentDiagnostics &&
              (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
         if (traceCopyToDrawable) {
-            mglTraceLogNSString(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
+            mglTraceLog("MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
                   (unsigned long long)swapCall,
                   rpColor0,
                   (unsigned long)sourceInfo.pixel_format,
@@ -280,7 +280,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
         }
 
         if (traceCopyToDrawable) {
-            mglTraceLogNSString(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
+            mglTraceLog("MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
         }
     } else if (MGL_STATE(ctx)->framebuffer == NULL &&
                _defaultDrawableWrittenSinceLastSwap &&
@@ -291,7 +291,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
             (kMGLSwapPresentDiagnostics &&
              (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
         if (traceSkipCopyToDrawable) {
-            mglTraceLogNSString(@"MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
+            mglTraceLog("MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
                   (unsigned long long)swapCall,
                   rpColor0,
                   drawableTexture);
@@ -312,8 +312,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
         void (^scheduleTextureSample)(id, NSString *, NSUInteger, NSUInteger) =
             ^(id sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
                 if (!sampleTexture) {
-                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
-                          sampleTag,
+                    mglTraceLog("MGL TRACE swap.sample.%s call=%llu skipped(texture=nil)",
+                          [sampleTag UTF8String],
                           (unsigned long long)swapCall);
                     return;
                 }
@@ -325,8 +325,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                 }
                 if (sampleInfo.pixel_format != 80u &&
                     sampleInfo.pixel_format != 70u) {
-                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
-                          sampleTag,
+                    mglTraceLog("MGL TRACE swap.sample.%s call=%llu skipped(fmt=%lu tex=%lux%lu)",
+                          [sampleTag UTF8String],
                           (unsigned long long)swapCall,
                           (unsigned long)sampleInfo.pixel_format,
                           (unsigned long)sampleInfo.width,
@@ -340,8 +340,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                 NSUInteger sampleBytesPerRow = sampleWidth * bytesPerPixel;
                 NSUInteger sampleBytesPerImage = sampleBytesPerRow * sampleHeight;
                 if (sampleWidth == 0 || sampleHeight == 0 || sampleBytesPerImage == 0) {
-                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
-                          sampleTag,
+                    mglTraceLog("MGL TRACE swap.sample.%s call=%llu skipped(invalid-size tex=%lux%lu)",
+                          [sampleTag UTF8String],
                           (unsigned long long)swapCall,
                           (unsigned long)sampleInfo.width,
                           (unsigned long)sampleInfo.height);
@@ -414,12 +414,12 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                     const uint8_t *p = sampleBufferLength >= sampleBytesPerImage
                         ? (const uint8_t *)sampleContents : NULL;
                     if (!p) {
-                        mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
-                              sampleTagCopy,
+                        mglTraceLog("MGL TRACE swap.sample.%s call=%llu unavailable(contents=nil) status=%s error=%s",
+                              [sampleTagCopy UTF8String],
                               (unsigned long long)sampleSwapCall,
                               mglCommandBufferStatusName(
                                   sampleState->status),
-                              sampleError);
+                              [sampleError UTF8String]);
                         return;
                     }
 
@@ -459,9 +459,9 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                     }
                     BOOL appearsSolid = (pixelCount > 0u && diffFromFirst == 0u);
 
-                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
+                    mglTraceLog("MGL TRACE swap.sample.%s call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
                           "nonZero=%lu/%lu sum=%llu firstPixel=0x%08x min=0x%08x max=0x%08x xor=0x%08x diff=%lu solid=%d status=%s error=%@",
-                          sampleTagCopy,
+                          [sampleTagCopy UTF8String],
                           (unsigned long long)sampleSwapCall,
                           (unsigned long)sampleTexWidth,
                           (unsigned long)sampleTexHeight,
@@ -495,7 +495,7 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
                         if (s_sameCenterPixelRun == 10ull ||
                             s_sameCenterPixelRun == 30ull ||
                             (s_sameCenterPixelRun % 120ull) == 0ull) {
-                            mglTraceLogNSString(@"MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
+                            mglTraceLog("MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
                                   firstPixel,
                                   (unsigned long long)s_sameCenterPixelRun,
                                   appearsSolid ? 1 : 0,

@@ -1081,7 +1081,7 @@ static void mglTextureCopyTextureToBuffer(
             uint64_t hit = ++s_shortBackingLogs;
             if (kMGLDiagnosticStateLogs &&
                 (hit <= 32ull || (hit % 512ull) == 0ull)) {
-                mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=0 have=%llu need=%llu reason=%s hit=%llu",
+                mglTraceLog("MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=0 have=%llu need=%llu reason=%s hit=%llu",
                               (unsigned)tex->name,
                               (unsigned)op->level,
                               (unsigned long long)op->available_bytes,
@@ -1120,7 +1120,7 @@ static void mglTextureCopyTextureToBuffer(
     uint64_t hit = ++s_refreshLogs;
     if (kMGLDiagnosticStateLogs &&
         (uploadedAny || hit <= 32ull || (hit % 512ull) == 0ull)) {
-        mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH tex=%u mtl=%p uploaded=%d failed=%d dirty=0x%x levels=%u reason=%s hit=%llu",
+        mglTraceLog("MGL TEXTURE CPU-REFRESH tex=%u mtl=%p uploaded=%d failed=%d dirty=0x%x levels=%u reason=%s hit=%llu",
                       (unsigned)tex->name,
                       texture,
                       uploadedAny ? 1 : 0,
@@ -3815,8 +3815,8 @@ static void mglTextureCopyTextureToBuffer(
     MGL_ASSERT_GL_THREAD();
 
     if (kMGLDiagnosticStateLogs) {
-        mglTraceLogNSString(@"MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
-        mglTraceLogNSString(@"MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
+        mglTraceLog("MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
+        mglTraceLog("MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
                       tex->target, tex->internalformat, tex->num_levels, upload_level_count);
     }
 
@@ -6145,11 +6145,11 @@ static void mglTextureCopyTextureToBuffer(
                 (unsigned)tl->width, (unsigned)tl->ever_written,
                 (unsigned)tl->has_initialized_data];
         }
-        mglTraceLogNSString(@"MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
-                      @"numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
-                      @"mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
-                      @"uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
-                      @"levels=%@ hit=%llu",
+        mglTraceLog("MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
+                      "numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
+                      "mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
+                      "uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
+                      "levels=%s hit=%llu",
                       (unsigned)tex->name, (unsigned)tex->target,
                       (unsigned)tex->width, (unsigned)tex->height,
                       (unsigned)tex->internalformat,
@@ -6159,7 +6159,7 @@ static void mglTextureCopyTextureToBuffer(
                       (unsigned)tex->params.base_level, (unsigned)tex->params.max_level,
                       (unsigned long)uploadedLevels, (unsigned long)skippedLevels,
                       (unsigned long)skippedSourceNone, (unsigned long)skippedNoData,
-                      levelSummary, (unsigned long long)diagHit);
+                      [levelSummary UTF8String], (unsigned long long)diagHit);
     }
 }
 
@@ -6849,11 +6849,11 @@ static void mglTextureCopyTextureToBuffer(
     BOOL fourByteColor =
         mglRenderPixelFormatIsUnorm8Color(fmt) != 0;
     if (!fourByteColor) {
-        mglTraceLogNSString(@"MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%@ fmt=%lu type=%lu size=%lux%lu hit=%llu",
+        mglTraceLog("MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%s fmt=%lu type=%lu size=%lux%lu hit=%llu",
               (unsigned)program,
               (unsigned)binding,
               glTex ? (unsigned)glTex->name : 0u,
-              reason,
+              [reason UTF8String],
               (unsigned long)fmt,
               (unsigned long)textureInfo.texture_type,
               (unsigned long)textureInfo.width,
@@ -6882,11 +6882,11 @@ static void mglTextureCopyTextureToBuffer(
     id cb = mglTextureCreateCommandBuffer(_commandQueue);
     id blit = mglTextureCreateBlitEncoder(cb);
     if (!readback || !cb || !blit) {
-        mglTraceLogNSString(@"MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%@ readback=%p cb=%p blit=%p hit=%llu",
+        mglTraceLog("MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%s readback=%p cb=%p blit=%p hit=%llu",
               (unsigned)program,
               (unsigned)binding,
               glTex ? (unsigned)glTex->name : 0u,
-              reason,
+              [reason UTF8String],
               readback,
               cb,
               blit,
@@ -6943,11 +6943,11 @@ static void mglTextureCopyTextureToBuffer(
              sampledState.error_domain,
              (long long)sampledState.error_code]
         : nil;
-    mglTraceLogNSString(@"MGL TRACE sampled.readback stage=%@ program=%u binding=%u glTex=%u reason=%@ hit=%llu "
+    mglTraceLog("MGL TRACE sampled.readback stage=%s program=%u binding=%u glTex=%u reason=%s hit=%llu "
           "mtl=%p fmt=%lu type=%lu size=%lux%lu sample=%lux%lu status=%s error=%@ "
           "nonZero=%lu/%lu sum=%llu first=0x%08x min=0x%08x max=0x%08x xor=0x%08x "
           "level(init ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx)",
-          stage,
+          [stage UTF8String],
           (unsigned)program,
           (unsigned)binding,
           glTex ? (unsigned)glTex->name : 0u,

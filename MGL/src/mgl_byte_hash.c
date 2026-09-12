@@ -82,7 +82,7 @@ void mglDumpBytesToLog(const char *label,
                        size_t baseOffset)
 {
     /* Early return when trace logging is disabled — avoids expensive hex
-     * formatting (snprintf loop) that would be discarded by mglTraceLogNSString. */
+     * formatting (snprintf loop) that the trace log would discard. */
     if (!mglTraceLogIsEnabled()) {
         return;
     }

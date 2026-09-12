@@ -2348,7 +2348,7 @@ static GLenum mglPassthroughDeclType(
         static uint64_t s_defaultSampledCullBypassCount = 0;
         uint64_t hit = ++s_defaultSampledCullBypassCount;
         if (hit <= 32ull || (hit % 256ull) == 0ull) {
-            mglTraceLogNSString(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
+            mglTraceLog("MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
                   (unsigned long long)hit,
                   (unsigned)(ctx ? state->program_name : 0u),
                   (unsigned)(ctx ? state->draw_buffer : 0u));
@@ -2615,7 +2615,7 @@ static GLenum mglPassthroughDeclType(
             BOOL viewportWasClamped = (vx != rawVx || vy != rawVy || vw != rawVw || vh != rawVh);
             BOOL viewportOriginConverted = (metalVy != vy);
             if (traceEncoderState) {
-                mglTraceLogNSString(@"MGL VIEWPORT apply pass=%lux%lu origin=0x%x raw=(%.3f,%.3f,%.3f,%.3f) resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
+                mglTraceLog("MGL VIEWPORT apply pass=%lux%lu origin=0x%x raw=(%.3f,%.3f,%.3f,%.3f) resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
                               (unsigned long)passWidth, (unsigned long)passHeight,
                               state->var.clip_origin,
                               rawVx, rawVy, rawVw, rawVh,
@@ -2638,7 +2638,7 @@ static GLenum mglPassthroughDeclType(
                     id rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
                     id drawableTexture = (_drawable ? [self mglDrawableTexture] : nil);
 
-                    mglTraceLogNSString(@"MGL VIEWPORT CLAMP DETAIL hit=%llu fbo=%p valid=%d fboName=%u drawBuffer=0x%x pass=%lux%lu "
+                    mglTraceLog("MGL VIEWPORT CLAMP DETAIL hit=%llu fbo=%p valid=%d fboName=%u drawBuffer=0x%x pass=%lux%lu "
                                   "rpColor0=%p(%lux%lu) rpDepth=%p(%lux%lu) drawable=%p(%lux%lu) raw=(%.3f,%.3f,%.3f,%.3f) "
                                   "resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
                                   (unsigned long long)clampHit,
@@ -2683,7 +2683,7 @@ static GLenum mglPassthroughDeclType(
                                 : nil;
                             id rpAttachment = mglRenderPassColorTextureFor(_renderPassManager.state, attIndex);
 
-                            mglTraceLogNSString(@"MGL VIEWPORT CLAMP FBO att=%d name=%u textarget=0x%x level=%d layer=%d tex=%p "
+                            mglTraceLog("MGL VIEWPORT CLAMP FBO att=%d name=%u textarget=0x%x level=%d layer=%d tex=%p "
                                           "texName=%u texTarget=0x%x texSize=%ux%ux%u mtl=%p(%lux%lu) rpTex=%p(%lux%lu)",
                                           attIndex,
                                           attachment->texture,
@@ -3014,7 +3014,7 @@ static GLenum mglPassthroughDeclType(
                 static uint64_t s_defaultDepthCreateCount = 0;
                 uint64_t hit = ++s_defaultDepthCreateCount;
                 if (kMGLDiagnosticStateLogs && hit <= 8) {
-                    mglTraceLogNSString(@"MGL DEFAULT FBO: created depth attachment fmt=%lu size=%lux%lu drawBuffer=%u",
+                    mglTraceLog("MGL DEFAULT FBO: created depth attachment fmt=%lu size=%lux%lu drawBuffer=%u",
                                   (unsigned long)depthFormat,
                                   (unsigned long)mglRenderPassTextureInfo(depth_texture).width,
                                   (unsigned long)mglRenderPassTextureInfo(depth_texture).height,
@@ -3404,7 +3404,7 @@ static GLenum mglPassthroughDeclType(
         static uint64_t s_defaultFboLoadLogCount = 0;
         uint64_t hit = ++s_defaultFboLoadLogCount;
         if (hit <= 32ull || (hit % 256ull) == 0ull) {
-            mglTraceLogNSString(@"MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
+            mglTraceLog("MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
                           (unsigned long long)hit,
                           MGL_STATE(ctx)->draw_buffer,
                           fbo ? (unsigned)fbo->name : 0u);
@@ -3472,7 +3472,7 @@ static GLenum mglPassthroughDeclType(
 {
 	    if (kMGLDiagnosticStateLogs && traceRenderEncoder) {
 	        MGLRenderPassClearColorValue c0 = mglRenderPassClearColorFor(_renderPassManager.state, 0, (MGLRenderPassClearColorValue){0, 0, 0, 0});
-	        mglTraceLogNSString(@"MGL TRACE clear.resolve call=%llu fbo=%u "
+	        mglTraceLog("MGL TRACE clear.resolve call=%llu fbo=%u "
 	              "fboColorClears=%u fboColorMask=0x%x fboAtt0ClearMask=0x%x c0LA=%s depthLA=%s stencilLA=%s "
 	              "c0Clear=(%.3f,%.3f,%.3f,%.3f) depthClear=%.3f stencilClear=%u",
               (unsigned long long)renderEncoderCall,
@@ -3572,7 +3572,7 @@ static GLenum mglPassthroughDeclType(
         id c0Tex = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
         id dTex = mglRenderPassDepthTextureFor(_renderPassManager.state);
         id sTex = mglRenderPassStencilTextureFor(_renderPassManager.state);
-        mglTraceLogNSString(@"MGL TRACE renderpass.attach call=%llu fbo=%u drawBuf=0x%x rt=%lux%lu "
+        mglTraceLog("MGL TRACE renderpass.attach call=%llu fbo=%u drawBuf=0x%x rt=%lux%lu "
               "c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s stencil=%p fmt=%lu size=%lux%lu la/sa=%s/%s",
               (unsigned long long)renderEncoderCall,
               (unsigned)(mglRendererSafeFramebufferName(ctx)),
@@ -4401,7 +4401,7 @@ static GLenum mglPassthroughDeclType(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState)) {
         if (kMGLDiagnosticStateLogs) {
-            mglTraceLogNSString(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
+            mglTraceLog("MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
         }
         if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
@@ -5293,7 +5293,7 @@ static GLenum mglPassthroughDeclType(
                         &s_processGLStateLastCallCount,
                         0.25);
     if (traceProcess) {
-        mglTraceLogNSString(@"MGL TRACE processGLState.begin call=%llu draw=%d",
+        mglTraceLog("MGL TRACE processGLState.begin call=%llu draw=%d",
               (unsigned long long)processCall, draw_command ? 1 : 0);
         mglLogStateSnapshot("processGLState.enter",
                             ctx,
@@ -5588,7 +5588,7 @@ static GLenum mglPassthroughDeclType(
         static uint64_t nil_pipeline_count = 0;
         nil_pipeline_count++;
         if (nil_pipeline_count <= 8 || (nil_pipeline_count % 1000) == 0) {
-            mglTraceLogNSString(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
+            mglTraceLog("MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
                           (unsigned long long)nil_pipeline_count);
         }
         mglMarkRendererDirtyBits(ctx->active_state,
@@ -5733,7 +5733,7 @@ static GLenum mglPassthroughDeclType(
 
     double processElapsedUs = (mglTraceClockNS() - processStartNS) / 1000.0;
     if (traceProcess) {
-        mglTraceLogNSString(@"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.1fus",
+        mglTraceLog("MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.1fus",
               (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedUs);
         mglLogStateSnapshot("processGLState.exit.ok",
                             ctx,
@@ -5742,7 +5742,7 @@ static GLenum mglPassthroughDeclType(
                             _renderPassManager.state->renderPassStateOwner,
                             _drawable);
     } else if (processElapsedUs >= 25.0) {
-        mglTraceLogNSString(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.1fus",
+        mglTraceLog("MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.1fus",
               (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedUs);
     }
     return true;
@@ -5804,7 +5804,7 @@ static GLenum mglPassthroughDeclType(
                 static uint64_t s_deferredMapCount = 0;
                 s_deferredMapCount++;
                 if (s_deferredMapCount <= 16 || (s_deferredMapCount % 1000ull) == 0ull) {
-                    mglTraceLogNSString(@"MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
+                    mglTraceLog("MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
                                   (unsigned long long)s_deferredMapCount);
                 }
             } else {

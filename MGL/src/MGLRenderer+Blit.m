@@ -2244,7 +2244,7 @@ static id mglLookupAuxRenderPipeline(
         static uint64_t s_msaaResolveLogCount = 0;
         uint64_t msaaHit = ++s_msaaResolveLogCount;
         if (msaaHit <= 8ull || (msaaHit % 256ull) == 0ull) {
-            mglTraceLogNSString(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu emulated=%d srcTex=%lux%lu srcObj=%u",
+            mglTraceLog("MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu emulated=%d srcTex=%lux%lu srcObj=%u",
                   (unsigned long long)msaaHit,
                   (unsigned long)(nativeMsaa ? readInfo.sample_count
                                              : (NSUInteger)readTextureObject->samples),
@@ -2810,7 +2810,7 @@ static id mglLookupAuxRenderPipeline(
                 (GLbitfield)mglRenderClearMaskClearColor(
                     (uint32_t)readFBOAttachment->clear_bitmask);
             mglMarkTextureLevelRenderTargetWritten(readTextureObject, readFBOAttachment->level);
-            mglTraceLogNSString(@"MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
+            mglTraceLog("MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
                   (unsigned)readfbo->name,
                   (unsigned)readAttachment,
                   (unsigned)readTextureObject->name,
@@ -3015,7 +3015,7 @@ static id mglLookupAuxRenderPipeline(
                         (unsigned)(glm_ctx ? glm_ctx->active_state->draw_buffer : 0u),
                         (unsigned)(glm_ctx ? glm_ctx->active_state->read_buffer : 0u));
         } else {
-            mglTraceLogNSString(@"MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%x filter=0x%x "
+            mglTraceLog("MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%x filter=0x%x "
                   "srcReq=(%d,%d)-(%d,%d) dstReq=(%d,%d)-(%d,%d) "
                   "copy srcGL=(%.3f,%.3f %.3fx%.3f) dstGL=(%.3f,%.3f %.3fx%.3f) srcMTL=(%ld,%ld) dstMTL=(%ld,%ld) scaled=%d flip=%d "
                   "srcObj=%u dstObj=%u srcRT=%d dstRT=%d srcAuth=0x%x dstAuth=0x%x srcRtVer=%u dstRtVer=%u srcCopyVer=%u dstCopyVer=%u "

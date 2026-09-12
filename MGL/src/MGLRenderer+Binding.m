@@ -330,7 +330,7 @@ static id mglBindingCreateDefaultSampler(void)
             }
         } else {
             if (kMGLDiagnosticStateLogs) {
-                mglTraceLogNSString(@"MGL SUCCESS: Primary texture created successfully");
+                mglTraceLog("MGL SUCCESS: Primary texture created successfully");
             }
         }
 

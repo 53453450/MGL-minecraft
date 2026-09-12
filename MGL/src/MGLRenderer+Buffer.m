@@ -147,7 +147,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     }
 
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
-        mglTraceLogNSString(@"MGL TRACE map.begin stage=%d call=%llu preCount=%u program=%u",
+        mglTraceLog("MGL TRACE map.begin stage=%d call=%llu preCount=%u program=%u",
               stage,
               (unsigned long long)mapCall,
               buffer_map ? buffer_map->count : 0,
@@ -211,7 +211,7 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     }
 
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
-        mglTraceLogNSString(@"MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
+        mglTraceLog("MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
               stage,
               (unsigned long long)mapCall,
               buffer_map ? buffer_map->count : 0);

@@ -14,10 +14,9 @@
  * regular application logs readable while preserving a single trace stream.
  */
 
-#import "mgl_trace_log.h"
+#include "mgl_trace_log.h"
+#include <dispatch/dispatch.h>  /* dispatch_once: libdispatch is a C API */
 #include "mgl_env_flag.h"
-
-#import <Foundation/Foundation.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -33,8 +32,8 @@
 /* === Private static globals === */
 
 static FILE *g_mglTraceLogFile = NULL;
-static bool g_mglTraceLogEnabled = NO;
-static bool g_mglTraceLogMirrorStderr = NO;
+static bool g_mglTraceLogEnabled = false;
+static bool g_mglTraceLogMirrorStderr = false;
 static pthread_mutex_t g_mglTraceLogMutex = PTHREAD_MUTEX_INITIALIZER;
 
 static _Atomic uint64_t g_mglTraceSeq = 0;
@@ -47,7 +46,7 @@ static uint64_t g_mglTraceFallbackFrameID = 0;
 
 static bool mglTraceEnvFlag(const char *name)
 {
-    return mgl_env_flag_enabled(name) ? YES : NO;
+    return mgl_env_flag_enabled(name) ? true : false;
 }
 
 /* === Core implementation === */
@@ -98,7 +97,7 @@ void mglInitTraceLogIfNeeded(void)
                     logPath,
                     errno,
                     strerror(errno));
-            g_mglTraceLogEnabled = NO;
+            g_mglTraceLogEnabled = false;
             return;
         }
 
@@ -415,23 +414,3 @@ void mglTraceLogCategory(MGLTraceCategory cat, const char *fmt, ...)
     va_end(args);
 }
 
-#ifdef __OBJC__
-void mglTraceLogNSStringV(NSString *format, va_list args)
-{
-    if (!mglTraceLogIsEnabled() || !format) {
-        return;
-    }
-
-    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
-    const char *utf8 = [message UTF8String];
-    mglTraceLog("%s", utf8 ? utf8 : "");
-}
-
-void mglTraceLogNSString(NSString *format, ...)
-{
-    va_list args;
-    va_start(args, format);
-    mglTraceLogNSStringV(format, args);
-    va_end(args);
-}
-#endif
