@@ -98,10 +98,6 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
 
     uint32_t flags = 0u;
 
-    if (mglShouldSkipStageBufferResource(program, stage, spvc_type, resource)) {
-        flags |= MGL_BP_FLAG_SKIP;
-    }
-
     /* Detect plain uniform struct packing path (mirrors
      * mapShaderBufferResourcesToBufferMap lines 775-778). */
     GLboolean is_struct_packed = GL_FALSE;

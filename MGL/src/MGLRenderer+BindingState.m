@@ -1277,10 +1277,6 @@ static BOOL mglBindingStateEmitAttribBuffer(
             }
             MGLShaderResource *resource =
                 &program->shader_resources_list[shaderStage][resourceType].list[i];
-            if (mglShouldSkipStageBufferResource(program, shaderStage, resourceType,
-                                                 resource)) {
-                continue;
-            }
             GLuint elementCount =
                 mglStageBufferResourceElementCount(resourceType, resource);
             for (GLuint element = 0; element < elementCount; element++) {
@@ -1582,10 +1578,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         MGLSampledTextureBindInput sin = {0};
         mglBindingTextureFillSampledGateInput(
             &sin, spirvBinding, glBinding, TEXTURE_UNITS,
-            mglShouldSkipStageTextureResource(sampleProgram, shaderStage,
-                                              _SAMPLED_IMAGE_RES, sampledResource)
-                ? 1
-                : 0,
+            /* No skip recipe: the SPIRV-era resource-skip heuristics are
+             * gone, so a sampler-like resource always reaches the plan. */
+            0,
             sampledResource ? 1 : 0);
         MGLSampledTextureBindPlan splan = {0};
         if (mglBindingTexturePlanSampled(&sin, &splan) != 0 ||
@@ -2695,10 +2690,7 @@ done:
             MGLStorageImageBindInput in = {0};
             mglBindingTextureFillStorageImageInput(
                 &in, pass,
-                mglShouldSkipStageTextureResource(program, shaderStage,
-                                                  _STORAGE_IMAGE_RES, resource)
-                    ? 1
-                    : 0,
+                0, /* no skip recipe (see the sampled-texture path) */
                 resource ? 1 : 0, resource ? resource->binding : 0u, element,
                 fallbackMetal, (explicitUnit || resource) ? 1 : 0,
                 explicitUnit ? 1 : 0,
@@ -2802,12 +2794,6 @@ done:
         if (sampleProgram &&
             i < sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].count) {
             samplerResource = &sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].list[i];
-        }
-        if (mglShouldSkipStageSamplerResource(sampleProgram,
-                                              _FRAGMENT_SHADER,
-                                              _SEPARATE_SAMPLERS_RES,
-                                              samplerResource)) {
-            continue;
         }
         GLuint textureUnit = [self textureUnitForSampledResource:samplerResource
                                                     metalBinding:spirvBinding

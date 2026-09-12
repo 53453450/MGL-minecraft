@@ -624,11 +624,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                     }
                 }
 
-                if (mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS) ||
-                    mglShouldSkipStageTextureResource(computeProgram,
-                                                      stage,
-                                                      spvc_type,
-                                                      resource)) {
+                if (mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS)) {
                     continue;
                 }
 

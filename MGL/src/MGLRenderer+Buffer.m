@@ -237,10 +237,6 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
         const MGLBufferPlanEntry *entry = &stagePlan->entries[pi];
         int spvc_type = (int)entry->resource_type;
 
-        if (mglRenderBufferPlanEntrySkip(entry->flags)) {
-            continue;
-        }
-
         /* Validate the resource is still in range (plan was built from the
          * same list, but guard against any unexpected reallocation). */
         if (!mglRenderShaderResourceIndexValid(

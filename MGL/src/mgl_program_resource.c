@@ -11,6 +11,9 @@
 
 #include "mgl_sampler_compat.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 const char *mglShaderStageName(int stage)
 {
     switch (stage) {
@@ -24,40 +27,16 @@ const char *mglShaderStageName(int stage)
     }
 }
 
-bool mglShouldSkipStageBufferResource(Program *program,
-                                      int stage,
-                                      int resource_type,
-                                      const MGLShaderResource *resource)
-{
-    (void)program;
-    (void)stage;
-    return resource && resource_type == _UNIFORM_CONSTANT_RES &&
-           mglRendererResourceLooksSamplerLike(resource, resource_type);
-}
-
-bool mglShouldSkipStageTextureResource(Program *program,
-                                       int stage,
-                                       int resource_type,
-                                       const MGLShaderResource *resource)
-{
-    (void)program;
-    (void)stage;
-    (void)resource_type;
-    (void)resource;
-    return false;
-}
-
-bool mglShouldSkipStageSamplerResource(Program *program,
-                                       int stage,
-                                       int resource_type,
-                                       const MGLShaderResource *resource)
-{
-    (void)program;
-    (void)stage;
-    (void)resource_type;
-    (void)resource;
-    return false;
-}
+/* The three SPIRV-era "should this stage resource be skipped" predicates are
+ * gone.  They existed because the old reflection could not always classify a
+ * resource (a sampler parked in the plain-uniform list, image dims guessed from
+ * names), so callers had to be told to ignore the odd entry.  On the IR chain
+ * every entry is classified exactly, and the last remaining rule
+ * (mglShouldSkipStageBufferResource) never fired: probe, 2026-09-12, zero hits
+ * across the local suite and the 1328-case GL46 hotspot list. */
+/* mglShouldSkipStageTextureResource / mglShouldSkipStageSamplerResource were
+ * constant-false stubs (their SPIRV-era skip heuristics are gone); callers no
+ * longer consult them. */
 
 uint32_t mglProgramStageBuiltinMask(const Program *program, int stage)
 {

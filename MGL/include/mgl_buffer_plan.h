@@ -30,7 +30,6 @@
  *                           Minecraft plain-uniform name table lookup)
  *   - element_count        (mglStageBufferResourceElementCount)
  *   - required_size         (getProgramBindingRequiredSize)
- *   - skip_resource         (mglShouldSkipStageBufferResource)
  *   - is_struct_packed      (plain uniform struct packing path)
  *   - allow_global_fallback (mglPlainUniformAllowsGlobalFallback)
  *   - ubo_array_uses_bindings_table (res->ubo_array_bindings != NULL)
@@ -63,7 +62,6 @@ uint32_t mglRenderGLTypeElementByteSize(uint64_t gl_type);
 /* ------------------------------------------------------------------ */
 /* Plan entry flags                                                    */
 /* ------------------------------------------------------------------ */
-#define MGL_BP_FLAG_SKIP              0x01u  /* mglShouldSkipStageBufferResource */
 #define MGL_BP_FLAG_STRUCT_PACKED     0x02u  /* plain uniform struct packing path */
 #define MGL_BP_FLAG_ALLOW_FALLBACK    0x04u  /* mglPlainUniformAllowsGlobalFallback */
 #define MGL_BP_FLAG_UBO_ARRAY_TABLE   0x08u  /* res->ubo_array_bindings != NULL; read live */

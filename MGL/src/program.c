@@ -2712,10 +2712,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                          resource_index++) {
                         MGLShaderResource *resource =
                             &resources->list[resource_index];
-                        if (mglShouldSkipStageBufferResource(
-                                pptr, stage, resource_type, resource)) {
-                            continue;
-                        }
                         GLuint element_count =
                             mglStageBufferResourceElementCount(resource_type,
                                                                resource);

@@ -2126,10 +2126,6 @@ extern "C" intptr_t mglRendererGetProgramMetalBufferIndexForStage(
             &program->shader_resources_list[stage][type];
         for (uint32_t i = 0; i < list->count; ++i) {
             MGLShaderResource *resource = &list->list[i];
-            if (mglShouldSkipStageBufferResource(
-                    program, stage, type, resource)) {
-                continue;
-            }
             if (mglClientBufferBindingForResource(type, resource) ==
                 client_binding) {
                 return static_cast<intptr_t>(mglMetalResourceSlot(resource));
@@ -2155,10 +2151,8 @@ extern "C" size_t mglRendererGetProgramBindingRequiredSizeForStage(
             &program->shader_resources_list[stage][type];
         for (uint32_t i = 0; i < list->count; ++i) {
             MGLShaderResource *resource = &list->list[i];
-            if (mglShouldSkipStageBufferResource(
-                    program, stage, type, resource) ||
-                mglClientBufferBindingForResource(type, resource) !=
-                    client_binding) {
+            if (mglClientBufferBindingForResource(type, resource) !=
+                client_binding) {
                 continue;
             }
             required = std::max(

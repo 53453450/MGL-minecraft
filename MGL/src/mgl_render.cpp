@@ -8958,9 +8958,8 @@ int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
                : 0;
 }
 
-int mglRenderBufferPlanEntrySkip(uint32_t flags) {
-    return (flags & MGL_BP_FLAG_SKIP) != 0u ? 1 : 0;
-}
+/* mglRenderBufferPlanEntrySkip removed with MGL_BP_FLAG_SKIP: the
+ * SPIRV-era skip rule that produced it never fired (probe, 2026-09-12). */
 
 int mglRenderBufferPlanIsStructPacked(uint32_t flags) {
     return (flags & MGL_BP_FLAG_STRUCT_PACKED) != 0u ? 1 : 0;

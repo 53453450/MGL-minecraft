@@ -1502,10 +1502,6 @@ static uint32_t mglTessCollectTextureBindsOfType(
             resource =
                 &program->shader_resources_list[stage][resource_type].list[i];
         }
-        if (mglShouldSkipStageTextureResource(program, stage, resource_type,
-                                              resource)) {
-            continue;
-        }
         const uint32_t fallback_gl =
             ctx ? (uint32_t)mglRendererGetProgramGLBinding(ctx, stage,
                                                            resource_type, i)

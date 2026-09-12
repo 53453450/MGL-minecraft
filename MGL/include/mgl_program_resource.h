@@ -34,18 +34,6 @@ static inline int mglProgramStageUsesBuiltin(const Program *program, int stage,
 
 const char *mglShaderStageName(int stage);
 
-bool mglShouldSkipStageBufferResource(Program *program,
-                                      int stage,
-                                      int resource_type,
-                                      const MGLShaderResource *resource);
-bool mglShouldSkipStageTextureResource(Program *program,
-                                       int stage,
-                                       int resource_type,
-                                       const MGLShaderResource *resource);
-bool mglShouldSkipStageSamplerResource(Program *program,
-                                       int stage,
-                                       int resource_type,
-                                       const MGLShaderResource *resource);
 
 #ifdef __cplusplus
 }

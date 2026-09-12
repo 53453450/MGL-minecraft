@@ -1315,7 +1315,6 @@ int mglRenderShaderResourceToGLBufferType(int spvc_type);
 int mglRenderUsePlainUniformBuffers(int spvc_type);
 int mglRenderShaderResourceIndexValid(int spvc_type, uint32_t index,
                                       uint32_t count);
-int mglRenderBufferPlanEntrySkip(uint32_t flags);
 int mglRenderBufferPlanIsStructPacked(uint32_t flags);
 int mglRenderBufferPlanAllowFallback(int has_fallback, uint32_t flags);
 int mglRenderStructMemberInElementRange(uint32_t member_loc_off,

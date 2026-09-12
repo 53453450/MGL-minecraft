@@ -699,11 +699,6 @@ extern "C" int mgl_batch_replay_plan_sampled_texture_candidates(
                                 [_SAMPLED_IMAGE_RES]
                                 .list[resource_index];
             }
-            if (mglShouldSkipStageTextureResource(program, stage,
-                                                  _SAMPLED_IMAGE_RES,
-                                                  resource)) {
-                continue;
-            }
             if (resource && resource->is_array) {
                 return 0;
             }
