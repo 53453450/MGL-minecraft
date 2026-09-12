@@ -21,6 +21,8 @@
 
 #include <stdint.h>
 
+#include "mgl_render_values.h" /* MGLLoadAction* / MGLStoreAction* (pure-C ABI) */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -99,6 +101,64 @@ int mglRenderProcessGLState(const MGLProcessGLStateInputs *in,
 
 int mglRenderProcessGLStateAfterDirty(const MGLProcessGLStateAfterInputs *in,
                                       MGLProcessGLStateAfterPlan *out);
+
+/* ---- O3.1: load / store actions, stale clear bits, attachment match ---- */
+
+enum {
+    MGL_RP_ATTACHMENT_COLOR = 0,
+    MGL_RP_ATTACHMENT_DEPTH = 1,
+    MGL_RP_ATTACHMENT_STENCIL = 2
+};
+
+typedef struct MGLRenderPassLoadStoreInput {
+    uint32_t attachment_kind;  /* MGL_RP_ATTACHMENT_* */
+    int attachment_present;    /* color: the draw slot resolved to an attached
+                                * attachment; depth/stencil: unused */
+    int has_clear_pending;     /* the framebuffer's clear bit for it */
+    int texture_present;       /* depth/stencil: an attachment texture exists */
+    int dontcare_enabled;      /* MGL_ENABLE_DONTCARE_LOAD */
+    int first_use_this_frame;  /* color: the frame generation said first use */
+    int blend_enabled;         /* color: blending forbids DontCare */
+} MGLRenderPassLoadStoreInput;
+
+typedef struct MGLRenderPassLoadStorePlan {
+    uint32_t load_action;      /* MGLLoadAction* */
+    /* The clear arm also stores; every other arm leaves the store action the
+     * pass state already carries (allocation-time default: Store). */
+    int set_store_action;
+    uint32_t store_action;     /* MGLStoreAction* when set_store_action */
+} MGLRenderPassLoadStorePlan;
+
+int mglRenderPassPlanLoadStore(const MGLRenderPassLoadStoreInput *in,
+                               MGLRenderPassLoadStorePlan *out);
+
+/* A pending color clear for an attachment that is not attached cannot be
+ * consumed by this pass and must be dropped. */
+int mglRenderPassDropsStaleColorClear(uint32_t clear_mask,
+                                      uint32_t attached_bitfield,
+                                      uint32_t attachment_index);
+
+/* One draw slot of the attachment match. */
+typedef struct MGLRenderPassSlotMatch {
+    int compare;         /* this draw slot of the framebuffer participates */
+    const void *actual;  /* texture the pass state currently carries */
+    const void *expected;/* texture the framebuffer wants */
+} MGLRenderPassSlotMatch;
+
+typedef struct MGLRenderPassAttachmentMatchInput {
+    int identity_ok;     /* framebuffer pointer / name / draw buffer / count */
+    const MGLRenderPassSlotMatch *slots;
+    uint32_t slot_count;
+    const void *actual_depth;
+    const void *expected_depth;
+    const void *actual_stencil;
+    const void *expected_stencil;
+    int depth_required;    /* depth test on, or a depth texture exists */
+    int stencil_required;  /* stencil test / format, or a stencil texture */
+} MGLRenderPassAttachmentMatchInput;
+
+/* 1 = the persistent pass covers exactly this framebuffer. */
+int mglRenderPassAttachmentsMatch(const MGLRenderPassAttachmentMatchInput *in);
 
 #ifdef __cplusplus
 }

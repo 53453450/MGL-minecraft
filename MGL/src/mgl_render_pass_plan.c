@@ -202,3 +202,84 @@ int mglRenderPassPlanClearValues(const MGLRenderPassState *state,
             return 0;
     }
 }
+
+/* ---- O3.1: load / store actions, stale clear bits, attachment match ---- */
+
+int mglRenderPassPlanLoadStore(const MGLRenderPassLoadStoreInput *in,
+                               MGLRenderPassLoadStorePlan *out) {
+    if (!in || !out) {
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
+    out->load_action = MGLLoadActionLoad;
+
+    if (in->attachment_kind == MGL_RP_ATTACHMENT_COLOR) {
+        if (!in->attachment_present) {
+            /* Nothing to clear into: keep whatever the pass state carried. */
+            return 0;
+        }
+        if (in->has_clear_pending) {
+            out->load_action = MGLLoadActionClear;
+            out->set_store_action = 1;
+            out->store_action = MGLStoreActionStore;
+            return 0;
+        }
+        if (in->dontcare_enabled && in->texture_present &&
+            in->first_use_this_frame && !in->blend_enabled) {
+            out->load_action = MGLLoadActionDontCare;
+        }
+        return 0;
+    }
+
+    /* Depth and stencil: clear wins, otherwise load and keep the contents by
+     * storing when there is an attachment texture to store into. */
+    if (in->has_clear_pending) {
+        out->load_action = MGLLoadActionClear;
+        out->set_store_action = 1;
+        out->store_action = MGLStoreActionStore;
+        return 0;
+    }
+    out->load_action = MGLLoadActionLoad;
+    if (in->texture_present) {
+        out->set_store_action = 1;
+        out->store_action = MGLStoreActionStore;
+    }
+    return 0;
+}
+
+int mglRenderPassDropsStaleColorClear(uint32_t clear_mask,
+                                      uint32_t attached_bitfield,
+                                      uint32_t attachment_index) {
+    if (attachment_index >= 32u) {
+        return 0;
+    }
+    const uint32_t bit = 1u << attachment_index;
+    return (clear_mask & bit) != 0u && (attached_bitfield & bit) == 0u ? 1 : 0;
+}
+
+int mglRenderPassAttachmentsMatch(const MGLRenderPassAttachmentMatchInput *in) {
+    if (!in || !in->identity_ok) {
+        return 0;
+    }
+    for (uint32_t i = 0; i < in->slot_count; i++) {
+        const MGLRenderPassSlotMatch *slot = &in->slots[i];
+        if (!slot->compare) {
+            continue;
+        }
+        if (slot->actual != slot->expected) {
+            return 0;
+        }
+    }
+    if (in->actual_depth != in->expected_depth ||
+        in->actual_stencil != in->expected_stencil) {
+        return 0;
+    }
+    /* A required attachment that is not there cannot be drawn into. */
+    if (in->depth_required && !in->expected_depth) {
+        return 0;
+    }
+    if (in->stencil_required && !in->expected_stencil) {
+        return 0;
+    }
+    return 1;
+}

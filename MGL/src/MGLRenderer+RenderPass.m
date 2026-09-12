@@ -1509,12 +1509,10 @@ static GLenum mglPassthroughDeclType(
                 MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
         }
 
-        if (actualColor0 != expectedColor0) {
-            return false;
-        }
-
         id expectedDepth = nil;
         id expectedStencil = nil;
+        BOOL defaultPassNeedsDepth = NO;
+        BOOL defaultPassNeedsStencil = NO;
         if (mgl_drawbuffer < _MAX_DRAW_BUFFERS) {
             id cachedDepth =
                 mglRenderPassDefaultDrawBufferAttachment(
@@ -1524,33 +1522,36 @@ static GLenum mglPassthroughDeclType(
                 mglRenderPassDefaultDrawBufferAttachment(
                     _backend, mgl_drawbuffer,
                     MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL);
-            BOOL defaultPassNeedsDepth = MGL_STATE(ctx)->caps.depth_test ||
-                                         cachedDepth != nil;
-            BOOL defaultPassNeedsStencil = MGL_STATE(ctx)->caps.stencil_test ||
-                                           ctx->stencil_format.format ||
-                                           cachedStencil != nil;
+            defaultPassNeedsDepth = MGL_STATE(ctx)->caps.depth_test ||
+                                    cachedDepth != nil;
+            defaultPassNeedsStencil = MGL_STATE(ctx)->caps.stencil_test ||
+                                      ctx->stencil_format.format ||
+                                      cachedStencil != nil;
             expectedDepth = defaultPassNeedsDepth ? cachedDepth : nil;
             expectedStencil = defaultPassNeedsStencil ? cachedStencil : nil;
-            if (MGL_STATE(ctx)->caps.depth_test && !expectedDepth) {
-                return false;
-            }
-            if ((MGL_STATE(ctx)->caps.stencil_test || ctx->stencil_format.format) && !expectedStencil) {
-                return false;
-            }
         }
 
-        id actualDepth = mglRenderPassTextureFromSnapshot(
+        /* The comparison (and "a required attachment that is missing never
+         * matches") is the same rule the user-FBO half uses; it lives in the
+         * plan. */
+        MGLRenderPassSlotMatch defaultSlot = {0};
+        defaultSlot.compare = 1;
+        defaultSlot.actual = (__bridge const void *)actualColor0;
+        defaultSlot.expected = (__bridge const void *)expectedColor0;
+        MGLRenderPassAttachmentMatchInput match = {0};
+        match.identity_ok = 1;
+        match.slots = &defaultSlot;
+        match.slot_count = 1;
+        match.actual_depth = (__bridge const void *)mglRenderPassTextureFromSnapshot(
             &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-        id actualStencil = mglRenderPassTextureFromSnapshot(
+        match.expected_depth = (__bridge const void *)expectedDepth;
+        match.actual_stencil = (__bridge const void *)mglRenderPassTextureFromSnapshot(
             &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
-        if (actualDepth != expectedDepth) {
-            return false;
-        }
-        if (actualStencil != expectedStencil) {
-            return false;
-        }
-
-        return true;
+        match.expected_stencil = (__bridge const void *)expectedStencil;
+        match.depth_required = (MGL_STATE(ctx)->caps.depth_test) ? 1 : 0;
+        match.stencil_required =
+            (MGL_STATE(ctx)->caps.stencil_test || ctx->stencil_format.format) ? 1 : 0;
+        return mglRenderPassAttachmentsMatch(&match) ? true : false;
     }
 
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
@@ -2753,25 +2754,6 @@ static GLenum mglPassthroughDeclType(
 }
 
 
-- (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex
-                             firstUseThisFrame:(BOOL)firstUseThisFrame
-{
-
-    if (!mglEnvFlagEnabled("MGL_ENABLE_DONTCARE_LOAD")) {
-        return NO;
-    }
-    if (!tex || !tex->mtl_data) {
-        return NO;
-    }
-    if (ctx && MGL_STATE(ctx)->caps.blend) {
-        return NO;
-    }
-    if (!firstUseThisFrame) {
-        return NO;
-    }
-    return YES;
-}
-
 - (bool) configureUserFBOAttachmentsLocked
 {
     Framebuffer *fbo;
@@ -3196,7 +3178,26 @@ static GLenum mglPassthroughDeclType(
                 (attachmentTextureForClear->mtl_rt_frame_generation != _renderPassManager.state->dontCareFrameGeneration);
             attachmentTextureForClear->mtl_rt_frame_generation = _renderPassManager.state->dontCareFrameGeneration;
         }
-        if (mglRenderClearMaskHasColor((uint32_t)att->clear_bitmask)) {
+        MGLRenderPassLoadStoreInput loadStore = {0};
+        loadStore.attachment_kind = MGL_RP_ATTACHMENT_COLOR;
+        loadStore.attachment_present = 1;
+        loadStore.has_clear_pending =
+            mglRenderClearMaskHasColor((uint32_t)att->clear_bitmask) ? 1 : 0;
+        loadStore.texture_present =
+            (attachmentTextureForClear && attachmentTextureForClear->mtl_data) ? 1 : 0;
+        loadStore.dontcare_enabled = dontCareLoadEnabled ? 1 : 0;
+        loadStore.first_use_this_frame = colorFirstUseThisFrame ? 1 : 0;
+        loadStore.blend_enabled =
+            (ctx && MGL_STATE(ctx)->caps.blend) ? 1 : 0;
+        MGLRenderPassLoadStorePlan loadStorePlan = {0};
+        if (mglRenderPassPlanLoadStore(&loadStore, &loadStorePlan) != 0) {
+            mglRenderPassSetPersistentLoadAction(
+                _renderPassManager.state,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MGLLoadActionLoad);
+            continue;
+        }
+        if (loadStorePlan.load_action == MGLLoadActionClear) {
             if (attachmentTextureForClear &&
                 attachmentTextureForClear->name == 8u &&
                 mglTraceLogIsEnabled()) {
@@ -3234,7 +3235,9 @@ static GLenum mglPassthroughDeclType(
             mglRenderPassSetPersistentActions(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
-                MGLLoadActionClear, MGLStoreActionStore);
+                loadStorePlan.load_action,
+                loadStorePlan.set_store_action ? loadStorePlan.store_action
+                                               : MGLStoreActionStore);
 
             /* MS textures are texture2d_array sample planes; LoadActionClear
              * only hits the attached base slice. Clear the other sample
@@ -3263,40 +3266,45 @@ static GLenum mglPassthroughDeclType(
 
             (*outFboColorClearCount)++;
             *outFboColorClearMask |= (GLbitfield)(1u << attachmentIndex);
-        } else if (dontCareLoadEnabled &&
-                   [self shouldUseDontCareLoadForColorTexture:attachmentTextureForClear
-                                                firstUseThisFrame:colorFirstUseThisFrame]) {
-
-            mglRenderPassSetPersistentLoadAction(
-                _renderPassManager.state,
-                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
-                MGLLoadActionDontCare);
         } else {
+            /* DontCare when the plan allows discarding, Load otherwise: the
+             * predicate (flag, texture, first use this frame, blending) lives
+             * in the plan. */
             mglRenderPassSetPersistentLoadAction(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
-                MGLLoadActionLoad);
+                loadStorePlan.load_action);
         }
     }
 
 
     for (GLuint ai = 0; ai < MAX_COLOR_ATTACHMENTS; ++ai) {
-        if ((mglRenderClearMaskHasColor(
-                 (uint32_t)fbo->color_attachments[ai].clear_bitmask)) &&
-            ((fbo->color_attachment_bitfield >> ai) & 1u) == 0u) {
+        /* A pending clear for an attachment this pass does not have cannot be
+         * consumed; the rule lives in the plan. */
+        if (mglRenderPassDropsStaleColorClear(
+                (uint32_t)fbo->color_attachments[ai].clear_bitmask,
+                (uint32_t)fbo->color_attachment_bitfield, (uint32_t)ai)) {
             fbo->color_attachments[ai].clear_bitmask =
                 (GLbitfield)mglRenderClearMaskClearColor(
                     (uint32_t)fbo->color_attachments[ai].clear_bitmask);
         }
     }
 
-    if (mglRenderClearMaskHasDepth((uint32_t)fbo->depth.clear_bitmask)) {
+    MGLRenderPassLoadStoreInput depthLoadStore = {0};
+    depthLoadStore.attachment_kind = MGL_RP_ATTACHMENT_DEPTH;
+    depthLoadStore.has_clear_pending =
+        mglRenderClearMaskHasDepth((uint32_t)fbo->depth.clear_bitmask) ? 1 : 0;
+    depthLoadStore.texture_present =
+        mglRenderPassDepthTextureFor(_renderPassManager.state) ? 1 : 0;
+    MGLRenderPassLoadStorePlan depthPlan = {0};
+    if (mglRenderPassPlanLoadStore(&depthLoadStore, &depthPlan) == 0 &&
+        depthPlan.load_action == MGLLoadActionClear) {
         mglRenderPassSetPersistentDepthClear(
             _renderPassManager.state, fbo->depth.clear_color[0]);
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-            MGLLoadActionClear, MGLStoreActionStore);
+            depthPlan.load_action, depthPlan.store_action);
         fbo->depth.clear_bitmask =
             (GLbitfield)mglRenderClearMaskClearDepth(
                 (uint32_t)fbo->depth.clear_bitmask);
@@ -3304,23 +3312,31 @@ static GLenum mglPassthroughDeclType(
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-            MGLLoadActionLoad);
-        if (mglRenderPassDepthTextureFor(_renderPassManager.state)) {
+            depthPlan.load_action);
+        if (depthPlan.set_store_action) {
             mglRenderPassSetPersistentStoreAction(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
-                MGLStoreActionStore);
+                depthPlan.store_action);
         }
     }
 
-    if (mglRenderClearMaskHasStencil((uint32_t)fbo->stencil.clear_bitmask)) {
+    MGLRenderPassLoadStoreInput stencilLoadStore = {0};
+    stencilLoadStore.attachment_kind = MGL_RP_ATTACHMENT_STENCIL;
+    stencilLoadStore.has_clear_pending =
+        mglRenderClearMaskHasStencil((uint32_t)fbo->stencil.clear_bitmask) ? 1 : 0;
+    stencilLoadStore.texture_present =
+        mglRenderPassStencilTextureFor(_renderPassManager.state) ? 1 : 0;
+    MGLRenderPassLoadStorePlan stencilPlan = {0};
+    if (mglRenderPassPlanLoadStore(&stencilLoadStore, &stencilPlan) == 0 &&
+        stencilPlan.load_action == MGLLoadActionClear) {
         mglRenderPassSetPersistentStencilClear(
             _renderPassManager.state,
             (uint32_t)fbo->stencil.clear_color[0]);
         mglRenderPassSetPersistentActions(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-            MGLLoadActionClear, MGLStoreActionStore);
+            stencilPlan.load_action, stencilPlan.store_action);
         fbo->stencil.clear_bitmask =
             (GLbitfield)mglRenderClearMaskClearStencil(
                 (uint32_t)fbo->stencil.clear_bitmask);
@@ -3328,12 +3344,12 @@ static GLenum mglPassthroughDeclType(
         mglRenderPassSetPersistentLoadAction(
             _renderPassManager.state,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-            MGLLoadActionLoad);
-        if (mglRenderPassStencilTextureFor(_renderPassManager.state)) {
+            stencilPlan.load_action);
+        if (stencilPlan.set_store_action) {
             mglRenderPassSetPersistentStoreAction(
                 _renderPassManager.state,
                 MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
-                MGLStoreActionStore);
+                stencilPlan.store_action);
         }
     }
 }
