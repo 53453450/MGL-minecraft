@@ -285,7 +285,9 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
  * Defined in MGLRenderer+Batch.m, called from already-locked callers
  * (mtlSwapBuffersLocked:, flushCommandBufferLocked:). */
 - (void)flushDrawBuffer:(GLMContext)glm_ctx;
-- (void)flushDrawBufferLocked:(GLMContext)glm_ctx;
+/* flushDrawBufferLocked: is now the C driver pair mglBatchFlushBegin /
+ * mglBatchFlushRunBatches plus mglBatchTeardownReplay, framed by
+ * mglRendererFlushDrawBufferLockedPort (mgl_batch_restore.h). */
 - (void)mtlDeleteMTLObj:(GLMContext)glm_ctx buffer:(void *)obj;
 - (void)mtlFlush:(GLMContext)glm_ctx finish:(bool)finish;
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx;

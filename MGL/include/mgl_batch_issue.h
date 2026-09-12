@@ -378,6 +378,23 @@ int mglBatchTryReplaySimpleBatch(void *renderer, MGLDrawBatch *batch,
                                  GLMContext glm_ctx,
                                  const MGLEncodeContext *encode_context);
 
+/* Flush-path drivers of the batch plans (mgl_batch_flush_restore_encode.c). */
+MGLBatchPath mglBatchScheduleDrawBatch(void *renderer, MGLDrawBatch *batch,
+                                       GLMContext glm_ctx);
+int mglBatchCheckShouldExecute(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
+                               uint64_t flush_id, uint32_t batch_index,
+                               GLenum *replay_error, uint32_t *skipped_commands);
+void mglBatchRecordCommandStats(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx);
+int mglBatchTraceSkipCommands(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
+                              uint64_t flush_id, uint32_t batch_index,
+                              const char *phase, const char *reason,
+                              uint32_t *skipped_commands);
+void mglBatchTraceStreamCmd0(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
+                             const char *phase, const char *reason);
+void mglBatchIssueStreamMergedBatch(void *renderer, MGLDrawBatch *batch,
+                                    GLMContext glm_ctx,
+                                    const MGLEncodeContext *encode_context);
+
 /* Bind every active texture's Metal object (former
  * -[MGLRenderer bindActiveTexturesToMTL]; mgl_batch_replay.cpp). */
 int mglBatchBindActiveTexturesToMTL(void *renderer, GLMContext glm_ctx);

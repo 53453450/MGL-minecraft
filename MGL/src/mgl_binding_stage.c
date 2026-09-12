@@ -16,6 +16,7 @@
 
 #include "mgl_binding_stage.h"
 
+
 #include <string.h>
 
 /* mgl_types_program.h resource ABI (avoid heavy includes). */
@@ -766,3 +767,4 @@ void mglBindingStageFillMapEntryPostMtl(
     in->binding_state_valid = binding_state_valid ? 1 : 0;
     in->buffer_matches = buffer_matches ? 1 : 0;
 }
+

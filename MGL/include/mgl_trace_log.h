@@ -49,6 +49,10 @@
 /* Monotonic nanosecond clock for trace timing.  Uses mach_absolute_time()
  * (not CFAbsoluteTimeGetCurrent) so elapsed values are immune to wall-clock
  * steps (e.g. NTP).  Returns nanoseconds since an arbitrary epoch. */
+/* Compile-time gate for the dense diagnostic state logs.  Kept a constant so
+ * the compiler drops the call sites entirely; C and ObjC share this one. */
+#define kMGLDiagnosticStateLogs 0
+
 static inline uint64_t mglTraceClockNS(void)
 {
     static mach_timebase_info_data_t tb = {0, 0};

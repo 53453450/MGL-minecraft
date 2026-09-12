@@ -51,6 +51,7 @@
 #include <dispatch/dispatch.h>
 
 #import "MGLRenderer_Private.h"
+#include "mgl_renderer_ports.h"
 #include "mgl_draw_tess.h"
 #include "mgl_air_loader.h"
 #import "mgl.h"
@@ -3445,7 +3446,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
 
     if (shouldPresent)
     {
-        [self flushDrawBufferLocked:activeCtx];
+        mglRendererFlushDrawBufferLockedPort((__bridge void *)self, activeCtx);
 
         if (![self processGLStateLocked: false]) {
             static uint64_t s_swapProcessStateFailCount = 0;

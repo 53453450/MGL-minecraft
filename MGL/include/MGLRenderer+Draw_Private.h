@@ -73,7 +73,7 @@ bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_ma
 /* Cull distance emulation params live in mgl_render.h. */
 
 /* === Diagnostic constants === */
-static const BOOL kMGLDiagnosticStateLogs = NO;
+/* kMGLDiagnosticStateLogs lives in the C-safe mgl_trace_log.h. */
 static const BOOL kMGLDrawSubmitDiagnostics = NO;
 
 /* === Draw binding/validation constants === */
@@ -274,14 +274,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                          drawcount:(GLsizei)drawcount stride:(GLsizei)stride;
 
 // === Draw batch scheduling and execution ===
-- (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
-- (BOOL)checkBatchShouldExecute:(MGLDrawBatch *)batch
-                        context:(GLMContext)glm_ctx
-                        flushId:(uint64_t)flushId
-                     batchIndex:(uint32_t)batchIndex
-                    replayError:(GLenum *)replayError
-                skippedCommands:(uint32_t *)skippedCommands;
-- (void)recordBatchCommandStats:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+/* scheduleDrawBatch:context: is now mglBatchScheduleDrawBatch (mgl_batch_issue.h). */
+/* checkBatchShouldExecute:... is now mglBatchCheckShouldExecute (mgl_batch_issue.h). */
+/* recordBatchCommandStats:context: is now mglBatchRecordCommandStats
+ * (mgl_batch_issue.h). */
 /* issueStreamMergedMDIBatch:... is now the C driver mglBatchIssueStreamMergedMDIBatch
  * (mgl_batch_issue.h, implemented in mgl_batch_icb_mdi_encode.c). */
 /* issueIndirectCommandBufferBatch:... is now the C driver

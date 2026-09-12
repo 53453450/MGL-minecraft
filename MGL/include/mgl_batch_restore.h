@@ -201,7 +201,33 @@ typedef struct MGLBatchRestoreForBatchOps {
 
 void mgl_batch_restore_run_for_batch(const MGLBatchRestoreForBatchOps *ops);
 
-/* Teardown after flushDrawBufferLocked @finally. */
+/* ---- A3: flush pass state shared by the C driver and the ObjC @try frame ----
+ * The frame itself stays in the shim (mglRendererFlushDrawBufferLockedPort):
+ * the teardown in its @finally must run even when a draw raises. */
+typedef struct MGLBatchFlushPass {
+    uint64_t hit;
+    uint32_t skipped;
+    GLMState saved;
+    GLenum saved_error;
+    GLenum replay_error;
+} MGLBatchFlushPass;
+
+/* Bind the context, snapshot the live state, switch to the replay workspace.
+ * Returns 0 when the context has no batches to replay. */
+int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass);
+
+/* The @try body: run the flush loop and log the per-flush summary. */
+void mglBatchFlushRunBatches(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass);
+
+/* The @finally body: replay-workspace teardown, driven by the pass state. */
+void mglBatchTeardownReplay(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass);
+
+/* Whole restore sequence for one batch (former
+ * -[MGLRenderer restoreStateForBatch:...]; mgl_batch_flush_restore_encode.c). */
+void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch,
+                                  GLMContext glm_ctx, const GLMState *savedState,
+                                  const MGLStateKey *prevKey, GLuint forcedDirtyBits);
+
 typedef struct MGLBatchTeardownOps {
     void *ctx;
     int used_replay_workspace;

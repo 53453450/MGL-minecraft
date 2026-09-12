@@ -6939,7 +6939,7 @@ static GLenum mglPassthroughDeclType(
         return;
     }
 
-    [self flushDrawBufferLocked:ctx];
+    mglRendererFlushDrawBufferLockedPort((__bridge void *)self, ctx);
 
     if (![self processGLStateLocked: false]) {
         NSLog(@"MGL WARNING: processGLState failed in flushCommandBuffer, continuing with cleanup");

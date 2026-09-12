@@ -22,6 +22,7 @@
 #import "MGLRenderer+RenderPass_Private.h"
 #import "MGLRenderer+Binding_Private.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_batch_restore.h"   /* mglBatchFlushBegin/RunBatches/TeardownReplay */
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
 
@@ -348,16 +349,13 @@ int mglRendererBindMTLTexturePort(void *renderer, Texture *texture)
               @"MGL_STATE() and STATE() would read different GLMState objects");
 }
 
-/* Locked variant of the flush: the caller holds METAL_LOCK.  The body stays in
- * mgl_batch_flush_restore_encode.m until that file is converted. */
+/* Locked variant of the flush: the caller holds METAL_LOCK.  The body (and its
+ * own @try/@finally around the replay teardown) lives in C. */
 - (void)flushDrawBuffer:(GLMContext)glm_ctx
 {
     METAL_LOCK();
-    @try {
-        [self flushDrawBufferLocked:glm_ctx];
-    } @finally {
-        METAL_UNLOCK();
-    }
+    mglRendererFlushDrawBufferLockedPort((__bridge void *)self, glm_ctx);
+    METAL_UNLOCK();
 }
 
 @end
@@ -379,4 +377,135 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
         }
     }
     mglRendererBackendEnd(&_backend_lease);
+}
+
+/* === Batch flush / replay-workspace ports =============================== */
+
+int mglRendererBindingStateIsValidPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && mglBindingStateIsValid(r->_bindingStateOwner)) ? 1 : 0;
+}
+
+void mglRendererAssertDualProxyPort(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r mglAssertDualProxyInSyncForContext:ctx];
+    }
+}
+
+void mglRendererActivateReplayStatePort(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r mglActivateReplayStateForContext:ctx];
+    }
+}
+
+void mglRendererRestoreLiveActiveStatePort(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r mglRestoreLiveActiveStateForContext:ctx];
+    }
+}
+
+void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r && ctx) {
+        r->_core.activeState = ctx->active_state;
+    }
+}
+
+void mglRendererSetCurrentCBHasWorkPort(void *renderer, int has_work)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        r->_currentCBHasWork = has_work ? YES : NO;
+    }
+}
+
+int mglRendererAbsoluteVertexBindingOffsetsPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && r->_batching.absoluteVertexBindingOffsets) ? 1 : 0;
+}
+
+void mglRendererSetAbsoluteVertexBindingOffsetsPort(void *renderer, int enabled)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        r->_batching.absoluteVertexBindingOffsets = enabled ? YES : NO;
+    }
+}
+
+int mglRendererSkipSameKeyRestoreEnabledPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && r->_batching.skipSameKeyRestoreEnabled) ? 1 : 0;
+}
+
+int mglRendererDirtyKeyDeltaEnabledPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && r->_batching.dirtyKeyDeltaEnabled) ? 1 : 0;
+}
+
+int mglRendererArenaSnapshotEnabledPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && r->_batching.arenaSnapshotEnabled) ? 1 : 0;
+}
+
+void mglRendererResetBatchArenaPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        mglResetBatchArena(&r->_batching.batchArena);
+    }
+}
+
+void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,
+                                   uint32_t batch_index)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [mglRendererRenderPassManager(r) setTraceReplayFlushId:flush_id
+                                                    batchIndex:batch_index];
+    }
+}
+
+int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r currentRenderPassMatchesCurrentFramebuffer]) ? 1 : 0;
+}
+
+int mglRendererPrepareRenderPassIfFBOChangedPort(void *renderer, void *batch,
+                                                 GLMContext ctx, GLenum *replay_error)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
+                                          context:ctx
+                                      replayError:replay_error])
+               ? 1
+               : 0;
+}
+
+/* The @try/@finally frame the C flush driver cannot express: the teardown in
+ * the @finally has to run even when a draw raises. */
+void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext glm_ctx)
+{
+    MGLBatchFlushPass pass;
+    if (!mglBatchFlushBegin(renderer, glm_ctx, &pass)) {
+        return;
+    }
+    @try {
+        mglBatchFlushRunBatches(renderer, glm_ctx, &pass);
+    } @finally {
+        mglRendererTraceReplaySetPort(renderer, 0u, 0u);
+        mglBatchTeardownReplay(renderer, glm_ctx, &pass);
+    }
 }

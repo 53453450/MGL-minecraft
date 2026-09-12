@@ -87,6 +87,34 @@ void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
                                                  uint64_t count,
                                                  int *failed_out);
 
+/* The @try/@finally frame around one flush (shim): it must tear the replay
+ * workspace down even when a draw raises, which C cannot express. */
+void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
+
+/* ---- batch flush / replay-workspace ports ---------------------------------
+ * Renderer state the C flush driver reads or writes: the replay-workspace
+ * switch and its dual-proxy checkpoint, the batching switches, the trace-replay
+ * identity and the render-pass checks. */
+/* Binding-state snapshot validity of the renderer's owner. */
+int mglRendererBindingStateIsValidPort(void *renderer);
+
+void mglRendererAssertDualProxyPort(void *renderer, GLMContext ctx);
+void mglRendererActivateReplayStatePort(void *renderer, GLMContext ctx);
+void mglRendererRestoreLiveActiveStatePort(void *renderer, GLMContext ctx);
+void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx);
+void mglRendererSetCurrentCBHasWorkPort(void *renderer, int has_work);
+int mglRendererAbsoluteVertexBindingOffsetsPort(void *renderer);
+void mglRendererSetAbsoluteVertexBindingOffsetsPort(void *renderer, int enabled);
+int mglRendererSkipSameKeyRestoreEnabledPort(void *renderer);
+int mglRendererDirtyKeyDeltaEnabledPort(void *renderer);
+int mglRendererArenaSnapshotEnabledPort(void *renderer);
+void mglRendererResetBatchArenaPort(void *renderer);
+void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,
+                                   uint32_t batch_index);
+int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer);
+int mglRendererPrepareRenderPassIfFBOChangedPort(void *renderer, void *batch,
+                                                 GLMContext ctx, GLenum *replay_error);
+
 /* Bind one Texture's Metal object through the binding state (returns 0 when
  * the renderer or the texture is missing). */
 int mglRendererBindMTLTexturePort(void *renderer, Texture *texture);
