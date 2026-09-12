@@ -234,42 +234,6 @@ static void mglRendererDiagnosticBuildMarker(void)
                 __TIME__);
 }
 
-
-NSRange mglRendererFindMSLEntryParameterClose(NSString *msl, const char *entryPoint)
-{
-    if (!msl || !entryPoint || entryPoint[0] == '\0') {
-        return NSMakeRange(NSNotFound, 0);
-    }
-
-    NSString *entryName = [NSString stringWithUTF8String:entryPoint];
-    if (!entryName) {
-        return NSMakeRange(NSNotFound, 0);
-    }
-
-    NSString *needle = [entryName stringByAppendingString:@"("];
-    NSRange entryRange = [msl rangeOfString:needle];
-    if (entryRange.location == NSNotFound) {
-        return NSMakeRange(NSNotFound, 0);
-    }
-
-    NSUInteger openParen = entryRange.location + entryRange.length - 1u;
-    NSUInteger length = [msl length];
-    NSInteger depth = 0;
-    for (NSUInteger idx = openParen; idx < length; idx++) {
-        unichar ch = [msl characterAtIndex:idx];
-        if (ch == '(') {
-            depth++;
-        } else if (ch == ')') {
-            depth--;
-            if (depth == 0) {
-                return NSMakeRange(idx, 1);
-            }
-        }
-    }
-
-    return NSMakeRange(NSNotFound, 0);
-}
-
 // Debug switch: temporarily disable shared-event synchronization path to isolate GPU timeout sources.
 // kMGLDisableSharedEventSync moved to MGLRenderer_Private.h
 // Leave verbose bind tracing off by default; per-draw logging can stall the render thread.

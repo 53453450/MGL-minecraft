@@ -58,3 +58,11 @@ bool mglShouldSkipStageSamplerResource(Program *program,
     (void)resource;
     return false;
 }
+
+uint32_t mglProgramStageBuiltinMask(const Program *program, int stage)
+{
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return 0u;
+    }
+    return program->air_builtin_mask[stage];
+}

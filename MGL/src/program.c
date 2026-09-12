@@ -1783,6 +1783,10 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
                 pptr->name, stage, err);
         return 0;
     }
+    /* Publish this stage's exact builtin usage (the reflected resource lists
+     * filter every gl_ builtin out, so callers used to scan the source). */
+    pptr->air_builtin_mask[stage] = stage_info.builtin_mask;
+
     /* Capture variants must see the same bindAttribLocation map as the
      * reflected VS, or sparse locations (CTS enable_disable) misalign
      * [[attribute(N)]] with the vertex descriptor. */
@@ -2257,6 +2261,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->uses_cull_distance = GL_FALSE;
     pptr->cull_distance_count = 0u;
     pptr->clip_distance_count = 0u;
+    memset(pptr->air_builtin_mask, 0, sizeof(pptr->air_builtin_mask));
     pptr->tess_uses_cull_distance = GL_FALSE;
     pptr->tess_cull_distance_count = 0u;
     memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));

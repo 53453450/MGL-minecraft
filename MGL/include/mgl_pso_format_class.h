@@ -30,6 +30,8 @@
 
 #include <stdint.h>
 
+#include "glm_context.h"   /* Program */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -42,7 +44,10 @@ uint32_t mglRenderTessOutputWinding(uint32_t tess_gen_vertex_order);
 uint32_t mglRenderTessControlPointIndexType(int indexed_draw);
 int mglRenderRasterizationEnabled(int rasterizer_discard, int has_fragment);
 int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_discard);
-int mglRenderVSWritesLayer(const char *src);
+/* Does the vertex stage write gl_Layer ([[render_target_array_index]])?  Read
+ * from the exact per-stage builtin mask; the previous source-text scan matched
+ * comments and longer identifiers too. */
+int mglRenderVSWritesLayer(const Program *vertex_program);
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format);
 uint32_t mglRenderStencilFormatOrFallback(uint32_t format);
 int mglRenderColorAttachmentBitfieldDone(uint32_t bitfield, int index);

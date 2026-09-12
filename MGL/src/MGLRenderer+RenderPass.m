@@ -25,6 +25,7 @@
 #include "mgl_render.h"
 #include "mgl_render_pass_plan.h"
 #include "mgl_render_pass_clear.h"   /* O3.1 clear-value plan (mglRenderPassPlanClearValues) */
+#include "mgl_program_resource.h"    /* per-stage builtin usage mask (gl_* scans retired) */
 
 #import <objc/message.h>
 
@@ -863,22 +864,20 @@ static GLenum mglPassthroughDeclType(
     const MGLShaderResourceList *fsInputs =
         &program->shader_resources_list[_FRAGMENT_SHADER][_STAGE_INPUT_RES];
 
-    /* gl_PointSize never appears in the reflected output list (all gl_
-     * builtins are filtered during reflection), so detect it straight from
-     * the GS source -- the same gate the AIR backend uses for its
-     * point-size store.  Forwarding matters because the pipeline builder
-     * rejects a vertex stage writing point size on a Line/Triangle
-     * topology, while Points-topology programs expect the real size. */
-    Shader *mgl_gs_for_ps = program->shader_slots[_GEOMETRY_SHADER];
-    BOOL hasPointSize = mgl_gs_for_ps && mgl_gs_for_ps->src &&
-                        strstr(mgl_gs_for_ps->src, "gl_PointSize") != NULL;
+    /* Builtins never appear in the reflected output list (all gl_ builtins are
+     * filtered during reflection), so ask the frontend for the exact per-stage
+     * usage mask instead of scanning the GS source text.  gl_PointSize
+     * forwarding matters because the pipeline builder rejects a vertex stage
+     * writing point size on a Line/Triangle topology, while Points-topology
+     * programs expect the real size. */
+    const uint32_t gsBuiltins =
+        mglProgramStageBuiltinMask(program, _GEOMETRY_SHADER);
+    BOOL hasPointSize = (gsBuiltins & MGL_AIR_BUILTIN_POINT_SIZE) != 0u;
     /* GS-written gl_PrimitiveID is parked at record offset 64 (vec4 slot 4,
      * component x; layout v2 / A04) and ferried to the fragment stage as a
      * flat float varying at the reserved location below. */
-    BOOL hasPrimitiveId = mgl_gs_for_ps && mgl_gs_for_ps->src &&
-                          strstr(mgl_gs_for_ps->src, "gl_PrimitiveID") != NULL;
-    BOOL hasClipDistance = mgl_gs_for_ps && mgl_gs_for_ps->src &&
-                           strstr(mgl_gs_for_ps->src, "gl_ClipDistance") != NULL;
+    BOOL hasPrimitiveId = (gsBuiltins & MGL_AIR_BUILTIN_PRIMITIVE_ID) != 0u;
+    BOOL hasClipDistance = (gsBuiltins & MGL_AIR_BUILTIN_CLIP_DISTANCE) != 0u;
     if (hasPrimitiveId) {
         /* Float carrier: the GS kernel stores sitofp(id) and a flat int
          * stage_input that is actually read crashes Apple's AGX compiler
@@ -1038,19 +1037,22 @@ static GLenum mglPassthroughDeclType(
         if (strcmp(in->name, "gl_Layer") == 0) fsNeedsLayer = YES;
         if (strcmp(in->name, "gl_ViewportIndex") == 0) fsNeedsViewport = YES;
     }
-    if (mgl_fs && mgl_fs->src) {
-        if (!fsNeedsLayer && strstr(mgl_fs->src, "gl_Layer"))
+    {
+        const uint32_t fsBuiltins =
+            mglProgramStageBuiltinMask(program, _FRAGMENT_SHADER);
+        if (!fsNeedsLayer && (fsBuiltins & MGL_AIR_BUILTIN_LAYER) != 0u)
             fsNeedsLayer = YES;
-        if (!fsNeedsViewport && strstr(mgl_fs->src, "gl_ViewportIndex"))
+        if (!fsNeedsViewport &&
+            (fsBuiltins & MGL_AIR_BUILTIN_VIEWPORT_INDEX) != 0u)
             fsNeedsViewport = YES;
     }
     if (getenv("MGL_PTVS_NO_SPECIALS")) {
         /* Diagnostic: omit the layer/viewport special outputs entirely so
          * the vertex return carries only position + user varyings. */
-    } else if (mgl_gs && mgl_gs->src &&
-        (strstr(mgl_gs->src, "gl_Layer") ||
-         strstr(mgl_gs->src, "gl_ViewportIndex") ||
-         fsNeedsLayer || fsNeedsViewport)) {
+    } else if ((gsBuiltins &
+                    (MGL_AIR_BUILTIN_LAYER | MGL_AIR_BUILTIN_VIEWPORT_INDEX)) !=
+                   0u ||
+               fsNeedsLayer || fsNeedsViewport) {
 
         /* Layout v2 (A04): layer @52 / viewport @56 share vec4 slot 3 as
          * .y / .z (stream occupies .w). */
@@ -1165,9 +1167,9 @@ static GLenum mglPassthroughDeclType(
         &program->shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
     NSUInteger recordStride = mglAIRPerVertexStrideForResources(outputs);
     NSUInteger vec4Stride = recordStride / 16u;
-    Shader *tesShader = program->shader_slots[_TESS_EVALUATION_SHADER];
-    BOOL hasClipDistance = tesShader && tesShader->src &&
-                           strstr(tesShader->src, "gl_ClipDistance") != NULL;
+    BOOL hasClipDistance =
+        (mglProgramStageBuiltinMask(program, _TESS_EVALUATION_SHADER) &
+         MGL_AIR_BUILTIN_CLIP_DISTANCE) != 0u;
     /* Isolines rasterize as lines; Metal rejects a vertex stage that writes
      * point size on a non-point topology. */
     BOOL writePointSize = mglTessWritePointSize(
@@ -4647,10 +4649,7 @@ static GLenum mglPassthroughDeclType(
          * Unspecified; Apple Paravirtual rejects with CompilerError. */
         BOOL needsExplicitTopology = mglRenderNeedsExplicitTopology(
             geometryExpansion ? 1 : 0, (uint32_t)_lastDrawPrimitiveMode,
-            vertexProgram && vertexProgram->shader_slots[_VERTEX_SHADER]
-                ? mglRenderVSWritesLayer(
-                      vertexProgram->shader_slots[_VERTEX_SHADER]->src)
-                : 0);
+            vertexProgram ? mglRenderVSWritesLayer(vertexProgram) : 0);
         if (needsExplicitTopology) {
             /* A geometry expansion emits the geometry shader's output
              * primitive type, not the GL draw mode: a layout(points) geometry

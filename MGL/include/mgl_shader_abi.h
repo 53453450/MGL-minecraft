@@ -56,7 +56,27 @@ typedef enum MGLShaderStage {
 
 /* Stage execution metadata needed by the renderer.  Values use GL enums at
  * the C ABI boundary so Program does not depend on parser-private enums. */
+/* Builtins a stage's IR/TU references, one bit per builtin.  This is the exact
+ * replacement for the ObjC layer's `strstr(shader->src, "gl_X")` scans, which
+ * predate IR reflection: every gl_ builtin is filtered out of the reflected
+ * resource lists, so the scans were the only way to answer "does this stage
+ * touch gl_PointSize / gl_PrimitiveID / gl_Layer / ...".  The frontend already
+ * has to know each of these to emit the corresponding store or load, so it
+ * publishes the fact here instead of letting callers re-parse the source text
+ * (which also matched comments, string literals and longer identifiers). */
+enum {
+    MGL_AIR_BUILTIN_POINT_SIZE     = 1u << 0,
+    MGL_AIR_BUILTIN_PRIMITIVE_ID   = 1u << 1,
+    MGL_AIR_BUILTIN_CLIP_DISTANCE  = 1u << 2,
+    MGL_AIR_BUILTIN_CULL_DISTANCE  = 1u << 3,
+    MGL_AIR_BUILTIN_LAYER          = 1u << 4,
+    MGL_AIR_BUILTIN_VIEWPORT_INDEX = 1u << 5,
+    MGL_AIR_BUILTIN_TESS_LEVEL     = 1u << 6,
+};
+
 typedef struct MGLAIRStageInfo {
+    /* MGL_AIR_BUILTIN_* mask of the builtins this stage references. */
+    uint32_t builtin_mask;
     uint32_t tess_control_output_vertices;
     uint32_t tess_patch_vertices;   /* TES: control points per patch
                                      * (TCS output or glPatchParameteri) */

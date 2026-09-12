@@ -61,7 +61,6 @@ void mglLogRenderPassLifecycle(const char *tag,
                                GLuint renderPassFramebufferName,
                                GLenum renderPassDrawBuffer,
                                GLsizei renderPassDrawBufferCount);
-NSRange mglRendererFindMSLEntryParameterClose(NSString *msl, const char *entryPoint);
 GLuint mglCurrentRenderProgramKey(GLMContext ctx);
 void mglWriteProgramMSLDump(Program *program, NSString *reason);
 GLuint mglRendererSafeFramebufferName(GLMContext ctx);

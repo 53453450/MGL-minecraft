@@ -18,6 +18,9 @@
 
 #include "mgl_pso_format_class.h"
 
+#include "mgl_program_resource.h"  /* mglProgramStageUsesBuiltin */
+#include "mgl_shader_abi.h"        /* MGL_AIR_BUILTIN_* */
+
 #include "glcorearb.h"
 #include "mgl_render_values.h"
 
@@ -75,8 +78,9 @@ int mglRenderPipelineFunctionsReady(int has_vs, int has_fs, int rasterizer_disca
     return has_vs && (has_fs || rasterizer_discard) ? 1 : 0;
 }
 
-int mglRenderVSWritesLayer(const char *src) {
-    return src && strstr(src, "gl_Layer") ? 1 : 0;
+int mglRenderVSWritesLayer(const Program *vertex_program) {
+    return mglProgramStageUsesBuiltin(vertex_program, _VERTEX_SHADER,
+                                      MGL_AIR_BUILTIN_LAYER);
 }
 
 uint32_t mglRenderDepthFormatOrFallback(uint32_t format) {

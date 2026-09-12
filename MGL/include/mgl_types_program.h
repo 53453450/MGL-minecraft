@@ -326,6 +326,9 @@ typedef struct Program_t {
     GLbitfield attached_shader_mask;
     GLboolean link_success;
     MGLProgramLinkState link_state;
+    /* Per-stage MGL_AIR_BUILTIN_* usage mask (exact, from the IR/TU) — the
+     * replacement for scanning shader->src for "gl_X" builtins. */
+    GLuint air_builtin_mask[_MAX_SHADER_TYPES];
     MGLShaderModule modules[_MAX_SHADER_TYPES];
     MGLShaderResourceList shader_resources_list[_MAX_SHADER_TYPES][MGL_MAX_SHADER_RESOURCES];
     struct {

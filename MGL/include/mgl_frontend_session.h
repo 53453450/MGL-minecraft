@@ -34,6 +34,13 @@ int mglFrontendRewriteLegacy(const char *src, int stage, char **out,
                              char *err, size_t err_cap);
 uint32_t mglFrontendIRBuiltinArrayCount(const MGLIRModule *mod,
                                         const char *name);
+/* Non-zero when this stage's IR or TU references builtin `name` (exact
+ * replacement for source-text scans; see MGL_AIR_BUILTIN_* in
+ * mgl_shader_abi.h). */
+int mglFrontendBuiltinUsed(const MGLIRModule *mod,
+                           const MGLTranslationUnit *tu,
+                           const char *name);
+
 uint32_t mglFrontendBuiltinArrayCount(const MGLIRModule *mod,
                                       const MGLTranslationUnit *tu,
                                       const char *name);

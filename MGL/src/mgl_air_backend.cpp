@@ -14361,6 +14361,24 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->uses_cull_distance =
             stage_info->cull_distance_count > 0 ? 1u : 0u;
     }
+    /* Publish the exact builtin usage the ObjC layer used to recover by scanning
+     * the shader source (all gl_ builtins are filtered from the reflected
+     * resource lists, so they cannot be seen there). */
+    stage_info->builtin_mask = 0u;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_PointSize"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_POINT_SIZE;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_PrimitiveID"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_PRIMITIVE_ID;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_ClipDistance"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_CLIP_DISTANCE;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_CullDistance"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_CULL_DISTANCE;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_Layer"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_LAYER;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_ViewportIndex"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_VIEWPORT_INDEX;
+    if (stage_info->uses_tess_level)
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_TESS_LEVEL;
     if (stage == MGL_STAGE_TESS_CONTROL && tu->layout_vertices > 0)
         stage_info->tess_control_output_vertices =
             static_cast<uint32_t>(tu->layout_vertices);

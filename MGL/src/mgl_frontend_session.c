@@ -333,6 +333,12 @@ uint32_t mglFrontendBuiltinArrayCount(const MGLIRModule *mod,
     return need > 0u ? need : 8u;
 }
 
+int mglFrontendBuiltinUsed(const MGLIRModule *mod,
+                           const MGLTranslationUnit *tu, const char *name)
+{
+    return mglFrontendBuiltinArrayCount(mod, tu, name) > 0u ? 1 : 0;
+}
+
 int mglFrontendSessionBuild(MGLFrontendSession *s, const char *src, int stage,
                             char *err, size_t err_cap)
 {
