@@ -14,6 +14,7 @@
 // traces → mgl_batch_replay_trace.m. Keep: unlocked flush ABI, dual-proxy, restore-from-key, active-tex.
 
 #import "MGLRenderer_Private.h"
+#include "mgl_batch_rt_mark.h"  /* T4 host ports */
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+BatchPorts_Private.h"
 #import "mgl_frame_activity.h"
@@ -33,7 +34,7 @@
                     (vertexCount > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)vertexCount);
     MGL_FRAME_INC(g_mglDrawArraysSinceSwap);
     MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap, vertexCount);
-    [self markCurrentFramebufferDrawAttachmentsWritten];
+    mglBatchRtMarkCurrentFramebufferDrawAttachments((__bridge void *)self, ctx);
 }
 
 - (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount
@@ -45,7 +46,7 @@
                     (indexCount > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)indexCount);
     MGL_FRAME_INC(g_mglDrawElementsSinceSwap);
     MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap, indexCount);
-    [self markCurrentFramebufferDrawAttachmentsWritten];
+    mglBatchRtMarkCurrentFramebufferDrawAttachments((__bridge void *)self, ctx);
 }
 
 typedef struct { __unsafe_unretained MGLRenderer *r; GLMContext glm; } ActTexCtx;

@@ -17,6 +17,7 @@
 #ifndef MGL_BATCH_RT_MARK_H
 #define MGL_BATCH_RT_MARK_H
 
+#include "glm_context.h"  /* GLMContext (host ports) */
 #include <stddef.h>
 #include <stdint.h>
 
@@ -277,6 +278,21 @@ typedef struct MGLBatchRtDrawMarkOps {
 } MGLBatchRtDrawMarkOps;
 
 void mgl_batch_rt_run_draw_attachments(const MGLBatchRtDrawMarkOps *ops);
+
+/* ---- host ports (ObjC-zeroing T4) -------------------------------------
+ * These were the Objective-C category methods
+ * -[MGLRenderer markCurrentFramebufferColorAttachmentWrittenAtIndex:] and
+ * -[MGLRenderer markCurrentFramebufferDrawAttachmentsWritten]; the renderer is
+ * passed as a handle so C callers can drive them. */
+
+/* Marks one colour attachment as written (also emits the RT-write trace when
+ * the plan asks for it). */
+void mglBatchRtMarkColorAttachmentWritten(void *renderer, GLMContext ctx,
+                                          uint32_t attachment_index);
+
+/* Marks every draw attachment of the current framebuffer as written. */
+void mglBatchRtMarkCurrentFramebufferDrawAttachments(void *renderer,
+                                                     GLMContext ctx);
 
 /* ---- A3: trace fill helpers (shrink replay_trace ObjC) ---- */
 

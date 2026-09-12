@@ -9,6 +9,7 @@
  */
 
 #include "mgl_batch_rt_mark.h"
+#include "mgl_types_program.h"   /* Program */
 #include <string.h>
 
 #include <stdio.h>
@@ -476,4 +477,3 @@ void mgl_batch_rt_mark_one_attachment(uint32_t attachment_index,
         }
     }
 }
-

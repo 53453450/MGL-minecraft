@@ -9,6 +9,7 @@
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_batch_path.h"
+#include "mgl_batch_rt_mark.h"  /* T4 host ports */
 #include "mgl_batch_replay.h"
 #include "mgl_batch_restore.h"
 #include "mgl_batch_issue.h"
@@ -353,7 +354,7 @@ static void skipTraceCmd(void *v, uint32_t i)
     MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap, st.array_vertices);
     MGL_FRAME_ADD(g_mglDrawElementsSinceSwap, st.element_draws);
     MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap, st.element_indices);
-    [self markCurrentFramebufferDrawAttachmentsWritten];
+    mglBatchRtMarkCurrentFramebufferDrawAttachments((__bridge void *)self, glm_ctx);
     (void)glm_ctx;
 }
 

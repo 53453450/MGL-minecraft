@@ -747,9 +747,6 @@ static inline bool mglBindingStateFlushResourceBindings(
 
 /* O3.3 RT-write mark port (impl: mgl_batch_rt_mark_port.m).  Declared here
  * so Batch/draw-path callers see the selector. */
-@interface MGLRenderer (BatchRtMark)
-- (void)markCurrentFramebufferDrawAttachmentsWritten;
-@end
 
 
 #endif /* MGLRenderer_Draw_Private_h */

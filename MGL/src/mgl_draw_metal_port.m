@@ -17,6 +17,7 @@
 #include "mgl_draw_tess.h"
 
 #include "mgl_draw_cull.h"
+#include "mgl_renderer_ports.h"
 #include "mgl_draw_issue.h"
 #include "mgl_index_buffer.h"
 #include "mgl_buffer_query.h"
@@ -479,6 +480,17 @@ MGLRenderPassManager *mglRendererRenderPassManager(MGLRenderer *r)
 {
     return r ? r->_renderPassManager : nil;
 }
+
+/* C port (ObjC-zeroing T4): the render pass state owner of a renderer handle,
+ * so C modules do not need a category to read it. */
+void *mglRendererRenderPassStateOwnerPort(void *renderer)
+{
+    MGLRenderPassManager *manager =
+        mglRendererRenderPassManager((__bridge MGLRenderer *)renderer);
+    const MGLCommandState *state = manager ? manager.state : NULL;
+    return state ? (void *)state->renderPassStateOwner : NULL;
+}
+
 
 MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r)
 {

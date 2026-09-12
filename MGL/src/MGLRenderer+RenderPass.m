@@ -18,6 +18,7 @@
 #include "mgl_renderer_backend.h"
 #include "mgl_env_flag.h"
 #include "mgl_byte_hash.h"
+#include "mgl_renderer_ports.h"  /* C ports of renderer accessors (T4) */
 #include "mgl_shader_abi.h"
 #include "mgl_program_reflection.h"
 #include "mgl_draw_tess.h"
@@ -1390,37 +1391,9 @@ static GLenum mglPassthroughDeclType(
 
 - (Texture *)framebufferAttachmentTexture: (FBOAttachment *)fbo_attachment
 {
-    Texture *tex = NULL;
-
-    if (!fbo_attachment) {
-        NSLog(@"MGL ERROR: framebufferAttachmentTexture called with NULL attachment");
-        return NULL;
-    }
-
-    if (mglRenderTargetIsRenderbuffer((uint32_t)fbo_attachment->textarget))
-    {
-        if (fbo_attachment->buf.rbo) {
-            tex = fbo_attachment->buf.rbo->tex;
-        }
-    }
-    else
-    {
-        tex = fbo_attachment->buf.tex;
-        if (!tex && fbo_attachment->texture != 0 &&
-            !mglRenderTargetIsRenderbuffer((uint32_t)fbo_attachment->textarget))
-        {
-            tex = findTexture(ctx, fbo_attachment->texture);
-            if (tex)
-            {
-                fbo_attachment->buf.tex = tex;
-            }
-        }
-    }
-    if (!tex) {
-        NSLog(@"MGL WARN: framebuffer attachment has no texture (target=0x%x)", fbo_attachment->textarget);
-    }
-
-    return tex;
+    /* C port (ObjC-zeroing T4): the resolution lives in
+     * mglRendererAttachmentTextureFor(). */
+    return mglRendererAttachmentTextureFor(ctx, fbo_attachment);
 }
 
 - (bool)currentRenderPassMatchesCurrentFramebuffer
