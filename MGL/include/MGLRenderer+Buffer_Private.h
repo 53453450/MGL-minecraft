@@ -70,10 +70,9 @@ void mglNoteBufferEncoded(Buffer *buf);
 
 /* mapGLBuffersToMTLBufferMap:stage: helpers */
 - (bool)mapShaderBufferResourcesToBufferMap:(BufferMapList *)buffer_map stage:(int)stage;
-- (bool)mapVertexAttributeBuffersToBufferMap:(BufferMapList *)buffer_map
-                                         vao:(VertexArray *)vao
-                            stageInputCount:(int)count
-                                       stage:(int)stage;
+/* Attribute-buffer mapping is planned in C
+ * (mglRenderPlanVertexAttribBuffers, mgl_buffer_plan.h); the candidate mask is
+ * gathered in mapGLBuffersToMTLBufferMap:stage:. */
 
 /* Public entry points (called from MGLRenderer.m, +Compute.m, +RenderPass.m) */
 - (bool)mapGLBuffersToMTLBufferMap:(BufferMapList *)buffer_map stage:(int)stage;

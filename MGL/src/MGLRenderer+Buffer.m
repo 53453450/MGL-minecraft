@@ -15,6 +15,7 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Buffer_Private.h"
 #import "mgl_buffer_plan.h"
+#import "mgl_vertex_attrib_plan.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 
@@ -97,6 +98,30 @@ static id mglBufferCreateConvertedVertexBuffer(
 /* mglPlainStructLocStep and mglGLTypeElementByteSize are now shared
  * static inline helpers in mgl_buffer_plan.h. */
 
+/* Resolver seam for the buffer-plan layer: the plan decides how resolved
+ * attribute bindings group into Metal vertex buffer slots, while resolving one
+ * attribute against live GL state stays here (it needs the context's validated
+ * buffer table).  `where` is only used for validation diagnostics. */
+typedef struct MGLVertexAttribPlanResolveCtx_t {
+    GLMContext ctx;
+    VertexArray *vao;
+} MGLVertexAttribPlanResolveCtx;
+
+static int mglResolveVertexAttribForPlan(void *user, GLuint attribute,
+                                         MGLResolvedVertexAttribBinding *out)
+{
+    const MGLVertexAttribPlanResolveCtx *resolveCtx =
+        (const MGLVertexAttribPlanResolveCtx *)user;
+    if (!resolveCtx) {
+        return 1;
+    }
+    return mglRendererResolveVertexAttribBinding(
+               resolveCtx->ctx, resolveCtx->vao, attribute,
+               "mapGLBuffersToMTLBufferMap", out)
+               ? 0
+               : 1;
+}
+
 /* Acquire renderer-owned packed struct storage from the C++ backend. */
 static Buffer *mglGetPackedStructBuffer(const void *data,
                                          size_t size)
@@ -156,10 +181,49 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     // bind vao attribs to buffers (attribs can share the same buffer)
     if (mglRenderStageMapsVertexAttribs(stage))
     {
-        int count = mglRendererGetProgramBindingCount(ctx, stage, _STAGE_INPUT_RES);
+        const int count = mglRendererGetProgramBindingCount(ctx, stage, _STAGE_INPUT_RES);
         VertexArray *vao = mglRendererGetValidatedVAO(ctx, "mapGLBuffersToMTLBufferMap");
-        if (![self mapVertexAttributeBuffersToBufferMap:buffer_map vao:vao stageInputCount:count stage:stage]) {
-            return false;
+        if (!vao) {
+            if (count > 0) {
+                NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage inputs=%d but VAO is invalid/null, skipping attrib mapping",
+                      count);
+            }
+        } else {
+            /* Candidate attributes: enabled in the VAO (or every attribute when
+             * the VAO carries no explicit enable mask) and consumed by the
+             * program's vertex stage.  The grouping/limits themselves are the
+             * buffer-plan layer's job (mglRenderPlanVertexAttribBuffers). */
+            const BOOL explicitAttribMask = (vao->enabled_attribs != 0u);
+            Program *vertexProgram =
+                mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+            uint32_t candidateMask = 0u;
+            for (GLuint att = 0u; att < MAX_ATTRIBS; att++) {
+                if (explicitAttribMask &&
+                    (vao->enabled_attribs & (0x1u << att)) == 0u) {
+                    continue;
+                }
+                if (!mglRendererProgramUsesVertexAttrib(vertexProgram, att)) {
+                    continue;
+                }
+                candidateMask |= (0x1u << att);
+            }
+            MGLVertexAttribPlanResolveCtx resolveCtx = {ctx, vao};
+            MGLVertexAttribBufferPlanInput planInput = {0};
+            planInput.candidate_mask = candidateMask;
+            planInput.stage_input_count = count;
+            planInput.stage = stage;
+            planInput.map_capacity = MAX_MAPPED_BUFFERS;
+            planInput.pipeline_state =
+                (const void *)_pipelineCache.state->pipelineState;
+            Buffer *drawIndexBuffer = vao->element_array.buffer;
+            planInput.index_buffer_metal =
+                drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
+            planInput.vao = (const void *)vao;
+            planInput.resolve = mglResolveVertexAttribForPlan;
+            planInput.resolve_user = (void *)&resolveCtx;
+            if (mglRenderPlanVertexAttribBuffers(buffer_map, &planInput) != 0) {
+                return false;
+            }
         }
     }
 
@@ -1162,212 +1226,11 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     return true;
 }
 
-- (bool)mapVertexAttributeBuffersToBufferMap:(BufferMapList *)buffer_map
-                                         vao:(VertexArray *)vao
-                            stageInputCount:(int)count
-                                       stage:(int)stage
-{
-    int vao_buffer_start;
-    int mapped_buffers = 0;
-    GLuint next_vertex_binding_index = (GLuint)kMGLVertexAttribBufferBase;
-    Program *activeProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-
-    mapped_buffers = 0;
-
-    if (!vao) {
-        if (count > 0) {
-            NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage inputs=%d but VAO is invalid/null, skipping attrib mapping",
-                  count);
-        }
-        return true;
-    }
-
-    if (kMGLVertexAttribBufferBase >= kMGLMaxMetalVertexBufferCount) {
-        NSLog(@"MGL ERROR: invalid vertex attrib base index=%lu (max valid=%lu)",
-              (unsigned long)kMGLVertexAttribBufferBase,
-              (unsigned long)kMGLMaxMetalVertexBufferIndex);
-        return false;
-    }
-
-    // vao buffers start after the uniforms and shader buffers
-    vao_buffer_start = buffer_map->count;
-    // CRITICAL SECURITY FIX: Check against actual map capacity.
-    if (!mglRenderMappedBufferCountOK((uint32_t)buffer_map->count,
-                                      MAX_MAPPED_BUFFERS)) {
-        NSLog(@"MGL SECURITY ERROR: buffer_map count %d exceeds MAX_MAPPED_BUFFERS %d",
-              buffer_map->count, MAX_MAPPED_BUFFERS);
-        return false;
-    }
-    buffer_map->buffers[vao_buffer_start].attribute_mask = 0;
-    buffer_map->buffers[vao_buffer_start].buffer_base_index = (GLuint)kMGLVertexAttribBufferBase;
-    buffer_map->buffers[vao_buffer_start].resource_type = 0;
-    buffer_map->buffers[vao_buffer_start].resource_index = 0;
-    buffer_map->buffers[vao_buffer_start].metal_binding_index = 0;
-    buffer_map->buffers[vao_buffer_start].has_metal_binding = (GLboolean)mglRenderGLBoolean(0);
-    buffer_map->buffers[vao_buffer_start].buf = NULL;
-    buffer_map->buffers[vao_buffer_start].offset = 0;
-    buffer_map->buffers[vao_buffer_start].size = 0;
-
-    // create attribute map
-    //
-    // we need to cache this mapping, its called on each draw command
-    //
-    bool vaoHasExplicitAttribs = (vao->enabled_attribs != 0u);
-    for(int att=0;att<MAX_ATTRIBS; att++)
-    {
-        if (vaoHasExplicitAttribs && !(vao->enabled_attribs & (0x1 << att)))
-        {
-            if ((vao->enabled_attribs >> (att+1)) == 0)
-                break;
-            continue;
-        }
-        {
-            if (!mglRendererProgramUsesVertexAttrib(activeProgram, (GLuint)att)) {
-                if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
-                    break;
-                continue;
-            }
-
-            MGLResolvedVertexAttribBinding resolved = {0};
-            if (!mglRendererResolveVertexAttribBinding(ctx,
-                                                       vao,
-                                                       (GLuint)att,
-                                                       "mapGLBuffersToMTLBufferMap",
-                                                       &resolved)) {
-                NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: enabled attrib %d has invalid/NULL buffer, skipping attrib",
-                      att);
-                continue;
-            }
-            Buffer *gl_buffer = resolved.buffer;
-
-            Buffer *map_buffer = NULL;
-
-            // check start for map... then check
-            map_buffer = buffer_map->buffers[vao_buffer_start].buf;
-
-            // empty slot map it here, only works on first buffer..
-            if (map_buffer == NULL)
-            {
-                if (next_vertex_binding_index >= kMGLMaxMetalVertexBufferCount) {
-                    NSLog(@"MGL WARNING: vertex binding index overflow (next=%u maxValid=%lu), skipping attrib %d",
-                          next_vertex_binding_index, (unsigned long)kMGLMaxMetalVertexBufferIndex, att);
-                    continue;
-                }
-                // map the buffer object to a metal vertex index
-                if (!mglRenderMappedBufferCountOK(
-                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
-                    NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), skipping attrib %d",
-                          buffer_map->count, MAX_MAPPED_BUFFERS, att);
-                    continue;
-                }
-                buffer_map->buffers[vao_buffer_start].attribute_mask |= (0x1 << att);
-                buffer_map->buffers[vao_buffer_start].buf = gl_buffer;
-                buffer_map->buffers[vao_buffer_start].buffer_base_index = next_vertex_binding_index++;
-                buffer_map->buffers[vao_buffer_start].has_metal_binding = (GLboolean)mglRenderGLBoolean(0);
-                buffer_map->buffers[vao_buffer_start].offset = resolved.binding_offset;
-                buffer_map->buffers[vao_buffer_start].size = 0;
-                buffer_map->count++;
-
-                mapped_buffers++;
-            }
-            else
-            {
-                bool found_buffer = false;
-
-                // find vao attrib with same buffer
-                for (int map=vao_buffer_start;
-                     (found_buffer == false) && map<buffer_map->count;
-                     map++)
-                {
-                    map_buffer = buffer_map->buffers[map].buf;
-                    if (!map_buffer) {
-                        continue;
-                    }
-
-                    // we need to check name and target, not pointers..
-                    // FIX ME: I think we don't need a target as all attribs should be an array_buffer
-                    // Offset is intentionally NOT compared: attributes sharing the same
-                    // VBO/stride/divisor are grouped into one Metal buffer slot, with
-                    // per-attribute offsets expressed via the vertex descriptor.
-	                        if ((map_buffer->name == gl_buffer->name) &&
-	                            (map_buffer->target == gl_buffer->target))
-	                        {
-	                            bool compatibleStream = true;
-	                            for (GLuint prevAttrib = 0; prevAttrib < MAX_ATTRIBS; prevAttrib++) {
-	                                if ((buffer_map->buffers[map].attribute_mask & (0x1u << prevAttrib)) == 0u) {
-	                                    continue;
-	                                }
-	                                MGLResolvedVertexAttribBinding prevResolved = {0};
-	                                if (!mglRendererResolveVertexAttribBinding(ctx,
-	                                                                           vao,
-	                                                                           prevAttrib,
-	                                                                           "mapGLBuffersToMTLBufferMap(stream)",
-	                                                                           &prevResolved)) {
-	                                    continue;
-	                                }
-	                                if (prevResolved.stride != resolved.stride ||
-	                                    prevResolved.divisor != resolved.divisor) {
-	                                    compatibleStream = false;
-	                                    break;
-	                                }
-	                            }
-	                            if (compatibleStream) {
-	                                // include it the list of attributes
-	                                buffer_map->buffers[map].attribute_mask |= (0x1 << att);
-	                                found_buffer = true;
-	                                mapped_buffers++;
-	                                break;
-	                            }
-	                        }
-                }
-
-                if (found_buffer == false)
-                {
-                    if (next_vertex_binding_index >= kMGLMaxMetalVertexBufferCount) {
-                        NSLog(@"MGL WARNING: vertex binding index overflow (next=%u maxValid=%lu), cannot append attrib %d",
-                              next_vertex_binding_index, (unsigned long)kMGLMaxMetalVertexBufferIndex, att);
-                        continue;
-                    }
-                    // map the next buffer object to a metal vertex index
-                    if (!mglRenderMappedBufferCountOK(
-                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
-                        NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), cannot append attrib %d",
-                              buffer_map->count, MAX_MAPPED_BUFFERS, att);
-                        continue;
-                    }
-                    buffer_map->buffers[buffer_map->count].attribute_mask = (0x1 << att);
-                    buffer_map->buffers[buffer_map->count].buffer_base_index = next_vertex_binding_index++;
-                    buffer_map->buffers[buffer_map->count].resource_type = 0;
-                    buffer_map->buffers[buffer_map->count].resource_index = 0;
-                    buffer_map->buffers[buffer_map->count].metal_binding_index = 0;
-                    buffer_map->buffers[buffer_map->count].has_metal_binding = (GLboolean)mglRenderGLBoolean(0);
-                    buffer_map->buffers[buffer_map->count].buf = gl_buffer;
-                    buffer_map->buffers[buffer_map->count].offset = resolved.binding_offset;
-                    buffer_map->buffers[buffer_map->count].size = 0;
-                    buffer_map->count++;
-
-                    mapped_buffers++;
-                }
-            }
-        }
-
-        if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
-            break;
-    }
-
-    if (mapped_buffers != count) {
-        static unsigned long long s_map_mismatch_hits = 0;
-        s_map_mismatch_hits++;
-        if ((s_map_mismatch_hits % 64ull) == 1ull) {
-            Buffer *drawIndexBuffer = vao->element_array.buffer;
-            void *indexBufferMetal = drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
-            NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap mismatch (pipeline=%p mapped=%u expected=%u stage=%d hit=%llu indexBuffer=%p vao=%p)",
-                  _pipelineCache.state->pipelineState, mapped_buffers, count, stage, s_map_mismatch_hits, indexBufferMetal, vao);
-        }
-    }
-
-    return true;
-}
+/* mapVertexAttributeBuffersToBufferMap: moved to the buffer-plan layer as
+ * mglRenderPlanVertexAttribBuffers (grouping / slot assignment / capacity
+ * guards / diagnostics); the per-attribute resolution stays here behind
+ * the mglResolveVertexAttribForPlan seam, and the caller in
+ * mapGLBuffersToMTLBufferMap:stage: gathers the candidate mask. */
 
 - (bool) mapBuffersToMTL
 {

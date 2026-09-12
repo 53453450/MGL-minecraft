@@ -9005,9 +9005,9 @@ uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
     return copy_size;
 }
 
-int mglRenderMappedBufferCountOK(uint32_t count, uint32_t max) {
-    return count < max ? 1 : 0;
-}
+/* mglRenderMappedBufferCountOK moved to mgl_vertex_attrib_plan.c: pure value
+ * predicate owned by the vertex-attribute buffer map plan, kept there so that
+ * layer and its unit-test harness stay free of Metal/LLVM dependencies. */
 
 int mglRenderClientBindingInRange(uint32_t binding, uint32_t max) {
     return binding < max ? 1 : 0;

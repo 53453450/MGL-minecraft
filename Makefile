@@ -739,6 +739,21 @@ $(build_dir)/test_render_pass_clear_plan: test_legacy_compat/test_render_pass_cl
 test-render-pass-clear-plan: $(build_dir)/test_render_pass_clear_plan
 	$(build_dir)/test_render_pass_clear_plan
 
+$(build_dir)/test_buffer_plan: test_legacy_compat/test_buffer_plan.c \
+	MGL/src/mgl_vertex_attrib_plan.c MGL/include/mgl_vertex_attrib_plan.h \
+	MGL/include/mgl_vertex_attrib_binding.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_buffer_plan.c \
+		MGL/src/mgl_vertex_attrib_plan.c \
+		-o $@
+
+test-buffer-plan: $(build_dir)/test_buffer_plan
+	$(build_dir)/test_buffer_plan
+
 $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
 	@mkdir -p $(dir $@)
@@ -1083,6 +1098,7 @@ test-all:
 	$(MAKE) test-batch-issue
 	$(MAKE) test-process-gl-state-plan
 	$(MAKE) test-render-pass-clear-plan
+	$(MAKE) test-buffer-plan
 	$(MAKE) test-binding-stage
 	$(MAKE) test-geometry-gather
 	$(MAKE) test-validate-arrays-early

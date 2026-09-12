@@ -38,6 +38,7 @@
 #include "mgl_air_tess_abi.h"
 #include "mgl_air_gs_abi.h"
 #include "mgl_render.h"
+#include "mgl_vertex_attrib_binding.h"
 
 /* Encode target passed explicitly to issue and bind methods. */
 typedef struct {
@@ -60,23 +61,9 @@ typedef struct MGLScissorRectValue_t {
     uint64_t height;
 } MGLScissorRectValue;
 
-/* === Resolved vertex-attrib binding === */
-typedef struct MGLResolvedVertexAttribBinding_t {
-    const VertexAttrib *attrib;
-    Buffer *buffer;
-    GLintptr binding_offset;
-    GLuint stride;
-    GLuint divisor;
-    GLintptr relativeoffset;
-    GLuint binding_index;
-    bool uses_binding_table;
-} MGLResolvedVertexAttribBinding;
-
-bool mglRendererResolveVertexAttribBinding(GLMContext ctx,
-                                           VertexArray *vao,
-                                           GLuint attribute,
-                                           const char *where,
-                                           MGLResolvedVertexAttribBinding *out);
+/* MGLResolvedVertexAttribBinding + mglRendererResolveVertexAttribBinding moved
+ * to mgl_vertex_attrib_binding.h (C-visible: the buffer binding plan layer and
+ * its harness resolve attribute bindings through that seam). */
 int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  VertexArray *vao,
                                                  GLuint attribute,
