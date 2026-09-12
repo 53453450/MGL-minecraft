@@ -263,6 +263,23 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
     - **下一刀候选**：`+Compute.m`（1255）的 compute binding 环仍厚 —— 可复用 `mgl_binding_stage`/`mgl_binding_texture` 的 plan 形态；或 `+Blit.m`（4945）O4.4 format/DS unify；或 `+BindingState.m`（2940）残量。
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
+26. **SPIRV 时代兼容写法清理（对象：ObjC 里的源码文本判定）**：SPIRV/MSL 工具链时代，内建与资源类型都不进反射列表，ObjC 只能 `strstr(shader->src, "gl_X")`。LLVM IR 链下 frontend 本来就知道每个内建（要生成对应 store/load），所以改为**发布精确事实**，分两刀落地：
+    - **#1（`a6cc8ce`）**：`MGLAIRStageInfo.builtin_mask`（POINT_SIZE / PRIMITIVE_ID / CLIP_DISTANCE / CULL_DISTANCE / LAYER / VIEWPORT_INDEX / TESS_LEVEL）+ `Program.air_builtin_mask[stage]` + 访问器 `mglProgramStageBuiltinMask()` / `mglProgramStageUsesBuiltin()`；退役 `+RenderPass.m` 的 GS `gl_PointSize`/`gl_PrimitiveID`/`gl_ClipDistance`、FS+GS `gl_Layer`/`gl_ViewportIndex`、TES `gl_ClipDistance` 共 6 处扫描；`mglRenderVSWritesLayer()` 由 `const char *src` 改为读 `Program`。顺带删掉死代码 `mglRendererFindMSLEntryParameterClose()`（解析生成 MSL 的入口参数表，AIR 链不再生成 MSL 文本，全树无调用）。
+    - **#2（`64d127d`）**：掩码扩到 VERTEX_ID / FRAG_COORD / NUM_SAMPLES / SAMPLE_ID / SAMPLE_POSITION / SAMPLE_MASK / INTERPOLATE_AT_SAMPLE / INTERPOLATE_AT_OFFSET / SAMPLE_INTERPOLATION；frontend 谓词补两项能力——`mglFrontendNoteBuiltinUse` 现在也匹配**调用名**（内建函数 interpolateAt*），新增 `mglFrontendStageUsesSampleInterpolation()`（`sample in` 限定符，走 IR symbol / TU decl 的 `MGL_AST_Q_SAMPLE`）。退役 `program.c` 的 vertex-id/primitive-id 扫描与 FS frag-coord/sample 扫描，删除 `mglRenderShaderSourceUsesSampleParams()`，`mglRenderFragmentNeedsPerSampleMSValues()` 改为接收 `Program`（注意两套 bit 集合刻意不同：`uses_sample_params` 含 NUM_SAMPLES、`needs_per_sample_ms` 含 INTERPOLATE_AT_OFFSET，与旧扫描一致）。
+    - **语义严格更准**：`strstr` 连注释、字符串字面量、`gl_LayerFoo` 这类更长标识符都会命中；掩码只认真正的内建符号。
+    - **验证（两刀同口径）**：本地全量 92 PASS / 0 FAIL / 2 SKIP；`test-legacy-compat` 193/193；`test-frontends` 67/67；`make test-buffer-plan`；GS 簇 136/0；tess 簇 139/1/0（同一 FO-spacing 归档例）；hotspot 1270/52/4 ns/1 crash，**非通过集合与上一轮逐条 diff 为空**。
+
+    **同族待清理清单（已定位，按收益排序）**：
+    | 位置 | SPIRV 时代写法 | IR 链下的替代 |
+    |---|---|---|
+    | `mgl_binding_policy.c:236` `mglRenderResourceLooksSamplerLike` | `_UNIFORM_CONSTANT_RES` 用 `image_dim != 0` / `uniform_location >= 0x4000` / **名字启发式**（`mglRenderSamplerNameLooksSamplerLike`）猜"这资源是不是 sampler" | 反射里 `_UNIFORM_CONSTANT_RES` 已带确切 sampler kind（`image_dim` / `tex_kind`）；名字与 0x4000 魔数可删 |
+    | `mgl_sampler_compat.m:163` `mglFindSamplerResourceForMetalBinding` | 按 metalBinding 遍历 5 类资源 + 名字启发式找 sampler | 用反射的 `binding` 直查 |
+    | `mgl_vertex_attrib_query.m:56` `mglRendererProgramUsesVertexAttrib` | `location == 0xffffffff && i == attribute` 的"无 location 时按声明序"兜底 | IR 链每个 stage input 都有 location；该分支只剩兼容意义 |
+    | `mgl_program_resource.c` `mglShouldSkipStageTextureResource` / `mglShouldSkipStageSamplerResource` | 恒返回 `false` 的桩（说明当年的跳过启发式已死） | 直接删桩与调用点判断 |
+    | `mgl_gl_extensions.c:1428` | `strstr(shader->src, "void main")` | 查询/校验路径，需单独评估 |
+    | `mgl_legacy_compat.c` 多处 | 旧 GLSL 文本改写 | **设计如此**（兼容层本体），不在清理范围 |
+    | `mgl_frontend_session.c:42/60` | `#version` 解析 / legacy 翻译标记 | 解析器本体需要，保留 |
+
 24. **O5.1 续刀2（本刀，vertex-attrib buffer map 沉 C）**：`mapVertexAttributeBuffersToBufferMap:` → `mglRenderPlanVertexAttribBuffers`（新 TU `mgl_vertex_attrib_plan.c`，故意与 `mgl_buffer_plan.c` 分开——后者的 plan-build 依赖 shader/program resource 层，会拖 ObjC/Foundation 进 harness）。seam：`MGLVertexAttribResolveFn` 回调 + `MGLResolvedVertexAttribBinding` 类型提到 C 头。`MGLResolvedVertexAttribBinding` 的原私头声明改为 include 转发。`+Buffer.m` −137；`make test-buffer-plan` 11 组 golden + 变异测试；`test-frontends`/`test-regression` 子集/CTS 复验见提交信息。
     - **下一刀候选**：同域剩余两大环 `mapShaderBufferResourcesViaPlan:`（fast path，保留）与 `mapShaderBufferResourcesToBufferMap:stage:`（~541 行 reflection fallback），可用同一 seam 思路（plan@C + 回调解析），但需要先补 plan/fast-path 一致性的 golden；或转 O5.2（`+Compute.m` dispatch/binding 环）与 O4.4（`+Blit` format/DS unify）。
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
