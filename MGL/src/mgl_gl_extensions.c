@@ -17,6 +17,7 @@
 //
 
 #include <assert.h>
+#include "mgl_frontend_session.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -815,14 +816,11 @@ static GLsizei mgl_program_resource_name_with_array(const MGLShaderResource *res
 	                "%s", res->name);
 }
 
-static GLboolean mgl_program_stage_source_references(Program *pptr,
-	                                                    int target_stage,
-	                                                    const char *name);
-static const char *mgl_program_stage_source_body(Program *pptr,
-                                                 int target_stage);
-static GLboolean mgl_program_qualified_member_referenced(const char *body,
-                                                         const char *instance,
-                                                         const char *member);
+static int mgl_program_stage_references_name(Program *pptr, int target_stage,
+                                             const char *name);
+static int mgl_program_stage_references_member(Program *pptr, int target_stage,
+                                               const char *instance,
+                                               const char *member);
 
 static GLboolean mgl_program_block_seen_before(Program *pptr, int res_type, int target_stage, GLuint target_index)
 {
@@ -859,7 +857,6 @@ static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_ty
 		&pptr->shader_resources_list[query_stage][res_type];
 	if (pptr->shader_slots[query_stage] && pptr->shader_slots[query_stage]->src &&
 	    block->ubo_members && block->ubo_member_count > 0) {
-		const char *body = mgl_program_stage_source_body(pptr, query_stage);
 		const GLboolean have_instance =
 			block->ubo_has_instance_name && block->ubo_instance_name;
 		for (GLuint m = 0; m < block->ubo_member_count; m++) {
@@ -869,13 +866,13 @@ static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_ty
 			/* With the instance name known, require a qualified access so
 			 * an unrelated identifier that merely shares the member's name
 			 * cannot fake a reference. */
-			GLboolean referenced =
+			const GLboolean referenced =
 				have_instance
-					? (body && mgl_program_qualified_member_referenced(
-					               body, block->ubo_instance_name, member))
-					: mgl_program_stage_source_references(pptr,
-					                                      query_stage,
-					                                      member);
+					? mgl_program_stage_references_member(
+					      pptr, query_stage, block->ubo_instance_name,
+					      member)
+					: mgl_program_stage_references_name(
+					      pptr, query_stage, member);
 			if (referenced)
 				return GL_TRUE;
 		}
@@ -1414,99 +1411,32 @@ static GLboolean mgl_program_uniform_referenced_by_stage(Program *pptr, const ch
 
 /* Reflection aggregates plain uniforms into a synthetic block for Metal, so
  * the presence of a member in a stage resource list does not prove that the
- * GLSL stage actually reads it.  Use the stage source body for the API's
- * per-stage reference query; declarations and comments before main() are
- * intentionally ignored. */
-static const char *mgl_program_stage_source_body(Program *pptr,
-                                                 int target_stage)
+ * GLSL stage actually reads it.  The API's per-stage reference query is
+ * answered from the parsed TU (mgl_frontend_session.h): the stage's function
+ * bodies are walked for the member's access path, so comments, string
+ * literals and declarations cannot fake a reference the way the retired
+ * source-text scan could (it matched the leaf of a nested member anywhere in
+ * the body and had to special-case the array-element spelling). */
+static int mgl_program_stage_references_name(Program *pptr, int target_stage,
+                                             const char *name)
 {
 	if (!pptr || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
-		return NULL;
+		return 0;
 	Shader *shader = pptr->shader_slots[target_stage];
-	if (!shader || !shader->src)
-		return NULL;
-	const char *body = strstr(shader->src, "void main");
-	return body ? body : shader->src;
+	return shader ? mglFrontendStageReferencesName(shader->frontend_tu, name)
+	              : 0;
 }
 
-static GLboolean mgl_program_source_name_is_referenced(const char *body, const char *name)
+static int mgl_program_stage_references_member(Program *pptr, int target_stage,
+                                               const char *instance,
+                                               const char *member)
 {
-	if (!body || !name || !name[0])
-		return GL_FALSE;
-
-	/* The query name may be a block member; reference sites qualify it with
-	 * the block instance ("uni_colors.red").  Match the identifier as a
-	 * whole so "model" does not hit "uni_model_view_projection", while a
-	 * qualified access ("<instance>.<member>") still counts as a use. */
-	const char *leaf = strrchr(name, '.');
-	leaf = leaf ? leaf + 1 : name;
-
-	const size_t leaf_len = strlen(leaf);
-	for (const char *p = strstr(body, leaf); p; p = strstr(p + 1, leaf))
-	{
-		const char prev = (p == body) ? '\0' : p[-1];
-		const char next = p[leaf_len];
-		const GLboolean prev_ok = !((prev >= 'a' && prev <= 'z') ||
-		                            (prev >= 'A' && prev <= 'Z') ||
-		                            (prev >= '0' && prev <= '9') ||
-		                            prev == '_');
-		const GLboolean next_ok = !((next >= 'a' && next <= 'z') ||
-		                            (next >= 'A' && next <= 'Z') ||
-		                            (next >= '0' && next <= '9') || next == '_');
-		if (prev_ok && next_ok)
-			return GL_TRUE;
-	}
-	return GL_FALSE;
-}
-
-/* Stricter member check when the block instance name is known: accept only
- * qualified accesses ("<instance>.<member>", optionally through array
- * subscripts), never a bare identifier that merely shares the member's
- * name. */
-static GLboolean mgl_program_qualified_member_referenced(const char *body,
-                                                         const char *instance,
-                                                         const char *member)
-{
-	if (!body || !instance || !instance[0] || !member || !member[0])
-		return GL_FALSE;
-
-	const size_t inst_len = strlen(instance);
-	for (const char *p = strstr(body, instance); p; p = strstr(p + 1, instance))
-	{
-		const char prev = (p == body) ? '\0' : p[-1];
-		const GLboolean prev_ok = !((prev >= 'a' && prev <= 'z') ||
-		                            (prev >= 'A' && prev <= 'Z') ||
-		                            (prev >= '0' && prev <= '9') || prev == '_');
-		if (!prev_ok)
-			continue;
-		const char *q = p + inst_len;
-		while (*q == '[')
-		{
-			q = strchr(q, ']');
-			if (!q)
-				break;
-			++q;
-		}
-		if (!q || *q != '.' || strncmp(q + 1, member, strlen(member)) != 0)
-			continue;
-		const char next = q[1 + strlen(member)];
-		const GLboolean next_ok = !((next >= 'a' && next <= 'z') ||
-		                            (next >= 'A' && next <= 'Z') ||
-		                            (next >= '0' && next <= '9') || next == '_');
-		if (next_ok)
-			return GL_TRUE;
-	}
-	return GL_FALSE;
-}
-
-static GLboolean mgl_program_stage_source_references(Program *pptr,
-	                                                    int target_stage,
-	                                                    const char *name)
-{
-	const char *body = mgl_program_stage_source_body(pptr, target_stage);
-	if (!body || !name || !name[0])
-		return GL_FALSE;
-	return mgl_program_source_name_is_referenced(body, name);
+	if (!pptr || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
+		return 0;
+	Shader *shader = pptr->shader_slots[target_stage];
+	return shader ? mglFrontendStageReferencesMember(shader->frontend_tu,
+	                                                 instance, member)
+	              : 0;
 }
 
 static GLboolean mgl_program_active_uniform_referenced_by_stage(Program *pptr,
@@ -1531,7 +1461,7 @@ static GLboolean mgl_program_active_uniform_referenced_by_stage(Program *pptr,
 				&pptr->shader_resources_list[target_stage][res_type];
 			if (pptr->shader_slots[target_stage] &&
 			    pptr->shader_slots[target_stage]->src)
-			return mgl_program_stage_source_references(pptr, target_stage,
+			return mgl_program_stage_references_name(pptr, target_stage,
 			                                          res->ubo_member->query_name);
 			for (GLuint i = 0; resources->list && i < resources->count; i++)
 			{
@@ -3383,7 +3313,7 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 			 * use inside the stage's main body makes the buffer
 			 * "referenced" by that stage (same activity rule as the
 			 * block interfaces, GL 4.6 §7.3.1). */
-			if (!mgl_program_stage_source_references(pptr, stage,
+			if (!mgl_program_stage_references_name(pptr, stage,
 			                                        res->name)) {
 				continue;
 			}
@@ -4844,7 +4774,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 							    /* Activity: the counter must be used in
 							     * this stage's main body, not merely
 							     * declared by a shared preamble. */
-							    mgl_program_stage_source_references(
+							    mgl_program_stage_references_name(
 							        pptr, query_stage,
 							        list->list[j].name))
 							{

@@ -39,6 +39,15 @@ uint32_t mglFrontendIRBuiltinArrayCount(const MGLIRModule *mod,
 int mglFrontendStageUsesSampleInterpolation(const MGLIRModule *mod,
                                             const MGLTranslationUnit *tu);
 
+/* Reference queries over a stage's parsed TU bodies (no source-text scan):
+ * `name` may be qualified (the leaf is matched), `member` is matched as a
+ * member field, optionally required to be rooted at `instance`. */
+int mglFrontendStageReferencesName(const MGLTranslationUnit *tu,
+                                   const char *name);
+int mglFrontendStageReferencesMember(const MGLTranslationUnit *tu,
+                                     const char *instance,
+                                     const char *member);
+
 /* Non-zero when this stage's IR or TU references builtin `name` (exact
  * replacement for source-text scans; see MGL_AIR_BUILTIN_* in
  * mgl_shader_abi.h). */

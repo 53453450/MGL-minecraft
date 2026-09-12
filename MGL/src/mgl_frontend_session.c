@@ -378,6 +378,342 @@ int mglFrontendStageUsesSampleInterpolation(const MGLIRModule *mod,
     return 0;
 }
 
+/* ---- Reference query over a stage's declaration bodies ---- */
+/* Answers "does this stage's code reference <name> / <instance>.<member>?"
+ * from the parsed TU instead of scanning the GLSL text.  Declarations never
+ * count (the queries ask whether the stage USES the resource) and every
+ * function body is walked, so a helper called from the entry point counts.
+ * The retired source-text scan had to cut the source at the first "void main"
+ * (a helper defined above main was invisible) and had to special-case comments
+ * and string literals, which could fake a reference; it also matched only the
+ * LEAF of a member name ("d[0]"), so an unrelated object with a member of the
+ * same name counted as a use.
+ *
+ * Both sides are compared component-wise:
+ *
+ *   component := name ( '[' index ']' )*      index := literal | '?'
+ *
+ * The AST flattens to components (VAR_REF/MEMBER add a name, INDEX appends an
+ * index to the last component) and a reflected query name ("colors[0]",
+ * "a[0].b[0].d[0]") parses to the same shape.  A query matches an access when
+ * its components appear as an aligned contiguous run, so the access may select
+ * deeper (query "colors[0]" vs access "colors[0].rgb"), the query may omit the
+ * trailing index (query "colors" vs access "colors[0]"), a dynamic index ('?',
+ * from a non-literal subscript) is a wildcard, while two literal indices must
+ * agree - "colors[1]" never matches an access to colors[0]. */
+
+#define MGL_FRONTEND_REF_MAX_COMPONENTS 16u
+#define MGL_FRONTEND_REF_MAX_INDICES 8u
+#define MGL_FRONTEND_REF_NAME_CAP 64u
+
+typedef struct MGLFrontendRefComponent {
+    char name[MGL_FRONTEND_REF_NAME_CAP];
+    uint32_t index_count;
+    long long indices[MGL_FRONTEND_REF_MAX_INDICES]; /* -1 == '?' (dynamic) */
+} MGLFrontendRefComponent;
+
+typedef struct MGLFrontendRefPath {
+    uint32_t count;
+    MGLFrontendRefComponent comps[MGL_FRONTEND_REF_MAX_COMPONENTS];
+} MGLFrontendRefPath;
+
+typedef struct MGLFrontendRefQuery {
+    const MGLFrontendRefPath *path; /* components to look for, in order */
+    int hit;
+} MGLFrontendRefQuery;
+
+/* Parse a dotted, subscripted name into path components.  With `append` the
+ * parsed components extend what `out` already holds (building "<instance>.<member>");
+ * on any malformed input `out` is left with the component count it had. */
+static int mglFrontendRefParseInto(const char *s, MGLFrontendRefPath *out,
+                                   int append)
+{
+    const uint32_t base = append ? out->count : 0u;
+    uint32_t count = base;
+    if (!s || !s[0])
+        return 0;
+    for (;;) {
+        const char *start = s;
+        while (*s && *s != '.' && *s != '[')
+            s++;
+        const size_t n = (size_t)(s - start);
+        if (n == 0u || n + 1u > MGL_FRONTEND_REF_NAME_CAP ||
+            count == MGL_FRONTEND_REF_MAX_COMPONENTS)
+            goto fail;
+        MGLFrontendRefComponent *c = &out->comps[count++];
+        memcpy(c->name, start, n);
+        c->name[n] = '\0';
+        c->index_count = 0u;
+        while (*s == '[') {
+            s++;
+            long long v = -1;
+            if (*s == '?') {
+                s++;
+            } else {
+                int neg = 0;
+                if (*s == '-') {
+                    neg = 1;
+                    s++;
+                }
+                if (*s < '0' || *s > '9')
+                    goto fail;
+                long long acc = 0;
+                while (*s >= '0' && *s <= '9')
+                    acc = acc * 10 + (*s++ - '0');
+                v = neg ? -acc : acc;
+            }
+            if (*s != ']' || c->index_count == MGL_FRONTEND_REF_MAX_INDICES)
+                goto fail;
+            s++;
+            c->indices[c->index_count++] = v;
+        }
+        if (*s == '.') {
+            s++;
+            continue;
+        }
+        if (*s == '\0') {
+            out->count = count;
+            return 1;
+        }
+        goto fail;
+    }
+fail:
+    out->count = base;
+    return 0;
+}
+
+/* Flatten an expression into its access path; 0 when it is not a plain path
+ * (a call result, a literal, ...). */
+static int mglFrontendRefFlatten(const MGLExpr *e, MGLFrontendRefPath *out)
+{
+    if (!e)
+        return 0;
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF:
+        /* The frontend may keep a block-instance member access as one
+         * qualified symbol name, so the name text is parsed into components
+         * too; a path always starts at a variable reference. */
+        return (out->count == 0u)
+                   ? mglFrontendRefParseInto(e->u.var_ref.name, out, 1)
+                   : 0;
+    case MGL_EXPR_MEMBER:
+        return mglFrontendRefFlatten(e->u.member.object, out) &&
+               mglFrontendRefParseInto(e->u.member.field, out, 1);
+    case MGL_EXPR_INDEX: {
+        if (!mglFrontendRefFlatten(e->u.index.object, out) || out->count == 0u)
+            return 0;
+        MGLFrontendRefComponent *c = &out->comps[out->count - 1u];
+        const MGLExpr *ix = e->u.index.index;
+        long long v = -1;
+        if (ix && ix->kind == MGL_EXPR_LITERAL &&
+            (ix->u.literal.base == MGL_AST_TYPE_INT ||
+             ix->u.literal.base == MGL_AST_TYPE_UINT))
+            v = (long long)ix->u.literal.value;
+        if (c->index_count == MGL_FRONTEND_REF_MAX_INDICES)
+            return 0;
+        c->indices[c->index_count++] = v;
+        return 1;
+    }
+    default:
+        return 0;
+    }
+}
+
+static int mglFrontendRefComponentMatches(const MGLFrontendRefComponent *q,
+                                          const MGLFrontendRefComponent *p)
+{
+    if (strcmp(q->name, p->name) != 0)
+        return 0;
+    for (uint32_t i = 0; i < q->index_count; i++) {
+        if (i >= p->index_count)
+            return 0; /* the access is indexed shallower than the query: the
+                       * path lost an index (the walker does not match the
+                       * unindexed prefix of an indexed access), so a query for
+                       * one element must not answer for its siblings */
+        const long long qi = q->indices[i];
+        const long long pi = p->indices[i];
+        if (qi >= 0 && pi >= 0 && qi != pi)
+            return 0;
+    }
+    return 1;
+}
+
+/* True when the query's components appear in the access path as an aligned
+ * contiguous run. */
+static int mglFrontendRefPathMatches(const MGLFrontendRefPath *path,
+                                     const MGLFrontendRefPath *query)
+{
+    if (path->count == 0u || query->count == 0u ||
+        query->count > path->count)
+        return 0;
+    for (uint32_t s = 0; s + query->count <= path->count; s++) {
+        uint32_t i = 0;
+        for (; i < query->count; i++) {
+            if (!mglFrontendRefComponentMatches(&query->comps[i],
+                                                &path->comps[s + i]))
+                break;
+        }
+        if (i == query->count)
+            return 1;
+    }
+    return 0;
+}
+
+/* Walk every expression of a body.  `match_self` is 0 for a path that dropped
+ * an index on the way up (an indexed object seen from its parent), where the
+ * prefix path must not be matched against the query. */
+static void mglFrontendRefWalkExpr(const MGLExpr *e, MGLFrontendRefQuery *q,
+                                   int match_self)
+{
+    if (!e || q->hit)
+        return;
+    if (match_self) {
+        MGLFrontendRefPath path;
+        path.count = 0u;
+        if (mglFrontendRefFlatten(e, &path) &&
+            mglFrontendRefPathMatches(&path, q->path))
+            q->hit = 1;
+    }
+    switch (e->kind) {
+    case MGL_EXPR_MEMBER:
+    case MGL_EXPR_VAR_REF:
+        /* The object chain keeps the parent's suppression state. */
+        mglFrontendRefWalkExpr(e->kind == MGL_EXPR_MEMBER ? e->u.member.object
+                                                          : NULL,
+                               q, match_self);
+        break;
+    case MGL_EXPR_INDEX:
+        /* The indexed object's own path is a prefix that dropped this index
+         * ("blk.colors" under "blk.colors[0]"): it must not match on its own,
+         * or a query for one element would answer for its siblings.  It is
+         * still walked for expressions of its own (its subscripts, calls). */
+        mglFrontendRefWalkExpr(e->u.index.object, q, 0);
+        mglFrontendRefWalkExpr(e->u.index.index, q, 1);
+        break;
+    case MGL_EXPR_CALL:
+        for (uint32_t i = 0; i < e->u.call.arg_count; i++)
+            mglFrontendRefWalkExpr(e->u.call.args[i], q, 1);
+        break;
+    case MGL_EXPR_UNARY:
+        mglFrontendRefWalkExpr(e->u.unary.operand, q, 1);
+        break;
+    case MGL_EXPR_BINARY:
+        mglFrontendRefWalkExpr(e->u.binary.lhs, q, 1);
+        mglFrontendRefWalkExpr(e->u.binary.rhs, q, 1);
+        break;
+    case MGL_EXPR_ASSIGN:
+        mglFrontendRefWalkExpr(e->u.assign.lhs, q, 1);
+        mglFrontendRefWalkExpr(e->u.assign.rhs, q, 1);
+        break;
+    case MGL_EXPR_TERNARY:
+        mglFrontendRefWalkExpr(e->u.ternary.cond, q, 1);
+        mglFrontendRefWalkExpr(e->u.ternary.then, q, 1);
+        mglFrontendRefWalkExpr(e->u.ternary.else_, q, 1);
+        break;
+    case MGL_EXPR_INIT_LIST:
+        for (uint32_t i = 0; i < e->u.init_list.arg_count; i++)
+            mglFrontendRefWalkExpr(e->u.init_list.args[i], q, 1);
+        break;
+    default:
+        break;
+    }
+}
+
+static void mglFrontendRefWalkStmt(const MGLStmt *st, MGLFrontendRefQuery *q)
+{
+    if (!st || q->hit)
+        return;
+    switch (st->kind) {
+    case MGL_STMT_COMPOUND:
+        for (uint32_t i = 0; i < st->u.compound.count; i++)
+            mglFrontendRefWalkStmt(st->u.compound.stmts[i], q);
+        break;
+    case MGL_STMT_EXPR:
+        mglFrontendRefWalkExpr(st->u.expr.expr, q, 1);
+        break;
+    case MGL_STMT_DECL:
+        if (st->u.decl.decl && st->u.decl.decl->init)
+            mglFrontendRefWalkExpr(st->u.decl.decl->init, q, 1);
+        break;
+    case MGL_STMT_IF:
+        mglFrontendRefWalkExpr(st->u.ifs.cond, q, 1);
+        mglFrontendRefWalkStmt(st->u.ifs.then, q);
+        mglFrontendRefWalkStmt(st->u.ifs.else_, q);
+        break;
+    case MGL_STMT_FOR:
+        mglFrontendRefWalkStmt(st->u.loop.init, q);
+        mglFrontendRefWalkExpr(st->u.loop.cond, q, 1);
+        mglFrontendRefWalkExpr(st->u.loop.incr, q, 1);
+        mglFrontendRefWalkStmt(st->u.loop.body, q);
+        break;
+    case MGL_STMT_WHILE:
+        mglFrontendRefWalkExpr(st->u.whilex.cond, q, 1);
+        mglFrontendRefWalkStmt(st->u.whilex.body, q);
+        break;
+    case MGL_STMT_DO_WHILE:
+        mglFrontendRefWalkStmt(st->u.body.body, q);
+        mglFrontendRefWalkExpr(st->u.whilex.cond, q, 1);
+        break;
+    case MGL_STMT_SWITCH:
+        mglFrontendRefWalkExpr(st->u.switchx.cond, q, 1);
+        mglFrontendRefWalkStmt(st->u.switchx.body, q);
+        break;
+    case MGL_STMT_CASE:
+        mglFrontendRefWalkExpr(st->u.casex.value, q, 1);
+        break;
+    case MGL_STMT_RETURN:
+        mglFrontendRefWalkExpr(st->u.ret.value, q, 1);
+        break;
+    default:
+        break;
+    }
+}
+
+static int mglFrontendStageHasPath(const MGLTranslationUnit *tu,
+                                   const MGLFrontendRefPath *query)
+{
+    if (!tu || query->count == 0u)
+        return 0;
+    MGLFrontendRefQuery q;
+    q.path = query;
+    q.hit = 0;
+    for (uint32_t i = 0; i < tu->decl_count && !q.hit; i++) {
+        for (const MGLDecl *d = tu->decls[i]; d && !q.hit;
+             d = d->next_declarator)
+            mglFrontendRefWalkStmt(d->body, &q);
+    }
+    return q.hit ? 1 : 0;
+}
+
+int mglFrontendStageReferencesName(const MGLTranslationUnit *tu,
+                                   const char *name)
+{
+    MGLFrontendRefPath query;
+    query.count = 0u;
+    if (!tu || !name || !name[0] ||
+        !mglFrontendRefParseInto(name, &query, 0))
+        return 0;
+    return mglFrontendStageHasPath(tu, &query);
+}
+
+int mglFrontendStageReferencesMember(const MGLTranslationUnit *tu,
+                                     const char *instance,
+                                     const char *member)
+{
+    MGLFrontendRefPath query;
+    query.count = 0u;
+    if (!tu || !member || !member[0])
+        return 0;
+    /* The query path is "<instance>.<member>"; the instance is optional (an
+     * unnamed block interface leaves only the member name to match on). */
+    if (instance && instance[0] &&
+        !mglFrontendRefParseInto(instance, &query, 0))
+        return 0;
+    if (!mglFrontendRefParseInto(member, &query, 1))
+        return 0;
+    return mglFrontendStageHasPath(tu, &query);
+}
+
 int mglFrontendBuiltinUsed(const MGLIRModule *mod,
                            const MGLTranslationUnit *tu, const char *name)
 {
