@@ -44,8 +44,9 @@
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0 |
 
-**当前进度（2026-09-12，T0+T1+T2 完成后）**：文件 **53 → 30**、空 TU **3 → 0**、行数 **43,989 → 40,044**、
-ObjC 语法 **2,268 → 2,239**、词汇 **4,353 → 4,266**。（T2 的 10 个文件词汇已清零，剩余词汇全在 30 个真 ObjC 文件里。）
+**当前进度（2026-09-12，T0+T1+T2+T2′首批 后）**：文件 **53 → 28**、空 TU **3 → 0**、行数 **43,989 → 39,751**、
+ObjC 语法 **2,268 → 2,231**、词汇 **4,353 → 4,209**。（T2 的 10 个文件词汇已清零；`mgl_readback` 转入 C；
+剩余全在 28 个真 ObjC 文件里。）
 
 ---
 
@@ -717,3 +718,22 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     test_regression 92/0/2 / 各 plan harness）；CTS 整轮（hotspot 非通过集合 diff 为空）。
     下一批：**T2′**（12 个 <20 处 ObjC 语法的文件：`mgl_trace_log` / `+Buffer` / `+VertexLayout` /
     `mgl_readback` / batch 端口等），随后进入 **T4**（端口 C++ 化）。
+
+40. **T2′ 首批：`mgl_readback` 转 C + 删空占位 category（`b3e8ea0`）**：
+    ① `mgl_readback.m` → `.c`：`BOOL/YES/NO`→`bool/true/false`、`NSUInteger/NSInteger`→`size_t/ptrdiff_t`、
+    去掉 `<Foundation/Foundation.h>`；其中真正需要改语义的一处是 **scratch buffer**——
+    `NSMutableData *bgra = [NSMutableData dataWithLength:…]`（`.mutableBytes`/`.bytes`）换成
+    `calloc(bgraBytesPerRow * height, 1)` + `free`（保持 `dataWithLength:` 的零填充语义），溢出检查
+    `NSUIntegerMax`→`SIZE_MAX`；头文件同步（`<stdbool.h>`/`<stddef.h>`）。
+    ② 删除 `MGLRenderer+BatchReplay.m`：一个**空 `@implementation`** 占位 category（文件自注"待 O6 删除"），
+    方法实现早已在 `mgl_batch_dyn_bind_encode.m`。
+    ③ 本批**没有新增 harness**——机械转换的 oracle 就是既有套件（`make test-all` 的 smoke/es-smoke/legacy-compat/
+    regression + CTS 整轮），文档在此如实标注。
+    **结论性分析（写入待办）**：`mgl_trace_log.m`（438 行，4 处语法/9 处词汇）**不能**并入 T2′——
+    它的 ObjC 面是 `mglTraceLogNSString*` 两个入口，而全仓有 **~80 处调用点**（`+RenderPass` 最多），
+    且部分格式串含 `%@`；要清零必须先把调用点改成 C API（`mglTraceLog` + UTF8 字符串），属 **T4** 量级，
+    故它保持 `.m`（其 ObjC 声明已在 `#ifdef __OBJC__` 内，C TU 可安全包含该头）。
+    度量：文件 **30 → 28**、行数 **40,044 → 39,751**、语法 **2,239 → 2,231**、词汇 **4,266 → 4,209**。
+    验证：两个库构建无错；**`make test-all` 返回 0**；CTS 整轮（hotspot 非通过集合 diff 为空）。
+    下一批：**T4 首切片**（挑一个 `__bridge`/`id` 端口文件改 C++ + `void*`）：`mgl_batch_rt_mark_port`(140 行) /
+    `mgl_batch_replay_trace`(257) / `mgl_batch_issue_encode`(218) 三选一；`mgl_trace_log` 的 80 处调用点改造列入其后。
