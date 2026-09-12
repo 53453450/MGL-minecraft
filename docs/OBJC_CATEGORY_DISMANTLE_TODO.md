@@ -51,7 +51,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | 其余 `docs/*.md` | ❌（`.gitignore` 的 `/docs/*`） | 阶段性审计/审查稿与逐轮工作日志，**一律留在本地**；入库文档引用它们时只用文件名（标注"本地"），不随引用一起入库 |
 
 度量脚本：[`scripts/objc_renderer_loc.sh`](../scripts/objc_renderer_loc.sh)（`MGLRenderer*.m` 合计、Batch 诚实簇、
-Draw 簇；当前输出 `MGLRenderer*.m total: 34617`）。
+Draw 簇；当前输出 `MGLRenderer*.m total: 34608`）。
 
 ## 0.2 验证口径（本周期每刀都按这三套语料报数）
 
@@ -104,7 +104,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | `+Tessellation.m` | 2174 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~21 | 薄占位 | O2.5：dyn-bind → `mgl_batch_dyn_bind_encode.m`；待 O6 删空 category |
 | `+Buffer.m` | 826 | 薄化中 | map/CoW/shadow plan → C++（O5.1：vertex-index + dirty-buffer 决策已沉 C 函数；vertex-attrib buffer map 已整段沉 `mgl_vertex_attrib_plan.*` + harness；**reflection fallback 已删——plan 成为唯一映射路径**）；ObjC 只 MTLBuffer 物化与逐 attribute resolve |
-| `+Compute.m` | 1276 | 中 | buffer 绑定环已复用 `mgl_binding_stage` plan 形态（O5.2 本刀：PRE/POST 两阶段 + 三个 opt-in 开关 + C 侧判决表；`+25` 行是显式阶段与失败语义）；**纹理/采样器环待续刀**；ObjC 只 compute encoder 端口 |
+| `+Compute.m` | 1267 | 中 | buffer 绑定环复用 `mgl_binding_stage` plan 形态（PRE/POST + 三个 opt-in 开关 + C 侧判决表）；采样器级联与图形侧收敛为同一 port（复用 `mglBindingTexturePlanSamplerMaterialize`）；**剩余**＝整段纹理循环迁 C++（需物化回调 vtable）；ObjC 只 compute encoder 端口 |
 | `+Lifecycle.m` | 665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
 | `+SwapDiagnostics.m` | 555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
 | `+Draw.m` | 511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
@@ -131,7 +131,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 
 > **实测（2026-09-12）**：`MGLRenderer+*.m` categories 合计 **34.5k** LOC（基线 ~59k；O1/O2/C1 已降 ~24.5k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 = **19.0k**（6981+7058+4945），仍是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
 >
-> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34617`，`+Buffer.m` 822）。
+> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34608`，`+Buffer.m` 822）。
 
 **Batch ObjC 诚实合计（Track B）**：categories ~190 + encode/trace/port ~1521 = **~1711**（`scripts/objc_renderer_loc.sh`）。A3 本刀 1923→~1711（−212；direct-submit C 决策树、trace fill helpers、binding helpers→`+Binding`、sampled resolve gate）；**勿宣称 cleanup done**（残量仍 ~1.7k）。
 
@@ -275,8 +275,20 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
   头文件写明该字段语义、harness 增断言 `plan.bind_offset == 0`、探针补上 copy-back 判决这一维。
   规模：`+Compute.m` 1251 → 1276（+25：PRE/POST 两阶段与显式失败语义写在 ObjC 侧，决策面已移出），
   顺带删掉该文件既有的未使用 helper `mglComputeCreateTextureLevelView`（编译期 warning 消失）。
-  **剩余**：`bindTexturesToComputeEncoder:` 的纹理/采样器环（约 470 行，含 "late binding" 启发式）应复用
-  `mglBindingTexturePlanSampled`；把整段循环迁 C++ 需要物化回调 vtable，留作 O5.2 续刀。
+  **续刀（纹理侧，`ef37534`）**：`bindTexturesToComputeEncoder:` 的**采样器级联**原本手写了两份
+  （主循环 + 采样纹理数组元素），与图形侧 `materializeSampledSamplerForTexture:` 第三份互不相同。
+  现在三处收敛到同一实现：compute 直接调用图形侧那个 port（`MGLRenderer+Binding_Private.h` 公开声明），
+  其内部仍走 `mglBindingTexturePlanSamplerMaterialize` 决策表；配套新增纯 C 日志标签
+  `mglBindingTextureSamplerStageTag()`（"vert"→VERT / "comp"→COMP / 其它→FRAG）。
+  **一处有意的行为变更**：数组元素路径过去**漏了 dirty 采样器的释放**（会继续用旧 Metal 对象），
+  走共享 port 后与其它路径一致；oracle＝**新造的 compute 专项语料**（152 例：`compute_shader` 42 /
+  `shader_image_load_store` 51 / `-cs` SSBO 59）做旧实现 A/B，**逐例 diff 为空**（两边同为 113 pass / 38 fail /
+  1 ns）——即该一致性修正在这批语料上不可观测，按"有意变更 + harness 固化 plan 判决"记录。
+  golden 先行：`test-binding-texture` 补 compute 形状的 materialize 用例（GL sampler 无 Metal ⇒ recreate + 清 dirty；
+  已物化且干净 ⇒ 复用；tex params 为空 ⇒ 仍选 tex params；顶点形状 ⇒ KEEP）与标签 helper 用例。
+  `+Compute.m` 1276 → 1267（−9），`MGLRenderer*.m` 34617 → 34608。**剩余**：纹理单元的解析（`textureForSampledResource:` /
+  `textureUnitForSampledResource:`）是共享解析函数、决策已是 C 谓词，不再重复下沉；
+  把整段纹理循环迁 C++ 需要物化回调 vtable，仍留作 O5.2 续刀。
 - [ ] **O5.3** `+VertexLayout` 删除或 &lt; 100 LOC
   - [x] **O5.3 本刀**：`generateVertexDescriptorState:` 整段 plan 装配（读 GL VAO/Program + 写 `MGLRenderPipelineDescriptorState`，零 Metal/`id`）沉为 C 函数 `mglRenderGenerateVertexDescriptorState(ctx, state, nativeTESActive, nativeTESProgram, tcsOutputStride, absoluteVertexBindingOffsets, where)`（`MGLRenderer.m` 兄弟函数，声明于 `MGLRenderer+VertexLayout_Private.h`）；ObjC 方法仅提取 `_tessellation`/`_batching` 两 ivar 标量 + 一行转发。逻辑逐行等价（`NSLog`→`fprintf(stderr,...)`）。`+VertexLayout.m` 332→~193。`test-frontends` 67/67；`test-regression` [01]–[15] PASS（[16] 已知上游 SIGSEGV 不变）。**剩余**：`updateBlendStateCache`（写 `_pipelineCache` ObjC 物化，留）、`bindFramebufferAttachmentTextures`（FBO 绑定，归 RenderPass/O6）。
 - [ ] **O5.4** `mgl_draw_encode.m` 迁空或删除
