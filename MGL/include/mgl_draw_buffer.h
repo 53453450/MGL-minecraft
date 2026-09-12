@@ -1,3 +1,5 @@
+#include <stdbool.h>
+#include <stddef.h>
 /*
  * mgl_draw_buffer.h
  * MGL
@@ -19,10 +21,7 @@
 
 #include "glcorearb.h"
 
-#include <objc/objc.h>   /* BOOL */
-
 #ifdef __OBJC__
-#import <Foundation/Foundation.h>
 #endif
 
 #include "glm_context.h"
@@ -34,7 +33,7 @@ extern "C" {
 GLuint mglDefaultDrawBufferIndexForGL(GLenum drawBuffer);
 GLsizei mglMetalDrawBufferCount(GLMContext drawCtx);
 GLenum mglMetalDrawBufferAt(GLMContext drawCtx, GLuint slot);
-BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
+bool mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
                                            GLenum drawBuffer,
                                            GLuint *attachmentIndex);
 GLuint mglMetalColorSlotForDrawBuffer(GLMContext drawCtx, GLuint drawBufferSlot);

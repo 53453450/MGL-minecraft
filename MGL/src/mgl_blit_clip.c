@@ -6,14 +6,15 @@
  * See mgl_blit_clip.h for the API contract.
  */
 
-#import "mgl_blit_clip.h"
+#include "mgl_blit_clip.h"
+#include <stdbool.h>
 
 #include <math.h>
 
-BOOL mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit)
+bool mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit)
 {
     if (!axis || axis->dst0 == axis->dst1 || axis->src0 == axis->src1 || dstLimit <= 0.0) {
-        return NO;
+        return false;
     }
 
     double dstMin = fmin(axis->dst0, axis->dst1);
@@ -21,7 +22,7 @@ BOOL mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit)
     double clippedMin = fmax(dstMin, 0.0);
     double clippedMax = fmin(dstMax, dstLimit);
     if (clippedMax <= clippedMin) {
-        return NO;
+        return false;
     }
 
     double dstSpan = axis->dst1 - axis->dst0;
@@ -43,13 +44,13 @@ BOOL mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit)
         axis->src1 = srcAtMin;
     }
 
-    return YES;
+    return true;
 }
 
-BOOL mglClipBlitAxisToSource(MGLBlitAxis *axis, double srcLimit)
+bool mglClipBlitAxisToSource(MGLBlitAxis *axis, double srcLimit)
 {
     if (!axis || axis->dst0 == axis->dst1 || axis->src0 == axis->src1 || srcLimit <= 0.0) {
-        return NO;
+        return false;
     }
 
     double srcMin = fmin(axis->src0, axis->src1);
@@ -57,7 +58,7 @@ BOOL mglClipBlitAxisToSource(MGLBlitAxis *axis, double srcLimit)
     double clippedMin = fmax(srcMin, 0.0);
     double clippedMax = fmin(srcMax, srcLimit);
     if (clippedMax <= clippedMin) {
-        return NO;
+        return false;
     }
 
     double srcSpan = axis->src1 - axis->src0;
@@ -79,10 +80,10 @@ BOOL mglClipBlitAxisToSource(MGLBlitAxis *axis, double srcLimit)
         axis->dst1 = dstAtMin;
     }
 
-    return YES;
+    return true;
 }
 
-BOOL mglClipBlitAxis(MGLBlitAxis *axis, double srcLimit, double dstLimit)
+bool mglClipBlitAxis(MGLBlitAxis *axis, double srcLimit, double dstLimit)
 {
     return mglClipBlitAxisToDestination(axis, dstLimit) &&
            mglClipBlitAxisToSource(axis, srcLimit);

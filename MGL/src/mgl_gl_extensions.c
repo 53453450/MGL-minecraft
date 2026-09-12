@@ -17,6 +17,8 @@
 //
 
 #include <assert.h>
+#include <stdlib.h> /* calloc / free / strtoul: this unit used to get them
+                         through a header that pulled in Foundation */
 #include "mgl_frontend_session.h"
 #include <stdio.h>
 #include <string.h>

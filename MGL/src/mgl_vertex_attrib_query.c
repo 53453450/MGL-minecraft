@@ -20,7 +20,8 @@
  * externally visible.
  */
 
-#import "mgl_vertex_attrib_query.h"
+#include "mgl_vertex_attrib_query.h"
+#include <stdbool.h>
 
 #include "mgl_shader_abi.h"
 #include <strings.h>        /* strcasecmp */
@@ -31,25 +32,25 @@ static GLuint mglAttribLocationSpan(const MGLShaderResource *res)
     return mglAIRVaryingLocationSpan(res->gl_type, res->gl_array_size);
 }
 
-BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
+bool mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
 {
     if (attribute >= MAX_ATTRIBS) {
-        return NO;
+        return false;
     }
     if (!program) {
-        return NO;
+        return false;
     }
 
     MGLShaderResourceList *inputs =
         &program->shader_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     if (!inputs->list || inputs->count == 0) {
-        return NO;
+        return false;
     }
 
     for (GLuint i = 0; i < inputs->count; i++) {
         GLuint location = inputs->list[i].location;
         if (location == attribute) {
-            return YES;
+            return true;
         }
 
         /* Array / matrix stage inputs occupy consecutive locations.  The
@@ -60,7 +61,7 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
         if (span > 1u &&
             attribute >= location &&
             attribute < location + span) {
-            return YES;
+            return true;
         }
 
         /* No `location == UINT32_MAX` declaration-order fallback: the AIR
@@ -72,7 +73,7 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
          * one. */
     }
 
-    return NO;
+    return false;
 }
 
 MGLShaderResource *mglRendererProgramVertexAttribResource(Program *program, GLuint attribute)
@@ -120,7 +121,7 @@ bool mglRendererVertexAttribIsColorInput(Program *program, GLuint attribute)
            strcasecmp(name, "VertColor") == 0);
 }
 
-BOOL mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute)
+bool mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute)
 {
     /* GL: a disabled generic attribute (including when no arrays are
      * enabled at all) feeds the current vertex attrib value.  An empty

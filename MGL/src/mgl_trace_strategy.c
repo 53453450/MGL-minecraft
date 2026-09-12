@@ -11,7 +11,9 @@
  * reads them.
  */
 
-#import "mgl_trace_strategy.h"
+#include "mgl_trace_strategy.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +21,7 @@
 
 /* === Fragment texture trace binding === */
 
-BOOL mglFragmentTextureTraceBindingIsInteresting(const MGLFragmentTextureTraceBinding *binding)
+bool mglFragmentTextureTraceBindingIsInteresting(const MGLFragmentTextureTraceBinding *binding)
 {
     return binding &&
            (binding->rt_write_version != 0u ||
@@ -29,40 +31,40 @@ BOOL mglFragmentTextureTraceBindingIsInteresting(const MGLFragmentTextureTraceBi
             binding->sampled_copy_ptr != NULL);
 }
 
-BOOL mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextureTraceBinding *bindings,
-                                                         NSUInteger count)
+bool mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextureTraceBinding *bindings,
+                                                         size_t count)
 {
     if (!bindings) {
-        return NO;
+        return false;
     }
 
-    for (NSUInteger i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         if (mglFragmentTextureTraceBindingIsInteresting(&bindings[i])) {
-            return YES;
+            return true;
         }
     }
 
-    return NO;
+    return false;
 }
 
-BOOL mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTraceBinding *bindings,
-                                                     NSUInteger count)
+bool mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTraceBinding *bindings,
+                                                     size_t count)
 {
     if (!bindings) {
-        return NO;
+        return false;
     }
 
-    for (NSUInteger i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         if (bindings[i].used_sampled_copy) {
-            return YES;
+            return true;
         }
     }
 
-    return NO;
+    return false;
 }
 
 void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding *bindings,
-                                                  NSUInteger count)
+                                                  size_t count)
 {
     if (!bindings || count == 0) {
         return;
@@ -73,7 +75,7 @@ void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding 
      * used_fallback     — checked by mglFragmentTextureTraceBindingIsInteresting
      *                     (only called from trace-gated paths, but clearing it
      *                     here keeps the early-exit fast path consistent). */
-    for (NSUInteger i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         bindings[i].used_sampled_copy = 0u;
         bindings[i].rt_write_version = 0u;
         bindings[i].used_fallback = 0u;
@@ -83,7 +85,7 @@ void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding 
 void mglTraceFragmentTextureTraceBindings(const char *tag,
                                           const char *reason,
                                           const MGLFragmentTextureTraceBinding *bindings,
-                                          NSUInteger count,
+                                          size_t count,
                                           GLuint program,
                                           GLuint pipelineProgram)
 {

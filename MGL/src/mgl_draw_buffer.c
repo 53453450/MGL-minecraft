@@ -10,7 +10,8 @@
  * externally visible.
  */
 
-#import "mgl_draw_buffer.h"
+#include "mgl_draw_buffer.h"
+#include <stdbool.h>
 #include "mgl_render.h"
 
 /* Local draw-buffer slot indices (mirrors the enum in MGLRenderer.m used by
@@ -58,12 +59,12 @@ GLenum mglMetalDrawBufferAt(GLMContext drawCtx, GLuint slot)
     return (GLenum)mglRenderEmptyDrawBuffer();
 }
 
-BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
+bool mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
                                                   GLenum drawBuffer,
                                                   GLuint *attachmentIndex)
 {
     if (!drawCtx || mglRenderDrawBufferIsNone((uint32_t)drawBuffer)) {
-        return NO;
+        return false;
     }
 
     uint32_t att = 0u;
@@ -72,16 +73,16 @@ BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
         if (attachmentIndex) {
             *attachmentIndex = att;
         }
-        return YES;
+        return true;
     }
 
     if (mglRenderDrawBufferIsDefaultFBOCompat((uint32_t)drawBuffer)) {
         if (attachmentIndex) {
             *attachmentIndex = 0u;
         }
-        return YES;
+        return true;
     }
-    return NO;
+    return false;
 }
 
 GLuint mglMetalColorSlotForDrawBuffer(GLMContext drawCtx, GLuint drawBufferSlot)

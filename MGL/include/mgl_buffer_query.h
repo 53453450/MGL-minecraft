@@ -21,10 +21,8 @@
 #include "glcorearb.h"
 
 #include <stdbool.h>
-#include <objc/objc.h>   /* BOOL */
-
+#include <stddef.h>
 #ifdef __OBJC__
-#import <Foundation/Foundation.h>
 #endif
 
 #include "glm_context.h"
@@ -33,7 +31,7 @@
 extern "C" {
 #endif
 
-BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
+bool mglRendererSameVertexStream(Buffer *lhsBuffer,
                                  GLintptr lhsOffset,
                                  GLuint lhsStride,
                                  GLuint lhsDivisor,
@@ -41,8 +39,8 @@ BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
                                  GLintptr rhsOffset,
                                  GLuint rhsStride,
                                  GLuint rhsDivisor);
-BOOL mglRendererBufferMayHaveMappedWrites(Buffer *buffer);
-BOOL mglRendererBufferHasDrawableContents(Buffer *buffer);
+bool mglRendererBufferMayHaveMappedWrites(Buffer *buffer);
+bool mglRendererBufferHasDrawableContents(Buffer *buffer);
 
 #ifdef __cplusplus
 }

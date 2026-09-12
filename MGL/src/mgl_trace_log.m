@@ -33,8 +33,8 @@
 /* === Private static globals === */
 
 static FILE *g_mglTraceLogFile = NULL;
-static BOOL g_mglTraceLogEnabled = NO;
-static BOOL g_mglTraceLogMirrorStderr = NO;
+static bool g_mglTraceLogEnabled = NO;
+static bool g_mglTraceLogMirrorStderr = NO;
 static pthread_mutex_t g_mglTraceLogMutex = PTHREAD_MUTEX_INITIALIZER;
 
 static _Atomic uint64_t g_mglTraceSeq = 0;
@@ -45,14 +45,14 @@ static uint64_t g_mglTraceFallbackFrameID = 0;
  * Delegates to the single-source mgl_env_flag_enabled() in mgl_env_flag.h.
  * (Formerly a private copy of MGLRenderer.m's mglEnvFlagEnabled.) */
 
-static BOOL mglTraceEnvFlag(const char *name)
+static bool mglTraceEnvFlag(const char *name)
 {
     return mgl_env_flag_enabled(name) ? YES : NO;
 }
 
 /* === Core implementation === */
 
-BOOL mglTraceEnvFlagEnabled(const char *name)
+bool mglTraceEnvFlagEnabled(const char *name)
 {
     return mglTraceEnvFlag(name);
 }
@@ -117,7 +117,7 @@ void mglInitTraceLogIfNeeded(void)
     });
 }
 
-BOOL mglTraceLogIsEnabled(void)
+bool mglTraceLogIsEnabled(void)
 {
     mglInitTraceLogIfNeeded();
     return g_mglTraceLogEnabled && g_mglTraceLogFile;

@@ -16,13 +16,14 @@
  * See mgl_state_compat.h for the API contract.
  */
 
-#import "mgl_state_compat.h"
+#include "mgl_state_compat.h"
+#include <stdbool.h>
+#include <stdio.h>
 #include "mgl_render.h"
 
-#import <Foundation/Foundation.h>
 #include <math.h>
 
-BOOL mglNearlyEqual(double a, double b)
+bool mglNearlyEqual(double a, double b)
 {
     return fabs(a - b) <= 0.00001;
 }
@@ -38,7 +39,7 @@ uint32_t mglMTLCompareFunctionForGL(GLenum func,
     static uint64_t s_badCompareFunctionCount = 0;
     uint64_t hit = ++s_badCompareFunctionCount;
     if (hit <= 32 || (hit % 256) == 0) {
-        NSLog(@"MGL WARNING: invalid %s compare func=0x%x, fallback=%lu hit=%llu",
+        fprintf(stderr, "MGL WARNING: invalid %s compare func=0x%x, fallback=%lu hit=%llu",
               label ? label : "unknown",
               func,
               (unsigned long)fallback,
@@ -58,24 +59,24 @@ uint32_t mglMTLWindingForGL(GLenum frontFace)
     static uint64_t s_badFrontFaceCount = 0;
     uint64_t hit = ++s_badFrontFaceCount;
     if (hit <= 32 || (hit % 256) == 0) {
-        NSLog(@"MGL WARNING: invalid front face enum=0x%x, fallback=GL_CCW hit=%llu",
+        fprintf(stderr, "MGL WARNING: invalid front face enum=0x%x, fallback=GL_CCW hit=%llu",
               frontFace,
               (unsigned long long)hit);
     }
     return MGLWindingCounterClockwise;
 }
 
-BOOL mglIsValidGLCompareFunction(GLenum func)
+bool mglIsValidGLCompareFunction(GLenum func)
 {
     return mglRenderIsValidGLCompareFunction((uint32_t)func) != 0;
 }
 
-BOOL mglIsValidGLBlendEquation(GLenum op)
+bool mglIsValidGLBlendEquation(GLenum op)
 {
     return mglRenderIsValidGLBlendEquation((uint32_t)op) != 0;
 }
 
-BOOL mglIsValidGLBlendFactor(GLenum factor)
+bool mglIsValidGLBlendFactor(GLenum factor)
 {
     return mglRenderIsValidGLBlendFactor((uint32_t)factor) != 0;
 }
@@ -86,7 +87,7 @@ void mglLogRenderStateRepair(const char *field, GLenum value, GLenum fallback)
     uint64_t hit = ++s_stateRepairCount;
 
     if (hit <= 64 || (hit % 512) == 0) {
-        NSLog(@"MGL WARNING: repairing invalid render state %s=0x%x -> 0x%x hit=%llu",
+        fprintf(stderr, "MGL WARNING: repairing invalid render state %s=0x%x -> 0x%x hit=%llu",
               field ? field : "unknown",
               value,
               fallback,
@@ -94,7 +95,7 @@ void mglLogRenderStateRepair(const char *field, GLenum value, GLenum fallback)
     }
 }
 
-BOOL mglShouldLogSmallBaseBinding(GLuint programName,
+bool mglShouldLogSmallBaseBinding(GLuint programName,
                                    int stage,
                                    int resourceType,
                                    GLuint binding,
@@ -163,7 +164,7 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
     /* Key not found — try to insert into the empty slot we recorded. */
     if (s_keyCount < kMGLSmallBaseLogTableSize && emptySlotIdx >= 0) {
         if (s_keyCount >= 32u && (s_keyCount % 16u) != 0u) {
-            return NO;
+            return false;
         }
         MGLSmallBaseBindingLogKey *key = &s_keys[emptySlotIdx];
         key->programName = programName;
@@ -175,7 +176,7 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
         key->reflectedSize = reflectedSize;
         key->hits = 1u;
         s_keyCount++;
-        return YES;
+        return true;
     }
 
     s_overflowHits++;

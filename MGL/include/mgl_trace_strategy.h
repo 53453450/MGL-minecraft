@@ -36,11 +36,11 @@
 #ifndef MGL_TRACE_STRATEGY_H
 #define MGL_TRACE_STRATEGY_H
 
-#include <objc/objc.h>  /* BOOL */
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __OBJC__
-#import <Foundation/Foundation.h>
 #endif
 
 #include "glm_context.h"
@@ -67,31 +67,31 @@ typedef struct MGLFragmentTextureTraceBinding_t {
     void *mtl_texture_ptr;
     void *direct_mtl_texture_ptr;
     void *sampled_copy_ptr;
-    NSUInteger width;
-    NSUInteger height;
-    NSUInteger pixel_format;
-    NSUInteger texture_type;
+    size_t width;
+    size_t height;
+    size_t pixel_format;
+    size_t texture_type;
     uint8_t used_sampled_copy;
     uint8_t used_fallback;
 } MGLFragmentTextureTraceBinding;
 
-/* Returns YES if the binding record has any non-default state worth tracing. */
-BOOL mglFragmentTextureTraceBindingIsInteresting(const MGLFragmentTextureTraceBinding *binding);
+/* Returns true if the binding record has any non-default state worth tracing. */
+bool mglFragmentTextureTraceBindingIsInteresting(const MGLFragmentTextureTraceBinding *binding);
 
-/* Returns YES if any binding in the array has interesting state. */
-BOOL mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextureTraceBinding *bindings,
-                                                         NSUInteger count);
+/* Returns true if any binding in the array has interesting state. */
+bool mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextureTraceBinding *bindings,
+                                                         size_t count);
 
-/* Returns YES if any binding in the array used a sampled copy. */
-BOOL mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTraceBinding *bindings,
-                                                     NSUInteger count);
+/* Returns true if any binding in the array used a sampled copy. */
+bool mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTraceBinding *bindings,
+                                                     size_t count);
 
 /* Emits a trace-log line summarizing up to 4 fragment texture trace bindings.
  * No-op when trace logging is disabled or no binding has interesting state. */
 void mglTraceFragmentTextureTraceBindings(const char *tag,
                                           const char *reason,
                                           const MGLFragmentTextureTraceBinding *bindings,
-                                          NSUInteger count,
+                                          size_t count,
                                           GLuint program,
                                           GLuint pipelineProgram);
 
@@ -102,7 +102,7 @@ void mglTraceFragmentTextureTraceBindings(const char *tag,
  * logging is disabled: it touches ~384 bytes (3 fields × 128 slots) vs
  * ~12 KB for the full array zero. */
 void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding *bindings,
-                                                  NSUInteger count);
+                                                  size_t count);
 
 /* === Program trace gating === */
 

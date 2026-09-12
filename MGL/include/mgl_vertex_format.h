@@ -44,8 +44,9 @@
 #ifndef MGL_VERTEX_FORMAT_H
 #define MGL_VERTEX_FORMAT_H
 
-#include <objc/objc.h>  /* GLuint, GLenum, GLboolean */
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stddef.h>
 
 #include "glm_context.h"
@@ -80,16 +81,16 @@ static inline size_t mglVertexAttribComponentSize(GLenum type)
 }
 
 /* GL index element size in bytes (1/2/4).  Returns 0 for unknown types. */
-static inline NSUInteger mglGLIndexElementSize(GLenum type)
+static inline size_t mglGLIndexElementSize(GLenum type)
 {
-    return (NSUInteger)mglRenderGLIndexElementSize((uint64_t)type);
+    return (size_t)mglRenderGLIndexElementSize((uint64_t)type);
 }
 
 /* Reads a single GL index value from a byte buffer.  Returns 0 for NULL
  * buffer or unknown type.  Pure logic lives in mgl_render.cpp. */
 static inline uint32_t mglReadGLIndexValue(const uint8_t *indexBytes,
                                            GLenum type,
-                                           NSUInteger elementIndex)
+                                           size_t elementIndex)
 {
     return mglRenderReadGLIndexValue(
         indexBytes, (uint32_t)mglGLIndexElementSize(type), (uint64_t)elementIndex);
@@ -111,9 +112,9 @@ static inline uint32_t mglDoubleVertexAttribFloatFormat(GLuint size)
 }
 
 /* Aligns a vertex stride to Metal's 4-byte minimum alignment. */
-static inline NSUInteger mglAlignVertexStrideForMetal(NSUInteger stride)
+static inline size_t mglAlignVertexStrideForMetal(size_t stride)
 {
-    return (NSUInteger)mglRenderAlignVertexStrideForMetal((uint64_t)stride);
+    return (size_t)mglRenderAlignVertexStrideForMetal((uint64_t)stride);
 }
 
 /* === Vertex format mapping (extern) === */
@@ -134,7 +135,7 @@ bool mglIntegerAttribNeedsConversion(GLenum srcType,
 double mglDecodeVertexAttribComponent(const uint8_t *src,
                                       GLenum type,
                                       GLboolean normalized,
-                                      NSUInteger component);
+                                      size_t component);
 
 /* === Pipeline signature === */
 

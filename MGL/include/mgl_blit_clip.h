@@ -1,3 +1,5 @@
+#include <stdbool.h>
+#include <stddef.h>
 /*
  * mgl_blit_clip.h
  * MGL
@@ -14,8 +16,6 @@
 #ifndef MGL_BLIT_CLIP_H
 #define MGL_BLIT_CLIP_H
 
-#include <objc/objc.h>  /* BOOL */
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,18 +31,18 @@ typedef struct MGLBlitAxis_t {
 
 /* Clips the blit axis against the destination bounds [0, dstLimit].
  * Adjusts src0/src1 proportionally to match the clipped dst0/dst1.
- * Returns NO if the axis is degenerate or the clipped region is empty. */
-BOOL mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit);
+ * Returns false if the axis is degenerate or the clipped region is empty. */
+bool mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit);
 
 /* Clips the blit axis against the source bounds [0, srcLimit].
  * Adjusts dst0/dst1 proportionally to match the clipped src0/src1.
- * Returns NO if the axis is degenerate or the clipped region is empty. */
-BOOL mglClipBlitAxisToSource(MGLBlitAxis *axis, double srcLimit);
+ * Returns false if the axis is degenerate or the clipped region is empty. */
+bool mglClipBlitAxisToSource(MGLBlitAxis *axis, double srcLimit);
 
 /* Clips the blit axis against both source and destination bounds.
  * Equivalent to calling mglClipBlitAxisToDestination then
- * mglClipBlitAxisToSource.  Returns NO if either step rejects. */
-BOOL mglClipBlitAxis(MGLBlitAxis *axis, double srcLimit, double dstLimit);
+ * mglClipBlitAxisToSource.  Returns false if either step rejects. */
+bool mglClipBlitAxis(MGLBlitAxis *axis, double srcLimit, double dstLimit);
 
 #ifdef __cplusplus
 }

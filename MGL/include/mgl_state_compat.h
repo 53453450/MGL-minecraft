@@ -25,14 +25,14 @@
 #include "glcorearb.h"
 #include "mgl_render_values.h"
 #include <stdint.h>
-#include <objc/objc.h>  /* BOOL */
-
+#include <stdbool.h>
+#include <stddef.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Floating-point near-equality helper used by state comparison paths. */
-BOOL mglNearlyEqual(double a, double b);
+bool mglNearlyEqual(double a, double b);
 
 /* Translate a GL compare function (GL_NEVER..GL_ALWAYS) to the matching
  * MTLCompareFunction.  On unrecognized enums, logs a rate-limited warning
@@ -47,10 +47,10 @@ uint32_t mglMTLCompareFunctionForGL(GLenum func,
  * MTLWindingCounterClockwise (GL default). */
 uint32_t mglMTLWindingForGL(GLenum frontFace);
 
-/* Enum validators (return YES for valid GL enum, NO otherwise). */
-BOOL mglIsValidGLCompareFunction(GLenum func);
-BOOL mglIsValidGLBlendEquation(GLenum op);
-BOOL mglIsValidGLBlendFactor(GLenum factor);
+/* Enum validators (return true for a valid GL enum, false otherwise). */
+bool mglIsValidGLCompareFunction(GLenum func);
+bool mglIsValidGLBlendEquation(GLenum op);
+bool mglIsValidGLBlendFactor(GLenum factor);
 
 /* Rate-limited logging for state repair events.  `field` is a short tag
  * naming the state field (may be NULL).  The first 64 hits plus every
@@ -58,11 +58,11 @@ BOOL mglIsValidGLBlendFactor(GLenum factor);
 void mglLogRenderStateRepair(const char *field, GLenum value, GLenum fallback);
 
 /* Rate-limited gating for "small base binding" diagnostic logs.  Returns
- * YES when the (program, stage, resourceType, binding, glName, rangeSize,
+ * true when the (program, stage, resourceType, binding, glName, rangeSize,
  * reflectedSize) tuple should emit a log line.  Deduplicates by tuple key
  * with a 128-entry static table; each unique key logs up to 4 times then
  * every 1024th hit. */
-BOOL mglShouldLogSmallBaseBinding(GLuint programName,
+bool mglShouldLogSmallBaseBinding(GLuint programName,
                                   int stage,
                                   int resourceType,
                                   GLuint binding,

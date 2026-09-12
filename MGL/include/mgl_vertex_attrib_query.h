@@ -32,10 +32,8 @@
 #include "glcorearb.h"
 
 #include <stdbool.h>
-#include <objc/objc.h>   /* BOOL */
-
+#include <stddef.h>
 #ifdef __OBJC__
-#import <Foundation/Foundation.h>
 #endif
 
 #include "glm_context.h"
@@ -46,7 +44,7 @@ extern "C" {
 
 /* Returns true if `program`'s vertex stage has a stage-input resource
  * matching `attribIndex`. */
-BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute);
+bool mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute);
 
 /* Returns the MGLShaderResource for `attribIndex` in `program`'s vertex stage,
  * or NULL if not found. */
@@ -59,7 +57,7 @@ bool mglRendererVertexAttribIsColorInput(Program *program, GLuint attribute);
 
 /* Returns true if the vertex attrib at `attribIndex` uses the current-value
  * fallback (no bound vertex buffer, relies on ctx current attrib state). */
-BOOL mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute);
+bool mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute);
 
 #ifdef __cplusplus
 }

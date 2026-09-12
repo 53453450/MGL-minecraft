@@ -9,8 +9,9 @@
  * MGLRenderer.m.  No renderer state dependency.
  */
 
-#import "mgl_byte_hash.h"
-#import "mgl_trace_log.h"
+#include "mgl_byte_hash.h"
+#include <stddef.h>
+#include "mgl_trace_log.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -75,7 +76,7 @@ void mglTraceFormatBytes(const void *data, size_t len, char *out, size_t outSize
     }
 }
 
-void mglDumpBytesToLog(NSString *label,
+void mglDumpBytesToLog(const char *label,
                        const uint8_t *bytes,
                        size_t length,
                        size_t baseOffset)
@@ -87,13 +88,14 @@ void mglDumpBytesToLog(NSString *label,
     }
 
     if (!bytes || length == 0) {
-        mglTraceLogNSString(@"MGL DUMP %@ empty", label ?: @"(null)");
+        mglTraceLog("MGL DUMP %@ empty", label ? label : "(null)");
         return;
     }
 
     const size_t row = 16u;
     for (size_t off = 0; off < length; off += row) {
-        size_t n = MIN(row, length - off);
+        const size_t remaining = length - off;
+        size_t n = remaining < row ? remaining : row;
         char hex[3 * row + 1];
         char ascii[row + 1];
         size_t hp = 0;
@@ -113,8 +115,8 @@ void mglDumpBytesToLog(NSString *label,
         hex[hp] = '\0';
         ascii[n] = '\0';
 
-        mglTraceLogNSString(@"MGL DUMP %@ +0x%zx: %-47s |%s|",
-                      label ?: @"(null)",
+        mglTraceLog("MGL DUMP %@ +0x%zx: %-47s |%s|",
+                      label ? label : "(null)",
                       baseOffset + off,
                       hex,
                       ascii);

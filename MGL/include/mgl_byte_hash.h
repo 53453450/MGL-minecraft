@@ -30,7 +30,6 @@
 #include <stddef.h>
 
 #ifdef __OBJC__
-#import <Foundation/Foundation.h>
 #endif
 
 #ifdef __cplusplus
@@ -58,9 +57,9 @@ uint64_t mglTraceHashBytes(const void *data, size_t len);
 void mglTraceFormatBytes(const void *data, size_t len, char *out, size_t outSize);
 
 /* Dumps a byte buffer to the trace log as labeled hex+ascii rows (16 bytes/row).
- * ObjC only (uses NSString label). */
+ * C only: the label is a plain string. */
 #ifdef __OBJC__
-void mglDumpBytesToLog(NSString *label,
+void mglDumpBytesToLog(const char *label,
                        const uint8_t *bytes,
                        size_t length,
                        size_t baseOffset);

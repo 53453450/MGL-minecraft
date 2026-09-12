@@ -21,11 +21,13 @@
  * without a function call.
  */
 
-#import <Foundation/Foundation.h>
-#import "mgl_frame_activity.h"
-#import "mgl_metal_ref.h"
+#include "mgl_frame_activity.h"
+#include <stdbool.h>
+#include <stdio.h>
+#include "mgl_metal_ref.h"
 
 #include <stdatomic.h>
+#include <os/log.h>
 #include <stdlib.h>
 
 /* Env-var caches can be queried from render and shader-compile paths. */
@@ -66,7 +68,7 @@ uint64_t mglPerfSummaryInterval(void)
         cached = parsed > 0 ? (uint64_t)parsed : kMGLDefaultPerfSummaryInterval;
         if (cached < kMGLMinSafePerfSummaryInterval) {
             const char *unsafeEveryFrame = getenv("MGL_PERF_SUMMARY_UNSAFE_EVERY_FRAME");
-            BOOL allowUnsafeEveryFrame =
+            bool allowUnsafeEveryFrame =
                 unsafeEveryFrame && atoi(unsafeEveryFrame) > 0;
             cached = allowUnsafeEveryFrame ? cached : kMGLMinSafePerfSummaryInterval;
         }
@@ -219,18 +221,18 @@ void mglPrintPerfSummary(double frame_interval_ms)
     MGLPerfCounters c = mglSnapshotPerfCounters();
 
     /* One concise line per frame */
-    NSLog(@"MGL PERF: frame=%.1fms | draws: dir=%llu mdi=%llu sm=%llu skip=%llu | "
-          @"batches: d=%llu m=%llu sm=%llu | pipe: hit=%llu miss=%llu evict=%llu | "
-          @"shaders: %llu/%.1fms | enc: vb=%llu(%llu skip) fb=%llu(%llu skip) ps=%llu(%llu skip) | "
-          @"encoder: new=%llu fboRot=%llu | "
-          @"merge rej: sd=%llu bh=%llu ub=%llu el=%llu af=%llu dc=%llu | "
-          @"lock: wait=%.1fms hold=%.1fms | "
-          @"ds: creates=%llu skips=%llu | "
-          @"snap: bytes=%llu allocs=%llu | "
-          @"bufCow: n=%llu bytes=%llu | "
-          @"replay: memcpy=%llu same_key_skip=%llu delta_narrow=%llu batches=%llu oracle=%llu | "
-          @"hazard: active=%llu ranges=%llu overflow=%llu | "
-          @"pso_dedup: hits=%llu misses=%llu",
+    fprintf(stderr, "MGL PERF: frame=%.1fms | draws: dir=%llu mdi=%llu sm=%llu skip=%llu | "
+          "batches: d=%llu m=%llu sm=%llu | pipe: hit=%llu miss=%llu evict=%llu | "
+          "shaders: %llu/%.1fms | enc: vb=%llu(%llu skip) fb=%llu(%llu skip) ps=%llu(%llu skip) | "
+          "encoder: new=%llu fboRot=%llu | "
+          "merge rej: sd=%llu bh=%llu ub=%llu el=%llu af=%llu dc=%llu | "
+          "lock: wait=%.1fms hold=%.1fms | "
+          "ds: creates=%llu skips=%llu | "
+          "snap: bytes=%llu allocs=%llu | "
+          "bufCow: n=%llu bytes=%llu | "
+          "replay: memcpy=%llu same_key_skip=%llu delta_narrow=%llu batches=%llu oracle=%llu | "
+          "hazard: active=%llu ranges=%llu overflow=%llu | "
+          "pso_dedup: hits=%llu misses=%llu",
           frame_interval_ms,
           c.draw_direct, c.draw_mdi, c.draw_stream_merged, c.draw_skipped,
           c.batches_direct, c.batches_mdi, c.batches_stream_merged,
@@ -251,12 +253,12 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.batches_replayed, c.same_key_oracle_would_skip,
           c.hazard_active_bindings, c.hazard_range_count, c.hazard_overflow_flushes,
           c.pso_dedup_hits, c.pso_dedup_misses);
-    NSLog(@"MGL PERF2: flush: total=%llu bindTex=%llu bindBuf=%llu texW=%llu bufR=%llu war=%llu cap=%llu other=%llu",
+    fprintf(stderr, "MGL PERF2: flush: total=%llu bindTex=%llu bindBuf=%llu texW=%llu bufR=%llu war=%llu cap=%llu other=%llu",
           c.flush_total, c.flush_bind_texture, c.flush_bind_buffer, c.flush_tex_write,
           c.flush_buffer_range, c.flush_active_tex_war, c.flush_capacity, c.flush_other);
-    NSLog(@"MGL PERF3: skip=%llu skipFail: keyDiffer=%llu bindInvalid=%llu noEncoder=%llu passMismatch=%llu | "
-          @"deltaNarrow=%llu batchesReplayed=%llu | "
-          @"deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu rsUboOnly=%llu | smDemote=%llu",
+    fprintf(stderr, "MGL PERF3: skip=%llu skipFail: keyDiffer=%llu bindInvalid=%llu noEncoder=%llu passMismatch=%llu | "
+          "deltaNarrow=%llu batchesReplayed=%llu | "
+          "deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu rsUboOnly=%llu | smDemote=%llu",
           c.same_key_restore_skips,
           c.skip_fail_key_differ, c.skip_fail_bind_invalid,
           c.skip_fail_no_encoder, c.skip_fail_pass_mismatch,
@@ -265,14 +267,14 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.delta_domain_texture, c.delta_domain_render_state,
           c.delta_domain_render_state_ubo_only,
           c.stream_demoted_to_direct);
-    NSLog(@"MGL PERF4: encReason: fbo=%llu nil=%llu clear=%llu draw=%llu vao=%llu rs=%llu cmd=%llu other=%llu | "
-          @"fboRotKind: def=%llu named=%llu",
+    fprintf(stderr, "MGL PERF4: encReason: fbo=%llu null=%llu clear=%llu draw=%llu vao=%llu rs=%llu cmd=%llu other=%llu | "
+          "fboRotKind: def=%llu named=%llu",
           c.encoder_reason_fbo, c.encoder_reason_nil, c.encoder_reason_clear,
           c.encoder_reason_draw, c.encoder_reason_vao, c.encoder_reason_rs,
           c.encoder_reason_cmd, c.encoder_reason_other,
           c.encoder_fbo_rot_default, c.encoder_fbo_rot_named);
-    NSLog(@"MGL PERF5: metal alive(+created/-released): buf=+%llu/-%llu tex=+%llu/-%llu smp=+%llu/-%llu "
-          @"lib=+%llu/-%llu fn=+%llu/-%llu pso=+%llu/-%llu other=+%llu/-%llu",
+    fprintf(stderr, "MGL PERF5: metal alive(+created/-released): buf=+%llu/-%llu tex=+%llu/-%llu smp=+%llu/-%llu "
+          "lib=+%llu/-%llu fn=+%llu/-%llu pso=+%llu/-%llu other=+%llu/-%llu",
           mglMetalGetCreated(MGLMetalKindBuffer), mglMetalGetReleased(MGLMetalKindBuffer),
           mglMetalGetCreated(MGLMetalKindTexture), mglMetalGetReleased(MGLMetalKindTexture),
           mglMetalGetCreated(MGLMetalKindSampler), mglMetalGetReleased(MGLMetalKindSampler),
@@ -282,6 +284,6 @@ void mglPrintPerfSummary(double frame_interval_ms)
           mglMetalGetCreated(MGLMetalKindOther), mglMetalGetReleased(MGLMetalKindOther));
 
     if (frame_interval_ms > 33.0) {
-        NSLog(@"MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);
+        fprintf(stderr, "MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);
     }
 }

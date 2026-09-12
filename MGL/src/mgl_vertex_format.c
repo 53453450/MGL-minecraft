@@ -10,8 +10,9 @@
 
 
 
-#import "mgl_vertex_format.h"
-#import "mgl_render.h"
+#include "mgl_vertex_format.h"
+#include <stddef.h>
+#include "mgl_render.h"
 
 #include "mgl_air_loader.h"   /* MGLRenderPipelineDescriptorState */
 
@@ -40,7 +41,7 @@ bool mglIntegerAttribNeedsConversion(GLenum srcType,
 double mglDecodeVertexAttribComponent(const uint8_t *src,
                                       GLenum type,
                                       GLboolean normalized,
-                                      NSUInteger component)
+                                      size_t component)
 {
     return mglRenderDecodeVertexAttribComponent(
         src, (uint32_t)type, normalized ? 1 : 0, (uint32_t)component);

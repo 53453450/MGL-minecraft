@@ -41,7 +41,7 @@
 #ifndef MGL_TRACE_LOG_H
 #define MGL_TRACE_LOG_H
 
-#include <objc/objc.h>  /* BOOL */
+#include <stdbool.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <mach/mach_time.h>
@@ -94,7 +94,7 @@ void mglTraceLogCategory(MGLTraceCategory cat, const char *fmt, ...);
 
 /* Returns YES if trace logging is enabled and the log file is open.
  * Lazily initializes the log file on first call (dispatch_once). */
-BOOL mglTraceLogIsEnabled(void);
+bool mglTraceLogIsEnabled(void);
 
 /* Monotonic frame counter for the fid= prefix field.  Incremented at the
  * swap boundary by the renderer (mglTraceNoteFrameBoundary); falls back to
@@ -108,7 +108,7 @@ void mglTraceNoteFrameBoundary(void);
  * MGL_TRACE_LOG_DRAW, MGL_TRACE_LOG_RESOURCES) without depending on
  * MGLRenderer.m's mglEnvFlagEnabled (which is shared with non-trace
  * code paths like ICB/MTL4 compiler switches). */
-BOOL mglTraceEnvFlagEnabled(const char *name);
+bool mglTraceEnvFlagEnabled(const char *name);
 
 /* Explicitly trigger log-file initialization.  Normally called via
  * mglTraceLogIsEnabled(); exposed for the constructor attribute in

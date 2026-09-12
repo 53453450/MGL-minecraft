@@ -1020,8 +1020,12 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # rely on C implicit conversions from void* that C++ rejects (see
 # mgl_trace_log.m).  Compile them with the library's ObjC rule and link the
 # objects with -x none, the same shape MCREPRO_COBJ uses for its C sources.
-METALCPP_OBJC_SRC := MGL/src/mgl_binding_texture_log.m MGL/src/mgl_trace_log.m
+METALCPP_OBJC_SRC := MGL/src/mgl_trace_log.m
 METALCPP_OBJC_OBJ := $(patsubst MGL/src/%.m,$(build_dir)/metalcpp_%.o,$(METALCPP_OBJC_SRC))
+# The binding/texture diagnostics port became C (ObjC-zeroing T2), so it is
+# compiled by a C rule of the same shape and linked the same way.
+METALCPP_C_SRC := MGL/src/mgl_binding_texture_log.c
+METALCPP_C_OBJ := $(patsubst MGL/src/%.c,$(build_dir)/metalcpp_%.o,$(METALCPP_C_SRC))
 
 $(build_dir)/metalcpp_%.o: MGL/src/%.m
 	@mkdir -p $(dir $@)
@@ -1030,6 +1034,10 @@ $(build_dir)/metalcpp_%.o: MGL/src/%.m
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework Metal -framework OpenGL \
 		-c $< -o $@
+
+$(build_dir)/metalcpp_%.o: MGL/src/%.c
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -MMD $(CFLAGS_GL_CORE) -c $< -o $@
 
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
@@ -1050,7 +1058,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
 	MGL/src/mgl_sync.c \
-	$(METALCPP_OBJC_OBJ)
+	$(METALCPP_OBJC_OBJ) $(METALCPP_C_OBJ)
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
@@ -1068,7 +1076,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \
 		MGL/src/mgl_sync.c \
-		-x none $(METALCPP_OBJC_OBJ) \
+		-x none $(METALCPP_OBJC_OBJ) $(METALCPP_C_OBJ) \
 		-o $@
 
 test-metalcpp: $(build_dir)/test_metalcpp_smoke

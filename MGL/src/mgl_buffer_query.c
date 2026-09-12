@@ -10,10 +10,11 @@
  * externally visible.
  */
 
-#import "mgl_buffer_query.h"
+#include "mgl_buffer_query.h"
+#include <stdbool.h>
 #include "mgl_render.h"
 
-BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
+bool mglRendererSameVertexStream(Buffer *lhsBuffer,
                                         GLintptr lhsOffset,
                                         GLuint lhsStride,
                                         GLuint lhsDivisor,
@@ -31,34 +32,34 @@ BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
         lhsOffset != rhsOffset ||
         lhsStride != rhsStride ||
         lhsDivisor != rhsDivisor) {
-        return NO;
+        return false;
     }
 
     return lhsBuffer == rhsBuffer ||
            (lhsBuffer->name == rhsBuffer->name && lhsBuffer->target == rhsBuffer->target);
 }
 
-BOOL mglRendererBufferMayHaveMappedWrites(Buffer *buffer)
+bool mglRendererBufferMayHaveMappedWrites(Buffer *buffer)
 {
     if (!buffer || !buffer->mapped) {
-        return NO;
+        return false;
     }
 
     if (mglRenderBufferHasMapWriteBit((uint32_t)buffer->access_flags)) {
-        return YES;
+        return true;
     }
 
     return mglRenderImageAccessWritable((uint32_t)buffer->access) != 0;
 }
 
-BOOL mglRendererBufferHasDrawableContents(Buffer *buffer)
+bool mglRendererBufferHasDrawableContents(Buffer *buffer)
 {
     if (!buffer) {
-        return NO;
+        return false;
     }
 
     if (buffer->ever_written || buffer->has_initialized_data) {
-        return YES;
+        return true;
     }
 
     /*

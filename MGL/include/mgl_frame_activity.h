@@ -129,11 +129,11 @@ extern MGL_ATOMIC(uint64_t) g_mglEncoderFBORotationsSinceSwap; /* FBO-change dri
  * include other FBO-driven rebuilds that call newRenderEncoder directly. */
 typedef enum MGLEncoderCreateReason {
     MGL_ENC_REASON_FBO = 0,       /* rotateRenderEncoder / FBO mismatch rebuild */
-    MGL_ENC_REASON_NIL,           /* processGLState nil-encoder recovery */
+    MGL_ENC_REASON_NIL,           /* processGLState null-encoder recovery */
     MGL_ENC_REASON_CLEAR,         /* clear / no-VAO dirty-state path */
     MGL_ENC_REASON_DRAW,          /* draw-time missing-encoder recovery */
-    MGL_ENC_REASON_VAO,           /* DIRTY_VAO with nil encoder */
-    MGL_ENC_REASON_RS,            /* DIRTY_RENDER_STATE with nil encoder */
+    MGL_ENC_REASON_VAO,           /* DIRTY_VAO with a null encoder */
+    MGL_ENC_REASON_RS,            /* DIRTY_RENDER_STATE with a null encoder */
     MGL_ENC_REASON_CMD,           /* newCommandBufferAndRenderEncoder */
     MGL_ENC_REASON_OTHER,
     MGL_ENC_REASON_COUNT
@@ -201,8 +201,8 @@ extern MGL_ATOMIC(uint64_t) g_mglBatchesReplayedSinceSwap;
  * the bind-cache reuse.  Only counted when lastKeyValid && lastExecuteOk (a
  * skip was otherwise possible). */
 extern MGL_ATOMIC(uint64_t) g_mglSkipFailKeyDifferSinceSwap;     /* state keys not equal */
-extern MGL_ATOMIC(uint64_t) g_mglSkipFailBindInvalidSinceSwap;   /* lastBoundValid == NO */
-extern MGL_ATOMIC(uint64_t) g_mglSkipFailNoEncoderSinceSwap;     /* currentRenderEncoder == nil */
+extern MGL_ATOMIC(uint64_t) g_mglSkipFailBindInvalidSinceSwap;   /* lastBoundValid == false */
+extern MGL_ATOMIC(uint64_t) g_mglSkipFailNoEncoderSinceSwap;     /* currentRenderEncoder == null */
 extern MGL_ATOMIC(uint64_t) g_mglSkipFailPassMismatchSinceSwap;
 extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainProgramSinceSwap;
 extern MGL_ATOMIC(uint64_t) g_mglDeltaDomainVAOSinceSwap;

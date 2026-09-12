@@ -1,13 +1,14 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  *
- * Rate-limited BindingState NSLog ports for O3.3. Freeze/shrink only —
+ * Rate-limited BindingState logging ports for O3.3. Freeze/shrink only —
  * do not spawn another log TU; do not grow this shell. Prefer merged
  * kind/POD entry points (DepthRecover / RTSampleCopy / TexFallbackEx).
  */
 
-#import <Foundation/Foundation.h>
 #include "mgl_binding_texture.h"
+#include <stdio.h>
+#include <stdbool.h>
 #include "mgl_trace_log.h"
 
 void mglBindingLogTBINDFocused(
@@ -16,7 +17,7 @@ void mglBindingLogTBINDFocused(
     const void *mtl, uint64_t mtl_type, uint64_t w, uint64_t h,
     uint32_t l0w, uint32_t l0h, uint32_t ever, uint32_t init, uint32_t source)
 {
-    NSLog(@"MGL TBIND focused stage=%s program=%u resource=%s metalTextureSlot=%u samplerUnit=%u glTex=%u target=0x%x mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
+    fprintf(stderr, "MGL TBIND focused stage=%s program=%u resource=%s metalTextureSlot=%u samplerUnit=%u glTex=%u target=0x%x mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
           stage ? stage : "?", (unsigned)program, resource ? resource : "",
           (unsigned)metal_slot, (unsigned)sampler_unit, (unsigned)gl_tex,
           (unsigned)target, mtl, (unsigned long)mtl_type, (unsigned long)w,
@@ -59,8 +60,8 @@ void mglBindingLogSampleDetail(
     uint32_t source, uint64_t upload, const void *src, uint64_t hash,
     uint64_t data_hash)
 {
-    mglTraceLogNSString(
-        @"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=%s program=%u "
+    mglTraceLog(
+        "MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=%s program=%u "
         "name=%s binding=%u unit=%u expectedType=%lu expectedIndex=%d ptrTex=%u "
         "ptr=%p target=0x%x fallback=%d mtlTex=%p mtlType=%lu mtlSize=%lux%lu "
         "unit(active=%u expected=%u tex2D=%u cube=%u) l0=%ux%ux%u bytes=%lu "
@@ -82,7 +83,7 @@ void mglBindingLogTexCompatMismatch(
     const char *kind, const char *stage, uint32_t binding, uint32_t program,
     uint32_t gl_tex, uint64_t mtl_type, uint64_t expected, uint64_t hit)
 {
-    NSLog(@"MGL TEX %s MISMATCH %s binding=%u program=%u glTex=%u mtlType=%lu expected=%lu hit=%llu",
+    fprintf(stderr, "MGL TEX %s MISMATCH %s binding=%u program=%u glTex=%u mtlType=%lu expected=%lu hit=%llu",
           kind ? kind : "?", stage ? stage : "?", (unsigned)binding,
           (unsigned)program, (unsigned)gl_tex, (unsigned long)mtl_type,
           (unsigned long)expected, (unsigned long long)hit);
@@ -95,7 +96,7 @@ void mglBindingLogTexBufferBind(
     uint64_t mtl_type, uint64_t w, uint64_t h, uint64_t format,
     const void *sampler)
 {
-    NSLog(@"MGL TEXBUFFER BIND vertex hit=%llu program=%u binding=%u unit=%u ptrTex=%u active=%u bufferSlot=%u expectedType=%lu lookupType=%lu mtlTex=%p mtlType=%lu size=%lux%lu format=%lu sampler=%p",
+    fprintf(stderr, "MGL TEXBUFFER BIND vertex hit=%llu program=%u binding=%u unit=%u ptrTex=%u active=%u bufferSlot=%u expectedType=%lu lookupType=%lu mtlTex=%p mtlType=%lu size=%lux%lu format=%lu sampler=%p",
           (unsigned long long)hit, (unsigned)program, (unsigned)binding,
           (unsigned)unit, (unsigned)ptr_tex, (unsigned)active,
           (unsigned)buffer_slot, (unsigned long)expected_type,
@@ -207,10 +208,10 @@ void mglBindingLogMipDiagFrag(
     const void *mtl, int render_target, int via_copy, uint32_t copy_levels,
     uint32_t dirty_mips, uint32_t rt_ver, uint32_t copy_ver)
 {
-    NSLog(@"MGL MIP_DIAG frag unit=%u binding=%u program=%u glTex=%u "
-          @"source=%s minFilter=0x%x magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f "
-          @"base=%u max=%u glLevels=%u mtlLevels=%lu mtlW=%lu mtlH=%lu mtlTex=%p "
-          @"renderTarget=%d viaCopy=%d copyLevels=%u dirtyMips=0x%x rtVer=%u copyVer=%u",
+    fprintf(stderr, "MGL MIP_DIAG frag unit=%u binding=%u program=%u glTex=%u "
+          "source=%s minFilter=0x%x magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f "
+          "base=%u max=%u glLevels=%u mtlLevels=%lu mtlW=%lu mtlH=%lu mtlTex=%p "
+          "renderTarget=%d viaCopy=%d copyLevels=%u dirtyMips=0x%x rtVer=%u copyVer=%u",
           (unsigned)unit, (unsigned)binding, (unsigned)program, (unsigned)gl_tex,
           source ? source : "?", (unsigned)min_filter, (unsigned)mag_filter,
           min_lod, max_lod, aniso, (unsigned)base, (unsigned)max_level,
@@ -225,11 +226,11 @@ void mglBindingLogTexFallbackEx(uint64_t hit, uint32_t binding, uint32_t program
                                 uint32_t unit)
 {
     if (suppressed) {
-        NSLog(@"MGL TEX FALLBACK SUPPRESSED fragment sampled binding=%u program=%u name=%s glTex=%u unit=%u reason=insampler-current-target-no-copy hit=%llu",
+        fprintf(stderr, "MGL TEX FALLBACK SUPPRESSED fragment sampled binding=%u program=%u name=%s glTex=%u unit=%u reason=insampler-current-target-no-copy hit=%llu",
               (unsigned)binding, (unsigned)program, name ? name : "",
               (unsigned)gl_tex, (unsigned)unit, (unsigned long long)hit);
     } else {
-        NSLog(@"MGL TEX FALLBACK fragment sampled binding=%u program=%u glTex=%u hit=%llu",
+        fprintf(stderr, "MGL TEX FALLBACK fragment sampled binding=%u program=%u glTex=%u hit=%llu",
               (unsigned)binding, (unsigned)program, (unsigned)gl_tex,
               (unsigned long long)hit);
     }
@@ -242,14 +243,14 @@ void mglBindingLogDepthRecover(const MGLBindingDepthLog *log)
     }
     switch (log->kind) {
     case MGL_DR_LOG_HIST_SUPPRESSED:
-        NSLog(@"MGL INSAMPLER DEPTH HISTORY SCAN SUPPRESSED hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u pairedColor=%u currentDrawTarget=1",
+        fprintf(stderr, "MGL INSAMPLER DEPTH HISTORY SCAN SUPPRESSED hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u pairedColor=%u currentDrawTarget=1",
               (unsigned long long)log->hit, (unsigned)log->program,
               (unsigned)log->binding, (unsigned)log->unit, (unsigned)log->fbo,
               (unsigned long)log->color_att, (unsigned)log->depth_tex,
               (unsigned)log->paired_color);
         break;
     case MGL_DR_LOG_NO_COPY:
-        NSLog(@"MGL INSAMPLER DEPTH CURRENT TARGET NO COPY hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u colorTex=%u depthFmt=%lu sampledVersion=%u rtVersion=%u",
+        fprintf(stderr, "MGL INSAMPLER DEPTH CURRENT TARGET false COPY hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u colorTex=%u depthFmt=%lu sampledVersion=%u rtVersion=%u",
               (unsigned long long)log->hit, (unsigned)log->program,
               (unsigned)log->binding, (unsigned)log->unit, (unsigned)log->fbo,
               (unsigned long)log->color_att, (unsigned)log->depth_tex,
@@ -257,7 +258,7 @@ void mglBindingLogDepthRecover(const MGLBindingDepthLog *log)
               (unsigned)log->sampled_ver, (unsigned)log->rt_ver);
         break;
     case MGL_DR_LOG_PAIRED_DIRECT:
-        NSLog(@"MGL INSAMPLER DEPTH RECOVERY hit=%llu program=%u binding=%u unit=%u fbo=%u depthTex=%u colorTex=%u depthFmt=%lu colorFmt=%lu size=%lux%lu",
+        fprintf(stderr, "MGL INSAMPLER DEPTH RECOVERY hit=%llu program=%u binding=%u unit=%u fbo=%u depthTex=%u colorTex=%u depthFmt=%lu colorFmt=%lu size=%lux%lu",
               (unsigned long long)log->hit, (unsigned)log->program,
               (unsigned)log->binding, (unsigned)log->unit, (unsigned)log->fbo,
               (unsigned)log->depth_tex, (unsigned)log->color_tex,
@@ -265,14 +266,14 @@ void mglBindingLogDepthRecover(const MGLBindingDepthLog *log)
               (unsigned long)log->w, (unsigned long)log->h);
         break;
     case MGL_DR_LOG_UNPAIRED:
-        NSLog(@"MGL INSAMPLER DEPTH UNPAIRED hit=%llu program=%u binding=%u unit=%u depthTex=%u fmt=%lu size=%lux%lu",
+        fprintf(stderr, "MGL INSAMPLER DEPTH UNPAIRED hit=%llu program=%u binding=%u unit=%u depthTex=%u fmt=%lu size=%lux%lu",
               (unsigned long long)log->hit, (unsigned)log->program,
               (unsigned)log->binding, (unsigned)log->unit,
               (unsigned)log->depth_tex, (unsigned long)log->depth_fmt,
               (unsigned long)log->w, (unsigned long)log->h);
         break;
     case MGL_DR_LOG_HISTORY_RECOVERY:
-        NSLog(@"MGL INSAMPLER DEPTH RECOVERY hit=%llu reason=%s program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u recoverTex=%u depthFmt=%lu recoverFmt=%lu size=%lux%lu copy=%d prevVersion=%d sampledVersion=%u rtVersion=%u pairedColor=%u pairedCurrent=%d",
+        fprintf(stderr, "MGL INSAMPLER DEPTH RECOVERY hit=%llu reason=%s program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u recoverTex=%u depthFmt=%lu recoverFmt=%lu size=%lux%lu copy=%d prevVersion=%d sampledVersion=%u rtVersion=%u pairedColor=%u pairedCurrent=%d",
               (unsigned long long)log->hit, log->reason ? log->reason : "none",
               (unsigned)log->program, (unsigned)log->binding, (unsigned)log->unit,
               (unsigned)log->fbo, (unsigned long)log->color_att,
@@ -283,7 +284,7 @@ void mglBindingLogDepthRecover(const MGLBindingDepthLog *log)
               (unsigned)log->paired_color, log->paired_current);
         break;
     case MGL_DR_LOG_RT_SKIP:
-        NSLog(@"MGL SAMPLED DEPTH RT RECOVER SKIP current-draw-target hit=%llu program=%u name=%s binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u colorTex=%u",
+        fprintf(stderr, "MGL SAMPLED DEPTH RT RECOVER SKIP current-draw-target hit=%llu program=%u name=%s binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u colorTex=%u",
               (unsigned long long)log->hit, (unsigned)log->program,
               log->name ? log->name : "", (unsigned)log->binding,
               (unsigned)log->unit, (unsigned)log->fbo,
@@ -291,14 +292,14 @@ void mglBindingLogDepthRecover(const MGLBindingDepthLog *log)
               (unsigned)log->color_tex);
         break;
     case MGL_DR_LOG_RT_SUPPRESS_LAST2D:
-        NSLog(@"MGL SAMPLED DEPTH RT RECOVER SUPPRESS last-sampled-2d hit=%llu program=%u name=%s binding=%u unit=%u depthTex=%u last2D=%u",
+        fprintf(stderr, "MGL SAMPLED DEPTH RT RECOVER SUPPRESS last-sampled-2d hit=%llu program=%u name=%s binding=%u unit=%u depthTex=%u last2D=%u",
               (unsigned long long)log->hit, (unsigned)log->program,
               log->name ? log->name : "", (unsigned)log->binding,
               (unsigned)log->unit, (unsigned)log->depth_tex,
               (unsigned)log->last2d);
         break;
     case MGL_DR_LOG_RT_RECOVER:
-        NSLog(@"MGL SAMPLED DEPTH RT RECOVER hit=%llu reason=%s program=%u name=%s binding=%u unit=%u depthTex=%u recoverTex=%u fmt=%lu recoverFmt=%lu size=%lux%lu level=%p ever=%u init=%u unit(active=%u tex2D=%u last2D=%u) recoverFbo=%u currentFbo=%u colorTex=%u fboDepthTex=%u",
+        fprintf(stderr, "MGL SAMPLED DEPTH RT RECOVER hit=%llu reason=%s program=%u name=%s binding=%u unit=%u depthTex=%u recoverTex=%u fmt=%lu recoverFmt=%lu size=%lux%lu level=%p ever=%u init=%u unit(active=%u tex2D=%u last2D=%u) recoverFbo=%u currentFbo=%u colorTex=%u fboDepthTex=%u",
               (unsigned long long)log->hit, log->reason ? log->reason : "none",
               (unsigned)log->program, log->name ? log->name : "",
               (unsigned)log->binding, (unsigned)log->unit,
@@ -312,7 +313,7 @@ void mglBindingLogDepthRecover(const MGLBindingDepthLog *log)
               (unsigned)log->fbo_depth_tex);
         break;
     case MGL_DR_LOG_RT_FALLBACK:
-        NSLog(@"MGL SAMPLED DEPTH RT FALLBACK hit=%llu program=%u name=%s binding=%u unit=%u depthTex=%u fmt=%lu size=%lux%lu level=%p ever=%u init=%u unit(active=%u tex2D=%u last2D=%u)",
+        fprintf(stderr, "MGL SAMPLED DEPTH RT FALLBACK hit=%llu program=%u name=%s binding=%u unit=%u depthTex=%u fmt=%lu size=%lux%lu level=%p ever=%u init=%u unit(active=%u tex2D=%u last2D=%u)",
               (unsigned long long)log->hit, (unsigned)log->program,
               log->name ? log->name : "", (unsigned)log->binding,
               (unsigned)log->unit, (unsigned)log->depth_tex,
