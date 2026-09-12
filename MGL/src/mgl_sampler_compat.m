@@ -154,32 +154,52 @@ bool mglRendererResourceLooksSamplerLike(const MGLShaderResource *res, int resTy
                                              (uint32_t)res->image_dim) != 0;
 }
 
+/* Which sampler/image resource owns Metal texture slot `metalBinding`?
+ *
+ * The reflection assigns one slot per resource element within a stage
+ * (mgl_air_reflect.c walks sampled textures, then storage images, handing out
+ * consecutive slots), so the reverse lookup is a slot-range test over the four
+ * sampler/image lists; an array element shares its resource with the following
+ * slots.
+ *
+ * The SPIRV-era version also walked _UNIFORM_CONSTANT_RES first, because back
+ * then a sampler could be parked in the plain-uniform list with a synthesized
+ * uniform location and no reliable type.  That list now holds plain-uniform
+ * aggregates whose `binding` is a *user buffer* slot and whose image_dim is 0
+ * (opaque leaves are extracted into _SAMPLED_IMAGE_RES), so the pass could only
+ * ever match a texture slot by numeric coincidence -- a hazard the sampler-like
+ * filter used to hide.  Measured before removal (probe, 2026-09-12): 12 calls
+ * in the local suite, none hitting the compat pass, none diverging from this
+ * lookup, no slot claimed twice.  Note the CTS corpus never reaches this
+ * function, so the local suite is the oracle here. */
 MGLShaderResource *mglFindSamplerResourceForMetalBinding(Program *program,
                                                      int stage,
                                                      GLuint metalBinding)
 {
     static const int samplerResourceTypes[] = {
-        _UNIFORM_CONSTANT_RES,
         _SAMPLED_IMAGE_RES,
         _SEPARATE_IMAGE_RES,
         _SEPARATE_SAMPLERS_RES,
         _STORAGE_IMAGE_RES
     };
 
-    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || metalBinding >= TEXTURE_UNITS) {
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        metalBinding >= TEXTURE_UNITS) {
         return NULL;
     }
 
-    for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
+    for (size_t rt = 0;
+         rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]);
+         rt++) {
         int resType = samplerResourceTypes[rt];
-        MGLShaderResourceList *resources = &program->shader_resources_list[stage][resType];
+        MGLShaderResourceList *resources =
+            &program->shader_resources_list[stage][resType];
         for (GLuint i = 0; resources->list && i < resources->count; i++) {
             MGLShaderResource *res = &resources->list[i];
             GLuint elementCount = res->gl_array_size > 1
                 ? (GLuint)res->gl_array_size : 1u;
             if (metalBinding >= res->binding &&
-                metalBinding - res->binding < elementCount &&
-                mglRendererResourceLooksSamplerLike(res, resType)) {
+                metalBinding - res->binding < elementCount) {
                 return res;
             }
         }
