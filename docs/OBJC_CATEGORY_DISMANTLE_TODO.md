@@ -53,6 +53,39 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 度量脚本：[`scripts/objc_renderer_loc.sh`](../scripts/objc_renderer_loc.sh)（`MGLRenderer*.m` 合计、Batch 诚实簇、
 Draw 簇；当前输出 `MGLRenderer*.m total: 34547`）。
 
+## 0.2 验证口径（本周期每刀都按这三套语料报数）
+
+| 语料 | 入口 | 通过口径 |
+|---|---|---|
+| 本地功能/回归 | `build/test_regression all`（94 项） | **92 PASS / 0 FAIL / 2 SKIP**（窗口/环境门控 2 项）；单例：`build/test_regression <name>` |
+| 本地单元 harness | `make test-all`（含 `test-tess-domain` / `test-tess-air` / `test-buffer-plan` / `test-binding-*` / `test-batch-*` / `test-render-pass-clear-plan` …） | 各自 `ok` / `0 failure` |
+| CTS tess 簇 | caselist `VK-GL-CTS-build-mgl-target/mgl-tess-cluster-cases.txt`（140 例） | **139 pass / 1 fail / 0 ns**；唯一失败为已归档的 FO-spacing CTS 期望矛盾 |
+| CTS GS 簇 | caselist `…/mgl-gs-cluster-cases.txt`（136 例，由上一轮 GS run 的 `summary.tsv` 复刻） | **136 / 0** |
+| GL46 hotspot | caselist `…/khr-gl46-fbo-hotspot.cases.txt`（1328 例） | 通过数可持平，但**必须给"非通过集合逐条 diff 为空"**（否则不算无回归） |
+
+批跑模板（在 CTS build 目录执行；`--dyld-library-path` 指向仓库根——那里的 `libmgl.dylib` 是
+`build/libmgl.dylib` 的软链，所以**先重建、再跑，跑的过程中不要再重建**，否则中途换库会让结果不可解释）：
+
+```sh
+python3 -u run_mgl_cts_cases.py \
+  --glcts  $PWD/external/openglcts/modules/glcts \
+  --caselist $PWD/mgl-tess-cluster-cases.txt \
+  --workdir  $PWD/external/openglcts/modules \
+  --outdir   $PWD/mgl-<tag>-$(date +%H%M%S) \
+  --dyld-library-path /Users/<you>/MGL-minecraft \
+  --timeout 45 --progress-every 70
+```
+
+非通过集合对比（hotspot 无回归的判据）：
+
+```sh
+awk -F'\t' 'NR>1 && $3!="pass" {print $2"\t"$3}' <outdir>/summary.tsv | sort > /tmp/nonpass_now.txt
+diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
+```
+
+单例复跑（定位单个 case，含打开 CTS 侧 trace 的方法）见
+[`docs/CTS_TESS_REMAINING_2026-09-10.md`](CTS_TESS_REMAINING_2026-09-10.md) 的「复现 ground truth 的方法」。
+
 ## 1. 现状库存（按厚度）
 
 ### 1.1 `MGLRenderer` categories（2026-09-12 实测 **34.5k**；基线 ~59k）
