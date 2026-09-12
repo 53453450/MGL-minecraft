@@ -51,7 +51,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | 其余 `docs/*.md` | ❌（`.gitignore` 的 `/docs/*`） | 阶段性审计/审查稿与逐轮工作日志，**一律留在本地**；入库文档引用它们时只用文件名（标注"本地"），不随引用一起入库 |
 
 度量脚本：[`scripts/objc_renderer_loc.sh`](../scripts/objc_renderer_loc.sh)（`MGLRenderer*.m` 合计、Batch 诚实簇、
-Draw 簇；当前输出 `MGLRenderer*.m total: 34608`）。
+Draw 簇；当前输出 `MGLRenderer*.m total: 34610`）。
 
 ## 0.2 验证口径（本周期每刀都按这三套语料报数）
 
@@ -95,7 +95,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 |------|-------:|------|------|
 | `+Texture.m` | 6981 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
 | `+RenderPass.m` | 7125 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（**O3.1 进行中**：clear-value、load/store 动作表、stale-clear 规则、**两半** attachment match 均已沉、各有 golden；**残量**＝attachment 物化/解析回调化以压 LOC）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
-| `+Blit.m` | 4945 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
+| `+Blit.m` | 4941 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（**O4.4 已启动**：depth/stencil 三道门与拷贝矩形推导已沉 + 58 例 golden；**残量**＝format conversion/unify 与物化回调化）；ObjC 只 blit encoder 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
 | `+BindingState.m` | 2940 | **厚**（C1 多刀已从 ~4523 降下，见 O3.3） | 拆：attrib/texture/image apply 残留 → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口（口仍 ≫300，O3.3 residual） |
 | `MGLRenderer.m` | 4693 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
 | `+DrawSupport.m` | 350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
@@ -132,7 +132,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 
 > **实测（2026-09-12）**：`MGLRenderer+*.m` categories 合计 **34.5k** LOC（基线 ~59k；O1/O2/C1 已降 ~24.5k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 = **19.0k**（6981+7058+4945），仍是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
 >
-> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34608`，`+Buffer.m` 822）。
+> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34610`，`+Buffer.m` 822）。
 
 **Batch ObjC 诚实合计（Track B）**：categories ~190 + encode/trace/port ~1521 = **~1711**（`scripts/objc_renderer_loc.sh`）。A3 本刀 1923→~1711（−212；direct-submit C 决策树、trace fill helpers、binding helpers→`+Binding`、sampled resolve gate）；**勿宣称 cleanup done**（残量仍 ~1.7k）。
 
@@ -245,6 +245,22 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 - [ ] **O4.2** upload dirty / 3D / array / texel buffer plan → C++；ObjC 只 `replaceRegion` / blit
 - [ ] **O4.3** fallback sampled texture 选择 → format/type class 表，禁止散落 `if`
 - [ ] **O4.4** `+Blit` 剩余 format/DS unify（延续 sink）→ `mgl_blit_plan.*`
+  - [x] **首切片：depth/stencil 三道门（`1359764`）**：新建纯 C `mgl_blit_plan.{h,c}`——
+    `mglBlitPlanDepthStencil()` 判定 `blitFramebufferDepthStencil:` 的三条路径（① MSAA resolve：格式相同 /
+    读多重采样 / 写单采样 / 两侧 level 与 depth plane 为 0 / 原点 0 / 不缩放 / 落在两张纹理内，**slice 允许不同**；
+    ② 同尺寸拷贝：格式相同 / 双单采样 / 不缩放 / 源尺寸为正，并把 **GL scissor 裁剪后的目标矩形**与随之平移的
+    源原点一起算好（含落在两侧纹理内的校验）；③ 缩放渲染：双单采样 / 缩放 / GL_NEAREST / 两张都是 2D 且
+    level·slice·depth plane 全 0），以及 resolve 的 depth/stencil 两个 arm（stencil 需 packed DS 源）；
+    配套 `mglBlitFillDS{Texture,Subresource,Rect,Mask}Input()` 分组填充口（仿既有 plan 模块的 Fill\*Input 风格，
+    texture 那个负责清零、须先调）。ObjC 侧改为**算一次纹理信息**（原先该函数内重复调用 `mglBlitTextureInfo`
+    ~20 次）＋ 4 次分组填充 ＋ 读 `dsPlan.*` 分派，三个门条件与裁剪/边界推导整段删除。
+    golden 先行：`make test-blit-plan`（`test_legacy_compat/test_blit_plan.c`，**58 例**：同尺寸拷贝含 scissor
+    裁剪与越界拒绝、MSAA resolve 的 7 个边界（slice 允许不同/level·plane·原点·缩放·越界各自阻断、packed 才有
+    stencil arm、unpacked stencil 无 arm）、缩放路径的 5 个阻断条件、填充口与 NULL 容错），已挂 `make test-all`。
+    规模：`+Blit.m` 4945 → **4941（−4）**，`MGLRenderer*.m` 34608 → 34610（plan 输入填充的开销与门的缩减基本抵消；
+    **决策面已移出**，进一步压 LOC 需把 blit 物化也做成回调/vtable，列入续刀）。
+    验证：本地 92/0/2；`test-blit-plan` 58/58；`make test-all` 返回 0（含 smoke / es-smoke / legacy-compat 193/193）；
+    CTS hotspot 非通过集合 diff 为空；tess/GS/refq/piq 见下。
 - [ ] **O4.5** 验收：`+Texture.m`+`+Blit.m` &lt; 1.5k；readback 金样不依赖 CTS oracle
 
 ### Batch O5 — Buffer / Compute / VertexLayout / 杂项【P2】
