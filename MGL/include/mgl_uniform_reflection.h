@@ -42,7 +42,6 @@ GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
                                               GLuint index,
                                               const char *glsl_src,
                                               const char *resource_name);
-bool mglUniformNameLooksSamplerLike(const char *name);
 void mglUnifySamplerUniformLocations(Program *program);
 
 void mglAssignPlainUniformLocations(Program *program);

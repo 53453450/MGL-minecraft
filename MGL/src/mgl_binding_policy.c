@@ -226,24 +226,20 @@ uint32_t mglRenderCombinedSamplerSlotForElement(int has_res, int has_combined,
            element;
 }
 
-int mglRenderSamplerNameLooksSamplerLike(const char *name) {
-    return name && (strstr(name, "Sampler") != NULL ||
-                    strcmp(name, "CloudFaces") == 0)
-               ? 1
-               : 0;
-}
-
-int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim,
-                                      int32_t uniform_location,
-                                      const char *name) {
+int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim) {
     if (mglRenderShaderResourceTypeIsSamplerImage(res_type)) {
         return 1;
     }
+    /* Plain-uniform resources are only sampler-like when the reflection gave
+     * them a texture dim.  The SPIRV-era fallbacks that used to answer this --
+     * a synthesized uniform location above MGL_SYNTHETIC_SAMPLER_LOCATION_BASE
+     * and a "Sampler"/"CloudFaces" name heuristic -- are gone: sampler
+     * declarations and the opaque leaves of plain uniform structs are
+     * reflected as _SAMPLED_IMAGE_RES with image_dim set, and synthetic
+     * locations are only ever assigned to sampled/storage image resources, so
+     * neither fallback could fire for _UNIFORM_CONSTANT_RES. */
     if (res_type == 2u /* _UNIFORM_CONSTANT_RES */) {
-        return image_dim != 0u || uniform_location >= 0x4000 ||
-                       mglRenderSamplerNameLooksSamplerLike(name)
-                   ? 1
-                   : 0;
+        return image_dim != 0u ? 1 : 0;
     }
     return 0;
 }

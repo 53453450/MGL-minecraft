@@ -29,6 +29,7 @@
  */
 
 #include <stdio.h>
+#include "mgl_binding_policy.h"  /* mglRenderResourceLooksSamplerLike */
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
@@ -47,7 +48,6 @@
 
 #define MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE 0xf0000000u
 #define MGL_SAFE_SPIRV_RESOURCE_MAX 4096u
-#define MGL_SYNTHETIC_SAMPLER_LOCATION_BASE 0x4000
 
 #include "mgl_trace_log.h"
 
@@ -436,35 +436,20 @@ static GLint mglKnownPlainUniformLocation(const char *name)
     }
 }
 
-static GLboolean mglUniformNameLooksSamplerLike(const char *name)
-{
-    if (!name || !mglSafeCStringLength(name, NULL)) {
-        return GL_FALSE;
-    }
 
-    return (mglSafeCStringContains(name, "Sampler") ||
-            mglSafeCStringEquals(name, "CloudFaces")) ? GL_TRUE : GL_FALSE;
-}
 
+/* Uniform queries classify sampler-like resources through the shared policy
+ * predicate (exact reflected facts only); the SPIRV-era synthetic-location and
+ * name heuristics are gone, see mglRenderResourceLooksSamplerLike. */
 static GLboolean mglUniformResourceLooksSamplerLike(const MGLShaderResource *res, int res_type)
 {
     if (!res) {
         return GL_FALSE;
     }
-
-    switch (res_type) {
-        case _SAMPLED_IMAGE_RES:
-        case _SEPARATE_IMAGE_RES:
-        case _SEPARATE_SAMPLERS_RES:
-        case _STORAGE_IMAGE_RES:
-            return GL_TRUE;
-        case _UNIFORM_CONSTANT_RES:
-            return (res->image_dim != 0u ||
-                    res->uniform_location >= MGL_SYNTHETIC_SAMPLER_LOCATION_BASE ||
-                    mglUniformNameLooksSamplerLike(res->name)) ? GL_TRUE : GL_FALSE;
-        default:
-            return GL_FALSE;
-    }
+    return mglRenderResourceLooksSamplerLike((uint32_t)res_type,
+                                             (uint32_t)res->image_dim)
+               ? GL_TRUE
+               : GL_FALSE;
 }
 
 static const int mglActiveUniformResourceTypes[] = {

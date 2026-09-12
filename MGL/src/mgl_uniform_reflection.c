@@ -9,6 +9,7 @@
  */
 
 #include "mgl_uniform_reflection.h"
+#include "mgl_binding_policy.h"  /* mglRenderResourceLooksSamplerLike */
 
 #include <ctype.h>
 #include <stdio.h>
@@ -338,33 +339,17 @@ GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
         : mglSyntheticSamplerUniformLocation(stage, resource_type, index);
 }
 
-bool mglUniformNameLooksSamplerLike(const char *name)
-{
-    return name && name[0] &&
-           (strstr(name, "Sampler") != NULL ||
-            strcmp(name, "CloudFaces") == 0);
-}
-
+/* Sampler-like classification goes through the shared policy predicate; the
+ * SPIRV-era synthetic-location and name heuristics are gone (see
+ * mglRenderResourceLooksSamplerLike). */
 static bool mglProgramResourceLooksSamplerLike(const MGLShaderResource *resource,
                                                int resource_type)
 {
     if (!resource) {
         return false;
     }
-    switch (resource_type) {
-        case _SAMPLED_IMAGE_RES:
-        case _SEPARATE_IMAGE_RES:
-        case _SEPARATE_SAMPLERS_RES:
-        case _STORAGE_IMAGE_RES:
-            return true;
-        case _UNIFORM_CONSTANT_RES:
-            return resource->image_dim != MGL_IMAGE_DIM_NONE ||
-                   resource->uniform_location >=
-                       MGL_SYNTHETIC_SAMPLER_LOCATION_BASE ||
-                   mglUniformNameLooksSamplerLike(resource->name);
-        default:
-            return false;
-    }
+    return mglRenderResourceLooksSamplerLike((uint32_t)resource_type,
+                                             (uint32_t)resource->image_dim) != 0;
 }
 
 static bool mglSamplerResourceNamesMatch(const char *left,

@@ -144,20 +144,14 @@ bool mglProgramNeedsBindingTrace(Program *program)
 
 /* === Sampler-like resource classification === */
 
-bool mglRendererSamplerNameLooksSamplerLike(const char *name)
-{
-    return mglRenderSamplerNameLooksSamplerLike(name) != 0;
-}
-
 bool mglRendererResourceLooksSamplerLike(const MGLShaderResource *res, int resType)
 {
     if (!res) {
         return false;
     }
 
-    return mglRenderResourceLooksSamplerLike((uint32_t)resType, res->image_dim,
-                                             res->uniform_location,
-                                             res->name) != 0;
+    return mglRenderResourceLooksSamplerLike((uint32_t)resType,
+                                             (uint32_t)res->image_dim) != 0;
 }
 
 MGLShaderResource *mglFindSamplerResourceForMetalBinding(Program *program,

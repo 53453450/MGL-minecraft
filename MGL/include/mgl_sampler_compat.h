@@ -81,7 +81,6 @@ bool mglProgramNeedsBindingTrace(Program *program);
  * the AIR backend lowers to a Metal texture+sampler pair?  Covers names
  * containing "Sampler" and the Minecraft "CloudFaces" texel-buffer
  * workaround. */
-bool mglRendererSamplerNameLooksSamplerLike(const char *name);
 
 /* Heuristic: does the shader resource look like a sampler that must be
  * bound to a Metal texture+sampler pair?  Considers resource type and,

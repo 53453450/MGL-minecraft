@@ -67,10 +67,11 @@ uint32_t mglRenderCombinedSamplerSlot(int has_res, int has_combined,
 uint32_t mglRenderCombinedSamplerSlotForElement(int has_res, int has_combined,
                                                 uint32_t combined_binding,
                                                 uint32_t element);
-int mglRenderSamplerNameLooksSamplerLike(const char *name);
-int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim,
-                                      int32_t uniform_location,
-                                      const char *name);
+/* Does this resource type name a sampler/image the binding path must treat as a
+ * texture binding?  `image_dim` (0 = MGL_IMAGE_DIM_NONE) is the exact reflected
+ * answer for plain-uniform resources; the retired synthetic-location and
+ * name-heuristic fallbacks are documented in mgl_binding_policy.c. */
+int mglRenderResourceLooksSamplerLike(uint32_t res_type, uint32_t image_dim);
 uint32_t mglRenderResourceMetalSlot(int has_resource, uint32_t binding,
                                     uint32_t element, uint32_t fallback);
 int mglRenderSamplerUnitValid(int32_t unit, uint32_t max_units);
