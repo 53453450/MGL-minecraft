@@ -31,12 +31,21 @@ static float edge_position(float factor, uint32_t segments, uint32_t spacing,
     if (index == segments) return 1.f;
     if (index > segments / 2u)
         return 1.f - edge_position(factor, segments, spacing, segments - index);
+    /* ARB_tessellation_shader: fractional spacing subdivides into n-2 regular
+     * segments of length 1/f plus two shorter end segments.  A clamped factor
+     * of 1 must not reach that formula: with f = 1 it evaluates
+     * `(1 - (n-2)) / 2` and publishes 5.96e-08 instead of a real position,
+     * which produced a spurious near-zero coordinate in the domain (an inner
+     * rectangle corner where 0 was expected).  The reference implementation
+     * clamps the factor to at least 2 below the rounded level; the same clamp
+     * makes the degenerate f = 1 case publish exactly the multiples of 1/n. */
     if (spacing != GL_FRACTIONAL_ODD && spacing != GL_FRACTIONAL_EVEN)
         return (float)index / (float)segments;
+    const double f = factor > 2.f ? (double)factor : 2.0;
     /* n-2 regular segments of length 1/f; the remaining length is shared
      * by the two end segments. Compute in double before publishing float. */
-    return (float)(((double)factor - (segments - 2u)) / (2.0 * factor) +
-                   (double)(index - 1u) / factor);
+    return (float)((f - (double)(segments - 2u)) / (2.0 * f) +
+                   (double)(index - 1u) / f);
 }
 
 static void emit(TessSink *sink, MGLTessCoord point)
