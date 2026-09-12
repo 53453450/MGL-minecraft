@@ -48,11 +48,11 @@
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
-| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **33 / 445**） |
+| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **31 / 446**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十一切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 38,025**、ObjC 语法 **2,268 → 2,179**、词汇 **4,353 → 4,137**；
-**shim（T4 硬规的记账面）：43 → 33 个端口 / 511 → 445 行 / 81 → 71 语法（连续三刀净减 ✓）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十二切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 38,026**、ObjC 语法 **2,268 → 2,177**、词汇 **4,353 → 4,137**；
+**shim（T4 硬规的记账面）：43 → 31 个端口 / 511 → 446 行 / 81 → 69 语法（连续四刀端口净减 ✓）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1155,3 +1155,35 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     `mglRendererFragmentTraceBindingsPort`）、`MGLTessellationState`（`+Tessellation` 厚块的 materialize 下沉时会用到）。
     下一刀建议：**T5 唯一平台壳合并**（把 shim 的 4 个 category 方法 + `MGLPlatformRendererShell.m` + `+Lifecycle.m`
     收敛为一个壳 TU，shim 只留端口；这一步同时满足审计对 T5 的"唯一壳"要求）。
+
+53. **shim 净减第四刀：状态区"一个 struct 一个端口"（本轮第十刀，**按 §0.04 端口净减、行数持平**）**：
+    ① 新增 **`MGLRendererStateAreas`**（`mgl_renderer_ports.h`，C 侧自带存储、无隐藏 static）：
+    `{ batching, command(const), pipeline_cache, binding_state_owner(地址), fragment_trace_bindings }` +
+    一个端口 `mglRendererStateAreasPort(renderer, &areas)`。**退掉 3 个字段端口**：
+    `mglRendererFragmentTraceBindingsPort`（→ `areas.fragment_trace_bindings`）、
+    `mglRendererBindingStateOwnerPort`（→ `*areas.binding_state_owner`，取地址是因为 owner 可能在 driver 运行中变化）、
+    `mglRendererPipelineCacheStatePort`（→ `areas.pipeline_cache->…`）。
+    ② **净减账（如实）**：**shim 33 → 31 个端口（−2）、71 → 69 语法（−2）**，但**行数 445 → 446（+1）**——
+    新端口带 `memset` + 5 个字段赋值，比它替代的 3 个两三行包装略长。**按 §0.04 的"端口/wrapper 净减"达标**，
+    行数这一项持平，故不宣称行数收益。全仓语法 **2,179 → 2,177**、行数 **38,025 → 38,026**。
+    ③ **oracle**：trace 374/296 行、`MGL_MIP_DIAG` 529/212 条与旧库逐字段一致（A/B 固定动作全执行）；
+    回归 92/0/2、ICB 轮 82/10/2 与旧库相同；CTS 七簇 diff 全空。
+    ④ **state-area 四刀小结**：batching（−5）、command（−4）、pipeline cache + 当前 CB 标志（−3）、
+    本次 areas 归并（−2 端口）——**shim 43 → 31**。后续可继续并入 areas 的候选：`MGLRendererCoreState`（需先把
+    `MGLCapability`/`MGLDrawable` 做成 C 类型）、`MGLResourceFallbackState` 其余字段、`MGLTessellationState`。
+
+### 0.09 goal 轮次用尽时的交接状态（2026-09-13 02:34）
+
+- **tip**：本文件所在提交（`objc_zero.sh`：**21** 个 `.m` / **38,026** 行 / 语法 **2,177** / 词汇 **4,137**；shim **31** 端口 + 4 方法 / 446 行）。
+- **Batch 簇已清零**：`mgl_batch_*` 全部为 C；`MGLRenderer+Batch.m`、`mgl_batch_flush_restore_encode.m` 整文件删除。
+- **下一步优先级（按审计 §0.05 与 §0.08）**：
+  1. **P0-1 三厚块**（`+RenderPass` 426 语法/7.1k 行 · `+Texture` 316/6.98k · `+Blit` 244/4.94k）：抽 C++ 域 + 金样，
+     **禁新增 ObjC 行**；每下沉一个方法体可连带退役对应端口（净减主力）。
+  2. **T5 唯一平台壳合并**：shim 的 4 个 category 方法 + `MGLPlatformRendererShell.m`(230) + `+Lifecycle.m`(666)
+     → **一个**壳 TU，shim 只留端口；这是审计对 T5 "唯一壳"的硬要求。
+  3. **ICB 门禁 82/10/2 → 92/0/2**（Keep-A/B-temporary 的退休条件；10 项既有失败为
+     `Fragment/Vertex shader cannot be used with indirect command buffer` + AGX RECOVERY 日志）。
+  4. **P0-0** `mgl_air_backend.cpp` 的 24 处 `strstr(esrc,…)` 双轨（LLVM 路径最高优先，oracle-equal 后删文本侧）。
+  5. 继续 state-area 净减（`_core` / `_resourceFallback` / `_tessellation`）。
+- **纪律提醒**：每刀必须给 **shim wrapper 净减数字**（§0.04），并跑满 §0.2 的三套语料 + 该刀自己的 oracle；
+  A/B 固定动作见第 51 条（清 `.d` → 构建 → `cmp` 两库 → 只取本轮日志）。
