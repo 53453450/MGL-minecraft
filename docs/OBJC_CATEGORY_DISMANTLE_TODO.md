@@ -44,9 +44,10 @@
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0 |
 
-**当前进度（2026-09-12，T0–T2′ + T4 首切片 后）**：文件 **53 → 27**、空 TU **3 → 0**、行数 **43,989 → 39,598**、
-ObjC 语法 **2,268 → 2,216**、词汇 **4,353 → 4,205**。（已建 C 端口面 `mgl_renderer_ports.*`；
-`mgl_readback` / `mgl_batch_rt_mark_port` 转入 C；剩余全在 27 个真 ObjC 文件里。）
+**当前进度（2026-09-12，T0–T2′ + T4 首切片 + trace 清零 后）**：文件 **53 → 26**、空 TU **3 → 0**、
+行数 **43,989 → 39,160**、ObjC 语法 **2,268 → 2,223**、词汇 **4,353 → 4,196**。
+（已建 C 端口面 `mgl_renderer_ports.*`；`mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` 转入 C；
+`mglTraceLogNSString`（429 行 ObjC 面）已彻底移除；剩余 26 个真 ObjC 文件。）
 
 ---
 
@@ -755,3 +756,23 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     验证：两个库构建无错；**`make test-all` 返回 0**；CTS 整轮（hotspot 非通过集合 diff 为空）。
     下一批候选：`mgl_batch_replay_trace`(257) / `mgl_batch_issue_encode`(218) / `mgl_batch_icb_mdi_encode`(178)
     同法转 C；`mgl_trace_log` 的 ~80 处 `mglTraceLogNSString` 调用点改 C API（其后可清 438 行 ObjC）。
+
+42. **`mgl_trace_log` 清零：76 处调用点改 C API（`6cd8567`）**：先前的分析说它要等 T4——本轮做的正是这件事。
+    ① **调用点改造**：全仓 76 处 `mglTraceLogNSString(@"…", …)` → `mglTraceLog("…", …)` 按**调用跨度**精确改写
+    （不碰文件里其它 `@"` 字面量），分布：`MGLRenderer.m` 34 · `+RenderPass` 14 · `+SwapDiagnostics` 9 ·
+    `+Texture` 8 · `+GPURecovery` 3 · `+Blit` 3 · `+Buffer` 2 · `+Binding` 1 · `mgl_batch_flush_restore_encode` 1 ·
+    `mgl_trace_log.m` 自身 1。
+    ② **10 处含 `%@` 的**逐条改：格式串 `%@`→`%s`，实参包 `[x UTF8String]`（`reason`/`stage` 为 `NSString *`、
+    `sampleTag`/`sampleTagCopy`/`sampleError` 同上、`reason ?: @"(none)"` → `reason ? [reason UTF8String] : "(none)"`）。
+    ③ 删除两个 NSString 入口（`mglTraceLogNSStringV`/`mglTraceLogNSString`）及其在 `mgl_trace_log.h` 的
+    `#ifdef __OBJC__` 声明与 Foundation 保护块；`mgl_trace_log.m` → **`.c`**（补 `<dispatch/dispatch.h>`——
+    `dispatch_once` 本就是 C API）；Makefile 里它的 `METALCPP_OBJC_SRC` 改为 C 列表，并删掉已空的 ObjC 对象规则。
+    **度量口径提醒**：语法次数反而 **2,216 → 2,223**——因为 `[x UTF8String]` 本身算一次消息发送，而调用点所在的
+    ObjC 文件尚未转 C；这是过渡态的正常现象，文件数与行数才是本刀的真实收益。
+    度量：文件 **27 → 26**、行数 **39,598 → 39,160**、语法 2,216 → 2,223（+7，见上）、词汇 **4,205 → 4,196**。
+    验证：两个库构建无错；**`make test-all` 返回 0**（smoke / es-smoke / legacy-compat 193/193 /
+    test_regression 92/0/2 / 各 plan harness）；CTS 整轮（hotspot 非通过集合 diff 为空）。
+    下一批：`mgl_batch_replay_trace`(257) / `mgl_batch_issue_encode`(218) / `mgl_batch_icb_mdi_encode`(178)
+    三个端口文件转 C——它们的依赖是**其它端口文件里的 ObjC 方法**（`traceReplayCommand` / `issueDirectBatch` /
+    `tryReplaySimpleBatch` / `mdiArgumentScratchBuffer` / `resolveElementBufferForCommand`），
+    需先按 T4 建立"C 侧 batch 端口面"（一函数一包装 + `void *renderer`），再逐个转。
