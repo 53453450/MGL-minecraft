@@ -44,9 +44,9 @@
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0 |
 
-**当前进度（2026-09-12，T0+T1+T2+T2′首批 后）**：文件 **53 → 28**、空 TU **3 → 0**、行数 **43,989 → 39,751**、
-ObjC 语法 **2,268 → 2,231**、词汇 **4,353 → 4,209**。（T2 的 10 个文件词汇已清零；`mgl_readback` 转入 C；
-剩余全在 28 个真 ObjC 文件里。）
+**当前进度（2026-09-12，T0–T2′ + T4 首切片 后）**：文件 **53 → 27**、空 TU **3 → 0**、行数 **43,989 → 39,598**、
+ObjC 语法 **2,268 → 2,216**、词汇 **4,353 → 4,205**。（已建 C 端口面 `mgl_renderer_ports.*`；
+`mgl_readback` / `mgl_batch_rt_mark_port` 转入 C；剩余全在 27 个真 ObjC 文件里。）
 
 ---
 
@@ -737,3 +737,21 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     验证：两个库构建无错；**`make test-all` 返回 0**；CTS 整轮（hotspot 非通过集合 diff 为空）。
     下一批：**T4 首切片**（挑一个 `__bridge`/`id` 端口文件改 C++ + `void*`）：`mgl_batch_rt_mark_port`(140 行) /
     `mgl_batch_replay_trace`(257) / `mgl_batch_issue_encode`(218) 三选一；`mgl_trace_log` 的 80 处调用点改造列入其后。
+
+41. **T4 首切片：C 端口面 + batch-RT-mark 端口转 C（`4dd24c2`）**：
+    ① 新建 **C 端口面** `mgl_renderer_ports.{h,c}`：`mglRendererAttachmentTextureFor(ctx, att)`（`-[MGLRenderer
+    framebufferAttachmentTexture:]` 的逐行 C 版：renderbuffer→`rbo->tex`、纹理→缓存 `buf.tex` 或 `findTexture`
+    并回填、NULL/无纹理各记一条 stderr）与 `mglRendererRenderPassStateOwnerPort(void *renderer)`（实现在
+    `mgl_draw_metal_port.m`，与既有 `mglRendererRenderPassManager` 并列；文档里的 dual-proxy 不变式保证
+    `_activeState == ctx->active_state`，故 C 侧用后者）。`+RenderPass.m` 的该方法**变成一行转发**（−33 行）。
+    ② `mgl_batch_rt_mark_port.m`（140 行）**整体转 C** → `mgl_batch_rt_mark_host.c`：三个 ObjC 方法改成
+    `mglBatchRtMarkColorAttachmentWritten(renderer, ctx, index)` 与
+    `mglBatchRtMarkCurrentFramebufferDrawAttachments(renderer, ctx)`（声明进 `mgl_batch_rt_mark.h` 的 host 段），
+    原 `__bridge id` 全部成为 `void *`；三个 ObjC 调用点改为直调；`MGLRenderer (BatchRtMark)` 声明与端口文件删除。
+    **拆分教训**：host 段落先写进了 plan 文件 `mgl_batch_rt_mark.c`，`make test-all` 立刻抓到
+    `test_batch_issue` 链接失败——该 harness 只链 plan 文件。按仓库"plan 模块可独立链接"的原则拆成独立
+    `mgl_batch_rt_mark_host.c`，plan 文件恢复自包含。
+    度量：文件 **28 → 27**、行数 **39,751 → 39,598**、语法 **2,231 → 2,216**、词汇 **4,209 → 4,205**。
+    验证：两个库构建无错；**`make test-all` 返回 0**；CTS 整轮（hotspot 非通过集合 diff 为空）。
+    下一批候选：`mgl_batch_replay_trace`(257) / `mgl_batch_issue_encode`(218) / `mgl_batch_icb_mdi_encode`(178)
+    同法转 C；`mgl_trace_log` 的 ~80 处 `mglTraceLogNSString` 调用点改 C API（其后可清 438 行 ObjC）。
