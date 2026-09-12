@@ -23,6 +23,8 @@
 #include "glm_context.h"
 #include "draw_command.h"
 #include "mgl_encode_context.h"
+#include "mgl_types_vertex.h"   /* VertexArray */
+#include <stdbool.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -353,6 +355,28 @@ int mglBatchIssueStreamMergedMDIBatch(void *renderer, MGLDrawBatch *batch,
 int mglBatchIssueIndirectCommandBufferBatch(void *renderer, MGLDrawBatch *batch,
                                             GLMContext glm_ctx,
                                             const MGLEncodeContext *encode_context);
+
+/* Dynamic-binding / sampler-snapshot / simple-replay drivers
+ * (mgl_batch_dyn_bind_encode.c).  1 = applied, 0 = declined (the caller then
+ * takes its fallback path). */
+int mglBatchDynBindVertexDirect(void *renderer, VertexArray *vao,
+                                const MGLDrawCommand *cmd, GLMContext glm_ctx,
+                                const MGLEncodeContext *encode_context);
+int mglBatchDynBindUniformDirect(void *renderer, const MGLDrawCommand *cmd,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encode_context);
+int mglBatchDynBindSampledDirect(void *renderer, const bool *touched_units,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encode_context);
+int mglBatchApplySamplerSnapshot(void *renderer, const MGLDrawCommand *cmd,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encode_context);
+int mglBatchApplyDynamicBindings(void *renderer, const MGLDrawCommand *cmd,
+                                 GLMContext glm_ctx,
+                                 MGLEncodeContext *encode_context);
+int mglBatchTryReplaySimpleBatch(void *renderer, MGLDrawBatch *batch,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encode_context);
 
 #ifdef __cplusplus
 }

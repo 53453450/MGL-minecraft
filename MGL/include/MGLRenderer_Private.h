@@ -54,6 +54,7 @@
 #import "mgl_rt_sync.h"
 #import "mgl_blit_clip.h"
 #import "mgl_state_compat.h"
+#include "mgl_state_log.h"      /* mglMipDiag* */
 #import "mgl_program_resource.h"
 #import "mgl_safety.h"
 #import "mgl_vertex_format.h"
@@ -145,33 +146,8 @@ static inline int mglBindingStateTextureSlotCount(void *owner)
     return __builtin_popcountll(mask[0]) + __builtin_popcountll(mask[1]);
 }
 
-/* MGL_MIP_DIAG=1 reports the effective sampler and mip chain of sampled
- * textures.  Independent of MGL_TRACE_LOG because the per-binding trace lines
- * are too dense to keep a frame rate high enough to observe view-dependent
- * artifacts.  Output goes to NSLog under the "MGL MIP_DIAG" prefix. */
-static inline BOOL mglMipDiagEnabled(void)
-{
-    static BOOL enabled;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ enabled = mglEnvFlagEnabled("MGL_MIP_DIAG"); });
-    return enabled;
-}
-
-/* Emits only on transitions, so a scene whose state is stable logs nothing and
- * a burst of lines pinpoints the state that flipped. */
-static inline BOOL mglMipDiagStateChanged(uint64_t *cache, uint64_t signature)
-{
-    if (!cache || *cache == signature) {
-        return NO;
-    }
-    *cache = signature;
-    return YES;
-}
-
-static inline uint64_t mglMipDiagMixState(uint64_t signature, uint64_t value)
-{
-    return (signature ^ value) * 1099511628211ULL;
-}
+/* mglMipDiagEnabled / mglMipDiagStateChanged / mglMipDiagMixState moved to the
+ * C-safe mgl_state_log.h so C and ObjC callers share one implementation. */
 
 /* === GL-thread contract ===
  * The Metal layer is owned by a single thread (see mgl_thread_affinity.h).

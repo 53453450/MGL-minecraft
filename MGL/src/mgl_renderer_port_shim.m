@@ -100,41 +100,6 @@ int mglRendererResolveElementBufferPort(void *renderer, const void *command,
     return 1;
 }
 
-int mglRendererTryReplaySimpleBatchPort(void *renderer, void *batch,
-                                        GLMContext ctx,
-                                        const void *encode_context)
-{
-    return [(__bridge MGLRenderer *)renderer
-               tryReplaySimpleBatch:(MGLDrawBatch *)batch
-                            context:ctx
-                      encodeContext:(const MGLEncodeContext *)encode_context]
-               ? 1
-               : 0;
-}
-
-int mglRendererApplyDynamicBindingsPort(void *renderer, const void *command,
-                                        GLMContext ctx, void *encode_context)
-{
-    return [(__bridge MGLRenderer *)renderer
-               applyDynamicBindingsForCommand:(const MGLDrawCommand *)command
-                                      context:ctx
-                                encodeContext:(MGLEncodeContext *)encode_context]
-               ? 1
-               : 0;
-}
-
-int mglRendererApplySamplerSnapshotPort(void *renderer, const void *command,
-                                        GLMContext ctx,
-                                        const void *encode_context)
-{
-    return [(__bridge MGLRenderer *)renderer
-               applySamplerSnapshotForCommand:(const MGLDrawCommand *)command
-                                      context:ctx
-                                encodeContext:(const MGLEncodeContext *)encode_context]
-               ? 1
-               : 0;
-}
-
 int mglRendererCaptureCullArrayPort(void *renderer, GLMContext ctx, int32_t first,
                                     int32_t count, int32_t instance_count,
                                     uint32_t base_instance)
@@ -215,4 +180,134 @@ void *mglRendererCurrentRenderEncoderOwnerPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     return mglRendererRenderPassManager(r).state->currentRenderEncoderOwner;
+}
+
+void *mglRendererBindingStateOwnerPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? r->_bindingStateOwner : NULL;
+}
+
+int mglRendererUpdateDirtyBaseBufferListPort(void *renderer, void *upload)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && upload && [r updateDirtyBaseBufferList:(BufferMapList *)upload]) ? 1 : 0;
+}
+
+void mglRendererBindMTLBufferPort(void *renderer, void *buffer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r && buffer) {
+        [r bindMTLBuffer:(Buffer *)buffer];
+    }
+}
+
+int mglRendererMapBuffersToMTLPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r mapBuffersToMTL]) ? 1 : 0;
+}
+
+int mglRendererBindVertexBuffersToCurrentRenderEncoderPort(void *renderer,
+                                                           const void *encode_context)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r bindVertexBuffersToCurrentRenderEncoder:
+                       (const MGLEncodeContext *)encode_context])
+               ? 1
+               : 0;
+}
+
+int mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(void *renderer,
+                                                             const void *encode_context)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r bindFragmentBuffersToCurrentRenderEncoder:
+                       (const MGLEncodeContext *)encode_context])
+               ? 1
+               : 0;
+}
+
+int mglRendererBindTexturesToCurrentRenderEncoderPort(void *renderer,
+                                                      const void *encode_context)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r bindTexturesToCurrentRenderEncoder:
+                       (const MGLEncodeContext *)encode_context])
+               ? 1
+               : 0;
+}
+
+int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
+                                                          const char *label)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r restoreRenderEncoderAfterTextureUploadForDraw:label]) ? 1 : 0;
+}
+
+uint32_t mglRendererTextureUnitForSampledResourcePort(void *renderer,
+                                                      void *resource,
+                                                      uint32_t metal_slot,
+                                                      int stage)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r || !resource) {
+        return 0u;
+    }
+    return (uint32_t)[r textureUnitForSampledResource:(MGLShaderResource *)resource
+                                         metalBinding:metal_slot
+                                                stage:stage];
+}
+
+void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
+                                               uint32_t metal_slot, int stage,
+                                               uint32_t expected_type)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r || !resource) {
+        return NULL;
+    }
+    /* The entry point returns a Texture *, not an object pointer. */
+    return [r textureForSampledResource:(MGLShaderResource *)resource
+                           metalBinding:metal_slot
+                                  stage:stage
+                           expectedType:(uint32_t)expected_type];
+}
+
+void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key)
+{
+    /* Body of the former -[MGLRenderer samplerStateForSnapshotKey:].  The
+     * return is unretained, as it was there: the backend snapshot cache holds
+     * the state it hands back. */
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r || !key) {
+        return NULL;
+    }
+    void *cachedState = NULL;
+    int cacheResult = mglRendererBackendGetSamplerSnapshotState(
+        r->_backend, (const MGLSamplerSnapshotKey *)key, &cachedState);
+    if (cacheResult == 1) {
+        return cachedState;
+    }
+    if (cacheResult < 0) {
+        return NULL;
+    }
+    TextureParameter params;
+    mgl_batch_replay_fill_sampler_params((const MGLSamplerSnapshotKey *)key, &params);
+    id state = [r createMTLSamplerForTexParam:&params
+                                       target:((const MGLSamplerSnapshotKey *)key)->target];
+    if (!state) {
+        return NULL;
+    }
+    return mglRendererBackendPutSamplerSnapshotState(
+               r->_backend, (const MGLSamplerSnapshotKey *)key,
+               (__bridge void *)state) == 0
+               ? (__bridge void *)state
+               : NULL;
+}
+
+void *mglRendererFallbackSamplerStatePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? (__bridge void *)[r fallbackSamplerState] : NULL;
 }

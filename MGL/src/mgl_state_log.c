@@ -8,6 +8,9 @@
 
 #include "mgl_state_log.h"
 
+#include "mgl_env_flag.h"
+
+#include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -72,4 +75,27 @@ void mglFormatDirtyBits(uint32_t bits, char *dst, size_t dstSize)
     if (first) {
         snprintf(dst, dstSize, "0x%x", bits);
     }
+}
+
+/* === MIP diagnostic gate / transition latch ===
+ * Moved here from the ObjC static inlines in MGLRenderer_Private.h so C and
+ * ObjC callers share one implementation; the env var is parsed by the
+ * single-source mgl_env_flag.h parser, as before. */
+int mglMipDiagEnabled(void)
+{
+    static int enabled = 0;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        enabled = mgl_env_flag_enabled("MGL_MIP_DIAG") ? 1 : 0;
+    });
+    return enabled;
+}
+
+int mglMipDiagStateChanged(uint64_t *cache, uint64_t signature)
+{
+    if (!cache || *cache == signature) {
+        return 0;
+    }
+    *cache = signature;
+    return 1;
 }

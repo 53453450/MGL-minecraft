@@ -87,6 +87,41 @@ void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
                                                  uint64_t count,
                                                  int *failed_out);
 
+/* ---- dyn-bind / sampler ports ------------------------------------------ */
+
+/* Binding state owner (the object the dyn-bind plans write bindings through). */
+void *mglRendererBindingStateOwnerPort(void *renderer);
+
+/* Buffer staging for the dyn-vertex path: upload a dirty base-buffer list and
+ * make sure a buffer object has its Metal allocation. */
+int mglRendererUpdateDirtyBaseBufferListPort(void *renderer, void *upload);
+void mglRendererBindMTLBufferPort(void *renderer, void *buffer);
+
+/* Binding-state push for the mapper fallback path. */
+int mglRendererMapBuffersToMTLPort(void *renderer);
+int mglRendererBindVertexBuffersToCurrentRenderEncoderPort(void *renderer,
+                                                           const void *encode_context);
+int mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(void *renderer,
+                                                             const void *encode_context);
+int mglRendererBindTexturesToCurrentRenderEncoderPort(void *renderer,
+                                                      const void *encode_context);
+int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
+                                                          const char *label);
+
+/* Sampled-resource lookup for the dyn-texture plan. */
+uint32_t mglRendererTextureUnitForSampledResourcePort(void *renderer,
+                                                      void *resource,
+                                                      uint32_t metal_slot,
+                                                      int stage);
+void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
+                                               uint32_t metal_slot, int stage,
+                                               uint32_t expected_type);
+
+/* Sampler state for a snapshot key (unretained; the backend cache owns it) and
+ * the fallback sampler. */
+void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key);
+void *mglRendererFallbackSamplerStatePort(void *renderer);
+
 /* Batch-replay diagnostic trace state: the renderer's fragment texture trace
  * binding records (TEXTURE_UNITS entries, `MGLFragmentTextureTraceBinding`),
  * the pipeline cache's current pipeline state / program name, and the render

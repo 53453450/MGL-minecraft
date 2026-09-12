@@ -96,8 +96,8 @@ static int cShouldS(void *v)
 static int cApplyS(void *v)
 { CCtx *c = v; MGLEncodeContext e = {.render_encoder_owner =
       mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner};
-  return [c->r applySamplerSnapshotForCommand:&c->batch->commands[0] context:c->ctx
-      encodeContext:&e] ? 1 : 0; }
+  return mglBatchApplySamplerSnapshot((__bridge void *)c->r, &c->batch->commands[0],
+      c->ctx, &e) ? 1 : 0; }
 static void cReady(void *v)
 { CCtx *c = v; mglBatchTraceReplayBatch((__bridge void *)c->r, c->batch, c->ctx, c->hit,
       c->bi, "READY"); }

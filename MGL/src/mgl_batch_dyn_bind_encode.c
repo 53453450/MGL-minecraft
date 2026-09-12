@@ -1,30 +1,38 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  * A3: dyn-bind / sampler / simple-replay encode (Batch cluster).
+ *
+ * Formerly mgl_batch_dyn_bind_encode.m.  The six entry points are C drivers
+ * now; every renderer operation they need goes through mgl_renderer_ports.h.
  */
-#import "MGLRenderer_Private.h"
-#import "MGLRenderer+Draw_Private.h"
-#import "MGLRenderer+BatchPorts_Private.h"
-#import "mgl_byte_hash.h"
-#import "mgl_frame_activity.h"
+#include "mgl_renderer_ports.h"       /* C port surface (T4) */
+#include "mgl_draw_issue.h"           /* mglDrawHostDevice */
+#include "mgl_vertex_attrib_query.h"  /* mglRendererResolveVertexAttributeBufferIndex */
+#include "mgl_state_log.h"            /* mglMipDiag* */
+#include "mgl_buffer_slots.h"         /* kmax slot constants */
+#include "mgl_texture_compat.h"       /* mglSampledTextureViewForBaseLevel */
+#include "mgl_shader_resource.h"      /* mglMetalCombinedSamplerSlot */
+#include "mgl_binding_policy.h"       /* mglRenderTextureBindingStageForShader */
+#include "mgl_byte_hash.h"
+#include "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_draw_encode.h"
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
+#include <stdio.h>
 #include <string.h>
 
-@implementation MGLRenderer (Draw)
+static const uint32_t kMaxFragmentSamplerSlots = 16;
 
-static const NSUInteger kMaxFragmentSamplerSlots = 16;
-static BOOL mglBatchReplayHasActiveEncoder(const MGLEncodeContext *e)
+static int mglBatchReplayHasActiveEncoder(const MGLEncodeContext *e)
 { return e && mglRenderEncoderOwnerHasCurrent(e->render_encoder_owner) != 0; }
 static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 { return mglHashBytesFNV1a(key, sizeof(*key)); }
 
 typedef struct {
-    __unsafe_unretained MGLRenderer *r; VertexArray *vao; const MGLDrawCommand *cmd;
+    void *r; VertexArray *vao; const MGLDrawCommand *cmd;
     GLMContext ctx; Program *prog;
 } MGLDynVertexCtx;
 static int mglDynVertexPlan(void *v, uint8_t bi, MGLBatchDynVertexStreamPlan *p)
@@ -32,7 +40,7 @@ static int mglDynVertexPlan(void *v, uint8_t bi, MGLBatchDynVertexStreamPlan *p)
       c->ctx, c->vao, c->prog, &c->cmd->dynamic_vertex_bindings[bi], p); }
 static int mglDynVertexResolve(void *v, uint32_t attrib, int *slot)
 { MGLDynVertexCtx *c = v; int s = mglRendererResolveVertexAttributeBufferIndex(
-      c->ctx, c->vao, attrib, __FUNCTION__); if (slot) *slot = s; return s >= 0; }
+      c->ctx, c->vao, attrib, __func__); if (slot) *slot = s; return s >= 0; }
 static int mglDynVertexCanBind(void *v, const MGLBatchDynVertexStreamPlan *p, uint32_t stream)
 { MGLDynVertexCtx *c = v; return mgl_batch_replay_dyn_vertex_stream_can_bind_directly(
       c->prog, c->vao, p, stream); }
@@ -42,13 +50,13 @@ static int mglDynVertexEnsure(void *v, const MGLBatchDynVertexStreamPlan *p, voi
     MGLDynVertexCtx *c = v; Buffer *buf = p->buffer; if (!buf) return 0;
     if (buf->data.dirty_bits) {
         BufferMapList upload = {0}; upload.count = 1; upload.buffers[0].buf = buf;
-        if (![c->r updateDirtyBaseBufferList:&upload]) return 0;
+        if (!mglRendererUpdateDirtyBaseBufferListPort(c->r, &upload)) return 0;
     }
-    if (!buf->data.mtl_data) [c->r bindMTLBuffer:buf];
+    if (!buf->data.mtl_data) mglRendererBindMTLBufferPort(c->r, buf);
     if (!mgl_batch_replay_mtl_ptr_ok(buf->data.mtl_data)) return 0;
-    id mb = (__bridge id)buf->data.mtl_data; MGLRenderBufferInfo info = {0};
-    if (mglRenderGetBufferInfo((__bridge void *)mb, &info) != 0) return 0;
-    if (mtl) *mtl = (__bridge void *)mb; if (gl) *gl = buf;
+    void *mb = buf->data.mtl_data; MGLRenderBufferInfo info = {0};
+    if (mglRenderGetBufferInfo(mb, &info) != 0) return 0;
+    if (mtl) *mtl = mb; if (gl) *gl = buf;
     if (dyn) *dyn = (uint64_t)p->dynamic_offset; if (len) *len = info.length;
     return 1;
 }
@@ -56,7 +64,7 @@ static uint64_t mglDynVertexBindOff(void *v, const MGLBatchDynVertexStreamPlan *
 { return (uint64_t)((MGLDynVertexCtx *)v)->vao->bindings[p->binding_index].offset; }
 
 typedef struct {
-    __unsafe_unretained MGLRenderer *r; const MGLDrawCommand *cmd; GLMContext ctx;
+    void *r; const MGLDrawCommand *cmd; GLMContext ctx;
 } MGLDynUniformCtx;
 static int mglDynUniformGather(void *v, uint64_t *lens, uint32_t count)
 {
@@ -81,13 +89,25 @@ static int mglDynUniformResolve(void *v, const MGLBatchUniformBindOp *op, void *
 }
 
 typedef struct {
-    __unsafe_unretained MGLRenderer *r; const MGLDrawCommand *cmd; GLMContext ctx;
+    void *r; const MGLDrawCommand *cmd; GLMContext ctx;
     MGLEncodeContext *enc; VertexArray dynamic_vao; VertexArray *draw_vao;
     VertexArray *base_vao; VertexArray *saved_vao; bool touched[TEXTURE_UNITS];
 } MGLDynApplyCtx;
+
+/* Defined below; the dyn-apply ops table wires them together. */
+int mglBatchDynBindVertexDirect(void *renderer, VertexArray *vao,
+                                const MGLDrawCommand *cmd, GLMContext glm_ctx,
+                                const MGLEncodeContext *encCtx);
+int mglBatchDynBindUniformDirect(void *renderer, const MGLDrawCommand *cmd,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encCtx);
+int mglBatchDynBindSampledDirect(void *renderer, const bool *touched_units,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encCtx);
+
 static void mglDynApplyRefresh(void *v)
 { MGLDynApplyCtx *c = v; if (c->enc)
-      c->enc->render_encoder_owner = mglRendererRenderPassManager(c->r).state->currentRenderEncoderOwner; }
+      c->enc->render_encoder_owner = mglRendererCurrentRenderEncoderOwnerPort(c->r); }
 static int mglDynApplyHasEnc(void *v)
 { return mglBatchReplayHasActiveEncoder(((MGLDynApplyCtx *)v)->enc) ? 1 : 0; }
 static int mglDynApplyBuildVao(void *v)
@@ -100,56 +120,55 @@ static int mglDynApplyTex(void *v)
 { MGLDynApplyCtx *c = v; memset(c->touched, 0, sizeof(c->touched));
   return mgl_batch_replay_apply_texture_overrides(c->ctx, c->cmd, c->touched, TEXTURE_UNITS) ? 1 : 0; }
 static int mglDynApplyBindTexDirect(void *v)
-{ MGLDynApplyCtx *c = v; return [c->r bindDynamicSampledTexturesDirectlyForTouchedUnits:c->touched
-      context:c->ctx encodeContext:c->enc] ? 1 : 0; }
+{ MGLDynApplyCtx *c = v; return mglBatchDynBindSampledDirect(c->r, c->touched, c->ctx, c->enc) ? 1 : 0; }
 static int mglDynApplyBindTexMapper(void *v)
-{ return [((MGLDynApplyCtx *)v)->r bindTexturesToCurrentRenderEncoder:((MGLDynApplyCtx *)v)->enc] ? 1 : 0; }
+{ MGLDynApplyCtx *c = v; return mglRendererBindTexturesToCurrentRenderEncoderPort(c->r, c->enc) ? 1 : 0; }
 static int mglDynApplyRestoreTex(void *v)
-{ return [((MGLDynApplyCtx *)v)->r restoreRenderEncoderAfterTextureUploadForDraw:
-      "dynamic-sampled-texture-bind"] ? 1 : 0; }
+{ return mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+      ((MGLDynApplyCtx *)v)->r, "dynamic-sampled-texture-bind") ? 1 : 0; }
 static int mglDynApplyBindVertex(void *v)
-{ MGLDynApplyCtx *c = v; return [c->r bindDynamicVertexArrayBuffersDirectly:c->draw_vao
-      command:c->cmd context:c->ctx encodeContext:c->enc] ? 1 : 0; }
+{ MGLDynApplyCtx *c = v; return mglBatchDynBindVertexDirect(c->r, c->draw_vao, c->cmd,
+      c->ctx, c->enc) ? 1 : 0; }
 static int mglDynApplyBindUniform(void *v)
-{ MGLDynApplyCtx *c = v; return [c->r bindDynamicUniformRangesDirectly:c->cmd context:c->ctx
-      encodeContext:c->enc] ? 1 : 0; }
+{ MGLDynApplyCtx *c = v; return mglBatchDynBindUniformDirect(c->r, c->cmd, c->ctx, c->enc) ? 1 : 0; }
 static int mglDynApplyMapperFallback(void *v)
 {
     MGLDynApplyCtx *c = v; c->saved_vao = c->ctx->active_state->vao;
     if (c->cmd->dynamic_vertex_binding_count > 0) c->ctx->active_state->vao = c->draw_vao;
     mglDynApplyRefresh(v);
-    int ok = ([c->r mapBuffersToMTL] && [c->r bindVertexBuffersToCurrentRenderEncoder:c->enc]) ? 1 : 0;
+    int ok = (mglRendererMapBuffersToMTLPort(c->r) &&
+              mglRendererBindVertexBuffersToCurrentRenderEncoderPort(c->r, c->enc)) ? 1 : 0;
     mglDynApplyRefresh(v);
     if (ok && c->cmd->dynamic_uniform_binding_count > 0) {
-        ok = [c->r bindFragmentBuffersToCurrentRenderEncoder:c->enc] ? 1 : 0;
+        ok = mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(c->r, c->enc) ? 1 : 0;
         mglDynApplyRefresh(v);
     }
     c->ctx->active_state->vao = c->saved_vao; return ok;
 }
 
 typedef struct {
-    __unsafe_unretained MGLRenderer *r; GLMContext ctx;
+    void *r; GLMContext ctx;
 } MGLDynSampledCtx;
 static int mglDynSampledResolve(void *v, const MGLBatchSampledTexCandidate *e,
                                 const bool *touched, void **tex_out, uint32_t *stage_out,
                                 int *needs_samp, void **samp_out, uint32_t *samp_slot)
 {
     MGLDynSampledCtx *c = v; MGLShaderResource *resource = e->resource;
-    GLuint unit = [c->r textureUnitForSampledResource:resource metalBinding:e->metal_slot
-                                                stage:(int)e->stage];
+    GLuint unit = mglRendererTextureUnitForSampledResourcePort(
+        c->r, resource, e->metal_slot, (int)e->stage);
     Texture *tex_obj = (unit < TEXTURE_UNITS && touched[unit])
-        ? [c->r textureForSampledResource:resource metalBinding:e->metal_slot
-              stage:(int)e->stage expectedType:(e->lookup_type ? e->lookup_type
-                                                               : e->expected_type)]
+        ? mglRendererTextureForSampledResourcePort(
+              c->r, resource, e->metal_slot, (int)e->stage,
+              e->lookup_type ? e->lookup_type : e->expected_type)
         : NULL;
-    id texture = (tex_obj && tex_obj->mtl_data)
-        ? (__bridge id)mglSampledTextureViewForBaseLevel(tex_obj, tex_obj->mtl_data) : nil;
+    void *texture = (tex_obj && tex_obj->mtl_data)
+        ? mglSampledTextureViewForBaseLevel(tex_obj, tex_obj->mtl_data) : NULL;
     MGLRenderTextureInfo info = {0};
-    int info_ok = texture && mglRenderGetTextureInfo((__bridge void *)texture, &info) == 0;
+    int info_ok = texture && mglRenderGetTextureInfo(texture, &info) == 0;
     Sampler *bound = (unit < TEXTURE_UNITS) ? c->ctx->active_state->texture_samplers[unit] : NULL;
-    id sampler = nil;
-    if (bound && !bound->dirty_bits && bound->mtl_data) sampler = (__bridge id)bound->mtl_data;
-    else if (tex_obj && tex_obj->params.mtl_data) sampler = (__bridge id)tex_obj->params.mtl_data;
+    void *sampler = NULL;
+    if (bound && !bound->dirty_bits && bound->mtl_data) sampler = bound->mtl_data;
+    else if (tex_obj && tex_obj->params.mtl_data) sampler = tex_obj->params.mtl_data;
     MGLBatchSampledResolveGateIn gin = {
         .unit_ok = (unit < TEXTURE_UNITS && touched[unit]) ? 1 : 0,
         .has_tex = tex_obj ? 1 : 0, .has_mtl = (tex_obj && tex_obj->mtl_data) ? 1 : 0,
@@ -165,29 +184,37 @@ static int mglDynSampledResolve(void *v, const MGLBatchSampledTexCandidate *e,
     int gate = mgl_batch_replay_sampled_resolve_gate(&gin);
     if (gate <= 0) return gate;
     if (stage_out) *stage_out = mglRenderTextureBindingStageForShader((int)e->stage);
-    if (tex_out) *tex_out = (__bridge void *)texture;
+    if (tex_out) *tex_out = texture;
     if (gate == 1) { if (needs_samp) *needs_samp = 0; return 1; }
     if (needs_samp) *needs_samp = 1;
-    if (samp_out) *samp_out = (__bridge void *)sampler;
+    if (samp_out) *samp_out = sampler;
     if (samp_slot) *samp_slot = resource ? mglMetalCombinedSamplerSlot(resource) : e->metal_slot;
     return 1;
 }
 
+/* Sampler state for a snapshot key (unretained; the backend cache owns it). */
+static void *mglBatchSamplerStateForSnapshotKey(void *renderer,
+                                                const MGLSamplerSnapshotKey *key)
+{
+    if (!key) return NULL;
+    return mglRendererSamplerStateForSnapshotKeyPort(renderer, key);
+}
+
 typedef struct {
-    __unsafe_unretained MGLRenderer *r; GLMContext ctx; const MGLSamplerSnapshotSet *set;
+    void *r; GLMContext ctx; const MGLSamplerSnapshotSet *set;
     MGLCommandBuffer *cb;
 } MGLSampSnapCtx;
 static int mglSampResolve(void *v, uint32_t i, MGLBatchResolvedSamplerBind *out)
 {
     MGLSampSnapCtx *c = v; const MGLSamplerSnapshotEntry *entry = &c->set->entries[i];
-    id sampler = (entry->key_index == MGL_FALLBACK_SAMPLER_KEY_INDEX)
-                     ? [c->r fallbackSamplerState]
-                     : (entry->key_index < c->cb->sampler_snapshot_key_count
-                            ? [c->r samplerStateForSnapshotKey:
-                                   &c->cb->sampler_snapshot_keys[entry->key_index]]
-                            : nil);
+    void *sampler = (entry->key_index == MGL_FALLBACK_SAMPLER_KEY_INDEX)
+                        ? mglRendererFallbackSamplerStatePort(c->r)
+                        : (entry->key_index < c->cb->sampler_snapshot_key_count
+                               ? mglBatchSamplerStateForSnapshotKey(
+                                     c->r, &c->cb->sampler_snapshot_keys[entry->key_index])
+                               : NULL);
     if (!sampler) return 0;
-    out->sampler = (__bridge void *)sampler;
+    out->sampler = sampler;
     out->metal_slot = entry->metal_slot;
     out->shader_stage = (int)entry->stage;
     return 1;
@@ -203,128 +230,116 @@ static void mglSampAfter(void *v, uint32_t i, const MGLBatchResolvedSamplerBind 
     if (!mglMipDiagStateChanged(&s_snapshotState[entry->metal_slot],
                                 mglRendererSamplerSnapshotHash(key)))
         return;
-    NSLog(@"MGL MIP_DIAG snapshot slot=%u unit=%u target=0x%x minFilter=0x%x "
-          @"magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f",
-          (unsigned)entry->metal_slot, (unsigned)entry->texture_unit, (unsigned)key->target,
-          (unsigned)key->min_filter, (unsigned)key->mag_filter, (double)key->min_lod,
-          (double)key->max_lod, (double)key->max_anisotropy);
+    /* Same sink and prefix as the NSLog this replaced; MGL_MIP_DIAG is
+     * deliberately independent of the trace log, so this cannot go through
+     * mglTraceLog. */
+    fprintf(stderr,
+            "MGL MIP_DIAG snapshot slot=%u unit=%u target=0x%x minFilter=0x%x "
+            "magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f\n",
+            (unsigned)entry->metal_slot, (unsigned)entry->texture_unit, (unsigned)key->target,
+            (unsigned)key->min_filter, (unsigned)key->mag_filter, (double)key->min_lod,
+            (double)key->max_lod, (double)key->max_anisotropy);
 }
 
 typedef struct {
-    __unsafe_unretained MGLRenderer *r; MGLDrawBatch *batch; GLMContext ctx;
+    void *r; MGLDrawBatch *batch; GLMContext ctx;
 } MGLSimpleReplayCtx;
 static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
                             uint64_t *ioff, uint32_t *mtype)
 {
     MGLSimpleReplayCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[i];
-    Buffer *glBuf = NULL; id idxBuf = nil;
-    if (![c->r resolveElementBufferForCommand:cmd label:"cppBatchReplay" context:c->ctx
-                                     glBuffer:&glBuf mtlBuffer:&idxBuf])
+    Buffer *glBuf = NULL; void *idxBuf = NULL;
+    if (!mglRendererResolveElementBufferPort(c->r, cmd, "cppBatchReplay", c->ctx,
+                                             &glBuf, &idxBuf))
         return 0;
-    NSUInteger off = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
-    uint64_t itype = mglIndexTypeForGLType((GLenum)gl_itype);
-    id prepared = mglPreparedElementIndexBuffer((__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), glBuf, idxBuf, (GLenum)gl_itype,
-                                                &off, &itype);
+    size_t off = ioff ? (size_t)*ioff : (size_t)cmd->indexBufferOffset;
+    uint64_t itype = mglRenderMTLIndexTypeForGLType((uint32_t)gl_itype);
+    void *prepared = mglPreparedElementIndexBuffer(mglDrawHostDevice(c->r), glBuf, idxBuf,
+                                                   (GLenum)gl_itype, &off, &itype);
     if (ioff) *ioff = (uint64_t)off; if (mtype) *mtype = (uint32_t)itype;
-    if (mtl) *mtl = (__bridge void *)prepared; return prepared ? 1 : 0;
+    if (mtl) *mtl = prepared; return prepared ? 1 : 0;
 }
 
 
-- (bool)bindDynamicVertexArrayBuffersDirectly:(VertexArray *)vao
-                                      command:(const MGLDrawCommand *)cmd
-                                       context:(GLMContext)glm_ctx
-                                 encodeContext:(const MGLEncodeContext *)encCtx
+int mglBatchDynBindVertexDirect(void *renderer, VertexArray *vao,
+                                const MGLDrawCommand *cmd, GLMContext glm_ctx,
+                                const MGLEncodeContext *encCtx)
 {
-    if (!vao || !cmd || !encCtx) return false;
-    MGLDynVertexCtx c = {.r = self, .vao = vao, .cmd = cmd, .ctx = glm_ctx,
+    if (!vao || !cmd || !encCtx) return 0;
+    MGLDynVertexCtx c = {.r = renderer, .vao = vao, .cmd = cmd, .ctx = glm_ctx,
                          .prog = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER)};
     MGLBatchDynVertexBindOps ops = {
         .ctx = &c, .binding_count = cmd->dynamic_vertex_binding_count,
         .max_metal_slots = (int)kMGLMaxMetalVertexBufferCount,
-        .binding_state_owner = _bindingStateOwner,
+        .binding_state_owner = mglRendererBindingStateOwnerPort(renderer),
         .render_encoder_owner = encCtx->render_encoder_owner,
         .plan_binding = mglDynVertexPlan, .resolve_slot = mglDynVertexResolve,
         .stream_can_bind = mglDynVertexCanBind, .ensure_mtl = mglDynVertexEnsure,
         .vao_binding_offset = mglDynVertexBindOff,
     };
-    return mgl_batch_mtl_bind_dyn_vertex(&ops) ? true : false;
+    return mgl_batch_mtl_bind_dyn_vertex(&ops) ? 1 : 0;
 }
 
-- (bool)bindDynamicUniformRangesDirectly:(const MGLDrawCommand *)cmd
-                                  context:(GLMContext)glm_ctx
-                            encodeContext:(const MGLEncodeContext *)encCtx
+int mglBatchDynBindUniformDirect(void *renderer, const MGLDrawCommand *cmd,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encCtx)
 {
-    if (!cmd || !glm_ctx || !encCtx) return false;
-    MGLDynUniformCtx c = {.r = self, .cmd = cmd, .ctx = glm_ctx};
+    if (!cmd || !glm_ctx || !encCtx) return 0;
+    MGLDynUniformCtx c = {.r = renderer, .cmd = cmd, .ctx = glm_ctx};
     MGLBatchDynUniformBindOps ops = {
-        .ctx = &c, .binding_state_owner = _bindingStateOwner,
+        .ctx = &c, .binding_state_owner = mglRendererBindingStateOwnerPort(renderer),
         .render_encoder_owner = encCtx->render_encoder_owner,
         .min_stage_binding_size = (uint64_t)kMGLMinimumStageBindingSize,
         .max_buffer_slots = (uint32_t)kMGLMaxBufferSlots,
         .gather_lengths = mglDynUniformGather, .cmd = cmd, .glm_ctx = glm_ctx,
         .resolve_op = mglDynUniformResolve,
     };
-    return mgl_batch_mtl_bind_dyn_uniforms(&ops) ? true : false;
+    return mgl_batch_mtl_bind_dyn_uniforms(&ops) ? 1 : 0;
 }
 
-- (bool)bindDynamicSampledTexturesDirectlyForTouchedUnits:(const bool *)touched_units
-                                                   context:(GLMContext)glm_ctx
-                                             encodeContext:(const MGLEncodeContext *)encCtx
+int mglBatchDynBindSampledDirect(void *renderer, const bool *touched_units,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encCtx)
 {
-    if (!touched_units || !glm_ctx || !mglBatchReplayHasActiveEncoder(encCtx)) return false;
-    MGLDynSampledCtx c = {.r = self, .ctx = glm_ctx};
+    if (!touched_units || !glm_ctx || !mglBatchReplayHasActiveEncoder(encCtx)) return 0;
+    MGLDynSampledCtx c = {.r = renderer, .ctx = glm_ctx};
     MGLBatchDynSampledBindOps ops = {
-        .ctx = &c, .binding_state_owner = _bindingStateOwner,
+        .ctx = &c, .binding_state_owner = mglRendererBindingStateOwnerPort(renderer),
         .render_encoder_owner = encCtx->render_encoder_owner,
-        .max_sampler_slots = (uint32_t)kMaxFragmentSamplerSlots, .glm_ctx = glm_ctx,
+        .max_sampler_slots = kMaxFragmentSamplerSlots, .glm_ctx = glm_ctx,
         .resolve_candidate = mglDynSampledResolve, .touched_units = touched_units,
     };
-    return mgl_batch_mtl_bind_dyn_sampled(&ops) ? true : false;
+    return mgl_batch_mtl_bind_dyn_sampled(&ops) ? 1 : 0;
 }
 
-- (id)samplerStateForSnapshotKey:(const MGLSamplerSnapshotKey *)key
+int mglBatchApplySamplerSnapshot(void *renderer, const MGLDrawCommand *cmd,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encCtx)
 {
-    if (!key) return nil;
-    void *cachedState = NULL;
-    int cacheResult = mglRendererBackendGetSamplerSnapshotState(_backend, key, &cachedState);
-    if (cacheResult == 1) return (__bridge id)cachedState;
-    if (cacheResult < 0) return nil;
-    TextureParameter params; mgl_batch_replay_fill_sampler_params(key, &params);
-    id state = [self createMTLSamplerForTexParam:&params target:key->target];
-    if (!state) return nil;
-    return mglRendererBackendPutSamplerSnapshotState(_backend, key, (__bridge void *)state) == 0
-               ? state : nil;
-}
-
-- (bool)applySamplerSnapshotForCommand:(const MGLDrawCommand *)cmd
-                                context:(GLMContext)glm_ctx
-                          encodeContext:(const MGLEncodeContext *)encCtx
-{
-    if (!cmd || !glm_ctx) return false;
-    if (cmd->sampler_snapshot_id == MGL_INVALID_SAMPLER_SNAPSHOT_ID) return true;
-    if (!mglBatchReplayHasActiveEncoder(encCtx)) return false;
+    if (!cmd || !glm_ctx) return 0;
+    if (cmd->sampler_snapshot_id == MGL_INVALID_SAMPLER_SNAPSHOT_ID) return 1;
+    if (!mglBatchReplayHasActiveEncoder(encCtx)) return 0;
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
-    if (cmd->sampler_snapshot_id >= cb->sampler_snapshot_set_count) return false;
+    if (cmd->sampler_snapshot_id >= cb->sampler_snapshot_set_count) return 0;
     const MGLSamplerSnapshotSet *set = &cb->sampler_snapshot_sets[cmd->sampler_snapshot_id];
-    if (set->count > MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES) return false;
-    MGLSampSnapCtx c = {.r = self, .ctx = glm_ctx, .set = set, .cb = cb};
+    if (set->count > MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES) return 0;
+    MGLSampSnapCtx c = {.r = renderer, .ctx = glm_ctx, .set = set, .cb = cb};
     MGLBatchSamplerSnapshotApplyOps ops = {
-        .ctx = &c, .binding_state_owner = _bindingStateOwner,
+        .ctx = &c, .binding_state_owner = mglRendererBindingStateOwnerPort(renderer),
         .render_encoder_owner = encCtx->render_encoder_owner,
         .entry_count = set->count, .max_sampler_slots = 16u,
         .resolve_entry = mglSampResolve, .after_resolved = mglSampAfter,
     };
-    return mgl_batch_mtl_apply_sampler_snapshot(&ops) ? true : false;
+    return mgl_batch_mtl_apply_sampler_snapshot(&ops) ? 1 : 0;
 }
 
-- (bool)applyDynamicBindingsForCommand:(const MGLDrawCommand *)cmd
-                                context:(GLMContext)glm_ctx
-                          encodeContext:(MGLEncodeContext *)encCtx
+int mglBatchApplyDynamicBindings(void *renderer, const MGLDrawCommand *cmd,
+                                 GLMContext glm_ctx, MGLEncodeContext *encCtx)
 {
-    if (!cmd) return true;
-    if (!glm_ctx || !encCtx) return false;
-    encCtx->render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner;
-    MGLDynApplyCtx c = {.r = self, .cmd = cmd, .ctx = glm_ctx, .enc = encCtx,
+    if (!cmd) return 1;
+    if (!glm_ctx || !encCtx) return 0;
+    encCtx->render_encoder_owner = mglRendererCurrentRenderEncoderOwnerPort(renderer);
+    MGLDynApplyCtx c = {.r = renderer, .cmd = cmd, .ctx = glm_ctx, .enc = encCtx,
                         .base_vao = glm_ctx->active_state->vao,
                         .draw_vao = glm_ctx->active_state->vao};
     MGLBatchDynApplyOps ops = {
@@ -340,13 +355,14 @@ static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
     return mgl_batch_issue_apply_dyn_bindings(cmd->dynamic_vertex_binding_count,
                                               cmd->dynamic_uniform_binding_count,
                                               cmd->dynamic_texture_binding_count, &ops)
-               ? true : false;
+               ? 1 : 0;
 }
 
-- (BOOL)tryReplaySimpleBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
-               encodeContext:(const MGLEncodeContext *)encCtx
+int mglBatchTryReplaySimpleBatch(void *renderer, MGLDrawBatch *batch,
+                                 GLMContext glm_ctx,
+                                 const MGLEncodeContext *encCtx)
 {
-    if (!batch || batch->command_count == 0u) return NO;
+    if (!batch || batch->command_count == 0u) return 0;
     Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     const GLenum batchMode = batch->commands[0].mode;
     if (!mgl_batch_replay_simple_eligible(
@@ -356,11 +372,8 @@ static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
             glm_ctx->active_state->caps.primitive_restart ? 1 : 0,
             mglPolygonModePointForDrawMode(glm_ctx, batchMode) ? 1 : 0,
             mglRenderDrawModeNeedsEmulate((uint32_t)batchMode) ? 1 : 0))
-        return NO;
-    MGLSimpleReplayCtx ctx = {self, batch, glm_ctx};
+        return 0;
+    MGLSimpleReplayCtx ctx = {renderer, batch, glm_ctx};
     MGLBatchSimpleReplayOps ops = {.ctx = &ctx, .resolve_index = mglSimpleResolve};
-    return mgl_batch_mtl_issue_simple_replay(batch, encCtx->render_encoder_owner, &ops) ? YES
-                                                                                         : NO;
+    return mgl_batch_mtl_issue_simple_replay(batch, encCtx->render_encoder_owner, &ops) ? 1 : 0;
 }
-
-@end

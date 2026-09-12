@@ -61,7 +61,7 @@ static void mglDirRefresh(void *v)
       mglRendererCurrentRenderEncoderOwnerPort(c->r); }
 static int mglDirSimple(void *v)
 { MGLIssueEncCtx *c = v;
-  return mglRendererTryReplaySimpleBatchPort(c->r, c->batch, c->ctx, c->enc); }
+  return mglBatchTryReplaySimpleBatch(c->r, c->batch, c->ctx, c->enc); }
 static uint32_t mglDirCount(void *v) { return ((MGLIssueEncCtx *)v)->batch->command_count; }
 static void mglDirFill(void *v, uint32_t i, MGLBatchDirectCmdView *out)
 {
@@ -100,10 +100,10 @@ static int mglDirAfterCull(void *v)
       mglRenderEncoderOwnerHasCurrent(mglRendererCurrentRenderEncoderOwnerPort(c->r)))
       ? 1 : 0; }
 static int mglDirDyn(void *v, uint32_t i)
-{ MGLIssueEncCtx *c = v; return mglRendererApplyDynamicBindingsPort(
+{ MGLIssueEncCtx *c = v; return mglBatchApplyDynamicBindings(
       c->r, &c->batch->commands[i], c->ctx, c->enc) ? 1 : 0; }
 static int mglDirSamp(void *v, uint32_t i)
-{ MGLIssueEncCtx *c = v; return mglRendererApplySamplerSnapshotPort(
+{ MGLIssueEncCtx *c = v; return mglBatchApplySamplerSnapshot(
       c->r, &c->batch->commands[i], c->ctx, c->enc) ? 1 : 0; }
 static int mglDirPolyPt(void *v, uint32_t mode)
 { return mglPolygonModePointForDrawMode(((MGLIssueEncCtx *)v)->ctx, (GLenum)mode) ? 1 : 0; }

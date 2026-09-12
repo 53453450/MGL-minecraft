@@ -37,15 +37,12 @@
  * (mgl_batch_rt_mark.h, implemented in mgl_batch_replay_trace.c). */
 
 /* dyn-bind / simple replay (impl: mgl_batch_dyn_bind_encode.m) */
-- (bool)applyDynamicBindingsForCommand:(const MGLDrawCommand *)cmd
-                                context:(GLMContext)glm_ctx
-                          encodeContext:(MGLEncodeContext *)encCtx;
-- (bool)applySamplerSnapshotForCommand:(const MGLDrawCommand *)cmd
-                                context:(GLMContext)glm_ctx
-                          encodeContext:(const MGLEncodeContext *)encCtx;
-- (BOOL)tryReplaySimpleBatch:(MGLDrawBatch *)batch
-                     context:(GLMContext)glm_ctx
-               encodeContext:(const MGLEncodeContext *)encCtx;
+/* applyDynamicBindingsForCommand:... is now the C driver
+ * mglBatchApplyDynamicBindings (mgl_batch_issue.h). */
+/* applySamplerSnapshotForCommand:... is now the C driver
+ * mglBatchApplySamplerSnapshot (mgl_batch_issue.h). */
+/* tryReplaySimpleBatch:... is now the C driver mglBatchTryReplaySimpleBatch
+ * (mgl_batch_issue.h). */
 
 @end
 

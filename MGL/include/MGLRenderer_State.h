@@ -39,9 +39,7 @@
 #import "mgl_capability.h"
 #import "mgl_trace_strategy.h"
 
-#ifndef kMGLMaxBufferSlots
-#define kMGLMaxBufferSlots 31
-#endif
+#include "mgl_buffer_slots.h"   /* kMGLMaxBufferSlots */
 
 typedef struct MGLDrawable_t {
     GLuint width;

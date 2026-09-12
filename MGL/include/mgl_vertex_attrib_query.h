@@ -65,6 +65,12 @@ bool mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute)
  * units can use it; `where` is a label for the drop diagnostic. */
 VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where);
 
+/* Metal vertex buffer slot a shader attribute resolves to, or -1 when the
+ * attribute has no buffer.  Defined in MGLRenderer.m. */
+int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx, VertexArray *vao,
+                                                 GLuint attribute,
+                                                 const char *where);
+
 #ifdef __cplusplus
 }
 #endif

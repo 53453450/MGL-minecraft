@@ -148,6 +148,14 @@ typedef enum {
     kMGLMaxMetalComputeBufferCount = 32,
 } MGLReservedBufferSlot;
 
+/* ---- Binding-state slot limits (C-safe home) ----
+ * kMGLMaxBufferSlots: client-visible buffer binding slots the binding state
+ * tracks (was a #define in the ObjC MGLRenderer_State.h).
+ * kMGLMinimumStageBindingSize: smallest buffer range a stage binding may cover,
+ * in bytes (was a static const in the ObjC MGLRenderer+Draw_Private.h). */
+#define kMGLMaxBufferSlots 31
+enum { kMGLMinimumStageBindingSize = 256 };
+
 /* Returns GL_TRUE if `slot` is reserved by MGL for the given shader `stage`
  * and therefore MUST NOT be assigned to a GL user buffer (UBO/SSBO/atomic).
  *

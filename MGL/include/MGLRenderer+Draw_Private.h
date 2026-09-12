@@ -41,6 +41,7 @@
 #include "mgl_vertex_attrib_binding.h"
 /* Encode target passed explicitly to issue and bind methods (C-safe home). */
 #include "mgl_encode_context.h"
+#include "mgl_buffer_slots.h"   /* kMGLMinimumStageBindingSize */
 
 typedef struct MGLViewportValue_t {
     double origin_x;
@@ -78,7 +79,6 @@ static const BOOL kMGLDrawSubmitDiagnostics = NO;
 /* === Draw binding/validation constants === */
 static inline BOOL kMGLVerboseBindLogsFn(void) { return getenv("MGL_VERBOSE_BIND") != NULL; }
 #define kMGLVerboseBindLogs kMGLVerboseBindLogsFn()
-static const NSUInteger kMGLMinimumStageBindingSize = 256;
 static const NSUInteger kMGLDefaultStageFallbackBufferSize = 4096;
 /* Stack scratch used to zero-pad small inline stage bindings up to the size the
  * shader argument requires.  Matches Metal's 4 KB set*Bytes limit.  A macro so
@@ -379,9 +379,8 @@ typedef struct {
 /* issueMDIBatch:context:encodeContext: and issueDirectBatch:... are now the C
  * drivers mglBatchIssueMDIBatch / mglBatchIssueDirectBatch (mgl_batch_issue.h,
  * implemented in mgl_batch_issue_encode.c). */
-- (bool)applySamplerSnapshotForCommand:(const MGLDrawCommand *)cmd
-                                context:(GLMContext)glm_ctx
-                          encodeContext:(const MGLEncodeContext *)encCtx;
+/* applySamplerSnapshotForCommand:... is now the C driver
+ * mglBatchApplySamplerSnapshot (mgl_batch_issue.h). */
 - (bool)bindTexturesToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindSampledTexturesForStage:(int)shaderStage
                     isFragmentStage:(BOOL)isFragment

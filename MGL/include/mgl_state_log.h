@@ -34,6 +34,23 @@ void mglAppendFlagName(char *dst, size_t dstSize, size_t *used,
  * match.  Always NUL-terminates (truncating if necessary). */
 void mglFormatDirtyBits(uint32_t bits, char *dst, size_t dstSize);
 
+/* MGL_MIP_DIAG=1 reports the effective sampler and mip chain of sampled
+ * textures.  Independent of MGL_TRACE_LOG because the per-binding trace lines
+ * are too dense to keep a frame rate high enough to observe view-dependent
+ * artifacts; the output goes out under the "MGL MIP_DIAG" prefix.  These three
+ * helpers used to be ObjC static inlines in MGLRenderer_Private.h; they live
+ * here now so C callers share the one implementation. */
+int mglMipDiagEnabled(void);
+
+/* Emits only on transitions, so a scene whose state is stable logs nothing and
+ * a burst of lines pinpoints the state that flipped. */
+int mglMipDiagStateChanged(uint64_t *cache, uint64_t signature);
+
+static inline uint64_t mglMipDiagMixState(uint64_t signature, uint64_t value)
+{
+    return (signature ^ value) * 1099511628211ULL;
+}
+
 #ifdef __cplusplus
 }
 #endif

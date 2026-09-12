@@ -112,9 +112,10 @@ MTL::Device* wrapDevice(void* objcDevice) {
 
 namespace {
 
-constexpr uint32_t kMGLMaxBufferSlots = 31;
+/* kMGLMaxBufferSlots / kMGLMinimumStageBindingSize live in mgl_buffer_slots.h
+ * (the C-safe home) so the C batch drivers and this file cannot drift. */
 constexpr size_t kPackedStructBufferCapacity = 128;
-constexpr size_t kMinimumStageBindingSize = 256;
+constexpr size_t kMinimumStageBindingSize = kMGLMinimumStageBindingSize;
 
 enum MetalObjectKind {
     kMetalKindBuffer = 0,
