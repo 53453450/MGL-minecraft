@@ -137,7 +137,20 @@ extern "C" void mglTessFillDrawContract(MGLAIRTessDrawContract *contract,
         vs ? mglAIRPerVertexStrideForResources(
                  &vs->shader_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES])
            : MGL_AIR_PER_VERTEX_STRIDE;
-    contract->patch_out_stride = 16u;
+    /* Per-patch record stride of the TCS patch-out buffer.  The buffer is
+     * written by the TCS at the span of its patch-qualified stage outputs
+     * (stageRecordStride in codegen counts every location a member spans), so
+     * the consumers of this field -- the TES-vertex render path and the
+     * native post-tessellation encode -- must use that same span.  A
+     * hardcoded 16 mis-addressed every patch but the first as soon as a patch
+     * varying spanned more than one location.  Without a TCS there are no
+     * patch inputs at all and the 16-byte minimum record stands. */
+    contract->patch_out_stride = mglTessNativePatchOutStride(
+        tcs != NULL,
+        tcs ? mglAIRPatchVaryingStride(
+                  &tcs->shader_resources_list[_TESS_CONTROL_SHADER]
+                                             [_STAGE_OUTPUT_RES])
+            : 0u);
 }
 
 extern "C" bool mglTessNativeInterfaceSupported(Program *tcs, Program *tes)
@@ -823,25 +836,38 @@ extern "C" int mglTessPlanNativeVertexDescriptor(
         if (input->is_per_patch || input->location >= 30u) {
             continue;
         }
+        /* One attribute per 16-byte location: a control-point input that is an
+         * array or a matrix spans several record slots (one per element or
+         * column, see mglAIRResourceLocationSpan), and the post-tessellation
+         * function declares the same split through
+         * air.patch_control_point_input.  Declaring a single attribute for the
+         * aggregate base location made Metal reject the pipeline with
+         * "Unsupported attribute type", and even when accepted left the
+         * element slots unaddressable. */
         const uint32_t format =
-            mglRenderTessControlPointFormat((uint64_t)input->gl_type);
+            mglRenderTessControlPointLocationFormat((uint64_t)input->gl_type);
         if (format == 0u) {
             return 0;
         }
-        const uint32_t attribute = (uint32_t)input->location + 1u;
-        if (attribute >= 32u) {
-            continue;
-        }
-        if (out->n_attribs >= 32u) {
-            return 0;
-        }
-        out->attribs[out->n_attribs].index = attribute;
-        out->attribs[out->n_attribs].format = format;
-        out->attribs[out->n_attribs].offset =
-            MGL_AIR_PER_VERTEX_STRIDE + (uint32_t)input->location * 16u;
-        out->n_attribs++;
-        if (attribute + 1u > out->attrib_count) {
-            out->attrib_count = attribute + 1u;
+        const uint32_t span = mglAIRResourceLocationSpan(input);
+        for (uint32_t element = 0u; element < span; element++) {
+            const uint32_t attribute =
+                (uint32_t)input->location + 1u + element;
+            if (attribute >= 32u) {
+                break;
+            }
+            if (out->n_attribs >= 32u) {
+                return 0;
+            }
+            out->attribs[out->n_attribs].index = attribute;
+            out->attribs[out->n_attribs].format = format;
+            out->attribs[out->n_attribs].offset =
+                MGL_AIR_PER_VERTEX_STRIDE +
+                ((uint32_t)input->location + element) * 16u;
+            out->n_attribs++;
+            if (attribute + 1u > out->attrib_count) {
+                out->attrib_count = attribute + 1u;
+            }
         }
     }
     return 1;
@@ -1323,6 +1349,19 @@ static bool mglTessPlanAppendDirectDispatch(MGLRenderComputeExecutionPlan *plan,
     return mglRenderAppendComputeDispatchToPlan(plan, &dispatch, NULL, 0) == 0;
 }
 
+/* Per-patch TES expansion: one dispatch per input patch, all of them replayed
+ * inside a single compute encoder.
+ *
+ * Memory independence (why the plan leaves dispatch_barrier_scope at NONE):
+ * each dispatch writes row range [inst * items_per_instance + patchBases[p],
+ * + items_p) of the TES output stream and the matching slice of the XFB
+ * stream, and every read it performs comes from data written before this
+ * encoder (host-seeded factors/domain records, the TCS encode, or the gather
+ * encode).  patchBases is a cumulative sum of the per-patch item counts, so
+ * the ranges are disjoint by construction and no dispatch observes another's
+ * writes.  A caller that hands over an items_per_instance smaller than that
+ * sum would break the invariant, so the ranges are re-checked here and the
+ * dispatch boundaries are fenced in that case instead of racing. */
 extern "C" bool mglTessAppendEvalPerPatchDispatches(
     MGLRenderComputeExecutionPlan *plan, Program *tes, const void *factor_bytes,
     const MGLTessEvalPerPatchDispatchSpec *spec, void **out_keep_alive)
@@ -1348,6 +1387,12 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
                                        patchBases)) {
         free(patchBases);
         return false;
+    }
+    if (patchBases[spec->patch_count] > spec->items_per_instance) {
+        /* The per-patch ranges would spill into the next instance's slice, so
+         * consecutive dispatches could touch the same memory.  Fence the
+         * dispatch boundaries rather than race. */
+        plan->dispatch_barrier_scope |= MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
     }
 
     const uint64_t cap64 =
@@ -2919,9 +2964,13 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
     if (path.classify != MGL_TESS_DRAW_ACTIVE) {
         return 1;
     }
-    fprintf(stderr, "MGL TRACE tess path native=%u air=%u exec=%d capture=%d has_tcs=%u has_tes=%u\n",
-            path.native_ok, path.air_tes, (int)path.exec, (int)path.capture,
-            path.has_tcs, path.has_tes);
+    if (mgl_env_flag_enabled("MGL_TESS_PATH_TRACE")) {
+        fprintf(stderr,
+                "MGL TESS path native=%u air=%u exec=%d capture=%d has_tcs=%u "
+                "has_tes=%u\n",
+                path.native_ok, path.air_tes, (int)path.exec,
+                (int)path.capture, path.has_tcs, path.has_tes);
+    }
     if (!path.has_tcs) {
         tcsProgram = NULL;
     }

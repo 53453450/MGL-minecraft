@@ -190,6 +190,50 @@ static_assert((int)MGL_STAGE_VERTEX == (int)mgl::air::AIR_STAGE_VERTEX &&
 /* Bodies in mgl_air_type.cpp; storeStageOut stays here (stage-out side
  * effect, not a type-model helper). */
 
+/* One 16-byte location of a control-point member: an array contributes one
+ * element per location and a matrix one column, so both dimensions are
+ * stripped here (an array of matrices yields its column type).  Used by the
+ * native post-tessellation ABI, which declares one record field per location
+ * -- Metal rejects an aggregate control point field -- and by the aggregate
+ * reassembly below. */
+static MType controlPointLocationType(const MType &t)
+{
+    MType el = t;
+    if (el.isArray() && el.arr > 0) el.arr = 0;
+    if (el.isMatrix() && el.cols > 0) el = matrixColumnType(el);
+    return el;
+}
+
+/* Reassemble a control-point member from the per-location fields emitted by
+ * the native post-tessellation ABI: field `base` holds location 0, field
+ * base+1 the next location, and so on (arrays elements then matrix columns).
+ * A single-location member is the plain field. */
+static llvm::Value *extractControlPointField(Codegen &cg, llvm::Value *record,
+                                             uint32_t base, const MType &type)
+{
+    const uint32_t span = varyingLocationSpan(type);
+    if (span <= 1u) return cg.b->CreateExtractValue(record, base);
+    llvm::Value *agg = llvm::UndefValue::get(llvmType(type, *cg.ctx));
+    if (type.isArray() && type.isMatrix() && type.arr > 0 && type.cols > 0) {
+        const MType col = matrixColumnType(type);
+        uint32_t loc = base;
+        for (uint32_t element = 0; element < (uint32_t)type.arr; element++) {
+            llvm::Value *mat = llvm::UndefValue::get(llvmType(col, *cg.ctx));
+            for (uint32_t c = 0; c < (uint32_t)type.cols; c++) {
+                mat = cg.b->CreateInsertValue(
+                    mat, cg.b->CreateExtractValue(record, loc++), c);
+            }
+            agg = cg.b->CreateInsertValue(agg, mat, element);
+        }
+        return agg;
+    }
+    for (uint32_t k = 0; k < span; k++) {
+        agg = cg.b->CreateInsertValue(
+            agg, cg.b->CreateExtractValue(record, base + k), k);
+    }
+    return agg;
+}
+
 
 /* Persist a stage-output write into the entry-block alloca (if any) so
  * subsequent user-function calls and assembleReturn observe it. */
@@ -2531,14 +2575,58 @@ static llvm::Value *emitGeometryBlockArrayLoad(
                                     cg.geometryInputPtr);
 }
 
+/* Element / column type of a per-vertex tessellation output that is itself an
+ * array or a matrix: such a member occupies one 16-byte location per element
+ * or column.  Returns false when the member fills a single location, and also
+ * for an array of matrices, whose location needs both indices (element and
+ * column) and is therefore rejected by the callers rather than mis-addressed. */
+static bool tessStageSlotType(const MType &t, MType *out)
+{
+    if (!out) return false;
+    if (t.isArray() && t.isMatrix()) return false;
+    if (t.isMatrix() && t.cols > 0) {
+        *out = matrixColumnType(t);
+        return true;
+    }
+    if (t.isArray() && t.arr > 0) {
+        MType el = t;
+        el.arr = 0;
+        *out = el;
+        return true;
+    }
+    return false;
+}
+
+/* Split `name[invocation]` / `name[invocation][element]` into the root name,
+ * the invocation index and the optional element index. */
+static bool tessStageIndexPath(const MGLExpr *e, const char **nameOut,
+                               const MGLExpr **invOut, const MGLExpr **elemOut)
+{
+    const MGLExpr *obj = nullptr;
+    if (!e || e->kind != MGL_EXPR_INDEX || !e->u.index.object) return false;
+    obj = e->u.index.object;
+    if (elemOut) *elemOut = nullptr;
+    if (obj->kind == MGL_EXPR_INDEX && obj->u.index.object &&
+        obj->u.index.object->kind == MGL_EXPR_VAR_REF) {
+        if (elemOut) *elemOut = e->u.index.index;
+        e = obj;
+        obj = obj->u.index.object;
+    }
+    if (obj->kind != MGL_EXPR_VAR_REF) return false;
+    if (nameOut) *nameOut = obj->u.var_ref.name;
+    if (invOut) *invOut = e->u.index.index;
+    return true;
+}
+
 static llvm::Value *emitTessStageArrayLoad(
     Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     const std::map<std::string, MType> &locals)
 {
+    const char *rootName = nullptr;
+    const MGLExpr *invE = nullptr, *elemE = nullptr;
     if ((!cg.isTessControl && !cg.isGeometry) || !e ||
-        e->kind != MGL_EXPR_INDEX || !e->u.index.object ||
-        e->u.index.object->kind != MGL_EXPR_VAR_REF) return nullptr;
-    const char *name = e->u.index.object->u.var_ref.name;
+        !tessStageIndexPath(e, &rootName, &invE, &elemE)) return nullptr;
+    const char *name = rootName;
     /* TCS may read per-vertex outs written by other invocations (after
      * barrier()). Prefer OUTPUT/stageOut; fall back to stage-in varyings. */
     VarSym *sym = nullptr;
@@ -2554,8 +2642,29 @@ static llvm::Value *emitTessStageArrayLoad(
         sym = codegenStageSymbol(cg, name, VarSym::VARYING);
     }
     if (!sym || sym->location == UINT32_MAX) return nullptr;
-    llvm::Value *index = emitExpr(cg, e->u.index.index, mod, locals);
+    llvm::Value *index = emitExpr(cg, invE, mod, locals);
     if (!index) return nullptr;
+    /* `name[invocation][element]`: the element/column occupies the next
+     * 16-byte location, so a dynamic element index is added to the location
+     * slot before scaling.  Only the tessellation record path has that
+     * layout; the GS input path keeps its single-location form. */
+    llvm::Value *elementSlot = nullptr;
+    MType slotType;
+    if (elemE && cg.isTessControl) {
+        if (!tessStageSlotType(sym->type, &slotType)) {
+            cg.err = 1;
+            cg.errmsg = "codegen: TCS stage output element is not a single-index "
+                            "array or matrix";
+            return nullptr;
+        }
+        elementSlot = emitExpr(cg, elemE, mod, locals);
+        if (!elementSlot) return nullptr;
+        elementSlot = coerceScalar(cg, elementSlot, MGLIR_SCALAR_UINT);
+    } else if (elemE) {
+        /* GS input member arrays keep their own record layout; not modelled
+         * here, so reject rather than load the wrong slot. */
+        return nullptr;
+    }
     llvm::Value *record = nullptr;
     llvm::Value *base = nullptr;
     uint64_t stride = 0;
@@ -2579,19 +2688,27 @@ static llvm::Value *emitTessStageArrayLoad(
         return loadGeometryInputVarying(cg, *sym, cg.b->getInt32(sym->location),
                                         record, base);
     }
+    llvm::Value *slotOff = cg.b->getInt64(sym->location * 16u);
+    if (elementSlot) {
+        slotOff = cg.b->CreateAdd(
+            slotOff,
+            cg.b->CreateMul(cg.b->CreateZExt(elementSlot, cg.b->getInt64Ty()),
+                            cg.b->getInt64(16u)));
+    }
     llvm::Value *off = cg.b->CreateAdd(
         cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
                         cg.b->getInt64(stride)),
-        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
-    llvm::Type *ty = llvmType(sym->type, *cg.ctx);
+        cg.b->CreateAdd(cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE), slotOff));
+    const MType &loadType = elementSlot ? slotType : sym->type;
+    llvm::Type *ty = llvmType(loadType, *cg.ctx);
     llvm::Type *loadTy = ty;
-    if (varyingNeedsFloatRecordCarrier(sym->type))
-        loadTy = llvmType(floatCarrierType(sym->type), *cg.ctx);
+    if (varyingNeedsFloatRecordCarrier(loadType))
+        loadTy = llvmType(floatCarrierType(loadType), *cg.ctx);
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base, off);
     p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
     llvm::Value *v = cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(4));
-    if (varyingNeedsFloatRecordCarrier(sym->type))
-        v = decodeFloatCarrier(cg, v, sym->type.scalar, ty);
+    if (varyingNeedsFloatRecordCarrier(loadType))
+        v = decodeFloatCarrier(cg, v, loadType.scalar, ty);
     return v;
 }
 
@@ -2599,28 +2716,51 @@ static bool emitTessStageArrayStore(
     Codegen &cg, const MGLExpr *lhs, llvm::Value *value,
     const MGLIRModule *mod, const std::map<std::string, MType> &locals)
 {
-    if (!cg.isTessControl || !lhs || lhs->kind != MGL_EXPR_INDEX ||
-        !lhs->u.index.object ||
-        lhs->u.index.object->kind != MGL_EXPR_VAR_REF ||
-        !cg.stageOutPtr || !cg.patchPos) return false;
-    const char *name = lhs->u.index.object->u.var_ref.name;
+    const char *name = nullptr;
+    const MGLExpr *invE = nullptr, *elemE = nullptr;
+    MType slotType;
+    llvm::Value *elementSlot = nullptr;
+    if (!cg.isTessControl || !cg.stageOutPtr || !cg.patchPos ||
+        !tessStageIndexPath(lhs, &name, &invE, &elemE)) return false;
     VarSym *sym = codegenStageSymbol(cg, name, VarSym::OUTPUT);
     if (!sym || sym->location == UINT32_MAX) return false;
-    llvm::Value *index = emitExpr(cg, lhs->u.index.index, mod, locals);
+    /* `out[invocation][element] = v`: the element occupies the next 16-byte
+     * location, so the location slot is `location + element` (a dynamic
+     * element index is fine because locations are consecutive). */
+    if (elemE) {
+        if (!tessStageSlotType(sym->type, &slotType)) {
+            cg.err = 1;
+            cg.errmsg = "codegen: TCS stage output element is not a single-index "
+                            "array or matrix";
+            return true;
+        }
+        elementSlot = emitExpr(cg, elemE, mod, locals);
+        if (!elementSlot) return true;
+        elementSlot = coerceScalar(cg, elementSlot, MGLIR_SCALAR_UINT);
+    }
+    llvm::Value *index = emitExpr(cg, invE, mod, locals);
     if (!index) return true;
     llvm::Value *record = tessStageRecordIndex(cg, index, false);
+    llvm::Value *slotOff = cg.b->getInt64(sym->location * 16u);
+    if (elementSlot) {
+        slotOff = cg.b->CreateAdd(
+            slotOff,
+            cg.b->CreateMul(cg.b->CreateZExt(elementSlot, cg.b->getInt64Ty()),
+                            cg.b->getInt64(16u)));
+    }
     llvm::Value *off = cg.b->CreateAdd(
         cg.b->CreateMul(cg.b->CreateZExt(record, cg.b->getInt64Ty()),
                         cg.b->getInt64(cg.stageOutStride)),
-        cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE + sym->location * 16u));
-    llvm::Type *ty = llvmType(sym->type, *cg.ctx);
+        cg.b->CreateAdd(cg.b->getInt64(MGL_AIR_PER_VERTEX_STRIDE), slotOff));
+    const MType &storeRecType = elementSlot ? slotType : sym->type;
+    llvm::Type *ty = llvmType(storeRecType, *cg.ctx);
     llvm::Value *storeVal = value;
     llvm::Type *storeTy = ty;
-    if (varyingNeedsFloatRecordCarrier(sym->type)) {
-        storeVal = encodeFloatCarrier(cg, value, sym->type.scalar);
+    if (varyingNeedsFloatRecordCarrier(storeRecType)) {
+        storeVal = encodeFloatCarrier(cg, value, storeRecType.scalar);
         storeTy = storeVal->getType();
     } else if (value->getType() != ty) {
-        storeVal = coerceScalar(cg, value, sym->type.scalar);
+        storeVal = coerceScalar(cg, value, storeRecType.scalar);
     }
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.stageOutPtr, off);
     p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
@@ -2810,7 +2950,8 @@ static llvm::Value *emitTessBlockMemberLoad(
         index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
         llvm::Value *record = cg.b->CreateCall(
             cg.controlPointGetter, {index, cg.patchControlPtr});
-        return cg.b->CreateExtractValue(record, fieldIt->second);
+        return extractControlPointField(cg, record, fieldIt->second,
+                                        member->type);
     }
     return nullptr;
 }
@@ -5674,7 +5815,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 }
                 llvm::Value *record = cg.b->CreateCall(
                     cg.controlPointGetter, {idx, cg.patchControlPtr});
-                return cg.b->CreateExtractValue(record, field->second);
+                VarSym *cpSym =
+                    codegenStageSymbol(cg, name, VarSym::CONTROL_POINT_INPUT);
+                return extractControlPointField(
+                    cg, record, field->second,
+                    cpSym ? cpSym->type : MType{});
             }
         }
         bool constIdx = idxE->kind == MGL_EXPR_LITERAL &&
@@ -8239,9 +8384,16 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 
         if (cg.isTessControl && lhs && lhs->kind == MGL_EXPR_INDEX &&
             lhs->u.index.object &&
-            lhs->u.index.object->kind == MGL_EXPR_VAR_REF) {
+            (lhs->u.index.object->kind == MGL_EXPR_VAR_REF ||
+             (lhs->u.index.object->kind == MGL_EXPR_INDEX &&
+              lhs->u.index.object->u.index.object &&
+              lhs->u.index.object->u.index.object->kind ==
+                  MGL_EXPR_VAR_REF))) {
+            const MGLExpr *outRoot = lhs->u.index.object;
+            if (outRoot->kind == MGL_EXPR_INDEX)
+                outRoot = outRoot->u.index.object;
             VarSym *outSym = codegenStageSymbol(
-                cg, lhs->u.index.object->u.var_ref.name, VarSym::OUTPUT);
+                cg, outRoot->u.var_ref.name, VarSym::OUTPUT);
             if (outSym) {
                 auto compoundInto = [&](llvm::Value *old) -> llvm::Value * {
                     if (!old) return nullptr;
@@ -8286,10 +8438,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     if (e->u.assign.op != MGL_OP_ASSIGN) {
                         llvm::Value *old =
                             emitTessStageArrayLoad(cg, lhs, mod, locals);
+                        if (!old) {
+                            cg.err = 1;
+                            cg.errmsg = "codegen: unavailable TCS per-vertex "
+                                        "output load";
+                            return nullptr;
+                        }
                         v = compoundInto(old);
                         if (!v) return nullptr;
                     }
-                    emitTessStageArrayStore(cg, lhs, v, mod, locals);
+                    if (!emitTessStageArrayStore(cg, lhs, v, mod, locals)) {
+                        cg.err = 1;
+                        cg.errmsg = "codegen: unavailable TCS per-vertex "
+                                    "output store";
+                        return nullptr;
+                    }
                     return v;
                 }
             }
@@ -10850,11 +11013,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     fn->setDoesNotThrow();
     llvm::Function *controlPointGetter = nullptr;
     if (isTES && !isTESCompute && !isTESVertex) {
+        /* One struct field per 16-byte location, field 0 being gl_Position:
+         * Metal rejects an aggregate-typed control point field
+         * ("Unsupported attribute type"), and the vertex descriptor that feeds
+         * this record declares the same per-location split.  A member that
+         * spans several locations is therefore reassembled by
+         * extractControlPointField when the shader reads it. */
         std::vector<llvm::Type *> cpRecordElems = {
             llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4)};
-        for (VarSym &v : syms)
-            if (v.kind == VarSym::CONTROL_POINT_INPUT && !v.isPatch)
-                cpRecordElems.push_back(llvmType(v.type, ctx));
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::CONTROL_POINT_INPUT || v.isPatch) continue;
+            const MType loc = controlPointLocationType(v.type);
+            const uint32_t span = varyingLocationSpan(v.type);
+            for (uint32_t k = 0; k < span; k++)
+                cpRecordElems.push_back(llvmType(loc, ctx));
+        }
         llvm::Type *cpRecordTy = llvm::StructType::get(ctx, cpRecordElems);
         controlPointGetter = llvm::Function::Create(
             llvm::FunctionType::get(cpRecordTy,
@@ -10977,10 +11150,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.lvalues["gl_CullDistance"] = defaultCullDistances(cg);
     }
     {
+        /* Field 0 is gl_Position; each member then owns one field per location
+         * it spans (array elements / matrix columns), so the stored index is
+         * the member's base field and the span is recoverable from the type. */
         uint32_t field = 1;
-        for (VarSym &v : syms)
-            if (v.kind == VarSym::CONTROL_POINT_INPUT && !v.isPatch)
-                cg.controlPointFields[v.name] = field++;
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::CONTROL_POINT_INPUT || v.isPatch) continue;
+            cg.controlPointFields[v.name] = field;
+            field += varyingLocationSpan(v.type);
+        }
     }
     cg.tcsOutputVertices = isTCS && tu->layout_vertices > 0
                                ? (uint32_t)tu->layout_vertices
@@ -12555,25 +12733,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 };
                 for (VarSym *varying : cg.varyings) {
                     if (!varying || varying->location == UINT32_MAX) continue;
-                    /* Plain stage-in arrays index by primitive vertex, so
-                     * each per-vertex record stores element 0 only.
-                     * Interface-block array members carry one distinct
-                     * value per element: store each element in its own
-                     * consecutive location slot.  Matrices are one column
-                     * per location (GL 4.6 §4.4.1) — packing <2 x float>
-                     * columns into a single 16B slot breaks column loads. */
+                    /* This capture variant belongs to the *vertex* stage, whose
+                     * per-vertex outputs have no invocation dimension: an array
+                     * member occupies one 16-byte location per element (GL 4.6
+                     * §4.4.1), exactly as the record struct and the TES-side
+                     * per-location fields describe it.  Storing element 0 only
+                     * left the higher location slots uninitialised, so a TES
+                     * reading `v[i][1]` picked up garbage.  Matrices are one
+                     * column per location for the same reason. */
                     MType mt = varying->type;
                     const bool wasArray = mt.isArray() && mt.arr > 0;
-                    const bool blockArray =
-                        wasArray && !varying->blockName.empty();
                     if (wasArray) mt.arr = 0;
                     llvm::Value *value = cg.lvalues.count(varying->name)
                         ? cg.lvalues[varying->name]
                         : llvm::UndefValue::get(llvmType(varying->type, ctx));
-                    if (wasArray && !blockArray &&
-                        value->getType()->isArrayTy())
-                        value = b.CreateExtractValue(value, 0u);
-                    if (blockArray) {
+                    if (wasArray) {
                         for (uint32_t ei = 0; ei < varying->type.arr; ++ei) {
                             llvm::Value *elem =
                                 value->getType()->isArrayTy()
@@ -13349,17 +13523,30 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             getterRef, fieldInfo};
         for (VarSym &v : syms) {
             if (v.kind != VarSym::CONTROL_POINT_INPUT || v.isPatch) continue;
-            uint32_t location = v.location + 1u;
-            patchInput.push_back(llvm::MDNode::get(ctx, {
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), location)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(v.type)),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)}));
+            /* One entry per 16-byte location, matching the vertex descriptor
+             * and the getter struct: a member that is an array or a matrix
+             * spans several locations, and declaring the aggregate type once
+             * made Metal reject the pipeline ("Unsupported attribute type"). */
+            const MType loc = controlPointLocationType(v.type);
+            const uint32_t span = varyingLocationSpan(v.type);
+            const std::string locName = mslTypeName(loc);
+            for (uint32_t element = 0; element < span; element++) {
+                const std::string argName =
+                    span > 1u
+                        ? std::string(v.name) + "[" + std::to_string(element) + "]"
+                        : std::string(v.name);
+                patchInput.push_back(llvm::MDNode::get(ctx, {
+                    llvm::MDString::get(ctx, "air.location_index"),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx),
+                        v.location + 1u + element)),
+                    llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(ctx), 1)),
+                    llvm::MDString::get(ctx, "air.arg_type_name"),
+                    llvm::MDString::get(ctx, locName),
+                    llvm::MDString::get(ctx, "air.arg_name"),
+                    llvm::MDString::get(ctx, argName)}));
+            }
         }
         argNodes.push_back(llvm::MDNode::get(ctx, patchInput));
         argNodes.push_back(llvm::MDNode::get(ctx, {

@@ -138,8 +138,7 @@ static inline uint32_t mglAIRPatchVaryingStride(const MGLShaderResourceList *res
          * TCS never wrote.  KHR-GL46.tessellation_shader.tessellation_shader_
          * tc_barriers.barrier_guarded_read_write_calls then saw garbage patch
          * results for whole patches, a different set on every run. */
-        uint32_t span = mglAIRVaryingLocationSpan(resource->gl_type,
-                                                  resource->gl_array_size);
+        uint32_t span = mglAIRResourceLocationSpan(resource);
         uint32_t end = (resource->location + span) * 16u;
         if (end > stride) stride = end;
     }

@@ -236,6 +236,25 @@ static inline uint32_t mglAIRVaryingLocationSpan(GLuint gl_type,
     return cols * elems;
 }
 
+/* Number of 16-byte locations a resource occupies: one per array element,
+ * one per matrix column.  Per-vertex tessellation / geometry resources report
+ * the dimension *inside* the invocation array through gl_element_array_size
+ * (gl_array_size holds the invocation size, which codegen strips before
+ * assigning slots); everything else falls back to gl_array_size. */
+static inline uint32_t mglAIRResourceLocationSpan(
+    const MGLShaderResource *resource)
+{
+    GLint elems = 1;
+    if (!resource) {
+        return 1u;
+    }
+    elems = (resource->gl_element_array_size > 0)
+                ? resource->gl_element_array_size
+                : resource->gl_array_size;
+    return mglAIRVaryingLocationSpan(resource->gl_type,
+                                     elems > 0 ? elems : 1);
+}
+
 static inline uint32_t mglAIRPerVertexStrideForResources(
     const MGLShaderResourceList *resources)
 {
@@ -245,8 +264,7 @@ static inline uint32_t mglAIRPerVertexStrideForResources(
         const MGLShaderResource *resource = &resources->list[i];
         if (resource->is_per_patch || resource->location >= 0x0fffffffu)
             continue;
-        uint32_t span = mglAIRVaryingLocationSpan(resource->gl_type,
-                                                  resource->gl_array_size);
+        uint32_t span = mglAIRResourceLocationSpan(resource);
         uint32_t end = MGL_AIR_PER_VERTEX_STRIDE +
                        (resource->location + span) * 16u;
         if (end > stride) stride = end;

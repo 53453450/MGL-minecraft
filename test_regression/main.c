@@ -59,7 +59,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 93
+#define MAX_TESTS 94
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -8493,6 +8493,196 @@ cleanup:
     return result;
 }
 
+/* Probe one patch's interior and compare it with the value the TES read out
+ * of an array member of a control point. */
+static int cp_array_probe(unsigned char *pixels, GLuint program, int mode,
+                          int patch, int want_r, int want_g, const char *label)
+{
+    const float ndc_x = -0.4f + (float)patch * 0.9f;
+    const float ndc_y = -0.4f;
+    const int sx = (int)((ndc_x + 1.0f) * 0.5f * (float)REG_W);
+    const int sy = (int)((ndc_y + 1.0f) * 0.5f * (float)REG_H);
+    const unsigned char *px = NULL;
+    int dr = 0, dg = 0;
+
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(program);
+    glDrawArrays(GL_PATCHES, 0, 6);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    px = &pixels[(sy * REG_W + sx) * 4];
+    dr = (int)px[0] - want_r;
+    dg = (int)px[1] - want_g;
+    if (dr < -8 || dr > 8 || dg < -8 || dg > 8 || px[2] > 8) {
+        fprintf(stderr,
+                "air_tessellation_control_point_array[%s]: %s patch %d "
+                "expected rgb(%d,%d,0) got (%u,%u,%u) at (%d,%d)\n",
+                mode ? "tcs" : "tes-only", label, patch, want_r, want_g, px[0],
+                px[1], px[2], sx, sy);
+        return 1;
+    }
+    return 0;
+}
+
+/* Per-vertex TES inputs that are themselves arrays (`in vec4 v[][2]`) span two
+ * locations per control point.  The element index must reach the control-point
+ * record layout instead of stopping at the member's base location, for a
+ * constant element as well as a dynamic one, and with the control point index
+ * constant or dynamic.  Both the TES-only native path (control points from the
+ * vertex capture stream) and the TCS native path (control points from the TCS
+ * outputs) are exercised, plus the compute expansion for the same sources.
+ *
+ * Values written by the VS per control point c: v[0].x = 0.1 + 0.2*c,
+ * v[1].y = 0.1 + 0.2*c, so the element/control-point combination that reached
+ * the TES is readable from the rendered color. */
+static int test_air_tessellation_control_point_array(unsigned char *pixels,
+                                                     const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec4 v[2];\n"
+        "void main() {\n"
+        "  int i = gl_VertexID % 3;\n"
+        "  v[0] = vec4(0.1 + 0.2 * float(i), 0.0, 0.0, 1.0);\n"
+        "  v[1] = vec4(0.0, 0.1 + 0.2 * float(i), 0.0, 1.0);\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "}\n";
+    static const char *tcs =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "layout(location=0) in vec4 v[][2];\n"
+        "layout(location=0) out vec4 vt[][2];\n"
+        "void main() {\n"
+        "  vt[gl_InvocationID][0] = v[gl_InvocationID][0];\n"
+        "  vt[gl_InvocationID][1] = v[gl_InvocationID][1];\n"
+        "  gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    gl_TessLevelOuter[0] = 2.0;\n"
+        "    gl_TessLevelOuter[1] = 2.0;\n"
+        "    gl_TessLevelOuter[2] = 2.0;\n"
+        "    gl_TessLevelInner[0] = 2.0;\n"
+        "  }\n"
+        "}\n";
+    /* %s: control-point array name (v for TES-only, vt behind the TCS), the
+     * member expression under test, and an extra statement used to force the
+     * compute expansion. */
+    static const char *tes_fmt =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, ccw) in;\n"
+        "layout(location=0) in vec4 %s[][2];\n"
+        "layout(location=0) out vec4 color;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(-0.6 + gl_TessCoord.x * 0.8 + float(gl_PrimitiveID) * 0.9,\n"
+        "                -0.6 + gl_TessCoord.y * 0.8);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  color = %s;\n"
+        "%s"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec4 color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = color; }\n";
+    static const float positions[6] = {
+        -0.8f, -0.8f, -0.2f, -0.8f, -0.5f, -0.2f,
+    };
+    /* {label, expression, patch, expected red, expected green} */
+    static const struct {
+        const char *label;
+        const char *expr;
+        int patch;
+        int want_r;
+        int want_g;
+    } cases[4] = {
+        {"v[0][0]", "v[0][0]", 0, 26, 0},
+        {"v[0][1]", "v[0][1]", 0, 0, 26},
+        {"v[gl_PrimitiveID&1][1]", "v[gl_PrimitiveID & 1][1]", 0, 0, 26},
+        {"v[gl_PrimitiveID&1][1]", "v[gl_PrimitiveID & 1][1]", 1, 0, 77},
+    };
+
+    const float default_outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    const float default_inner[2] = {1.0f, 1.0f};
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint vao = 0u, vbo = 0u;
+    int result = 1;
+    int mode = 0;
+
+    if (!fbo) goto cleanup;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, default_outer);
+    glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, default_inner);
+
+    /* mode 0: TES-only native capture path.  mode 1: TCS native path (the TCS
+     * writes the array through its per-vertex outputs).  mode 2: the same TCS
+     * program with the TES reading a tessellation level, which forces the AIR
+     * compute expansion (native post-tessellation cannot expose the exact
+     * float levels), so the compute path is covered too. */
+    for (mode = 0; mode < 3; mode++) {
+        const char *array_name = mode ? "vt" : "v";
+        const char *extra = mode == 2
+            ? "  color += gl_TessLevelOuter[0] * 0.0;\n"
+            : "";
+        const char *modeName = mode == 0 ? "tes-only" : mode == 1 ? "tcs"
+                                                                 : "compute";
+        int ci = 0;
+        for (ci = 0; ci < 4; ci++) {
+            char tes[1200];
+            GLuint program = 0u;
+            const char *expr = cases[ci].expr;
+            if (mode) {
+                /* The TCS-side names differ; rewrite the member reference to
+                 * the pass-through array. */
+                static const char *tcs_exprs[4] = {
+                    "vt[0][0]", "vt[0][1]", "vt[gl_PrimitiveID & 1][1]",
+                    "vt[gl_PrimitiveID & 1][1]",
+                };
+                expr = tcs_exprs[ci];
+            }
+            snprintf(tes, sizeof tes, tes_fmt, array_name, expr, extra);
+            if (mode) {
+                program = link_program_with_tessellation(vs, tcs, tes, fs);
+            } else {
+                program = link_program_tess_eval_only(vs, tes, fs);
+            }
+            if (!program) {
+                fprintf(stderr,
+                        "air_tessellation_control_point_array: %s program "
+                        "build failed for %s\n",
+                        modeName, cases[ci].label);
+                goto cleanup;
+            }
+            if (cp_array_probe(pixels, program, mode, cases[ci].patch,
+                               cases[ci].want_r, cases[ci].want_g,
+                               cases[ci].label)) {
+                glDeleteProgram(program);
+                goto cleanup;
+            }
+            glDeleteProgram(program);
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_tessellation_indirect(unsigned char *pixels,
                                           const char *out_path)
 {
@@ -16328,6 +16518,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_tessellation_varying", test_air_tessellation_varying),
     SELF_CHECK_TEST("air_tessellation_accumulation",
                     test_air_tessellation_accumulation),
+    SELF_CHECK_TEST("air_tessellation_control_point_array",
+                    test_air_tessellation_control_point_array),
     SELF_CHECK_TEST("air_tessellation_isolines_point_mode",
                     test_air_tessellation_isolines_point_mode),
     SELF_CHECK_TEST("air_tessellation_isolines_variants",

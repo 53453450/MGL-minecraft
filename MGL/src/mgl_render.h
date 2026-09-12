@@ -847,6 +847,14 @@ float mglRenderSnorm8ToFloat(int8_t value);
  * macOS SDK enum (Float=28 ... UInt4=39).  Shared by both gates. */
 uint32_t mglRenderTessControlPointFormat(uint64_t gl_type);
 
+/* Vertex format of one location of a control-point input: a matrix type
+ * contributes one column (`rows` floats), everything else maps exactly like
+ * mglRenderTessControlPointFormat.  The native post-tessellation descriptor
+ * declares one attribute per location, so a member spanning several
+ * locations (array element / matrix column) is described by this per-location
+ * format rather than by an aggregate type Metal does not accept. */
+uint32_t mglRenderTessControlPointLocationFormat(uint64_t gl_type);
+
 /* TES XFB compact vertex stride — sum of the byte
  * sizes of the transform-feedback varyings resolved by name against the
  * TES stage-output resource list (lockstep with the packed writes injected
@@ -2415,7 +2423,24 @@ typedef struct MGLRenderComputeExecutionPlan_t {
         dispatch_ops[MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES];
     /* Backward-compatible single-dispatch form used when dispatch_op_count=0. */
     MGLRenderComputePlan dispatch;
+    /* Barrier emitted after the final dispatch, before endEncoding. */
     uint32_t barrier_scope;
+    /* Barrier emitted *between* consecutive dispatches of this encoder.
+     *
+     * Metal only guarantees that dispatches inside one encoder execute in
+     * submission order; memory written by dispatch N is not visible to
+     * dispatch N+1 unless a memoryBarrier separates them.  Leaving this NONE
+     * therefore asserts that the dispatches are memory-independent: each
+     * writes a range disjoint from the others and reads only data produced on
+     * the host or by an earlier encoder (an encoder boundary orders memory).
+     * The per-patch TES expansion (mglTessAppendEvalPerPatchDispatches) is
+     * such a plan and documents the invariant there.
+     *
+     * A plan whose later dispatches consume earlier dispatches' writes must
+     * set this to the touched resource classes;
+     * mglRenderEncodeComputeExecutionPlanForCommandBufferOwner then fences
+     * every dispatch boundary instead of silently racing. */
+    uint32_t dispatch_barrier_scope;
 } MGLRenderComputeExecutionPlan;
 
 /* Value-state barrier request. These values intentionally mirror Metal's

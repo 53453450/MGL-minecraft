@@ -517,6 +517,27 @@ static int push_resource(MGLShaderResourceList *list, const MGLIRSymbol *s,
     r.block_member = s->block_name ? GL_TRUE : GL_FALSE;
     r.stream = (s->stream >= 0) ? s->stream : 0;
     r.num_array_dims = (type->kind == MGLIR_TYPE_ARRAY) ? 1u : 0u;
+    /* Per-vertex tessellation / geometry resources keep the invocation
+     * dimension in gl_array_size, but codegen strips that dimension before
+     * assigning record slots, so location accounting needs the shape inside
+     * it.  Mirror mgl_air_varsym.cpp: TCS inputs and outputs, TES inputs and
+     * GS inputs whose outermost dimension is the invocation (control point /
+     * input vertex) index are the stripped ones; interface-block members and
+     * patch variables keep their own array shape and stay 0 here. */
+    r.gl_element_array_size = 0;
+    {
+        const GLuint q = s->qualifiers;
+        const int perVertexInvocationDim =
+            ((stage == MGL_STAGE_TESS_CONTROL && (q & (MGL_AST_Q_IN | MGL_AST_Q_OUT))) ||
+             (stage == MGL_STAGE_TESS_EVALUATION && (q & MGL_AST_Q_IN)) ||
+             (stage == MGL_STAGE_GEOMETRY && (q & MGL_AST_Q_IN)))
+                ? 1
+                : 0;
+        if (perVertexInvocationDim && !(q & MGL_AST_Q_PATCH) && !s->block_name &&
+            type->kind == MGLIR_TYPE_ARRAY && type->elem_type) {
+            r.gl_element_array_size = mglAirGLArraySizeFromIR(type->elem_type);
+        }
+    }
     r.uniform_location = -1;
     r.sampler_unit = 0;
     r.sampler_unit_explicit = GL_FALSE;

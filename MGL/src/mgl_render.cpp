@@ -10533,6 +10533,30 @@ uint32_t mglRenderTessControlPointFormat(uint64_t gl_type) {
 
 
 extern "C"
+uint32_t mglRenderTessControlPointLocationFormat(uint64_t gl_type) {
+    /* One 16-byte location of a control-point input.  Matrix types occupy one
+     * location per column, so a single location holds `rows` floats; every
+     * other type is described by the component-count mapping above. */
+    switch (gl_type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT4x2:
+            return (uint32_t)MTL::VertexFormatFloat2;
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT4x3:
+            return (uint32_t)MTL::VertexFormatFloat3;
+        case GL_FLOAT_MAT4:
+        case GL_FLOAT_MAT2x4:
+        case GL_FLOAT_MAT3x4:
+            return (uint32_t)MTL::VertexFormatFloat4;
+        default:
+            return mglRenderTessControlPointFormat(gl_type);
+    }
+}
+
+
+extern "C"
 uint64_t mglRenderTESXFBVertexStride(const void* program_v) {
     const Program* program = (const Program*)program_v;
     if (!program || program->transform_feedback_varying_count <= 0) {
@@ -14789,6 +14813,12 @@ int mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(
         if (err && errcap) snprintf(err, errcap, "invalid compute barrier scope");
         return -1;
     }
+    if (plan->dispatch_barrier_scope & ~validBarrierScope) {
+        if (err && errcap) {
+            snprintf(err, errcap, "invalid inter-dispatch barrier scope");
+        }
+        return -1;
+    }
     for (uint32_t i = 0; i < plan->binding_op_count; i++) {
         const MGLRenderComputeBindingOp* op = &plan->binding_ops[i];
         if (op->kind > 3u || (op->kind == 1u && !op->bytes)) {
@@ -14875,6 +14905,16 @@ int mglRenderEncodeComputeExecutionPlanForCommandBufferOwner(
     for (uint32_t i = 0; i <= plan->binding_op_count; i++) {
         while (nextDispatch < plan->dispatch_op_count &&
                plan->dispatch_ops[nextDispatch].binding_op_count == i) {
+            /* Dispatch boundaries of one encoder are only execution-ordered;
+             * memory written by an earlier dispatch reaches a later one only
+             * through this fence.  Plans that assert memory independence
+             * leave dispatch_barrier_scope at NONE (see mgl_render.h). */
+            if (nextDispatch > 0u &&
+                plan->dispatch_barrier_scope !=
+                    MGL_RENDER_COMPUTE_BARRIER_NONE) {
+                encoder->memoryBarrier(static_cast<MTL::BarrierScope>(
+                    plan->dispatch_barrier_scope));
+            }
             if (mglRenderEncodeComputeDispatchOnEncoder(
                     encoder, &plan->dispatch_ops[nextDispatch].dispatch,
                     err, errcap) != 0) {

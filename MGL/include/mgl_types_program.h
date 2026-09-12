@@ -223,6 +223,20 @@ typedef struct MGLShaderResource_t {
     GLint   gl_array_size;
     GLboolean is_array; /* true if the underlying shader type is an array */
     GLuint  num_array_dims; /* number of array dimensions (0 if not array) */
+    /* Size of the array *inside* the invocation dimension of a per-vertex
+     * tessellation / geometry resource (0 when the resource has no such
+     * dimension or it is not an array).
+     *
+     * gl_array_size keeps the outer (invocation) dimension, because link
+     * validation and the GL queries need it (a GS input array must match the
+     * input vertex count, a sized TES input array must match the patch size).
+     * Location accounting needs the inner shape instead: codegen strips the
+     * invocation dimension before assigning record slots
+     * (mgl_air_varsym.cpp), so `in vec4 v[][2]` occupies two 16-byte slots
+     * per control point and `in mat4 m[]` four.  Host-side stride and
+     * descriptor builders must count the same slots, otherwise the record
+     * they size or fetch disagrees with what the shader writes. */
+    GLint   gl_element_array_size;
     GLint   uniform_location;
     GLint   sampler_unit;
     GLboolean sampler_unit_explicit;
