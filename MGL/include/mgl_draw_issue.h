@@ -116,6 +116,12 @@ bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
                                            GLsizei count, GLint baseVertex,
                                            GLsizei instanceCount,
                                            GLuint baseInstance);
+/* The MGLCullDistanceBindFn the cull-distance split encoder calls back into;
+ * defined next to the other draw host ports (mgl_draw_metal_port.m). */
+void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
+                                    GLenum mode, GLuint first_vertex,
+                                    const uint32_t *explicit_vertices,
+                                    uint32_t explicit_vertex_count);
 bool mglDrawHostResolveElementBuffer(void *renderer, GLMContext ctx,
                                      const char *label, Buffer **glBufferOut,
                                      void **metalBufferOut);

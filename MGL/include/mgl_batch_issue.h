@@ -17,7 +17,12 @@
 #ifndef MGL_BATCH_ISSUE_H
 #define MGL_BATCH_ISSUE_H
 
+/* glm_context.h must precede draw_command.h: the latter expects GL base types
+ * (GLenum/GLuint/GLintptr/...) to already be declared. */
 #include "mgl_batch_restore.h"
+#include "glm_context.h"
+#include "draw_command.h"
+#include "mgl_encode_context.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -327,6 +332,18 @@ typedef struct MGLBatchSyncResourceOps {
 } MGLBatchSyncResourceOps;
 
 int mgl_batch_sync_resource_bindings(const MGLBatchSyncResourceOps *ops);
+
+/* Renderer-side drivers of the MDI / direct plans above.  They used to be
+ * -[MGLRenderer issueMDIBatch:context:encodeContext:] and
+ * -[MGLRenderer issueDirectBatch:context:encodeContext:]; the loops now live
+ * in C and reach the renderer through the mgl_draw_issue.h /
+ * mgl_renderer_ports.h ports. */
+void mglBatchIssueMDIBatch(void *renderer, MGLDrawBatch *batch,
+                           GLMContext glm_ctx,
+                           const MGLEncodeContext *encode_context);
+void mglBatchIssueDirectBatch(void *renderer, MGLDrawBatch *batch,
+                              GLMContext glm_ctx,
+                              const MGLEncodeContext *encode_context);
 
 #ifdef __cplusplus
 }

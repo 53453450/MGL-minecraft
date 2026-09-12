@@ -39,11 +39,8 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_render.h"
 #include "mgl_vertex_attrib_binding.h"
-
-/* Encode target passed explicitly to issue and bind methods. */
-typedef struct {
-    void *render_encoder_owner;
-} MGLEncodeContext;
+/* Encode target passed explicitly to issue and bind methods (C-safe home). */
+#include "mgl_encode_context.h"
 
 typedef struct MGLViewportValue_t {
     double origin_x;
@@ -381,10 +378,9 @@ typedef struct {
                           program:(Program *)tcsProgram
                          contract:(const MGLAIRTessDrawContract *)contract;
 
-- (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
-        encodeContext:(const MGLEncodeContext *)encCtx;
-- (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
-           encodeContext:(const MGLEncodeContext *)encCtx;
+/* issueMDIBatch:context:encodeContext: and issueDirectBatch:... are now the C
+ * drivers mglBatchIssueMDIBatch / mglBatchIssueDirectBatch (mgl_batch_issue.h,
+ * implemented in mgl_batch_issue_encode.c). */
 - (bool)applySamplerSnapshotForCommand:(const MGLDrawCommand *)cmd
                                 context:(GLMContext)glm_ctx
                           encodeContext:(const MGLEncodeContext *)encCtx;

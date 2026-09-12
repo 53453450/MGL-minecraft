@@ -67,11 +67,11 @@ static void fEnc(FCtx *c)
 static void fIssS(void *v, uint32_t b)
 { FCtx *c = v; fEnc(c); [c->r issueStreamMergedBatch:FB(c, b) context:c->ctx encodeContext:&c->enc]; }
 static void fIssM(void *v, uint32_t b)
-{ FCtx *c = v; fEnc(c); [c->r issueMDIBatch:FB(c, b) context:c->ctx encodeContext:&c->enc]; }
+{ FCtx *c = v; fEnc(c); mglBatchIssueMDIBatch((__bridge void *)c->r, FB(c, b), c->ctx, &c->enc); }
 static void fIssI(void *v, uint32_t b)
 { FCtx *c = v; fEnc(c); [c->r issueIndirectCommandBufferBatch:FB(c, b) context:c->ctx encodeContext:&c->enc]; }
 static void fIssD(void *v, uint32_t b)
-{ FCtx *c = v; fEnc(c); [c->r issueDirectBatch:FB(c, b) context:c->ctx encodeContext:&c->enc]; }
+{ FCtx *c = v; fEnc(c); mglBatchIssueDirectBatch((__bridge void *)c->r, FB(c, b), c->ctx, &c->enc); }
 static void fRec(void *v, uint32_t b)
 { [((FCtx *)v)->r recordBatchCommandStats:FB(v, b) context:((FCtx *)v)->ctx]; }
 
@@ -120,7 +120,7 @@ static int sMdi(void *v)
 { SCtx *c = v; return [c->r issueStreamMergedMDIBatch:c->batch context:c->ctx
       encodeContext:c->enc] ? 1 : 0; }
 static void sDir(void *v)
-{ SCtx *c = v; [c->r issueDirectBatch:c->batch context:c->ctx encodeContext:c->enc]; }
+{ SCtx *c = v; mglBatchIssueDirectBatch((__bridge void *)c->r, c->batch, c->ctx, c->enc); }
 static int sIdx(void *v, void **mtl)
 {
     SCtx *c = v; Buffer *ib = (Buffer *)c->batch->stream_index_buffer;

@@ -127,6 +127,11 @@ void mglRenderFlushBufferRange(GLMContext glm_ctx,
                                   intptr_t offset,
                                   intptr_t length);
 void mglRenderBindProgram(GLMContext glm_ctx, Program *program);
+/* Program bound to a stage by GL state: GL_CURRENT_PROGRAM when one is bound,
+ * otherwise the separable pipeline's stage program.  Defined in MGLRenderer.m;
+ * declared here so C / C++ translation units stop hand-declaring it (they did
+ * before this header carried it). */
+Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 void mglRenderGetSync(GLMContext glm_ctx, Sync *sync);
 void mglRenderWaitForSync(GLMContext glm_ctx, Sync *sync);
 unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync *sync);
