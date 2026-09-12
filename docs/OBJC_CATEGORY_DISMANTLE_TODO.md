@@ -47,10 +47,11 @@
 | ObjC 文件行数 | **43,989** | ≈ 平台壳 |
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
-| `MGLRenderer*.m` total | **34,604** | 0（当前 **34,555**） |
+| `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 八切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 38,099**、ObjC 语法 **2,268 → 2,190**、词汇 **4,353 → 4,141**。
+**当前进度（2026-09-13，T0–T2′ + T4 九切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 38,065**、ObjC 语法 **2,268 → 2,185**、词汇 **4,353 → 4,139**；
+**shim（T4 硬规的记账面）：43 → 38 个端口 / 511 → 477 行 / 81 → 76 语法（净减 ✓）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1090,3 +1091,22 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
 
 **纪律**：下一 PR 必须给出 `shim wrappers: 40 → N (<40)` 与 `shim LOC` 的**净减数字**，否则按 §0.04 拒收；
 「再转一个 `.m`、端口照搬」不再算进度。
+
+50. **shim 净减第一刀：`_batching` 状态域搬进 C（本轮第七刀，**按 §0.04 达标**）**：
+    ① **做法**：`MGLBatchingState`（4 个 `BOOL` 开关 + `MGLBatchArena`）原在 ObjC 头 `MGLRenderer_State.h`，
+    每个标志都要一个 shim 端口。现在结构体搬到新的 C 安全头 **`MGL/include/mgl_batching_state.h`**（字段改 `uint8_t`，
+    `MGLBatchArena` 本就来自 C 头 `draw_command.h`），renderer 仍以 ivar 持有，**只用一个端口**
+    `mglRendererBatchingStatePort()` 把地址交给 C，C driver 直接读写字段。
+    ② **净减账**：退掉 6 个端口（`AbsoluteVertexBindingOffsets` 读/写、`SkipSameKeyRestoreEnabled`、
+    `DirtyKeyDeltaEnabled`、`ArenaSnapshotEnabled`、`ResetBatchArena`），新增 1 个 →
+    **shim 43 → 38 个端口、511 → 477 行、81 → 76 语法**；全仓语法 **2,190 → 2,185**、行数 **38,099 → 38,065**。
+    ObjC 侧 `_batching.*` 的读点（`+Lifecycle.m` 12 处、`+BindingState.m`、`+VertexLayout.m`）**一行未改**——
+    `uint8_t` 与 `BOOL` 在这些位置等价（赋值只可能是 0/1）。
+    ③ **oracle**：trace 语料 374/296 行、`MGL_MIP_DIAG` 语料 529/212 条与旧库逐字段一致（A/B 走的是**真旧库**：
+    第一次旧库构建因 stash 后 `.d` 依赖残留指向新头文件而失败，已 `find build -name '*.d' -delete` 重做，
+    两库字节不同已核对）；回归 92/0/2、ICB 轮 82/10/2 与旧库相同；CTS 七簇 diff 全空。
+    ④ **教训（记一次）**：`git stash` 做 A/B 时，`build/**/*.d` 里记着新头文件的依赖，会让"旧树"构建立刻
+    `No rule to make target`；**清 `.d` 再构建**，并核对两库字节不同再跑对比，否则会把新库当旧库跑出"空 diff"假证据。
+    下一刀（同样要求净减）：§0.08 表里按序取，优先 **`_currentCBHasWork`（1 端口，但要改 9 处 ObjC 写点，风险中）**
+    或 **`+Batch.m` 留下的 category 5 方法（dual-proxy 断言/锁壳，可并入 T5 唯一壳）**；
+    `P0-1` 三厚块与 `P0-2` 的 shim 记账需并行推进（三厚块的 materialize 下沉一次能退役多个端口）。
