@@ -192,7 +192,19 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 ### Batch O3 — RenderPass / PSO / Binding【P1】
 
 - [ ] **O3.1** load/store / clear / attachment match → `mgl_render_pass_plan.*`
-  - [x] **clear-value 首刀**（O3.1 启动 + 回归保护就位）：`mglRenderPassPlanClearValues` 沉入 plan 层（`mgl_render_pass_plan.c`），配套新头 `mgl_render_pass_clear.h`（**必须**与 `mgl_render_pass_plan.h` 分开——后者被 `glm_context.h:96` 引入，若再 include `mgl_render.h` 会成环）；`mglRenderPassAttachmentClass` / `mglRenderPassColorAttachmentIndexValid` 从 `mgl_render.cpp` 迁入 plan 层（纯值谓词，C linkage，顺带压薄 monolith），使 plan 层自包含、**harness 可独立链接不拖 Metal/LLVM**；`+RenderPass.m` 的 `mglRenderPassClearValuesFor` 变薄转发（只取 persistent state 再转发）
+  - [x] **clear-value 首刀**（O3.1 启动 + 回归保护就位）
+  - [x] **load/store + attachment match 首刀（`d52f334`）**：`configureUserFBOLoadStoreActionsLocked:` 的三段
+    动作决策（颜色 / 深度 / 模板）与"未附着却挂着 clear 位"的清理规则移入 plan：
+    `mglRenderPassPlanLoadStore()`（输入＝kind / 是否附着 / 是否有待清位 / 是否有 texture / dontcare 开关 /
+    本帧首次使用 / 是否开混合；输出＝load action + 是否改写 store + store action）与
+    `mglRenderPassDropsStaleColorClear()`；`shouldUseDontCareLoadForColorTexture:firstUseThisFrame:` 整个谓词删除
+    （其判据成为 plan 输入）。同时把**默认帧缓冲**那一半的附着匹配移入
+    `mglRenderPassAttachmentsMatch()`（identity / 逐 color slot 的 actual-vs-expected / 深度模板对 /
+    "required 但缺失 ⇒ 不匹配"）；用户 FBO 那一半仍留在 ObjC（其循环与 subresource 比对、扫描提前停止规则交织，
+    留作下一刀——subresource/scan-stop 两条规则本身已是 C 谓词）。
+    golden＝新增 `make test-render-pass-load-store`（44 例，纯 C：颜色 8 组决策、深度/模板 5 组、
+    stale clear 4 组、匹配 9 组，含"未参与的 slot 不比较"与"required 缺失即不匹配"）；golden 是**先照 ObjC
+    现有语义写死**再改实现（文档要求的"先补 golden"）。：`mglRenderPassPlanClearValues` 沉入 plan 层（`mgl_render_pass_plan.c`），配套新头 `mgl_render_pass_clear.h`（**必须**与 `mgl_render_pass_plan.h` 分开——后者被 `glm_context.h:96` 引入，若再 include `mgl_render.h` 会成环）；`mglRenderPassAttachmentClass` / `mglRenderPassColorAttachmentIndexValid` 从 `mgl_render.cpp` 迁入 plan 层（纯值谓词，C linkage，顺带压薄 monolith），使 plan 层自包含、**harness 可独立链接不拖 Metal/LLVM**；`+RenderPass.m` 的 `mglRenderPassClearValuesFor` 变薄转发（只取 persistent state 再转发）
   - [x] **clear-value 回归保护 harness**：`make test-render-pass-clear-plan`（`test_legacy_compat/test_render_pass_clear_plan.c`，已挂 `test-all`）；golden 覆盖 color[0]/color[3]/depth/stencil 取值、非法 color index(8/100)、未知 attachment kind、NULL state、NULL out params；**已做变异测试验证能捕获回归**（故意交换 blue/alpha → harness exit 2、2 failures）
   - [ ] **残量**：load/store（`mglRenderPassActionsFor` 等）与 attachment match（draw buffer → Metal color attachment 映射）仍待沉，需先把对应 golden 补进 harness 再动手（勿无 oracle 下刀）
 - [ ] **O3.2** `generatePipelineDescriptorState` → format-class PSO builder（CTS Batch 4）
