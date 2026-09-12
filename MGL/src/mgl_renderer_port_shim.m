@@ -22,7 +22,9 @@
 #import "MGLRenderer+RenderPass_Private.h"
 #import "MGLRenderer+Binding_Private.h"
 #include "mgl_renderer_ports.h"
-#include "mgl_batch_restore.h"   /* mglBatchFlushBegin/RunBatches/TeardownReplay */
+#include "mgl_batch_restore.h"
+
+#include <string.h>   /* mglBatchFlushBegin/RunBatches/TeardownReplay */
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
 
@@ -140,18 +142,6 @@ int mglRendererProcessGLStatePort(void *renderer, int draw_command)
     return [(__bridge MGLRenderer *)renderer processGLState:draw_command ? true : false]
                ? 1
                : 0;
-}
-
-MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindingsPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? &r->_resourceFallback.fragmentTextureTraceBindings[0] : NULL;
-}
-
-void *mglRendererBindingStateOwnerPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? r->_bindingStateOwner : NULL;
 }
 
 int mglRendererUpdateDirtyBaseBufferListPort(void *renderer, void *upload)
@@ -383,10 +373,21 @@ void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx)
     }
 }
 
-const MGLPipelineCacheState *mglRendererPipelineCacheStatePort(void *renderer)
+void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [r->_pipelineCache state] : NULL;
+    if (!areas_out) {
+        return;
+    }
+    memset(areas_out, 0, sizeof(*areas_out));
+    if (!r) {
+        return;
+    }
+    areas_out->batching = &r->_batching;
+    areas_out->command = [mglRendererRenderPassManager(r) state];
+    areas_out->pipeline_cache = [r->_pipelineCache state];
+    areas_out->binding_state_owner = &r->_bindingStateOwner;
+    areas_out->fragment_trace_bindings = &r->_resourceFallback.fragmentTextureTraceBindings[0];
 }
 
 const MGLCommandState *mglRendererCommandStatePort(void *renderer)

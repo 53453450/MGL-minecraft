@@ -119,7 +119,6 @@ int mglRendererBindMTLTexturePort(void *renderer, Texture *texture);
 /* ---- dyn-bind / sampler ports ------------------------------------------ */
 
 /* Binding state owner (the object the dyn-bind plans write bindings through). */
-void *mglRendererBindingStateOwnerPort(void *renderer);
 
 /* Buffer staging for the dyn-vertex path: upload a dirty base-buffer list and
  * make sure a buffer object has its Metal allocation. */
@@ -151,6 +150,24 @@ void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
 void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key);
 void *mglRendererFallbackSamplerStatePort(void *renderer);
 
+/* === Renderer state areas (the "one struct, one port" pattern) ===
+ * States whose records are plain C structs are handed out as pointers, so C
+ * drivers read and write their fields directly instead of going through one
+ * port per field.  Fetched explicitly (caller-provided storage, no hidden
+ * static), and cheap enough to take once per driver call.
+ *
+ * `binding_state_owner` is the ADDRESS of the owner slot: the value can change
+ * while a driver runs, so dereference it at the point of use. */
+typedef struct MGLRendererStateAreas {
+    MGLBatchingState *batching;
+    const MGLCommandState *command;
+    const MGLPipelineCacheState *pipeline_cache;
+    void **binding_state_owner;
+    MGLFragmentTextureTraceBinding *fragment_trace_bindings;
+} MGLRendererStateAreas;
+
+void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out);
+
 /* The manager's command state (render pass owner, render pass framebuffer
  * name, trace-replay identity, render encoder owner, ...).  C callers read the
  * fields directly; this one port replaced five field wrappers. */
@@ -158,13 +175,11 @@ const MGLCommandState *mglRendererCommandStatePort(void *renderer);
 
 /* The pipeline cache's state record (active pipeline handle, pipeline program
  * name, formats).  C readers use the fields directly. */
-const MGLPipelineCacheState *mglRendererPipelineCacheStatePort(void *renderer);
 
 /* Batch-replay diagnostic trace state: the renderer's fragment texture trace
  * binding records (TEXTURE_UNITS entries, `MGLFragmentTextureTraceBinding`),
  * the pipeline cache's current pipeline state / program name, and the render
  * pass framebuffer name the trace line reports. */
-MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindingsPort(void *renderer);
 
 /* Batch-replay trace identity of the current flush / batch. */
 
