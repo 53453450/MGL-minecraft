@@ -154,23 +154,6 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
               ctx ? (unsigned)MGL_STATE(ctx)->program_name : 0u);
     }
 
-    int count;
-    int mapped_buffers;
-    struct {
-        int spvc_type;
-        int gl_buffer_type;
-        const char *name;
-    } mapped_types[4] = {
-        {_UNIFORM_BUFFER_RES, _UNIFORM_BUFFER, "Uniform Buffer"},
-        {_UNIFORM_CONSTANT_RES, _UNIFORM_CONSTANT, "Uniform Constant"},
-        {_STORAGE_BUFFER_RES, _SHADER_STORAGE_BUFFER, "Shader Storage Buffer"},
-        {_ATOMIC_COUNTER_RES, _ATOMIC_COUNTER_BUFFER, "Atomic Counter Buffer"}
-    };
-#if DEBUG_MAPPED_TYPES
-    const char *stages[] = {"VERTEX_SHADER", "TESS_CONTROL_SHADER", "TESS_EVALUATION_SHADER",
-        "GEOMETRY_SHADER", "FRAGMENT_SHADER", "COMPUTE_SHADER"};
-#endif
-    
     // init mapped buffer count
     buffer_map->count = 0;
 
@@ -237,10 +220,9 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
     return true;
 }
 
-/* Fast path: map shader buffer resources using the cached buffer binding plan.
- * Returns true if the plan was valid and all resources were processed.
- * Returns false if the plan is unavailable (caller falls back to the
- * reflection-based path in mapShaderBufferResourcesToBufferMap). */
+/* Map shader buffer resources from the cached buffer binding plan.  Called only
+ * with a valid stage plan (see mapShaderBufferResourcesToBufferMap:stage:, which
+ * owns plan availability); returns false when a resource cannot be bound. */
 - (bool)mapShaderBufferResourcesViaPlan:(BufferMapList *)buffer_map
                                   stage:(int)stage
                                 program:(Program *)program
@@ -687,550 +669,52 @@ static Buffer *mglGetPackedStructBuffer(const void *data,
 
 - (bool)mapShaderBufferResourcesToBufferMap:(BufferMapList *)buffer_map stage:(int)stage
 {
-    /* Resolve the active program once and reuse it across both the fast path
-     * and the reflection fallback, avoiding repeated per-resource re-resolves. */
+    /* The cached buffer binding plan is the only mapping path: it caches every
+     * decision the previous reflection walk recomputed per draw (metal/client
+     * binding bases, element counts, required sizes, skip rules, plain-uniform
+     * struct packing metadata, global-fallback allowance) and is rebuilt at
+     * link and after glUniformBlockBinding / glShaderStorageBlockBinding
+     * mutations, so its per-draw output is what the reflection walk produced.
+     *
+     * Resolution order:
+     *   1. no program for the stage -> nothing to map (the reflection walk also
+     *      iterated zero resources here);
+     *   2. cached plan valid        -> replay it;
+     *   3. plan/stage invalid       -> force one rebuild (EnsureBuilt only
+     *      rebuilds when the *vertex* stage is invalid) and replay;
+     *   4. still invalid            -> allocation failure: refuse the draw
+     *      loudly instead of binding a partial resource set.  The caller keeps
+     *      the draw dirty and retries, so a transient failure recovers on the
+     *      next frame. */
     Program *program = mglResolveProgramForStageFromState(ctx, stage);
-
-    /* Fast path: try the cached buffer binding plan first.  If the plan
-     * is valid, this skips all per-draw name lookups, program resolution,
-     * and MSL argument scans for resources that haven't changed since
-     * link.  Falls through to the original reflection-based path if the
-     * plan is unavailable (NULL program, plan not yet built, or stage
-     * invalid after a binding mutation). */
-    if (program) {
-        const MGLBufferBindingPlan *plan =
-            mglBufferBindingPlanEnsureBuilt(program);
-        const MGLStageBufferPlan *stagePlan = mglStageBufferPlan(plan, stage);
-        if (stagePlan && stagePlan->valid) {
-            return [self mapShaderBufferResourcesViaPlan:buffer_map
-                                                    stage:stage
-                                                  program:program
-                                                stagePlan:stagePlan];
-        }
+    if (!program) {
+        return true;
     }
 
-    /* Original reflection-based path (plan unavailable or invalid). */
-    int count;
-    struct {
-        int spvc_type;
-        int gl_buffer_type;
-        const char *name;
-    } mapped_types[4] = {
-        {_UNIFORM_BUFFER_RES, _UNIFORM_BUFFER, "Uniform Buffer"},
-        {_UNIFORM_CONSTANT_RES, _UNIFORM_CONSTANT, "Uniform Constant"},
-        {_STORAGE_BUFFER_RES, _SHADER_STORAGE_BUFFER, "Shader Storage Buffer"},
-        {_ATOMIC_COUNTER_RES, _ATOMIC_COUNTER_BUFFER, "Atomic Counter Buffer"}
-    };
-#if DEBUG_MAPPED_TYPES
-    const char *stages[] = {"VERTEX_SHADER", "TESS_CONTROL_SHADER", "TESS_EVALUATION_SHADER",
-        "GEOMETRY_SHADER", "FRAGMENT_SHADER", "COMPUTE_SHADER"};
-#endif
-
-    for(int type=0; type<4; type++)
-    {
-        int spvc_type;
-        int gl_buffer_type;
-
-        spvc_type = mapped_types[type].spvc_type;
-        gl_buffer_type = mapped_types[type].gl_buffer_type;
-
-        /* Read count directly from the already-resolved program instead of
-         * getProgramBindingCount:, which would re-resolve the program. */
-        count = (program && spvc_type >= 0 && spvc_type < MGL_MAX_SHADER_RESOURCES)
-                  ? (int)program->shader_resources_list[stage][spvc_type].count
-                  : 0;
-
-#if DEBUG_MAPPED_TYPES
-        DEBUG_PRINT("Checking mapped_types: %s count:%d for stage: %s\n", mapped_types[type].name, count, stages[stage]);
-#endif
-
-        if (count)
-        {
-            BufferBaseTarget *buffers;
-            BufferBaseTarget *fallbackBuffers = NULL;
-
-            if (mglRenderUsePlainUniformBuffers(spvc_type) && program) {
-                buffers = program->plain_uniform_buffers;
-                fallbackBuffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
-            } else {
-                buffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
-            }
-            
-            for (int i = 0; i < count; i++)
-            {
-                GLuint spirv_binding;
-                Buffer *buf;
-                BufferBaseTarget *baseBinding;
-
-                // Use the GL binding point to locate the client's buffer base.
-                // The resource's `binding` may already have been rewritten to the
-                // Metal [[buffer(n)]] slot parsed from generated MSL.
-                if (!program ||
-                    !mglRenderShaderResourceIndexValid(
-                        spvc_type, (uint32_t)i,
-                        program->shader_resources_list[stage][spvc_type].count)) {
-                    continue;
-                }
-                MGLShaderResource *resource = &program->shader_resources_list[stage][spvc_type].list[i];
-                if (mglShouldSkipStageBufferResource(program, stage, spvc_type, resource)) {
-                    continue;
-                }
-
-                if (mglRenderUsePlainUniformBuffers(spvc_type) &&
-                    getenv("MGL_DEBUG_STRUCT_PACK")) {
-                    NSLog(@"MGL STRUCTCHECK program=%u stage=%d name=%s ubo_members=%p count=%u req_size=%lu samplerLike=%d unifLoc=%d",
-                          (unsigned)program->name, stage,
-                          resource->name ? resource->name : "(null)",
-                          (void *)resource->ubo_members,
-                          (unsigned)resource->ubo_member_count,
-                          (unsigned long)resource->required_size,
-                          mglRendererResourceLooksSamplerLike(resource, spvc_type) ? 1 : 0,
-                          resource->uniform_location);
-                }
-
-                /* Plain struct uniform packing.
-                 *
-                 * The AIR backend translates `layout(location=N) uniform S u[K]`
-                 * into separate Metal buffer arguments (`constant S* u_0
-                 * [[buffer(B)]]`, etc.), each expecting a full struct's
-                 * worth of data.  MGL stores individual uniform member data
-                 * per location in plain_uniform_buffers[location].  Pack
-                 * the member data into struct-sized Metal buffers here. */
-                if (mglRenderShouldPackPlainUniformStruct(
-                        spvc_type, resource->ubo_members ? 1 : 0,
-                        (uint32_t)resource->ubo_member_count,
-                        (uint64_t)resource->required_size,
-                        mglRendererResourceLooksSamplerLike(resource, spvc_type)
-                            ? 1
-                            : 0)) {
-
-                    GLuint loc_step = mglPlainStructLocStep(resource);
-                    GLint base_loc = mglRenderPlainUniformBaseLoc(
-                        resource->uniform_location, resource->location);
-                    GLuint array_size = mglStageBufferResourceElementCount(spvc_type, resource);
-                    size_t struct_size = resource->required_size;
-                    bool allowFallback = fallbackBuffers &&
-                        mglPlainUniformAllowsGlobalFallback(resource);
-
-                    for (GLuint element = 0; element < array_size; element++) {
-                        GLuint metal_binding = mglMetalResourceSlotForElement(resource, element);
-                        GLuint elem_loc_start = element * loc_step;
-                        GLuint elem_loc_end = (element + 1u) * loc_step;
-                        GLuint elem_byte_start = element * (GLuint)struct_size;
-
-                        uint8_t stack_packed[256];
-                        uint8_t *packed = (struct_size <= sizeof(stack_packed))
-                                          ? stack_packed
-                                          : (uint8_t *)calloc(1, struct_size);
-                        if (!packed) continue;
-                        memset(packed, 0, struct_size);
-
-                        for (GLuint m = 0; m < resource->ubo_member_count; m++) {
-                            SpirvUBOMember *member = &resource->ubo_members[m];
-
-                            /* member->location_offset is relative to the
-                             * resource's base uniform_location (spans all
-                             * array elements).  Filter to current element. */
-                            GLuint member_loc_off = (GLuint)member->location_offset;
-                            if (!mglRenderStructMemberInElementRange(
-                                    member_loc_off, elem_loc_start,
-                                    elem_loc_end)) {
-                                continue;
-                            }
-
-                            /* member->offset is the absolute byte offset
-                             * across the whole array.  Compute the relative
-                             * offset within this element. */
-                            GLuint member_offset = mglRenderMemberOffsetInElement(
-                                member->offset, elem_byte_start);
-                            if (!mglRenderMemberOffsetInStruct(
-                                    member_offset, (uint32_t)struct_size)) {
-                                continue;
-                            }
-
-                            /* Location of this member's data in
-                             * plain_uniform_buffers: base_loc + the member's
-                             * absolute location_offset. */
-                            GLint member_loc = base_loc + (GLint)member_loc_off;
-                            if (!mglRenderBindableLocValid(member_loc,
-                                                   MAX_BINDABLE_BUFFERS)) {
-                                continue;
-                            }
-
-                            if (member->size > 1) {
-                                /* Array member: each element at its own
-                                 * location (CTS).  Nested struct paths use
-                                 * std140 ArrayStride; top-level plain arrays
-                                 * stay tightly packed for LLVM loads. */
-                                GLuint src_stride = 0u;
-                                GLuint elem_stride = 0u;
-                                mglRenderPlainUniformArrayStrides(
-                                    member->name,
-                                    mglGLTypeElementByteSize(member->gl_type),
-                                    member->array_stride, &src_stride,
-                                    &elem_stride);
-                                for (GLint ai = 0; ai < member->size; ai++) {
-                                    GLint elem_loc = member_loc + ai;
-                                    if (!mglRenderBindableLocValid(elem_loc,
-                                                           MAX_BINDABLE_BUFFERS)) {
-                                        continue;
-                                    }
-                                    BufferBaseTarget *mb = &buffers[elem_loc];
-                                    Buffer *mbuf = mglRendererGetValidatedBuffer(
-                                        ctx, mb->buf,
-                                        "mapGLBuffersToMTLBufferMap(struct,array)",
-                                        (NSUInteger)elem_loc);
-                                    if (!mbuf && allowFallback) {
-                                        BufferBaseTarget *fb = &fallbackBuffers[elem_loc];
-                                        mbuf = mglRendererGetValidatedBuffer(
-                                            ctx, fb->buf,
-                                            "mapGLBuffersToMTLBufferMap(struct,array,fb)",
-                                            (NSUInteger)elem_loc);
-                                    }
-                                    if (!mglRenderCPUShadowReadable(
-                                    mbuf ? mbuf->data.buffer_data : NULL,
-                                    mbuf ? mbuf->size : 0)) {
-                                        continue;
-                                    }
-                                    /* glUniform*iv/fv uploads an entire array
-                                     * to the base location in one buffer.  Copy
-                                     * once when source and dest strides match;
-                                     * otherwise scatter leaf elements into the
-                                     * std140 layout. */
-                                    if (mglRenderStructPackUseBulk(
-                                            ai, mbuf->size, (uint32_t)member->size,
-                                            src_stride)) {
-                                        if (elem_stride == src_stride) {
-                                            size_t copy_size =
-                                                (size_t)mglRenderClampCopyToStruct(
-                                                    (uint64_t)member_offset,
-                                                    (uint64_t)mbuf->size,
-                                                    (uint64_t)struct_size);
-                                            if (copy_size > 0) {
-                                                memcpy(packed + member_offset,
-                                                       (const void *)(uintptr_t)
-                                                           mbuf->data.buffer_data,
-                                                       copy_size);
-                                            }
-                                        } else {
-                                            const uint8_t *src =
-                                                (const uint8_t *)(uintptr_t)
-                                                    mbuf->data.buffer_data;
-                                            for (GLint sj = 0; sj < member->size;
-                                                 sj++) {
-                                                size_t dest_off =
-                                                    (size_t)member_offset +
-                                                    (size_t)sj *
-                                                        (size_t)elem_stride;
-                                                size_t copy_size =
-                                                    (size_t)mglRenderClampCopyToStruct(
-                                                        (uint64_t)dest_off,
-                                                        (uint64_t)src_stride,
-                                                        (uint64_t)struct_size);
-                                                if (copy_size == 0)
-                                                    break;
-                                                memcpy(packed + dest_off,
-                                                       src +
-                                                           (size_t)sj *
-                                                               src_stride,
-                                                       copy_size);
-                                            }
-                                        }
-                                        break;
-                                    }
-                                    size_t dest_off = (size_t)member_offset +
-                                        (size_t)ai * (size_t)elem_stride;
-                                    size_t copy_size = (size_t)mbuf->size;
-                                    if (copy_size > (size_t)elem_stride) {
-                                        copy_size = (size_t)elem_stride;
-                                    }
-                                    copy_size = (size_t)mglRenderClampCopyToStruct(
-                                        (uint64_t)dest_off, (uint64_t)copy_size,
-                                        (uint64_t)struct_size);
-                                    if (copy_size > 0) {
-                                        memcpy(packed + dest_off,
-                                               (const void *)(uintptr_t)mbuf->data.buffer_data,
-                                               copy_size);
-                                    }
-                                }
-                            } else {
-                                /* Scalar / vector / matrix member: all data
-                                 * at one location. */
-                                BufferBaseTarget *mb = &buffers[member_loc];
-                                Buffer *mbuf = mglRendererGetValidatedBuffer(
-                                    ctx, mb->buf,
-                                    "mapGLBuffersToMTLBufferMap(struct,scalar)",
-                                    (NSUInteger)member_loc);
-                                if (!mbuf && allowFallback) {
-                                    BufferBaseTarget *fb = &fallbackBuffers[member_loc];
-                                    mbuf = mglRendererGetValidatedBuffer(
-                                        ctx, fb->buf,
-                                        "mapGLBuffersToMTLBufferMap(struct,scalar,fb)",
-                                        (NSUInteger)member_loc);
-                                }
-                                if (!mglRenderCPUShadowReadable(
-                                    mbuf ? mbuf->data.buffer_data : NULL,
-                                    mbuf ? mbuf->size : 0)) {
-                                    continue;
-                                }
-                                size_t copy_size = (size_t)mglRenderClampCopyToStruct(
-                                    (uint64_t)member_offset,
-                                    mbuf ? (uint64_t)mbuf->size : 0u,
-                                    (uint64_t)struct_size);
-                                if (copy_size > 0) {
-                                    memcpy(packed + member_offset,
-                                           (const void *)(uintptr_t)mbuf->data.buffer_data,
-                                           copy_size);
-                                }
-                            }
-                        }
-
-                        if (getenv("MGL_DEBUG_STRUCT_PACK")) {
-                            const float *fv = (const float *)packed;
-                            NSLog(@"MGL STRUCTDUMP prog=%u stage=%d res=%s elem=%u loc=%d metal=%u size=%lu",
-                                  (unsigned)program->name, stage,
-                                  resource->name ? resource->name : "(null)",
-                                  element, base_loc + (GLint)(loc_step * element),
-                                  (unsigned)metal_binding, (unsigned long)struct_size);
-                            for (size_t di = 0; di < struct_size && di < 64; di += 4) {
-                                NSLog(@"  off[%zu] = %02x%02x%02x%02x (float=%.6f)",
-                                      di, packed[di], packed[di+1], packed[di+2], packed[di+3],
-                                      fv[di/4]);
-                            }
-                        }
-
-                        Buffer *packedBuf = mglGetPackedStructBuffer(packed, struct_size);
-                        if (packed != stack_packed) {
-                            free(packed);
-                        }
-                        if (!packedBuf) {
-                            continue;
-                        }
-
-                        if (!mglRenderMappedBufferCountOK(
-                        (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS)) {
-                            NSLog(@"MGL ERROR: mapGLBuffersToMTLBufferMap struct overflow: count=%d max=%d",
-                                  buffer_map->count, MAX_MAPPED_BUFFERS);
-                            return false;
-                        }
-                        BufferMap *entry = &buffer_map->buffers[buffer_map->count];
-                        bzero(entry, sizeof(*entry));
-                        entry->attribute_mask = 0;
-                        entry->buffer_base_index = (GLuint)(base_loc + (GLint)(loc_step * element));
-                        entry->resource_type = (GLuint)spvc_type;
-                        entry->resource_index = (GLuint)i;
-                        entry->metal_binding_index = metal_binding;
-                        entry->has_metal_binding = (GLboolean)mglRenderGLBoolean(1);
-                        entry->buf = packedBuf;
-                        entry->offset = 0;
-                        entry->size = (GLsizeiptr)struct_size;
-                        buffer_map->count++;
-                    }
-                    continue; /* Skip normal binding path for struct resource */
-                }
-
-                GLuint element_count = mglStageBufferResourceElementCount(spvc_type, resource);
-                for (GLuint element = 0; element < element_count; element++) {
-                    GLuint metal_binding = mglMetalResourceSlotForElement(resource, element);
-                    spirv_binding = mglClientBufferBindingForResourceElement(spvc_type, resource, element);
-                    if (spirv_binding >= MAX_BINDABLE_BUFFERS)
-                    {
-                        NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage=%d type=%d binding=%u exceeds MAX_BINDABLE_BUFFERS=%d, skipping",
-                              stage, spvc_type, spirv_binding, MAX_BINDABLE_BUFFERS);
-                        continue;
-                    }
-
-                baseBinding = &buffers[spirv_binding];
-                bool usedFallbackBinding = false;
-                bool allowGlobalFallback =
-                    fallbackBuffers &&
-                    (spvc_type != _UNIFORM_CONSTANT_RES ||
-                     mglPlainUniformAllowsGlobalFallback(resource));
-                if (allowGlobalFallback && !baseBinding->buf && baseBinding->buffer == 0) {
-                    BufferBaseTarget *fallbackBinding = &fallbackBuffers[spirv_binding];
-                    if (fallbackBinding->buf || fallbackBinding->buffer != 0) {
-                        baseBinding = fallbackBinding;
-                        usedFallbackBinding = true;
-                    }
-                }
-                buf = mglRendererGetValidatedBuffer(ctx, baseBinding->buf,
-                                                    "mapGLBuffersToMTLBufferMap(base)",
-                                                    (NSUInteger)spirv_binding);
-
-                // Recover from name/object map skew: some paths can preserve GL name while pointer slot is stale.
-                if (!buf && baseBinding->buffer != 0) {
-                    Buffer *resolved = (Buffer *)searchHashTable(&MGL_STATE(ctx)->buffer_table, baseBinding->buffer);
-                    resolved = mglRendererGetValidatedBuffer(ctx, resolved,
-                                                             "mapGLBuffersToMTLBufferMap(base,recover)",
-                                                             (NSUInteger)spirv_binding);
-                    if (resolved) {
-                        baseBinding->buf = resolved;
-                        buf = resolved;
-                        static unsigned long long s_recoverHits = 0;
-                        if ((++s_recoverHits % 64ull) == 1ull) {
-                            NSLog(@"MGL BUFFER RECOVER: stage=%d type=%d binding=%u name=%u ptr=%p hit=%llu",
-	                              stage, spvc_type, spirv_binding, baseBinding->buffer, resolved,
-	                              s_recoverHits);
-                        }
-	                    }
-	                }
-
-                /* Read required_size directly from the already-resolved
-                 * resource instead of getProgramBindingRequiredSize:, which
-                 * would re-resolve the program. */
-                NSUInteger reflectedRequiredSize = (NSUInteger)resource->required_size;
-
-	                if (buf)
-	                {
-	                    if (!mglRenderMappedBufferCountOK(
-                                (uint32_t)buffer_map->count, MAX_MAPPED_BUFFERS))
-	                    {
-	                        NSLog(@"MGL ERROR: mapGLBuffersToMTLBufferMap overflow: count=%d max=%d",
-                              buffer_map->count, MAX_MAPPED_BUFFERS);
-                        return false;
-                    }
-                    BufferMap *entry = &buffer_map->buffers[buffer_map->count];
-                    bzero(entry, sizeof(*entry));
-                    entry->attribute_mask = 0; // non attribute.. no bits set
-                    entry->buffer_base_index = spirv_binding;
-                    entry->resource_type = (GLuint)spvc_type;
-                    entry->resource_index = (GLuint)i;
-                    entry->metal_binding_index = metal_binding;
-                    entry->has_metal_binding = (GLboolean)mglRenderGLBoolean(1);
-                    entry->buf = buf;
-                    entry->offset = baseBinding->offset;
-                    entry->size = baseBinding->size;
-                    entry->size = mglRenderMappedUniformSize(
-                        spvc_type, entry->size, buf->size, entry->offset,
-                        (uint64_t)reflectedRequiredSize);
-                    baseBinding->buffer = buf->name;
-                    buffer_map->count++;
-
-                    if (mglProgramNeedsBindingTrace(program)) {
-                        static uint64_t s_focusedUBOMapLogs = 0;
-                        if (mglShouldLogFocusedBinding(&s_focusedUBOMapLogs)) {
-                            NSLog(@"MGL BINDMAP focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu",
-                                  (unsigned)program->name,
-                                  mglShaderStageName(stage),
-                                  mglMGLShaderResourceTypeName(spvc_type),
-                                  resource->name ? resource->name : "(null)",
-                                  i,
-                                  (unsigned)spirv_binding,
-                                  (unsigned)metal_binding,
-                                  (unsigned)buf->name,
-                                  (long long)baseBinding->offset,
-                                  (long long)baseBinding->size,
-                                  (unsigned long)reflectedRequiredSize);
-                        }
-                    }
-
-                    /* Trace file: log UBO binding for program trace */
-                    static uint64_t s_traceFileUBOMapLogs = 0;
-                    if (mglProgramNeedsTraceLog(program) &&
-                        mglShouldLogTraceFileBindingForProgram(program, &s_traceFileUBOMapLogs)) {
-                        mglTraceLog("BINDMAP program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u buffer=%u offset=%lld range=%lld reflected=%lu fallback=%d",
-                                    (unsigned)program->name,
-                                    mglShaderStageName(stage),
-                                    mglMGLShaderResourceTypeName(spvc_type),
-                                    resource->name ? resource->name : "(null)",
-                                    i,
-                                    (unsigned)spirv_binding,
-                                    (unsigned)metal_binding,
-                                    (unsigned)buf->name,
-                                    (long long)baseBinding->offset,
-                                    (long long)baseBinding->size,
-                                    (unsigned long)reflectedRequiredSize,
-                                    usedFallbackBinding ? 1 : 0);
-                    }
-
-                    if (mglRenderBaseBindingTooSmall(baseBinding->size,
-                                                     (uint64_t)reflectedRequiredSize)) {
-                        GLuint programName = ctx ? MGL_STATE(ctx)->program_name : 0u;
-                        if (mglShouldLogSmallBaseBinding(programName,
-                                                         stage,
-                                                         spvc_type,
-                                                         spirv_binding,
-                                                         buf->name,
-                                                         baseBinding->size,
-                                                         reflectedRequiredSize)) {
-                            NSLog(@"MGL WARNING: base binding too small program=%u stage=%d type=%d binding=%u glName=%u range=%lld reflected=%lu (padding at bind)",
-                                  programName,
-                                  stage,
-                                  spvc_type,
-                                  spirv_binding,
-                                  buf->name,
-                                  (long long)baseBinding->size,
-                                  (unsigned long)reflectedRequiredSize);
-                        }
-                    }
-                    
-                    //DEBUG_PRINT("Found buffer type: %s buffer_base_index: %d\n", mapped_types[type].name, spirv_binding);
-	                }
-	                else
-	                {
-                    if (mglProgramNeedsBindingTrace(program)) {
-                        static uint64_t s_focusedUBOMissLogs = 0;
-                        if (mglShouldLogFocusedBinding(&s_focusedUBOMissLogs)) {
-                            NSLog(@"MGL BINDMISS focused program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu usedFallback=%d",
-                                  (unsigned)program->name,
-                                  mglShaderStageName(stage),
-                                  mglMGLShaderResourceTypeName(spvc_type),
-                                  resource->name ? resource->name : "(null)",
-                                  i,
-                                  (unsigned)spirv_binding,
-                                  (unsigned)metal_binding,
-                                  (unsigned)baseBinding->buffer,
-                                  baseBinding->buf,
-                                  (long long)baseBinding->offset,
-                                  (long long)baseBinding->size,
-                                  (unsigned long)reflectedRequiredSize,
-                                  usedFallbackBinding ? 1 : 0);
-                        }
-                    }
-                    static uint64_t s_traceFileUBOMissLogs = 0;
-                    if (mglProgramNeedsTraceLog(program) &&
-                        mglShouldLogTraceFileBindingForProgram(program, &s_traceFileUBOMissLogs)) {
-                        mglTraceLog("BINDMISS program=%u stage=%s type=%s resource=%s resourceIndex=%d clientBinding=%u metalSlot=%u baseBuffer=%u basePtr=%p offset=%lld range=%lld reflected=%lu fallback=%d",
-                                    (unsigned)program->name,
-                                    mglShaderStageName(stage),
-                                    mglMGLShaderResourceTypeName(spvc_type),
-                                    resource->name ? resource->name : "(null)",
-                                    i,
-                                    (unsigned)spirv_binding,
-                                    (unsigned)metal_binding,
-                                    (unsigned)baseBinding->buffer,
-                                    baseBinding->buf,
-                                    (long long)baseBinding->offset,
-                                    (long long)baseBinding->size,
-                                    (unsigned long)reflectedRequiredSize,
-                                    usedFallbackBinding ? 1 : 0);
-                    }
-	                    if (baseBinding->buf || baseBinding->buffer != 0 || baseBinding->offset != 0 || baseBinding->size != 0) {
-	                        NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: dropping invalid base buffer binding=%u stage=%d type=%d name=%u ptr=%p offset=%lld size=%lld",
-	                              spirv_binding, stage, spvc_type,
-                              baseBinding->buffer,
-                              baseBinding->buf,
-                              (long long)baseBinding->offset,
-                              (long long)baseBinding->size);
-                        bzero(baseBinding, sizeof(BufferBaseTarget));
-                    }
-                    // Some vanilla shader paths tolerate unbound blocks on specific stages.
-                    // Skip instead of poisoning global GL error state with GL_INVALID_OPERATION.
-                    continue;
-                }
-                }
-            }
+    const MGLBufferBindingPlan *plan = mglBufferBindingPlanEnsureBuilt(program);
+    const MGLStageBufferPlan *stagePlan = mglStageBufferPlan(plan, stage);
+    if (!stagePlan || !stagePlan->valid) {
+        mglBufferBindingPlanBuild(program);
+        plan = mglBufferBindingPlanEnsureBuilt(program);
+        stagePlan = mglStageBufferPlan(plan, stage);
+    }
+    if (!stagePlan || !stagePlan->valid) {
+        static uint64_t s_planMissingHits = 0;
+        uint64_t hit = ++s_planMissingHits;
+        if (hit <= 16ull || (hit % 4096ull) == 0ull) {
+            NSLog(@"MGL ERROR: buffer binding plan unavailable for program=%u stage=%d (plan=%p, hit=%llu); refusing the draw",
+                  (unsigned)program->name, stage, (const void *)plan,
+                  (unsigned long long)hit);
         }
+        return false;
     }
 
-    return true;
+    return [self mapShaderBufferResourcesViaPlan:buffer_map
+                                            stage:stage
+                                          program:program
+                                        stagePlan:stagePlan];
 }
 
-/* mapVertexAttributeBuffersToBufferMap: moved to the buffer-plan layer as
- * mglRenderPlanVertexAttribBuffers (grouping / slot assignment / capacity
- * guards / diagnostics); the per-attribute resolution stays here behind
- * the mglResolveVertexAttribForPlan seam, and the caller in
- * mapGLBuffersToMTLBufferMap:stage: gathers the candidate mask. */
 
 - (bool) mapBuffersToMTL
 {
