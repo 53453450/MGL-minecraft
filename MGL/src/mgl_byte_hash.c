@@ -88,7 +88,7 @@ void mglDumpBytesToLog(const char *label,
     }
 
     if (!bytes || length == 0) {
-        mglTraceLog("MGL DUMP %@ empty", label ? label : "(null)");
+        mglTraceLog("MGL DUMP %s empty", label ? label : "(null)");
         return;
     }
 
@@ -115,7 +115,7 @@ void mglDumpBytesToLog(const char *label,
         hex[hp] = '\0';
         ascii[n] = '\0';
 
-        mglTraceLog("MGL DUMP %@ +0x%zx: %-47s |%s|",
+        mglTraceLog("MGL DUMP %s +0x%zx: %-47s |%s|",
                       label ? label : "(null)",
                       baseOffset + off,
                       hex,
