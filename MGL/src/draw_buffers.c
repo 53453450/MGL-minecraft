@@ -458,7 +458,30 @@ bool validate_vao(GLMContext ctx, bool uses_elements)
     return true;
 }
 
-bool validate_program(GLMContext ctx)
+/* GL 4.6 §11.2: a program object linking both a tessellation control and a
+ * tessellation evaluation shader is required before GL_PATCHES may be used,
+ * and a program object carrying a tessellation control shader without a
+ * tessellation evaluation shader cannot be used to draw at all.  A
+ * GL_PATCHES draw whose bound program or pipeline supplies TCS but no TES
+ * therefore generates INVALID_OPERATION (KHR-GL46.tessellation_shader.single.
+ * xfb_captures_data_from_correct_stage, negative {VS,TCS,FS} pipeline case). */
+static bool program_missing_tes_for_patches(GLMContext ctx, GLenum mode)
+{
+    GLMState *st = ctx ? ctx->active_state : NULL;
+    if (!st || mode != GL_PATCHES) return false;
+
+    Program *program = st->program;
+    if (program && program->shader_slots[_TESS_CONTROL_SHADER])
+        return program->shader_slots[_TESS_EVALUATION_SHADER] == NULL;
+
+    ProgramPipeline *pipeline = st->program_pipeline;
+    if (pipeline && pipeline->stage_programs[_TESS_CONTROL_SHADER])
+        return pipeline->stage_programs[_TESS_EVALUATION_SHADER] == NULL;
+
+    return false;
+}
+
+bool validate_program(GLMContext ctx, GLenum mode)
 {
     GLMState *st = ctx ? ctx->active_state : NULL;
     Program *program = st ? st->program : NULL;
@@ -502,6 +525,13 @@ bool validate_program(GLMContext ctx)
                 return false;
             }
         }
+    }
+
+    if (program_missing_tes_for_patches(ctx, mode)) {
+        fprintf(stderr,
+                "MGL WARNING: draw rejected: GL_PATCHES draw has a tessellation "
+                "control shader but no tessellation evaluation shader\n");
+        return false;
     }
 
     if (program) {
@@ -1604,7 +1634,7 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
         return;
 
     /* S7: program validation */
-    if (!validate_program(ctx)) {
+    if (!validate_program(ctx, cmd->mode)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -2036,7 +2066,7 @@ void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
         return;
     }
 
-    if (!validate_program(ctx)) {
+    if (!validate_program(ctx, mode)) {
         mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -2099,7 +2129,7 @@ void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const voi
         return;
     }
 
-    if (!validate_program(ctx)) {
+    if (!validate_program(ctx, mode)) {
         mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -2181,7 +2211,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(validate_program(ctx, mode), GL_INVALID_OPERATION);
 
 
 
@@ -2237,7 +2267,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
         return;
     }
 
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(validate_program(ctx, mode), GL_INVALID_OPERATION);
 
 
 
@@ -2296,7 +2326,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
         return;
     }
 
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(validate_program(ctx, mode), GL_INVALID_OPERATION);
 
 
 
@@ -2371,7 +2401,7 @@ void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirec
         return;
     }
 
-    if (!validate_program(ctx)) {
+    if (!validate_program(ctx, mode)) {
         mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -2446,7 +2476,7 @@ void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, cons
         return;
     }
 
-    if (!validate_program(ctx)) {
+    if (!validate_program(ctx, mode)) {
         mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
