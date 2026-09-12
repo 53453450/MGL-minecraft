@@ -22,18 +22,58 @@
 #import "MGLRenderer+RenderPass_Private.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_renderer_backend.h"
+#include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
 
 void *mglRendererMdiScratchBufferPort(void *renderer, uint64_t length,
                                       uint64_t *offset_out)
 {
+    /* Body of the former -[MGLRenderer mdiArgumentScratchBufferWithLength:
+     * offset:]; the render pass manager owns the ring buffer. */
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r) {
+        return NULL;
+    }
     NSUInteger offset = 0u;
-    id buffer = [(__bridge MGLRenderer *)renderer
-        mdiArgumentScratchBufferWithLength:(NSUInteger)length
+    id buffer = (__bridge id)[mglRendererRenderPassManager(r)
+        mdiArgumentScratchBufferWithDevice:mglRendererBackendGetDevice(r->_backend)
+                                    length:(NSUInteger)length
                                     offset:&offset];
     if (offset_out) {
         *offset_out = (uint64_t)offset;
     }
     return (__bridge void *)buffer;
+}
+
+int mglRendererProcessBufferPort(void *renderer, void *buffer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && buffer && [r processBuffer:(Buffer *)buffer]) ? 1 : 0;
+}
+
+void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
+                                                 uint64_t count,
+                                                 int *failed_out)
+{
+    (void)renderer;
+    if (failed_out) {
+        *failed_out = 0;
+    }
+    /* The @try/@catch is the reason this one stays ObjC for now: Metal raises
+     * when an indirect command buffer cannot be allocated, and that has to
+     * become a NULL result the replay path can fall back from. */
+    @try {
+        return mgl_batch_mtl_create_icb(indexed, count);
+    } @catch (NSException *ex) {
+        static uint64_t s_hit = 0;
+        uint64_t hit = ++s_hit;
+        if (hit <= 8ull || (hit % 256ull) == 0ull) {
+            NSLog(@"MGL WARNING: ICB creation failed, falling back: %@", ex);
+        }
+        if (failed_out) {
+            *failed_out = 1;
+        }
+        return NULL;
+    }
 }
 
 int mglRendererResolveElementBufferPort(void *renderer, const void *command,

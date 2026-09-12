@@ -69,7 +69,7 @@ static void fIssS(void *v, uint32_t b)
 static void fIssM(void *v, uint32_t b)
 { FCtx *c = v; fEnc(c); mglBatchIssueMDIBatch((__bridge void *)c->r, FB(c, b), c->ctx, &c->enc); }
 static void fIssI(void *v, uint32_t b)
-{ FCtx *c = v; fEnc(c); [c->r issueIndirectCommandBufferBatch:FB(c, b) context:c->ctx encodeContext:&c->enc]; }
+{ FCtx *c = v; fEnc(c); mglBatchIssueIndirectCommandBufferBatch((__bridge void *)c->r, FB(c, b), c->ctx, &c->enc); }
 static void fIssD(void *v, uint32_t b)
 { FCtx *c = v; fEnc(c); mglBatchIssueDirectBatch((__bridge void *)c->r, FB(c, b), c->ctx, &c->enc); }
 static void fRec(void *v, uint32_t b)
@@ -117,8 +117,8 @@ typedef struct {
 static void sTr0(void *v, const char *ph, const char *rs)
 { SCtx *c = v; [c->r mglTraceStreamCmd0:c->batch context:c->ctx phase:ph reason:rs]; }
 static int sMdi(void *v)
-{ SCtx *c = v; return [c->r issueStreamMergedMDIBatch:c->batch context:c->ctx
-      encodeContext:c->enc] ? 1 : 0; }
+{ SCtx *c = v; return mglBatchIssueStreamMergedMDIBatch((__bridge void *)c->r,
+      c->batch, c->ctx, c->enc) ? 1 : 0; }
 static void sDir(void *v)
 { SCtx *c = v; mglBatchIssueDirectBatch((__bridge void *)c->r, c->batch, c->ctx, c->enc); }
 static int sIdx(void *v, void **mtl)

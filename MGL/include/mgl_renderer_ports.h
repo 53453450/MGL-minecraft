@@ -77,6 +77,16 @@ int mglRendererCaptureCullElementPort(void *renderer, GLMContext ctx,
 /* Renderer state processing (1 = a draw command). */
 int mglRendererProcessGLStatePort(void *renderer, int draw_command);
 
+/* Vertex / element / indirect buffer upload for a draw's buffer object. */
+int mglRendererProcessBufferPort(void *renderer, void *buffer);
+
+/* Create an indirect command buffer (indexed when `indexed`), returned with a
+ * +1 reference the caller owns and releases.  *failed_out is 1 when Metal
+ * raised; the caller then traces its own fallback reason. */
+void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
+                                                 uint64_t count,
+                                                 int *failed_out);
+
 /* Batch-replay diagnostic trace state: the renderer's fragment texture trace
  * binding records (TEXTURE_UNITS entries, `MGLFragmentTextureTraceBinding`),
  * the pipeline cache's current pipeline state / program name, and the render

@@ -1,10 +1,15 @@
 /*
  * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
  * A3: ICB + stream-MDI — whole loops via mgl_batch_mtl_issue_*_batch.
+ *
+ * Formerly mgl_batch_icb_mdi_encode.m.  The two issue entry points are C
+ * drivers now; the one piece that has to stay ObjC -- the @try/@catch around
+ * the Metal indirect-command-buffer allocation -- lives behind
+ * mglRendererCreateIndirectCommandBufferPort in mgl_renderer_port_shim.m.
  */
-#import "MGLRenderer_Private.h"
-#import "MGLRenderer+Draw_Private.h"
-#import "MGLRenderer+BatchPorts_Private.h"
+#include "mgl_renderer_ports.h"   /* C port surface (T4) */
+#include "mgl_draw_issue.h"       /* mglDrawHostDevice */
+#include "mgl_types_program.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_batch_path.h"
@@ -12,38 +17,34 @@
 #include "mgl_draw_encode.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
-#include "mgl_batch_rt_mark.h"  /* mglBatchTraceReplayCommand */
+#include "mgl_batch_rt_mark.h"    /* mglBatchTraceReplayCommand */
 #include "mgl_batch_encode_shared.h"
 #include <CoreFoundation/CoreFoundation.h>
 
-@implementation MGLRenderer (Batch)
-
 typedef struct {
-    MGLRenderer *r;
+    void *r;
     MGLDrawBatch *batch;
     GLMContext ctx;
     const MGLEncodeContext *enc;
-    void *sticky_icb; /* objc_retain for C++ driver lifetime */
+    void *sticky_icb; /* +1 reference held for the C driver's lifetime */
 } MGLIcbMdiCtx;
 
 static void mglIcbTrace(void *v, uint32_t i, const char *phase, const char *reason)
 {
     MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
     if (!c->batch || i >= c->batch->command_count) return;
-    mglBatchTraceReplayCommand((__bridge void *)c->r, c->batch, &c->batch->commands[i],
+    mglBatchTraceReplayCommand(c->r, c->batch, &c->batch->commands[i],
                                c->ctx,
-                               mglRendererRenderPassManager(c->r).state->traceReplayFlushId,
-                               mglRendererRenderPassManager(c->r).state->traceReplayBatchIndex,
+                               mglRendererBatchTraceFlushIdPort(c->r),
+                               mglRendererBatchTraceBatchIndexPort(c->r),
                                i, phase, reason);
 }
 
 static void *mglIcbScratch(void *v, uint64_t len, uint64_t *off)
 {
-    NSUInteger o = 0;
-    id b = [((MGLIcbMdiCtx *)v)->r mdiArgumentScratchBufferWithLength:(NSUInteger)len
-                                                               offset:&o];
-    if (off) *off = (uint64_t)o;
-    return (__bridge void *)b;
+    /* The ops table passes ITS ctx (MGLIcbMdiCtx*), not the renderer handle --
+     * the port takes the renderer, so unwrap here. */
+    return mglRendererMdiScratchBufferPort(((MGLIcbMdiCtx *)v)->r, len, off);
 }
 
 static int mglIcbMap(void *v, void *buf, uint64_t off, uint64_t need, void **out)
@@ -58,32 +59,27 @@ static int mglIcbResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
     MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
     MGLDrawCommand *cmd = &c->batch->commands[i];
     Buffer *glBuf = NULL;
-    id idxBuf = nil;
-    if (![c->r resolveElementBufferForCommand:cmd label:"icbBatch" context:c->ctx
-                                     glBuffer:&glBuf mtlBuffer:&idxBuf])
+    void *idxBuf = NULL;
+    if (!mglRendererResolveElementBufferPort(c->r, cmd, "icbBatch", c->ctx,
+                                             &glBuf, &idxBuf))
         return 0;
-    NSUInteger drawOff = ioff ? (NSUInteger)*ioff : cmd->indexBufferOffset;
-    uint64_t drawType = mglIndexTypeForGLType((GLenum)gl_itype);
-    id prepared = mglPreparedElementIndexBuffer(
-        (__bridge id)mglRendererBackendGetDevice(mglRendererBackend(c->r)), glBuf, idxBuf, (GLenum)gl_itype, &drawOff, &drawType);
+    size_t drawOff = ioff ? (size_t)*ioff : (size_t)cmd->indexBufferOffset;
+    uint64_t drawType = mglRenderMTLIndexTypeForGLType((uint32_t)gl_itype);
+    void *prepared = mglPreparedElementIndexBuffer(
+        mglDrawHostDevice(c->r), glBuf, idxBuf, (GLenum)gl_itype, &drawOff, &drawType);
     if (ioff) *ioff = (uint64_t)drawOff;
     if (mtype) *mtype = (uint32_t)drawType;
-    if (mtl) *mtl = (__bridge void *)prepared;
+    if (mtl) *mtl = prepared;
     return 1;
 }
 
 static void *mglIcbCreate(void *v, int indexed, uint64_t count)
 {
     MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
-    id icb = nil;
-    @try {
-        icb = (__bridge_transfer id)mgl_batch_mtl_create_icb(indexed, count);
-    } @catch (NSException *ex) {
-        static uint64_t s_hit = 0;
-        uint64_t hit = ++s_hit;
-        if (hit <= 8ull || (hit % 256ull) == 0ull) {
-            NSLog(@"MGL WARNING: ICB creation failed, falling back: %@", ex);
-        }
+    int failed = 0;
+    void *icb = mglRendererCreateIndirectCommandBufferPort(c->r, indexed, count,
+                                                           &failed);
+    if (failed) {
         mglIcbTrace(v, 0, "FALLBACK", "icb_create_exception");
         return NULL;
     }
@@ -95,7 +91,7 @@ static void *mglIcbCreate(void *v, int indexed, uint64_t count)
         CFRelease(c->sticky_icb);
         c->sticky_icb = NULL;
     }
-    c->sticky_icb = (__bridge_retained void *)icb;
+    c->sticky_icb = icb;
     return c->sticky_icb;
 }
 
@@ -103,23 +99,24 @@ static void *mglStreamIdx(void *v)
 {
     MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
     Buffer *indexBuffer = (Buffer *)c->batch->stream_index_buffer;
-    if (!indexBuffer || ![c->r processBuffer:indexBuffer]) {
+    if (!indexBuffer || !mglRendererProcessBufferPort(c->r, indexBuffer)) {
         mglIcbTrace(v, 0, "FALLBACK", "stream_mdi_index_buffer");
         return NULL;
     }
-    id mtl = (__bridge id)(indexBuffer->data.mtl_data);
+    void *mtl = indexBuffer->data.mtl_data;
     if (!mtl) {
         mglIcbTrace(v, 0, "FALLBACK", "stream_mdi_no_mtl_index");
         return NULL;
     }
-    return (__bridge void *)mtl;
+    return mtl;
 }
 
 
-- (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
-                    encodeContext:(const MGLEncodeContext *)encCtx
+int mglBatchIssueStreamMergedMDIBatch(void *renderer, MGLDrawBatch *batch,
+                                      GLMContext glm_ctx,
+                                      const MGLEncodeContext *encCtx)
 {
-    MGLIcbMdiCtx ctx = {.r = self, .batch = batch, .ctx = glm_ctx, .enc = encCtx};
+    MGLIcbMdiCtx ctx = {.r = renderer, .batch = batch, .ctx = glm_ctx, .enc = encCtx};
     MGLBatchStreamMdiIssueOps ops = {
         .ctx = &ctx,
         .on_trace = mglIcbTrace,
@@ -128,18 +125,18 @@ static void *mglStreamIdx(void *v)
         .map_scratch = mglIcbMap,
     };
     return mgl_batch_mtl_issue_stream_mdi_batch(
-               batch, mglEnvFlagEnabled("MGL_DISABLE_MDI") ? 1 : 0,
+               batch, mgl_env_flag_enabled("MGL_DISABLE_MDI"),
                encCtx ? encCtx->render_encoder_owner : NULL, &ops)
-               ? YES
-               : NO;
+               ? 1
+               : 0;
 }
 
-- (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch
-                                context:(GLMContext)glm_ctx
-                          encodeContext:(const MGLEncodeContext *)encCtx
+int mglBatchIssueIndirectCommandBufferBatch(void *renderer, MGLDrawBatch *batch,
+                                            GLMContext glm_ctx,
+                                            const MGLEncodeContext *encCtx)
 {
     MGLBatchIcbConfig icbCfg = mgl_batch_icb_config();
-    MGLIcbMdiCtx ctx = {.r = self, .batch = batch, .ctx = glm_ctx, .enc = encCtx,
+    MGLIcbMdiCtx ctx = {.r = renderer, .batch = batch, .ctx = glm_ctx, .enc = encCtx,
                        .sticky_icb = NULL};
     MGLBatchIcbIssueOps ops = {
         .ctx = &ctx,
@@ -148,11 +145,11 @@ static void *mglStreamIdx(void *v)
         .resolve_index = mglIcbResolve,
     };
     int os_ok = 0;
-    if (@available(macOS 10.14, *)) {
+    if (__builtin_available(macOS 10.14, *)) {
         os_ok = 1;
     }
     const int ok = mgl_batch_mtl_issue_icb_batch(
-        batch, _device ? 1 : 0,
+        batch, mglDrawHostDevice(renderer) ? 1 : 0,
         (encCtx &&
          mglRenderEncoderOwnerHasCurrent(encCtx->render_encoder_owner))
             ? 1
@@ -163,16 +160,5 @@ static void *mglStreamIdx(void *v)
         CFRelease(ctx.sticky_icb);
         ctx.sticky_icb = NULL;
     }
-    return ok ? YES : NO;
+    return ok ? 1 : 0;
 }
-
-- (id)mdiArgumentScratchBufferWithLength:(NSUInteger)length
-                                  offset:(NSUInteger *)offsetOut
-{
-    return (__bridge id)[_renderPassManager
-        mdiArgumentScratchBufferWithDevice:(__bridge void *)_device
-                                     length:length
-                                     offset:offsetOut];
-}
-
-@end

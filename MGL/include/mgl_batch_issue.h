@@ -345,6 +345,15 @@ void mglBatchIssueDirectBatch(void *renderer, MGLDrawBatch *batch,
                               GLMContext glm_ctx,
                               const MGLEncodeContext *encode_context);
 
+/* Stream-MDI and indirect-command-buffer issue (mgl_batch_icb_mdi_encode.c).
+ * 1 = issued, 0 = the plan declined / fell back. */
+int mglBatchIssueStreamMergedMDIBatch(void *renderer, MGLDrawBatch *batch,
+                                      GLMContext glm_ctx,
+                                      const MGLEncodeContext *encode_context);
+int mglBatchIssueIndirectCommandBufferBatch(void *renderer, MGLDrawBatch *batch,
+                                            GLMContext glm_ctx,
+                                            const MGLEncodeContext *encode_context);
+
 #ifdef __cplusplus
 }
 #endif

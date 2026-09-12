@@ -282,14 +282,12 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     replayError:(GLenum *)replayError
                 skippedCommands:(uint32_t *)skippedCommands;
 - (void)recordBatchCommandStats:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
-- (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch
-                          context:(GLMContext)glm_ctx
-                    encodeContext:(const MGLEncodeContext *)encCtx;
-- (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch
-                                context:(GLMContext)glm_ctx
-                          encodeContext:(const MGLEncodeContext *)encCtx;
-- (id)mdiArgumentScratchBufferWithLength:(NSUInteger)length
-                                             offset:(NSUInteger *)offsetOut;
+/* issueStreamMergedMDIBatch:... is now the C driver mglBatchIssueStreamMergedMDIBatch
+ * (mgl_batch_issue.h, implemented in mgl_batch_icb_mdi_encode.c). */
+/* issueIndirectCommandBufferBatch:... is now the C driver
+ * mglBatchIssueIndirectCommandBufferBatch (mgl_batch_issue.h). */
+/* mdiArgumentScratchBufferWithLength:offset: moved into
+ * mglRendererMdiScratchBufferPort (mgl_renderer_port_shim.m). */
 
 // === Resource binding sync ===
 /* Work already performed by processDirtyStateDomainsLocked within the same
