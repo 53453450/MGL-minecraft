@@ -4652,13 +4652,49 @@ static GLenum mglPassthroughDeclType(
                       vertexProgram->shader_slots[_VERTEX_SHADER]->src)
                 : 0);
         if (needsExplicitTopology) {
+            /* A geometry expansion emits the geometry shader's output
+             * primitive type, not the GL draw mode: a layout(points) geometry
+             * shader drawing GL_PATCHES still rasterizes points.  Classifying
+             * by the draw mode gave it MTLPrimitiveTopologyClassTriangle, and
+             * Metal refuses to build a pipeline whose vertex function writes
+             * [[point_size]] against a triangle class ("Vertex shader writes
+             * point size but inputPrimitiveTopology is
+             * MTLPrimitiveTopologyClassTriangle").  The geometry pass then
+             * produced nothing and the draw rendered all zeroes
+             * (tessellation_shader_point_mode.point_rendering), while the
+             * sibling points_verification case only passed because its
+             * geometry shader happens to emit triangle strips. */
+            GLenum topologyMode = (GLenum)_lastDrawPrimitiveMode;
+            if (geometryExpansion && _geometry.program) {
+                switch (_geometry.program->geometry_output_type) {
+                case GL_POINTS:
+                    topologyMode = GL_POINTS;
+                    break;
+                case GL_LINE_STRIP:
+                    topologyMode = GL_LINES;
+                    break;
+                default:
+                    topologyMode = GL_TRIANGLES;
+                    break;
+                }
+            }
             state->input_primitive_topology =
-                mglRenderPrimitiveTopologyClass((uint32_t)_lastDrawPrimitiveMode);
+                mglRenderPrimitiveTopologyClass((uint32_t)topologyMode);
         }
-        /* TES-vertex (isolines / point_mode) rasterizes the expanded point /
-         * line stream with the TES as its vertex function.  Force the
-         * matching topology class so Metal links and validates the PSO. */
-        if (tessCompute && _tessellation.tessVertexRenderActive) {
+        /* isolines / point_mode rasterize the expanded point / line stream,
+         * either with the TES acting as its own vertex function (TES-vertex)
+         * or through the generated record-passthrough vertex function (TES
+         * compute).  Both write gl_PointSize under point_mode, and Metal
+         * refuses to link such a vertex function against a triangle topology
+         * class ("Vertex shader writes point size but inputPrimitiveTopology
+         * is MTLPrimitiveTopologyClassTriangle").  Gating this on
+         * tessVertexRenderActive left the compute path with the default
+         * triangle class, so the point-mode pipeline failed to build, the draw
+         * was never encoded, and the framebuffer stayed cleared
+         * (tessellation_shader_point_mode.point_rendering rendered all
+         * zeroes).  Force the class from the tessellation raster mode whenever
+         * a TES compute draw is being submitted. */
+        if (tessCompute && _tessellation.tessComputeProgram) {
             state->input_primitive_topology =
                 mglRenderPrimitiveTopologyClass(
                     (uint32_t)mglTessRasterGLMode(
@@ -6056,6 +6092,14 @@ static GLenum mglPassthroughDeclType(
 
             [self updateBlendStateCache];
             state->dirty_bits &= ~DIRTY_ALPHA_STATE;
+            if (getenv("MGL_TOPO_TRACE") != NULL) {
+                fprintf(stderr, "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",
+                        (int)(_tessellation.tessComputeActive ? 1 : 0),
+                        (int)(_tessellation.tessVertexRenderActive ? 1 : 0),
+                        (void *)_tessellation.tessComputeProgram,
+                        (unsigned)psoState.input_primitive_topology);
+                fflush(stderr);
+            }
             if (![self generatePipelineDescriptorState:&psoState
                                         vertexFunction:&psoVertexFunction
                                       fragmentFunction:&psoFragmentFunction]) {

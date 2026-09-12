@@ -5294,6 +5294,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                         v = decodeFloatCarrier(cg, v, sym->type.scalar, ty);
                     return v;
                 }
+                /* The Metal control-point function only exists for the
+                 * non-compute, non-render-vertex TES codegen.  The sibling
+                 * paths at 2807 / 2878 check for it; this one did not, so a
+                 * TES-vertex program that indexed gl_in[i].<field> built a
+                 * CallInst against a null callee and crashed inside LLVM's
+                 * type accessors (reachable once point-mode geometry
+                 * expansion got its correct point topology and the stage
+                 * actually compiled). */
+                if (!cg.controlPointGetter || !cg.patchControlPtr) {
+                    cg.err = 1;
+                    cg.errmsg = "TES AIR codegen: control-point getter is "
+                                "unavailable for this tessellation path";
+                    return nullptr;
+                }
                 llvm::Value *record = cg.b->CreateCall(
                     cg.controlPointGetter, {idx, cg.patchControlPtr});
                 return cg.b->CreateExtractValue(record, field->second);
@@ -10345,6 +10359,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
+    if (!retTy && getenv("MGL_GS_TRACE")) {
+        fprintf(stderr, "MGLGSTRACE site1 NULL retTy isGS=%d isTCS=%d isCompute=%d isTES=%d\n",
+                (int)isGS, (int)isTCS, (int)isCompute, (int)isTES);
+        fflush(stderr);
+    }
     llvm::FunctionType *ft = llvm::FunctionType::get(retTy, paramTys, false);
     llvm::Function *fn = llvm::Function::Create(
         ft, llvm::Function::ExternalLinkage, "main", &module);
@@ -11265,6 +11284,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         std::string key = std::string(d->name) + "#" +
                           std::to_string(fs->param_count);
         userFnHidden[key] = (uint32_t)pts.size() - nExplicit;
+        if (!rt && getenv("MGL_GS_TRACE")) {
+            fprintf(stderr, "MGLGSTRACE site3 NULL rt fn=%s params=%u isGS=%d\n",
+                    d->name ? d->name : "?", (unsigned)fs->param_count, (int)isGS);
+            fflush(stderr);
+        }
         llvm::Function *f = llvm::Function::Create(
             llvm::FunctionType::get(rt, pts, false),
             llvm::Function::ExternalLinkage,
