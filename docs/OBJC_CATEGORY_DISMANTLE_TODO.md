@@ -54,7 +54,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `+Batch.m` | ~170 | 薄 category / **簇仍厚** | O2.5 字面达标；encode 仍在 `mgl_batch_*_encode.m`（见 §1.2 / Track B） |
 | `+Tessellation.m` | ~1766 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~21 | 薄占位 | O2.5：dyn-bind → `mgl_batch_dyn_bind_encode.m`；待 O6 删空 category |
-| `+Buffer.m` | ~1575 | 中 | map/CoW/shadow plan → C++（O5.1 启动：vertex-index + dirty-buffer 决策已沉 C 函数）；ObjC 只 MTLBuffer 物化 |
+| `+Buffer.m` | ~1342 | 中 | map/CoW/shadow plan → C++（O5.1：vertex-index + dirty-buffer 决策已沉 C 函数；**vertex-attrib buffer map 已整段沉 `mgl_vertex_attrib_plan.*` + harness**）；ObjC 只 MTLBuffer 物化与逐 attribute resolve |
 | `+Compute.m` | ~1255 | 中 | dispatch plan → C++（O5.2 待启动）；ObjC 只 compute encoder 端口 |
 | `+Lifecycle.m` | ~665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
 | `+SwapDiagnostics.m` | ~555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
@@ -174,6 +174,7 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 - [ ] **O5.1** Buffer map / CoW / UBO isolate → C++；cap CoW（兼 FPS 方案）
   - [x] **O5.1 本刀**：`getVertexBufferIndexWithAttributeSet:`（纯决策：VAO 解析 + `vertex_buffer_map_list` fallback）下沉为 C 函数 `mglRenderVertexBufferIndexForAttribute(ctx, state, attribute, where)`（`MGLRenderer.m` 兄弟函数，声明于 `MGLRenderer+Draw_Private.h:84`）；ObjC 方法仅 `MGL_STATE(ctx)` 解 `GLMState *` + 一行转发。C1 模式范本，零 Metal 耦合；`+Buffer.m` 该入口 −33 行；唯一调用方 `+BindingState.m:356` 不变。
+  - [x] **O5.1 续刀2（本刀）**：`mapVertexAttributeBuffersToBufferMap:vao:stageInputCount:stage:` 整段（207 行）沉为纯 C `mglRenderPlanVertexAttribBuffers`（`mgl_vertex_attrib_plan.{h,c}`）：候选遍历、同流分组（buffer name/target + stride/divisor）、slot 分配（`kMGLVertexAttribBufferBase` 起）、容量/索引溢出守卫、mismatch 诊断全部在 C；逐 attribute 的 GL 状态解析留在 ObjC，经 `MGLVertexAttribResolveFn` 回调注入（`+Buffer.m` 传 `mglResolveVertexAttribForPlan`）。配套把 `MGLResolvedVertexAttribBinding` + resolver 原型从 ObjC 私头 `MGLRenderer+Draw_Private.h` 提到 C 头 `mgl_vertex_attrib_binding.h`，并把纯值谓词 `mglRenderMappedBufferCountOK` 从 `mgl_render.cpp` 迁入 plan TU（沿用 O3.1 的"纯值谓词迁 plan 层、harness 不拖 Metal/LLVM"口径）。`+Buffer.m` 1479→1342（−137），`MGLRenderer*.m` 35239→35102。新增 `make test-buffer-plan`（`test_legacy_compat/test_buffer_plan.c`，11 组 golden：单 attribute/同流合并/stride 分裂/divisor 分裂/多 buffer/不可解析跳过/空候选/既有条目保留/容量守卫/mismatch 只告警/混合候选，已挂 `test-all`；变异测试：删掉 stride 兼容判据、slot 不自增两次都被 harness 捕获）。
   - [x] **O5.1 续刀**：`checkForDirtyBufferData:` / `updateDirtyBaseBufferList:`（纯 `BufferMapList` 迭代 + dirty 上传决策，零 Metal）下沉为 `mglRenderCheckForDirtyBufferData` / `mglRenderUpdateDirtyBaseBufferList`（`MGLRenderer.m` 兄弟函数，`MGLRenderer+Draw_Private.h` 声明）；ObjC 方法仅一行转发。原 `[self updateDirtyBuffer:]` 调用改为直调 `mglRenderUpdateDirtyBuffer`，逻辑等价；所有调用方（`+RenderPass`/`+Compute`/`+Binding`/`mgl_batch_dyn_bind_encode`）经 ObjC 薄壳不变。`+Buffer.m` 两入口合计 −75 行。`test-regression` [01]–[15] 全 PASS（[16] `air_geometry_resources` 仍是已知上游 SIGSEGV，与本改动无关）。
 - [ ] **O5.2** Compute binding expansion → C++；ObjC 只 dispatch
 - [ ] **O5.3** `+VertexLayout` 删除或 &lt; 100 LOC
@@ -255,6 +256,10 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 22. **O5.4 本刀（已落）**：`mgl_draw_encode.m` 的两枚纯 C indirect-skip 谓词迁至 `mgl_draw_issue.cpp`（O5.4 第一步：`mgl_draw_encode.m` −39 行、零 Metal/ObjC 逻辑移出 ObjC TU）。`test-regression` [01]–[15] 仍全 PASS；[16] `air_geometry_resources` 已知上游 SIGSEGV 不变。
     - **下一刀候选**（O5）：`mgl_draw_encode.m` 余下 `mglEncode*ForRenderEncoderOwner` 需把 `MGLDrawMetalHandle` 改 `void*` + 调用方 `__bridge` 后方可整文件迁 C++；或转 O5.2（`+Compute.m` dispatch plan）。
+    - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
+
+24. **O5.1 续刀2（本刀，vertex-attrib buffer map 沉 C）**：`mapVertexAttributeBuffersToBufferMap:` → `mglRenderPlanVertexAttribBuffers`（新 TU `mgl_vertex_attrib_plan.c`，故意与 `mgl_buffer_plan.c` 分开——后者的 plan-build 依赖 shader/program resource 层，会拖 ObjC/Foundation 进 harness）。seam：`MGLVertexAttribResolveFn` 回调 + `MGLResolvedVertexAttribBinding` 类型提到 C 头。`MGLResolvedVertexAttribBinding` 的原私头声明改为 include 转发。`+Buffer.m` −137；`make test-buffer-plan` 11 组 golden + 变异测试；`test-frontends`/`test-regression` 子集/CTS 复验见提交信息。
+    - **下一刀候选**：同域剩余两大环 `mapShaderBufferResourcesViaPlan:`（fast path，保留）与 `mapShaderBufferResourcesToBufferMap:stage:`（~541 行 reflection fallback），可用同一 seam 思路（plan@C + 回调解析），但需要先补 plan/fast-path 一致性的 golden；或转 O5.2（`+Compute.m` dispatch/binding 环）与 O4.4（`+Blit` format/DS unify）。
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
 23. **上游 SIGSEGV 已修（6f53544，2026-09-09）**：[16/93] `air_geometry_resources` 的 `EXC_BAD_ACCESS`（`objc_retain` ← AGX `setBuffer_impl` ← `mglDrawGsExecuteMetalExpansion`）根因是 **GS compute-binding 计划的 temporaries 生命周期**：`mglGsMetalFillComputeBindings` 用局部 `NSMutableArray` 保活 plan 里的借用 MTL 指针，ARC 在函数返回时释放数组，而 C++ 侧在其后才 encode/dispatch。修复：`fill_compute_bindings` 新增 `void **temporaries_out` 出参，以 +1 CF 引用交还 keep-alive 集，C++ 侧用既有 `OwnedList` 追踪（作用域覆盖 expansion + XFB scatter 两次 execute）。compute-dispatch 与 tessellation 路径 temps/execute 同作用域，无同类问题。
