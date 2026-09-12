@@ -238,6 +238,13 @@ static void mglFrontendNoteBuiltinUse(const MGLExpr *e, const char *name,
         mglFrontendNoteBuiltinUse(e->u.index.index, name, used, max_need);
         break;
     case MGL_EXPR_CALL:
+        /* Builtin *functions* (interpolateAtSample / interpolateAtOffset) are
+         * called, not declared, so the callee name is the usage signal. */
+        if (e->u.call.name && strcmp(e->u.call.name, name) == 0) {
+            *used = 1;
+            if (*max_need == 0u)
+                *max_need = 1u;
+        }
         for (uint32_t i = 0; i < e->u.call.arg_count; i++)
             mglFrontendNoteBuiltinUse(e->u.call.args[i], name, used, max_need);
         break;
@@ -331,6 +338,44 @@ uint32_t mglFrontendBuiltinArrayCount(const MGLIRModule *mod,
     if (!used)
         return 0u;
     return need > 0u ? need : 8u;
+}
+
+/* Recursive `sample`-qualifier search over the AST declarations. */
+static int mglFrontendDeclSampleQualified(const MGLDecl *d)
+{
+    for (; d; d = d->next_declarator) {
+        /* `sample` is only legal on interface (in/out) declarations, so the
+         * declaration-level qualifier is the whole answer -- no statement
+         * walk needed. */
+        if (d->qualifiers & MGL_AST_Q_SAMPLE)
+            return 1;
+        for (uint32_t i = 0; i < d->struct_member_count; i++)
+            if (mglFrontendDeclSampleQualified(d->struct_members[i]))
+                return 1;
+        for (uint32_t i = 0; i < d->param_count; i++)
+            if (mglFrontendDeclSampleQualified(d->params[i]))
+                return 1;
+    }
+    return 0;
+}
+
+int mglFrontendStageUsesSampleInterpolation(const MGLIRModule *mod,
+                                            const MGLTranslationUnit *tu)
+{
+    if (mod) {
+        for (uint32_t i = 0; i < mod->symbol_count; i++) {
+            const MGLIRSymbol *sym = mod->symbols[i];
+            if (sym && !sym->is_function &&
+                (sym->qualifiers & MGL_AST_Q_SAMPLE))
+                return 1;
+        }
+    }
+    if (!tu)
+        return 0;
+    for (uint32_t i = 0; i < tu->decl_count; i++)
+        if (mglFrontendDeclSampleQualified(tu->decls[i]))
+            return 1;
+    return 0;
 }
 
 int mglFrontendBuiltinUsed(const MGLIRModule *mod,

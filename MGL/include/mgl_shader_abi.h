@@ -72,6 +72,17 @@ enum {
     MGL_AIR_BUILTIN_LAYER          = 1u << 4,
     MGL_AIR_BUILTIN_VIEWPORT_INDEX = 1u << 5,
     MGL_AIR_BUILTIN_TESS_LEVEL     = 1u << 6,
+    MGL_AIR_BUILTIN_VERTEX_ID      = 1u << 7,  /* gl_VertexID/gl_VertexIndex */
+    MGL_AIR_BUILTIN_FRAG_COORD     = 1u << 8,  /* gl_FragCoord               */
+    MGL_AIR_BUILTIN_NUM_SAMPLES    = 1u << 9,  /* gl_NumSamples              */
+    MGL_AIR_BUILTIN_SAMPLE_ID      = 1u << 10, /* gl_SampleID                */
+    MGL_AIR_BUILTIN_SAMPLE_POSITION = 1u << 11,/* gl_SamplePosition          */
+    MGL_AIR_BUILTIN_SAMPLE_MASK    = 1u << 12, /* gl_SampleMask(In)          */
+    /* Builtin *functions* the stage calls (see the call-name match in
+     * mglFrontendBuiltinUsed), plus the `sample` interpolation qualifier. */
+    MGL_AIR_BUILTIN_INTERPOLATE_AT_SAMPLE = 1u << 13,
+    MGL_AIR_BUILTIN_INTERPOLATE_AT_OFFSET = 1u << 14,
+    MGL_AIR_BUILTIN_SAMPLE_INTERPOLATION  = 1u << 15,
 };
 
 typedef struct MGLAIRStageInfo {

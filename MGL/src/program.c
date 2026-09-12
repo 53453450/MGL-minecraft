@@ -2445,23 +2445,15 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         goto link_fail;
     }
 
+    /* Builtin usage comes from the per-stage masks the frontend published at
+     * compile time (exact), not from scanning the shader sources. */
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
-        for (GLuint attached = 0u; attached < attached_count; attached++) {
-            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
-                ? pptr->attached_shader_slots[stage][attached]
-                : pptr->shader_slots[stage];
-            if (!shader || !shader->src) {
-                continue;
-            }
-            if (strstr(shader->src, "gl_VertexID") ||
-                strstr(shader->src, "gl_VertexIndex")) {
-                pptr->uses_vertex_id = GL_TRUE;
-            }
-            if (strstr(shader->src, "gl_PrimitiveID") ||
-                strstr(shader->src, "gl_PrimitiveIndex")) {
-                pptr->uses_primitive_id = GL_TRUE;
-            }
+        const GLuint bits = pptr->air_builtin_mask[stage];
+        if (bits & MGL_AIR_BUILTIN_VERTEX_ID) {
+            pptr->uses_vertex_id = GL_TRUE;
+        }
+        if (bits & MGL_AIR_BUILTIN_PRIMITIVE_ID) {
+            pptr->uses_primitive_id = GL_TRUE;
         }
     }
 
@@ -2884,11 +2876,20 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         pptr->usesFragCoordParams = GL_FALSE;
         pptr->uses_sample_params = GL_FALSE;
         {
-            Shader *fs = pptr->shader_slots[_FRAGMENT_SHADER];
-            if (fs && fs->src && strstr(fs->src, "gl_FragCoord"))
+            /* Fragment builtin usage from the published mask: gl_FragCoord
+             * drives the frag-coord fixup params, and the sample-related
+             * builtins (plus the `sample` qualifier / interpolateAtSample)
+             * drive the sample params.  gl_NumSamples counts for the params
+             * but not for per-sample MS values, matching the old scans. */
+            const GLuint fsBits = pptr->air_builtin_mask[_FRAGMENT_SHADER];
+            if (fsBits & MGL_AIR_BUILTIN_FRAG_COORD)
                 pptr->usesFragCoordParams = GL_TRUE;
-            if (fs && fs->src &&
-                mglRenderShaderSourceUsesSampleParams(fs->src))
+            if (fsBits & (MGL_AIR_BUILTIN_NUM_SAMPLES |
+                          MGL_AIR_BUILTIN_SAMPLE_ID |
+                          MGL_AIR_BUILTIN_SAMPLE_POSITION |
+                          MGL_AIR_BUILTIN_SAMPLE_MASK |
+                          MGL_AIR_BUILTIN_INTERPOLATE_AT_SAMPLE |
+                          MGL_AIR_BUILTIN_SAMPLE_INTERPOLATION))
                 pptr->uses_sample_params = GL_TRUE;
         }
         pptr->uses_point_size_params = GL_FALSE;

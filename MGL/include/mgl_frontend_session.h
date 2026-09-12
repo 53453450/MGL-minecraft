@@ -34,6 +34,11 @@ int mglFrontendRewriteLegacy(const char *src, int stage, char **out,
                              char *err, size_t err_cap);
 uint32_t mglFrontendIRBuiltinArrayCount(const MGLIRModule *mod,
                                         const char *name);
+/* Non-zero when this stage declares a `sample`-qualified interface (the
+ * `sample in` case that used to be found by scanning the source text). */
+int mglFrontendStageUsesSampleInterpolation(const MGLIRModule *mod,
+                                            const MGLTranslationUnit *tu);
+
 /* Non-zero when this stage's IR or TU references builtin `name` (exact
  * replacement for source-text scans; see MGL_AIR_BUILTIN_* in
  * mgl_shader_abi.h). */

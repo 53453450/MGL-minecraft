@@ -20,6 +20,7 @@
 
 #include "mgl_metal.h"
 #include "mgl_render.h"
+#include "mgl_program_resource.h"  /* mglProgramStageUsesBuiltin */
 #include "mgl_renderer_backend.h"
 #include "mgl_air_loader.h"
 #include "mgl_air_tess_abi.h"
@@ -15274,30 +15275,20 @@ int mglRenderClassifyCommandBufferCommit(
 
 /* mglRenderClassifyProcessGLState moved to mgl_render_pass_plan.c (O1.1) */
 
-int mglRenderShaderSourceUsesSampleParams(const char *src) {
-    if (!src) {
-        return 0;
-    }
-    return strstr(src, "gl_NumSamples") || strstr(src, "gl_SampleMask") ||
-                   strstr(src, "gl_SamplePosition") ||
-                   strstr(src, "gl_SampleID") ||
-                   strstr(src, "interpolateAtSample") ||
-                   strstr(src, "sample in")
-               ? 1
-               : 0;
-}
-
-int mglRenderFragmentNeedsPerSampleMSValues(const char *src) {
-    if (!src) {
-        return 0;
-    }
-    return strstr(src, "gl_SampleID") || strstr(src, "gl_SamplePosition") ||
-                   strstr(src, "gl_SampleMask") ||
-                   strstr(src, "interpolateAtSample") ||
-                   strstr(src, "interpolateAtOffset") ||
-                   strstr(src, "sample in")
-               ? 1
-               : 0;
+/* Per-sample multisample values are needed when the fragment stage reads a
+ * sample-indexed builtin or interpolates at an explicit sample/offset.  The
+ * facts come from the exact per-stage builtin mask (see
+ * mglProgramStageBuiltinMask); the previous version scanned the shader source
+ * for these names.  gl_NumSamples is deliberately excluded: it is a uniform
+ * count, not a per-sample value. */
+int mglRenderFragmentNeedsPerSampleMSValues(const Program *program) {
+    return mglProgramStageUsesBuiltin(program, _FRAGMENT_SHADER,
+                                      MGL_AIR_BUILTIN_SAMPLE_ID |
+                                          MGL_AIR_BUILTIN_SAMPLE_POSITION |
+                                          MGL_AIR_BUILTIN_SAMPLE_MASK |
+                                          MGL_AIR_BUILTIN_INTERPOLATE_AT_SAMPLE |
+                                          MGL_AIR_BUILTIN_INTERPOLATE_AT_OFFSET |
+                                          MGL_AIR_BUILTIN_SAMPLE_INTERPOLATION);
 }
 
 int mglRenderIsEmulatedMSColorTexture(uint32_t target, int32_t samples) {

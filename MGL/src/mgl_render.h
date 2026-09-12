@@ -2675,8 +2675,9 @@ int mglRenderClassifyCommandBufferCommit(
 
 #include "mgl_render_pass_plan.h"
 
-int mglRenderShaderSourceUsesSampleParams(const char *src);
-int mglRenderFragmentNeedsPerSampleMSValues(const char *src);
+/* Exact, program-based replacement for the retired shader-source scans: reads
+ * the per-stage builtin mask published by the frontend. */
+int mglRenderFragmentNeedsPerSampleMSValues(const Program *program);
 int mglRenderIsEmulatedMSColorTexture(uint32_t target, int32_t samples);
 
 int mglRenderTextureSampleParams(uint32_t target, int32_t samples,

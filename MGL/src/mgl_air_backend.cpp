@@ -14377,6 +14377,26 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_LAYER;
     if (mglFrontendBuiltinUsed(mod, tu, "gl_ViewportIndex"))
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_VIEWPORT_INDEX;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_VertexID") ||
+        mglFrontendBuiltinUsed(mod, tu, "gl_VertexIndex"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_VERTEX_ID;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_FragCoord"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_FRAG_COORD;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_NumSamples"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_NUM_SAMPLES;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_SampleID"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_SAMPLE_ID;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_SamplePosition"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_SAMPLE_POSITION;
+    if (mglFrontendBuiltinUsed(mod, tu, "gl_SampleMask") ||
+        mglFrontendBuiltinUsed(mod, tu, "gl_SampleMaskIn"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_SAMPLE_MASK;
+    if (mglFrontendBuiltinUsed(mod, tu, "interpolateAtSample"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_INTERPOLATE_AT_SAMPLE;
+    if (mglFrontendBuiltinUsed(mod, tu, "interpolateAtOffset"))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_INTERPOLATE_AT_OFFSET;
+    if (mglFrontendStageUsesSampleInterpolation(mod, tu))
+        stage_info->builtin_mask |= MGL_AIR_BUILTIN_SAMPLE_INTERPOLATION;
     if (stage_info->uses_tess_level)
         stage_info->builtin_mask |= MGL_AIR_BUILTIN_TESS_LEVEL;
     if (stage == MGL_STAGE_TESS_CONTROL && tu->layout_vertices > 0)

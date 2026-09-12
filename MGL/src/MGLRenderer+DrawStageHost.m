@@ -287,9 +287,7 @@
 {
     Program *fp = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
     if (!fp) return NO;
-    Shader *fs = fp->shader_slots[_FRAGMENT_SHADER];
-    if (!fs || !fs->src) return NO;
-    return mglRenderFragmentNeedsPerSampleMSValues(fs->src) != 0;
+    return mglRenderFragmentNeedsPerSampleMSValues(fp) != 0;
 }
 
 - (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
