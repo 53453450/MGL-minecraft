@@ -51,14 +51,14 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | 其余 `docs/*.md` | ❌（`.gitignore` 的 `/docs/*`） | 阶段性审计/审查稿与逐轮工作日志，**一律留在本地**；入库文档引用它们时只用文件名（标注"本地"），不随引用一起入库 |
 
 度量脚本：[`scripts/objc_renderer_loc.sh`](../scripts/objc_renderer_loc.sh)（`MGLRenderer*.m` 合计、Batch 诚实簇、
-Draw 簇；当前输出 `MGLRenderer*.m total: 34547`）。
+Draw 簇；当前输出 `MGLRenderer*.m total: 34525`）。
 
 ## 0.2 验证口径（本周期每刀都按这三套语料报数）
 
 | 语料 | 入口 | 通过口径 |
 |---|---|---|
 | 本地功能/回归 | `build/test_regression all`（94 项） | **92 PASS / 0 FAIL / 2 SKIP**（窗口/环境门控 2 项）；单例：`build/test_regression <name>` |
-| 本地单元 harness | `make test-all`（含 `test-tess-domain` / `test-tess-air` / `test-buffer-plan` / `test-binding-*` / `test-batch-*` / `test-render-pass-clear-plan` …） | 各自 `ok` / `0 failure` |
+| 本地单元 harness | `make test-all`（含 `test-tess-domain` / `test-tess-air` / `test-buffer-plan` / `test-reference-query` / `test-binding-*` / `test-batch-*` / `test-render-pass-clear-plan` …） | 各自 `ok` / `0 failure` |
 | CTS tess 簇 | caselist `VK-GL-CTS-build-mgl-target/mgl-tess-cluster-cases.txt`（140 例） | **139 pass / 1 fail / 0 ns**；唯一失败为已归档的 FO-spacing CTS 期望矛盾 |
 | CTS GS 簇 | caselist `…/mgl-gs-cluster-cases.txt`（136 例，由上一轮 GS run 的 `summary.tsv` 复刻） | **136 / 0** |
 | GL46 hotspot | caselist `…/khr-gl46-fbo-hotspot.cases.txt`（1328 例） | 通过数可持平，但**必须给"非通过集合逐条 diff 为空"**（否则不算无回归） |
@@ -131,7 +131,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 
 > **实测（2026-09-12）**：`MGLRenderer+*.m` categories 合计 **34.5k** LOC（基线 ~59k；O1/O2/C1 已降 ~24.5k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 = **19.0k**（6981+7058+4945），仍是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
 >
-> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34547`）。
+> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34525`，`+Buffer.m` 822）。
 
 **Batch ObjC 诚实合计（Track B）**：categories ~190 + encode/trace/port ~1521 = **~1711**（`scripts/objc_renderer_loc.sh`）。A3 本刀 1923→~1711（−212；direct-submit C 决策树、trace fill helpers、binding helpers→`+Binding`、sampled resolve gate）；**勿宣称 cleanup done**（残量仍 ~1.7k）。
 
@@ -291,9 +291,31 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
   **零次 TRUE**，与 sampler 启发式那刀的结论一致（plain-uniform 资源在 IR 链下不带 texture dim），
   随后删除并简化 5 处调用点。`MGL_BP_FLAG_SKIP` 因此失去生产者，标志位、`mglRenderBufferPlanEntrySkip()`
   与 buffer-map fast path 的守卫一并退休（plan 层仍保留 skip action 供 harness 使用）。
+- [x] **O7.4.4 引用查询从源码文本扫描迁到 TU 访问路径（`f089cd9`）**：
+  `mgl_gl_extensions.c` 的三个文本扫描器——`mgl_program_stage_source_body`（`strstr(src, "void main")`
+  截断取"主体"）、`mgl_program_source_name_is_referenced`（叶子标识符整词匹配）、
+  `mgl_program_qualified_member_referenced`（`<instance>[...].<member>` 文本匹配）加转发包装
+  `mgl_program_stage_source_references`，四个函数共 123 行——删除，
+  改由 `mgl_frontend_session.c` 的 `mglFrontendStageReferencesName()` / `mglFrontendStageReferencesMember()`
+  回答（`mgl_program_stage_references_name/member` 只做 `Program` → `Shader::frontend_tu` 转发）。
+  语义（= 新的**规格**，由 `make test-reference-query` 固化）：
+  1. 只走**函数体**：声明、注释、预处理行都不算引用；反过来 main 之前定义的 helper 算引用
+     （旧扫描在第一个 `void main` 处截断，位于其上的 helper 一律看不见）；
+  2. 表达式压成组件路径 `name[idx][idx]...`（VAR_REF/MEMBER 追加名字，INDEX 给最后一个组件追加下标；
+     非字面量下标记 `?`），query（`colors[0]`、`a[0].b[0].d[0]`）按同一形状解析，两边的组件必须**对齐成连续一段**；
+  3. 于是：选得更深算引用（query `colors[0]` vs 访问 `colors[0].xyz`）、query 少写尾部下标算引用
+     （`colors` vs `colors[0]`）、两个**字面量**下标必须相等（`colors[1]` 不匹配 `colors[0]`）、`?` 是通配；
+  4. 被索引对象的"丢下标前缀"（`blk.colors` 之于 `blk.colors[0]`）不参与匹配，否则同族元素会互相冒充
+     （这一条是 harness 逼出来的：第一版匹配器把 MEMBER 子表达式路径也算引用，`colors[1]` 会命中 `colors[0]`）；
+  5. 旧扫描按**叶子**文本找（`a[0].b[0].d[0]` 只找 `d[0]`），所以同名叶子会假阳性——这是本次唯一有意的语义收紧。
+  oracle：① 新增 `make test-reference-query`（30 例，纯 C，不需要 Metal/ObjC：`mglGLSLParse` + sema 后直接查 TU）；
+  ② A/B 双库对照：223 例 `KHR-GL46.{program_interface_query, shader_atomic_counters,
+  shader_atomic_counter_ops_tests, shader_storage_buffer_object, layout_binding}.*`，切换前（`79269da` 的三个文件）
+  与切换后各跑一次，**逐例结果 diff 为空**（两边都是 164 pass / 54 fail / 5 crash）；③ 标准三套语料见下。
+  注：这三套语料几乎不触达该路径（caselist 内 `atomic|program_resource|interface_query|shader_storage` 命中
+  tess 1 / GS 4 / hotspot 0 例），所以真 oracle 是 ①②，CTS 只作回归护栏——文档如实标注。
 - [ ] **O7.4 剩余候选（按收益排序）**：
-  1. `mgl_gl_extensions.c` 的 `strstr(shader->src, "void main")` → 查询/校验路径，需单独评估；
-  2. `mgl_draw_encode` / `program.c` 中其余 `->src` 文本判定（如 legacy 翻译标记）→ 逐条判定，凡属
+  1. `mgl_draw_encode` / `program.c` 中其余 `->src` 文本判定（如 legacy 翻译标记）→ 逐条判定，凡属
      「解析器本体需要」的保留并在此处标注。
 - [ ] **O7.5 验收口径**：每刀必须给 `local 全量（94 项）` + `CTS tess 140 / GS 136 / hotspot 1328`
   三套数字，hotspot 要求**非通过集合逐条 diff 为空**；退役的判据要在文档里留下 oracle 说明（探针名 +
@@ -432,10 +454,22 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     验证：本地 92/0/2；`test-legacy-compat` 193/193；`test-frontends` 67/67；`make test-buffer-plan`；
     GS 簇 136/0；tess 簇 139/1/0；hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
 
-32. **当前下一刀（2026-09-12 收口，按推荐顺序）**：
-    1. **O7.4.4** `mgl_gl_extensions.c` 的 `strstr(shader->src, "void main")`：查询/校验路径，需单独评估（是否可用反射的"是否存在 main"代替）；这是 O7 清单里最后一条非解析器本体的文本判定。
-    2. **O5.2** `+Compute.m`（1255）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
-    3. **O3.1 残量**（load/store + attachment match → `mgl_render_pass_plan.*`）：风险高，需先补 harness golden。
+32. **O7.4.4 引用查询迁到 TU 访问路径（`f089cd9`）**：`mgl_gl_extensions.c` 的三个文本扫描器加转发包装
+    （`mgl_program_stage_source_body` / `mgl_program_source_name_is_referenced` /
+    `mgl_program_qualified_member_referenced` / `mgl_program_stage_source_references`，共 123 行）删除，
+    改由 `mglFrontendStageReferencesName()` / `mglFrontendStageReferencesMember()` 走 TU 函数体 +
+    组件化访问路径（详见 Batch O7 的 O7.4.4 条）。
+    顺带修掉旧扫描的两个结构性问题：main 之前的 helper 看不见（截断），以及按**叶子**文本匹配导致同名叶子假阳性。
+    新增持久 oracle `make test-reference-query`（30 例，纯 C；`make test-all` 已纳入）。
+    验证：本地 92/0/2；`test-reference-query` 30/30；`test-legacy-compat` 193/193；`test-frontends`；
+    `test-buffer-plan` / `test-tess-domain` / `test-tess-air`(180) / `test-binding-*` / `test-render-pass-clear-plan`；
+    A/B 双库 223 例逐例 diff 为空（164/54/5 两边相同）；GS 簇 136/0；tess 簇 139/1/0；
+    hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
+
+33. **当前下一刀（2026-09-12 收口，按推荐顺序）**：
+    1. **O5.2** `+Compute.m`（1255）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
+    2. **O3.1 残量**（load/store + attachment match → `mgl_render_pass_plan.*`）：风险高，需先补 harness golden。
+    3. **O7.4 残条**：`mgl_draw_encode` / `program.c` 里其余 `->src` 文本判定——逐条判定，属"解析器本体需要"的保留并标注。
   - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
