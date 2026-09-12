@@ -20,6 +20,7 @@
 #include "mgl_types_texture.h"     /* Texture */
 #include "mgl_types_buffer.h"      /* Buffer */
 #include "mgl_trace_strategy.h"    /* MGLFragmentTextureTraceBinding */
+#include "mgl_batching_state.h"     /* MGLBatchingState */
 
 #ifdef __cplusplus
 extern "C" {
@@ -98,17 +99,15 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
 /* Binding-state snapshot validity of the renderer's owner. */
 int mglRendererBindingStateIsValidPort(void *renderer);
 
+/* The renderer's batching state (flags + batch arena).  C drivers read and
+ * write the fields directly; this one port replaced six per-flag wrappers. */
+MGLBatchingState *mglRendererBatchingStatePort(void *renderer);
+
 void mglRendererAssertDualProxyPort(void *renderer, GLMContext ctx);
 void mglRendererActivateReplayStatePort(void *renderer, GLMContext ctx);
 void mglRendererRestoreLiveActiveStatePort(void *renderer, GLMContext ctx);
 void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx);
 void mglRendererSetCurrentCBHasWorkPort(void *renderer, int has_work);
-int mglRendererAbsoluteVertexBindingOffsetsPort(void *renderer);
-void mglRendererSetAbsoluteVertexBindingOffsetsPort(void *renderer, int enabled);
-int mglRendererSkipSameKeyRestoreEnabledPort(void *renderer);
-int mglRendererDirtyKeyDeltaEnabledPort(void *renderer);
-int mglRendererArenaSnapshotEnabledPort(void *renderer);
-void mglRendererResetBatchArenaPort(void *renderer);
 void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,
                                    uint32_t batch_index);
 int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer);

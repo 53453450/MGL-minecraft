@@ -40,6 +40,7 @@
 #import "mgl_trace_strategy.h"
 
 #include "mgl_buffer_slots.h"   /* kMGLMaxBufferSlots */
+#include "mgl_batching_state.h" /* MGLBatchingState */
 
 typedef struct MGLDrawable_t {
     GLuint width;
@@ -143,15 +144,8 @@ typedef struct MGLGeometryState_t {
     Program *program;
 } MGLGeometryState;
 
-typedef struct MGLBatchingState_t {
-    MGLBatchArena batchArena;
-    BOOL arenaSnapshotEnabled;
-    BOOL skipSameKeyRestoreEnabled;
-    BOOL dirtyKeyDeltaEnabled;
-    /* Replay of a BindNoFlush batch that captured per-draw BindVertexBuffer
-     * overrides.  Descriptor bakes only relativeoffset; setVertexBuffer uses
-     * the absolute VERTEX_BINDING_OFFSET so overrides are not double-counted. */
-    BOOL absoluteVertexBindingOffsets;
-} MGLBatchingState;
+/* MGLBatchingState moved to the C-safe mgl_batching_state.h so the C batch
+ * drivers can read and write its fields directly (one port hands out the
+ * address) instead of going through a port per flag. */
 
 #endif /* MGLRenderer_State_h */

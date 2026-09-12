@@ -37,8 +37,9 @@ static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
         mglRendererCurrentRenderEncoderOwnerPort(c->r)) ? 1u : 0u;
     in->bind_valid = mglRendererBindingStateIsValidPort(c->r) ? 1u : 0u;
     in->keys_equal = mglStateKeysEqual(&batch->key, &c->key) ? 1u : 0u;
+    const MGLBatchingState *bs = mglRendererBatchingStatePort(c->r);
     in->absolute_offsets_match =
-        (want == mglRendererAbsoluteVertexBindingOffsetsPort(c->r)) ? 1u : 0u;
+        (want == (bs && bs->absoluteVertexBindingOffsets ? 1 : 0)) ? 1u : 0u;
     in->pass_matches = mglRendererCurrentRenderPassMatchesFramebufferPort(c->r) ? 1u : 0u;
 }
 static void fNote(void *v, int d) { (void)v; mgl_batch_mtl_restore_note_skip_fail_perf(d); }
@@ -48,7 +49,8 @@ static void fApplySkip(void *v, uint32_t b)
 { (void)b; FCtx *c = v; mglRendererSetActiveStatePort(c->r, c->ctx);
   c->ctx->active_state->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)
-{ mglRendererSetAbsoluteVertexBindingOffsetsPort(((FCtx *)v)->r, w ? 1 : 0); }
+{ MGLBatchingState *bs = mglRendererBatchingStatePort(((FCtx *)v)->r);
+  if (bs) bs->absoluteVertexBindingOffsets = w ? 1u : 0u; }
 static void fRestore(void *v, uint32_t b, uint32_t forced)
 { FCtx *c = v; mglBatchRestoreStateForBatch(c->r, FB(c, b), c->ctx, c->saved,
       (c->st->last_key_valid ? &c->key : NULL), forced); }
@@ -182,6 +184,7 @@ void mglBatchFlushRunBatches(void *renderer, GLMContext glm_ctx, MGLBatchFlushPa
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     uint64_t hit = pass->hit;
     uint32_t skipped = pass->skipped;
+    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
     MGLBatchFlushLoopState st; memset(&st, 0, sizeof(st));
     FCtx fc = {.r = renderer, .ctx = glm_ctx, .saved = &pass->saved, .hit = hit,
                .err = &pass->replay_error, .skipped = &skipped, .st = &st};
@@ -196,7 +199,7 @@ void mglBatchFlushRunBatches(void *renderer, GLMContext glm_ctx, MGLBatchFlushPa
         .perf_direct = fPerfD, .issue_stream = fIssS, .issue_mdi = fIssM,
         .issue_icb = fIssI, .issue_direct = fIssD, .record_stats = fRec,
         .vao_buffer_dirty_mask = (DIRTY_VAO | DIRTY_BUFFER),
-        .skip_enabled = mglRendererSkipSameKeyRestoreEnabledPort(renderer) ? 1u : 0u,
+        .skip_enabled = bs && bs->skipSameKeyRestoreEnabled ? 1u : 0u,
         .oracle_env_enabled = mgl_env_flag_enabled("MGL_SKIP_SAME_KEY_ORACLE") ? 1u : 0u,
     };
     mgl_batch_flush_run_batches(&st, &ops);
@@ -255,6 +258,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
                                  const MGLStateKey *prevKey, GLuint forcedDirtyBits)
 {
     if (!renderer || !batch || !glm_ctx) return;
+    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     mglRendererAssertDualProxyPort(renderer, glm_ctx);
     if (batch->state_snapshot) {
@@ -272,7 +276,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
     GLuint replayDirtyBits = kFull;
     int prevKeyValid = (prevKey != NULL);
     int canDelta = mgl_batch_restore_can_delta(
-                       mglRendererDirtyKeyDeltaEnabledPort(renderer), prevKeyValid,
+                       bs && bs->dirtyKeyDeltaEnabled ? 1 : 0, prevKeyValid,
                        mglRenderEncoderOwnerHasCurrent(
                            mglRendererCurrentRenderEncoderOwnerPort(renderer)),
                        mglRendererBindingStateIsValidPort(renderer))
@@ -302,15 +306,16 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
 
 void mglBatchTeardownReplay(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass)
 {
+    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
     mglRendererAssertDualProxyPort(renderer, glm_ctx);
     const int usedReplayWorkspace = (glm_ctx->active_state == &glm_ctx->replay_state);
     if (usedReplayWorkspace)
         mgl_batch_replay_sync_hash_tables_from_replay(&glm_ctx->state, &glm_ctx->replay_state);
     mglRendererRestoreLiveActiveStatePort(renderer, glm_ctx);
     mglRendererAssertDualProxyPort(renderer, glm_ctx);
-    mglRendererSetAbsoluteVertexBindingOffsetsPort(renderer, 0);
+    if (bs) bs->absoluteVertexBindingOffsets = 0u;
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
-    if (mglRendererArenaSnapshotEnabledPort(renderer)) mglRendererResetBatchArenaPort(renderer);
+    if (bs && bs->arenaSnapshotEnabled) mglResetBatchArena(&bs->batchArena);
     if (!usedReplayWorkspace) memcpy(glm_ctx->active_state, &pass->saved, sizeof(GLMState));
     mglClearStateDirtyBitsPreservingHashInvalidation(glm_ctx->active_state);
     mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,

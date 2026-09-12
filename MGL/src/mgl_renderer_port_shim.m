@@ -419,51 +419,17 @@ void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx)
     }
 }
 
+MGLBatchingState *mglRendererBatchingStatePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? &r->_batching : NULL;
+}
+
 void mglRendererSetCurrentCBHasWorkPort(void *renderer, int has_work)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     if (r) {
         r->_currentCBHasWork = has_work ? YES : NO;
-    }
-}
-
-int mglRendererAbsoluteVertexBindingOffsetsPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && r->_batching.absoluteVertexBindingOffsets) ? 1 : 0;
-}
-
-void mglRendererSetAbsoluteVertexBindingOffsetsPort(void *renderer, int enabled)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        r->_batching.absoluteVertexBindingOffsets = enabled ? YES : NO;
-    }
-}
-
-int mglRendererSkipSameKeyRestoreEnabledPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && r->_batching.skipSameKeyRestoreEnabled) ? 1 : 0;
-}
-
-int mglRendererDirtyKeyDeltaEnabledPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && r->_batching.dirtyKeyDeltaEnabled) ? 1 : 0;
-}
-
-int mglRendererArenaSnapshotEnabledPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && r->_batching.arenaSnapshotEnabled) ? 1 : 0;
-}
-
-void mglRendererResetBatchArenaPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        mglResetBatchArena(&r->_batching.batchArena);
     }
 }
 
