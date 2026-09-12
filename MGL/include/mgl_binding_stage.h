@@ -137,6 +137,13 @@ typedef struct MGLStageBufferBindInput {
     uint64_t visible_mtl;     /* visible from metal backing */
     int binding_state_valid;
     int buffer_matches; /* last-bound matches candidate (POST only) */
+    /* Stage-specific switches a caller may set after the POD fill.  All zero
+     * keeps the vertex/fragment behaviour, so a zero-initialised input (as the
+     * plan harness builds) plans exactly as before. */
+    int no_inline;             /* stage has no set*Bytes path (compute) */
+    int iso_storage_exhausted; /* isolate when storage_remaining <= 0 */
+    int iso_empty_visible;     /* isolate when the visible backing is empty */
+    int64_t storage_remaining; /* GL storage left from `offset`, for the above */
 } MGLStageBufferBindInput;
 
 typedef struct MGLStageBufferBindPlan {
@@ -144,6 +151,9 @@ typedef struct MGLStageBufferBindPlan {
     uint32_t reason; /* MGL_SB_REASON_* */
     uint32_t metal_slot;
     uint32_t gl_binding;
+    /* Offset to bind at.  ISOLATE always reports 0 (the isolated copy is bound
+     * at 0), so a caller that copies the isolated buffer back must take the
+     * DESTINATION offset from its own map entry, never from this field. */
     uint64_t bind_offset;
     uint32_t required_bytes;
     uint32_t reflected_bytes;
@@ -161,6 +171,19 @@ typedef struct MGLStageBufferBindPlan {
     int invalidate_last_bound;    /* after set*Bytes */
     int use_mtl_as_inline_src;    /* fragment small MTL fallback path */
 } MGLStageBufferBindPlan;
+
+/* Disposition of a planned map entry, for a caller that has just planned one:
+ * 0 = carry out the action, 1 = skip this entry, -1 = refuse the binding.  The
+ * reason table lives here so a materializing caller (compute) does not grow its
+ * own copy of it. */
+int mglBindingStageMapEntryDisposition(uint32_t reason);
+
+/* Stable short name of a MGL_SB_REASON_* value, for diagnostics. */
+const char *mglBindingStagePlanReasonName(uint32_t reason);
+
+/* Length of the isolated copy buffer for `required` bytes: at least one
+ * uint32, the floor the tess / compute isolation path always used. */
+uint32_t mglBindingStageIsolateFallbackLength(uint32_t required);
 
 /* Plan one mapped stage-buffer entry. Returns 0 on success (plan filled). */
 int mglBindingStagePlanMapEntry(const MGLStageBufferBindInput *in,

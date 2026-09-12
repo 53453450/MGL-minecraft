@@ -180,6 +180,50 @@ static void mglBindingStagePlanClear(MGLStageBufferBindPlan *out) {
     memset(out, 0, sizeof(*out));
 }
 
+int mglBindingStageMapEntryDisposition(uint32_t reason) {
+    switch (reason) {
+    case MGL_SB_REASON_NOT_BASE:
+    case MGL_SB_REASON_SLOT_OOR:
+    case MGL_SB_REASON_ATTRIB_RESERVED:
+        return 1; /* nothing to bind for this entry */
+    case MGL_SB_REASON_NEED_ENSURE:
+    case MGL_SB_REASON_ISOLATE:
+    case MGL_SB_REASON_BIND:
+    case MGL_SB_REASON_MATCHED:
+        return 0; /* the caller carries the action out */
+    default:
+        return -1; /* NULL_BUFFER / BAD_OFFSET / BAD_SIZE / inline arms */
+    }
+}
+
+const char *mglBindingStagePlanReasonName(uint32_t reason) {
+    switch (reason) {
+    case MGL_SB_REASON_OK: return "ok";
+    case MGL_SB_REASON_NOT_BASE: return "not-base-binding";
+    case MGL_SB_REASON_SLOT_OOR: return "metal-slot-out-of-range";
+    case MGL_SB_REASON_ATTRIB_RESERVED: return "attrib-slot-reserved";
+    case MGL_SB_REASON_NULL_BUFFER: return "no-metal-backing";
+    case MGL_SB_REASON_BAD_OFFSET: return "bad-offset";
+    case MGL_SB_REASON_BAD_SIZE: return "bad-size";
+    case MGL_SB_REASON_INLINE_UC: return "inline-uniform-constant";
+    case MGL_SB_REASON_INLINE_FS_SMALL: return "inline-fragment-small";
+    case MGL_SB_REASON_INLINE_FS_TAGGED: return "inline-fragment-tagged";
+    case MGL_SB_REASON_INLINE_FS_BAD_OFF: return "inline-fragment-bad-offset";
+    case MGL_SB_REASON_INLINE_FS_MTL: return "inline-fragment-metal";
+    case MGL_SB_REASON_INLINE_FS_EMPTY: return "inline-fragment-empty";
+    case MGL_SB_REASON_NEED_ENSURE: return "needs-metal-backing";
+    case MGL_SB_REASON_ISOLATE: return "isolate";
+    case MGL_SB_REASON_BIND: return "bind";
+    case MGL_SB_REASON_MATCHED: return "already-bound";
+    default: return "unknown";
+    }
+}
+
+uint32_t mglBindingStageIsolateFallbackLength(uint32_t required) {
+    return required > (uint32_t)sizeof(uint32_t) ? required
+                                                : (uint32_t)sizeof(uint32_t);
+}
+
 int mglBindingStagePlanMapEntry(const MGLStageBufferBindInput *in,
                                 MGLStageBufferBindPlan *out) {
     if (!in || !out) {
@@ -266,7 +310,7 @@ int mglBindingStagePlanMapEntry(const MGLStageBufferBindInput *in,
     /* ---- Fragment non-base-style small inline (historical FS path) ----
      * UseInlineFragmentBytes is !is_base && size<4096; base bindings never
      * take this arm. Kept for ABI completeness if callers pass is_base=0. */
-    if (in->is_fragment &&
+    if (!in->no_inline && in->is_fragment &&
         mglRenderUseInlineFragmentBytes(in->is_base_binding, in->buffer_size)) {
         if (in->has_cpu_data && in->buffer_size > 0) {
             if (mglRenderCPUPointerLooksTagged(in->cpu_ptr)) {
@@ -330,7 +374,7 @@ int mglBindingStagePlanMapEntry(const MGLStageBufferBindInput *in,
     }
 
     /* ---- Uniform-constant set*Bytes (both stages) ---- */
-    if (mglRenderUseUniformConstantInline(
+    if (!in->no_inline && mglRenderUseUniformConstantInline(
             in->is_base_binding ? 1 : 0, (int)in->resource_type,
             in->has_cpu_data ? 1 : 0, in->offset, required, in->scratch_cap)) {
         uint32_t visible = (uint32_t)in->visible_cpu;
@@ -360,9 +404,19 @@ int mglBindingStagePlanMapEntry(const MGLStageBufferBindInput *in,
     out->metal_len = (uint32_t)in->metal_len;
     out->available_bytes = (uint32_t)in->visible_mtl;
 
-    if (mglRenderNeedsIsolatedStageBinding(
-            has_usable_mtl, in->offset, in->metal_len, in->visible_mtl,
-            required) &&
+    /* The compute / tess stage-binding path treats an exhausted GL storage
+     * range or an empty visible backing as "needs a correct-size copy" too;
+     * both clauses are opt-in so the vertex / fragment plan is unchanged. */
+    int need_isolate = mglRenderNeedsIsolatedStageBinding(
+        has_usable_mtl, in->offset, in->metal_len, in->visible_mtl, required);
+    if (!need_isolate && in->iso_storage_exhausted &&
+        in->storage_remaining <= 0) {
+        need_isolate = 1;
+    }
+    if (!need_isolate && in->iso_empty_visible && in->visible_mtl == 0u) {
+        need_isolate = 1;
+    }
+    if (need_isolate &&
         mglRenderAllowIsolateGPUWriteTarget(in->gpu_write_target ? 1 : 0,
                                             in->allow_isolate_when_gpu ? 1
                                                                        : 0)) {

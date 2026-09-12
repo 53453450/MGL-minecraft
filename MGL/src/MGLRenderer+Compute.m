@@ -45,28 +45,6 @@ static id mglComputeCreateDefaultSampler(void)
     return nil;
 }
 
-static id mglComputeCreateTextureLevelView(id texture, NSUInteger level)
-{
-    MGLRenderTextureInfo info = {0};
-    if (mglRenderGetTextureInfo((__bridge void *)texture, &info) != 0) {
-        return nil;
-    }
-    if (!mglRenderImageLevelInRange((uint32_t)level,
-                                    (uint32_t)info.mipmap_level_count)) {
-        return nil;
-    }
-    uint64_t sliceCount = mglRenderImageViewSliceCount(info.texture_type,
-                                                       info.array_length);
-    void *view = NULL;
-    if (mglRenderCreateTextureViewRange(
-            (__bridge void *)texture, info.pixel_format, info.texture_type,
-            level, 1, 0, sliceCount,
-            0, 0, 0, 0, 0, &view) == 0 && view) {
-        return (__bridge_transfer id)view;
-    }
-    return nil;
-}
-
 static void mglComputeSetBuffer(id encoder,
                                 id buffer,
                                 NSUInteger offset,
@@ -266,11 +244,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     for(int i=0; i<bufferMap->count; i++)
     {
         BufferMap *map = &bufferMap->buffers[i];
-        Buffer *ptr;
-        NSUInteger metalBindingIndex = 0u;
-        NSUInteger bindOffset;
-
-        ptr = map->buf;
+        Buffer *ptr = map->buf;
 
         if (!ptr) {
             MGL_CBIND_FLUSH_SNAPSHOT();
@@ -278,30 +252,75 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
             return false;
         }
 
-        uint32_t resolvedSlot = 0u;
-        if (!mglRenderResolveMappedBufferSlot(
-                map->has_metal_binding ? 1 : 0, (int32_t)map->metal_binding_index,
-                (int32_t)map->buffer_base_index,
-                (uint32_t)kMGLMaxMetalVertexBufferCount, &resolvedSlot)) {
-            NSLog(@"MGL COMPUTE WARNING: buffer map[%d] Metal slot out of range, skipping",
-                  i);
-            continue;
-        }
-        metalBindingIndex = (NSUInteger)resolvedSlot;
-        [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
-        if (!mglRenderBufferMapOffsetValid(map->offset)) {
-            NSLog(@"MGL COMPUTE WARNING: buffer map[%d] negative offset=%lld, skipping",
-                  i,
-                  (long long)map->offset);
+        /* One shared plan decides the Metal slot, the required size, whether
+         * the map needs an isolated copy and at which offset to bind
+         * (mgl_binding_stage.h).  This loop only materializes what the plan
+         * asks for and records the encode.  The three switches below describe
+         * the compute stage: it has no set*Bytes path (so a plain-uniform slot
+         * must become a real Metal buffer instead of an inline binding) and,
+         * as the writer of its own buffers, it isolates a map whose GL storage
+         * is exhausted or whose visible backing is empty. */
+        NSUInteger requiredBytes = mglRendererGetProgramBindingRequiredSize(
+            ctx, stage, (int)map->resource_type, (int)map->resource_index);
+        requiredBytes = mglTessRequiredBindingBytes((int)map->resource_type,
+                                                    (uint32_t)requiredBytes);
+
+        MGLStageBufferBindInput bin = {0};
+        mglBindingStageFillMapEntryInput(
+            &bin, /*is_fragment=*/0, MGL_SB_PHASE_PRE_MTL,
+            /*is_base_binding=*/1, map->has_metal_binding ? 1 : 0,
+            map->has_metal_binding ? (int32_t)map->metal_binding_index : -1,
+            (int32_t)map->buffer_base_index, (uint32_t)map->resource_type,
+            map->offset, ptr->size, /*has_buffer=*/1,
+            ptr->data.buffer_data ? 1 : 0, ptr->data.mtl_data ? 1 : 0,
+            (const void *)(uintptr_t)ptr->data.buffer_data, ptr->data.mtl_data,
+            /*cpu_dirty=*/0, ptr->gpu_write_target ? 1 : 0,
+            /*allow_isolate_when_gpu=*/1, /*attrib_reserved=*/0,
+            (uint32_t)kMGLMaxMetalVertexBufferCount,
+            (uint32_t)MAX_BINDABLE_BUFFERS, (uint32_t)requiredBytes,
+            /*min_stage_bytes=*/0u, /*scratch_cap=*/0u,
+            /*visible_cpu=*/0u, /*visible_range=*/0);
+        bin.no_inline = 1;
+        bin.iso_storage_exhausted = 1;
+        bin.iso_empty_visible = 1;
+        bin.storage_remaining = (int64_t)mglBufferMapStorageRemaining(map);
+
+        MGLStageBufferBindPlan plan = {0};
+        if (mglBindingStagePlanMapEntry(&bin, &plan) != 0) {
             MGL_CBIND_FLUSH_SNAPSHOT();
+            NSLog(@"MGL COMPUTE ERROR: buffer map[%d] bind plan failed", i);
             return false;
         }
-        bindOffset = (NSUInteger)map->offset;
+        /* An unusable map is refused loudly rather than encoded as a nil
+         * binding; only an entry with nothing to bind is skipped, as before.
+         * The reason table lives in the plan layer. */
+        const int disposition =
+            mglBindingStageMapEntryDisposition(plan.reason);
+        if (disposition != 0) {
+            MGL_CBIND_FLUSH_SNAPSHOT();
+            if (disposition > 0) {
+                NSLog(@"MGL COMPUTE WARNING: buffer map[%d] %s, skipping", i,
+                      mglBindingStagePlanReasonName(plan.reason));
+                continue;
+            }
+            NSLog(@"MGL COMPUTE ERROR: buffer map[%d] %s (offset=%lld size=%lld)",
+                  i, mglBindingStagePlanReasonName(plan.reason),
+                  (long long)map->offset, (long long)ptr->size);
+            return false;
+        }
+        if (plan.action != MGL_SB_ACTION_NEED_MTL) {
+            /* No inline path is allowed above, so anything else here means the
+             * map cannot be bound. */
+            MGL_CBIND_FLUSH_SNAPSHOT();
+            NSLog(@"MGL COMPUTE ERROR: buffer map[%d] %s is not bindable", i,
+                  mglBindingStagePlanReasonName(plan.reason));
+            return false;
+        }
 
-        /* Compute has no inline set*Bytes path, so it needs a real Metal
-         * buffer.  Small plain-uniform slots deliberately do not carry one
-         * (see updateDirtyBuffer); create it from the current CPU shadow
-         * instead of falling through to a zero-filled isolated binding. */
+        NSUInteger metalBindingIndex = (NSUInteger)plan.metal_slot;
+        [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
+
+        /* ---- materialize the Metal backing the plan asked for ---- */
         if (ptr->data.mtl_data) {
             MGLRenderBufferInfo existingInfo = {0};
             if (mglRenderGetBufferInfo(ptr->data.mtl_data, &existingInfo) == 0 &&
@@ -335,33 +354,32 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                 (int)map->resource_type)) {
             mglRenderClearCPUWriteRange(ptr);
         }
+
         id buffer = ptr->data.mtl_data
             ? (__bridge id)(ptr->data.mtl_data)
             : nil;
         MGLRenderBufferInfo bufferInfo = {0};
         const BOOL hasBufferInfo = buffer &&
             mglRenderGetBufferInfo((__bridge void *)buffer, &bufferInfo) == 0;
-
-        NSUInteger requiredBytes =
-            mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
-        requiredBytes = mglTessRequiredBindingBytes((int)map->resource_type,
-                                                    (uint32_t)requiredBytes);
-
-        GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
         NSUInteger availableBytes = hasBufferInfo
             ? mglBufferMapVisibleBackingBytes(map, bufferInfo.length)
             : 0u;
-        MGLTessIsolatedBindingPlan bindPlan = {0};
-        if (!mglTessPlanIsolatedBinding(
-                hasBufferInfo ? 1 : 0, (int64_t)bindOffset,
-                hasBufferInfo ? bufferInfo.length : 0u,
-                (int64_t)storageRemaining, (uint64_t)availableBytes,
-                (uint32_t)requiredBytes, (int)map->resource_type,
-                &bindPlan)) {
+
+        mglBindingStageFillMapEntryPostMtl(
+            &bin, ptr->data.mtl_data ? 1 : 0, ptr->data.mtl_data,
+            hasBufferInfo ? 1 : 0, hasBufferInfo ? bufferInfo.length : 0u,
+            (uint64_t)availableBytes, /*binding_state_valid=*/0,
+            /*buffer_matches=*/0);
+        if (mglBindingStagePlanMapEntry(&bin, &plan) != 0) {
+            MGL_CBIND_FLUSH_SNAPSHOT();
+            NSLog(@"MGL COMPUTE ERROR: buffer map[%d] post-ensure plan failed", i);
             return false;
         }
-        if (bindPlan.isolated) {
-            NSUInteger fallbackLength = bindPlan.fallback_length;
+
+        if (plan.action == MGL_SB_ACTION_ISOLATE) {
+            NSUInteger fallbackLength =
+                (NSUInteger)mglBindingStageIsolateFallbackLength(
+                    plan.required_bytes);
             id isolated =
                 [self isolatedStageBindingBufferForMap:map
                                                  source:buffer
@@ -376,15 +394,15 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                 return false;
             }
 
-            if (mglTessIsolatedNeedsCopyBack(bindPlan.writable ? 1 : 0,
-                                             buffer ? 1 : 0,
-                                             bindPlan.init_length) &&
+            /* The copy-back writes where the caller's binding starts, not at
+             * the plan's bind offset (an isolated binding is always @0). */
+            if (plan.needs_copy_back &&
                 ![self recordStageBindingCopyBack:copyBacks
                                            atIndex:metalBindingIndex
                                          temporary:isolated
                                        destination:buffer
                                  destinationBuffer:ptr
-                                destinationOffset:bindOffset
+                                destinationOffset:(NSUInteger)map->offset
                                             length:availableBytes]) {
                 return false;
             }
@@ -403,8 +421,15 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
             continue;
         }
 
+        if (plan.action != MGL_SB_ACTION_BIND_BUFFER) {
+            MGL_CBIND_FLUSH_SNAPSHOT();
+            NSLog(@"MGL COMPUTE ERROR: buffer map[%d] not bindable after ensure (%s)",
+                  i, mglBindingStagePlanReasonName(plan.reason));
+            return false;
+        }
+
         MGL_CBIND_EMIT_BUFFER(metalBindingIndex,
-                             (__bridge void *)buffer, bindOffset);
+                             (__bridge void *)buffer, plan.bind_offset);
         mglNoteBufferEncoded(ptr);
     }
 
