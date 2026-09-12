@@ -122,8 +122,17 @@ enum {
     MGL_AIR_PER_VERTEX_CLIP_DISTANCE_OFFSET = 80,
     MGL_AIR_PER_VERTEX_CLIP_DISTANCE_COUNT = MGL_MAX_CLIP_DISTANCES,
     /* Reserved varying location carrying gl_PrimitiveID from the geometry
-     * passthrough vertex function to the fragment shader. */
-    MGL_AIR_PRIMITIVE_ID_LOCATION = 31,
+     * passthrough vertex function to the fragment shader.  It is an internal
+     * Metal interface tag (never a GLSL-visible location), so it only has to
+     * stay outside the range applications may occupy.  With
+     * GL_MAX_VERTEX_OUTPUT_COMPONENTS reported as 128 that range is locations
+     * 0..31, so the carrier sits at 32: reserving 31 (as this did while the
+     * limit was 64) would collide with the app's own varying at location 31.
+     * The id reaches the fragment stage as an interface tag only; the value
+     * itself travels in the per-vertex record at
+     * MGL_AIR_PER_VERTEX_PRIMITIVE_ID_OFFSET, so this does not widen any
+     * record or consume a Metal stage-out slot beyond the one attribute. */
+    MGL_AIR_PRIMITIVE_ID_LOCATION = 32,
     MGL_AIR_PER_VERTEX_STRIDE = 112,
 };
 
