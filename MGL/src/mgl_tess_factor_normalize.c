@@ -149,10 +149,6 @@ void mglTessNormalizeFactors(const MGLTessFactorInput *in,
                                              out->all_levels_one);
         out->inner_eff[1] = tess_round_inner(in->spacing, out->inner_ceil[1],
                                              out->all_levels_one);
-        for (i = 0; i < 2u; i++) {
-            if (!out->all_levels_one && out->inner_clamped[i] == 1.f)
-                out->inner_clamped[i] = nextafterf(1.f, 2.f);
-        }
         return;
     }
 
@@ -168,6 +164,4 @@ void mglTessNormalizeFactors(const MGLTessFactorInput *in,
     out->inner_eff[0] =
         tess_round_inner(in->spacing, out->inner_ceil[0], out->all_levels_one);
     out->inner_eff[1] = 1u;
-    if (!out->all_levels_one && out->inner_clamped[0] == 1.f)
-        out->inner_clamped[0] = nextafterf(1.f, 2.f);
 }

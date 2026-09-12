@@ -31,17 +31,30 @@ static float edge_position(float factor, uint32_t segments, uint32_t spacing,
     if (index == segments) return 1.f;
     if (index > segments / 2u)
         return 1.f - edge_position(factor, segments, spacing, segments - index);
-    /* ARB_tessellation_shader: fractional spacing subdivides into n-2 regular
-     * segments of length 1/f plus two shorter end segments.  A clamped factor
-     * of 1 must not reach that formula: with f = 1 it evaluates
-     * `(1 - (n-2)) / 2` and publishes 5.96e-08 instead of a real position,
-     * which produced a spurious near-zero coordinate in the domain (an inner
-     * rectangle corner where 0 was expected).  The reference implementation
-     * clamps the factor to at least 2 below the rounded level; the same clamp
-     * makes the degenerate f = 1 case publish exactly the multiples of 1/n. */
+    /* ARB_tessellation_shader (spacing): fractional spacing divides the edge
+     * into <n>-2 segments of length 1/<f> plus two additional end segments,
+     * "typically shorter", whose relative length decreases monotonically with
+     * <n>-<f> and reaches zero as <n>-<f> approaches 2.0.  The two end
+     * segments therefore have length (f-(n-2))/(2f) and the position of
+     * subdivision point <i> is that length plus (i-1) regular segments.
+     *
+     * <f> here is the *clamped* tessellation level, exactly as the spacing
+     * section defines it, and not the level after rounding up to <n>.  This
+     * matters for the degenerate cases the primitive generator is required to
+     * support: an inner level of one is used as 1+epsilon, whose limit is
+     * f = 1 with n = 3 (fractional_odd) - and then n-<f> is exactly 2.0, so
+     * the two end segments have length zero and the subdivision publishes
+     * the three positions 0, 0, 1 (equivalently 0, 1, 1).  That is the
+     * behaviour described for the quad and triangle domains, where "the
+     * three-segment subdivision may produce inner vertices positioned on the
+     * edge of the rectangle/triangle", the positions of such vertices "may be
+     * numerically indistinguishable", and point mode "can produce multiple
+     * vertices with the same position".  Publishing a representable epsilon
+     * offset instead would leave those vertices distinct and the degenerate
+     * outer tessellation regions would not collapse. */
     if (spacing != GL_FRACTIONAL_ODD && spacing != GL_FRACTIONAL_EVEN)
         return (float)index / (float)segments;
-    const double f = factor > 2.f ? (double)factor : 2.0;
+    const double f = (double)factor;
     /* n-2 regular segments of length 1/f; the remaining length is shared
      * by the two end segments. Compute in double before publishing float. */
     return (float)((f - (double)(segments - 2u)) / (2.0 * f) +
@@ -110,12 +123,22 @@ static void generate_quads(const MGLTessFactorInput *in,
     uint32_t grid[63][63];
     const uint32_t nx = n->inner_eff[0], ny = n->inner_eff[1];
     for (unsigned edge = 0; edge < 4; edge++) {
-        lengths[edge] = n->outer_eff[levels[edge]];
-        for (uint32_t i = 0; i < lengths[edge]; i++) {
-            const float t = edge_position(n->outer_clamped[levels[edge]],
-                lengths[edge], in->spacing, i);
-            const float u = edge == 0 ? t : edge == 1 ? 1.f : edge == 2 ? 1.f - t : 0.f;
-            const float v = edge == 0 ? 0.f : edge == 1 ? t : edge == 2 ? 1.f : 1.f - t;
+        const uint32_t length = n->outer_eff[levels[edge]];
+        const float factor = n->outer_clamped[levels[edge]];
+        lengths[edge] = length;
+        for (uint32_t i = 0; i < length; i++) {
+            /* The top and left edges are traversed against the v and u axes,
+             * so their coordinate is 1 - t.  Publish that as the position of
+             * the mirrored index instead of subtracting: 1 - (1 - x) does not
+             * round-trip in float, so a value-level reflection yields two
+             * adjacent floats for one subdivision point.  Identical values of
+             * <f> must produce identically placed vertices on every edge, and
+             * the boundary chains have to meet the inner grid lines exactly,
+             * so all four edges are read out of the same position function. */
+            const float t = edge_position(factor, length, in->spacing, i);
+            const float r = edge_position(factor, length, in->spacing, length - i);
+            const float u = edge == 0 ? t : edge == 1 ? 1.f : edge == 2 ? r : 0.f;
+            const float v = edge == 0 ? 0.f : edge == 1 ? t : edge == 2 ? 1.f : r;
             outer[edge][i] = vertex(mesh, u, v, 0.f);
         }
     }
@@ -157,13 +180,23 @@ static void generate_triangles(const MGLTessFactorInput *in,
     uint32_t outer[3][65], lengths[3];
     const uint32_t segments = n->inner_eff[0];
     for (unsigned edge = 0; edge < 3; edge++) {
-        lengths[edge] = n->outer_eff[levels[edge]];
-        for (uint32_t i = 0; i < lengths[edge]; i++) {
-            const float t = edge_position(n->outer_clamped[levels[edge]],
-                lengths[edge], in->spacing, i);
-            const float u = edge == 0 ? t : edge == 1 ? 1.f - t : 0.f;
-            const float v = edge == 0 ? 0.f : edge == 1 ? t : 1.f - t;
-            outer[edge][i] = vertex(mesh, u, v, 1.f - u - v);
+        const uint32_t length = n->outer_eff[levels[edge]];
+        const float factor = n->outer_clamped[levels[edge]];
+        lengths[edge] = length;
+        for (uint32_t i = 0; i < length; i++) {
+            /* Each barycentric component is one of the domain positions: <t>
+             * along the edge, <r> for its mirror, and zero for the edge the
+             * vertex sits on.  Rule 4 of the tessellation invariance rules
+             * requires the triples on the two axes-aligned edges to be
+             * permutations of the same three numbers, so no component is
+             * rebuilt with 1 - u - v: that subtraction lands one ulp away from
+             * the value the mirrored edge publishes. */
+            const float t = edge_position(factor, length, in->spacing, i);
+            const float r = edge_position(factor, length, in->spacing, length - i);
+            const float u = edge == 0 ? t : edge == 1 ? r : 0.f;
+            const float v = edge == 0 ? 0.f : edge == 1 ? t : r;
+            const float w = edge == 0 ? r : edge == 1 ? 0.f : t;
+            outer[edge][i] = vertex(mesh, u, v, w);
         }
     }
     for (unsigned edge = 0; edge < 3; edge++)
