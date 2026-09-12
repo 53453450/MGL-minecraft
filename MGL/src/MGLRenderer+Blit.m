@@ -3527,7 +3527,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     }
     /* A blit encoder is now active on the current CB.  Mark it as having
      * work so flushCommandBuffer:YES below does not skip the commit. */
-    _currentCBHasWork = YES;
+    _batching.currentCommandBufferHasWork = YES;
 
     @try {
         mglBlitCopyTextureToBuffer(readEncoder, texture, slice, level,
@@ -4251,7 +4251,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                             mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
                             return YES;
                         }
-                        _currentCBHasWork = YES;
+                        _batching.currentCommandBufferHasWork = YES;
                         mglBlitCopyTextureToBuffer(
                             readEncoder, srcTexture, srcSlice,
                             (NSUInteger)srcLevel, sliceRegion.origin,

@@ -14,6 +14,7 @@
 #import <Foundation/Foundation.h>
 
 #include "glm_context.h"
+#include "mgl_pipeline_cache_state.h"   /* MGLPipelineCacheState */
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -29,22 +30,7 @@ typedef struct MGLRenderDepthStencilDescriptorState_t
 
 NS_ASSUME_NONNULL_END
 
-typedef struct MGLPipelineCacheState_t {
-    /* Metal objects are owned by the C++ cache owner.  These borrowed opaque
-     * identities are retained only so the GL-semantic ObjC layer can test and
-     * pass the active handles without importing Metal object types. */
-    void * _Nullable pipelineState;
-    /* Keep the native NSUInteger-sized value width while remaining a plain
-     * C value; Metal enum names stay out of this interface. */
-    uint64_t pipelineColor0Format;
-    uint64_t pipelineDepthFormat;
-    uint64_t pipelineStencilFormat;
-    GLuint pipelineProgramName;
-    void * _Nullable pipelineVertexFunction;
-    void * _Nullable pipelineFragmentFunction;
-    BOOL dsCacheEnabled;
-    BOOL psoDedupEnabled;
-} MGLPipelineCacheState;
+/* MGLPipelineCacheState moved to the C-safe mgl_pipeline_cache_state.h. */
 
 NS_ASSUME_NONNULL_BEGIN
 

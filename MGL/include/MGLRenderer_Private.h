@@ -244,7 +244,8 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
     MGLBatchingState _batching;
     /* Track whether the current command buffer has encoded work. The C++
      * CommandBufferOwner retains the most recent submission for glFinish. */
-    BOOL                 _currentCBHasWork;
+    /* _currentCBHasWork moved into MGLBatchingState.currentCommandBufferHasWork
+     * (C-safe mgl_batching_state.h) so the C flush driver writes it directly. */
 }
 
 /* Methods called from MGLRenderer+Compute.m.

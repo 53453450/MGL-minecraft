@@ -148,18 +148,6 @@ MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindingsPort(void *rende
     return r ? &r->_resourceFallback.fragmentTextureTraceBindings[0] : NULL;
 }
 
-void *mglRendererPipelineStatePort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? r->_pipelineCache.state->pipelineState : NULL;
-}
-
-uint32_t mglRendererPipelineProgramNamePort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? (uint32_t)r->_pipelineCache.state->pipelineProgramName : 0u;
-}
-
 void *mglRendererBindingStateOwnerPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -395,6 +383,12 @@ void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx)
     }
 }
 
+const MGLPipelineCacheState *mglRendererPipelineCacheStatePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? [r->_pipelineCache state] : NULL;
+}
+
 const MGLCommandState *mglRendererCommandStatePort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -405,14 +399,6 @@ MGLBatchingState *mglRendererBatchingStatePort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     return r ? &r->_batching : NULL;
-}
-
-void mglRendererSetCurrentCBHasWorkPort(void *renderer, int has_work)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        r->_currentCBHasWork = has_work ? YES : NO;
-    }
 }
 
 void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,

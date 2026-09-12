@@ -916,7 +916,7 @@ typedef struct {
     mglTessPlanRasterQuery(tesProgram, (uint64_t)instanceCount,
                            (uint64_t)itemsPerInstanceU, 0, 0u, 0u, &query);
     if (MGL_STATE(glm_ctx)->caps.rasterizer_discard) {
-        _currentCBHasWork = YES;
+        _batching.currentCommandBufferHasWork = YES;
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
         return YES;
     }
@@ -1060,7 +1060,7 @@ typedef struct {
     }
     free(patches);
     free(contracts);
-    _currentCBHasWork = YES;
+    _batching.currentCommandBufferHasWork = YES;
     mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     _tessellation.tessComputeActive = NO;
     _tessellation.tessComputeProgram = NULL;
@@ -2108,7 +2108,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
          * passthrough draw entirely, but the compute expansion already ran
          * and the primitive query must still count the generated
          * primitives (persistent query semantics). */
-        _currentCBHasWork = YES;
+        _batching.currentCommandBufferHasWork = YES;
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
         return YES;
     }
@@ -2164,7 +2164,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             primType, 0u, (NSUInteger)itemsPerInstanceU, 1u,
             (NSUInteger)baseInstance + (NSUInteger)i);
     }
-    _currentCBHasWork = YES;
+    _batching.currentCommandBufferHasWork = YES;
     mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     _tessellation.tessComputeActive = NO;
     _tessellation.tessComputeProgram = NULL;

@@ -166,7 +166,8 @@ int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pa
     mglRendererAssertDualProxyPort(renderer, glm_ctx);
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cb->batch_count == 0) return 0;
-    mglRendererSetCurrentCBHasWorkPort(renderer, 1);
+    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
+    if (bs) bs->currentCommandBufferHasWork = 1u;
     static uint64_t s_hit = 0;
     pass->hit = ++s_hit;
     pass->skipped = 0;

@@ -127,7 +127,7 @@ void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
     MGLBatchTraceStatePod state; mglBatchFillStatePod(glm_ctx, &state);
     mgl_batch_trace_copy_state_to_batch(&v, &state);
     v.encoder = mglBatchEncoderTraceToken(mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner);
-    v.pipeline_state = mglRendererPipelineStatePort(renderer);
+    v.pipeline_state = mglRendererPipelineCacheStatePort(renderer)->pipelineState;
     v.rp_fbo = mglRendererCommandStatePort(renderer)->renderPassFramebufferName;
     v.rp_color = rpColor0; v.rp_depth = rpDepth;
     char line[2048];
@@ -183,7 +183,7 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
                                   cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
     v.ebo_name = eboName; v.ebo = ebo;
     v.encoder = mglBatchEncoderTraceToken(mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner);
-    v.pipeline_state = mglRendererPipelineStatePort(renderer);
+    v.pipeline_state = mglRendererPipelineCacheStatePort(renderer)->pipelineState;
     v.fbo_name = fboName; v.rp_fbo = mglRendererCommandStatePort(renderer)->renderPassFramebufferName;
     v.rp_color = rpColor0; v.rp_depth = rpDepth;
     v.rp_color_w = rpColorInfo.width; v.rp_color_h = rpColorInfo.height;
@@ -229,7 +229,7 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
                 mglCurrentRenderProgramKey(glm_ctx),
                 vertexProgram ? vertexProgram->name : 0u,
                 fragmentProgram ? fragmentProgram->name : 0u,
-                mglRendererPipelineProgramNamePort(renderer), slots) > 0)
+                mglRendererPipelineCacheStatePort(renderer)->pipelineProgramName, slots) > 0)
             mglTraceLog("%s", texline);
         if ((fsSlotHasRT || fsSlotUsedCopy) && fragmentProgram) {
             char dumpReason[128];

@@ -22,6 +22,7 @@
 #include "mgl_trace_strategy.h"    /* MGLFragmentTextureTraceBinding */
 #include "mgl_batching_state.h"     /* MGLBatchingState */
 #include "mgl_command_state.h"      /* MGLCommandState */
+#include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
 
 #ifdef __cplusplus
 extern "C" {
@@ -105,7 +106,6 @@ void mglRendererAssertDualProxyPort(void *renderer, GLMContext ctx);
 void mglRendererActivateReplayStatePort(void *renderer, GLMContext ctx);
 void mglRendererRestoreLiveActiveStatePort(void *renderer, GLMContext ctx);
 void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx);
-void mglRendererSetCurrentCBHasWorkPort(void *renderer, int has_work);
 void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,
                                    uint32_t batch_index);
 int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer);
@@ -156,13 +156,15 @@ void *mglRendererFallbackSamplerStatePort(void *renderer);
  * fields directly; this one port replaced five field wrappers. */
 const MGLCommandState *mglRendererCommandStatePort(void *renderer);
 
+/* The pipeline cache's state record (active pipeline handle, pipeline program
+ * name, formats).  C readers use the fields directly. */
+const MGLPipelineCacheState *mglRendererPipelineCacheStatePort(void *renderer);
+
 /* Batch-replay diagnostic trace state: the renderer's fragment texture trace
  * binding records (TEXTURE_UNITS entries, `MGLFragmentTextureTraceBinding`),
  * the pipeline cache's current pipeline state / program name, and the render
  * pass framebuffer name the trace line reports. */
 MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindingsPort(void *renderer);
-void *mglRendererPipelineStatePort(void *renderer);
-uint32_t mglRendererPipelineProgramNamePort(void *renderer);
 
 /* Batch-replay trace identity of the current flush / batch. */
 

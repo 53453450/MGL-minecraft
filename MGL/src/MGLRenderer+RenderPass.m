@@ -4224,7 +4224,7 @@ static GLenum mglPassthroughDeclType(
      * the ObjC adapter does not immediately allocate and release another one.
      * Unmarked current buffers still follow the ordinary fresh-rotate path. */
     if ([_renderPassManager consumeTransactionCreatedCurrentCommandBuffer]) {
-        _currentCBHasWork = NO;
+        _batching.currentCommandBufferHasWork = NO;
         return true;
     }
 
@@ -4262,7 +4262,7 @@ static GLenum mglPassthroughDeclType(
             return false;
         }
 
-        _currentCBHasWork = NO;
+        _batching.currentCommandBufferHasWork = NO;
 
         // AGX Driver Validation: Check if the command buffer is immediately invalid
         MGLRenderCommandBufferState initialState = {0};
@@ -5082,7 +5082,7 @@ static GLenum mglPassthroughDeclType(
     {
         /* An active render encoder means work was encoded into the current
          * CB, so flushCommandBufferLocked: must not skip the commit. */
-        _currentCBHasWork = YES;
+        _batching.currentCommandBufferHasWork = YES;
 
         Framebuffer *endedFramebuffer = _renderPassManager.state->renderPassFramebuffer;
         GLsizei endedDrawBufferCount = _renderPassManager.state->renderPassDrawBufferCount;
@@ -6949,7 +6949,7 @@ static GLenum mglPassthroughDeclType(
      * having work so the commit below is not skipped. */
     if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
-        _currentCBHasWork = YES;
+        _batching.currentCommandBufferHasWork = YES;
     }
 
     [self endRenderEncodingLocked];
@@ -6957,13 +6957,13 @@ static GLenum mglPassthroughDeclType(
     /* Skip empty-CB commit when finish=true: wait on the owner's last submit
      * instead (Metal CBs execute serially on the same queue).  Any path
      * that encodes work (draws/render/blit/compute) into the current CB
-     * MUST set _currentCBHasWork before calling flushCommandBuffer:YES,
+     * MUST set _batching.currentCommandBufferHasWork before calling flushCommandBuffer:YES,
      * else the skip drops uncommitted work. */
-    if (finish && !_currentCBHasWork &&
+    if (finish && !_batching.currentCommandBufferHasWork &&
         [_renderPassManager hasLastSubmittedCommandBuffer]) {
         return;
     }
-    if (finish && !_currentCBHasWork &&
+    if (finish && !_batching.currentCommandBufferHasWork &&
         ![_renderPassManager hasLastSubmittedCommandBuffer]) {
 
         return;

@@ -1119,7 +1119,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     /* Without this, a dispatch with no copy-backs stays in the current
      * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
      * glFinish then never executes the compute writes (SSBO stores vanish). */
-    _currentCBHasWork = YES;
+    _batching.currentCommandBufferHasWork = YES;
 
     if (!useExecutionPlan &&
         ![self flushStageBindingCopyBacks:&copyBacks

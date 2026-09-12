@@ -493,7 +493,7 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r)
 static void mglStageMarkCbHasWork(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) self->_currentCBHasWork = YES;
+    if (self) self->_batching.currentCommandBufferHasWork = YES;
 }
 
 static void mglStageFlushCB(void *renderer, int wait)

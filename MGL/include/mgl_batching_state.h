@@ -37,6 +37,9 @@ typedef struct MGLBatchingState_t {
      * overrides.  Descriptor bakes only relativeoffset; setVertexBuffer uses
      * the absolute VERTEX_BINDING_OFFSET so overrides are not double-counted. */
     uint8_t absoluteVertexBindingOffsets;
+    /* Former renderer ivar _currentCBHasWork: set when a flush puts work on the
+     * current command buffer, read by the flush path. */
+    uint8_t currentCommandBufferHasWork;
 } MGLBatchingState;
 
 #ifdef __cplusplus
