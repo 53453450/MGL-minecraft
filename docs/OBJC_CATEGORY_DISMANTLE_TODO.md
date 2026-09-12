@@ -48,10 +48,11 @@
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
+| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **35 / 459**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 九切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 38,065**、ObjC 语法 **2,268 → 2,185**、词汇 **4,353 → 4,139**；
-**shim（T4 硬规的记账面）：43 → 38 个端口 / 511 → 477 行 / 81 → 76 语法（净减 ✓）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 38,039**、ObjC 语法 **2,268 → 2,181**、词汇 **4,353 → 4,139**；
+**shim（T4 硬规的记账面）：43 → 35 个端口 / 511 → 459 行 / 81 → 73 语法（连续两刀净减 ✓）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1110,3 +1111,27 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     下一刀（同样要求净减）：§0.08 表里按序取，优先 **`_currentCBHasWork`（1 端口，但要改 9 处 ObjC 写点，风险中）**
     或 **`+Batch.m` 留下的 category 5 方法（dual-proxy 断言/锁壳，可并入 T5 唯一壳）**；
     `P0-1` 三厚块与 `P0-2` 的 shim 记账需并行推进（三厚块的 materialize 下沉一次能退役多个端口）。
+
+51. **shim 净减第二刀：`MGLCommandState` 搬进 C（本轮第八刀，**按 §0.04 达标**）**：
+    ① **做法**：render pass manager 的 `MGLCommandState`（16 个字段：`renderPassStateOwner`、`renderPassFramebuffer(Name)`、
+    `traceReplayFlushId/BatchIndex`、`currentRenderEncoderOwner`、两个 FBO-match 缓存字段等）原定义在 ObjC 头
+    `MGLRenderPassManager.h`，C 侧每个字段一个端口。现在结构体搬到新的 C 安全头 **`mgl/include/mgl_command_state.h`**
+    （两个 `BOOL` 字段改 `uint8_t`；其余字段本就是 C 类型），manager 仍以 ivar `_state` 持有，
+    **一个端口** `mglRendererCommandStatePort()` 通过既有 readonly property `state` 把 `const MGLCommandState *` 交给 C。
+    ② **净减账**：退掉 5 个端口——`mglRendererRenderPassStateOwnerPort`（实现在 `mgl_draw_metal_port.m`）、
+    `mglRendererRenderPassFramebufferNamePort`、`mglRendererBatchTraceFlushIdPort`、`mglRendererBatchTraceBatchIndexPort`、
+    `mglRendererCurrentRenderEncoderOwnerPort`；新增 1 个 →
+    **shim 38 → 35 个端口、477 → 459 行、76 → 73 语法**；全仓语法 **2,185 → 2,181**、行数 **38,065 → 38,039**。
+    ③ **改动面**：6 个 C driver（flush_restore / icb / issue / replay_trace / dyn_bind / rt_mark_host）里的
+    `mglRendererXxxPort(r)` 全部改为 `mglRendererCommandStatePort(r)->xxx`；ObjC 侧 `_state.xxx` 读写一行未改。
+    `mglRendererTraceReplaySetPort`（写 trace id 的 mutator，方法体是两行赋值）**保留为端口**——避免为了省一个包装
+    而 cast 掉 `const`，收益不值风险。
+    ④ **oracle**：trace 语料 374/296 行、`MGL_MIP_DIAG` 语料 529/212 条与旧库逐字段一致（旧库分支这次出现
+    `dyld: Library not loaded` → **A/B 目录必须同时放 `libmgl.dylib` 与 `libglfw.dylib`**，已补；两库字节不同已核对）；
+    回归 92/0/2、ICB 轮 82/10/2 与旧库相同；CTS 七簇 diff 全空。
+    ⑤ **方法论沉淀（A/B 三坑，本轮各踩一次）**：① `build/**/*.d` 残留依赖会让 stash 后的旧树构建失败并**静默用新库跑对比**
+    （第 50 条）；② A/B 目录缺 `libglfw.dylib` → `dyld` abort；③ 多个历史 trace 日志共存时按 mtime 取错分支。
+    **固定动作**：`find build -name '*.d' -delete` → 构建 → `cmp` 两库 → 只取本轮日志 → 比对。
+    下一刀（仍要求净减）：`MGLRendererCoreState`（`_core`，含 `activeState`/capability/drawable 尺寸/原子重置标志）
+    同样可以搬成 C 结构 + 一个端口，可再退 1–2 个端口；更值钱的是 **P0-1 三厚块** 与 **`+Batch.m` 遗留的 category 5 方法**
+    （后者可整体并入 T5 唯一平台壳 TU，一次退役 4 个方法 + 若干断言）。
