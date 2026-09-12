@@ -138,23 +138,41 @@ int mglRenderPassDropsStaleColorClear(uint32_t clear_mask,
                                       uint32_t attached_bitfield,
                                       uint32_t attachment_index);
 
-/* One draw slot of the attachment match. */
-typedef struct MGLRenderPassSlotMatch {
-    int compare;         /* this draw slot of the framebuffer participates */
-    const void *actual;  /* texture the pass state currently carries */
-    const void *expected;/* texture the framebuffer wants */
-} MGLRenderPassSlotMatch;
+/* One attachment of the pass match: a color draw slot, or the depth / stencil
+ * attachment.  Rules, in order: an entry that does not compare is skipped; the
+ * texture pointers must be equal; a required attachment must have a texture;
+ * and when asked, the pass-state subresource must line up with the
+ * framebuffer's (level / slice / depth plane). */
+typedef struct MGLRenderPassSubresource {
+    uint32_t level;
+    uint32_t slice;
+    uint32_t depth_plane;
+} MGLRenderPassSubresource;
+
+typedef struct MGLRenderPassAttachmentMatchEntry {
+    int compare;
+    const void *actual_texture;   /* texture the pass state carries */
+    const void *expected_texture; /* texture the framebuffer wants */
+    int required;                 /* a required attachment must be there */
+    int compare_subresource;
+    MGLRenderPassSubresource actual_sub;   /* pass-state side */
+    MGLRenderPassSubresource expected_sub; /* framebuffer side */
+} MGLRenderPassAttachmentMatchEntry;
+
+/* Fill one entry from what the caller resolved: the two textures, whether the
+ * attachment is required, whether the subresource must line up (only for a
+ * framebuffer side that has one) and the two subresources. */
+void mglRenderPassFillMatchEntry(MGLRenderPassAttachmentMatchEntry *entry,
+                                 const void *actual_texture,
+                                 const void *expected_texture, int required,
+                                 int compare_subresource,
+                                 MGLRenderPassSubresource actual_sub,
+                                 MGLRenderPassSubresource expected_sub);
 
 typedef struct MGLRenderPassAttachmentMatchInput {
-    int identity_ok;     /* framebuffer pointer / name / draw buffer / count */
-    const MGLRenderPassSlotMatch *slots;
-    uint32_t slot_count;
-    const void *actual_depth;
-    const void *expected_depth;
-    const void *actual_stencil;
-    const void *expected_stencil;
-    int depth_required;    /* depth test on, or a depth texture exists */
-    int stencil_required;  /* stencil test / format, or a stencil texture */
+    int identity_ok; /* framebuffer pointer / name / draw buffer / count */
+    const MGLRenderPassAttachmentMatchEntry *entries;
+    uint32_t entry_count;
 } MGLRenderPassAttachmentMatchInput;
 
 /* 1 = the persistent pass covers exactly this framebuffer. */

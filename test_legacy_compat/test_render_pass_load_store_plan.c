@@ -179,63 +179,115 @@ static void test_attachment_match(void)
     const void *tex_a = (const void *)(uintptr_t)0x1000;
     const void *tex_b = (const void *)(uintptr_t)0x2000;
 
-    MGLRenderPassSlotMatch slots[2];
-    memset(slots, 0, sizeof(slots));
-    slots[0].compare = 1;
-    slots[0].actual = tex_a;
-    slots[0].expected = tex_a;
-    slots[1].compare = 0; /* not a draw slot of this framebuffer */
-    slots[1].actual = tex_b; /* stale texture the pass still carries */
-    slots[1].expected = NULL;
+    MGLRenderPassAttachmentMatchEntry entries[3];
+    memset(entries, 0, sizeof(entries));
+    entries[0].compare = 1; /* a color draw slot */
+    entries[0].actual_texture = tex_a;
+    entries[0].expected_texture = tex_a;
+    entries[0].compare_subresource = 1;
+    entries[0].compare_subresource = 1;
+    entries[0].actual_sub.level = 1;
+    entries[0].expected_sub.level = 1;
+    entries[1].compare = 0; /* not a draw slot of this framebuffer */
+    entries[1].actual_texture = tex_b; /* stale texture the pass still carries */
+    entries[2].compare = 1; /* the depth attachment */
+    entries[2].actual_texture = tex_b;
+    entries[2].expected_texture = tex_b;
 
     MGLRenderPassAttachmentMatchInput in;
     memset(&in, 0, sizeof(in));
     in.identity_ok = 1;
-    in.slots = slots;
-    in.slot_count = 2;
+    in.entries = entries;
+    in.entry_count = 3;
     CHECK(mglRenderPassAttachmentsMatch(&in) == 1,
-          "matching slots match, uncompared slots are ignored");
+          "matching attachments match, uncompared ones are ignored");
 
     in.identity_ok = 0;
     CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
           "a different framebuffer never matches");
     in.identity_ok = 1;
 
-    slots[0].expected = tex_b;
+    entries[0].expected_texture = tex_b;
     CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
           "a different color texture does not match");
-    slots[0].expected = tex_a;
+    entries[0].expected_texture = tex_a;
 
-    in.actual_depth = tex_a;
-    in.expected_depth = NULL;
+    /* The subresource must line up with the framebuffer's. */
+    entries[0].expected_sub.level = 2;
+    CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
+          "a different mip level does not match");
+    entries[0].expected_sub.level = 1;
+    entries[0].actual_sub.slice = 3;
+    entries[0].expected_sub.slice = 4;
+    CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
+          "a different array slice does not match");
+    entries[0].actual_sub.slice = 0;
+    entries[0].expected_sub.slice = 0;
+    entries[0].actual_sub.depth_plane = 1;
+    entries[0].expected_sub.depth_plane = 0;
+    CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
+          "a different depth plane does not match");
+    entries[0].actual_sub.depth_plane = 0;
+    CHECK(mglRenderPassAttachmentsMatch(&in) == 1,
+          "matching subresources match");
+
+    /* A subresource is only meaningful when both sides have a texture. */
+    entries[0].actual_texture = NULL;
+    entries[0].expected_texture = NULL;
+    entries[0].expected_sub.level = 7;
+    CHECK(mglRenderPassAttachmentsMatch(&in) == 1,
+          "absent textures do not compare subresources");
+    entries[0].actual_texture = tex_a;
+    entries[0].expected_texture = tex_a;
+    entries[0].expected_sub.level = 1;
+
+    /* A required attachment that is missing never matches. */
+    entries[2].expected_texture = NULL;
     CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
           "a stale depth attachment does not match");
-
-    in.actual_depth = NULL;
-    in.expected_depth = tex_a;
-    in.depth_required = 1;
+    entries[2].actual_texture = NULL;
+    entries[2].required = 1;
     CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
           "a required but missing depth attachment does not match");
-
-    in.actual_depth = tex_a;
+    entries[2].required = 0;
     CHECK(mglRenderPassAttachmentsMatch(&in) == 1,
-          "an optional depth attachment matches when it is there");
+          "an optional depth attachment matches when it is absent");
 
-    in.depth_required = 0;
-    in.actual_depth = NULL;
-    in.expected_depth = NULL;
-    in.actual_stencil = NULL;
-    in.expected_stencil = tex_b;
-    in.stencil_required = 1;
-    CHECK(mglRenderPassAttachmentsMatch(&in) == 0,
-          "a required but missing stencil attachment does not match");
-
-    in.expected_stencil = NULL;
-    in.stencil_required = 0;
+    /* Everything absent matches. */
+    in.entry_count = 0;
     CHECK(mglRenderPassAttachmentsMatch(&in) == 1,
-          "everything absent matches");
+          "nothing to compare matches");
+    in.entry_count = 3;
 
     CHECK(mglRenderPassAttachmentsMatch(NULL) == 0, "NULL input does not match");
+
+    /* The fill helper takes what the caller resolved. */
+    {
+        MGLRenderPassAttachmentMatchEntry filled;
+        const MGLRenderPassSubresource actual_sub = {2u, 3u, 4u};
+        const MGLRenderPassSubresource expected_sub = {2u, 3u, 4u};
+        mglRenderPassFillMatchEntry(&filled, tex_a, tex_a, 1, 1, actual_sub,
+                                    expected_sub);
+        CHECK(filled.compare == 1 && filled.required == 1 &&
+                  filled.compare_subresource == 1,
+              "fill sets the flags");
+        CHECK(filled.actual_texture == tex_a &&
+                  filled.expected_texture == tex_a,
+              "fill copies the textures");
+        MGLRenderPassAttachmentMatchInput filledIn = {0};
+        filledIn.identity_ok = 1;
+        filledIn.entries = &filled;
+        filledIn.entry_count = 1;
+        CHECK(mglRenderPassAttachmentsMatch(&filledIn) == 1,
+              "a filled entry matches");
+        mglRenderPassFillMatchEntry(&filled, tex_a, tex_b, 0, 0, actual_sub,
+                                    expected_sub);
+        CHECK(mglRenderPassAttachmentsMatch(&filledIn) == 0,
+              "a filled mismatching entry does not match");
+        mglRenderPassFillMatchEntry(NULL, tex_a, tex_a, 0, 0, actual_sub,
+                                    expected_sub);
+        CHECK(1, "fill tolerates a NULL entry");
+    }
 }
 
 int main(void)

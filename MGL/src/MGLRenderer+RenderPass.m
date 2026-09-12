@@ -333,21 +333,6 @@ static id mglRenderPassTextureFromSnapshot(
         ? (__bridge id)attachment->texture : nil;
 }
 
-static bool mglRenderPassSnapshotAttachmentMatchesSubresource(
-    const MGLRenderPassState *state,
-    uint32_t attachmentKind,
-    NSUInteger colorIndex,
-    MGLMetalAttachmentSubresource subresource)
-{
-    const MGLRenderPassAttachmentState *attachment =
-        mglRenderPassAttachmentStateFromSnapshot(
-            state, attachmentKind, colorIndex);
-    return attachment &&
-           attachment->level == subresource.level &&
-           attachment->slice == subresource.slice &&
-           attachment->depth_plane == subresource.depthPlane;
-}
-
 /* RenderPassStateOwner is the writer of record for every attachment field. */
 static id mglRenderPassAttachmentTextureFor(
     const MGLCommandState *commandState,
@@ -1534,23 +1519,29 @@ static GLenum mglPassthroughDeclType(
         /* The comparison (and "a required attachment that is missing never
          * matches") is the same rule the user-FBO half uses; it lives in the
          * plan. */
-        MGLRenderPassSlotMatch defaultSlot = {0};
-        defaultSlot.compare = 1;
-        defaultSlot.actual = (__bridge const void *)actualColor0;
-        defaultSlot.expected = (__bridge const void *)expectedColor0;
+        const MGLRenderPassSubresource no_sub = {0u, 0u, 0u};
+        MGLRenderPassAttachmentMatchEntry entries[3];
+        mglRenderPassFillMatchEntry(
+            &entries[0], (__bridge const void *)actualColor0,
+            (__bridge const void *)expectedColor0, 0, 0, no_sub, no_sub);
+        mglRenderPassFillMatchEntry(
+            &entries[1],
+            (__bridge const void *)mglRenderPassTextureFromSnapshot(
+                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0),
+            (__bridge const void *)expectedDepth,
+            MGL_STATE(ctx)->caps.depth_test ? 1 : 0, 0, no_sub, no_sub);
+        mglRenderPassFillMatchEntry(
+            &entries[2],
+            (__bridge const void *)mglRenderPassTextureFromSnapshot(
+                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0),
+            (__bridge const void *)expectedStencil,
+            (MGL_STATE(ctx)->caps.stencil_test || ctx->stencil_format.format) ? 1
+                                                                             : 0,
+            0, no_sub, no_sub);
         MGLRenderPassAttachmentMatchInput match = {0};
         match.identity_ok = 1;
-        match.slots = &defaultSlot;
-        match.slot_count = 1;
-        match.actual_depth = (__bridge const void *)mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-        match.expected_depth = (__bridge const void *)expectedDepth;
-        match.actual_stencil = (__bridge const void *)mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
-        match.expected_stencil = (__bridge const void *)expectedStencil;
-        match.depth_required = (MGL_STATE(ctx)->caps.depth_test) ? 1 : 0;
-        match.stencil_required =
-            (MGL_STATE(ctx)->caps.stencil_test || ctx->stencil_format.format) ? 1 : 0;
+        match.entries = entries;
+        match.entry_count = 3;
         return mglRenderPassAttachmentsMatch(&match) ? true : false;
     }
 
@@ -1581,20 +1572,38 @@ static GLenum mglPassthroughDeclType(
         }
 
         id actual = mglRenderPassTextureFromSnapshot(
-            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
-            colorSlot);
-        if (actual != expected) {
-            return false;
-        }
-
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot);
+        MGLRenderPassSubresource actualSub = {0u, 0u, 0u};
+        MGLRenderPassSubresource expectedSub = {0u, 0u, 0u};
+        int compareSubresource = 0;
         if (attachment && actual) {
-            MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(attachment);
-            bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
-                &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
-                colorSlot, subresource);
-            if (!matches) {
-                return false;
+            const MGLRenderPassAttachmentState *snapshot =
+                mglRenderPassAttachmentStateFromSnapshot(
+                    &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                    colorSlot);
+            MGLMetalAttachmentSubresource subresource =
+                mglMetalAttachmentSubresourceForAttachment(attachment);
+            compareSubresource = snapshot ? 1 : 0;
+            if (snapshot) {
+                actualSub = (MGLRenderPassSubresource){snapshot->level,
+                                                       snapshot->slice,
+                                                       snapshot->depth_plane};
             }
+            expectedSub = (MGLRenderPassSubresource){subresource.level,
+                                                     subresource.slice,
+                                                     subresource.depthPlane};
+        }
+        MGLRenderPassAttachmentMatchEntry slotEntry;
+        mglRenderPassFillMatchEntry(&slotEntry,
+                                    (__bridge const void *)actual,
+                                    (__bridge const void *)expected, 0,
+                                    compareSubresource, actualSub, expectedSub);
+        MGLRenderPassAttachmentMatchInput slotMatch = {0};
+        slotMatch.identity_ok = 1;
+        slotMatch.entries = &slotEntry;
+        slotMatch.entry_count = 1;
+        if (!mglRenderPassAttachmentsMatch(&slotMatch)) {
+            return false;
         }
 
         id nextColor = nil;
@@ -1625,15 +1634,36 @@ static GLenum mglPassthroughDeclType(
     }
     id actualDepth = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-    if (actualDepth != expectedDepth) {
-        return false;
-    }
-    if (fbo->depth.texture && expectedDepth) {
-        MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
-        bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
-            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH,
-            0, subresource);
-        if (!matches) {
+    {
+        MGLRenderPassSubresource actualSub = {0u, 0u, 0u};
+        MGLRenderPassSubresource expectedSub = {0u, 0u, 0u};
+        int compareSubresource = 0;
+        if (fbo->depth.texture && expectedDepth) {
+            const MGLRenderPassAttachmentState *snapshot =
+                mglRenderPassAttachmentStateFromSnapshot(
+                    &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+            MGLMetalAttachmentSubresource subresource =
+                mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
+            compareSubresource = snapshot ? 1 : 0;
+            if (snapshot) {
+                actualSub = (MGLRenderPassSubresource){snapshot->level,
+                                                       snapshot->slice,
+                                                       snapshot->depth_plane};
+            }
+            expectedSub = (MGLRenderPassSubresource){subresource.level,
+                                                     subresource.slice,
+                                                     subresource.depthPlane};
+        }
+        MGLRenderPassAttachmentMatchEntry entry;
+        mglRenderPassFillMatchEntry(&entry,
+                                    (__bridge const void *)actualDepth,
+                                    (__bridge const void *)expectedDepth, 0,
+                                    compareSubresource, actualSub, expectedSub);
+        MGLRenderPassAttachmentMatchInput entryMatch = {0};
+        entryMatch.identity_ok = 1;
+        entryMatch.entries = &entry;
+        entryMatch.entry_count = 1;
+        if (!mglRenderPassAttachmentsMatch(&entryMatch)) {
             return false;
         }
     }
@@ -1651,15 +1681,36 @@ static GLenum mglPassthroughDeclType(
     }
     id actualStencil = mglRenderPassTextureFromSnapshot(
         &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
-    if (actualStencil != expectedStencil) {
-        return false;
-    }
-    if (fbo->stencil.texture && expectedStencil) {
-        MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
-        bool matches = mglRenderPassSnapshotAttachmentMatchesSubresource(
-            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL,
-            0, subresource);
-        if (!matches) {
+    {
+        MGLRenderPassSubresource actualSub = {0u, 0u, 0u};
+        MGLRenderPassSubresource expectedSub = {0u, 0u, 0u};
+        int compareSubresource = 0;
+        if (fbo->stencil.texture && expectedStencil) {
+            const MGLRenderPassAttachmentState *snapshot =
+                mglRenderPassAttachmentStateFromSnapshot(
+                    &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+            MGLMetalAttachmentSubresource subresource =
+                mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
+            compareSubresource = snapshot ? 1 : 0;
+            if (snapshot) {
+                actualSub = (MGLRenderPassSubresource){snapshot->level,
+                                                       snapshot->slice,
+                                                       snapshot->depth_plane};
+            }
+            expectedSub = (MGLRenderPassSubresource){subresource.level,
+                                                     subresource.slice,
+                                                     subresource.depthPlane};
+        }
+        MGLRenderPassAttachmentMatchEntry entry;
+        mglRenderPassFillMatchEntry(&entry,
+                                    (__bridge const void *)actualStencil,
+                                    (__bridge const void *)expectedStencil, 0,
+                                    compareSubresource, actualSub, expectedSub);
+        MGLRenderPassAttachmentMatchInput entryMatch = {0};
+        entryMatch.identity_ok = 1;
+        entryMatch.entries = &entry;
+        entryMatch.entry_count = 1;
+        if (!mglRenderPassAttachmentsMatch(&entryMatch)) {
             return false;
         }
     }

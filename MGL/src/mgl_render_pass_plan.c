@@ -257,29 +257,48 @@ int mglRenderPassDropsStaleColorClear(uint32_t clear_mask,
     return (clear_mask & bit) != 0u && (attached_bitfield & bit) == 0u ? 1 : 0;
 }
 
+void mglRenderPassFillMatchEntry(MGLRenderPassAttachmentMatchEntry *entry,
+                                 const void *actual_texture,
+                                 const void *expected_texture, int required,
+                                 int compare_subresource,
+                                 MGLRenderPassSubresource actual_sub,
+                                 MGLRenderPassSubresource expected_sub) {
+    if (!entry) {
+        return;
+    }
+    memset(entry, 0, sizeof(*entry));
+    entry->compare = 1;
+    entry->actual_texture = actual_texture;
+    entry->expected_texture = expected_texture;
+    entry->required = required ? 1 : 0;
+    entry->compare_subresource = compare_subresource ? 1 : 0;
+    entry->actual_sub = actual_sub;
+    entry->expected_sub = expected_sub;
+}
+
 int mglRenderPassAttachmentsMatch(const MGLRenderPassAttachmentMatchInput *in) {
     if (!in || !in->identity_ok) {
         return 0;
     }
-    for (uint32_t i = 0; i < in->slot_count; i++) {
-        const MGLRenderPassSlotMatch *slot = &in->slots[i];
-        if (!slot->compare) {
+    for (uint32_t i = 0; i < in->entry_count; i++) {
+        const MGLRenderPassAttachmentMatchEntry *entry = &in->entries[i];
+        if (!entry->compare) {
             continue;
         }
-        if (slot->actual != slot->expected) {
+        if (entry->actual_texture != entry->expected_texture) {
             return 0;
         }
-    }
-    if (in->actual_depth != in->expected_depth ||
-        in->actual_stencil != in->expected_stencil) {
-        return 0;
-    }
-    /* A required attachment that is not there cannot be drawn into. */
-    if (in->depth_required && !in->expected_depth) {
-        return 0;
-    }
-    if (in->stencil_required && !in->expected_stencil) {
-        return 0;
+        if (entry->required && !entry->expected_texture) {
+            return 0;
+        }
+        if (entry->compare_subresource && entry->actual_texture &&
+            entry->expected_texture) {
+            if (entry->actual_sub.level != entry->expected_sub.level ||
+                entry->actual_sub.slice != entry->expected_sub.slice ||
+                entry->actual_sub.depth_plane != entry->expected_sub.depth_plane) {
+                return 0;
+            }
+        }
     }
     return 1;
 }
