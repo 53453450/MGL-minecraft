@@ -20,6 +20,7 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+BatchPorts_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
+#import "MGLRenderer+Binding_Private.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
@@ -310,4 +311,72 @@ void *mglRendererFallbackSamplerStatePort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     return r ? (__bridge void *)[r fallbackSamplerState] : NULL;
+}
+
+int mglRendererBindMTLTexturePort(void *renderer, Texture *texture)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && texture && [r bindMTLTexture:texture]) ? 1 : 0;
+}
+
+
+/* === Batch replay shell (former MGLRenderer+Batch.m) =====================
+ * These members are pure renderer plumbing: the dual-proxy invariant, the
+ * replay-workspace switch, the lock/exception frame around a flush and the
+ * outer exception guard of the C entry point.  They are the ObjC-only part of
+ * that file, so they live here; its loops moved to C. */
+@implementation MGLRenderer (BatchZeroShell)
+
+/* Dual-proxy: (A) _activeState NULL -> live; (B) equals ctx->active_state (replay). */
+- (void)mglActivateReplayStateForContext:(GLMContext)glm_ctx
+{
+    memcpy(&glm_ctx->replay_state, &glm_ctx->state, sizeof(glm_ctx->replay_state));
+    glm_ctx->active_state = &glm_ctx->replay_state;
+    _core.activeState = &glm_ctx->replay_state;
+}
+
+- (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx
+{
+    glm_ctx->active_state = &glm_ctx->state;
+    _core.activeState = NULL;
+}
+
+- (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx
+{
+    NSCAssert(_core.activeState == NULL || _core.activeState == glm_ctx->active_state,
+              @"DUAL-PROXY DESYNC: _activeState != ctx->active_state — "
+              @"MGL_STATE() and STATE() would read different GLMState objects");
+}
+
+/* Locked variant of the flush: the caller holds METAL_LOCK.  The body stays in
+ * mgl_batch_flush_restore_encode.m until that file is converted. */
+- (void)flushDrawBuffer:(GLMContext)glm_ctx
+{
+    METAL_LOCK();
+    @try {
+        [self flushDrawBufferLocked:glm_ctx];
+    } @finally {
+        METAL_UNLOCK();
+    }
+}
+
+@end
+
+/* C entry point: lease the backend, then flush under an autorelease pool with a
+ * last-resort exception guard so a throwing draw never escapes into C. */
+void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
+{
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (renderer && glm_ctx) {
+        @autoreleasepool {
+            @try {
+                [renderer flushDrawBuffer:glm_ctx];
+            } @catch (NSException *exception) {
+                NSLog(@"MGL ERROR: callback flushDrawBuffer exception: %@", exception);
+            }
+        }
+    }
+    mglRendererBackendEnd(&_backend_lease);
 }

@@ -258,7 +258,7 @@ static void skipTraceCmd(void *v, uint32_t i)
         mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
                                       glm_ctx->active_state->var.program_pipeline_binding);
     } else {
-        [self restoreStateFromKey:&batch->key context:glm_ctx];
+        mglBatchRestoreStateFromKey(&batch->key, glm_ctx);
     }
     _activeState = glm_ctx->active_state; glm_ctx->active_state->dirty_bits = 0;
     const GLuint kFull = mgl_batch_restore_full_dirty_bits();

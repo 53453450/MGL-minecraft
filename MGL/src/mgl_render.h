@@ -135,6 +135,12 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 /* Identity of the program the current draw would use (restored/scheduled), as
  * the trace log and pipeline-cache keys see it.  Defined in MGLRenderer.m. */
 GLuint mglCurrentRenderProgramKey(GLMContext ctx);
+/* GL-state restore helpers defined in MGLRenderer.m: restore the
+ * program/pipeline pair a key names, and re-sync the framebuffer binding names
+ * after a hashtable swap. */
+void mglRestoreProgramPipelinePair(GLMContext ctx, GLuint programName,
+                                   GLuint pipelineName);
+void mglRendererSyncFramebufferBindingNames(GLMContext ctx);
 void mglRenderGetSync(GLMContext glm_ctx, Sync *sync);
 void mglRenderWaitForSync(GLMContext glm_ctx, Sync *sync);
 unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync *sync);

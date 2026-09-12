@@ -58,6 +58,15 @@ static inline uint64_t mglTraceClockNS(void)
     return (uint64_t)((double)mach_absolute_time() * (double)tb.numer / (double)tb.denom);
 }
 
+/* Monotonic seconds for duration/gap measurements.  Wall-clock time is
+ * unsuitable here: NTP steps can make elapsed values negative or spuriously
+ * large.  C-safe twin of the ObjC inline that used to live in
+ * MGLRenderer_Private.h. */
+static inline double mglTraceNowSeconds(void)
+{
+    return (double)mglTraceClockNS() / 1000000000.0;
+}
+
 /* Semantic trace categories (apitrace-style flag bits).  Each written line
  * is tagged with one of these via the cat= field; consumers filter with
  * awk on cat= without parsing the message body. */

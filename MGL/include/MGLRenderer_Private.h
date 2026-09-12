@@ -161,13 +161,8 @@ static inline double mglNowSeconds(void)
     return CFAbsoluteTimeGetCurrent();
 }
 
-/* Monotonic clock for duration/gap/age measurements (heartbeats, watchdog,
- * perf intervals).  Wall-clock mglNowSeconds is unsuitable: NTP steps can
- * make elapsed values negative or spuriously large. */
-static inline double mglTraceNowSeconds(void)
-{
-    return (double)mglTraceClockNS() / 1000000000.0;
-}
+/* mglTraceNowSeconds moved to the C-safe mgl_trace_log.h (same monotonic
+ * clock); mglNowSeconds below stays ObjC-only because it reads CFAbsoluteTime. */
 
 #define METAL_LOCK()   do { MGL_ASSERT_GL_THREAD(); } while (0)
 #define METAL_UNLOCK() do { } while (0)

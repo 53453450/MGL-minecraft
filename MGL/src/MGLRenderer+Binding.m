@@ -14,6 +14,7 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
+#include "mgl_batch_issue.h"
 
 void mglRendererBindTexture(GLMContext glm_ctx,
                                   Texture *texture)
@@ -474,7 +475,7 @@ static id mglBindingCreateDefaultSampler(void)
     RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
     if (!done || !done->boundActiveTextures) {
-        RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+        RETURN_FALSE_ON_FAILURE(mglBatchBindActiveTexturesToMTL((__bridge void *)self, ctx));
     }
     RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
     if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {

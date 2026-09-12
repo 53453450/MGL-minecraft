@@ -17,6 +17,11 @@
 #ifndef MGL_BATCH_RESTORE_H
 #define MGL_BATCH_RESTORE_H
 
+/* glm_context.h must precede draw_command.h: the latter expects GL base
+ * types (GLenum/GLuint/GLintptr/...) to already be declared. */
+#include "glm_context.h"
+#include "draw_command.h"
+
 #include <stdint.h>
 
 
@@ -168,6 +173,11 @@ typedef struct MGLBatchRestoreFromKeyOps {
 } MGLBatchRestoreFromKeyOps;
 
 void mgl_batch_restore_apply_from_key(const MGLBatchRestoreFromKeyOps *ops);
+
+/* Driver of that plan (former -[MGLRenderer restoreStateFromKey:context:],
+ * defined in mgl_batch_restore.c): restores program/pipeline, VAO, FBO,
+ * viewport and scissor from a batch key. */
+void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx);
 
 /* ---- A3: restoreStateForBatch whole-sequence driver ---- */
 

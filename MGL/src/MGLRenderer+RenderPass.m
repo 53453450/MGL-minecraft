@@ -12,6 +12,7 @@
 // Render pass lifecycle methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_batch_issue.h"
 #import "MGLRenderer+RenderPass_Private.h"
 #include "mgl_air_loader.h"     /* AIR metallib loader. */
 #include "mgl_aux_assets.h"
@@ -5817,7 +5818,7 @@ static GLenum mglPassthroughDeclType(
 
         if (plan.bind_textures)
         {
-            RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+            RETURN_FALSE_ON_FAILURE(mglBatchBindActiveTexturesToMTL((__bridge void *)self, ctx));
             if (work) work->boundActiveTextures = true;
 
             MGL_STATE(ctx)->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);

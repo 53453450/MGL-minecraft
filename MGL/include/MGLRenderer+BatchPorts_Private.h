@@ -30,7 +30,8 @@
 @interface MGLRenderer (BatchPorts)
 
 /* restore-from-key host (impl: MGLRenderer+Batch.m) */
-- (void)restoreStateFromKey:(const MGLStateKey *)key context:(GLMContext)glm_ctx;
+/* restoreStateFromKey:context: is now mglBatchRestoreStateFromKey
+ * (mgl_batch_restore.h). */
 
 /* replay tracing (impl: mgl_batch_replay_trace.m) */
 /* traceReplayBatch:... is now the C driver mglBatchTraceReplayBatch

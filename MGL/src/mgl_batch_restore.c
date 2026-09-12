@@ -309,4 +309,3 @@ void mgl_batch_teardown_run(const MGLBatchTeardownOps *ops)
         ops->propagate_replay_error(ops->ctx);
     }
 }
-

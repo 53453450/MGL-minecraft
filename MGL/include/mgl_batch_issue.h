@@ -378,6 +378,10 @@ int mglBatchTryReplaySimpleBatch(void *renderer, MGLDrawBatch *batch,
                                  GLMContext glm_ctx,
                                  const MGLEncodeContext *encode_context);
 
+/* Bind every active texture's Metal object (former
+ * -[MGLRenderer bindActiveTexturesToMTL]; mgl_batch_replay.cpp). */
+int mglBatchBindActiveTexturesToMTL(void *renderer, GLMContext glm_ctx);
+
 #ifdef __cplusplus
 }
 #endif

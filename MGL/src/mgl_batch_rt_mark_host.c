@@ -21,6 +21,10 @@
 #include "mgl_rt_sync.h"
 #include "mgl_texture_compat.h"
 
+#include "mgl_frame_activity.h"  /* MGL_FRAME_* counters */
+#include "mgl_trace_log.h"       /* mglTraceNowSeconds */
+
+#include <limits.h>
 #include <string.h>
 
 /* ==== host ports (ObjC-zeroing T4) ====
@@ -236,4 +240,34 @@ void mglBatchRtMarkCurrentFramebufferDrawAttachments(void *renderer,
         .rp_has_mtl = mglBatchRtMarkHostRpHas,
     };
     mgl_batch_rt_run_draw_attachments(&ops);
+}
+
+/* === Draw-submission records (former -[MGLRenderer recordArrayDrawSubmittedMode:
+ * vertexCount:] / -[MGLRenderer recordElementDrawSubmittedMode:indexCount:]) ===
+ * The renderer's draw entry points call these once per submitted draw; they keep
+ * the frame counters, the last-draw snapshot and the RT-mark in one place. */
+void mglBatchRecordArrayDrawSubmitted(void *renderer, GLMContext ctx, GLenum mode,
+                                      uint64_t vertex_count)
+{
+    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglTraceNowSeconds());
+    MGL_FRAME_STORE(g_mglLastDrawArraysProgram, mglCurrentRenderProgramKey(ctx));
+    MGL_FRAME_STORE(g_mglLastDrawArraysMode, mode);
+    MGL_FRAME_STORE(g_mglLastDrawArraysCount,
+                    (vertex_count > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)vertex_count);
+    MGL_FRAME_INC(g_mglDrawArraysSinceSwap);
+    MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap, vertex_count);
+    mglBatchRtMarkCurrentFramebufferDrawAttachments(renderer, ctx);
+}
+
+void mglBatchRecordElementDrawSubmitted(void *renderer, GLMContext ctx, GLenum mode,
+                                        uint64_t index_count)
+{
+    MGL_FRAME_STORE(g_mglLastDrawElementsSeconds, mglTraceNowSeconds());
+    MGL_FRAME_STORE(g_mglLastDrawElementsProgram, mglCurrentRenderProgramKey(ctx));
+    MGL_FRAME_STORE(g_mglLastDrawElementsMode, mode);
+    MGL_FRAME_STORE(g_mglLastDrawElementsCount,
+                    (index_count > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)index_count);
+    MGL_FRAME_INC(g_mglDrawElementsSinceSwap);
+    MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap, index_count);
+    mglBatchRtMarkCurrentFramebufferDrawAttachments(renderer, ctx);
 }

@@ -347,6 +347,13 @@ void mgl_batch_rt_mark_one_attachment(uint32_t attachment_index,
                                       uint64_t *diag_hit_inout,
                                       const MGLBatchRtMarkOneOps *ops);
 
+/* Draw-submission records: frame counters, last-draw snapshot and the RT-mark
+ * for one submitted draw.  Defined in mgl_batch_rt_mark_host.c. */
+void mglBatchRecordArrayDrawSubmitted(void *renderer, GLMContext ctx, GLenum mode,
+                                      uint64_t vertex_count);
+void mglBatchRecordElementDrawSubmitted(void *renderer, GLMContext ctx, GLenum mode,
+                                        uint64_t index_count);
+
 /* === Replay trace drivers (former -[MGLRenderer traceReplayBatch:...] /
  * -[MGLRenderer traceReplayCommand:...]; defined in mgl_batch_replay_trace.c) ===
  * They read renderer state through mgl_renderer_ports.h and only emit when the

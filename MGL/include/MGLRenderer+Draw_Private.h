@@ -322,7 +322,8 @@ typedef struct {
                      usedSampledCopyOut:(BOOL *)usedSampledCopyOut
                    directTextureForTrace:(id *)directTextureForTrace
                    sampledCopyForTrace:(id *)sampledCopyForTrace;
-- (bool)bindActiveTexturesToMTL;
+/* bindActiveTexturesToMTL is now mglBatchBindActiveTexturesToMTL
+ * (mgl_batch_issue.h). */
 
 // === Dedup state management ===
 - (void)invalidateLastBoundState;
@@ -408,8 +409,10 @@ typedef struct {
 
 /* traceReplayCommand:... is now the C driver mglBatchTraceReplayCommand
  * (mgl_batch_rt_mark.h, implemented in mgl_batch_replay_trace.c). */
-- (void)recordArrayDrawSubmittedMode:(GLenum)mode vertexCount:(uint64_t)vertexCount;
-- (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount;
+/* recordArrayDrawSubmittedMode:vertexCount: is now
+ * mglBatchRecordArrayDrawSubmitted (mgl_batch_rt_mark.h). */
+/* recordElementDrawSubmittedMode:indexCount: is now
+ * mglBatchRecordElementDrawSubmitted (mgl_batch_rt_mark.h). */
 - (void)bindCullDistanceEmulationBuffers:(GLenum)mode
                              firstVertex:(GLuint)firstVertex
                         explicitVertices:(const GLuint *)explicitVertices

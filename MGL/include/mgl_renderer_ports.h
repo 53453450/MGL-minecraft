@@ -87,6 +87,10 @@ void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
                                                  uint64_t count,
                                                  int *failed_out);
 
+/* Bind one Texture's Metal object through the binding state (returns 0 when
+ * the renderer or the texture is missing). */
+int mglRendererBindMTLTexturePort(void *renderer, Texture *texture);
+
 /* ---- dyn-bind / sampler ports ------------------------------------------ */
 
 /* Binding state owner (the object the dyn-bind plans write bindings through). */

@@ -19,6 +19,7 @@
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_issue.h"
+#include "mgl_batch_rt_mark.h"
 #include "mgl_index_buffer.h"
 #include "mgl_buffer_query.h"
 #include "glm_limits.h"
@@ -1821,7 +1822,7 @@ void mglDrawHostRecordArraySubmitted(void *renderer, GLenum mode,
 {
     MGLRenderer *host = mglDrawHostSelf(renderer);
     if (host) {
-        [host recordArrayDrawSubmittedMode:mode vertexCount:vertexCount];
+        mglBatchRecordArrayDrawSubmitted((__bridge void *)host, host->ctx, mode, vertexCount);
     }
 }
 
@@ -1920,7 +1921,7 @@ void mglDrawHostRecordElementSubmitted(void *renderer, GLenum mode,
 {
     MGLRenderer *host = mglDrawHostSelf(renderer);
     if (host) {
-        [host recordElementDrawSubmittedMode:mode indexCount:indexCount];
+        mglBatchRecordElementDrawSubmitted((__bridge void *)host, host->ctx, mode, indexCount);
     }
 }
 
