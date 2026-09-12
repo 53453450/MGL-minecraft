@@ -48,3 +48,21 @@ Publishing the complement of every interior position (behind
 unsatisfied: the `v==0` edge gets its positions from the outer tessellation level
 while the `u==0` edge gets its from the inner mesh subdivision, so the two edges
 still publish different float values for the same coordinate.
+
+## Marker check (#3)
+
+```sh
+cc -O1 -IMGL/include -IMGL/include/GL -o marker marker_check.c \
+   MGL/src/mgl_tess_domain_gen.c MGL/src/mgl_tess_factor_normalize.c -lm
+./marker
+```
+
+Reproduces the `inner_tessellation_level_rounding` "marker triangle" search
+(`esextcTessellationShaderQuads.cpp`) against MGL's domain for `inner=(1,3)`,
+`outer=3`, `fractional_odd`, and prints which rows are full width.
+
+Current output shows the marker **is** found for that configuration, so the
+simple `inner=(1,3)` case is not the one failing in CTS -- the failing pass is a
+different `inner[0] == 1` configuration.  The CTS log does not name it, so the
+next step is to instrument the CTS side to print the run descriptor when the
+marker search fails.
