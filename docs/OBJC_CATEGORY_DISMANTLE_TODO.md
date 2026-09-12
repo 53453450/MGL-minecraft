@@ -48,11 +48,11 @@
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
-| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **35 / 459**） |
+| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **33 / 445**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 38,039**、ObjC 语法 **2,268 → 2,181**、词汇 **4,353 → 4,139**；
-**shim（T4 硬规的记账面）：43 → 35 个端口 / 511 → 459 行 / 81 → 73 语法（连续两刀净减 ✓）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十一切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 38,025**、ObjC 语法 **2,268 → 2,179**、词汇 **4,353 → 4,137**；
+**shim（T4 硬规的记账面）：43 → 33 个端口 / 511 → 445 行 / 81 → 71 语法（连续三刀净减 ✓）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1135,3 +1135,23 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     下一刀（仍要求净减）：`MGLRendererCoreState`（`_core`，含 `activeState`/capability/drawable 尺寸/原子重置标志）
     同样可以搬成 C 结构 + 一个端口，可再退 1–2 个端口；更值钱的是 **P0-1 三厚块** 与 **`+Batch.m` 遗留的 category 5 方法**
     （后者可整体并入 T5 唯一平台壳 TU，一次退役 4 个方法 + 若干断言）。
+
+52. **shim 净减第三刀：pipeline cache 状态搬 C + `_currentCBHasWork` 并入 batching 状态（本轮第九刀，**按 §0.04 达标**）**：
+    ① `MGLPipelineCacheState`（`pipelineState`/`pipelineColor0Format`/`pipelineProgramName`/…/`dsCacheEnabled`）从 ObjC 头
+    `MGLPipelineCache.h` 搬进新的 C 安全头 **`mgl_pipeline_cache_state.h`**（两个 `BOOL`→`uint8_t`），cache 仍以 ivar `_state` 持有，
+    新端口 `mglRendererPipelineCacheStatePort()` 交出 `const MGLPipelineCacheState *` → 退掉
+    `mglRendererPipelineStatePort` / `mglRendererPipelineProgramNamePort`（净 −1）。
+    ② `_currentCBHasWork`（renderer ivar）并入 `MGLBatchingState.currentCommandBufferHasWork` → 退掉
+    `mglRendererSetCurrentCBHasWorkPort`（净 −1，无新端口）；ObjC 侧 15 处写点（`+RenderPass` 7、`+Tessellation` 4、
+    `+Blit` 2、`+Compute` 1、`mgl_draw_metal_port` 1）改名为 `_batching.currentCommandBufferHasWork`，ivar 删除。
+    ③ **净减账**：**shim 35 → 33 个端口、459 → 445 行、73 → 71 语法**；全仓语法 **2,181 → 2,179**、
+    行数 **38,039 → 38,025**、词汇 **4,139 → 4,137**（`_currentCBHasWork`/`pipelineXxx` 的 NS 词汇减少）。
+    ④ **oracle**：trace 语料 374/296 行、`MGL_MIP_DIAG` 语料 529/212 条与旧库逐字段一致（A/B 三坑固定动作已执行：
+    清 `.d` → 构建 → `cmp` 两库 → 只取本轮日志）；回归 92/0/2、ICB 轮 82/10/2 与旧库相同；CTS 七簇 diff 全空。
+    ⑤ **规律沉淀**：**"ObjC 头里只有 C 字段的状态结构 = 一个端口换 N 个字段端口"** 是本层最稳的净减方式。
+    已按此搬走三块：batching（−5）、command state（−4）、pipeline cache + `_currentCBHasWork`（−2）。
+    剩余候选：`MGLRendererCoreState`（`_core`：activeState/capability/drawable/原子标志；需先把 `MGLCapability`/`MGLDrawable`
+    做成 C 类型，可退 `mglRendererSetActiveStatePort` 等）、`MGLResourceFallbackState`（trace bindings，可退
+    `mglRendererFragmentTraceBindingsPort`）、`MGLTessellationState`（`+Tessellation` 厚块的 materialize 下沉时会用到）。
+    下一刀建议：**T5 唯一平台壳合并**（把 shim 的 4 个 category 方法 + `MGLPlatformRendererShell.m` + `+Lifecycle.m`
+    收敛为一个壳 TU，shim 只留端口；这一步同时满足审计对 T5 的"唯一壳"要求）。
