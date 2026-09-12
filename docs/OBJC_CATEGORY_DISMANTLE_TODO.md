@@ -314,9 +314,40 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
   与切换后各跑一次，**逐例结果 diff 为空**（两边都是 164 pass / 54 fail / 5 crash）；③ 标准三套语料见下。
   注：这三套语料几乎不触达该路径（caselist 内 `atomic|program_resource|interface_query|shader_storage` 命中
   tess 1 / GS 4 / hotspot 0 例），所以真 oracle 是 ①②，CTS 只作回归护栏——文档如实标注。
+- [x] **O7.4 残条：源码文本判定的逐条判定（`7383fc2`）**：把全树剩余的 `->src` / 源码文本判定逐条过了一遍
+  （`grep -rn "->src"` + `grep -rn "strstr("` 全命中 + 调用者追踪），按"可删 / 解析器本体需要"分类。
+  **本刀删除（每条都有 oracle）**：
+  1. `mgl_uniform_reflection.c` 的 `mglSamplerUniformLocationFromReflection()` +
+     `mglFindExplicitUniformLocation()`（共 102 行）：前者**全仓无调用者**（`mgl_air_reflect.c` 直接用
+     `s->location`，拿不到才用 `mglSyntheticSamplerUniformLocation()`），后者是它内部"从名字位置向前找
+     `layout(...)` 再 `strtoul` 解析 `location=N`"的源码扫描器。oracle＝静态事实：`grep` 全仓（含 ObjC/C++/
+     harness/头文件）零引用，且无 harness 桩引用它。
+  2. `mgl_gl_extensions.c` 的 `_UNIFORM_CONSTANT_RES` 无 TU 兜底（按本 stage 资源表里同名 `query_name`
+     猜"被引用"）。oracle＝探针 `MGL_O74B_LOG`：本地 94 项 + CTS piq 30 例 + refq 223 例共 **32 次命中，
+     全部 `no_tu=1` 且 `result=0`**，而无 TU 时 TU 查询本身也返回 0 ⇒ 该兜底从未改变过答案。
+  3. `mgl_gl_extensions.c` 的 `.d[0]` 数组长度特判（`query_name` 以 `[0]` 结尾且含 `.d[0]` ⇒ 返回 2）。
+     oracle＝同一探针：命中 2 次，`query=TrickyBlock.a[2].b[0].d[0]`，**`reflected_size` 本身已经是 2**
+     ⇒ 返回值与删除后的 `res->ubo_member->size` 完全相同（零行为差异）。
+  4. `mgl_gl_extensions.c` 两处残留 `->src` 门（block 成员引用查询、plain-uniform 引用查询）：查询已改走 TU，
+     门只剩"有没有 src"的旧含义；删掉后由 TU 判空回答（stage 缺失/未编译 ⇒ 0）。
+  5. `mgl_program_reflection.c` 的 `mglProgramPerVertexSignature()` + `mglShaderSourceHasToken()`：
+     `strstr(src,"gl_PerVertex")` → 花括号配对 → 整词找成员。改为读 TU 的块声明
+     （`decl->type->name == "gl_PerVertex"`，成员取 `struct_members`；实例名无关）。oracle＝新增
+     `make test-per-vertex-signature`（23 例，纯 C，构造 Program/Shader + `mglGLSLParse`）；A/B＝同 harness
+     编到旧实现上 **21/23**，差异恰好是旧扫描的两处假阳性（注释里的块、`struct gl_PerVertexLike`）。
+  **保留并标注（不属兼容残留）**：`mgl_frontend_session.c` 的 `strstr(src,"#version")`
+  （`mglFrontendGLSLVersionOf`：legacy 重写需要版本号，发生在解析**之前**，此处无 TU 可用）与 legacy 翻译
+  幂等标记注释（同样是重写阶段的唯一通道）；`program.c` 的 `mglShaderInterfaceCheck` /
+  `mglShaderTessInterfaceCheck` 与 `mglAirReflectGLSLStageInfo(shader->src,…)`（三者都是**自己 parse+sema**
+  再用 IR 比较/填充，不是文本判定——链接期重复解析属 O5 类去重候选，另计）；
+  `program.c`/`shaders.c` 把 `->src` 当编译输入与空值判断；`mgl_air_backend.cpp` 的
+  `strstr(name,"Proj"/"Lod"/"Grad"/"Offset")`（GLSL 内建名→AIR 行为分派；子串匹配偏松，属代码质量项）。
+  **留待下一批**：`mgl_uniform_reflection.c` / `mgl_gl_extensions.c` 的"名字→类型/location"启发式
+  （`Color`/`UV`/`Normal`/`Position`…）与 `mglDefaultAttribLocationForName()`——属 O7.3 名字启发式家族，
+  需先探针测 `gl_type == 0` / 默认 location 的命中率。
 - [ ] **O7.4 剩余候选（按收益排序）**：
-  1. `mgl_draw_encode` / `program.c` 中其余 `->src` 文本判定（如 legacy 翻译标记）→ 逐条判定，凡属
-     「解析器本体需要」的保留并在此处标注。
+  1. 名字启发式一批（见上条末段）；2. 链接期重复 parse 去重（`mglShaderInterfaceCheck` 复用
+     `frontend_tu`，属 O5 类）。
 - [ ] **O7.5 验收口径**：每刀必须给 `local 全量（94 项）` + `CTS tess 140 / GS 136 / hotspot 1328`
   三套数字，hotspot 要求**非通过集合逐条 diff 为空**；退役的判据要在文档里留下 oracle 说明（探针名 +
   样本量 + 结论），否则不得删。
@@ -466,10 +497,32 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     A/B 双库 223 例逐例 diff 为空（164/54/5 两边相同）；GS 簇 136/0；tess 簇 139/1/0；
     hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
 
-33. **当前下一刀（2026-09-12 收口，按推荐顺序）**：
-    1. **O5.2** `+Compute.m`（1255）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
+33. **O7.4 残条：源码文本判定逐条判定 + 五处删除（`7383fc2`）**：全树 `->src` / `strstr` 命中逐条过筛
+    （Batch O7 有分类表），本刀删五处、换一处：
+    ① `mglSamplerUniformLocationFromReflection()`（**全仓无调用者**）+ 其内部 86 行"向前找 `layout(...)` 再
+    `strtoul` 取 `location=N`"的源码扫描器 `mglFindExplicitUniformLocation()`，共 102 行；
+    ② `_UNIFORM_CONSTANT_RES` 的"无 TU 时按同名成员猜被引用"兜底（探针 32 次命中全 `result=0`，且无 TU 时新
+    查询同值）；
+    ③ `.d[0]` 数组长度特判（探针 2 次命中，`reflected_size` 本身已是 2 ⇒ 零行为差异）；
+    ④ 两处残留 `->src` 门（查询已走 TU，门只剩旧含义）；
+    ⑤ `mglProgramPerVertexSignature()` 的 `strstr(src,"gl_PerVertex")`+花括号配对+整词找成员，换成读 TU 块声明
+    （新增 `make test-per-vertex-signature` 23 例；同一 harness 编到旧实现是 **21/23**，差异恰好是旧扫描的两处
+    假阳性：注释里的块、`struct gl_PerVertexLike`）。
+    保留并标注的：frontend 的 `#version` 读取与 legacy 翻译幂等标记（都发生在解析**之前**，此处没有 TU 可用）、
+    `mglShaderInterfaceCheck`/`mglShaderTessInterfaceCheck`/`mglAirReflectGLSLStageInfo`（自己 parse+sema，
+    不是文本判定）、`->src` 作编译输入；名字启发式一批（`Color`/`UV`/`Normal`…、`mglDefaultAttribLocationForName`）
+    留待下一批。
+    验证：本地 92/0/2；`test-reference-query` 30/30、`test-per-vertex-signature` 23/23、`test-legacy-compat`
+    193/193、`test-frontends`、`test-buffer-plan`/`test-tess-domain`/`test-tess-air`(180)/`test-binding-*`/
+    `test-render-pass-clear-plan`；piq 30 例 17/12/1 且逐例 diff 为空；refq 223 例 164/54/5 且逐例 diff 为空；
+    pp 语料（可分程序管线 5 例）新旧库一致 1/3/1 ns；GS 簇 136/0；tess 簇 139/1/0；
+    hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
+
+34. **当前下一刀（按推荐顺序）**：
+    1. **O5.2** `+Compute.m`（1251）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
     2. **O3.1 残量**（load/store + attachment match → `mgl_render_pass_plan.*`）：风险高，需先补 harness golden。
-    3. **O7.4 残条**：`mgl_draw_encode` / `program.c` 里其余 `->src` 文本判定——逐条判定，属"解析器本体需要"的保留并标注。
+    3. **O7.4 残条（下一批）**：名字→类型/location 启发式（`gl_type == 0` 命中率需探针）；链接期重复 parse 去重
+       （`mglShaderInterfaceCheck` 复用 `frontend_tu`，属 O5 类）。
   - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。
