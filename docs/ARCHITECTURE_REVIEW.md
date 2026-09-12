@@ -48,7 +48,7 @@
 | 层 | kLOC |
 |----|------|
 | C GL state | 78.9 |
-| ObjC renderer | 58.5 |
+| ObjC renderer | 34.5（2026-09-12 实测；审查稿为 58.5，O1/O2/C1/O5/O7 已降 ~24k） |
 | AIR + frontend | 35.3 |
 | Metal-cpp | 24.2 |
 | GL ABI | 10.4 |
@@ -299,7 +299,7 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 | `mgl_air_backend.cpp` | 含在 AIR | 局部重写 | clip/cull 改 IR/AST；TU 仍未按域拆开。PSO cache 已加锁。 |
 | CompileArtifact / reflect | 含在 AIR | 保留并收口 | variant/capture 已进同一门闩。 |
 | `draw_command` 批处理 | 含在状态机 | 保留并收口 | GS/tess/compute retain 已齐。动态 VB/纹理/EBO 改为对象名。 |
-| `MGLRenderer+*.m` | ~59k | 替换边界 | PSO miss 不再复用旧 PSO。Compat 符号已删。Draw*/MultiDraw*/Indirect 编排在 C++ `mglIssueDraw*`。GS 拓扑 / tess 判定 / native TES encode / GS passthrough / TCS ABI / TES per-patch / texture 槽位 / stage-in 默认值与 pack / sparse compact / GS loc_map / XFB scatter / counts / 核心 bindings / compute layout / XFB prefix-sum / cull-distance array split / VS capture POINT encode / cull attrib 扫描与 emu 槽 bind / capture 槽 bind 在 C++；VS capture processGLState 与 VAO cull resolve 仍在 ObjC。 |
+| `MGLRenderer+*.m` | 34.5k（实测） | 替换边界 | PSO miss 不再复用旧 PSO；**PSO 键已含 `tessVertexRenderActive`**（TES-vertex 与 compute 两条栅格化路线不再互相命中，见 `docs/TESS_NATIVE_RENDER_VERTEX_PATH.md` §10.4）。Compat 符号已删。Draw*/MultiDraw*/Indirect 编排在 C++ `mglIssueDraw*`。GS 拓扑 / tess 判定 / native TES encode / GS passthrough / TCS ABI / TES per-patch / texture 槽位 / stage-in 默认值与 pack / sparse compact / GS loc_map / XFB scatter / counts / 核心 bindings / compute layout / XFB prefix-sum / cull-distance array split / VS capture POINT encode / cull attrib 扫描与 emu 槽 bind / capture 槽 bind 在 C++；VS capture processGLState 与 VAO cull resolve 仍在 ObjC。 |
 | `mgl_render.cpp` + backend | ~24k | 局部重写 | 已删 MetalDrawExecutor 与 Compat 桥。 |
 | Platform shell + GLFW fork | 薄 | 保留并收口 | 扩展探测已委托 `glGetStringi`。share 显式失败。 |
 | OpenGL ES 3.2 路径 | `gl_es.c` | 保留并收口 | 独立 limits 表 + smoke/CTS 子集。不要扩 ES 语义假装验收。 |
@@ -327,7 +327,7 @@ Compat 生产符号已删除。Draw* / MultiDraw* / Indirect 公共 encode 不�
 
 下一批应把 VS GPU capture 的 processGLState / buffer 分配与 VAO cull resolve 移出巨型 ObjC category，压到薄 layer/drawable/swap 端口，而不是扩 ES。array split、capture POINT encode、cull attrib 扫描与槽 bind 已下沉。
 
-**ObjC 薄平台层拆解**：见 [`docs/OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（O0 政策/度量；O1 draw/tess/GS 宿主；O2 batch path）。度量脚本 `scripts/objc_renderer_loc.sh`，目标 `MGLRenderer*.m` 合计 ≤ 8–12k。即时下一刀：O1.2–O1.3（VS capture plan/prep + VAO cull port 表）与 O2.1（`mgl_batch_select_path`）。
+**ObjC 薄平台层拆解**：见 [`docs/OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（O0 政策/度量；O1 draw/tess/GS 宿主；O2 batch path）。度量脚本 `scripts/objc_renderer_loc.sh`，目标 `MGLRenderer*.m` 合计 ≤ 8–12k。即时下一刀：见该文档 §5 第 29 条（当前为 O7.4 的 SPIRV 兼容清理残项与 O5.2 `+Compute.m` / O4.4 `+Blit.m` 下沉）。Batch O7 专管「SPIRV→LLVM IR 兼容层清理」：先用探针/逐条 diff 建 oracle，再删源码文本判定与名字启发式（已清 10 处文本判定 + 3 份 sampler 启发式）。
 
 ## 验证矩阵
 

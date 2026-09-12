@@ -37,31 +37,47 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 ---
 
+## 0.1 文档地图（2026-09-12 整理）
+
+| 文档 | 入库 | 作用 |
+|---|---|---|
+| [`OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（本文） | ✅ | 薄 ObjC 边界：政策/度量/批次清单 + §5 落地日志（连续编号；最新可执行清单见第 29 条与 Batch O7） |
+| [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | ✅ | 总架构审查与分层规模；ObjC 厚度数字以本文度量为准 |
+| [`C0_AIR_RENDER_DEP_MAP.md`](C0_AIR_RENDER_DEP_MAP.md) | ✅ | `mgl_air_backend.cpp` / `mgl_render.cpp` 的依赖与调用域地图 |
+| [`TESS_NATIVE_RENDER_VERTEX_PATH.md`](TESS_NATIVE_RENDER_VERTEX_PATH.md) | ✅ | TES-vertex / compute 双路线设计 + §10.4 的 PSO 键修复记录 |
+| [`CTS_TESS_REMAINING_2026-09-10.md`](CTS_TESS_REMAINING_2026-09-10.md) | ✅ | tess 簇逐轮排查日志（顶部有当前状态横幅：139/1/0） |
+| [`GS_XFB_GL4_CTS_PROGRESS_2026-08-21.md`](GS_XFB_GL4_CTS_PROGRESS_2026-08-21.md) | ✅ | GS/XFB 簇进度（被 `ARCHITECTURE_REVIEW.md` 引用） |
+| [`AIR_M3_CPP_TODO.md`](AIR_M3_CPP_TODO.md) · [`P4_COMMAND_LIFECYCLE_LIMITATIONS_2026-08-16.md`](P4_COMMAND_LIFECYCLE_LIMITATIONS_2026-08-16.md) · [`GL46_GS_LAYERED_SPEC_AUDIT.md`](GL46_GS_LAYERED_SPEC_AUDIT.md) | ✅ | 专题记录 |
+| 其余 `docs/*.md` | ❌（`.gitignore` 的 `/docs/*`） | 阶段性审计/审查稿，保留为本地资料；**若被入库文档引用，必须先 `git add -f` 一并入库**（2026-09-12 即按此规则补入 3 篇） |
+
+度量脚本：[`scripts/objc_renderer_loc.sh`](../scripts/objc_renderer_loc.sh)（`MGLRenderer*.m` 合计、Batch 诚实簇、
+Draw 簇；当前输出 `MGLRenderer*.m total: 34547`）。
+
 ## 1. 现状库存（按厚度）
 
-### 1.1 `MGLRenderer` categories（约 59k）
+### 1.1 `MGLRenderer` categories（2026-09-12 实测 **34.5k**；基线 ~59k）
 
 | 文件 | 约 LOC | 判定 | 终态 |
 |------|-------:|------|------|
-| `+Texture.m` | ~6993 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
-| `+RenderPass.m` | ~6997 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（**O3.1 已启动**：clear-value 首刀已沉 + harness 就位；残量 load/store + attachment match 待补 golden 后再沉）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
-| `+Blit.m` | ~4970 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
-| `+BindingState.m` | ~2940 | **厚**（C1 多刀已从 ~4523 降下，见 O3.3） | 拆：attrib/texture/image apply 残留 → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口（口仍 ≫300，O3.3 residual） |
-| `MGLRenderer.m` | ~4473 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
-| `+DrawSupport.m` | ~350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
-| `+DrawStageHost.m` | ~363 | 薄 | A1：保留（非空）；bindCull/MS + 一行包装；GS 扩张已无策略 |
-| `mgl_draw_metal_port.m` | ~1953 | 薄端口+HostOps | A1：id 物化 + HostOps 表；`metal_ops` 嵌套 |
-| `+Batch.m` | ~170 | 薄 category / **簇仍厚** | O2.5 字面达标；encode 仍在 `mgl_batch_*_encode.m`（见 §1.2 / Track B） |
-| `+Tessellation.m` | ~1766 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
+| `+Texture.m` | 6981 | **厚** | 拆：upload/readback/fallback plan → C++；ObjC 只 `newTexture` / blit encode 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
+| `+RenderPass.m` | 7058 | **厚** | 拆：load-store / clear / attachment match → `mgl_render_pass_plan.*`（**O3.1 已启动**：clear-value 首刀已沉 + harness 就位；残量 load/store + attachment match 待补 golden 后再沉）；ObjC 只 `MTLRenderPassDescriptor` 物化 |
+| `+Blit.m` | 4945 | **厚** | 拆：clip/format/DS unify plan → `mgl_blit_plan.*`（O4.4 待启动）；ObjC 只 blit encoder 端口（值类型/构造器已沉 `mgl_region_value.cpp`，O4.0） |
+| `+BindingState.m` | 2940 | **厚**（C1 多刀已从 ~4523 降下，见 O3.3） | 拆：attrib/texture/image apply 残留 → C；ObjC 只 `setVertexBuffer`/`set*Texture` 口（口仍 ≫300，O3.3 residual） |
+| `MGLRenderer.m` | 4693 | **厚** | 收口：删已迁走的死 `#pragma`；只留公共入口与少量 utility |
+| `+DrawSupport.m` | 350 | 薄 | O1.6：id 端口 → `mgl_draw_metal_port.m`；host ABI/cull/MS → StageHost；Support 仅 resolve/raster/polygon/ensure |
+| `+DrawStageHost.m` | 362 | 薄 | A1：保留（非空）；bindCull/MS + 一行包装；GS 扩张已无策略 |
+| `mgl_draw_metal_port.m` | 1970 | 薄端口+HostOps | A1：id 物化 + HostOps 表；`metal_ops` 嵌套 |
+| `+Batch.m` | 170 | 薄 category / **簇仍厚** | O2.5 字面达标；encode 仍在 `mgl_batch_*_encode.m`（见 §1.2 / Track B） |
+| `+Tessellation.m` | 2174 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~21 | 薄占位 | O2.5：dyn-bind → `mgl_batch_dyn_bind_encode.m`；待 O6 删空 category |
-| `+Buffer.m` | ~826 | 薄化中 | map/CoW/shadow plan → C++（O5.1：vertex-index + dirty-buffer 决策已沉 C 函数；vertex-attrib buffer map 已整段沉 `mgl_vertex_attrib_plan.*` + harness；**reflection fallback 已删——plan 成为唯一映射路径**）；ObjC 只 MTLBuffer 物化与逐 attribute resolve |
-| `+Compute.m` | ~1255 | 中 | dispatch plan → C++（O5.2 待启动）；ObjC 只 compute encoder 端口 |
-| `+Lifecycle.m` | ~665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
-| `+SwapDiagnostics.m` | ~555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
-| `+Draw.m` | ~511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
-| `+Binding.m` | ~488 | 薄化（实测较基线 +80；与 BindingState 合并后删除） | 与 BindingState 合并后删除 |
-| `+GPURecovery.m` | ~350 | Keep 薄 | 触发 + 日志；reset 在 C++ |
-| `+VertexLayout.m` | ~193 | 薄化（O5.3 本刀：`generateVertexDescriptorState` 已沉 C 函数 `mglRenderGenerateVertexDescriptorState`，ObjC 仅薄转发） | `updateBlendStateCache` 写 `_pipelineCache`（ObjC 物化，留）；`bindFramebufferAttachmentTextures` 实为 FBO 绑定，应归 RenderPass 域 |
+| `+Buffer.m` | 826 | 薄化中 | map/CoW/shadow plan → C++（O5.1：vertex-index + dirty-buffer 决策已沉 C 函数；vertex-attrib buffer map 已整段沉 `mgl_vertex_attrib_plan.*` + harness；**reflection fallback 已删——plan 成为唯一映射路径**）；ObjC 只 MTLBuffer 物化与逐 attribute resolve |
+| `+Compute.m` | 1255 | 中 | dispatch plan → C++（O5.2 待启动）；ObjC 只 compute encoder 端口 |
+| `+Lifecycle.m` | 665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
+| `+SwapDiagnostics.m` | 555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
+| `+Draw.m` | 511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
+| `+Binding.m` | 488 | 薄化（实测较基线 +80；与 BindingState 合并后删除） | 与 BindingState 合并后删除 |
+| `+GPURecovery.m` | 350 | Keep 薄 | 触发 + 日志；reset 在 C++ |
+| `+VertexLayout.m` | 203 | 薄化（O5.3 本刀：`generateVertexDescriptorState` 已沉 C 函数 `mglRenderGenerateVertexDescriptorState`，ObjC 仅薄转发） | `updateBlendStateCache` 写 `_pipelineCache`（ObjC 物化，留）；`bindFramebufferAttachmentTextures` 实为 FBO 绑定，应归 RenderPass 域 |
 
 ### 1.2 其它 `.m`（非 category，但同边界）
 
@@ -80,7 +96,9 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | `MGLPlatformRendererShell.m` | ~229 | **Keep 样板** |
 | `mgl_readback.m` 等 compat | 小 | 策略进 ReadbackPolicy；`.m` 变转发 |
 
-> **实测（2026-09-09）**：`MGLRenderer+*.m` categories 合计 ≈ **34.8k** LOC（基线 ~59k；O1/O2/C1 已降 ~24k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 ≈ **19.0k**，是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
+> **实测（2026-09-12）**：`MGLRenderer+*.m` categories 合计 **34.5k** LOC（基线 ~59k；O1/O2/C1 已降 ~24.5k）；距目标 ≤8–12k 仍差 ~3×。`MGLRenderer+Texture.m`+`+RenderPass.m`+`+Blit.m` 三厚块 = **19.0k**（6981+7058+4945），仍是 O4 主体。`MGLPipelineCache`/`+VertexLayout`/`mgl_batch_*_encode` 已呈薄端口/ops 形，不应再计入「待沉厚代码」。
+>
+> 本周期新增回落（同日多刀，见 §5 第 25–28 条）：`+Buffer.m` 1479→**826**（vertex-attrib buffer map 沉 `mgl_vertex_attrib_plan.*` 且删掉 544 行 reflection fallback）、`+RenderPass.m` 退役 6 处源码文本扫描、3 份 sampler 启发式实现合并为 1 个共享谓词。度量：`scripts/objc_renderer_loc.sh`（当前输出 `MGLRenderer*.m total: 34547`）。
 
 **Batch ObjC 诚实合计（Track B）**：categories ~190 + encode/trace/port ~1521 = **~1711**（`scripts/objc_renderer_loc.sh`）。A3 本刀 1923→~1711（−212；direct-submit C 决策树、trace fill helpers、binding helpers→`+Binding`、sampled resolve gate）；**勿宣称 cleanup done**（残量仍 ~1.7k）。
 
@@ -195,6 +213,43 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 - [ ] **O6.3** `MGLRenderer.m` 降到入口表 + 文档化 C ABI
 - [ ] **O6.4** 总 LOC 达标；ARCH 表格更新为「薄平台壳」
 
+### Batch O7 — SPIRV→LLVM IR 兼容层清理【P0，2026-09-12 新开】
+
+**口径**：SPIRV/MSL 文本时代，内建、资源类型与 sampler 归属都不在反射里，ObjC/C 只能靠
+「扫源码文本 / 猜名字 / 合成 location」作答。IR 链（`mgl_air_reflect` + `fillStageInfo`）现在对这些
+问题有**精确事实**，因此本批任务是：把事实发布出来，删掉猜测。**禁则**：不得用「CTS 没跑到」当作
+删除依据——每一刀必须先建立 oracle（探针计数 / 逐条 diff / golden），再删。
+
+- [x] **O7.1 内建使用掩码（`a6cc8ce`）**：`MGLAIRStageInfo.builtin_mask` +
+  `Program.air_builtin_mask[stage]` + `mglProgramStageBuiltinMask()` / `mglProgramStageUsesBuiltin()`；
+  退役 6 处 `strstr(shader->src, "gl_X")`（GS `gl_PointSize`/`gl_PrimitiveID`/`gl_ClipDistance`、
+  FS+GS `gl_Layer`/`gl_ViewportIndex`、TES `gl_ClipDistance`）；`mglRenderVSWritesLayer()` 改收
+  `Program`。顺带删除死代码 `mglRendererFindMSLEntryParameterClose()`（生成 MSL 入口参数表解析器，
+  AIR 链不再生成 MSL 文本，全树零调用）。
+- [x] **O7.2 vertex-id / frag-coord / sample（`64d127d`）**：掩码扩到 VERTEX_ID / FRAG_COORD /
+  NUM_SAMPLES / SAMPLE_ID / SAMPLE_POSITION / SAMPLE_MASK / INTERPOLATE_AT_SAMPLE /
+  INTERPOLATE_AT_OFFSET / SAMPLE_INTERPOLATION；frontend 谓词补「调用名匹配」（内建函数）与
+  `mglFrontendStageUsesSampleInterpolation()`（`sample in`）。退役 `program.c` 的
+  vertex/primitive-id 扫描与 FS frag-coord/sample 扫描；删除 `mglRenderShaderSourceUsesSampleParams()`；
+  `mglRenderFragmentNeedsPerSampleMSValues()` 改收 `Program`。
+- [x] **O7.3 sampler 名字/位置启发式（`84fe4c4`）**：删掉 `_UNIFORM_CONSTANT_RES` 分支上的
+  `uniform_location >= 0x4000` 与「名字含 `Sampler` / 等于 `CloudFaces`」两条子句，三份重复实现合并为
+  `mglRenderResourceLooksSamplerLike(res_type, image_dim)`；oracle＝探针在 CTS 1328 例 9602 次判定 +
+  本地全量 721 次判定中**零次**由这两条子句决定。
+- [ ] **O7.4 剩余候选（按收益排序）**：
+  1. `mglFindSamplerResourceForMetalBinding`（`mgl_sampler_compat.m`）仍按 metalBinding 遍历 5 类
+     资源找 sampler → 可改为反射 `binding` 直查（判定已走共享谓词）；
+  2. `mglRendererProgramUsesVertexAttrib`（`mgl_vertex_attrib_query.m`）的
+     `location == 0xffffffff && i == attribute` 声明序兜底 → IR 链每个 stage input 都有 location；
+  3. `mglShouldSkipStageTextureResource` / `mglShouldSkipStageSamplerResource`（`mgl_program_resource.c`）
+     恒返回 `false` 的死桩 → 连调用点判断一起删；
+  4. `mgl_gl_extensions.c` 的 `strstr(shader->src, "void main")` → 查询/校验路径，需单独评估；
+  5. `mgl_draw_encode` / `program.c` 中其余 `->src` 文本判定（如 legacy 翻译标记）→ 逐条判定，凡属
+     「解析器本体需要」的保留并在此处标注。
+- [ ] **O7.5 验收口径**：每刀必须给 `local 全量（94 项）` + `CTS tess 140 / GS 136 / hotspot 1328`
+  三套数字，hotspot 要求**非通过集合逐条 diff 为空**；退役的判据要在文档里留下 oracle 说明（探针名 +
+  样本量 + 结论），否则不得删。
+
 ---
 
 ## 3. 与并行工作流的衔接
@@ -206,9 +261,10 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | CTS Batch 2 ReadbackPolicy | **驱动 O4** |
 | CTS Batch 3 LimitsTable | 不进 ObjC；C 状态机 |
 | CTS Batch 4 PSO format-class | **驱动 O3.2 / O3.4** |
+| SPIRV→IR 兼容清理（O7） | 与 CTS Batch 2/3/4 同向：凡是「CTS 时代为绕开反射缺口而猜」的写法，先建 oracle 再删；本周期已清 10 处文本判定 + 3 份 sampler 启发式 |
 | MC FPS：hazard / PSO LRU / Y-flip / CoW | 分别挂在 O2.2 / O3.4 / O4.1 / O5.1 |
 
-建议 PR 节奏：**O0 docs → O1 draw host → O2 batch →（CTS readback ∥ O4）→ O3 PSO/bind → O5 → O6 删文件**。
+建议 PR 节奏：**O0 docs → O1 draw host → O2 batch →（CTS readback ∥ O4）→ O3 PSO/bind → O5 → O7 兼容清理 → O6 删文件**。
 
 ---
 
@@ -222,7 +278,10 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 
 ---
 
-## 5. 即时下一刀（建议本周）
+## 5. 落地日志与即时下一刀
+
+> 按时间顺序连续编号（2026-09-12 整理：修掉重复编号并把新增刀按序归位）。每条末尾给出该刀的
+> **下一刀候选**与**禁则**；最新的可执行清单见文末第 29 条与 §2 的 Batch O7。
 
 1. ~~**O1.1–O1.6**~~：DrawSupport &lt;400；XFB/TES HostOps 已下沉
 2. ~~**O1.4 residual**~~：`mglDrawGsExecuteMetalExpansion` + `mgl_draw_gs_metal.cpp`
@@ -246,30 +305,35 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 19b. ~~**C1 O4.1 residual**~~：Y-flip (`CopyRows`) / depth pack (`CopyDepth*`/`DepthReadbackPlan`/`RepackDepthPlanes`) / `GetTexImagePlan` / `MSAAArrayLayerStride` → 同 TU（render ~20599→~20470）；Metal MSAA encode 残量留 monolith；禁堆回
 19c. ~~**C1 binding-policy (O3.3)**~~：slot/sampler/stage/plain-uniform → `mgl_binding_policy.{h,c}`（render ~20470→~20165，−305）；禁增厚 `+Binding.m`；BindingState apply 残量留 monolith（仍厚）
 19d. ~~**C1 format-class PSO (O3.2)**~~：NeedsExplicitTopology / PrimitiveTopologyClass / format-class / Blend·Stencil·Cull / scissor·viewport → `mgl_pso_format_class.{h,c}`（render ~20165→~19558，−607）；禁增厚 `+Binding.m`/`+RenderPass.m`；generatePipeline apply 残量留 monolith
-19. ~~**A3 encode-fold 本刀（submit/trace/Binding）**~~：`mgl_batch_issue_submit_direct_*` 决策树；trace fill/gate helpers（**shrink** replay_trace 374→~254）；binding dedup/sync → `+Binding.m`；sampled resolve gate；restore/teardown/sync C drivers + tests。诚实簇 **1923→~1711**（−212）。禁扩 metal_port / trace / `mgl_render.cpp`。**勿宣称 cleanup done**
-20. **下一刀**：残量 `dyn`(~364) / `flush`(~379) / `trace`(~254) / `issue`(~215)；C1 已开但勿掩盖 Batch 残量；**C1b–C1g done**（见上）；Batch 诚实簇仍~1711、`mgl_render`~19.6k 勿宣称 done；BindingState 仍厚；继续 ensure/resolve/submit 与 flush callback 压薄；O3 / O6 可并行
+20. ~~**A3 encode-fold 本刀（submit/trace/Binding）**~~：`mgl_batch_issue_submit_direct_*` 决策树；trace fill/gate helpers（**shrink** replay_trace 374→~254）；binding dedup/sync → `+Binding.m`；sampled resolve gate；restore/teardown/sync C drivers + tests。诚实簇 **1923→~1711**（−212）。禁扩 metal_port / trace / `mgl_render.cpp`。**勿宣称 cleanup done**
+21. **下一刀**：残量 `dyn`(~364) / `flush`(~379) / `trace`(~254) / `issue`(~215)；C1 已开但勿掩盖 Batch 残量；**C1b–C1g done**（见上）；Batch 诚实簇仍~1711、`mgl_render`~19.6k 勿宣称 done；BindingState 仍厚；继续 ensure/resolve/submit 与 flush callback 压薄；O3 / O6 可并行
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
-21. **O5.1 本刀**：`getVertexBufferIndexWithAttributeSet:` → C 函数 `mglRenderVertexBufferIndexForAttribute(ctx,state,attribute,where)`（`MGLRenderer.m` 兄弟函数，`MGLRenderer+Draw_Private.h:84` 声明）；ObjC 仅 `MGL_STATE(ctx)` + 一行转发；零 Metal 耦合，C1 模式范本；`+Buffer.m` −33 行、唯一调用方 `+BindingState.m:356` 不变
+22. **O5.1 本刀**：`getVertexBufferIndexWithAttributeSet:` → C 函数 `mglRenderVertexBufferIndexForAttribute(ctx,state,attribute,where)`（`MGLRenderer.m` 兄弟函数，`MGLRenderer+Draw_Private.h:84` 声明）；ObjC 仅 `MGL_STATE(ctx)` + 一行转发；零 Metal 耦合，C1 模式范本；`+Buffer.m` −33 行、唯一调用方 `+BindingState.m:356` 不变
     - **O5.1 续刀（已落）**：`checkForDirtyBufferData:` / `updateDirtyBaseBufferList:` → C 函数 `mglRenderCheckForDirtyBufferData` / `mglRenderUpdateDirtyBaseBufferList`（`MGLRenderer+Draw_Private.h` 声明）；ObjC 两入口合计 −75 行。`test-regression` [01]–[15] 全 PASS。
     - **下一刀候选**（O5）：`+Buffer.m` 的 map/CoW/shadow plan、`+Compute.m` dispatch plan（O5.2）、`mgl_draw_encode.m`（O5.4）迁空；**O3.1（`+RenderPass` load/store/clear）风险高，留待带 clear-value 回归保护时再做**
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
-22. **O5.4 本刀（已落）**：`mgl_draw_encode.m` 的两枚纯 C indirect-skip 谓词迁至 `mgl_draw_issue.cpp`（O5.4 第一步：`mgl_draw_encode.m` −39 行、零 Metal/ObjC 逻辑移出 ObjC TU）。`test-regression` [01]–[15] 仍全 PASS；[16] `air_geometry_resources` 已知上游 SIGSEGV 不变。
+23. **O5.4 本刀（已落）**：`mgl_draw_encode.m` 的两枚纯 C indirect-skip 谓词迁至 `mgl_draw_issue.cpp`（O5.4 第一步：`mgl_draw_encode.m` −39 行、零 Metal/ObjC 逻辑移出 ObjC TU）。`test-regression` [01]–[15] 仍全 PASS；[16] `air_geometry_resources` 已知上游 SIGSEGV 不变。
     - **下一刀候选**（O5）：`mgl_draw_encode.m` 余下 `mglEncode*ForRenderEncoderOwner` 需把 `MGLDrawMetalHandle` 改 `void*` + 调用方 `__bridge` 后方可整文件迁 C++；或转 O5.2（`+Compute.m` dispatch plan）。
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
-25. **O5.1 续刀3（reflection fallback 已删）**：证据链＝探针（`MGL_PLANFB_TRACE`，测后已删）在 92 项本地全量 + 1328 例 GL46 hotspot 上零命中；此后 plan 缺失只可能是分配失败，改为"重试一次 + 拒绝该 draw + 速率限制日志"。**注意语义变化**：OOM 下旧代码会静默走慢路径完成绑定，现在会拒画（调用方 dirty 重试）；若日后要恢复 OOM 韧性，应该让 plan 分配不可失败（例如 Program 内联存储），而不是把慢路径搬回来。
+24. **上游 SIGSEGV 已修（6f53544，2026-09-09）**：[16/93] `air_geometry_resources` 的 `EXC_BAD_ACCESS`（`objc_retain` ← AGX `setBuffer_impl` ← `mglDrawGsExecuteMetalExpansion`）根因是 **GS compute-binding 计划的 temporaries 生命周期**：`mglGsMetalFillComputeBindings` 用局部 `NSMutableArray` 保活 plan 里的借用 MTL 指针，ARC 在函数返回时释放数组，而 C++ 侧在其后才 encode/dispatch。修复：`fill_compute_bindings` 新增 `void **temporaries_out` 出参，以 +1 CF 引用交还 keep-alive 集，C++ 侧用既有 `OwnedList` 追踪（作用域覆盖 expansion + XFB scatter 两次 execute）。compute-dispatch 与 tessellation 路径 temps/execute 同作用域，无同类问题。
+    - **回归基线变化**：`test-regression` 首次跑完 93 项：**PASS 80 / FAIL 11 / SKIP 2**。11 个失败为此前被 [16] 崩溃掩盖的既有失败：10× `air_tessellation_*`（accumulation、isolines_point_mode/variants/indexed/multidraw/rasterdiscard/tripoint_instanced/xfb、factors_spacing、cull_distance，均 rc=1）+ `legacy_glsl_frontend`（rc=31）。**这些不在本次修复引入范围内，需独立排查**（嫌疑：tess-domain 重构 5d81d98 行为变化）。
+      - **2026-09-12 更新**：上述 10× `air_tessellation_*` 已由后续 tessellation 修复（`b6adea0` 三项 ABI 风险 + `06ab844` PSO 键）清掉，`legacy_glsl_frontend` 亦不在当前失败列表；本地全量基线现为 **94 项：92 PASS / 0 FAIL / 2 SKIP**。
+    - **另**：`test-mglair` `TCS_FACTOR_FAIL (patch=0 factor=5 bits=0x0000)` 经 stash 基线法确认为既有失败（与 GS temporaries 修复无关）。
+    - **诊断教训**：旧 "+Compute.m temporaries" 定位是陈旧结论（早期文本检索转义差异导致静默漏配、误判"符号已不存在"）；崩溃定位应优先取系统崩溃报告里的真实调用栈，并用**泄漏对照实验**（临时延长可疑对象生命周期看崩溃是否消失）确认根因后再改码。
+
+
+25. **O5.1 续刀2（本刀，vertex-attrib buffer map 沉 C）**：`mapVertexAttributeBuffersToBufferMap:` → `mglRenderPlanVertexAttribBuffers`（新 TU `mgl_vertex_attrib_plan.c`，故意与 `mgl_buffer_plan.c` 分开——后者的 plan-build 依赖 shader/program resource 层，会拖 ObjC/Foundation 进 harness）。seam：`MGLVertexAttribResolveFn` 回调 + `MGLResolvedVertexAttribBinding` 类型提到 C 头。`MGLResolvedVertexAttribBinding` 的原私头声明改为 include 转发。`+Buffer.m` −137；`make test-buffer-plan` 11 组 golden + 变异测试；`test-frontends`/`test-regression` 子集/CTS 复验见提交信息。
+    - **下一刀候选**：同域剩余两大环 `mapShaderBufferResourcesViaPlan:`（fast path，保留）与 `mapShaderBufferResourcesToBufferMap:stage:`（~541 行 reflection fallback），可用同一 seam 思路（plan@C + 回调解析），但需要先补 plan/fast-path 一致性的 golden；或转 O5.2（`+Compute.m` dispatch/binding 环）与 O4.4（`+Blit` format/DS unify）。
+    - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
+
+26. **O5.1 续刀3（reflection fallback 已删）**：证据链＝探针（`MGL_PLANFB_TRACE`，测后已删）在 92 项本地全量 + 1328 例 GL46 hotspot 上零命中；此后 plan 缺失只可能是分配失败，改为"重试一次 + 拒绝该 draw + 速率限制日志"。**注意语义变化**：OOM 下旧代码会静默走慢路径完成绑定，现在会拒画（调用方 dirty 重试）；若日后要恢复 OOM 韧性，应该让 plan 分配不可失败（例如 Program 内联存储），而不是把慢路径搬回来。
     - **下一刀候选**：`+Compute.m`（1255）的 compute binding 环仍厚 —— 可复用 `mgl_binding_stage`/`mgl_binding_texture` 的 plan 形态；或 `+Blit.m`（4945）O4.4 format/DS unify；或 `+BindingState.m`（2940）残量。
     - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
 
-27. **SPIRV 时代兼容写法清理 #3（sampler 名字/位置启发式，`84fe4c4`）**：sampler-like 判定原有**三份重复实现**（`mgl_binding_policy.c` / `uniforms.c` / `mgl_uniform_reflection.c`），规则是"类型是 sampler/image，或 `_UNIFORM_CONSTANT_RES` 且（`image_dim != 0` ∥ `uniform_location >= 0x4000` ∥ 名字含 `Sampler` ∥ 名字 == `CloudFaces`）"。后两条是 SPIRV 时代兼容：旧反射可能把 sampler 放在 plain-uniform 列表里且类型不可靠，于是用"合成了 uniform location"和 Minecraft 专属名字当证据。IR 链下两条都不可能命中（合成 location 只发给 sampled/storage image；sampler 声明与 plain struct 的 opaque leaves 都进 `_SAMPLED_IMAGE_RES`）。
-    - **先测后删**：临时探针在两个 live 副本上记录每次 `_UNIFORM_CONSTANT_RES` 判定（子句 + 结论）——CTS hotspot 1328 例 **9602 次判定、本地全量 721 次**，**全部 `clause=none decision=0`**，无一次由 synthetic-location 或名字子句决定。
-    - 删除后可合并为单一共享谓词 `mglRenderResourceLooksSamplerLike(res_type, image_dim)`；`uniforms.c` 查询路径与 uniform-reflection 的 sampler 匹配改调它。顺带删掉 `mglRenderSamplerNameLooksSamplerLike()`、两份 `mglUniformNameLooksSamplerLike()`、`mglRendererSamplerNameLooksSamplerLike()`、未使用的 `MGL_SYNTHETIC_SAMPLER_LOCATION_BASE` 定义。
-    - 验证：本地全量 92/0/2；`test-legacy-compat` 193/193；`test-frontends` 67/67；GS 簇 136/0；tess 簇 139/1/0；hotspot 1270/52/4 ns/1 crash，非通过集合与上一轮 diff 为空。
-    - **下一刀候选**：`mglFindSamplerResourceForMetalBinding` 的 5 类资源遍历 → 反射 `binding` 直查；`mglRendererProgramUsesVertexAttrib` 的无 location 兜底；`mglShouldSkipStageTexture/SamplerResource` 恒 false 死桩；`mgl_gl_extensions.c:1428` 的 `"void main"` 扫描。
-
-26. **SPIRV 时代兼容写法清理（对象：ObjC 里的源码文本判定）**：SPIRV/MSL 工具链时代，内建与资源类型都不进反射列表，ObjC 只能 `strstr(shader->src, "gl_X")`。LLVM IR 链下 frontend 本来就知道每个内建（要生成对应 store/load），所以改为**发布精确事实**，分两刀落地：
+27. **SPIRV 时代兼容写法清理（对象：ObjC 里的源码文本判定）**：SPIRV/MSL 工具链时代，内建与资源类型都不进反射列表，ObjC 只能 `strstr(shader->src, "gl_X")`。LLVM IR 链下 frontend 本来就知道每个内建（要生成对应 store/load），所以改为**发布精确事实**，分两刀落地：
     - **#1（`a6cc8ce`）**：`MGLAIRStageInfo.builtin_mask`（POINT_SIZE / PRIMITIVE_ID / CLIP_DISTANCE / CULL_DISTANCE / LAYER / VIEWPORT_INDEX / TESS_LEVEL）+ `Program.air_builtin_mask[stage]` + 访问器 `mglProgramStageBuiltinMask()` / `mglProgramStageUsesBuiltin()`；退役 `+RenderPass.m` 的 GS `gl_PointSize`/`gl_PrimitiveID`/`gl_ClipDistance`、FS+GS `gl_Layer`/`gl_ViewportIndex`、TES `gl_ClipDistance` 共 6 处扫描；`mglRenderVSWritesLayer()` 由 `const char *src` 改为读 `Program`。顺带删掉死代码 `mglRendererFindMSLEntryParameterClose()`（解析生成 MSL 的入口参数表，AIR 链不再生成 MSL 文本，全树无调用）。
     - **#2（`64d127d`）**：掩码扩到 VERTEX_ID / FRAG_COORD / NUM_SAMPLES / SAMPLE_ID / SAMPLE_POSITION / SAMPLE_MASK / INTERPOLATE_AT_SAMPLE / INTERPOLATE_AT_OFFSET / SAMPLE_INTERPOLATION；frontend 谓词补两项能力——`mglFrontendNoteBuiltinUse` 现在也匹配**调用名**（内建函数 interpolateAt*），新增 `mglFrontendStageUsesSampleInterpolation()`（`sample in` 限定符，走 IR symbol / TU decl 的 `MGL_AST_Q_SAMPLE`）。退役 `program.c` 的 vertex-id/primitive-id 扫描与 FS frag-coord/sample 扫描，删除 `mglRenderShaderSourceUsesSampleParams()`，`mglRenderFragmentNeedsPerSampleMSValues()` 改为接收 `Program`（注意两套 bit 集合刻意不同：`uses_sample_params` 含 NUM_SAMPLES、`needs_per_sample_ms` 含 INTERPOLATE_AT_OFFSET，与旧扫描一致）。
     - **语义严格更准**：`strstr` 连注释、字符串字面量、`gl_LayerFoo` 这类更长标识符都会命中；掩码只认真正的内建符号。
@@ -286,14 +350,17 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
     | `mgl_legacy_compat.c` 多处 | 旧 GLSL 文本改写 | **设计如此**（兼容层本体），不在清理范围 |
     | `mgl_frontend_session.c:42/60` | `#version` 解析 / legacy 翻译标记 | 解析器本体需要，保留 |
 
-24. **O5.1 续刀2（本刀，vertex-attrib buffer map 沉 C）**：`mapVertexAttributeBuffersToBufferMap:` → `mglRenderPlanVertexAttribBuffers`（新 TU `mgl_vertex_attrib_plan.c`，故意与 `mgl_buffer_plan.c` 分开——后者的 plan-build 依赖 shader/program resource 层，会拖 ObjC/Foundation 进 harness）。seam：`MGLVertexAttribResolveFn` 回调 + `MGLResolvedVertexAttribBinding` 类型提到 C 头。`MGLResolvedVertexAttribBinding` 的原私头声明改为 include 转发。`+Buffer.m` −137；`make test-buffer-plan` 11 组 golden + 变异测试；`test-frontends`/`test-regression` 子集/CTS 复验见提交信息。
-    - **下一刀候选**：同域剩余两大环 `mapShaderBufferResourcesViaPlan:`（fast path，保留）与 `mapShaderBufferResourcesToBufferMap:stage:`（~541 行 reflection fallback），可用同一 seam 思路（plan@C + 回调解析），但需要先补 plan/fast-path 一致性的 golden；或转 O5.2（`+Compute.m` dispatch/binding 环）与 O4.4（`+Blit` format/DS unify）。
-    - **禁止**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`
+28. **SPIRV 时代兼容写法清理 #3（sampler 名字/位置启发式，`84fe4c4`）**：sampler-like 判定原有**三份重复实现**（`mgl_binding_policy.c` / `uniforms.c` / `mgl_uniform_reflection.c`），规则是"类型是 sampler/image，或 `_UNIFORM_CONSTANT_RES` 且（`image_dim != 0` ∥ `uniform_location >= 0x4000` ∥ 名字含 `Sampler` ∥ 名字 == `CloudFaces`）"。后两条是 SPIRV 时代兼容：旧反射可能把 sampler 放在 plain-uniform 列表里且类型不可靠，于是用"合成了 uniform location"和 Minecraft 专属名字当证据。IR 链下两条都不可能命中（合成 location 只发给 sampled/storage image；sampler 声明与 plain struct 的 opaque leaves 都进 `_SAMPLED_IMAGE_RES`）。
+    - **先测后删**：临时探针在两个 live 副本上记录每次 `_UNIFORM_CONSTANT_RES` 判定（子句 + 结论）——CTS hotspot 1328 例 **9602 次判定、本地全量 721 次**，**全部 `clause=none decision=0`**，无一次由 synthetic-location 或名字子句决定。
+    - 删除后可合并为单一共享谓词 `mglRenderResourceLooksSamplerLike(res_type, image_dim)`；`uniforms.c` 查询路径与 uniform-reflection 的 sampler 匹配改调它。顺带删掉 `mglRenderSamplerNameLooksSamplerLike()`、两份 `mglUniformNameLooksSamplerLike()`、`mglRendererSamplerNameLooksSamplerLike()`、未使用的 `MGL_SYNTHETIC_SAMPLER_LOCATION_BASE` 定义。
+    - 验证：本地全量 92/0/2；`test-legacy-compat` 193/193；`test-frontends` 67/67；GS 簇 136/0；tess 簇 139/1/0；hotspot 1270/52/4 ns/1 crash，非通过集合与上一轮 diff 为空。
+    - **下一刀候选**：`mglFindSamplerResourceForMetalBinding` 的 5 类资源遍历 → 反射 `binding` 直查；`mglRendererProgramUsesVertexAttrib` 的无 location 兜底；`mglShouldSkipStageTexture/SamplerResource` 恒 false 死桩；`mgl_gl_extensions.c:1428` 的 `"void main"` 扫描。
 
-23. **上游 SIGSEGV 已修（6f53544，2026-09-09）**：[16/93] `air_geometry_resources` 的 `EXC_BAD_ACCESS`（`objc_retain` ← AGX `setBuffer_impl` ← `mglDrawGsExecuteMetalExpansion`）根因是 **GS compute-binding 计划的 temporaries 生命周期**：`mglGsMetalFillComputeBindings` 用局部 `NSMutableArray` 保活 plan 里的借用 MTL 指针，ARC 在函数返回时释放数组，而 C++ 侧在其后才 encode/dispatch。修复：`fill_compute_bindings` 新增 `void **temporaries_out` 出参，以 +1 CF 引用交还 keep-alive 集，C++ 侧用既有 `OwnedList` 追踪（作用域覆盖 expansion + XFB scatter 两次 execute）。compute-dispatch 与 tessellation 路径 temps/execute 同作用域，无同类问题。
-    - **回归基线变化**：`test-regression` 首次跑完 93 项：**PASS 80 / FAIL 11 / SKIP 2**。11 个失败为此前被 [16] 崩溃掩盖的既有失败：10× `air_tessellation_*`（accumulation、isolines_point_mode/variants/indexed/multidraw/rasterdiscard/tripoint_instanced/xfb、factors_spacing、cull_distance，均 rc=1）+ `legacy_glsl_frontend`（rc=31）。**这些不在本次修复引入范围内，需独立排查**（嫌疑：tess-domain 重构 5d81d98 行为变化）。
-      - **2026-09-12 更新**：上述 10× `air_tessellation_*` 已由后续 tessellation 修复（`b6adea0` 三项 ABI 风险 + `06ab844` PSO 键）清掉，`legacy_glsl_frontend` 亦不在当前失败列表；本地全量基线现为 **94 项：92 PASS / 0 FAIL / 2 SKIP**。
-    - **另**：`test-mglair` `TCS_FACTOR_FAIL (patch=0 factor=5 bits=0x0000)` 经 stash 基线法确认为既有失败（与 GS temporaries 修复无关）。
-    - **诊断教训**：旧 "+Compute.m temporaries" 定位是陈旧结论（早期文本检索转义差异导致静默漏配、误判"符号已不存在"）；崩溃定位应优先取系统崩溃报告里的真实调用栈，并用**泄漏对照实验**（临时延长可疑对象生命周期看崩溃是否消失）确认根因后再改码。
+29. **当前下一刀（2026-09-12 收口，按推荐顺序）**：
+    1. **O7.4.1** `mglFindSamplerResourceForMetalBinding`（`mgl_sampler_compat.m`）：按 metalBinding 遍历 5 类资源找 sampler → 改用反射 `binding` 直查；判定已走共享谓词 `mglRenderResourceLooksSamplerLike`。oracle：`air_*` sampler 用例 + CTS `KHR-GL46.*sampler*` / `ubo` 子集。
+    2. **O7.4.2** `mglRendererProgramUsesVertexAttrib` 的无 location 声明序兜底 → IR 链每个 stage input 都有 location；删前用探针证明该分支零命中。
+    3. **O7.4.3** `mglShouldSkipStageTextureResource` / `mglShouldSkipStageSamplerResource` 恒 `false` 死桩：连调用点判断一起删（`mgl_buffer_plan.c` 的 `MGL_BP_FLAG_SKIP` 语义需同步核对）。
+    4. **O5.2** `+Compute.m`（1255）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
+  - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。

@@ -2647,8 +2647,9 @@ BGRA8/RGBA8 UNORM → packed types：
 - smoke 新增 `BINARY_ARCHIVE_HIT_MISS_OK`，用真实 Metal archive 断言首次
   miss 与序列化重载 hit。独立进程验证：cpp cold + warm x4 全部
   71/0/2 且 created/loaded/saved 正常；ObjC cold/warm 后再切 cpp warm 也全部
-  71/0/2，无 `discarded unserializable archive`。详见
-  `docs/P4_BINARY_ARCHIVE_LIFECYCLE_2026-08-16.md`。
+  71/0/2，无 `discarded unserializable archive`。（该专题未单独成文，
+  结论即上文三段：producer 隔离非根因 → archive hit 不 add、miss 才 add →
+  防御边界保留。）
 - sanitizer 构建修正：`SANITIZE` 现同时进入 C/C++ flags，AIR/Metal-cpp
   flags 定义前移到 compile/link hash 之前，避免复用未插桩 C++ 对象。
   完整插桩后 ASan/TSan cpp regression 均 71/0/2、exit 0，分别稳定
@@ -3393,6 +3394,13 @@ box 重置回整幅 pass（GL 4.6 §14.6.1 允许空 box 裁剪全部 fragment�
     数据」；dummy 按 outSize 分配后 10+ 连跑全套件双门全绿，无需额外的
     GPU ordering 改动——compute 与 VS-capture 同 CB 内编码，顺序由 Metal
     保证。）
+
+> **状态更新（2026-09-12）**：本节记录的 `isolines_multidraw` / `isolines_point_mode`
+> "独立跑失败、套件跑通过"的状态依赖，已由 PSO 缓存键缺陷解释并修复：pipeline `primaryKey`
+> 没有折入决定栅格化顶点函数的 `tessVertexRenderActive`，同一 isolines program 的
+> TES-vertex 段与 compute 回退段互相命中 PSO。修复 `06ab844`，细节与验证见
+> `docs/TESS_NATIVE_RENDER_VERTEX_PATH.md` §10.4。当前两种跑法（独立 / 套件）均通过。
+> 下文保留当时（2026-08-14）的调查过程，用于说明当时的排除项。
 
 **2026-08-14 专项调查（P4.1e3 续）**：**纠正了问题的性质** —— 独立跑失败
 **与 gate 无关**（gate-off 独立跑 isolines_multidraw/point_mode 同样失败；
