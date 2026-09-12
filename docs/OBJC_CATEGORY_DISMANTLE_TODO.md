@@ -104,7 +104,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | `+Tessellation.m` | 2174 | 中→薄 | O1.4：编排在 `mglTessRunPatchDraw`；ObjC 仅 dispatch/物化口 |
 | `+BatchReplay.m` | ~21 | 薄占位 | O2.5：dyn-bind → `mgl_batch_dyn_bind_encode.m`；待 O6 删空 category |
 | `+Buffer.m` | 826 | 薄化中 | map/CoW/shadow plan → C++（O5.1：vertex-index + dirty-buffer 决策已沉 C 函数；vertex-attrib buffer map 已整段沉 `mgl_vertex_attrib_plan.*` + harness；**reflection fallback 已删——plan 成为唯一映射路径**）；ObjC 只 MTLBuffer 物化与逐 attribute resolve |
-| `+Compute.m` | 1255 | 中 | dispatch plan → C++（O5.2 待启动）；ObjC 只 compute encoder 端口 |
+| `+Compute.m` | 1276 | 中 | buffer 绑定环已复用 `mgl_binding_stage` plan 形态（O5.2 本刀：PRE/POST 两阶段 + 三个 opt-in 开关 + C 侧判决表；`+25` 行是显式阶段与失败语义）；**纹理/采样器环待续刀**；ObjC 只 compute encoder 端口 |
 | `+Lifecycle.m` | 665 | **Keep 核心** | 压到 shell：init/bind/view/lease/dealloc |
 | `+SwapDiagnostics.m` | 555 | Keep/旁路 | 诊断可留 ObjC 或迁 trace；非热路径 |
 | `+Draw.m` | 511 | 薄 | O1.5：`mtlDraw*` 一行 → `mglIssue*` / MS guard |
@@ -228,7 +228,30 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
   - [x] **O5.1 续刀3（本刀）**：删掉 `mapShaderBufferResourcesToBufferMap:stage:` 里 **544 行 reflection fallback**（4 类资源逐 draw 重算 metal/client binding、plain-uniform struct packing、全局 fallback），plan 成为唯一映射路径。**先测量后下刀**：临时探针挂在 fallback 入口（reason/stage/program/四类资源计数），本地全量 `test_regression`（92 项）与 GL46 hotspot（1328 例）**一次都没触发**。删除后可用性显式化：无 program → 无需映射；plan/stage plan invalid → 强制一次 `mglBufferBindingPlanBuild` 重试（`EnsureBuilt` 只在 vertex stage invalid 时重建）；仍 invalid 即分配失败 → 日志 + **拒绝该 draw**（调用方保持 dirty 并重试，瞬态失败下一帧自愈）——这是唯一的行为变化（旧行为是 OOM 时静默走慢路径）。`+Buffer.m` 1342→826（本 session 内 1479→826），`MGLRenderer*.m` 35102→34586。
   - [x] **O5.1 续刀2（本刀）**：`mapVertexAttributeBuffersToBufferMap:vao:stageInputCount:stage:` 整段（207 行）沉为纯 C `mglRenderPlanVertexAttribBuffers`（`mgl_vertex_attrib_plan.{h,c}`）：候选遍历、同流分组（buffer name/target + stride/divisor）、slot 分配（`kMGLVertexAttribBufferBase` 起）、容量/索引溢出守卫、mismatch 诊断全部在 C；逐 attribute 的 GL 状态解析留在 ObjC，经 `MGLVertexAttribResolveFn` 回调注入（`+Buffer.m` 传 `mglResolveVertexAttribForPlan`）。配套把 `MGLResolvedVertexAttribBinding` + resolver 原型从 ObjC 私头 `MGLRenderer+Draw_Private.h` 提到 C 头 `mgl_vertex_attrib_binding.h`，并把纯值谓词 `mglRenderMappedBufferCountOK` 从 `mgl_render.cpp` 迁入 plan TU（沿用 O3.1 的"纯值谓词迁 plan 层、harness 不拖 Metal/LLVM"口径）。`+Buffer.m` 1479→1342（−137），`MGLRenderer*.m` 35239→35102。新增 `make test-buffer-plan`（`test_legacy_compat/test_buffer_plan.c`，11 组 golden：单 attribute/同流合并/stride 分裂/divisor 分裂/多 buffer/不可解析跳过/空候选/既有条目保留/容量守卫/mismatch 只告警/混合候选，已挂 `test-all`；变异测试：删掉 stride 兼容判据、slot 不自增两次都被 harness 捕获）。
   - [x] **O5.1 续刀**：`checkForDirtyBufferData:` / `updateDirtyBaseBufferList:`（纯 `BufferMapList` 迭代 + dirty 上传决策，零 Metal）下沉为 `mglRenderCheckForDirtyBufferData` / `mglRenderUpdateDirtyBaseBufferList`（`MGLRenderer.m` 兄弟函数，`MGLRenderer+Draw_Private.h` 声明）；ObjC 方法仅一行转发。原 `[self updateDirtyBuffer:]` 调用改为直调 `mglRenderUpdateDirtyBuffer`，逻辑等价；所有调用方（`+RenderPass`/`+Compute`/`+Binding`/`mgl_batch_dyn_bind_encode`）经 ObjC 薄壳不变。`+Buffer.m` 两入口合计 −75 行。`test-regression` [01]–[15] 全 PASS（[16] `air_geometry_resources` 仍是已知上游 SIGSEGV，与本改动无关）。
-- [ ] **O5.2** Compute binding expansion → C++；ObjC 只 dispatch
+- [x] **O5.2 compute buffer 绑定环复用 stage-binding plan（`ad7f18e`）**：
+  `bindBuffersToComputeEncoder:…:executionPlan:temporaries:` 的逐条目决策不再由 ObjC 自己拼（旧形态是
+  `mglRenderResolveMappedBufferSlot` + `mglTessPlanIsolatedBinding` + 手写 "Metal backing 太小就重建" 三套并存），
+  改为与图形路径**同一个 plan**：PRE 阶段 `mglBindingStageFillMapEntryInput` → `mglBindingStagePlanMapEntry`
+  （NEED_MTL）→ 物化 → `mglBindingStageFillMapEntryPostMtl` → POST 阶段（ISOLATE / BIND），ObjC 只剩物化与快照编码。
+  plan 输入新增三个**默认关闭**的开关（零初始化即旧行为，harness 已固化）：`no_inline`（compute 没有 set*Bytes
+  路径 ⇒ plain-uniform 槽必须落成真 Metal buffer）、`iso_storage_exhausted` + `storage_remaining`（GL 存储耗尽也要
+  隔离，compute/tess 口径）、`iso_empty_visible`（可见 backing 为空也要隔离）；另加 C 侧
+  `mglBindingStageMapEntryDisposition()`（失败/跳过/继续的判决表）、`mglBindingStagePlanReasonName()`、
+  `mglBindingStageIsolateFallbackLength()`（隔离副本长度下限 `max(required,4)`），把判决表与下限从 ObjC 移出。
+  等价性 oracle＝**决策级 A/B 探针**（物化后同点复算旧公式与 plan 判决，逐条目比较 slot / 隔离判决 / copy-back
+  判决 / fallback 长度）：本地 94 项 21 次决策、CTS refq+tess+gs+hotspot 537 次决策，**0 分歧**。逐点核对：
+  slot 解析与 `mglRenderResolveMappedBufferSlot` 同算法；required 字节以 `visible_range=0 && min_stage_bytes=0`
+  复现旧 `mglTessRequiredBindingBytes` 的结果；`allow_isolate_when_gpu=1` 复现"compute 作为写入者也要隔离"；
+  copy-back 判定与旧 `mglTessIsolatedNeedsCopyBack` 一致。
+  **CTS 抓到一处探针没覆盖的差异（如实记录）**：plan 在 ISOLATE 时把 `bind_offset` 置 0（隔离副本总绑 0），
+  而 copy-back 的**目标**偏移必须取调用方 map 的 offset；第一版误用 `plan.bind_offset`，
+  `KHR-GL46.geometry_shader.api.max_shader_storage_blocks`（GS 写 16 个 SSBO、binding 带非零 offset）立刻报
+  "Value read from Shader Storage Buffer [9] … is not equal to expected value"（GS 簇 135/1）。修正后恢复；
+  头文件写明该字段语义、harness 增断言 `plan.bind_offset == 0`、探针补上 copy-back 判决这一维。
+  规模：`+Compute.m` 1251 → 1276（+25：PRE/POST 两阶段与显式失败语义写在 ObjC 侧，决策面已移出），
+  顺带删掉该文件既有的未使用 helper `mglComputeCreateTextureLevelView`（编译期 warning 消失）。
+  **剩余**：`bindTexturesToComputeEncoder:` 的纹理/采样器环（约 470 行，含 "late binding" 启发式）应复用
+  `mglBindingTexturePlanSampled`；把整段循环迁 C++ 需要物化回调 vtable，留作 O5.2 续刀。
 - [ ] **O5.3** `+VertexLayout` 删除或 &lt; 100 LOC
   - [x] **O5.3 本刀**：`generateVertexDescriptorState:` 整段 plan 装配（读 GL VAO/Program + 写 `MGLRenderPipelineDescriptorState`，零 Metal/`id`）沉为 C 函数 `mglRenderGenerateVertexDescriptorState(ctx, state, nativeTESActive, nativeTESProgram, tcsOutputStride, absoluteVertexBindingOffsets, where)`（`MGLRenderer.m` 兄弟函数，声明于 `MGLRenderer+VertexLayout_Private.h`）；ObjC 方法仅提取 `_tessellation`/`_batching` 两 ivar 标量 + 一行转发。逻辑逐行等价（`NSLog`→`fprintf(stderr,...)`）。`+VertexLayout.m` 332→~193。`test-frontends` 67/67；`test-regression` [01]–[15] PASS（[16] 已知上游 SIGSEGV 不变）。**剩余**：`updateBlendStateCache`（写 `_pipelineCache` ObjC 物化，留）、`bindFramebufferAttachmentTextures`（FBO 绑定，归 RenderPass/O6）。
 - [ ] **O5.4** `mgl_draw_encode.m` 迁空或删除
@@ -518,7 +541,23 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     pp 语料（可分程序管线 5 例）新旧库一致 1/3/1 ns；GS 簇 136/0；tess 簇 139/1/0；
     hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
 
-34. **当前下一刀（按推荐顺序）**：
+34. **O5.2 compute buffer 绑定环复用 stage-binding plan（`ad7f18e`）**：compute 的逐条目绑定决策
+    （slot / required / 隔离 / 偏移 / copy-back / 判决）并入图形路径同一个 `mglBindingStagePlanMapEntry`，
+    plan 输入加三个默认关闭的开关（`no_inline` / `iso_storage_exhausted` + `storage_remaining` /
+    `iso_empty_visible`）与三个 C 侧 helper（判决表 / reason 名 / 隔离长度下限）。
+    决策级 A/B 探针（旧公式 vs plan 判决，含 copy-back 维度）：本地 21 次 + CTS 537 次决策 **0 分歧**；
+    但 **CTS 仍抓到一处探针漏掉的差异**——ISOLATE 的 `plan.bind_offset` 是 0（隔离副本总绑 0），
+    copy-back 目标偏移必须取调用方 map 的 offset，第一版误用后者导致
+    `KHR-GL46.geometry_shader.api.max_shader_storage_blocks` 数据错（GS 135/1），修正后恢复。
+    `+Compute.m` 1251 → 1276（+25，决策面已移出；顺带删掉既有未使用 helper）。
+    验证：本地 92/0/2；`test-binding-stage`（新开关 / 判决表 / 隔离偏移断言）、`test-buffer-plan`、
+    `test-reference-query` 30/30、`test-per-vertex-signature` 23/23、`test-legacy-compat` 193/193、
+    `test-frontends`、`test-tess-domain`、`test-tess-air`(180)、`test-render-pass-clear-plan`；
+    refq 223 例 164/54/5 且逐例 diff 为空；piq 30 例 17/12/1 且逐例 diff 为空；tess 簇 139/1/0；
+    GS 簇 136/0（含回归单例 `KHR-GL46.geometry_shader.api.max_shader_storage_blocks` 1/0）；
+    hotspot 1270/52/4 ns/1 crash 且非通过集合 diff 为空。
+
+35. **当前下一刀（按推荐顺序）**：
     1. **O5.2** `+Compute.m`（1251）的 compute binding 环 → 复用 `mgl_binding_stage` / `mgl_binding_texture` 的 plan 形态；或 **O4.4** `+Blit.m`（4945）format/DS unify → `mgl_blit_plan.*`。
     2. **O3.1 残量**（load/store + attachment match → `mgl_render_pass_plan.*`）：风险高，需先补 harness golden。
     3. **O7.4 残条（下一批）**：名字→类型/location 启发式（`gl_type == 0` 命中率需探针）；链接期重复 parse 去重
