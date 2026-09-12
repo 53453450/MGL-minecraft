@@ -19,6 +19,7 @@
 #include "mgl_aux_assets.h"
 #include <stdio.h>
 #include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
+#include "mgl_blit_plan.h"      // depth/stencil blit gates (O4.4)
 
 /* Shared state for mtlBlitFramebuffer color blit helpers.
  * Filled after attachment resolution and clip computation, then
@@ -1662,41 +1663,66 @@ static id mglLookupAuxRenderPipeline(
             GLint srcHeight = srcY1 - srcY0;
             GLint dstWidth = dstX1 - dstX0;
             GLint dstHeight = dstY1 - dstY0;
+            const MGLRenderTextureInfo dsReadInfo =
+                mglBlitTextureInfo(depthReadTexture);
+            const MGLRenderTextureInfo dsDrawInfo =
+                mglBlitTextureInfo(depthDrawTexture);
 
-            if (depthReadTexture && depthDrawTexture &&
-                srcWidth > 0 && srcHeight > 0 &&
-                srcWidth == dstWidth && srcHeight == dstHeight &&
-                mglBlitTextureInfo(depthReadTexture).pixel_format == mglBlitTextureInfo(depthDrawTexture).pixel_format &&
-                mglBlitTextureInfo(depthReadTexture).sample_count > 1u && mglBlitTextureInfo(depthDrawTexture).sample_count <= 1u &&
-                depthReadSubresource.level == 0u && depthDrawSubresource.level == 0u &&
-                depthReadSubresource.depthPlane == 0u && depthDrawSubresource.depthPlane == 0u &&
-                srcX0 == 0 && srcY0 == 0 && dstX0 == 0 && dstY0 == 0 &&
-                (NSUInteger)srcWidth <= mglBlitTextureInfo(depthReadTexture).width &&
-                (NSUInteger)srcHeight <= mglBlitTextureInfo(depthReadTexture).height &&
-                (NSUInteger)dstWidth <= mglBlitTextureInfo(depthDrawTexture).width &&
-                (NSUInteger)dstHeight <= mglBlitTextureInfo(depthDrawTexture).height) {
+            /* Which of the three depth/stencil paths this rectangle and these
+             * textures allow, plus the scissor-clipped copy rectangle: the
+             * gates live in the plan (O4.4). */
+            MGLBlitDSInput dsIn;
+            mglBlitFillDSTextureInput(
+                &dsIn, (uint32_t)dsReadInfo.pixel_format,
+                (uint32_t)dsDrawInfo.pixel_format,
+                (uint32_t)dsReadInfo.sample_count,
+                (uint32_t)dsDrawInfo.sample_count,
+                (uint32_t)dsReadInfo.texture_type,
+                (uint32_t)dsDrawInfo.texture_type, (uint32_t)dsReadInfo.width,
+                (uint32_t)dsReadInfo.height, (uint32_t)dsDrawInfo.width,
+                (uint32_t)dsDrawInfo.height,
+                mglRenderPixelFormatIsPackedDepthStencil(
+                    (uint32_t)dsReadInfo.pixel_format));
+            mglBlitFillDSSubresourceInput(
+                &dsIn, (uint32_t)depthReadSubresource.level,
+                (uint32_t)depthReadSubresource.slice,
+                (uint32_t)depthReadSubresource.depthPlane,
+                (uint32_t)depthDrawSubresource.level,
+                (uint32_t)depthDrawSubresource.slice,
+                (uint32_t)depthDrawSubresource.depthPlane);
+            mglBlitFillDSRectInput(
+                &dsIn, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1,
+                glm_ctx->active_state->caps.scissor_test ? 1 : 0,
+                glm_ctx->active_state->var.scissor_box[0],
+                glm_ctx->active_state->var.scissor_box[1],
+                glm_ctx->active_state->var.scissor_box[2],
+                glm_ctx->active_state->var.scissor_box[3]);
+            mglBlitFillDSMaskInput(
+                &dsIn, mglRenderClearMaskHasDepth((uint32_t)depthStencilMask),
+                mglRenderClearMaskHasStencil((uint32_t)depthStencilMask),
+                mglRenderFilterIsNearest((uint32_t)filter));
+            MGLBlitDSPlan dsPlan = {0};
+            if (mglBlitPlanDepthStencil(&dsIn, &dsPlan) != 0) {
+                return mask;
+            }
+
+            if (depthReadTexture && depthDrawTexture && dsPlan.msaa_resolve) {
                 [self endRenderEncoding];
                 if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthMsaaResolve"]) {
-                    if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
+                    if (dsPlan.resolve_depth) {
                         [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
                                                            attachment:depthReadAttachment
                                                            textureObj:depthReadObject
                                                            mtlTexture:depthReadTexture];
                     }
 
-                    BOOL resolvedAny = NO;
-                    if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
-                        resolvedAny = YES;
-                    }
-                    if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
-                        mglRenderPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
-                        resolvedAny = YES;
-                    }
+                    const BOOL resolvedAny =
+                        (dsPlan.resolve_depth || dsPlan.resolve_stencil) ? YES : NO;
 
                     if (resolvedAny) {
                         MGLRenderPassState resolveState =
                             mglBlitDefaultRenderPassState();
-                        if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
+                        if (dsPlan.resolve_depth) {
                             resolveState.depth.attachment =
                                 mglBlitRenderPassAttachment(
                                     depthReadTexture, 0u,
@@ -1710,9 +1736,7 @@ static id mglLookupAuxRenderPipeline(
                             resolveState.depth.resolve_filter =
                                 (uint32_t)MGLMultisampleDepthResolveFilterSample0;
                         }
-                        if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
-                            mglRenderPixelFormatIsPackedDepthStencil(
-                                (uint32_t)mglBlitTextureInfo(depthReadTexture).pixel_format)) {
+                        if (dsPlan.resolve_stencil) {
                             resolveState.stencil.attachment =
                                 mglBlitRenderPassAttachment(
                                     depthReadTexture, 0u,
@@ -1732,11 +1756,10 @@ static id mglLookupAuxRenderPipeline(
                         if (resolveEncoder) {
                             mglBlitEndRenderEncoder(resolveEncoder);
                             mglMarkTextureLevelRenderTargetWritten(depthDrawObject, depthDrawAttachment->level);
-                            if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
+                            if (dsPlan.resolve_depth) {
                                 mask = (GLbitfield)mglRenderClearMaskClearDepth((uint32_t)mask);
                             }
-                            if ((mglRenderClearMaskHasStencil((uint32_t)depthStencilMask)) &&
-                                mglRenderPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthReadTexture).pixel_format)) {
+                            if (dsPlan.resolve_stencil) {
                                 mask = (GLbitfield)mglRenderClearMaskClearStencil((uint32_t)mask);
                             }
                         }
@@ -1745,39 +1768,19 @@ static id mglLookupAuxRenderPipeline(
             }
 
             if (depthReadTexture && depthDrawTexture &&
-                srcWidth > 0 && srcHeight > 0 &&
-                mglBlitTextureInfo(depthReadTexture).pixel_format == mglBlitTextureInfo(depthDrawTexture).pixel_format &&
-                mglBlitTextureInfo(depthReadTexture).sample_count == 1u && mglBlitTextureInfo(depthDrawTexture).sample_count == 1u) {
-                BOOL depthIsScaled = (srcWidth != dstWidth) || (srcHeight != dstHeight);
-
-                if (!depthIsScaled) {
-                    /* Same-size depth blit via MTLBlitCommandEncoder */
-                    GLint copyDstX0 = dstX0;
-                    GLint copyDstY0 = dstY0;
-                    GLint copyDstX1 = dstX1;
-                    GLint copyDstY1 = dstY1;
-                    if (glm_ctx->active_state->caps.scissor_test) {
-                        GLint scissorX0 = glm_ctx->active_state->var.scissor_box[0];
-                        GLint scissorY0 = glm_ctx->active_state->var.scissor_box[1];
-                        GLint scissorX1 = scissorX0 + glm_ctx->active_state->var.scissor_box[2];
-                        GLint scissorY1 = scissorY0 + glm_ctx->active_state->var.scissor_box[3];
-                        copyDstX0 = MAX(copyDstX0, scissorX0);
-                        copyDstY0 = MAX(copyDstY0, scissorY0);
-                        copyDstX1 = MIN(copyDstX1, scissorX1);
-                        copyDstY1 = MIN(copyDstY1, scissorY1);
-                    }
-
-                    GLint copyWidth = copyDstX1 - copyDstX0;
-                    GLint copyHeight = copyDstY1 - copyDstY0;
-                    GLint copySrcX = srcX0 + (copyDstX0 - dstX0);
-                    GLint copySrcY = srcY0 + (copyDstY0 - dstY0);
-                    if (copyWidth > 0 && copyHeight > 0 &&
-                        copySrcX >= 0 && copySrcY >= 0 &&
-                        copySrcX + copyWidth <= (GLint)mglBlitTextureInfo(depthReadTexture).width &&
-                        copySrcY + copyHeight <= (GLint)mglBlitTextureInfo(depthReadTexture).height &&
-                        copyDstX0 >= 0 && copyDstY0 >= 0 &&
-                        copyDstX1 <= (GLint)mglBlitTextureInfo(depthDrawTexture).width &&
-                        copyDstY1 <= (GLint)mglBlitTextureInfo(depthDrawTexture).height) {
+                (dsPlan.same_size_copy || dsPlan.scaled_render)) {
+                if (dsPlan.same_size_copy) {
+                    /* Same-size depth blit via MTLBlitCommandEncoder; the plan
+                     * already clipped the rectangle by the scissor box. */
+                    const GLint copyDstX0 = dsPlan.copy_dst_x0;
+                    const GLint copyDstY0 = dsPlan.copy_dst_y0;
+                    const GLint copyDstX1 = dsPlan.copy_dst_x1;
+                    const GLint copyDstY1 = dsPlan.copy_dst_y1;
+                    const GLint copyWidth = copyDstX1 - copyDstX0;
+                    const GLint copyHeight = copyDstY1 - copyDstY0;
+                    const GLint copySrcX = dsPlan.copy_src_x0;
+                    const GLint copySrcY = dsPlan.copy_src_y0;
+                    if (dsPlan.copy_valid) {
                         [self endRenderEncoding];
                         if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthStencil"]) {
                             if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
@@ -1795,9 +1798,9 @@ static id mglLookupAuxRenderPipeline(
                                     _renderPassManager.state->currentCommandBufferOwner);
                             if (depthBlit) {
                                 NSUInteger sourceMetalY =
-                                    mglBlitTextureInfo(depthReadTexture).height - (NSUInteger)(copySrcY + copyHeight);
+                                    dsReadInfo.height - (NSUInteger)(copySrcY + copyHeight);
                                 NSUInteger destinationMetalY =
-                                    mglBlitTextureInfo(depthDrawTexture).height - (NSUInteger)(copyDstY0 + copyHeight);
+                                    dsDrawInfo.height - (NSUInteger)(copyDstY0 + copyHeight);
                                 mglBlitCopyTexture(
                                     depthBlit, depthReadTexture,
                                     depthReadSubresource.slice,
@@ -1823,18 +1826,10 @@ static id mglLookupAuxRenderPipeline(
                      * Only GL_NEAREST is supported (GL_LINEAR for depth is not allowed
                      * by the GL spec; filter must be GL_NEAREST when depth/stencil is
                      * in the mask). */
-                    if (mglRenderFilterIsNearest((uint32_t)filter) &&
-                        depthReadSubresource.level == 0u &&
-                        depthReadSubresource.slice == 0u &&
-                        depthReadSubresource.depthPlane == 0u &&
-                        mglBlitTextureInfo(depthReadTexture).texture_type == MGLTextureType2D &&
-                        depthDrawSubresource.level == 0u &&
-                        depthDrawSubresource.slice == 0u &&
-                        depthDrawSubresource.depthPlane == 0u &&
-                        mglBlitTextureInfo(depthDrawTexture).texture_type == MGLTextureType2D) {
+                    if (dsPlan.scaled_render) {
                         /* Apply pending depth clears before the scaled blit so the
                          * source texture reflects any lazy glClear operations. */
-                        if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
+                        if (dsIn.has_depth) {
                             [self endRenderEncoding];
                             if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthScaledClear"]) {
                                 [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
@@ -1858,7 +1853,8 @@ static id mglLookupAuxRenderPipeline(
                                  * attachment to the same texture so Metal preserves the
                                  * stencil component during the render pass. */
                                 BOOL isPackedDepthStencil =
-                                    mglRenderPixelFormatIsPackedDepthStencil(mglBlitTextureInfo(depthDrawTexture).pixel_format);
+                                    mglRenderPixelFormatIsPackedDepthStencil(
+                                        (uint32_t)dsDrawInfo.pixel_format);
 
                                 MGLRenderPassState scaledDepthState =
                                     mglBlitDefaultRenderPassState();
@@ -1885,8 +1881,8 @@ static id mglLookupAuxRenderPipeline(
 
                                     /* Compute UVs for the source region in Metal's
                                      * texture coordinate space (Y-flipped). */
-                                    NSUInteger srcTexW = mglBlitTextureInfo(depthReadTexture).width;
-                                    NSUInteger srcTexH = mglBlitTextureInfo(depthReadTexture).height;
+                                    NSUInteger srcTexW = dsReadInfo.width;
+                                    NSUInteger srcTexH = dsReadInfo.height;
                                     float invSrcW = srcTexW ? (1.0f / (float)srcTexW) : 0.0f;
                                     float invSrcH = srcTexH ? (1.0f / (float)srcTexH) : 0.0f;
                                     float srcMinXf = (float)srcX0;
@@ -1933,8 +1929,8 @@ static id mglLookupAuxRenderPipeline(
                                     float dstMaxXf = (float)dstX1;
                                     float dstMinYf = (float)dstY0;
                                     float dstMaxYf = (float)dstY1;
-                                    NSUInteger dstTexW = mglBlitTextureInfo(depthDrawTexture).width;
-                                    NSUInteger dstTexH = mglBlitTextureInfo(depthDrawTexture).height;
+                                    NSUInteger dstTexW = dsDrawInfo.width;
+                                    NSUInteger dstTexH = dsDrawInfo.height;
                                     double dstMinXd = fmin(dstMinXf, dstMaxXf);
                                     double dstMaxXd = fmax(dstMinXf, dstMaxXf);
                                     double dstMinYd = fmin(dstMinYf, dstMaxYf);

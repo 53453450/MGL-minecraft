@@ -807,6 +807,20 @@ $(build_dir)/test_render_pass_load_store_plan: test_legacy_compat/test_render_pa
 test-render-pass-load-store: $(build_dir)/test_render_pass_load_store_plan
 	$(build_dir)/test_render_pass_load_store_plan
 
+$(build_dir)/test_blit_plan: test_legacy_compat/test_blit_plan.c \
+	MGL/src/mgl_blit_plan.c MGL/include/mgl_blit_plan.h
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_blit_plan.c \
+		MGL/src/mgl_blit_plan.c \
+		-o $@
+
+test-blit-plan: $(build_dir)/test_blit_plan
+	$(build_dir)/test_blit_plan
+
 $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
 	@mkdir -p $(dir $@)
@@ -1157,6 +1171,7 @@ test-all:
 	$(MAKE) test-reference-query
 	$(MAKE) test-per-vertex-signature
 	$(MAKE) test-render-pass-load-store
+	$(MAKE) test-blit-plan
 	$(MAKE) test-binding-stage
 	$(MAKE) test-geometry-gather
 	$(MAKE) test-validate-arrays-early
@@ -1176,7 +1191,7 @@ test-all:
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
 	test-buffer-plan test-reference-query test-per-vertex-signature test-render-pass-clear-plan \
-	test-render-pass-load-store \
+	test-render-pass-load-store test-blit-plan \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
