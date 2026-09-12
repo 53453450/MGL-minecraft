@@ -14,3 +14,11 @@ clang -O1 -I "$root/MGL/include" -I "$root/MGL/include/GL" \
   "$root/MGL/src/mgl_tess_domain_gen.c" \
   "$root/MGL/src/mgl_tess_factor_normalize.c" -lm
 echo "built $here/rule34"
+
+# Point-set dump used by spacing_sweep.py (and handy on its own):
+#   ./dump_quad_points <spacing-enum> <i0> <i1> <o0> <o1> <o2> <o3>
+clang -O1 -I "$root/MGL/include" -I "$root/MGL/include/GL" -I "$root/MGL/src" \
+  -o "$here/dump_quad_points" "$here/dump_quad_points.c" \
+  "$root/MGL/src/mgl_tess_domain_gen.c" \
+  "$root/MGL/src/mgl_tess_factor_normalize.c" -lm
+echo "built $here/dump_quad_points"
