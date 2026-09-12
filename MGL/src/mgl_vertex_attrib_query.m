@@ -63,9 +63,13 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
             return YES;
         }
 
-        if (location == 0xffffffffu && i == attribute) {
-            return YES;
-        }
+        /* No `location == UINT32_MAX` declaration-order fallback: the AIR
+         * linker assigns every vertex stage input a location (explicit
+         * layout(location), glBindAttribLocation, or declaration order) in
+         * assignStageVarSymLocations, and applyVertexInputLocations only
+         * overrides bound names -- measured with a probe: neither the local
+         * suite nor the 1328-case GL46 hotspot list ever saw an input without
+         * one. */
     }
 
     return NO;
@@ -96,9 +100,8 @@ MGLShaderResource *mglRendererProgramVertexAttribResource(Program *program, GLui
             return &inputs->list[i];
         }
 
-        if (location == 0xffffffffu && i == attribute) {
-            return &inputs->list[i];
-        }
+        /* See mglRendererProgramUsesVertexAttrib: inputs always carry a
+         * location on the IR chain, so there is no declaration-order fallback. */
     }
 
     return NULL;
