@@ -773,6 +773,26 @@ $(build_dir)/test_reference_query: test_legacy_compat/test_reference_query.c \
 test-reference-query: $(build_dir)/test_reference_query
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_reference_query
 
+$(build_dir)/test_per_vertex_signature: test_legacy_compat/test_per_vertex_signature.c \
+	MGL/src/mgl_program_reflection.c MGL/include/mgl_program_reflection.h \
+	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
+	MGL/src/mgl_metal_ref.c MGL/include/mgl_metal_ref.h \
+	MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_per_vertex_signature.c \
+		MGL/src/mgl_program_reflection.c MGL/src/mgl_metal_ref.c \
+		MGL/src/mgl_uniform_reflection.c MGL/src/mgl_binding_policy.c \
+		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_glsl_cpp.c \
+		-framework CoreFoundation -framework Foundation -framework Metal \
+		-o $@
+
+test-per-vertex-signature: $(build_dir)/test_per_vertex_signature
+	$(build_dir)/test_per_vertex_signature
+
 $(build_dir)/test_binding_stage: test_legacy_compat/test_binding_stage.c \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h
 	@mkdir -p $(dir $@)
@@ -1119,6 +1139,7 @@ test-all:
 	$(MAKE) test-render-pass-clear-plan
 	$(MAKE) test-buffer-plan
 	$(MAKE) test-reference-query
+	$(MAKE) test-per-vertex-signature
 	$(MAKE) test-binding-stage
 	$(MAKE) test-geometry-gather
 	$(MAKE) test-validate-arrays-early
@@ -1137,7 +1158,7 @@ test-all:
 
 .PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system \
 	build-test-regression test-regression test-dirty-hash test-arch-correctness test-tess-domain test-xfb-plan test-batch-path test-batch-hazard test-batch-icb test-batch-restore test-batch-issue test-process-gl-state-plan test-binding-stage test-geometry-gather test-validate-arrays-early test-tess-air test-benchmark \
-	test-buffer-plan test-reference-query test-render-pass-clear-plan \
+	test-buffer-plan test-reference-query test-per-vertex-signature test-render-pass-clear-plan \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \

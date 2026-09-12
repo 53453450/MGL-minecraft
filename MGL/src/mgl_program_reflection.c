@@ -7,38 +7,14 @@
  * See LICENSE and LICENSING.md.
  */
 
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "mgl_program_reflection.h"
+#include "mgl_glsl_ast.h" /* MGLTranslationUnit / MGLDecl: gl_PerVertex redeclarations */
 #include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
-
-static GLboolean mglShaderSourceHasToken(const char *start,
-                                         const char *end,
-                                         const char *token)
-{
-    if (!start || !end || !token || start > end) {
-        return GL_FALSE;
-    }
-
-    size_t token_len = strlen(token);
-    for (const char *p = start; p + token_len <= end; p++) {
-        if (strncmp(p, token, token_len) != 0) {
-            continue;
-        }
-        int before = p != start &&
-            (isalnum((unsigned char)p[-1]) || p[-1] == '_');
-        int after = p[token_len] != '\0' &&
-            (isalnum((unsigned char)p[token_len]) || p[token_len] == '_');
-        if (!before && !after) {
-            return GL_TRUE;
-        }
-    }
-    return GL_FALSE;
-}
 
 void clearStageCompileState(Program *program, int stage)
 {
@@ -89,36 +65,45 @@ GLboolean mglProgramPerVertexSignature(Program *program, int stage,
         return GL_FALSE;
     }
 
+    /* A gl_PerVertex redeclaration is a normal block declaration in the parsed
+     * TU (type name "gl_PerVertex", members = the redeclared builtins), so the
+     * signature is read from the declaration instead of scanning the source
+     * text for the block and its member tokens: a commented-out or similarly
+     * named struct is no longer mistaken for a redeclaration, and a stage
+     * without a TU simply has no signature.  The instance name is irrelevant -
+     * `out gl_PerVertex { ... } vs_out;` declares the same interface. */
     Shader *shader = program->shader_slots[stage];
-    const char *src = shader ? shader->src : NULL;
-    if (!src) {
+    MGLTranslationUnit *tu = shader ? shader->frontend_tu : NULL;
+    if (!tu) {
         return GL_FALSE;
     }
 
     unsigned result = 0;
     GLboolean found = GL_FALSE;
-    const char *cursor = src;
-    while ((cursor = strstr(cursor, "gl_PerVertex")) != NULL) {
-        const char *open = strchr(cursor, '{');
-        const char *close = open ? strchr(open + 1, '}') : NULL;
-        if (!open || !close) {
-            cursor += strlen("gl_PerVertex");
-            continue;
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        for (MGLDecl *decl = tu->decls[i]; decl; decl = decl->next_declarator) {
+            if (!decl->type || !decl->type->name ||
+                strcmp(decl->type->name, "gl_PerVertex") != 0) {
+                continue;
+            }
+            for (uint32_t m = 0; m < decl->struct_member_count; m++) {
+                const MGLDecl *member = decl->struct_members[m];
+                const char *name = member ? member->name : NULL;
+                if (!name) {
+                    continue;
+                }
+                if (strcmp(name, "gl_Position") == 0) {
+                    result |= 1u << 0;
+                } else if (strcmp(name, "gl_PointSize") == 0) {
+                    result |= 1u << 1;
+                } else if (strcmp(name, "gl_ClipDistance") == 0) {
+                    result |= 1u << 2;
+                } else if (strcmp(name, "gl_CullDistance") == 0) {
+                    result |= 1u << 3;
+                }
+            }
+            found = GL_TRUE;
         }
-        if (mglShaderSourceHasToken(open, close, "gl_Position")) {
-            result |= 1u << 0;
-        }
-        if (mglShaderSourceHasToken(open, close, "gl_PointSize")) {
-            result |= 1u << 1;
-        }
-        if (mglShaderSourceHasToken(open, close, "gl_ClipDistance")) {
-            result |= 1u << 2;
-        }
-        if (mglShaderSourceHasToken(open, close, "gl_CullDistance")) {
-            result |= 1u << 3;
-        }
-        found = GL_TRUE;
-        cursor = close + 1;
     }
 
     if (found) {

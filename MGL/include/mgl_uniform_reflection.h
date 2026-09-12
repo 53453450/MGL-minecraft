@@ -36,12 +36,6 @@ GLenum mglProgramActiveAttribType(const MGLShaderResource *res);
 
 GLint mglSyntheticSamplerUniformLocation(int stage, int resource_type,
                                          GLuint index);
-GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
-                                              int stage,
-                                              int resource_type,
-                                              GLuint index,
-                                              const char *glsl_src,
-                                              const char *resource_name);
 void mglUnifySamplerUniformLocations(Program *program);
 
 void mglAssignPlainUniformLocations(Program *program);

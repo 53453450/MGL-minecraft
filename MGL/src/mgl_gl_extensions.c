@@ -855,8 +855,7 @@ static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_ty
 
 	MGLShaderResourceList *resources =
 		&pptr->shader_resources_list[query_stage][res_type];
-	if (pptr->shader_slots[query_stage] && pptr->shader_slots[query_stage]->src &&
-	    block->ubo_members && block->ubo_member_count > 0) {
+	if (block->ubo_members && block->ubo_member_count > 0) {
 		const GLboolean have_instance =
 			block->ubo_has_instance_name && block->ubo_instance_name;
 		for (GLuint m = 0; m < block->ubo_member_count; m++) {
@@ -1456,26 +1455,8 @@ static GLboolean mgl_program_active_uniform_referenced_by_stage(Program *pptr,
 			                                            target_stage);
 		if (res_type == _UNIFORM_CONSTANT_RES && pptr &&
 		    res->ubo_member->query_name)
-		{
-			MGLShaderResourceList *resources =
-				&pptr->shader_resources_list[target_stage][res_type];
-			if (pptr->shader_slots[target_stage] &&
-			    pptr->shader_slots[target_stage]->src)
 			return mgl_program_stage_references_name(pptr, target_stage,
 			                                          res->ubo_member->query_name);
-			for (GLuint i = 0; resources->list && i < resources->count; i++)
-			{
-				MGLShaderResource *candidate = &resources->list[i];
-				for (GLuint m = 0; candidate->ubo_members &&
-				     m < candidate->ubo_member_count; m++)
-				{
-					if (candidate->ubo_members[m].query_name &&
-					    strcmp(candidate->ubo_members[m].query_name,
-					           res->ubo_member->query_name) == 0)
-						return GL_TRUE;
-				}
-			}
-		}
 		return res_stage == target_stage ? GL_TRUE : GL_FALSE;
 	}
 	return GL_FALSE;
@@ -1485,14 +1466,6 @@ static GLint mgl_program_uniform_array_size_for_query(const MGLShaderResource *r
 {
 	if (!res || !res->ubo_member)
 		return 1;
-
-	if (res->ubo_member->query_name)
-	{
-		size_t len = strlen(res->ubo_member->query_name);
-		if (len >= 3 && strcmp(res->ubo_member->query_name + len - 3, "[0]") == 0 &&
-		    strstr(res->ubo_member->query_name, ".d[0]"))
-			return 2;
-	}
 
 	return res->ubo_member->size;
 }
