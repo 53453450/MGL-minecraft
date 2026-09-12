@@ -33,6 +33,8 @@
 #include <mach/vm_map.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h> /* calloc / getenv: include what this unit uses, not what
+                     * mgl_trace_log.h happens to pull in through objc.h */
 #include <string.h>
 
 #include "glm_context.h"
