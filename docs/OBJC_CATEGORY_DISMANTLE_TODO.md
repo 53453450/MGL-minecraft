@@ -44,11 +44,11 @@ ObjC **禁止**再增长（与 ARCH「不要保留」一致）：
 | [`OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md)（本文） | ✅ | 薄 ObjC 边界：政策/度量/批次清单 + §5 落地日志（连续编号；最新可执行清单见第 29 条与 Batch O7） |
 | [`ARCHITECTURE_REVIEW.md`](ARCHITECTURE_REVIEW.md) | ✅ | 总架构审查与分层规模；ObjC 厚度数字以本文度量为准 |
 | [`C0_AIR_RENDER_DEP_MAP.md`](C0_AIR_RENDER_DEP_MAP.md) | ✅ | `mgl_air_backend.cpp` / `mgl_render.cpp` 的依赖与调用域地图 |
-| [`TESS_NATIVE_RENDER_VERTEX_PATH.md`](TESS_NATIVE_RENDER_VERTEX_PATH.md) | ✅ | TES-vertex / compute 双路线设计 + §10.4 的 PSO 键修复记录 |
-| [`CTS_TESS_REMAINING_2026-09-10.md`](CTS_TESS_REMAINING_2026-09-10.md) | ✅ | tess 簇逐轮排查日志（顶部有当前状态横幅：139/1/0） |
-| [`GS_XFB_GL4_CTS_PROGRESS_2026-08-21.md`](GS_XFB_GL4_CTS_PROGRESS_2026-08-21.md) | ✅ | GS/XFB 簇进度（被 `ARCHITECTURE_REVIEW.md` 引用） |
+| `TESS_NATIVE_RENDER_VERTEX_PATH.md`（本地） | ❌ | TES-vertex / compute 双路线设计 + §10.4 的 PSO 键修复记录（2026-09-12）；按文件名引用，不入库 |
+| `CTS_TESS_REMAINING_2026-09-10.md`（本地） | ❌ | tess 簇逐轮排查日志 + 单例 ground-truth 复现方法（顶部有当前状态横幅：139/1/0）；按文件名引用，不入库 |
+| `GS_XFB_GL4_CTS_PROGRESS_2026-08-21.md`（本地） | ❌ | GS/XFB 簇进度切片 + 批跑命令模板；按文件名引用，不入库 |
 | [`AIR_M3_CPP_TODO.md`](AIR_M3_CPP_TODO.md) · [`P4_COMMAND_LIFECYCLE_LIMITATIONS_2026-08-16.md`](P4_COMMAND_LIFECYCLE_LIMITATIONS_2026-08-16.md) · [`GL46_GS_LAYERED_SPEC_AUDIT.md`](GL46_GS_LAYERED_SPEC_AUDIT.md) | ✅ | 专题记录 |
-| 其余 `docs/*.md` | ❌（`.gitignore` 的 `/docs/*`） | 阶段性审计/审查稿，保留为本地资料；**若被入库文档引用，必须先 `git add -f` 一并入库**（2026-09-12 即按此规则补入 3 篇） |
+| 其余 `docs/*.md` | ❌（`.gitignore` 的 `/docs/*`） | 阶段性审计/审查稿与逐轮工作日志，**一律留在本地**；入库文档引用它们时只用文件名（标注"本地"），不随引用一起入库 |
 
 度量脚本：[`scripts/objc_renderer_loc.sh`](../scripts/objc_renderer_loc.sh)（`MGLRenderer*.m` 合计、Batch 诚实簇、
 Draw 簇；当前输出 `MGLRenderer*.m total: 34547`）。
@@ -84,7 +84,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 ```
 
 单例复跑（定位单个 case，含打开 CTS 侧 trace 的方法）见
-[`docs/CTS_TESS_REMAINING_2026-09-10.md`](CTS_TESS_REMAINING_2026-09-10.md) 的「复现 ground truth 的方法」。
+本地日志 `docs/CTS_TESS_REMAINING_2026-09-10.md` 的「复现 ground truth 的方法」。
 
 ## 1. 现状库存（按厚度）
 

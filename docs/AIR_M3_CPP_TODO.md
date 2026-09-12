@@ -3399,7 +3399,7 @@ box 重置回整幅 pass（GL 4.6 §14.6.1 允许空 box 裁剪全部 fragment�
 > "独立跑失败、套件跑通过"的状态依赖，已由 PSO 缓存键缺陷解释并修复：pipeline `primaryKey`
 > 没有折入决定栅格化顶点函数的 `tessVertexRenderActive`，同一 isolines program 的
 > TES-vertex 段与 compute 回退段互相命中 PSO。修复 `06ab844`，细节与验证见
-> `docs/TESS_NATIVE_RENDER_VERTEX_PATH.md` §10.4。当前两种跑法（独立 / 套件）均通过。
+> 本地日志 `docs/TESS_NATIVE_RENDER_VERTEX_PATH.md` §10.4。当前两种跑法（独立 / 套件）均通过。
 > 下文保留当时（2026-08-14）的调查过程，用于说明当时的排除项。
 
 **2026-08-14 专项调查（P4.1e3 续）**：**纠正了问题的性质** —— 独立跑失败
