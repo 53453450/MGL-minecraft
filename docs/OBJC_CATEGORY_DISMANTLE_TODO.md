@@ -44,17 +44,18 @@
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,555**） |
 
-**当前进度（2026-09-12，T0–T2′ + T4 四切片 + trace 清零 后）**：文件 **53 → 25**、空 TU **3 → 0**、
-行数 **43,989 → 38,863**、ObjC 语法 **2,268 → 2,218**、词汇 **4,353 → 4,184**。
+**当前进度（2026-09-12，T0–T2′ + T4 五切片 + trace 清零 后）**：文件 **53 → 24**、空 TU **3 → 0**、
+行数 **43,989 → 38,724**、ObjC 语法 **2,268 → 2,207**、词汇 **4,353 → 4,170**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
-`mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace`
-五个 TU 已转入 C；
+`mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
+`mgl_batch_icb_mdi_encode` 六个 TU 已转入 C；
 `mglTraceLogNSString`（429 行 ObjC 面）已彻底移除；剩余 26 个真 ObjC 文件。）
 
 **口径提醒**：上表数字全部由同一脚本在同一天测得，但 **2,223 那一格是端口 shim 建立之前**的数字
 （shim 新增 176 行 / 19 语法 / 3 词汇），本行以重测为准：`2,223 + 19(shim) + 3(桥接) − 14(issue_encode 转 C) − 1(shim 收窄) = 2,230`；
 replay_trace 一刀：`2,230 − 16(文件转 C) − 2(MGLRenderer.m 去 NSString) − 1(+BindingState.m 去 NSString)
-+ 3(shim 端口) + 4(flush_restore 桥接) = 2,218`。
++ 3(shim 端口) + 4(flush_restore 桥接) = 2,218`；
+icb_mdi 一刀：`2,218 − 17(文件转 C) + 3(shim 的 @try/@catch 端口 + processBuffer 端口) + 2(flush_restore 桥接) = 2,207`。
 shim 是**唯一**允许新增的 ObjC 面（逐函数一行包装，把 batch/draw 端口集中到一处），它随实现文件逐个转 C
 而缩小，终态删除或并入 T5 平台壳。
 
@@ -121,7 +122,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | **T0 空 TU ✅ 已删** | 3 / 48 | ~~`MGLBindingSync.m`~~ · ~~`MGLQueryManager.m`~~ · ~~`MGLTextures.m`~~ |
 | **T1 仅 `#import` ✅ 已改名** | 10 / 2,188 | `hash_table.m`(855) · `mgl_texture_compat.m`(331) · `mgl_sampler_compat.m`(324) · `mgl_sync.m`(108) · `mgl_rt_sync.m`(104) · `mgl_capability.m`(100) · `mgl_coordinate.m`(99) · `mgl_focus_program.m`(97) · `mgl_shader_resource.m`(94) · `mgl_state_log.m`(76) |
 | **T2 有词汇无语法 ✅ 已改名** | 10 / 1,709 | `mgl_binding_texture_log.m`(328,v16) · `mgl_frame_activity.m`(288,v8) · `mgl_trace_strategy.m`(229,v16) · `mgl_state_compat.m`(184,v10) · `mgl_vertex_format.m`(147,v1) · `mgl_byte_hash.m`(142,v1) · `mgl_vertex_attrib_query.m`(133,v8) · `mgl_draw_buffer.m`(94,v5) · `mgl_blit_clip.m`(90,v9) · `mgl_buffer_query.m`(74,v8) |
-| **T3/T4 真 ObjC（当前唯一剩余）** | 25 / 38,863 | `+RenderPass`(426 语法/556 词汇) · `+Texture`(316/1103) · `+Blit`(244/880) · `MGLRenderer`(170/280) · `+BindingState`(135/197) · `+Tessellation`(153/292) · `mgl_draw_metal_port`(117/100) · `+Compute`(90/104) · … |
+| **T3/T4 真 ObjC（当前唯一剩余）** | 24 / 38,724 | `+RenderPass`(426 语法/556 词汇) · `+Texture`(316/1103) · `+Blit`(244/880) · `MGLRenderer`(170/280) · `+BindingState`(135/197) · `+Tessellation`(153/292) · `mgl_draw_metal_port`(117/100) · `+Compute`(90/104) · … |
 | **T5 平台壳** | 1 / 229 | `MGLPlatformRendererShell.m`（归 T4/T5 处理） |
 
 ### 1.1 现状库存（按厚度）
@@ -159,7 +160,7 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 | `mgl_batch_dyn_bind_encode.m` | ~366 | **Batch 簇残量**：dyn-bind/sampler；`mgl_batch_mtl_bind_dyn_*` / `apply_sampler_snapshot` 已接线 |
 | `mgl_batch_issue_encode.c`（原 `.m`） | ~213 | **已迁出 ObjC**（T4，`mgl_batch_issue_encode` 转 C）：MDI/direct loops → `mgl_batch_mtl_issue_mdi_batch` / `mgl_batch_issue_direct_batch`；driver 变成 C 函数 `mglBatchIssueMDIBatch` / `mglBatchIssueDirectBatch` |
 | `mgl_batch_replay_trace.c`（原 `.m`） | ~258 | **已迁出 ObjC**（T4）：trace 两个入口变 C driver `mglBatchTraceReplayBatch` / `mglBatchTraceReplayCommand`（声明在 `mgl_batch_rt_mark.h`）；**禁止再扩** |
-| `mgl_batch_icb_mdi_encode.m` | ~177 | **Batch 簇残量**：ICB/stream-MDI；whole loops → `mgl_batch_mtl_issue_*_batch` |
+| `mgl_batch_icb_mdi_encode.c`（原 `.m`） | ~152 | **已迁出 ObjC**（T4）：ICB/stream-MDI driver 变 C（`mglBatchIssueStreamMergedMDIBatch` / `mglBatchIssueIndirectCommandBufferBatch`）；唯一留下的 ObjC 是 ICB 分配失败的 `@try/@catch`，收在 shim 端口里 |
 | ~~`mgl_batch_rt_mark_port.m`~~ | 0 | **已删**（T4 首切片）：RT-mark host 段转 C（`mgl_batch_rt_mark_host.c`） |
 | `hash_table.m` | ~854 | 平台资源表；可保留或 C++ owner |
 | `MGLRenderPassManager.m` | ~523 | 并入 RenderPass 下沉 |
@@ -852,3 +853,36 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     tess 139/1 · GS 136/0 · refq 164/54/5 · piq 17/12/1 · compute 113/38/1ns · pp 1/3/1ns）；trace A/B 如上。
     下一批：`mgl_batch_icb_mdi_encode`(178) / `mgl_batch_dyn_bind_encode`(367) / `mgl_batch_flush_restore_encode`(383)
     三个 batch 文件转 C（端口已备齐；icb 含 `@try/@catch`，需按 C 侧错误码改写并单独说明）。
+
+45. **`mgl_batch_icb_mdi_encode` 转 C：ICB / stream-MDI driver（本轮第三刀）**：
+    ① **文件转 C**：`mgl_batch_icb_mdi_encode.m`(178) → `.c`(152)。两个 ObjC 方法
+    `-[MGLRenderer issueStreamMergedMDIBatch:context:encodeContext:]`（返回 `BOOL`）与
+    `-[MGLRenderer issueIndirectCommandBufferBatch:context:encodeContext:]` 变成 C driver
+    `mglBatchIssueStreamMergedMDIBatch` / `mglBatchIssueIndirectCommandBufferBatch`（返回 `int`，声明进
+    `mgl_batch_issue.h`），`mgl_batch_flush_restore_encode.m` 两处调用点改直调。
+    `-[MGLRenderer mdiArgumentScratchBufferWithLength:offset:]` 的**整体**搬进 shim 的
+    `mglRendererMdiScratchBufferPort`（它的唯一调用者就是那个端口），ObjC 头里的四条声明一并清掉。
+    ② **`@try/@catch` 的处置**：`@try { mgl_batch_mtl_create_icb } @catch (NSException *)` 无法用 C 表达（Metal 在
+    ICB 分配失败时抛 NSException），因此这一小段**留在 shim**：`mglRendererCreateIndirectCommandBufferPort(renderer,
+    indexed, count, &failed)`，内含原样的限流 `NSLog`，C 侧只按 `failed` 决定 trace 的 fallback 原因
+    （`icb_create_exception` / `icb_create_nil`）。所有权：端口返回 **+1**，C 侧 `CFRelease`——与原
+    `__bridge_transfer` + `__bridge_retained` 的净效果一致。
+    ③ **C 化替换**：`@available(macOS 10.14, *)` → `__builtin_available`（C 也可用）；
+    `resolveElementBufferForCommand:` → `mglRendererResolveElementBufferPort`；`mglIndexTypeForGLType` →
+    `mglRenderMTLIndexTypeForGLType`；`[r processBuffer:]` → 新端口 `mglRendererProcessBufferPort`；
+    `_device` → `mglDrawHostDevice`；`mglEnvFlagEnabled` → `mgl_env_flag_enabled`；scratch 端口新增
+    `mglRendererProcessBufferPort`（共 +2 端口）。
+    ④ **踩坑（这次被聚合门禁抓住）**：第一版把 `mglRendererMdiScratchBufferPort` **直接**填进 ops 表的
+    `.alloc_scratch`——但 ops 表传的第一参是 **ctx（`MGLIcbMdiCtx *`）而不是 renderer**，端口把它当
+    `MGLRenderer *` 解引用 → `test-dirty-hash` **段错误**。`make test-all` 立刻报 `Error 2`（不是只挑 harness 跑），
+    修法是保留 `mglIcbScratch(void *v, …)` 解包 `((MGLIcbMdiCtx *)v)->r` 再调端口。
+    **教训**：端口签名"看起来一样"不等于调用约定一样——ops 表 vtable 的首参语义必须逐个核对。
+    ⑤ **oracle**：两套 trace 语料 A/B（默认 + `MGL_ENABLE_ICB=1`）——`REPLAY_*`+`IFACE DUMP` 行归一化后
+    **373 行 / 295 行逐字段一致**；ICB 轮的回归结果 82 PASS/10 FAIL/2 SKIP 与旧库**完全相同**（该 10 项是 ICB
+    opt-in 路径的既有失败：`Fragment/Vertex shader cannot be used with indirect command buffer`，非本刀引入）。
+    度量：文件 **25 → 24**、行数 **38,863 → 38,724**、语法 **2,218 → 2,207**、词汇 **4,184 → 4,170**。
+    验证：两个库构建无错；**`make test-all` 返回 0**（本刀第一次跑就是它抓到的段错误）；CTS 七簇非通过集合 diff
+    全为空（hotspot 1270/52/4/1+1cw · tess 139/1 · GS 136/0 · refq 164/54/5 · piq 17/12/1 · compute 113/38/1ns ·
+    pp 1/3/1ns）；trace A/B 如上。
+    下一批：`mgl_batch_dyn_bind_encode`(367) / `mgl_batch_flush_restore_encode`(383)——后者是本簇最后一个文件，
+    做完 Batch 簇的 `mgl_batch_*_encode` 就不再是 ObjC。
