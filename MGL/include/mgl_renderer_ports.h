@@ -21,6 +21,7 @@
 #include "mgl_types_buffer.h"      /* Buffer */
 #include "mgl_trace_strategy.h"    /* MGLFragmentTextureTraceBinding */
 #include "mgl_batching_state.h"     /* MGLBatchingState */
+#include "mgl_command_state.h"      /* MGLCommandState */
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,9 +32,6 @@ extern "C" {
  * attachment carries none -- the C port of
  * -[MGLRenderer framebufferAttachmentTexture:]. */
 Texture *mglRendererAttachmentTextureFor(GLMContext ctx, FBOAttachment *att);
-
-/* Render pass state owner of a renderer handle, or NULL when there is none. */
-void *mglRendererRenderPassStateOwnerPort(void *renderer);
 
 /* ---- batch / draw ports ------------------------------------------------
  * Thin wrappers over the renderer entry points the batch replay path drives.
@@ -153,6 +151,11 @@ void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
 void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key);
 void *mglRendererFallbackSamplerStatePort(void *renderer);
 
+/* The manager's command state (render pass owner, render pass framebuffer
+ * name, trace-replay identity, render encoder owner, ...).  C callers read the
+ * fields directly; this one port replaced five field wrappers. */
+const MGLCommandState *mglRendererCommandStatePort(void *renderer);
+
 /* Batch-replay diagnostic trace state: the renderer's fragment texture trace
  * binding records (TEXTURE_UNITS entries, `MGLFragmentTextureTraceBinding`),
  * the pipeline cache's current pipeline state / program name, and the render
@@ -160,14 +163,9 @@ void *mglRendererFallbackSamplerStatePort(void *renderer);
 MGLFragmentTextureTraceBinding *mglRendererFragmentTraceBindingsPort(void *renderer);
 void *mglRendererPipelineStatePort(void *renderer);
 uint32_t mglRendererPipelineProgramNamePort(void *renderer);
-uint32_t mglRendererRenderPassFramebufferNamePort(void *renderer);
 
 /* Batch-replay trace identity of the current flush / batch. */
-uint64_t mglRendererBatchTraceFlushIdPort(void *renderer);
-uint32_t mglRendererBatchTraceBatchIndexPort(void *renderer);
 
-/* Render encoder owner the renderer currently encodes into (or NULL). */
-void *mglRendererCurrentRenderEncoderOwnerPort(void *renderer);
 
 #ifdef __cplusplus
 }

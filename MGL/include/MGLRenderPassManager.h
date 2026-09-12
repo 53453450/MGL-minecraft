@@ -15,38 +15,10 @@
 
 #include "glm_context.h"
 #include "mgl_render.h"
+#include "mgl_command_state.h"   /* MGLCommandState */
 
-typedef struct MGLCommandState_t {
-    void *_Nullable renderPassIdentityOwner;
-    void *_Nullable renderPassStateOwner;
-    Framebuffer *_Nullable renderPassFramebuffer;
-    GLuint renderPassFramebufferName;
-    GLenum renderPassDrawBuffer;
-    GLsizei renderPassDrawBufferCount;
-    GLenum renderPassDrawBuffers[MAX_COLOR_ATTACHMENTS];
-    uint64_t traceReplayFlushId;
-    uint32_t traceReplayBatchIndex;
-    GLuint dontCareFrameGeneration;
-    void *_Nullable currentCommandBufferOwner;
-    void *_Nullable detachedCommandBufferSubmission;
-    void *_Nullable mdiArgsScratchOwner;
-    void *_Nullable currentRenderEncoderOwner;
-    BOOL currentDrawUsesRTSampledCopy;
-    void *_Nullable pendingEventOwner;
-    /* Cache for currentRenderPassMatchesCurrentFramebuffer.
-     * lastFboMatchFboName == 0 means "invalid cache, recompute".
-     * Valid only for non-default FBOs (fbo != NULL && fboName != 0);
-     * the default-framebuffer path is never cached because its inputs
-     * (drawable, depth/stencil caps, _drawBuffers) change independently
-     * of fbo_attachment_generation.
-     * Invalidated on encoder install/clear, descriptor install, and
-     * render-pass identity update/clear — all signals that the render
-     * pass configuration may have changed. */
-    GLuint lastFboMatchFboName;
-    uint64_t lastFboMatchFboGeneration;
-    BOOL lastFboMatchResult;
-    GLMContext _Nullable runtimeContext;
-} MGLCommandState;
+/* MGLCommandState moved to the C-safe mgl_command_state.h so the C batch
+ * drivers can read its fields directly. */
 
 NS_ASSUME_NONNULL_BEGIN
 

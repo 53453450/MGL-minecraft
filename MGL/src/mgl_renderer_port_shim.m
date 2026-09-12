@@ -160,30 +160,6 @@ uint32_t mglRendererPipelineProgramNamePort(void *renderer)
     return r ? (uint32_t)r->_pipelineCache.state->pipelineProgramName : 0u;
 }
 
-uint32_t mglRendererRenderPassFramebufferNamePort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? (uint32_t)mglRendererRenderPassManager(r).state->renderPassFramebufferName : 0u;
-}
-
-uint64_t mglRendererBatchTraceFlushIdPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return mglRendererRenderPassManager(r).state->traceReplayFlushId;
-}
-
-uint32_t mglRendererBatchTraceBatchIndexPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return mglRendererRenderPassManager(r).state->traceReplayBatchIndex;
-}
-
-void *mglRendererCurrentRenderEncoderOwnerPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return mglRendererRenderPassManager(r).state->currentRenderEncoderOwner;
-}
-
 void *mglRendererBindingStateOwnerPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -417,6 +393,12 @@ void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx)
     if (r && ctx) {
         r->_core.activeState = ctx->active_state;
     }
+}
+
+const MGLCommandState *mglRendererCommandStatePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? [mglRendererRenderPassManager(r) state] : NULL;
 }
 
 MGLBatchingState *mglRendererBatchingStatePort(void *renderer)

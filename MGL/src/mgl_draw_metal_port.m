@@ -484,14 +484,6 @@ MGLRenderPassManager *mglRendererRenderPassManager(MGLRenderer *r)
 
 /* C port (ObjC-zeroing T4): the render pass state owner of a renderer handle,
  * so C modules do not need a category to read it. */
-void *mglRendererRenderPassStateOwnerPort(void *renderer)
-{
-    MGLRenderPassManager *manager =
-        mglRendererRenderPassManager((__bridge MGLRenderer *)renderer);
-    const MGLCommandState *state = manager ? manager.state : NULL;
-    return state ? (void *)state->renderPassStateOwner : NULL;
-}
-
 
 MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r)
 {

@@ -35,8 +35,8 @@ static void mglIcbTrace(void *v, uint32_t i, const char *phase, const char *reas
     if (!c->batch || i >= c->batch->command_count) return;
     mglBatchTraceReplayCommand(c->r, c->batch, &c->batch->commands[i],
                                c->ctx,
-                               mglRendererBatchTraceFlushIdPort(c->r),
-                               mglRendererBatchTraceBatchIndexPort(c->r),
+                               mglRendererCommandStatePort(c->r)->traceReplayFlushId,
+                               mglRendererCommandStatePort(c->r)->traceReplayBatchIndex,
                                i, phase, reason);
 }
 
