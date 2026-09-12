@@ -22,7 +22,7 @@
 |---|---|---|---|
 | **T0 ✅** | 空 TU 删除：只有注释的 `.m` | 文件消失；构建 + `make test-all` 通过 | 3 个文件 / 48 行（**已完成**） |
 | **T1 ✅** | 仅 `#import` 算 ObjC 语法的 `.m` → `.c`（改 `#include`，去掉无用 `<Foundation/Foundation.h>`） | 全部为 `.c`；构建 + `make test-all` + hotspot 非通过集合 diff 为空 | 10 个文件 / 2,188 行（**已完成**） |
-| **T2** | 无 ObjC 语法但有词汇：`BOOL`/`YES`/`NO`/`nil`/`NSUInteger`/`NSLog` 换成 C 等价物后改名 | 同上 + 该文件 ObjC 词汇清零 | **10 个文件 / 1,709 行** |
+| **T2 ✅** | 无 ObjC 语法但有词汇：`BOOL`/`YES`/`NO`/`nil`/`NSUInteger`/`NSLog` 换成 C 等价物后改名 | 同上 + 该文件 ObjC 词汇清零 | 10 个文件 / 1,709 行（**已完成**） |
 | **T3** | 决策下沉：category 里的 policy / plan / enum 映射 / 分类搬进 C 模块（**沿用 §2 的 Batch O1–O7**） | 每个 domain：决策在 C、有 golden harness、ObjC 只剩物化端口 | `MGLRenderer*.m` 34,610 → 逐批下降 |
 | **T4** | 端口 C++ 化：`.m` 端口改 C++（Metal-cpp），`id` → `void*`，`MTL*` ObjC 类型 → Metal-cpp 类型 | `MGL/src` 内不再有 `.m`（平台壳除外） | 剩余 category + `MGLRenderer.m` + `mgl_draw_metal_port.m` 等 |
 | **T5** | 平台壳：`NSWindow`/`CAMetalLayer`/drawable/present/主线程同步 | 二选一并记录：**(a)** 用 ObjC runtime C API（`objc_msgSend`）在 C++ 内实现，`MGL/` 内 0 个 `.m`；**(b)** 移交消费方，`MGL/` 内 0 个 `.m` | 现 `MGLPlatformRendererShell.m` 229 行 + `+Lifecycle` 665 行 |
@@ -44,8 +44,8 @@
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0 |
 
-**当前进度（2026-09-12，T0+T1 完成后）**：文件 **53 → 40**、空 TU **3 → 0**、行数 **43,989 → 41,753**、
-ObjC 语法 **2,268 → 2,254**、词汇 **4,353（未动）**。
+**当前进度（2026-09-12，T0+T1+T2 完成后）**：文件 **53 → 30**、空 TU **3 → 0**、行数 **43,989 → 40,044**、
+ObjC 语法 **2,268 → 2,239**、词汇 **4,353 → 4,266**。（T2 的 10 个文件词汇已清零，剩余词汇全在 30 个真 ObjC 文件里。）
 
 ---
 
@@ -109,8 +109,8 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
 |---|---|---|
 | **T0 空 TU ✅ 已删** | 3 / 48 | ~~`MGLBindingSync.m`~~ · ~~`MGLQueryManager.m`~~ · ~~`MGLTextures.m`~~ |
 | **T1 仅 `#import` ✅ 已改名** | 10 / 2,188 | `hash_table.m`(855) · `mgl_texture_compat.m`(331) · `mgl_sampler_compat.m`(324) · `mgl_sync.m`(108) · `mgl_rt_sync.m`(104) · `mgl_capability.m`(100) · `mgl_coordinate.m`(99) · `mgl_focus_program.m`(97) · `mgl_shader_resource.m`(94) · `mgl_state_log.m`(76) |
-| **T2 有词汇无语法** | 10 / 1,709 | `mgl_binding_texture_log.m`(328,v16) · `mgl_frame_activity.m`(288,v8) · `mgl_trace_strategy.m`(229,v16) · `mgl_state_compat.m`(184,v10) · `mgl_vertex_format.m`(147,v1) · `mgl_byte_hash.m`(142,v1) · `mgl_vertex_attrib_query.m`(133,v8) · `mgl_draw_buffer.m`(94,v5) · `mgl_blit_clip.m`(90,v9) · `mgl_buffer_query.m`(74,v8) |
-| **T3/T4 真 ObjC** | 30 / 40,044 | `+RenderPass`(426 语法/558 词汇) · `+Texture`(312/1103) · `+Blit`(244/880) · `MGLRenderer`(172/282) · `+BindingState`(136/198) · `+Tessellation`(153/292) · `mgl_draw_metal_port`(116/100) · `+Compute`(90/104) · … |
+| **T2 有词汇无语法 ✅ 已改名** | 10 / 1,709 | `mgl_binding_texture_log.m`(328,v16) · `mgl_frame_activity.m`(288,v8) · `mgl_trace_strategy.m`(229,v16) · `mgl_state_compat.m`(184,v10) · `mgl_vertex_format.m`(147,v1) · `mgl_byte_hash.m`(142,v1) · `mgl_vertex_attrib_query.m`(133,v8) · `mgl_draw_buffer.m`(94,v5) · `mgl_blit_clip.m`(90,v9) · `mgl_buffer_query.m`(74,v8) |
+| **T3/T4 真 ObjC（当前唯一剩余）** | 30 / 40,044 | `+RenderPass`(426 语法/558 词汇) · `+Texture`(312/1103) · `+Blit`(244/880) · `MGLRenderer`(172/282) · `+BindingState`(136/198) · `+Tessellation`(153/292) · `mgl_draw_metal_port`(116/100) · `+Compute`(90/104) · … |
 | **T5 平台壳** | 1 / 229 | `MGLPlatformRendererShell.m`（归 T4/T5 处理） |
 
 ### 1.1 现状库存（按厚度）
@@ -699,3 +699,21 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     验证：两个库构建无错；**`make test-all` 返回 0**（smoke / es-smoke / legacy-compat 193/193 / test_regression
     92/0/2 / 各 plan harness）；CTS 整轮见下（hotspot 非通过集合 diff 为空）。
     下一批：**T2**（10 个"有词汇无语法"文件：`BOOL/YES/NO/nil/NSUInteger/NSLog` → C 等价物后改名）。
+
+39. **T2 落地：10 个"有词汇无语法"文件转 C（`38455bd`）**：`BOOL→bool`（头里 `<objc/objc.h>`→`<stdbool.h>`）、
+    `YES/NO→true/false`、`NSUInteger→size_t`、`NSLog(@"…")→fprintf(stderr, "…")`、
+    `NSString *label→const char *label`（`mglDumpBytesToLog`，其 `mglTraceLogNSString` 调用改 `mglTraceLog`）、
+    去掉 `#import <Foundation/Foundation.h>` 与 `#import`；`mgl_frame_activity` 的 `os_log_t`/`OS_LOG_DEFAULT`
+    改由 `<os/log.h>`（本就是 C API）提供；注释里残留的 YES/NO/nil 措辞一并改写（度量把注释计入）。
+    涉及文件：`mgl_buffer_query` / `mgl_blit_clip` / `mgl_draw_buffer` / `mgl_vertex_attrib_query` /
+    `mgl_vertex_format` / `mgl_trace_strategy` / `mgl_state_compat` / `mgl_frame_activity` /
+    `mgl_binding_texture_log` / `mgl_byte_hash`，全部改名 `.c`。
+    **解依赖**：`mgl_trace_log.h` 的 `BOOL`→`bool`（`NSString` 声明本就有 `#ifdef __OBJC__` 保护，C TU 可安全包含）；
+    Makefile 为 `mgl_binding_texture_log.c` 加同形状 C 规则（`METALCPP_C_SRC/_OBJ`，smoke 目标仍以 `-x none` 链接）。
+    **顺带清掉一处潜在传递依赖**：去掉若干头的 Foundation 后，`mgl_gl_extensions.c` 失去间接的 `<stdlib.h>`
+    （`calloc`/`free`/`strtoul`），按"谁用谁 include"补显式 include——清零工作正在把这些隐患逐个逼出来。
+    度量：文件 **40 → 30**、行数 **41,753 → 40,044**、语法 **2,254 → 2,239**、词汇 **4,353 → 4,266**。
+    验证：两个库构建无错；**`make test-all` 返回 0**（smoke / es-smoke / legacy-compat 193/193 /
+    test_regression 92/0/2 / 各 plan harness）；CTS 整轮（hotspot 非通过集合 diff 为空）。
+    下一批：**T2′**（12 个 <20 处 ObjC 语法的文件：`mgl_trace_log` / `+Buffer` / `+VertexLayout` /
+    `mgl_readback` / batch 端口等），随后进入 **T4**（端口 C++ 化）。
