@@ -18,7 +18,6 @@
 
 #include "mgl_draw_encode.h"
 
-#include <stdlib.h>
 #include <stdio.h>
 #include "mgl_env_flag.h"
 #include "mgl_render.h"

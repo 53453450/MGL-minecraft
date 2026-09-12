@@ -58,6 +58,7 @@ Draw 簇；当前输出 `MGLRenderer*.m total: 34608`）。
 | 语料 | 入口 | 通过口径 |
 |---|---|---|
 | 本地功能/回归 | `build/test_regression all`（94 项） | **92 PASS / 0 FAIL / 2 SKIP**（窗口/环境门控 2 项）；单例：`build/test_regression <name>` |
+| 本地聚合门禁 | **`make test-all`（必须跑）** | 返回 0；含 `test-metalcpp` / `test-es-smoke` / `test-mcrepro` 等 smoke 目标——**2026-09-12 的教训**：O7.4 把 `mglProgramStageBuiltinMask` 搬进 `mgl_program_resource.c` 后，`test_metalcpp_smoke` 因缺该文件**链接失败**，而当时的验证清单只挑着跑 harness、没跑聚合目标，破损被漏掉数小时 |
 | 本地单元 harness | `make test-all`（含 `test-tess-domain` / `test-tess-air` / `test-buffer-plan` / `test-reference-query` / `test-binding-*` / `test-batch-*` / `test-render-pass-clear-plan` …） | 各自 `ok` / `0 failure` |
 | CTS tess 簇 | caselist `VK-GL-CTS-build-mgl-target/mgl-tess-cluster-cases.txt`（140 例） | **139 pass / 1 fail / 0 ns**；唯一失败为已归档的 FO-spacing CTS 期望矛盾 |
 | CTS GS 簇 | caselist `…/mgl-gs-cluster-cases.txt`（136 例，由上一轮 GS run 的 `summary.tsv` 复刻） | **136 / 0** |
@@ -615,5 +616,23 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
     3. **O7.4 残条（下一批）**：名字→类型/location 启发式（`gl_type == 0` 命中率需探针）；链接期重复 parse 去重
        （`mglShaderInterfaceCheck` 复用 `frontend_tu`，属 O5 类）。
   - **禁则（不变）**：扩 `mgl_draw_metal_port.m`、扩 `mgl_batch_replay_trace.m`、新开厚 category、堆进 `mgl_render.cpp`；不得以「CTS 没跑到」代替 oracle。
+
+37. **smoke 死桩与 stdio/stdlib include 清理（`<commit>`）**：三件事：
+    ① **修好 `test_metalcpp_smoke` 的链接**——O7.4 把 `mglProgramStageBuiltinMask` 移到
+    `mgl_program_resource.c`（头里是 `static inline mglProgramStageUsesBuiltin` 的转发），该 harness 编译
+    `mgl_render.cpp` 却没编这个文件 ⇒ 链接失败。按"补真实现而非补桩"的原则把
+    `mgl_program_resource.c` 加进它的编译集（该 TU 零外部依赖，只导出 `mglProgramStageBuiltinMask` /
+    `mglShaderStageName`）。
+    ② **删 smoke 死桩**：判据＝"引擎里已无任何声明的符号，其桩要删"——桩会把未来重新引入的调用**静默接住**，
+    而缺桩会**链接失败**（更强的护栏）。据此删 `mtlBindBuffer` / `mtlFlushBufferRange` / `mtlBindProgram`
+    （引擎零引用）与 `mglShouldSkipStageBufferResource`（O7.4.3 已删），并清掉随之失效的观测点；
+    保留 `mtlBufferSubData` / `mtlMapUnmapBuffer` / `mtlFlush`（引擎仍在引用 ⇒ 桩有承载）与
+    `mglSyntheticSamplerUniformLocation`（`test_mglair*` / `test_mcrepro` 的链接确实需要它——**实证**：删掉后
+    链接失败，恢复后通过）。
+    ③ **清未使用的 stdio/stdlib include**（10 个文件，逐个以构建验证）：`mgl.h`、`gl_core.c`、
+    `mgl_draw_encode.cpp`、`mgl_legacy_compat.c`、`mgl_program_reflection.c`、`mgl_program_resource.c`、
+    `mgl_texture_transfer.c`、`test_legacy_compat/main.c`、`test_mcrepro.mm`、`test_mglir.c`。
+    验证：**`make test-all` 返回 0**（含 smoke 系列：`SMOKE_DONE`、`es-smoke: ok`、legacy-compat 193/193、
+    test_regression 92/0/2、各 plan harness 全绿）；CTS hotspot 非通过集合 diff 为空。
 
 完成以上后，再大规模继续 sink 也不会失去「薄平台层」方向感。

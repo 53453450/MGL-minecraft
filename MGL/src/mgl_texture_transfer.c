@@ -28,7 +28,6 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "mgl_pixel_format.h"

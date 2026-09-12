@@ -10,7 +10,6 @@
 
 #include "glm_context.h"
 #include <stdio.h>
-#include <stdlib.h>
 
 extern void mgl_lazy_init(void);
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);

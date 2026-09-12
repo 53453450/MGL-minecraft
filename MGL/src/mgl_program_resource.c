@@ -11,8 +11,6 @@
 
 #include "mgl_sampler_compat.h"
 
-#include <stdio.h>
-#include <stdlib.h>
 
 const char *mglShaderStageName(int stage)
 {

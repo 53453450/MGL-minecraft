@@ -9,7 +9,6 @@
 #import <Foundation/Foundation.h>
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "mgl_shader_abi.h"

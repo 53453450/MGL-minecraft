@@ -102,11 +102,6 @@ extern "C" Program *mglResolveProgramForStageFromState(
     return context->active_state->program;
 }
 
-extern "C" bool mglShouldSkipStageBufferResource(
-    Program *, int, int, const MGLShaderResource *) {
-    return false;
-}
-
 extern "C" GLuint mglClientBufferBindingForResource(
     int, const MGLShaderResource *resource) {
     return resource ? resource->gl_binding : 0u;
@@ -137,10 +132,6 @@ static id<MTLLibrary> smokeLoadAssetLibrary(id<MTLDevice> device,
     }
     return library;
 }
-static int s_legacyBufferBindCount = 0;
-extern "C" void mtlBindBuffer(GLMContext, Buffer *) {
-    ++s_legacyBufferBindCount;
-}
 static int s_legacyBufferSubDataCount = 0;
 extern "C" void mtlBufferSubData(GLMContext, Buffer *, size_t, size_t,
                                   const void *) {
@@ -151,15 +142,6 @@ extern "C" void *mtlMapUnmapBuffer(GLMContext, Buffer *, size_t, size_t,
                                     unsigned int, bool) {
     ++s_legacyBufferMapCount;
     return reinterpret_cast<void *>(0x1234u);
-}
-static int s_legacyBufferFlushRangeCount = 0;
-extern "C" void mtlFlushBufferRange(GLMContext, Buffer *, intptr_t,
-                                     intptr_t) {
-    ++s_legacyBufferFlushRangeCount;
-}
-static int s_legacyProgramBindCount = 0;
-extern "C" void mtlBindProgram(GLMContext, Program *) {
-    ++s_legacyProgramBindCount;
 }
 static int s_legacyFlushCount = 0;
 static bool s_legacyFlushFinish = false;
@@ -692,10 +674,8 @@ static int verifyBufferBinding(void) {
     uint8_t *noCopyBytes = reinterpret_cast<uint8_t *>(noCopyAddress);
     memcpy(noCopyBytes, source, sizeof(source));
 
-    const int legacyBindBefore = s_legacyBufferBindCount;
     const int legacySubDataBefore = s_legacyBufferSubDataCount;
     const int legacyMapBefore = s_legacyBufferMapCount;
-    const int legacyFlushBefore = s_legacyBufferFlushRangeCount;
     Buffer noCopy = {};
     noCopy.name = 102u;
     noCopy.size = noCopyLength;
@@ -730,10 +710,8 @@ static int verifyBufferBinding(void) {
     }
     mglRenderFlushBufferRange(
         NULL, &noCopy, 0, (intptr_t)sizeof(source));
-    if (s_legacyBufferBindCount != legacyBindBefore ||
-        s_legacyBufferSubDataCount != legacySubDataBefore ||
-        s_legacyBufferMapCount != legacyMapBefore ||
-        s_legacyBufferFlushRangeCount != legacyFlushBefore) {
+    if (s_legacyBufferSubDataCount != legacySubDataBefore ||
+        s_legacyBufferMapCount != legacyMapBefore) {
         fprintf(stderr, "FAIL: no-copy buffer entered legacy callback\n");
         return 1;
     }
@@ -1095,8 +1073,7 @@ static int verifyAIRProgramClassification(void) {
     }
     program.dirty_bits = DIRTY_PROGRAM;
     mglRenderBindProgram(NULL, &program);
-    if (s_legacyProgramBindCount != 0 ||
-        (program.dirty_bits & DIRTY_PROGRAM) != 0u) {
+    if ((program.dirty_bits & DIRTY_PROGRAM) != 0u) {
         fprintf(stderr, "FAIL: non-AIR program reached legacy callback\n");
         return 1;
     }
