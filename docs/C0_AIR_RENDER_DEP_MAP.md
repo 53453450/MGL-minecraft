@@ -1,7 +1,9 @@
 # C0 — Dependency map: `mgl_air_backend.cpp` & `mgl_render.cpp`
 
 > Track **C0** was docs-only; **C1** started monolith knives (IntegerReadback out).
-> Snapshot: `main` @ C1 format-class PSO strip (~13.8k air / ~19.6k render LOC). Re-measure with `wc -l` after splits.
+> Snapshot: `main` @ C1 format-class PSO strip（写稿时 ~13.8k air / ~19.6k render）。
+> **2026-09-12 复测**：`mgl_air_backend.cpp` 14753 行、`mgl_render.cpp` 19445 行（sink 持续把这些 TU 的
+> 域逻辑搬进 `mgl_*_plan/policy/abi` 等域文件；本图只描述依赖与调用域，LOC 以 `wc -l` 为准）。
 > Purpose: make include / caller / domain boundaries visible before any TU knife.
 
 ---

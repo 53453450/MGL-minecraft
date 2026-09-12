@@ -4,6 +4,14 @@
 反射 API 闭环、KHR-GL46 geometry_shader 组首轮 CTS 批跑与失败分类。
 承接 `docs/AIR_M3_CPP_TODO.md` 的 M3 标准 1。
 
+> **当前状态（2026-09-12）**：本文是 2026-08-20/21 的 GS 工作切片记录，其中"全矩阵绿"是**当时**的口径。
+> 现行口径：`KHR-GL46.geometry_shader.*`（136 例）**136 pass / 0 fail**；
+> 本地全量 `test_regression`（94 项）**92 PASS / 0 FAIL / 2 SKIP**；
+> GL46 hotspot（1328 例）非通过集合与基线逐条 diff 为空。GS 侧后续改动（geometry 拓扑分类、
+> GS passthrough 的 builtin 判定改走精确掩码）见
+> [`docs/OBJC_CATEGORY_DISMANTLE_TODO.md`](OBJC_CATEGORY_DISMANTLE_TODO.md) Batch O7。
+> 本文已随 2026-09-12 文档整理一并入库。
+
 ## 一、已完成（全矩阵绿：regression 78/80 PASS 0 FAIL 2 SKIP[环境门控]，
 ## test-mglair / test-mglair-gtest / test-metalcpp 全 0，git diff --check 干净）
 
