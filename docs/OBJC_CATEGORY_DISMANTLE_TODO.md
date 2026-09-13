@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
-行数 **43,989 → 35,096**、ObjC 语法 **2,268 → 2,006**、词汇 **4,353 → 3,912**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,096**、ObjC 语法 **2,268 → 2,006**、词汇 **4,353 → 3,912**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1917,3 +1917,30 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：`+Binding.m` 只剩 `bindMTLTextureLocked:`(339) 与 `syncResourceBindingsForContext:`(27)。
      建议先转 `endRenderEncodingLocked`（`+RenderPass.m:5060`，约 60 行，OBjC 成分是 `_batching`/`_renderPassManager` 两个
      areas 已覆盖的状态 + 日志），转换后 `bindMTLTextureLocked:` 的依赖表就少一项；每转一项立刻编译 + A/B。
+
+### 0.13 余下 17 个 `.m` 的"依赖深度"复核（2026-09-13，第 35 轮；**修正第 78 条的乐观估计**）
+
+第 78 条建议的下一刀是 `endRenderEncodingLocked`（`+RenderPass.m:5060`，约 91 行）。本轮**先把依赖逐条列出**，结论是
+**它不能单独转 C**，需要先补 4 个前置：
+
+| 依赖 | 现状 | 说明 |
+|---|---|---|
+| `[_renderPassManager endCurrentRenderEncoder]` / `clearCurrentRenderEncoder` / `clearRenderPassIdentity` | 3 个 manager 方法 | 各需一个 C 入口或先 C 化（后两者体很短，`clearFboMatchCache` 一类） |
+| `@try { … } @catch (NSException *)` | ObjC 异常语义 | 只能留在 ObjC（或改由壳 TU 提供一个 `mglPlatformShellEndEncoderGuarded(...)` C 入口包住 @try） |
+| `[self updateGLSampledCopiesForEndedRenderPassFramebuffer:…]` | 另一个 ObjC 方法 | 需一并处理 |
+| `NSLog` / `_batching` / `_renderPassManager.state->…` | 混合 | 后者两项已在 areas 覆盖（`areas.batching` / `areas.command`），`NSLog` → `fprintf` |
+
+**因此"下一刀"应按"依赖深度 ≤1"来挑**，而不是按行数挑。按此复核，当前**依赖深度 ≤1 的整文件候选**是：
+
+| 文件 | 方法/行数 | 依赖深度复核 |
+|---|---|---|
+| `MGLRenderer+GPURecovery.m` | 10 / 350 | 每个方法 0–3 处发送，除 `_device`/`_commandQueue`（backend 句柄，areas 已有 `backend`）与 `NSLog` 外基本是 C；**最可能整文件转 C** |
+| `MGLRenderer+DrawStageHost.m` | 4 / 217 | 剩 `runVertexCaptureSession:`（要写 `self->ctx`）、`bindCullDistanceEmulationBuffers:`（要 2 个 areas 字段 + 1 个 C 入口）、MS 循环族（含 block）；**逐条可做但零散** |
+| `MGLRenderer+SwapDiagnostics.m` | 2 / 556 | 两个方法都在 swap 路径、体较大，依赖 `copyRenderPassColorToDrawableIfNeeded:` 内的 drawable 逻辑 |
+| `mgl_draw_metal_port.m` | **0 / 1,973** | **没有任何 ObjC 方法**，全是 host-ops 适配函数 + `[host …]` 转发；它是 T5 之后最大的单块 ObjC 面。方向：把 host-ops 表改成纯 C 函数指针（表本身已是 `void *`），把其中调用的类别方法逐个转 C |
+| `MGLRenderer+Binding.m` | 3 / 430 | 余 `bindMTLTexture*`(339) 与 `syncResourceBindingsForContext:`(27)，依赖深度 ≥3（见上表同型） |
+
+> **结论（给下一轮的可执行指令）**：先做 **`+GPURecovery.m` 的整文件转 C**（C 头 + C 入口 + areas 已覆盖的 backend 句柄，
+> 预计 −350 行、文件 17 → 16）；若中途发现依赖深度 ≥2，则退回"逐个方法转 C"并在日志里记录依赖表。
+> `mgl_draw_metal_port.m` 与三厚块（`+RenderPass`/`+Texture`/`+Blit`）属于最后阶段：它们的方法彼此调用密集，
+> 应先做"叶子方法"（只调 C 与 areas 的那些）再向上收口。
