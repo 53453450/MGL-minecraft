@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **27 / 394**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 37,974**、ObjC 语法 **2,268 → 2,170**、词汇 **4,353 → 4,136**；
-**shim（T4 硬规的记账面）：43 → 27 个端口 / 511 → 394 行 / 81 → 62 语法；shim 内 ObjC 方法 5 → 1（连续五刀净减 ✓）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 首刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 37,617**、ObjC 语法 **2,268 → 2,167**、词汇 **4,353 → 4,077**；
+**shim：43 → 27 个端口（P0-1 首刀端口零增长）/ 396 行 / 62 语法；shim 内 ObjC 方法 5 → 1**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
