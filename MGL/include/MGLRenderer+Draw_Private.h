@@ -68,6 +68,11 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                                  const char *where);
 int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int attribute, const char *where);
 bool mglRenderCheckForDirtyBufferData(GLMContext ctx, BufferMapList *buffer_map_list, const char *where);
+/* C function (defined in MGLRenderer.m): C linkage so an Objective-C++ TU that
+ * also sees the extern "C" declaration in mgl_renderer_ports.h agrees. */
+#ifdef __cplusplus
+extern "C"
+#endif
 bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_map_list, const char *where);
 
 /* Cull distance emulation params live in mgl_render.h. */

@@ -37,7 +37,7 @@ Texture *mglRendererAttachmentTextureFor(GLMContext ctx, FBOAttachment *att);
 
 /* ---- batch / draw ports ------------------------------------------------
  * Thin wrappers over the renderer entry points the batch replay path drives.
- * They live in one shim TU (mgl_renderer_port_shim.m) so the Objective-C
+ * They live in one shim TU (MGLPlatformRendererShell.m) so the Objective-C
  * surface C talks to stays in a single place, and each one moves into its
  * implementation file as that file is converted. */
 

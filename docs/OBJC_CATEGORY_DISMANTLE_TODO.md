@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十四刀** + trace 清零 后）**：文件 **53 → 19**、空 TU **3 → 0**、
-行数 **43,989 → 35,491**、ObjC 语法 **2,268 → 2,029**、词汇 **4,353 → 3,944**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十五刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
+行数 **43,989 → 35,478**、ObjC 语法 **2,268 → 2,029**、词汇 **4,353 → 3,944**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1708,3 +1708,24 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      需要一个 C 可见的 setter 或把 `MGLPipelineCacheState` 的 blend 部分做成 state area 的可变指针）；
      `generateVertexDescriptorState:` 需要把 `MGLTessellationState` 变成 C 安全头并挂进 `MGLRendererStateAreas`；
      `bindFramebufferAttachmentTextures` 需先 C 化 `bindFramebufferTexture:isDrawBuffer:`（`+RenderPass.m:1931`）。
+
+69. **T5 第一步：端口 shim 并入平台壳，ObjC 壳 TU 唯一化（**文件 19 → 18**）**：
+     ① 做法：把 `mgl_renderer_port_shim.m`（223 行、13 个端口 + 1 个 category 方法）整块并入
+     **`MGLPlatformRendererShell.m`**，合并 include（去重 11 条）并加分段注释；随后 `git rm` 该文件。
+     两个文件本就没有同名 static / 全局符号（合并前逐名比对过 `static` 与 `mgl*` 定义，交集为空）。
+     **端口数不变（仍 13）**——这是审计要求的"ObjC 壳只有一个 TU"的形态收口，**不冒充净减**。
+     ② **踩坑（重要，值得单列）**：`test_metalcpp_smoke` 这条 C++ harness **单独编译 `MGLPlatformRendererShell.m`**
+     （不带库的其余部分），合并后端口包装把 `mglBatchTeardownReplay` / `mgl_batch_mtl_create_icb` 等符号拖进来 → 链接失败。
+     另外同一 TU 里同时看到 `MGLRenderer+Draw_Private.h`（无 `extern "C"`）与 `mgl_renderer_ports.h`（`extern "C"`）里的
+     `mglRenderUpdateDirtyBaseBufferList` 声明 → ObjC++ 下报 **different language linkage**。
+     修法：① 给那条声明补 `extern "C"`（它本来就是 C 函数）；② smoke 规则加 `-DMGL_PLATFORM_SHELL_SMOKE`，
+     端口段用 `#ifndef MGL_PLATFORM_SHELL_SMOKE … #endif` 包住（smoke 只验证壳本身仍能以 ObjC++ 编译）。
+     **规则：把"平台壳/端口"文件合并进任何被独立 harness 编译的 TU 前，先查 Makefile 里哪些 target 单独编译它。**
+     ③ **度量**：`objc_zero.sh` **文件 19 → 18**、行数 **35,491 → 35,478**、语法 2,029、词汇 3,944；
+     `MGLPlatformRendererShell.m` 229 → 437 行（壳 229 + 端口 208）。
+     ④ **oracle**：旧库 = 提交 `429d4c8` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与
+     5,513/5,513 逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；
+     **CTS 七簇非通过集合 diff 全空**；全门禁（28 目标）`GATE=0`（含修好后的 `test-air` / `test-metalcpp`）。
+     下一刀：T5 第二步——把 `+Lifecycle.m`(665) 里真正属于平台壳的部分（NSView/drawable/swap 提交）并入同一个 TU，
+     其余生命周期逻辑按域下沉 C；同时按 §0.11 继续 `+VertexLayout.m` 的三条前置依赖（pipeline-cache blend setter、
+     `MGLTessellationState` 进 areas、`bindFramebufferTexture:isDrawBuffer:`）。
