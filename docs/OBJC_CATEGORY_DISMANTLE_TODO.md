@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十八刀** + trace 清零 后；第 68–73 轮见 §0.24/§0.26–§0.30）**：
-文件 **53 → 11**、空 TU **3 → 0**、行数 **43,989 → 32,471**、ObjC 语法 **2,268 → 1,853**、词汇 **4,353 → 3,645**；
-**shim：43 → 15 个端口 / 唯一壳 TU 1,098 行 / 150 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103 刀按 T5 把 `MGLPipelineCache` 并入壳、第 104 刀按 T5 把纹理绑定入口并入壳，端口均不变；`MGLRenderer*.m` **34,604 → 28,948**）。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十九刀** + trace 清零 后；第 68–74 轮见 §0.24/§0.26–§0.31）**：
+文件 **53 → 10**、空 TU **3 → 0**、行数 **43,989 → 32,462**、ObjC 语法 **2,268 → 1,850**、词汇 **4,353 → 3,645**；
+**shim：43 → 15 个端口 / 唯一壳 TU 1,756 行 / 272 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；`MGLRenderer*.m` **34,604 → 28,948**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -2900,10 +2900,16 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 | 236–320 | 渲染器端口 shim（15 个端口） | 85 | 每个端口在它转发的方法转 C 时退役（第 100/102 刀已各退役 1 个） |
 | 321–391 | 纹理物化端口（4 个，第 100 刀新增） | 71 | `MGLRenderer+Texture.m` 转 C 时一起退役 |
 | 392–627 | Batch replay 壳（`@try/@finally` 帧 + flush/port C 入口） | 236 | 异常帧 C 无法表达；flush 驱动完全 C 化后退役 |
-| 628–1068 | `MGLPipelineCache` 类（第 103 刀并入） | 441 | 转 C handle（见第 103 条第①项的阻塞与解除条件） |
+| 628–1273 | `MGLRenderer (Lifecycle)` 类目（第 105 刀并入：构造 / 视图 KVO / 窗口通知 / capture / `dealloc`） | 646 | **终态平台代码**（Cocoa 观察者与窗口 API 无法用 C 表达）；其中 `createProactiveTextures` 等纯调用块可在转 C 时再搬出 |
+| 1274–1756 | `MGLPipelineCache` 类（第 103 刀并入） | 483 | 转 C handle（见第 103 条第①项的阻塞与解除条件） |
 
-**上限与纪律**：壳**目标 ≤1,200 行**（当前 1,069）。任何把它继续撑大的合并（T5）都必须在同一刀里更新本表并写明移除路径；
+**上限与纪律**：壳**目标 ≤1,800 行**（第 105 刀后实测 **1,756 行 / 272 语法**，故按第 105 刀的上限修订；
+第 105 刀前的上限是 1,200）。任何把它继续撑大的合并（T5）都必须在同一刀里更新本表并写明移除路径；
 若某块本身不是平台代码（例如只是"尚未转 C 的实现"），**优先转 C 而不是并进壳**。
+**壳的收缩路径（终态应回到 ~600 行）**：① 15 个端口随其转发方法转 C 逐个退役；② 纹理物化 4 端口随 `+Texture.m` 退役；
+③ `MGLPipelineCache` 类转 C handle；④ batch `@try/@finally` 帧等 flush 驱动 C 化后退役；
+⑤ 只剩 `MGLPlatformRendererShell` 类（窗口/图层/drawable/capture）与 renderer 生命周期（KVO/通知/构造/卸载）——
+这两块是终态允许保留的平台面。
 
 剩余 **12** 个文件的可消性排序（按"前置成本 ÷ 文件收益"重排，`_renderPassManager.state->` 读数已实测）：
 
@@ -2970,3 +2976,49 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 **纪律补充（承接第 104 条第④项）**：A/B 报告必须同时给出**未过滤**的 `processGLState.slow` 计数与**同库背靠背重跑**的对应计数；
 只有"去掉该行后的逐行相等"才算通过，因为该行条数在多次运行间可差数十到数百条（本刀实测：新 367/595、旧 315/326，
 同库重跑 293/295 与 300/296）。
+
+105. **P0-1 第四十九刀：`MGLRenderer+Lifecycle.m` 按 T5 并入唯一壳（**文件 11 → 10**，语法 −3）**：
+     ① 该文件是单一 `@implementation MGLRenderer (Lifecycle)`（构造 / 后端回调绑定 / 视图 KVO / 窗口通知 /
+     主动纹理预热 / Metal capture / `dealloc` 卸载），639 行里真正"只能 ObjC"的部分是 **Cocoa API**：
+     `addObserver:forKeyPath:`、`NSNotificationCenter`、`NSWindow`、`CALayer`/drawable 拉起、`@try/@catch`——
+     与壳的既有职责（窗口/图层/drawable）同域，因此按 T5 并入；它驱动的全部实现早已是 C。
+     ② 落地：把文件第 21–666 行（KVO 上下文静态量 + 私有 `@interface MGLRenderer (LifecycleBackendBoundary)` +
+     整个 `@implementation`）搬进壳的 `#ifndef MGL_PLATFORM_SHELL_SMOKE` 块（放在端口块之后、`MGLPipelineCache` 之前），
+     壳新增 `#import "MGLRenderer+Lifecycle_Private.h"`、`#include "mgl.h"`、`#include "draw_command.h"`、
+     `#include "mgl_binding_state_ops.h"`；`git rm MGL/src/MGLRenderer+Lifecycle.m`，`MGLRenderer+Lifecycle_Private.h`
+     （给调用方的声明）保持不变。
+     ③ **ivat/宏口径**：该文件本来就 `#import "MGLRenderer_Private.h"`，所以 `_view`/`_layer`/`_drawable`/`_device`
+     这些**宏**的展开与并壳前完全一致——**这次没有出现第 103 刀那种冲突**（冲突只发生在"自带同名 ivar 的类"上，
+     类别方法不会）。
+     ④ **度量（如实：文件 −1，但语法只是搬运）**：文件 **11 → 10**、行数 **32,471 → 32,462（−9）**、语法 **1,853 → 1,850（−3）**、
+     词汇 3,645（持平）；**壳 TU 1,098 → 1,756 行 / 150 → 272 语法**（上限按 §0.29 修订为 1,800，并在下表逐块说明）；
+     `MGLRenderer*.m` 28,948 不变（该文件不在 `MGLRenderer*.m` 里）。**本刀的收益是 TU 数与集中度，不是 ObjC 语法净减。**
+     ⑤ **oracle**：旧库 = 提交 `549568f` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,272/5,271 与 5,807/5,806 → `processGLState.slow` **291/290 与 293/292**，两臂几乎同值，
+     与本刀是纯搬运相符），stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑥ 下一刀：§0.31 排序——壳已到 1,756 行，**优先做能"减少语法"的转换**：`MGLRenderPassManager.m`（416 行 / 26 语法，
+     34 处发送 + 270 处 `state->` 读数）或直接开 `MGLRenderer+Compute.m`（1,246 行 / 84 语法 / 11 方法）。
+
+### 0.31 第 74 轮快照（第 105 刀后，文件 10）与"减少语法"阶段的排序
+
+文件数已从 53 降到 **10**，但**剩下 9 个文件 + 壳 = 32,462 行 ObjC / 1,850 语法**，其中三厚块占 17,412 行（54%）。
+因此本阶段的目标从"消文件"转向**先减少语法，再消文件**（第 105 刀已证明：纯 T5 搬运不减语法）。
+
+| 文件 | 行数 | 语法 | 词汇 | 方法 | 建议 |
+|---|---|---|---|---|---|
+| `MGLRenderer+RenderPass.m` | 6,850 | 413 | 555 | 48 | 厚块：按簇分批搬（encoder 生命周期 → 状态处理 → attachment/persistent） |
+| `MGLRenderer+Texture.m` | 6,500 | 297 | 1,088 | 38 | 厚块：先搬 upload/readback 簇，再搬 `createMTLTextureFromGLTexture:`（转完退役 4 个纹理端口） |
+| `MGLRenderer.m` | 4,614 | 173 | 276 | 23 | 主体类（`_device`/`_commandQueue` 宏对应的 ivar 在类体内）——最后做 |
+| `MGLRenderer+Blit.m` | 4,062 | 236 | 761 | 19 | 厚块：按 blit/copy/resolve 簇分批 |
+| `MGLRenderer+BindingState.m` | 2,916 | 129 | 197 | 17 | 中块：dyn-bind 计划已在 C，剩采样器级联与 stage copy-back |
+| `MGLRenderer+Tessellation.m` | 2,101 | 151 | 278 | 11 | 中块 |
+| `mgl_draw_metal_port.m` | 2,001 | 100 | 97 | 0 | **纯语法清扫**：`id` → `void *`（头文件同改）+ host 发送换 C 入口 |
+| `MGLPlatformRendererShell.m`（唯一壳） | 1,756 | 272 | 146 | — | 收缩路径见 §0.29（上限 1,800） |
+| `MGLRenderer+Compute.m` | 1,246 | 84 | 104 | 11 | **下一刀候选**：11 个方法、24 处 `[self …]`，其中 ~10 处需要新 C 入口 |
+| `MGLRenderPassManager.m` | 416 | 26 | 17 | 28 | 类 → C handle（34 处发送 + 270 处 `state->` 读数；和 `+RenderPass.m` 一起做最省） |
+
+**建议顺序**：① `MGLRenderer+Compute.m`（单文件闭环，收益 1,246 行 / 84 语法 / 文件 −1）→
+② `MGLRenderPassManager.m`（类 → C handle，顺带把 `+RenderPass.m` 的 270 处读数换成 `areas.command`）→
+③ `mgl_draw_metal_port.m`（纯语法，100 语法 + 97 词汇）→ ④ `+Tessellation.m` / `+BindingState.m` →
+⑤ 三厚块与 `MGLRenderer.m`（多刀，按簇搬）。
