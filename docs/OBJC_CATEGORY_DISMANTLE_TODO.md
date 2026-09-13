@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十一刀** + trace 清零 后；第 68–76 轮见 §0.24/§0.26–§0.33）**：
-文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 32,033**、ObjC 语法 **2,268 → 1,732**、词汇 **4,353 → 3,575**；
-**shim：43 → 15 个端口 / 唯一壳 TU 1,756 行 / 233 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十二刀** + trace 清零 后；第 68–77 轮见 §0.24/§0.26–§0.34）**：
+文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 32,166**、ObjC 语法 **2,268 → 1,761**、词汇 **4,353 → 3,586**；
+**shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -3114,3 +3114,32 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 老库独立构建（`git worktree`，借 `config.mk`/`build/aux`/`external/glfw/build`，**永不 `make clean`**）→ `cmp` 两库不同 →
 `/private/tmp/run_ab<N>.sh {new,old}` + `ab_full.py`（**只认"去掉 `processGLState.slow` 后的逐行相等"**，并同时报 slow 计数）→
 CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日志、§0.2x/§0.3x 快照）→ 提交推送（`git push origin main:main`）。
+
+108. **P0-1 第五十二刀：补齐"计算/细分宿主入口"10 个（**可加性前置，ObjC 语法如实 +29、端口 15 → 25**）**：
+     ① **为什么先补桥接而不是直接转文件**：算过 4 个"可整文件消"的剩余文件（`+Compute.m` 1,246 / `mgl_draw_metal_port.m` 2,014 /
+     `+Tessellation.m` 2,101 / `+BindingState.m` 2,916）的发送面后，它们的**前置是同一批**宿主入口
+     （copy-back 家族在四个文件里分别被调用 27 / 3 / 4 / 1 次，`materializeSampledSamplerForTexture:` 4+2 次，
+     `bindMTLProgram:` / `endRenderEncoding` / `newCommandBufferLocked` / `processGLStateLocked:` 各若干）：
+     先补一次，随后每个文件转 C 都是纯机械替换；若逐文件各补一次，会把这些入口在四个文件里反复改。
+     本条与第 94 条同类：**只加不减、如实标注"0 行 ObjC 净减"**。
+     ② 新增入口（`mgl_renderer_ports.h` 声明 + 壳 TU 实现，全部是薄转发，无自有状态）：
+     `mglRendererBindMTLProgramPort`、`mglRendererEndRenderEncodingPort`、`mglRendererNewCommandBufferLockedPort`、
+     `mglRendererProcessGLStateLockedPort`；copy-back 族 `mglRendererClearStageBindingCopyBacksPort` /
+     `…ClearStageBindingCopyBackPort` / `…RecordStageBindingCopyBackPort`（8 参）/ `…FlushStageBindingCopyBacksPort`；
+     `mglRendererIsolatedStageBindingBufferPort`、`mglRendererMaterializeSampledSamplerPort`（10 参）；
+     以及 keep-alive 集合 `mglRendererTemporariesCreate / Add / Release`（ObjC 侧原来是 `NSMutableArray`，
+     C++ 侧只当作不透明句柄 `owned.track(...)` 持有）。
+     **所有权逐条写明**：`IsolatedStageBindingBufferPort` 方法返回的是 **+0（autorelease）**，C 入口用 `CFBridgingRetain`
+     交回 **+1**（调用方用 `mglSafeReleaseMetalObj` 释放）；采样器入口返回**借用**引用；`TemporariesCreate` 返回 +1、`Release` 释放整集。
+     ③ **度量（如实：这一刀 ObjC 面是增加的）**：语法 **1,732 → 1,761（+29）**、词汇 **3,575 → 3,586（+11）**、
+     行数 **32,033 → 32,166（+133）**；**端口 15 → 25**、壳 TU 1,756 → 1,888 行 / 233 → 262 语法；文件数 9 不变。
+     按 §0.04 硬规本刀**不是 T4 净减**，它的价值是"把 4 个文件的转换前置一次做完"；这 10 个入口随其目标
+     （`MGLRenderer.m` / `MGLRenderer+RenderPass.m` / `MGLRenderer+BindingState.m`）转 C 而**逐个退役**，
+     `Temporaries*` 三个则在计划 API 改收 C keep-alive 集合时退役。
+     ④ **oracle**：旧库 = 提交 `5a28d8c` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,274/5,279 与 5,811/5,813 → `processGLState.slow` 293/298 与 297/299），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。新入口在本刀**尚无调用者**（不可达），
+     A/B 一致正是"只加不减"应有的结果。
+     ⑤ 下一刀：用这批入口转 **`MGLRenderer+Compute.m`**（bind 两族先搬，`+mgl_compute_bind.{h,c}`），
+     随后 `mgl_draw_metal_port.m`（补 capture 段进壳 + `NSMutableArray` 换 keep-alive 集）→ 文件 9 → 8 → 7。

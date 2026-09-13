@@ -221,6 +221,46 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
 int mglRendererEnsureWritableCommandBufferPort(void *renderer,
                                                const char *reason);
 
+/* ---- compute / tessellation host entries ---------------------------------
+ * The C compute and tessellation binders need the renderer's program, encoder
+ * and stage copy-back plumbing.  Those bodies still live in MGLRenderer.m and
+ * MGLRenderer+RenderPass.m, so they arrive through these entries until those
+ * two files are converted; they are thin forwards, no state of their own.
+ *
+ * OWNERSHIP: mglRendererIsolatedStageBindingBufferPort returns a +1 buffer the
+ * caller releases with mglSafeReleaseMetalObj; the sampler entry returns a
+ * BORROWED sampler (the renderer or the backend cache owns it). */
+int mglRendererBindMTLProgramPort(void *renderer, Program *program);
+void mglRendererEndRenderEncodingPort(void *renderer);
+int mglRendererNewCommandBufferLockedPort(void *renderer);
+int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command);
+
+void mglRendererClearStageBindingCopyBacksPort(void *renderer, void *copy_backs);
+void mglRendererClearStageBindingCopyBackPort(void *renderer, void *copy_backs,
+                                              uint64_t index);
+int mglRendererRecordStageBindingCopyBackPort(
+    void *renderer, void *copy_backs, uint64_t index, void *temporary,
+    void *destination, Buffer *destination_buffer, uint64_t destination_offset,
+    uint64_t length);
+int mglRendererFlushStageBindingCopyBacksPort(void *renderer, void *copy_backs,
+                                              int require_cpu_visibility);
+void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
+                                                const BufferMap *map,
+                                                void *source,
+                                                uint64_t required_length);
+void *mglRendererMaterializeSampledSamplerPort(
+    void *renderer, Texture *texture, uint32_t texture_unit,
+    void *default_sampler, int force_default, uint32_t sampler_target,
+    uint32_t program_name, uint32_t spirv_binding, const char *stage,
+    void *texture_handle);
+
+/* Keep-alive set for the temporaries a binding plan borrows (the Objective-C
+ * side used an NSMutableArray).  Create returns +1; add retains the object for
+ * the set's lifetime; release drops the whole set. */
+void *mglRendererTemporariesCreate(void);
+void mglRendererTemporariesAdd(void *temporaries, void *object);
+void mglRendererTemporariesRelease(void *temporaries);
+
 /* The pipeline cache's state record (active pipeline handle, pipeline program
  * name, formats).  C readers use the fields directly. */
 

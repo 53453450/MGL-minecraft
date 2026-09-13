@@ -317,6 +317,139 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
 }
 
 
+/* === compute / tessellation host entries =================================
+ * Thin forwards for the stages that are still Objective-C; see the ownership
+ * notes next to their declarations in mgl_renderer_ports.h. */
+int mglRendererBindMTLProgramPort(void *renderer, Program *program)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && program && [r bindMTLProgram:program]) ? 1 : 0;
+}
+
+void mglRendererEndRenderEncodingPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r endRenderEncoding];
+    }
+}
+
+int mglRendererNewCommandBufferLockedPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r newCommandBufferLocked]) ? 1 : 0;
+}
+
+int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r processGLStateLocked:draw_command ? true : false]) ? 1 : 0;
+}
+
+void mglRendererClearStageBindingCopyBacksPort(void *renderer, void *copy_backs)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r clearStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copy_backs];
+    }
+}
+
+void mglRendererClearStageBindingCopyBackPort(void *renderer, void *copy_backs,
+                                              uint64_t index)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copy_backs
+                             atIndex:(NSUInteger)index];
+    }
+}
+
+int mglRendererRecordStageBindingCopyBackPort(
+    void *renderer, void *copy_backs, uint64_t index, void *temporary,
+    void *destination, Buffer *destination_buffer, uint64_t destination_offset,
+    uint64_t length)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copy_backs
+                                       atIndex:(NSUInteger)index
+                                     temporary:(__bridge id)temporary
+                                   destination:(__bridge id)destination
+                             destinationBuffer:destination_buffer
+                            destinationOffset:(NSUInteger)destination_offset
+                                        length:(NSUInteger)length])
+               ? 1
+               : 0;
+}
+
+int mglRendererFlushStageBindingCopyBacksPort(void *renderer, void *copy_backs,
+                                              int require_cpu_visibility)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r flushStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copy_backs
+                          requireCPUVisibility:require_cpu_visibility ? YES : NO])
+               ? 1
+               : 0;
+}
+
+void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
+                                                const BufferMap *map,
+                                                void *source,
+                                                uint64_t required_length)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r) {
+        return NULL;
+    }
+    /* The method returns an autoreleased +0 object; the C caller owns its ref. */
+    id isolated = [r isolatedStageBindingBufferForMap:map
+                                               source:(__bridge id)source
+                                       requiredLength:(NSUInteger)required_length];
+    return (void *)CFBridgingRetain(isolated);
+}
+
+void *mglRendererMaterializeSampledSamplerPort(
+    void *renderer, Texture *texture, uint32_t texture_unit,
+    void *default_sampler, int force_default, uint32_t sampler_target,
+    uint32_t program_name, uint32_t spirv_binding, const char *stage,
+    void *texture_handle)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r) {
+        return NULL;
+    }
+    /* Borrowed sampler: the renderer keeps it (GL sampler object, texture
+     * parameters or the default sampler). */
+    return (__bridge void *)[r materializeSampledSamplerForTexture:texture
+                                                       textureUnit:texture_unit
+                                                   defaultSampler:(__bridge id)default_sampler
+                                                     forceDefault:force_default ? YES : NO
+                                                    samplerTarget:sampler_target
+                                                      programName:program_name
+                                                     spirvBinding:spirv_binding
+                                                            stage:stage
+                                                          texture:(__bridge id)texture_handle];
+}
+
+void *mglRendererTemporariesCreate(void)
+{
+    return (void *)CFBridgingRetain([NSMutableArray array]);
+}
+
+void mglRendererTemporariesAdd(void *temporaries, void *object)
+{
+    if (!temporaries || !object) {
+        return;
+    }
+    [(__bridge NSMutableArray *)temporaries addObject:(__bridge id)object];
+}
+
+void mglRendererTemporariesRelease(void *temporaries)
+{
+    if (temporaries) {
+        CFBridgingRelease(temporaries);
+    }
+}
+
 /* The former mglRendererBindMTLTexturePort is gone: the body is the C function
  * mglRendererBindMTLTexture (mgl_texture_bind.h), and so is
  * mglRendererMapBuffersToMTLPort: mglRendererMapBuffersToMTL (mgl_buffer_map.h)
