@@ -761,7 +761,7 @@ static void mglTextureCopyTextureToBuffer(
     }
 
 
-    if ([self shouldSkipGPUOperations]) {
+    if (mglRendererShouldSkipGPUOperations((__bridge void *)self)) {
         NSLog(@"MGL AGX: Skipping texture upload during recovery");
         return false;
     }
@@ -3583,7 +3583,7 @@ static void mglTextureCopyTextureToBuffer(
                                     NSLog(@"MGL INFO: Created temporary MTLBuffer for texture data");
 
 
-                                    if ([self shouldSkipGPUOperations]) {
+                                    if (mglRendererShouldSkipGPUOperations((__bridge void *)self)) {
 
                                         NSLog(@"MGL AGX: Skipping texture fill during recovery - texture will be empty");
 
@@ -5044,7 +5044,7 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     // Check if we're in a recovery state that would make texture creation futile
-    if ([self shouldSkipGPUOperations]) {
+    if (mglRendererShouldSkipGPUOperations((__bridge void *)self)) {
         NSLog(@"MGL AGX: GPU operations temporarily suspended during recovery");
         return nil;
     }

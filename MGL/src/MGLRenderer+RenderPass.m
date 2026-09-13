@@ -4051,7 +4051,7 @@ static GLenum mglPassthroughDeclType(
 
     // AGX ERROR THROTTLING: Check if we should skip render encoder creation
     // BUT allow limited render encoder creation for essential functionality
-    if ([self shouldSkipGPUOperations]) {
+    if (mglRendererShouldSkipGPUOperations((__bridge void *)self)) {
         NSLog(@"MGL AGX: Render encoder creation requested during GPU recovery - attempting essential creation");
         // Continue with essential render encoder creation even during recovery
     }

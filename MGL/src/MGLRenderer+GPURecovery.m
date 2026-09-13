@@ -262,42 +262,8 @@
 }
 
 // AGX GPU Error Throttling - Prevent command queue from entering error state
-- (BOOL)shouldSkipGPUOperations
-{
-    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
-    MGLRenderCommandRecoverySkipDecision decision = {0};
-    if (mglRenderCommandRecoveryShouldSkip(
-            _gpuRecovery.commandRecoveryOwner, currentTime, &decision) != 0) {
-        return NO;
-    }
-    if (decision.recovery_timed_out && decision.previous_errors > 0) {
-        NSLog(@"MGL AGX: Recovery timeout - attempting GPU operations (had %llu errors)",
-              (unsigned long long)decision.previous_errors);
-    }
-    if (decision.entered_recovery_mode) {
-        NSLog(@"MGL AGX: Entering recovery mode after %llu consecutive errors",
-              (unsigned long long)decision.state.consecutive_errors);
-        [self clearProblematicGPUState];
-    }
-    return decision.should_skip != 0;
-}
 
 // PROPER FIX: Clear problematic state without giving up on GPU operations entirely
-- (void)clearProblematicGPUState
-{
-    NSLog(@"MGL AGX: Clearing problematic GPU state for recovery");
-
-    // Clear current problematic resources
-    MGLRenderCommandBufferState currentState = {0};
-    if (mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
-            &currentState)) {
-        [_renderPassManager discardCurrentCommandBuffer];
-    }
-
-    // Don't recreate command queue immediately - let it rest
-    // The AGX driver needs time to recover from error state
-}
 
 
 

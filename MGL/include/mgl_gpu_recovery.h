@@ -31,6 +31,11 @@ uint64_t mglRendererOptimalAlignmentForPixelFormat(uint32_t format);
 void mglRendererRecordGPUError(void *renderer);
 void mglRendererRecordGPUSuccess(void *renderer);
 
+/* GPU-operation gating: clears problematic resources and reports whether GPU
+ * work should be skipped while the driver recovers. */
+void mglRendererClearProblematicGPUState(void *renderer);
+int mglRendererShouldSkipGPUOperations(void *renderer);
+
 #ifdef __cplusplus
 }
 #endif

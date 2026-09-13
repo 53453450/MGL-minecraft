@@ -11,6 +11,7 @@
  * -getOptimalAlignmentForPixelFormat:, which never needed Objective-C. */
 
 #include "mgl_gpu_recovery.h"
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_render.h"     /* mglRenderCommandRecovery* */
 
@@ -75,4 +76,48 @@ void mglRendererRecordGPUSuccess(void *renderer)
                 (unsigned long long)result.recovered_successes,
                 (unsigned long long)result.previous_errors);
     }
+}
+
+void mglRendererClearProblematicGPUState(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+
+    fprintf(stderr, "MGL AGX: Clearing problematic GPU state for recovery\n");
+
+    MGLRenderCommandBufferState currentState = {0};
+    if (cs && mglRenderCommandBufferOwnerHasState(cs->currentCommandBufferOwner,
+                                                   &currentState)) {
+        mglRenderPassManagerDiscardCurrentCommandBuffer(renderer);
+    }
+    /* Don't recreate the command queue immediately - let it rest: the AGX driver
+     * needs time to recover from the error state. */
+}
+
+int mglRendererShouldSkipGPUOperations(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *owner = areas.gpu_recovery_command_owner
+                      ? *areas.gpu_recovery_command_owner
+                      : NULL;
+
+    MGLRenderCommandRecoverySkipDecision decision = {0};
+    if (mglRenderCommandRecoveryShouldSkip(owner, mglGpuRecoveryNowSeconds(),
+                                           &decision) != 0) {
+        return 0;
+    }
+    if (decision.recovery_timed_out && decision.previous_errors > 0) {
+        fprintf(stderr,
+                "MGL AGX: Recovery timeout - attempting GPU operations (had %llu errors)\n",
+                (unsigned long long)decision.previous_errors);
+    }
+    if (decision.entered_recovery_mode) {
+        fprintf(stderr,
+                "MGL AGX: Entering recovery mode after %llu consecutive errors\n",
+                (unsigned long long)decision.state.consecutive_errors);
+        mglRendererClearProblematicGPUState(renderer);
+    }
+    return decision.should_skip != 0;
 }

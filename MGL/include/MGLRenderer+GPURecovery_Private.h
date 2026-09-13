@@ -44,8 +44,8 @@
 - (void)resetMetalState;
 - (void)emergencyResetMetalState;
 - (void)commitCommandBufferWithAGXRecovery:(id)commandBuffer;
-- (BOOL)shouldSkipGPUOperations;
-- (void)clearProblematicGPUState;
+/* now the C functions in mgl_gpu_recovery.h */
+/* now the C functions in mgl_gpu_recovery.h */
 /* now the C functions in mgl_gpu_recovery.h */
 /* now the C functions in mgl_gpu_recovery.h */
 /* now the C functions in mgl_gpu_recovery.h */
