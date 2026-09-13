@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十四刀** + trace 清零 后；第 68/69 轮见 §0.24/§0.26）**：
-文件 **53 → 15**、空 TU **3 → 0**、行数 **43,989 → 33,995**、ObjC 语法 **2,268 → 1,938**、词汇 **4,353 → 3,795**；
-**shim：43 → 16 个端口 / 唯一壳 TU 629 行 / 88 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；`MGLRenderer*.m` **34,604 → 30,493**）。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十五刀** + trace 清零 后；第 68/69/70 轮见 §0.24/§0.26/§0.27）**：
+文件 **53 → 14**、空 TU **3 → 0**、行数 **43,989 → 33,443**、ObjC 语法 **2,268 → 1,895**、词汇 **4,353 → 3,694**；
+**shim：43 → 16 个端口 / 唯一壳 TU 629 行 / 88 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101 刀端口 0 增**；`MGLRenderer*.m` **34,604 → 29,942**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -2733,3 +2733,68 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 转完 `文件 15 → 14`）→ ② `MGLRenderer+Buffer.m`（语法只 13、`[self …]` 只 4 处，9 个 mapper 需逐段搬）→
 ③ `MGLPipelineCache.m`（27 方法但状态指针都已在 areas）→ ④ `MGLRenderer+Compute.m` → ⑤ `+Tessellation.m` / `+BindingState.m` 两个中块
 → ⑥ 三厚块（`+RenderPass.m` / `+Texture.m` / `+Blit.m`）。每刀纪律不变：**抽盘副本 → 手工逐段 → 每段编译 → 整轮 A/B/CTS/门禁 → 三处文档同步**。
+
+101. **P0-1 第四十五刀：`MGLRenderer+SwapDiagnostics.m` 整文件转 C 并删除（**文件 15 → 14**，零新增端口）**：
+     ① 选中它的理由（第 100 条第⑤项的实测复核）：557 行里**只有 2 个方法**、`[self …]` **0 处**、体内对 Metal 的调用
+     **本来就已经是 `mglRender*` C 门面**（只差把 `id` + `(__bridge void *)` 换成 `void *`），ivar 依赖只有 5 处且全都有 C 家：
+     `ctx` → `areas.ctx`、`_activeState` → `areas.core->activeState`（即 `MGL_STATE()` 的 C 写法）、
+     `_defaultDrawableWrittenSinceLastSwap` → `areas.core->…`、`_renderPassManager.state` → `areas.command`。**因此不需要任何新端口。**
+     ② 落地：
+     - 新 TU **`mgl_swap_diagnostics.{h,c}`**（539 行 C + 53 行头）：`mglSwapCopyRenderPassColorToDrawableIfNeeded(renderer, rp_color0,
+       drawable_texture, swap_call, trace_swap)` 与 `mglSwapScheduleTextureSampleDiagnostics(renderer, rp_color0, drawable_texture, swap_call)`；
+     - **两个 block 换 C**：局部块 `scheduleTextureSample` → `static mglSwapScheduleTextureSample()`（10 个调用点照旧）；
+       完成回调块 → `static mglSwapSampleCompletion()` + 堆上下文 `MGLSwapSampleCompletion`，用
+       `mglRenderAddCommandBufferOwnerCompletion()` 注册（它的 `MGLRenderCommandBufferCompletion` 签名本来就是 C 的，块只是包装）；
+       上下文里 `sample_buffer` 的 +1 从局部搬进上下文、由 `Destroy` 释放；`NSString *sampleTag` → `const char *`（所有调用点都是
+       字面量，异步回调期间不会失效），`[sampleTagCopy isEqualToString:@"src.center"]` → `strcmp`；
+     - `NSLog` → `fprintf(stderr, …)`；`%@` 在 `mglTraceLog`（C varargs sink）里换成 `%s` + 缺省 `"(null)"`（原来那条 trace 在
+       `%@` 下本来就是坏格式，且该路径因常量恒假而不可达，如实记账）；
+     - **常量与结构体单点化**：`kMGLSwapPresentDiagnostics`（原 `MGLRenderer+Blit_Private.h` 的 `static const BOOL … = NO`，
+       但 `MGLRenderer+Blit.m:2103` 也在用）移进 `mgl_blit_pipelines.h` 成为 `enum { kMglSwapPresentDiagnostics = 0 }`（避免
+       `static const` 在被大量 include 的头里触发 unused 警告），`+Blit.m` 一处改名；`MGLScaledBlitParams` 同理由 ObjC 私有头
+       移进 `mgl_blit_pipelines.h`（C 侧要用同一份布局），`+Blit.m` 的 3 个使用点类型不变；
+     - 删除 `MGLRenderer+SwapDiagnostics.m` 与 `MGLRenderer+SwapDiagnostics_Private.h`，去掉 `MGLRenderer_Private.h` 里的
+       `#import`，`MGLRenderer.m` 两处调用点改直调 C（并同步两处"moved to …"注释）。
+     ③ **踩坑（新规则）**：删掉一个**被其它 TU include 的头**之后，`make -j8 lib` 能过，但 `make test-all` 会报
+     `No rule to make target 'MGL/include/MGLRenderer+SwapDiagnostics_Private.h', needed by 'build/core/arc/…/mgl_draw_metal_port.o'`
+     ——**残留 `.d` 依赖**。按既有纪律处理（**不 `make clean`**）：`find build/core build/es -name '*.o' -o -name '*.d' | xargs rm -f`
+     后重建，两个库无错、门禁恢复 `GATE=0`。**规则：删头文件 = 必须清 `.o`/`.d` 依赖面。**
+     ④ **度量**：文件 **15 → 14**、行数 **33,995 → 33,443（−552）**、语法 **1,938 → 1,895（−43）**、词汇 **3,795 → 3,694（−101）**；
+     `MGLRenderer*.m` **30,493 → 29,942**；**端口 16 不变、壳 TU 629 行/88 语法不变**——本刀是**纯 ObjC 面净减**（§0.04 合格）。
+     C 侧新增 592 行。
+     ⑤ **oracle**：旧库 = 提交 `9ff89b6` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤时 default 5,272/5,271、flushy 5,806/5,806，差异仍只在 `processGLState.slow` 行），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；**CTS 七簇非通过集合 diff 全空**；
+     28 目标门禁 `GATE=0`。
+     ⑥ 下一刀：按 §0.26 排序——`MGLRenderer+Buffer.m`（823 行 / 语法只 13 / `[self …]` 只 4 处，9 个 mapper 逐段搬）或
+     `MGLPipelineCache.m`（446 行 / 27 方法，但状态指针都已在 `areas.pipeline_cache`）。
+
+### 0.27 第 70 轮快照（第 101 刀后，文件 14）与"整文件消"排序
+
+**本轮新增规则（第 101 条第③项）**：**删掉任何被 include 的头文件后，必须清 `.o`/`.d` 依赖面**
+（`find build/core build/es -name '*.o' -o -name '*.d' | xargs rm -f`，**永不 `make clean`**），否则 `make test-all`
+会因残留 `.d` 里的已删头报 `No rule to make target`（本轮实测：`make -j8 lib` 能过、`make test-all` 失败）。
+
+第 101 刀删掉 `+SwapDiagnostics.m`（**证明"2 方法 + 0 个 `[self …]` + 体内已是 C 门面"的文件可以零端口整文件消**）后的 14 个文件：
+
+| 文件 | 行数 | 语法 | 词汇 | 方法 | `[self …]` | 可消性 |
+|---|---|---|---|---|---|---|
+| `MGLRenderer+RenderPass.m` | 6,954 | 423 | 563 | 49 | 143 | 三厚块之一，需多刀 |
+| `MGLRenderer+Texture.m` | 6,500 | 297 | 1,088 | 38 | 94 | 三厚块之一；转完可退役第 100 刀的 4 个纹理端口 |
+| `MGLRenderer.m` | 4,611 | 173 | 276 | 23 | 54 | 主体类，最后处理 |
+| `MGLRenderer+Blit.m` | 4,062 | 236 | 761 | 19 | 74 | 三厚块之一 |
+| `MGLRenderer+BindingState.m` | 2,914 | 130 | 197 | 17 | 44 | 中块 |
+| `MGLRenderer+Tessellation.m` | 2,100 | 151 | 278 | 11 | 57 | 中块 |
+| `mgl_draw_metal_port.m` | 2,000 | 101 | 97 | **0** | 23 | host-ops 适配层，只剩 `id`/词汇 |
+| `MGLRenderer+Compute.m` | 1,245 | 84 | 104 | 11 | 28 | 中块 |
+| **`MGLRenderer+Buffer.m`** | **823** | **13** | **41** | **9** | **4** | **下一刀：ObjC 面最小，9 个 mapper 逐段搬** |
+| `MGLRenderer+Lifecycle.m` | 667 | 94 | 126 | 12 | 14 | T5 合并候选 |
+| `MGLPlatformRendererShell.m`（唯一壳） | 629 | 88 | 55 | 18 | 0 | 终态保留 1 个 |
+| `MGLPipelineCache.m` | 446 | 62 | 91 | 27 | 18 | 状态已在 `areas.pipeline_cache` |
+| `MGLRenderPassManager.m` | 416 | 26 | 17 | 28 | 14 | 多为薄转发 |
+| `MGLRenderer+Binding.m` | 76 | 17 | 0 | 2 | 10 | 卡在 §0.23（成本倒挂） |
+
+**排序**：① `MGLRenderer+Buffer.m`（语法 13、`[self …]` 4；按 mapper 逐段搬，搬完即删文件 → 13）→
+② `MGLPipelineCache.m`（27 方法但状态指针已在 areas，先搬状态机再搬缓存创建）→ ③ `MGLRenderer+Compute.m` →
+④ `+Tessellation.m` / `+BindingState.m` 两个中块 → ⑤ `mgl_draw_metal_port.m`（0 方法，纯 `id`/词汇清扫）→
+⑥ 三厚块（`+RenderPass.m` / `+Texture.m` / `+Blit.m`）→ ⑦ `MGLRenderer.m` 与 `MGLRenderer+Lifecycle.m`（T5 并入唯一壳）。

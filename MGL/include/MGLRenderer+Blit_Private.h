@@ -40,13 +40,9 @@
 
 /* === Shader parameter structs ===
  * Used by blit/copy/resolve pipelines in MGLRenderer+Blit.m and MGLRenderer.m.
- * The Metal shader string mirrors these layouts — keep field order in sync. */
-typedef struct MGLScaledBlitParams_t {
-    vector_float4 uvRect; // xy=min, zw=max in normalized Metal texture coordinates.
-    float forceOpaqueAlpha;
-    vector_float3 _padding;
-} MGLScaledBlitParams;
-
+ * The Metal shader string mirrors these layouts — keep field order in sync.
+ * MGLScaledBlitParams now lives in mgl_blit_pipelines.h (the C swap-diagnostics
+ * copy path needs it too). */
 typedef struct MGLMSAAIntegerResolveParams_t {
     vector_uint2 srcOrigin;
     vector_uint2 dstOrigin;
@@ -60,8 +56,9 @@ typedef struct MGLClearRectParams_t {
     vector_float3 _padding;
 } MGLClearRectParams;
 
-/* === Diagnostic constant === */
-static const BOOL kMGLSwapPresentDiagnostics = NO;
+/* === Diagnostic constant ===
+ * kMglSwapPresentDiagnostics now lives in mgl_blit_pipelines.h, next to the
+ * scaled-blit pipeline it guards. */
 
 /* === C functions defined in MGLRenderer.m, used by MGLRenderer+Blit.m === */
 

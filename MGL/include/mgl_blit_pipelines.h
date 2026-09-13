@@ -30,10 +30,28 @@
 #include "mgl_types_texture.h"   /* Texture */
 
 #include <stdint.h>
+#include <simd/simd.h>  /* vector_float4 / vector_float3 (scaled-blit params) */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Scaled-blit uniform block.  Lived in the Objective-C
+ * MGLRenderer+Blit_Private.h until the C swap-diagnostics copy path needed the
+ * same layout; the Metal shader mirrors it (MGL/aux_shaders/scaled_blit.metal),
+ * so keep the field order in sync. */
+typedef struct MGLScaledBlitParams_t {
+    vector_float4 uvRect; /* xy=min, zw=max in normalized Metal texture coordinates. */
+    float forceOpaqueAlpha;
+    vector_float3 _padding;
+} MGLScaledBlitParams;
+
+/* Diagnostic switch for the swap/present trace-and-copy paths (formerly
+ * kMGLSwapPresentDiagnostics in MGLRenderer+Blit_Private.h, which the C swap
+ * diagnostics cannot include).  An enum, so includers that never read it do not
+ * warn; 0 keeps the diagnostics off, which is how MGL has always been built.
+ * The ObjC branches that test it fold away exactly as they did before. */
+enum { kMglSwapPresentDiagnostics = 0 };
 
 /* Scaled-blit pipeline for a colour pixel format (BGRA-substituted). */
 void *mglBlitScaledPipelineForPixelFormat(void *renderer, uint32_t pixel_format);

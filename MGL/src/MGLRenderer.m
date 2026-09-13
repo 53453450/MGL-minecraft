@@ -55,6 +55,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_blit_pipelines.h"
+#include "mgl_swap_diagnostics.h"  /* swap-time diagnostics (was the SwapDiagnostics category) */
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_tess.h"
 #include "mgl_air_loader.h"
@@ -250,7 +251,7 @@ static void mglRendererDiagnosticBuildMarker(void)
 // kMGLVerboseFrameLoopLogs moved to MGLRenderer_Private.h
 // kMGLDisableSharedEventSync moved to MGLRenderer_Private.h
 // kMGLDiagnosticStateLogs moved to MGLRenderer_Private.h
-// kMGLSwapPresentDiagnostics moved to MGLRenderer_Private.h
+// kMglSwapPresentDiagnostics moved to mgl_blit_pipelines.h
 // kMGLDrawSubmitDiagnostics moved to MGLRenderer_Private.h
 // kMGLSynchronizeTextureUploads moved to MGLRenderer_Private.h
 // kMGLTextureUploadWaitTimeoutSeconds moved to MGLRenderer_Private.h
@@ -2395,8 +2396,8 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                               metal:(id)texture
                effectiveMipLevels:(GLuint)effective_mipmap_levels;
 // mtlSwapBuffersLocked: helpers (copyRenderPassColorToDrawableIfNeeded: and
-// scheduleSwapTextureSampleDiagnostics:) moved to
-// MGLRenderer+SwapDiagnostics.m
+// scheduleSwapTextureSampleDiagnostics:) are the C functions of
+// mgl_swap_diagnostics.h now
 @end
 
 // Main class performing the rendering
@@ -3455,9 +3456,13 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
             MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
         id drawableTexture = mglRendererCurrentDrawableTexture(self);
         if (!skipPresent) {
-            [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
+            mglSwapCopyRenderPassColorToDrawableIfNeeded(
+                (__bridge void *)self, (__bridge void *)rpColor0,
+                (__bridge void *)drawableTexture, swapCall, traceSwap);
 
-            [self scheduleSwapTextureSampleDiagnostics:rpColor0 drawableTexture:drawableTexture swapCall:swapCall];
+            mglSwapScheduleTextureSampleDiagnostics(
+                (__bridge void *)self, (__bridge void *)rpColor0,
+                (__bridge void *)drawableTexture, swapCall);
         }
 
         if (_layer == NULL) {
@@ -3674,8 +3679,8 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
 }
 
 /* copyRenderPassColorToDrawableIfNeeded: and
- * scheduleSwapTextureSampleDiagnostics: moved to
- * MGLRenderer+SwapDiagnostics.m */
+ * scheduleSwapTextureSampleDiagnostics: are the C functions of
+ * mgl_swap_diagnostics.h now. */
 
 #pragma mark C interface to mtlClearBuffer
 /* AGX recovery: recreate the command queue through the backend and report

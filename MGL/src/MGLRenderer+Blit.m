@@ -2100,7 +2100,7 @@ static void mglBlitSynchronizeTexture(id encoder,
     static uint64_t s_blitDiagCount = 0;
     uint64_t blitDiag = ++s_blitDiagCount;
     BOOL traceBlitToFile = mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_BLIT");
-    BOOL traceBlit = (kMGLSwapPresentDiagnostics || traceBlitToFile) &&
+    BOOL traceBlit = (kMglSwapPresentDiagnostics || traceBlitToFile) &&
         (blitDiag <= 24ull || (blitDiag % 120ull) == 0ull || needsScaledBlit);
     if (traceBlit) {
         const char *fmt =
