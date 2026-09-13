@@ -2149,6 +2149,15 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 | `runEmulatedMSSampleDrawLoopIfNeeded:` | 26 | `[self endRenderEncodingLocked]` | `_mglInMSSampleDrawLoop` / `_mglForcedMSSampleId` / `_mglMSSamplePlaneOffset`（私有）、block 参数 `void (^)(void)` | 需先 C 化 `endRenderEncodingLocked`（本身要 3 个 manager 入口 + guarded 入口，见第 81 条），再把 block 换成 `fn + ctx` 并在调用点改成函数指针 |
 | `broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:` | 39 | `[self endRenderEncodingLocked]`、`[self newCommandBufferLocked]` | `_mglInMSSampleDrawLoop`（私有）、`_renderPassManager`（areas.command ✓） | 同上，另需 `newCommandBufferLocked`（大方法） |
 
-> **建议下一刀**：先转 **`bindCullDistanceEmulationBuffers:`(85 行、零发送)**——它是本文件里最大且依赖最少的一个，只需 areas 加两个字段；
+> **⚠️ 第 45 轮实测修正（重要）**：`bindCullDistanceEmulationBuffers:` **"零发送"不等于"机械可搬"**。用脚本抽取+替换后编译报出四类问题，
+> 全部需要手工处理，脚本化搬运在本例**失败并已整刀回退（未提交）**：
+> ① 体里有 **`id captureBuffer`** 与 **3 处 `__bridge`**（不是"零 ObjC 成分"，只是"零消息发送"）；
+> ② `mglRendererResolveVertexAttribBinding` 的 C 声明与 ObjC 头里的**签名不一致**（`conflicting types`），C 侧得按真实现写；
+> ③ 依赖的 `mglDrawSupportEncodeContextIsActive` 声明在 **ObjC 头** `MGLRenderer+DrawSupportUtil.h`（含 Foundation，C 不能 include）→ 需本地 extern 并注意返回类型；
+> ④ `MGLEncodeContext` / `MGLResolvedVertexAttribBinding` 分别在 `mgl_encode_context.h` / `mgl_vertex_attrib_binding.h`（容易漏）。
+> **规则：判断一个方法能否搬，看的是"有没有 ObjC-only 语法（`id`/`__bridge`/block/消息）"，不是"有没有消息发送"**；
+> 手工逐个搬（每次编译验证）而不是正则批处理。
+>
+> **建议下一刀**：改从 `runVertexCaptureSession:`(19 行、**真正零响应**) 开始——它只有一个 `self->ctx` 写入需要"方法 + 壳转发"；
 > 随后转 `runVertexCaptureSession:`(19 行) 用"方法 + 壳转发"补一个 ctx 写入；**MS 循环两方法放最后**，
 > 因为它们依赖 `endRenderEncodingLocked`（第 81 条评估为依赖深度 ≥3）。
