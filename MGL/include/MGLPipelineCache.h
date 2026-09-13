@@ -37,7 +37,10 @@ NS_ASSUME_NONNULL_BEGIN
 @interface MGLPipelineCache : NSObject {
 @private
     MGLPipelineCacheState _state;
-    void *_device;
+    /* Named _cacheDevice, not _device: MGLRenderer_Private.h defines a
+     * renderer-backend _device macro, and this class now lives in the same
+     * translation unit as the rest of the Objective-C shell. */
+    void *_cacheDevice;
     void *_owner;
     BOOL _binaryArchiveRequested;
 }

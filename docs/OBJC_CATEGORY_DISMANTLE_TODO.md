@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十六刀** + trace 清零 后；第 68–71 轮见 §0.24/§0.26–§0.28）**：
-文件 **53 → 13**、空 TU **3 → 0**、行数 **43,989 → 32,623**、ObjC 语法 **2,268 → 1,879**、词汇 **4,353 → 3,653**；
-**shim：43 → 15 个端口 / 唯一壳 TU 625 行 / 86 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；`MGLRenderer*.m` **34,604 → 29,127**）。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十七刀** + trace 清零 后；第 68–72 轮见 §0.24/§0.26–§0.29）**：
+文件 **53 → 12**、空 TU **3 → 0**、行数 **43,989 → 32,621**、ObjC 语法 **2,268 → 1,877**、词汇 **4,353 → 3,653**；
+**shim：43 → 15 个端口 / 唯一壳 TU 1,069 行 / 146 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103 刀按 T5 把 `MGLPipelineCache` 并入壳，端口不变；`MGLRenderer*.m` **34,604 → 29,127**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -2859,3 +2859,61 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 先搬缓存创建/查询，再搬 blend 与 reset）→ ② `MGLRenderer+Compute.m` → ③ `MGLRenderer+Lifecycle.m`（T5 并入壳的候选）→
 ④ `MGLRenderPassManager.m`（28 个薄转发）→ ⑤ `+Tessellation.m` / `+BindingState.m` 两个中块 →
 ⑥ `mgl_draw_metal_port.m`（0 方法，纯 `id`/词汇清扫）→ ⑦ 三厚块 → ⑧ `MGLRenderer.m`。
+
+103. **P0-1 第四十七刀：`MGLPipelineCache` 按 T5 并入唯一壳 TU（**文件 13 → 12**，端口不变、语法 −2）**：
+     ① 为什么不按 §0.28 的"直接转 C"做（**本刀的判断依据，写在文档里以便复核**）：
+     - 该类只剩 **15 处消息发送**（`+RenderPass.m` 9、`+Lifecycle.m` 4、壳 2），但 `_pipelineCache.state->…` 这类
+       **纯 C 记录读取有 46 处**、`_renderPassManager.state->…` 另有 270 处（后者属于 `MGLRenderPassManager`，见 §0.29 排序）；
+     - 真正卡住的是**归档路径**：`binaryArchiveURL`/`loadBinaryArchive`/`saveBinaryArchive` 用的是
+       `NSSearchPathForDirectoriesInDomains` + `NSBundle.mainBundle.bundleIdentifier` + `NSFileManager` + `NSURL`，
+       而要等价替换成 C 只能靠 `getenv("HOME")`/`CFBundleGetIdentifier`/POSIX，**产物路径与 `NSError.localizedDescription`
+       的文案都会变**；偏偏 A/B 口径（`ab_full.py`）把 `BINARY ARCHIVE` 行当作非确定性**过滤掉**——
+       即"改动点正好落在验证盲区"，按纪律不该在无专用 oracle 时动它；
+     - 结论：**先按 T5 把类并入唯一壳**（终态本来就允许一个平台壳 TU），等它的调用点随各文件转 C 变成 C 调用后，
+       再做"类 → C handle"的转换（那时只有 handful 调用点，且可另起 oracle 专门比对归档文件路径与文案）。
+     ② 落地：把 `MGLPipelineCache.m` 的 `@interface MGLPipelineCache ()`（2 个私有方法声明）、
+     `kMGLPipelineArchiveBuildSchema`（ASan/TSan/普通三档）、`MGLSafeArchivePathComponent` 与整个 `@implementation`
+     搬进 `MGLPlatformRendererShell.m` 的 `#ifndef MGL_PLATFORM_SHELL_SMOKE` 块内（smoke 单独编译面不变）；
+     壳新增 `#include "mgl_frame_activity.h"`（`MGL_PERF_INC/ADD`）与 `#include "mgl_air_loader.h"`
+     （`MGLRenderPipelineDescriptorState`）；`git rm MGL/src/MGLPipelineCache.m`；`MGLPipelineCache.h`（类接口）不变。
+     ③ **踩坑（新规则）**：合并后**第一个编译错误是宏冲突**——`MGLRenderer_Private.h:308` 有
+     `#define _device ((__bridge id)mglRendererBackendGetDevice(_backend))`，而该类自己的 ivar 也叫 `_device`；
+     它原来的 TU 不 include 渲染器私有头所以相安无事，并进壳后 9 处 `_device` 全部被宏吃掉。
+     **修法：把该类 ivar 改名 `_cacheDevice`**（头文件里加注释说明原因），而不是 `#undef` 宏。
+     **规则：把 ObjC 类并进壳之前，先查它的 ivar 名是否撞上 `MGLRenderer_Private.h` 的 `_view/_layer/_drawable/_device/_commandQueue…` 宏。**
+     ④ **度量**：文件 **13 → 12**、行数 **32,623 → 32,621**、语法 **1,879 → 1,877**、词汇 3,653（持平）；
+     壳 TU **625 → 1,069 行 / 86 → 146 语法**；端口 15 不变；`MGLRenderer*.m` 29,127 不变。
+     ⑤ **oracle**：旧库 = 提交 `148fb5f` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑥ 下一刀：按 §0.29 排序 —— 先**消掉最后一个 <100 行的文件** `MGLRenderer+Binding.m`（77 行），
+     前置是把它依赖的 `bindBufferSizeConstantsForRenderEncoder`（78 行）与 `syncResourceBindingsForContext:`（27 行）转 C。
+
+### 0.29 唯一壳 TU 的构成、行数上限与移除路径（第 103 刀后实测）
+
+终态允许**一个**平台壳 TU，因此壳的每一块都要有"为什么它是平台代码"和"它怎么消失"。
+`MGLPlatformRendererShell.m` 现为 **1,069 行 / 146 语法**，构成如下：
+
+| 行区间 | 块 | 行数 | 为什么留在壳里 / 移除路径 |
+|---|---|---|---|
+| 1–231 | `MGLPlatformRendererShell` 类（NSView / CAMetalLayer / drawable / GPU capture / swap interval） | 231 | **终态平台代码**：Cocoa 图层与 drawable 只能由 ObjC 持有；随窗口后端一起保留 |
+| 236–320 | 渲染器端口 shim（15 个端口） | 85 | 每个端口在它转发的方法转 C 时退役（第 100/102 刀已各退役 1 个） |
+| 321–391 | 纹理物化端口（4 个，第 100 刀新增） | 71 | `MGLRenderer+Texture.m` 转 C 时一起退役 |
+| 392–627 | Batch replay 壳（`@try/@finally` 帧 + flush/port C 入口） | 236 | 异常帧 C 无法表达；flush 驱动完全 C 化后退役 |
+| 628–1068 | `MGLPipelineCache` 类（第 103 刀并入） | 441 | 转 C handle（见第 103 条第①项的阻塞与解除条件） |
+
+**上限与纪律**：壳**目标 ≤1,200 行**（当前 1,069）。任何把它继续撑大的合并（T5）都必须在同一刀里更新本表并写明移除路径；
+若某块本身不是平台代码（例如只是"尚未转 C 的实现"），**优先转 C 而不是并进壳**。
+
+剩余 **12** 个文件的可消性排序（按"前置成本 ÷ 文件收益"重排，`_renderPassManager.state->` 读数已实测）：
+
+| 文件 | 行数 | 语法 | 阻塞前置 | 建议 |
+|---|---|---|---|---|
+| `MGLRenderer+Binding.m` | 77 | 17 | `bindBufferSizeConstantsForRenderEncoder`(78 行) + `syncResourceBindingsForContext:`(27 行) 需先转 C | **下一刀**（前置 ~105 行 C 换整文件消除） |
+| `MGLRenderPassManager.m` | 416 | 26 | `_renderPassManager.state->` 读数 **270 处**、发送 34 处（多在 `+RenderPass.m`） | 等 `+RenderPass.m` 转 C 后一起做，避免两次改同 270 处 |
+| `MGLRenderer+Lifecycle.m` | 667 | 94 | KVO / NSNotification / NSWindow（真正的 ObjC API） | T5 并入壳（并入前先查 ivar 宏冲突，见第 103 条第③项） |
+| `MGLRenderer+Compute.m` | 1,246 | 84 | 11 个方法、28 处 `[self …]` | 整块搬（按 `+Buffer.m` 的手法逐段） |
+| `mgl_draw_metal_port.m` | 2,000 | 101 | 30+ 处 host 发送 + Foundation（`NSMutableArray`/`NSString`/capture）+ `id` 签名（头文件同改） | 多刀：先搬纯 `id → void *` 的包装，再搬 host 发送 |
+| `MGLRenderer+Tessellation.m` / `+BindingState.m` | 2,101 / 2,916 | 151 / 129 | 中块，依赖已大多就绪 | 整块搬 |
+| `+RenderPass.m` / `+Texture.m` / `+Blit.m` | 6,955 / 6,500 / 4,062 | 423 / 297 / 236 | 三厚块 | 多刀 |
+| `MGLRenderer.m` | 4,612 | 173 | 主体类 | 最后 |
