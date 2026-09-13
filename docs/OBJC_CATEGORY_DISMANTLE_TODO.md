@@ -2436,3 +2436,23 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      下一刀：§0.22 第②步 `endRenderEncodingLocked`（≈91 行）——它的三个 manager 依赖、guarded 入口与本步的方法都已就绪，
      可直接手工搬（注意 `@try/@catch` 用 `mglPlatformShellGuardedCall`、`_batching` 用 `areas.batching`）。
+
+### 0.23 `syncResourceBindingsForContext:` 的阻塞点（第 59 轮实测）
+
+`-[MGLRenderer syncResourceBindingsForContext:alreadyDone:]`（`+Binding.m`，27 行）看似"全走已有 C 入口"，实测**有一处阻塞**：
+
+| 依赖 | 现状 |
+|---|---|
+| `[self mapBuffersToMTL]` | ✅ 端口 `mglRendererMapBuffersToMTLPort` |
+| `[self updateDirtyBaseBufferList:&state->X]` ×2 | ✅ C `mglRenderUpdateDirtyBaseBufferList(ctx, list, where)` |
+| `_renderPassManager.state->currentRenderEncoderOwner` | ✅ `areas.command` |
+| `[self bindVertexBuffersToCurrentRenderEncoder:&encCtx]` / `…FragmentBuffers…` / `…Textures…` | ✅ 三个端口（shim） |
+| `mglBatchBindActiveTexturesToMTL(self, ctx)` | ✅ 已是 C |
+| `[self restoreRenderEncoderAfterTextureUploadForDraw:]` | ✅ 端口 `mglRendererRestoreRenderEncoderAfterTextureUploadPort` |
+| **`[self bindBufferSizeConstantsForRenderEncoder]`** | ❌ **阻塞**：该方法（`+RenderPass.m:6642`，约 40 行）含 `id vertexSizeBuffer` / `_device` / 多处 `__bridge`，**且没有对应端口或 C 入口** |
+
+**结论**：这一刀的前置是先把 `bindBufferSizeConstantsForRenderEncoder` 转 C（需 `_device` → 走"方法 + 壳转发"，`id`/`__bridge` 手工改 `void *`，`_backend` 用 areas）。
+**优先级判断**：它的收益（27 行）与前置成本（40+ 行的 `bindBufferSizeConstants…`）不成比例，**因此不推荐作为下一刀**；
+仍建议按 §0.22 的直线计划推进——**第②步 `endRenderEncodingLocked`**（依赖已全部就绪：3 个 manager C 入口 + 壳守卫 + 第 38 刀刚转好的
+`mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer`，`_batching`/`_renderPassManager` 由 areas 覆盖），
+做完第③④步即可**删掉 `+DrawStageHost.m`（文件 16 → 15）**。
