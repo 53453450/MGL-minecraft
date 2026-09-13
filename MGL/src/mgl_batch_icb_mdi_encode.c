@@ -60,7 +60,7 @@ static int mglIcbResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
     MGLDrawCommand *cmd = &c->batch->commands[i];
     Buffer *glBuf = NULL;
     void *idxBuf = NULL;
-    if (!mglRendererResolveElementBufferPort(c->r, cmd, "icbBatch", c->ctx,
+    if (!mglRendererResolveElementBufferForCommand(c->r, cmd, "icbBatch", c->ctx,
                                              &glBuf, &idxBuf))
         return 0;
     size_t drawOff = ioff ? (size_t)*ioff : (size_t)cmd->indexBufferOffset;
@@ -99,7 +99,7 @@ static void *mglStreamIdx(void *v)
 {
     MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
     Buffer *indexBuffer = (Buffer *)c->batch->stream_index_buffer;
-    if (!indexBuffer || !mglRendererProcessBufferPort(c->r, indexBuffer)) {
+    if (!indexBuffer || !mglRendererProcessBuffer(c->r, indexBuffer)) {
         mglIcbTrace(v, 0, "FALLBACK", "stream_mdi_index_buffer");
         return NULL;
     }

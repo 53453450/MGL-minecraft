@@ -16,83 +16,10 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_draw_mode.h"
+#include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
 #include "mgl_draw_encode.h"
 
 @implementation MGLRenderer (Draw)
-
-- (BOOL)resolveElementBufferForDraw:(const char *)label
-                            context:(GLMContext)drawCtx
-                           glBuffer:(Buffer **)glBufferOut
-                          mtlBuffer:(id *)mtlBufferOut
-{
-    Buffer *gl_element_buffer = getElementBuffer(drawCtx);
-    return [self resolveElementBuffer:gl_element_buffer
-                                label:label
-                              context:drawCtx
-                             glBuffer:glBufferOut
-                            mtlBuffer:mtlBufferOut];
-}
-
-- (BOOL)resolveElementBufferForCommand:(const MGLDrawCommand *)cmd
-                                  label:(const char *)label
-                                context:(GLMContext)drawCtx
-                               glBuffer:(Buffer **)glBufferOut
-                              mtlBuffer:(id *)mtlBufferOut
-{
-    Buffer *gl_element_buffer = NULL;
-    if (cmd && cmd->element_buffer_name) {
-        gl_element_buffer = mglRendererGetValidatedBuffer(drawCtx,
-                                                          mglDrawCommandElementBuffer(drawCtx, cmd),
-                                                          label ? label : "deferred indexed draw",
-                                                          0);
-        if (!gl_element_buffer) {
-            return NO;
-        }
-    } else {
-        gl_element_buffer = getElementBuffer(drawCtx);
-    }
-
-    return [self resolveElementBuffer:gl_element_buffer
-                                label:label
-                              context:drawCtx
-                             glBuffer:glBufferOut
-                            mtlBuffer:mtlBufferOut];
-}
-
-- (BOOL)resolveElementBuffer:(Buffer *)gl_element_buffer
-                       label:(const char *)label
-                     context:(GLMContext)drawCtx
-                    glBuffer:(Buffer **)glBufferOut
-                   mtlBuffer:(id *)mtlBufferOut
-{
-    if (!gl_element_buffer) {
-        NSLog(@"MGL WARNING: %s skipped because no element array buffer is bound", label ? label : "indexed draw");
-        if (drawCtx) {
-            mglDispatchError(drawCtx, label ? label : __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        }
-        return NO;
-    }
-
-    if ([self processBuffer:gl_element_buffer] == false) {
-        return NO;
-    }
-
-    id indexBuffer = (__bridge id)(gl_element_buffer->data.mtl_data);
-    if (!indexBuffer) {
-        NSLog(@"MGL WARNING: %s skipped because element buffer %u has no Metal buffer",
-              label ? label : "indexed draw",
-              gl_element_buffer->name);
-        return NO;
-    }
-
-    if (glBufferOut) {
-        *glBufferOut = gl_element_buffer;
-    }
-    if (mtlBufferOut) {
-        *mtlBufferOut = indexBuffer;
-    }
-    return YES;
-}
 
 - (BOOL)resolveIndirectBufferForDraw:(const char *)label
                              context:(GLMContext)drawCtx
@@ -108,7 +35,7 @@
         return NO;
     }
 
-    if ([self processBuffer:gl_indirect_buffer] == false) {
+    if (mglRendererProcessBuffer((__bridge void *)self, gl_indirect_buffer) == false) {
         return NO;
     }
 

@@ -14,7 +14,13 @@
 
 #include "mgl_renderer_ports.h"
 #include "mgl_render.h"           /* command-buffer snapshot, MDI scratch owner */
-#include "mgl_renderer_backend.h" /* mglRendererBackendGetDevice */
+#include "mgl_renderer_backend.h" /* mglRendererBackendGetDevice, sampler cache */
+#include "mgl_texture_sampler.h"  /* mglTextureCreateSamplerForTexParam */
+#include "mgl_batch_replay.h"     /* mgl_batch_replay_fill_sampler_params */
+#include "mgl_metal_ref.h"        /* mglReleaseMetalObjNoNull */
+#include "mgl_draw_encode.h"      /* mglDrawCommandElementBuffer */
+#include "draw_command.h"         /* MGLDrawCommand */
+#include "error.h"                /* mglDispatchError */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -104,4 +110,166 @@ void *mglRendererMdiScratchBuffer(void *renderer, uint64_t length,
         *offset_out = offset;
     }
     return buffer;
+}
+
+/* === element-buffer resolve / processBuffer / sampler-snapshot ============
+ *
+ * Bodies of the former -[MGLRenderer resolveElementBuffer*:], -processBuffer:
+ * and -samplerStateForSnapshotKey:.  Every dependency was already C
+ * (getElementBuffer, mglRendererGetValidatedBuffer,
+ * mglRenderUpdateDirtyBaseBufferList, mglRenderUpdateDirtyBuffer,
+ * mglRenderBindBufferStorage, the sampler creation and the backend snapshot
+ * cache); only the Objective-C `id` handles were in the way, and those are
+ * `void *` here.
+ *
+ * Each of these functions is declared next to its definition in
+ * MGLRenderer+Draw_Private.h / MGLRenderer+DrawSupportUtil.h, which are
+ * Objective-C headers, so the C prototypes are repeated here the way
+ * framebuffers.c already does for findTexture(). */
+
+/* NSUInteger is `unsigned long` on the 64-bit targets MGL builds for. */
+extern Buffer *getElementBuffer(GLMContext ctx);
+extern Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate,
+                                             const char *where,
+                                             unsigned long slot);
+extern int mglRenderUpdateDirtyBuffer(Buffer *ptr, char *err, size_t errcap);
+extern int mglRenderBindBufferStorage(Buffer *buffer, char *err, size_t errcap);
+
+int mglRendererProcessBuffer(void *renderer, Buffer *buffer)
+{
+    if (!buffer) {
+        fprintf(stderr, "MGL Error: processBuffer failed\n");
+        return 0;
+    }
+
+    if (buffer->data.mtl_data == NULL) {
+        /* The bind takes METAL_LOCK, so it stays the shim port. */
+        mglRendererBindMTLBufferPort(renderer, buffer);
+        if (buffer->data.mtl_data == NULL) {
+            return 0;
+        }
+    }
+
+    if (buffer->data.dirty_bits) {
+        char error[256] = {0};
+        int result = mglRenderUpdateDirtyBuffer(buffer, error, sizeof(error));
+        if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
+            fprintf(stderr,
+                    "MGL BUFFER ERROR: Metal-cpp dirty update failed buffer=%u: %s\n",
+                    buffer ? (unsigned)buffer->name : 0u,
+                    error[0] ? error : "?");
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+int mglRendererResolveElementBufferForDraw(void *renderer, const char *label,
+                                           GLMContext ctx, Buffer **gl_out,
+                                           void **mtl_out)
+{
+    Buffer *gl_element_buffer = getElementBuffer(ctx);
+    return mglRendererResolveElementBuffer(renderer, gl_element_buffer, label,
+                                           ctx, gl_out, mtl_out);
+}
+
+int mglRendererResolveElementBufferForCommand(void *renderer, const void *command,
+                                              const char *label, GLMContext ctx,
+                                              Buffer **gl_out, void **mtl_out)
+{
+    const MGLDrawCommand *cmd = (const MGLDrawCommand *)command;
+    Buffer *gl_element_buffer = NULL;
+    if (cmd && cmd->element_buffer_name) {
+        gl_element_buffer = mglRendererGetValidatedBuffer(
+            ctx, mglDrawCommandElementBuffer(ctx, cmd),
+            label ? label : "deferred indexed draw", 0);
+        if (!gl_element_buffer) {
+            return 0;
+        }
+    } else {
+        gl_element_buffer = getElementBuffer(ctx);
+    }
+
+    return mglRendererResolveElementBuffer(renderer, gl_element_buffer, label,
+                                           ctx, gl_out, mtl_out);
+}
+
+int mglRendererResolveElementBuffer(void *renderer, Buffer *gl_element_buffer,
+                                    const char *label, GLMContext ctx,
+                                    Buffer **gl_out, void **mtl_out)
+{
+    (void)renderer;
+    if (!gl_element_buffer) {
+        fprintf(stderr,
+                "MGL WARNING: %s skipped because no element array buffer is bound\n",
+                label ? label : "indexed draw");
+        if (ctx) {
+            mglDispatchError(ctx, label ? label : "resolveElementBuffer",
+                             (GLenum)mglRenderErrorInvalidOperation());
+        }
+        return 0;
+    }
+
+    if (!mglRendererProcessBuffer(renderer, gl_element_buffer)) {
+        return 0;
+    }
+
+    void *indexBuffer = gl_element_buffer->data.mtl_data;
+    if (!indexBuffer) {
+        fprintf(stderr,
+                "MGL WARNING: %s skipped because element buffer %u has no Metal buffer\n",
+                label ? label : "indexed draw",
+                gl_element_buffer->name);
+        return 0;
+    }
+
+    if (gl_out) {
+        *gl_out = gl_element_buffer;
+    }
+    if (mtl_out) {
+        *mtl_out = indexBuffer;
+    }
+    return 1;
+}
+
+/* Body of the former -[MGLRenderer samplerStateForSnapshotKey:], moved from the
+ * shim: the backend handle comes from the state areas and every other step was
+ * already C.  The return stays unretained -- the backend snapshot cache owns the
+ * state it hands back. */
+void *mglRendererSamplerStateForSnapshotKey(void *renderer, const void *key)
+{
+    if (!renderer || !key) {
+        return NULL;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    void *cachedState = NULL;
+    int cacheResult = mglRendererBackendGetSamplerSnapshotState(
+        areas.backend, (const MGLSamplerSnapshotKey *)key, &cachedState);
+    if (cacheResult == 1) {
+        return cachedState;
+    }
+    if (cacheResult < 0) {
+        return NULL;
+    }
+
+    TextureParameter params;
+    mgl_batch_replay_fill_sampler_params((const MGLSamplerSnapshotKey *)key,
+                                         &params);
+    /* +1 from the C sampler creation; the backend cache below takes ownership
+     * through the Put call, so release our reference again. */
+    void *state = mglTextureCreateSamplerForTexParam(
+        &params, ((const MGLSamplerSnapshotKey *)key)->target);
+    if (!state) {
+        return NULL;
+    }
+    if (mglRendererBackendPutSamplerSnapshotState(
+            areas.backend, (const MGLSamplerSnapshotKey *)key, state) != 0) {
+        mglReleaseMetalObjNoNull(state);
+        return NULL;
+    }
+    mglReleaseMetalObjNoNull(state);   /* the backend snapshot cache retains it */
+    return state;
 }

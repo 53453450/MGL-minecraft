@@ -15,6 +15,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_sampler.h"
+#include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
 #import "MGLRenderer+Tessellation_Private.h"
 #import "mgl_sampler_compat.h"
 #import "mgl_trace_log.h"
@@ -1110,7 +1111,7 @@ typedef struct {
     bool primitiveRestart = false;
     if (indexType != 0u) {
         Buffer *ebo = getElementBuffer(drawCtx);
-        if (!ebo || ![self processBuffer:ebo]) {
+        if (!ebo || !mglRendererProcessBuffer((__bridge void *)self, ebo)) {
             NSLog(@"MGL TESS WARNING: TCS indexed stage_in has no readable element buffer");
             return nil;
         }
@@ -1171,7 +1172,7 @@ typedef struct {
             }
         } else if (hasBinding) {
             Buffer *vbo = resolved.buffer;
-            if (vbo && [self processBuffer:vbo]) {
+            if (vbo && mglRendererProcessBuffer((__bridge void *)self, vbo)) {
                 srcs[m].bytes = mglRendererReadableBufferBytes(vbo);
                 srcs[m].stride = resolved.stride;
                 srcs[m].divisor = resolved.divisor;

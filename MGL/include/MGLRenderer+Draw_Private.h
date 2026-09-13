@@ -290,7 +290,6 @@ typedef struct {
                               stage:(NSString *)stage
                              reason:(NSString *)reason
                                 hit:(uint64_t)hit;
-- (bool)processBuffer:(Buffer *)ptr;
 - (bool)dispatchTessControlShader:(GLMContext)glm_ctx
                           program:(Program *)tcsProgram
                          contract:(const MGLAIRTessDrawContract *)contract;
@@ -319,11 +318,6 @@ typedef struct {
 - (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode;
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode;
 - (BOOL)ensureRasterEncoderForDraw;
-- (BOOL)resolveElementBufferForCommand:(const MGLDrawCommand *)cmd
-                                  label:(const char *)label
-                                context:(GLMContext)drawCtx
-                               glBuffer:(Buffer **)glBufferOut
-                              mtlBuffer:(id *)mtlBufferOut;
 
 /* traceReplayCommand:... is now the C driver mglBatchTraceReplayCommand
  * (mgl_batch_rt_mark.h, implemented in mgl_batch_replay_trace.c). */
@@ -360,10 +354,6 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                  first:(GLint)first
                                  count:(GLsizei)count
                               drawCall:(uint64_t)drawCall;
-- (BOOL)resolveElementBufferForDraw:(const char *)label
-                            context:(GLMContext)drawCtx
-                           glBuffer:(Buffer **)glBufferOut
-                          mtlBuffer:(id *)mtlBufferOut;
 - (BOOL)resolveIndirectBufferForDraw:(const char *)label
                              context:(GLMContext)drawCtx
                             glBuffer:(Buffer **)glBufferOut

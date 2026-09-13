@@ -54,18 +54,34 @@ void *mglRendererMdiScratchBuffer(void *renderer, uint64_t length,
  * field of the state areas. */
 const MGLCommandState *mglRendererCommandStateFor(void *renderer);
 
+/* C helper defined in MGLRenderer.m (the Objective-C side keeps its own
+ * declaration in MGLRenderer+Draw_Private.h): the batch drivers upload a dirty
+ * base-buffer list straight through it. */
+bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx,
+                                        BufferMapList *buffer_map_list,
+                                        const char *where);
+
 /* Element (index) buffer for a command; fills the GL buffer and, when it has
- * one, the Metal buffer.  0 when the command cannot be resolved. */
-int mglRendererResolveElementBufferPort(void *renderer, const void *command,
-                                        const char *label, GLMContext ctx,
-                                        Buffer **gl_buffer_out,
-                                        void **mtl_buffer_out);
+ * one, the Metal buffer.  0 when the command cannot be resolved.  C, not a
+ * port: the bodies only ever needed C helpers, so all three moved here. */
+int mglRendererResolveElementBufferForDraw(void *renderer, const char *label,
+                                           GLMContext ctx, Buffer **gl_out,
+                                           void **mtl_out);
+int mglRendererResolveElementBufferForCommand(void *renderer,
+                                              const void *command,
+                                              const char *label, GLMContext ctx,
+                                              Buffer **gl_out, void **mtl_out);
+int mglRendererResolveElementBuffer(void *renderer, Buffer *gl_element_buffer,
+                                    const char *label, GLMContext ctx,
+                                    Buffer **gl_out, void **mtl_out);
 
 /* Renderer state processing (1 = a draw command). */
 int mglRendererProcessGLStatePort(void *renderer, int draw_command);
 
-/* Vertex / element / indirect buffer upload for a draw's buffer object. */
-int mglRendererProcessBufferPort(void *renderer, void *buffer);
+/* Vertex / element / indirect buffer upload for a draw's buffer object: bind
+ * the Metal storage when it is missing, then push dirty data.  C, not a port
+ * (only the lock-taking bind stays one). */
+int mglRendererProcessBuffer(void *renderer, Buffer *buffer);
 
 /* Create an indirect command buffer (indexed when `indexed`), returned with a
  * +1 reference the caller owns and releases.  *failed_out is 1 when Metal
@@ -100,9 +116,9 @@ int mglRendererBindMTLTexturePort(void *renderer, Texture *texture);
 /* The binding-state owner (the object the dyn-bind plans write bindings
  * through) is reached as `areas.binding_state_owner`, not through a port. */
 
-/* Buffer staging for the dyn-vertex path: upload a dirty base-buffer list and
- * make sure a buffer object has its Metal allocation. */
-int mglRendererUpdateDirtyBaseBufferListPort(void *renderer, void *upload);
+/* Buffer staging for the dyn-vertex path.  The dirty base-buffer list goes
+ * straight to the C mglRenderUpdateDirtyBaseBufferList(ctx, list, where); the
+ * Metal allocation bind below stays a port because it takes METAL_LOCK. */
 void mglRendererBindMTLBufferPort(void *renderer, void *buffer);
 
 /* Binding-state push for the mapper fallback path. */
@@ -118,9 +134,10 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
 
 /* Sampled-resource lookup for the dyn-texture plan. */
 
-/* Sampler state for a snapshot key (unretained; the backend cache owns it) and
- * the fallback sampler. */
-void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key);
+/* Sampler state for a snapshot key (unretained; the backend cache owns it).
+ * C, not a port: the body moved here once the backend handle came from the
+ * state areas. */
+void *mglRendererSamplerStateForSnapshotKey(void *renderer, const void *key);
 
 /* === Renderer state areas (the "one struct, one port" pattern) ===
  * States whose records are plain C structs are handed out as pointers, so C

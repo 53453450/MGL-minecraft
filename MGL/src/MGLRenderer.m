@@ -3176,28 +3176,6 @@ void logDirtyBits(GLMContext ctx)
 
 /* bindBufferSizeConstantsForRenderEncoder moved to MGLRenderer+RenderPass.m */
 
--(bool) processBuffer:(Buffer*)ptr
-{
-    if (ptr == NULL)
-    {
-        NSLog(@"Error: processBuffer failed\n");
-
-        return false;
-    }
-
-    if (ptr->data.mtl_data == NULL)
-    {
-        [self bindMTLBuffer: ptr];
-        RETURN_FALSE_ON_NULL(ptr->data.mtl_data);
-    }
-
-    if (ptr->data.dirty_bits)
-    {
-        [self updateDirtyBuffer: ptr];
-    }
-
-    return true;
-}
 /* flushCommandBuffer: moved to MGLRenderer+RenderPass.m */
 
 /* flushCommandBufferLocked: moved to MGLRenderer+RenderPass.m */

@@ -143,7 +143,7 @@ static void sDir(void *v)
 static int sIdx(void *v, void **mtl)
 {
     SCtx *c = v; Buffer *ib = (Buffer *)c->batch->stream_index_buffer;
-    int pok = ib ? mglRendererProcessBufferPort(c->r, ib) : 0;
+    int pok = ib ? mglRendererProcessBuffer(c->r, ib) : 0;
     void *m = ib ? ib->data.mtl_data : NULL;
     int ready = mgl_batch_issue_stream_index_ready(ib ? 1 : 0, pok, m ? 1 : 0);
     if (ready != MGL_BATCH_STREAM_INDEX_OK) {

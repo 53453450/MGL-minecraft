@@ -18,6 +18,7 @@
 #import "MGLRenderer+Texture_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
 #include "mgl_blit_sampled_copy.h"  /* sampled RT copy refresh */
 #include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
 
@@ -5478,7 +5479,7 @@ static void mglTextureCopyTextureToBuffer(
         return nil;
     }
 
-    if (![self processBuffer:sourceBuffer]) {
+    if (!mglRendererProcessBuffer((__bridge void *)self, sourceBuffer)) {
         NSLog(@"MGL TEXBUFFER ERROR: failed to process source buffer tex=%u buffer=%u",
               tex->name,
               sourceBuffer->name);

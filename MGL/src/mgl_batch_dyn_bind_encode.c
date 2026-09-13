@@ -52,7 +52,7 @@ static int mglDynVertexEnsure(void *v, const MGLBatchDynVertexStreamPlan *p, voi
     MGLDynVertexCtx *c = v; Buffer *buf = p->buffer; if (!buf) return 0;
     if (buf->data.dirty_bits) {
         BufferMapList upload = {0}; upload.count = 1; upload.buffers[0].buf = buf;
-        if (!mglRendererUpdateDirtyBaseBufferListPort(c->r, &upload)) return 0;
+        if (!mglRenderUpdateDirtyBaseBufferList(c->ctx, &upload, "updateDirtyBaseBufferList:")) return 0;
     }
     if (!buf->data.mtl_data) mglRendererBindMTLBufferPort(c->r, buf);
     if (!mgl_batch_replay_mtl_ptr_ok(buf->data.mtl_data)) return 0;
@@ -200,7 +200,7 @@ static void *mglBatchSamplerStateForSnapshotKey(void *renderer,
                                                 const MGLSamplerSnapshotKey *key)
 {
     if (!key) return NULL;
-    return mglRendererSamplerStateForSnapshotKeyPort(renderer, key);
+    return mglRendererSamplerStateForSnapshotKey(renderer, key);
 }
 
 typedef struct {
@@ -252,7 +252,7 @@ static int mglSimpleResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
 {
     MGLSimpleReplayCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[i];
     Buffer *glBuf = NULL; void *idxBuf = NULL;
-    if (!mglRendererResolveElementBufferPort(c->r, cmd, "cppBatchReplay", c->ctx,
+    if (!mglRendererResolveElementBufferForCommand(c->r, cmd, "cppBatchReplay", c->ctx,
                                              &glBuf, &idxBuf))
         return 0;
     size_t off = ioff ? (size_t)*ioff : (size_t)cmd->indexBufferOffset;

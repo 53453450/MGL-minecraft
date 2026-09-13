@@ -29,11 +29,6 @@
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
 
-int mglRendererProcessBufferPort(void *renderer, void *buffer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && buffer && [r processBuffer:(Buffer *)buffer]) ? 1 : 0;
-}
 
 void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
                                                  uint64_t count,
@@ -61,29 +56,6 @@ void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
     }
 }
 
-int mglRendererResolveElementBufferPort(void *renderer, const void *command,
-                                        const char *label, GLMContext ctx,
-                                        Buffer **gl_buffer_out,
-                                        void **mtl_buffer_out)
-{
-    Buffer *gl_buffer = NULL;
-    id mtl_buffer = nil;
-    if (![(__bridge MGLRenderer *)renderer
-            resolveElementBufferForCommand:(const MGLDrawCommand *)command
-                                    label:label
-                                  context:ctx
-                                 glBuffer:&gl_buffer
-                                mtlBuffer:&mtl_buffer]) {
-        return 0;
-    }
-    if (gl_buffer_out) {
-        *gl_buffer_out = gl_buffer;
-    }
-    if (mtl_buffer_out) {
-        *mtl_buffer_out = (__bridge void *)mtl_buffer;
-    }
-    return 1;
-}
 
 int mglRendererProcessGLStatePort(void *renderer, int draw_command)
 {
@@ -92,11 +64,6 @@ int mglRendererProcessGLStatePort(void *renderer, int draw_command)
                : 0;
 }
 
-int mglRendererUpdateDirtyBaseBufferListPort(void *renderer, void *upload)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && upload && [r updateDirtyBaseBufferList:(BufferMapList *)upload]) ? 1 : 0;
-}
 
 void mglRendererBindMTLBufferPort(void *renderer, void *buffer)
 {
@@ -149,41 +116,6 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
     return (r && [r restoreRenderEncoderAfterTextureUploadForDraw:label]) ? 1 : 0;
 }
 
-void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key)
-{
-    /* Body of the former -[MGLRenderer samplerStateForSnapshotKey:].  The
-     * return is unretained, as it was there: the backend snapshot cache holds
-     * the state it hands back. */
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || !key) {
-        return NULL;
-    }
-    void *cachedState = NULL;
-    int cacheResult = mglRendererBackendGetSamplerSnapshotState(
-        r->_backend, (const MGLSamplerSnapshotKey *)key, &cachedState);
-    if (cacheResult == 1) {
-        return cachedState;
-    }
-    if (cacheResult < 0) {
-        return NULL;
-    }
-    TextureParameter params;
-    mgl_batch_replay_fill_sampler_params((const MGLSamplerSnapshotKey *)key, &params);
-    /* +1 from the C sampler creation; the backend cache below takes ownership
-     * through the Put call, so release our reference again. */
-    void *state = mglTextureCreateSamplerForTexParam(
-        &params, ((const MGLSamplerSnapshotKey *)key)->target);
-    if (!state) {
-        return NULL;
-    }
-    if (mglRendererBackendPutSamplerSnapshotState(
-            r->_backend, (const MGLSamplerSnapshotKey *)key, state) != 0) {
-        mglReleaseMetalObjNoNull(state);
-        return NULL;
-    }
-    mglReleaseMetalObjNoNull(state);   /* the backend snapshot cache retains it */
-    return state;
-}
 
 int mglRendererBindMTLTexturePort(void *renderer, Texture *texture)
 {

@@ -46,7 +46,7 @@ static int mglMdiResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
 {
     MGLIssueEncCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[i];
     Buffer *glBuf = NULL; void *idxBuf = NULL;
-    if (!mglRendererResolveElementBufferPort(c->r, cmd, "mdiBatch", c->ctx,
+    if (!mglRendererResolveElementBufferForCommand(c->r, cmd, "mdiBatch", c->ctx,
                                              &glBuf, &idxBuf))
         return 0;
     size_t drawOff = ioff ? (size_t)*ioff : (size_t)cmd->indexBufferOffset;
@@ -87,7 +87,7 @@ static int mglDirCullCap(void *v, uint32_t i, int cullPath)
             cmd->count, cmd->instanceCount, cmd->baseInstance) ? 1 : 0;
     if (cullPath != MGL_BATCH_CULL_CAPTURE_ELEMENTS) return 0;
     Buffer *eb = NULL; void *meb = NULL;
-    if (!mglRendererResolveElementBufferPort(c->r, cmd, "cullDistanceCapture", c->ctx,
+    if (!mglRendererResolveElementBufferForCommand(c->r, cmd, "cullDistanceCapture", c->ctx,
                                              &eb, &meb))
         return 0;
     const uint8_t *src = mglElementIndexSourceForDraw(eb, meb, cmd->indexType,
@@ -141,7 +141,7 @@ static int mglDirPrepEl(void *v, uint32_t i, MGLBatchDirectElementPrep *out)
 {
     MGLIssueEncCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[i];
     Buffer *glBuf = NULL; void *idxBuf = NULL;
-    if (!mglRendererResolveElementBufferPort(c->r, cmd, "directBatch", c->ctx,
+    if (!mglRendererResolveElementBufferForCommand(c->r, cmd, "directBatch", c->ctx,
                                              &glBuf, &idxBuf))
         return 0;
     uint64_t idxOffset = cmd->indexBufferOffset;

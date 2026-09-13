@@ -549,7 +549,7 @@ static int mglStageBindProgram(void *renderer, Program *program)
 static int mglStageProcessBuffer(void *renderer, Buffer *buf)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self processBuffer:buf] ? 1 : 0;
+    return self && mglRendererProcessBuffer((__bridge void *)self, buf) ? 1 : 0;
 }
 
 static void *mglStageCreateBuffer(void *renderer, uint64_t length)
@@ -1870,16 +1870,16 @@ bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
         return false;
     }
     Buffer *glBuffer = NULL;
-    id metalBuffer = nil;
-    if (![host resolveElementBufferForDraw:"drawElements"
-                                   context:host->ctx
-                                  glBuffer:&glBuffer
-                                 mtlBuffer:&metalBuffer]) {
+    void *metalBuffer = NULL;
+    if (!mglRendererResolveElementBufferForDraw((__bridge void *)host,
+                                                "drawElements", host->ctx,
+                                                &glBuffer, &metalBuffer)) {
         return false;
     }
     const NSUInteger offset = (NSUInteger)(uintptr_t)indices;
     const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
-        glBuffer, metalBuffer, type, offset, count);
+        glBuffer, (__bridge MGLIndexMetalHandle)metalBuffer, type, offset,
+        count);
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawPrepareAndEncodeCullDistanceElement(
                host->ctx, mode, cullIndexBytes, type, count, baseVertex,
@@ -1895,15 +1895,15 @@ bool mglDrawHostResolveElementBuffer(void *renderer, GLMContext ctx,
     if (!host) {
         return false;
     }
-    id metalBuffer = nil;
-    if (![host resolveElementBufferForDraw:label ? label : "drawElements"
-                                   context:ctx
-                                  glBuffer:glBufferOut
-                                 mtlBuffer:&metalBuffer]) {
+    void *metalBuffer = NULL;
+    if (!mglRendererResolveElementBufferForDraw((__bridge void *)host,
+                                                label ? label : "drawElements",
+                                                ctx, glBufferOut,
+                                                &metalBuffer)) {
         return false;
     }
     if (metalBufferOut) {
-        *metalBufferOut = (__bridge void *)metalBuffer;
+        *metalBufferOut = metalBuffer;
     }
     return true;
 }

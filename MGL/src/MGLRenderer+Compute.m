@@ -18,6 +18,7 @@
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
 #include "mgl_draw_tess.h"
 
 enum {
@@ -1212,7 +1213,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
         return;
     }
 
-    if (![self processBuffer:glIndirectBuffer]) {
+    if (!mglRendererProcessBuffer((__bridge void *)self, glIndirectBuffer)) {
         NSLog(@"MGL COMPUTE ERROR: failed to process dispatch indirect buffer %u",
               glIndirectBuffer ? glIndirectBuffer->name : 0u);
         return;

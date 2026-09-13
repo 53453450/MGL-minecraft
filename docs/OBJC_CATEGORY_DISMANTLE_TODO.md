@@ -47,12 +47,12 @@
 | ObjC 文件行数 | **43,989** | ≈ 平台壳 |
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
-| `MGLRenderer*.m` total | **34,604** | 0（当前 **32,834**） |
-| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **18 / 298**） |
+| `MGLRenderer*.m` total | **34,604** | 0（当前 **32,742**） |
+| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **14 / 230**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 九刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 36,281**、ObjC 语法 **2,268 → 2,106**、词汇 **4,353 → 3,986**；
-**shim：43 → 18 个端口 / 298 行 / 45 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀端口 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 36,121**、ObjC 语法 **2,268 → 2,093**、词汇 **4,353 → 3,972**；
+**shim：43 → 14 个端口 / 230 行 / 38 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1179,18 +1179,24 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     本次 areas 归并（−2 端口）——**shim 43 → 31**。后续可继续并入 areas 的候选：`MGLRendererCoreState`（需先把
     `MGLCapability`/`MGLDrawable` 做成 C 类型）、`MGLResourceFallbackState` 其余字段、`MGLTessellationState`。
 
-### 0.09 goal 轮次用尽时的交接状态（2026-09-13 12:05 更新，P0-1 第九刀后）
+### 0.09 goal 轮次用尽时的交接状态（2026-09-13 12:20 更新，P0-1 第十刀后）
 
-- **tip**：本文件所在提交（`objc_zero.sh`：**21** 个 `.m` / 空 TU **0** / **36,281** 行 / 语法 **2,106** / 词汇 **3,986**；
-  shim **18 端口 / 298 行 / 45 语法**，端口**声明面与实现面都是 18，无死声明**；`MGLRenderer*.m` **32,834**）。
+- **tip**：本文件所在提交（`objc_zero.sh`：**21** 个 `.m` / 空 TU **0** / **36,121** 行 / 语法 **2,093** / 词汇 **3,972**；
+  shim **14 端口 / 230 行 / 38 语法**，端口**声明面与实现面都是 14，无死声明**；`MGLRenderer*.m` **32,742**）。
+- **剩余 14 个端口**（都还需要 ObjC）：`StateAreas`（核心）/ `EnsureWritableCommandBuffer`（轮转命令缓冲）/
+  `FlushDrawBufferLocked`（METAL_LOCK + @try）/ `BindMTLBuffer`、`BindMTLTexture`（锁）/ `ProcessGLState`、
+  `MapBuffersToMTL`、`Bind{,Vertex,Fragment,Texture}sToCurrentRenderEncoder`、`RestoreRenderEncoderAfterTextureUpload`、
+  `CurrentRenderPassMatchesFramebuffer`、`PrepareRenderPassIfFBOChanged`、`CreateIndirectCommandBuffer`。
 - **Batch 簇已清零**：`mgl_batch_*` 全部为 C；`MGLRenderer+Batch.m`、`mgl_batch_flush_restore_encode.m` 整文件删除。
 - **A/B 设施（每刀复用）**：`git worktree add --detach /Users/fterward/MGL-ab-old HEAD` 得真旧库（借 `config.mk` +
   `build/aux` + `external/glfw/build`，**不要 `make clean`**），`cmp` 两库不同后跑
   `/private/tmp/run_ab7b.sh <side>`（default 与 `MGL_BATCH_MAX_DRAWS=1` 两臂，均由 `test_regression` 产生）
   + `/private/tmp/ab_full.py`；**只有加载 `libmgl` 的二进制才会写 trace 日志**（`test_batch_*` 系列不链接 libmgl）。
 - **下一步优先级（按审计 §0.05 与 §0.08）**：
-  1. **先清"一行转发 C"的壳**（第九刀手法，低风险高产出）：`+DrawSupport.m`(351) · `+GPURecovery.m`(351) ·
-     `+SwapDiagnostics.m`(557) 等文件里凡是 `return mglX(...)` 的方法，直接让 C 调用者调 `mglX`，方法+端口一起删；
+  1. **清"一行转发 C"的壳**（第九/十刀手法，低风险高产出）：`+DrawSupport.m` 余下的
+     `currentDrawRasterizationIsEmpty` / `applyPolygonOffsetForDrawMode` / `ensureRasterEncoderForDraw` /
+     `resolveIndirectBufferForDraw` / `prepareEmulatedIndirectCPURead`（体 1–3 行），以及
+     `+GPURecovery.m`(351) · `+SwapDiagnostics.m`(557) 里的同类壳；
   2. **P0-1 三厚块**（`+RenderPass` 7.1k 行 · `+Texture` 6.5k · `+Blit` 4.1k）：抽 C++ 域 + 金样，**禁新增 ObjC 行**，
      每下沉一个方法体可连带退役对应端口（净减主力）；`+Blit.m` 建议从 91 行的
      `blitFramebufferDirectColorCopyWithState` 之后的 scaled/format-conversion 簇继续；
@@ -1548,3 +1554,35 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      **规则：同一文件的多步编辑一律基于行列表（或每步重读文件、重算位置），绝不在文本长度会变的步骤之间复用字符偏移。**
      下一刀：`MGLRenderer+DrawSupport.m`(351) / `+GPURecovery.m`(351) / `MGLRenderer+SwapDiagnostics.m`(557) 里
      同类"一行转发 C"的壳（先按本刀手法清掉再谈方法体下沉）；以及 §0.09 列表里的 ICB 门禁与 T5 唯一壳合并。
+
+64. **P0-1 第十刀：element-buffer / processBuffer / sampler-snapshot 三簇体转 C（**shim 净减 4，18 → 14**）**：
+     ① **一次退四个端口**，做法都是"方法体本来只依赖 C，只有 `id` 挡着"：
+     - `mglRendererResolveElementBufferPort` → **三个 C 函数** `mglRendererResolveElementBufferForDraw` /
+       `…ForCommand` / `…`（`getElementBuffer`、`mglRendererGetValidatedBuffer`、`mglDrawCommandElementBuffer`、
+       `mglDispatchError` 全是 C；`NSLog` → `fprintf(stderr, …)` 同 sink 同字段；`id *mtlBufferOut` → `void **`），
+       5 处 C 调用点（dyn_bind / icb_mdi / issue_encode ×3）改直调；
+     - `mglRendererProcessBufferPort` → `mglRendererProcessBuffer`：方法体是"缺 Metal 存储就 bind、脏了就走
+       `mglRenderUpdateDirtyBuffer`"（`-processBuffer:` 22 行删除），**唯一保留的端口是 `BindMTLBufferPort`——
+       因为它要 `METAL_LOCK`**；7 处 ObjC 调用点（+Compute / +Tessellation ×2 / +Texture / +DrawSupport / draw_metal_port）
+       改为 `mglRendererProcessBuffer((__bridge void *)self, …)`；
+     - `mglRendererUpdateDirtyBaseBufferListPort` → C 调用者直接调 `mglRenderUpdateDirtyBaseBufferList(ctx, list, where)`
+       （`ctx` 由 `areas.ctx`/`c->ctx` 提供），声明放进 **C 头** `mgl_renderer_ports.h`（`MGLRenderer+Draw_Private.h`
+       是 ObjC 头，C 不能 include）；
+     - `mglRendererSamplerStateForSnapshotKeyPort` → `mglRendererSamplerStateForSnapshotKey`：整段体（缓存查询 + 物化 +
+       backend Put）**逐行搬到 C**，只把 `r->_backend` 换成 `areas.backend`；所有权注释与"未持有引用"契约原样保留。
+     ② **净减账**：**端口 18 → 14**（声明面与 shim 实现面都是 14）；shim **298 → 230 行**、**45 → 38 语法**。
+     全仓：ObjC 行数 **36,281 → 36,121**、语法 **2,106 → 2,093**、词汇 **3,986 → 3,972**；
+     `MGLRenderer*.m` **32,834 → 32,742**；`+DrawSupport.m` 350 → **275**、`MGLRenderer.m` −22 行。
+     ③ **oracle（本刀改了逐 draw 的 buffer 处理与采样器快照路径，必须 A/B）**：旧库 = 提交 `a521302` 的独立构建
+     （`cmp` 两库不同）；两臂 trace 的**确定性行 4,980/4,980 与 5,513/5,513 逐行保序完全一致**，stderr `MGL` 行 **307/307
+     多重集一致**。**非确定项做了对照实验**：`processGLState.slow` 行数在"新 vs 旧"是 295/341（default）与 489/595（flushy），
+     而**同一份库连跑两次**也是 295/340 与 489/595 —— 证实该行计数与改动无关，本刀仍如实报告而不是写成"diff 全空"。
+     plain **92/0/2**、ICB 门禁 **82/10/2** 在新旧库上相同。
+     ④ **门禁与 CTS**：`verify_gl_api` 离线通过 + 28 个目标全过（`GATE_EXIT=0`）；
+     **CTS 七簇非通过集合 diff 全空**（hotspot 1270/52/4/1+1cw · tess 139/1 · GS 136/0 · refq 164/54/5 ·
+     piq 17/12/1 · compute 113/38/1ns · pp 1/3/1ns）。
+     下一刀：剩余 14 个端口里 **`ProcessGLState` / `UpdateDirtyBuffer` 一类"只差一个 ObjC 字段访问"的**已不多，
+     建议转向 §0.09 的 T5 唯一壳（`MGLPlatformRendererShell.m` + `+Lifecycle.m` + shim 的 1 个方法）与
+     `+DrawSupport.m` 剩余方法（`resolveIndirectBufferForDraw` / `prepareEmulatedIndirectCPURead` /
+     `currentDrawRasterizationIsEmpty` / `applyPolygonOffsetForDrawMode` / `ensureRasterEncoderForDraw`）——
+     后四个已是"谓词/一行转发"形（1–3 行体），按本刀手法可整批下沉。
