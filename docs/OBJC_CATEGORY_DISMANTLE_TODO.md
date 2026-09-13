@@ -2896,20 +2896,23 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 
 | 行区间 | 块 | 行数 | 为什么留在壳里 / 移除路径 |
 |---|---|---|---|
-| 1–231 | `MGLPlatformRendererShell` 类（NSView / CAMetalLayer / drawable / GPU capture / swap interval） | 231 | **终态平台代码**：Cocoa 图层与 drawable 只能由 ObjC 持有；随窗口后端一起保留 |
-| 236–320 | 渲染器端口 shim（15 个端口） | 85 | 每个端口在它转发的方法转 C 时退役（第 100/102 刀已各退役 1 个） |
-| 321–391 | 纹理物化端口（4 个，第 100 刀新增） | 71 | `MGLRenderer+Texture.m` 转 C 时一起退役 |
-| 392–627 | Batch replay 壳（`@try/@finally` 帧 + flush/port C 入口） | 236 | 异常帧 C 无法表达；flush 驱动完全 C 化后退役 |
-| 628–1273 | `MGLRenderer (Lifecycle)` 类目（第 105 刀并入：构造 / 视图 KVO / 窗口通知 / capture / `dealloc`） | 646 | **终态平台代码**（Cocoa 观察者与窗口 API 无法用 C 表达）；其中 `createProactiveTextures` 等纯调用块可在转 C 时再搬出 |
-| 1274–1756 | `MGLPipelineCache` 类（第 103 刀并入） | 483 | 转 C handle（见第 103 条第①项的阻塞与解除条件） |
+| 1–236 | `MGLPlatformRendererShell` 类（NSView / CAMetalLayer / drawable / GPU capture / swap interval） | 236 | **终态平台代码**：Cocoa 图层与 drawable 只能由 ObjC 持有；随窗口后端一起保留 |
+| 241–319 | 渲染器端口 shim（第 100/102 刀已退役 2 个） | 79 | 每个端口在它转发的方法转 C 时退役 |
+| 320–458 | **计算/细分宿主入口 10 个（第 108 刀新增）** | 139 | 随其目标（`MGLRenderer.m` / `+RenderPass.m` / `+BindingState.m`）转 C 逐个退役；`Temporaries*` 三个随计划 API 改收 C keep-alive 集退役 |
+| 459–529 | 纹理物化端口（4 个，第 100 刀新增） | 71 | `MGLRenderer+Texture.m` 转 C 时一起退役 |
+| 530–765 | Batch replay 壳（`@try/@finally` 帧 + flush/port C 入口） | 236 | 异常帧 C 无法表达；flush 驱动完全 C 化后退役 |
+| 766–793 | 纹理绑定入口（`bindMTLTexture:` 的锁帧 + GL 入口，第 104 刀并入） | 28 | `bindMTLTexture:` 的 ObjC 调用点全部转 C 后退役 |
+| 794–1447 | `MGLRenderer (Lifecycle)` 类目（第 105 刀并入：构造 / 视图 KVO / 窗口通知 / capture / `dealloc`） | 654 | **终态平台代码**（Cocoa 观察者与窗口 API 无法用 C 表达） |
+| 1448–1888 | `MGLPipelineCache` 类（第 103 刀并入） | 441 | 转 C handle（见第 103 条第①项的阻塞与解除条件） |
 
-**上限与纪律**：壳**目标 ≤1,800 行**（第 105 刀后实测 **1,756 行 / 272 语法**，故按第 105 刀的上限修订；
-第 105 刀前的上限是 1,200）。任何把它继续撑大的合并（T5）都必须在同一刀里更新本表并写明移除路径；
+**上限与纪律**：壳**目标 ≤2,000 行**（第 108 刀后实测 **1,889 行 / 262 语法**；上限随"新增的端口/入口"上调，
+每次上调都必须像本表这样逐块列出移除路径；第 105 刀前的上限是 1,200、第 105 刀后是 1,800）。任何把它继续撑大的合并（T5）都必须在同一刀里更新本表并写明移除路径；
 若某块本身不是平台代码（例如只是"尚未转 C 的实现"），**优先转 C 而不是并进壳**。
-**壳的收缩路径（终态应回到 ~600 行）**：① 15 个端口随其转发方法转 C 逐个退役；② 纹理物化 4 端口随 `+Texture.m` 退役；
-③ `MGLPipelineCache` 类转 C handle；④ batch `@try/@finally` 帧等 flush 驱动 C 化后退役；
-⑤ 只剩 `MGLPlatformRendererShell` 类（窗口/图层/drawable/capture）与 renderer 生命周期（KVO/通知/构造/卸载）——
-这两块是终态允许保留的平台面。
+**壳的收缩路径（终态应回到 ~600 行）**：① 渲染器端口随其转发方法转 C 逐个退役；② 计算/细分宿主入口 10 个随
+`MGLRenderer.m` / `+RenderPass.m` / `+BindingState.m` 转 C 退役；③ 纹理物化 4 端口随 `+Texture.m` 退役；
+④ `MGLPipelineCache` 类转 C handle；⑤ 纹理绑定入口随 ObjC 调用点清零退役；⑥ batch `@try/@finally` 帧等 flush 驱动 C 化后退役；
+⑦ 只剩 `MGLPlatformRendererShell` 类（窗口/图层/drawable/capture）与 renderer 生命周期（KVO/通知/构造/卸载）——
+这两块是终态允许保留的平台面（合计 ~890 行）。
 
 剩余 **12** 个文件的可消性排序（按"前置成本 ÷ 文件收益"重排，`_renderPassManager.state->` 读数已实测）：
 
