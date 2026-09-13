@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十八刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
-行数 **43,989 → 35,305**、ObjC 语法 **2,268 → 2,016**、词汇 **4,353 → 3,927**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十九刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
+行数 **43,989 → 35,206**、ObjC 语法 **2,268 → 2,015**、词汇 **4,353 → 3,924**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1789,3 +1789,28 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      前者差"`_tessellation` 三个字段进 areas"，后者差"pipeline-cache blend setter"。两条都能用**既有模式**零端口解决：
      给 `MGLRendererStateAreas` 加 `void *pipeline_cache_object` 与一个 tessellation 快照字段（areas 加字段不新增端口），
      再由壳 TU 里填（`_pipelineCache` / `_tessellation`），C 侧通过回调函数指针调用 cache 的既有方法。
+
+73. **P0-1 第十九刀：`+VertexLayout.m` 整个文件转 C 并删除（**文件 18 → 17**，零新增端口）**：
+     ① 新 TU **`mgl_vertex_layout.{h,c}`** 替换最后两个方法：
+     `-generateVertexDescriptorState:`(11) → `mglRendererGenerateVertexDescriptorState`；
+     `-updateBlendStateCache`(89) → `mglRendererUpdateBlendStateCache`。文件只剩空 `@implementation`，**整文件删除**。
+     ② **零新增端口的两个抓手（本刀的通用手法，值得复用）**：
+     - **areas 加字段不算新端口**：`MGLRendererStateAreas` 增加 `void *pipeline_cache_object`、三个 tessellation 快照字段
+       （`tess_native_tes_active` / `tess_native_tes_program` / `tess_tcs_output_stride`），由**壳 TU 填**
+       （`r->_pipelineCache`、`r->_tessellation.*`）。blend 结构用**前置声明** `struct MGLRenderPipelineBlendState_t`
+       避免让 C 头拖进 `mgl_render.h`。
+     - **函数指针放进 areas**：`int (*pipeline_cache_set_blend)(void *, uint32_t, const MGLRenderPipelineBlendState *)`，
+       壳 TU 里实现为 `mglPlatformShellPipelineCacheSetBlend`（壳是 ObjC，可以直接发 `-setBlendFactorsForAttachment:…`），
+       于是 C 能上传 blend 而**不需要新端口**、也不需要碰 cache 的私有 ivar。
+     ③ **坑**：`(void *)` 与 `(__bridge void *)` 混用会分别报"incompatible types casting 'Program *'"与
+     implicit-function-declaration 两类错——`Program *` 是 C 结构体指针，**只能直接转 `void *`**（`__bridge` 只服务 ObjC 对象）；
+     `mglRenderGenerateVertexDescriptorState` 的声明在 ObjC 头里，C 侧要自带 `extern` 声明（沿用既有做法）。
+     ④ **度量**：`objc_zero.sh` **文件 18 → 17**、行数 **35,305 → 35,206**、语法 **2,016 → 2,015**、词汇 **3,927 → 3,924**。
+     ⚠️ **如实记账**：语法只降 1——删掉的 `.m` 本身仅 7 处语法，而壳 TU 为填 areas 新增了 `(__bridge …)`/消息发送，
+     两者基本抵消；本刀的收益在**文件数、行数与词汇**，不宣称语法收益。
+     ⑤ **oracle（本刀改的是每次 blend 变更与顶点描述符构建的路径）**：旧库 = 提交 `e2bf9bc` 的独立构建（`cmp` 两库不同）；
+     两臂 trace **确定性行 4,980/4,980 与 5,513/5,513 逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；
+     plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 + `verify_gl_api` 均通过。
+     下一刀：同类"整文件转 C"继续挑薄文件——剩余 `MGLRenderer+Binding.m`(490/42 语法) · `+GPURecovery.m`(350/32) ·
+     `+DrawStageHost.m`(余 ~250) · `MGLRenderPassManager.m`(524) · `MGLPipelineCache.m`(446)；
+     手法照本刀：先建 C 头 + C 入口（必要时用 areas 字段 + 函数指针），再删 ObjC 方法，最后删空文件。

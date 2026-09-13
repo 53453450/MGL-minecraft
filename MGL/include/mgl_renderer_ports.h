@@ -25,6 +25,10 @@
 #include "mgl_command_state.h"      /* MGLCommandState */
 #include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
 
+/* Forward declaration: the blend record lives in mgl_render.h, which this
+ * header does not need to pull in. */
+struct MGLRenderPipelineBlendState_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -160,6 +164,19 @@ typedef struct MGLRendererStateAreas {
     const MGLPipelineCacheState *pipeline_cache;
     void **binding_state_owner;
     MGLFragmentTextureTraceBinding *fragment_trace_bindings;
+    /* Pipeline-cache object (the Objective-C cache instance) and the pieces of
+     * the tessellation state the vertex-descriptor plan needs.  Both are plain
+     * values C can hold, so they travel in the areas instead of costing a port
+     * per field; the shell fills them. */
+    void *pipeline_cache_object;
+    /* Sets one attachment's blend factors through the cache's own setter.
+     * Returns 1 on success. */
+    int (*pipeline_cache_set_blend)(
+        void *pipeline_cache_object, uint32_t index,
+        const struct MGLRenderPipelineBlendState_t *blend);
+    int32_t tess_native_tes_active;
+    void *tess_native_tes_program;
+    uint32_t tess_tcs_output_stride;
 } MGLRendererStateAreas;
 
 void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out);

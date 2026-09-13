@@ -376,6 +376,28 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 
 /* === Batch flush / replay-workspace ports =============================== */
 
+/* C entry point for the pipeline cache's blend setter: the cache object comes
+ * from the state areas and the message stays in this Objective-C TU, so C never
+ * needs a port for it. */
+int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
+                                          uint32_t index,
+                                          const MGLRenderPipelineBlendState *blend)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache || !blend || index >= MAX_COLOR_ATTACHMENTS) {
+        return 0;
+    }
+    [cache setBlendFactorsForAttachment:(NSUInteger)index
+                           srcRgbFactor:blend->source_rgb_factor
+                         srcAlphaFactor:blend->source_alpha_factor
+                           dstRgbFactor:blend->destination_rgb_factor
+                         dstAlphaFactor:blend->destination_alpha_factor
+                           rgbOperation:blend->rgb_operation
+                         alphaOperation:blend->alpha_operation
+                              colorMask:blend->color_write_mask];
+    return 1;
+}
+
 void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -395,6 +417,11 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->command = (MGLCommandState *)[mglRendererRenderPassManager(r) state];
     areas_out->pipeline_cache = [r->_pipelineCache state];
     areas_out->binding_state_owner = &r->_bindingStateOwner;
+    areas_out->pipeline_cache_object = (__bridge void *)r->_pipelineCache;
+    areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
+    areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
+    areas_out->tess_native_tes_program = (void *)r->_tessellation.nativeTESProgram;
+    areas_out->tess_tcs_output_stride = (uint32_t)r->_tessellation.tcsOutputStride;
     areas_out->fragment_trace_bindings = &r->_resourceFallback.fragmentTextureTraceBindings[0];
 }
 

@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_draw_encode.h"
+#include "mgl_vertex_layout.h"  /* vertex descriptor / blend cache */
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
 #include "mgl_draw_mode.h"
 #import "MGLRenderer+DrawSupportUtil.h"
@@ -4952,7 +4953,7 @@ static GLenum mglPassthroughDeclType(
 
     if (mglRenderNeedsVertexDescriptor(geometryExpansion ? 1 : 0,
                                        tessCompute ? 1 : 0)) {
-        if (![self generateVertexDescriptorState:state]) {
+        if (!mglRendererGenerateVertexDescriptorState((__bridge void *)self, state)) {
             return NO;
         }
     }
@@ -6115,7 +6116,7 @@ static GLenum mglPassthroughDeclType(
             uint32_t builtDepthFormat = mglRenderInvalidPixelFormat();
             uint32_t builtStencilFormat = mglRenderInvalidPixelFormat();
 
-            [self updateBlendStateCache];
+            mglRendererUpdateBlendStateCache((__bridge void *)self);
             state->dirty_bits &= ~DIRTY_ALPHA_STATE;
             if (getenv("MGL_TOPO_TRACE") != NULL) {
                 fprintf(stderr, "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",

@@ -53,8 +53,8 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
 
 @interface MGLRenderer ()
 
-- (BOOL)generateVertexDescriptorState:(MGLRenderPipelineDescriptorState *)state;
-- (void)updateBlendStateCache;
+/* now the C functions in mgl_vertex_layout.h */
+/* now the C functions in mgl_vertex_layout.h */
 
 @end
 
