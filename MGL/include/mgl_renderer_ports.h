@@ -52,18 +52,6 @@ int mglRendererResolveElementBufferPort(void *renderer, const void *command,
                                         Buffer **gl_buffer_out,
                                         void **mtl_buffer_out);
 
-/* Simple-replay fast path for a whole batch. */
-int mglRendererTryReplaySimpleBatchPort(void *renderer, void *batch,
-                                        GLMContext ctx,
-                                        const void *encode_context);
-
-/* Per-command dynamic bindings / sampler snapshot application. */
-int mglRendererApplyDynamicBindingsPort(void *renderer, const void *command,
-                                        GLMContext ctx, void *encode_context);
-int mglRendererApplySamplerSnapshotPort(void *renderer, const void *command,
-                                        GLMContext ctx,
-                                        const void *encode_context);
-
 /* Cull-distance capture for a direct draw. */
 int mglRendererCaptureCullArrayPort(void *renderer, GLMContext ctx, int32_t first,
                                     int32_t count, int32_t instance_count,
@@ -96,12 +84,11 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
  * Renderer state the C flush driver reads or writes: the replay-workspace
  * switch and its dual-proxy checkpoint, the batching switches, the trace-replay
  * identity and the render-pass checks. */
-/* The renderer's batching state (flags + batch arena).  C drivers read and
- * write the fields directly; this one port replaced six per-flag wrappers. */
-MGLBatchingState *mglRendererBatchingStatePort(void *renderer);
+/* The batching state (flags + batch arena) and the command state (including the
+ * trace-replay identity) are **not** ports any more: they arrive through
+ * MGLRendererStateAreas (`areas.batching` / `areas.command`), which replaced six
+ * per-flag wrappers plus a "set the trace identity" wrapper. */
 
-void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,
-                                   uint32_t batch_index);
 int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer);
 int mglRendererPrepareRenderPassIfFBOChangedPort(void *renderer, void *batch,
                                                  GLMContext ctx, GLenum *replay_error);
@@ -112,7 +99,8 @@ int mglRendererBindMTLTexturePort(void *renderer, Texture *texture);
 
 /* ---- dyn-bind / sampler ports ------------------------------------------ */
 
-/* Binding state owner (the object the dyn-bind plans write bindings through). */
+/* The binding-state owner (the object the dyn-bind plans write bindings
+ * through) is reached as `areas.binding_state_owner`, not through a port. */
 
 /* Buffer staging for the dyn-vertex path: upload a dirty base-buffer list and
  * make sure a buffer object has its Metal allocation. */
@@ -151,7 +139,8 @@ typedef struct MGLRendererStateAreas {
     void *backend;
     GLMContext ctx;
     MGLBatchingState *batching;
-    const MGLCommandState *command;
+    /* Mutable: the trace-replay identity is written by the flush driver. */
+    MGLCommandState *command;
     const MGLPipelineCacheState *pipeline_cache;
     void **binding_state_owner;
     MGLFragmentTextureTraceBinding *fragment_trace_bindings;

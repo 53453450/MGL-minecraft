@@ -298,7 +298,9 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->backend = r->_backend;
     areas_out->ctx = r->ctx;
     areas_out->batching = &r->_batching;
-    areas_out->command = [mglRendererRenderPassManager(r) state];
+    /* The manager exposes a const pointer; the record itself is mutable and
+     * the flush driver writes the trace-replay identity through it. */
+    areas_out->command = (MGLCommandState *)[mglRendererRenderPassManager(r) state];
     areas_out->pipeline_cache = [r->_pipelineCache state];
     areas_out->binding_state_owner = &r->_bindingStateOwner;
     areas_out->fragment_trace_bindings = &r->_resourceFallback.fragmentTextureTraceBindings[0];
@@ -308,22 +310,6 @@ const MGLCommandState *mglRendererCommandStatePort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     return r ? [mglRendererRenderPassManager(r) state] : NULL;
-}
-
-MGLBatchingState *mglRendererBatchingStatePort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? &r->_batching : NULL;
-}
-
-void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,
-                                   uint32_t batch_index)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [mglRendererRenderPassManager(r) setTraceReplayFlushId:flush_id
-                                                    batchIndex:batch_index];
-    }
 }
 
 int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer)
@@ -354,7 +340,11 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext glm_ctx)
     @try {
         mglBatchFlushRunBatches(renderer, glm_ctx, &pass);
     } @finally {
-        mglRendererTraceReplaySetPort(renderer, 0u, 0u);
+        MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+        if (areas.command) {
+            areas.command->traceReplayFlushId = 0u;
+            areas.command->traceReplayBatchIndex = 0u;
+        }
         mglBatchTeardownReplay(renderer, glm_ctx, &pass);
     }
 }

@@ -47,7 +47,8 @@ static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
     in->bind_valid =
         (areas.binding_state_owner && mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u;
     in->keys_equal = mglStateKeysEqual(&batch->key, &c->key) ? 1u : 0u;
-    const MGLBatchingState *bs = mglRendererBatchingStatePort(c->r);
+    MGLRendererStateAreas bsareas; mglRendererStateAreasPort(c->r, &bsareas);
+    const MGLBatchingState *bs = bsareas.batching;
     in->absolute_offsets_match =
         (want == (bs && bs->absoluteVertexBindingOffsets ? 1 : 0)) ? 1u : 0u;
     in->pass_matches = mglRendererCurrentRenderPassMatchesFramebufferPort(c->r) ? 1u : 0u;
@@ -61,7 +62,8 @@ static void fApplySkip(void *v, uint32_t b)
       areas.core->activeState = c->ctx->active_state;
   c->ctx->active_state->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)
-{ MGLBatchingState *bs = mglRendererBatchingStatePort(((FCtx *)v)->r);
+{ MGLRendererStateAreas areas; mglRendererStateAreasPort(((FCtx *)v)->r, &areas);
+  MGLBatchingState *bs = areas.batching;
   if (bs) bs->absoluteVertexBindingOffsets = w ? 1u : 0u; }
 static void fRestore(void *v, uint32_t b, uint32_t forced)
 { FCtx *c = v; mglBatchRestoreStateForBatch(c->r, FB(c, b), c->ctx, c->saved,
@@ -97,7 +99,9 @@ typedef struct {
     uint64_t hit; uint32_t bi; GLenum *err; uint32_t *skipped; GLenum mode;
 } CCtx;
 static void cBegin(void *v)
-{ CCtx *c = v; mglRendererTraceReplaySetPort(c->r, c->hit, c->bi);
+{ CCtx *c = v; MGLRendererStateAreas areas; mglRendererStateAreasPort(c->r, &areas);
+  if (areas.command) { areas.command->traceReplayFlushId = c->hit;
+                       areas.command->traceReplayBatchIndex = c->bi; }
   mglBatchTraceReplayBatch(c->r, c->batch, c->ctx, c->hit, c->bi, "RESTORE"); }
 static int cFbo(void *v)
 { CCtx *c = v; return mglRendererPrepareRenderPassIfFBOChangedPort(c->r, c->batch, c->ctx,
@@ -179,7 +183,7 @@ int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pa
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cb->batch_count == 0) return 0;
-    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
+    MGLBatchingState *bs = areas.batching;
     if (bs) bs->currentCommandBufferHasWork = 1u;
     static uint64_t s_hit = 0;
     pass->hit = ++s_hit;
@@ -198,7 +202,8 @@ void mglBatchFlushRunBatches(void *renderer, GLMContext glm_ctx, MGLBatchFlushPa
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     uint64_t hit = pass->hit;
     uint32_t skipped = pass->skipped;
-    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
+    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLBatchingState *bs = areas.batching;
     MGLBatchFlushLoopState st; memset(&st, 0, sizeof(st));
     FCtx fc = {.r = renderer, .ctx = glm_ctx, .saved = &pass->saved, .hit = hit,
                .err = &pass->replay_error, .skipped = &skipped, .st = &st};
@@ -272,8 +277,8 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
                                  const MGLStateKey *prevKey, GLuint forcedDirtyBits)
 {
     if (!renderer || !batch || !glm_ctx) return;
-    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
     MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLBatchingState *bs = areas.batching;
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     if (batch->state_snapshot) {
@@ -323,8 +328,8 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
 
 void mglBatchTeardownReplay(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass)
 {
-    MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
     MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLBatchingState *bs = areas.batching;
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     const int usedReplayWorkspace = (glm_ctx->active_state == &glm_ctx->replay_state);
     if (usedReplayWorkspace)
