@@ -338,9 +338,7 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                     const uint32_t *explicit_vertices,
                                     uint32_t explicit_vertex_count);
 - (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
-- (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
-                        capture:(id)capture
-                         params:(const uint32_t *)params;
+/* runVertexCaptureSession: had no caller left and was removed */
 /* now the C functions in mgl_draw_support.h */
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
                                       outputPrimitive:(uint32_t)outputPrimitive;

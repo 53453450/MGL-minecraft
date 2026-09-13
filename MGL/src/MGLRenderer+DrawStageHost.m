@@ -34,25 +34,6 @@
 
 
 
-- (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
-                        capture:(id)capture
-                         params:(const uint32_t *)params
-{
-    if (!drawCtx || !capture || !params) return NO;
-    self->ctx = drawCtx;
-    MGLTessCaptureSessionHostOps ops = {
-        .ctx = drawCtx,
-        .renderer = (__bridge void *)self,
-        .mark_dirty_all = mglDrawSupportCaptureMarkDirtyAll,
-        .process_gl_state = mglDrawSupportCaptureProcessGL,
-        .encoder_has_current = mglDrawSupportCaptureEncoderReady,
-        .bind_capture_slots = mglDrawSupportCaptureBindSlots,
-        .set_capture_active = mglDrawSupportCaptureSetActive,
-    };
-    return mglTessRunCaptureSession((__bridge void *)capture, params, &ops)
-               ? YES
-               : NO;
-}
 
 
 

@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,845**、ObjC 语法 **2,268 → 1,986**、词汇 **4,353 → 3,863**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,826**、ObjC 语法 **2,268 → 1,984**、词汇 **4,353 → 3,859**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2191,3 +2191,19 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 
 > **注意**：本文件剩下 3 个方法（`bindCullDistanceEmulationBuffers:` 85 行含 `id`+3×`__bridge`、MS 循环族含 block）
 > 都**不能**用正则批处理（第 45 条的失败），必须手工逐段搬并逐步编译。
+
+86. **P0-1 第三十二刀：`runVertexCaptureSession:` 其实是死方法（**−19 行**）**：
+     ① 按第 46 条（§0.17）准备转换配方时，先做了一遍全树核查：`runVertexCaptureSession` 在**整个仓库**（含 `.m/.mm/.c/.cpp/.h`，
+     排除 build）只出现在**它自己的定义**与 `MGLRenderer+Draw_Private.h` 的**声明**里——**没有任何调用者**。
+     于是不走"转换"而直接**删除方法与声明**（死代码不该换个语言继续养，第 74 条的规则）。
+     ② **工具盲点（记一次，重要）**：`scripts/objc_dead_methods.py` **没有**把它报为候选，因为该脚本的 `bare` 检查会把
+     "私有头里的声明"也算作一次引用（保守设计）。**结论：脚本的"零候选"只保证"没有'连声明都没有'的死方法"；
+     遇到"只有声明、没有调用"的情形，仍须手工做一次"定义 vs 调用点"的核查**（本轮即如此发现）。
+     ③ **度量**：行数 **34,845 → 34,826**、语法 **1,986 → 1,984**、词汇 **3,863 → 3,859**；文件 16、shim 端口 13 不变；
+     `+DrawStageHost.m` 203 → **185 行**（余 3 方法：`bindCullDistanceEmulationBuffers:` 85、MS 循环族 26+39）。
+     ④ **oracle**：旧库 = 提交 `88d35fd` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：`+DrawStageHost.m` 余 3 方法都含 ObjC-only 语法（`id`/`__bridge`/block 或 `endRenderEncodingLocked` 依赖），
+     必须手工搬并逐步编译（第 45 条失败教训）；建议顺序：`bindCullDistanceEmulationBuffers:`（先补 areas 两个
+     `_tessellation.cullDistanceCapture*` 字段，再逐段处理 `id captureBuffer` 与 3 处 `__bridge`）→ MS 循环族（先 C 化
+     `endRenderEncodingLocked`）。
