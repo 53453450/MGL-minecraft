@@ -2405,3 +2405,19 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：`+DrawStageHost.m` 余 MS 循环族（26+39）——先 C 化 `endRenderEncodingLocked`（3 个 manager 入口 +
      `mglPlatformShellGuardedCall`；其中 `_renderPassManager` 的三处调用已被第 81 刀的 `mglRenderPassManager*` C 入口覆盖），
      再把 block 参数换成 `fn + ctx`。
+
+### 0.22 收掉 `+DrawStageHost.m` 的四步直线计划（第 57 轮把依赖链全部走通，可直接照做）
+
+目标：**删掉 `MGLRenderer+DrawStageHost.m`（现 102 行 / 2 方法）→ 文件 16 → 15**。经核实，路上每一环的依赖**现在都已具备**，
+四步均为"手工搬 + 每步编译 + 整轮 A/B/CTS"：
+
+| 步 | 目标 | 依赖现状 | 预估 |
+|---|---|---|---|
+| ① | `updateGLSampledCopiesForEndedRenderPassFramebuffer:drawCount:drawBuffers:reason:`（`+RenderPass.m:4903`，约 40 行）→ C | 只用 `ctx`（areas ✓）与两处 `[self framebufferAttachmentTexture:]`（**已有 C 端口 `mglRendererAttachmentTextureFor`**）；`drawCount`/`drawBuffers` 原体已 `(void)` 弃用 | −40 |
+| ② | `endRenderEncodingLocked`（`+RenderPass.m:5060` 附近，约 91 行）→ C | 它的三个 manager 依赖（`End`/`Clear`/`Discard`）**已在第 27 刀做成 C 入口**；`@try/@catch` 由 **`mglPlatformShellGuardedCall`** 承担；`_batching`/`_renderPassManager` 由 areas 覆盖；唯一剩余依赖就是第 ① 步 | −91 |
+| ③ | MS 循环族两方法（`+DrawStageHost.m` 26+39）→ C | 依赖 `[self endRenderEncodingLocked]`（第 ② 步后可用）与 `[self newCommandBufferLocked]`（大方法，需在其内部改用 C 入口或一并搬）；**block 参数 `void (^)(void)` 换成 `fn + ctx`**，调用点（`mgl_draw_metal_port.m` 各 2 处）随之改 | −65 |
+| ④ | 删除 `MGLRenderer+DrawStageHost.m` + 私有头声明 | 文件内已无方法 | 文件 **16 → 15** |
+
+**注意事项（前几轮换来的）**：`_mglInMSSampleDrawLoop` / `_mglForcedMSSampleId` / `_mglMSSamplePlaneOffset` 是**私有 ivar**
+→ 用"方法 + 壳转发"（§0.14 第二条）而不是 areas 槽地址（第 83/85 刀的结论）；每步完成后立刻 `make -j4 lib`
+（clang 是唯一裁判），再做 A/B 与 CTS；不要试图用正则批处理（第 45/91 条）。
