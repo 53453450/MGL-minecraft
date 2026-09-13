@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十三刀** + trace 清零 后）**：文件 **53 → 19**、空 TU **3 → 0**、
-行数 **43,989 → 35,571**、ObjC 语法 **2,268 → 2,032**、词汇 **4,353 → 3,958**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十四刀** + trace 清零 后）**：文件 **53 → 19**、空 TU **3 → 0**、
+行数 **43,989 → 35,491**、ObjC 语法 **2,268 → 2,029**、词汇 **4,353 → 3,944**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1692,3 +1692,19 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 6. **提交纪律**：`git status` 逐条确认归属，只 `git add` 自己的路径（**禁用 `git add -A`**，见第 66 条）；推送 `git push origin main:main`
    （22 端口不通时用 `git -c url."ssh://git@ssh.github.com:443/53453450/MGL-minecraft.git".insteadOf="git@github.com:53453450/MGL-minecraft.git" push origin main:main`）。
 7. 文档：§0.0 进度行 + §5 新条目 + §0.09 交接状态，三处同步刷新。
+
+68. **P0-1 第十四刀：删掉 6 个编译器证明死掉的 static 函数（**−80 行 / 语法 −3 / 词汇 −14**）**：
+     ① 由 `-Wunused-function` 精确定位，逐个删除（删前用花括号配对切块，连同紧邻注释一起删）：
+     `+Tessellation.m` 的 `mglTessCreateTextureLevelView`(16) · `mglTessPlanBytesOrBind`(12) ·
+     `mglTessPlanDispatchOrBind`(31) · `mglTESXFBFieldByteSize`(4) · `mglCheckedNSUIntegerProduct`(11)；
+     `+Texture.m` 的 `mglTextureBufferLength`(6)。删后重编**再无 unused-function 告警**（这两文件此前每次全量构建都在刷）。
+     ② **度量**：行数 **35,571 → 35,491**、语法 **2,032 → 2,029**、词汇 **3,958 → 3,944**；文件仍 19、shim 仍 13 端口 / 223 行。
+     ③ **oracle**：旧库 = 提交 `5473a84` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与
+     5,513/5,513 逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**、ICB 门禁 82/10/2 不变；
+     **CTS 七簇非通过集合 diff 全空**；`GATE_EXIT=0`。
+     ④ 说明：本刀是"清死代码"，**不动 shim / 不转文件**，只如实计行数、语法与词汇的下降。
+     下一刀（按 §0.11 第一行）：`+VertexLayout.m`——`updateBlendStateCache` 的体只差
+     `[_pipelineCache setBlendFactorsForAttachment:…]`（其体是 `[self ensureOwner]` + `mglRenderSetPipelineBlendState(_owner,…)`，
+     需要一个 C 可见的 setter 或把 `MGLPipelineCacheState` 的 blend 部分做成 state area 的可变指针）；
+     `generateVertexDescriptorState:` 需要把 `MGLTessellationState` 变成 C 安全头并挂进 `MGLRendererStateAreas`；
+     `bindFramebufferAttachmentTextures` 需先 C 化 `bindFramebufferTexture:isDrawBuffer:`（`+RenderPass.m:1931`）。

@@ -482,12 +482,6 @@ static void *mglCreateDepthStencilMetalUpload(
     return dst;
 }
 
-static uint64_t mglTextureBufferLength(id buffer)
-{
-    MGLRenderBufferInfo info = {0};
-    return buffer && mglRenderGetBufferInfo((__bridge void *)buffer, &info) == 0
-        ? info.length : 0u;
-}
 
 static void *mglTextureBufferContents(id buffer)
 {

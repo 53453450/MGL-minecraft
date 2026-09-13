@@ -99,22 +99,6 @@ static bool mglTessTextureInfo(id texture, MGLRenderTextureInfo *info)
         mglRenderGetTextureInfo((__bridge void *)texture, info) == 0;
 }
 
-static id mglTessCreateTextureLevelView(
-    id texture,
-    NSUInteger level,
-    NSUInteger sliceCount)
-{
-    MGLRenderTextureInfo info = {0};
-    if (!mglTessTextureInfo(texture, &info)) return nil;
-    void *view = NULL;
-    if (mglRenderCreateTextureViewRange(
-            (__bridge void *)texture, info.pixel_format,
-            info.texture_type, level, 1, 0, sliceCount,
-            0, 0, 0, 0, 0, &view) == 0 && view) {
-        return (__bridge_transfer id)view;
-    }
-    return nil;
-}
 
 static void mglTessSetRenderVertexBuffer(id encoder,
                                          void *renderEncoderOwner,
@@ -290,50 +274,7 @@ static bool mglTessPlanSamplerOrBind(
         plan, temporaries, 3u, sampler, 0u, index);
 }
 
-static bool mglTessPlanBytesOrBind(
-    MGLRenderComputeExecutionPlan *plan,
-    NSMutableArray *temporaries,
-    id encoder,
-    const void *bytes,
-    NSUInteger length,
-    NSUInteger index)
-{
-    (void)encoder;
-    return mglTessAppendComputeBytesOp(
-        plan, temporaries, bytes, length, index);
-}
 
-static bool mglTessPlanDispatchOrBind(
-    MGLRenderComputeExecutionPlan *plan,
-    id encoder,
-    uint32_t groupsX,
-    uint32_t groupsY,
-    uint32_t groupsZ,
-    uint32_t localX,
-    uint32_t localY,
-    uint32_t localZ)
-{
-    MGLRenderComputePlan dispatch = {
-        .dispatch_kind = MGL_RENDER_COMPUTE_DISPATCH_DIRECT,
-        .groups_x = groupsX,
-        .groups_y = groupsY,
-        .groups_z = groupsZ,
-        .local_x = localX,
-        .local_y = localY,
-        .local_z = localZ,
-        .indirect_buffer = NULL,
-        .indirect_offset = 0u,
-    };
-    (void)encoder;
-    if (plan &&
-        plan->dispatch_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_DISPATCHES) {
-        NSLog(@"MGL TESS ERROR: compute dispatch sequence overflow (%u)",
-              (unsigned)plan->dispatch_op_count);
-        return false;
-    }
-    return mglRenderAppendComputeDispatchToPlan(
-        plan, &dispatch, NULL, 0) == 0;
-}
 
 static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
 {
@@ -1447,10 +1388,6 @@ typedef struct {
 }
 
 
-static NSUInteger mglTESXFBFieldByteSize(GLenum glType)
-{
-    return (NSUInteger)mglRenderTESXFBFieldByteSize((uint64_t)glType);
-}
 
 
 static NSUInteger mglTESXFBVertexStride(const Program *program)
@@ -1459,17 +1396,6 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
 }
 
 
-static bool mglCheckedNSUIntegerProduct(NSUInteger a,
-                                        NSUInteger b,
-                                        NSUInteger *result)
-{
-    uint64_t out = 0u;
-    if (mglRenderCheckedProduct((uint64_t)a, (uint64_t)b, &out) != 0) {
-        return false;
-    }
-    *result = (NSUInteger)out;
-    return true;
-}
 
 
 /* Isolines / point-mode TES: expand one vertex record per work item with
