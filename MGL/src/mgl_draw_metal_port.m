@@ -970,8 +970,7 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
                                          uint32_t *copybacks_count,
                                          void **temporaries_out)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !plan || !copybacks || !copybacks_count) return 0;
+    if (!renderer || !plan || !copybacks || !copybacks_count) return 0;
     (void)ctx;
     if (temporaries_out) *temporaries_out = NULL;
     MGLStageBindingCopyBackList stageCopyBacks = {0};
@@ -1225,17 +1224,19 @@ static void *mglStagePrepareElementIndex(void *renderer, void *index_buffer,
                                          uint64_t *inout_offset,
                                          uint64_t *inout_mtl_type)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !index_buffer || !inout_offset || !inout_mtl_type) return NULL;
+    if (!renderer || !index_buffer || !inout_offset || !inout_mtl_type) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     size_t off = (size_t)*inout_offset;
     uint64_t typ = *inout_mtl_type;
-    id prepared = mglPreparedElementIndexBuffer(
-        ((__bridge id)mglRendererBackendGetDevice(self->_backend)), NULL, (__bridge id)index_buffer, gl_index_type, &off,
+    void *prepared = (__bridge void *)mglPreparedElementIndexBuffer(
+        (__bridge id)mglRendererBackendGetDevice(areas.backend), NULL,
+        (__bridge id)index_buffer, gl_index_type, &off,
         &typ);
     if (!prepared) return NULL;
     *inout_offset = (uint64_t)off;
     *inout_mtl_type = typ;
-    return (__bridge void *)prepared;
+    return prepared;
 }
 
 static void mglStageSetCtx(void *renderer, GLMContext ctx)
@@ -1489,11 +1490,10 @@ static int mglStageResolveAttribPort(GLMContext ctx, void *vao, uint32_t attrib,
 static int mglStageEnsureMtlBufferPort(void *renderer,
                                        MGLValidateArraysAttribInfo *info)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !info || !info->buffer_obj) return 0;
+    if (!renderer || !info || !info->buffer_obj) return 0;
     Buffer *vbo = (Buffer *)info->buffer_obj;
     if (!vbo->data.mtl_data) {
-        mglRendererBindMTLBuffer((__bridge void *)self, vbo);
+        mglRendererBindMTLBuffer(renderer, vbo);
     }
     info->mtl_data = vbo->data.mtl_data;
     return info->mtl_data ? 1 : 0;
@@ -1761,9 +1761,11 @@ bool mglDrawHostBindContext(void *renderer, GLMContext ctx)
 
 void mglDrawHostSetLastPrimitiveMode(void *renderer, GLenum mode)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (host) {
-        host->_lastDrawPrimitiveMode = mode;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    {
+        areas.core->lastDrawPrimitiveMode = mode;
     }
 }
 
@@ -1861,23 +1863,28 @@ bool mglDrawHostEncodeCullDistanceArray(void *renderer, GLenum mode,
 
 void *mglDrawHostEncoderOwner(void *renderer)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host ? mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner
-                : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.command ? areas.command->currentRenderEncoderOwner : NULL;
 }
 
 void *mglDrawHostDevice(void *renderer)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host ? mglRendererBackendGetDevice(mglRendererBackend(host)) : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetDevice(areas.backend);
 }
 
 void mglDrawHostRecordArraySubmitted(void *renderer, GLenum mode,
                                      uint64_t vertexCount)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (host) {
-        mglBatchRecordArrayDrawSubmitted((__bridge void *)host, host->ctx, mode, vertexCount);
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    {
+        mglBatchRecordArrayDrawSubmitted(renderer, areas.ctx, mode, vertexCount);
     }
 }
 
@@ -1974,9 +1981,11 @@ bool mglDrawHostResolveElementBuffer(void *renderer, GLMContext ctx,
 void mglDrawHostRecordElementSubmitted(void *renderer, GLenum mode,
                                        uint64_t indexCount)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (host) {
-        mglBatchRecordElementDrawSubmitted((__bridge void *)host, host->ctx, mode, indexCount);
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    {
+        mglBatchRecordElementDrawSubmitted(renderer, areas.ctx, mode, indexCount);
     }
 }
 

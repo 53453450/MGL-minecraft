@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十二刀** + trace 清零 后；第 68–86 轮见 §0.24/§0.26–§0.43）**：
-文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,116**、ObjC 语法 **2,268 → 1,667**、词汇 **4,353 → 3,438**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十三刀** + trace 清零 后；第 68–87 轮见 §0.24/§0.26–§0.44）**：
+文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,125**、ObjC 语法 **2,268 → 1,664**、词汇 **4,353 → 3,438**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3452,3 +3452,24 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      ⑤ 下一刀：剩 21 个局部（stage 9 + draw 12；draw 侧含 `mglDrawHostHandleTessellation/Geometry/XFB`、
      `mglDrawHostGuardIssue{Arrays,Elements}`、`mglDrawHostRecord*Submitted`、`mglDrawHostResolve{Element,Indirect}Buffer` 等），
      预计 2 刀清完，随后删两个 `*HostSelf` 助手并改名 `.c`（**文件 8 → 7**）。
+
+119. **P0-1 第六十三刀：`mgl_draw_metal_port.m` 收尾第七、八簇（再 10 个函数，**剩余 13 个局部：stage 6 / draw 7**）**：
+     ① **第七簇（stage 侧剩余，3 个）**：`mglGsMetalFillComputeBindings`（只做空值判断，**不需要状态区**）、
+     `mglStagePrepareElementIndex`、`mglStageEnsureMtlBufferPort`。
+     **第八簇（draw 侧，5 个）**：`mglDrawHostSetLastPrimitiveMode`、`mglDrawHostEncoderOwner`、`mglDrawHostDevice`、
+     `mglDrawHostRecordArraySubmitted`、`mglDrawHostRecordElementSubmitted`。
+     ② 两处**编译期就抓到的形态细节**（值得记下，因为它们是"另一次失败的开始"）：
+     - `mglStagePrepareElementIndex` 里 `mglPreparedElementIndexBuffer` 的**参数与返回类型都是 ObjC 的
+       `MGLIndexMetalHandle`（`id`）**，把局部从 `id` 改成 `void *` 后两侧都要补 `(__bridge …)`——
+       报错信息是 `implicit conversion … requires a bridged cast`，改回"两边都桥接、局部保持 `void *`"即可；
+     - `if (host) { … }` 这类**带缩进块的**写法，改成 `if (!renderer) return;` 后必须保持块结构或把块体对齐，
+       本刀用"早退 + 保留一个平凡块"的方式最小化改动面（避免再引入缩进错位）。
+     ③ **度量**：该文件语法 **21 → 18**、词汇 1（持平）、行数 2,036 → 2,045；全库语法 **1,667 → 1,664**、词汇 3,438（持平）、
+     行数 31,116 → 31,125；**局部 stage 9 → 6、draw 12 → 7**；文件数 8 不变。
+     ④ **oracle**：旧库 = 提交 `226d034` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,275/5,276 与 5,806/5,809 → `processGLState.slow` **294/295** 与 292/295），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ 下一刀：剩 13 个局部（stage 6：`mglStage*` 收尾；draw 7：`mglDrawHostHandle{Tessellation,Geometry}`、
+     `mglDrawHostGuardIssue{Arrays,Elements}`、`mglDrawHostBindContext`、`mglDrawHostEncode/PrepareCullDistance*`、
+     `mglDrawHostWatchdog*`、`mglDrawHostResolve*`），**再来 1–2 刀即可删两个 `*HostSelf` 助手并改名 `.c`**。
