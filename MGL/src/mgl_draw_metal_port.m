@@ -19,6 +19,7 @@
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_compute_bind.h"    /* compute buffer binding (was a method pair) */
+#include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
 #include "mgl_size_constants.h"  /* runtime-array size constants (was a method) */
 #include "mgl_draw_support.h"
 #include "mgl_ms_sample_loop.h"
@@ -448,8 +449,7 @@ void mglDrawSupportCaptureMarkDirtyAll(void *ctx_ptr)
 
 int mglDrawSupportCaptureProcessGL(void *renderer)
 {
-    MGLRenderer *host = (__bridge MGLRenderer *)renderer;
-    return host && [host processGLState:true] ? 1 : 0;
+    return mglRendererProcessGLStatePort(renderer, 1);
 }
 
 int mglDrawSupportCaptureEncoderReady(void *renderer)
@@ -556,8 +556,7 @@ static void *mglStageCaptureIndexed(void *renderer, GLMContext ctx, void *index_
 
 static int mglStageBindProgram(void *renderer, Program *program)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self bindMTLProgram:program] ? 1 : 0;
+    return mglRendererBindMTLProgramPort(renderer, program);
 }
 
 static int mglStageProcessBuffer(void *renderer, Buffer *buf)
@@ -634,8 +633,7 @@ static int mglStageDispatchAirTESVertex(void *renderer, GLMContext ctx,
 
 static int mglStageProcessGL(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self processGLState:true] ? 1 : 0;
+    return mglRendererProcessGLStatePort(renderer, 1);
 }
 
 static int mglStageEncoderHasCurrent(void *renderer)
@@ -669,23 +667,24 @@ static void mglStageApplyPolygonOffset(void *renderer, GLenum mode)
 
 static void mglStageEndRender(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) [self endRenderEncoding];
+    if (renderer) mglRendererEndRenderEncodingPort(renderer);
 }
 
 static void mglStageClearNativeCB(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) [self clearStageBindingCopyBacks:&self->_tessellation.nativeTESCopyBacks];
+    MGLRendererStateAreas areas;
+    if (!renderer) return;
+    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererClearStageBindingCopyBacksPort(renderer, &areas.tessellation->nativeTESCopyBacks);
 }
 
 static int mglStageFlushNativeCB(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self flushStageBindingCopyBacks:&self->_tessellation.nativeTESCopyBacks
-                                   requireCPUVisibility:0]
-               ? 1
-               : 0;
+    MGLRendererStateAreas areas;
+    if (!renderer) return 0;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererFlushStageBindingCopyBacksPort(
+        renderer, &areas.tessellation->nativeTESCopyBacks, 0);
 }
 
 static void mglStageBeginNativeTES(void *renderer, Program *tes)
@@ -902,19 +901,17 @@ static uint64_t mglGsMetalBufferLength(void *buffer)
 
 static int mglGsMetalEnsureCB(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self newCommandBuffer] ? 1 : 0;
+    return renderer ? mglPlatformShellNewCommandBuffer(renderer) : 0;
 }
 
 static int mglGsMetalBindDrawTextures(void *renderer, GLMContext ctx)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !ctx) return 0;
+    if (!renderer || !ctx) return 0;
     for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         Texture *image = ctx->active_state->image_units[unit].tex;
         Texture *sampled = ctx->active_state->active_textures[unit];
-        if (image && ![self bindMTLTexture:image]) return 0;
-        if (sampled && ![self bindMTLTexture:sampled]) return 0;
+        if (image && !mglRendererBindMTLTexture(renderer, image)) return 0;
+        if (sampled && !mglRendererBindMTLTexture(renderer, sampled)) return 0;
     }
     return 1;
 }
@@ -1041,11 +1038,14 @@ static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !ctx) return 0;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     MGLEncodeContext gsEncCtx = {
         .render_encoder_owner =
-            self->_renderPassManager->state->currentRenderEncoderOwner,
+            areas.command ? areas.command->currentRenderEncoderOwner : NULL,
     };
-    [self bindFragmentBuffersToCurrentRenderEncoder:&gsEncCtx];
+    (void)mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(renderer,
+                                                                   &gsEncCtx);
     (void)mglRendererBindBufferSizeConstantsForRenderEncoder(renderer);
     Program *gsVertexProgram =
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
@@ -1747,11 +1747,10 @@ bool mglDrawHostCaptureCullDistanceElement(void *renderer, GLMContext ctx,
 
 bool mglDrawHostProcessGLStateLocked(void *renderer, bool draw_command)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host) {
+    if (!renderer) {
         return false;
     }
-    return [host processGLStateLocked:draw_command] ? true : false;
+    return mglRendererProcessGLStateLockedPort(renderer, draw_command) ? true : false;
 }
 
 bool mglDrawHostRasterizationIsEmpty(void *renderer)
