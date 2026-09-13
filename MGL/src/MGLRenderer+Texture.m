@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_readback_clear.h"
+#include "mgl_gpu_recovery.h"
 #include "mgl_pixel_format.h"
 #include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Texture_Private.h"
@@ -3167,7 +3168,7 @@ static void mglTextureCopyTextureToBuffer(
                 bytesPerImage = dsBytesPerImage;
             }
 
-            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+            NSUInteger alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
 
             NSUInteger alignedBytesPerRow = bytesPerRow;
 
@@ -3295,7 +3296,7 @@ static void mglTextureCopyTextureToBuffer(
 
         NSUInteger bytesPerRow = mglTextureInfo(texture).width * bytesPerPixel;
 
-        NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:mglTextureInfo(texture).pixel_format];
+        NSUInteger alignment = mglRendererOptimalAlignmentForPixelFormat(mglTextureInfo(texture).pixel_format);
 
         if (bytesPerRow % alignment != 0) {
 
@@ -3986,7 +3987,7 @@ static void mglTextureCopyTextureToBuffer(
                     }
 
 
-                    NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                    NSUInteger alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
 
                     NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
 
@@ -4368,7 +4369,7 @@ static void mglTextureCopyTextureToBuffer(
                         }
                     }
 
-                    NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                    NSUInteger alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
                     NSUInteger alignedBytesPerRow = bytesPerRow;
                     if (alignedBytesPerRow % alignment != 0) {
                         alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
@@ -4691,7 +4692,7 @@ static void mglTextureCopyTextureToBuffer(
                                 addr = (uintptr_t)srcData;
                             }
 
-                            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                            NSUInteger alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
                             NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
                             if (alignedBytesPerRow % alignment != 0) {
                                 alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
@@ -4895,7 +4896,7 @@ static void mglTextureCopyTextureToBuffer(
                             }
                         }
 
-                        NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                        NSUInteger alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
                         NSUInteger alignedBytesPerRow = bytesPerRow;
                         if (alignedBytesPerRow % alignment != 0) {
                             alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;

@@ -39,7 +39,7 @@
 @interface MGLRenderer ()
 
 - (BOOL)validateMetalObjects;
-- (void)clearTextureCache;
+/* now the C functions in mgl_gpu_recovery.h */
 - (void)cleanupCommandBuffer;
 - (void)resetMetalState;
 - (void)emergencyResetMetalState;
@@ -48,7 +48,7 @@
 - (void)clearProblematicGPUState;
 - (void)recordGPUError;
 - (void)recordGPUSuccess;
-- (NSUInteger)getOptimalAlignmentForPixelFormat:(uint32_t)format;
+/* now the C functions in mgl_gpu_recovery.h */
 
 @end
 

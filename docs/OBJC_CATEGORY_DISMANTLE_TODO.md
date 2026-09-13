@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,096**、ObjC 语法 **2,268 → 2,006**、词汇 **4,353 → 3,912**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,077**、ObjC 语法 **2,268 → 1,999**、词汇 **4,353 → 3,910**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1944,3 +1944,24 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 > 预计 −350 行、文件 17 → 16）；若中途发现依赖深度 ≥2，则退回"逐个方法转 C"并在日志里记录依赖表。
 > `mgl_draw_metal_port.m` 与三厚块（`+RenderPass`/`+Texture`/`+Blit`）属于最后阶段：它们的方法彼此调用密集，
 > 应先做"叶子方法"（只调 C 与 areas 的那些）再向上收口。
+
+79. **P0-1 第二十五刀：`+GPURecovery.m` 的两个零依赖方法转 C（**−19 行**，§0.13 路线的第一步）**：
+     ① 按 §0.13"按依赖深度挑刀"的方法，先从 `+GPURecovery.m` 里挑出**发送数与 ivar 数都是 0** 的两个方法：
+     `-clearTextureCache`(14) → `mglRendererClearTextureCache`；
+     `-getOptimalAlignmentForPixelFormat:`(7) → `mglRendererOptimalAlignmentForPixelFormat`，
+     新 TU **`mgl_gpu_recovery.{h,c}`**；`+Texture.m` 里 **6 处** `[self getOptimalAlignmentForPixelFormat:…]`
+     与 `+GPURecovery.m` 内 1 处 `[self clearTextureCache]` 改直调；私有头两条声明注释化。
+     ② **该文件的依赖表（本轮实测，供下一刀直接用）**：
+     - 零依赖：`clearTextureCache` ✅已转、`getOptimalAlignmentForPixelFormat:` ✅已转；
+     - 仅依赖 `_gpuRecovery` + `[NSDate date]`：`recordGPUError`(10) / `recordGPUSuccess`(12) / `shouldSkipGPUOperations`(19)
+       → 需要 1 个 `_gpuRecovery` 的 areas 指针 + 1 个 C 时间函数（`mglTraceNowSeconds()` 已存在）；
+     - 依赖 `_renderPassManager` 的方法（`cleanupCommandBuffer` / `clearProblematicGPUState` / `commitCommandBufferWithAGXRecovery:`）
+       → 需要 manager 的 `discardCurrentCommandBuffer` / `clearCurrentRenderEncoder` / `endCurrentRenderEncoder` /
+       `commitCommandBufferTransaction` / `releaseDetachedCommandBufferIfOwned` 五个 C 入口；
+     - `resetMetalState`(35) 还需 `_pipelineCache.resetCaches`（cut 19 已把 cache 对象放进 areas，可加 1 个 C 入口）与
+       `_depthStencilState`、`_commandQueue`、`_isVirtualized` 三个 ivar。
+     ③ **度量**：行数 **35,096 → 35,077**、语法 **2,006 → 1,999**（−7）、词汇 **3,912 → 3,910**；文件 17、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `be79747` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：按上面第 ② 条继续拆 `+GPURecovery.m`——先加 `_gpuRecovery` 的 areas 指针 + 用 `mglTraceNowSeconds()` 替 `[NSDate date]`，
+     把 `recordGPUError` / `recordGPUSuccess` / `shouldSkipGPUOperations` 三个转 C（预计 −41 行）；再补 5 个 manager C 入口收口整文件。

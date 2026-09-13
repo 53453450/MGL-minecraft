@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_env_flag.h"
+#include "mgl_gpu_recovery.h"
 
 @implementation MGLRenderer (GPURecovery)
 
@@ -94,20 +95,6 @@
     }
 }
 
-- (void)clearTextureCache
-{
-    // PROPER FIX: Intelligent texture cache cleanup
-    NSLog(@"MGL INFO: Clearing texture cache to free memory");
-
-    // Note: Texture binding cache cleanup would require instance variables
-    // For now, we focus on basic resource cleanup
-
-    // Force garbage collection using available methods
-    if (@available(macOS 10.15, *)) {
-        // Simply nil out some references to encourage garbage collection
-        // This is a placeholder for more sophisticated cache management
-    }
-}
 
 - (void)cleanupCommandBuffer
 {
@@ -166,7 +153,7 @@
     // Note: _depthStencilState would be an instance variable if it exists
 
     // Clear all cached objects
-    [self clearTextureCache];
+    mglRendererClearTextureCache();
 
     NSLog(@"MGL INFO: AGX Metal state reset completed");
 
@@ -338,13 +325,6 @@
 
 #pragma mark - Metal Optimization Methods
 
-- (NSUInteger)getOptimalAlignmentForPixelFormat:(uint32_t)format
-{
-    (void)format;
-    // aligned_alloc requires an alignment compatible with platform pointer alignment.
-    // Using a conservative 64-byte value avoids EINVAL on macOS/arm64 and is safe for texture rows.
-    return 64;
-}
 
 
 @end
