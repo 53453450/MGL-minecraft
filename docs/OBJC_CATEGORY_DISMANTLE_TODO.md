@@ -2547,3 +2547,62 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      ⑤ 下一刀：**整块搬迁 `endRenderEncodingLocked`**（≈91 行）——本刀 + 第 93 刀（trace 清理 C 入口）+ 第 94 刀
      （`ClearRenderPassIdentity`）+ 第 27 刀（`End`/`Clear`/`Discard`）+ `mglPlatformShellGuardedCall` 已把它的依赖全部凑齐。
+
+96. **第 65 轮：整块搬迁的最后一块拼图（`mglPlatformShellDrawable`）与精确代码骨架**
+
+第 95 刀把日志函数签名改成 `void *drawable` 后，`endRenderEncodingLocked` 的 C 版**只剩一处还需要壳帮忙**：
+外侧函数要调用 `mglLogRenderPassLifecycle(…, drawable, …)`，而 `_drawable` 是**私有 ivar**（且不在 `MGLRendererCoreState`）→
+必须补一个 **"方法 + 壳转发"**：
+
+```objc
+/* MGLRenderer.m */
+- (void *)mglDrawablePointer { return (__bridge void *)_drawable; }   /* 方法体内用 ivar 合法 */
+/* 壳 TU */
+void *mglPlatformShellDrawable(void *renderer)
+{ MGLRenderer *r = (__bridge MGLRenderer *)renderer; return r ? [r mglDrawablePointer] : NULL; }
+```
+
+**C 版骨架（下一刀照抄，逐段编译）**：
+
+```c
+static int mglRendererEndRenderEncodingGuardedBody(void *renderer)   /* 原 @try 体 */
+{
+    mglRenderPassManagerEndCurrentRenderEncoder(renderer);
+    mglRenderPassManagerClearCurrentRenderEncoder(renderer);
+    mglClearFragmentTraceBindingsForRenderer(renderer, "end_render_encoding");
+    mglRenderPassManagerClearRenderPassIdentity(renderer);
+    return 1;
+}
+
+void mglRendererEndRenderEncodingLocked(void *renderer)
+{
+    mglBindingInvalidateLastBoundState(renderer);                    /* cut 22 的 C 函数 */
+    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+    if (!cs || mglRenderEncoderOwnerHasCurrent(cs->currentRenderEncoderOwner) != 1) return;
+    if (areas.batching) areas.batching->currentCommandBufferHasWork = 1u;
+    Framebuffer *endedFramebuffer = cs->renderPassFramebuffer;
+    static uint64_t s_log = 0; uint64_t hit = ++s_log;
+    if (hit <= 128ull || (hit % 1024ull) == 0ull) {
+        mglLogRenderPassLifecycle("end", hit, areas.ctx, cs->currentCommandBufferOwner,
+                                  cs->currentRenderEncoderOwner, cs->renderPassStateOwner,
+                                  mglPlatformShellDrawable(renderer),   /* ← 需新增的壳入口 */
+                                  cs->renderPassFramebuffer, cs->renderPassFramebufferName,
+                                  cs->renderPassDrawBuffer, cs->renderPassDrawBufferCount);
+    }
+    if (!mglPlatformShellGuardedCall(renderer, "end render encoding",
+                                     mglRendererEndRenderEncodingGuardedBody)) {
+        fprintf(stderr, "MGL ERROR: Exception ending render encoder - ignoring\n");
+        mglRenderPassManagerClearCurrentRenderEncoder(renderer);
+        mglClearFragmentTraceBindingsForRenderer(renderer, "end_render_encoding_exception");
+        mglRenderPassManagerClearRenderPassIdentity(renderer);
+    }
+    if (endedFramebuffer)
+        mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(renderer, endedFramebuffer, "end_render_pass");
+}
+```
+
+**语义等价性说明**：原 `@catch` 体在异常时执行三件事（清 encoder、清 trace、清 identity）——C 版由守卫返回 0 后**紧接着执行同样三件事**；
+唯一差别是异常对象只被记录成固定文案（原版打印 `exception.reason`），如需保留 reason，可让守卫把 `description` 写进一个 out 参数。
+
+**本轮不做改动**：可用上下文不足以在一次闭环内完成"新增壳入口 + 新 C TU + 删 91 行方法 + 门禁/CTS/A/B"，按纪律不把树留在半成品状态。
