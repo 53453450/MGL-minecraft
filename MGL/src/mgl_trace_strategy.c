@@ -12,6 +12,7 @@
  */
 
 #include "mgl_trace_strategy.h"
+#include "mgl_renderer_ports.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -227,4 +228,31 @@ bool mglShouldLogTraceFileBindingForProgram(Program *program, uint64_t *counter)
         return true;
     }
     return mglShouldLogFocusedBinding(counter);
+}
+
+
+/* Fragment-texture trace bindings cleanup used by the render-pass teardown:
+ * trace the current contents (when tracing is on) and clear them, or - with
+ * tracing off - only clear the functional flags.  Body of the two identical
+ * blocks in -[MGLRenderer endRenderEncodingLocked]. */
+void mglClearFragmentTraceBindingsForRenderer(void *renderer, const char *reason)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLFragmentTextureTraceBinding *bindings = areas.fragment_trace_bindings;
+    if (!bindings) {
+        return;
+    }
+    GLuint programKey = areas.ctx ? mglCurrentRenderProgramKey(areas.ctx) : 0u;
+    GLuint pipelineProgram = areas.pipeline_cache
+                                 ? areas.pipeline_cache->pipelineProgramName
+                                 : 0u;
+    if (mglTraceLogIsEnabled()) {
+        mglTraceFragmentTextureTraceBindings("CLEAR", reason, bindings,
+                                             TEXTURE_UNITS, programKey,
+                                             pipelineProgram);
+        memset(bindings, 0, sizeof(MGLFragmentTextureTraceBinding) * TEXTURE_UNITS);
+    } else {
+        mglClearFragmentTextureTraceFunctionalFlags(bindings, TEXTURE_UNITS);
+    }
 }

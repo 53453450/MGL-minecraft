@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,396**、ObjC 语法 **2,268 → 1,957**、词汇 **4,353 → 3,836**；
+文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,373**、ObjC 语法 **2,268 → 1,959**、词汇 **4,353 → 3,836**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2475,3 +2475,21 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
   4. 之后按 §0.19 表继续（`bindMTLTextureLocked:` → `MGLPipelineCache.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块）。
 - **不要碰的目标**（成本倒挂，已实测）：`syncResourceBindingsForContext:`（§0.23，前置 40 行的 `bindBufferSizeConstantsForRenderEncoder`）；
   §0.20/§0.21 列出的访问器与一行转发；§0.18 里 §0.19/§0.20 已判定为假阳性的名字。
+
+93. **P0-1 第三十九刀：`endRenderEncodingLocked` 里两份重复的 trace 清理块转 C（**−23 行**）**：
+     ① 该方法里"清空 fragment texture trace bindings"的逻辑（trace 开时 `mglTraceFragmentTextureTraceBindings` + memset，
+     否则 `mglClearFragmentTextureTraceFunctionalFlags`）**原样出现了两遍**（正常路径与 `@catch` 路径）。
+     新增 C 入口 **`mglClearFragmentTraceBindingsForRenderer(void *renderer, const char *reason)`**
+     （落在 `mgl_trace_strategy.c`）：状态全部来自 areas——`areas.fragment_trace_bindings`（已在 areas 里）、
+     `areas.ctx`（取 `mglCurrentRenderProgramKey`）、`areas.pipeline_cache->pipelineProgramName`。
+     两处各 11 行 → 各 1 行。
+     ② **本刀是"半块"策略的样本**：`endRenderEncodingLocked` 整体（≈91 行）尚需 `mglRenderPassManagerClearRenderPassIdentity`
+     的 C 入口与 catch/正常两条路径的守卫化，本轮先把它内部**重复且纯 C** 的部分拿走，控制面（`@try/@catch`）保持不动，
+     以零风险换取行数下降；整块搬迁仍按 §0.22 第②步在后续轮次做。
+     ③ **度量**：行数 **34,396 → 34,373**、语法 **1,957 → 1,959（+2）**、词汇 3,836（持平）；文件 16、shim 端口 13 不变。
+     **语法 +2 的原因**：两处调用点各引入一个 `(__bridge void *)` 桥接（与第 46/59/83 条同款现象），如实记账、不宣称语法收益。
+     ④ **oracle**：旧库 = 提交 `bd9cf01` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：继续 §0.22 第②步的剩余部分——补 `mglRenderPassManagerClearRenderPassIdentity` 的 C 入口（其体只是
+     `mglRenderClearRenderPassIdentity(_state.renderPassIdentityOwner)` 一类调用），再把 `@try/@catch` 用
+     `mglPlatformShellGuardedCall` 包成"C 体 + 失败后清理"两步；随后第③④步即可删 `+DrawStageHost.m`。

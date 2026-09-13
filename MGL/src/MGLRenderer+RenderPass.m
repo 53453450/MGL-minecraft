@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_draw_encode.h"
+#include "mgl_trace_strategy.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_binding_state_ops.h"
 #include "mgl_vertex_layout.h"  /* vertex descriptor / blend cache */
@@ -4950,19 +4951,7 @@ static GLenum mglPassthroughDeclType(
             [_renderPassManager clearCurrentRenderEncoder];
             /* When trace is disabled, skip the full-struct memset and
              * trace call and clear only the functional flag fields. */
-            if (mglTraceLogIsEnabled()) {
-                mglTraceFragmentTextureTraceBindings("CLEAR",
-                                                     "end_render_encoding",
-                                                     _resourceFallback.fragmentTextureTraceBindings,
-                                                     TEXTURE_UNITS,
-                                                     ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
-                                                     _pipelineCache.state->pipelineProgramName);
-                memset(_resourceFallback.fragmentTextureTraceBindings, 0,
-                       sizeof(_resourceFallback.fragmentTextureTraceBindings));
-            } else {
-                mglClearFragmentTextureTraceFunctionalFlags(
-                    _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS);
-            }
+            mglClearFragmentTraceBindingsForRenderer((__bridge void *)self, "end_render_encoding");
             [_renderPassManager clearRenderPassIdentity];
             if (kMGLVerboseFrameLoopLogs) {
                 NSLog(@"MGL DEBUG: Render encoder ended successfully");
@@ -4973,19 +4962,7 @@ static GLenum mglPassthroughDeclType(
             [_renderPassManager clearCurrentRenderEncoder];
             /* When trace is disabled, skip the full-struct memset and
              * trace call and clear only the functional flag fields. */
-            if (mglTraceLogIsEnabled()) {
-                mglTraceFragmentTextureTraceBindings("CLEAR",
-                                                     "end_render_encoding_exception",
-                                                     _resourceFallback.fragmentTextureTraceBindings,
-                                                     TEXTURE_UNITS,
-                                                     ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
-                                                     _pipelineCache.state->pipelineProgramName);
-                memset(_resourceFallback.fragmentTextureTraceBindings, 0,
-                       sizeof(_resourceFallback.fragmentTextureTraceBindings));
-            } else {
-                mglClearFragmentTextureTraceFunctionalFlags(
-                    _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS);
-            }
+            mglClearFragmentTraceBindingsForRenderer((__bridge void *)self, "end_render_encoding_exception");
             [_renderPassManager clearRenderPassIdentity];
         }
 

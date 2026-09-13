@@ -164,6 +164,9 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
                                               uint32_t commandIndex,
                                               bool forceTrace);
 
+/* Clears the renderer's fragment-texture trace bindings (see the body). */
+void mglClearFragmentTraceBindingsForRenderer(void *renderer, const char *reason);
+
 #ifdef __cplusplus
 }
 #endif
