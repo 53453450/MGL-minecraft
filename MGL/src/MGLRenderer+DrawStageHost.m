@@ -19,6 +19,7 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_draw_cull.h"
+#include "mgl_draw_support.h"  /* fragment-needs-per-sample-MS */
 #include "mgl_draw_issue.h"
 #include "mgl_draw_tess.h"
 #include "mgl_draw_encode.h"
@@ -53,25 +54,6 @@
 }
 
 
-- (id)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
-                                                  indexBuffer:(id)indexBuffer
-                                                    indexType:(uint64_t)indexType
-                                                  indexOffset:(NSUInteger)indexOffset
-                                                        count:(GLsizei)count
-                                                    baseVertex:(GLint)baseVertex
-                                                 instanceCount:(GLsizei)instanceCount
-                                                  baseInstance:(GLuint)baseInstance
-                                                     maxIndex:(uint32_t)maxIndex
-                                                    outOffset:(NSUInteger *)outOffset
-{
-    uint64_t off = 0u;
-    void *cap = mglDrawHostRunVertexCaptureIndexed(
-        (__bridge void *)self, drawCtx, (__bridge void *)indexBuffer, indexType,
-        (uint64_t)indexOffset, count, baseVertex, instanceCount, baseInstance,
-        maxIndex, &off);
-    if (outOffset) *outOffset = (NSUInteger)off;
-    return (__bridge_transfer id)cap;
-}
 
 
 - (void)bindCullDistanceEmulationBuffers:(GLenum)mode
@@ -185,12 +167,6 @@
     return tex;
 }
 
-- (BOOL)fragmentNeedsPerSampleMSValuesForContext:(GLMContext)glm_ctx
-{
-    Program *fp = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
-    if (!fp) return NO;
-    return mglRenderFragmentNeedsPerSampleMSValues(fp) != 0;
-}
 
 - (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
                                    drawOnce:(void (^)(void))drawOnce
@@ -198,7 +174,7 @@
     if (_mglInMSSampleDrawLoop || !drawOnce) return NO;
     Texture *tex = [self emulatedMSColor0TextureForContext:glm_ctx];
     if (!tex) return NO;
-    if (![self fragmentNeedsPerSampleMSValuesForContext:glm_ctx]) return NO;
+    if (!mglDrawFragmentNeedsPerSampleMSValues(glm_ctx)) return NO;
 
     const GLint samples = (GLint)MAX(tex->samples, 1);
     _mglInMSSampleDrawLoop = YES;
@@ -224,7 +200,7 @@
     if (_mglInMSSampleDrawLoop) return;
     Texture *tex = [self emulatedMSColor0TextureForContext:glm_ctx];
     if (!tex || !tex->mtl_data) return;
-    if ([self fragmentNeedsPerSampleMSValuesForContext:glm_ctx]) {
+    if (mglDrawFragmentNeedsPerSampleMSValues(glm_ctx)) {
         /* Per-sample draws already filled each plane. */
         return;
     }

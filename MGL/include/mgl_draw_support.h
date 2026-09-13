@@ -47,6 +47,9 @@ void mglDrawApplyPolygonOffset(void *renderer, uint32_t mode);
 /* True when `mode`'s primitives are all culled by the current cull state. */
 int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode);
 
+/* True when the current fragment program needs per-sample MS values. */
+int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx);
+
 #ifdef __cplusplus
 }
 #endif

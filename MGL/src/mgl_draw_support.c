@@ -20,6 +20,8 @@
  */
 
 #include "mgl_draw_support.h"
+#include "mgl_draw_issue.h"
+#include "mgl_draw_tess.h"    /* mglResolveProgramForStageFromState */   /* mglDrawHostRunVertexCaptureIndexed */
 #include "mgl_renderer_ports.h"   /* state areas, mglRendererProcessBuffer */
 #include "mgl_render.h"
 #include "mgl_state_compat.h"     /* mglLogRenderStateRepair */
@@ -208,4 +210,14 @@ int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode)
                ctx->active_state->caps.cull_face ? 1 : 0,
                (uint32_t)ctx->active_state->var.cull_face_mode,
                mglRenderDrawModeProducesPolygons((uint64_t)mode) ? 1 : 0) != 0;
+}
+
+/* Body of the former -[MGLRenderer fragmentNeedsPerSampleMSValuesForContext:]. */
+int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx)
+{
+    Program *fp = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    if (!fp) {
+        return 0;
+    }
+    return mglRenderFragmentNeedsPerSampleMSValues(fp) != 0;
 }

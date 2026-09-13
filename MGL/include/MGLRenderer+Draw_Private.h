@@ -341,16 +341,7 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
 - (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
                         capture:(id)capture
                          params:(const uint32_t *)params;
-- (id)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
-                                                  indexBuffer:(id)indexBuffer
-                                                    indexType:(uint64_t)indexType
-                                                  indexOffset:(NSUInteger)indexOffset
-                                                        count:(GLsizei)count
-                                                    baseVertex:(GLint)baseVertex
-                                                 instanceCount:(GLsizei)instanceCount
-                                                  baseInstance:(GLuint)baseInstance
-                                                     maxIndex:(uint32_t)maxIndex
-                                                     outOffset:(NSUInteger *)outOffset;
+/* now the C functions in mgl_draw_support.h */
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
                                       outputPrimitive:(uint32_t)outputPrimitive;
 - (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program;
@@ -371,7 +362,7 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
 
 /* Emulated MS (texture2d_array sample planes): per-sample redraw + broadcast. */
 - (Texture *)emulatedMSColor0TextureForContext:(GLMContext)glm_ctx;
-- (BOOL)fragmentNeedsPerSampleMSValuesForContext:(GLMContext)glm_ctx;
+/* now the C functions in mgl_draw_support.h */
 - (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
                                    drawOnce:(void (^)(void))drawOnce;
 - (void)broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:(GLMContext)glm_ctx;

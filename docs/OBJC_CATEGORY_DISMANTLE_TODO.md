@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十九刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
-行数 **43,989 → 35,206**、ObjC 语法 **2,268 → 2,015**、词汇 **4,353 → 3,924**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
+行数 **43,989 → 35,182**、ObjC 语法 **2,268 → 2,010**、词汇 **4,353 → 3,919**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1814,3 +1814,20 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：同类"整文件转 C"继续挑薄文件——剩余 `MGLRenderer+Binding.m`(490/42 语法) · `+GPURecovery.m`(350/32) ·
      `+DrawStageHost.m`(余 ~250) · `MGLRenderPassManager.m`(524) · `MGLPipelineCache.m`(446)；
      手法照本刀：先建 C 头 + C 入口（必要时用 areas 字段 + 函数指针），再删 ObjC 方法，最后删空文件。
+
+74. **P0-1 第二十刀：`+DrawStageHost.m` 再清两个方法（**−24 行**）**：
+     ① `fragmentNeedsPerSampleMSValuesForContext:`(6) → C 的 `mglDrawFragmentNeedsPerSampleMSValues`（并入
+     `mgl_draw_support.{h,c}`），文件内 2 处 MS 采样循环的调用点改直调；`captureAIRVertexPositionsForGeometryIndexed:`(19)
+     经"死方法三条件"（文件内自调用 0、全树引用 0、非函数指针）判定为**死方法，直接删除**。
+     ② **本刀的一个自我纠错**：我先把 `captureAIRVertexPositionsForGeometryIndexed:` 的体也搬成了 C 函数
+     （`mglDrawCaptureVertexPositionsForGeometryIndexed`），随后才发现该 ObjC 方法**已经没有任何调用者**——
+     于是**把刚写的 C 函数也一并删掉**，没有把死代码从 ObjC 搬到 C（"搬运死代码"不算进度）。
+     **规则：迁移前先跑一遍死方法判定；死的东西直接删，不要换个语言继续养着。**
+     ③ **度量**：行数 **35,206 → 35,182**、语法 **2,015 → 2,010**、词汇 **3,924 → 3,919**；文件 17、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `921b57b` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与
+     5,513/5,513 逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀（轮次预算内继续）：`+DrawStageHost.m` 只剩 5 个方法（MS 采样循环族 + `runVertexCaptureSession:` +
+     `bindCullDistanceEmulationBuffers:` + `emulatedMSColor0TextureForContext:`）；`bindCullDistance…` 需要
+     areas 再补两个 `_tessellation.cullDistanceCapture*` 字段 + 一个 `recordLastBoundVertexBuffer:` 的 C 入口
+     （照第 73 条的"areas 字段 + 函数指针"手法，零端口）；MS 循环族因**含 block 参数**（`void (^)(void)`）暂留 ObjC。
