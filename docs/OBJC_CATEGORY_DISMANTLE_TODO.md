@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十刀** + trace 清零 后；第 68–75 轮见 §0.24/§0.26–§0.32）**：
-文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 32,020**、ObjC 语法 **2,268 → 1,774**、词汇 **4,353 → 3,621**；
-**shim：43 → 15 个端口 / 唯一壳 TU 1,756 行 / 233 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；`MGLRenderer*.m` **34,604 → 28,504**）。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十一刀** + trace 清零 后；第 68–76 轮见 §0.24/§0.26–§0.33）**：
+文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 32,033**、ObjC 语法 **2,268 → 1,732**、词汇 **4,353 → 3,575**；
+**shim：43 → 15 个端口 / 唯一壳 TU 1,756 行 / 233 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -3056,3 +3056,32 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
      stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
      **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      ⑦ 下一刀：按 §0.32 排序——`MGLRenderer+Compute.m`（1,246 行 / 84 语法 / 11 方法）或 `mgl_draw_metal_port.m`（纯语法清扫）。
+
+107. **P0-1 第五十一刀：host-ops 门面的 25 个 `id`/`NSUInteger` 端口改 `void *`（**语法 −42 / 词汇 −46**，文件数不变）**：
+     ① `mgl_draw_metal_port.m` 是"0 方法"的 host-ops 适配层，其中 25 个函数**本来就是纯 Metal 门面**
+     （`mglRender*` 的一层包装，只因为类型写成 `id`/`NSUInteger`/`BOOL` 才带 ObjC 语法）。这一刀把这批函数的
+     **声明与定义同时改成 C 类型**：`id → void *`、`NSUInteger/NSInteger → size_t/int64_t`、`BOOL → bool`、
+     `nil → NULL`、`YES/NO → true/false`，并去掉随之多余的全部 `(__bridge …)`；
+     `MGLRenderer+DrawSupportUtil.h` 由 ObjC 头改为 C 可用头（`#import <Foundation/Foundation.h>` →
+     `<stdbool.h>/<stddef.h>/<stdint.h>`），唯一另一个使用者 `MGLRenderer+RenderPass.m` 照旧 `#import` ✓。
+     ② **踩坑（重要，新的纪律）**：把 `(__bridge_retained void *)x` 一概改成 `return x;` 是**错的**——
+     ARC 下 `__bridge_retained` 的含义是"给 C 调用方 +1"，而 C 调用方（`mglGsMetalEndBlit` 等）确实 `CFRelease` 它。
+     只有"局部变量本来拿着 +1（来自 create）"的那几处等价；**底层调用只是借用**的两处必须显式 `CFRetain`：
+     `mglGsMetalBeginBlit`（借来的 encoder）与 `mglStageNativeFactors`（可能直接返回借用的 canonical 缓冲）。
+     实测后果：改错后 `make test-regression` 在 `air_geometry_xfb` 崩在
+     `-[_MTLCommandEncoder dealloc]: failed assertion 'Command encoder released without endEncoding'`（encoder 被提前 CFRelease）。
+     修法是新增 `mglDrawSupportRetainForCaller()`（`CFRetain` 后原样返回）并在这两处调用；**门禁随即回到 92/0/2**。
+     **规则：去 `__bridge_retained` 前，先确认那个 `+1` 原本由谁持有——局部（等价）还是 ARC 的 bridge（必须补 `CFRetain`）。**
+     ③ 另一处如实记账的语义微差：`mglCachedDefaultTessFactorBuffer` 走"新建"分支时，ARC 版把结果以 **+0（autorelease）**
+     交给调用方，C 版现在交给调用方 **+1**（`mglStageCachedFactors` 只借用不释放）→ **每次新建会多一个引用**，
+     但该缓冲由后端缓存持有、按 patch_count/levels 复用，泄漏有界；若强行在 C 里释放，未入缓存的失败分支就会 use-after-free，
+     因此**保留 +1 并在此记录**，不做"看起来更干净"的改动。
+     ④ **度量**：语法 **1,774 → 1,732（−42）**、词汇 **3,621 → 3,575（−46）**；行数 **32,020 → 32,033（+13，新增注释与 helper）**；
+     文件数 9 不变（该文件仍有 ~58 语法：host 发送、`NSMutableArray`、capture 的 `NSString`）；
+     `mgl_draw_metal_port.m` 单文件 100 → **58** 语法、96 → **50** 词汇。
+     ⑤ **oracle**：旧库 = 提交 `c5e281c` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,274/5,273 与 5,804/5,807 → `processGLState.slow` **293/292 与 290/293**），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑥ 下一刀：继续同一文件——剩下 58 语法是 **host 发送 + Foundation**（`NSMutableArray *temps`、capture 的 `NSString`、
+     `[self bindBuffersToComputeEncoder:…]` 等），补 ~6 个 C 入口后即可把该文件整体改名 `.c`（**文件 9 → 8**）。
