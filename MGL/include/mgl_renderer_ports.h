@@ -230,6 +230,11 @@ int mglRendererEnsureWritableCommandBufferPort(void *renderer,
  * OWNERSHIP: mglRendererIsolatedStageBindingBufferPort returns a +1 buffer the
  * caller releases with mglSafeReleaseMetalObj; the sampler entry returns a
  * BORROWED sampler (the renderer or the backend cache owns it). */
+/* Assign the renderer's context ivar (the Objective-C compute entry points did
+ * `ctx = glm_ctx;` before dispatching; the port-wrapped methods downstream read
+ * that ivar through the state areas). */
+void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx);
+
 int mglRendererBindMTLProgramPort(void *renderer, Program *program);
 void mglRendererEndRenderEncodingPort(void *renderer);
 int mglRendererNewCommandBufferLockedPort(void *renderer);

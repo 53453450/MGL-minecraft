@@ -3144,6 +3144,15 @@ void logDirtyBits(GLMContext ctx)
 
 /* syncPipelineStateWithDeferredBufferMap: moved to MGLRenderer+RenderPass.m */
 
+/* Assigns the context ivar for the C dispatch path (the Objective-C compute
+ * entry points did `ctx = glm_ctx;` inline).  A method because the ivar is not
+ * visible outside the class body; the shell exposes it to C as
+ * mglPlatformShellSetContext(). */
+- (void)mglSetActiveContext:(GLMContext)glm_ctx
+{
+    ctx = glm_ctx;
+}
+
 /* bindBufferSizeConstantsForRenderEncoder is the C entry
  * mglRendererBindBufferSizeConstantsForRenderEncoder (mgl_size_constants.h). */
 

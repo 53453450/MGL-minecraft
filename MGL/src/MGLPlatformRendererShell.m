@@ -24,6 +24,7 @@
 #include "mgl_texture_sampler.h"
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture (was -bindMTLTextureLocked:) */
 #include "mgl_binding_state_ops.h"  /* mglBindingInvalidateLastBoundState */
+#include "mgl_compute_dispatch.h"     /* compute dispatch entries */
 #import "MGLRenderer+Lifecycle_Private.h"  /* renderer construction/teardown */
 #include "mgl.h"
 #include "draw_command.h"
@@ -320,6 +321,14 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
 /* === compute / tessellation host entries =================================
  * Thin forwards for the stages that are still Objective-C; see the ownership
  * notes next to their declarations in mgl_renderer_ports.h. */
+void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r mglSetActiveContext:glm_ctx];
+    }
+}
+
 int mglRendererBindMTLProgramPort(void *renderer, Program *program)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -762,6 +771,43 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext glm_ctx)
 }
 
 
+
+
+/* === compute dispatch entries (T5 merge from MGLRenderer+Compute.m) ======
+ * The orchestration is the C functions of mgl_compute_dispatch.h; what stays
+ * here is the lease/lock frame and the renderer lookup, which need the
+ * MGLRenderer type. */
+void mglRendererDispatchCompute(GLMContext glm_ctx,
+                                unsigned int groups_x,
+                                unsigned int groups_y,
+                                unsigned int groups_z)
+{
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (renderer && glm_ctx) {
+        METAL_LOCK();
+        mglComputeMtlDispatchLocked((__bridge void *)renderer, glm_ctx,
+                                    groups_x, groups_y, groups_z);
+        METAL_UNLOCK();
+    }
+    mglRendererBackendEnd(&_backend_lease);
+}
+
+void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
+                                        intptr_t indirect)
+{
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (renderer && glm_ctx) {
+        METAL_LOCK();
+        mglComputeMtlDispatchIndirectLocked((__bridge void *)renderer, glm_ctx,
+                                            indirect);
+        METAL_UNLOCK();
+    }
+    mglRendererBackendEnd(&_backend_lease);
+}
 
 /* === Texture binding (T5 merge from MGLRenderer+Binding.m) ================
  * The bind body is the C function mglRendererBindMTLTexture (mgl_texture_bind.h);

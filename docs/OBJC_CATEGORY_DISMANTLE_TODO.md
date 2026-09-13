@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十四刀** + trace 清零 后；第 68–79 轮见 §0.24/§0.26–§0.36）**：
-文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 31,455**、ObjC 语法 **2,268 → 1,718**、词汇 **4,353 → 3,536**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十五刀** + trace 清零 后；第 68–80 轮见 §0.24/§0.26–§0.37）**：
+文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 30,975**、ObjC 语法 **2,268 → 1,673**、词汇 **4,353 → 3,480**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3107,7 +3107,7 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 | 文件 | 剩余 ObjC 面 | 需要的前置 | 预计 |
 |---|---|---|---|
 | `mgl_draw_metal_port.m`（58 语法） | host 发送 ~25 处、`NSMutableArray *temps`、capture 的 `NSString`、`#import`×4 | 12–15 个 C 入口（`bindMTLProgram:` / `dispatchTessControlShader:` / `dispatchAIRTessEval{Compute,VertexRender}:` / `endRenderEncoding` / `ensureAIRGeometryPassthroughFunctionForProgram:` / `bindStorageImagesForVertexProgram:` / `bindBuffers,TexturesToComputeEncoder:` / `clearStageBindingCopyBack(s):` / `flushStageBindingCopyBacks:` / `isolatedStageBindingBufferForMap:` / `recordStageBindingCopyBack:` / `ensureRasterEncoderForDraw` / `prepareEmulatedIndirectCPURead:`）；`temps` 用 C 侧 retain 数组替换；capture 段整体挪进壳（它是 Cocoa 面） | **2 刀 → 文件 9 → 8** |
-| `MGLRenderer+Compute.m`（**已完成 2 刀：1,246 → 535 行 / 84 → 49 语法**） | 剩余 = `processCompute`(2 重载) + `runComputeDispatchOrchestrationLocked` + `mtlDispatchCompute{,Indirect}Locked` + 2 个顶层 C 入口 + 6 个 `id` 助手 | **前置已全部就绪，无需新桥接**：`endRenderEncoding` / `ensureWritableCommandBufferPort` / `bindMTLProgramPort` / `newCommandBufferLockedPort` / copy-back 族（第 108 刀）+ `mglRenderSetComputeThreadgroupMemoryLength`（既有 C 门面）+ `mglComputeBind{Buffer,Texture}sToEncoder`（第 109/110 刀） | **1 刀 → 删文件（9 → 8）** |
+| ~~`MGLRenderer+Compute.m`~~ | **已完成（第 109/110/111 刀）：1,246 行 → 删除** | `mgl_compute_bind.{h,c}` + `mgl_compute_dispatch.{h,c}` + 壳内两个 GL 入口 | **文件 9 → 8 ✓** |
 | `MGLPipelineCache` 类（在壳内，约 480 行 / 120 语法） | `NSFileManager`/`NSBundle`/`NSURL`/`NSSearchPath…` | C++ 侧 `mglRenderLoadPipelineCacheArchive` 改为**由 path 自建 `NS::URL`**（2 个函数），归档路径改 `getenv("HOME")/Library/Caches` + `CFBundleGetIdentifier`；**必须另起 oracle**：逐字比对两臂 `MGL BINARY ARCHIVE:` 行与归档文件名（A/B 会过滤这类行） | 2 刀 |
 | `MGLRenderer+Tessellation.m`（151 语法 / 11 方法） | 中块，依赖多在 C | 按簇搬（factor buffer/捕获/GS 桥） | 3 刀 |
 | `MGLRenderer+BindingState.m`（129 语法 / 17 方法） | 采样器级联 + stage copy-back | `materializeSampledSamplerForTexture:` 已是 ObjC 边界的最后一块 | 3 刀 |
@@ -3203,3 +3203,31 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      ⑦ 下一刀：`+Compute.m` 只剩 535 行（`processCompute` / `runComputeDispatchOrchestrationLocked` /
      `mtlDispatchCompute{,Indirect}Locked` / `mglRendererDispatchCompute{,Indirect}` 顶层入口），搬完即可**删文件（9 → 8）**；
      前置已齐（第 108 刀的 `EndRenderEncoding` / `NewCommandBufferLocked` / `EnsureWritableCommandBuffer` 等入口）。
+
+111. **P0-1 第五十五刀：compute 派发编排转 C，**删除 `MGLRenderer+Compute.m`（文件 9 → 8）**：
+     ① `+Compute.m` 自第 109/110 刀后只剩 534 行，本刀把编排部分整体搬到新 TU **`mgl_compute_dispatch.{h,c}`**（543+60 行）：
+     - `mglComputeProcess(renderer, encoder, copy_backs, plan, temporaries)`（原 `processCompute:` 两个重载：程序/管线创建 →
+       绑定两族 → 清 `dirty_bits`）；`mglComputeRunDispatchOrchestrationLocked(...)`（结束渲染编码 → 可写命令缓冲 →
+      image/sampled 纹理预绑 → 执行计划事务或直接编码 → `currentCommandBufferHasWork` → copy-back 冲刷/换命令缓冲 → 脏位）；
+      以及 `mglComputeMtlDispatch{,Indirect}Locked(...)`（零尺寸短路、可写 image 的 `metal_data_authoritative` 标记、
+      间接缓冲的范围校验）；
+     - **两个 GL 入口 `mglRendererDispatchCompute{,Indirect}` 留在壳**（它们要走 `mglRendererForContext` 与 `METAL_LOCK()/UNLOCK()`
+       帧，需要 MGLRenderer 类型），体改为调用上面的 C 函数——即 **T5 合并**，壳 +46 行；
+     - 状态映射全部沿用既有口径：`_renderPassManager->state` → `areas.command`、`_gpuRecovery.commandRecoveryOwner` →
+       `*areas.gpu_recovery_command_owner`、`_batching.currentCommandBufferHasWork` → `areas.batching->…`、
+       `_deviceResetRequested` → `areas.core->deviceResetRequested`（`atomic_store_explicit` 照旧）、
+       `MGL_STATE(ctx)`/`MGL_STATE(glm_ctx)` → 本地 dual-proxy twin。
+     ② **新入口 1 个**：`mglPlatformShellSetContext(renderer, glm_ctx)` —— 两个 locked 方法开头都有 `ctx = glm_ctx;`
+     （**给渲染器 ivar 赋值**，C 无法直接做），C 侧改为调用该入口，壳里经新方法 `-mglSetActiveContext:` 赋值，
+     保证下游经端口调用到的那些方法读到的渲染器上下文与转换前一致。**这是一处容易被忽略的语义点，单独记录。**
+     ③ **执行计划的 keep-alive 生命周期**：原方法里 `NSMutableArray *executionTemporaries = [NSMutableArray array]`
+     在方法返回时由 ARC 释放（计划编码/派发都发生在方法内），C 版建 `mglRendererTemporariesCreate()` 并在
+     所有返回路径（含 4 条失败早退）显式 `Release`，逐一核对过。
+     ④ **度量**：文件 **9 → 8**、行数 **31,455 → 30,975（−480）**、语法 **1,718 → 1,673（−45）**、词汇 **3,536 → 3,480（−56）**；
+     壳 TU 1,889 → 1,935 行（语法 262 → 266）；端口 25 → 26（新增 `mglPlatformShellSetContext`）；C 侧新增 603 行。
+     ⑤ **oracle**：旧库 = 提交 `0fcc8d2` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,277/5,280 与 5,811/5,813 → `processGLState.slow` 296/299 与 297/299），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑥ 下一刀：`mgl_draw_metal_port.m`（2,014 行 / 50 语法）——补 capture 段进壳 + 剩余 host 发送换 C 入口，
+     之后**文件 8 → 7**；再往后是 `+Tessellation.m`（2,101 / 151 语法，copy-back 族已就绪）。

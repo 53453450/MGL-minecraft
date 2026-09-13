@@ -39,6 +39,10 @@
 @interface MGLRenderer ()
 
 /* AGX recovery: recreate the command queue (implemented in MGLRenderer.m). */
+/* Assigns the context ivar for the C compute dispatch path (the Objective-C
+ * entry points did `ctx = glm_ctx;` inline); see mglPlatformShellSetContext. */
+- (void)mglSetActiveContext:(GLMContext)glm_ctx;
+
 - (int)mglRecreateCommandQueue;
 - (void *)mglMetalDevicePointer;
 - (int)mglMetalObjectsPresent;
