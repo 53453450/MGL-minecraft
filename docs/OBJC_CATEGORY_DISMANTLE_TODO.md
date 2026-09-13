@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,371**、ObjC 语法 **2,268 → 1,965**、词汇 **4,353 → 3,836**；
+文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,324**、ObjC 语法 **2,268 → 1,956**、词汇 **4,353 → 3,831**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2606,3 +2606,24 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 唯一差别是异常对象只被记录成固定文案（原版打印 `exception.reason`），如需保留 reason，可让守卫把 `description` 写进一个 out 参数。
 
 **本轮不做改动**：可用上下文不足以在一次闭环内完成"新增壳入口 + 新 C TU + 删 91 行方法 + 门禁/CTS/A/B"，按纪律不把树留在半成品状态。
+
+97. **P0-1 第四十二刀：`endRenderEncodingLocked` 整块转 C（**−47 行**，§0.22 第②步完成）**：
+     ① 按第 96 条骨架落地，一次改动内完成四件事：
+     - `MGLRenderer.m` 加 `- (void *)mglDrawablePointer`（方法体内用私有 ivar 合法），声明进
+       `MGLRenderer+GPURecovery_Private.h`；壳 TU 加 C 入口 `mglPlatformShellDrawable(void *)`；
+     - 新逻辑写进 `mgl_render_pass_manager_ops.c`：`mglRendererEndRenderEncodingLocked(renderer)`（外侧：
+       `mglBindingInvalidateLastBoundState` → encoder 判定 → `areas.batching->currentCommandBufferHasWork` →
+       限频 `mglLogRenderPassLifecycle`（drawable 走壳入口）→ guarded 调用 → 失败时执行原 `@catch` 的三条清理 →
+       末尾 `mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer`）＋ 静态守卫体
+       `mglRendererEndRenderEncodingGuardedBody`（原 `@try` 的三条语句）；
+     - 删除 ObjC 方法（**65 行**）与私有头声明；4 个文件的调用点（`+DrawStageHost.m`、`+Binding.m`、`+Blit.m`、`MGLRenderer.m`）
+       改为 `mglRendererEndRenderEncodingLocked((__bridge void *)self)`。
+     ② **语义差异（如实记录）**：原 `@catch` 打印 `exception.reason`，C 版只能记固定文案（`MGL ERROR: Exception ending render encoder - ignoring`），
+     并紧接着执行同样的三条清理；异常对象内容如需保真，可让守卫用 out 参数回传 description。
+     ③ **度量**：行数 **34,371 → 34,324**、语法 **1,965 → 1,956**、词汇 **3,836 → 3,831**；文件 16、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `e7dc910` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ 下一刀（§0.22 第③④步，收尾即可删文件）：MS 循环族（`+DrawStageHost.m` 余 26+39）——block `void (^)(void)` 换 `fn + ctx`，
+     `_mglInMSSampleDrawLoop` / `_mglForcedMSSampleId` / `_mglMSSamplePlaneOffset` 走"方法 + 壳转发"；
+     它们依赖的 `[self endRenderEncodingLocked]` **本刀已变成 C 函数**，`newCommandBufferLocked` 仍需处理。
+     完成后 **删除 `MGLRenderer+DrawStageHost.m` → 文件 16 → 15**。

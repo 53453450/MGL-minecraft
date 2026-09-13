@@ -19,6 +19,7 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_draw_cull.h"
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_binding_state_ops.h"
 #include "mgl_draw_support.h"  /* fragment-needs-per-sample-MS */
 #include "mgl_draw_issue.h"
@@ -54,7 +55,7 @@
     for (GLint s = 0; s < samples; s++) {
         _mglForcedMSSampleId = s;
         _mglMSSamplePlaneOffset = s;
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
         mglMarkStateDirtyBits(MGL_STATE(glm_ctx), DIRTY_FBO);
         Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
         if (fbo) {
@@ -91,7 +92,7 @@
     if (info.width == 0u || info.height == 0u) return;
     if (baseSlice + samples > info.array_length) return;
 
-    [self endRenderEncodingLocked];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
     if (!_renderPassManager.state->currentCommandBufferOwner &&
         ![self newCommandBufferLocked]) {
         return;

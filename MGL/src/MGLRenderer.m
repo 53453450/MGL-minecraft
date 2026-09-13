@@ -34,6 +34,7 @@
 #import <objc/runtime.h>
 
 #include <mach/mach_vm.h>
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
 #include <mach/mach_init.h>
@@ -3382,7 +3383,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
             }
         }
 
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
 
         /* Deferred device reset drain.  This is the only safe reset point: the
          * render encoder is closed and the command buffer has not been rebuilt
@@ -3481,7 +3482,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
                 NSLog(@"MGL WARNING: mtlSwapBuffers found finalized command buffer (status: %ld), rotating (hit=%llu)",
                       (long)bufferStatus, (unsigned long long)swapFinHit);
             }
-            [self endRenderEncodingLocked];
+            mglRendererEndRenderEncodingLocked((__bridge void *)self);
             [self newCommandBufferLocked];
             if (!mglRenderCommandBufferOwnerHasState(
                     _renderPassManager.state->currentCommandBufferOwner,
@@ -3691,6 +3692,13 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
 - (int)mglMetalObjectsPresent
 {
     return (_device && _commandQueue) ? 1 : 0;
+}
+
+/* Drawable pointer for the render-pass lifecycle log (see mglRecreateCommandQueue
+ * for why these probes are methods rather than C functions). */
+- (void *)mglDrawablePointer
+{
+    return (__bridge void *)_drawable;
 }
 
 - (int)mglRecreateCommandQueue

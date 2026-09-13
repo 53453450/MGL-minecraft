@@ -24,6 +24,10 @@ extern "C" {
  * renderer's command state (areas.command). */
 void mglRenderPassManagerDiscardCurrentCommandBuffer(void *renderer);
 void mglRenderPassManagerClearRenderPassIdentity(void *renderer);
+
+/* End the current render encoding: encoder teardown, trace-bindings cleanup and
+ * render-pass identity reset, guarded like the Objective-C method was. */
+void mglRendererEndRenderEncodingLocked(void *renderer);
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer);
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer);
 int mglRenderPassManagerCommitCommandBufferTransaction(

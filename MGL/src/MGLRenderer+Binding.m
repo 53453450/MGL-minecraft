@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_sampler.h"
+#include "mgl_render_pass_manager_ops.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
 #include "mgl_batch_issue.h"
@@ -170,7 +171,7 @@ static id mglBindingCreateDefaultSampler(void)
                     // Blit GPU data from old texture to new texture to preserve
                     // any writes (e.g. imageStore) that occurred before the
                     // is_render_target transition.
-                    [self endRenderEncodingLocked];
+                    mglRendererEndRenderEncodingLocked((__bridge void *)self);
                     if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
                         if (mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
                                 _renderPassManager.state->currentCommandBufferOwner,

@@ -366,6 +366,12 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
  * needs a port for it. */
 /* C entry point for the AGX queue recreation: the method lives in
  * MGLRenderer.m where the queue ivar is visible. */
+void *mglPlatformShellDrawable(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? [r mglDrawablePointer] : NULL;
+}
+
 void *mglPlatformShellMetalDevice(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

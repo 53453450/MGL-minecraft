@@ -112,7 +112,6 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 - (bool)newRenderEncoder; /* OTHER — prefer WithReason: */
 - (bool)newRenderEncoderLocked; /* OTHER — prefer WithReason: */
 - (void)endRenderEncoding;
-- (void)endRenderEncodingLocked;
 - (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall;
 - (bool)currentRenderPassMatchesCurrentFramebuffer;
 /* these are the C functions in mgl_attachment_binding.h now */

@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_blit_sampled_copy.h"
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_texture_readback_clear.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
@@ -710,7 +711,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1;
     if (hadRenderEncoder) {
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
     }
 
     /* texSubImage may leave DIRTY_TEXTURE_DATA after releasing the sampled

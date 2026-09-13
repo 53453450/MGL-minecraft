@@ -15,6 +15,27 @@
 
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_binding_state_ops.h"      /* mglBindingInvalidateLastBoundState */
+#include "mgl_trace_strategy.h"         /* mglClearFragmentTraceBindingsForRenderer */
+#include "mgl_blit_sampled_copy.h"      /* GLSampled copies refresh */
+
+#include <stdio.h>
+
+/* Defined in MGLRenderer.m; declared in the Objective-C
+ * MGLRenderer+RenderPass_Private.h. */
+extern void mglLogRenderPassLifecycle(const char *tag, uint64_t call,
+                                      GLMContext ctx, void *commandBufferOwner,
+                                      void *renderEncoderOwner,
+                                      void *renderPassStateOwner, void *drawable,
+                                      Framebuffer *renderPassFramebuffer,
+                                      GLuint renderPassFramebufferName,
+                                      GLenum renderPassDrawBuffer,
+                                      GLsizei renderPassDrawBufferCount);
+
+/* Shell-provided drawable accessor (private ivar) and guarded call. */
+extern void *mglPlatformShellDrawable(void *renderer);
+extern int mglPlatformShellGuardedCall(void *renderer, const char *what,
+                                       int (*body)(void *));
 
 /* Local twin of the manager's file-static helper of the same name. */
 static void mglRenderPassManagerSyncRuntimeOwners(MGLCommandState *state)
@@ -146,4 +167,68 @@ void mglRenderPassManagerClearRenderPassIdentity(void *renderer)
         identity.draw_buffers[index] = (GLenum)mglRenderEmptyDrawBuffer();
     }
     mglRenderPassManagerStoreIdentity(cs, &identity);
+}
+
+/* Former @try body of -[MGLRenderer endRenderEncodingLocked]. */
+static int mglRendererEndRenderEncodingGuardedBody(void *renderer)
+{
+    mglRenderPassManagerEndCurrentRenderEncoder(renderer);
+    mglRenderPassManagerClearCurrentRenderEncoder(renderer);
+    mglClearFragmentTraceBindingsForRenderer(renderer, "end_render_encoding");
+    mglRenderPassManagerClearRenderPassIdentity(renderer);
+    return 1;
+}
+
+/* Body of -[MGLRenderer endRenderEncodingLocked] (P0-1).  The @try/@catch is the
+ * shell guard; when it fails the same three cleanups run as the old @catch. */
+void mglRendererEndRenderEncodingLocked(void *renderer)
+{
+    mglBindingInvalidateLastBoundState(renderer);
+
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+    if (!cs ||
+        mglRenderEncoderOwnerHasCurrent(cs->currentRenderEncoderOwner) != 1) {
+        return;
+    }
+
+    /* An active render encoder means work was encoded into the current command
+     * buffer, so the flush must not skip the commit. */
+    if (areas.batching) {
+        areas.batching->currentCommandBufferHasWork = 1u;
+    }
+
+    Framebuffer *endedFramebuffer = cs->renderPassFramebuffer;
+
+    static uint64_t s_renderPassEndLogCount = 0;
+    uint64_t hit = ++s_renderPassEndLogCount;
+    if (hit <= 128ull || (hit % 1024ull) == 0ull) {
+        mglLogRenderPassLifecycle("end", hit, areas.ctx,
+                                  cs->currentCommandBufferOwner,
+                                  cs->currentRenderEncoderOwner,
+                                  cs->renderPassStateOwner,
+                                  mglPlatformShellDrawable(renderer),
+                                  cs->renderPassFramebuffer,
+                                  cs->renderPassFramebufferName,
+                                  cs->renderPassDrawBuffer,
+                                  cs->renderPassDrawBufferCount);
+    }
+
+    if (!mglPlatformShellGuardedCall(renderer, "end render encoding",
+                                     mglRendererEndRenderEncodingGuardedBody)) {
+        fprintf(stderr,
+                "MGL ERROR: Exception ending render encoder - ignoring\n");
+        mglRenderPassManagerClearCurrentRenderEncoder(renderer);
+        mglClearFragmentTraceBindingsForRenderer(renderer,
+                                                 "end_render_encoding_exception");
+        mglRenderPassManagerClearRenderPassIdentity(renderer);
+    }
+
+    /* A later batch may sample this render target before the command buffer is
+     * submitted, so refresh its GL-visible copy immediately. */
+    if (endedFramebuffer) {
+        mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
+            renderer, endedFramebuffer, "end_render_pass");
+    }
 }

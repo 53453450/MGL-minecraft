@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_draw_encode.h"
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_trace_strategy.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_binding_state_ops.h"
@@ -3751,7 +3752,7 @@ static GLenum mglPassthroughDeclType(
     if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1) {
         NSLog(@"MGL WARNING: Active render encoder detected - ending it before creating new one");
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
     }
 
     // Validate command buffer status. If already committed/completed, rotate to a new buffer.
@@ -4026,7 +4027,7 @@ static GLenum mglPassthroughDeclType(
     }
 
     // end encoding on current render encoder
-    [self endRenderEncodingLocked];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
 
     // grab the next drawable from CAMetalLayer
     if (_drawable == NULL)
@@ -4153,7 +4154,7 @@ static GLenum mglPassthroughDeclType(
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: Ending existing render encoder before creating new command buffer");
         }
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
     }
 
     // STEP 1: Clean up sync tracking list safely.
@@ -4365,7 +4366,7 @@ static GLenum mglPassthroughDeclType(
         (uint32_t)commandState.status;
     if (status >= MGLCommandBufferStatusCommitted) {
         NSLog(@"MGL INFO: %s requested on finalized command buffer (status: %ld), rotating", reason ? reason : "operation", (long)status);
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
         if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer for %s", reason ? reason : "operation");
             return false;
@@ -4905,75 +4906,10 @@ static GLenum mglPassthroughDeclType(
 - (void) endRenderEncoding
 {
     METAL_LOCK();
-    [self endRenderEncodingLocked];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
     METAL_UNLOCK();
 }
 
-- (void) endRenderEncodingLocked
-{
-
-    mglBindingInvalidateLastBoundState((__bridge void *)self);
-
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) == 1)
-    {
-        /* An active render encoder means work was encoded into the current
-         * CB, so flushCommandBufferLocked: must not skip the commit. */
-        _batching.currentCommandBufferHasWork = YES;
-
-        Framebuffer *endedFramebuffer = _renderPassManager.state->renderPassFramebuffer;
-        GLsizei endedDrawBufferCount = _renderPassManager.state->renderPassDrawBufferCount;
-        GLenum endedDrawBuffers[MAX_COLOR_ATTACHMENTS];
-        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            endedDrawBuffers[i] = _renderPassManager.state->renderPassDrawBuffers[i];
-        }
-
-        static uint64_t s_renderPassEndLogCount = 0;
-        uint64_t hit = ++s_renderPassEndLogCount;
-        if (hit <= 128ull || (hit % 1024ull) == 0ull) {
-            mglLogRenderPassLifecycle("end",
-                                      hit,
-                                      ctx,
-                                      _renderPassManager.state->currentCommandBufferOwner,
-                                      _renderPassManager.state->currentRenderEncoderOwner,
-                                      _renderPassManager.state->renderPassStateOwner,
-                                      (__bridge void *)_drawable,
-                                      _renderPassManager.state->renderPassFramebuffer,
-                                      _renderPassManager.state->renderPassFramebufferName,
-                                      _renderPassManager.state->renderPassDrawBuffer,
-                                      _renderPassManager.state->renderPassDrawBufferCount);
-        }
-        @try {
-            if (kMGLVerboseFrameLoopLogs) {
-                NSLog(@"MGL DEBUG: Ending render encoder");
-            }
-            [_renderPassManager endCurrentRenderEncoder];
-            [_renderPassManager clearCurrentRenderEncoder];
-            /* When trace is disabled, skip the full-struct memset and
-             * trace call and clear only the functional flag fields. */
-            mglClearFragmentTraceBindingsForRenderer((__bridge void *)self, "end_render_encoding");
-            [_renderPassManager clearRenderPassIdentity];
-            if (kMGLVerboseFrameLoopLogs) {
-                NSLog(@"MGL DEBUG: Render encoder ended successfully");
-            }
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: Exception ending render encoder: %@ - ignoring", exception.reason);
-            // Force clear the encoder even if ending failed
-            [_renderPassManager clearCurrentRenderEncoder];
-            /* When trace is disabled, skip the full-struct memset and
-             * trace call and clear only the functional flag fields. */
-            mglClearFragmentTraceBindingsForRenderer((__bridge void *)self, "end_render_encoding_exception");
-            [_renderPassManager clearRenderPassIdentity];
-        }
-
-        /* A later batch may sample this render target before the command
-         * buffer is submitted, so refresh its GL-visible copy immediately. */
-        if (endedFramebuffer) {
-            mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
-                (__bridge void *)self, endedFramebuffer, "end_render_pass");
-        }
-    }
-}
 
 - (BOOL)currentRenderPassUsesTexture:(id)texture
 {
@@ -5060,7 +4996,7 @@ static GLenum mglPassthroughDeclType(
 
     @try {
         // Force cleanup of all Metal objects
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
 
         [_renderPassManager discardCurrentCommandBuffer];
         [_renderPassManager clearCurrentRenderEncoder];
@@ -5235,7 +5171,7 @@ static GLenum mglPassthroughDeclType(
         [self endRenderPassIfFramebufferChangedForNonDraw:processCall];
     }
     if (plan.no_vao_clear_path) {
-        [self endRenderEncodingLocked];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
         if (!mglRendererValidateMetalObjects((__bridge void *)self)) {
             NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
             MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
@@ -6763,7 +6699,7 @@ static GLenum mglPassthroughDeclType(
         _batching.currentCommandBufferHasWork = YES;
     }
 
-    [self endRenderEncodingLocked];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
 
     /* Skip empty-CB commit when finish=true: wait on the owner's last submit
      * instead (Metal CBs execute serially on the same queue).  Any path
@@ -6884,7 +6820,7 @@ static GLenum mglPassthroughDeclType(
     } else {
         MGL_PERF_INC(g_mglEncoderFboRotNamedSinceSwap);
     }
-    [self endRenderEncodingLocked];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
     RETURN_FALSE_ON_FAILURE(
         [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_FBO]);
     return true;

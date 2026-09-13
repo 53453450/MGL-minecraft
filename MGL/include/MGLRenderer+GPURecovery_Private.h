@@ -42,6 +42,7 @@
 - (int)mglRecreateCommandQueue;
 - (void *)mglMetalDevicePointer;
 - (int)mglMetalObjectsPresent;
+- (void *)mglDrawablePointer;
 
 
 /* now the C function mglRendererValidateMetalObjects (mgl_gpu_recovery.h) */
