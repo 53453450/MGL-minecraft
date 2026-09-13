@@ -3696,6 +3696,25 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
 
 /* Drawable pointer for the render-pass lifecycle log (see mglRecreateCommandQueue
  * for why these probes are methods rather than C functions). */
+/* Emulated-MS sample-loop state, kept as methods because these ivars are private
+ * (see mglRecreateCommandQueue for the same reasoning). */
+- (int)mglMSSampleInLoop
+{
+    return _mglInMSSampleDrawLoop ? 1 : 0;
+}
+
+- (void)mglSetMSSampleState:(int)inLoop forced:(int32_t)forced offset:(int32_t)offset
+{
+    _mglInMSSampleDrawLoop = inLoop ? YES : NO;
+    _mglForcedMSSampleId = forced;
+    _mglMSSamplePlaneOffset = offset;
+}
+
+- (int)mglEnsureNewCommandBuffer
+{
+    return [self newCommandBufferLocked] ? 1 : 0;
+}
+
 - (void *)mglDrawablePointer
 {
     return (__bridge void *)_drawable;

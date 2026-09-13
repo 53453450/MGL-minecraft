@@ -19,6 +19,7 @@
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_support.h"
+#include "mgl_ms_sample_loop.h"
 #include "mgl_draw_issue.h"
 #include "mgl_batch_rt_mark.h"
 #include "mgl_index_buffer.h"
@@ -1616,6 +1617,34 @@ static MGLRenderer *mglDrawHostSelf(void *renderer)
 }
 
 
+
+/* Blocks in the MS sample loop became function pointers plus a context. */
+typedef struct {
+    GLMContext ctx; void *renderer; uint32_t mode; int32_t first; int32_t count;
+    int32_t instance_count; uint32_t base_instance; const char *label;
+} MGLMsDrawArraysOnce;
+
+static void mglMsDrawArraysOnce(void *v)
+{
+    MGLMsDrawArraysOnce *o = v;
+    mglIssueDrawArrays(o->ctx, o->renderer, o->mode, o->first, o->count,
+                       o->instance_count, o->base_instance, o->label);
+}
+
+typedef struct {
+    GLMContext ctx; void *renderer; uint32_t mode; int32_t count; uint32_t type;
+    const void *indices; int32_t instance_count; int32_t base_vertex;
+    uint32_t base_instance; const char *label;
+} MGLMsDrawElementsOnce;
+
+static void mglMsDrawElementsOnce(void *v)
+{
+    MGLMsDrawElementsOnce *o = v;
+    mglIssueDrawElements(o->ctx, o->renderer, o->mode, o->count, o->type,
+                         o->indices, o->instance_count, o->base_vertex,
+                         o->base_instance, o->label);
+}
+
 void mglDrawHostGuardIssueArrays(void *renderer, GLMContext ctx, GLenum mode,
                                  GLint first, GLsizei count,
                                  GLsizei instanceCount, GLuint baseInstance,
@@ -1627,21 +1656,22 @@ void mglDrawHostGuardIssueArrays(void *renderer, GLMContext ctx, GLenum mode,
     }
     METAL_LOCK();
     host->_lastDrawPrimitiveMode = mode;
-    if (with_ms &&
-        [host runEmulatedMSSampleDrawLoopIfNeeded:ctx
-                                         drawOnce:^{
-                                             mglIssueDrawArrays(
-                                                 ctx, renderer, mode, first,
-                                                 count, instanceCount,
-                                                 baseInstance, label);
-                                         }]) {
-        METAL_UNLOCK();
-        return;
+    if (with_ms) {
+        MGLMsDrawArraysOnce once = {.ctx = ctx, .renderer = renderer, .mode = mode,
+                                    .first = first, .count = count,
+                                    .instance_count = instanceCount,
+                                    .base_instance = baseInstance,
+                                    .label = label};
+        if (mglRendererRunEmulatedMSSampleDrawLoopIfNeeded(
+                renderer, ctx, mglMsDrawArraysOnce, &once)) {
+            METAL_UNLOCK();
+            return;
+        }
     }
     mglIssueDrawArrays(ctx, renderer, mode, first, count, instanceCount,
                        baseInstance, label);
     if (with_ms) {
-        [host broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:ctx];
+        mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(renderer, ctx);
     }
     METAL_UNLOCK();
 }
@@ -1658,22 +1688,24 @@ void mglDrawHostGuardIssueElements(void *renderer, GLMContext ctx, GLenum mode,
     }
     METAL_LOCK();
     host->_lastDrawPrimitiveMode = mode;
-    if (with_ms &&
-        [host runEmulatedMSSampleDrawLoopIfNeeded:ctx
-                                         drawOnce:^{
-                                             mglIssueDrawElements(
-                                                 ctx, renderer, mode, count,
-                                                 type, indices, instanceCount,
-                                                 baseVertex, baseInstance,
-                                                 label);
-                                         }]) {
-        METAL_UNLOCK();
-        return;
+    if (with_ms) {
+        MGLMsDrawElementsOnce once = {.ctx = ctx, .renderer = renderer, .mode = mode,
+                                      .count = count, .type = type,
+                                      .indices = indices,
+                                      .instance_count = instanceCount,
+                                      .base_vertex = baseVertex,
+                                      .base_instance = baseInstance,
+                                      .label = label};
+        if (mglRendererRunEmulatedMSSampleDrawLoopIfNeeded(
+                renderer, ctx, mglMsDrawElementsOnce, &once)) {
+            METAL_UNLOCK();
+            return;
+        }
     }
     mglIssueDrawElements(ctx, renderer, mode, count, type, indices,
                          instanceCount, baseVertex, baseInstance, label);
     if (with_ms) {
-        [host broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:ctx];
+        mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(renderer, ctx);
     }
     METAL_UNLOCK();
 }

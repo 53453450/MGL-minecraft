@@ -43,6 +43,9 @@
 - (void *)mglMetalDevicePointer;
 - (int)mglMetalObjectsPresent;
 - (void *)mglDrawablePointer;
+- (int)mglMSSampleInLoop;
+- (void)mglSetMSSampleState:(int)inLoop forced:(int32_t)forced offset:(int32_t)offset;
+- (int)mglEnsureNewCommandBuffer;
 
 
 /* now the C function mglRendererValidateMetalObjects (mgl_gpu_recovery.h) */

@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,324**、ObjC 语法 **2,268 → 1,956**、词汇 **4,353 → 3,831**；
+文件 **53 → 15**、空 TU **3 → 0**、行数 **43,989 → 34,281**、ObjC 语法 **2,268 → 1,951**、词汇 **4,353 → 3,821**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2651,3 +2651,22 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 **④ 收尾**：删两个方法 + `MGLRenderer+Draw_Private.h` 声明，`mgl_draw_metal_port.m` 两处调用点改成 `fn + ctx` 形式，
 然后 **`git rm MGL/src/MGLRenderer+DrawStageHost.m` → 文件 16 → 15**（该文件内已无其它方法）。
 **本轮不做改动**：可用上下文不足以在一次闭环内完成"3 个壳入口 + 新 C TU + block 改造 + 删文件 + 门禁/CTS/A/B"。
+
+99. **P0-1 第四十三刀：MS 循环族转 C 并删除 `+DrawStageHost.m`（**文件 16 → 15**，§0.22 第③④步完成）**：
+     ① 按第 98 条配方一次完成：
+     - `MGLRenderer.m` 加三个方法（私有 ivar）：`-mglMSSampleInLoop` / `-mglSetMSSampleState:forced:offset:` / `-mglEnsureNewCommandBuffer`；
+       壳 TU 对应加三个 C 入口 `mglPlatformShellMSSampleInLoop` / `mglPlatformShellSetMSSampleState` / `mglPlatformShellNewCommandBuffer`；
+     - 新 TU **`mgl_ms_sample_loop.{h,c}`**：`mglRendererRunEmulatedMSSampleDrawLoopIfNeeded(renderer, ctx, fn, fn_ctx)` 与
+       `mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(renderer, ctx)`，体照抄原方法（`endRenderEncodingLocked` 已是 C、
+       MS color0 / per-sample 谓词已是 C、`_renderPassManager.state` → `areas.command`）；
+     - **block → `fn + ctx`**：`mgl_draw_metal_port.m` 里两处 `drawOnce:^{ … }`（块体本就是纯 C 调用）改为两个小结构体
+       `MGLMsDrawArraysOnce` / `MGLMsDrawElementsOnce` + `static void mglMsDrawOnce(void *)`；
+     - 删除两个方法（26+39 行）、`MGLRenderer+Draw_Private.h` 声明，并 **`git rm MGLRenderer+DrawStageHost.m`**。
+     ② **度量**：`objc_zero.sh` **文件 16 → 15**、行数 **34,324 → 34,281**、语法 **1,956 → 1,951**、词汇 **3,831 → 3,821**；
+     shim 端口 13 不变（唯一壳 TU 仍为 `MGLPlatformRendererShell.m`）。
+     ③ **oracle**：旧库 = 提交 `f2b4e50` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ④ **§0.22 四步直线全部完成**：① ended-pass sampled-copy 刷新（第 38 刀）→ ② `endRenderEncodingLocked`（第 42 刀）
+     → ③ MS 循环族（本刀）→ ④ 删除文件（本刀）。
+     下一刀：按 §0.19 表继续——`+Binding.m` 的 `bindMTLTextureLocked:`(339) 与 `MGLPipelineCache.m`(446) 是接下来两个大目标；
+     手法照旧（§0.14 三种路线 + 手工逐段 + 每段编译 + 整轮 A/B/CTS）。
