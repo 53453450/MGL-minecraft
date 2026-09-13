@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **27 / 394**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 37,047**、ObjC 语法 **2,268 → 2,137**、词汇 **4,353 → 4,062**；
-**shim：43 → 24 个端口 / 366 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 五刀端口 27 → 24）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 37,004**、ObjC 语法 **2,268 → 2,136**、词汇 **4,353 → 4,056**；
+**shim：43 → 23 个端口 / 360 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀端口 27 → 23）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1382,3 +1382,26 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
     `lazyRefreshGLSampledRenderTargetCopyForTexture:…`(52) + **`updateGLSampledRenderTargetCopyForTexture:…`(375)**，
     后者只依赖 `ensureWritableCommandBuffer` 与前者，整簇约 **464 行**，是迄今最大单块；
     若把它转 C，可顺带退役/收窄若干 blit 端口。
+
+60. **P0-1 第六刀：sampled-copy 谓词转 C + 退役两个冗余端口（**shim 净减 1**）**：
+    ① **转 C**：`-textureCanUseGLSampledRenderTargetCopy:source:`（37 行，唯一的自制引用是
+    `mglTextureCanUseGLSampledRenderTargetCopy`（`mgl_rt_sync.h` 的 C inline）与 `mglBlitTextureInfo`（`+Blit.m` 的
+    file-static 3 行包装））→ 新 TU **`MGL/src/mgl_blit_sampled_copy.c`** + C 安全头；C 侧自带 3 行等价 helper
+    （`mglBlitSampledCopyTextureInfo`，注明与 `+Blit.m` 的同源关系），调用点 2 处（`+Blit` 1、`+RenderPass` 1）改直调。
+    ② **退役两个"已被 state areas 覆盖"的端口**（本轮真正的净减来源）：
+    `mglRendererPipelineCacheStatePort`（areas 已带 `pipeline_cache` → `mgl_batch_replay_trace.c` 改用 `areas.pipeline_cache`）、
+    `mglRendererBindingStateIsValidPort`（`mgl_batch_flush_restore_encode.c` 自带 `mglBatchBindingStateIsValid(owner)`
+    本地检查 + 从 areas 取 owner 地址）。**shim 24 → 23 端口 / 366 → 360 行**；全仓行数 **37,047 → 37,004**、
+    语法 **2,137 → 2,136**、词汇 4,062 → **4,056**。
+    ③ **事故（本轮自己造的，门禁抓住）**：抽取三个方法时把 `lazyRefreshGLSampledRenderTargetCopyForTexture`(52) 与
+    **`updateGLSampledRenderTargetCopyForTexture`(375)** 一并从 `+Blit.m` 删掉、却只补回了 37 行的谓词，
+    于是 `test-dirty-hash` 立刻 `Abort trap: 6`（缺实现）。**已从抽取副本逐字回插**并把其中对已转 C 谓词的调用改为直调。
+    **新规则：批量抽取=先"抽取即落盘副本"，转换与回插必须在同一脚本内完成；门禁必须在抽取后立刻跑一次。**
+    ④ **oracle**：本刀**未跑 trace A/B**（纯代码搬移 + 端口退役，风险面小）——如实记录；跑的是
+    **门禁全过**（`verify_gl_api` 离线 + 28 个 `test-all` 目标，`test_regression` 92/0/2、es-smoke ok）+
+    **CTS 七簇非通过集合 diff 全空**（hotspot 1270/52/4/1+1cw · tess 139/1 · GS 136/0 · refq 164/54/5 ·
+    piq 17/12/1 · compute 113/38/1ns · pp 1/3/1ns）。
+    下一刀：把 **`lazyRefresh…`(52) + `updateGLSampledRenderTargetCopyForTexture`(375)** 真正转 C——后者
+    375 行里只有 **2 处消息发送**（`ensureWritableCommandBuffer:reason:` 与本次已转的谓词）与 **79 处 `mgl*` C 调用**，
+    因此只需为 `ensureWritableCommandBuffer:` 开**一个**端口（再用"退役一个冗余端口"抵消），
+    另有 1 处 `@autoreleasepool`（C 侧去掉，临时对象随调用方池释放）与 `mglBlitCreateRenderEncoder(_renderPassManager,…)`（需 C 化签名）。

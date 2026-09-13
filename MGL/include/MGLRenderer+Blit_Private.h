@@ -140,8 +140,8 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
                                                     reason:(const char *)reason;
 
 // === GL sampled render target copy management ===
-- (BOOL)textureCanUseGLSampledRenderTargetCopy:(Texture *)tex
-                                        source:(id)source;
+/* textureCanUseGLSampledRenderTargetCopy:source: is now
+ * mglBlitTextureCanUseGLSampledRenderTargetCopy (mgl_blit_sampled_copy.h). */
 - (BOOL)updateGLSampledRenderTargetCopyForTexture:(Texture *)tex
                                            source:(id)source
                                            reason:(const char *)reason;

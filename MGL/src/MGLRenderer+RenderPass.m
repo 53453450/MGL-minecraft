@@ -12,6 +12,7 @@
 // Render pass lifecycle methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_blit_sampled_copy.h"
 #include "mgl_batch_issue.h"
 #import "MGLRenderer+RenderPass_Private.h"
 #include "mgl_air_loader.h"     /* AIR metallib loader. */
@@ -5040,7 +5041,7 @@ static GLenum mglPassthroughDeclType(
         }
 
         id source = (__bridge id)(tex->mtl_data);
-        if (![self textureCanUseGLSampledRenderTargetCopy:tex source:source]) {
+        if (!mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, (__bridge void *)source)) {
             continue;
         }
 

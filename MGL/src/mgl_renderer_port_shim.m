@@ -284,12 +284,6 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 
 /* === Batch flush / replay-workspace ports =============================== */
 
-int mglRendererBindingStateIsValidPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && mglBindingStateIsValid(r->_bindingStateOwner)) ? 1 : 0;
-}
-
 void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

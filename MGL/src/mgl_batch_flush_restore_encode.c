@@ -27,6 +27,14 @@ typedef struct {
     MGLBatchFlushLoopState *st; MGLEncodeContext enc;
 } FCtx;
 static MGLDrawBatch *FB(FCtx *c, uint32_t b) { return &c->ctx->draw_command_buffer.batches[b]; }
+/* Validity of the binding-state snapshot (was mglRendererBindingStateIsValidPort;
+ * the owner now comes from the state areas, the check is local C). */
+static int mglBatchBindingStateIsValid(void *owner)
+{
+    uint32_t valid = 0;
+    return owner && mglRenderBindingGetValid(owner, &valid) == 0 && valid;
+}
+
 static uint32_t fCount(void *v) { return ((FCtx *)v)->ctx->draw_command_buffer.batch_count; }
 static uint32_t fCmds(void *v, uint32_t b) { return FB(v, b)->command_count; }
 static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
@@ -35,7 +43,9 @@ static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
     int want = batch->has_dynamic_vertex_bindings ? 1 : 0; if (wa) *wa = want;
     in->has_encoder = mglRenderEncoderOwnerHasCurrent(
         mglRendererCommandStatePort(c->r)->currentRenderEncoderOwner) ? 1u : 0u;
-    in->bind_valid = mglRendererBindingStateIsValidPort(c->r) ? 1u : 0u;
+    MGLRendererStateAreas areas; mglRendererStateAreasPort(c->r, &areas);
+    in->bind_valid =
+        (areas.binding_state_owner && mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u;
     in->keys_equal = mglStateKeysEqual(&batch->key, &c->key) ? 1u : 0u;
     const MGLBatchingState *bs = mglRendererBatchingStatePort(c->r);
     in->absolute_offsets_match =
@@ -284,7 +294,8 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
                        bs && bs->dirtyKeyDeltaEnabled ? 1 : 0, prevKeyValid,
                        mglRenderEncoderOwnerHasCurrent(
                            mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner),
-                       mglRendererBindingStateIsValidPort(renderer))
+                       (areas.binding_state_owner &&
+                        mglBatchBindingStateIsValid(*areas.binding_state_owner)))
                        ? 1 : 0;
     MGLBatchDirtyDeltaFlags dflags; memset(&dflags, 0, sizeof(dflags));
     if (canDelta) {
@@ -300,7 +311,8 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
             (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ? 1u : 0u,
         .has_encoder = mglRenderEncoderOwnerHasCurrent(
                            mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner) ? 1u : 0u,
-        .bind_valid = mglRendererBindingStateIsValidPort(renderer) ? 1u : 0u,
+        .bind_valid = (areas.binding_state_owner &&
+                       mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u,
         .pass_matches = mglRendererCurrentRenderPassMatchesFramebufferPort(renderer) ? 1u : 0u,
     };
     replayDirtyBits = mgl_batch_restore_finish_dirty(replayDirtyBits, forcedDirtyBits, kFull,

@@ -96,9 +96,6 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
  * Renderer state the C flush driver reads or writes: the replay-workspace
  * switch and its dual-proxy checkpoint, the batching switches, the trace-replay
  * identity and the render-pass checks. */
-/* Binding-state snapshot validity of the renderer's owner. */
-int mglRendererBindingStateIsValidPort(void *renderer);
-
 /* The renderer's batching state (flags + batch arena).  C drivers read and
  * write the fields directly; this one port replaced six per-flag wrappers. */
 MGLBatchingState *mglRendererBatchingStatePort(void *renderer);
