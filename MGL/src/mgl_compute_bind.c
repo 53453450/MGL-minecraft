@@ -29,6 +29,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "mgl_compute_bind.h"
+#include "mgl_texture_bind.h"        /* mglRendererBindMTLTexture */
 #include "mgl_renderer_ports.h"     /* state areas + the host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes */
 #include "mgl_binding_policy.h"
@@ -36,6 +37,9 @@
 #include "mgl_buffer_slots.h"       /* kMGLMaxMetalVertexBufferCount */
 #include "mgl_buffer_map.h"         /* map/update-dirty entries */
 #include "mgl_draw_tess.h"          /* mglTessRequiredBindingBytes */
+#include "mgl_texture_binding_resolve.h" /* sampled-resource lookups */
+#include "mgl_texture_compat.h"    /* mglTextureUnitForSampledResource */
+#include "mgl_shader_resource.h"   /* mglMetalResourceSlot */
 #include "mgl_env_flag.h"
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C. */
@@ -416,5 +420,313 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
     }
 
     mglComputeBindFlushSnapshot(&bind);
+    return bind.snapshot_ok;
+}
+
+/* === texture / sampler half =============================================
+ * The MGL_CTEX_* macros of the Objective-C file, over the same context; kind 2
+ * is a texture binding and kind 3 a sampler. */
+
+static void mglComputeBindEmitTexture(MGLComputeBindCtx *ctx, uint32_t slot,
+                                      void *texture)
+{
+    if (ctx->snapshot.op_count >= MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {
+        mglComputeBindFlushSnapshot(ctx);
+    }
+    ctx->snapshot.ops[ctx->snapshot.op_count++] =
+        (MGLRenderComputeBindingOp){/* kind */ 2u,
+                                    /* index */ slot,
+                                    /* offset */ 0,
+                                    /* buffer */ texture,
+                                    /* bytes */ NULL,
+                                    /* length */ 0u};
+}
+
+static void mglComputeBindEmitSampler(MGLComputeBindCtx *ctx, uint32_t slot,
+                                      void *sampler)
+{
+    if (ctx->snapshot.op_count >= MGL_RENDER_COMPUTE_BINDING_SNAPSHOT_MAX_OPS) {
+        mglComputeBindFlushSnapshot(ctx);
+    }
+    ctx->snapshot.ops[ctx->snapshot.op_count++] =
+        (MGLRenderComputeBindingOp){/* kind */ 3u,
+                                    /* index */ slot,
+                                    /* offset */ 0,
+                                    /* buffer */ sampler,
+                                    /* bytes */ NULL,
+                                    /* length */ 0u};
+}
+
+bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
+                                     MGLRenderComputeExecutionPlan *plan,
+                                     void *temporaries)
+{
+    if (!encoder && !plan) {
+        fprintf(stderr,
+                "MGL COMPUTE ERROR: NULL compute encoder for texture binding\n");
+        return false;
+    }
+
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    GLMState *state = mglComputeBindState(&areas);
+
+    MGLComputeBindCtx bind = {
+        .encoder = encoder,
+        .plan = plan,
+        .temporaries = temporaries,
+        .snapshot_ok = true,
+    };
+    /* The Objective-C macro created a local NSMutableArray when none was
+     * passed and the function dropped it again on return; that set therefore
+     * never reached a caller.  Created and released the same way here. */
+    bool owns_temporaries = false;
+
+    Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
+
+    static const int kComputeTextureSpvcTypes[] = {
+        _SAMPLED_IMAGE_RES, _STORAGE_IMAGE_RES,
+    };
+    for (int type = 0; type < 2; type++)
+    {
+        int spvc_type = kComputeTextureSpvcTypes[type];
+        int gl_texture_type =
+            mglRenderComputeTextureBindKind((uint32_t)spvc_type);
+        if (gl_texture_type < 0) {
+            continue;
+        }
+
+        /* iterate shader storage buffers */
+        GLuint count = mglRendererGetProgramBindingCount(ctx, stage, spvc_type);
+        if (count)
+        {
+            int textures_to_be_mapped = count;
+
+            if (textures_to_be_mapped > TEXTURE_UNITS) {
+                textures_to_be_mapped = TEXTURE_UNITS;
+            }
+
+            for (int i = 0; i < (int)count && textures_to_be_mapped > 0; i++)
+            {
+                MGLShaderResource *resource = NULL;
+                GLuint resourceElement = 0u;
+                GLuint metalBinding = mglRendererGetProgramBinding(ctx, stage, spvc_type, i);
+                GLuint glUnit = 0u;
+                Texture *ptr = NULL;
+
+                if (computeProgram &&
+                    spvc_type >= 0 && spvc_type < MGL_MAX_SHADER_RESOURCES &&
+                    i >= 0) {
+                    MGLShaderResourceList *resourceList =
+                        &computeProgram->shader_resources_list[stage][spvc_type];
+                    if (mglRenderComputeTextureListExpandsByElement(
+                            (uint32_t)spvc_type)) {
+                        GLuint ordinal = (GLuint)i;
+                        for (GLuint ri = 0; ri < resourceList->count; ri++) {
+                            MGLShaderResource *candidate = &resourceList->list[ri];
+                            GLuint elements = mglRenderShaderResourceElementCount(
+                                (uint32_t)candidate->gl_array_size);
+                            if (ordinal < elements) {
+                                resource = candidate;
+                                resourceElement = ordinal;
+                                metalBinding = candidate->binding + ordinal;
+                                break;
+                            }
+                            ordinal -= elements;
+                        }
+                    } else if (i < (int)resourceList->count) {
+                        resource = &resourceList->list[i];
+                        metalBinding = mglMetalResourceSlot(resource);
+                    }
+                }
+
+                if (mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS)) {
+                    continue;
+                }
+
+                if (mglRenderComputeTextureBindIsStorage((uint32_t)gl_texture_type))
+                {
+                    const int explicitUnit =
+                        computeProgram && metalBinding < TEXTURE_UNITS &&
+                        computeProgram->sampler_units_explicit_by_stage[stage]
+                                                                      [metalBinding];
+                    if (explicitUnit || resource) {
+                        glUnit = mglRenderImageUnitFromResource(
+                            explicitUnit,
+                            explicitUnit
+                                ? (uint32_t)computeProgram
+                                      ->sampler_units_by_stage[stage][metalBinding]
+                                : 0u,
+                            resource ? resource->sampler_unit : -1,
+                            resource ? resource->gl_binding : 0u,
+                            resourceElement);
+                    } else {
+                        glUnit = (GLuint)mglRendererGetProgramGLBinding(
+                            ctx, stage, spvc_type, i);
+                    }
+                    if (!mglRenderImageUnitsInRange(0u, glUnit, TEXTURE_UNITS)) {
+                        continue;
+                    }
+                    ptr = state->image_units[glUnit].tex;
+                } else {
+                    glUnit = mglTextureUnitForSampledResource(
+                        resource, mglResolveProgramForStageFromState(ctx, stage),
+                        metalBinding, stage);
+                    if (glUnit >= TEXTURE_UNITS) {
+                        continue;
+                    }
+                    ptr = mglTextureForSampledResourceForStage(
+                        ctx, resource, metalBinding, stage,
+                        mglRendererGetProgramDeclaredTextureType(ctx, stage,
+                                                                 spvc_type, i));
+                }
+
+                if (ptr)
+                {
+                    RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
+                    if (!ptr->mtl_data) {
+                        continue;
+                    }
+
+                    void *texture = ptr->mtl_data;
+                    if (!texture) {
+                        continue;
+                    }
+
+                    /* Storage images: BindImage <format>/level/slice views
+                     * (same helper as VS/FS). Cached on ImageUnit. */
+                    if (mglRenderComputeTextureBindIsStorage(
+                            (uint32_t)gl_texture_type)) {
+                        texture = mglRendererStorageImageTexture(
+                            texture, &state->image_units[glUnit]);
+                    }
+
+                    /* Sampler cascade (GL sampler object → texture parameters
+                     * → default) is the shared materialize port the
+                     * vertex / fragment spine uses. */
+                    void *sampler = mglRendererMaterializeSampledSamplerPort(
+                        renderer, ptr, glUnit, NULL, 0, (uint32_t)ptr->target,
+                        computeProgram ? computeProgram->name : 0u,
+                        resource ? mglMetalResourceSlot(resource) : metalBinding,
+                        "compute", texture);
+
+                    if (!sampler) {
+                        void *fallbackSampler = NULL;
+                        if (mglRenderCreateDefaultSampler(&fallbackSampler) != 0) {
+                            fallbackSampler = NULL;
+                        }
+                        sampler = fallbackSampler;
+                        /* Keep the fallback alive until the end replay. */
+                        if (!temporaries) {
+                            temporaries = mglRendererTemporariesCreate();
+                            bind.temporaries = temporaries;
+                            owns_temporaries = true;
+                        }
+                        mglComputeBindHandOffCreated(&bind, fallbackSampler);
+                        if (!sampler) {
+                            continue;
+                        }
+                    }
+
+                    mglComputeBindEmitTexture(&bind, metalBinding, texture);
+                    if (mglRenderComputeTextureBindNeedsSampler(
+                            (uint32_t)gl_texture_type,
+                            !resource || resource->has_combined_sampler)) {
+                        GLuint samplerBinding = resource
+                            ? mglMetalCombinedSamplerSlotForElement(resource,
+                                                                    resourceElement)
+                            : metalBinding;
+                        mglComputeBindEmitSampler(&bind, samplerBinding, sampler);
+                    }
+
+                    textures_to_be_mapped--;
+                }
+            }
+
+            /* texture not found */
+            if (textures_to_be_mapped)
+            {
+                DEBUG_PRINT("No texture bound for fragment shader location\n");
+                mglComputeBindFlushSnapshot(&bind);
+                if (owns_temporaries) {
+                    mglRendererTemporariesRelease(temporaries);
+                }
+                return false;
+            }
+        }
+    }
+
+    if (computeProgram) {
+        MGLShaderResourceList *arrayResources =
+            &computeProgram->shader_resources_list[stage][_SAMPLED_IMAGE_RES];
+        for (GLuint resourceIndex = 0;
+             arrayResources->list && resourceIndex < arrayResources->count;
+             resourceIndex++) {
+            MGLShaderResource *resource = &arrayResources->list[resourceIndex];
+            if (resource->gl_array_size <= 1) {
+                continue;
+            }
+
+            uint32_t expectedType = mglRendererGetProgramDeclaredTextureType(
+                ctx, stage, _SAMPLED_IMAGE_RES, (int)resourceIndex);
+            for (GLint element = 1; element < resource->gl_array_size; element++) {
+                GLuint metalSlot = resource->binding + (GLuint)element;
+                GLuint samplerSlot = mglMetalCombinedSamplerSlotForElement(
+                    resource, (GLuint)element);
+                if (metalSlot >= TEXTURE_UNITS) {
+                    break;
+                }
+
+                GLuint glUnit = mglTextureUnitForSampledResource(
+                    NULL, mglResolveProgramForStageFromState(ctx, stage),
+                    metalSlot, stage);
+                Texture *ptr = mglTextureForSampledResourceForStage(
+                    ctx, NULL, metalSlot, stage, expectedType);
+                if (!ptr || !mglRendererBindMTLTexture(renderer, ptr) ||
+                    !ptr->mtl_data) {
+                    continue;
+                }
+
+                void *texture = ptr->mtl_data;
+                /* Same shared port as the loop above.  This path used to
+                 * skip the "dirty sampler" release the others do, so a
+                 * re-parameterized sampler could keep its old Metal object;
+                 * going through the port makes it consistent. */
+                void *sampler = mglRendererMaterializeSampledSamplerPort(
+                    renderer, ptr, glUnit, NULL, 0, (uint32_t)ptr->target,
+                    computeProgram ? computeProgram->name : 0u, metalSlot,
+                    "compute", texture);
+
+                if (!sampler) {
+                    void *fallbackSampler = NULL;
+                    if (mglRenderCreateDefaultSampler(&fallbackSampler) != 0) {
+                        fallbackSampler = NULL;
+                    }
+                    sampler = fallbackSampler;
+                    /* Keep the fallback alive until the end replay. */
+                    if (!temporaries) {
+                        temporaries = mglRendererTemporariesCreate();
+                        bind.temporaries = temporaries;
+                        owns_temporaries = true;
+                    }
+                    mglComputeBindHandOffCreated(&bind, fallbackSampler);
+                }
+
+                mglComputeBindEmitTexture(&bind, metalSlot, texture);
+                if (resource->has_combined_sampler && sampler) {
+                    mglComputeBindEmitSampler(&bind, samplerSlot, sampler);
+                }
+            }
+        }
+    }
+
+    mglComputeBindFlushSnapshot(&bind);
+    if (owns_temporaries) {
+        mglRendererTemporariesRelease(temporaries);
+    }
+
+    state->dirty_bits &= ~(DIRTY_TEX_BINDING | DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE);
+
     return bind.snapshot_ok;
 }

@@ -43,6 +43,13 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
                                     MGLRenderComputeExecutionPlan *plan,
                                     void *temporaries);
 
+/* Bind the stage's sampled/storage textures and their samplers, with the same
+ * encoder/plan rule and the same keep-alive set.  This also clears
+ * DIRTY_TEX_BINDING | DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE. */
+bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
+                                     MGLRenderComputeExecutionPlan *plan,
+                                     void *temporaries);
+
 #ifdef __cplusplus
 }
 #endif

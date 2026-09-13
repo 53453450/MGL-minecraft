@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十三刀** + trace 清零 后；第 68–78 轮见 §0.24/§0.26–§0.35）**：
-文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 31,823**、ObjC 语法 **2,268 → 1,742**、词汇 **4,353 → 3,555**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十四刀** + trace 清零 后；第 68–79 轮见 §0.24/§0.26–§0.36）**：
+文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 31,455**、ObjC 语法 **2,268 → 1,718**、词汇 **4,353 → 3,536**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3174,3 +3174,32 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      ⑤ 下一刀：`+Compute.m` 剩下的 **纹理绑定族**（`bindTexturesToComputeEncoder:` 两个重载 + 三个 `MGL_CTEX_*` 宏，
      同样机制、同样用第 108 刀的采样器入口），搬完即可把 `+Compute.m` 整文件删除（**文件 9 → 8**）。
+
+110. **P0-1 第五十四刀：compute 纹理/采样器绑定族转 C（`+Compute.m` 901 → 535 行，语法 70 → 49）**：
+     ① 同一套机制再搬一族：`-[MGLRenderer bindTexturesToComputeEncoder:stage:executionPlan:temporaries:]`
+     （含 3 参重载、四个 `MGL_CTEX_*` 宏、两个采样/采样器循环、数组纹理补绑循环，共 341 行）→
+     `mglComputeBindTexturesToEncoder(renderer, stage, encoder, plan, temporaries)`，与缓冲族**共用**
+     `MGLComputeBindCtx` 与 `mglComputeBindFlushSnapshot/RetainTemp`，新增 `mglComputeBindEmitTexture`（kind 2）与
+     `mglComputeBindEmitSampler`（kind 3）。
+     ② 两处 ObjC 语义细节**照原样保留并记录**：
+     - `MGL_CTEX_RETAIN_TEMP` 原本在 `temporaries` 为 nil 时**就地新建**一个 `NSMutableArray`（该集合随函数返回即被 ARC 释放，
+       不会回到调用方）——C 版用 `mglRendererTemporariesCreate()` 建本地集合并**在函数返回前 `Release`**，
+       行为与"本地数组在返回时消失"一致（这属于原实现的既存小瑕疵，不借转换之机改变语义）；
+     - 默认采样器走 `mglRenderCreateDefaultSampler`（+1）→ `mglComputeBindHandOffCreated()` 先交给 keep-alive 集合再释放自己那份
+       （与缓冲族同一对 ARC 语义：数组持有、强局部在作用域末尾释放）。
+     ③ 顺带删掉三个**已无使用者**的 file-static：`mglComputeCreateDefaultSampler`、`mglComputeSetTexture`、`mglComputeSetSampler`
+     （它们只被搬走的两族使用；按"clang 是唯一裁判"逐个删并编译确认），`+Draw_Private.h` 里两个重载声明删除，
+     `mgl_draw_metal_port.m` 的纹理调用点改调 C 入口。
+     ④ **踩坑（老问题的又一次实例）**：脚本按"正则匹配整条语句"替换多行调用点时只吃到了中间片段，
+     留下 `RETURN_FALSE_ON_FAILURE(` 悬挂前缀，编译立刻报 `unterminated function-like macro invocation`；
+     **规则照旧：调用点替换后必须马上编译**（本刀的修复就是把前缀与调用并成一条）。
+     ⑤ **度量**：语法 **1,742 → 1,718（−24）**、词汇 **3,555 → 3,536（−19）**、行数 **31,823 → 31,455（−368）**；
+     `+Compute.m` 单文件 **901 → 535 行 / 70 → 49 语法**；`mgl_draw_metal_port.m` 53 → 50 语法；
+     `mgl_compute_bind.{h,c}` 现共 700 行；文件数 9 不变。
+     ⑥ **oracle**：旧库 = 提交 `0690c37` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,272/5,269 与 5,807/5,805 → `processGLState.slow` 291/288 与 293/291），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑦ 下一刀：`+Compute.m` 只剩 535 行（`processCompute` / `runComputeDispatchOrchestrationLocked` /
+     `mtlDispatchCompute{,Indirect}Locked` / `mglRendererDispatchCompute{,Indirect}` 顶层入口），搬完即可**删文件（9 → 8）**；
+     前置已齐（第 108 刀的 `EndRenderEncoding` / `NewCommandBufferLocked` / `EnsureWritableCommandBuffer` 等入口）。

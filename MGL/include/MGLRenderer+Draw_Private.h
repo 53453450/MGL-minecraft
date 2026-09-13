@@ -330,12 +330,8 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
                                       outputPrimitive:(uint32_t)outputPrimitive;
 - (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program;
-- (bool)bindTexturesToComputeEncoder:(id)encoder
-                                stage:(int)stage;
-- (bool)bindTexturesToComputeEncoder:(id)encoder
-                                stage:(int)stage
-                        executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
-                         temporaries:(NSMutableArray *)temporaries;
+/* the compute texture/sampler binding is the C entry
+ * mglComputeBindTexturesToEncoder (mgl_compute_bind.h) now */
 
 /* Emulated MS (texture2d_array sample planes): per-sample redraw + broadcast. */
 /* now the C function mglDrawEmulatedMSColor0Texture (mgl_draw_support.h) */

@@ -964,10 +964,8 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
     void *compute = NULL;
     bool buffersOK = mglComputeBindBuffersToEncoder(
         renderer, _GEOMETRY_SHADER, compute, &stageCopyBacks, plan, temps);
-    bool texturesOK = buffersOK && [self bindTexturesToComputeEncoder:(__bridge id)compute
-                                                                stage:_GEOMETRY_SHADER
-                                                        executionPlan:plan
-                                                         temporaries:(__bridge NSMutableArray *)temps];
+    bool texturesOK = buffersOK && mglComputeBindTexturesToEncoder(
+        renderer, _GEOMETRY_SHADER, compute, plan, temps);
     if (!buffersOK || !texturesOK) {
         if (compute) mglDrawSupportEndComputeEncoder(compute);
         mglRendererClearStageBindingCopyBacksPort(renderer, &stageCopyBacks);
