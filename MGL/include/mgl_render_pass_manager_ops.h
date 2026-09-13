@@ -23,6 +23,7 @@ extern "C" {
 /* Same bodies as the manager methods of the same name, driven from the
  * renderer's command state (areas.command). */
 void mglRenderPassManagerDiscardCurrentCommandBuffer(void *renderer);
+void mglRenderPassManagerClearRenderPassIdentity(void *renderer);
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer);
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer);
 int mglRenderPassManagerCommitCommandBufferTransaction(

@@ -100,3 +100,50 @@ void mglRenderPassManagerReleaseDetachedCommandBufferIfOwned(
     }
     mglRenderDestroyCommandBufferSubmission(&cs->detachedCommandBufferSubmission);
 }
+
+/* Local twins of the manager's file-static helpers (same bodies). */
+static void mglRenderPassManagerSyncIdentityView(
+    MGLCommandState *commandState, const MGLRenderPassIdentityState *identity)
+{
+    commandState->renderPassFramebuffer = (Framebuffer *)identity->framebuffer;
+    commandState->renderPassFramebufferName = identity->framebuffer_name;
+    commandState->renderPassDrawBuffer = identity->draw_buffer;
+    commandState->renderPassDrawBufferCount = (GLsizei)identity->draw_buffer_count;
+    for (uint32_t index = 0; index < MAX_COLOR_ATTACHMENTS; ++index) {
+        commandState->renderPassDrawBuffers[index] = identity->draw_buffers[index];
+    }
+}
+
+static void mglRenderPassManagerStoreIdentity(
+    MGLCommandState *commandState, const MGLRenderPassIdentityState *identity)
+{
+    if (!commandState->renderPassIdentityOwner &&
+        mglRenderCreateRenderPassIdentityOwner(
+            &commandState->renderPassIdentityOwner) != 0) {
+        commandState->renderPassIdentityOwner = NULL;
+    }
+    if (commandState->renderPassIdentityOwner &&
+        mglRenderUpdateRenderPassIdentity(commandState->renderPassIdentityOwner,
+                                          identity) != 0) {
+        mglRenderDestroyRenderPassIdentityOwner(
+            &commandState->renderPassIdentityOwner);
+    }
+    mglRenderPassManagerSyncIdentityView(commandState, identity);
+}
+
+void mglRenderPassManagerClearRenderPassIdentity(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+    if (!cs) {
+        return;
+    }
+    /* render pass ended - invalidate FBO match cache. */
+    mglRenderClearFboMatchCache(cs->renderPassIdentityOwner);
+    MGLRenderPassIdentityState identity = {0};
+    for (uint32_t index = 0; index < MAX_COLOR_ATTACHMENTS; index++) {
+        identity.draw_buffers[index] = (GLenum)mglRenderEmptyDrawBuffer();
+    }
+    mglRenderPassManagerStoreIdentity(cs, &identity);
+}

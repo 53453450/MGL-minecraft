@@ -2513,3 +2513,21 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 **结论**：item 1 是小改动（~10 行）且可单独落地；**item 2 与整块搬迁绑定**；做完后第 93 条的"半块"与它们合起来就是 §0.22 第②步的完整内容，
 之后第③步 MS 循环族、第④步删除 `+DrawStageHost.m`（**文件 16 → 15**）。**本轮不做代码改动**：可用上下文已不足以在一次闭环内完成
 "补两处 + 搬 91 行 + 门禁/CTS/A/B"，按既定纪律不把树留在半成品状态。
+
+94. **P0-1 第四十刀：补第 4 个 manager C 入口 `mglRenderPassManagerClearRenderPassIdentity`（**可加性前置，0 行净变化**）**：
+     ① 本刀**只加不减**（按第 62 条修正后的路线：先把"真正可加性"的前置落地，再把整块搬迁作为同一刀完成）：
+     在 `mgl_render_pass_manager_ops.c` 里照 manager 的两处 file-static 写成本地 twin——
+     `mglRenderPassManagerSyncIdentityView`（把 identity 的 5 个字段写进 `MGLCommandState`）与
+     `mglRenderPassManagerStoreIdentity`（必要时 `mglRenderCreateRenderPassIdentityOwner` → `mglRenderUpdateRenderPassIdentity`
+     → 失败即销毁 → 再同步 view），然后实现 `mglRenderPassManagerClearRenderPassIdentity(void *renderer)`：
+     `mglRenderClearFboMatchCache(cs->renderPassIdentityOwner)` → 组装 `draw_buffers[] = mglRenderEmptyDrawBuffer()` →
+     `StoreIdentity`。`areas.command` 提供 `MGLCommandState`，**零新增端口**。
+     ② **度量**：`objc_zero.sh` 不变（**16 文件 / 34,373 行 / 语法 1,959 / 词汇 3,836**，因为新增代码全在 `.c` 侧）；
+     C 侧新增约 50 行。这是**为下一刀铺路**的提交，如实标注"0 行 ObjC 净变化"。
+     ③ **oracle**：旧库 = 提交 `1ddca30` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ④ 下一刀（**整块搬迁，含第 62 条 item 2**）：把 `endRenderEncodingLocked`（≈91 行）搬成 C——用本刀的
+     `ClearRenderPassIdentity`、第 27 刀的 `End`/`Clear`/`Discard`、第 93 刀的 `mglClearFragmentTraceBindingsForRenderer`；
+     **同一次改动里**把 `mglLogRenderPassLifecycle` 的 `id drawable` 改为 `void *` 并给 5–6 个 ObjC 调用点补
+     `(__bridge void *)_drawable`；`@try/@catch` 用 `mglPlatformShellGuardedCall`，catch 路径的清理放在守卫返回失败之后执行。
+     做完后第③步 MS 循环族、第④步删 `+DrawStageHost.m`（**文件 16 → 15**）。
