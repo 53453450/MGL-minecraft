@@ -930,7 +930,7 @@ static void *mglGsMetalMtlForBuffer(void *renderer, Buffer *buf)
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !buf) return NULL;
     if (!buf->data.mtl_data) {
-        [self bindMTLBuffer:buf];
+        mglRendererBindMTLBuffer((__bridge void *)self, buf);
     }
     return buf->data.mtl_data;
 }
@@ -1459,7 +1459,7 @@ static int mglStageEnsureMtlBufferPort(void *renderer,
     if (!self || !info || !info->buffer_obj) return 0;
     Buffer *vbo = (Buffer *)info->buffer_obj;
     if (!vbo->data.mtl_data) {
-        [self bindMTLBuffer:vbo];
+        mglRendererBindMTLBuffer((__bridge void *)self, vbo);
     }
     info->mtl_data = vbo->data.mtl_data;
     return info->mtl_data ? 1 : 0;

@@ -333,7 +333,7 @@ typedef struct {
     for (GLuint i = 0; i < stageBufferMap.count; i++) {
         Buffer *ptr = stageBufferMap.buffers[i].buf;
         if (ptr && !ptr->data.mtl_data) {
-            [self bindMTLBuffer:ptr];
+            mglRendererBindMTLBuffer((__bridge void *)self, ptr);
         }
     }
 
@@ -1693,7 +1693,7 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
                 mglRenderClearEmptyBufferDirty(xfbSlot->buf);
             }
             if (!xfbSlot->buf->data.mtl_data) {
-                [self bindMTLBuffer:xfbSlot->buf];
+                mglRendererBindMTLBuffer((__bridge void *)self, xfbSlot->buf);
             }
             xfbMTL = (__bridge id)(xfbSlot->buf->data.mtl_data);
             if (xfbMTL) {
@@ -1888,7 +1888,7 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
                     }
                 }
                 if (!destBuf->data.mtl_data) {
-                    [self bindMTLBuffer:destBuf];
+                    mglRendererBindMTLBuffer((__bridge void *)self, destBuf);
                 }
                 id destMTL = (__bridge id)(destBuf->data.mtl_data);
                 const uint64_t sessionOffset = mglXfbSessionOffsetOr(

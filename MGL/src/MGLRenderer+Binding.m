@@ -40,24 +40,7 @@ static id mglBindingCreateDefaultSampler(void)
 
 @implementation MGLRenderer (Binding)
 
-- (void) bindMTLBuffer:(Buffer *) ptr
-{
-    METAL_LOCK();
-    [self bindMTLBufferLocked:ptr];
-    METAL_UNLOCK();
-}
 
-- (void) bindMTLBufferLocked:(Buffer *)ptr
-{
-    char bindError[256] = {0};
-    int bindResult = mglRenderBindBufferStorage(
-        ptr, bindError, sizeof(bindError));
-    if (bindResult != MGL_RENDER_BUFFER_BOUND) {
-        NSLog(@"MGL ERROR: Metal-cpp buffer bind failed buffer=%u: %s",
-              ptr ? (unsigned)ptr->name : 0u,
-              bindError[0] ? bindError : "?");
-    }
-}
 
 - (bool)bindMTLTexture:(Texture *)tex
 {

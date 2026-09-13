@@ -12,6 +12,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_sampler.h"
+#include "mgl_renderer_ports.h"
 #include "mgl_binding_state_ops.h"
 #include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Draw_Private.h"
@@ -705,7 +706,7 @@ static BOOL mglBindingStateEmitAttribBuffer(
 
         /* NEED_MTL → ensure → POST plan */
         if (!attribBuffer->data.mtl_data) {
-            [self bindMTLBuffer:attribBuffer];
+            mglRendererBindMTLBuffer((__bridge void *)self, attribBuffer);
         }
         if (!attribBuffer->data.mtl_data) {
             NSLog(@"MGL VBIND skip attrib=%u buffer=%u: no Metal backing", attrib,
@@ -1148,7 +1149,7 @@ static BOOL mglBindingStateEmitAttribBuffer(
 
         if (!(isFragment && plan.use_mtl_as_inline_src)) {
             if (!ptr->data.mtl_data) {
-                [self bindMTLBuffer:ptr];
+                mglRendererBindMTLBuffer((__bridge void *)self, ptr);
             } else if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
                 [self updateDirtyBuffer:ptr];
             }

@@ -336,7 +336,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
             }
         }
         if (!ptr->data.mtl_data) {
-            [self bindMTLBuffer:ptr];
+            mglRendererBindMTLBuffer((__bridge void *)self, ptr);
         }
         if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
             /* Push pending CPU shadow into Metal.  bindMTLBuffer alone does

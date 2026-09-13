@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十三刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
-行数 **43,989 → 35,112**、ObjC 语法 **2,268 → 2,007**、词汇 **4,353 → 3,913**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
+行数 **43,989 → 35,096**、ObjC 语法 **2,268 → 2,006**、词汇 **4,353 → 3,912**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1902,3 +1902,18 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      可以作为判据；临时写的启发式扫描一律不要直接用来删代码。**
      下一刀：回到第 76 条的路线——`+Binding.m` 的 `bindMTLTextureLocked:`(339) 按其依赖顺序逐个转 C
      （先 `endRenderEncodingLocked`，再 `createMTLTextureFromGLTexture`/`createFallbackMTLTexture`，`NSDate` 计时改 `mglTraceNowSeconds()`）。
+
+78. **P0-1 第二十四刀：`bindMTLBuffer:` 双方法删除，全部调用点走已有 C 函数（**−17 行**）**：
+     ① 第十一刀已经产生 C 函数 `mglRendererBindMTLBuffer`（体与 `bindMTLBufferLocked:` 完全相同：`mglRenderBindBufferStorage`
+     + 同字段诊断），但 ObjC 的 `bindMTLBuffer:`（6 行锁壳）与 `bindMTLBufferLocked:`（11 行）一直留着。
+     本刀把 5 个文件里约 10 处 `[self bindMTLBuffer:…]` 全部改成 `mglRendererBindMTLBuffer((__bridge void *)self, …)`，
+     然后**连方法带声明一起删除**（`MGLRenderer+Binding_Private.h` 两条声明注释化）。
+     ② **教训**：`METAL_LOCK()` 是空断言早已查明（第 65 条），所以这类"锁壳 + Locked 双份"是**结构冗余**——
+     一旦对应的 C 函数存在，就应该把两个方法一起删；本刀即"同一功能曾同时存在 C 与 ObjC 两份实现"的收尾。
+     ③ **度量**：行数 **35,112 → 35,096**、语法 **2,007 → 2,006**、词汇 **3,913 → 3,912**；文件 17、shim 端口 13 不变；
+     `+Binding.m` 448 → **431 行**（余 `bindMTLTexture*`/`syncResourceBindings*`）。
+     ④ **oracle**：旧库 = 提交 `874c929` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：`+Binding.m` 只剩 `bindMTLTextureLocked:`(339) 与 `syncResourceBindingsForContext:`(27)。
+     建议先转 `endRenderEncodingLocked`（`+RenderPass.m:5060`，约 60 行，OBjC 成分是 `_batching`/`_renderPassManager` 两个
+     areas 已覆盖的状态 + 日志），转换后 `bindMTLTextureLocked:` 的依赖表就少一项；每转一项立刻编译 + A/B。

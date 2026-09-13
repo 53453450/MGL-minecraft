@@ -2556,7 +2556,7 @@ static void mglTextureCopyTextureToBuffer(
     // we can deal with a null buffer but we need a texture
     if (buf->data.mtl_data == NULL)
     {
-        [self bindMTLBufferLocked: buf];
+        mglRendererBindMTLBuffer((__bridge void *)self, buf);
         RETURN_ON_NULL(buf->data.mtl_data);
     }
 

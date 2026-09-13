@@ -29,8 +29,8 @@
 
 @interface MGLRenderer ()
 
-- (void)bindMTLBuffer:(Buffer *)ptr;
-- (void)bindMTLBufferLocked:(Buffer *)ptr;
+/* now the C function mglRendererBindMTLBuffer (mgl_renderer_ports.h) */
+/* now the C function mglRendererBindMTLBuffer (mgl_renderer_ports.h) */
 - (bool)bindMTLTexture:(Texture *)tex;
 - (bool)bindMTLTextureLocked:(Texture *)tex;
 
