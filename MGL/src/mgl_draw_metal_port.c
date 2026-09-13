@@ -10,10 +10,36 @@
 
 /* O1.6: true id/MTL materialization ports shared by draw host runners. */
 
-#import "MGLRenderer_Private.h"
-#import "MGLRenderer+Draw_Private.h"
-#import "MGLRenderer+DrawSupportUtil.h"
-#import "MGLRenderer+Tessellation_Private.h"
+#include <CoreFoundation/CoreFoundation.h>  /* CFRetain / CFRelease */
+
+#include "mgl_encode_context.h"          /* MGLEncodeContext */
+#include "mgl_vertex_attrib_query.h"     /* mglRendererGetValidatedVAO */
+#include "mgl_vertex_attrib_binding.h"   /* mglRendererResolveVertexAttribBinding */
+#include "mgl_draw_validate.h"           /* mglShouldInspectDrawCall */
+#include "mgl_env_flag.h"               /* mgl_env_flag_enabled_default_on */
+#include "mgl_thread_affinity.h"         /* MGL_ASSERT_GL_THREAD (METAL_LOCK) */
+#include "MGLRenderer+DrawSupportUtil.h"
+/* Declared next to their definitions in the Objective-C MGLRenderer+Draw_Private.h,
+ * which a .c file cannot include; repeated here the way mgl_renderer_ports.c does. */
+extern void mglLogDrawWithoutSwapWatchdog(const char *kind, int stage, GLMContext ctx,
+                                          void *cb_owner, void *enc_owner,
+                                          void *rp_owner);
+extern bool mglShouldInspectDrawCall(uint64_t draw_call, GLuint program_name);
+/* static inline in the Objective-C header (MGLRenderer+Draw_Private.h): same
+ * policy, including the debug-build short circuit. */
+static inline bool mglVboRangeValidationEnabled(void)
+{
+#if defined(DEBUG) || defined(MGL_DEBUG)
+    return true;
+#else
+    return mgl_env_flag_enabled_default_on("MGL_VALIDATE_VBO_RANGE") ? true : false;
+#endif
+}
+
+/* METAL_LOCK/METAL_UNLOCK were renderer-private macros that only assert the GL
+ * thread (see MGLRenderer_Private.h); the C twin keeps the same meaning. */
+#define METAL_LOCK()   do { MGL_ASSERT_GL_THREAD(); } while (0)
+#define METAL_UNLOCK() do { } while (0)
 #include "mgl_draw_tess.h"
 
 #include "mgl_draw_cull.h"
@@ -485,27 +511,15 @@ void mglDrawSupportCaptureSetActive(void *renderer, int active)
 
 /* ---- O1.4 HostOps ports (thin MTL / renderer ivar materialization) ---- */
 
-static MGLRenderer *mglStageHostSelf(void *renderer)
-{
-    return renderer ? (__bridge MGLRenderer *)renderer : NULL;
-}
 
 /* C-ABI accessors for the Metal-facing sub-objects (see declarations in
  * MGLRenderer_Private.h). Defined here so they compile with full knowledge of
  * the MGLRenderer class extension; consumed by file-scope C functions in this
  * and the other encode ports. */
-MGLRenderPassManager *mglRendererRenderPassManager(MGLRenderer *r)
-{
-    return r ? r->_renderPassManager : NULL;
-}
 
 /* C port (ObjC-zeroing T4): the render pass state owner of a renderer handle,
  * so C modules do not need a category to read it. */
 
-MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r)
-{
-    return r ? r->_backend : NULL;
-}
 
 static void mglStageMarkCbHasWork(void *renderer)
 {
@@ -1232,9 +1246,9 @@ static void *mglStagePrepareElementIndex(void *renderer, void *index_buffer,
     mglRendererStateAreasPort(renderer, &areas);
     size_t off = (size_t)*inout_offset;
     uint64_t typ = *inout_mtl_type;
-    void *prepared = (__bridge void *)mglPreparedElementIndexBuffer(
-        (__bridge id)mglRendererBackendGetDevice(areas.backend), NULL,
-        (__bridge id)index_buffer, gl_index_type, &off,
+    void *prepared = mglPreparedElementIndexBuffer(
+        mglRendererBackendGetDevice(areas.backend), NULL,
+        index_buffer, gl_index_type, &off,
         &typ);
     if (!prepared) return NULL;
     *inout_offset = (uint64_t)off;
@@ -1298,7 +1312,7 @@ static void mglStageBindCullEmu(void *renderer, GLenum mode, GLuint first_vertex
                                 uint32_t explicit_vertex_count,
                                 const void *enc_ctx)
 {
-    if (!mglStageHostSelf(renderer) || !enc_ctx) return;
+    if (!renderer || !enc_ctx) return;
     mglDrawBindCullDistanceEmulationBuffers(renderer, mode, first_vertex,
                                             explicit_vertices,
                                             explicit_vertex_count, enc_ctx);
@@ -1312,7 +1326,7 @@ static int mglStageTryArraySplitEncode(void *renderer, void *device,
                                        const void *enc_ctx)
 {
     return mglEncodeCullDistanceArraySplitForRenderEncoderOwner(
-               encoder_owner, (__bridge MGLDrawMetalHandle)device, mode, first,
+               encoder_owner, device, mode, first,
                count, (size_t)instance_count,
                (size_t)base_instance, renderer, enc_ctx,
                mglRendererBindCullDistanceEmu)
@@ -1332,7 +1346,7 @@ static void mglStageDrawIndexedPrimsPort(void *encoder_owner,
     mglDrawSupportDrawIndexedPrimitives(
         encoder_owner, primitive_type, (size_t)index_count,
         index_buffer, (size_t)index_offset,
-        (size_t)instance_count, (NSInteger)base_vertex,
+        (size_t)instance_count, (int64_t)base_vertex,
         (size_t)base_instance);
 }
 
@@ -1398,7 +1412,7 @@ void *mglDrawHostRunVertexCaptureArray(void *renderer, GLMContext ctx,
                                        GLuint baseInstance,
                                        uint64_t *out_offset)
 {
-    if (!mglStageHostSelf(renderer)) return NULL;
+    if (!renderer) return NULL;
     MGLTessVertexCaptureHostOps ops = mglStageMakeVertexCaptureOps(renderer);
     return mglTessRunVertexCaptureArray(ctx, first, count, instanceCount,
                                         baseInstance, out_offset, &ops);
@@ -1420,7 +1434,7 @@ void *mglDrawHostRunVertexCaptureIndexed(
     GLsizei instanceCount, GLuint baseInstance, uint32_t maxIndex,
     uint64_t *out_offset)
 {
-    if (!mglStageHostSelf(renderer)) return NULL;
+    if (!renderer) return NULL;
     MGLTessVertexCaptureHostOps ops = mglStageMakeVertexCaptureOps(renderer);
     return mglTessRunVertexCaptureIndexed(ctx, index_mtl, indexType, index_offset,
                                           count, baseVertex, instanceCount,
@@ -1546,7 +1560,7 @@ bool mglDrawHostHandleXFB(void *renderer, GLMContext ctx, GLenum mode,
                           GLint first, GLsizei count, GLsizei instanceCount,
                           GLuint baseInstance)
 {
-    if (!mglStageHostSelf(renderer)) return false;
+    if (!renderer) return false;
     MGLXfbVsDrawHostOps ops = {
         .renderer = renderer,
         .capture_vs_positions = mglStageCaptureArray,
@@ -1571,7 +1585,7 @@ bool mglDrawHostHandleTessellation(void *renderer, GLMContext ctx,
     mglRendererStateAreasPort(renderer, &areas);
     MGLTessPatchDrawHostOps ops = {
         .renderer = renderer,
-        .device = (__bridge void *)((__bridge id)mglRendererBackendGetDevice(areas.backend)),
+        .device = (mglRendererBackendGetDevice(areas.backend)),
         .bind_mtl_program = mglStageBindProgram,
         .capture_array = mglStageCaptureArray,
         .capture_indexed = mglStageCaptureIndexed,
@@ -1653,10 +1667,6 @@ bool mglDrawHostHandleGeometry(void *renderer, GLMContext ctx, GLenum mode,
 }
 
 
-static MGLRenderer *mglDrawHostSelf(void *renderer)
-{
-    return renderer ? (__bridge MGLRenderer *)renderer : NULL;
-}
 
 
 
@@ -1784,7 +1794,7 @@ bool mglDrawHostCaptureCullDistanceArray(void *renderer, GLMContext ctx,
                                          GLsizei instanceCount,
                                          GLuint baseInstance)
 {
-    if (!mglStageHostSelf(renderer)) return false;
+    if (!renderer) return false;
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawRunCullDistanceArrayCapture(ctx, first, count, instanceCount,
                                               baseInstance, &ops) != 0;
@@ -1797,7 +1807,7 @@ bool mglDrawHostCaptureCullDistanceElement(void *renderer, GLMContext ctx,
                                            GLsizei instanceCount,
                                            GLuint baseInstance)
 {
-    if (!mglStageHostSelf(renderer)) return false;
+    if (!renderer) return false;
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawRunCullDistanceElementCapture(ctx, indexBytes, indexType, count,
                                                 baseVertex, instanceCount,
@@ -1814,18 +1824,18 @@ bool mglDrawHostProcessGLStateLocked(void *renderer, bool draw_command)
 
 bool mglDrawHostRasterizationIsEmpty(void *renderer)
 {
-    return mglDrawHostSelf(renderer) ? mglDrawRasterizationIsEmpty(renderer) : 0;
+    return renderer ? mglDrawRasterizationIsEmpty(renderer) : 0;
 }
 
 bool mglDrawHostModeFullyCulled(void *renderer, GLenum mode)
 {
-    return mglDrawHostSelf(renderer)
+    return renderer
                ? mglDrawModeIsFullyCulled(renderer, (uint32_t)mode) : 0;
 }
 
 void mglDrawHostApplyPolygonOffset(void *renderer, GLenum mode)
 {
-    if (mglDrawHostSelf(renderer)) {
+    if (renderer) {
         mglDrawApplyPolygonOffset(renderer, (uint32_t)mode);
     }
 }
@@ -1839,7 +1849,7 @@ bool mglDrawHostValidateArrayVertexInputs(void *renderer, GLMContext ctx,
                                           GLenum mode, GLint first,
                                           GLsizei count)
 {
-    if (!mglStageHostSelf(renderer)) return false;
+    if (!renderer) return false;
     MGLValidateArraysHostOps ops = mglStageMakeValidateOps(renderer);
     const int enabled = mglVboRangeValidationEnabled() ? 1 : 0;
     return mglDrawValidateArraysVertexInputs(ctx, mode, first, count, 0ull,
@@ -1960,7 +1970,7 @@ bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
     }
     const size_t offset = (size_t)(uintptr_t)indices;
     const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
-        glBuffer, (__bridge MGLIndexMetalHandle)metalBuffer, type, offset,
+        glBuffer, metalBuffer, type, offset,
         count);
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawPrepareAndEncodeCullDistanceElement(

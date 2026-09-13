@@ -827,7 +827,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->batching = &r->_batching;
     /* The manager exposes a const pointer; the record itself is mutable and
      * the flush driver writes the trace-replay identity through it. */
-    areas_out->command = mglRendererRenderPassManager(r)->state;
+    areas_out->command = r->_renderPassManager->state;
     areas_out->pipeline_cache = [r->_pipelineCache state];
     areas_out->binding_state_owner = &r->_bindingStateOwner;
     areas_out->pipeline_cache_object = (__bridge void *)r->_pipelineCache;

@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十四刀** + trace 清零 后；第 68–88 轮见 §0.24/§0.26–§0.45）**：
-文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,136**、ObjC 语法 **2,268 → 1,659**、词汇 **4,353 → 3,438**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十五刀** + trace 清零 后；第 68–89 轮见 §0.24/§0.26–§0.46）**：
+文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 29,080**、ObjC 语法 **2,268 → 1,646**、词汇 **4,353 → 3,437**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3500,3 +3500,31 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      ③ 4 个 `#import` → `#include`（`MGLRenderer+DrawSupportUtil.h` 已是 C 可用头，另三个 ObjC 头所需的声明补进 C 头）；
      ④ 剩余 **9 处 `__bridge`**：`MGLIndexMetalHandle`/`MGLDrawMetalHandle` 两处需要 C 类型化（或保留一层薄包装），
      `.device = (__bridge void *)((__bridge id)…)` 与 `mglPreparedElementIndexBuffer` 两侧的桥接按第 107 条检查所有权后再去。
+
+121. **P0-1 第六十五刀：**`mgl_draw_metal_port` 变成 `.c`（**文件 8 → 7**，行数 31,120 → 29,080）**：
+     ① 按第 120 条第⑤项的四件清单一次做完：
+     - **删掉两个 `*HostSelf` 助手**（调用点先清零；`mglDrawHostSelf`/`mglStageHostSelf` 的残留使用是
+       `if (!mglXHostSelf(renderer)) …` 与 `return mglXHostSelf(renderer) ? … : …` 两类，全部改成 `renderer` 判定）；
+     - **两个访问器 `mglRendererRenderPassManager(MGLRenderer *)` / `mglRendererBackend(MGLRenderer *)` 删除**
+       （它们直接读 ivar），唯一外部使用者——壳的状态区填充——改为 `r->_renderPassManager->state` / `areas_out->backend = r->_backend`，
+       `MGLRenderer_Private.h` 的两行声明换成说明注释（**同理：状态区取用替代访问器，字段不是端口**）；
+     - **4 个 `#import` 处理**：删掉 `MGLRenderer_Private.h` / `+Draw_Private.h` / `+Tessellation_Private.h` 三个 ObjC 头，
+       `+DrawSupportUtil.h` 改 `#include`（第 107 刀已把它变成 C 可用头），并补上真正的 C 依赖：
+       `mgl_encode_context.h`（`MGLEncodeContext`）、`mgl_vertex_attrib_query.h`、`mgl_vertex_attrib_binding.h`、
+       `mgl_draw_validate.h`、`mgl_env_flag.h`、`mgl_thread_affinity.h`、`<CoreFoundation/CoreFoundation.h>`；
+     - **9 处 `__bridge` 全去**：句柄类型在两个头里本来就是 `#ifdef __OBJC__ typedef id …; #else typedef void *…; #endif`
+       （`MGLDrawMetalHandle`、`MGLIndexMetalHandle`），所以 C 侧直接是 `void *`，桥接纯属多余。
+     ② **三个 C 化细节**（编译器逐个逼出来，已写进日志）：
+     - `METAL_LOCK()/METAL_UNLOCK()` 是渲染器私有宏、本质只是 `MGL_ASSERT_GL_THREAD()`，C 文件里补同义的两行宏；
+     - `mglLogDrawWithoutSwapWatchdog` / `mglShouldInspectDrawCall` 声明在 ObjC 头里 → 按既有先例用**文件内 `extern` 原型**接上；
+     - `mglVboRangeValidationEnabled()` 是 ObjC 头里的 `static inline`（**含 `#if defined(DEBUG)` 分支**）→ C 侧写**同策略 twin**，
+       不能只留 env 分支；
+     - 一处 `(NSInteger)` 强转改 `(int64_t)`；`MGLRenderer+DrawSupportUtil.h` 里残留的 `NSInteger` 一并改（该头现在是 C 头）。
+     ③ **度量（本刀是"文件数 + 行数"的大跳）**：文件 **8 → 7**、行数 **31,120 → 29,080（−2,040）**、语法 **1,658 → 1,646（−12）**、
+     词汇 **3,438 → 3,437**；`mgl_draw_metal_port.c` 自身 2,005 行（不再计入 ObjC 面）。
+     ④ **oracle**：旧库 = 提交 `e6d9fd5` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 **5,271/5,275** 与 **5,806/5,805** → `processGLState.slow` **290/294** 与 **292/291**，
+     两臂几乎同值），stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ 下一刀：按 §0.33 的表继续——`+Tessellation.m`（2,101 / 151 语法，copy-back 族与采样器入口都已就绪，
+     且**它自己的 host-ops 端口已在第 108/112 刀备齐**）。

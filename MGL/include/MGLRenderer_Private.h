@@ -204,8 +204,9 @@ static inline double mglNowSeconds(void)
  * class extension.  Routing the Metal-typed members through accessors preserves
  * the M3 invariant that the C ABI never exposes MTL::* internals; plain-C
  * internal state (core/geometry/tessellation/batching fields) stays @package. */
-MGLRenderPassManager *mglRendererRenderPassManager(MGLRenderer *r);
-MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
+/* the mglRendererRenderPassManager / mglRendererBackend accessors are gone: their
+ * users reach the records through the state areas (areas.command /
+ * areas.backend). */
 
 @interface MGLRenderer () {
     /* @package (not @public): visible within the MGL dylib only, so file-scope
