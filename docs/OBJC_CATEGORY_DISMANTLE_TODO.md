@@ -1263,3 +1263,35 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 
 **工作量估计**：134 个方法 / ~16.9k 行 / 79 个外部依赖（去重后约 40 个）。按当前"每刀 300–500 行 + 端口面"的节奏，
 约 **8–12 个切片**；前 3–4 刀应专挑"零依赖 + 调用点集中"的方法，保证每刀都能报出 shim 净减。
+
+55. **P0-1 首刀：`+Blit.m` 的 pipeline/sampler/depth-state 缓存簇转 C（**shim 端口零增长**）**：
+    ① **搬走的内容**：7 个方法（`scaledBlitPipelineForPixelFormat` / `scaledDepthBlitPipelineForPixelFormat` /
+    `scaledBlitComputePipelineForPixelFormat` / `msaaIntegerResolvePipelineForSigned` / `clearRectPipelineForColorFormat:…` /
+    `clearRectDepthState` / `scaledBlitSamplerForFilter`）+ 6 个文件内 asset helper
+    （`mglLookupAux{Render,Compute}Pipeline` / `mglCreateAux{Render,Compute}PipelineFromAsset` /
+    `mglBlitCreate{Sampler,DepthStencilState}`）→ 新 TU **`MGL/src/mgl_blit_pipelines.c`** + C 安全头
+    **`MGL/include/mgl_blit_pipelines.h`**（7 个入口，均返回**借用**引用，所有权归 renderer 生命周期的
+    C++ aux pipeline 缓存与 backend blit 缓存）。
+    ② **顺带清掉的 ObjC 词汇**：`NSError **error` → `char errbuf[512]`、`NSString` 描述串 → C 字符串、
+    `NSLog` → `fprintf(stderr, …)`、`id` → `void *`、`__bridge_transfer`/`__bridge id` 全部消失。
+    ③ **`MGLRendererStateAreas` 扩两个字段**（`void *backend` + `GLMContext ctx`）即够用，**没有新增端口**——
+    这正是 §0.10 的结论：**端口只在 C→ObjC 时需要**；方法转 C 后 ObjC 调用点直接调 C 函数（13 处改直调）。
+    ④ **度量**：`+Blit.m` **4,942 → 4,584 行（−358）**、语法 244 → **236**、词汇 880 → **821（−59）**；
+    全仓行数 **37,974 → 37,617**、语法 **2,170 → 2,167**、词汇 **4,136 → 4,077**；**shim 端口 27 不变**（行数 +2 = areas 两个字段赋值）。
+    ⑤ **oracle**：trace 语料 374/374、296/296 **逐字段一致**；stderr 语料 824/824、622/622 行，仅 3 类差异且均已确认无害：
+    (a) BINARY ARCHIVE created/loaded 取决于 archive 文件状态的运行序伪差；(b) 失败诊断文本由 NSError 描述
+    （`Error Domain=MGLBlitPipeline Code=2 "…"`）改为 C++ 原始 message（更直接）；(c) `mglDispatchError` 的函数标签由
+    ObjC selector `-[MGLRenderer(Blit) scaledBlitPipelineForPixelFormat:]` 改为 C 函数名。回归 92/0/2、ICB 轮 82/10/2 与旧库相同；
+    CTS 七簇 diff 全空。
+    ⑥ **环境/流程事故（两条，都影响证据可信度，必须改规则）**：
+    - `make clean` → **本机 Metal toolchain 组件缺失**，`build/aux/*.metallib` 无法重建（见第 54 条），已按资产表逆推还原并逐字节验证；
+    - **只删 `build/**/*.d` 会关闭头文件依赖重建**：本刀给 `MGLRendererStateAreas` 加字段后，部分 `.o` 未重编，
+      出现"指针像被踩坏"的 SIGSEGV（`test_dirty_hash` 崩在 `+Blit.m:1666` 的 `glm_ctx->active_state->readbuffer`，ctx 是垃圾值），
+      一度被误判为"旧库也崩"。**修正后的 A/B/重建固定动作**：
+      **① 切树或改头文件后，`find build/core build/es -name '*.o' -o -name '*.d' | xargs rm -f` 全量重编；
+      ② 每次重建后重新 `cp` 库到 A/B 目录并 `cmp` 确认两库不同；③ 只取本轮日志；④ 网络不可用时
+      `verify-gl-api` 的 `git fetch` 会失败 → 改为直接跑 `python3 scripts/verify_gl_api.py`（离线校验，registry 已在 `external/`）。**
+    下一刀（同法，仍要求 shim 零增长或净减）：`+Blit.m` 的 `scaledBlitPipelineForPixelFormat` 之外的
+    compute/clear 路径调用方（`MGLRenderer.m` 的 scissored clear、`+SwapDiagnostics.m` 的 drawable 缩放）已在本刀改直调；
+    接着按 §0.10 阶段 A 推进 `+Blit.m` 的 `releaseGLSampledRenderTargetCopyForTexture`、`+RenderPass.m` 的
+    `newRenderEncoder`/`endRenderEncoding`/`ensureWritableCommandBuffer` 等零依赖方法。

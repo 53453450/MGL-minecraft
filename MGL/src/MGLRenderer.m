@@ -51,6 +51,7 @@
 #include <dispatch/dispatch.h>
 
 #import "MGLRenderer_Private.h"
+#include "mgl_blit_pipelines.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_tess.h"
 #include "mgl_air_loader.h"
@@ -3977,10 +3978,7 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
 
     uint32_t colorFormat = colorTexture ? mglRendererTextureFieldFormat(colorTexture) : MGL_RENDERER_PIXEL_FORMAT_INVALID;
     uint32_t depthFormat = depthTexture ? mglRendererTextureFieldFormat(depthTexture) : MGL_RENDERER_PIXEL_FORMAT_INVALID;
-    id pipeline = [self clearRectPipelineForColorFormat:colorFormat
-                                                                    depthFormat:depthFormat
-                                                                    writesColor:wantsColor
-                                                                    writesDepth:wantsDepth];
+    id pipeline = (__bridge id)mglBlitClearRectPipeline((__bridge void *)self, colorFormat, depthFormat, wantsColor, wantsDepth);
     if (!pipeline) {
         NSLog(@"MGL ERROR: scissored clear missing pipeline color=%lu depth=%lu wantsColor=%d wantsDepth=%d",
               (unsigned long)colorFormat,
@@ -4085,7 +4083,7 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
         mglRenderBindingSetPipelineState(
             _bindingStateOwner, (__bridge void *)pipeline);
         if (wantsDepth) {
-            id depthState = [self clearRectDepthState];
+            id depthState = (__bridge id)mglBlitClearRectDepthState((__bridge void *)self);
             if (depthState) {
                 mglRenderSetRenderDepthStencilStateForOwner(
                     _renderPassManager.state->currentRenderEncoderOwner,
@@ -4185,7 +4183,7 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     mglRendererSetScissor(clearEncoder, scissor);
     mglRendererSetRenderPipeline(clearEncoder, pipeline);
     if (wantsDepth) {
-        id depthState = [self clearRectDepthState];
+        id depthState = (__bridge id)mglBlitClearRectDepthState((__bridge void *)self);
         if (depthState) {
             mglRendererSetDepthStencil(clearEncoder, depthState);
         }

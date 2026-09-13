@@ -331,6 +331,8 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
         return;
     }
     areas_out->core = &r->_core;
+    areas_out->backend = r->_backend;
+    areas_out->ctx = r->ctx;
     areas_out->batching = &r->_batching;
     areas_out->command = [mglRendererRenderPassManager(r) state];
     areas_out->pipeline_cache = [r->_pipelineCache state];

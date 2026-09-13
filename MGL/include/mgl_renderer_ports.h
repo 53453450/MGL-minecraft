@@ -157,6 +157,10 @@ void *mglRendererFallbackSamplerStatePort(void *renderer);
  * while a driver runs, so dereference it at the point of use. */
 typedef struct MGLRendererStateAreas {
     MGLRendererCoreState *core;
+    /* The backend handle and the owning context: blit/texture code needs both
+     * (cache lookups and error dispatch) and they are plain C pointers. */
+    void *backend;
+    GLMContext ctx;
     MGLBatchingState *batching;
     const MGLCommandState *command;
     const MGLPipelineCacheState *pipeline_cache;

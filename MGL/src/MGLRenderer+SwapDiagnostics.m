@@ -18,6 +18,7 @@
 // low-frequency black-screen diagnostics.
 
 #import "MGLRenderer_Private.h"
+#include "mgl_blit_pipelines.h"
 #import "MGLRenderer+SwapDiagnostics_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_env_flag.h"
@@ -228,8 +229,8 @@ static void mglSwapDiagnosticsEndBlitEncoder(id encoder)
              (sourceInfo.pixel_format == 70u && drawableInfo.pixel_format == 80u) ||
              (sourceInfo.pixel_format == 80u && drawableInfo.pixel_format == 70u));
         if (canShaderCopyToDrawable) {
-                id pipeline = [self scaledBlitPipelineForPixelFormat:drawableInfo.pixel_format];
-                id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
+                id pipeline = (__bridge id)mglBlitScaledPipelineForPixelFormat((__bridge void *)self, drawableInfo.pixel_format);
+                id sampler = (__bridge id)mglBlitScaledSamplerForFilter((__bridge void *)self, (GLuint)mglRenderNearestFilter());
                 NSUInteger copyWidth = MIN((NSUInteger)sourceInfo.width, (NSUInteger)drawableInfo.width);
                 NSUInteger copyHeight = MIN((NSUInteger)sourceInfo.height, (NSUInteger)drawableInfo.height);
                 if (pipeline && sampler && copyWidth > 0 && copyHeight > 0) {

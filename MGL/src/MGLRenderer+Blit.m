@@ -14,6 +14,7 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
+#include "mgl_blit_pipelines.h"
 #include "mgl_env_flag.h"
 #include "mgl_batch_path.h"
 #include "mgl_aux_assets.h"
@@ -152,31 +153,6 @@ static void mglBlitGetTextureBytes(id texture,
         region.origin.x, region.origin.y, region.origin.z,
         region.size.width, region.size.height, region.size.depth,
         level, slice, useSlice ? 1 : 0);
-}
-
-static id mglBlitCreateSampler(
-    id device,
-    uint32_t nearest)
-{
-    (void)device;
-    void *sampler = NULL;
-    if (mglRenderCreateFilterSampler(nearest, &sampler) == 0 && sampler) {
-        return (__bridge_transfer id)sampler;
-    }
-    return nil;
-}
-
-static id mglBlitCreateDepthStencilState(
-    id device,
-    const MGLRenderDepthStencilDescriptorState *descriptor)
-{
-    (void)device;
-    void *state = NULL;
-    if (mglRenderCreateDepthStencilStateFromState(
-            descriptor, &state) == 0 && state) {
-        return (__bridge_transfer id)state;
-    }
-    return nil;
 }
 
 static id mglBlitCreateRenderEncoder(
@@ -414,169 +390,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         (__bridge void *)encoder, (__bridge void *)texture, slice, level);
 }
 
-static id mglLookupAuxComputePipeline(
-    uint32_t kind, uint64_t variant)
-{
-    void *pipeline = NULL;
-    if (mglRenderGetOrCreateAuxComputePipeline(
-            NULL, kind, variant, &pipeline, NULL, 0) == 0 && pipeline) {
-        return (__bridge_transfer id)pipeline;
-    }
-    return nil;
-}
-
-static id mglCreateAuxComputePipelineFromAsset(
-    const char *assetName, const char *entryName,
-    uint32_t kind, uint64_t variant, NSError **error)
-{
-    const MGLAuxShaderAsset *asset = mglAuxShaderAssetFind(assetName);
-    if (!asset || !asset->data || asset->size == 0) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"MGLBlitAuxAsset"
-                                         code:1
-                                     userInfo:@{NSLocalizedDescriptionKey:
-                                                    [NSString stringWithFormat:
-                                                        @"aux shader asset '%s' missing", assetName]}];
-        }
-        return nil;
-    }
-    void *pipeline = NULL;
-    char message[512] = {0};
-    if (mglRenderGetOrCreateAuxComputePipelineFromMetallib(
-            asset->data, asset->size, asset->hash, entryName,
-            kind, variant, &pipeline, message, sizeof(message)) == 0 &&
-        pipeline) {
-        return (__bridge_transfer id)pipeline;
-    }
-    if (error) {
-        NSString *description = message[0]
-            ? [NSString stringWithUTF8String:message]
-            : @"Metal-cpp auxiliary compute pipeline creation failed";
-        *error = [NSError errorWithDomain:@"MGLBlitPipeline"
-                                     code:1
-                                 userInfo:@{NSLocalizedDescriptionKey:
-                                                description}];
-    }
-    return nil;
-}
-
-static id mglCreateAuxRenderPipelineFromAsset(
-    const char *assetName, const char *vsEntry, const char *fsEntry,
-    uint32_t kind, uint64_t variant,
-    uint32_t colorFormat, uint32_t depthFormat,
-    uint32_t stencilFormat, uint32_t colorWriteMask,
-    uint32_t rasterSampleCount, NSError **error)
-{
-    const MGLAuxShaderAsset *asset = mglAuxShaderAssetFind(assetName);
-    if (!asset || !asset->data || asset->size == 0) {
-        if (error) {
-            *error = [NSError errorWithDomain:@"MGLBlitAuxAsset"
-                                         code:1
-                                     userInfo:@{NSLocalizedDescriptionKey:
-                                                    [NSString stringWithFormat:
-                                                        @"aux shader asset '%s' missing", assetName]}];
-        }
-        return nil;
-    }
-    void *pipeline = NULL;
-    char message[512] = {0};
-    int icbEnabled = mgl_batch_icb_support_indirect_command_buffers();
-    if (mglRenderGetOrCreateAuxRenderPipelineFromMetallib(
-            asset->data, asset->size, asset->hash,
-            vsEntry, fsEntry, kind, variant,
-            (uint32_t)colorFormat, (uint32_t)depthFormat,
-            (uint32_t)stencilFormat, (uint32_t)colorWriteMask, icbEnabled,
-            rasterSampleCount, &pipeline, message, sizeof(message)) == 0 &&
-        pipeline) {
-        return (__bridge_transfer id)pipeline;
-    }
-    if (error) {
-        NSString *description = message[0]
-            ? [NSString stringWithUTF8String:message]
-            : @"Metal-cpp auxiliary render pipeline creation failed";
-        *error = [NSError errorWithDomain:@"MGLBlitPipeline"
-                                     code:2
-                                 userInfo:@{NSLocalizedDescriptionKey:
-                                                description}];
-    }
-    return nil;
-}
-
-static id mglLookupAuxRenderPipeline(
-    uint32_t kind, uint64_t variant,
-    uint32_t colorFormat, uint32_t depthFormat,
-    uint32_t stencilFormat, uint32_t colorWriteMask,
-    uint32_t rasterSampleCount)
-{
-    void *pipeline = NULL;
-    int icbEnabled = mgl_batch_icb_support_indirect_command_buffers();
-    if (mglRenderGetOrCreateAuxRenderPipeline(
-            NULL, NULL, kind, variant, (uint32_t)colorFormat,
-            (uint32_t)depthFormat, (uint32_t)stencilFormat,
-            (uint32_t)colorWriteMask, icbEnabled, rasterSampleCount,
-            &pipeline, NULL, 0) == 0 && pipeline) {
-        return (__bridge_transfer id)pipeline;
-    }
-    return nil;
-}
-
 @implementation MGLRenderer (Blit)
-- (id)scaledBlitSamplerForFilter:(GLuint)filter
-{
-    BOOL wantsNearest = mglRenderFilterIsNearest((uint32_t)filter) != 0;
-    MGLRendererBackendBlitCacheKind cacheKind = wantsNearest
-        ? MGL_RENDERER_BACKEND_BLIT_CACHE_NEAREST_SAMPLER
-        : MGL_RENDERER_BACKEND_BLIT_CACHE_LINEAR_SAMPLER;
-    id cached = (__bridge id)
-        mglRendererBackendGetBlitCachedObject(_backend, cacheKind);
-    if (cached) {
-        return cached;
-    }
-
-    id sampler = mglBlitCreateSampler(_device, wantsNearest ? 1u : 0u);
-    if (!sampler) {
-        NSLog(@"MGL ERROR: failed to create scaled blit sampler filter=0x%x", filter);
-        return nil;
-    }
-
-    if (mglRendererBackendSetBlitCachedObject(
-            _backend, cacheKind, (__bridge void *)sampler) != 0) {
-        return nil;
-    }
-    return (__bridge id)
-        mglRendererBackendGetBlitCachedObject(_backend, cacheKind);
-}
-
-- (id)scaledBlitPipelineForPixelFormat:(uint32_t)pixelFormat
-{
-    pixelFormat = mglRenderColorFormatOrBGRA(pixelFormat);
-
-    uint64_t variant = (uint64_t)pixelFormat;
-    id cached =
-        mglLookupAuxRenderPipeline(
-            MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
-            pixelFormat, mglRenderInvalidPixelFormat(), mglRenderInvalidPixelFormat(),
-            MGLColorWriteMaskAll, 1u);
-    if (cached) return cached;
-
-    NSError *error = nil;
-    id pipeline =
-        mglCreateAuxRenderPipelineFromAsset(
-            "scaled_blit", "mgl_scaled_blit_vs", "mgl_scaled_blit_fs",
-            MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
-            pixelFormat, mglRenderInvalidPixelFormat(), mglRenderInvalidPixelFormat(),
-            MGLColorWriteMaskAll, 1u, &error);
-    if (!pipeline) {
-        NSLog(@"MGL ERROR: scaled blit asset pipeline create failed pixelFormat=%lu error=%@",
-              (unsigned long)pixelFormat, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return nil;
-    }
-    NSLog(@"MGL INFO: created scaled blit pipeline pixelFormat=%lu (Metal-cpp asset)",
-          (unsigned long)pixelFormat);
-    return pipeline;
-}
-
 /* Compute-based Y-flip blit pipeline.  Used by
  * updateGLSampledRenderTargetCopyForTexture to batch all dirty mip levels of
  * a sampled render-target copy into a single MTLComputeCommandEncoder, instead
@@ -589,111 +403,6 @@ static id mglLookupAuxRenderPipeline(
  * explicit level (so the full mipmap destination can be bound once).  Y-flip
  * is baked into the UV calculation: destination Metal row 0 (top) receives
  * the source's bottom row, restoring GL lower-left sampling semantics. */
-- (id)scaledBlitComputePipelineForPixelFormat:(uint32_t)pixelFormat
-{
-    pixelFormat = mglRenderColorFormatOrBGRA(pixelFormat);
-
-    MGLTextureDataKind dataKind =
-        mglTextureDataKindForPixelFormat(pixelFormat);
-    const char *entryName = "mgl_scaled_blit_cs";
-    if (dataKind == MGLTextureDataKindUint) {
-        entryName = "mgl_scaled_blit_cs_uint";
-    } else if (dataKind == MGLTextureDataKindSint) {
-        entryName = "mgl_scaled_blit_cs_int";
-    } else if (dataKind == MGLTextureDataKindDepth) {
-        return nil;
-    }
-    /* Encode data kind so uint/int/float caches do not collide. */
-    uint64_t variant =
-        ((uint64_t)(uint32_t)dataKind << 32) | (uint64_t)pixelFormat;
-
-    id cached =
-        mglLookupAuxComputePipeline(
-            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT, variant);
-    if (cached) return cached;
-
-    NSError *error = nil;
-    id pipeline =
-        mglCreateAuxComputePipelineFromAsset(
-            "scaled_blit_cs", entryName,
-            MGL_RENDER_AUX_COMPUTE_SCALED_BLIT,
-            variant, &error);
-    if (!pipeline) {
-        NSLog(@"MGL ERROR: scaled blit asset compute pipeline create failed pixelFormat=%lu kind=%s entry=%s error=%@",
-              (unsigned long)pixelFormat,
-              mglTextureDataKindName(dataKind),
-              entryName,
-              error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return nil;
-    }
-    NSLog(@"MGL INFO: created scaled blit compute pipeline pixelFormat=%lu kind=%s entry=%s (Metal-cpp asset)",
-          (unsigned long)pixelFormat,
-          mglTextureDataKindName(dataKind),
-          entryName);
-    return pipeline;
-}
-
-- (id)scaledDepthBlitPipelineForPixelFormat:(uint32_t)pixelFormat
-{
-    if (mglRenderPixelFormatIsInvalid(pixelFormat)) {
-        return nil;
-    }
-
-    uint32_t stencilFormat = mglRenderDepthBlitStencilFormat(pixelFormat);
-    uint64_t variant = ((uint64_t)pixelFormat << 1) |
-                       (!mglRenderPixelFormatIsInvalid(stencilFormat) ? 1u : 0u);
-    id cached =
-        mglLookupAuxRenderPipeline(
-            MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
-            mglRenderInvalidPixelFormat(), pixelFormat, stencilFormat,
-            MGLColorWriteMaskNone, 1u);
-    if (cached) return cached;
-
-    NSError *error = nil;
-    id pipeline =
-        mglCreateAuxRenderPipelineFromAsset(
-            "scaled_depth_blit", "mgl_scaled_depth_blit_vs",
-            "mgl_scaled_depth_blit_fs",
-            MGL_RENDER_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
-            mglRenderInvalidPixelFormat(), pixelFormat, stencilFormat,
-            MGLColorWriteMaskNone, 1u, &error);
-    if (!pipeline) {
-        NSLog(@"MGL ERROR: scaled depth asset pipeline create failed depthPixelFormat=%lu error=%@",
-              (unsigned long)pixelFormat, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return nil;
-    }
-    NSLog(@"MGL INFO: created scaled depth blit pipeline depthPixelFormat=%lu (Metal-cpp asset)",
-          (unsigned long)pixelFormat);
-    return pipeline;
-}
-
-- (id)msaaIntegerResolvePipelineForSigned:(BOOL)signedInteger
-{
-    const char *entryName = signedInteger
-        ? "mgl_msaa_resolve_int" : "mgl_msaa_resolve_uint";
-    id cached =
-        mglLookupAuxComputePipeline(
-            MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
-            signedInteger ? 1u : 0u);
-    if (cached) return cached;
-
-    NSError *error = nil;
-    id pipeline =
-        mglCreateAuxComputePipelineFromAsset(
-            "msaa_integer_resolve", entryName,
-            MGL_RENDER_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
-            signedInteger ? 1u : 0u, &error);
-    if (!pipeline) {
-        NSLog(@"MGL ERROR: MSAA integer resolve asset pipeline create failed signed=%d error=%@",
-              signedInteger ? 1 : 0, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return nil;
-    }
-    return pipeline;
-}
-
 - (BOOL)resolveIntegerMultisampleTexture:(id)sourceTexture
                                toTexture:(id)destTexture
                                 srcOrigin:(MGLOriginValue)srcOrigin
@@ -711,7 +420,7 @@ static id mglLookupAuxRenderPipeline(
     }
 
     id pipeline =
-        [self msaaIntegerResolvePipelineForSigned:mglMetalPixelFormatIsSignedIntegerColor(mglBlitTextureInfo(sourceTexture).pixel_format)];
+        (__bridge id)mglBlitMsaaIntegerResolvePipeline((__bridge void *)self, mglMetalPixelFormatIsSignedIntegerColor(mglBlitTextureInfo(sourceTexture).pixel_format));
     if (!pipeline) {
         return NO;
     }
@@ -853,8 +562,8 @@ static id mglLookupAuxRenderPipeline(
     }
 
     id pipeline =
-        [self scaledDepthBlitPipelineForPixelFormat:mglRenderDefaultDepthPixelFormat()];
-    id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
+        (__bridge id)mglBlitScaledDepthPipelineForPixelFormat((__bridge void *)self, mglRenderDefaultDepthPixelFormat());
+    id sampler = (__bridge id)mglBlitScaledSamplerForFilter((__bridge void *)self, (GLuint)mglRenderNearestFilter());
     if (!pipeline || !sampler) {
         NSLog(@"MGL WARNING: readPixels DS depth extract unavailable for %s pipeline=%p sampler=%p",
               reason ? reason : "unknown",
@@ -888,7 +597,7 @@ static id mglLookupAuxRenderPipeline(
     }
 
     mglBlitSetRenderPipeline(encoder, pipeline);
-    mglBlitSetDepthStencil(encoder, [self clearRectDepthState]);
+    mglBlitSetDepthStencil(encoder, (__bridge id)mglBlitClearRectDepthState((__bridge void *)self));
     mglBlitSetRenderBytes(encoder, &params, sizeof(params),
                           MGL_RENDER_BINDING_STAGE_VERTEX, 0);
     mglBlitSetRenderBytes(encoder, &params, sizeof(params),
@@ -1274,7 +983,7 @@ static id mglLookupAuxRenderPipeline(
     }
 
     id destination = (__bridge id)(tex->mtl_gl_sampled_data);
-    id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
+    id sampler = (__bridge id)mglBlitScaledSamplerForFilter((__bridge void *)self, (GLuint)mglRenderNearestFilter());
     if (!destination || !sampler) {
         static uint64_t s_copySetupFailCount = 0;
         uint64_t hit = ++s_copySetupFailCount;
@@ -1326,7 +1035,7 @@ static id mglLookupAuxRenderPipeline(
     BOOL useComputePath = (mglBlitTextureInfo(destination).usage & MGLTextureUsageShaderWrite) != 0;
     id computePipeline = nil;
     if (useComputePath) {
-        computePipeline = [self scaledBlitComputePipelineForPixelFormat:mglBlitTextureInfo(destination).pixel_format];
+        computePipeline = (__bridge id)mglBlitScaledComputePipelineForPixelFormat((__bridge void *)self, mglBlitTextureInfo(destination).pixel_format);
         if (!computePipeline) {
             useComputePath = NO;
         }
@@ -1407,7 +1116,7 @@ static id mglLookupAuxRenderPipeline(
             return NO;
         }
 
-        id pipeline = [self scaledBlitPipelineForPixelFormat:mglBlitTextureInfo(destination).pixel_format];
+        id pipeline = (__bridge id)mglBlitScaledPipelineForPixelFormat((__bridge void *)self, mglBlitTextureInfo(destination).pixel_format);
         if (!pipeline) {
             static uint64_t s_copySetupFailCount = 0;
             uint64_t hit = ++s_copySetupFailCount;
@@ -1559,73 +1268,6 @@ static id mglLookupAuxRenderPipeline(
     }
 
     return YES;
-}
-
-- (id)clearRectPipelineForColorFormat:(uint32_t)colorFormat
-                                                  depthFormat:(uint32_t)depthFormat
-                                                  writesColor:(BOOL)writesColor
-                                                  writesDepth:(BOOL)writesDepth
-{
-    if (!mglRenderClearRectPipelineReady(writesColor ? 1 : 0, colorFormat,
-                                         writesDepth ? 1 : 0, depthFormat)) {
-        return nil;
-    }
-
-    uint64_t variant = (uint64_t)(uint32_t)colorFormat |
-                       ((uint64_t)(uint32_t)depthFormat << 16) |
-                       ((uint64_t)(writesColor ? 1u : 0u) << 32) |
-                       ((uint64_t)(writesDepth ? 1u : 0u) << 33);
-    id cached =
-        mglLookupAuxRenderPipeline(
-            MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
-            colorFormat, depthFormat, mglRenderInvalidPixelFormat(),
-            writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone,
-            1u);
-    if (cached) return cached;
-
-    NSError *error = nil;
-    id pipeline =
-        mglCreateAuxRenderPipelineFromAsset(
-            "clear_rect", "mgl_clear_rect_vs",
-            writesColor ? "mgl_clear_rect_fs" : NULL,
-            MGL_RENDER_AUX_RENDER_CLEAR_RECT, variant,
-            colorFormat, depthFormat, mglRenderInvalidPixelFormat(),
-            writesColor ? MGLColorWriteMaskAll : MGLColorWriteMaskNone,
-            1u, &error);
-    if (!pipeline) {
-        NSLog(@"MGL ERROR: scissored clear asset pipeline create failed color=%lu depth=%lu writesColor=%d writesDepth=%d error=%@",
-              (unsigned long)colorFormat, (unsigned long)depthFormat,
-              writesColor ? 1 : 0, writesDepth ? 1 : 0, error);
-        if (ctx) mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return nil;
-    }
-    NSLog(@"MGL INFO: created scissored clear pipeline (Metal-cpp asset)");
-    return pipeline;
-}
-
-- (id)clearRectDepthState
-{
-    id cached = (__bridge id)
-        mglRendererBackendGetBlitCachedObject(
-            _backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE);
-    if (cached) {
-        return cached;
-    }
-
-    MGLRenderDepthStencilDescriptorState desc = {0};
-    desc.depth_compare_function = MGLCompareFunctionAlways;
-    desc.depth_write_enabled = 1u;
-    id depthState =
-        mglBlitCreateDepthStencilState(_device, &desc);
-    if (!depthState ||
-        mglRendererBackendSetBlitCachedObject(
-            _backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE,
-            (__bridge void *)depthState) != 0) {
-        return nil;
-    }
-    return (__bridge id)
-        mglRendererBackendGetBlitCachedObject(
-            _backend, MGL_RENDERER_BACKEND_BLIT_CACHE_CLEAR_DEPTH_STATE);
 }
 
 /* Depth/stencil blit path for mtlBlitFramebuffer.
@@ -1844,8 +1486,8 @@ static id mglLookupAuxRenderPipeline(
                         }
 
                         id depthPipeline =
-                            [self scaledDepthBlitPipelineForPixelFormat:mglBlitTextureInfo(depthDrawTexture).pixel_format];
-                        id sampler = [self scaledBlitSamplerForFilter:(GLuint)mglRenderNearestFilter()];
+                            (__bridge id)mglBlitScaledDepthPipelineForPixelFormat((__bridge void *)self, mglBlitTextureInfo(depthDrawTexture).pixel_format);
+                        id sampler = (__bridge id)mglBlitScaledSamplerForFilter((__bridge void *)self, (GLuint)mglRenderNearestFilter());
                         if (depthPipeline && sampler) {
                             [self endRenderEncoding];
                             if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthScaled"]) {
@@ -1877,7 +1519,7 @@ static id mglLookupAuxRenderPipeline(
                                 if (depthEncoder) {
                                     mglBlitSetRenderPipeline(depthEncoder, depthPipeline);
                                     mglBlitSetDepthStencil(depthEncoder,
-                                                           [self clearRectDepthState]);
+                                                           (__bridge id)mglBlitClearRectDepthState((__bridge void *)self));
 
                                     /* Compute UVs for the source region in Metal's
                                      * texture coordinate space (Y-flipped). */
@@ -2492,8 +2134,8 @@ static id mglLookupAuxRenderPipeline(
             }
         }
 
-        id pipeline = [self scaledBlitPipelineForPixelFormat:mglBlitTextureInfo(drawtexid).pixel_format];
-        id sampler = [self scaledBlitSamplerForFilter:filter];
+        id pipeline = (__bridge id)mglBlitScaledPipelineForPixelFormat((__bridge void *)self, mglBlitTextureInfo(drawtexid).pixel_format);
+        id sampler = (__bridge id)mglBlitScaledSamplerForFilter((__bridge void *)self, filter);
         if (!pipeline || !sampler) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer scaled path unavailable pipeline=%p sampler=%p", pipeline, sampler);
             return YES;
