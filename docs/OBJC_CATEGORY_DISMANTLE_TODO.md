@@ -2139,3 +2139,16 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 > **建议顺序**：`+DrawStageHost.m`（最小、4 方法）→ `+Binding.m` 的 `syncResourceBindingsForContext:` → `MGLPipelineCache.m`
 > → `MGLRenderPassManager.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块（`+Compute`/`+Buffer`/`+BindingState`/`+Tessellation`
 > 在过程中顺带收）。每一步都按 §0.14 的三条路线取最短路径。
+
+### 0.16 `+DrawStageHost.m` 四个方法的依赖表（第 44 轮实测，下一刀可直接照做）
+
+| 方法 | 行数 | 消息发送 | ivar / 依赖 | 转换路径（按 §0.14） |
+|---|---|---|---|---|
+| `bindCullDistanceEmulationBuffers:` | **85** | **0** | `_backend`（areas ✓）、`_VERTEX_SHADER`（GL 常量 ✓）、`_tessellation.cullDistanceCaptureFirstInstance` / `…InstanceStride`（**头里可见**） | **最短**：给 areas 加两个 `uint32_t` 字段（`tess_cull_capture_first_instance` / `…_instance_stride`），壳里从 `r->_tessellation` 填；体里 `recordLastBoundVertexBuffer:` / `invalidateLastBoundVertexBufferAtIndex:` 已在第 22 刀变成 C（`mglBindingRecordLastBoundVertexBuffer` / `…AtIndex`），可直接调 |
+| `runVertexCaptureSession:` | 19 | **0** | 只有 `self->ctx = drawCtx;`（**写 renderer 的 ctx**，`areas.ctx` 是副本、写了不生效） | 方法 + 壳转发：`MGLRenderer.m` 加 `- (void)mglSetDrawContext:(GLMContext)ctx`（体内 `ctx = drawCtx;`），壳加 C 入口 `mglPlatformShellSetDrawContext(void *, GLMContext)` |
+| `runEmulatedMSSampleDrawLoopIfNeeded:` | 26 | `[self endRenderEncodingLocked]` | `_mglInMSSampleDrawLoop` / `_mglForcedMSSampleId` / `_mglMSSamplePlaneOffset`（私有）、block 参数 `void (^)(void)` | 需先 C 化 `endRenderEncodingLocked`（本身要 3 个 manager 入口 + guarded 入口，见第 81 条），再把 block 换成 `fn + ctx` 并在调用点改成函数指针 |
+| `broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:` | 39 | `[self endRenderEncodingLocked]`、`[self newCommandBufferLocked]` | `_mglInMSSampleDrawLoop`（私有）、`_renderPassManager`（areas.command ✓） | 同上，另需 `newCommandBufferLocked`（大方法） |
+
+> **建议下一刀**：先转 **`bindCullDistanceEmulationBuffers:`(85 行、零发送)**——它是本文件里最大且依赖最少的一个，只需 areas 加两个字段；
+> 随后转 `runVertexCaptureSession:`(19 行) 用"方法 + 壳转发"补一个 ctx 写入；**MS 循环两方法放最后**，
+> 因为它们依赖 `endRenderEncodingLocked`（第 81 条评估为依赖深度 ≥3）。
