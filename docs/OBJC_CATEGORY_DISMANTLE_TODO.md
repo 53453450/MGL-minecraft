@@ -1179,11 +1179,17 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     本次 areas 归并（−2 端口）——**shim 43 → 31**。后续可继续并入 areas 的候选：`MGLRendererCoreState`（需先把
     `MGLCapability`/`MGLDrawable` 做成 C 类型）、`MGLResourceFallbackState` 其余字段、`MGLTessellationState`。
 
-### 0.09 goal 轮次用尽时的交接状态（2026-09-13 13:05 更新，**第 24 轮＝轮次上限**，P0-1 第十三刀后）
+### 0.09 goal 轮次用尽时的交接状态（2026-09-13 16:45 更新，**第 40 轮＝本轮次预算上限**，P0-1 第二十八刀后）
 
-- **tip（提交 `69e834c`）**：`objc_zero.sh`：**19** 个 `.m` / 空 TU **0** / **35,571** 行 / 语法 **2,032** / 词汇 **3,958**；
-  shim **13 端口 / 223 行 / 37 语法**（声明面＝实现面，无死声明）；`MGLRenderer*.m` **32,218**。
-  基线对照：文件 53 → 19、行数 43,989 → 35,571、语法 2,268 → 2,032、词汇 4,353 → 3,958、shim 43 → 13 端口。
+- **tip（提交 `32a80c1`）**：`objc_zero.sh`：**17** 个 `.m` / 空 TU **0** / **35,015** 行 / 语法 **1,991** / 词汇 **3,897**；
+  shim **13 端口 / 223 行 / 37 语法**（声明面＝实现面，无死声明）；`MGLRenderer*.m` ≈ **31,9xx**。
+  基线对照：文件 53 → 17、行数 43,989 → 35,015、语法 2,268 → 1,991、词汇 4,353 → 3,897、shim 43 → 13 端口。
+- **第 40 轮的一次失败尝试（已回退，必须记录）**：`resetMetalState` 的 C 化在补 areas 槽地址时编译失败——
+  **`_commandQueue` 在壳 TU 里不可见**（`_core`/`_backend`/`_batcing`/`_pipelineCache`/`_gpuRecovery`/`_tessellation` 等都可见，
+  唯独它不可见），clang 报 `expected identifier` 并连锁报 `_backend` 未声明。**已 `git checkout -- .` 全部回退，未进提交。**
+  → **结论：`resetMetalState` 不能靠 areas 槽地址读 `_commandQueue`，应改由 `MGLRenderer.m` 提供一个 C 入口
+  （例如 `void *mglRendererCurrentCommandQueue(void *renderer)` / `int mglRendererRecreateCommandQueue(void *renderer)`），
+  或把该 ivar 的可见性补齐后再走槽地址路线。**
 - **轮次上限已到（24/24）**：本轮没有再开新刀，改为把交接做扎实——下面按"下一步能直接开工"的粒度列清楚。
 - **剩余 13 个端口**（都还需要 ObjC）：`StateAreas`（核心）/ `EnsureWritableCommandBuffer`（轮转命令缓冲）/
   `FlushDrawBufferLocked`（port 里是 `@try/@catch` + METAL_LOCK）/ `BindMTLTexture`（**锁已成纸面理由**，见第 65 条）/
