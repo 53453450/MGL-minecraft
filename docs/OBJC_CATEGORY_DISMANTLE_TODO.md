@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十二刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
-行数 **43,989 → 35,117**、ObjC 语法 **2,268 → 2,007**、词汇 **4,353 → 3,913**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十三刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
+行数 **43,989 → 35,112**、ObjC 语法 **2,268 → 2,007**、词汇 **4,353 → 3,913**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1887,3 +1887,18 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：`+Binding.m` 只剩两块 ObjC——`bindMTLTextureLocked:`(339) 与 `syncResourceBindingsForContext:`(27)；
      前者依赖 `createMTLTextureFromGLTexture` / `createFallbackMTLTexture` / `endRenderEncodingLocked` / `NSDate`（计时），
      建议按依赖顺序逐个转 C（每次转一个依赖后立刻编译 + 跑 A/B）；后者是 10 处发送的编排方法，可最后处理。
+
+77. **P0-1 第二十三刀：删掉第七刀留下的死 setter（**−5 行**）**：
+     `-[MGLRenderPassManager setTraceReplayFlushId:batchIndex:]` 是第七刀退役
+     `mglRendererTraceReplaySetPort` 时**遗留下来的最后一个调用者侧残留**——C 端现在直接写
+     `areas.command->traceReplayFlushId / …BatchIndex`，全树（含 `.mm/.c/.h`，排除 build）只在该 setter 的定义与
+     `MGLRenderPassManager.h` 的声明里出现。删除方法 + 声明。
+     度量：行数 **35,117 → 35,112**、语法/词汇持平（2,007 / 3,913）；文件 17、shim 端口 13 不变。
+     oracle：旧库 = 提交 `1a237a8` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     **附带发现（工具口径）**：本轮先用"小方法 + 外部调用点数"粗筛了 54 个候选，结果**不可用**——大量 getter 是
+     通过**属性语法** `obj.state` 访问的，粗筛只看 `[recv sel` 就会把它们误判成"零引用"（与第 71 条同一个坑）。
+     **结论：只有 `scripts/objc_dead_methods.py` 的四类检查（带冒号选择器 / 任意接收者 / 属性 setter / 框架回调）
+     可以作为判据；临时写的启发式扫描一律不要直接用来删代码。**
+     下一刀：回到第 76 条的路线——`+Binding.m` 的 `bindMTLTextureLocked:`(339) 按其依赖顺序逐个转 C
+     （先 `endRenderEncodingLocked`，再 `createMTLTextureFromGLTexture`/`createFallbackMTLTexture`，`NSDate` 计时改 `mglTraceNowSeconds()`）。

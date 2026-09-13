@@ -65,7 +65,7 @@ NS_ASSUME_NONNULL_BEGIN
                        fboName:(GLuint)fboName
                      generation:(uint64_t)generation;
 - (void)clearFboMatchCache;
-- (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex;
+/* the trace-replay identity is written through areas.command now */
 - (void)setCurrentDrawUsesRTSampledCopy:(BOOL)usesRTSampledCopy;
 - (void)setDontCareFrameGeneration:(GLuint)generation;
 - (void)incrementDontCareFrameGenerationWithWrap;

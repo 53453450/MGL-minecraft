@@ -431,11 +431,6 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderClearFboMatchCache(_state.renderPassIdentityOwner);
 }
 
-- (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex
-{
-    _state.traceReplayFlushId = flushId;
-    _state.traceReplayBatchIndex = batchIndex;
-}
 
 - (void)setCurrentDrawUsesRTSampledCopy:(BOOL)usesRTSampledCopy
 {
