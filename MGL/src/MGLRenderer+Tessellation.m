@@ -14,6 +14,7 @@
 // writes per-patch output plus tess factors, then the TES kernel consumes them.
 
 #import "MGLRenderer_Private.h"
+#include "mgl_texture_sampler.h"
 #import "MGLRenderer+Tessellation_Private.h"
 #import "mgl_sampler_compat.h"
 #import "mgl_trace_log.h"
@@ -756,9 +757,7 @@ typedef struct {
                 mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
             }
             if (!glSampler->mtl_data && ptr) {
-                glSampler->mtl_data = (void *)CFBridgingRetain(
-                    [self createMTLSamplerForTexParam:&glSampler->params
-                                               target:ptr->target]);
+                glSampler->mtl_data = (void *)CFBridgingRetain((__bridge id)mglTextureCreateSamplerForTexParam(&glSampler->params, ptr->target));
                 glSampler->dirty_bits = 0;
             }
             sampler = (__bridge id)(glSampler->mtl_data);
@@ -1002,9 +1001,7 @@ typedef struct {
                 mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
             }
             if (!glSampler->mtl_data && ptr) {
-                glSampler->mtl_data = (void *)CFBridgingRetain(
-                    [self createMTLSamplerForTexParam:&glSampler->params
-                                               target:ptr->target]);
+                glSampler->mtl_data = (void *)CFBridgingRetain((__bridge id)mglTextureCreateSamplerForTexParam(&glSampler->params, ptr->target));
                 glSampler->dirty_bits = 0;
             }
             sampler = (__bridge id)(glSampler->mtl_data);

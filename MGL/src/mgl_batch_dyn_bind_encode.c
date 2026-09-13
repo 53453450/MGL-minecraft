@@ -11,7 +11,8 @@
 #include "mgl_state_log.h"            /* mglMipDiag* */
 #include "mgl_buffer_slots.h"         /* kmax slot constants */
 #include "mgl_texture_compat.h"
-#include "mgl_texture_binding_resolve.h"       /* mglSampledTextureViewForBaseLevel */
+#include "mgl_texture_binding_resolve.h"
+#include "mgl_texture_sampler.h"       /* mglSampledTextureViewForBaseLevel */
 #include "mgl_shader_resource.h"      /* mglMetalCombinedSamplerSlot */
 #include "mgl_binding_policy.h"       /* mglRenderTextureBindingStageForShader */
 #include "mgl_byte_hash.h"
@@ -210,7 +211,7 @@ static int mglSampResolve(void *v, uint32_t i, MGLBatchResolvedSamplerBind *out)
 {
     MGLSampSnapCtx *c = v; const MGLSamplerSnapshotEntry *entry = &c->set->entries[i];
     void *sampler = (entry->key_index == MGL_FALLBACK_SAMPLER_KEY_INDEX)
-                        ? mglRendererFallbackSamplerStatePort(c->r)
+                        ? mglTextureFallbackSamplerState(c->r)
                         : (entry->key_index < c->cb->sampler_snapshot_key_count
                                ? mglBatchSamplerStateForSnapshotKey(
                                      c->r, &c->cb->sampler_snapshot_keys[entry->key_index])

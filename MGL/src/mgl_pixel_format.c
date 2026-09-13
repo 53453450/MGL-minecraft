@@ -34,6 +34,8 @@
 #include <string.h>
 
 #include "mgl_pixel_format.h"
+#include "mgl_render.h"   /* mglRenderBytesPerPixelForInternalFormat */
+#include <stdio.h>
 #include "pixel_utils.h"
 
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
@@ -1845,4 +1847,17 @@ bool mglCopyTex2DFaceForTarget(GLenum target, GLuint *face_out)
         default:
             return false;
     }
+}
+
+uint32_t mglTextureBytesPerPixelForFormat(GLenum internalformat)
+{
+    int known = 1;
+    uint32_t bpp = mglRenderBytesPerPixelForInternalFormat(
+        (uint32_t)internalformat, &known);
+    if (!known) {
+        fprintf(stderr,
+                "MGL WARNING: Unknown internal format 0x%x, defaulting to 4 bytes per pixel\n",
+                (unsigned)internalformat);
+    }
+    return bpp;
 }

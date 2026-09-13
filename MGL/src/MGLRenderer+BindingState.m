@@ -11,6 +11,7 @@
 // MGLRenderer+BindingState.m — V/F buffer, attrib, texture bind ports
 
 #import "MGLRenderer_Private.h"
+#include "mgl_texture_sampler.h"
 #include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
@@ -1407,7 +1408,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     vertexProgramName = vertexProgram ? vertexProgram->name : mglCurrentRenderProgramKey(ctx);
     fragmentProgramName = fragmentProgram ? fragmentProgram->name : mglCurrentRenderProgramKey(ctx);
 
-    id defaultSampler = [self fallbackSamplerState];
+    id defaultSampler = (__bridge id)mglTextureFallbackSamplerState((__bridge void *)self);
     if (defaultSampler) {
         if (vertexProgram) {
             (void)mglProgramSamplesTextureUnit(vertexProgram, 0);
@@ -2492,8 +2493,7 @@ done:
             GLuint target = samplerTarget
                                 ? samplerTarget
                                 : (ptr ? ptr->target : GL_TEXTURE_2D);
-            glSampler->mtl_data = (void *)CFBridgingRetain(
-                [self createMTLSamplerForTexParam:&glSampler->params target:target]);
+            glSampler->mtl_data = (void *)CFBridgingRetain((__bridge id)mglTextureCreateSamplerForTexParam(&glSampler->params, target));
         }
         if (plan.clear_gl_sampler_dirty) {
             glSampler->dirty_bits = 0;

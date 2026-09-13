@@ -23,6 +23,7 @@
 #import "MGLRenderer+Binding_Private.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_batch_restore.h"
+#include "mgl_texture_sampler.h"
 
 #include <string.h>   /* mglBatchFlushBegin/RunBatches/TeardownReplay */
 #include "mgl_renderer_backend.h"
@@ -221,22 +222,20 @@ void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key)
     }
     TextureParameter params;
     mgl_batch_replay_fill_sampler_params((const MGLSamplerSnapshotKey *)key, &params);
-    id state = [r createMTLSamplerForTexParam:&params
-                                       target:((const MGLSamplerSnapshotKey *)key)->target];
+    /* +1 from the C sampler creation; the backend cache below takes ownership
+     * through the Put call, so release our reference again. */
+    void *state = mglTextureCreateSamplerForTexParam(
+        &params, ((const MGLSamplerSnapshotKey *)key)->target);
     if (!state) {
         return NULL;
     }
-    return mglRendererBackendPutSamplerSnapshotState(
-               r->_backend, (const MGLSamplerSnapshotKey *)key,
-               (__bridge void *)state) == 0
-               ? (__bridge void *)state
-               : NULL;
-}
-
-void *mglRendererFallbackSamplerStatePort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? (__bridge void *)[r fallbackSamplerState] : NULL;
+    if (mglRendererBackendPutSamplerSnapshotState(
+            r->_backend, (const MGLSamplerSnapshotKey *)key, state) != 0) {
+        mglReleaseMetalObjNoNull(state);
+        return NULL;
+    }
+    mglReleaseMetalObjNoNull(state);   /* the backend snapshot cache retains it */
+    return state;
 }
 
 int mglRendererBindMTLTexturePort(void *renderer, Texture *texture)

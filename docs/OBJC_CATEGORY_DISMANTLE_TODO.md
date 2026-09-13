@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **27 / 394**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 三刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 37,241**、ObjC 语法 **2,268 → 2,142**、词汇 **4,353 → 4,075**；
-**shim：43 → 25 个端口 / 367 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 三刀合计净减 2 个端口）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 37,177**、ObjC 语法 **2,268 → 2,129**、词汇 **4,353 → 4,066**；
+**shim：43 → 24 个端口 / 366 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 四刀合计净减 3 个端口）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1337,3 +1337,26 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
     `git push origin main:main`。此前 HTTPS 因网络中断积压的 3 个提交已一次性推送成功。
     下一刀：`+RenderPass.m` 的 `newRenderEncoder(Locked)WithReason:` 环与 `endRenderEncoding` 系列
     （`endRenderEncoding` 带 METAL_LOCK，**保留**）；以及 `+Blit.m` 的 `clearRectPipelineForColorFormat:` 调用链。
+
+58. **P0-1 第四刀：sampler 物化转 C（**shim 再净减 1 个端口**）**：
+    ① **搬走**：`-createMTLSamplerForTexParam:target:`（14 行，4 处调用点）、`-fallbackSamplerState`（21 行）、
+    `id` 版本的文件内 helper `mglTextureCreateSampler`、`-bytesPerPixelForFormat:`（10 行，4 处调用点）、
+    以及**0 调用者的死方法** `textureForSampledBinding:stage:expectedType:` →
+    新 TU **`MGL/src/mgl_texture_sampler.c`** + C 安全头（`mglTextureCreateSamplerForTexParam`（+1）、
+    `mglTextureFallbackSamplerState`（借用，backend fallback 缓存持有））+ `mgl_pixel_format.{h,c}` 的
+    `mglTextureBytesPerPixelForFormat`。
+    ② **退掉 shim 端口** `mglRendererFallbackSamplerStatePort`（C 侧 `mgl_batch_dyn_bind_encode.c` 直调）；
+    shim 的 snapshot-sampler 端口改为调用 C 的 sampler 创建（+1 交给 backend 快照缓存后释放），
+    因此 shim 端口 **25 → 24**、行数 367 → 366。
+    ③ **踩坑与教训（重要）**：我先删掉了 `fallbackSamplerState` 方法，但**漏了一处 ObjC 调用点**
+    （`+BindingState.m` 的 `bindTexturesToCurrentRenderEncoder:` 路径用 `[self fallbackSamplerState]`），
+    结果 `test-all` 的 `test-dirty-hash` 直接抛 `unrecognized selector` 崩溃（`Abort trap: 6`）。
+    **新规则：删/转一个方法后，必须用"裸 selector 名"全树 grep（含 `self.x` 属性写法与 `[other x]` 接收者），
+    不能只 grep `[self X` 或端口名。** 本次即由聚合门禁在同一轮内抓到，未进提交。
+    ④ **度量**：`+Texture.m` 6,679 → **6,614**；全仓行数 **37,241 → 37,177**、语法 **2,142 → 2,129**、词汇 4,075 → **4,066**。
+    ⑤ **oracle**：trace 语料 374/374、296/296 逐字段一致（default 臂含 `MGL_TRACE_LOG_RESOURCES=1`）；
+    stderr 仅 BINARY ARCHIVE 运行序伪差；回归 92/0/2、ICB 轮 82/10/2 相同；CTS 七簇 diff 全空；
+    P0-1 四刀累计 **shim 27 → 24 端口**、全仓 **−801 行**。
+    下一刀：`+Blit.m` 的 `textureCanUseGLSampledRenderTargetCopy`(37) / `lazyRefreshGLSampledRenderTargetCopyForTexture`(52) /
+    `blitFramebufferDirectColorCopyWithState`(91) 等零外部依赖方法，以及 `+Texture.m` 的
+    `mglApplyPending{FBO,Default}{Color,Depth}Clear*` 系列（21–30 行 ×4，`+Blit.m` 已在调用）。

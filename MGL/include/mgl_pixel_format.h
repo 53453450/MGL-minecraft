@@ -86,5 +86,8 @@ bool mglCompressedBlockInfoOf(GLenum internalformat, GLuint *out_bw, GLuint *out
 bool mglIsGenericCompressedFormat(GLenum format);
 bool mglCompressedFormatRequiresHeight(GLenum format);
 bool mglCopyTex2DFaceForTarget(GLenum target, GLuint *face_out);
+/* Bytes per pixel for a GL internal format, defaulting to 4 with a diagnostic
+ * for unknown formats (former -[MGLRenderer bytesPerPixelForFormat:]). */
+uint32_t mglTextureBytesPerPixelForFormat(GLenum internalformat);
 
 #endif /* mgl_pixel_format_h */

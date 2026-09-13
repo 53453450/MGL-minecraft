@@ -12,6 +12,7 @@
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_pixel_format.h"
 #include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Texture_Private.h"
 #include "mgl_env_flag.h"
@@ -361,15 +362,6 @@ static void mglTextureGetBytes(id texture,
     }
 }
 
-static id mglTextureCreateSampler(id device)
-{
-    (void)device;
-    void *sampler = NULL;
-    if (mglRenderCreateDefaultSampler(&sampler) == 0 && sampler) {
-        return (__bridge_transfer id)sampler;
-    }
-    return nil;
-}
 
 static id mglTextureCreateCommandBuffer(
     id queue)
@@ -2710,7 +2702,7 @@ static void mglTextureCopyTextureToBuffer(
                                            tex->faces[0].levels[level].width > 0u &&
                                            tex->faces[0].levels[level].pitch > 0u)
                 ? (NSUInteger)(tex->faces[0].levels[level].pitch / tex->faces[0].levels[level].width)
-                : [self bytesPerPixelForFormat:tex->internalformat];
+                : mglTextureBytesPerPixelForFormat(tex->internalformat);
             if (cpuBytesPerPixel == 0u) {
                 cpuBytesPerPixel = (NSUInteger)sizeForInternalFormat(tex->internalformat, 0, 0);
             }
@@ -2830,7 +2822,7 @@ static void mglTextureCopyTextureToBuffer(
         return false;
     }
 
-    NSUInteger bytesPerPixel = [self bytesPerPixelForFormat:tex->internalformat];
+    NSUInteger bytesPerPixel = mglTextureBytesPerPixelForFormat(tex->internalformat);
     if (bytesPerPixel == 0u &&
         tex->faces[0].levels &&
         tex->faces[0].levels[level].width > 0u) {
@@ -5566,7 +5558,7 @@ static void mglTextureCopyTextureToBuffer(
         return nil;
     }
 
-    NSUInteger bytesPerTexel = [self bytesPerPixelForFormat:tex->internalformat];
+    NSUInteger bytesPerTexel = mglTextureBytesPerPixelForFormat(tex->internalformat);
     if (bytesPerTexel == 0) {
         NSLog(@"MGL TEXBUFFER ERROR: unsupported internal format 0x%x tex=%u buffer=%u",
               tex->internalformat,
@@ -5922,7 +5914,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    NSUInteger bytesPerTexel = [self bytesPerPixelForFormat:tex->internalformat];
+    NSUInteger bytesPerTexel = mglTextureBytesPerPixelForFormat(tex->internalformat);
     if (bytesPerTexel == 0u) {
         bytesPerTexel = (NSUInteger)sizeForInternalFormat(tex->internalformat, 0, 0);
     }
@@ -6229,32 +6221,6 @@ static void mglTextureCopyTextureToBuffer(
 }
 
 // Helper function to calculate bytes per pixel for different OpenGL formats
-- (NSUInteger)bytesPerPixelForFormat:(GLenum)internalformat
-{
-    int known = 1;
-    uint32_t bpp = mglRenderBytesPerPixelForInternalFormat(
-        (uint32_t)internalformat, &known);
-    if (!known) {
-        NSLog(@"MGL WARNING: Unknown internal format 0x%x, defaulting to 4 bytes per pixel", internalformat);
-    }
-    return (NSUInteger)bpp;
-}
-
-- (id) createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target
-{
-    mglMetalCountCreate(MGLMetalKindSampler);
-    void *sampler = NULL;
-    char error[256] = {0};
-    if (mglRenderCreateSamplerForGL(
-            tex_param, target, &sampler, error, sizeof(error)) == 0 &&
-        sampler) {
-        return (__bridge_transfer id)sampler;
-    }
-    NSLog(@"MGL SAMPLER ERROR: Metal-cpp sampler creation failed: %s",
-          error[0] ? error : "unknown");
-    return nil;
-}
-
 - (id)fallbackSampledTexture
 {
     id cached = (__bridge id)
@@ -6491,33 +6457,6 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     return [self fallbackSampledTexture];
-}
-
-- (Texture *)textureForSampledBinding:(GLuint)metalBinding stage:(int)stage expectedType:(uint32_t)expectedType
-{
-    return mglTextureForSampledResourceForStage(ctx, NULL, metalBinding, stage, expectedType);
-}
-
-- (id)fallbackSamplerState
-{
-    id cached = (__bridge id)
-        mglRendererBackendGetFallbackResource(
-            _backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER);
-    if (cached) {
-        return cached;
-    }
-
-    id sampler = mglTextureCreateSampler(_device);
-    if (!sampler) {
-        NSLog(@"MGL ERROR: Failed to create fallback sampler state");
-        return nil;
-    }
-    if (mglRendererBackendSetFallbackResource(
-            _backend, MGL_RENDERER_BACKEND_FALLBACK_SAMPLER,
-            (__bridge void *)sampler) != 0) {
-        return nil;
-    }
-    return sampler;
 }
 
 - (void)traceSampledTextureReadback:(id)texture

@@ -337,7 +337,8 @@ typedef struct {
 // getVertexBufferIndexWithAttributeSet: and floatVertexBufferFor*Attrib: are
 // now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
 // Program reflection queries use the fixed mglRendererGetProgram* C ABI.
-- (id)fallbackSamplerState;
+/* fallbackSamplerState is now mglTextureFallbackSamplerState
+ * (mgl_texture_sampler.h). */
 /* textureUnitForSampledResource:... is now the C function
  * mglTextureUnitForSampledResource (mgl_texture_compat.h). */
 /* program-resolved variant — skips mglResolveProgramForStageFromState. */

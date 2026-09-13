@@ -138,7 +138,6 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
 /* Sampler state for a snapshot key (unretained; the backend cache owns it) and
  * the fallback sampler. */
 void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key);
-void *mglRendererFallbackSamplerStatePort(void *renderer);
 
 /* === Renderer state areas (the "one struct, one port" pattern) ===
  * States whose records are plain C structs are handed out as pointers, so C

@@ -12,6 +12,7 @@
 // Buffer/texture Metal object binding methods extracted from MGLRenderer+RenderPass.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_texture_sampler.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
 #include "mgl_batch_issue.h"
@@ -339,7 +340,7 @@ static id mglBindingCreateDefaultSampler(void)
 
     if (tex->params.mtl_data == NULL)
     {
-        tex->params.mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&tex->params target:tex->target]);
+        tex->params.mtl_data = (void *)CFBridgingRetain((__bridge id)mglTextureCreateSamplerForTexParam(&tex->params, tex->target));
         // Sampler creation should not fail even in recovery mode
         if (!tex->params.mtl_data) {
             NSLog(@"MGL WARNING: Sampler creation failed, using default");

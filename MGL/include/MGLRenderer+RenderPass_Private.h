@@ -149,7 +149,8 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 // now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
 - (id)createMTLTextureFromGLTexture:(Texture *)tex;
 - (id)createFallbackMTLTexture:(Texture *)tex;
-- (id)createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target;
+/* createMTLSamplerForTexParam:target: is now
+ * mglTextureCreateSamplerForTexParam (mgl_texture_sampler.h). */
 - (uint32_t)mtlStencilOpForGLOp:(GLenum)op;
 - (bool)checkDrawBufferSize:(GLuint)index;
 - (id)newDrawBuffer:(uint32_t)pixelFormat isDepthStencil:(bool)depthStencil;
@@ -172,7 +173,8 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 - (BOOL)mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)requiredWidth
                                         height:(NSUInteger)requiredHeight
                                         reason:(const char *)reason;
-- (NSUInteger)bytesPerPixelForFormat:(GLenum)internalformat;
+/* bytesPerPixelForFormat: is now mglTextureBytesPerPixelForFormat
+ * (mgl_pixel_format.h). */
 - (CGSize)mglSyncLayerDrawableSizeFromView:(const char *)reason;
 
 @end
