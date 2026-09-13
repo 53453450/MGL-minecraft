@@ -361,7 +361,7 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                          temporaries:(NSMutableArray *)temporaries;
 
 /* Emulated MS (texture2d_array sample planes): per-sample redraw + broadcast. */
-- (Texture *)emulatedMSColor0TextureForContext:(GLMContext)glm_ctx;
+/* now the C function mglDrawEmulatedMSColor0Texture (mgl_draw_support.h) */
 /* now the C functions in mgl_draw_support.h */
 - (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
                                    drawOnce:(void (^)(void))drawOnce;

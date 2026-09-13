@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
-行数 **43,989 → 35,182**、ObjC 语法 **2,268 → 2,010**、词汇 **4,353 → 3,919**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十一刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
+行数 **43,989 → 35,160**、ObjC 语法 **2,268 → 2,007**、词汇 **4,353 → 3,919**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1831,3 +1831,40 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      `bindCullDistanceEmulationBuffers:` + `emulatedMSColor0TextureForContext:`）；`bindCullDistance…` 需要
      areas 再补两个 `_tessellation.cullDistanceCapture*` 字段 + 一个 `recordLastBoundVertexBuffer:` 的 C 入口
      （照第 73 条的"areas 字段 + 函数指针"手法，零端口）；MS 循环族因**含 block 参数**（`void (^)(void)`）暂留 ObjC。
+
+75. **P0-1 第二十一刀：MS color0 取样转 C（**−22 行**）**：
+     `-[MGLRenderer emulatedMSColor0TextureForContext:]`(22) → C 的 **`mglDrawEmulatedMSColor0Texture`**（并入
+     `mgl_draw_support.{h,c}`）：`MGL_STATE(ctx)->framebuffer` → `ctx->active_state->framebuffer`，
+     `[self framebufferAttachmentTexture:att]` → 已有的 C 端口 `mglRendererAttachmentTextureFor(ctx, att)`；
+     文件内 2 处 MS 采样循环调用点（`runEmulatedMSSampleDrawLoopIfNeeded` / `broadcastEmulatedMS…`）改直调。
+     **零新增端口、零 areas 变更**。
+     度量：行数 **35,182 → 35,160**、语法 **2,010 → 2,007**、词汇 3,919（持平）；文件 17、shim 端口 13 不变。
+     oracle：旧库 = 提交 `e2b71d0` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+
+### 0.12 当前 17 个 `.m` 的构成与"下一刀优先级"（2026-09-13，第二十一刀后）
+
+| 文件 | 行数 | 备注 / 下一步 |
+|---|---|---|
+| `MGLRenderer+RenderPass.m` | ~7.1k | 三厚块之一；`processGLStateLocked:` 是最大单块（ObC 只剩 `@try/@catch` + backend 句柄 + 少量发送） |
+| `MGLRenderer+Texture.m` | ~6.5k | 三厚块之一 |
+| `MGLRenderer.m` | ~4.7k | 仍持大量 C 桥（`mglRenderer*`）与少量 ObjC 内部方法 |
+| `MGLRenderer+Blit.m` | ~4.0k | 三厚块之一 |
+| `MGLRenderer+BindingState.m` | ~2.9k | `bindTexturesToCurrentRenderEncoder:` 等编码器绑定族（对应 shim 4 个端口） |
+| `MGLRenderer+Tessellation.m` | ~2.2k | 残留 ObjC 方法多与 tess 捕获/描述符有关 |
+| `mgl_draw_metal_port.m` | ~1.95k | host-ops 表；方法体多为一行转发（本周期已清若干） |
+| `MGLRenderer+Compute.m` | ~1.25k | 计算路径；已有 2 个死方法被清 |
+| `MGLRenderer+Buffer.m` | ~0.8k | `mapGLBuffersToMTLBufferMap:stage:` 链（对应 `MapBuffersToMTL` 端口） |
+| `MGLRenderer+Lifecycle.m` | ~0.66k | T5 第二步候选：平台部分并入唯一壳 TU（KVO/通知回调保留） |
+| `MGLRenderer+SwapDiagnostics.m` | ~0.56k | 2 个方法，均在 swap 路径 |
+| `MGLRenderPassManager.m` | ~0.52k | manager 类；`mdiArgsScratch` 等已 C 化 |
+| `MGLRenderer+Binding.m` | ~0.49k | 多为一行转发到 `mglRenderBinding*`，整文件转 C 候选 |
+| `MGLPipelineCache.m` | ~0.45k | cache 类；方法多为 `mglRender*PipelineCacheOwner*` 转发 |
+| `MGLRenderer+GPURecovery.m` | ~0.35k | 10 个方法、每个 0–3 处发送；整文件转 C 候选（需 areas 暴露 `_device`/`_commandQueue` 或 C 入口） |
+| `MGLRenderer+DrawStageHost.m` | ~0.23k | 剩 5 个方法（MS 循环族含 block、`runVertexCaptureSession:` 需写 `self->ctx`、`bindCullDistance…` 需 2 个 areas 字段 + 1 个 C 入口） |
+| `MGLPlatformRendererShell.m` | ~0.44k | **唯一壳 TU**：平台壳 229 行 + 13 个端口 208 行（T5 目标形态） |
+
+> 计数口径：行数取 `scripts/objc_zero.sh` 的逐文件输出（上一轮实测四舍五入）；
+> **下一刀仍按"投入产出"排序：`+Binding.m` → `+GPURecovery.m` → `MGLPipelineCache.m` 的整文件转 C**
+> （手法见第 73 条：C 头 + C 入口，必要时 areas 加字段/函数指针，零端口），
+> 之后是 `+DrawStageHost.m` 余量与 `+Lifecycle.m` 的 T5 合并。

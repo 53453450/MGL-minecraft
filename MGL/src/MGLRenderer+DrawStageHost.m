@@ -144,35 +144,13 @@
     [self invalidateLastBoundVertexBufferAtIndex:kMGLCullDistanceParamsBufferIndex];
 }
 
-- (Texture *)emulatedMSColor0TextureForContext:(GLMContext)glm_ctx
-{
-    if (!glm_ctx) return NULL;
-    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
-    if (!fbo || (fbo->color_attachment_bitfield & 1u) == 0u) return NULL;
-    FBOAttachment *att = &fbo->color_attachments[0];
-    Texture *tex = [self framebufferAttachmentTexture:att];
-    if (!tex) return NULL;
-    if (!mglRenderIsEmulatedMSColorTexture((uint32_t)tex->target,
-                                           (int32_t)tex->samples)) {
-        return NULL;
-    }
-    /* Metal backing is created during processGLState; before the first draw
-     * mtl_data may still be nil. All MS textures are emulated as array
-     * sample planes, so the GL target/samples check is sufficient. */
-    if (tex->mtl_data) {
-        MGLRenderTextureInfo info = {0};
-        (void)mglRenderGetTextureInfo(tex->mtl_data, &info);
-        if (info.texture_type != MGLTextureType2DArray) return NULL;
-    }
-    return tex;
-}
 
 
 - (BOOL)runEmulatedMSSampleDrawLoopIfNeeded:(GLMContext)glm_ctx
                                    drawOnce:(void (^)(void))drawOnce
 {
     if (_mglInMSSampleDrawLoop || !drawOnce) return NO;
-    Texture *tex = [self emulatedMSColor0TextureForContext:glm_ctx];
+    Texture *tex = mglDrawEmulatedMSColor0Texture(glm_ctx);
     if (!tex) return NO;
     if (!mglDrawFragmentNeedsPerSampleMSValues(glm_ctx)) return NO;
 
@@ -198,7 +176,7 @@
 - (void)broadcastEmulatedMSSamplePlanesAfterDrawIfNeeded:(GLMContext)glm_ctx
 {
     if (_mglInMSSampleDrawLoop) return;
-    Texture *tex = [self emulatedMSColor0TextureForContext:glm_ctx];
+    Texture *tex = mglDrawEmulatedMSColor0Texture(glm_ctx);
     if (!tex || !tex->mtl_data) return;
     if (mglDrawFragmentNeedsPerSampleMSValues(glm_ctx)) {
         /* Per-sample draws already filled each plane. */

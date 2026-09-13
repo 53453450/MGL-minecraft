@@ -50,6 +50,10 @@ int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode);
 /* True when the current fragment program needs per-sample MS values. */
 int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx);
 
+/* The color attachment 0 of the bound FBO when it is an emulated-MS texture
+ * (used by the per-sample draw loop), else NULL. */
+Texture *mglDrawEmulatedMSColor0Texture(GLMContext ctx);
+
 #ifdef __cplusplus
 }
 #endif
