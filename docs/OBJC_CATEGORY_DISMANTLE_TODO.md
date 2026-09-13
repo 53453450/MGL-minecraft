@@ -3634,3 +3634,42 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
 每簇/每类记号单独做、每步编译。
 
 **本轮未改动代码**：两次尝试都在写盘前失败（`git status` 干净），工作区仍在 `3daac52`（第 124 刀已验证状态）。
+
+### 0.51 第 94 轮交接：从这里继续（**新会话/新轮次请先读本小节**）
+
+**状态快照（本轮实测，工作区 `5d14092`）**：文件 **7**（53 起）、空 TU 0、行数 **29,004**（43,989 起）、
+ObjC 语法 **1,645**（2,268 起）、词汇 **3,186**（4,353 起）；端口 33、唯一壳 TU **2,054 行**（上限 2,400，块表见 §0.29）。
+七个文件与本轮实测的语法/词汇/行数：
+
+| 文件 | 语法 | 词汇 | 行数 | 下一刀建议 |
+|---|---|---|---|---|
+| `MGLRenderer+RenderPass.m` | 385 | 553 | 6,842 | 厚块：按簇搬（encoder 生命周期 → 状态处理 → attachment/persistent） |
+| `MGLRenderer+Texture.m` | 289 | 1,086 | 6,489 | 厚块：先 upload/readback 簇，再 `createMTLTextureFromGLTexture:`（转完退役第 100 刀的 4 个纹理端口） |
+| `MGLPlatformRendererShell.m`（唯一壳） | 289 | 287 | 2,054 | 见 §0.29：`MGLPipelineCache` 类转 C handle（阻塞=归档路径，需专用 oracle）、lifecycle/壳类为终态平台面 |
+| `MGLRenderer+Blit.m` | 235 | 761 | 4,062 | 厚块：blit/copy/resolve 簇 |
+| `MGLRenderer.m` | 168 | 275 | 4,616 | 主体类，最后做 |
+| `MGLRenderer+Tessellation.m` | 150 | 27 | 2,025 | 四小方法被 `MGLTessStageBufferBinding*` 的 `id __strong` 挡住（§0.49）；先做该结构体改造 |
+| `MGLRenderer+BindingState.m` | 129 | 197 | 2,916 | 采样器级联 + stage copy-back；`NSLog` 批量转换见 §0.50 的**屏蔽字符串**配方 |
+
+**每轮闭环（照抄即可）**：
+1. 改代码：**按簇人工改、每簇 `clang -fsyntax-only` 或 `make -j8`**；`NSLog` 类批量转换先屏蔽字符串/注释再配平（§0.50）；
+   删头文件后必须 `find build/core build/es -name '*.o' -o -name '*.d' | xargs rm -f`（§0.101③）；**永不 `make clean`**。
+2. 两个库：`make -j8`（无 error）。
+3. 门禁：`make test-all` → 需 `GATE=0` 且 `PASS 92 / FAIL 0 / SKIP 2`；**首跑若在 `verify-gl-api` 因
+   `scripts/fetch_opengl_registry.sh` 访问 GitHub 失败（`Error in the HTTP2 framing layer`）→ 直接重跑**（§0.115④）。
+4. 旧库：`git -C /Users/fterward/MGL-ab-old checkout --detach <上一提交>` + 清 `.o/.d` + `make -j8 lib`；
+   `cmp` 两个 `libmgl.dylib` 必须**不同**。
+5. A/B：`/private/tmp/run_ab.sh <ablibN> {new,old}` + `python3 /private/tmp/ab_full.py <new_dir> <old_dir> <new_txt> <old_txt>`；
+   **判定只看"去掉 `processGLState.slow` 后的逐行相等"**，并如实报 slow 计数与 stderr `MGL` 行多重集（307/307）。
+6. CTS：`TAG=<tag> /private/tmp/run_t4b_battery_z.sh`（七簇），与 `/private/tmp/base_*.txt` 逐簇比对**非通过集合 diff 必须为空**
+   （基线计数长期为 58 / 1 / 0 / 59 / 13 / 39 / 4）。
+7. 文档三处同步（§0.0 进度行、§5 新增日志条目、§0.2x/§0.3x/§0.4x/§0.5x 快照），**把验证证据抄进文档**
+   （`/private/tmp` 会被清空，见 §0.116⑤）。
+8. 提交推送：`git push origin main:main`；若 22 端口超时（`Please make sure you have the correct access rights`），
+   用 `git -c url."ssh://git@ssh.github.com:443/53453450/MGL-minecraft.git".insteadOf="git@github.com:53453450/MGL-minecraft.git" push origin main:main`。
+
+**已知阻塞（都需要专门设计，不要用脚本硬推）**：
+- `MGLTessStageBufferBinding` / `…List` 的 **`id __strong` 字段**（§0.49）→ 需"ObjC 持有 + C 只读 `void *`"的清单与验证口径；
+- 壳内 `MGLPipelineCache` 类的**归档路径**（Foundation：`NSSearchPath…`/`NSBundle`/`NSFileManager`/`NSURL`）→
+  转 C 会改变归档文件名与 `NSError` 文案，而 **A/B 恰好过滤 `BINARY ARCHIVE` 行**（§0.103①）→ 必须先建专用 oracle；
+- `syncResourceBindingsForContext:` 一类"成本倒挂"项（§0.23）→ 除非顺带解锁整文件删除，否则不动。
