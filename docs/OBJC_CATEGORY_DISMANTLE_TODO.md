@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十五刀** + trace 清零 后；第 68–80 轮见 §0.24/§0.26–§0.37）**：
-文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 30,975**、ObjC 语法 **2,268 → 1,673**、词汇 **4,353 → 3,480**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十六刀** + trace 清零 后；第 68–81 轮见 §0.24/§0.26–§0.38）**：
+文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,062**、ObjC 语法 **2,268 → 1,683**、词汇 **4,353 → 3,478**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3261,3 +3261,33 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
 **再往后**（按 §0.33 的表）：`+Tessellation.m`（2,101 / 151 语法，copy-back 族与采样器入口都已就绪）→
 `+BindingState.m`（2,916 / 129）→ 三厚块（`+Blit.m` 4,062 / 235、`MGLRenderer.m` 4,616 / 168、`+Texture.m` 6,489 / 289、`+RenderPass.m` 6,842 / 385）
 → 最后是壳内两块（`MGLPipelineCache` 类转 C handle 后壳可回到 ~1,300 行；lifecycle/壳类 ~890 行是终态允许保留的平台面）。
+
+112. **P0-1 第五十六刀：`mgl_draw_metal_port.m` 的第二批宿主入口 + 9 处调用点转 C（该文件 50 → 37 语法）**：
+     ① 按 §0.37 的清单补齐 **10 个入口**（声明进 `mgl_renderer_ports.h`、壳内薄转发）：
+     `mglRendererFlushCommandBufferPort`、`…EnsureRasterEncoderForDrawPort`、`…PrepareEmulatedIndirectCPUReadPort`、
+     `…EnsureAIRGeometryPassthroughPort`、`…DispatchTessControlShaderPort`、`…DispatchAIRTessEvalComputePort`（笔误见下）、
+     `…DispatchAIRTessEvalVertexRenderPort`、`…BindStorageImagesForVertexProgramPort`，以及 **GPU capture 的两个入口
+     `mglPlatformShellGpuCapture{Start,Stop}`**——后者按 §0.37 的决议**把 capture 段整体搬进壳**
+     （`getenv("MGL_GPU_CAPTURE")` + `NSString` + `MTLCaptureDescriptor` + `NSError`），
+     `mgl_draw_metal_port.m` 里只留两个转发到壳入口的 host-ops 回调。
+     ② 一个小发现（写下来避免下次再猜）：`mglRendererForContext()` 取的 `context->platform_renderer_shell` **就是 `MGLRenderer`
+     对象本身**（`@interface MGLRenderer : MGLPlatformRendererShell`），所以 capture 方法可以直接对 `MGLRenderer *r` 发送——
+     不需要任何 delegate 关系。
+     ③ **9 处调用点**改 C：`mglStageFlushCB`、`mglStageDispatchTCS`、`mglStageDispatchAirTES`（compute/vertex-render 两个）、
+     `mglStageEnsurePassthrough`、GS 存储图像绑定、`mglDrawHostEnsureRasterEncoder`、`mglDrawHostPrepareIndirectCPURead`、
+     以及两个 capture 回调。
+     ④ **度量（如实：总量微增）**：该文件 **50 → 37 语法 / 48 → 41 词汇**（行数 2,014 → 1,983）；
+     但全库语法 **1,673 → 1,683（+10）**、词汇 3,480 → 3,478、行数 30,975 → **31,062（+87）**——
+     因为 10 个新入口各自带一个 `(__bridge …)`，而它们的收益要等该文件本体整体转 C 才兑现；
+     端口 26 → 36；文件数 8 不变。按 §0.04 这是**可加性前置**。
+     ⑤ **oracle**：旧库 = 提交 `4e16dff` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,275/5,273 与 5,808/5,813 → `processGLState.slow` 294/292 与 294/299），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑥ 下一刀（该文件收尾）：剩下的 ObjC 面是 **2 处 `[self …]`/`[host …]`（已在 ① 里有入口）、
+     23 处 `__bridge`、24 处 `NSUInteger`、16 处 `YES/NO`、6 处 `id`、3 处 `NSLog`、4 处 `#import`**，
+     以及一批 `self->_ivar` 访问——其中 `_batching`（→ `areas.batching`）、`_backend`（→ `areas.backend`）、
+     `_renderPassManager`（→ `areas.command`）已就绪，**只差 tessellation/geometry 子状态**
+     （`nativeTESCopyBacks`、`tessVertexCaptureActive`、`tessIndexedDraw`、`tessVertexCaptureOffset`、
+     `tessInstanceRecords`、`geometry.expansionActive`）——按"一个状态 struct + 一个端口"的老办法，
+     给 `MGLRendererStateAreas` **加字段**（字段不是端口）即可，然后 `git mv mgl_draw_metal_port.m → .c`（**文件 8 → 7**）。

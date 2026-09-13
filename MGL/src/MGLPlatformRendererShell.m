@@ -318,6 +318,123 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
 }
 
 
+/* === draw / tessellation host entries (phase 2) ========================= */
+void mglRendererFlushCommandBufferPort(void *renderer, int finish)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r flushCommandBuffer:finish ? true : false];
+    }
+}
+
+int mglRendererEnsureRasterEncoderForDrawPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r ensureRasterEncoderForDraw]) ? 1 : 0;
+}
+
+int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
+                                                  GLMContext draw_ctx,
+                                                  const char *label)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r prepareEmulatedIndirectCPURead:draw_ctx label:label]) ? 1 : 0;
+}
+
+int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
+                                                Program *program,
+                                                uint32_t output_primitive)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r ensureAIRGeometryPassthroughFunctionForProgram:program
+                                                  outputPrimitive:output_primitive])
+               ? 1
+               : 0;
+}
+
+int mglRendererDispatchTessControlShaderPort(
+    void *renderer, GLMContext glm_ctx, Program *program,
+    const struct MGLAIRTessDrawContract *contract)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r dispatchTessControlShader:glm_ctx
+                                      program:program
+                                     contract:contract])
+               ? 1
+               : 0;
+}
+
+int mglRendererDispatchAIRTessEvalComputePort(
+    void *renderer, GLMContext glm_ctx, Program *program,
+    const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,
+    int32_t instance_count, uint32_t base_instance)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r dispatchAIRTessEvalCompute:glm_ctx
+                                       program:program
+                                      contract:contract
+                                    patchCount:patch_count
+                                 instanceCount:(GLsizei)instance_count
+                                  baseInstance:base_instance])
+               ? 1
+               : 0;
+}
+
+int mglRendererDispatchAIRTessEvalVertexRenderPort(
+    void *renderer, GLMContext glm_ctx, Program *program,
+    const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,
+    int32_t instance_count, uint32_t base_instance)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r dispatchAIRTessEvalVertexRender:glm_ctx
+                                            program:program
+                                           contract:contract
+                                         patchCount:patch_count
+                                      instanceCount:(GLsizei)instance_count
+                                       baseInstance:base_instance])
+               ? 1
+               : 0;
+}
+
+int mglRendererBindStorageImagesForVertexProgramPort(void *renderer,
+                                                     Program *vertex_program,
+                                                     Program *fragment_program)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r bindStorageImagesForVertexProgram:vertex_program
+                                      fragmentProgram:fragment_program])
+               ? 1
+               : 0;
+}
+
+/* GPU capture: the capture session lives on the shell object, which owns the
+ * MTLCaptureManager descriptor/start/stop calls. */
+void mglPlatformShellGpuCaptureStart(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    /* MGLRenderer carries the capture methods (they come from the platform
+     * shell class), and the renderer owns the backend ivar holding the device. */
+    if (!r || !getenv("MGL_GPU_CAPTURE")) {
+        return;
+    }
+    id desc = [r mglCaptureDescriptorForDevice:(__bridge id)mglRendererBackendGetDevice(r->_backend)
+                                    outputPath:[NSString stringWithUTF8String:getenv("MGL_GPU_CAPTURE")]];
+    NSError *capErr = nil;
+    if (desc && [r mglStartCaptureWithDescriptor:desc error:&capErr]) {
+        NSLog(@"MGL GPU capture started -> %s", getenv("MGL_GPU_CAPTURE"));
+    } else {
+        NSLog(@"MGL GPU capture start failed: %@", capErr.localizedDescription);
+    }
+}
+
+void mglPlatformShellGpuCaptureStop(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r mglStopCapture];
+    }
+}
+
 /* === compute / tessellation host entries =================================
  * Thin forwards for the stages that are still Objective-C; see the ownership
  * notes next to their declarations in mgl_renderer_ports.h. */

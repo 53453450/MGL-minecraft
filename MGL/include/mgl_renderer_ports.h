@@ -259,6 +259,38 @@ void *mglRendererMaterializeSampledSamplerPort(
     uint32_t program_name, uint32_t spirv_binding, const char *stage,
     void *texture_handle);
 
+/* === draw / tessellation host entries (phase 2) ==========================
+ * The remaining calls mgl_draw_metal_port.m makes into renderer methods, so
+ * that file can finish converting.  Thin forwards; retirement follows their
+ * targets in MGLRenderer+RenderPass.m / +Tessellation.m / +BindingState.m. */
+void mglRendererFlushCommandBufferPort(void *renderer, int finish);
+int mglRendererEnsureRasterEncoderForDrawPort(void *renderer);
+int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
+                                                  GLMContext draw_ctx,
+                                                  const char *label);
+int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
+                                                Program *program,
+                                                uint32_t output_primitive);
+int mglRendererDispatchTessControlShaderPort(
+    void *renderer, GLMContext glm_ctx, Program *program,
+    const struct MGLAIRTessDrawContract *contract);
+int mglRendererDispatchAIRTessEvalComputePort(
+    void *renderer, GLMContext glm_ctx, Program *program,
+    const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,
+    int32_t instance_count, uint32_t base_instance);
+int mglRendererDispatchAIRTessEvalVertexRenderPort(
+    void *renderer, GLMContext glm_ctx, Program *program,
+    const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,
+    int32_t instance_count, uint32_t base_instance);
+int mglRendererBindStorageImagesForVertexProgramPort(void *renderer,
+                                                     Program *vertex_program,
+                                                     Program *fragment_program);
+
+/* GPU capture (the MGLPlatformRendererShell class owns the Metal capture
+ * session): start reads MGL_GPU_CAPTURE, stop is unconditional. */
+void mglPlatformShellGpuCaptureStart(void *renderer);
+void mglPlatformShellGpuCaptureStop(void *renderer);
+
 /* Keep-alive set for the temporaries a binding plan borrows (the Objective-C
  * side used an NSMutableArray).  Create returns +1; add retains the object for
  * the set's lifetime; release drops the whole set. */

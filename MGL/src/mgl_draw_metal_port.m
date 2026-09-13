@@ -512,8 +512,8 @@ static void mglStageMarkCbHasWork(void *renderer)
 
 static void mglStageFlushCB(void *renderer, int wait)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) [self flushCommandBuffer:wait ? YES : NO];
+    if (!renderer) return;
+    mglRendererFlushCommandBufferPort(renderer, wait ? 1 : 0);
 }
 
 static void *mglStageBufContents(void *buffer)
@@ -608,11 +608,7 @@ static void *mglStageNativeFactors(void *renderer, void *canonical, GLenum mode,
 static int mglStageDispatchTCS(void *renderer, GLMContext ctx, Program *tcs,
                                MGLAIRTessDrawContract *contract)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self dispatchTessControlShader:ctx program:tcs
-                                          contract:contract]
-               ? 1
-               : 0;
+    return mglRendererDispatchTessControlShaderPort(renderer, ctx, tcs, contract);
 }
 
 static int mglStageDispatchAirTES(void *renderer, GLMContext ctx, Program *tes,
@@ -620,15 +616,9 @@ static int mglStageDispatchAirTES(void *renderer, GLMContext ctx, Program *tes,
                                   uint32_t patch_count, GLsizei instanceCount,
                                   GLuint baseInstance)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self dispatchAIRTessEvalCompute:ctx
-                                           program:tes
-                                          contract:contract
-                                        patchCount:patch_count
-                                     instanceCount:instanceCount
-                                      baseInstance:baseInstance]
-               ? 1
-               : 0;
+    return mglRendererDispatchAIRTessEvalComputePort(
+        renderer, ctx, tes, contract, patch_count, (int32_t)instanceCount,
+        baseInstance);
 }
 
 static int mglStageDispatchAirTESVertex(void *renderer, GLMContext ctx,
@@ -637,15 +627,9 @@ static int mglStageDispatchAirTESVertex(void *renderer, GLMContext ctx,
                                         uint32_t patch_count, GLsizei instanceCount,
                                         GLuint baseInstance)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self dispatchAIRTessEvalVertexRender:ctx
-                                                program:tes
-                                               contract:contract
-                                             patchCount:patch_count
-                                          instanceCount:instanceCount
-                                           baseInstance:baseInstance]
-               ? 1
-               : 0;
+    return mglRendererDispatchAIRTessEvalVertexRenderPort(
+        renderer, ctx, tes, contract, patch_count, (int32_t)instanceCount,
+        baseInstance);
 }
 
 static int mglStageProcessGL(void *renderer)
@@ -875,11 +859,8 @@ static void mglStageLogError(const char *msg)
 static int mglStageEnsurePassthrough(void *renderer, Program *program,
                                      uint32_t output_primitive)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self ensureAIRGeometryPassthroughFunctionForProgram:program
-                                                       outputPrimitive:output_primitive]
-               ? 1
-               : 0;
+    return mglRendererEnsureAIRGeometryPassthroughPort(renderer, program,
+                                                       output_primitive);
 }
 
 static int mglStagePendingGsActive(void *renderer)
@@ -1070,10 +1051,8 @@ static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *gsFragmentProgram =
         mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    return [self bindStorageImagesForVertexProgram:gsVertexProgram
-                                   fragmentProgram:gsFragmentProgram]
-               ? 1
-               : 0;
+    return mglRendererBindStorageImagesForVertexProgramPort(
+        renderer, gsVertexProgram, gsFragmentProgram);
 }
 
 static void mglGsMetalRecordQueries(GLMContext ctx, uint64_t generated,
@@ -1097,24 +1076,17 @@ static void mglGsMetalRecordQueries(GLMContext ctx, uint64_t generated,
                                       bw, bs, geometry_invocations);
 }
 
+/* The capture session itself lives in the shell TU
+ * (mglPlatformShellGpuCapture{Start,Stop}); this file only publishes them as
+ * the host-ops callbacks. */
 static void mglGsMetalGpuCaptureStart(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !getenv("MGL_GPU_CAPTURE")) return;
-    id desc = [self mglCaptureDescriptorForDevice:((__bridge id)mglRendererBackendGetDevice(self->_backend))
-                                       outputPath:[NSString stringWithUTF8String:getenv("MGL_GPU_CAPTURE")]];
-    NSError *capErr = nil;
-    if (desc && [self mglStartCaptureWithDescriptor:desc error:&capErr]) {
-        NSLog(@"MGL GPU capture started -> %s", getenv("MGL_GPU_CAPTURE"));
-    } else {
-        NSLog(@"MGL GPU capture start failed: %@", capErr.localizedDescription);
-    }
+    mglPlatformShellGpuCaptureStart(renderer);
 }
 
 static void mglGsMetalGpuCaptureStop(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) [self mglStopCapture];
+    mglPlatformShellGpuCaptureStop(renderer);
 }
 
 static void mglGsMetalSetVertexBuffer(void *encoder_owner, void *buffer,
@@ -1802,8 +1774,7 @@ void mglDrawHostApplyPolygonOffset(void *renderer, GLenum mode)
 
 bool mglDrawHostEnsureRasterEncoder(void *renderer)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host && [host ensureRasterEncoderForDraw];
+    return mglRendererEnsureRasterEncoderForDrawPort(renderer) ? true : false;
 }
 
 bool mglDrawHostValidateArrayVertexInputs(void *renderer, GLMContext ctx,
@@ -1992,9 +1963,8 @@ bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,
 bool mglDrawHostPrepareIndirectCPURead(void *renderer, GLMContext ctx,
                                        const char *label)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host && [host prepareEmulatedIndirectCPURead:ctx
-                                                  label:label ? label : "indirectDraw"];
+    return mglRendererPrepareEmulatedIndirectCPUReadPort(
+               renderer, ctx, label ? label : "indirectDraw") ? true : false;
 }
 
 bool mglDrawHostHasGeometry(GLMContext ctx)
