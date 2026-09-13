@@ -2291,7 +2291,7 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 `MGLPlatformRendererShell.m`）、`+Batch` 整簇与 `+Draw.m`/`+DrawSupport.m`/`+VertexLayout.m`/`+GPURecovery.m` 四个文件消失、
 死代码两批共清 17 个方法（−262 行）。
 
-**未达成**（终态要求 `MGL/` 内零 `.m`）：**16 个 `.m` / 34,564 行 / 1,973 语法 / 3,836 词汇**。剩余 16 个文件的清单与规模见 §0.15。
+**未达成**（终态要求 `MGL/` 内零 `.m`）：**16 个 `.m` / 34,553 行 / 1,973 语法 / 3,836 词汇**。剩余 16 个文件的清单与规模见 §0.15。
 
 **下一刀候选（按 §0.14 的三种路线取最短）**：
 
@@ -2310,3 +2310,20 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 需手工"定义 vs 调用点"核查（第 86 条）；② 反过来的启发式（忽略声明）会产生 3 类假阳性——属性语法、框架回调、跨行/复杂接收者
 （第 48 条），**每删一个都必须跑"三步核查"**（第 88 条）；已知仍会假阳性的名字：`.state` / `.device` / `.pipelineState` /
 `performOperation:` / `mtlDispatchComputeLocked:` / `mglBackendWillDestroy:`。
+
+90. **P0-1 第三十六刀：删掉 `mglSetSwapInterval:`（**−11 行**），并把"不能删"的判据固化**：
+     ① 三步核查：`mglSetSwapInterval` 的全部命中只有**定义 + `MGLPlatformRendererShell.h` 声明**，无属性语法、无 `@selector`、
+     无 host-ops 引用 → 判死并删除（同时删声明）。
+     ② **同批核查里"看似也死、实际不能删"的五类**（**写进文档，避免下轮重复踩**）：
+     - **公开 API**：`initMGLRendererFromContext:` / `createMGLRendererFromContext:` 声明在 **public 的 `MGLRenderer.h`**，
+       仓库内没有调用不代表外部使用者没有 → **保留**；
+     - **属性 getter/setter**：`isBinaryArchiveEnabled`（`getter=isBinaryArchiveEnabled` 的只读属性）、`setPipelineState:`、
+       `setDevice:` —— 可通过 `.binaryArchiveEnabled` / `.pipelineState = ` / `.device = ` 到达，扫描看不见 → **保留**；
+     - **同文件内不同接收者的调用**：`mglBackendWillDestroy:` 在 `MGLRenderer+Lifecycle.m:38` 有 `[renderer mglBackendWillDestroy:backend]` → **保留**；
+     - **测试目录调用**：`performOperation:` 在 `test_legacy_compat/test_metalcpp_smoke.mm` 有 2 处 → **保留**；
+     - **被其它方法真实调用**：`mtlDispatchComputeLocked:`（`+Compute.m:134`）→ **保留**。
+     ③ **度量**：行数 **34,564 → 34,553**、语法/词汇持平（1,973 / 3,836）；文件 16、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `02e0110` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ **本轮结论（重要）**：**死代码这条线已接近枯竭**——剩下的候选全部落在上述五类里。后续必须转回**结构性**路线（§0.19 表），
+     即"手工搬方法体 + areas 字段/方法+壳转发/守卫"三件套；详见 §0.14 与 §0.17 的配方。

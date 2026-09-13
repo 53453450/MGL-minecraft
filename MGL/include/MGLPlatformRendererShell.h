@@ -32,7 +32,6 @@ typedef int (*MGLPlatformRendererShellOperation)(void *context);
 @property(nonatomic, strong) id<CAMetalDrawable> drawable;
 
 - (instancetype)initWithView:(NSView *)view;
-- (void)mglSetSwapInterval:(int)interval;
 - (int)mglSwapInterval;
 - (BOOL)mglShouldSkipPresentForUnlockedSwap;
 - (id)mglCreateSystemDefaultDevice;

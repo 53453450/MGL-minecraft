@@ -39,17 +39,6 @@
     return self;
 }
 
-- (void)mglSetSwapInterval:(int)interval
-{
-    if (interval < 0) {
-        interval = 0;
-    }
-    _swapInterval = interval;
-    if (self.layer) {
-        /* interval > 0 → vsync-like display sync; 0 → unlock present rate. */
-        self.layer.displaySyncEnabled = (interval > 0);
-    }
-}
 
 - (int)mglSwapInterval
 {
