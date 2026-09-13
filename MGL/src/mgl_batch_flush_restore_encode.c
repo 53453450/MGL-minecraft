@@ -42,7 +42,7 @@ static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
     FCtx *c = v; MGLDrawBatch *batch = FB(c, b);
     int want = batch->has_dynamic_vertex_bindings ? 1 : 0; if (wa) *wa = want;
     in->has_encoder = mglRenderEncoderOwnerHasCurrent(
-        mglRendererCommandStatePort(c->r)->currentRenderEncoderOwner) ? 1u : 0u;
+        mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner) ? 1u : 0u;
     MGLRendererStateAreas areas; mglRendererStateAreasPort(c->r, &areas);
     in->bind_valid =
         (areas.binding_state_owner && mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u;
@@ -82,7 +82,7 @@ static void fPerfS(void *v, uint32_t n)
 static void fPerfD(void *v, uint32_t n)
 { (void)v; MGL_PERF_INC(g_mglBatchesDirectSinceSwap); MGL_PERF_ADD(g_mglDrawDirectSinceSwap, n); }
 static void fEnc(FCtx *c)
-{ c->enc.render_encoder_owner = mglRendererCommandStatePort(c->r)->currentRenderEncoderOwner; }
+{ c->enc.render_encoder_owner = mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner; }
 static void fIssS(void *v, uint32_t b)
 { FCtx *c = v; fEnc(c); mglBatchIssueStreamMergedBatch(c->r, FB(c, b), c->ctx, &c->enc); }
 static void fIssM(void *v, uint32_t b)
@@ -116,7 +116,7 @@ static int cShouldS(void *v)
       MGL_INVALID_SAMPLER_SNAPSHOT_ID); }
 static int cApplyS(void *v)
 { CCtx *c = v; MGLEncodeContext e = {.render_encoder_owner =
-      mglRendererCommandStatePort(c->r)->currentRenderEncoderOwner};
+      mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner};
   return mglBatchApplySamplerSnapshot(c->r, &c->batch->commands[0], c->ctx, &e) ? 1 : 0; }
 static void cReady(void *v)
 { CCtx *c = v; mglBatchTraceReplayBatch(c->r, c->batch, c->ctx, c->hit, c->bi, "READY"); }
@@ -298,7 +298,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
     int canDelta = mgl_batch_restore_can_delta(
                        bs && bs->dirtyKeyDeltaEnabled ? 1 : 0, prevKeyValid,
                        mglRenderEncoderOwnerHasCurrent(
-                           mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner),
+                           mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner),
                        (areas.binding_state_owner &&
                         mglBatchBindingStateIsValid(*areas.binding_state_owner)))
                        ? 1 : 0;
@@ -315,7 +315,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
         .prev_fbo_differs =
             (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ? 1u : 0u,
         .has_encoder = mglRenderEncoderOwnerHasCurrent(
-                           mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner) ? 1u : 0u,
+                           mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner) ? 1u : 0u,
         .bind_valid = (areas.binding_state_owner &&
                        mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u,
         .pass_matches = mglRendererCurrentRenderPassMatchesFramebufferPort(renderer) ? 1u : 0u,
@@ -392,8 +392,8 @@ void mglBatchTraceStreamCmd0(void *renderer, MGLDrawBatch *batch, GLMContext glm
 {
     if (!batch || batch->command_count == 0) return;
     mglBatchTraceReplayCommand(renderer, batch, &batch->commands[0], glm_ctx,
-                              mglRendererCommandStatePort(renderer)->traceReplayFlushId,
-                              mglRendererCommandStatePort(renderer)->traceReplayBatchIndex,
+                              mglRendererCommandStateFor(renderer)->traceReplayFlushId,
+                              mglRendererCommandStateFor(renderer)->traceReplayBatchIndex,
                               0, phase, reason);
 }
 

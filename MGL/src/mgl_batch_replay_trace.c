@@ -94,7 +94,7 @@ void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
     VertexArray *vao = mglRendererGetValidatedVAO(glm_ctx, "replay.batch.trace");
     Framebuffer *fbo = glm_ctx->active_state->framebuffer;
     GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
-    void *rpStateOwner = mglRendererCommandStatePort(renderer)->renderPassStateOwner;
+    void *rpStateOwner = mglRendererCommandStateFor(renderer)->renderPassStateOwner;
     void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
         rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
     void *rpDepth = mglRenderGetRenderPassAttachmentTextureOwner(
@@ -127,9 +127,9 @@ void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
     v.enabled_attribs = vao ? (uint32_t)vao->enabled_attribs : 0u;
     MGLBatchTraceStatePod state; mglBatchFillStatePod(glm_ctx, &state);
     mgl_batch_trace_copy_state_to_batch(&v, &state);
-    v.encoder = mglBatchEncoderTraceToken(mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner);
+    v.encoder = mglBatchEncoderTraceToken(mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner);
     v.pipeline_state = areas.pipeline_cache->pipelineState;
-    v.rp_fbo = mglRendererCommandStatePort(renderer)->renderPassFramebufferName;
+    v.rp_fbo = mglRendererCommandStateFor(renderer)->renderPassFramebufferName;
     v.rp_color = rpColor0; v.rp_depth = rpDepth;
     char line[2048];
     if (mgl_batch_trace_format_batch_line(line, sizeof(line), &v) > 0) mglTraceLog("%s", line);
@@ -155,7 +155,7 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
     GLuint eboName = mglBatchSafeName(ebo, sizeof(*ebo), ebo ? ebo->name : 0u);
     Framebuffer *fbo = glm_ctx->active_state->framebuffer;
     GLuint fboName = mglBatchSafeName(fbo, sizeof(*fbo), fbo ? fbo->name : 0u);
-    void *rpStateOwner = mglRendererCommandStatePort(renderer)->renderPassStateOwner;
+    void *rpStateOwner = mglRendererCommandStateFor(renderer)->renderPassStateOwner;
     void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
         rpStateOwner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
     void *rpDepth = mglRenderGetRenderPassAttachmentTextureOwner(
@@ -184,9 +184,9 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
                                   cmd->first, cmd->indexType, (uint32_t)cmd->indexBufferOffset,
                                   cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
     v.ebo_name = eboName; v.ebo = ebo;
-    v.encoder = mglBatchEncoderTraceToken(mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner);
+    v.encoder = mglBatchEncoderTraceToken(mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner);
     v.pipeline_state = areas.pipeline_cache->pipelineState;
-    v.fbo_name = fboName; v.rp_fbo = mglRendererCommandStatePort(renderer)->renderPassFramebufferName;
+    v.fbo_name = fboName; v.rp_fbo = mglRendererCommandStateFor(renderer)->renderPassFramebufferName;
     v.rp_color = rpColor0; v.rp_depth = rpDepth;
     v.rp_color_w = rpColorInfo.width; v.rp_color_h = rpColorInfo.height;
     v.rp_depth_w = rpDepthInfo.width; v.rp_depth_h = rpDepthInfo.height;

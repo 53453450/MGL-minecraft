@@ -35,7 +35,7 @@ void mglTextureApplyPendingFBODepthClearForReadback(void *renderer,
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     if (mglRenderEncodeDepthClearForCommandBufferOwner(
-            mglRendererCommandStatePort(renderer)->currentCommandBufferOwner,
+            mglRendererCommandStateFor(renderer)->currentCommandBufferOwner,
             mtl_texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0]) == 0) {
@@ -66,7 +66,7 @@ void mglTextureApplyPendingFBOColorClearForReadback(void *renderer,
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
     if (mglRenderEncodeColorClearForCommandBufferOwner(
-            mglRendererCommandStatePort(renderer)->currentCommandBufferOwner,
+            mglRendererCommandStateFor(renderer)->currentCommandBufferOwner,
             mtl_texture, subresource.level,
             subresource.slice, subresource.depthPlane,
             attachment->clear_color[0], attachment->clear_color[1],
@@ -92,7 +92,7 @@ void mglTextureApplyPendingDefaultDepthClear(void *renderer, void *mtl_texture)
     }
 
     if (mglRenderEncodeDepthClearForCommandBufferOwner(
-            mglRendererCommandStatePort(renderer)->currentCommandBufferOwner,
+            mglRendererCommandStateFor(renderer)->currentCommandBufferOwner,
             mtl_texture, 0, 0, 0,
             ctx->active_state->var.depth_clear_value) == 0) {
         ctx->active_state->default_fbo_clear_bitmask =
@@ -113,7 +113,7 @@ void mglTextureApplyPendingDefaultColorClear(void *renderer, void *mtl_texture)
     }
 
     if (mglRenderEncodeColorClearForCommandBufferOwner(
-            mglRendererCommandStatePort(renderer)->currentCommandBufferOwner,
+            mglRendererCommandStateFor(renderer)->currentCommandBufferOwner,
             mtl_texture, 0, 0, 0,
             ctx->active_state->default_clear_color[0],
             ctx->active_state->default_clear_color[1],

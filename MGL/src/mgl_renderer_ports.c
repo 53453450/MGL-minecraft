@@ -13,7 +13,10 @@
  */
 
 #include "mgl_renderer_ports.h"
+#include "mgl_render.h"           /* command-buffer snapshot, MDI scratch owner */
+#include "mgl_renderer_backend.h" /* mglRendererBackendGetDevice */
 
+#include <stdint.h>
 #include <stdio.h>
 
 /* Defined in textures.c (C); declared here like framebuffers.c does. */
@@ -49,4 +52,56 @@ Texture *mglRendererAttachmentTextureFor(GLMContext ctx, FBOAttachment *att)
     }
 
     return tex;
+}
+
+/* The manager's command state, reached through the state areas.  Replaces the
+ * former mglRendererCommandStatePort wrapper (the areas already carry the
+ * pointer, so the shim does not need an entry point of its own). */
+const MGLCommandState *mglRendererCommandStateFor(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.command;
+}
+
+/* Body of the former -[MGLRenderPassManager mdiArgumentScratchBufferWithDevice:
+ * length:offset:].  The arena itself is C++ (mglRenderAllocateMDIScratch) and
+ * the owner pointer is a field of the command state, so no Objective-C message
+ * is involved: the returned buffer is borrowed, exactly as before. */
+void *mglRendererMdiScratchBuffer(void *renderer, uint64_t length,
+                                  uint64_t *offset_out)
+{
+    if (offset_out) {
+        *offset_out = 0;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+    if (!cs || length == 0 ||
+        !mglRendererBackendGetDevice(areas.backend)) {
+        return NULL;
+    }
+
+    MGLRenderCommandBufferState commandBufferState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(cs->currentCommandBufferOwner,
+                                             &commandBufferState)) {
+        return NULL;
+    }
+
+    if (!cs->mdiArgsScratchOwner &&
+        mglRenderCreateMDIScratchOwner(&cs->mdiArgsScratchOwner) != 0) {
+        return NULL;
+    }
+    void *buffer = NULL;
+    uint64_t offset = 0;
+    uint64_t capacity = 0;
+    if (mglRenderAllocateMDIScratch(cs->mdiArgsScratchOwner, length, 256u,
+                                    &buffer, &offset, &capacity) != 0 ||
+        !buffer) {
+        return NULL;
+    }
+    if (offset_out) {
+        *offset_out = offset;
+    }
+    return buffer;
 }

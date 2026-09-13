@@ -29,26 +29,6 @@
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
 
-void *mglRendererMdiScratchBufferPort(void *renderer, uint64_t length,
-                                      uint64_t *offset_out)
-{
-    /* Body of the former -[MGLRenderer mdiArgumentScratchBufferWithLength:
-     * offset:]; the render pass manager owns the ring buffer. */
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r) {
-        return NULL;
-    }
-    NSUInteger offset = 0u;
-    id buffer = (__bridge id)[mglRendererRenderPassManager(r)
-        mdiArgumentScratchBufferWithDevice:mglRendererBackendGetDevice(r->_backend)
-                                    length:(NSUInteger)length
-                                    offset:&offset];
-    if (offset_out) {
-        *offset_out = (uint64_t)offset;
-    }
-    return (__bridge void *)buffer;
-}
-
 int mglRendererProcessBufferPort(void *renderer, void *buffer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -306,10 +286,11 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->fragment_trace_bindings = &r->_resourceFallback.fragmentTextureTraceBindings[0];
 }
 
-const MGLCommandState *mglRendererCommandStatePort(void *renderer)
+int mglRendererEnsureWritableCommandBufferPort(void *renderer,
+                                               const char *reason)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [mglRendererRenderPassManager(r) state] : NULL;
+    return (r && [r ensureWritableCommandBuffer:reason]) ? 1 : 0;
 }
 
 int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer)

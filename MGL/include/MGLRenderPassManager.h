@@ -56,9 +56,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)clearCurrentRenderEncoder;
 - (BOOL)beginCommandBufferCommit;
 - (void)endCommandBufferCommit;
-- (void * _Nullable)mdiArgumentScratchBufferWithDevice:(void * _Nullable)device
-                                                      length:(NSUInteger)length
-                                                      offset:(nullable NSUInteger *)offsetOut;
 - (void)resetMDIScratch;
 - (void)installNewRenderPassDescriptor;
 /* Store/clear the FBO-match cache used by

@@ -747,9 +747,7 @@ static void mglBlitSynchronizeTexture(id encoder,
           mglTexturePixelFormatCompatibleWithExpectedDataKind(mglBlitTextureInfo(sampledCopy).pixel_format, expectedKind))) {
         source = tex->mtl_data ? (__bridge id)(tex->mtl_data) : nil;
         if (source) {
-            [self updateGLSampledRenderTargetCopyForTexture:tex
-                                                     source:source
-                                                     reason:"sample_gate_miss_repair"];
+            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, tex, (__bridge void *)source, "sample_gate_miss_repair");
         }
         sampledCopy = tex->mtl_gl_sampled_data
             ? (__bridge id)(tex->mtl_gl_sampled_data)
@@ -1478,9 +1476,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         }
         if (drawTextureObject && drawFBOAttachment) {
             mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
-            [self updateGLSampledRenderTargetCopyForTexture:drawTextureObject
-                                                     source:drawtexid
-                                                     reason:"blit_framebuffer_integer_msaa"];
+            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, drawTextureObject, (__bridge void *)drawtexid, "blit_framebuffer_integer_msaa");
         }
         return YES;
     }
@@ -1532,9 +1528,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         mglBlitEndBlitEncoder(integerBlit);
         if (drawTextureObject && drawFBOAttachment) {
             mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
-            [self updateGLSampledRenderTargetCopyForTexture:drawTextureObject
-                                                     source:drawtexid
-                                                     reason:"blit_framebuffer_integer_direct"];
+            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, drawTextureObject, (__bridge void *)drawtexid, "blit_framebuffer_integer_direct");
         }
         return YES;
     }
@@ -1732,9 +1726,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         }
         if (drawTextureObject && drawFBOAttachment) {
             mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
-            [self updateGLSampledRenderTargetCopyForTexture:drawTextureObject
-                                                     source:drawtexid
-                                                     reason:"blit_framebuffer_scaled"];
+            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, drawTextureObject, (__bridge void *)drawtexid, "blit_framebuffer_scaled");
         }
         // When the source is also a render target, refresh its sampled copy
         // so future fragment-shader samples see useCopy=1 instead of falling
@@ -1742,9 +1734,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         if (readTextureObject &&
             readTextureObject->is_render_target &&
             readtexid) {
-            [self updateGLSampledRenderTargetCopyForTexture:readTextureObject
-                                                     source:readtexid
-                                                     reason:"blit_framebuffer_scaled_src"];
+            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, readTextureObject, (__bridge void *)readtexid, "blit_framebuffer_scaled_src");
         }
         return YES;
     }
@@ -1826,9 +1816,7 @@ static void mglBlitSynchronizeTexture(id encoder,
     }
     if (drawTextureObject && drawFBOAttachment) {
         mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
-        [self updateGLSampledRenderTargetCopyForTexture:drawTextureObject
-                                                 source:drawtexid
-                                                 reason:"blit_framebuffer_copy"];
+        (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, drawTextureObject, (__bridge void *)drawtexid, "blit_framebuffer_copy");
     }
     // When the source is also a render target, refresh its sampled copy
     // so future fragment-shader samples use the synchronized copy instead
@@ -1839,9 +1827,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         readTextureObject->is_render_target &&
         readtexid &&
         !didMsaaResolve) {
-        [self updateGLSampledRenderTargetCopyForTexture:readTextureObject
-                                                 source:readtexid
-                                                 reason:"blit_framebuffer_copy_src"];
+        (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, readTextureObject, (__bridge void *)readtexid, "blit_framebuffer_copy_src");
     }
 }
 
@@ -2428,9 +2414,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     }
 
     mglMarkTextureLevelMetalFilled(tex, (GLuint)level, 0);
-    [self updateGLSampledRenderTargetCopyForTexture:tex
-                                             source:destTexture
-                                             reason:"copy_tex_sub_image_blit"];
+    (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, tex, (__bridge void *)destTexture, "copy_tex_sub_image_blit");
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     mglMarkRendererDirtyBits(&glm_ctx->state, DIRTY_TEX | DIRTY_TEX_BINDING);
     return YES;
@@ -2616,9 +2600,7 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     }
 
     mglMarkTextureLevelMetalFilled(tex, (GLuint)level, bgraSize);
-    [self updateGLSampledRenderTargetCopyForTexture:tex
-                                             source:texture
-                                             reason:"copy_tex_sub_image"];
+    (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, tex, (__bridge void *)texture, "copy_tex_sub_image");
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     if (glm_ctx) {
         mglMarkRendererDirtyBits(&glm_ctx->state,
@@ -4074,433 +4056,5 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     }
 }
 
-- (BOOL)lazyRefreshGLSampledRenderTargetCopyForTexture:(Texture *)tex
-                                                 stage:(const char *)stage
-                                               program:(GLuint)programName
-                                               binding:(GLuint)binding
-                                                  unit:(GLuint)unit
-{
-    if (!tex || !tex->mtl_data) {
-        return NO;
-    }
-    if (!mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
-        return NO;
-    }
-    if (tex->mtl_render_target_write_version == 0u) {
-        return NO;
-    }
-
-    if (mglGLSampledCopyContentFresh(tex)) {
-        return YES;
-    }
-    /* Stale (or no copy yet): safe to refresh only if the texture is not an
-     * attachment of the active render pass.  Reading a render-pass
-     * attachment mid-pass is a Metal read-after-write hazard. */
-    if (mglTextureIsAttachmentOfFramebuffer(_renderPassManager.state->renderPassFramebuffer, tex)) {
-        if (mglTraceLogIsEnabled()) {
-            mglTraceLog("RT_SAMPLE_COPY_LAZY_SKIP stage=%s program=%u binding=%u unit=%u tex=%u writeVer=%u rtVer=%u reason=current-pass-attachment",
-                        stage ? stage : "",
-                        (unsigned)programName,
-                        (unsigned)binding,
-                        (unsigned)unit,
-                        (unsigned)tex->name,
-                        (unsigned)tex->mtl_gl_sampled_write_version,
-                        (unsigned)tex->mtl_render_target_write_version);
-        }
-        return NO;
-    }
-    id source = (__bridge id)(tex->mtl_data);
-    BOOL ok = [self updateGLSampledRenderTargetCopyForTexture:tex
-                                                       source:source
-                                                       reason:"lazy_sample_copy_refresh"];
-    if (mglTraceLogIsEnabled()) {
-        mglTraceLog("RT_SAMPLE_COPY_LAZY_REFRESH stage=%s program=%u binding=%u unit=%u tex=%u ok=%d writeVer=%u rtVer=%u",
-                    stage ? stage : "",
-                    (unsigned)programName,
-                    (unsigned)binding,
-                    (unsigned)unit,
-                    (unsigned)tex->name,
-                    ok ? 1 : 0,
-                    (unsigned)tex->mtl_gl_sampled_write_version,
-                    (unsigned)tex->mtl_render_target_write_version);
-    }
-    return ok && mglGLSampledCopyContentFresh(tex);
-}
-
-- (BOOL)updateGLSampledRenderTargetCopyForTexture:(Texture *)tex
-                                           source:(id)source
-                                           reason:(const char *)reason
-{
-    MGL_ASSERT_GL_THREAD();
-    if (!mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, (__bridge void *)source)) {
-        return NO;
-    }
-
-    if (tex->mtl_render_target_write_version == 0u) {
-        return NO;
-    }
-
-    /* Copy the full GL mip chain of the RT (capped to mglBlitTextureInfo(source).mipmap_level_count),
-     * not the transient GpuTextureView BASE/MAX_LEVEL window.  Shrinking the
-     * Y-flip copy to that window left higher mips stale and re-broke the
-     * ced1a99 stripe fix (mipmapped sampling fell back to the un-flipped RT).
-     * Sampling windows are applied later via mglSampledTextureViewForBaseLevel. */
-    NSUInteger copyLevelCount = 1u;
-    if (mglBlitTextureInfo(source).mipmap_level_count > 1u) {
-        GLuint highestGLLevel = tex->num_levels > 0u ? tex->num_levels - 1u : 0u;
-        if (tex->mipmap_levels > 0u && highestGLLevel >= tex->mipmap_levels) {
-            highestGLLevel = tex->mipmap_levels - 1u;
-        }
-
-        NSUInteger highestSourceLevel = mglBlitTextureInfo(source).mipmap_level_count - 1u;
-        if ((NSUInteger)highestGLLevel > highestSourceLevel) {
-            highestGLLevel = (GLuint)highestSourceLevel;
-        }
-
-        copyLevelCount = (NSUInteger)highestGLLevel + 1u;
-    }
-
-    if (tex->mtl_gl_sampled_data &&
-        tex->mtl_gl_sampled_width == (GLuint)mglBlitTextureInfo(source).width &&
-        tex->mtl_gl_sampled_height == (GLuint)mglBlitTextureInfo(source).height &&
-        tex->mtl_gl_sampled_format == (GLuint)mglBlitTextureInfo(source).pixel_format &&
-        tex->mtl_gl_sampled_levels == (GLuint)copyLevelCount &&
-        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version &&
-        tex->mtl_gl_sampled_dirty_mip_mask == 0u) {
-        return YES;
-    }
-
-    BOOL needsNewCopy =
-        tex->mtl_gl_sampled_data == NULL ||
-        tex->mtl_gl_sampled_width != (GLuint)mglBlitTextureInfo(source).width ||
-        tex->mtl_gl_sampled_height != (GLuint)mglBlitTextureInfo(source).height ||
-        tex->mtl_gl_sampled_format != (GLuint)mglBlitTextureInfo(source).pixel_format ||
-        tex->mtl_gl_sampled_levels != (GLuint)copyLevelCount;
-    if (needsNewCopy) {
-        mglTextureReleaseGLSampledCopy(tex);
-
-
-        MGLRenderTextureDescriptorState desc = {0};
-        desc.texture_type = MGLTextureType2D;
-        desc.pixel_format = mglBlitTextureInfo(source).pixel_format;
-        desc.width = mglBlitTextureInfo(source).width;
-        desc.height = mglBlitTextureInfo(source).height;
-        desc.depth = 1;
-        desc.mipmap_level_count = copyLevelCount;
-        desc.sample_count = 1;
-        desc.array_length = 1;
-        desc.usage = MGLTextureUsageShaderRead | MGLTextureUsageRenderTarget | MGLTextureUsageShaderWrite;
-        desc.storage_mode = MGLStorageModePrivate;
-
-        id copy = mglBlitCreateTexture(_device, &desc);
-        if (!copy) {
-            static uint64_t s_copyCreateFailCount = 0;
-            uint64_t hit = ++s_copyCreateFailCount;
-            if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                NSLog(@"MGL RT-SAMPLE-COPY create failed tex=%u size=%lux%lu fmt=%lu reason=%s hit=%llu",
-                      (unsigned)tex->name,
-                      (unsigned long)mglBlitTextureInfo(source).width,
-                      (unsigned long)mglBlitTextureInfo(source).height,
-                      (unsigned long)mglBlitTextureInfo(source).pixel_format,
-                      reason ? reason : "(null)",
-                      (unsigned long long)hit);
-            }
-            return NO;
-        }
-
-        tex->mtl_gl_sampled_data = (void *)CFBridgingRetain(copy);
-        tex->mtl_gl_sampled_width = (GLuint)mglBlitTextureInfo(source).width;
-        tex->mtl_gl_sampled_height = (GLuint)mglBlitTextureInfo(source).height;
-        tex->mtl_gl_sampled_format = (GLuint)mglBlitTextureInfo(source).pixel_format;
-        tex->mtl_gl_sampled_levels = (GLuint)copyLevelCount;
-    }
-
-    id destination = (__bridge id)(tex->mtl_gl_sampled_data);
-    id sampler = (__bridge id)mglBlitScaledSamplerForFilter((__bridge void *)self, (GLuint)mglRenderNearestFilter());
-    if (!destination || !sampler) {
-        static uint64_t s_copySetupFailCount = 0;
-        uint64_t hit = ++s_copySetupFailCount;
-        if (hit <= 32ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL RT-SAMPLE-COPY setup failed tex=%u dst=%p sampler=%p reason=%s hit=%llu",
-                  (unsigned)tex->name,
-                  destination,
-                  sampler,
-                  reason ? reason : "(null)",
-                  (unsigned long long)hit);
-        }
-        return NO;
-    }
-
-
-    NSUInteger mipLevels = MAX(copyLevelCount, 1u);
-    if (mipLevels > mglBlitTextureInfo(destination).mipmap_level_count) {
-        mipLevels = mglBlitTextureInfo(destination).mipmap_level_count;
-    }
-    if (mipLevels > (NSUInteger)mglBlitTextureInfo(source).mipmap_level_count) {
-        mipLevels = (NSUInteger)mglBlitTextureInfo(source).mipmap_level_count;
-    }
-    uint32_t mipMask = mipLevels >= 32u
-        ? UINT32_MAX
-        : (((uint32_t)1u << mipLevels) - 1u);
-    uint32_t copyMask = needsNewCopy
-        ? mipMask
-        : (tex->mtl_gl_sampled_dirty_mip_mask & mipMask);
-    if (copyMask == 0u &&
-        tex->mtl_gl_sampled_write_version != tex->mtl_render_target_write_version) {
-        copyMask = mipMask;
-    }
-
-    if (![self ensureWritableCommandBuffer:reason ? reason : "rt_sample_copy"]) {
-        return NO;
-    }
-
-    // Sampled render-target copy: flip rows once so that Metal row 0 (top, which
-    // is what Metal's texture::sample sees at v=0) holds GL row 0 (bottom).
-    // See the longer comment block in the fallback render path below for the
-    // full Metal-vs-GL Y-origin rationale.
-    BOOL yFlipCopy = YES;
-
-    uint32_t dirtyBefore = tex->mtl_gl_sampled_dirty_mip_mask;
-    uint32_t copiedMask = 0u;
-
-    /* Prefer compute path: single MTLComputeCommandEncoder dispatches all dirty
-     * mip levels, avoiding per-mip render-encoder creation overhead. */
-    BOOL useComputePath = (mglBlitTextureInfo(destination).usage & MGLTextureUsageShaderWrite) != 0;
-    id computePipeline = nil;
-    if (useComputePath) {
-        computePipeline = (__bridge id)mglBlitScaledComputePipelineForPixelFormat((__bridge void *)self, mglBlitTextureInfo(destination).pixel_format);
-        if (!computePipeline) {
-            useComputePath = NO;
-        }
-    }
-
-    if (useComputePath) {
-        id computeEncoder =
-            (__bridge id)mglRenderCreateComputeEncoderBorrowed(
-                _renderPassManager.state->currentCommandBufferOwner);
-        if (!computeEncoder) {
-            static uint64_t s_computeEncoderFailCount = 0;
-            uint64_t hit = ++s_computeEncoderFailCount;
-            if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                NSLog(@"MGL RT-SAMPLE-COPY compute encoder failed tex=%u reason=%s hit=%llu",
-                      (unsigned)tex->name,
-                      reason ? reason : "(null)",
-                      (unsigned long long)hit);
-            }
-            useComputePath = NO;
-        } else {
-            typedef struct {
-                vector_uint2 dstSize;
-                uint32_t srcLevel;
-                uint32_t dstLevel;
-            } MGLScaledBlitComputeParams;
-
-            mglBlitSetComputePipeline(computeEncoder, computePipeline);
-            mglBlitSetComputeTexture(computeEncoder, source, 0);
-            mglBlitSetComputeTexture(computeEncoder, destination, 1);
-
-            NSUInteger tgW = MIN((NSUInteger)16u, mglRenderComputePipelineMaxTotalThreads((__bridge void *)computePipeline));
-            NSUInteger tgH = MAX((NSUInteger)1u,
-                                 MIN((NSUInteger)16u,
-                                     mglRenderComputePipelineMaxTotalThreads((__bridge void *)computePipeline) / tgW));
-            MGLSizeValue threadgroup = mglBlitSize(tgW, tgH, 1u);
-
-            for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
-                if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
-                    continue;
-                }
-
-                NSUInteger mipW = MAX(1u, mglBlitTextureInfo(source).width >> lvl);
-                NSUInteger mipH = MAX(1u, mglBlitTextureInfo(source).height >> lvl);
-
-                MGLScaledBlitComputeParams params;
-                params.dstSize = (vector_uint2){(uint32_t)mipW, (uint32_t)mipH};
-                params.srcLevel = (uint32_t)lvl;
-                params.dstLevel = (uint32_t)lvl;
-
-                mglBlitSetComputeBytes(computeEncoder, &params, sizeof(params), 0);
-
-                MGLSizeValue threads = mglBlitSize(mipW, mipH, 1u);
-                mglBlitDispatchThreads(computeEncoder, threads, threadgroup);
-
-                copiedMask |= (uint32_t)1u << lvl;
-            }
-            mglBlitEndComputeEncoder(computeEncoder);
-        }
-    }
-
-    if (!useComputePath) {
-        /* Render-path scaled blit is float-only; integer RTs must use
-         * the uint/int compute kernels. */
-        MGLTextureDataKind copyKind =
-            mglTextureDataKindForPixelFormat(
-                mglBlitTextureInfo(destination).pixel_format);
-        if (copyKind == MGLTextureDataKindUint ||
-            copyKind == MGLTextureDataKindSint) {
-            static uint64_t s_intCopyFailCount = 0;
-            uint64_t hit = ++s_intCopyFailCount;
-            if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                NSLog(@"MGL RT-SAMPLE-COPY integer compute path unavailable tex=%u kind=%s reason=%s hit=%llu",
-                      (unsigned)tex->name,
-                      mglTextureDataKindName(copyKind),
-                      reason ? reason : "(null)",
-                      (unsigned long long)hit);
-            }
-            return NO;
-        }
-
-        id pipeline = (__bridge id)mglBlitScaledPipelineForPixelFormat((__bridge void *)self, mglBlitTextureInfo(destination).pixel_format);
-        if (!pipeline) {
-            static uint64_t s_copySetupFailCount = 0;
-            uint64_t hit = ++s_copySetupFailCount;
-            if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                NSLog(@"MGL RT-SAMPLE-COPY render pipeline setup failed tex=%u reason=%s hit=%llu",
-                      (unsigned)tex->name,
-                      reason ? reason : "(null)",
-                      (unsigned long long)hit);
-            }
-            return NO;
-        }
-
-        MGLScaledBlitParams params;
-        params.uvRect = yFlipCopy
-            ? (vector_float4){0.0f, 1.0f, 1.0f, 0.0f}
-            : (vector_float4){0.0f, 0.0f, 1.0f, 1.0f};
-        params.forceOpaqueAlpha = 0.0f;
-        params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
-
-        for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
-            if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
-                continue;
-            }
-            @autoreleasepool {
-                id srcLvl = source;
-                id dstLvl = destination;
-                if (mipLevels > 1u) {
-                    srcLvl = mglBlitCreateTextureView(
-                        source, mglBlitTextureInfo(source).pixel_format, MGLTextureType2D,
-                        NSMakeRange(lvl, 1u), NSMakeRange(0, 1u));
-                    dstLvl = mglBlitCreateTextureView(
-                        destination, mglBlitTextureInfo(destination).pixel_format,
-                        MGLTextureType2D, NSMakeRange(lvl, 1u),
-                        NSMakeRange(0, 1u));
-                    if (!srcLvl || !dstLvl) {
-                        static uint64_t s_levelViewFailCount = 0;
-                        uint64_t hit = ++s_levelViewFailCount;
-                        if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                            NSLog(@"MGL RT-SAMPLE-COPY level view failed tex=%u lvl=%lu hit=%llu",
-                                  (unsigned)tex->name,
-                                  (unsigned long)lvl,
-                                  (unsigned long long)hit);
-                        }
-                        continue;
-                    }
-                }
-
-                MGLRenderPassState copyState =
-                    mglBlitDefaultRenderPassState();
-                copyState.color[0].attachment =
-                    mglBlitRenderPassAttachment(
-                        dstLvl, 0u, 0u, 0u, MGLLoadActionDontCare,
-                        MGLStoreActionStore);
-                copyState.render_target_width = mglBlitTextureInfo(dstLvl).width;
-                copyState.render_target_height = mglBlitTextureInfo(dstLvl).height;
-
-                id copyEncoder =
-                    mglBlitCreateRenderEncoder(_renderPassManager, &copyState);
-                if (!copyEncoder) {
-                    static uint64_t s_copyEncoderFailCount = 0;
-                    uint64_t hit = ++s_copyEncoderFailCount;
-                    if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                        NSLog(@"MGL RT-SAMPLE-COPY encoder failed tex=%u lvl=%lu reason=%s hit=%llu",
-                              (unsigned)tex->name,
-                              (unsigned long)lvl,
-                              reason ? reason : "(null)",
-                              (unsigned long long)hit);
-                    }
-                    continue;
-                }
-
-                mglBlitSetRenderPipeline(copyEncoder, pipeline);
-                mglBlitSetRenderBytes(copyEncoder, &params, sizeof(params),
-                                      MGL_RENDER_BINDING_STAGE_VERTEX, 0);
-                mglBlitSetRenderBytes(copyEncoder, &params, sizeof(params),
-                                      MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
-                mglBlitSetRenderTexture(copyEncoder, srcLvl,
-                                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
-                mglBlitSetRenderSampler(copyEncoder, sampler,
-                                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
-                mglBlitSetRenderViewport(copyEncoder, (MGLViewportValue){
-                    .origin_x = 0.0,
-                    .origin_y = 0.0,
-                    .width = (double)mglBlitTextureInfo(dstLvl).width,
-                    .height = (double)mglBlitTextureInfo(dstLvl).height,
-                    .znear = 0.0,
-                    .zfar = 1.0
-                });
-                mglBlitSetRenderScissor(copyEncoder, (MGLScissorRectValue){
-                    .x = 0,
-                    .y = 0,
-                    .width = mglBlitTextureInfo(dstLvl).width,
-                    .height = mglBlitTextureInfo(dstLvl).height
-                });
-                mglBlitDrawPrimitives(copyEncoder, MGLPrimitiveTypeTriangleStrip, 0, 4);
-                mglBlitEndRenderEncoder(copyEncoder);
-                copiedMask |= (uint32_t)1u << lvl;
-            }
-        }
-    }
-
-    tex->mtl_gl_sampled_dirty_mip_mask &= ~copiedMask;
-    if ((tex->mtl_gl_sampled_dirty_mip_mask & mipMask) == 0u) {
-        tex->mtl_gl_sampled_write_version = tex->mtl_render_target_write_version;
-    }
-
-    if (mglTraceLogIsEnabled()) {
-        char levelSizes[160];
-        size_t levelSizesLen = 0;
-        levelSizes[0] = '\0';
-        for (NSUInteger lvl = 0u; lvl < mipLevels && lvl < 8u; lvl++) {
-            NSUInteger mipW = MAX(1u, mglBlitTextureInfo(source).width >> lvl);
-            NSUInteger mipH = MAX(1u, mglBlitTextureInfo(source).height >> lvl);
-            int n = snprintf(levelSizes + levelSizesLen,
-                             sizeof(levelSizes) - levelSizesLen,
-                             "%s%lux%lu",
-                             levelSizesLen ? "," : "",
-                             (unsigned long)mipW,
-                             (unsigned long)mipH);
-            if (n < 0 || (size_t)n >= sizeof(levelSizes) - levelSizesLen) {
-                break;
-            }
-            levelSizesLen += (size_t)n;
-        }
-        mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu srcLevels=%lu dstLevels=%lu glLevels=%u mips=%u base=%u max=%u writeVersion=%u dirtyBefore=0x%x copyMask=0x%x copiedMask=0x%x dirtyAfter=0x%x levelSizes=%s reason=%s compute=%d",
-                    (unsigned)tex->name,
-                    mglTraceTextureLabel(tex),
-                    0,
-                    yFlipCopy ? 1 : 0,
-                    source,
-                    destination,
-                    (unsigned long)mglBlitTextureInfo(destination).width,
-                    (unsigned long)mglBlitTextureInfo(destination).height,
-                    (unsigned long)mglBlitTextureInfo(destination).pixel_format,
-                    (unsigned long)mglBlitTextureInfo(source).mipmap_level_count,
-                    (unsigned long)mglBlitTextureInfo(destination).mipmap_level_count,
-                    (unsigned)tex->num_levels,
-                    (unsigned)tex->mipmap_levels,
-                    (unsigned)tex->params.base_level,
-                    (unsigned)tex->params.max_level,
-                    (unsigned)tex->mtl_gl_sampled_write_version,
-                    (unsigned)dirtyBefore,
-                    (unsigned)copyMask,
-                    (unsigned)copiedMask,
-                    (unsigned)tex->mtl_gl_sampled_dirty_mip_mask,
-                    levelSizes,
-                    reason ? reason : "(null)",
-                    useComputePath ? 1 : 0);
-    }
-
-    return YES;
-}
 
 @end

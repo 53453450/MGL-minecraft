@@ -94,7 +94,7 @@ static void *mglBatchRtMarkHostAttachmentMtl(void *v, uint32_t att)
 static int mglBatchRtMarkHostRpHas(void *v, void *mtl)
 {
     MGLBatchRtMarkHostCtx *c = (MGLBatchRtMarkHostCtx *)v;
-    void *owner = mglRendererCommandStatePort(c->renderer)->renderPassStateOwner;
+    void *owner = mglRendererCommandStateFor(c->renderer)->renderPassStateOwner;
     for (GLuint slot = 0u; slot < MAX_COLOR_ATTACHMENTS; slot++) {
         if (mglRenderGetRenderPassAttachmentTextureOwner(
                 owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, slot) == mtl) {
@@ -118,7 +118,7 @@ static void mglBatchRtMarkTraceWriteMark(GLMContext ctx, void *renderer,
                                                            &rtDepth);
     void *colorMTL = tex->mtl_data;
     void *depthMTL = (rtDepth && rtDepth->mtl_data) ? rtDepth->mtl_data : NULL;
-    void *owner = mglRendererCommandStatePort(renderer)->renderPassStateOwner;
+    void *owner = mglRendererCommandStateFor(renderer)->renderPassStateOwner;
     void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
         owner, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
     void *rpDepth = mglRenderGetRenderPassAttachmentTextureOwner(
@@ -235,7 +235,7 @@ void mglBatchRtMarkCurrentFramebufferDrawAttachments(void *renderer,
         .resolve_draw_slot = mglBatchRtMarkHostResolveSlot,
         .mark_attachment = mglBatchRtMarkHostMarkAttachment,
         .has_rp_owner =
-            mglRendererCommandStatePort(renderer)->renderPassStateOwner ? 1 : 0,
+            mglRendererCommandStateFor(renderer)->renderPassStateOwner ? 1 : 0,
         .attachment_mtl = mglBatchRtMarkHostAttachmentMtl,
         .rp_has_mtl = mglBatchRtMarkHostRpHas,
     };

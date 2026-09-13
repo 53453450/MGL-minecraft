@@ -28,15 +28,15 @@ static void mglIssueTrace(void *v, uint32_t i, const char *phase, const char *re
     if (!c->batch || i >= c->batch->command_count) return;
     mglBatchTraceReplayCommand(
         c->r, c->batch, &c->batch->commands[i], c->ctx,
-        mglRendererCommandStatePort(c->r)->traceReplayFlushId,
-        mglRendererCommandStatePort(c->r)->traceReplayBatchIndex, i, phase, reason);
+        mglRendererCommandStateFor(c->r)->traceReplayFlushId,
+        mglRendererCommandStateFor(c->r)->traceReplayBatchIndex, i, phase, reason);
 }
 static void mglMdiDirect(void *v)
 { MGLIssueEncCtx *c = v; mglBatchIssueDirectBatch(c->r, c->batch, c->ctx, c->cenc); }
 static void *mglMdiScratch(void *v, uint64_t len, uint64_t *off)
 {
     uint64_t o = 0;
-    void *b = mglRendererMdiScratchBufferPort(((MGLIssueEncCtx *)v)->r, len, &o);
+    void *b = mglRendererMdiScratchBuffer(((MGLIssueEncCtx *)v)->r, len, &o);
     if (off) *off = o; return b;
 }
 static int mglMdiMap(void *v, void *buf, uint64_t off, uint64_t need, void **out)
@@ -58,7 +58,7 @@ static int mglMdiResolve(void *v, uint32_t i, uint32_t gl_itype, void **mtl,
 }
 static void mglDirRefresh(void *v)
 { MGLIssueEncCtx *c = v; c->enc->render_encoder_owner =
-      mglRendererCommandStatePort(c->r)->currentRenderEncoderOwner; }
+      mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner; }
 static int mglDirSimple(void *v)
 { MGLIssueEncCtx *c = v;
   return mglBatchTryReplaySimpleBatch(c->r, c->batch, c->ctx, c->enc); }
@@ -97,7 +97,7 @@ static int mglDirCullCap(void *v, uint32_t i, int cullPath)
 }
 static int mglDirAfterCull(void *v)
 { MGLIssueEncCtx *c = v; return (mglRendererProcessGLStatePort(c->r, 1) &&
-      mglRenderEncoderOwnerHasCurrent(mglRendererCommandStatePort(c->r)->currentRenderEncoderOwner))
+      mglRenderEncoderOwnerHasCurrent(mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner))
       ? 1 : 0; }
 static int mglDirDyn(void *v, uint32_t i)
 { MGLIssueEncCtx *c = v; return mglBatchApplyDynamicBindings(
@@ -192,7 +192,7 @@ void mglBatchIssueDirectBatch(void *renderer, MGLDrawBatch *batch, GLMContext gl
                               const MGLEncodeContext *encCtx)
 {
     MGLEncodeContext live = *encCtx;
-    live.render_encoder_owner = mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner;
+    live.render_encoder_owner = mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner;
     MGLIssueEncCtx ctx = {.r = renderer, .batch = batch, .ctx = glm_ctx, .enc = &live};
     MGLBatchDirectIssueOps ops = {
         .ctx = &ctx, .refresh_encoder = mglDirRefresh, .try_simple_replay = mglDirSimple,

@@ -18,6 +18,7 @@
 #import "MGLRenderer+Texture_Private.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_blit_sampled_copy.h"  /* sampled RT copy refresh */
 #include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
 
 enum {
@@ -2981,9 +2982,7 @@ static void mglTextureCopyTextureToBuffer(
         mglMarkTextureLevelMetalFilled(tex, level, packedBytes);
         id source = (__bridge id)(tex->mtl_data);
         if (source) {
-            [self updateGLSampledRenderTargetCopyForTexture:tex
-                                                     source:source
-                                                     reason:"texSubImage_metal_fill"];
+            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, tex, (__bridge void *)source, "texSubImage_metal_fill");
         }
     }
     return uploaded;

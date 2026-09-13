@@ -10,7 +10,7 @@
  *   - Is a texture currently an active render-pass attachment?
  *   - Does a framebuffer match the "GL sampled copy" pattern?
  *
- * The actual Y-flipped copy generation (updateGLSampledRenderTargetCopyForTexture)
+ * The actual Y-flipped copy generation (mglBlitUpdateGLSampledRenderTargetCopy)
  * and encoder lifecycle management stay in MGLRenderer.m because they require
  * access to MTLRenderCommandEncoder, the command buffer ivar, and a number of
  * renderer-internal helpers.  Splitting the gate logic out here makes the

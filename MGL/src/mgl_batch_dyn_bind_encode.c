@@ -109,7 +109,7 @@ int mglBatchDynBindSampledDirect(void *renderer, const bool *touched_units,
 
 static void mglDynApplyRefresh(void *v)
 { MGLDynApplyCtx *c = v; if (c->enc)
-      c->enc->render_encoder_owner = mglRendererCommandStatePort(c->r)->currentRenderEncoderOwner; }
+      c->enc->render_encoder_owner = mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner; }
 static int mglDynApplyHasEnc(void *v)
 { return mglBatchReplayHasActiveEncoder(((MGLDynApplyCtx *)v)->enc) ? 1 : 0; }
 static int mglDynApplyBuildVao(void *v)
@@ -345,7 +345,7 @@ int mglBatchApplyDynamicBindings(void *renderer, const MGLDrawCommand *cmd,
 {
     if (!cmd) return 1;
     if (!glm_ctx || !encCtx) return 0;
-    encCtx->render_encoder_owner = mglRendererCommandStatePort(renderer)->currentRenderEncoderOwner;
+    encCtx->render_encoder_owner = mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner;
     MGLDynApplyCtx c = {.r = renderer, .cmd = cmd, .ctx = glm_ctx, .enc = encCtx,
                         .base_vao = glm_ctx->active_state->vao,
                         .draw_vao = glm_ctx->active_state->vao};

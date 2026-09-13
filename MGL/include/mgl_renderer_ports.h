@@ -41,9 +41,18 @@ Texture *mglRendererAttachmentTextureFor(GLMContext ctx, FBOAttachment *att);
  * surface C talks to stays in a single place, and each one moves into its
  * implementation file as that file is converted. */
 
-/* MDI argument scratch buffer; *offset_out receives the write offset. */
-void *mglRendererMdiScratchBufferPort(void *renderer, uint64_t length,
-                                      uint64_t *offset_out);
+/* MDI argument scratch buffer; *offset_out receives the write offset.
+ * C, not a port: the render pass manager's scratch owner lives in the command
+ * state (areas.command->mdiArgsScratchOwner) and the allocator itself was
+ * already C++ (mglRenderAllocateMDIScratch), so the whole body moved to
+ * mgl_renderer_ports.c. */
+void *mglRendererMdiScratchBuffer(void *renderer, uint64_t length,
+                                  uint64_t *offset_out);
+
+/* The render pass manager's command state (render encoder owner, render-pass
+ * state owner, trace identity, FBO-match cache).  C, not a port: it is one
+ * field of the state areas. */
+const MGLCommandState *mglRendererCommandStateFor(void *renderer);
 
 /* Element (index) buffer for a command; fills the GL buffer and, when it has
  * one, the Metal buffer.  0 when the command cannot be resolved. */
@@ -148,10 +157,11 @@ typedef struct MGLRendererStateAreas {
 
 void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out);
 
-/* The manager's command state (render pass owner, render pass framebuffer
- * name, trace-replay identity, render encoder owner, ...).  C callers read the
- * fields directly; this one port replaced five field wrappers. */
-const MGLCommandState *mglRendererCommandStatePort(void *renderer);
+/* Make sure the current command buffer is writable (rotating it when it was
+ * already committed).  A port: the rotation runs -newCommandBufferLocked /
+ * -endRenderEncodingLocked, which are Objective-C render-pass methods. */
+int mglRendererEnsureWritableCommandBufferPort(void *renderer,
+                                               const char *reason);
 
 /* The pipeline cache's state record (active pipeline handle, pipeline program
  * name, formats).  C readers use the fields directly. */

@@ -29,6 +29,14 @@ extern "C" {
  * `source` for FBO feedback. */
 int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source);
 
+/* Bring `tex`'s GL-sampled copy of `source` up to date (create it, then copy the
+ * dirty mip levels with the Y-flip that GL's bottom-up origin needs).  Returns
+ * 1 when the copy is usable, 0 when the texture/source cannot carry one or the
+ * Metal objects could not be created.  `reason` is a static label for the
+ * RT_SAMPLE_COPY_* trace lines and the failure diagnostics. */
+int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
+                                           void *source, const char *reason);
+
 #ifdef __cplusplus
 }
 #endif

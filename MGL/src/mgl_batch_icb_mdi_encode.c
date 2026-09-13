@@ -35,8 +35,8 @@ static void mglIcbTrace(void *v, uint32_t i, const char *phase, const char *reas
     if (!c->batch || i >= c->batch->command_count) return;
     mglBatchTraceReplayCommand(c->r, c->batch, &c->batch->commands[i],
                                c->ctx,
-                               mglRendererCommandStatePort(c->r)->traceReplayFlushId,
-                               mglRendererCommandStatePort(c->r)->traceReplayBatchIndex,
+                               mglRendererCommandStateFor(c->r)->traceReplayFlushId,
+                               mglRendererCommandStateFor(c->r)->traceReplayBatchIndex,
                                i, phase, reason);
 }
 
@@ -44,7 +44,7 @@ static void *mglIcbScratch(void *v, uint64_t len, uint64_t *off)
 {
     /* The ops table passes ITS ctx (MGLIcbMdiCtx*), not the renderer handle --
      * the port takes the renderer, so unwrap here. */
-    return mglRendererMdiScratchBufferPort(((MGLIcbMdiCtx *)v)->r, len, off);
+    return mglRendererMdiScratchBuffer(((MGLIcbMdiCtx *)v)->r, len, off);
 }
 
 static int mglIcbMap(void *v, void *buf, uint64_t off, uint64_t need, void **out)

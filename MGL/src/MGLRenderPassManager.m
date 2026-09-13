@@ -14,14 +14,6 @@
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 
-static BOOL mglRenderPassManagerCommandBufferState(
-    void *owner, MGLRenderCommandBufferState *stateOut)
-{
-    if (stateOut) memset(stateOut, 0, sizeof(*stateOut));
-    return owner && stateOut &&
-           mglRenderGetCommandBufferOwnerState(owner, stateOut) == 0;
-}
-
 static id mglRenderPassManagerCreateCommandBuffer(
     void **owner, id commandQueue)
 {
@@ -399,42 +391,6 @@ static void mglRenderPassManagerStoreIdentity(
 {
     mglRenderCommandBufferOwnerEndCommit(
         _state.currentCommandBufferOwner);
-}
-
-- (void *)mdiArgumentScratchBufferWithDevice:(void *)device
-                                              length:(NSUInteger)length
-                                              offset:(NSUInteger *)offsetOut
-{
-    if (offsetOut) {
-        *offsetOut = 0;
-    }
-    MGLRenderCommandBufferState commandBufferState = {0};
-    if (!device ||
-        !mglRenderPassManagerCommandBufferState(
-            _state.currentCommandBufferOwner, &commandBufferState) ||
-        length == 0) {
-        return nil;
-    }
-
-    /* both gates share the C++ MDIScratchOwner — the ObjC
-     * gate-off allocator and the mirror fields are gone.  The returned buffer
-     * is a borrowed reference (the owner keeps it alive and may swap it on
-     * growth, same lifetime contract as the old mirror). */
-    if (!_state.mdiArgsScratchOwner &&
-        mglRenderCreateMDIScratchOwner(&_state.mdiArgsScratchOwner) != 0) {
-        return nil;
-    }
-    void *buffer = NULL;
-    uint64_t offset = 0;
-    uint64_t capacity = 0;
-    if (mglRenderAllocateMDIScratch(
-            _state.mdiArgsScratchOwner, (uint64_t)length, 256u,
-            &buffer, &offset, &capacity) != 0 || !buffer ||
-        offset > NSUIntegerMax) {
-        return nil;
-    }
-    if (offsetOut) *offsetOut = (NSUInteger)offset;
-    return buffer;
 }
 
 - (void)resetMDIScratch

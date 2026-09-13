@@ -282,8 +282,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
  * (mgl_batch_issue.h, implemented in mgl_batch_icb_mdi_encode.c). */
 /* issueIndirectCommandBufferBatch:... is now the C driver
  * mglBatchIssueIndirectCommandBufferBatch (mgl_batch_issue.h). */
-/* mdiArgumentScratchBufferWithLength:offset: moved into
- * mglRendererMdiScratchBufferPort (mgl_renderer_port_shim.m). */
+/* mdiArgumentScratchBufferWithLength:offset: moved into the C helper
+ * mglRendererMdiScratchBuffer (mgl_renderer_ports.c). */
 
 // === Resource binding sync ===
 /* Work already performed by processDirtyStateDomainsLocked within the same

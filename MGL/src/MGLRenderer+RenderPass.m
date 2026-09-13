@@ -5060,9 +5060,7 @@ static GLenum mglPassthroughDeclType(
             continue;
         }
 
-        [self updateGLSampledRenderTargetCopyForTexture:tex
-                                                 source:source
-                                                 reason:reason ? reason : "end_render_pass"];
+        (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, tex, (__bridge void *)source, reason ? reason : "end_render_pass");
     }
 }
 
