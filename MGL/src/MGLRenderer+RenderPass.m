@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_draw_encode.h"
+#include "mgl_attachment_binding.h"  /* FBO attachment bind */
 #include "mgl_draw_mode.h"
 #import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_blit_sampled_copy.h"
@@ -1928,24 +1929,6 @@ static GLenum mglPassthroughDeclType(
     return true;
 }
 
-- (bool)bindFramebufferTexture:(FBOAttachment *)fbo_attachment isDrawBuffer:(bool) isDrawBuffer
-{
-    Texture *tex;
-
-    tex = [self framebufferAttachmentTexture: fbo_attachment];
-    if (!tex) {
-        // Incomplete/missing attachment. Do not crash.
-        return true;
-    }
-
-    if (isDrawBuffer) {
-        tex->is_render_target = true;
-    }
-
-    RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
-
-    return true;
-}
 
 - (void)invalidateCurrentPipelineStateForReason:(NSString *)reason
 {
@@ -5788,7 +5771,7 @@ static GLenum mglPassthroughDeclType(
 
         if (plan.bind_fbo_attachments)
         {
-            RETURN_FALSE_ON_FAILURE([self bindFramebufferAttachmentTextures]);
+            RETURN_FALSE_ON_FAILURE(mglRendererBindFramebufferAttachmentTextures((__bridge void *)self));
             Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(
                 ctx, "processGLState.dirtyStateFBO.afterBind");
             if (framebuffer) {
@@ -7042,7 +7025,7 @@ static GLenum mglPassthroughDeclType(
 
     if (framebuffer && framebufferBindingDirty)
     {
-        RETURN_FALSE_ON_FAILURE([self bindFramebufferAttachmentTextures]);
+        RETURN_FALSE_ON_FAILURE(mglRendererBindFramebufferAttachmentTextures((__bridge void *)self));
         framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO.afterBind");
         if (framebuffer) {
             framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;

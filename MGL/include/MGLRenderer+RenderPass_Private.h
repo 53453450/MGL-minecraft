@@ -115,9 +115,9 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 - (void)endRenderEncodingLocked;
 - (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall;
 - (bool)currentRenderPassMatchesCurrentFramebuffer;
-- (bool)bindFramebufferAttachmentTextures;
+/* these are the C functions in mgl_attachment_binding.h now */
 - (bool)bindBufferSizeConstantsForRenderEncoder;
-- (bool)bindFramebufferTexture:(FBOAttachment *)fbo_attachment isDrawBuffer:(bool)isDrawBuffer;
+/* these are the C functions in mgl_attachment_binding.h now */
 
 // === Framebuffer attachment helpers ===
 - (Texture *)framebufferAttachmentTexture:(FBOAttachment *)fbo_attachment;

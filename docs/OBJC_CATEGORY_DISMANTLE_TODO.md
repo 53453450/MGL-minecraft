@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十七刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
-行数 **43,989 → 35,398**、ObjC 语法 **2,268 → 2,021**、词汇 **4,353 → 3,931**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十八刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
+行数 **43,989 → 35,305**、ObjC 语法 **2,268 → 2,016**、词汇 **4,353 → 3,927**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1768,3 +1768,24 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：直接跑 `python3 scripts/objc_dead_methods.py`（应为 0 候选）后回到结构性刀：§0.11 的 `+VertexLayout.m` 三条前置依赖
      （pipeline-cache blend setter / `MGLTessellationState` 进 areas / `bindFramebufferTexture:isDrawBuffer:`）
      与 T5 第二步（`+Lifecycle.m` 平台部分并入唯一壳 TU）。
+
+72. **P0-1 第十八刀：FBO attachment 绑定整簇转 C（**−93 行**，零新增端口）**：
+     ① 新 TU **`mgl_attachment_binding.{h,c}`**，两个入口替换两个 ObjC 方法：
+     - `-[MGLRenderer bindFramebufferTexture:isDrawBuffer:]`（`+RenderPass.m` 18 行）→ `mglRendererBindFramebufferTexture`；
+     - `-[MGLRenderer bindFramebufferAttachmentTextures]`（`+VertexLayout.m` **77 行**）→ `mglRendererBindFramebufferAttachmentTextures`。
+     两者**不需要任何新端口**：附件纹理走已有的 C 端口 `mglRendererAttachmentTextureFor(ctx, att)`，Metal 侧走已有的
+     `mglRendererBindMTLTexturePort`，`ctx`/`fbo` 分别来自 `areas.ctx` 与 `areas.ctx->active_state->framebuffer`；
+     `NSLog` → 同 sink 同字段 `fprintf`，`DEBUG_PRINT`（`glm_context.h` 的 C 宏）原样保留。
+     ② 调用点与声明：`MGLRenderer.m` 1 处、`+RenderPass.m` 2 处改直调；`+RenderPass_Private.h` 两条声明注释化。
+     `+VertexLayout.m` **203 → 126 行**（该文件只剩 `generateVertexDescriptorState:` 与 `updateBlendStateCache`）。
+     ③ **定位教训**：`bindFramebufferTexture:isDrawBuffer:` 的**定义不在 `+VertexLayout.m` 而在 `+RenderPass.m`**
+     （`+VertexLayout.m` 里那 3 处只是调用点）——我先按"文件里有这个名字"就以为定义在同文件，脚本三次
+     `StopIteration` 才发现。**规则：动手前用 `grep -n '^- *(' 定位"定义行"，不要用裸名字计数当定义证据。**
+     ④ **度量**：行数 **35,398 → 35,305**、语法 **2,021 → 2,016**、词汇 **3,931 → 3,927**；文件仍 18、shim 端口仍 13。
+     ⑤ **oracle（本刀改的是每次 FBO 绑定都走的路径，必须 A/B）**：旧库 = 提交 `f11ecba` 的独立构建（`cmp` 两库不同）；
+     两臂 trace **确定性行 4,980/4,980 与 5,513/5,513 逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；
+     plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 + `verify_gl_api` 均通过。
+     下一刀：`+VertexLayout.m` 余下两方法（`generateVertexDescriptorState:` 11 行 + `updateBlendStateCache` 90 行）——
+     前者差"`_tessellation` 三个字段进 areas"，后者差"pipeline-cache blend setter"。两条都能用**既有模式**零端口解决：
+     给 `MGLRendererStateAreas` 加 `void *pipeline_cache_object` 与一个 tessellation 快照字段（areas 加字段不新增端口），
+     再由壳 TU 里填（`_pipelineCache` / `_tessellation`），C 侧通过回调函数指针调用 cache 的既有方法。

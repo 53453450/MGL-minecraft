@@ -34,6 +34,7 @@
 #import <objc/runtime.h>
 
 #include <mach/mach_vm.h>
+#include "mgl_attachment_binding.h"  /* FBO attachment bind */
 #include <mach/mach_init.h>
 #include <mach/vm_map.h>
 #include <string.h>
@@ -3767,7 +3768,7 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
 
         Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
         if (fbo && (fbo->dirty_bits & DIRTY_FBO_BINDING)) {
-            RETURN_ON_FAILURE([self bindFramebufferAttachmentTextures]);
+            RETURN_ON_FAILURE(mglRendererBindFramebufferAttachmentTextures((__bridge void *)self));
             fbo->dirty_bits &= ~DIRTY_FBO_BINDING;
         }
 
