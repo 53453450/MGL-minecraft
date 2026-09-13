@@ -2627,3 +2627,27 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
      `_mglInMSSampleDrawLoop` / `_mglForcedMSSampleId` / `_mglMSSamplePlaneOffset` 走"方法 + 壳转发"；
      它们依赖的 `[self endRenderEncodingLocked]` **本刀已变成 C 函数**，`newCommandBufferLocked` 仍需处理。
      完成后 **删除 `MGLRenderer+DrawStageHost.m` → 文件 16 → 15**。
+
+98. **第 67 轮：MS 循环族的精确搬迁配方（§0.22 第③步；下一刀照此执行即可删文件）**
+
+本轮把两个 MS 方法与它们的调用点都看完了，结论是**比预想简单**：
+
+**① block 不是障碍**：`mgl_draw_metal_port.m` 里两处 `drawOnce:^{ … }` 的块体**都是纯 C 调用**（`mglIssueDrawArrays(...)` / `mglIssueDrawElements(...)`，参数全是块外捕获的普通值）。
+→ 换成 `fn + ctx` 即可：定义一个携带这些参数的 C 结构体 + 一个 `static void mglMsDrawOnce(void *ctx)`，把两者传给新的 C 入口。
+
+**② 只剩 3 个私有 ivar + 1 个方法需要壳转发**（其余依赖本周期都已 C 化）：
+
+| 依赖 | 现状 | 需要的壳入口 |
+|---|---|---|
+| `[self emulatedMSColor0TextureForContext:]` | ✅ 已 C（`mglDrawEmulatedMSColor0Texture`，第 21 刀） | — |
+| `[self fragmentNeedsPerSampleMSValuesForContext:]` | ✅ 已 C（`mglDrawFragmentNeedsPerSampleMSValues`，第 20 刀） | — |
+| `[self endRenderEncodingLocked]` | ✅ 已 C（`mglRendererEndRenderEncodingLocked`，**第 42 刀**） | — |
+| `_mglInMSSampleDrawLoop` / `_mglForcedMSSampleId` / `_mglMSSamplePlaneOffset` | 私有 ivar（读+写） | **两个** C 入口即可：`mglPlatformShellMSSampleInLoop(void *)` 与 `mglPlatformShellSetMSSampleState(void *, int in_loop, int32_t forced, int32_t offset)`（`MGLRenderer.m` 里配对应方法，方法体内用 ivar） |
+| `[self newCommandBufferLocked]`（仅 `broadcast…` 用） | 大方法 | 一个壳转发 `mglPlatformShellNewCommandBuffer(void *)` |
+
+**③ 新 C 入口（放 `mgl_gpu_recovery.c` 或新建 `mgl_ms_sample_loop.c`）**：
+`int mglRendererRunEmulatedMSSampleDrawLoopIfNeeded(void *renderer, GLMContext ctx, void (*draw_once)(void *), void *draw_ctx)`
+与 `void mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(void *renderer, GLMContext ctx)`；逻辑照抄原体（`MAX(tex->samples,1)` 用本地 helper、`mglMarkStateDirtyBits`/`fbo->dirty_bits` 直接用 C）。
+**④ 收尾**：删两个方法 + `MGLRenderer+Draw_Private.h` 声明，`mgl_draw_metal_port.m` 两处调用点改成 `fn + ctx` 形式，
+然后 **`git rm MGL/src/MGLRenderer+DrawStageHost.m` → 文件 16 → 15**（该文件内已无其它方法）。
+**本轮不做改动**：可用上下文不足以在一次闭环内完成"3 个壳入口 + 新 C TU + block 改造 + 删文件 + 门禁/CTS/A/B"。
