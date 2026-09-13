@@ -379,6 +379,24 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 /* C entry point for the pipeline cache's blend setter: the cache object comes
  * from the state areas and the message stays in this Objective-C TU, so C never
  * needs a port for it. */
+/* Runs a C body with the Objective-C exception guard the renderer's cleanup
+ * paths always had.  Kept in the shell TU because @try/@catch has no C form. */
+int mglPlatformShellGuardedCall(void *renderer, const char *what,
+                                int (*body)(void *))
+{
+    if (!body) {
+        return 0;
+    }
+    @try {
+        return body(renderer);
+    } @catch (NSException *exception) {
+        fprintf(stderr, "MGL ERROR: Exception during %s: %s\n",
+                what ? what : "operation",
+                exception.description ? exception.description.UTF8String : "?");
+        return 0;
+    }
+}
+
 int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
                                           uint32_t index,
                                           const MGLRenderPipelineBlendState *blend)

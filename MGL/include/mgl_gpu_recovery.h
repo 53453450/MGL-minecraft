@@ -36,6 +36,15 @@ void mglRendererRecordGPUSuccess(void *renderer);
 void mglRendererClearProblematicGPUState(void *renderer);
 int mglRendererShouldSkipGPUOperations(void *renderer);
 
+/* Body (no exception guard) of the command-buffer cleanup; call it through
+ * mglPlatformShellGuardedCall() to keep the historical @try/@catch. */
+int mglRendererCleanupCommandBufferBody(void *renderer);
+
+/* Runs a C body with the Objective-C @try/@catch the cleanup paths always had
+ * (implemented in the shell TU).  Returns the body's result, or 0 when it threw. */
+int mglPlatformShellGuardedCall(void *renderer, const char *what,
+                                int (*body)(void *));
+
 #ifdef __cplusplus
 }
 #endif

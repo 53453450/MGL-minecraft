@@ -12,6 +12,7 @@
 
 #include "mgl_gpu_recovery.h"
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_sync.h"       /* MGL_COMMAND_BUFFER_STATUS_COMMITTED */
 #include "mgl_renderer_ports.h"
 #include "mgl_render.h"     /* mglRenderCommandRecovery* */
 
@@ -120,4 +121,37 @@ int mglRendererShouldSkipGPUOperations(void *renderer)
         mglRendererClearProblematicGPUState(renderer);
     }
     return decision.should_skip != 0;
+}
+
+/* Body of the former -[MGLRenderer cleanupCommandBuffer]; the @try/@catch that
+ * wrapped it is provided by mglPlatformShellGuardedCall(). */
+int mglRendererCleanupCommandBufferBody(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+    if (!cs) {
+        return 0;
+    }
+
+    MGLRenderCommandBufferState currentState = {0};
+    if (mglRenderCommandBufferOwnerHasState(cs->currentCommandBufferOwner,
+                                            &currentState)) {
+        if (currentState.status == MGL_COMMAND_BUFFER_STATUS_COMMITTED) {
+            /* Do not block indefinitely here; cleanup can be invoked on the
+             * render thread.  Command buffers retain resources until
+             * completion, so dropping the reference is safe. */
+            if (0) {   /* kMGLVerboseFrameLoopLogs is NO (MGLRenderer+RenderPass_Private.h) */
+                fprintf(stderr,
+                        "MGL INFO: cleanupCommandBuffer skipping blocking wait for committed command buffer\n");
+            }
+        }
+        mglRenderPassManagerDiscardCurrentCommandBuffer(renderer);
+    }
+
+    if (mglRenderEncoderOwnerHasCurrent(cs->currentRenderEncoderOwner) == 1) {
+        mglRenderPassManagerEndCurrentRenderEncoder(renderer);
+        mglRenderPassManagerClearCurrentRenderEncoder(renderer);
+    }
+    return 1;
 }

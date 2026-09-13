@@ -6982,13 +6982,13 @@ static GLenum mglPassthroughDeclType(
     if (preCommitState.has_error) {
         NSLog(@"MGL ERROR: Command buffer has error before commit: %s",
               mglRenderCommandBufferErrorDescription(&preCommitState));
-        [self cleanupCommandBuffer];
+        mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
         return;
     }
 
     if (![self validateMetalObjects]) {
         NSLog(@"MGL WARNING: GPU throttling active - skipping command buffer commit");
-        [self cleanupCommandBuffer];
+        mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
         return;
     }
 
@@ -7003,7 +7003,7 @@ static GLenum mglPassthroughDeclType(
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Command buffer commit failed in flushCommandBuffer: %@", exception);
         mglRendererRecordGPUError((__bridge void *)self);
-        [self cleanupCommandBuffer];
+        mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
     }
 
     if (!finish) {

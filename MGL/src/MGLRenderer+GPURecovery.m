@@ -96,33 +96,6 @@
 }
 
 
-- (void)cleanupCommandBuffer
-{
-    // PROPER FIX: Safe command buffer cleanup
-    @try {
-        MGLRenderCommandBufferState currentState = {0};
-        if (mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
-                &currentState)) {
-            if (currentState.status == MGL_COMMAND_BUFFER_STATUS_COMMITTED) {
-                // Do not block indefinitely here; cleanup can be invoked on the render thread.
-                // Command buffers retain resources until completion, so dropping the reference is safe.
-                if (kMGLVerboseFrameLoopLogs) {
-                    NSLog(@"MGL INFO: cleanupCommandBuffer skipping blocking wait for committed command buffer");
-                }
-            }
-            [_renderPassManager discardCurrentCommandBuffer];
-        }
-
-        if (mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner) == 1) {
-            [_renderPassManager endCurrentRenderEncoder];
-            [_renderPassManager clearCurrentRenderEncoder];
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: Exception during command buffer cleanup: %@", exception);
-    }
-}
 
 - (void)resetMetalState
 {

@@ -3588,7 +3588,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Critical drawable presentation failure: %@", exception);
             NSLog(@"MGL ERROR: Exception name: %@, reason: %@", [exception name], [exception reason]);
-            [self cleanupCommandBuffer];
+            mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
             return;
         }
 

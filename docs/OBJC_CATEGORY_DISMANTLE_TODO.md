@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,024**、ObjC 语法 **2,268 → 1,994**、词汇 **4,353 → 3,899**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,015**、ObjC 语法 **2,268 → 1,991**、词汇 **4,353 → 3,897**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2005,3 +2005,27 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      cache 的 `resetCaches` C 入口 + `_depthStencilState`/`_commandQueue`/`_isVirtualized` 三个值，
      `commitCommandBufferWithAGXRecovery:`(99) 需要 `commitCommandBufferTransaction`/`releaseDetachedCommandBufferIfOwned`
      两个入口 + guarded 语义；补完即可**整文件转 C → 文件 17 → 16**。
+
+82. **P0-1 第二十八刀：`@try/@catch` 交给壳的 guarded C 入口，`cleanupCommandBuffer` 转 C（**−27 行**）**：
+     ① **新增模式（可复用）**：Objective-C 异常语义没有 C 形式，于是把"守护"留在**唯一壳 TU**里，C 只提供裸体：
+     ```c
+     int mglPlatformShellGuardedCall(void *renderer, const char *what, int (*body)(void *));
+     ```
+     壳里是 `@try { return body(renderer); } @catch (NSException *e) { fprintf(stderr, "MGL ERROR: Exception during %s: %s\n", …); return 0; }`。
+     这样 `@try/@catch` 只出现在壳里，业务体是纯 C，且**不新增端口**（它是 C 入口，不是 renderer port）。
+     ② `-cleanupCommandBuffer`(27) → `mglRendererCleanupCommandBufferBody`（纯 C，用第 81 刀的 manager 入口
+     `Discard/End/Clear`），调用点（`+RenderPass.m` 3 处、`MGLRenderer.m` 1 处）统一写成
+     `mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody)`。
+     ③ **两处口径陷阱**：`MGL_COMMAND_BUFFER_STATUS_COMMITTED` 在 **`mgl_sync.h`**（不是 `mgl_render.h`）；
+     `kMGLVerboseFrameLoopLogs` 是 ObjC 私头里的 `static const BOOL = NO`，C 侧写成 `if (0)` 并注明来源
+     （**不要为了一个永远是 NO 的日志开关去把 ObjC 头拖进 C**）。
+     ④ **度量**：行数 **35,024 → 35,015**、语法 **1,994 → 1,991**、词汇 **3,899 → 3,897**；文件 17、shim 端口 13 不变；
+     `+GPURecovery.m` 剩余 **`validateMetalObjects`(75) · `resetMetalState`(35) · `commitCommandBufferWithAGXRecovery:`(99)**。
+     ⑤ **oracle**：旧库 = 提交 `48e652d` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀（轮次预算内最后几刀）：① `resetMetalState`(35)——需 cache 的 `resetCaches` C 入口（cache 对象已在 areas）
+     + `_depthStencilState`/`_commandQueue`/`_isVirtualized` 三个值（可照 `gpu_recovery_command_owner` 的"槽地址"模式）；
+     ② `commitCommandBufferWithAGXRecovery:`(99)——需 `commitCommandBufferTransaction` /
+     `releaseDetachedCommandBufferIfOwned` 两个 manager 入口 + `mglPlatformShellGuardedCall`；
+     ③ `validateMetalObjects`(75)——需 `_device`/`_commandQueue`/`_isVirtualized` 与 `[NSDate date]`（墙钟 helper 已有）、
+     `[self resetMetalState]`（C 化后即可）。**三项补完即可整文件转 C（文件 17 → 16）。**
