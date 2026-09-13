@@ -1181,7 +1181,8 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
 
 ### 0.09 goal 交接状态（2026-09-13 19:00 更新，**第 52 轮**，P0-1 第三十五刀后）
 
-- **tip（提交 `28b6885`）**：`objc_zero.sh`：**16** 个 `.m` / 空 TU **0** / **34,564** 行 / 语法 **1,973** / 词汇 **3,836**；
+- **tip（提交 `9dcbaee`，第 60 轮＝本轮次预算上限）**：`objc_zero.sh`：**16** 个 `.m` / 空 TU **0** / **34,396** 行 /
+  语法 **1,957** / 词汇 **3,836**；
   shim **13 端口 / 223 行 / 37 语法**（声明面＝实现面，无死声明）。
   基线对照：文件 53 → 16、行数 43,989 → 34,564（−21.4%）、语法 2,268 → 1,973（−13.0%）、
   词汇 4,353 → 3,836（−11.9%）、shim 43 → 13 端口（−70%）。
@@ -2456,3 +2457,21 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 仍建议按 §0.22 的直线计划推进——**第②步 `endRenderEncodingLocked`**（依赖已全部就绪：3 个 manager C 入口 + 壳守卫 + 第 38 刀刚转好的
 `mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer`，`_batching`/`_renderPassManager` 由 areas 覆盖），
 做完第③④步即可**删掉 `+DrawStageHost.m`（文件 16 → 15）**。
+
+### 0.24 第 60 轮（本轮次预算末轮）交接快照
+
+- **状态（提交 `9dcbaee`，工作区干净）**：`objc_zero.sh` = **16 个 `.m` / 空 TU 0 / 34,396 行 / 语法 1,957 / 词汇 3,836**；
+  shim **13 端口 / 223 行 / 37 语法**（声明面＝实现面，端口与平台壳同处 `MGLPlatformRendererShell.m` = 唯一壳 TU）。
+  复验：`make -j4 lib` **0 error**；`test-regression` **92/0/2**；`test_batch_icb: ok`；上一刀 CTS 七簇 diff 全空、A/B 确定性行逐行一致。
+- **相对基线（2026-09-12 @ `8e64afb`）**：文件 **53 → 16**（−37）、行数 **43,989 → 34,396**（−21.8%）、
+  语法 **2,268 → 1,957**（−13.7%）、词汇 **4,353 → 3,836**（−11.9%）、端口 **43 → 13**（−70%）。
+- **终态仍未达成**：要求 `MGL/` 内零 `.m`（至多一个平台壳 TU），现存 16 个 `.m`；目标**保持 active**，未标记完成。
+- **下一步（唯一推荐路线，§0.22 四步直线，依赖已全部就绪）**：
+  1. `endRenderEncodingLocked`（`+RenderPass.m`，≈91 行）→ C：用第 27 刀的 `mglRenderPassManager{End,Clear,Discard}…`、
+     壳的 `mglPlatformShellGuardedCall`（吃 `@try/@catch`）、第 38 刀的
+     `mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer`，`_batching`/`_renderPassManager.state` 走 areas；
+  2. MS 循环族（`+DrawStageHost.m` 26+39）→ C：block 换 `fn + ctx`，三个 `_mgl*` 私有 ivar 走"方法 + 壳转发"；
+  3. 删 `MGLRenderer+DrawStageHost.m` + 私有头声明 → **文件 16 → 15**；
+  4. 之后按 §0.19 表继续（`bindMTLTextureLocked:` → `MGLPipelineCache.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块）。
+- **不要碰的目标**（成本倒挂，已实测）：`syncResourceBindingsForContext:`（§0.23，前置 40 行的 `bindBufferSizeConstantsForRenderEncoder`）；
+  §0.20/§0.21 列出的访问器与一行转发；§0.18 里 §0.19/§0.20 已判定为假阳性的名字。
