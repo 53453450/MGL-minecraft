@@ -28,6 +28,7 @@
 #include "mgl_air_tess_abi.h"
 #include "mgl_draw_tess.h"
 #include "mgl_tess_texture.h"  /* mglTessEnsureTextureMetalData */
+#include "mgl_tess_compute_ops.h"  /* mglTessBindPointSizeParamsToComputeEncoder */
 #include "mgl_draw_issue.h"
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
@@ -208,36 +209,6 @@ static bool mglTessAppendComputeResourceOp(
     return true;
 }
 
-static bool mglTessAppendComputeBytesOp(
-    MGLRenderComputeExecutionPlan *plan,
-    NSMutableArray *temporaries,
-    const void *bytes,
-    size_t length,
-    size_t index)
-{
-    if (!plan || !temporaries || !bytes || length == 0u ||
-        length > UINT32_MAX) {
-        return false;
-    }
-    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
-        fprintf(stderr, "MGL TESS ERROR: compute bytes-binding overflow (%u)",
-              (unsigned)plan->binding_op_count);
-        return false;
-    }
-    NSData *storage = [NSData dataWithBytes:bytes length:length];
-    if (!storage) return false;
-    [temporaries addObject:storage];
-    plan->binding_ops[plan->binding_op_count++] =
-        (MGLRenderComputeBindingOp){
-            .kind = 1u,
-            .index = (uint32_t)index,
-            .offset = 0u,
-            .buffer = NULL,
-            .bytes = storage.bytes,
-            .length = (uint32_t)length,
-        };
-    return true;
-}
 
 static bool mglTessPlanBufferOrBind(
     MGLRenderComputeExecutionPlan *plan,
@@ -615,32 +586,6 @@ typedef struct {
 }
 
 
-- (void)bindPointSizeParamsToComputeEncoder:(id)computeEncoder
-                                    program:(Program *)program
-                                      stage:(int)stage
-                              executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
-                               temporaries:(NSMutableArray *)temporaries
-{
-    MGL_ASSERT_GL_THREAD();
-    (void)computeEncoder;
-    if (!executionPlan || !program ||
-        stage < 0 || stage >= _MAX_SHADER_TYPES) {
-        return;
-    }
-    if (!program->uses_point_size_params) {
-        return;
-    }
-    float pointSizeParams[2] = {0.f, 0.f};
-    mglTessFillPointSizeParams(
-        ctx && MGL_STATE(ctx)->var.point_size > 0.0f
-            ? MGL_STATE(ctx)->var.point_size
-            : 0.0f,
-        ctx && MGL_STATE(ctx)->caps.program_point_size ? 1 : 0,
-        pointSizeParams);
-    (void)mglTessAppendComputeBytesOp(
-        executionPlan, temporaries, pointSizeParams,
-        sizeof(pointSizeParams), kMGLPointSizeParamBufferIndex);
-}
 
 - (BOOL)planTessTextureBinds:(const MGLTessTextureBind *)binds
                        count:(uint32_t)count
@@ -1217,11 +1162,11 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    [self bindPointSizeParamsToComputeEncoder:computeEncoder
-                                      program:tcsProgram
-                                        stage:_TESS_CONTROL_SHADER
-                                executionPlan:&executionPlan
-                                 temporaries:executionTemporaries];
+    mglTessBindPointSizeParamsToComputeEncoder((__bridge void *)self,
+                                               tcsProgram,
+                                               _TESS_CONTROL_SHADER,
+                                               &executionPlan,
+                                               (__bridge void *)executionTemporaries);
 
     MGLTessTCSCoreLayout tcsLayout;
     if (!mglTessComputeTCSCoreLayout(tcsProgram, contract, &tcsLayout)) {
@@ -1609,11 +1554,11 @@ static size_t mglTESXFBVertexStride(const Program *program)
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    [self bindPointSizeParamsToComputeEncoder:computeEncoder
-                                      program:tesProgram
-                                        stage:_TESS_EVALUATION_SHADER
-                                executionPlan:&executionPlan
-                                 temporaries:executionTemporaries];
+    mglTessBindPointSizeParamsToComputeEncoder((__bridge void *)self,
+                                               tesProgram,
+                                               _TESS_EVALUATION_SHADER,
+                                               &executionPlan,
+                                               (__bridge void *)executionTemporaries);
 
 
     /* Transform-feedback stream (slot 31): the kernel writes complete stage
