@@ -1924,7 +1924,7 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      建议先转 `endRenderEncodingLocked`（`+RenderPass.m:5060`，约 60 行，OBjC 成分是 `_batching`/`_renderPassManager` 两个
      areas 已覆盖的状态 + 日志），转换后 `bindMTLTextureLocked:` 的依赖表就少一项；每转一项立刻编译 + A/B。
 
-### 0.13 余下 17 个 `.m` 的"依赖深度"复核（2026-09-13，第 35 轮；**修正第 78 条的乐观估计**）
+### 0.13 余下 `.m` 的"依赖深度"复核（2026-09-13；**第 43 轮更新：现为 16 个**）
 
 第 78 条建议的下一刀是 `endRenderEncodingLocked`（`+RenderPass.m:5060`，约 91 行）。本轮**先把依赖逐条列出**，结论是
 **它不能单独转 C**，需要先补 4 个前置：
@@ -2100,3 +2100,42 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：按 §0.12/§0.13 继续挑薄文件——`+DrawStageHost.m`(≈217，余 4 方法，含 block 与 `self->ctx` 写)、
      `+SwapDiagnostics.m`(556，2 方法)、`+Binding.m`(431，`bindMTLTextureLocked:` 339 + `syncResourceBindings…` 27)、
      `MGLPipelineCache.m`(446)、`MGLRenderPassManager.m`(≈500)；最后是 `mgl_draw_metal_port.m`(1,973, 0 方法) 与三厚块。
+
+### 0.14 私有 ivar 的三种可达方式（第 83–85 刀固化；**下一阶段最重要的规则**）
+
+把方法体搬进 C 时，最先撞上的不是算法而是"renderer 的 ivar 拿不到"。实测有三种，按代价从低到高：
+
+| 情形 | 做法 | 例 |
+|---|---|---|
+| ivar **在头文件里可见**（`_core` / `_backend` / `_ctx` / `_batching` / `_pipelineCache` / `_gpuRecovery` / `_tessellation` / `_bindingStateOwner` / `_resourceFallback`） | **加进 `MGLRendererStateAreas`**（值或"槽地址"）——**加字段不算新端口** | 第 73、80 刀 |
+| ivar **只在类体内可见**（`_device` / `_commandQueue` / `_isVirtualized` / `_mglInMSSampleDrawLoop` 等） | **方法 + 壳转发**：在 `MGLRenderer.m` 加一个方法（方法体里 `_device` 合法），壳 TU 加一个 **C 入口**转发消息（C 入口不是端口） | 第 83–85 刀 |
+| 需要 `@try/@catch/@finally` | **壳提供的守卫**：`mglPlatformShellGuardedCall(renderer, what, body)` 与带 ctx/finally 的 `mglPlatformShellGuardedCallCtx(...)`；业务体保持纯 C | 第 82、85 刀 |
+
+**每次搬完必须做的事**：① 立刻 `make -j4 lib`（clang 是唯一裁判）；② 跑 `/private/tmp/run_ab<N>.sh {new,old}` + `ab_full.py`（真旧库、`cmp` 校验）；
+③ CTS 七簇 diff；④ `bash scripts/objc_zero.sh` 记数；⑤ 只 `git add` 自己的路径。**反例警告**：不要用"裸名字出现次数"当 liveness 证据
+（第 71/77 条各踩一次）；死方法一律用 `scripts/objc_dead_methods.py` 判定。
+
+### 0.15 当前 16 个 `.m`（第 43 轮实测）与建议顺序
+
+| 文件 | 行数 | 备注 |
+|---|---|---|
+| `MGLRenderer+RenderPass.m` | ~7.1k | 三厚块之一；`processGLStateLocked:` 是最大单块 |
+| `MGLRenderer+Texture.m` | ~6.4k | 三厚块之一 |
+| `MGLRenderer.m` | ~4.7k | 仍持 `mglRenderer*` C 桥与少量内部方法；**现在是"方法+壳转发"的落点** |
+| `MGLRenderer+Blit.m` | ~4.0k | 三厚块之一 |
+| `MGLRenderer+BindingState.m` | ~2.9k | 编码器绑定族（对应 shim 4 个端口） |
+| `MGLRenderer+Tessellation.m` | ~2.2k | tess 捕获/描述符残留 |
+| `mgl_draw_metal_port.m` | ~1.97k | **0 方法**，纯 host-ops 适配；最后阶段 |
+| `MGLRenderer+Compute.m` | ~1.2k | 计算路径 |
+| `MGLRenderer+Buffer.m` | ~0.8k | `mapGLBuffersToMTLBufferMap:stage:` 链 |
+| `MGLRenderer+Lifecycle.m` | ~0.66k | T5 第二步候选（KVO/通知回调必须保留） |
+| `MGLRenderer+SwapDiagnostics.m` | ~0.56k | 2 方法，均在 swap 路径 |
+| `MGLRenderPassManager.m` | ~0.50k | manager 类（`_state` 已 C 化） |
+| `MGLRenderer+Binding.m` | ~0.43k | 余 `bindMTLTextureLocked:` 339 + `syncResourceBindings…` 27 |
+| `MGLPipelineCache.m` | ~0.45k | cache 类，方法多为 `mglRender*PipelineCacheOwner*` 转发 |
+| `MGLRenderer+DrawStageHost.m` | ~0.22k | 余 4 方法：MS 循环族（block）、`runVertexCaptureSession:`（写 `self->ctx`）、`bindCullDistanceEmulationBuffers:` |
+| `MGLPlatformRendererShell.m` | ~0.51k | **唯一壳 TU**：平台壳 + 13 端口 + 各 guarded/转发 C 入口 |
+
+> **建议顺序**：`+DrawStageHost.m`（最小、4 方法）→ `+Binding.m` 的 `syncResourceBindingsForContext:` → `MGLPipelineCache.m`
+> → `MGLRenderPassManager.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块（`+Compute`/`+Buffer`/`+BindingState`/`+Tessellation`
+> 在过程中顺带收）。每一步都按 §0.14 的三条路线取最短路径。
