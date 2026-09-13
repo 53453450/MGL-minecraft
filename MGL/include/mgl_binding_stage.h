@@ -36,6 +36,23 @@
 extern "C" {
 #endif
 
+/* === Stage copy-back list ==============================================
+ * Moved here from the Objective-C MGLRenderer_State.h: the C compute binder
+ * fills the list and hands it to the renderer's copy-back entries, so the
+ * record has to be C.  NSUInteger is `unsigned long` on the 64-bit targets MGL
+ * builds for, i.e. the same type as the size_t used here. */
+typedef struct {
+    void *temporary;
+    void *destination;
+    struct Buffer_t *destination_buffer;
+    size_t destination_offset;
+    size_t length;
+} MGLStageBindingCopyBack;
+
+typedef struct {
+    MGLStageBindingCopyBack slots[31 /* kMGLMaxBufferSlots */];
+} MGLStageBindingCopyBackList;
+
 /* ---- Stage-bind helpers (ex-mgl_render.cpp; same mglRender* names) ---- */
 
 int mglRenderUseInlineFragmentBytes(int is_base_binding, int64_t size);

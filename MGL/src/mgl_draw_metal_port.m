@@ -18,6 +18,7 @@
 
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_compute_bind.h"    /* compute buffer binding (was a method pair) */
 #include "mgl_size_constants.h"  /* runtime-array size constants (was a method) */
 #include "mgl_draw_support.h"
 #include "mgl_ms_sample_loop.h"
@@ -959,35 +960,36 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
     (void)ctx;
     if (temporaries_out) *temporaries_out = NULL;
     MGLStageBindingCopyBackList stageCopyBacks = {0};
-    NSMutableArray *temps = [NSMutableArray array];
+    void *temps = mglRendererTemporariesCreate();
     void *compute = NULL;
-    bool buffersOK = [self bindBuffersToComputeEncoder:(__bridge id)compute
-                                                   stage:_GEOMETRY_SHADER
-                                               copyBacks:&stageCopyBacks
-                                           executionPlan:plan
-                                            temporaries:temps];
+    bool buffersOK = mglComputeBindBuffersToEncoder(
+        renderer, _GEOMETRY_SHADER, compute, &stageCopyBacks, plan, temps);
     bool texturesOK = buffersOK && [self bindTexturesToComputeEncoder:(__bridge id)compute
                                                                 stage:_GEOMETRY_SHADER
                                                         executionPlan:plan
-                                                         temporaries:temps];
+                                                         temporaries:(__bridge NSMutableArray *)temps];
     if (!buffersOK || !texturesOK) {
         if (compute) mglDrawSupportEndComputeEncoder(compute);
-        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        mglRendererClearStageBindingCopyBacksPort(renderer, &stageCopyBacks);
+        mglRendererTemporariesRelease(temps);
         return 0;
     }
     uint32_t n = mglRenderCollectCopyBackEntries(
         (const MGLRenderCopyBackEntry *)stageCopyBacks.slots,
         kMGLMaxBufferSlots, copybacks, copybacks_cap);
     *copybacks_count = n;
-    [self clearStageBindingCopyBacks:&stageCopyBacks];
+    mglRendererClearStageBindingCopyBacksPort(renderer, &stageCopyBacks);
     /* The plan only stores borrowed MTL pointers, and this function returns
      * before the C++ side encodes/dispatches it.  Hand the keep-alive set back
-     * as a +1 CF reference so the caller can hold it across the encode; ARC
-     * would otherwise drop `temps` (and every temporary it retains) here, and
-     * setBuffer: would retain a deallocated buffer (EXC_BAD_ACCESS /
-     * "message sent to deallocated instance"). */
-    if (temporaries_out && temps.count) {
-        *temporaries_out = (__bridge_retained void *)temps;
+     * as a +1 reference so the caller can hold it across the encode; releasing
+     * it here would drop every temporary it retains, and setBuffer: would then
+     * retain a deallocated buffer (EXC_BAD_ACCESS / "message sent to
+     * deallocated instance").  (The Objective-C version used an
+     * NSMutableArray here; the C entry hands back the same +1 shape.) */
+    if (temporaries_out) {
+        *temporaries_out = temps;
+    } else {
+        mglRendererTemporariesRelease(temps);
     }
     return 1;
 }

@@ -40,23 +40,15 @@
 #import "mgl_trace_strategy.h"
 
 #include "mgl_buffer_slots.h"   /* kMGLMaxBufferSlots */
+#include "mgl_binding_stage.h"  /* MGLStageBindingCopyBackList */
 #include "mgl_batching_state.h" /* MGLBatchingState */
 #include "mgl_renderer_core_state.h" /* MGLRendererCoreState */
 
 /* The drawable index enum moved to the C-safe mgl_renderer_core_state.h
  * (the core state sizes its drawBuffers array with _MAX_DRAW_BUFFERS). */
 
-typedef struct {
-    void *temporary;
-    void *destination;
-    Buffer *destination_buffer;
-    NSUInteger destination_offset;
-    NSUInteger length;
-} MGLStageBindingCopyBack;
-
-typedef struct {
-    MGLStageBindingCopyBack slots[kMGLMaxBufferSlots];
-} MGLStageBindingCopyBackList;
+/* MGLStageBindingCopyBack / MGLStageBindingCopyBackList moved to the C-safe
+ * mgl_binding_stage.h (the C compute binder fills the list). */
 
 /* MGLDrawable and MGLRendererCoreState moved to the C-safe
  * mgl_renderer_core_state.h (with the dual-proxy helpers). */

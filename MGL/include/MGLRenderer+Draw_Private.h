@@ -330,14 +330,6 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
                                       outputPrimitive:(uint32_t)outputPrimitive;
 - (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program;
-- (bool)bindBuffersToComputeEncoder:(id)encoder
-                               stage:(int)stage
-                           copyBacks:(MGLStageBindingCopyBackList *)copyBacks;
-- (bool)bindBuffersToComputeEncoder:(id)encoder
-                               stage:(int)stage
-                           copyBacks:(MGLStageBindingCopyBackList *)copyBacks
-                       executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
-                        temporaries:(NSMutableArray *)temporaries;
 - (bool)bindTexturesToComputeEncoder:(id)encoder
                                 stage:(int)stage;
 - (bool)bindTexturesToComputeEncoder:(id)encoder
