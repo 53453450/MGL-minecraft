@@ -2327,3 +2327,21 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      ⑤ **本轮结论（重要）**：**死代码这条线已接近枯竭**——剩下的候选全部落在上述五类里。后续必须转回**结构性**路线（§0.19 表），
      即"手工搬方法体 + areas 字段/方法+壳转发/守卫"三件套；详见 §0.14 与 §0.17 的配方。
+
+### 0.20 "廉价结构刀"也已枯竭（第 54 轮扫描结论）
+
+对剩余 16 个 `.m` 做了一次"≤15 行 + 无消息发送 + 无 `id`/`__bridge`/block"的扫描，命中 34 个方法，但**全部属于"不值得单独动刀"的两类**：
+
+1. **访问器**（4–9 行）：`isBinaryArchiveEnabled` / `mglSwapInterval` / `mglDrawableTexture` / `mglHasMetalLayer` /
+   `mglMetalLayerDrawableSize` / `mglMetalLayerFrame` / `setRuntimeContext:` / `hasLastSubmittedCommandBuffer` /
+   `waitForLastSubmittedCommandBuffer:` / `resetMDIScratch` / `clearFboMatchCache` / `endCommandBufferCommit` / `dealloc` 等
+   —— 它们多是属性访问或由框架调用，**删不得**（§0.20 第 90 条五类），转换也无收益（4 行换成 4 行 + 调用点改动）。
+2. **一行的 C 转发**（4–15 行）：`checkForDirtyBufferData:` / `updateDirtyBaseBufferList:` / `updateDirtyBuffer:` /
+   `commitCommandBufferTransaction:` / `releaseDetachedCommandBufferIfOwned:` / `clearStageBindingCopyBack(s)` 等
+   —— 体本身已是"一次 C 调用"，但**调用点都是 ObjC 发送**，逐个改直调是纯 churn（行数不降、语法不降），
+   收益要等它们所在的整块逻辑一起下沉时才能兑现。
+
+**结论**：至此**两种"低垂果实"（死代码 / 小方法）都已摘完**。后续必须做**整块搬迁**——即 §0.19 表里的
+`+DrawStageHost.m` 剩余 3 方法（85/26/39 行）、`bindMTLTextureLocked:`(339)、`MGLPipelineCache.m`(446)、
+`+SwapDiagnostics.m`(556)、`mgl_draw_metal_port.m`(1,973) 与三厚块；这些都需要"手工逐段搬 + 每段编译 + 整轮 A/B/CTS"，
+**建议在上下文充裕的新会话里成批推进**，并严格按 §0.14 的三种路线与 §0.17 的配方执行。
