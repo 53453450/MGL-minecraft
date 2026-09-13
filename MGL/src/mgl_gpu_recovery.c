@@ -12,7 +12,8 @@
 
 #include "mgl_gpu_recovery.h"
 #include "mgl_render_pass_manager_ops.h"
-#include "mgl_sync.h"       /* MGL_COMMAND_BUFFER_STATUS_COMMITTED */
+#include "mgl_sync.h"
+#include "mgl_thread_affinity.h"   /* MGL_ASSERT_GL_THREAD */       /* MGL_COMMAND_BUFFER_STATUS_COMMITTED */
 #include "mgl_renderer_ports.h"
 #include "mgl_render.h"     /* mglRenderCommandRecovery* */
 
@@ -154,4 +155,33 @@ int mglRendererCleanupCommandBufferBody(void *renderer)
         mglRenderPassManagerClearCurrentRenderEncoder(renderer);
     }
     return 1;
+}
+
+void mglRendererResetMetalState(void *renderer)
+{
+    MGL_ASSERT_GL_THREAD();
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    fprintf(stderr, "MGL INFO: Performing full Metal state reset for AGX recovery\n");
+
+    /* Runs on the GL calling thread (frame-boundary drain in mtlSwapBuffers or
+     * GL-layer error paths), so this is not a cross-thread reset. */
+    (void)mglPlatformShellGuardedCall(renderer, "command buffer cleanup",
+                                      mglRendererCleanupCommandBufferBody);
+
+    fprintf(stderr,
+            "MGL AGX RECOVERY: Recreating command queue to clear GPU error state\n");
+    if (!mglPlatformShellRecreateCommandQueue(renderer)) {
+        fprintf(stderr,
+                "MGL CRITICAL: Failed to recreate command queue during AGX recovery\n");
+    } else {
+        fprintf(stderr, "MGL AGX RECOVERY: Command queue successfully recreated\n");
+    }
+
+    (void)mglPipelineCacheResetCaches(areas.pipeline_cache_object);
+
+    mglRendererClearTextureCache();
+
+    fprintf(stderr, "MGL INFO: AGX Metal state reset completed\n");
 }

@@ -40,6 +40,19 @@ int mglRendererShouldSkipGPUOperations(void *renderer);
  * mglPlatformShellGuardedCall() to keep the historical @try/@catch. */
 int mglRendererCleanupCommandBufferBody(void *renderer);
 
+/* Full Metal state reset for AGX recovery (cleanup, queue recreation, cache
+ * reset). */
+void mglRendererResetMetalState(void *renderer);
+
+/* Recreates the renderer's command queue through the backend; returns 1 when a
+ * queue is present afterwards (implemented in the shell TU, which forwards to
+ * -[MGLRenderer mglRecreateCommandQueue]). */
+int mglPlatformShellRecreateCommandQueue(void *renderer);
+
+/* Resets the pipeline cache's caches; the cache object comes from the state
+ * areas (implemented in the shell TU). */
+int mglPipelineCacheResetCaches(void *pipeline_cache_object);
+
 /* Runs a C body with the Objective-C @try/@catch the cleanup paths always had
  * (implemented in the shell TU).  Returns the body's result, or 0 when it threw. */
 int mglPlatformShellGuardedCall(void *renderer, const char *what,

@@ -38,10 +38,14 @@
 
 @interface MGLRenderer ()
 
+/* AGX recovery: recreate the command queue (implemented in MGLRenderer.m). */
+- (int)mglRecreateCommandQueue;
+
+
 - (BOOL)validateMetalObjects;
 /* now the C functions in mgl_gpu_recovery.h */
 - (void)cleanupCommandBuffer;
-- (void)resetMetalState;
+/* now the C function mglRendererResetMetalState (mgl_gpu_recovery.h) */
 - (void)emergencyResetMetalState;
 - (void)commitCommandBufferWithAGXRecovery:(id)commandBuffer;
 /* now the C functions in mgl_gpu_recovery.h */

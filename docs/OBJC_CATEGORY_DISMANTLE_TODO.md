@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,015**、ObjC 语法 **2,268 → 1,991**、词汇 **4,353 → 3,897**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,014**、ObjC 语法 **2,268 → 1,993**、词汇 **4,353 → 3,893**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2035,3 +2035,26 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      `releaseDetachedCommandBufferIfOwned` 两个 manager 入口 + `mglPlatformShellGuardedCall`；
      ③ `validateMetalObjects`(75)——需 `_device`/`_commandQueue`/`_isVirtualized` 与 `[NSDate date]`（墙钟 helper 已有）、
      `[self resetMetalState]`（C 化后即可）。**三项补完即可整文件转 C（文件 17 → 16）。**
+
+83. **P0-1 第二十九刀：`resetMetalState` 转 C（**行数 −1 / 词汇 −4，语法 +2，如实记账**）**：
+     ① **上一轮那次失败的正确解法**：`resetMetalState` 需要"重建命令队列后回读 `_commandQueue`"。第 40 轮试图用 areas 槽地址读它，
+     失败原因是 **`_commandQueue` / `_backend` 这些 ivar 只对"类体内的代码"可见**（方法里的 `_backend` 是 `self->_backend`），
+     **不是 `@public`**，所以 C 侧 `r->_backend` 根本无法编译。本刀改用**方法 + 壳转发**：
+     - `MGLRenderer.m` 加 `- (int)mglRecreateCommandQueue`（体里用 `_backend` / `_commandQueue`，方法体内合法），
+       声明放进 `MGLRenderer+GPURecovery_Private.h`；
+     - 壳 TU 加 C 入口 `mglPlatformShellRecreateCommandQueue(void *)`（壳是 ObjC，可以发消息）——
+       **C 入口不是端口，端口计数不变**；
+     - `mglRendererResetMetalState`（`mgl_gpu_recovery.c`）用 `mglPlatformShellGuardedCall` 跑 cleanup 体、
+       用上面的壳入口重建队列、用 `mglPipelineCacheResetCaches`（壳里新加的 C 入口，cache 对象来自 areas）复位 cache、
+       再调已有的 `mglRendererClearTextureCache`；`NSLog` → `fprintf`。
+     ② 三个调用点（`+RenderPass.m` 3、`+GPURecovery.m` 1）改直调；`+GPURecovery.m` 私有头声明注释化。
+     **`+GPURecovery.m` 只剩 2 个方法**：`validateMetalObjects`(75) 与 `commitCommandBufferWithAGXRecovery:`(99)。
+     ③ **度量（如实）**：行数 **35,015 → 35,014**、语法 **1,991 → 1,993（+2）**、词汇 **3,897 → 3,893**。
+     语法上升是因为"方法 + 壳转发"两条 ObjC 声明/发送抵掉了被删的 35 行方法体里的大部分语法——**不宣称语法收益**，
+     本刀价值在于把业务体搬进 C、并把 `_commandQueue` 的可见性陷阱固化下来。
+     ④ **oracle**：旧库 = 提交 `6a2dcec` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：`+GPURecovery.m` 收口最后两个方法——`commitCommandBufferWithAGXRecovery:`(99) 需 manager 的
+     `commitCommandBufferTransaction` / `releaseDetachedCommandBufferIfOwned` 两个 C 入口 + `mglPlatformShellGuardedCall`；
+     `validateMetalObjects`(75) 需 `_device`/`_isVirtualized` 的**方法+壳转发**式入口（照本刀模式，不要再用 areas 槽地址）与
+     C 化的 `mglRendererResetMetalState`（本刀已具备）。补完即可**整文件转 C → 文件 17 → 16**。

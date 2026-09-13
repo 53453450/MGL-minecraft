@@ -379,6 +379,26 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 /* C entry point for the pipeline cache's blend setter: the cache object comes
  * from the state areas and the message stays in this Objective-C TU, so C never
  * needs a port for it. */
+/* C entry point for the AGX queue recreation: the method lives in
+ * MGLRenderer.m where the queue ivar is visible. */
+int mglPlatformShellRecreateCommandQueue(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? [r mglRecreateCommandQueue] : 0;
+}
+
+/* C entry point for the pipeline cache's cache reset (same shape as the blend
+ * setter: the cache object travels in the state areas). */
+int mglPipelineCacheResetCaches(void *pipeline_cache_object)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache) {
+        return 0;
+    }
+    [cache resetCaches];
+    return 1;
+}
+
 /* Runs a C body with the Objective-C exception guard the renderer's cleanup
  * paths always had.  Kept in the shell TU because @try/@catch has no C form. */
 int mglPlatformShellGuardedCall(void *renderer, const char *what,

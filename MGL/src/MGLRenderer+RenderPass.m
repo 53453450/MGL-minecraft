@@ -4228,7 +4228,7 @@ static GLenum mglPassthroughDeclType(
         // AGX DRIVER COMPATIBILITY: Validate command queue health before creating buffer
         if (!_commandQueue) {
             NSLog(@"MGL AGX ERROR: Command queue is NULL - recreating");
-            [self resetMetalState];
+            mglRendererResetMetalState((__bridge void *)self);
             if (!_commandQueue) {
                 NSLog(@"MGL AGX CRITICAL: Cannot recreate command queue");
                 return false;
@@ -4246,7 +4246,7 @@ static GLenum mglPassthroughDeclType(
             NSLog(@"MGL AGX ERROR: Failed to create Metal command buffer - command queue may be in error state");
             mglRendererRecordGPUError((__bridge void *)self);
             // Force command queue recreation
-            [self resetMetalState];
+            mglRendererResetMetalState((__bridge void *)self);
             return false;
         }
 
@@ -4273,7 +4273,7 @@ static GLenum mglPassthroughDeclType(
             NSLog(@"MGL AGX CRITICAL: Command buffer immediately in error state");
             mglRendererRecordGPUError((__bridge void *)self);
             [_renderPassManager discardCurrentCommandBuffer];
-            [self resetMetalState]; // Force full reset
+            mglRendererResetMetalState((__bridge void *)self); // Force full reset
             return false;
         }
 
@@ -4287,14 +4287,14 @@ static GLenum mglPassthroughDeclType(
                   mglRenderCommandBufferErrorDescription(&initialState));
             mglRendererRecordGPUError((__bridge void *)self);
             [_renderPassManager discardCurrentCommandBuffer];
-            [self resetMetalState];
+            mglRendererResetMetalState((__bridge void *)self);
             return false;
         }
 
         // Validate command queue health
         if (!_commandQueue) {
             NSLog(@"MGL AGX CRITICAL: Command queue became NULL");
-            [self resetMetalState];
+            mglRendererResetMetalState((__bridge void *)self);
             return false;
         }
 
@@ -4307,7 +4307,7 @@ static GLenum mglPassthroughDeclType(
         [_renderPassManager discardCurrentCommandBuffer];
 
         // AGX DRIVER COMPATIBILITY: Force reset on exception to clear driver state
-        [self resetMetalState];
+        mglRendererResetMetalState((__bridge void *)self);
         return false;
     }
 

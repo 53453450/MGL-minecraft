@@ -3453,7 +3453,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
                                   memory_order_release);
         }
         if (atomic_exchange_explicit(&_deviceResetRequested, false, memory_order_acquire)) {
-            [self resetMetalState];
+            mglRendererResetMetalState((__bridge void *)self);
         }
 
         if (![self ensureWritableCommandBufferLocked:"mtlSwapBuffers"]) {
@@ -3733,6 +3733,20 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
  * MGLRenderer+SwapDiagnostics.m */
 
 #pragma mark C interface to mtlClearBuffer
+/* AGX recovery: recreate the command queue through the backend and report
+ * whether the renderer now holds one.  A method rather than a C function because
+ * the queue and backend ivars are not visible outside the class body; the shell
+ * TU exposes it to C as mglPlatformShellRecreateCommandQueue(). */
+- (int)mglRecreateCommandQueue
+{
+    if (!_backend) {
+        return 0;
+    }
+    void *commandQueue = NULL;
+    (void)mglRendererBackendResetCommandQueue(_backend, 0u, &commandQueue);
+    return _commandQueue != nil ? 1 : 0;
+}
+
 void mglRendererClearBuffer(GLMContext glm_ctx,
                                   unsigned int type,
                                   unsigned int mask)

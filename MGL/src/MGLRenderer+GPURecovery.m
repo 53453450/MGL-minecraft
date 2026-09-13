@@ -60,7 +60,7 @@
                     NSLog(@"MGL CRITICAL: GPU error threshold exceeded - throttling operations for %.1f seconds", throttleWindow);
 
                     // Force a reset and temporary pause
-                    [self resetMetalState];
+                    mglRendererResetMetalState((__bridge void *)self);
 
                     // Reset counter after pause
                     if (currentTime - lastErrorTime > throttleWindow) {
@@ -97,41 +97,6 @@
 
 
 
-- (void)resetMetalState
-{
-    // PROPER FIX: Full Metal state reset for AGX driver recovery
-    NSLog(@"MGL INFO: Performing full Metal state reset for AGX recovery");
-
-    /* Runs on the GL calling thread (frame-boundary drain in mtlSwapBuffers
-     * or GL-layer error paths).  With the recovery path removed from the
-     * main queue this is no longer a cross-thread reset. */
-    METAL_LOCK();
-
-    [self cleanupCommandBuffer];
-
-    // CRITICAL: Recreate command queue to clear AGX driver error state
-    NSLog(@"MGL AGX RECOVERY: Recreating command queue to clear GPU error state");
-    void *commandQueue = NULL;
-    if (_backend) {
-        (void)mglRendererBackendResetCommandQueue(
-            _backend, 0u, &commandQueue);
-    }
-    if (!_commandQueue) {
-        NSLog(@"MGL CRITICAL: Failed to recreate command queue during AGX recovery");
-    } else {
-        NSLog(@"MGL AGX RECOVERY: Command queue successfully recreated");
-    }
-
-    [_pipelineCache resetCaches];
-    // Note: _depthStencilState would be an instance variable if it exists
-
-    // Clear all cached objects
-    mglRendererClearTextureCache();
-
-    NSLog(@"MGL INFO: AGX Metal state reset completed");
-
-    METAL_UNLOCK();
-}
 
 // AGX Driver Compatibility: Specialized command buffer commit with recovery
 - (void)commitCommandBufferWithAGXRecovery:(id)commandBuffer
