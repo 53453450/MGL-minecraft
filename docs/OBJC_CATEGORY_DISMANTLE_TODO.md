@@ -3085,3 +3085,32 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
      **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      ⑥ 下一刀：继续同一文件——剩下 58 语法是 **host 发送 + Foundation**（`NSMutableArray *temps`、capture 的 `NSString`、
      `[self bindBuffersToComputeEncoder:…]` 等），补 ~6 个 C 入口后即可把该文件整体改名 `.c`（**文件 9 → 8**）。
+
+### 0.33 第 76 轮交接（第 107 刀后：9 个文件 / 1,732 语法）与逐文件配方
+
+**状态**：文件 **9**（`+RenderPass.m` 6,842 / `+Texture.m` 6,489 / `MGLRenderer.m` 4,607 / `+Blit.m` 4,062 /
+`+BindingState.m` 2,916 / `+Tessellation.m` 2,101（`mgl_draw_metal_port.m` 2,014）/ 壳 1,756 / `+Compute.m` 1,246）；
+语法 1,732、词汇 3,575、行数 32,033；端口 15、壳 1,756 行（上限 1,800）。
+**本轮周期新增的三条纪律**（都已在前面的刀里踩过并修好，务必照做）：
+1. **删头文件 = 清 `.o`/`.d`**（第 101 条第③项）：否则 `make test-all` 报 `No rule to make target`。
+2. **并类入壳前查 ivar 宏冲突**（第 103 条第③项）：`MGLRenderer_Private.h` 有 `_view/_layer/_drawable/_device/_commandQueue…`
+   宏，自带同名 ivar 的类并进来会被宏吃掉（修法是改 ivar 名）。
+3. **去 `__bridge_retained` 前确认那份 `+1` 原本归谁**（第 107 条第②项）：局部持有（来自 create）→ 直接 `return` 等价；
+   底层只是借用 → 必须补 `CFRetain`（否则调用方的 `CFRelease` 会提前释放，典型症状是
+   `Command encoder released without endEncoding`）。
+
+**逐文件配方（按"下一步最省"排序）**：
+
+| 文件 | 剩余 ObjC 面 | 需要的前置 | 预计 |
+|---|---|---|---|
+| `mgl_draw_metal_port.m`（58 语法） | host 发送 ~25 处、`NSMutableArray *temps`、capture 的 `NSString`、`#import`×4 | 12–15 个 C 入口（`bindMTLProgram:` / `dispatchTessControlShader:` / `dispatchAIRTessEval{Compute,VertexRender}:` / `endRenderEncoding` / `ensureAIRGeometryPassthroughFunctionForProgram:` / `bindStorageImagesForVertexProgram:` / `bindBuffers,TexturesToComputeEncoder:` / `clearStageBindingCopyBack(s):` / `flushStageBindingCopyBacks:` / `isolatedStageBindingBufferForMap:` / `recordStageBindingCopyBack:` / `ensureRasterEncoderForDraw` / `prepareEmulatedIndirectCPURead:`）；`temps` 用 C 侧 retain 数组替换；capture 段整体挪进壳（它是 Cocoa 面） | **2 刀 → 文件 9 → 8** |
+| `MGLRenderer+Compute.m`（84 语法，11 方法） | 9 个 `id` 助手 + 11 个方法签名 + `[self …]`×24 | 与上一行**共用**同一批 C 入口（compute 绑定族互为调用方）；`MGLRenderComputeExecutionPlan` 的 `temporaries` 参数要换成 C 数组 | **2 刀 → 文件 8 → 7**（建议与上一行同批做，一次补桥接） |
+| `MGLPipelineCache` 类（在壳内，约 480 行 / 120 语法） | `NSFileManager`/`NSBundle`/`NSURL`/`NSSearchPath…` | C++ 侧 `mglRenderLoadPipelineCacheArchive` 改为**由 path 自建 `NS::URL`**（2 个函数），归档路径改 `getenv("HOME")/Library/Caches` + `CFBundleGetIdentifier`；**必须另起 oracle**：逐字比对两臂 `MGL BINARY ARCHIVE:` 行与归档文件名（A/B 会过滤这类行） | 2 刀 |
+| `MGLRenderer+Tessellation.m`（151 语法 / 11 方法） | 中块，依赖多在 C | 按簇搬（factor buffer/捕获/GS 桥） | 3 刀 |
+| `MGLRenderer+BindingState.m`（129 语法 / 17 方法） | 采样器级联 + stage copy-back | `materializeSampledSamplerForTexture:` 已是 ObjC 边界的最后一块 | 3 刀 |
+| `+Blit.m` / `MGLRenderer.m` / `+Texture.m` / `+RenderPass.m` | 235 / 168 / 289 / 385 语法 | 三厚块 + 主体类 | 各 4–6 刀 |
+
+**每刀不变的闭环**：手工逐段改 → 每段 `clang -fsyntax-only` → `make -j8`（两库）→ `make test-all`（需 `GATE=0`）→
+老库独立构建（`git worktree`，借 `config.mk`/`build/aux`/`external/glfw/build`，**永不 `make clean`**）→ `cmp` 两库不同 →
+`/private/tmp/run_ab<N>.sh {new,old}` + `ab_full.py`（**只认"去掉 `processGLState.slow` 后的逐行相等"**，并同时报 slow 计数）→
+CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日志、§0.2x/§0.3x 快照）→ 提交推送（`git push origin main:main`）。
