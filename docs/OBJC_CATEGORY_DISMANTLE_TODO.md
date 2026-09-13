@@ -48,11 +48,11 @@
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
-| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **31 / 446**） |
+| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **27 / 394**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十二切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 38,026**、ObjC 语法 **2,268 → 2,177**、词汇 **4,353 → 4,137**；
-**shim（T4 硬规的记账面）：43 → 31 个端口 / 511 → 446 行 / 81 → 69 语法（连续四刀端口净减 ✓）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 37,974**、ObjC 语法 **2,268 → 2,170**、词汇 **4,353 → 4,136**；
+**shim（T4 硬规的记账面）：43 → 27 个端口 / 511 → 394 行 / 81 → 62 语法；shim 内 ObjC 方法 5 → 1（连续五刀净减 ✓）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1187,3 +1187,27 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
   5. 继续 state-area 净减（`_core` / `_resourceFallback` / `_tessellation`）。
 - **纪律提醒**：每刀必须给 **shim wrapper 净减数字**（§0.04），并跑满 §0.2 的三套语料 + 该刀自己的 oracle；
   A/B 固定动作见第 51 条（清 `.d` → 构建 → `cmp` 两库 → 只取本轮日志）。
+
+54. **shim 净减第五刀：`MGLRendererCoreState` 与 dual-proxy 不变式转 C（**按 §0.04 达标**）**：
+    ① `MGLRendererCoreState`（`activeState` / capability 快照 / `drawBuffers[]` / `defaultDrawableWrittenSinceLastSwap` /
+    四个 `_Atomic` 交接通道）连同 `MGLDrawable` 与 `_FRONT.._MAX_DRAW_BUFFERS` 枚举从 ObjC 头
+    `MGLRenderer_State.h` 搬进新的 C 安全头 **`mgl_renderer_core_state.h`**（`BOOL`→`uint8_t`）。
+    ② **dual-proxy 不变式真正落到 C**：新 TU `mgl_renderer_core_state.c` 实现
+    `mglCoreActivateReplayState` / `mglCoreRestoreLiveActiveState` / `mglCoreAssertDualProxy`
+    （等价于原 `-mglActivateReplayStateForContext:` / `-mglRestoreLiveActiveStateForContext:` /
+    `-mglAssertDualProxyInSyncForContext:`：两次指针写 + replay 工作区 memcpy；断言语义保持"desync 即 abort"）。
+    ③ **净减账**：退掉 4 个端口（AssertDualProxy / ActivateReplayState / RestoreLiveActiveState / SetActiveState），
+    `MGLRendererStateAreas` 增加 `core` 字段（**不新增端口**）；**shim 内 ObjC 方法从 5 个减到 1 个**
+    （只剩 `flushDrawBuffer:` 锁壳）。度量：**shim 31 → 27 端口、446 → 394 行、69 → 62 语法**；
+    全仓行数 **38,026 → 37,974**、语法 **2,177 → 2,170**、词汇 **4,137 → 4,136**。
+    ④ **oracle**：trace 374/296 行、`MGL_MIP_DIAG` 529/212 条与旧库逐字段一致；回归 92/0/2、ICB 轮 82/10/2 相同；
+    CTS 七簇 diff 全空。dual-proxy 断言在每次 flush 上都跑，覆盖充分。
+    ⑤ **环境事故（已恢复，必须记录）**：为清 stale `.d` 我执行了 `make clean` —— 本机 **Metal toolchain 组件缺失**
+    （`cannot execute tool 'metal' due to missing Metal Toolchain`），`build/aux/*.metallib` 被删后无法重建，整个库构建中断。
+    **恢复办法**：用 `scripts/gen_aux_assets.py` 的**逆操作**从提交版 `MGL/src/mgl_aux_assets.c` 里把 7 个 metallib
+    逐字节还原到 `build/aux/`，并放置时间戳正确的空 `.air` 占位（避免触发 `metal`）；随后重跑生成器，**产出的
+    `mgl_aux_assets.c/h` 与提交版逐字节一致**（`git status` 干净）——这同时反证还原是精确的。
+    `build/aux/README-restored.txt` 写明占位风险：**改 `*.metal`/MANIFEST 前必须先删 `build/aux`**，否则会用到旧 metallib。
+    结论：**本机不要跑 `make clean`**（要清依赖用 `find build -name '*.d' -delete`，这也是 A/B 固定动作）。
+    剩余 shim 端口路线：`_resourceFallback` 其余字段、`_tessellation`（P0-1 下沉时并入）、`_bindingStateOwner`
+    已在 areas 内、`mglRendererCommandStatePort`/`BatchingStatePort` 可并入 areas（但调用点多，收益 −2）。
