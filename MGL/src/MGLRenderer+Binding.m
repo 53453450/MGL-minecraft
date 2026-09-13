@@ -18,6 +18,7 @@
 #include "mgl_render.h"
 #include "mgl_batch_issue.h"
 #include "mgl_texture_bind.h"
+#include "mgl_buffer_map.h"
 
 void mglRendererBindTexture(GLMContext glm_ctx,
                                   Texture *texture)
@@ -48,11 +49,11 @@ void mglRendererBindTexture(GLMContext glm_ctx,
 {
     GLMState *state = MGL_STATE(glm_ctx);
     if (!done || !done->mappedBuffers) {
-        RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+        RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL((__bridge void *)self));
     }
     if (!done || !done->updatedBaseLists) {
-        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]);
-        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
+        RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &state->vertex_buffer_map_list));
+        RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &state->fragment_buffer_map_list));
     }
     MGLEncodeContext encCtx = {
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,

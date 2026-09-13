@@ -18,6 +18,7 @@
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
+#include "mgl_buffer_map.h"  /* buffer mapping entries (was MGLRenderer+Buffer.m) */
 #include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
 #include "mgl_draw_tess.h"
 
@@ -233,13 +234,13 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     BufferMapList *bufferMap = mglRenderStageUsesComputeBufferMap(stage)
         ? &MGL_STATE(ctx)->compute_buffer_map_list : &localBufferMap;
     RETURN_FALSE_ON_FAILURE(
-        [self mapGLBuffersToMTLBufferMap:bufferMap stage:stage]);
+        mglRendererMapGLBuffersToMTLBufferMap((__bridge void *)self, bufferMap, stage));
 
     // dirty buffer covers all buffer modifications
     if (mglRenderHasDirtyBufferBit(MGL_STATE(ctx)->dirty_bits))
     {
         // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
-        [self updateDirtyBaseBufferList:bufferMap];
+        (void)mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, bufferMap);
 
         MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER;
     }
@@ -343,7 +344,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
              * not clear dirty_bits; leaving them set lets a later VBO bind
              * CoW-overlay the CPU shadow and wipe shader SSBO stores
              * (CTS advanced-write-geometry). */
-            if (![self updateDirtyBuffer:ptr]) {
+            if (!mglRendererUpdateDirtyBuffer((__bridge void *)self, ptr)) {
                 NSLog(@"MGL COMPUTE ERROR: dirty buffer update failed buffer=%u",
                       (unsigned)ptr->name);
                 MGL_CBIND_FLUSH_SNAPSHOT();

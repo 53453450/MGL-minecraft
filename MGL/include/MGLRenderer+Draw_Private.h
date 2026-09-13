@@ -274,7 +274,7 @@ typedef struct {
 
 // === Methods defined in MGLRenderer.m, called from MGLRenderer+Draw.m ===
 // getVertexBufferIndexWithAttributeSet: and floatVertexBufferFor*Attrib: are
-// now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
+// now the C entries of mgl_buffer_map.h (was MGLRenderer+Buffer.m).
 // Program reflection queries use the fixed mglRendererGetProgram* C ABI.
 /* fallbackSamplerState is now mglTextureFallbackSamplerState
  * (mgl_texture_sampler.h). */

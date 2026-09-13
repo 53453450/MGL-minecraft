@@ -154,7 +154,8 @@ int mglRendererUploadDirtyCPUTextureDataPort(void *renderer, Texture *tex,
 void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer);
 
 /* Binding-state push for the mapper fallback path. */
-int mglRendererMapBuffersToMTLPort(void *renderer);
+/* mglRendererMapBuffersToMTLPort is gone: the buffer mapping is the C function
+ * mglRendererMapBuffersToMTL (mgl_buffer_map.h). */
 int mglRendererBindVertexBuffersToCurrentRenderEncoderPort(void *renderer,
                                                            const void *encode_context);
 int mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(void *renderer,

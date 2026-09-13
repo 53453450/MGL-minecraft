@@ -272,12 +272,6 @@ int mglRendererProcessGLStatePort(void *renderer, int draw_command)
 
 
 
-int mglRendererMapBuffersToMTLPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r mapBuffersToMTL]) ? 1 : 0;
-}
-
 int mglRendererBindVertexBuffersToCurrentRenderEncoderPort(void *renderer,
                                                            const void *encode_context)
 {
@@ -317,7 +311,9 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
 
 
 /* The former mglRendererBindMTLTexturePort is gone: the body is the C function
- * mglRendererBindMTLTexture (mgl_texture_bind.h). */
+ * mglRendererBindMTLTexture (mgl_texture_bind.h), and so is
+ * mglRendererMapBuffersToMTLPort: mglRendererMapBuffersToMTL (mgl_buffer_map.h)
+ * replaced it. */
 
 
 /* === Texture materialization ports (mglRendererBindMTLTexture) ===========

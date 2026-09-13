@@ -249,7 +249,7 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
 }
 
 /* Methods called from MGLRenderer+Compute.m.
- * mapGLBuffersToMTLBufferMap:stage: now declared in MGLRenderer+Buffer_Private.h. */
+ * mapGLBuffersToMTLBufferMap:stage: is the C entry of mgl_buffer_map.h now. */
 - (id)isolatedStageBindingBufferForMap:(const BufferMap *)map
                                            source:(id)source
                                    requiredLength:(NSUInteger)requiredLength;
@@ -349,6 +349,5 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
 #import "MGLRenderer+Texture_Private.h"
 #import "MGLRenderer+Tessellation_Private.h"
 #import "MGLRenderer+Lifecycle_Private.h"
-#import "MGLRenderer+Buffer_Private.h"
 
 #endif /* MGLRenderer_Private_h */

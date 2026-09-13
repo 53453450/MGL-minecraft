@@ -141,7 +141,7 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 
 // === Methods defined in MGLRenderer.m, called from MGLRenderer+RenderPass.m ===
 // mapBuffersToMTL, updateDirtyBaseBufferList:, checkForDirtyBufferData: are
-// now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
+// now the C entries of mgl_buffer_map.h (was MGLRenderer+Buffer.m).
 - (id)createMTLTextureFromGLTexture:(Texture *)tex;
 - (id)createFallbackMTLTexture:(Texture *)tex;
 /* createMTLSamplerForTexParam:target: is now

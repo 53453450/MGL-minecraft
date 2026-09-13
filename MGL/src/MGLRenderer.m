@@ -56,6 +56,7 @@
 #import "MGLRenderer_Private.h"
 #include "mgl_blit_pipelines.h"
 #include "mgl_swap_diagnostics.h"  /* swap-time diagnostics (was the SwapDiagnostics category) */
+#include "mgl_buffer_map.h"  /* buffer mapping + frame-generation gates */
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_tess.h"
 #include "mgl_air_loader.h"

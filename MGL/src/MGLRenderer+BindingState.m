@@ -13,6 +13,7 @@
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_sampler.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_buffer_map.h"  /* buffer mapping entries (was MGLRenderer+Buffer.m) */
 #include "mgl_binding_state_ops.h"
 #include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Draw_Private.h"
@@ -357,7 +358,7 @@ static BOOL mglBindingStateEmitAttribBuffer(
             continue;
         }
 
-        int mappedIndex = [self getVertexBufferIndexWithAttributeSet:(int)attrib];
+        int mappedIndex = mglRendererGetVertexBufferIndexWithAttributeSet((__bridge void *)self, (int)attrib);
         if (mappedIndex < 0 || mappedIndex >= (int)kMGLMaxMetalVertexBufferCount) {
             NSLog(@"MGL ERROR: VBIND reserve attrib=%u unresolved mapping=%d", attrib, mappedIndex);
             continue;
@@ -679,15 +680,12 @@ static BOOL mglBindingStateEmitAttribBuffer(
             BOOL integerConvDstIsInt = mglRenderIntegerAttribDstIsInt(
                 convRes ? convRes->gl_type : 0u) != 0;
             NSUInteger convertedStride = 0;
-            id convertedBuffer =
-                [self convertedVertexBufferForAttribKind:ain.conversion_kind
-                                                  source:attribBuffer
-                                                resolved:&resolved
-                                                    size:attribState->size
-                                                    type:attribState->type
-                                              normalized:attribState->normalized
-                                               dstIsInt:integerConvDstIsInt
-                                               outStride:&convertedStride];
+            void *convertedBuffer =
+                mglBufferCreateConvertedVertexBufferForAttribKind(
+                    (__bridge void *)self, ain.conversion_kind,
+                    attribBuffer, &resolved, attribState->size,
+                    attribState->type, attribState->normalized,
+                    integerConvDstIsInt, &convertedStride);
             if (!convertedBuffer) {
                 NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert vertex attrib kind=%d type=0x%x",
                       attrib, attribBuffer->name, ain.conversion_kind,
@@ -698,9 +696,13 @@ static BOOL mglBindingStateEmitAttribBuffer(
             if (mglBindingStateEmitAttribBuffer(
                     _bindingStateOwner, encCtx, vattrSnapshot, vattrUseSnapshot,
                     &vattrScratchDummy, bindingIndex,
-                    (__bridge void *)convertedBuffer, 0, anyBindingPresent)) {
+                    convertedBuffer, 0, anyBindingPresent)) {
                 MGL_VATTR_FLUSH_SNAPSHOT();
             }
+            /* The conversion facade hands back a +1 retain; release it here the
+             * way ARC released the strong local (the encoder retains the
+             * buffer for the lifetime of the encoding). */
+            mglBufferReleaseConvertedVertexBuffer(convertedBuffer);
             continue;
         }
 
@@ -1151,7 +1153,7 @@ static BOOL mglBindingStateEmitAttribBuffer(
             if (!ptr->data.mtl_data) {
                 mglRendererBindMTLBuffer((__bridge void *)self, ptr);
             } else if (mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
-                [self updateDirtyBuffer:ptr];
+                (void)mglRendererUpdateDirtyBuffer((__bridge void *)self, ptr);
             }
         }
 

@@ -16,6 +16,7 @@
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_sampler.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_buffer_map.h"  /* buffer mapping entries (was MGLRenderer+Buffer.m) */
 #include "mgl_draw_support.h"  /* draw-support predicates */  /* mglRendererProcessBuffer */
 #import "MGLRenderer+Tessellation_Private.h"
 #import "mgl_sampler_compat.h"
@@ -324,7 +325,7 @@ typedef struct {
     }
 
     BufferMapList stageBufferMap = {0};
-    if (![self mapGLBuffersToMTLBufferMap:&stageBufferMap stage:stage]) {
+    if (!mglRendererMapGLBuffersToMTLBufferMap((__bridge void *)self, &stageBufferMap, stage)) {
         return false;
     }
 
@@ -359,7 +360,7 @@ typedef struct {
             /* Consume the CPU-side initialization before a tessellation
              * stage can write the same Metal backing. Otherwise a later
              * stage bind would upload the stale shadow over the GPU result. */
-            if (![self updateDirtyBuffer:ptr]) {
+            if (!mglRendererUpdateDirtyBuffer((__bridge void *)self, ptr)) {
                 return false;
             }
             buffer = ptr->data.mtl_data
@@ -1685,7 +1686,7 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
                 /* Consume CPU initialization before the XFB blit writes the
                  * same backing. Otherwise a later map can upload the stale
                  * shadow over the captured GPU data. */
-                if (![self updateDirtyBuffer:xfbSlot->buf]) {
+                if (!mglRendererUpdateDirtyBuffer((__bridge void *)self, xfbSlot->buf)) {
                     [self clearStageBindingCopyBacks:&stageCopyBacks];
                     return false;
                 }
@@ -1883,7 +1884,7 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
                 }
                 if (mglRenderBufferNeedsCPUUpload(
                         destBuf->size, destBuf->data.dirty_bits)) {
-                    if (![self updateDirtyBuffer:destBuf]) {
+                    if (!mglRendererUpdateDirtyBuffer((__bridge void *)self, destBuf)) {
                         return false;
                     }
                 }

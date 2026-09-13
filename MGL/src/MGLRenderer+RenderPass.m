@@ -23,7 +23,8 @@
 #import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_batch_issue.h"
-#include "mgl_texture_bind.h"  /* mglRendererBindMTLTexture (was -bindMTLTextureLocked:) */
+#include "mgl_texture_bind.h"
+#include "mgl_buffer_map.h"  /* mglRendererBindMTLTexture (was -bindMTLTextureLocked:) */
 #import "MGLRenderer+RenderPass_Private.h"
 #include "mgl_air_loader.h"     /* AIR metallib loader. */
 #include "mgl_aux_assets.h"
@@ -1881,7 +1882,7 @@ static GLenum mglPassthroughDeclType(
         return false;
     }
 
-    RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+    RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL((__bridge void *)self));
     MGLEncodeContext encCtx = {
         .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
     };
@@ -5557,7 +5558,7 @@ static GLenum mglPassthroughDeclType(
                                   (unsigned long long)s_deferredMapCount);
                 }
             } else {
-                RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+                RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL((__bridge void *)self));
                 if (work) work->mappedBuffers = true;
             }
 
@@ -5574,8 +5575,8 @@ static GLenum mglPassthroughDeclType(
 
         if (plan.vao_path)
         {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->vertex_buffer_map_list]);
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list));
             if (work) work->updatedBaseLists = true;
 
             if (mglRenderEncoderOwnerHasCurrent(
@@ -5590,8 +5591,8 @@ static GLenum mglPassthroughDeclType(
         }
         else if (plan.buffer_path)
         {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->vertex_buffer_map_list]);
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list));
             if (work) work->updatedBaseLists = true;
 
             MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER;
@@ -5623,16 +5624,16 @@ static GLenum mglPassthroughDeclType(
             .render_encoder_owner = _renderPassManager.state->currentRenderEncoderOwner,
         };
 
-        if( [self checkForDirtyBufferData: &MGL_STATE(ctx)->vertex_buffer_map_list])
+        if( mglRendererCheckForDirtyBufferData((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list))
         {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->vertex_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list));
 
             RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
         }
 
-        if( [self checkForDirtyBufferData: &MGL_STATE(ctx)->fragment_buffer_map_list])
+        if( mglRendererCheckForDirtyBufferData((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list))
         {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &MGL_STATE(ctx)->fragment_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list));
 
             RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
         }
@@ -6067,7 +6068,7 @@ static GLenum mglPassthroughDeclType(
             }
 
                 if (deferredBufferMapForPipelineBuild && _pipelineCache.state->pipelineState != nil) {
-                    RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+                    RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL((__bridge void *)self));
                     deferredBufferMapForPipelineBuild = false;
                 }
 

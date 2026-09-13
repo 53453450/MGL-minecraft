@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十五刀** + trace 清零 后；第 68/69/70 轮见 §0.24/§0.26/§0.27）**：
-文件 **53 → 14**、空 TU **3 → 0**、行数 **43,989 → 33,443**、ObjC 语法 **2,268 → 1,895**、词汇 **4,353 → 3,694**；
-**shim：43 → 16 个端口 / 唯一壳 TU 629 行 / 88 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101 刀端口 0 增**；`MGLRenderer*.m` **34,604 → 29,942**）。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十六刀** + trace 清零 后；第 68–71 轮见 §0.24/§0.26–§0.28）**：
+文件 **53 → 13**、空 TU **3 → 0**、行数 **43,989 → 32,623**、ObjC 语法 **2,268 → 1,879**、词汇 **4,353 → 3,653**；
+**shim：43 → 15 个端口 / 唯一壳 TU 625 行 / 86 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；`MGLRenderer*.m` **34,604 → 29,127**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -2798,3 +2798,64 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 ② `MGLPipelineCache.m`（27 方法但状态指针已在 areas，先搬状态机再搬缓存创建）→ ③ `MGLRenderer+Compute.m` →
 ④ `+Tessellation.m` / `+BindingState.m` 两个中块 → ⑤ `mgl_draw_metal_port.m`（0 方法，纯 `id`/词汇清扫）→
 ⑥ 三厚块（`+RenderPass.m` / `+Texture.m` / `+Blit.m`）→ ⑦ `MGLRenderer.m` 与 `MGLRenderer+Lifecycle.m`（T5 并入唯一壳）。
+
+102. **P0-1 第四十六刀：`MGLRenderer+Buffer.m` 整文件转 C 并删除（**文件 14 → 13**，退役 1 个端口、0 新增）**：
+     ① 该文件 822 行 / 9 个方法 / ObjC 语法只 13（`[self …]` 4 处），是 §0.27 排序里的第一目标。**先做依赖审计**：
+     它用到的渲染器事实**全部**已在状态区或已是 C 入口——`ctx` → `areas.ctx`、`MGL_STATE(ctx)` → 本地
+     `mglBufferMapState(&areas)`（dual-proxy 语义）、`_tessellation.nativeTESActive` → `areas.tess_native_tes_active`、
+     `_pipelineCache.state->pipelineState` → `areas.pipeline_cache->pipelineState`；**不需要任何新端口**。
+     ② 落地：新 TU **`mgl_buffer_map.{h,c}`**（903+100 行 C）承载 9 个 C 入口
+     （`mglRendererMapGLBuffersToMTLBufferMap` / `…MapShaderBufferResourcesViaPlan` / `…MapShaderBufferResourcesToBufferMap` /
+     `mglRendererMapBuffersToMTL` / `…UpdateDirtyBuffer` / `…CheckForDirtyBufferData` / `…UpdateDirtyBaseBufferList` /
+     `…GetVertexBufferIndexWithAttributeSet` / `mglBufferCreateConvertedVertexBufferForAttribKind` + 释放函数）与 3 个原本就在
+     该文件里的 C 函数（`mglAdvanceFrameGeneration` / `mglRecordFrameCompleted` / `mglNoteBufferEncoded`）。
+     - **26 个 Objective-C 调用点**改直调 C（`+Binding.m` 3、`+RenderPass.m` 11、`+Tessellation.m` 4、`+Compute.m` 3、
+       `+BindingState.m` 3、壳 1 端口实现删除）；**退役 `mglRendererMapBuffersToMTLPort`**，唯一 C 调用点
+       `mgl_batch_dyn_bind_encode.c` 改直调 `mglRendererMapBuffersToMTL`（端口 16 → 15，按 §0.04 是净减）。
+     - 三个"定义在 ObjC TU、声明在 ObjC 头"的函数按 `mgl_renderer_ports.c` 的既有先例用**文件内 `extern` 原型**接上：
+       `mglRendererGetValidatedBuffer`（`NSUInteger` → `unsigned long`）、`mglRenderCheckForDirtyBufferData`、
+       `mglRenderUpdateDirtyBaseBufferList`、`mglRenderVertexBufferIndexForAttribute`；`mglShouldTraceCall` 是 ObjC 头的
+       `static inline`，在 C 侧写同策略本地 twin（`kMGLDiagnosticStateLogs` 恒 0，两条分支本来就编译掉）。
+     - **`where` 标签逐字保留**：三条 C 入口分别传 `"-[MGLRenderer(Buffer) checkForDirtyBufferData:]"` /
+       `"…updateDirtyBaseBufferList:]"` / `"…getVertexBufferIndexWithAttributeSet:]"`（`strings` 从旧 .o 里读出的
+       `__FUNCTION__` 原文），保证 `MGL BUFFER INVALID in %s:` 这类诊断不变。
+     - **所有权**：`convertedVertexBufferForAttribKind:…` 原返回 `__bridge_transfer id`（+1，ARC 作用域结束释放），
+       C 版返回 `void *` +1 并新增 `mglBufferReleaseConvertedVertexBuffer()` 供调用点释放；它必须用**裸 `CFRelease`**——
+       该引用是转换缓存的 `retain()`（创建计数在缓存建立时已记过一次），走 `mglSafeReleaseMetalObj` 会多记一次 release。
+     ③ **顺带删掉两个死函数（按 §0.18 三步法核验）**：`mglSnapshotSharedDirtyBuffer` / `mglSnapshotSharedBufferRange`
+     在全树（含 .c/.cpp/测试/基准）**零调用点**（清单纯声明与定义各一处），也不在任何 host-ops 函数指针表里 → 直接删除；
+     它们包装的 C++ `mglRenderSnapshotShared{DirtyBuffer,BufferRange}` 因此也变成无引用（留待后续 C++ 侧死代码清扫）。
+     另：`+Buffer_Private.h` 里 `mglCompletedFrameGeneration`、`mglShouldTraceBufferTransferCall` 亦无使用者，随头文件一起消失。
+     ④ **度量**：文件 **14 → 13**、行数 **33,443 → 32,623（−820）**、语法 **1,895 → 1,879（−16）**、词汇 **3,694 → 3,653（−41）**；
+     `MGLRenderer*.m` **29,942 → 29,127**；**壳 TU 629 → 625 行 / 88 → 86 语法、端口 16 → 15**；C 侧新增 1,003 行。
+     ⑤ **oracle**：旧库 = 提交 `6cac97b` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤时 default 5,278/5,295、flushy 5,816/5,833：差量全在 `processGLState.slow` 行，
+     即已知的批处理计数非确定性），stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。删头文件后同样先清 `.o`/`.d`（第 101 条第③项的规则）。
+     ⑥ 下一刀：按 §0.28 排序——`MGLPipelineCache.m`（446 行 / 62 语法 / 27 方法，但状态指针已在 `areas.pipeline_cache`）。
+
+### 0.28 第 71 轮快照（第 102 刀后，文件 13）与剩余 13 个文件的排序
+
+第 102 刀验证了 §0.27 的判据（"ObjC 语法/词汇最少者优先"）：`+Buffer.m` 822 行只掉 16 语法，但**整文件消失**，
+而且**顺带退役 1 个端口、删掉 2 个死函数**——**文件数与端口数才是这一阶段的主指标**，语法数只是副产品。
+
+| 文件 | 行数 | 语法 | 词汇 | 方法 | `[self …]` | 可消性 |
+|---|---|---|---|---|---|---|
+| `MGLRenderer+RenderPass.m` | 6,955 | 423 | 563 | 49 | 143 | 三厚块之一，需多刀 |
+| `MGLRenderer+Texture.m` | 6,500 | 297 | 1,088 | 38 | 94 | 三厚块之一；转完可退役第 100 刀的 4 个纹理端口 |
+| `MGLRenderer.m` | 4,612 | 173 | 276 | 23 | 54 | 主体类，最后处理 |
+| `MGLRenderer+Blit.m` | 4,062 | 236 | 761 | 19 | 74 | 三厚块之一 |
+| `MGLRenderer+BindingState.m` | 2,916 | 129 | 197 | 17 | 44 | 中块 |
+| `MGLRenderer+Tessellation.m` | 2,101 | 151 | 278 | 11 | 57 | 中块 |
+| `mgl_draw_metal_port.m` | 2,000 | 101 | 97 | **0** | 23 | host-ops 适配层，只剩 `id`/词汇 |
+| `MGLRenderer+Compute.m` | 1,246 | 84 | 104 | 11 | 28 | 中块 |
+| `MGLRenderer+Lifecycle.m` | 667 | 94 | 126 | 12 | 14 | T5 合并候选 |
+| `MGLPlatformRendererShell.m`（唯一壳） | 625 | 86 | 55 | 18 | 0 | 终态保留 1 个 |
+| **`MGLPipelineCache.m`** | **446** | **62** | **91** | **27** | **18** | **下一刀：状态指针已在 `areas.pipeline_cache`** |
+| `MGLRenderPassManager.m` | 416 | 26 | 17 | 28 | 14 | 多为薄转发 |
+| `MGLRenderer+Binding.m` | 77 | 17 | 0 | 2 | 10 | 卡在 §0.23（成本倒挂） |
+
+**排序**：① `MGLPipelineCache.m`（转完文件 13 → 12；其 `pipelineState`/程序名/格式都已在 `areas.pipeline_cache`，
+先搬缓存创建/查询，再搬 blend 与 reset）→ ② `MGLRenderer+Compute.m` → ③ `MGLRenderer+Lifecycle.m`（T5 并入壳的候选）→
+④ `MGLRenderPassManager.m`（28 个薄转发）→ ⑤ `+Tessellation.m` / `+BindingState.m` 两个中块 →
+⑥ `mgl_draw_metal_port.m`（0 方法，纯 `id`/词汇清扫）→ ⑦ 三厚块 → ⑧ `MGLRenderer.m`。

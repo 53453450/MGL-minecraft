@@ -6,6 +6,7 @@
  * now; every renderer operation they need goes through mgl_renderer_ports.h.
  */
 #include "mgl_renderer_ports.h"       /* C port surface (T4) */
+#include "mgl_buffer_map.h"    /* mglRendererMapBuffersToMTL */
 #include "mgl_draw_issue.h"           /* mglDrawHostDevice */
 #include "mgl_vertex_attrib_query.h"  /* mglRendererResolveVertexAttributeBufferIndex */
 #include "mgl_state_log.h"            /* mglMipDiag* */
@@ -138,7 +139,7 @@ static int mglDynApplyMapperFallback(void *v)
     MGLDynApplyCtx *c = v; c->saved_vao = c->ctx->active_state->vao;
     if (c->cmd->dynamic_vertex_binding_count > 0) c->ctx->active_state->vao = c->draw_vao;
     mglDynApplyRefresh(v);
-    int ok = (mglRendererMapBuffersToMTLPort(c->r) &&
+    int ok = (mglRendererMapBuffersToMTL(c->r) &&
               mglRendererBindVertexBuffersToCurrentRenderEncoderPort(c->r, c->enc)) ? 1 : 0;
     mglDynApplyRefresh(v);
     if (ok && c->cmd->dynamic_uniform_binding_count > 0) {
