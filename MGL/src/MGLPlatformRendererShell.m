@@ -17,6 +17,7 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+BatchPorts_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
+#import "MGLRenderer+Texture_Private.h"  /* texture upload ports */
 #import "MGLRenderer+Binding_Private.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_batch_restore.h"
@@ -315,12 +316,80 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
 }
 
 
-int mglRendererBindMTLTexturePort(void *renderer, Texture *texture)
+/* The former mglRendererBindMTLTexturePort is gone: the body is the C function
+ * mglRendererBindMTLTexture (mgl_texture_bind.h). */
+
+
+/* === Texture materialization ports (mglRendererBindMTLTexture) ===========
+ * The remaining Objective-C half of the texture bind: creation (both paths),
+ * the two CPU-data uploads and the default sampler.  MGLRenderer+Texture.m owns
+ * the bodies; the CREATE ports hand the +1 back to C through CFBridgingRetain. */
+
+void *mglRendererCreateMTLTextureFromGLTexturePort(void *renderer, Texture *tex)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && texture && [r bindMTLTexture:texture]) ? 1 : 0;
+    if (!r || !tex) {
+        return NULL;
+    }
+    return (void *)CFBridgingRetain([r createMTLTextureFromGLTexture:tex]);
 }
 
+void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r || !tex) {
+        return NULL;
+    }
+    return (void *)CFBridgingRetain([r createFallbackMTLTexture:tex]);
+}
+
+int mglRendererUploadFullCPUTextureDataPort(void *renderer, Texture *tex,
+                                            void *texture,
+                                            const char *reason)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r || !tex) {
+        return 0;
+    }
+    return [r uploadFullCPUTextureDataIntoTexture:tex
+                                            metal:(__bridge id)texture
+                                           reason:reason]
+               ? 1
+               : 0;
+}
+
+int mglRendererUploadDirtyCPUTextureDataPort(void *renderer, Texture *tex,
+                                             void *texture,
+                                             uint32_t pixel_format,
+                                             uint32_t num_faces,
+                                             uint32_t upload_level_count,
+                                             int is_array,
+                                             int texture1d_backed_by_2d,
+                                             int texture1d_array_backed_by_2d_array,
+                                             uint32_t tex_type,
+                                             int *out_all_levels_uploaded)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r || !tex) {
+        return 0;
+    }
+    BOOL allLevelsUploaded = NO;
+    BOOL uploaded = [r
+        uploadDirtyCPUTextureData:tex
+                            metal:(__bridge id)texture
+                      pixelFormat:pixel_format
+                        numFaces:(uint)num_faces
+                uploadLevelCount:(GLuint)upload_level_count
+                         isArray:(BOOL)(is_array != 0)
+              texture1DBackedBy2D:(BOOL)(texture1d_backed_by_2d != 0)
+        texture1DArrayBackedBy2DArray:(BOOL)(texture1d_array_backed_by_2d_array != 0)
+                         texType:tex_type
+            outAllLevelsUploaded:&allLevelsUploaded];
+    if (out_all_levels_uploaded) {
+        *out_all_levels_uploaded = allLevelsUploaded ? 1 : 0;
+    }
+    return uploaded ? 1 : 0;
+}
 
 /* === Batch replay shell (former MGLRenderer+Batch.m) =====================
  * These members are pure renderer plumbing: the dual-proxy invariant, the

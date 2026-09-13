@@ -29,10 +29,11 @@
 
 @interface MGLRenderer ()
 
-/* now the C function mglRendererBindMTLBuffer (mgl_renderer_ports.h) */
-/* now the C function mglRendererBindMTLBuffer (mgl_renderer_ports.h) */
+/* the buffer bind is now the C function mglRendererBindMTLBuffer
+ * (mgl_renderer_ports.h), and the texture bind body is the C function
+ * mglRendererBindMTLTexture (mgl_texture_bind.h); this method only keeps the
+ * lock/assert frame for the Objective-C call sites. */
 - (bool)bindMTLTexture:(Texture *)tex;
-- (bool)bindMTLTextureLocked:(Texture *)tex;
 
 /* Sampler cascade for a sampled texture: the GL sampler object at the unit,
  * else the texture parameters, else `defaultSampler`.  Shared by the

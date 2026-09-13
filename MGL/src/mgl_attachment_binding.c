@@ -19,7 +19,8 @@
  */
 
 #include "mgl_attachment_binding.h"
-#include "mgl_renderer_ports.h"   /* state areas, attachment texture, bind port */
+#include "mgl_renderer_ports.h"   /* state areas, attachment texture */
+#include "mgl_texture_bind.h"   /* mglRendererBindMTLTexture */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -40,7 +41,7 @@ int mglRendererBindFramebufferTexture(void *renderer, FBOAttachment *attachment,
         tex->is_render_target = true;
     }
 
-    if (!mglRendererBindMTLTexturePort(renderer, tex)) {
+    if (!mglRendererBindMTLTexture(renderer, tex)) {
         return 0;
     }
 

@@ -23,6 +23,7 @@
 #import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_batch_issue.h"
+#include "mgl_texture_bind.h"  /* mglRendererBindMTLTexture (was -bindMTLTextureLocked:) */
 #import "MGLRenderer+RenderPass_Private.h"
 #include "mgl_air_loader.h"     /* AIR metallib loader. */
 #include "mgl_aux_assets.h"
@@ -2754,7 +2755,7 @@ static GLenum mglPassthroughDeclType(
 
             // Ensure attachment textures are created with RenderTarget usage.
             tex->is_render_target = true;
-            RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
+            RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture((__bridge void *)self, tex));
             if (!tex->mtl_data) {
                 continue;
             }
@@ -2822,7 +2823,7 @@ static GLenum mglPassthroughDeclType(
         tex = [self framebufferAttachmentTexture: &fbo->depth];
         if (tex) {
             tex->is_render_target = true;
-            RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
+            RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture((__bridge void *)self, tex));
         }
         if (tex && tex->mtl_data) {
             MGLMetalAttachmentSubresource subresource =
@@ -2844,7 +2845,7 @@ static GLenum mglPassthroughDeclType(
         tex = [self framebufferAttachmentTexture: &fbo->stencil];
         if (tex) {
             tex->is_render_target = true;
-            RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
+            RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture((__bridge void *)self, tex));
         }
         if (tex && tex->mtl_data) {
             MGLMetalAttachmentSubresource subresource =

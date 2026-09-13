@@ -111,9 +111,36 @@ int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer);
 int mglRendererPrepareRenderPassIfFBOChangedPort(void *renderer, void *batch,
                                                  GLMContext ctx, GLenum *replay_error);
 
-/* Bind one Texture's Metal object through the binding state (returns 0 when
- * the renderer or the texture is missing). */
-int mglRendererBindMTLTexturePort(void *renderer, Texture *texture);
+/* Bind one Texture's Metal object (mglRendererBindMTLTexture, mgl_texture_bind.h)
+ * is C now: it was -[MGLRenderer bindMTLTextureLocked:], so the former
+ * mglRendererBindMTLTexturePort is gone and callers link straight to it. */
+
+/* ---- texture materialization ports --------------------------------------
+ * The four Objective-C steps left inside mglRendererBindMTLTexture: Metal
+ * texture creation (the -createMTLTextureFromGLTexture: /
+ * -createFallbackMTLTexture: pair), the two CPU-data uploads, and the
+ * render-target preservation that needs the render-pass manager.  They live in
+ * MGLRenderer+Texture.m, so their C entries stay in the shell TU until that
+ * file is converted.
+ *
+ * OWNERSHIP: both creation ports return +1 (the caller owns it, releases it
+ * with mglSafeReleaseMetalObj); the upload ports return 1 on success and write
+ * *out_all_levels_uploaded when it is non-NULL. */
+void *mglRendererCreateMTLTextureFromGLTexturePort(void *renderer, Texture *tex);
+void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex);
+int mglRendererUploadFullCPUTextureDataPort(void *renderer, Texture *tex,
+                                            void *texture,
+                                            const char *reason);
+int mglRendererUploadDirtyCPUTextureDataPort(void *renderer, Texture *tex,
+                                             void *texture,
+                                             uint32_t pixel_format,
+                                             uint32_t num_faces,
+                                             uint32_t upload_level_count,
+                                             int is_array,
+                                             int texture1d_backed_by_2d,
+                                             int texture1d_array_backed_by_2d_array,
+                                             uint32_t tex_type,
+                                             int *out_all_levels_uploaded);
 
 /* ---- dyn-bind / sampler ports ------------------------------------------ */
 

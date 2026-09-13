@@ -13,7 +13,8 @@
  */
 
 #include "mgl_batch_replay.h"
-#include "mgl_renderer_ports.h"  /* mglRendererBindMTLTexturePort */
+#include "mgl_renderer_ports.h"
+#include "mgl_texture_bind.h"  /* mglRendererBindMTLTexture */
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
 
@@ -1178,7 +1179,7 @@ int mglActTexBindUnit(void *v, uint32_t unit, int *stale_out)
         return 0;
     }
     if (stale_out) *stale_out = 0;
-    return mglRendererBindMTLTexturePort(c->r, tex) ? 1 : 0;
+    return mglRendererBindMTLTexture(c->r, tex) ? 1 : 0;
 }
 
 void mglActTexClearStale(void *v, uint32_t word, uint32_t bit)

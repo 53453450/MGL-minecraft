@@ -48,11 +48,11 @@
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
-| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
+| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 15**、空 TU **3 → 0**、行数 **43,989 → 34,281**、ObjC 语法 **2,268 → 1,951**、词汇 **4,353 → 3,821**；
-**shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十四刀** + trace 清零 后；第 68/69 轮见 §0.24/§0.26）**：
+文件 **53 → 15**、空 TU **3 → 0**、行数 **43,989 → 33,995**、ObjC 语法 **2,268 → 1,938**、词汇 **4,353 → 3,795**；
+**shim：43 → 16 个端口 / 唯一壳 TU 629 行 / 88 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；`MGLRenderer*.m` **34,604 → 30,493**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -2670,3 +2670,66 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
      → ③ MS 循环族（本刀）→ ④ 删除文件（本刀）。
      下一刀：按 §0.19 表继续——`+Binding.m` 的 `bindMTLTextureLocked:`(339) 与 `MGLPipelineCache.m`(446) 是接下来两个大目标；
      手法照旧（§0.14 三种路线 + 手工逐段 + 每段编译 + 整轮 A/B/CTS）。
+
+100. **P0-1 第四十四刀：`bindMTLTextureLocked:`（339 行）整体转 C（`+Binding.m` 431 → 76 行，语法 39 → 17，词汇 32 → 0）**：
+     ① 方法体在 `MGLRenderer+Texture.m`，所以按 §0.14 **只能走"方法 + 壳转发"**这一条路：
+     - 新 TU **`mgl_texture_bind.{h,c}`**（450 行 C）：`bool mglRendererBindMTLTexture(void *renderer, Texture *tex)`，体照抄原方法；
+       `_renderPassManager.state->currentCommandBufferOwner` → `areas.command->currentCommandBufferOwner`（**零新端口**）；
+     - 壳 TU 加 4 个端口（声明进 `mgl_renderer_ports.h`）：`mglRendererCreateMTLTextureFromGLTexturePort` /
+       `mglRendererCreateFallbackMTLTexturePort`（两者都 `CFBridgingRetain` 把 +1 交回 C）与
+       `mglRendererUploadFullCPUTextureDataPort` / `mglRendererUploadDirtyCPUTextureDataPort`（11 参版，`BOOL *` 出参换 `int *`）；
+       渲染目标保留 blit 复用已有 `mglRendererEnsureWritableCommandBufferPort`；
+     - `bindMTLTexture:` 只留 `METAL_LOCK()` 断言帧，体内直调 C（`METAL_LOCK()` 本身只是 `MGL_ASSERT_GL_THREAD()`）；
+       `+RenderPass.m` 三处 `[self bindMTLTextureLocked: tex]` 改直调 C；**退役 `mglRendererBindMTLTexturePort`**，
+       两个 C 调用点（`mgl_attachment_binding.c`、`mgl_batch_replay.cpp`）改为直调 `mglRendererBindMTLTexture`。
+     ② **ARC → C 的所有权改写（本刀最需要小心的地方）**：`__bridge id` 强局部（`existingTexture`、`__strong id oldTexture`）在 C 里
+     换成"借用指针 + `CFRetain` 别名"，且**别名必须在 `mglSafeReleaseMetalObj((void **)&tex->mtl_data)` 之前取**（否则旧纹理会被提前释放，
+     后面的保留 blit 就是 use-after-free）；别名用**裸 `CFRetain`/`CFRelease`** 而非 `mglSafeReleaseMetalObj`——后者会记一次
+     `mglMetalCountRelease`，而该对象创建时已经计过数，会造成 created/released 记账偏差。创建端口返回的 +1 存进 `tex->mtl_data` /
+     `tex->params.mtl_data` 后即归该槽位所有（未入库时要显式 `mglSafeReleaseMetalObj(&newTexture)`）。
+     其余等价改写：`NSLog` → `fprintf(stderr, …)`（同一 sink）、`[[NSDate date] timeIntervalSince1970]` →
+     `clock_gettime(CLOCK_REALTIME)`（`mgl_gpu_recovery.c` 的 twin）、`mglEnvFlagEnabled` → `mgl_env_flag_enabled`、
+     `MIN(a,b)`（宏无括号，`(GLuint)MIN(…)` 会把**比较结果**强转）→ 显式 `mglTextureBindUploadLevelCount()`；
+     `mglBindingCreateDefaultSampler` 的 `__bridge_transfer` 版 → 直接收 `mglRenderCreateDefaultSampler` 的 +1（顺带消掉原实现里
+     `(__bridge id)` + `CFBridgingRetain` 造成的一次 +1 泄漏）。
+     ③ **度量**：行数 **34,281 → 33,995**、语法 **1,951 → 1,938（−13）**、词汇 **3,821 → 3,795（−26）**；文件 15 **不变**
+     （`+Binding.m` 仍留 `syncResourceBindingsForContext:` 27 行，按 §0.23 是成本倒挂项）；`MGLRenderer*.m` **30,841 → 30,493**；
+     **壳 TU 560 → 629 行 / 语法 79 → 88**，**端口 13 → 16（+3：退役 1、新增 4）**——按 §0.04 硬规本刀**不算 T4 端口净减**
+     （与第 47–49 条同类：这 4 个端口要等 `MGLRenderer+Texture.m` 转 C 时才一起退役）。
+     ④ **oracle**：旧库 = 提交 `60cfbae` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（`processGLState.slow` 行按惯例过滤，两臂**未过滤**时计数本就不同步：default 5,272/5,271、
+     flushy 5,812/5,812），stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**
+     （两臂同值，且与上一轮 `ablib43` 的两臂完全相同 → 是 `MGL_BATCH_MAX_DRAWS=1` 下的既存差异，非本刀引入）；
+     **CTS 七簇非通过集合 diff 全空**（hotspot 58 · tess 1 · GS 0 · refq 59 · piq 13 · compute 39 · pp 4）；
+     28 目标门禁 `GATE=0`。
+     ⑤ 下一刀：**`MGLRenderer+SwapDiagnostics.m`（557 行 / 47 语法 / **只有 2 个方法** / `[self …]` 0 处）**——它体内的
+     encoder 操作**已经是** `mglRender*` C++ 助手（只差把 `id` + `(__bridge void *)` 换成 `void *`），ivar 依赖只有
+     `_renderPassManager`(3) 与 `_drawable`(1)，后者已有 `mglPlatformShellDrawable`；转完即**整文件删除（文件 15 → 14）**。
+
+### 0.26 第 69 轮快照与"下一刀"排序（按"能否整文件消"重排）
+
+第 100 刀后 `+Binding.m` 只剩 76 行（`syncResourceBindingsForContext:` 27 行 + `bindMTLTexture:` 断言帧），文件数仍是 15。
+本轮实测各文件 ObjC 面（`objc_zero.sh` 语法 / 词汇 / 行数 + 方法数 + `[self …]` 数）：
+
+| 文件 | 行数 | 语法 | 词汇 | 方法 | `[self …]` | 可消性 |
+|---|---|---|---|---|---|---|
+| `MGLRenderer+RenderPass.m` | 6,954 | 423 | 563 | 49 | 143 | 需多刀整块搬 |
+| `MGLRenderer+Texture.m` | 6,500 | 297 | 1,088 | 38 | 94 | 转完可退役第 100 刀的 4 个纹理端口 |
+| `MGLRenderer.m` | 4,606 | 169 | 276 | 23 | 54 | 主体类，最后处理 |
+| `MGLRenderer+Blit.m` | 4,062 | 236 | 761 | 19 | 74 | 需多刀整块搬 |
+| `MGLRenderer+BindingState.m` | 2,914 | 130 | 197 | 17 | 44 | 需多刀整块搬 |
+| `MGLRenderer+Tessellation.m` | 2,100 | 151 | 278 | 11 | 57 | 需多刀整块搬 |
+| `mgl_draw_metal_port.m` | 2,000 | 101 | 97 | **0** | 23 | host-ops 适配层，只剩 `id`/词汇 |
+| `MGLRenderer+Compute.m` | 1,245 | 84 | 104 | 11 | 28 | 需整块搬 |
+| `MGLRenderer+Buffer.m` | 823 | **13** | 41 | 9 | **4** | ObjC 面最小（9 个 mapper 相扣） |
+| `MGLRenderer+Lifecycle.m` | 667 | 94 | 126 | 12 | 14 | T5 合并候选 |
+| `MGLPlatformRendererShell.m`（唯一壳） | 629 | 88 | 55 | 18 | 0 | 终态保留 1 个 |
+| **`MGLRenderer+SwapDiagnostics.m`** | **557** | **47** | **101** | **2** | **0** | **下一刀：整文件删除** |
+| `MGLPipelineCache.m` | 446 | 62 | 91 | 27 | 18 | 状态已在 `areas.pipeline_cache` |
+| `MGLRenderPassManager.m` | 416 | 26 | 17 | 28 | 14 | 多为薄转发 |
+| `MGLRenderer+Binding.m` | 76 | 17 | 0 | 2 | 10 | 卡在 §0.23（成本倒挂） |
+
+**排序（下一刀 → 之后）**：① `MGLRenderer+SwapDiagnostics.m`（557 行 / 2 方法 / 0 `[self …]` / 体内已是 `mglRender*` C++ 助手，
+转完 `文件 15 → 14`）→ ② `MGLRenderer+Buffer.m`（语法只 13、`[self …]` 只 4 处，9 个 mapper 需逐段搬）→
+③ `MGLPipelineCache.m`（27 方法但状态指针都已在 areas）→ ④ `MGLRenderer+Compute.m` → ⑤ `+Tessellation.m` / `+BindingState.m` 两个中块
+→ ⑥ 三厚块（`+RenderPass.m` / `+Texture.m` / `+Blit.m`）。每刀纪律不变：**抽盘副本 → 手工逐段 → 每段编译 → 整轮 A/B/CTS/门禁 → 三处文档同步**。
