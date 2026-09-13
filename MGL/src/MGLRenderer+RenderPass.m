@@ -5411,7 +5411,7 @@ static GLenum mglPassthroughDeclType(
     }
     if (plan.no_vao_clear_path) {
         [self endRenderEncodingLocked];
-        if (![self validateMetalObjects]) {
+        if (!mglRendererValidateMetalObjects((__bridge void *)self)) {
             NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
             MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
             return true;
@@ -6986,7 +6986,7 @@ static GLenum mglPassthroughDeclType(
         return;
     }
 
-    if (![self validateMetalObjects]) {
+    if (!mglRendererValidateMetalObjects((__bridge void *)self)) {
         NSLog(@"MGL WARNING: GPU throttling active - skipping command buffer commit");
         mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
         return;

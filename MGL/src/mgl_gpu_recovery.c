@@ -185,3 +185,73 @@ void mglRendererResetMetalState(void *renderer)
 
     fprintf(stderr, "MGL INFO: AGX Metal state reset completed\n");
 }
+
+/* Body of the former -[MGLRenderer validateMetalObjects]; the @try/@catch is the
+ * shell guard, the device/queue probes are shell forwards, and the wall clock
+ * matches [[NSDate date] timeIntervalSince1970] as before. */
+static int mglRendererValidateMetalObjectsBody(void *renderer)
+{
+    if (!mglPlatformShellMetalObjectsPresent(renderer)) {
+        fprintf(stderr,
+                "MGL ERROR: Metal device or command queue is nil during validation\n");
+        return 0;
+    }
+
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+
+    /* GPU ERROR THROTTLING: track recent failures to prevent error cascades. */
+    static uint64_t consecutiveGpuErrors = 0;
+    static double lastErrorTime = 0.0;
+    static const double throttleWindow = 2.0;   /* 2 second throttle window */
+    static const uint64_t maxErrorsPerWindow = 3;
+
+    MGLRenderCommandBufferState currentState = {0};
+    int hasCurrentCommandBuffer =
+        cs && mglRenderCommandBufferOwnerHasState(cs->currentCommandBufferOwner,
+                                                  &currentState);
+    if (hasCurrentCommandBuffer && currentState.has_error) {
+        double currentTime = mglGpuRecoveryNowSeconds();
+        if (currentTime - lastErrorTime < throttleWindow) {
+            consecutiveGpuErrors++;
+            fprintf(stderr,
+                    "MGL GPU THROTTLING: %llu consecutive GPU errors detected\n",
+                    (unsigned long long)consecutiveGpuErrors);
+            if (consecutiveGpuErrors > maxErrorsPerWindow) {
+                fprintf(stderr,
+                        "MGL CRITICAL: GPU error threshold exceeded - throttling operations for %.1f seconds\n",
+                        throttleWindow);
+                mglRendererResetMetalState(renderer);
+                if (currentTime - lastErrorTime > throttleWindow) {
+                    consecutiveGpuErrors = 0;
+                } else {
+                    return 0;   /* skip this operation to prevent more errors */
+                }
+            }
+        } else {
+            consecutiveGpuErrors = 1;
+            lastErrorTime = currentTime;
+        }
+    }
+
+    /* Device registry ID changes indicate virtualization issues. */
+    if (__builtin_available(macOS 11.0, *)) {
+        void *device = mglPlatformShellMetalDevice(renderer);
+        if (device) {
+            uint64_t registryID = 0;
+            (void)mglRenderGetDeviceIdentity(device, &registryID, NULL, 0);
+            if (registryID == 0) {
+                fprintf(stderr,
+                        "MGL WARNING: Detected virtualized Metal environment - enabling safety mode\n");
+            }
+        }
+    }
+    return 1;
+}
+
+int mglRendererValidateMetalObjects(void *renderer)
+{
+    return mglPlatformShellGuardedCall(renderer, "Metal object validation",
+                                       mglRendererValidateMetalObjectsBody);
+}

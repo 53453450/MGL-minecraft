@@ -49,6 +49,15 @@ void mglRendererResetMetalState(void *renderer);
  * -[MGLRenderer mglRecreateCommandQueue]). */
 int mglPlatformShellRecreateCommandQueue(void *renderer);
 
+/* Metal device/queue probes (implemented in the shell TU, forwarding to
+ * MGLRenderer methods, where the ivars are visible). */
+void *mglPlatformShellMetalDevice(void *renderer);
+int mglPlatformShellMetalObjectsPresent(void *renderer);
+
+/* Validates the Metal device/queue and throttles repeated GPU errors.
+ * Returns 1 when operations may continue. */
+int mglRendererValidateMetalObjects(void *renderer);
+
 /* Resets the pipeline cache's caches; the cache object comes from the state
  * areas (implemented in the shell TU). */
 int mglPipelineCacheResetCaches(void *pipeline_cache_object);

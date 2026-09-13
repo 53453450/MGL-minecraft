@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,014**、ObjC 语法 **2,268 → 1,993**、词汇 **4,353 → 3,893**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,963**、ObjC 语法 **2,268 → 1,993**、词汇 **4,353 → 3,871**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2058,3 +2058,23 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      `commitCommandBufferTransaction` / `releaseDetachedCommandBufferIfOwned` 两个 C 入口 + `mglPlatformShellGuardedCall`；
      `validateMetalObjects`(75) 需 `_device`/`_isVirtualized` 的**方法+壳转发**式入口（照本刀模式，不要再用 areas 槽地址）与
      C 化的 `mglRendererResetMetalState`（本刀已具备）。补完即可**整文件转 C → 文件 17 → 16**。
+
+84. **P0-1 第三十刀：`validateMetalObjects` 转 C（**−51 行 / 词汇 −22**）**：
+     ① 按第 83 条的"方法 + 壳转发"模式（不再用 areas 槽地址）：`MGLRenderer.m` 加两个方法
+     `-mglMetalDevicePointer` / `-mglMetalObjectsPresent`（方法体内用 `_device` / `_commandQueue` 合法），
+     壳 TU 加 C 入口 `mglPlatformShellMetalDevice` / `mglPlatformShellMetalObjectsPresent`；
+     `mglRendererValidateMetalObjects` 在 `mgl_gpu_recovery.c` 里用 `mglPlatformShellGuardedCall` 包住裸体
+     （`@try/@catch` 留在壳），`@available(macOS 11.0, *)` → C 的 `__builtin_available`，`[NSDate date]` → 墙钟 helper，
+     `NSLog` → `fprintf`；`consecutiveGpuErrors` / `lastErrorTime` / `throttleWindow` / `maxErrorsPerWindow` 改为 C 静态量。
+     ② 调用点（`+RenderPass.m`）改直调，私有头声明注释化。**`+GPURecovery.m` 只剩 1 个方法**
+     （`commitCommandBufferWithAGXRecovery:` 99 行，含嵌套 `@try/@catch/@finally`）。
+     ③ **度量**：行数 **35,014 → 34,963**、语法 1,993（持平）、词汇 **3,893 → 3,871**；文件 17、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `618e701` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀（收口 `+GPURecovery.m` → 文件 17 → 16）：`commitCommandBufferWithAGXRecovery:` 需要
+     ① manager 的 `commitCommandBufferTransaction` / `releaseDetachedCommandBufferIfOwned` 两个 C 入口
+     （都只动 `_state`，照 `mgl_render_pass_manager_ops.c` 的写法）；② 一个**带 `@finally` 语义的 guarded 入口**
+     （壳里 `mglPlatformShellGuardedCallWithFinally(renderer, what, body, finally_fn)`），因为原方法把
+     `releaseDetachedCommandBufferIfOwned:` 放在 `@finally` 里，必须保证异常路径也执行；
+     ③ `_deviceResetRequested` 的置位——先确认它是否在 `MGLRendererCoreState`（cut 54 搬进去的四个 `_Atomic` 通道之一），
+     若是则 `areas.core->deviceResetRequested` 直接写，若否则再加一个方法+壳转发。

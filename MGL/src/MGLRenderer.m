@@ -3737,6 +3737,18 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
  * whether the renderer now holds one.  A method rather than a C function because
  * the queue and backend ivars are not visible outside the class body; the shell
  * TU exposes it to C as mglPlatformShellRecreateCommandQueue(). */
+/* Metal device/queue probes for the recovery validation path (see
+ * mglRecreateCommandQueue for why these are methods, not C functions). */
+- (void *)mglMetalDevicePointer
+{
+    return (__bridge void *)_device;
+}
+
+- (int)mglMetalObjectsPresent
+{
+    return (_device && _commandQueue) ? 1 : 0;
+}
+
 - (int)mglRecreateCommandQueue
 {
     if (!_backend) {

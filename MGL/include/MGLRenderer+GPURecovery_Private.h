@@ -40,9 +40,11 @@
 
 /* AGX recovery: recreate the command queue (implemented in MGLRenderer.m). */
 - (int)mglRecreateCommandQueue;
+- (void *)mglMetalDevicePointer;
+- (int)mglMetalObjectsPresent;
 
 
-- (BOOL)validateMetalObjects;
+/* now the C function mglRendererValidateMetalObjects (mgl_gpu_recovery.h) */
 /* now the C functions in mgl_gpu_recovery.h */
 - (void)cleanupCommandBuffer;
 /* now the C function mglRendererResetMetalState (mgl_gpu_recovery.h) */
