@@ -12,6 +12,7 @@
 // Blit/copy/resolve operations extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_texture_readback_clear.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_render.h"
 #include "mgl_blit_pipelines.h"
@@ -1334,10 +1335,7 @@ static void mglBlitSynchronizeTexture(id encoder,
                 [self endRenderEncoding];
                 if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthMsaaResolve"]) {
                     if (dsPlan.resolve_depth) {
-                        [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
-                                                           attachment:depthReadAttachment
-                                                           textureObj:depthReadObject
-                                                           mtlTexture:depthReadTexture];
+                        mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, depthReadFBO, depthReadAttachment, depthReadObject, (__bridge void *)depthReadTexture);
                     }
 
                     const BOOL resolvedAny =
@@ -1408,14 +1406,8 @@ static void mglBlitSynchronizeTexture(id encoder,
                         [self endRenderEncoding];
                         if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthStencil"]) {
                             if (mglRenderClearMaskHasDepth((uint32_t)depthStencilMask)) {
-                                [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
-                                                                   attachment:depthReadAttachment
-                                                                   textureObj:depthReadObject
-                                                                   mtlTexture:depthReadTexture];
-                                [self mglApplyPendingFBODepthClearForReadback:depthDrawFBO
-                                                                   attachment:depthDrawAttachment
-                                                                   textureObj:depthDrawObject
-                                                                   mtlTexture:depthDrawTexture];
+                                mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, depthReadFBO, depthReadAttachment, depthReadObject, (__bridge void *)depthReadTexture);
+                                mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, depthDrawFBO, depthDrawAttachment, depthDrawObject, (__bridge void *)depthDrawTexture);
                             }
                             id depthBlit =
                                 (__bridge id)mglRenderCreateBlitEncoderBorrowed(
@@ -1456,14 +1448,8 @@ static void mglBlitSynchronizeTexture(id encoder,
                         if (dsIn.has_depth) {
                             [self endRenderEncoding];
                             if ([self ensureWritableCommandBuffer:"mtlBlitFramebuffer.depthScaledClear"]) {
-                                [self mglApplyPendingFBODepthClearForReadback:depthReadFBO
-                                                                   attachment:depthReadAttachment
-                                                                   textureObj:depthReadObject
-                                                                   mtlTexture:depthReadTexture];
-                                [self mglApplyPendingFBODepthClearForReadback:depthDrawFBO
-                                                                   attachment:depthDrawAttachment
-                                                                   textureObj:depthDrawObject
-                                                                   mtlTexture:depthDrawTexture];
+                                mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, depthReadFBO, depthReadAttachment, depthReadObject, (__bridge void *)depthReadTexture);
+                                mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, depthDrawFBO, depthDrawAttachment, depthDrawObject, (__bridge void *)depthDrawTexture);
                             }
                         }
 
@@ -2876,17 +2862,10 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
     /* Apply any pending FBO clear so the source texture has authoritative
      * data before the blit reads from it. */
     if (destIsDepth) {
-        [self mglApplyPendingFBODepthClearForReadback:fbo
-                                            attachment:srcAttachment
-                                            textureObj:srcTexObj
-                                            mtlTexture:srcTexture];
+        mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, fbo, srcAttachment, srcTexObj, (__bridge void *)srcTexture);
     } else {
         GLenum readBuffer = glm_ctx->active_state->read_buffer;
-        [self mglApplyPendingFBOColorClearForReadback:fbo
-                                            attachment:srcAttachment
-                                            textureObj:srcTexObj
-                                            mtlTexture:srcTexture
-                                       attachmentEnum:readBuffer];
+        mglTextureApplyPendingFBOColorClearForReadback((__bridge void *)self, fbo, srcAttachment, srcTexObj, (__bridge void *)srcTexture, readBuffer);
     }
 
     id blitEncoder =

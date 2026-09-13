@@ -12,6 +12,7 @@
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_texture_readback_clear.h"
 #include "mgl_pixel_format.h"
 #include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Texture_Private.h"
@@ -1133,59 +1134,6 @@ static void mglTextureCopyTextureToBuffer(
     return false;
 }
 
-- (void)mglApplyPendingDefaultColorClearToTexture:(id)texture
-{
-    if (!ctx || !texture ||
-        !mglRenderClearMaskHasColor((uint32_t)STATE(default_fbo_clear_bitmask))) {
-        return;
-    }
-
-    if (mglRenderEncodeColorClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
-            (__bridge void *)texture, 0, 0, 0,
-            STATE(default_clear_color)[0],
-            STATE(default_clear_color)[1],
-            STATE(default_clear_color)[2],
-            STATE(default_clear_color)[3]) == 0) {
-        STATE(default_fbo_clear_bitmask) =
-            (GLbitfield)mglRenderClearMaskClearColor(
-                (uint32_t)STATE(default_fbo_clear_bitmask));
-        return;
-    }
-    NSLog(@"MGL WARNING: C++ default framebuffer color clear failed");
-}
-
-- (void)mglApplyPendingFBOColorClearForReadback:(Framebuffer *)fbo
-                                     attachment:(FBOAttachment *)attachment
-                                    textureObj:(Texture *)textureObj
-                                     mtlTexture:(id)texture
-                                  attachmentEnum:(GLenum)attachmentEnum
-{
-    (void)attachmentEnum;
-    if (!fbo || !attachment || !texture ||
-        !mglRenderClearMaskHasColor((uint32_t)attachment->clear_bitmask)) {
-        return;
-    }
-
-    MGLMetalAttachmentSubresource subresource =
-        mglMetalAttachmentSubresourceForAttachment(attachment);
-    if (mglRenderEncodeColorClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
-            (__bridge void *)texture, subresource.level,
-            subresource.slice, subresource.depthPlane,
-            attachment->clear_color[0], attachment->clear_color[1],
-            attachment->clear_color[2], attachment->clear_color[3]) == 0) {
-        attachment->clear_bitmask =
-            (GLbitfield)mglRenderClearMaskClearColor(
-                (uint32_t)attachment->clear_bitmask);
-        mglMarkTextureLevelRenderTargetWritten(
-            textureObj, attachment->level);
-        return;
-    }
-    NSLog(@"MGL WARNING: C++ readPixels FBO color clear failed fbo=%u",
-          (unsigned)fbo->name);
-}
-
 
 - (id)readbackStageAndWaitTexture:(id)sourceTexture
                                  sourceLevel:(NSUInteger)sourceLevel
@@ -1791,52 +1739,6 @@ static void mglTextureCopyTextureToBuffer(
     return YES;
 }
 
-- (void)mglApplyPendingFBODepthClearForReadback:(Framebuffer *)fbo
-                                     attachment:(FBOAttachment *)attachment
-                                     textureObj:(Texture *)textureObj
-                                     mtlTexture:(id)texture
-{
-    if (!fbo || !attachment || !texture ||
-        !mglRenderClearMaskHasDepth((uint32_t)attachment->clear_bitmask)) {
-        return;
-    }
-
-    MGLMetalAttachmentSubresource subresource =
-        mglMetalAttachmentSubresourceForAttachment(attachment);
-    if (mglRenderEncodeDepthClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
-            (__bridge void *)texture, subresource.level,
-            subresource.slice, subresource.depthPlane,
-            attachment->clear_color[0]) == 0) {
-        attachment->clear_bitmask =
-            (GLbitfield)mglRenderClearMaskClearDepth(
-                (uint32_t)attachment->clear_bitmask);
-        mglMarkTextureLevelRenderTargetWritten(textureObj, attachment->level);
-    } else {
-        NSLog(@"MGL WARNING: C++ readPixels depth clear failed fbo=%u",
-              (unsigned)fbo->name);
-    }
-}
-
-- (void)mglApplyPendingDefaultDepthClearToTexture:(id)texture
-{
-    if (!ctx || !texture ||
-        !mglRenderClearMaskHasDepth((uint32_t)STATE(default_fbo_clear_bitmask))) {
-        return;
-    }
-
-    if (mglRenderEncodeDepthClearForCommandBufferOwner(
-            _renderPassManager.state->currentCommandBufferOwner,
-            (__bridge void *)texture, 0, 0, 0,
-            STATE(var).depth_clear_value) == 0) {
-        STATE(default_fbo_clear_bitmask) =
-            (GLbitfield)mglRenderClearMaskClearDepth(
-                (uint32_t)STATE(default_fbo_clear_bitmask));
-    } else {
-        NSLog(@"MGL WARNING: C++ default depth clear failed");
-    }
-}
-
 - (void)mtlReadDepthPixels:(GLMContext)glm_ctx
                 pixelBytes:(void *)pixelBytes
                bytesPerRow:(NSUInteger)bytesPerRow
@@ -1883,10 +1785,7 @@ static void mglTextureCopyTextureToBuffer(
             mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
-        [self mglApplyPendingFBODepthClearForReadback:fbo
-                                           attachment:attachment
-                                           textureObj:readTextureObject
-                                           mtlTexture:texture];
+        mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, fbo, attachment, readTextureObject, (__bridge void *)texture);
         [self mglReadDepthTextureAsFloat:texture
                              sourceLevel:subresource.level
                              sourceSlice:subresource.slice
@@ -1920,7 +1819,7 @@ static void mglTextureCopyTextureToBuffer(
         mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
-    [self mglApplyPendingDefaultDepthClearToTexture:texture];
+    mglTextureApplyPendingDefaultDepthClear((__bridge void *)self, (__bridge void *)texture);
     [self mglReadDepthTextureAsFloat:texture
                          sourceLevel:0u
                          sourceSlice:0u
@@ -1967,11 +1866,7 @@ static void mglTextureCopyTextureToBuffer(
         mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         return;
     }
-    [self mglApplyPendingFBOColorClearForReadback:fbo
-                                       attachment:attachment
-                                       textureObj:textureObj
-                                       mtlTexture:texture
-                                   attachmentEnum:readBuffer];
+    mglTextureApplyPendingFBOColorClearForReadback((__bridge void *)self, fbo, attachment, textureObj, (__bridge void *)texture, readBuffer);
 
     /* Determine output component count and component mapping.
      * componentMap[c] = source component index for output component c, or -1. */
@@ -2076,11 +1971,7 @@ static void mglTextureCopyTextureToBuffer(
             mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             return;
         }
-        [self mglApplyPendingFBOColorClearForReadback:fbo
-                                           attachment:attachment
-                                           textureObj:readTextureObject
-                                           mtlTexture:texture
-                                       attachmentEnum:readBuffer];
+        mglTextureApplyPendingFBOColorClearForReadback((__bridge void *)self, fbo, attachment, readTextureObject, (__bridge void *)texture, readBuffer);
         [self mglReadColorTextureAsBGRA8:texture
                               sourceLevel:subresource.level
                               sourceSlice:subresource.slice
@@ -2137,7 +2028,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
     if (mglRenderDefaultDrawBufferIsFront((uint32_t)mgl_drawbuffer)) {
-        [self mglApplyPendingDefaultColorClearToTexture:texture];
+        mglTextureApplyPendingDefaultColorClear((__bridge void *)self, (__bridge void *)texture);
     }
     [self mglReadColorTextureAsBGRA8:texture
                           sourceLevel:0u

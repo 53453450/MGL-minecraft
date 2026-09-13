@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **27 / 394**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 37,177**、ObjC 语法 **2,268 → 2,129**、词汇 **4,353 → 4,066**；
-**shim：43 → 24 个端口 / 366 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 四刀合计净减 3 个端口）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 37,047**、ObjC 语法 **2,268 → 2,137**、词汇 **4,353 → 4,062**；
+**shim：43 → 24 个端口 / 366 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 五刀端口 27 → 24）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1360,3 +1360,25 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
     下一刀：`+Blit.m` 的 `textureCanUseGLSampledRenderTargetCopy`(37) / `lazyRefreshGLSampledRenderTargetCopyForTexture`(52) /
     `blitFramebufferDirectColorCopyWithState`(91) 等零外部依赖方法，以及 `+Texture.m` 的
     `mglApplyPending{FBO,Default}{Color,Depth}Clear*` 系列（21–30 行 ×4，`+Blit.m` 已在调用）。
+
+59. **P0-1 第五刀：readback/blit 前置 clear 应用族转 C（**shim 持平、行数 −130**）**：
+    ① **搬走**：`mglApplyPendingFBODepthClearForReadback:attachment:textureObj:mtlTexture:`（26 行）、
+    `mglApplyPendingFBOColorClearForReadback:…attachmentEnum:`（30）、`mglApplyPendingDefaultDepthClearToTexture:`（18）、
+    `mglApplyPendingDefaultColorClearToTexture:`（21）→ 新 TU **`MGL/src/mgl_texture_readback_clear.c`** + C 安全头
+    （4 个入口；`_renderPassManager.state->currentCommandBufferOwner` 改为
+    `mglRendererCommandStatePort(renderer)->currentCommandBufferOwner` ✓ 本周期已把 command state 做成 C 可见，
+    `STATE(...)` → `areas.ctx->active_state->…` ✓ dual-proxy 不变式）。12 处调用点（`+Texture` 6、`+Blit` 6）改直调。
+    ② **如实记账（shim 持平，不到"净减"）**：本轮**先多开了一个端口** `mglRendererStateAreasCtxPort`，
+    发现 `mglRendererStateAreasPort` 已带 `ctx` 字段后**立即回退**（多一个端口＝违反 §0.04），
+    最终 **shim 24 端口持平**、行数 366（+0）；ObjC 行数 **37,177 → 37,047（−130）**、
+    词汇 4,066 → **4,062**，但**语法 2,129 → 2,137（+8）**——12 处调用点各引入一个 `(__bridge void *)` 桥接，
+    这是"方法转 C 而调用点仍是 ObjC"的固有代价（第 46 条同款现象），如实记录、不宣称语法收益。
+    ③ **oracle**：trace 语料 374/374、296/296 逐字段一致（default 臂含 `MGL_TRACE_LOG_RESOURCES=1`）；
+    stderr 仅 BINARY ARCHIVE 运行序伪差；回归 92/0/2、ICB 轮 82/10/2 相同；CTS 七簇 diff 全空。
+    ④ **教训（第三次同源）**：`mglMarkTextureLevelRenderTargetWritten` 是 ObjC 头里的**宏**（4 参 Impl + `__func__`/`__LINE__`），
+    C 侧必须声明并使用 `…Impl(tex, level, __func__, __LINE__)`；先按 2 参声明会与 `mgl_batch_rt_mark_host.c` 的
+    `extern` 冲突。**规则：从 ObjC 头借符号给 C 用时，先确认它是宏还是函数。**
+    下一刀（目标重新回到净减）：`+Blit.m` 的 GLSampled-copy 簇——`textureCanUseGLSampledRenderTargetCopy:source:`(37) +
+    `lazyRefreshGLSampledRenderTargetCopyForTexture:…`(52) + **`updateGLSampledRenderTargetCopyForTexture:…`(375)**，
+    后者只依赖 `ensureWritableCommandBuffer` 与前者，整簇约 **464 行**，是迄今最大单块；
+    若把它转 C，可顺带退役/收窄若干 blit 端口。

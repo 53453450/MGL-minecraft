@@ -139,15 +139,6 @@ void mglMetalCopyRows(const uint8_t *src,
                       depth:(GLsizei)depth;
 
 // === Pending FBO clear application for readback ===
-- (void)mglApplyPendingFBODepthClearForReadback:(Framebuffer *)fbo
-                                     attachment:(FBOAttachment *)attachment
-                                    textureObj:(Texture *)textureObj
-                                     mtlTexture:(id)texture;
-- (void)mglApplyPendingFBOColorClearForReadback:(Framebuffer *)fbo
-                                     attachment:(FBOAttachment *)attachment
-                                    textureObj:(Texture *)textureObj
-                                     mtlTexture:(id)texture
-                                  attachmentEnum:(GLenum)attachmentEnum;
 
 // === Locked texture upload variant ===
 - (void)mtlTexSubImageLocked:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset;
