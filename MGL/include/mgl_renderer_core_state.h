@@ -58,6 +58,9 @@ typedef struct MGLRendererCoreState_t {
     MGLCapability capability;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     uint8_t defaultDrawableWrittenSinceLastSwap;
+    /* Last primitive mode the draw path recorded (was the MGLRenderer
+     * _lastDrawPrimitiveMode ivar; the C draw host port writes it). */
+    uint32_t lastDrawPrimitiveMode;
     /* Lock-free hand-off channels.  Written by the completion-handler thread
      * / main queue, drained (and resynchronized) on the GL thread. */
     _Atomic bool deviceResetRequested;

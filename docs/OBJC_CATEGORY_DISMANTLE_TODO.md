@@ -3345,3 +3345,31 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      ⑥ 下一刀：该文件**已无任何 ObjC 消息发送**，剩下 25 处语法是 4 个 `#import`、约 19 个 `__bridge` 与少量 `MGLRenderer *` 局部；
      按簇把局部改成状态区读取（`host->ctx` → `areas.ctx` 等）后即可 `git mv … → .c`（**文件 8 → 7**）。
+
+115. **P0-1 第五十九刀：`_lastDrawPrimitiveMode` 并入核心状态记录（为最后一刀扫清字段）+ 两次脚本化尝试的失败记录**：
+     ① 该 ivar 是 `mgl_draw_metal_port.m` 收尾时**唯一没有 C 家**的渲染器字段（其余 `_tessellation` / `_geometry` / `_batching` /
+     `_core` / `_backend` / `_renderPassManager` / `_gpuRecovery.commandRecoveryOwner` / `_bindingStateOwner` 都已能经状态区读写）。
+     按"一个状态 struct + 一个端口"的老办法，把它并进 **`MGLRendererCoreState`**（`uint32_t lastDrawPrimitiveMode;`），
+     `MGLRenderer_Private.h` 里的 ivar 换成宏 `#define _lastDrawPrimitiveMode _core.lastDrawPrimitiveMode`
+     （与 `_activeState`/`_defaultDrawableWrittenSinceLastSwap` 同一写法），ObjC 侧一行未改、C 侧从此可写。
+     ② **两次脚本化转换失败，如实记录**（都是我自己踩的，不是环境问题）：
+     - **第一次**（第 114 条第③项）：按函数体把 `MGLRenderer *self = mglStageHostSelf(renderer);` 整体换成状态区取用；
+       47 个函数被改写但 35 个函数残留 `self`/`host`，编译报 17 处 `areas` 未声明 + 1 处重定义；
+     - **第二次**（本刀）：改用"屏蔽注释与字符串后的括号配对"来切函数体 + 补全字段映射（含 `_gpuRecovery.commandRecoveryOwner`
+       → `*(areas.gpu_recovery_command_owner)`、`_bindingStateOwner` → `*(areas.binding_state_owner)`、`_core.deviceResetRequested`、
+       `_lastDrawPrimitiveMode`），并把兜底规则 `\bself\b → renderer` 也加上；结果仍出现
+       `redefinition of 'renderer' with a different type`（说明有的函数体切片跨越了下一个函数的声明行）与新的 `areas` 未声明。
+     **两次都已 `cp` 备份后整体回退**，树始终停在上一刀已验证的状态。
+     **结论（升格为纪律）**：`mgl_draw_metal_port.m` 的收尾**只能按 host-ops 簇人工改、每簇编译**——
+     文件里 67 个函数各自声明 `MGLRenderer *self/host`，三种用法（空值判断 / 字段访问 / 实参）交织，
+     任何"一次扫描全文件"的脚本都会在函数边界上出错；本文件剩余 25 处语法（4 个 `#import` + 约 19 个 `__bridge` + 少量局部）
+     对应的正是这 67 个函数，**按每簇 5–10 个函数推进，约 7–10 刀可清完**。
+     ③ **度量**：语法 1,671（持平）、词汇 3,438（持平）、行数 31,063（持平）——本刀是**零度量的可加性前置**
+     （把最后一个字段搬进 C 状态记录）；文件数 8 不变。
+     ④ **oracle（含一次环境失败）**：旧库 = 提交 `0b48503` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与
+     5,514/5,514 逐行保序完全一致**（未过滤 5,281/5,281 与 5,808/5,806 → `processGLState.slow` **300/300 与 294/292**），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**。
+     ⚠️ **环境事故如实记录**：第一次跑 `make test-all` 时 `verify-gl-api` 因 `bash scripts/fetch_opengl_registry.sh`
+     访问 GitHub 失败（`Error in the HTTP2 framing layer`）而返回 `Error 2`；**重跑即恢复 `GATE=0`**。
+     这条与代码无关，但按纪律必须写出——**门禁失败先看是不是网络/工具链，再怀疑自己的改动**。

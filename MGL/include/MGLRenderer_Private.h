@@ -233,7 +233,8 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
     /* Most recent GL primitive mode handed to a draw entry point, used to
      * derive MTLRenderPipelineDescriptor.inputPrimitiveTopology (required by
      * Metal when the VS writes [[render_target_array_index]]). */
-    GLenum _lastDrawPrimitiveMode;
+    /* _lastDrawPrimitiveMode moved into MGLRendererCoreState (see the macro
+     * next to _defaultDrawableWrittenSinceLastSwap below). */
     /* Emulated MS textures are texture2d_array sample planes. When drawing
      * per-sample (SampleID / sample qualify / interpolateAtSample), these
      * select the attached plane and force FS SampleID to match. Active only
@@ -310,6 +311,7 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
 #define _capability _core.capability
 #define _drawBuffers _core.drawBuffers
 #define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap
+#define _lastDrawPrimitiveMode _core.lastDrawPrimitiveMode
 #define _commandQueueOwner mglRendererBackendGetOwner( \
     _backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE)
 #define _commandQueue ((__bridge id) \
