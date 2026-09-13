@@ -29,54 +29,8 @@
 
 @implementation MGLRenderer (DrawStageHost)
 
-- (BOOL)prepareAndEncodeDirectCullDistanceElementDraw:(GLenum)mode
-                                           indexBytes:(const uint8_t *)indexBytes
-                                            indexType:(GLenum)indexType
-                                                count:(GLsizei)count
-                                           baseVertex:(GLint)baseVertex
-                                        instanceCount:(GLsizei)instanceCount
-                                         baseInstance:(GLuint)baseInstance
-                                      polygonLineMode:(BOOL)polygonLineMode
-{
-    return mglDrawHostPrepareEncodeCullDistanceElement(
-               (__bridge void *)self, mode, indexBytes, indexType, count,
-               baseVertex, instanceCount, baseInstance,
-               polygonLineMode ? 1 : 0)
-               ? YES
-               : NO;
-}
 
-- (BOOL)encodeCullDistanceArrayDraw:(GLenum)mode
-                               first:(GLint)first
-                               count:(GLsizei)count
-                       instanceCount:(GLsizei)instanceCount
-                        baseInstance:(GLuint)baseInstance
-                       encodeContext:(const MGLEncodeContext *)encCtx
-{
-    (void)encCtx;
-    return mglDrawHostEncodeCullDistanceArray((__bridge void *)self, mode, first,
-                                              count, instanceCount, baseInstance)
-               ? YES
-               : NO;
-}
 
-- (BOOL)encodeCullDistanceElementDraw:(GLenum)mode
-                            indexBytes:(const uint8_t *)indexBytes
-                             indexType:(GLenum)indexType
-                                 count:(GLsizei)count
-                            baseVertex:(GLint)baseVertex
-                         instanceCount:(GLsizei)instanceCount
-                          baseInstance:(GLuint)baseInstance
-                       polygonLineMode:(BOOL)polygonLineMode
-                         encodeContext:(const MGLEncodeContext *)encCtx
-{
-    return mglDrawHostEncodeCullDistanceElementBytes(
-               (__bridge void *)self, mode, indexBytes, indexType, count,
-               baseVertex, instanceCount, baseInstance,
-               polygonLineMode ? 1 : 0, encCtx)
-               ? YES
-               : NO;
-}
 
 - (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
                         capture:(id)capture
@@ -98,20 +52,6 @@
                : NO;
 }
 
-- (id)captureAIRVertexPositionsForTessellation:(GLMContext)drawCtx
-                                                    first:(GLint)first
-                                                    count:(GLsizei)count
-                                            instanceCount:(GLsizei)instanceCount
-                                             baseInstance:(GLuint)baseInstance
-                                               outOffset:(NSUInteger *)outOffset
-{
-    uint64_t off = 0u;
-    void *cap = mglDrawHostRunVertexCaptureArray(
-        (__bridge void *)self, drawCtx, first, count, instanceCount,
-        baseInstance, &off);
-    if (outOffset) *outOffset = (NSUInteger)off;
-    return (__bridge_transfer id)cap;
-}
 
 - (id)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
                                                   indexBuffer:(id)indexBuffer
@@ -133,16 +73,6 @@
     return (__bridge_transfer id)cap;
 }
 
-- (bool)validateDrawArraysVertexInputs:(GLMContext)drawCtx
-                                    mode:(GLenum)mode
-                                   first:(GLint)first
-                                   count:(GLsizei)count
-                                drawCall:(uint64_t)drawCall
-{
-    (void)drawCall;
-    return mglDrawHostValidateArrayVertexInputs((__bridge void *)self, drawCtx,
-                                                mode, first, count);
-}
 
 - (void)bindCullDistanceEmulationBuffers:(GLenum)mode
                              firstVertex:(GLuint)firstVertex

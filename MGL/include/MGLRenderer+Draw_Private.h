@@ -337,25 +337,6 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                     GLenum mode, GLuint first_vertex,
                                     const uint32_t *explicit_vertices,
                                     uint32_t explicit_vertex_count);
-- (BOOL)prepareAndEncodeDirectCullDistanceElementDraw:(GLenum)mode
-                                           indexBytes:(const uint8_t *)indexBytes
-                                            indexType:(GLenum)indexType
-                                                count:(GLsizei)count
-                                           baseVertex:(GLint)baseVertex
-                                        instanceCount:(GLsizei)instanceCount
-                                         baseInstance:(GLuint)baseInstance
-                                      polygonLineMode:(BOOL)polygonLineMode;
-- (BOOL)encodeCullDistanceArrayDraw:(GLenum)mode
-                               first:(GLint)first
-                               count:(GLsizei)count
-                       instanceCount:(GLsizei)instanceCount
-                        baseInstance:(GLuint)baseInstance
-                       encodeContext:(const MGLEncodeContext *)encCtx;
-- (bool)validateDrawArraysVertexInputs:(GLMContext)drawCtx
-                                  mode:(GLenum)mode
-                                 first:(GLint)first
-                                 count:(GLsizei)count
-                              drawCall:(uint64_t)drawCall;
 - (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
 - (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
                         capture:(id)capture

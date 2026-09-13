@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十五刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
-行数 **43,989 → 35,478**、ObjC 语法 **2,268 → 2,029**、词汇 **4,353 → 3,944**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十六刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
+行数 **43,989 → 35,413**、ObjC 语法 **2,268 → 2,023**、词汇 **4,353 → 3,931**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1729,3 +1729,19 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：T5 第二步——把 `+Lifecycle.m`(665) 里真正属于平台壳的部分（NSView/drawable/swap 提交）并入同一个 TU，
      其余生命周期逻辑按域下沉 C；同时按 §0.11 继续 `+VertexLayout.m` 的三条前置依赖（pipeline-cache blend setter、
      `MGLTessellationState` 进 areas、`bindFramebufferTexture:isDrawBuffer:`）。
+
+70. **P0-1 第十六刀：删掉 `+DrawStageHost.m` 的 5 个"已被 C 取代"的死方法（**−70 行**）**：
+     ① 判别方法（本轮固化为"死方法三条件"，比 `-Wunused-function` 更严）：
+     **`grep -c "\[self <sel>"` 文件内自调用 = 0** ∧ **全树（含 .mm/.c/.h，排除声明）引用 = 0** ∧ **不是 host-ops 表里的函数指针**。
+     按此筛出并删除：`prepareAndEncodeDirectCullDistanceElementDraw:`(16) · `encodeCullDistanceArrayDraw:`(13) ·
+     `encodeCullDistanceElementDraw:`(17) · `captureAIRVertexPositionsForTessellation:`(14) · `validateDrawArraysVertexInputs:`(10)
+     （它们的 C 对应物 `mglDrawHost*` 早已被 host-ops 直接调用，ObjC 方法成了空壳残留）；私有头里 5 条声明同步删除。
+     ⚠️ **反例（差点误删）**：`fragmentNeedsPerSampleMSValuesForContext:` 全树外部引用为 0，但**文件内 `[self …]` 有 2 处**
+     （MS 采样循环），属"只在本文件用"的活方法——**所以第一步必须查文件内自调用**。
+     ② **度量**：行数 **35,478 → 35,413**、语法 **2,029 → 2,023**、词汇 **3,944 → 3,931**；文件仍 18、shim 端口仍 13。
+     ③ **oracle**：旧库 = 提交 `1a58d80` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；
+     28 目标门禁 `GATE=0`。
+     下一刀：同一"死方法三条件"扫全仓（`+Binding.m` / `+GPURecovery.m` / `+SwapDiagnostics.m` / `MGLRenderPassManager.m`
+     都是候选），把"已被 C 取代但方法壳还在"的残留一次清完；之后再回到 §0.11 的结构性刀（`+VertexLayout.m` 三条前置依赖、
+     T5 第二步 `+Lifecycle.m` 并入唯一壳 TU）。
