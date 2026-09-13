@@ -643,29 +643,28 @@ static int mglStageProcessGL(void *renderer)
 
 static int mglStageEncoderHasCurrent(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return 0;
+    if (!renderer) return 0;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     return mglRenderEncoderOwnerHasCurrent(
-               self->_renderPassManager->state->currentRenderEncoderOwner)
+               areas.command ? areas.command->currentRenderEncoderOwner : NULL)
                ? 1
                : 0;
 }
 
 static int mglStageRasterEmpty(void *renderer)
 {
-    return mglStageHostSelf(renderer)
-               ? mglDrawRasterizationIsEmpty(renderer) : 0;
+    return renderer ? mglDrawRasterizationIsEmpty(renderer) : 0;
 }
 
 static int mglStageFullyCulled(void *renderer, GLenum mode)
 {
-    return mglStageHostSelf(renderer)
-               ? mglDrawModeIsFullyCulled(renderer, (uint32_t)mode) : 0;
+    return renderer ? mglDrawModeIsFullyCulled(renderer, (uint32_t)mode) : 0;
 }
 
 static void mglStageApplyPolygonOffset(void *renderer, GLenum mode)
 {
-    if (mglStageHostSelf(renderer)) {
+    if (renderer) {
         mglDrawApplyPolygonOffset(renderer, (uint32_t)mode);
     }
 }
@@ -1010,21 +1009,28 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
 
 static void *mglGsMetalCmdOwner(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? self->_renderPassManager->state->currentCommandBufferOwner : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.command ? areas.command->currentCommandBufferOwner : NULL;
 }
 
 static void *mglGsMetalRecoveryOwner(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? self->_gpuRecovery.commandRecoveryOwner : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.gpu_recovery_command_owner ? *areas.gpu_recovery_command_owner
+                                            : NULL;
 }
 
 static void mglGsMetalNoteDeviceReset(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) {
-        atomic_store_explicit(&self->_core.deviceResetRequested, true,
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (areas.core) {
+        atomic_store_explicit(&areas.core->deviceResetRequested, true,
                               memory_order_release);
     }
 }
@@ -1032,21 +1038,23 @@ static void mglGsMetalNoteDeviceReset(void *renderer)
 static void mglGsMetalSetExpansion(void *renderer, Program *program, int active,
                                    GLenum last_draw_mode)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    self->_geometry.expansionActive = active ? 1 : 0;
-    self->_geometry.program = active ? program : NULL;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    areas.geometry->expansionActive = active ? 1 : 0;
+    areas.geometry->program = active ? program : NULL;
     if (active && last_draw_mode) {
-        self->_lastDrawPrimitiveMode = last_draw_mode;
+        areas.core->lastDrawPrimitiveMode = last_draw_mode;
     }
 }
 
 static void *mglGsMetalBeginBlit(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     void *blit = mglDrawSupportCreateBlitEncoder(
-        self->_renderPassManager->state->currentCommandBufferOwner);
+        areas.command ? areas.command->currentCommandBufferOwner : NULL);
     return mglDrawSupportRetainForCaller(blit);
 }
 
@@ -1067,15 +1075,16 @@ static void mglGsMetalEndBlit(void *blit)
 
 static void *mglGsMetalBindingOwner(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? self->_bindingStateOwner : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 }
 
 /* A1: clears are in mgl_draw_gs_metal.cpp; ObjC only rebinds MTL resources. */
 static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !ctx) return 0;
+    if (!renderer || !ctx) return 0;
     MGLRendererStateAreas areas;
     mglRendererStateAreasPort(renderer, &areas);
     MGLEncodeContext gsEncCtx = {
@@ -1231,47 +1240,53 @@ static void *mglStagePrepareElementIndex(void *renderer, void *index_buffer,
 
 static void mglStageSetCtx(void *renderer, GLMContext ctx)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) self->ctx = ctx;
+    if (renderer) mglPlatformShellSetContext(renderer, ctx);
 }
 
 static void mglStageClearCullCapture(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    (void)mglRendererBackendSetCullDistanceCaptureBuffer(self->_backend, NULL);
-    self->_tessellation.cullDistanceCaptureFirstInstance = 0u;
-    self->_tessellation.cullDistanceCaptureInstanceStride = 0u;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    (void)mglRendererBackendSetCullDistanceCaptureBuffer(areas.backend, NULL);
+    areas.tessellation->cullDistanceCaptureFirstInstance = 0u;
+    areas.tessellation->cullDistanceCaptureInstanceStride = 0u;
 }
 
 static void mglStageSetCullCaptureActive(void *renderer, int active)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) self->_tessellation.cullDistanceCaptureActive = active ? 1 : 0;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    areas.tessellation->cullDistanceCaptureActive = active ? 1 : 0;
 }
 
 static void mglStageStoreCullCapture(void *renderer, void *buf,
                                      uint32_t first_instance,
                                      uint32_t instance_stride)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    (void)mglRendererBackendSetCullDistanceCaptureBuffer(self->_backend, buf);
-    self->_tessellation.cullDistanceCaptureFirstInstance = first_instance;
-    self->_tessellation.cullDistanceCaptureInstanceStride = instance_stride;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    (void)mglRendererBackendSetCullDistanceCaptureBuffer(areas.backend, buf);
+    areas.tessellation->cullDistanceCaptureFirstInstance = first_instance;
+    areas.tessellation->cullDistanceCaptureInstanceStride = instance_stride;
 }
 
 static void *mglStageLoadCullCapture(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? mglRendererBackendGetCullDistanceCaptureBuffer(self->_backend)
-                : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetCullDistanceCaptureBuffer(areas.backend);
 }
 
 static void *mglStageDevicePtr(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (__bridge void *)((__bridge id)mglRendererBackendGetDevice(self->_backend)) : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetDevice(areas.backend);
 }
 
 static void mglStageBindCullEmu(void *renderer, GLenum mode, GLuint first_vertex,
