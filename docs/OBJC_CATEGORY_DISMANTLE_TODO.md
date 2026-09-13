@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **27 / 394**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 两刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 37,459**、ObjC 语法 **2,268 → 2,150**、词汇 **4,353 → 4,077**；
-**shim：43 → 26 个端口 / 382 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 两刀已净减 1 个端口）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 三刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 37,241**、ObjC 语法 **2,268 → 2,142**、词汇 **4,353 → 4,075**；
+**shim：43 → 25 个端口 / 367 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 三刀合计净减 2 个端口）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1317,3 +1317,23 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
     50 个调用点不能机械内联）、`+Blit.m` 的 `clearRectDepthState` 已随首刀搬走；
     更值钱的是把 `textureForSampledResource:metalBinding:stage:expectedType:`（+Texture 的采样取纹理环）与
     `+RenderPass.m` 的 `newRenderEncoder(Locked)WithReason:` 一并下沉。
+
+57. **P0-1 第三刀：`textureForSampledResource` 采样取纹理环下沉（**shim 再净减 1 个端口**）**：
+    ① **搬走 189 行纯 C 决策**：`-textureForSampledResource:metalBinding:stage:expectedType:textureUnit:`（174 行：1D/buffer/MS/typed-slot
+    优先级、默认纹理拒绝规则、texel-buffer 缺失即拒绝、两条限流诊断）与它的 15 行 `:expectedType:` 包装
+    → 新 TU **`MGL/src/mgl_texture_binding_resolve.c`** + C 安全头 **`mgl_texture_binding_resolve.h`**
+    （`mglTextureForSampledResource(ctx, res, binding, stage, expected_type, unit)` /
+    `mglTextureForSampledResourceForStage(...)`）。**单独开 TU 的原因**：`mgl_binding_texture.c` 被
+    `test_binding_texture` 单独链接，不能拉进 `mgl_render.*` 依赖（老教训）。
+    ② **退掉 shim 端口** `mglRendererTextureForSampledResourcePort`（C 侧 `mgl_batch_dyn_bind_encode.c` 直调
+    `mglTextureForSampledResourceForStage`）；ObjC 调用点 5 处改直调（`+BindingState` 2、`+Compute` 2、`+Texture` 1）。
+    ③ 两处 `NSLog` 诊断 → `fprintf(stderr, …)`（同 sink，字段不变）；`MGL_STATE(ctx)` → `ctx->active_state`（dual-proxy 不变式）。
+    ④ **度量**：全仓行数 **37,459 → 37,241**、语法 **2,150 → 2,142**、词汇 4,077 → **4,075**；
+    **shim 26 → 25 端口 / 382 → 367 行**；`+Texture.m` 6,868 → **6,679**。
+    ⑤ **oracle**：trace 语料（本轮 default 臂额外开 `MGL_TRACE_LOG_RESOURCES=1`，覆盖纹理绑定路径）**374/374、296/296 逐字段一致**；
+    stderr 仅 BINARY ARCHIVE created/loaded/saved 的运行序伪差；回归 92/0/2、ICB 轮 82/10/2 相同；CTS 七簇 diff 全空。
+    ⑥ **推送方式变更（用户指示）**：**不再用 HTTPS**，改用已有的 SSH remote `origin`
+    （`git@github.com:53453450/MGL-minecraft.git`，`ssh -T git@github.com` 已验证），推送命令固定为
+    `git push origin main:main`。此前 HTTPS 因网络中断积压的 3 个提交已一次性推送成功。
+    下一刀：`+RenderPass.m` 的 `newRenderEncoder(Locked)WithReason:` 环与 `endRenderEncoding` 系列
+    （`endRenderEncoding` 带 METAL_LOCK，**保留**）；以及 `+Blit.m` 的 `clearRectPipelineForColorFormat:` 调用链。

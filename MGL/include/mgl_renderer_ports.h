@@ -134,9 +134,6 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
                                                           const char *label);
 
 /* Sampled-resource lookup for the dyn-texture plan. */
-void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
-                                               uint32_t metal_slot, int stage,
-                                               uint32_t expected_type);
 
 /* Sampler state for a snapshot key (unretained; the backend cache owns it) and
  * the fallback sampler. */

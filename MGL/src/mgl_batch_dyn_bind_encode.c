@@ -10,7 +10,8 @@
 #include "mgl_vertex_attrib_query.h"  /* mglRendererResolveVertexAttributeBufferIndex */
 #include "mgl_state_log.h"            /* mglMipDiag* */
 #include "mgl_buffer_slots.h"         /* kmax slot constants */
-#include "mgl_texture_compat.h"       /* mglSampledTextureViewForBaseLevel */
+#include "mgl_texture_compat.h"
+#include "mgl_texture_binding_resolve.h"       /* mglSampledTextureViewForBaseLevel */
 #include "mgl_shader_resource.h"      /* mglMetalCombinedSamplerSlot */
 #include "mgl_binding_policy.h"       /* mglRenderTextureBindingStageForShader */
 #include "mgl_byte_hash.h"
@@ -158,8 +159,8 @@ static int mglDynSampledResolve(void *v, const MGLBatchSampledTexCandidate *e,
         resource, mglResolveProgramForStageFromState(c->ctx, (int)e->stage),
         e->metal_slot, (int)e->stage);
     Texture *tex_obj = (unit < TEXTURE_UNITS && touched[unit])
-        ? mglRendererTextureForSampledResourcePort(
-              c->r, resource, e->metal_slot, (int)e->stage,
+        ? mglTextureForSampledResourceForStage(
+              c->ctx, resource, e->metal_slot, (int)e->stage,
               e->lookup_type ? e->lookup_type : e->expected_type)
         : NULL;
     void *texture = (tex_obj && tex_obj->mtl_data)

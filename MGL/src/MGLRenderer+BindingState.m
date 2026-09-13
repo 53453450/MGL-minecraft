@@ -11,6 +11,7 @@
 // MGLRenderer+BindingState.m — V/F buffer, attrib, texture bind ports
 
 #import "MGLRenderer_Private.h"
+#include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
@@ -1595,12 +1596,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         MGLTextureDataKind expectedKind =
             (MGLTextureDataKind)mglExpectedTextureDataKindForResource(
                 sampleProgram, shaderStage, sampledResource);
-        Texture *ptr = [self textureForSampledResource:sampledResource
-                                          metalBinding:spirvBinding
-                                                  stage:shaderStage
-                                           expectedType:(lookupType ? lookupType
-                                                                    : expectedType)
-                                          textureUnit:textureUnit];
+        Texture *ptr = mglTextureForSampledResource(
+            ctx, sampledResource, spirvBinding, shaderStage,
+            (lookupType ? lookupType : expectedType), textureUnit);
         id texture = nil;
         id sampler = isFragment ? nil : defaultSampler;
         id directTextureForTrace = nil;
@@ -2854,10 +2852,7 @@ done:
                 }
 
                 GLuint textureUnit = mglTextureUnitForSampledResource(NULL, mglResolveProgramForStageFromState(ctx, arrayStage), metalSlot, arrayStage);
-                Texture *arrayTexture = [self textureForSampledResource:NULL
-                                                            metalBinding:metalSlot
-                                                                    stage:arrayStage
-                                                             expectedType:expectedType];
+                Texture *arrayTexture = mglTextureForSampledResourceForStage(ctx, NULL, metalSlot, arrayStage, expectedType);
                 id metalTexture = nil;
                 id metalSampler = defaultSampler;
                 if (arrayTexture && [self bindMTLTexture:arrayTexture]) {

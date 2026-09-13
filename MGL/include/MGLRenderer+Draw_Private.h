@@ -341,17 +341,10 @@ typedef struct {
 /* textureUnitForSampledResource:... is now the C function
  * mglTextureUnitForSampledResource (mgl_texture_compat.h). */
 /* program-resolved variant — skips mglResolveProgramForStageFromState. */
-- (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
-                          metalBinding:(GLuint)metalBinding
-                                  stage:(int)stage
-                           expectedType:(uint32_t)expectedType;
+/* textureForSampledResource:... is now the C API in
+ * mgl_texture_binding_resolve.h. */
 /* textureUnit-resolved variant — caller passes the already-computed
  * texture unit, skipping the internal textureUnitForSampledResource: call. */
-- (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
-                          metalBinding:(GLuint)metalBinding
-                                  stage:(int)stage
-                           expectedType:(uint32_t)expectedType
-                          textureUnit:(GLuint)textureUnit;
 - (id)fallbackSampledTextureForExpectedType:(uint32_t)expectedType
                                                dataKind:(MGLTextureDataKind)dataKind;
 - (void)traceSampledTextureReadback:(id)texture

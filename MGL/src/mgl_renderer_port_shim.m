@@ -201,21 +201,6 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
     return (r && [r restoreRenderEncoderAfterTextureUploadForDraw:label]) ? 1 : 0;
 }
 
-void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
-                                               uint32_t metal_slot, int stage,
-                                               uint32_t expected_type)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || !resource) {
-        return NULL;
-    }
-    /* The entry point returns a Texture *, not an object pointer. */
-    return [r textureForSampledResource:(MGLShaderResource *)resource
-                           metalBinding:metal_slot
-                                  stage:stage
-                           expectedType:(uint32_t)expected_type];
-}
-
 void *mglRendererSamplerStateForSnapshotKeyPort(void *renderer, const void *key)
 {
     /* Body of the former -[MGLRenderer samplerStateForSnapshotKey:].  The

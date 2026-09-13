@@ -13,6 +13,7 @@
 // These methods do not depend on any file-scope static functions in MGLRenderer.m.
 
 #import "MGLRenderer_Private.h"
+#include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Binding_Private.h"
 #import "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
@@ -686,11 +687,8 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                         if (glUnit >= TEXTURE_UNITS) {
                             continue;
                         }
-                        ptr = [self textureForSampledResource:resource
-                                                 metalBinding:metalBinding
-                                                         stage:stage
-                                                  expectedType:mglRendererGetProgramDeclaredTextureType(
-                                                      ctx, stage, spvc_type, i)];
+                        ptr = mglTextureForSampledResourceForStage(ctx, resource, metalBinding, stage, mglRendererGetProgramDeclaredTextureType(
+                                                      ctx, stage, spvc_type, i));
                 }
 
                 if (ptr)
@@ -790,10 +788,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                 }
 
                 GLuint glUnit = mglTextureUnitForSampledResource(NULL, mglResolveProgramForStageFromState(ctx, stage), metalSlot, stage);
-                Texture *ptr = [self textureForSampledResource:NULL
-                                                   metalBinding:metalSlot
-                                                           stage:stage
-                                                    expectedType:expectedType];
+                Texture *ptr = mglTextureForSampledResourceForStage(ctx, NULL, metalSlot, stage, expectedType);
                 if (!ptr || ![self bindMTLTexture:ptr] || !ptr->mtl_data) {
                     continue;
                 }
