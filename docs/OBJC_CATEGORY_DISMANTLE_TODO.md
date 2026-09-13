@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十六刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
-行数 **43,989 → 35,413**、ObjC 语法 **2,268 → 2,023**、词汇 **4,353 → 3,931**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十七刀** + trace 清零 后）**：文件 **53 → 18**、空 TU **3 → 0**、
+行数 **43,989 → 35,398**、ObjC 语法 **2,268 → 2,021**、词汇 **4,353 → 3,931**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1745,3 +1745,26 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：同一"死方法三条件"扫全仓（`+Binding.m` / `+GPURecovery.m` / `+SwapDiagnostics.m` / `MGLRenderPassManager.m`
      都是候选），把"已被 C 取代但方法壳还在"的残留一次清完；之后再回到 §0.11 的结构性刀（`+VertexLayout.m` 三条前置依赖、
      T5 第二步 `+Lifecycle.m` 并入唯一壳 TU）。
+
+71. **P0-1 第十七刀：把"死方法扫描"做成脚本并修掉三个假阳性陷阱（**−15 行**，工具入仓）**：
+     ① **事故（本轮自己造的，编译器抓住）**：按第 70 条的"三条件"手工扫出 7 个候选，我把其中 5 个（含
+     `mtlBlitFramebuffer:` 412 行、`mtlClearBuffer:` 447 行）直接删掉，**编译立刻报错**——
+     `MGLRenderer.m:3260 [renderer mtlSwapBuffers:glm_ctx]`、`+Blit.m:1851`、`MGLRenderer.m:3733` 都是**活调用**，
+     它们就在**定义所在的同一个文件里**，而我上一轮的"全树 grep"用 `grep -v "^MGL/src/MGLRenderer\.m"` 把整个文件排除了，
+     于是把"文件内其它接收者的调用"全漏掉。**已 `git checkout` 全部回退**，未进任何提交。
+     ② **修法**：把判别固化成脚本 **`scripts/objc_dead_methods.py`**（入仓，可复跑），逐条处理 4 类引用：
+     - 选择器**带冒号**（上一版把 `mglWindowGeometryChanged:` 截成 `…Changed` 导致误判，而它正是 NSNotification 的 selector）；
+     - **任意接收者**的发送 `[<recv> sel…]`（不只 `[self …]`，也不再整文件排除）；
+     - **属性语法** `obj.device = x`（等价于 `setDevice:`，上一版漏掉；`setDevice:` 因此是活的）；
+     - **框架回调**（KVO `observeValueForKeyPath:…`、通知 selector）单列"需人工确认"。
+     **结论/规则：静态扫描只负责给候选，`clang` 才是 liveness 的唯一裁判——删除后必须立刻编译验证**；
+     这条与第 63 条（多步编辑别复用字符偏移）、第 66 条（并行改动时只 add 自己路径）并列为"本周期三次自伤"。
+     ③ 脚本在修正后只剩 **3 个候选**，其中 2 个经编译验证确为死代码并删除：
+     `+Compute.m` 的 `mtlDispatchCompute:`(9) 与 `mtlDispatchComputeIndirect:`(6)（调用方早已改直调 `…Locked` 版本）；
+     第 3 个 `observeValueForKeyPath:` 是 KVO 回调，**保留**。脚本现在的稳态输出是**零候选**（唯一残留就是这条待人工确认项）。
+     ④ **度量**：行数 **35,413 → 35,398**、语法 **2,023 → 2,021**、词汇 3,931；文件仍 18、shim 端口仍 13。
+     ⑤ **oracle**：旧库 = 提交 `651eefb` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非对称集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：直接跑 `python3 scripts/objc_dead_methods.py`（应为 0 候选）后回到结构性刀：§0.11 的 `+VertexLayout.m` 三条前置依赖
+     （pipeline-cache blend setter / `MGLTessellationState` 进 areas / `bindFramebufferTexture:isDrawBuffer:`）
+     与 T5 第二步（`+Lifecycle.m` 平台部分并入唯一壳 TU）。

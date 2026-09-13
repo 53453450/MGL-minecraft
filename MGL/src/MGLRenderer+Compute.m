@@ -949,15 +949,6 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
     return true;
 }
 
--(void)mtlDispatchCompute:(GLMContext)glm_ctx groupsX:(GLuint)groups_x groupsY:(GLuint)groups_y groupsZ:(GLuint)groups_z
-{
-    METAL_LOCK();
-    [self mtlDispatchComputeLocked:glm_ctx
-                           groupsX:groups_x
-                           groupsY:groups_y
-                           groupsZ:groups_z];
-    METAL_UNLOCK();
-}
 
 
 - (BOOL)runComputeDispatchOrchestrationLocked:(GLMContext)glm_ctx
@@ -1186,12 +1177,6 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
 }
 
 
--(void)mtlDispatchComputeIndirect:(GLMContext)glm_ctx indirect:(GLintptr)indirect
-{
-    METAL_LOCK();
-    [self mtlDispatchComputeIndirectLocked:glm_ctx indirect:indirect];
-    METAL_UNLOCK();
-}
 
 -(void)mtlDispatchComputeIndirectLocked:(GLMContext)glm_ctx indirect:(GLintptr)indirect
 {
