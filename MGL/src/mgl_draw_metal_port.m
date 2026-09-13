@@ -689,106 +689,119 @@ static int mglStageFlushNativeCB(void *renderer)
 
 static void mglStageBeginNativeTES(void *renderer, Program *tes)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    self->_tessellation.nativeTESProgram = tes;
-    self->_tessellation.nativeTESActive = 1;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    areas.tessellation->nativeTESProgram = tes;
+    areas.tessellation->nativeTESActive = 1;
 }
 
 static void mglStageEndNativeTES(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    self->_tessellation.nativeTESActive = 0;
-    self->_tessellation.nativeTESProgram = NULL;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    areas.tessellation->nativeTESActive = 0;
+    areas.tessellation->nativeTESProgram = NULL;
 }
 
 static void mglStageResetTessDrawState(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    (void)mglRendererBackendSetTessVertexCaptureBuffer(self->_backend, NULL);
-    self->_tessellation.tessVertexCaptureOffset = 0u;
-    (void)mglRendererBackendSetTessControlPointIndexBuffer(self->_backend, NULL);
-    self->_tessellation.tessIndexedDraw = 0;
-    self->_tessellation.tessInstanceRecords = 0u;
-    (void)mglRendererBackendSetTcsOutputBuffer(self->_backend, NULL);
-    self->_tessellation.tcsOutputOffset = 0u;
-    self->_tessellation.tcsOutputStride = 0u;
-    self->_tessellation.tcsOutVertices = 0u;
-    (void)mglRendererBackendSetCurrentTessFactorBuffer(self->_backend, NULL);
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    (void)mglRendererBackendSetTessVertexCaptureBuffer(areas.backend, NULL);
+    areas.tessellation->tessVertexCaptureOffset = 0u;
+    (void)mglRendererBackendSetTessControlPointIndexBuffer(areas.backend, NULL);
+    areas.tessellation->tessIndexedDraw = 0;
+    areas.tessellation->tessInstanceRecords = 0u;
+    (void)mglRendererBackendSetTcsOutputBuffer(areas.backend, NULL);
+    areas.tessellation->tcsOutputOffset = 0u;
+    areas.tessellation->tcsOutputStride = 0u;
+    areas.tessellation->tcsOutVertices = 0u;
+    (void)mglRendererBackendSetCurrentTessFactorBuffer(areas.backend, NULL);
 }
 
 static void mglStageSetTessCapture(void *renderer, void *buf, uint64_t offset,
                                    uint64_t instance_records, int indexed)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    (void)mglRendererBackendSetTessVertexCaptureBuffer(self->_backend, buf);
-    self->_tessellation.tessVertexCaptureOffset = (size_t)offset;
-    self->_tessellation.tessIndexedDraw = indexed ? 1 : 0;
-    self->_tessellation.tessInstanceRecords = (size_t)instance_records;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    (void)mglRendererBackendSetTessVertexCaptureBuffer(areas.backend, buf);
+    areas.tessellation->tessVertexCaptureOffset = (size_t)offset;
+    areas.tessellation->tessIndexedDraw = indexed ? 1 : 0;
+    areas.tessellation->tessInstanceRecords = (size_t)instance_records;
     if (!buf) {
-        self->_tessellation.tessIndexedDraw = 0;
-        self->_tessellation.tessInstanceRecords = 0u;
-        self->_tessellation.tessVertexCaptureOffset = 0u;
-        (void)mglRendererBackendSetTessControlPointIndexBuffer(self->_backend,
+        areas.tessellation->tessIndexedDraw = 0;
+        areas.tessellation->tessInstanceRecords = 0u;
+        areas.tessellation->tessVertexCaptureOffset = 0u;
+        (void)mglRendererBackendSetTessControlPointIndexBuffer(areas.backend,
                                                                NULL);
     }
 }
 
 static void mglStageSetControlPointIndex(void *renderer, void *gather)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    (void)mglRendererBackendSetTessControlPointIndexBuffer(self->_backend,
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    (void)mglRendererBackendSetTessControlPointIndexBuffer(areas.backend,
                                                            gather);
 }
 
 static void mglStageAdoptCaptureAsTCS(void *renderer, uint32_t stride,
                                       uint32_t out_vertices)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    void *cap = mglRendererBackendGetTessVertexCaptureBuffer(self->_backend);
-    (void)mglRendererBackendSetTcsOutputBuffer(self->_backend, cap);
-    self->_tessellation.tcsOutputOffset =
-        self->_tessellation.tessVertexCaptureOffset;
-    self->_tessellation.tcsOutputStride = stride;
-    self->_tessellation.tcsOutVertices = out_vertices;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *cap = mglRendererBackendGetTessVertexCaptureBuffer(areas.backend);
+    (void)mglRendererBackendSetTcsOutputBuffer(areas.backend, cap);
+    areas.tessellation->tcsOutputOffset =
+        areas.tessellation->tessVertexCaptureOffset;
+    areas.tessellation->tcsOutputStride = stride;
+    areas.tessellation->tcsOutVertices = out_vertices;
 }
 
 static void mglStageSetCurrentFactors(void *renderer, void *factors)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return;
-    (void)mglRendererBackendSetCurrentTessFactorBuffer(self->_backend, factors);
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    (void)mglRendererBackendSetCurrentTessFactorBuffer(areas.backend, factors);
 }
 
 static void *mglStageGetTessCapture(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? mglRendererBackendGetTessVertexCaptureBuffer(self->_backend)
-                : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetTessVertexCaptureBuffer(areas.backend);
 }
 
 static void *mglStageGetTcsOutput(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? mglRendererBackendGetTcsOutputBuffer(self->_backend) : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetTcsOutputBuffer(areas.backend);
 }
 
 static void *mglStageGetFactors(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? mglRendererBackendGetCurrentTessFactorBuffer(self->_backend)
-                : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetCurrentTessFactorBuffer(areas.backend);
 }
 
 static void *mglStageGetPatchOut(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? mglRendererBackendGetTcsPatchOutBuffer(self->_backend) : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetTcsPatchOutBuffer(areas.backend);
 }
 
 static void *mglStageGetControlPointIndex(void *renderer)
