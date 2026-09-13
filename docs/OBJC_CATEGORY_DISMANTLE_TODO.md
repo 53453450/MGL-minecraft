@@ -2207,3 +2207,27 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      必须手工搬并逐步编译（第 45 条失败教训）；建议顺序：`bindCullDistanceEmulationBuffers:`（先补 areas 两个
      `_tessellation.cullDistanceCapture*` 字段，再逐段处理 `id captureBuffer` 与 3 处 `__bridge`）→ MS 循环族（先 C 化
      `endRenderEncodingLocked`）。
+
+### 0.18 "只有声明、无调用"候选清单（第 48 轮扫描；**仅为候选，禁止直接删**）
+
+第 86 条发现 `scripts/objc_dead_methods.py` 的 `bare` 检查会把"私有头里的声明"当引用，于是本轮用一版**忽略声明**的启发式扫了全仓，
+得到 **34 个"无调用形态引用"** 的方法。**其中大部分是假阳性**，典型三类：
+
+| 假阳性类型 | 例子 | 实际情况 |
+|---|---|---|
+| 属性语法读取 getter | `MGLPipelineCache.state` / `.device`、`MGLRenderPassManager.state` | `obj.state` / `.device = x` 是调用，启发式看不见 |
+| 框架回调 / 生命周期 | `initWithView:`、`initWithPSODedupEnabled:`、`dealloc`、`observeValueForKeyPath:` | 由运行时/KVO 调用，源码里没有调用点 |
+| 跨行或复杂接收者的发送 | `mglBackendWillDestroy:`、`mglTextureForDrawable:`、`performOperation:` 等 | `[renderer …]` 的调用点在别处，或发送跨行 |
+
+**因此本轮没有删除任何东西**（第 45 条那次教训：启发式只配当候选）。真正值得下一步逐个核查的**次级候选**（都是 4–9 行的小方法，
+且名字像"GL→Metal 旧入口"）：`MGLRenderer.m` 的 `mtlFlush:`(4) · `mtlReadBackBuffer:`(6) · `mtlDeleteMTLObj:`(6) ·
+`mtlBufferSubData:`(7) · `mtlMapUnmapBuffer:`(7) · `mtlFlushMappedBufferRange:`(6) · `mtlStencilOpForGLOp:`(8) ·
+`blendFactorFromGL:`(13) · `blendOperationFromGL:`(13)；`MGLRenderPassManager.m` 的 `beginCommandBufferCommit`(5) ·
+`clearPendingEvent`(7) · `commitDetachedCommandBufferIfOwned:`(15) · `appendSyncToCurrentCommandBuffer:`(15) ·
+`preparePendingEventWithDevice:`(17)；`MGLRenderer+RenderPass.m` 的 `newCommandBufferAndRenderEncoder`(37) ·
+`mtlInvalidateRenderPass:`(45)；`MGLRenderer+Compute.m` 的 `mtlDispatchComputeLocked:`(26)；`MGLPlatformRendererShell.m` 的
+`mglTextureForDrawable:`(4) · `performOperation:`(21)。
+
+**核查方法（每个候选 3 步，缺一不可）**：① `grep -rn "<sel>" --include='*.m' --include='*.mm' --include='*.c' --include='*.cpp' --include='*.h'`，
+逐条看清命中是"调用"还是"声明/注释"；② 查属性语法（getter 看 `.name`，setter 看 `.name =`）；③ 查 `@selector(<sel>)` 与函数指针表
+（`mgl_draw_metal_port.m` 的 host-ops 表）、以及 `respondsToSelector`。**三步都确认无调用，才可删除**。
