@@ -282,27 +282,6 @@ int mglRendererBindMTLTexturePort(void *renderer, Texture *texture)
  * that file, so they live here; its loops moved to C. */
 @implementation MGLRenderer (BatchZeroShell)
 
-/* Dual-proxy: (A) _activeState NULL -> live; (B) equals ctx->active_state (replay). */
-- (void)mglActivateReplayStateForContext:(GLMContext)glm_ctx
-{
-    memcpy(&glm_ctx->replay_state, &glm_ctx->state, sizeof(glm_ctx->replay_state));
-    glm_ctx->active_state = &glm_ctx->replay_state;
-    _core.activeState = &glm_ctx->replay_state;
-}
-
-- (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx
-{
-    glm_ctx->active_state = &glm_ctx->state;
-    _core.activeState = NULL;
-}
-
-- (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx
-{
-    NSCAssert(_core.activeState == NULL || _core.activeState == glm_ctx->active_state,
-              @"DUAL-PROXY DESYNC: _activeState != ctx->active_state — "
-              @"MGL_STATE() and STATE() would read different GLMState objects");
-}
-
 /* Locked variant of the flush: the caller holds METAL_LOCK.  The body (and its
  * own @try/@finally around the replay teardown) lives in C. */
 - (void)flushDrawBuffer:(GLMContext)glm_ctx
@@ -341,38 +320,6 @@ int mglRendererBindingStateIsValidPort(void *renderer)
     return (r && mglBindingStateIsValid(r->_bindingStateOwner)) ? 1 : 0;
 }
 
-void mglRendererAssertDualProxyPort(void *renderer, GLMContext ctx)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r mglAssertDualProxyInSyncForContext:ctx];
-    }
-}
-
-void mglRendererActivateReplayStatePort(void *renderer, GLMContext ctx)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r mglActivateReplayStateForContext:ctx];
-    }
-}
-
-void mglRendererRestoreLiveActiveStatePort(void *renderer, GLMContext ctx)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r mglRestoreLiveActiveStateForContext:ctx];
-    }
-}
-
-void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r && ctx) {
-        r->_core.activeState = ctx->active_state;
-    }
-}
-
 void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -383,6 +330,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     if (!r) {
         return;
     }
+    areas_out->core = &r->_core;
     areas_out->batching = &r->_batching;
     areas_out->command = [mglRendererRenderPassManager(r) state];
     areas_out->pipeline_cache = [r->_pipelineCache state];

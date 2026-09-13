@@ -278,9 +278,6 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
  *   - mglAssertDualProxyInSyncForContext:   debug-mode checkpoint
  *                                          (NSCAssert compiled out in release)
  */
-- (void)mglActivateReplayStateForContext:(GLMContext)glm_ctx;
-- (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx;
-- (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx;
 
 /* Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
  * Defined in MGLRenderer+Batch.m, called from already-locked callers

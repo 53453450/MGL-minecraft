@@ -46,7 +46,9 @@ static void fNote(void *v, int d) { (void)v; mgl_batch_mtl_restore_note_skip_fai
 static int fOracleEq(void *v, uint32_t b) { return mglStateKeysEqual(&FB(v, b)->key, &((FCtx *)v)->key); }
 static void fOracle(void *v) { (void)v; MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap); }
 static void fApplySkip(void *v, uint32_t b)
-{ (void)b; FCtx *c = v; mglRendererSetActiveStatePort(c->r, c->ctx);
+{ (void)b; FCtx *c = v; MGLRendererStateAreas areas; mglRendererStateAreasPort(c->r, &areas);
+  if (areas.core && areas.core->activeState != c->ctx->active_state)
+      areas.core->activeState = c->ctx->active_state;
   c->ctx->active_state->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)
 { MGLBatchingState *bs = mglRendererBatchingStatePort(((FCtx *)v)->r);
@@ -163,7 +165,8 @@ int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pa
 {
     if (!renderer || !glm_ctx || !pass) return 0;
     if (!mglDrawHostBindContext(renderer, glm_ctx)) return 0;
-    mglRendererAssertDualProxyPort(renderer, glm_ctx);
+    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    mglCoreAssertDualProxy(areas.core, glm_ctx);
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cb->batch_count == 0) return 0;
     MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
@@ -173,8 +176,8 @@ int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pa
     pass->skipped = 0;
     memcpy(&pass->saved, glm_ctx->active_state, sizeof(pass->saved));
     pass->saved_error = pass->saved.error;
-    mglRendererActivateReplayStatePort(renderer, glm_ctx);
-    mglRendererAssertDualProxyPort(renderer, glm_ctx);
+    mglCoreActivateReplayState(areas.core, glm_ctx);
+    mglCoreAssertDualProxy(areas.core, glm_ctx);
     pass->replay_error = (GLenum)mglRenderErrorNone();
     return 1;
 }
@@ -260,8 +263,9 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
 {
     if (!renderer || !batch || !glm_ctx) return;
     MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
+    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
-    mglRendererAssertDualProxyPort(renderer, glm_ctx);
+    mglCoreAssertDualProxy(areas.core, glm_ctx);
     if (batch->state_snapshot) {
         mglCopyHotStateFields(glm_ctx->active_state, (const GLMState *)batch->state_snapshot);
         MGL_PERF_INC(g_mglReplayMemcpyCountSinceSwap);
@@ -271,7 +275,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
     } else {
         mglBatchRestoreStateFromKey(&batch->key, glm_ctx);
     }
-    mglRendererSetActiveStatePort(renderer, glm_ctx);
+    if (areas.core) areas.core->activeState = glm_ctx->active_state;
     glm_ctx->active_state->dirty_bits = 0;
     const GLuint kFull = mgl_batch_restore_full_dirty_bits();
     GLuint replayDirtyBits = kFull;
@@ -308,12 +312,13 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
 void mglBatchTeardownReplay(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass)
 {
     MGLBatchingState *bs = mglRendererBatchingStatePort(renderer);
-    mglRendererAssertDualProxyPort(renderer, glm_ctx);
+    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    mglCoreAssertDualProxy(areas.core, glm_ctx);
     const int usedReplayWorkspace = (glm_ctx->active_state == &glm_ctx->replay_state);
     if (usedReplayWorkspace)
         mgl_batch_replay_sync_hash_tables_from_replay(&glm_ctx->state, &glm_ctx->replay_state);
-    mglRendererRestoreLiveActiveStatePort(renderer, glm_ctx);
-    mglRendererAssertDualProxyPort(renderer, glm_ctx);
+    mglCoreRestoreLiveActiveState(areas.core, glm_ctx);
+    mglCoreAssertDualProxy(areas.core, glm_ctx);
     if (bs) bs->absoluteVertexBindingOffsets = 0u;
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
     if (bs && bs->arenaSnapshotEnabled) mglResetBatchArena(&bs->batchArena);

@@ -21,6 +21,7 @@
 #include "mgl_types_buffer.h"      /* Buffer */
 #include "mgl_trace_strategy.h"    /* MGLFragmentTextureTraceBinding */
 #include "mgl_batching_state.h"     /* MGLBatchingState */
+#include "mgl_renderer_core_state.h" /* MGLRendererCoreState */
 #include "mgl_command_state.h"      /* MGLCommandState */
 #include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
 
@@ -102,10 +103,6 @@ int mglRendererBindingStateIsValidPort(void *renderer);
  * write the fields directly; this one port replaced six per-flag wrappers. */
 MGLBatchingState *mglRendererBatchingStatePort(void *renderer);
 
-void mglRendererAssertDualProxyPort(void *renderer, GLMContext ctx);
-void mglRendererActivateReplayStatePort(void *renderer, GLMContext ctx);
-void mglRendererRestoreLiveActiveStatePort(void *renderer, GLMContext ctx);
-void mglRendererSetActiveStatePort(void *renderer, GLMContext ctx);
 void mglRendererTraceReplaySetPort(void *renderer, uint64_t flush_id,
                                    uint32_t batch_index);
 int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer);
@@ -159,6 +156,7 @@ void *mglRendererFallbackSamplerStatePort(void *renderer);
  * `binding_state_owner` is the ADDRESS of the owner slot: the value can change
  * while a driver runs, so dereference it at the point of use. */
 typedef struct MGLRendererStateAreas {
+    MGLRendererCoreState *core;
     MGLBatchingState *batching;
     const MGLCommandState *command;
     const MGLPipelineCacheState *pipeline_cache;

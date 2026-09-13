@@ -41,21 +41,10 @@
 
 #include "mgl_buffer_slots.h"   /* kMGLMaxBufferSlots */
 #include "mgl_batching_state.h" /* MGLBatchingState */
+#include "mgl_renderer_core_state.h" /* MGLRendererCoreState */
 
-typedef struct MGLDrawable_t {
-    GLuint width;
-    GLuint height;
-} MGLDrawable;
-
-enum {
-    _FRONT,
-    _BACK,
-    _FRONT_LEFT,
-    _FRONT_RIGHT,
-    _BACK_LEFT,
-    _BACK_RIGHT,
-    _MAX_DRAW_BUFFERS
-};
+/* The drawable index enum moved to the C-safe mgl_renderer_core_state.h
+ * (the core state sizes its drawBuffers array with _MAX_DRAW_BUFFERS). */
 
 typedef struct {
     void *temporary;
@@ -69,18 +58,8 @@ typedef struct {
     MGLStageBindingCopyBack slots[kMGLMaxBufferSlots];
 } MGLStageBindingCopyBackList;
 
-typedef struct MGLRendererCoreState_t {
-    GLMState *activeState;
-    MGLCapability capability;
-    MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
-    BOOL defaultDrawableWrittenSinceLastSwap;
-    /* Lock-free hand-off channels.  Written by the completion-handler thread
-     * / main queue, drained (and resynchronized) on the GL thread. */
-    _Atomic bool deviceResetRequested;
-    _Atomic uint32_t pendingDrawableW;
-    _Atomic uint32_t pendingDrawableH;
-    _Atomic bool drawableSizeDirty;
-} MGLRendererCoreState;
+/* MGLDrawable and MGLRendererCoreState moved to the C-safe
+ * mgl_renderer_core_state.h (with the dual-proxy helpers). */
 
 typedef struct MGLGPURecoveryState_t {
     void *commandRecoveryOwner;
