@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十五刀** + trace 清零 后；第 68–89 轮见 §0.24/§0.26–§0.46）**：
-文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 29,080**、ObjC 语法 **2,268 → 1,646**、词汇 **4,353 → 3,437**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十六刀** + trace 清零 后；第 68–90 轮见 §0.24/§0.26–§0.47）**：
+文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 29,080**、ObjC 语法 **2,268 → 1,646**、词汇 **4,353 → 3,191**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3528,3 +3528,26 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      ⑤ 下一刀：按 §0.33 的表继续——`+Tessellation.m`（2,101 / 151 语法，copy-back 族与采样器入口都已就绪，
      且**它自己的 host-ops 端口已在第 108/112 刀备齐**）。
+
+122. **P0-1 第六十六刀：`MGLRenderer+Tessellation.m` 的词汇层清零（**词汇 278 → 32**，全库词汇 3,437 → 3,191）**：
+     ① 该文件 2,101 行、**151 语法 / 278 词汇**，本刀先做"零风险的一半"：
+     - **35 处 `NSLog(@"…")` → `fprintf(stderr, "…\n")`**，并把随之多余的 **35 个 `@` 字符串前缀去掉**
+       （先换成 `fprintf(stderr, @"…")` 再统一去 `@`；两步都编译验证过，`grep '@'` 复查后文件里只剩
+       `@implementation`/`@end` 两处 ObjC 语法必需记号）；
+     - `NSUInteger → size_t`、`BOOL → bool`、`nil → NULL`、`YES/NO → 1/0`。
+     ② **一个重要的口径澄清（补进 §0.04 的记账面）**：`scripts/objc_zero.sh` 的**语法**计数只认
+     `@interface/@implementation/@protocol/@end/@autoreleasepool/@selector/@encode/@property/@synthesize/@try/@catch/@finally/@synchronized`、
+     **`[receiver selector]` 形式的消息发送**、`__bridge/__weak/__strong`、`#import` 这几类；
+     **`NSLog` 与 `@""` 字符串并不计入语法**（它们计入**词汇**）。所以本刀**语法 151 不变、词汇 278 → 32**——
+     这也解释了为什么"词汇层转换"在这份文档里被记为 T2 而不是语法清零手段。
+     ③ **度量**：该文件词汇 **278 → 32**、语法 151（不变）、行数 2,101（不变）；全库语法 **1,646（不变）**、
+     词汇 **3,437 → 3,191（−246）**、行数 29,080（不变）；文件数 7 不变。
+     ④ **oracle**：旧库 = 提交 `ced649d` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,274/5,271 与 5,809/5,806 → `processGLState.slow` 293/290 与 295/292），
+     stderr `MGL` 行 **307/307 多重集一致**（这正是"`NSLog` → `fprintf` 同一 sink"的既有结论在本文件的再次确认）；
+     default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ 下一刀：该文件剩下的 **151 语法**几乎全是**消息发送**（`@implementation`/`@end`/`#import` 只占个位数），
+     按第 116–120 刀对 `mgl_draw_metal_port` 的做法**按簇转 C**（`prepareTessStageBufferBindings` /
+     `bindPreparedTessStageBufferBindings` / `planTessTextureBinds` / `bindPointSizeParamsToComputeEncoder` /
+     `ensureTessTextureMetalData` / `flushTessStageBindingInitializationBlit` 等 11 个方法，逐个换成 `mglTess*` C 入口，
+     copy-back 族与采样器入口已就绪）。
