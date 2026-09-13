@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,759**、ObjC 语法 **2,268 → 1,979**、词汇 **4,353 → 3,856**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,614**、ObjC 语法 **2,268 → 1,973**、词汇 **4,353 → 3,839**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2248,3 +2248,21 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      `commitDetachedCommandBufferIfOwned:`(15) · `appendSyncToCurrentCommandBuffer:`(15) · `preparePendingEventWithDevice:`(17)）与
      `+RenderPass.m` 的 `newCommandBufferAndRenderEncoder`(37) · `mtlInvalidateRenderPass:`(45)、`MGLPlatformRendererShell.m` 的
      `mglTextureForDrawable:`(4) · `performOperation:`(21)——**同样先跑三步核查再删**。
+
+88. **P0-1 第三十四刀：§0.18 余下候选再删 8 个（**−145 行**，单刀最大死代码清理）**：
+     ① 三步核查结果：
+     - **死**（全部命中 = 定义 + 头声明 [+ 无关注释]）：`MGLRenderPassManager.m` 的 `beginCommandBufferCommit`(5) ·
+       `clearPendingEvent`(7) · `commitDetachedCommandBufferIfOwned:`(15) · `appendSyncToCurrentCommandBuffer:`(15) ·
+       `preparePendingEventWithDevice:`(17)；`+RenderPass.m` 的 `newCommandBufferAndRenderEncoder`(37，
+       命中只剩自身 NSLog 文案与 `mgl_frame_activity.h` 的一处注释) · `mtlInvalidateRenderPass:`(45，
+       命中只剩 `+Blit.m` 的注释与 `MGLRenderer.m` 的过时注释)；壳的 `mglTextureForDrawable:`(4)。
+     - **活**：`MGLPlatformRendererShell.performOperation:` —— **`test_legacy_compat/test_metalcpp_smoke.mm` 里有 2 处真实调用**
+       （`[shell performOperation:…]`），**保留**。这条再次印证"候选必须逐个核查"。
+     ② 方法与三个头里的声明一并删除。
+     ③ **度量**：行数 **34,759 → 34,614**、语法 **1,979 → 1,973**、词汇 **3,856 → 3,839**；文件 16、shim 端口 13 不变；
+     `MGLRenderPassManager.m` 524 → **465 行**、`+RenderPass.m` 7,099 → **7,017 行**。
+     ④ **oracle**：旧库 = 提交 `7ab0dec` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：§0.18 的候选已全部处理完（9 + 8 删、2 保留）。后续回到**结构性**路线（§0.15）：`+DrawStageHost.m` 余 3 方法
+     （需手工搬 + areas 两个字段）→ `+Binding.m` 的 `bindMTLTextureLocked:` → `MGLPipelineCache.m` → `+SwapDiagnostics.m`
+     → `mgl_draw_metal_port.m`（0 方法、1,973 行）→ 三厚块。

@@ -184,21 +184,6 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderPassManagerSyncRuntimeOwners(&_state);
 }
 
-- (BOOL)commitDetachedCommandBufferIfOwned:(void *)commandBuffer
-{
-    /* ownership guard via the C++ submission. */
-    if (!commandBuffer || !_state.detachedCommandBufferSubmission ||
-        mglRenderCommandBufferSubmissionMatchesBuffer(
-            _state.detachedCommandBufferSubmission,
-            commandBuffer) != 1) {
-        return NO;
-    }
-    if (mglRenderCommitCommandBufferSubmission(
-            &_state.detachedCommandBufferSubmission) != 0) {
-        return NO;
-    }
-    return YES;
-}
 
 - (int)commitCommandBufferTransaction:(void *)commandBuffer
                          recoveryOwner:(void *)recoveryOwner
@@ -255,21 +240,6 @@ static void mglRenderPassManagerStoreIdentity(
         &_state.detachedCommandBufferSubmission);
 }
 
-- (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync
-{
-    /* the tracking list now lives inside the C++
-     * command-buffer owner; this method is a thin adapter.  The list is
-     * advisory only (never read by the wait paths), so the gate-off path
-     * without an owner reports success as before. */
-    if (!sync) {
-        return NO;
-    }
-    if (!_state.currentCommandBufferOwner) {
-        return YES;
-    }
-    return mglRenderCommandBufferOwnerAppendSync(
-               _state.currentCommandBufferOwner, sync) == 0;
-}
 
 - (void)clearCurrentCommandBufferSyncListEntries
 {
@@ -281,23 +251,6 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderCommandBufferOwnerClearSyncs(_state.currentCommandBufferOwner);
 }
 
-- (void *)preparePendingEventWithDevice:(__unused void *)device
-                                     syncName:(GLsizei)syncName
-{
-    /* the pending event slot lives inside the C++
-     * PendingEventOwner; this method is a thin adapter. */
-    if (!_state.pendingEventOwner &&
-        mglRenderCreatePendingEventOwner(&_state.pendingEventOwner) != 0) {
-        _state.pendingEventOwner = NULL;
-        return nil;
-    }
-    void *event = NULL;
-    if (mglRenderPendingEventPrepare(
-            _state.pendingEventOwner, syncName, &event) != 0 || !event) {
-        return nil;
-    }
-    return event;
-}
 
 - (void *)detachPendingEventWithSyncName:(GLuint *)syncNameOut
 {
@@ -315,13 +268,6 @@ static void mglRenderPassManagerStoreIdentity(
     return event;
 }
 
-- (void)clearPendingEvent
-{
-    /* discard the pending event; the owner stays. */
-    if (_state.pendingEventOwner) {
-        mglRenderPendingEventClear(_state.pendingEventOwner);
-    }
-}
 
 - (void)installRenderEncoder:(void *)renderEncoder
 {
@@ -381,11 +327,6 @@ static void mglRenderPassManagerStoreIdentity(
     mglRenderPassManagerSyncRuntimeOwners(&_state);
 }
 
-- (BOOL)beginCommandBufferCommit
-{
-    return mglRenderCommandBufferOwnerBeginCommit(
-               _state.currentCommandBufferOwner) == 1;
-}
 
 - (void)endCommandBufferCommit
 {

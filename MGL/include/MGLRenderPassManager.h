@@ -35,7 +35,6 @@ NS_ASSUME_NONNULL_BEGIN
 - (void * _Nullable)installNewCommandBufferFromQueue:(void * _Nullable)commandQueue;
 - (void * _Nullable)detachCurrentCommandBufferForSubmission;
 - (void)discardCurrentCommandBuffer;
-- (BOOL)commitDetachedCommandBufferIfOwned:(void * _Nullable)commandBuffer;
 - (int)commitCommandBufferTransaction:(void * _Nullable)commandBuffer
                          recoveryOwner:(nullable void *)recoveryOwner
                      waitForCompletion:(BOOL)waitForCompletion
@@ -44,17 +43,12 @@ NS_ASSUME_NONNULL_BEGIN
 - (int)waitForLastSubmittedCommandBuffer:(MGLRenderCommandBufferState *)state;
 - (void * _Nullable)consumeTransactionCreatedCurrentCommandBuffer;
 - (void)releaseDetachedCommandBufferIfOwned:(void * _Nullable)commandBuffer;
-- (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync;
 - (void)clearCurrentCommandBufferSyncListEntries;
-- (void * _Nullable)preparePendingEventWithDevice:(void * _Nullable)device
-                                             syncName:(GLsizei)syncName;
 - (void * _Nullable)detachPendingEventWithSyncName:(nullable GLuint *)syncNameOut;
-- (void)clearPendingEvent;
 - (void)installRenderEncoder:(void * _Nullable)renderEncoder;
 - (void * _Nullable)createRenderEncoder;
 - (void)endCurrentRenderEncoder;
 - (void)clearCurrentRenderEncoder;
-- (BOOL)beginCommandBufferCommit;
 - (void)endCommandBufferCommit;
 - (void)resetMDIScratch;
 - (void)installNewRenderPassDescriptor;

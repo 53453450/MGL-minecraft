@@ -47,7 +47,6 @@ typedef int (*MGLPlatformRendererShellOperation)(void *context);
 - (void)mglStopCapture;
 - (id)mglNextDrawable;
 - (id)mglDrawableTexture;
-- (id)mglTextureForDrawable:(id)drawable;
 - (BOOL)mglHasMetalLayer;
 - (CGSize)mglMetalLayerDrawableSize;
 - (CGRect)mglMetalLayerFrame;

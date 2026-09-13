@@ -1352,51 +1352,6 @@ static GLenum mglPassthroughDeclType(
         program->pipeline_cache_instance_id) == 0;
 }
 
-- (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx
-{
-    if (!glm_ctx || glm_ctx != ctx ||
-        mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
-        return;
-    }
-
-
-    Framebuffer *curFbo = MGL_STATE(glm_ctx)->framebuffer;
-    MGLRenderPassIdentityState identity =
-        mglRenderPassIdentitySnapshot(_renderPassManager.state);
-    if (curFbo == identity.framebuffer &&
-        MGL_STATE(glm_ctx)->draw_buffer == identity.draw_buffer) {
-        return;
-    }
-
-    static uint64_t s_renderPassInvalidateCount = 0;
-    uint64_t hit = ++s_renderPassInvalidateCount;
-    if (mglTraceLogIsEnabled() && (hit <= 64ull || (hit % 512ull) == 0ull)) {
-        Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
-        mglTraceLog("RENDERPASS_INVALIDATE hit=%llu fbo=%u(%p) drawBuf=0x%x rpFbo=%u(%p) rpDrawBuf=0x%x",
-                    (unsigned long long)hit,
-                    (unsigned)(fbo ? fbo->name : 0u),
-                    fbo,
-                    (unsigned)MGL_STATE(glm_ctx)->draw_buffer,
-                    (unsigned)_renderPassManager.state->renderPassFramebufferName,
-                    _renderPassManager.state->renderPassFramebuffer,
-                    (unsigned)_renderPassManager.state->renderPassDrawBuffer);
-        mglLogRenderPassLifecycle("invalidate-before-end",
-                                  hit,
-                                  glm_ctx,
-                                  _renderPassManager.state->currentCommandBufferOwner,
-                                  _renderPassManager.state->currentRenderEncoderOwner,
-                                  _renderPassManager.state->renderPassStateOwner,
-                                  _drawable,
-                                  _renderPassManager.state->renderPassFramebuffer,
-                                  _renderPassManager.state->renderPassFramebufferName,
-                                  _renderPassManager.state->renderPassDrawBuffer,
-                                  _renderPassManager.state->renderPassDrawBufferCount);
-    }
-
-    [self flushDrawBuffer:glm_ctx];
-    [self endRenderEncoding];
-}
 
 - (Texture *)framebufferAttachmentTexture: (FBOAttachment *)fbo_attachment
 {
@@ -4428,43 +4383,6 @@ static GLenum mglPassthroughDeclType(
     return true;
 }
 
-- (bool) newCommandBufferAndRenderEncoder
-{
-    // AGGRESSIVE MEMORY SAFETY: Validate fundamental Metal objects before use
-    if (!_device) {
-        NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - No device available");
-        return false;
-    }
-
-    if (!_commandQueue) {
-        NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - No command queue available");
-        return false;
-    }
-
-    // Validate device pointer lower bound only (high canonical addresses are valid on macOS)
-    uintptr_t device_addr = (uintptr_t)_device;
-    if (device_addr < 0x1000) {
-        NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - Invalid device pointer: 0x%lx", device_addr);
-        return false;
-    }
-
-    @try {
-        if ([self newCommandBuffer] == false) {
-            NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - newCommandBuffer failed");
-            return false;
-        }
-
-        if ([self newRenderEncoderWithReason:MGL_ENC_REASON_CMD] == false) {
-            NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - newRenderEncoder failed");
-            return false;
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - Metal operation failed: %@", exception);
-        return false;
-    }
-
-    return true;
-}
 
 #pragma mark pipeline descriptor
 /* Build the renderer pipeline as C ABI value-state. Color/depth/stencil,

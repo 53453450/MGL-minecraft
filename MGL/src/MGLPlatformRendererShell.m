@@ -177,10 +177,6 @@
     return self.drawable.texture;
 }
 
-- (id)mglTextureForDrawable:(id)drawable
-{
-    return [(id<CAMetalDrawable>)drawable texture];
-}
 
 - (BOOL)mglHasMetalLayer
 {

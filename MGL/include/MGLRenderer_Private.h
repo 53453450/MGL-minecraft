@@ -286,7 +286,6 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r);
 /* flushDrawBufferLocked: is now the C driver pair mglBatchFlushBegin /
  * mglBatchFlushRunBatches plus mglBatchTeardownReplay, framed by
  * mglRendererFlushDrawBufferLockedPort (mgl_batch_restore.h). */
-- (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx;
 
 /* Drawable-geometry hand-off (component 3 of the lock replacement).
  * mglMainThreadSyncViewGeometry: main-thread only; reads NSView/NSWindow/
