@@ -682,9 +682,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                         }
                         ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
                 } else {
-                        glUnit = [self textureUnitForSampledResource:resource
-                                                         metalBinding:metalBinding
-                                                                stage:stage];
+                        glUnit = mglTextureUnitForSampledResource(resource, mglResolveProgramForStageFromState(ctx, stage), metalBinding, stage);
                         if (glUnit >= TEXTURE_UNITS) {
                             continue;
                         }
@@ -791,9 +789,7 @@ void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
                     break;
                 }
 
-                GLuint glUnit = [self textureUnitForSampledResource:NULL
-                                                        metalBinding:metalSlot
-                                                               stage:stage];
+                GLuint glUnit = mglTextureUnitForSampledResource(NULL, mglResolveProgramForStageFromState(ctx, stage), metalSlot, stage);
                 Texture *ptr = [self textureForSampledResource:NULL
                                                    metalBinding:metalSlot
                                                            stage:stage

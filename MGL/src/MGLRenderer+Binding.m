@@ -139,7 +139,7 @@ static id mglBindingCreateDefaultSampler(void)
             __strong id oldTexture = existingTexture;
 
             mglSafeReleaseMetalObj((void **)&tex->mtl_data);
-            [self releaseGLSampledRenderTargetCopyForTexture:tex];
+            mglTextureReleaseGLSampledCopy(tex);
 
             // Create a new texture with correct usage.  Don't set
             // DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
@@ -286,7 +286,7 @@ static id mglBindingCreateDefaultSampler(void)
         {
             if (textureNeedsRebuild) {
                 mglSafeReleaseMetalObj((void **)&tex->mtl_data);
-                [self releaseGLSampledRenderTargetCopyForTexture:tex];
+                mglTextureReleaseGLSampledCopy(tex);
             }
         }
 

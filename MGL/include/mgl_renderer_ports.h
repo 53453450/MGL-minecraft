@@ -134,10 +134,6 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
                                                           const char *label);
 
 /* Sampled-resource lookup for the dyn-texture plan. */
-uint32_t mglRendererTextureUnitForSampledResourcePort(void *renderer,
-                                                      void *resource,
-                                                      uint32_t metal_slot,
-                                                      int stage);
 void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
                                                uint32_t metal_slot, int stage,
                                                uint32_t expected_type);

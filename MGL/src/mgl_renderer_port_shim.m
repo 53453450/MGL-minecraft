@@ -201,20 +201,6 @@ int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
     return (r && [r restoreRenderEncoderAfterTextureUploadForDraw:label]) ? 1 : 0;
 }
 
-uint32_t mglRendererTextureUnitForSampledResourcePort(void *renderer,
-                                                      void *resource,
-                                                      uint32_t metal_slot,
-                                                      int stage)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || !resource) {
-        return 0u;
-    }
-    return (uint32_t)[r textureUnitForSampledResource:(MGLShaderResource *)resource
-                                         metalBinding:metal_slot
-                                                stage:stage];
-}
-
 void *mglRendererTextureForSampledResourcePort(void *renderer, void *resource,
                                                uint32_t metal_slot, int stage,
                                                uint32_t expected_type)

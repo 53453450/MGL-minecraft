@@ -154,8 +154,9 @@ static int mglDynSampledResolve(void *v, const MGLBatchSampledTexCandidate *e,
                                 int *needs_samp, void **samp_out, uint32_t *samp_slot)
 {
     MGLDynSampledCtx *c = v; MGLShaderResource *resource = e->resource;
-    GLuint unit = mglRendererTextureUnitForSampledResourcePort(
-        c->r, resource, e->metal_slot, (int)e->stage);
+    GLuint unit = mglTextureUnitForSampledResource(
+        resource, mglResolveProgramForStageFromState(c->ctx, (int)e->stage),
+        e->metal_slot, (int)e->stage);
     Texture *tex_obj = (unit < TEXTURE_UNITS && touched[unit])
         ? mglRendererTextureForSampledResourcePort(
               c->r, resource, e->metal_slot, (int)e->stage,

@@ -143,6 +143,23 @@ void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture);
  * case of single-channel R8 swizzle expansion at upload time. */
 size_t mglStoredColorComponentsForTexture(Texture *tex);
 uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
+
+/* Texture unit a sampled resource resolves to for a program / Metal binding /
+ * stage (former -[MGLRenderer textureUnitForSampledResource:program:
+ * metalBinding:stage:]).  `program` may be NULL, in which case the reflected
+ * sampler unit or the binding itself is used. */
+GLuint mglTextureUnitForSampledResource(MGLShaderResource *sampled_resource,
+                                        Program *program, GLuint metal_binding,
+                                        int stage);
+
+/* Fill the descriptor's swizzle fields from a texture's GL swizzle parameters
+ * (former -[MGLRenderer swizzleTexDesc:forTex:]). */
+void mglTextureSwizzleDescriptor(MGLRenderTextureDescriptorState *desc,
+                                 Texture *tex);
+
+/* Release the GL-sampled render-target copy a texture keeps and clear its
+ * bookkeeping (former -[MGLRenderer releaseGLSampledRenderTargetCopyForTexture:]). */
+void mglTextureReleaseGLSampledCopy(Texture *tex);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);
 bool mglTextureUploadNeedsSingleChannelSwizzleBake(Texture *tex);
 bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex);

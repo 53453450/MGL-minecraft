@@ -338,14 +338,9 @@ typedef struct {
 // now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
 // Program reflection queries use the fixed mglRendererGetProgram* C ABI.
 - (id)fallbackSamplerState;
-- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
-                            metalBinding:(GLuint)metalBinding
-                                  stage:(int)stage;
+/* textureUnitForSampledResource:... is now the C function
+ * mglTextureUnitForSampledResource (mgl_texture_compat.h). */
 /* program-resolved variant — skips mglResolveProgramForStageFromState. */
-- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
-                                program:(Program *)program
-                           metalBinding:(GLuint)metalBinding
-                                  stage:(int)stage;
 - (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
@@ -359,7 +354,6 @@ typedef struct {
                           textureUnit:(GLuint)textureUnit;
 - (id)fallbackSampledTextureForExpectedType:(uint32_t)expectedType
                                                dataKind:(MGLTextureDataKind)dataKind;
-- (int)textureIndexForExpectedMetalType:(uint32_t)expectedType;
 - (void)traceSampledTextureReadback:(id)texture
                               glTex:(Texture *)glTex
                               level:(TextureLevel *)level0

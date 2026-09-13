@@ -5049,7 +5049,7 @@ static GLenum mglPassthroughDeclType(
             if (tex->mtl_gl_sampled_data &&
                 mglRenderSampledRTCopyStale(tex->mtl_gl_sampled_write_version,
                                             tex->mtl_render_target_write_version)) {
-                [self releaseGLSampledRenderTargetCopyForTexture:tex];
+                mglTextureReleaseGLSampledCopy(tex);
                 if (mglTraceLogIsEnabled()) {
                     mglTraceLog("RT_SAMPLE_COPY_SKIP_INJECTED_RENDER tex=%u label=\"%s\" reason=render_yflip_injected_stale_released",
                                 (unsigned)tex->name,

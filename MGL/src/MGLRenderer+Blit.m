@@ -658,24 +658,6 @@ static void mglBlitSynchronizeTexture(id encoder,
     return YES;
 }
 
-- (void)releaseGLSampledRenderTargetCopyForTexture:(Texture *)tex
-{
-    if (!tex) {
-        return;
-    }
-
-    if (tex->mtl_gl_sampled_data) {
-        mglSafeReleaseMetalObj((void **)&tex->mtl_gl_sampled_data);
-    }
-
-    tex->mtl_gl_sampled_width = 0u;
-    tex->mtl_gl_sampled_height = 0u;
-    tex->mtl_gl_sampled_format = 0u;
-    tex->mtl_gl_sampled_levels = 0u;
-    tex->mtl_gl_sampled_write_version = 0u;
-    tex->mtl_gl_sampled_dirty_mip_mask = 0u;
-}
-
 
 - (BOOL)lazyRefreshGLSampledRenderTargetCopyForTexture:(Texture *)tex
                                                  stage:(const char *)stage
@@ -944,7 +926,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         tex->mtl_gl_sampled_format != (GLuint)mglBlitTextureInfo(source).pixel_format ||
         tex->mtl_gl_sampled_levels != (GLuint)copyLevelCount;
     if (needsNewCopy) {
-        [self releaseGLSampledRenderTargetCopyForTexture:tex];
+        mglTextureReleaseGLSampledCopy(tex);
 
 
         MGLRenderTextureDescriptorState desc = {0};

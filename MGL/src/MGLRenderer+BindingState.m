@@ -1587,10 +1587,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             splan.action == MGL_ST_ACTION_SKIP) {
             continue;
         }
-        GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
-                                                        program:sampleProgram
-                                                    metalBinding:spirvBinding
-                                                           stage:shaderStage];
+        GLuint textureUnit = mglTextureUnitForSampledResource(sampledResource, sampleProgram, spirvBinding, shaderStage);
         uint32_t expectedType = (uint32_t)mglExpectedTextureTypeForResource(
             sampleProgram, shaderStage, sampledResource);
         uint32_t lookupType =
@@ -2312,8 +2309,7 @@ done:
 {
     TextureLevel *level0 = mglTraceTextureBaseLevel(ptr);
     int expectedIndex =
-        [self textureIndexForExpectedMetalType:(lookupType ? lookupType
-                                                           : expectedType)];
+        (int)mglRenderTextureIndexForMetalType((lookupType ? lookupType : expectedType));
     Texture *unitActive = NULL, *unitExpected = NULL, *unit2D = NULL, *unitCube = NULL;
     if (textureUnit < TEXTURE_UNITS) {
         unitActive = MGL_STATE(ctx)->active_textures[textureUnit];
@@ -2793,9 +2789,7 @@ done:
             i < sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].count) {
             samplerResource = &sampleProgram->shader_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].list[i];
         }
-        GLuint textureUnit = [self textureUnitForSampledResource:samplerResource
-                                                    metalBinding:spirvBinding
-                                                           stage:_FRAGMENT_SHADER];
+        GLuint textureUnit = mglTextureUnitForSampledResource(samplerResource, mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER), spirvBinding, _FRAGMENT_SHADER);
 
         id sampler = [self materializeSampledSamplerForTexture:NULL
                                                    textureUnit:textureUnit
@@ -2859,9 +2853,7 @@ done:
                     break;
                 }
 
-                GLuint textureUnit = [self textureUnitForSampledResource:NULL
-                                                             metalBinding:metalSlot
-                                                                    stage:arrayStage];
+                GLuint textureUnit = mglTextureUnitForSampledResource(NULL, mglResolveProgramForStageFromState(ctx, arrayStage), metalSlot, arrayStage);
                 Texture *arrayTexture = [self textureForSampledResource:NULL
                                                             metalBinding:metalSlot
                                                                     stage:arrayStage

@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **34,387**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **27 / 394**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 首刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 37,617**、ObjC 语法 **2,268 → 2,167**、词汇 **4,353 → 4,077**；
-**shim：43 → 27 个端口（P0-1 首刀端口零增长）/ 396 行 / 62 语法；shim 内 ObjC 方法 5 → 1**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 两刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 37,459**、ObjC 语法 **2,268 → 2,150**、词汇 **4,353 → 4,077**；
+**shim：43 → 26 个端口 / 382 行 / 62 语法；shim 内 ObjC 方法 5 → 1（P0-1 两刀已净减 1 个端口）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1295,3 +1295,25 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
     compute/clear 路径调用方（`MGLRenderer.m` 的 scissored clear、`+SwapDiagnostics.m` 的 drawable 缩放）已在本刀改直调；
     接着按 §0.10 阶段 A 推进 `+Blit.m` 的 `releaseGLSampledRenderTargetCopyForTexture`、`+RenderPass.m` 的
     `newRenderEncoder`/`endRenderEncoding`/`ensureWritableCommandBuffer` 等零依赖方法。
+
+56. **P0-1 第二刀：`+Texture.m` 的 sampler-unit 决策与三个叶子方法转 C（**shim 净减 1 个端口**）**：
+    ① **决策下沉（T3）**：83 行的 `-textureUnitForSampledResource:program:metalBinding:stage:`（sampler 单元解析：
+    explicit/reflected/binding 级与 stage 级优先级、`Sampler0/Sampler2` 那类 Minecraft 特例）**整段搬进 C**，
+    `mgl_texture_compat.h/.c` 新增 `mglTextureUnitForSampledResource(res, program, metal_binding, stage)`；
+    **顺手退掉 shim 端口** `mglRendererTextureUnitForSampledResourcePort`（C 侧 `mgl_batch_dyn_bind_encode.c`
+    改为直调，program 由 `mglResolveProgramForStageFromState` 解析，与该端口原语义一致）→ **shim 27 → 26 端口**。
+    ② **叶子方法删除**：`textureUnitForSampledResource:metalBinding:stage:`（3 行转发）、
+    `textureUnitForSampledBinding:stage:`（**0 调用者的死代码**）、`swizzleTexDesc:forTex:`（1 调用点 → C `mglTextureSwizzleDescriptor`）、
+    `textureIndexForExpectedMetalType:`（1 调用点 → 直接用 `mglRenderTextureIndexForMetalType`）、
+    `releaseGLSampledRenderTargetCopyForTexture:`（4 调用点 → C `mglTextureReleaseGLSampledCopy`）。
+    合计 **删 5 个方法 + 1 个 shim 端口**，14 处调用点改直调（`+Texture` / `+Binding` / `+BindingState` / `+Compute` / `+Blit` / `+RenderPass`）。
+    ③ **度量**：`+Texture.m` **6,981 → 6,868 行**、`+Blit.m` 4,584 → **4,566**；全仓行数 **37,617 → 37,459**、
+    语法 **2,167 → 2,150（−17）**、词汇不变（4,077）；shim 端口 **27 → 26**、行数 396 → **382**。
+    ④ **oracle**：trace 语料 374/374、296/296 逐字段一致；stderr 语料 824/824、622/622 行，差异仅剩
+    BINARY ARCHIVE created/loaded/saved 的运行序伪差（上一刀的诊断文本改动两臂已一致）；回归 92/0/2、ICB 轮 82/10/2 相同；
+    CTS 七簇 diff 全空。
+    下一刀：继续 §0.10 阶段 A/B——`+RenderPass.m` 的 `newRenderEncoder`/`newRenderEncoderLocked`（转发到
+    `...WithReason:MGL_ENC_REASON_OTHER`，13+8 个调用点可内联）、`endRenderEncoding` 需**保留**（它带 METAL_LOCK，
+    50 个调用点不能机械内联）、`+Blit.m` 的 `clearRectDepthState` 已随首刀搬走；
+    更值钱的是把 `textureForSampledResource:metalBinding:stage:expectedType:`（+Texture 的采样取纹理环）与
+    `+RenderPass.m` 的 `newRenderEncoder(Locked)WithReason:` 一并下沉。

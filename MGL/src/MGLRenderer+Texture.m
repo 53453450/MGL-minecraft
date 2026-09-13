@@ -5151,15 +5151,6 @@ static void mglTextureCopyTextureToBuffer(
 }
 
 
-- (void)swizzleTexDesc:(MGLRenderTextureDescriptorState *)tex_desc forTex:(Texture*)tex
-{
-    tex_desc->swizzle_red = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_r);
-    tex_desc->swizzle_green = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_g);
-    tex_desc->swizzle_blue = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_b);
-    tex_desc->swizzle_alpha = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_a);
-    tex_desc->has_swizzle = 1u;
-}
-
 
 
 
@@ -5437,7 +5428,7 @@ static void mglTextureCopyTextureToBuffer(
     if (tex->params.swizzled && !usesUploadSwizzleBake &&
         !tex->is_render_target)
     {
-        [self swizzleTexDesc:&tex_desc forTex:tex];
+        mglTextureSwizzleDescriptor(&tex_desc, tex);
     }
 
     id texture;
@@ -6501,109 +6492,6 @@ static void mglTextureCopyTextureToBuffer(
     return [self fallbackSampledTexture];
 }
 
-- (int)textureIndexForExpectedMetalType:(uint32_t)expectedType
-{
-    return (int)mglRenderTextureIndexForMetalType((uint32_t)expectedType);
-}
-
-- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource
-                                program:(Program *)program
-                           metalBinding:(GLuint)metalBinding
-                                  stage:(int)stage
-{
-    if (!program) {
-        GLuint candidate = sampledResource &&
-                           sampledResource->sampler_unit >= 0 &&
-                           sampledResource->sampler_unit < TEXTURE_UNITS
-            ? (GLuint)sampledResource->sampler_unit
-            : metalBinding;
-        return candidate;
-    }
-
-    const char *sampledName = NULL;
-    if (!sampledResource && metalBinding < TEXTURE_UNITS) {
-        sampledResource = mglFindSamplerResourceForMetalBinding(program, stage, metalBinding);
-    }
-    if (sampledResource) {
-        sampledName = sampledResource->name;
-    }
-
-    /*
-     * Minecraft usually assigns sampler texture units from the RenderPipeline
-     * sampler list, not from numeric suffixes like Sampler2. For example, chunk
-     * rendering declares Sampler0 and Sampler2, so Sampler2 can be uploaded
-     * through glUniform1i(..., 1). Keep sampler units on the exact reflected
-     * resource instead of only the Metal binding: vertex and fragment resources
-     * commonly share binding numbers, and binding-level state can make entity,
-     * hand, and text textures bleed into each other.
-     */
-    if (sampledResource) {
-        uint32_t explicitUnit = mglRenderSampledResourceUnit(
-            sampledResource->sampler_unit_explicit ? 1 : 0,
-            sampledResource->sampler_unit, metalBinding,
-            sampledResource->binding, TEXTURE_UNITS);
-        if (explicitUnit != UINT32_MAX) {
-            return explicitUnit;
-        }
-    }
-
-    if (mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS)) {
-        return metalBinding;
-    }
-
-    bool stageExplicit = mglRenderShaderStageValid(stage)
-        ? mglRenderSamplerUnitExplicit(
-              (uint32_t)program->sampler_units_explicit_by_stage[stage][metalBinding]) != 0
-        : false;
-    bool globalExplicit = mglRenderSamplerUnitExplicit(
-                              (uint32_t)program->sampler_units_explicit[metalBinding]) != 0;
-
-    GLint unit = mglRenderShaderStageValid(stage)
-        ? program->sampler_units_by_stage[stage][metalBinding]
-        : program->sampler_units[metalBinding];
-
-    if (stageExplicit && mglRenderSamplerUnitValid(unit, TEXTURE_UNITS)) {
-        return (GLuint)unit;
-    }
-
-    unit = program->sampler_units[metalBinding];
-    if (globalExplicit && mglRenderSamplerUnitValid(unit, TEXTURE_UNITS)) {
-        return (GLuint)unit;
-    }
-
-    GLint defaultUnit = mglRenderShaderStageValid(stage)
-        ? program->sampler_units_by_stage[stage][metalBinding]
-        : program->sampler_units[metalBinding];
-    if (!mglRenderSamplerUnitValid(defaultUnit, TEXTURE_UNITS)) {
-        defaultUnit = program->sampler_units[metalBinding];
-    }
-
-    if (sampledResource && !sampledResource->sampler_unit_explicit) {
-        uint32_t implicitUnit = mglRenderSampledResourceUnit(
-            1, sampledResource->sampler_unit, metalBinding,
-            sampledResource->binding, TEXTURE_UNITS);
-        if (implicitUnit != UINT32_MAX) {
-            return implicitUnit;
-        }
-    }
-
-    return mglRenderDefaultSamplerUnit(defaultUnit, TEXTURE_UNITS);
-}
-
-- (GLuint)textureUnitForSampledResource:(MGLShaderResource *)sampledResource metalBinding:(GLuint)metalBinding stage:(int)stage
-{
-    Program *program = mglResolveProgramForStageFromState(ctx, stage);
-    return [self textureUnitForSampledResource:sampledResource
-                                      program:program
-                                 metalBinding:metalBinding
-                                        stage:stage];
-}
-
-- (GLuint)textureUnitForSampledBinding:(GLuint)metalBinding stage:(int)stage
-{
-    return [self textureUnitForSampledResource:NULL metalBinding:metalBinding stage:stage];
-}
-
 - (Texture *)textureForSampledResource:(MGLShaderResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
@@ -6677,7 +6565,7 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    int textureIndex = [self textureIndexForExpectedMetalType:expectedType];
+    int textureIndex = (int)mglRenderTextureIndexForMetalType(expectedType);
     if (textureIndex >= 0 && textureIndex < _MAX_TEXTURE_TYPES) {
         Texture *typedTexture = MGL_STATE(ctx)->texture_units[textureUnit].textures[textureIndex];
         /* The AIR backend lowers sampler1D to texture2d, so expectedType is
@@ -6787,9 +6675,7 @@ static void mglTextureCopyTextureToBuffer(
     if (!ctx || mglRenderMetalBindingPastUnits(metalBinding, TEXTURE_UNITS)) {
         return NULL;
     }
-    GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
-                                                metalBinding:metalBinding
-                                                       stage:stage];
+    GLuint textureUnit = mglTextureUnitForSampledResource(sampledResource, mglResolveProgramForStageFromState(ctx, stage), metalBinding, stage);
     return [self textureForSampledResource:sampledResource
                               metalBinding:metalBinding
                                       stage:stage
