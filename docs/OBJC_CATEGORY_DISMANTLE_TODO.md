@@ -47,11 +47,11 @@
 | ObjC 文件行数 | **43,989** | ≈ 平台壳 |
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
-| `MGLRenderer*.m` total | **34,604** | 0（当前 **32,589**） |
+| `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十一刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 35,959**、ObjC 语法 **2,268 → 2,077**、词汇 **4,353 → 3,958**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十二刀** + trace 清零 后）**：文件 **53 → 20**、空 TU **3 → 0**、
+行数 **43,989 → 35,587**、ObjC 语法 **2,268 → 2,036**、词汇 **4,353 → 3,958**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1617,3 +1617,32 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      可逐个把方法体的 C 部分搬走；`+DrawSupport.m` 只剩 `prepareEmulatedIndirectCPURead`(30) 与
      `ensureRasterEncoderForDraw`(68)（前者要 `flushCommandBuffer:`、后者要 `newRenderEncoderLockedWithReason:`，
      两者仍属 ObjC 大方法）——下一步建议评估这两个方法的 C 化，或转 §0.09 的 T5 唯一壳。
+
+66. **P0-1 第十二刀：`MGLRenderer+Draw.m` 整文件转 C（**文件 21 → 20**，本轮第一个 .m 消失）**：
+     ① **做法**：该文件在第九刀之后只剩 18 个 C 桥 + 3 个 C helper，唯一的 ObjC 成分是
+     18 处 `@autoreleasepool { … }`、`MGLRenderer *` 局部与 `(__bridge void *)`。逐项等价替换：
+     - `@autoreleasepool { X }` → **`objc_autoreleasePoolPush()` / `objc_autoreleasePoolPop(pool)`**
+       （`@autoreleasepool` 的底层就是这两个 libobjc C 函数，链接已有 `-lobjc`；**逐 draw 池语义不变**）；
+     - `static MGLRenderer *mglRendererDrawTarget(GLMContext)`（原来是 ObjC 私头里的
+       `static inline mglRendererForContext`）→ `static void *… { return ctx ? ctx->platform_renderer_shell : NULL; }`
+       （`platform_renderer_shell` 本就是 `void *`）；
+     - `mglRendererEnterBackendLease` 同样来自 ObjC 私头（`static inline` 包 `mglRendererBackendBeginContext`），
+       C 侧自带同义 inline；`(__bridge void *)renderer` → `renderer`；空的 `@implementation MGLRenderer (Draw)` 删除。
+     - include 换成 C 头（`glm_context.h` / `mgl_renderer_backend.h` / `mgl_sampler_compat.h` / `mgl_draw_issue.h` …），
+       文件 `git mv` 为 **`MGL/src/mgl_draw_entry.c`**（Makefile 用 `wildcard MGL/src/*.c`，无需改构建脚本）。
+     ② **度量**：`objc_zero.sh` **文件 21 → 20**（本周期 P0-1 阶段第一次真正删掉一个 `.m`）、行数 **35,959 → 35,587**、
+     语法 **2,077 → 2,036**、词汇 3,958（持平）；`MGLRenderer*.m` **32,589 → 32,218**。
+     ③ **如实记账**：**本刀没有退役端口**（shim 仍 13/223）。§0.04 的"净减"针对的是"把消息发送搬进 shim 充数"，
+     本刀是**整个 ObjC TU 消失**这一更高一层的收益；不把它计入 shim 账。
+     ④ **oracle**：旧库 = 提交 `0716d8a` 的独立构建（`cmp` 两库不同）；两臂 trace 的**确定性行 4,980/4,980 与
+     5,513/5,513 逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**（`processGLState.slow` 288/292、304/293，
+     已知非确定）；plain **92/0/2**、ICB 门禁 **82/10/2** 新旧库相同；**CTS 七簇非通过集合 diff 全空**；
+     `verify_gl_api` 通过 + 28 目标全过（`GATE_EXIT=0`）。
+     ⑤ **并行工作区提示（必须记录）**：本刀提交时工作区里还有**不属于本刀的并行改动**
+     （`MGL/include/mgl_env_flag.h`、`MGL/include/mgl_types_state.h`、`MGL/src/draw_command.c`、`MGL/src/mgl_batch_path.c`、
+     `Makefile`（新增 `test-state-dataflow`）、`scripts/state_dataflow_coverage.py`）。它们**未随本刀提交、未被修改**，
+     但本刀 A/B 的 new 臂是在**含这些改动的树**上构建的，因此结论应读作"合成树 vs `0716d8a` 在这些语料上无可观测差异"。
+     **规则：同一 checkout 可能有并行改动时，提交前必须 `git status` 逐条确认归属，只 `git add` 自己的路径（禁用 `git add -A`）。**
+     下一刀：继续 T1/T2 式的**整文件转 C**——候选 `+VertexLayout.m`(203) / `MGLRenderer+DrawStageHost.m`(334) /
+     `MGLPipelineCache.m`(446) / `+Binding.m`(490)，先扫每个文件剩余的 ObjC 成分是否只剩锁壳/断言；
+     同时按 §0.09 的"纸面理由清单"复评 `BindMTLTexture` / `ProcessGLState` / `MapBuffersToMTL` 三端口。

@@ -11,12 +11,21 @@
 // MGLRenderer+Draw.m
 // Draw command encoding methods extracted from MGLRenderer.m
 
-#import "MGLRenderer_Private.h"
-#import "MGLRenderer+Draw_Private.h"
-#import "mgl_frame_activity.h"
+#include "glm_context.h"
+#include "mgl_renderer_backend.h"  /* MGLRendererBackendLease, lease begin/end */
+#include "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_draw_issue.h"
+#include "mgl_sampler_compat.h"    /* mglRendererResourceLooksSamplerLike */
+
+#include <stddef.h>
+#include <string.h>
+
+/* @autoreleasepool is objc_autoreleasePoolPush/Pop underneath; these entry
+ * points keep the per-draw pool without making this file Objective-C. */
+extern void *objc_autoreleasePoolPush(void);
+extern void objc_autoreleasePoolPop(void *);
 
 /* === C helpers used by Draw and Batch methods === */
 /* mglRendererProgramHasSampledResourceNamed is non-static so
@@ -45,9 +54,16 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     return false;
 }
 
-static MGLRenderer *mglRendererDrawTarget(GLMContext glm_ctx)
+static void *mglRendererDrawTarget(GLMContext glm_ctx)
 {
-    return mglRendererForContext(glm_ctx);
+    return glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
+}
+
+/* The Objective-C side has the same two-line inline in MGLRenderer_Private.h. */
+static inline int mglRendererEnterBackendLease(GLMContext context,
+                                               MGLRendererBackendLease *lease)
+{
+    return mglRendererBackendBeginContext(context, lease);
 }
 
 void mglRendererDrawArrays(GLMContext glm_ctx,
@@ -56,14 +72,14 @@ void mglRendererDrawArrays(GLMContext glm_ctx,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglDrawHostGuardIssueArrays((__bridge void *)renderer, glm_ctx, mode, first, count, 1, 0u, "drawArrays", /*with_ms=*/1);
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglDrawHostGuardIssueArrays(renderer, glm_ctx, mode, first, count, 1, 0u, "drawArrays", /*with_ms=*/1);
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -73,14 +89,14 @@ void mglRendererDrawElements(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglDrawHostGuardIssueElements((__bridge void *)renderer, glm_ctx, mode, count, type, indices, 1, 0, 0u, "drawElements", /*with_ms=*/1);
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglDrawHostGuardIssueElements(renderer, glm_ctx, mode, count, type, indices, 1, 0, 0u, "drawElements", /*with_ms=*/1);
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -91,14 +107,14 @@ void mglRendererDrawRangeElements(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        (void)start; (void)end; mglIssueDrawElements(glm_ctx, (__bridge void *)renderer, mode, count, type, indices, 1, 0, 0u, "drawRangeElements");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        (void)start; (void)end; mglIssueDrawElements(glm_ctx, renderer, mode, count, type, indices, 1, 0, 0u, "drawRangeElements");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -108,14 +124,14 @@ void mglRendererDrawArraysInstanced(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawArrays(glm_ctx, (__bridge void *)renderer, mode, first, count, instance_count, 0u, "drawArraysInstanced");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawArrays(glm_ctx, renderer, mode, first, count, instance_count, 0u, "drawArraysInstanced");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -126,14 +142,14 @@ void mglRendererDrawElementsInstanced(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawElements(glm_ctx, (__bridge void *)renderer, mode, count, type, indices, instance_count, 0, 0u, "drawElementsInstanced");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawElements(glm_ctx, renderer, mode, count, type, indices, instance_count, 0, 0u, "drawElementsInstanced");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -143,14 +159,14 @@ void mglRendererDrawElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawElements(glm_ctx, (__bridge void *)renderer, mode, count, type, indices, 1, base_vertex, 0u, "drawElementsBaseVertex");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawElements(glm_ctx, renderer, mode, count, type, indices, 1, base_vertex, 0u, "drawElementsBaseVertex");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -161,14 +177,14 @@ void mglRendererDrawRangeElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        (void)start; (void)end; mglIssueDrawElements(glm_ctx, (__bridge void *)renderer, mode, count, type, indices, 1, base_vertex, 0u, "drawRangeElementsBaseVertex");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        (void)start; (void)end; mglIssueDrawElements(glm_ctx, renderer, mode, count, type, indices, 1, base_vertex, 0u, "drawRangeElementsBaseVertex");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -179,14 +195,14 @@ void mglRendererDrawElementsInstancedBaseVertex(GLMContext glm_ctx, uint32_t mod
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawElements(glm_ctx, (__bridge void *)renderer, mode, count, type, indices, instance_count, base_vertex, 0u, "drawElementsInstancedBaseVertex");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawElements(glm_ctx, renderer, mode, count, type, indices, instance_count, base_vertex, 0u, "drawElementsInstancedBaseVertex");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -196,14 +212,14 @@ void mglRendererDrawArraysIndirect(GLMContext glm_ctx,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawArraysIndirect(glm_ctx, (__bridge void *)renderer, mode, indirect, "drawArraysIndirect");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawArraysIndirect(glm_ctx, renderer, mode, indirect, "drawArraysIndirect");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -213,14 +229,14 @@ void mglRendererDrawElementsIndirect(GLMContext glm_ctx,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawElementsIndirect(glm_ctx, (__bridge void *)renderer, mode, type, indirect, "drawElementsIndirect");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawElementsIndirect(glm_ctx, renderer, mode, type, indirect, "drawElementsIndirect");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -231,14 +247,14 @@ void mglRendererDrawArraysInstancedBaseInstance(GLMContext glm_ctx, uint32_t mod
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawArrays(glm_ctx, (__bridge void *)renderer, mode, first, count, instance_count, base_instance, "drawArraysInstancedBaseInstance");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawArrays(glm_ctx, renderer, mode, first, count, instance_count, base_instance, "drawArraysInstancedBaseInstance");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -249,14 +265,14 @@ void mglRendererDrawElementsInstancedBaseInstance(GLMContext glm_ctx, uint32_t m
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawElements(glm_ctx, (__bridge void *)renderer, mode, count, type, indices, instance_count, 0, base_instance, "drawElementsInstancedBaseInstance");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawElements(glm_ctx, renderer, mode, count, type, indices, instance_count, 0, base_instance, "drawElementsInstancedBaseInstance");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -267,14 +283,14 @@ void mglRendererDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, 
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueDrawElements(glm_ctx, (__bridge void *)renderer, mode, count, type, indices, instance_count, base_vertex, base_instance, "drawElementsInstancedBaseVertexBaseInstance");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueDrawElements(glm_ctx, renderer, mode, count, type, indices, instance_count, base_vertex, base_instance, "drawElementsInstancedBaseVertexBaseInstance");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -284,14 +300,14 @@ void mglRendererMultiDrawArrays(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueMultiDrawArrays(glm_ctx, (__bridge void *)renderer, mode, firsts, counts, draw_count, "multiDrawArrays");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueMultiDrawArrays(glm_ctx, renderer, mode, firsts, counts, draw_count, "multiDrawArrays");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -302,14 +318,14 @@ void mglRendererMultiDrawElements(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueMultiDrawElements(glm_ctx, (__bridge void *)renderer, mode, counts, type, indices, draw_count, NULL, "multiDrawElements");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueMultiDrawElements(glm_ctx, renderer, mode, counts, type, indices, draw_count, NULL, "multiDrawElements");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -320,14 +336,14 @@ void mglRendererMultiDrawElementsBaseVertex(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueMultiDrawElements(glm_ctx, (__bridge void *)renderer, mode, counts, type, indices, draw_count, base_vertices, "multiDrawElementsBaseVertex");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueMultiDrawElements(glm_ctx, renderer, mode, counts, type, indices, draw_count, base_vertices, "multiDrawElementsBaseVertex");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -337,14 +353,14 @@ void mglRendererMultiDrawArraysIndirect(GLMContext glm_ctx, uint32_t mode,
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueMultiDrawArraysIndirect(glm_ctx, (__bridge void *)renderer, mode, indirect, draw_count, stride, "multiDrawArraysIndirect");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueMultiDrawArraysIndirect(glm_ctx, renderer, mode, indirect, draw_count, stride, "multiDrawArraysIndirect");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
 
@@ -354,18 +370,13 @@ void mglRendererMultiDrawElementsIndirect(GLMContext glm_ctx, uint32_t mode, uin
     MGLRendererBackendLease _backend_lease = {};
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
 
-    MGLRenderer *renderer = mglRendererDrawTarget(glm_ctx);
+    void *renderer = mglRendererDrawTarget(glm_ctx);
     if (!renderer) {
         mglRendererBackendEnd(&_backend_lease);
         return;
     }
-    @autoreleasepool {
-        mglIssueMultiDrawElementsIndirect(glm_ctx, (__bridge void *)renderer, mode, type, indirect, draw_count, stride, "multiDrawElementsIndirect");
-    }
+    void *mgl_pool = objc_autoreleasePoolPush();
+        mglIssueMultiDrawElementsIndirect(glm_ctx, renderer, mode, type, indirect, draw_count, stride, "multiDrawElementsIndirect");
+    objc_autoreleasePoolPop(mgl_pool);
     mglRendererBackendEnd(&_backend_lease);
 }
-
-
-@implementation MGLRenderer (Draw)
-
-@end
