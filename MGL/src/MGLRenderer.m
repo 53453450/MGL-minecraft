@@ -3139,11 +3139,13 @@ void logDirtyBits(GLMContext ctx)
  * Returns false to indicate that this draw should be skipped (semantically equivalent to the
  * original inline return false).
  */
-/* syncResourceBindingsForContext:(GLMContext)glm_ctx moved to MGLRenderer+Draw.m */
+/* syncResourceBindingsForContext:(GLMContext)glm_ctx is the C entry
+ * mglRendererSyncResourceBindingsForContext (mgl_binding_state_ops.h). */
 
 /* syncPipelineStateWithDeferredBufferMap: moved to MGLRenderer+RenderPass.m */
 
-/* bindBufferSizeConstantsForRenderEncoder moved to MGLRenderer+RenderPass.m */
+/* bindBufferSizeConstantsForRenderEncoder is the C entry
+ * mglRendererBindBufferSizeConstantsForRenderEncoder (mgl_size_constants.h). */
 
 /* flushCommandBuffer: moved to MGLRenderer+RenderPass.m */
 

@@ -18,6 +18,7 @@
 
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_size_constants.h"  /* runtime-array size constants (was a method) */
 #include "mgl_draw_support.h"
 #include "mgl_ms_sample_loop.h"
 #include "mgl_draw_issue.h"
@@ -1051,7 +1052,7 @@ static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
             self->_renderPassManager.state->currentRenderEncoderOwner,
     };
     [self bindFragmentBuffersToCurrentRenderEncoder:&gsEncCtx];
-    [self bindBufferSizeConstantsForRenderEncoder];
+    (void)mglRendererBindBufferSizeConstantsForRenderEncoder(renderer);
     Program *gsVertexProgram =
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *gsFragmentProgram =

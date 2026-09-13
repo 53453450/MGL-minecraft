@@ -13,9 +13,11 @@
 #ifndef MGL_BINDING_STATE_OPS_H
 #define MGL_BINDING_STATE_OPS_H
 
+#include "glm_context.h"
 #include "mgl_render_values.h"
 #include "mgl_render.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -37,6 +39,22 @@ void mglBindingSetViewportIfNeeded(void *renderer, double origin_x,
 void mglBindingSetScissorRectIfNeeded(void *renderer, int64_t x, int64_t y,
                                       uint64_t width, uint64_t height);
 void mglBindingSetTriangleFillModeIfNeeded(void *renderer, uint32_t mode);
+
+/* === Resource binding sync ==============================================
+ * Work already performed by processDirtyStateDomainsLocked within the same
+ * processGLState invocation; the sync entry skips these steps instead of
+ * repeating the full rebind (which used to run twice per draw).  The record
+ * moved here from MGLRenderer+Draw_Private.h when the method became C. */
+typedef struct {
+    bool mappedBuffers;
+    bool updatedBaseLists;
+    bool boundActiveTextures;
+} MGLResourceSyncWork;
+
+/* Binding work the render pass still owes after its own state processing
+ * (formerly -[MGLRenderer syncResourceBindingsForContext:alreadyDone:]). */
+bool mglRendererSyncResourceBindingsForContext(
+    void *renderer, GLMContext glm_ctx, const MGLResourceSyncWork *done);
 
 #ifdef __cplusplus
 }

@@ -225,17 +225,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
  * mglRendererMdiScratchBuffer (mgl_renderer_ports.c). */
 
 // === Resource binding sync ===
-/* Work already performed by processDirtyStateDomainsLocked within the same
- * processGLState invocation; syncResourceBindingsForContext skips these
- * steps instead of repeating the full rebind (which used to run twice per
- * draw). */
-typedef struct {
-    bool mappedBuffers;
-    bool updatedBaseLists;
-    bool boundActiveTextures;
-} MGLResourceSyncWork;
-- (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
-                           alreadyDone:(const MGLResourceSyncWork *)done;
+/* MGLResourceSyncWork and the sync entry are C now:
+ * mglRendererSyncResourceBindingsForContext (mgl_binding_state_ops.h). */
 - (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindStorageImagesForStage:(int)shaderStage

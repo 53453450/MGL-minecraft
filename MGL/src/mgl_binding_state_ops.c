@@ -16,6 +16,10 @@
 
 #include "mgl_binding_state_ops.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_buffer_map.h"        /* map/update-dirty entries */
+#include "mgl_size_constants.h"    /* runtime-array size constants */
+#include "mgl_encode_context.h"    /* MGLEncodeContext */
+#include "mgl_batch_issue.h"       /* mglBatchBindActiveTexturesToMTL */
 
 void mglBindingInvalidateLastBoundState(void *renderer)
 {
@@ -97,4 +101,60 @@ void mglBindingSetTriangleFillModeIfNeeded(void *renderer, uint32_t mode)
     mglRenderBindingSetTriangleFillForOwner(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL, owner,
         mode);
+}
+
+/* MGL_STATE() from MGLRenderer_Private.h, in C; the argument is the caller's
+ * context, exactly as the method's MGL_STATE(glm_ctx) was. */
+static GLMState *mglBindingStateDerivedState(const MGLRendererStateAreas *areas,
+                                             GLMContext glm_ctx)
+{
+    if (areas->core && areas->core->activeState) {
+        return areas->core->activeState;
+    }
+    return glm_ctx ? glm_ctx->active_state : NULL;
+}
+
+bool mglRendererSyncResourceBindingsForContext(
+    void *renderer, GLMContext glm_ctx, const MGLResourceSyncWork *done)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMState *state = mglBindingStateDerivedState(&areas, glm_ctx);
+
+    if (!done || !done->mappedBuffers) {
+        RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL(renderer));
+    }
+    if (!done || !done->updatedBaseLists) {
+        RETURN_FALSE_ON_FAILURE(
+            mglRendererUpdateDirtyBaseBufferList(renderer,
+                                                 &state->vertex_buffer_map_list));
+        RETURN_FALSE_ON_FAILURE(
+            mglRendererUpdateDirtyBaseBufferList(renderer,
+                                                 &state->fragment_buffer_map_list));
+    }
+    MGLEncodeContext encCtx = {
+        .render_encoder_owner =
+            areas.command ? areas.command->currentRenderEncoderOwner : NULL,
+    };
+    RETURN_FALSE_ON_FAILURE(
+        mglRendererBindVertexBuffersToCurrentRenderEncoderPort(renderer, &encCtx));
+    RETURN_FALSE_ON_FAILURE(
+        mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(renderer, &encCtx));
+    RETURN_FALSE_ON_FAILURE(
+        mglRendererBindBufferSizeConstantsForRenderEncoder(renderer));
+    if (!done || !done->boundActiveTextures) {
+        RETURN_FALSE_ON_FAILURE(
+            mglBatchBindActiveTexturesToMTL(renderer, areas.ctx));
+    }
+    RETURN_FALSE_ON_FAILURE(
+        mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+            renderer, "final-active-texture-bind"));
+    if (!mglRendererBindTexturesToCurrentRenderEncoderPort(renderer, &encCtx)) {
+        RETURN_FALSE_ON_FAILURE(
+            mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+                renderer, "final-sampled-texture-bind"));
+        RETURN_FALSE_ON_FAILURE(
+            mglRendererBindTexturesToCurrentRenderEncoderPort(renderer, &encCtx));
+    }
+    return true;
 }

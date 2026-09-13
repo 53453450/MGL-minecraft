@@ -22,6 +22,7 @@
 #include "mgl_renderer_ports.h"
 #include "mgl_batch_restore.h"
 #include "mgl_texture_sampler.h"
+#include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture (was -bindMTLTextureLocked:) */
 #include "mgl_frame_activity.h"  /* MGL_PERF_INC/ADD (pipeline cache counters) */
 #include "mgl_air_loader.h"      /* MGLRenderPipelineDescriptorState */
 #include "mgl_renderer_backend.h"
@@ -624,6 +625,34 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext glm_ctx)
 }
 
 
+
+/* === Texture binding (T5 merge from MGLRenderer+Binding.m) ================
+ * The bind body is the C function mglRendererBindMTLTexture (mgl_texture_bind.h);
+ * what is left of the category is the lock/thread-assert frame the Objective-C
+ * call sites use and the GL entry point above it. */
+@implementation MGLRenderer (BindingShell)
+
+- (bool)bindMTLTexture:(Texture *)tex
+{
+    METAL_LOCK();
+    const bool result = mglRendererBindMTLTexture((__bridge void *)self, tex);
+    METAL_UNLOCK();
+    return result;
+}
+
+@end
+
+void mglRendererBindTexture(GLMContext glm_ctx,
+                            Texture *texture)
+{
+    MGLRendererBackendLease _backend_lease = {};
+    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
+    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    if (renderer && glm_ctx && texture) {
+        (void)[renderer bindMTLTexture:texture];
+    }
+    mglRendererBackendEnd(&_backend_lease);
+}
 
 /* === MGLPipelineCache (T5 merge from MGLPipelineCache.m) ====================
  * The pipeline cache is a platform object: its state record is already

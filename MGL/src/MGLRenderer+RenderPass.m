@@ -5387,8 +5387,8 @@ static GLenum mglPassthroughDeclType(
     }
 
     if (after.sync_resources) {
-        RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx
-                                                         alreadyDone:&resourceSyncWork]);
+        RETURN_FALSE_ON_FAILURE(mglRendererSyncResourceBindingsForContext(
+            (__bridge void *)self, ctx, &resourceSyncWork));
     }
 
     if (after.bind_frag_coord_slot) {
@@ -6554,111 +6554,6 @@ static GLenum mglPassthroughDeclType(
  * .length() on unsized SSBO arrays.  The render encoder has separate buffer
  * tables for vertex and fragment, so we bind a size buffer for each stage
  * that needs it. */
-- (bool) bindBufferSizeConstantsForRenderEncoder
-{
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
-        return true;
-    }
-
-    Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-    if (vertexProgram && vertexProgram->modules[_VERTEX_SHADER].needs_runtime_array_size_buffer)
-    {
-        uint32_t sizeConstants[31];
-        memset(sizeConstants, 0, sizeof(sizeConstants));
-
-        for (int i = 0; i < MGL_STATE(ctx)->vertex_buffer_map_list.count; i++)
-        {
-            BufferMap *map = &MGL_STATE(ctx)->vertex_buffer_map_list.buffers[i];
-            if (!map->buf)
-                continue;
-            NSUInteger metalSlot = map->has_metal_binding
-                ? (NSUInteger)map->metal_binding_index
-                : (NSUInteger)map->buffer_base_index;
-            if (metalSlot >= 31 || metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)
-                continue;
-            GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
-            sizeConstants[metalSlot] = (uint32_t)visibleSize;
-        }
-
-        id vertexSizeBuffer = (__bridge id)
-            mglRendererBackendGetSizeConstantsBuffer(
-                _backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX,
-                sizeConstants, 31u);
-        if (!vertexSizeBuffer) {
-            vertexSizeBuffer = mglRenderPassCreateBufferWithBytes(
-                _device, sizeConstants, sizeof(sizeConstants),
-                MGLResourceStorageModeShared);
-            if (vertexSizeBuffer &&
-                mglRendererBackendSetSizeConstantsBuffer(
-                    _backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_VERTEX,
-                    sizeConstants, 31u, (__bridge void *)vertexSizeBuffer) != 0) {
-                vertexSizeBuffer = nil;
-            }
-        }
-        if (vertexSizeBuffer) {
-            mglRenderSetRenderBufferForOwner(
-                _renderPassManager.state->currentRenderEncoderOwner,
-                (__bridge void *)vertexSizeBuffer, 0,
-                MGL_RENDER_BINDING_STAGE_VERTEX,
-                MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            mglBindingRecordLastBoundVertexBuffer((__bridge void *)self,
-                                                  (__bridge void *)vertexSizeBuffer,
-                                                  0, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-        }
-    }
-
-    Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    if (fragmentProgram && fragmentProgram->modules[_FRAGMENT_SHADER].needs_runtime_array_size_buffer)
-    {
-        uint32_t sizeConstants[31];
-        memset(sizeConstants, 0, sizeof(sizeConstants));
-
-        for (int i = 0; i < MGL_STATE(ctx)->fragment_buffer_map_list.count; i++)
-        {
-            BufferMap *map = &MGL_STATE(ctx)->fragment_buffer_map_list.buffers[i];
-            if (!map->buf)
-                continue;
-            NSUInteger metalSlot = map->has_metal_binding
-                ? (NSUInteger)map->metal_binding_index
-                : (NSUInteger)map->buffer_base_index;
-            if (metalSlot >= 31 || metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)
-                continue;
-            GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
-            sizeConstants[metalSlot] = (uint32_t)visibleSize;
-        }
-
-        id fragmentSizeBuffer = (__bridge id)
-            mglRendererBackendGetSizeConstantsBuffer(
-                _backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_FRAGMENT,
-                sizeConstants, 31u);
-        if (!fragmentSizeBuffer) {
-            fragmentSizeBuffer = mglRenderPassCreateBufferWithBytes(
-                _device, sizeConstants, sizeof(sizeConstants),
-                MGLResourceStorageModeShared);
-            if (fragmentSizeBuffer &&
-                mglRendererBackendSetSizeConstantsBuffer(
-                    _backend, MGL_RENDERER_BACKEND_SIZE_CONSTANTS_FRAGMENT,
-                    sizeConstants, 31u, (__bridge void *)fragmentSizeBuffer) != 0) {
-                fragmentSizeBuffer = nil;
-            }
-        }
-        if (fragmentSizeBuffer) {
-            mglRenderSetRenderBufferForOwner(
-                _renderPassManager.state->currentRenderEncoderOwner,
-                (__bridge void *)fragmentSizeBuffer, 0,
-                MGL_RENDER_BINDING_STAGE_FRAGMENT,
-                MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            mglBindingRecordLastBoundFragmentBuffer((__bridge void *)self,
-                                                    (__bridge void *)fragmentSizeBuffer,
-                                                    0, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
-        }
-    }
-
-    return true;
-}
 
 -(void) flushCommandBuffer: (bool) finish
 {
