@@ -122,10 +122,6 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 // === Framebuffer attachment helpers ===
 - (Texture *)framebufferAttachmentTexture:(FBOAttachment *)fbo_attachment;
 - (BOOL)currentRenderPassUsesTexture:(id)texture;
-- (void)updateGLSampledCopiesForEndedRenderPassFramebuffer:(Framebuffer *)fbo
-                                                  drawCount:(GLsizei)drawCount
-                                               drawBuffers:(const GLenum *)drawBuffers
-                                                    reason:(const char *)reason;
 - (bool)restoreRenderEncoderAfterTextureUploadForDraw:(const char *)reason;
 - (BOOL)synchronizeRenderPassForTextureReadback:(id)texture
                                           reason:(const char *)reason;

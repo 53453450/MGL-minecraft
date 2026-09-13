@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,466**、ObjC 语法 **2,268 → 1,963**、词汇 **4,353 → 3,836**；
+文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,396**、ObjC 语法 **2,268 → 1,957**、词汇 **4,353 → 3,836**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2421,3 +2421,18 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 **注意事项（前几轮换来的）**：`_mglInMSSampleDrawLoop` / `_mglForcedMSSampleId` / `_mglMSSamplePlaneOffset` 是**私有 ivar**
 → 用"方法 + 壳转发"（§0.14 第二条）而不是 areas 槽地址（第 83/85 刀的结论）；每步完成后立刻 `make -j4 lib`
 （clang 是唯一裁判），再做 A/B 与 CTS；不要试图用正则批处理（第 45/91 条）。
+
+92. **P0-1 第三十八刀：§0.22 第①步——`updateGLSampledCopiesForEndedRenderPassFramebuffer:` 转 C（**−70 行**）**：
+     ① 体搬进 `mgl_blit_sampled_copy.c` 的 `mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(renderer, fbo, reason)`：
+     `ctx` → `areas.ctx`；两处 `[self framebufferAttachmentTexture:attachment]` → **已有 C 端口**
+     `mglRendererAttachmentTextureFor(areas.ctx, attachment)`；`id source = (__bridge id)(tex->mtl_data)` → `void *source = tex->mtl_data`；
+     末尾的 `mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, …)` → 传 `renderer`；
+     **`drawCount` / `drawBuffers` 两个参数按原体语义（本来就是 `(void)` 弃用）直接取消**；`NSLog`/trace 调用不变。
+     ② 方法与 `MGLRenderer+RenderPass_Private.h` 声明删除；唯一调用点（`+RenderPass.m` 的 `endRenderEncodingLocked` 内）改直调。
+     ③ **编译期三类错（已解决）**：残留 `(void)drawCount/drawBuffers`；`mglRTWriteAuthorityIsCurrentAndUsesOriginal` 的头是
+     **`mgl_coordinate.h`**（不是 `mgl_frame_activity.h`）；调用点仍发旧 selector。
+     ④ **度量**：行数 **34,466 → 34,396**、语法 **1,963 → 1,957**、词汇 3,836（持平）；文件 16、shim 端口 13 不变。
+     ⑤ **oracle**：旧库 = 提交 `6e4d2ca` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：§0.22 第②步 `endRenderEncodingLocked`（≈91 行）——它的三个 manager 依赖、guarded 入口与本步的方法都已就绪，
+     可直接手工搬（注意 `@try/@catch` 用 `mglPlatformShellGuardedCall`、`_batching` 用 `areas.batching`）。

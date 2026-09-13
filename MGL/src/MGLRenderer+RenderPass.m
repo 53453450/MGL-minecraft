@@ -4900,74 +4900,6 @@ static GLenum mglPassthroughDeclType(
 
 #pragma mark vertex descriptor
 
-- (void)updateGLSampledCopiesForEndedRenderPassFramebuffer:(Framebuffer *)fbo
-                                                  drawCount:(GLsizei)drawCount
-                                               drawBuffers:(const GLenum *)drawBuffers
-                                                    reason:(const char *)reason
-{
-    (void)drawCount;
-    (void)drawBuffers;
-
-    if (!ctx || !fbo) {
-        return;
-    }
-
-
-    bool anySampledRT = false;
-    for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
-        if (!mglRenderColorAttachmentBitSet(
-                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
-            continue;
-        }
-        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
-        Texture *tex = [self framebufferAttachmentTexture:attachment];
-        if (tex && tex->mtl_data &&
-            mglRenderSampledRTNeedsCopy(tex->is_render_target ? 1 : 0,
-                                        tex->mtl_render_target_write_version)) {
-            anySampledRT = true;
-            break;
-        }
-    }
-    if (!anySampledRT) {
-        return;
-    }
-
-    for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
-        if (!mglRenderColorAttachmentBitSet(
-                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
-            continue;
-        }
-
-        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
-
-        Texture *tex = [self framebufferAttachmentTexture:attachment];
-        if (!tex || !tex->mtl_data) {
-            continue;
-        }
-
-        id source = (__bridge id)(tex->mtl_data);
-        if (!mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, (__bridge void *)source)) {
-            continue;
-        }
-
-
-        if (mglRTWriteAuthorityIsCurrentAndUsesOriginal(tex)) {
-            if (tex->mtl_gl_sampled_data &&
-                mglRenderSampledRTCopyStale(tex->mtl_gl_sampled_write_version,
-                                            tex->mtl_render_target_write_version)) {
-                mglTextureReleaseGLSampledCopy(tex);
-                if (mglTraceLogIsEnabled()) {
-                    mglTraceLog("RT_SAMPLE_COPY_SKIP_INJECTED_RENDER tex=%u label=\"%s\" reason=render_yflip_injected_stale_released",
-                                (unsigned)tex->name,
-                                mglTraceTextureLabel(tex));
-                }
-            }
-            continue;
-        }
-
-        (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, tex, (__bridge void *)source, reason ? reason : "end_render_pass");
-    }
-}
 
 - (void) endRenderEncoding
 {
@@ -5060,10 +4992,8 @@ static GLenum mglPassthroughDeclType(
         /* A later batch may sample this render target before the command
          * buffer is submitted, so refresh its GL-visible copy immediately. */
         if (endedFramebuffer) {
-            [self updateGLSampledCopiesForEndedRenderPassFramebuffer:endedFramebuffer
-                                                            drawCount:endedDrawBufferCount
-                                                         drawBuffers:endedDrawBuffers
-                                                              reason:"end_render_pass"];
+            mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
+                (__bridge void *)self, endedFramebuffer, "end_render_pass");
         }
     }
 }

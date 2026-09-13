@@ -19,7 +19,8 @@
 #include "mgl_renderer_ports.h"  /* state areas, ensure-writable command buffer */
 #include "mgl_blit_pipelines.h"  /* scaled copy pipeline / compute pipeline / sampler */
 #include "mgl_texture_compat.h"  /* release sampled copy, data kind name, trace label */
-#include "mgl_rt_sync.h"        /* mglTextureCanUseGLSampledRenderTargetCopy */
+#include "mgl_rt_sync.h"
+#include "mgl_coordinate.h"      /* mglRTWriteAuthorityIsCurrentAndUsesOriginal */        /* mglTextureCanUseGLSampledRenderTargetCopy */
 #include "mgl_region_value.h"  /* MGLSizeValue / mglBlitSize */
 #include "mgl_trace_log.h"      /* mglTraceLog / mglTraceLogIsEnabled */
 #include "mgl_thread_affinity.h" /* MGL_ASSERT_GL_THREAD */
@@ -530,4 +531,75 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
     }
 
     return 1;
+}
+
+
+/* Body of the former -[MGLRenderer updateGLSampledCopiesForEndedRenderPassFramebuffer:
+ * drawCount:drawBuffers:reason:] (P0-1): the context comes from the state areas and
+ * the attachment texture from the C port, so nothing here needs Objective-C. */
+void mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
+    void *renderer, Framebuffer *fbo, const char *reason)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    if (!areas.ctx || !fbo) {
+        return;
+    }
+
+
+    bool anySampledRT = false;
+    for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
+        if (!mglRenderColorAttachmentBitSet(
+                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
+            continue;
+        }
+        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
+        Texture *tex = mglRendererAttachmentTextureFor(areas.ctx, attachment);
+        if (tex && tex->mtl_data &&
+            mglRenderSampledRTNeedsCopy(tex->is_render_target ? 1 : 0,
+                                        tex->mtl_render_target_write_version)) {
+            anySampledRT = true;
+            break;
+        }
+    }
+    if (!anySampledRT) {
+        return;
+    }
+
+    for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
+        if (!mglRenderColorAttachmentBitSet(
+                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
+            continue;
+        }
+
+        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
+
+        Texture *tex = mglRendererAttachmentTextureFor(areas.ctx, attachment);
+        if (!tex || !tex->mtl_data) {
+            continue;
+        }
+
+        void *source = tex->mtl_data;
+        if (!mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, source)) {
+            continue;
+        }
+
+
+        if (mglRTWriteAuthorityIsCurrentAndUsesOriginal(tex)) {
+            if (tex->mtl_gl_sampled_data &&
+                mglRenderSampledRTCopyStale(tex->mtl_gl_sampled_write_version,
+                                            tex->mtl_render_target_write_version)) {
+                mglTextureReleaseGLSampledCopy(tex);
+                if (mglTraceLogIsEnabled()) {
+                    mglTraceLog("RT_SAMPLE_COPY_SKIP_INJECTED_RENDER tex=%u label=\"%s\" reason=render_yflip_injected_stale_released",
+                                (unsigned)tex->name,
+                                mglTraceTextureLabel(tex));
+                }
+            }
+            continue;
+        }
+
+        (void)mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, source, reason ? reason : "end_render_pass");
+    }
 }

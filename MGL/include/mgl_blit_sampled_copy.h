@@ -37,6 +37,12 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source);
 int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
                                            void *source, const char *reason);
 
+/* Refresh the GL-sampled copies of every color attachment of a framebuffer whose
+ * render pass just ended (draw count/buffers were unused in the Objective-C
+ * version, so they are gone). */
+void mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
+    void *renderer, Framebuffer *fbo, const char *reason);
+
 #ifdef __cplusplus
 }
 #endif
