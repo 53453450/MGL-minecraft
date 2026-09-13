@@ -218,12 +218,9 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
     if (!renderer || !encode_context) {
         return;
     }
-    MGLRenderer *host = (__bridge MGLRenderer *)renderer;
-    [host bindCullDistanceEmulationBuffers:mode
-                                firstVertex:first_vertex
-                           explicitVertices:explicit_vertices
-                         explicitVertexCount:explicit_vertex_count
-                              encodeContext:(const MGLEncodeContext *)encode_context];
+    mglDrawBindCullDistanceEmulationBuffers(renderer, mode, first_vertex,
+                                            explicit_vertices,
+                                            explicit_vertex_count, encode_context);
 }
 
 id mglDrawSupportCreateComputeEncoder(
@@ -1257,13 +1254,10 @@ static void mglStageBindCullEmu(void *renderer, GLenum mode, GLuint first_vertex
                                 uint32_t explicit_vertex_count,
                                 const void *enc_ctx)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !enc_ctx) return;
-    [self bindCullDistanceEmulationBuffers:mode
-                                firstVertex:first_vertex
-                           explicitVertices:explicit_vertices
-                         explicitVertexCount:explicit_vertex_count
-                              encodeContext:(const MGLEncodeContext *)enc_ctx];
+    if (!mglStageHostSelf(renderer) || !enc_ctx) return;
+    mglDrawBindCullDistanceEmulationBuffers(renderer, mode, first_vertex,
+                                            explicit_vertices,
+                                            explicit_vertex_count, enc_ctx);
 }
 
 static int mglStageTryArraySplitEncode(void *renderer, void *device,

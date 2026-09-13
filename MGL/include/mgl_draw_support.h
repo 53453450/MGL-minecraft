@@ -23,6 +23,7 @@
 
 #include "glm_context.h"
 #include "mgl_types_buffer.h"
+#include "mgl_encode_context.h"
 
 #include <stdint.h>
 
@@ -53,6 +54,13 @@ int mglDrawFragmentNeedsPerSampleMSValues(GLMContext ctx);
 /* The color attachment 0 of the bound FBO when it is an emulated-MS texture
  * (used by the per-sample draw loop), else NULL. */
 Texture *mglDrawEmulatedMSColor0Texture(GLMContext ctx);
+
+/* Binds the cull-distance emulation buffers for a draw mode. */
+void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
+                                             uint32_t firstVertex,
+                                             const uint32_t *explicitVertices,
+                                             uint32_t explicitVertexCount,
+                                             const MGLEncodeContext *encCtx);
 
 #ifdef __cplusplus
 }

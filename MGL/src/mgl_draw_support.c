@@ -20,6 +20,11 @@
  */
 
 #include "mgl_draw_support.h"
+#include "mgl_frame_activity.h"
+#include "mgl_renderer_backend.h"
+#include "mgl_vertex_attrib_binding.h"
+#include "mgl_encode_context.h"
+#include "mgl_binding_state_ops.h"
 #include "mgl_draw_issue.h"
 #include "mgl_draw_tess.h"    /* mglResolveProgramForStageFromState */   /* mglDrawHostRunVertexCaptureIndexed */
 #include "mgl_renderer_ports.h"   /* state areas, mglRendererProcessBuffer */
@@ -28,6 +33,11 @@
 #include "error.h"                /* mglDispatchError */
 
 #include <stdio.h>
+
+/* Declared in the Objective-C MGLRenderer+DrawSupportUtil.h. */
+extern int mglDrawSupportEncodeContextIsActive(const MGLEncodeContext *encCtx);
+extern VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where);
+extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
 /* Defined in MGLRenderer.m; declared next to the definition in the
  * Objective-C MGLRenderer+Draw_Private.h, which C cannot include. */
@@ -253,4 +263,94 @@ Texture *mglDrawEmulatedMSColor0Texture(GLMContext ctx)
         }
     }
     return tex;
+}
+
+static uint32_t mglDrawSupportMinU32(uint32_t a, uint32_t b) { return a < b ? a : b; }
+
+void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
+                                             uint32_t firstVertex,
+                                             const uint32_t *explicitVertices,
+                                             uint32_t explicitVertexCount,
+                                             const MGLEncodeContext *encCtx)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (!areas.ctx || !mglDrawSupportEncodeContextIsActive(encCtx)) {
+        return;
+    }
+    VertexArray *vao = mglRendererGetValidatedVAO(areas.ctx, "bindCullDistanceEmu");
+    if (!vao) {
+        return;
+    }
+    Program *activeProgram = mglResolveProgramForStageFromState(areas.ctx, _VERTEX_SHADER);
+    if (!activeProgram) {
+        return;
+    }
+    explicitVertexCount = mglDrawSupportMinU32(explicitVertexCount, 4u);
+
+    void *captureBuffer =
+        mglRendererBackendGetCullDistanceCaptureBuffer(areas.backend);
+    if (captureBuffer) {
+        MGLCullDistanceEmuParams params;
+        mglRenderFillCullDistanceEmuParams(
+            mglRenderPrimitiveVertexCountForMode((uint32_t)mode), firstVertex,
+            explicitVertices, explicitVertexCount, 0u, 32u,
+            mglDrawSupportMinU32(activeProgram->cull_distance_count, 8u),
+            areas.tess_cull_capture_first_instance,
+            areas.tess_cull_capture_instance_stride, &params);
+        mglRenderBindCullDistanceEmuSlots(encCtx->render_encoder_owner,
+                                          captureBuffer,
+                                          &params);
+        mglBindingRecordLastBoundVertexBuffer(
+            renderer, captureBuffer, 0,
+            kMGLCullDistanceVertexBufferIndex);
+        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+        mglBindingInvalidateLastBoundVertexBufferAtIndex(renderer, 
+                  kMGLCullDistanceParamsBufferIndex);
+        return;
+    }
+
+    /* O1.3: ObjC fills VAO pointer ports; layout (+ dummy) in C++. */
+    uint32_t attribs[MAX_ATTRIBS];
+    const uint32_t attribCount = mglRenderCollectCullDistanceAttribs(
+        activeProgram, attribs, MAX_ATTRIBS);
+    MGLRenderCullDistanceAttribPort ports[MAX_ATTRIBS];
+    memset(ports, 0, sizeof(ports));
+    uint32_t portCount = 0u;
+    for (uint32_t i = 0u; i < attribCount && portCount < MAX_ATTRIBS; i++) {
+        MGLResolvedVertexAttribBinding resolved = {0};
+        if (!mglRendererResolveVertexAttribBinding(
+                areas.ctx, vao, attribs[i], "bindCullDistanceEmu", &resolved)) {
+            continue;
+        }
+        if (!resolved.buffer || !resolved.buffer->data.mtl_data) {
+            continue;
+        }
+        ports[portCount].mtl_buffer = resolved.buffer->data.mtl_data;
+        ports[portCount].binding_offset = resolved.binding_offset;
+        ports[portCount].stride = resolved.stride;
+        ports[portCount].relativeoffset = resolved.relativeoffset;
+        ports[portCount].valid = 1u;
+        portCount++;
+    }
+    MGLRenderCullDistanceLayout layout;
+    mglRenderBuildCullDistanceLayoutFromPorts(
+        &layout, ports, portCount,
+        mglRendererBackendGetCullDistanceDummyBuffer(areas.backend));
+    void *cullMtlBuffer = layout.mtl_buffer;
+    uint32_t cullStride = layout.stride;
+    uint32_t cullDistSize = layout.culldist_size;
+
+    MGLCullDistanceEmuParams params;
+    mglRenderFillCullDistanceEmuParams(
+        mglRenderPrimitiveVertexCountForMode((uint32_t)mode), firstVertex,
+        explicitVertices, explicitVertexCount,
+        mglRenderCullDistanceLayoutOffset(&layout), cullStride, cullDistSize,
+        0u, 0u, &params);
+    mglRenderBindCullDistanceEmuSlots(encCtx->render_encoder_owner,
+                                      cullMtlBuffer, &params);
+    mglBindingRecordLastBoundVertexBuffer(renderer, cullMtlBuffer,
+                                          0, kMGLCullDistanceVertexBufferIndex);
+    MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+    mglBindingInvalidateLastBoundVertexBufferAtIndex(renderer, kMGLCullDistanceParamsBufferIndex);
 }

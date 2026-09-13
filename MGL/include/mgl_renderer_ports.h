@@ -181,6 +181,8 @@ typedef struct MGLRendererStateAreas {
     int32_t tess_native_tes_active;
     void *tess_native_tes_program;
     uint32_t tess_tcs_output_stride;
+    uint32_t tess_cull_capture_first_instance;
+    uint32_t tess_cull_capture_instance_stride;
 } MGLRendererStateAreas;
 
 void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out);

@@ -2361,3 +2361,25 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
   2. MS 循环族（26+39）：先 C 化 `endRenderEncodingLocked`（需 3 个 manager 入口 + `mglPlatformShellGuardedCall`），
      再把 block 参数换成 `fn + ctx`。
   3. 之后按 §0.19 表逐行往下（`bindMTLTextureLocked:` → `MGLPipelineCache.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块）。
+
+91. **P0-1 第三十七刀：`bindCullDistanceEmulationBuffers:` 整块转 C（**−87 行**，第一个"整块搬"样本）**：
+     ① 按 §0.21 的配方执行（**手工逐段 + 每段编译**，不用正则批处理）：
+     - areas 加两个 `uint32_t`：`tess_cull_capture_first_instance` / `tess_cull_capture_instance_stride`，壳里从
+       `r->_tessellation.cullDistanceCaptureFirstInstance/…InstanceStride` 填（**加字段不算新端口**）；
+     - 体搬进 `mgl_draw_support.c` 的 `mglDrawBindCullDistanceEmulationBuffers`：
+       `ctx` → `areas.ctx`、`_backend` → `areas.backend`、`_tessellation.*` → 两个新字段、
+       **`id captureBuffer = (__bridge id)X` → `void *captureBuffer = X`**、去掉全部 `__bridge`、
+       `[self recordLastBoundVertexBuffer:…]` / `[self invalidateLastBoundVertexBufferAtIndex:…]` → 第 22 刀的 C 函数、
+       `MIN` → 本地 `mglDrawSupportMinU32`；
+     - 依赖声明三处**必须本地 extern**（都在 ObjC 头里）：`mglDrawSupportEncodeContextIsActive`（返回 `int`）、
+       `mglRendererGetValidatedVAO`、`mglResolveProgramForStageFromState`；类型头要补 `mgl_encode_context.h`、
+       `mgl_vertex_attrib_binding.h`、`mgl_renderer_backend.h`；
+     - 方法与私有头声明删除；`mgl_draw_metal_port.m` 两处调用点（一行 `MGLRenderer *host` 形式 + 一处 `mglStageHostSelf` 守卫）改直调。
+     ② **编译期踩到的四类错（本轮已全部解决，供后续整块搬直接复用）**：`MGLEncodeContext` 未引入（缺 `mgl_encode_context.h`）；
+     `mglMinU32` 定义在使用点之后；转换脚本残留两处 `self`（原来是 `[self …]` 的接收者）；两处 ObjC 调用点仍发旧 selector。
+     ③ **度量**：行数 **34,553 → 34,466**、语法 **1,973 → 1,963**、词汇 3,836（持平）；文件 16、shim 端口 13 不变；
+     `+DrawStageHost.m` 185 → **102 行**（余 MS 循环族 26+39）。
+     ④ **oracle**：旧库 = 提交 `e1a0a1f` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：`+DrawStageHost.m` 余 MS 循环族（26+39）——先 C 化 `endRenderEncodingLocked`（3 个 manager 入口 + `mglPlatformShellGuardedCall`，
+     注意其中 `_renderPassManager` 的三处调用已由第 81 刀的 `mglRenderPassManager*` C 入口覆盖），再把 block 参数换成 `fn + ctx`。

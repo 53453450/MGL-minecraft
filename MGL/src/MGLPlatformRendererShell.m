@@ -478,6 +478,10 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
     areas_out->tess_native_tes_program = (void *)r->_tessellation.nativeTESProgram;
     areas_out->tess_tcs_output_stride = (uint32_t)r->_tessellation.tcsOutputStride;
+    areas_out->tess_cull_capture_first_instance =
+        (uint32_t)r->_tessellation.cullDistanceCaptureFirstInstance;
+    areas_out->tess_cull_capture_instance_stride =
+        (uint32_t)r->_tessellation.cullDistanceCaptureInstanceStride;
     areas_out->fragment_trace_bindings = &r->_resourceFallback.fragmentTextureTraceBindings[0];
 }
 

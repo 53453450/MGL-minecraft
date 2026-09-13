@@ -327,11 +327,7 @@ typedef struct {
  * mglBatchRecordArrayDrawSubmitted (mgl_batch_rt_mark.h). */
 /* recordElementDrawSubmittedMode:indexCount: is now
  * mglBatchRecordElementDrawSubmitted (mgl_batch_rt_mark.h). */
-- (void)bindCullDistanceEmulationBuffers:(GLenum)mode
-                             firstVertex:(GLuint)firstVertex
-                        explicitVertices:(const GLuint *)explicitVertices
-                      explicitVertexCount:(GLuint)explicitVertexCount
-                           encodeContext:(const MGLEncodeContext *)encCtx;
+/* now the C function mglDrawBindCullDistanceEmulationBuffers (mgl_draw_support.h) */
 
 void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                     GLenum mode, GLuint first_vertex,
