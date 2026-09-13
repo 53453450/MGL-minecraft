@@ -2493,3 +2493,17 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：继续 §0.22 第②步的剩余部分——补 `mglRenderPassManagerClearRenderPassIdentity` 的 C 入口（其体只是
      `mglRenderClearRenderPassIdentity(_state.renderPassIdentityOwner)` 一类调用），再把 `@try/@catch` 用
      `mglPlatformShellGuardedCall` 包成"C 体 + 失败后清理"两步；随后第③④步即可删 `+DrawStageHost.m`。
+
+### 0.25 `endRenderEncodingLocked` 完全转 C 前还差两件（第 61 轮实测）
+
+第 93 刀已把该方法内部**重复且纯 C** 的 trace 清理块拿走（`mglClearFragmentTraceBindingsForRenderer`）。要把整个方法（≈91 行）搬完，
+实测还剩两处必须先补：
+
+| 阻塞 | 现状 | 解法 |
+|---|---|---|
+| `[_renderPassManager clearRenderPassIdentity]` | 无 C 入口（第 27 刀只做了 `End`/`Clear`/`Discard` 三个） | 在 `mgl_render_pass_manager_ops.c` 加第 4 个入口（体应是 `mglRenderClearRenderPassIdentity(cs->renderPassIdentityOwner)` 一类调用） |
+| `mglLogRenderPassLifecycle(…, id drawable, …)` | 签名带 **`id drawable`**（定义在 `MGLRenderer.m`），而 `_drawable` 是**私有 ivar**、且**不在 `MGLRendererCoreState`**（该结构只有 `drawBuffers[]` / 尺寸交接通道） | 二选一：① 给日志函数加一个 `void *` 版 C 变体；② 用"方法 + 壳转发"提供 `mglPlatformShellDrawable(void *)`，再让 C 版日志收 `void *` |
+
+**结论**：这两件都是小改动（各 ~10 行），但必须先做；做完后第 93 条的"半块"与它们合起来就是 §0.22 第②步的完整内容，
+之后第③步 MS 循环族、第④步删除 `+DrawStageHost.m`（**文件 16 → 15**）。**本轮不做代码改动**：可用上下文已不足以在一次闭环内完成
+"补两处 + 搬 91 行 + 门禁/CTS/A/B"，按既定纪律不把树留在半成品状态。
