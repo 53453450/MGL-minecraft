@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十二刀** + trace 清零 后）**：文件 **53 → 20**、空 TU **3 → 0**、
-行数 **43,989 → 35,587**、ObjC 语法 **2,268 → 2,036**、词汇 **4,353 → 3,958**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 十三刀** + trace 清零 后）**：文件 **53 → 19**、空 TU **3 → 0**、
+行数 **43,989 → 35,571**、ObjC 语法 **2,268 → 2,032**、词汇 **4,353 → 3,958**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1646,3 +1646,23 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：继续 T1/T2 式的**整文件转 C**——候选 `+VertexLayout.m`(203) / `MGLRenderer+DrawStageHost.m`(334) /
      `MGLPipelineCache.m`(446) / `+Binding.m`(490)，先扫每个文件剩余的 ObjC 成分是否只剩锁壳/断言；
      同时按 §0.09 的"纸面理由清单"复评 `BindMTLTexture` / `ProcessGLState` / `MapBuffersToMTL` 三端口。
+
+67. **P0-1 第十三刀：`+DrawSupport.m` 并入 `+RenderPass.m`（**文件 20 → 19**）**：
+     ① 该文件在第十、十一刀后只剩两个方法——`prepareEmulatedIndirectCPURead:`(30) 与 `ensureRasterEncoderForDraw`(68)——
+     而两者调用的正是 `+RenderPass.m` 里的东西（`-flushCommandBuffer:` / `-processGlState:` / `-newRenderEncoderLockedWithReason:`）。
+     按"依赖在哪就并到哪"的原则，把 98 行方法体整块移入 `MGLRenderer+RenderPass.m` 末尾（含同源注释块），
+     补齐三个 include（`MGLRenderer+DrawSupportUtil.h`、`mgl_draw_mode.h`、`mgl_draw_encode.h`），随后 `git rm` 该文件。
+     方法是纯位移，**没有改一行逻辑**，头声明留在 `MGLRenderer+Draw_Private.h` 不动（调用点零改动）。
+     ② **度量**：`objc_zero.sh` **文件 20 → 19**、行数 **35,587 → 35,571**、语法 **2,036 → 2,032**、词汇 3,958（持平）；
+     `MGLRenderer+RenderPass.m` 7,099 → 7,197（+98）。
+     ③ **oracle**：旧库 = 提交 `1565fdf` 的独立构建（`cmp` 两库不同）；两臂 trace 的**确定性行 4,980/4,980 与
+     5,513/5,513 逐行保序完全一致**（含 `built=` 归一后 multiset 相同），stderr `MGL` 行 **307/307 多重集一致**；
+     plain **92/0/2**、ICB 门禁 **82/10/2** 新旧库相同；**CTS 七簇非通过集合 diff 全空**；
+     `verify_gl_api` 通过 + 28 目标全过（`GATE_EXIT=0`）。
+     ④ **纪律**：本刀同样**不动 shim**（13 端口 / 223 行），按第 66 条的口径只计入"ObjC TU 数量"这一层收益；
+     提交时工作区曾有第 66 条记录的并行改动，**只 `git add` 本刀路径**；那些改动在提交前已从工作区消失（非本刀所为），
+     因此**提交后在纯净树上重建（0 error）并重跑 `test-regression` 92/0/2、`test-batch-icb: ok`、`test-dirty-hash`、`test-es-smoke`**
+     以确认"提交内容本身"可用；本刀的 CTS/A-B 结论仍标注为"当时含并行改动的合成树"下测得。
+     下一刀（轮次将尽）：按 §0.09 继续"整文件转 C / 类别合并"——`+VertexLayout.m`(203, 仅 7 语法) 与 `MGLPipelineCache.m`(446)
+     的 ObjC 成分已很薄，先补 `_tessellation` 进 areas、再评估 `bindFramebufferTexture:isDrawBuffer:` 与
+     `mapGLBuffersToMTLBufferMap:stage:` 两条 ObjC 链；同时保留"每刀给 net 数字 + 自跑 oracle"的纪律。

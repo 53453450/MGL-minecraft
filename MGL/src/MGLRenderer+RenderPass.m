@@ -12,6 +12,9 @@
 // Render pass lifecycle methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_draw_encode.h"
+#include "mgl_draw_mode.h"
+#import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_batch_issue.h"
 #import "MGLRenderer+RenderPass_Private.h"
@@ -7093,6 +7096,111 @@ static GLenum mglPassthroughDeclType(
             *replayError = MGL_STATE(glm_ctx)->error;
         return NO;
     }
+    return YES;
+}
+
+
+/* === moved from MGLRenderer+DrawSupport.m (category merge) =================
+ * Both need the render-pass machinery that lives here: the first calls
+ * -flushCommandBuffer: / -processGLState:, the second
+ * -newRenderEncoderLockedWithReason:. */
+
+- (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label
+{
+    if (!drawCtx) {
+        NSLog(@"MGL WARNING: %s skipped because context is NULL",
+              label ? label : "indirect emulation");
+        return NO;
+    }
+
+    /* The C draw-indirect frontends already flush pending command buffers before
+     * dispatching into these Metal entry points. If processGLState has just
+     * rebuilt a render encoder, keep it; a second flush can discard the fresh
+     * pass and make state restoration fail for CPU-emulated indirect modes. */
+    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 1) {
+        return YES;
+    }
+
+    [self flushCommandBuffer:true];
+    if (![self processGLState:true]) {
+        NSLog(@"MGL WARNING: %s skipped because GL state could not be restored after CPU-read synchronization",
+              label ? label : "indirect emulation");
+        return NO;
+    }
+    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        NSLog(@"MGL WARNING: %s skipped because CPU-read synchronization left no render encoder",
+              label ? label : "indirect emulation");
+        return NO;
+    }
+    return YES;
+}
+
+- (BOOL)ensureRasterEncoderForDraw
+{
+    if (mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+        return YES;
+    }
+    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_DRAW];
+    if (mglRenderEncoderOwnerHasCurrent(
+            _renderPassManager.state->currentRenderEncoderOwner) != 1) {
+        return NO;
+    }
+    if (!_pipelineCache.state->pipelineState) {
+        return NO;
+    }
+
+    uint32_t rpColor0Format = 0u;
+    uint32_t rpDepthFormat = 0u;
+    uint32_t rpStencilFormat = 0u;
+    MGLRenderPassAttachmentState colorAttachment = {0};
+    MGLRenderPassAttachmentState depthAttachment = {0};
+    MGLRenderPassAttachmentState stencilAttachment = {0};
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        _renderPassManager.state->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, &colorAttachment);
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        _renderPassManager.state->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, &depthAttachment);
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        _renderPassManager.state->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, &stencilAttachment);
+    id rpColor0 = (__bridge id)colorAttachment.texture;
+    id rpDepth = (__bridge id)depthAttachment.texture;
+    id rpStencil = (__bridge id)stencilAttachment.texture;
+    MGLRenderTextureInfo textureInfo = {0};
+    if (rpColor0 && mglRenderGetTextureInfo(
+            (__bridge void *)rpColor0, &textureInfo) == 0) {
+        rpColor0Format = textureInfo.pixel_format;
+    }
+    if (rpDepth && mglRenderGetTextureInfo(
+            (__bridge void *)rpDepth, &textureInfo) == 0) {
+        rpDepthFormat = textureInfo.pixel_format;
+    }
+    if (rpStencil && mglRenderGetTextureInfo(
+            (__bridge void *)rpStencil, &textureInfo) == 0) {
+        rpStencilFormat = textureInfo.pixel_format;
+    }
+
+    const BOOL colorMismatch =
+        (_pipelineCache.state->pipelineColor0Format != 0u &&
+         rpColor0Format != 0u &&
+         _pipelineCache.state->pipelineColor0Format != rpColor0Format);
+    const BOOL depthMismatch =
+        (_pipelineCache.state->pipelineDepthFormat != rpDepthFormat);
+    const BOOL stencilMismatch =
+        (_pipelineCache.state->pipelineStencilFormat != rpStencilFormat);
+    if (colorMismatch || depthMismatch || stencilMismatch) {
+        return NO;
+    }
+    if (mglRenderSetRenderPipelineStateForOwner(
+            _renderPassManager.state->currentRenderEncoderOwner,
+            _pipelineCache.state->pipelineState) != 0) {
+        return NO;
+    }
+    mglRenderBindingSetPipelineState(_bindingStateOwner,
+                                     _pipelineCache.state->pipelineState);
+    MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
     return YES;
 }
 
