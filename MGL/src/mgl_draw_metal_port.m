@@ -454,10 +454,11 @@ int mglDrawSupportCaptureProcessGL(void *renderer)
 
 int mglDrawSupportCaptureEncoderReady(void *renderer)
 {
-    MGLRenderer *host = (__bridge MGLRenderer *)renderer;
-    if (!host) return 0;
+    if (!renderer) return 0;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     return mglRenderEncoderOwnerHasCurrent(
-               mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner) == 1
+               areas.command ? areas.command->currentRenderEncoderOwner : NULL) == 1
                ? 1
                : 0;
 }
@@ -465,18 +466,20 @@ int mglDrawSupportCaptureEncoderReady(void *renderer)
 void mglDrawSupportCaptureBindSlots(void *renderer, void *capture,
                                            const uint32_t *params)
 {
-    MGLRenderer *host = (__bridge MGLRenderer *)renderer;
-    if (!host || !capture || !params) return;
+    if (!renderer || !capture || !params) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     mglTessBindCaptureSlots(
-        mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner, capture,
+        areas.command ? areas.command->currentRenderEncoderOwner : NULL, capture,
         params);
 }
 
 void mglDrawSupportCaptureSetActive(void *renderer, int active)
 {
-    MGLRenderer *host = (__bridge MGLRenderer *)renderer;
-    if (host) {
-        host->_tessellation.tessVertexCaptureActive = active ? 1 : 0;
+    if (renderer) {
+        MGLRendererStateAreas areas;
+        mglRendererStateAreasPort(renderer, &areas);
+        areas.tessellation->tessVertexCaptureActive = active ? 1 : 0;
     }
 }
 
@@ -1562,12 +1565,13 @@ bool mglDrawHostHandleTessellation(void *renderer, GLMContext ctx,
                                    GLint baseVertex, GLsizei instanceCount,
                                    GLuint baseInstance, const char *label)
 {
-    MGLRenderer *host = mglStageHostSelf(renderer);
-    if (!host || !mode) return false;
-    host->ctx = ctx;
+    if (!renderer || !mode) return false;
+    mglPlatformShellSetContext(renderer, ctx);
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     MGLTessPatchDrawHostOps ops = {
         .renderer = renderer,
-        .device = (__bridge void *)((__bridge id)mglRendererBackendGetDevice(mglRendererBackend(host))),
+        .device = (__bridge void *)((__bridge id)mglRendererBackendGetDevice(areas.backend)),
         .bind_mtl_program = mglStageBindProgram,
         .capture_array = mglStageCaptureArray,
         .capture_indexed = mglStageCaptureIndexed,
@@ -1624,9 +1628,8 @@ bool mglDrawHostHandleGeometry(void *renderer, GLMContext ctx, GLenum mode,
                                GLsizei instanceCount, GLuint baseInstance,
                                const char *label)
 {
-    MGLRenderer *host = mglStageHostSelf(renderer);
-    if (!host) return false;
-    host->ctx = ctx;
+    if (!renderer) return false;
+    mglPlatformShellSetContext(renderer, ctx);
     MGLGsMetalExpansionHostOps metal_ops = mglGsMetalMakeExpansionOps(renderer);
     MGLGsDrawHostOps ops = {
         .renderer = renderer,
@@ -1689,12 +1692,13 @@ void mglDrawHostGuardIssueArrays(void *renderer, GLMContext ctx, GLenum mode,
                                  GLsizei instanceCount, GLuint baseInstance,
                                  const char *label, int with_ms)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host || !ctx) {
+    if (!renderer || !ctx) {
         return;
     }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     METAL_LOCK();
-    host->_lastDrawPrimitiveMode = mode;
+    areas.core->lastDrawPrimitiveMode = mode;
     if (with_ms) {
         MGLMsDrawArraysOnce once = {.ctx = ctx, .renderer = renderer, .mode = mode,
                                     .first = first, .count = count,
@@ -1721,12 +1725,13 @@ void mglDrawHostGuardIssueElements(void *renderer, GLMContext ctx, GLenum mode,
                                    GLint baseVertex, GLuint baseInstance,
                                    const char *label, int with_ms)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host || !ctx) {
+    if (!renderer || !ctx) {
         return;
     }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     METAL_LOCK();
-    host->_lastDrawPrimitiveMode = mode;
+    areas.core->lastDrawPrimitiveMode = mode;
     if (with_ms) {
         MGLMsDrawElementsOnce once = {.ctx = ctx, .renderer = renderer, .mode = mode,
                                       .count = count, .type = type,
@@ -1751,11 +1756,10 @@ void mglDrawHostGuardIssueElements(void *renderer, GLMContext ctx, GLenum mode,
 
 bool mglDrawHostBindContext(void *renderer, GLMContext ctx)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host) {
+    if (!renderer) {
         return false;
     }
-    host->ctx = ctx;
+    mglPlatformShellSetContext(renderer, ctx);
     return true;
 }
 
@@ -1847,16 +1851,18 @@ bool mglDrawHostEncodeCullDistanceArray(void *renderer, GLenum mode,
                                         GLsizei instanceCount,
                                         GLuint baseInstance)
 {
-    MGLRenderer *host = mglStageHostSelf(renderer);
-    if (!host || mglPolygonModePointForDrawMode(host->ctx, mode)) {
+    if (!renderer) return false;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (mglPolygonModePointForDrawMode(areas.ctx, mode)) {
         return false;
     }
     MGLEncodeContext encCtx = {
         .render_encoder_owner =
-            mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner,
+            areas.command ? areas.command->currentRenderEncoderOwner : NULL,
     };
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
-    return mglDrawEncodeCullDistanceArray(host->ctx, mode, first, count,
+    return mglDrawEncodeCullDistanceArray(areas.ctx, mode, first, count,
                                           instanceCount, baseInstance, &encCtx,
                                           &ops) != 0;
 }
@@ -1890,15 +1896,16 @@ void mglDrawHostRecordArraySubmitted(void *renderer, GLenum mode,
 
 void mglDrawHostWatchdogArrays(void *renderer, GLMContext ctx)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host) {
+    if (!renderer) {
         return;
     }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     mglLogDrawWithoutSwapWatchdog(
         "arrays", 0, ctx,
-        mglRendererRenderPassManager(host)->state->currentCommandBufferOwner,
-        mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner,
-        mglRendererRenderPassManager(host)->state->renderPassStateOwner);
+        areas.command ? areas.command->currentCommandBufferOwner : NULL,
+        areas.command ? areas.command->currentRenderEncoderOwner : NULL,
+        areas.command ? areas.command->renderPassStateOwner : NULL);
 }
 
 
@@ -1907,10 +1914,11 @@ bool mglDrawHostEncodeCullDistanceElementBytes(
     GLsizei count, GLint baseVertex, GLsizei instanceCount, GLuint baseInstance,
     int polygon_line_mode, const void *enc_ctx)
 {
-    MGLRenderer *host = mglStageHostSelf(renderer);
-    if (!host) return false;
+    if (!renderer) return false;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
-    GLMContext ctx = host->ctx;
+    GLMContext ctx = areas.ctx;
     return mglDrawEncodeCullDistanceElement(
                ctx, mode, indexBytes, type, count, baseVertex, instanceCount,
                baseInstance, polygon_line_mode, enc_ctx, &ops) != 0;
@@ -1921,11 +1929,13 @@ bool mglDrawHostPrepareEncodeCullDistanceElement(
     GLsizei count, GLint baseVertex, GLsizei instanceCount, GLuint baseInstance,
     int polygon_line_mode)
 {
-    MGLRenderer *host = mglStageHostSelf(renderer);
-    if (!host || !host->ctx) return false;
+    if (!renderer) return false;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (!areas.ctx) return false;
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawPrepareAndEncodeCullDistanceElement(
-               host->ctx, mode, indexBytes, type, count, baseVertex,
+               areas.ctx, mode, indexBytes, type, count, baseVertex,
                instanceCount, baseInstance, polygon_line_mode, &ops) != 0;
 }
 
@@ -1935,14 +1945,16 @@ bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
                                            GLsizei instanceCount,
                                            GLuint baseInstance)
 {
-    MGLRenderer *host = mglStageHostSelf(renderer);
-    if (!host || mglPolygonModePointForDrawMode(host->ctx, mode)) {
+    if (!renderer) return false;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (mglPolygonModePointForDrawMode(areas.ctx, mode)) {
         return false;
     }
     Buffer *glBuffer = NULL;
     void *metalBuffer = NULL;
-    if (!mglRendererResolveElementBufferForDraw((__bridge void *)host,
-                                                "drawElements", host->ctx,
+    if (!mglRendererResolveElementBufferForDraw(renderer,
+                                                "drawElements", areas.ctx,
                                                 &glBuffer, &metalBuffer)) {
         return false;
     }
@@ -1952,21 +1964,20 @@ bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
         count);
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawPrepareAndEncodeCullDistanceElement(
-               host->ctx, mode, cullIndexBytes, type, count, baseVertex,
+               areas.ctx, mode, cullIndexBytes, type, count, baseVertex,
                instanceCount, baseInstance,
-               mglPolygonModeLineForDrawMode(host->ctx, mode) ? 1 : 0, &ops) != 0;
+               mglPolygonModeLineForDrawMode(areas.ctx, mode) ? 1 : 0, &ops) != 0;
 }
 
 bool mglDrawHostResolveElementBuffer(void *renderer, GLMContext ctx,
                                      const char *label, Buffer **glBufferOut,
                                      void **metalBufferOut)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host) {
+    if (!renderer) {
         return false;
     }
     void *metalBuffer = NULL;
-    if (!mglRendererResolveElementBufferForDraw((__bridge void *)host,
+    if (!mglRendererResolveElementBufferForDraw(renderer,
                                                 label ? label : "drawElements",
                                                 ctx, glBufferOut,
                                                 &metalBuffer)) {
@@ -1991,23 +2002,23 @@ void mglDrawHostRecordElementSubmitted(void *renderer, GLenum mode,
 
 void mglDrawHostWatchdogElements(void *renderer, GLMContext ctx)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host) {
+    if (!renderer) {
         return;
     }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     mglLogDrawWithoutSwapWatchdog(
         "elements", 0, ctx,
-        mglRendererRenderPassManager(host)->state->currentCommandBufferOwner,
-        mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner,
-        mglRendererRenderPassManager(host)->state->renderPassStateOwner);
+        areas.command ? areas.command->currentCommandBufferOwner : NULL,
+        areas.command ? areas.command->currentRenderEncoderOwner : NULL,
+        areas.command ? areas.command->renderPassStateOwner : NULL);
 }
 
 bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,
                                       const char *label, Buffer **glBufferOut,
                                       void **metalBufferOut)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (!host) {
+    if (!renderer) {
         return false;
     }
     void *metalBuffer = NULL;

@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十三刀** + trace 清零 后；第 68–87 轮见 §0.24/§0.26–§0.44）**：
-文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,125**、ObjC 语法 **2,268 → 1,664**、词汇 **4,353 → 3,438**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十四刀** + trace 清零 后；第 68–88 轮见 §0.24/§0.26–§0.45）**：
+文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,136**、ObjC 语法 **2,268 → 1,659**、词汇 **4,353 → 3,438**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3473,3 +3473,30 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      ⑤ 下一刀：剩 13 个局部（stage 6：`mglStage*` 收尾；draw 7：`mglDrawHostHandle{Tessellation,Geometry}`、
      `mglDrawHostGuardIssue{Arrays,Elements}`、`mglDrawHostBindContext`、`mglDrawHostEncode/PrepareCullDistance*`、
      `mglDrawHostWatchdog*`、`mglDrawHostResolve*`），**再来 1–2 刀即可删两个 `*HostSelf` 助手并改名 `.c`**。
+
+120. **P0-1 第六十四刀：`mgl_draw_metal_port.m` 的 67 个类型化局部**全部清零**（局部 13 → 0）**：
+     ① 本刀把**最后 13 个** `MGLRenderer *self/host = mgl*HostSelf(renderer);` 全部改写：
+     `mglDrawHostHandleTessellation`、`mglDrawHostHandleGeometry`、`mglDrawHostGuardIssueArrays`、
+     `mglDrawHostGuardIssueElements`、`mglDrawHostBindContext`、`mglDrawHostEncodeCullDistanceArray`、
+     `mglDrawHostEncodeCullDistanceElements`、`mglDrawHostEncodeCullDistanceElementBytes`、
+     `mglDrawHostPrepareEncodeCullDistanceElement`、`mglDrawHostWatchdogArrays`、`mglDrawHostWatchdogElements`、
+     `mglDrawHostResolveElementBuffer`、`mglDrawHostResolveIndirectBuffer`（另有 `mglDrawHostHandleMS*` 两个内联块）。
+     **`mglStageHostSelf` / `mglDrawHostSelf` 的调用点现在为 0**（只剩两个函数定义本身待删）。
+     ② **三个新形态**（都由编译器逐个抓出，记下来给下一刀用）：
+     - `host->ctx = ctx;`（写上下文 ivar）→ `mglPlatformShellSetContext(renderer, ctx)`（第 111 刀的既有入口）；
+     - `mglRendererRenderPassManager(host)->state->X` → `areas.command ? areas.command->X : NULL`
+       （`mglDrawHostRecord*Submitted` / `Watchdog*` 的日志参数里一次三连）；
+     - **`METAL_LOCK()` 之后才用到 `areas`** 的两个 MS 派发块：取状态区必须插在 `METAL_LOCK()` **之前**（否则变量作用域不覆盖），
+       这是"早退替换"批量脚本最容易漏的一类位置。
+     ③ **度量**：该文件语法 **18 → 15**、词汇 1（持平）、行数 2,045 → 2,056；全库语法 **1,664 → 1,659**、词汇 3,438（持平）、
+     行数 31,125 → 31,136；**类型化局部 13 → 0**；文件数 8 不变。
+     ④ **oracle**：旧库 = 提交 `023cb7f` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,337/5,325 与 6,112/6,164 → `processGLState.slow` **356/344** 与 598/650；
+     本刀的 slow 计数明显高于往轮，属已记录的运行期噪声，判定仍只看过滤后的逐行相等），stderr `MGL` 行 **307/307 多重集一致**；
+     default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ **改名 `.c` 前的最后清单**（本刀查实）：① 删两个 `*HostSelf` 定义（现已无调用者）；
+     ② `mglRendererRenderPassManager(MGLRenderer *r)` 与 `mglRendererBackend(MGLRenderer *r)` **两个访问器必须搬进壳 TU**
+     （它们直接读 ivar `r->_renderPassManager` / `r->_backend`），C 侧的声明改为接收 `void *`；
+     ③ 4 个 `#import` → `#include`（`MGLRenderer+DrawSupportUtil.h` 已是 C 可用头，另三个 ObjC 头所需的声明补进 C 头）；
+     ④ 剩余 **9 处 `__bridge`**：`MGLIndexMetalHandle`/`MGLDrawMetalHandle` 两处需要 C 类型化（或保留一层薄包装），
+     `.device = (__bridge void *)((__bridge id)…)` 与 `mglPreparedElementIndexBuffer` 两侧的桥接按第 107 条检查所有权后再去。
