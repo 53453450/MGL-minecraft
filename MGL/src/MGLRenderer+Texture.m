@@ -658,7 +658,7 @@ static void mglTextureCopyTextureToBuffer(
         }
 
         if (mglRenderEncodeTextureUploadLayersForCommandBufferOwner(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _renderPassManager->state->currentCommandBufferOwner,
                 (__bridge void *)sourceBuffer, sourceOffset,
                 sourceBytesPerRow, sourceBytesPerImage, sourceLayerStride,
                 sourceSize.width, sourceSize.height, sourceSize.depth,
@@ -1152,7 +1152,7 @@ static void mglTextureCopyTextureToBuffer(
         _device, stagingSize, MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
     id blitEncoder = readBuffer
         ? (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-              _renderPassManager.state->currentCommandBufferOwner)
+              _renderPassManager->state->currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blitEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create %s resources for %s",
@@ -1190,14 +1190,9 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     id readbackCommandBuffer =
-        (__bridge id)[_renderPassManager
-            detachCurrentCommandBufferForSubmission];
+        (__bridge id)mglPassManagerDetachCurrentCommandBufferForSubmission(_renderPassManager);
     MGLRenderCommandBufferTransaction readbackTransaction = {0};
-    int readbackTransactionResult = [_renderPassManager
-        commitCommandBufferTransaction:(__bridge void *)readbackCommandBuffer
-        recoveryOwner:_gpuRecovery.commandRecoveryOwner
-        waitForCompletion:YES
-        result:&readbackTransaction];
+    int readbackTransactionResult = mglPassManagerCommitCommandBufferTransaction(_renderPassManager, (__bridge void *)readbackCommandBuffer, _gpuRecovery.commandRecoveryOwner, 1, &readbackTransaction);
     if (readbackTransactionResult != 0 || readbackTransaction.has_error) {
         NSLog(@"MGL WARNING: readPixels %s owner transaction failed for %s",
               logKind ? logKind : "readback", reason ? reason : "unknown");
@@ -1220,7 +1215,7 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)readbackCommandBuffer];
+    mglPassManagerReleaseDetachedCommandBufferIfOwned(_renderPassManager, (__bridge void *)readbackCommandBuffer);
     [self newCommandBuffer];
     return readBuffer;
 }
@@ -1655,7 +1650,7 @@ static void mglTextureCopyTextureToBuffer(
         _device, stagingSize, MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
     id blit = readBuffer
         ? (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-              _renderPassManager.state->currentCommandBufferOwner)
+              _renderPassManager->state->currentCommandBufferOwner)
         : nil;
     if (!readBuffer || !blit) {
         mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorOutOfMemory());
@@ -1683,20 +1678,15 @@ static void mglTextureCopyTextureToBuffer(
         0u, srcBytesPerRow, stagingSize);
     mglTextureEndBlitEncoder(blit);
     id integerReadbackCommandBuffer =
-        (__bridge id)[_renderPassManager
-            detachCurrentCommandBufferForSubmission];
+        (__bridge id)mglPassManagerDetachCurrentCommandBufferForSubmission(_renderPassManager);
     MGLRenderCommandBufferTransaction integerReadbackTransaction = {0};
-    int integerReadbackResult = [_renderPassManager
-        commitCommandBufferTransaction:(__bridge void *)integerReadbackCommandBuffer
-        recoveryOwner:_gpuRecovery.commandRecoveryOwner
-        waitForCompletion:YES
-        result:&integerReadbackTransaction];
+    int integerReadbackResult = mglPassManagerCommitCommandBufferTransaction(_renderPassManager, (__bridge void *)integerReadbackCommandBuffer, _gpuRecovery.commandRecoveryOwner, 1, &integerReadbackTransaction);
     if (integerReadbackResult != 0 || integerReadbackTransaction.has_error) {
         NSLog(@"MGL ERROR: integer texture readback owner transaction failed");
-        [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)integerReadbackCommandBuffer];
+        mglPassManagerReleaseDetachedCommandBufferIfOwned(_renderPassManager, (__bridge void *)integerReadbackCommandBuffer);
         return NO;
     }
-    [_renderPassManager releaseDetachedCommandBufferIfOwned:(__bridge void *)integerReadbackCommandBuffer];
+    mglPassManagerReleaseDetachedCommandBufferIfOwned(_renderPassManager, (__bridge void *)integerReadbackCommandBuffer);
 
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
     NSUInteger dstY = (NSUInteger)(minY - (NSInteger)region.origin.y);
@@ -2085,10 +2075,9 @@ static void mglTextureCopyTextureToBuffer(
      * the blit encoding the upload is still in the uncommitted command buffer. */
     [self endRenderEncoding];
     if (mglRenderCommandBufferOwnerHasCurrent(
-            _renderPassManager.state->currentCommandBufferOwner) == 1) {
+            _renderPassManager->state->currentCommandBufferOwner) == 1) {
         id pendingCB =
-            (__bridge id)[_renderPassManager
-                detachCurrentCommandBufferForSubmission];
+            (__bridge id)mglPassManagerDetachCurrentCommandBufferForSubmission(_renderPassManager);
         @try {
             mglRendererCommitCommandBufferWithAGXRecovery((__bridge void *)self, (__bridge void *)pendingCB);
             mglTextureWaitCommandBuffer(pendingCB);
@@ -2387,7 +2376,7 @@ static void mglTextureCopyTextureToBuffer(
     // start blit encoder
     id blitCommandEncoder;
     blitCommandEncoder = mglTextureCreateCurrentBlitEncoder(
-        _renderPassManager.state->currentCommandBufferOwner);
+        _renderPassManager->state->currentCommandBufferOwner);
     if (!blitCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create blit encoder for mipmap generation");
         return;
@@ -5699,12 +5688,12 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     [self endRenderEncoding];
-    if (!_renderPassManager.state->currentCommandBufferOwner &&
+    if (!_renderPassManager->state->currentCommandBufferOwner &&
         ![self newCommandBufferLocked]) {
         return;
     }
     void *blit = mglRenderCreateBlitEncoderBorrowed(
-        _renderPassManager.state->currentCommandBufferOwner);
+        _renderPassManager->state->currentCommandBufferOwner);
     if (!blit) {
         return;
     }
@@ -5766,12 +5755,12 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     [self endRenderEncoding];
-    if (!_renderPassManager.state->currentCommandBufferOwner &&
+    if (!_renderPassManager->state->currentCommandBufferOwner &&
         ![self newCommandBufferLocked]) {
         return;
     }
     void *blit = mglRenderCreateBlitEncoderBorrowed(
-        _renderPassManager.state->currentCommandBufferOwner);
+        _renderPassManager->state->currentCommandBufferOwner);
     if (!blit) {
         return;
     }

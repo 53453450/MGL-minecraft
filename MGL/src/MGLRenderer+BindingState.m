@@ -1354,7 +1354,7 @@ static BOOL mglBindingStateEmitAttribBuffer(
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 #define MGL_ABORT_TBIND_IF_ENCODER_CLOSED() do { \
-    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager.state->currentRenderEncoderOwner) == 0) { \
+    if (mglRenderEncoderOwnerHasCurrent(_renderPassManager->state->currentRenderEncoderOwner) == 0) { \
         if (ctx) { \
             mglMarkRendererDirtyBits(ctx->active_state, (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_RENDER_STATE)); \
         } \
@@ -1435,13 +1435,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
             if (!mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _renderPassManager->state->currentRenderEncoderOwner,
                     &resourceSnapshot, MGL_RENDER_BINDING_STAGE_VERTEX,
                     MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                     (__bridge void *)defaultSampler, s) ||
                 !mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _renderPassManager->state->currentRenderEncoderOwner,
                     &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                     MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                     (__bridge void *)defaultSampler, s)) {
@@ -1453,7 +1453,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _renderPassManager->state->currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }
@@ -1813,7 +1813,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if ((isFragment || splan.queue_texture) &&
             !mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _renderPassManager->state->currentRenderEncoderOwner,
                 &resourceSnapshot, metalStage,
                 MGL_RENDER_RESOURCE_BINDING_TEXTURE, (__bridge void *)texture,
                 isFragment ? spirvBinding : splan.texture_slot)) {
@@ -1822,7 +1822,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (!isFragment && splan.queue_sampler &&
             !mglBindingStateQueueResourceBinding(
                 useResourceSnapshot, _bindingStateOwner,
-                _renderPassManager.state->currentRenderEncoderOwner,
+                _renderPassManager->state->currentRenderEncoderOwner,
                 &resourceSnapshot, metalStage,
                 MGL_RENDER_RESOURCE_BINDING_SAMPLER, (__bridge void *)sampler,
                 splan.sampler_slot)) {
@@ -1894,7 +1894,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 samplerBinding < kMaxFragmentSamplerSlots) {
                 if (!mglBindingStateQueueResourceBinding(
                         useResourceSnapshot, _bindingStateOwner,
-                        _renderPassManager.state->currentRenderEncoderOwner,
+                        _renderPassManager->state->currentRenderEncoderOwner,
                         &resourceSnapshot, metalStage,
                         MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                         (__bridge void *)sampler, samplerBinding)) {
@@ -1952,7 +1952,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _renderPassManager->state->currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }
@@ -2033,7 +2033,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             pairedMTL = pairedColor->mtl_data ? (__bridge id)(pairedColor->mtl_data) : nil;
             if (!pairedCur && pairedMTL) {
                 pairedCur = mglBindingStateRenderPassUsesColorTexture(
-                    _renderPassManager.state->renderPassStateOwner,
+                    _renderPassManager->state->renderPassStateOwner,
                     (__bridge void *)pairedMTL, &curAtt);
             }
         }
@@ -2093,7 +2093,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 BOOL candCur =
                     mglCurrentDrawFramebufferUsesColorTexture(ctx, cand, 0u, &candAtt) ||
                     mglBindingStateRenderPassUsesColorTexture(
-                        _renderPassManager.state->renderPassStateOwner,
+                        _renderPassManager->state->renderPassStateOwner,
                         (__bridge void *)candMTL, &candAtt);
                 if (!candCur && (!cand->mtl_data || cand->dirty_bits)) {
                     RETURN_FALSE_ON_FAILURE([self bindMTLTexture:cand]);
@@ -2103,7 +2103,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     candCur =
                         mglCurrentDrawFramebufferUsesColorTexture(ctx, cand, 0u, &candAtt) ||
                         mglBindingStateRenderPassUsesColorTexture(
-                            _renderPassManager.state->renderPassStateOwner,
+                            _renderPassManager->state->renderPassStateOwner,
                             (__bridge void *)candMTL, &candAtt);
                 }
                 id candCopy = nil;
@@ -2178,7 +2178,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             id pairedMTL = pairedColor->mtl_data ? (__bridge id)(pairedColor->mtl_data) : nil;
             BOOL pairedCur = mglBindingStateRenderPassUsesColorTexture(
-                _renderPassManager.state->renderPassStateOwner, (__bridge void *)pairedMTL,
+                _renderPassManager->state->renderPassStateOwner, (__bridge void *)pairedMTL,
                 &drawAtt);
             MGLDepthRecoverInput rin = {0};
             mglBindingTextureFillDepthRecoverRTInput(
@@ -2370,7 +2370,7 @@ done:
         texture ? 1 : 0, bindCall, usedSampledCopyTrace ? 1 : 0,
         ctx && MGL_STATE(ctx)->framebuffer ? MGL_STATE(ctx)->framebuffer->name
                                            : 0u,
-        _renderPassManager.state->renderPassFramebufferName,
+        _renderPassManager->state->renderPassFramebufferName,
         textureUnit < TEXTURE_UNITS
             ? mglTraceTextureName(MGL_STATE(ctx)
                                       ->texture_units[textureUnit]
@@ -2389,10 +2389,10 @@ done:
     ein.copy_for_trace = (__bridge const void *)sampledCopyForTrace;
     ein.rt_label = mglTraceTextureLabel(ptr);
     ein.rp_color = mglRenderGetRenderPassAttachmentTextureOwner(
-        _renderPassManager.state->renderPassStateOwner,
+        _renderPassManager->state->renderPassStateOwner,
         MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
     ein.rp_depth = mglRenderGetRenderPassAttachmentTextureOwner(
-        _renderPassManager.state->renderPassStateOwner,
+        _renderPassManager->state->renderPassStateOwner,
         MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
     MGLSampledDiagEmitResult eres = {0};
     mglBindingTextureEmitSampledDiagPorts(&ein, &eres);
@@ -2721,7 +2721,7 @@ done:
             }
             if (!mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _renderPassManager->state->currentRenderEncoderOwner,
                     &resourceSnapshot, metalBindStage,
                     MGL_RENDER_RESOURCE_BINDING_TEXTURE,
                     (__bridge void *)texture, plan.metal_slot)) {
@@ -2730,7 +2730,7 @@ done:
         }
         if (pass == MGL_SI_PASS_ENSURE &&
             mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner) == 0) {
+                _renderPassManager->state->currentRenderEncoderOwner) == 0) {
             RETURN_FALSE_ON_FAILURE(
                 [self restoreRenderEncoderAfterTextureUploadForDraw:restoreTag]);
         }
@@ -2738,7 +2738,7 @@ done:
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _renderPassManager->state->currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }
@@ -2805,7 +2805,7 @@ done:
         if (sampler && spirvBinding < kMaxFragmentSamplerSlots) {
             if (!mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager.state->currentRenderEncoderOwner,
+                    _renderPassManager->state->currentRenderEncoderOwner,
                     &resourceSnapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
                     MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                     (__bridge void *)sampler, spirvBinding)) {
@@ -2880,7 +2880,7 @@ done:
                     mglRenderTextureBindingStageForShader(arrayStage);
                 if (!mglBindingStateQueueResourceBinding(
                         useResourceSnapshot, _bindingStateOwner,
-                        _renderPassManager.state->currentRenderEncoderOwner,
+                        _renderPassManager->state->currentRenderEncoderOwner,
                         &resourceSnapshot, bindStage,
                         MGL_RENDER_RESOURCE_BINDING_TEXTURE,
                         (__bridge void *)metalTexture, metalSlot)) {
@@ -2892,7 +2892,7 @@ done:
                         kMaxFragmentSamplerSlots)) {
                     if (!mglBindingStateQueueResourceBinding(
                             useResourceSnapshot, _bindingStateOwner,
-                            _renderPassManager.state->currentRenderEncoderOwner,
+                            _renderPassManager->state->currentRenderEncoderOwner,
                             &resourceSnapshot, bindStage,
                             MGL_RENDER_RESOURCE_BINDING_SAMPLER,
                             (__bridge void *)metalSampler, samplerSlot)) {
@@ -2905,7 +2905,7 @@ done:
     if (useResourceSnapshot &&
         !mglBindingStateFlushResourceBindings(
             _bindingStateOwner,
-            _renderPassManager.state->currentRenderEncoderOwner,
+            _renderPassManager->state->currentRenderEncoderOwner,
             &resourceSnapshot)) {
         return false;
     }

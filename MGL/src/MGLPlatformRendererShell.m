@@ -568,7 +568,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->batching = &r->_batching;
     /* The manager exposes a const pointer; the record itself is mutable and
      * the flush driver writes the trace-replay identity through it. */
-    areas_out->command = (MGLCommandState *)[mglRendererRenderPassManager(r) state];
+    areas_out->command = mglRendererRenderPassManager(r)->state;
     areas_out->pipeline_cache = [r->_pipelineCache state];
     areas_out->binding_state_owner = &r->_bindingStateOwner;
     areas_out->pipeline_cache_object = (__bridge void *)r->_pipelineCache;
@@ -827,13 +827,13 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL ERROR: failed to bind platform renderer view");
         return;
     }
-    _renderPassManager = [MGLRenderPassManager new];
-    [_renderPassManager setRuntimeContext:glm_ctx];
+    _renderPassManager = mglPassManagerCreate();
+    mglPassManagerSetRuntimeContext(_renderPassManager, glm_ctx);
 
     /* start the DontCare frame generation at 1 so it never matches a
      * texture's zero-initialized mtl_rt_frame_generation stamp until that
      * texture is actually written this frame. */
-    [_renderPassManager setDontCareFrameGeneration:1u];
+    mglPassManagerSetDontCareFrameGeneration(_renderPassManager, 1u);
 
     BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
@@ -925,9 +925,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: Metal-cpp renderer backend ready (%p)", _backend);
     mglRenderAttachRuntimeOwners(
         glm_ctx,
-        _renderPassManager.state->currentCommandBufferOwner,
-        _renderPassManager.state->currentRenderEncoderOwner,
-        _renderPassManager.state->renderPassStateOwner);
+        _renderPassManager->state->currentCommandBufferOwner,
+        _renderPassManager->state->currentRenderEncoderOwner,
+        _renderPassManager->state->renderPassStateOwner);
     _pipelineCache.device = _device;
 
     /* Initialize AGX Capability Layer (centralized device detection +
@@ -1045,10 +1045,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     // Create initial command buffer for AGX safety
     @try {
-        [_renderPassManager installNewCommandBufferFromQueue:(__bridge void *)_commandQueue];
+        mglPassManagerInstallNewCommandBufferFromQueue(_renderPassManager, (__bridge void *)_commandQueue);
         MGLRenderCommandBufferState commandState = {0};
         if (!mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _renderPassManager->state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
         }
@@ -1080,7 +1080,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     if (ready) {
         MGLRenderCommandBufferState commandState = {0};
         ready = mglRenderCommandBufferOwnerHasState(
-            _renderPassManager.state->currentCommandBufferOwner,
+            _renderPassManager->state->currentCommandBufferOwner,
             &commandState);
     }
     mglRendererBackendEnd(&lease);
@@ -1242,16 +1242,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // Cleanup command buffer and encoder
         MGLRenderCommandBufferState commandState = {0};
         if (mglRenderCommandBufferOwnerHasState(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _renderPassManager->state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL INFO: Releasing current command buffer");
-            [_renderPassManager discardCurrentCommandBuffer];
+            mglPassManagerDiscardCurrentCommandBuffer(_renderPassManager);
         }
 
         if (mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner) == 1) {
+                _renderPassManager->state->currentRenderEncoderOwner) == 1) {
             NSLog(@"MGL INFO: Releasing current render encoder");
-            [_renderPassManager clearCurrentRenderEncoder];
+            mglPassManagerClearCurrentRenderEncoder(_renderPassManager);
         }
 
         MGLRendererBackendShutdownResult shutdownResult = {0};
@@ -1261,9 +1261,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
                   shutdownResult.last_submission_error_code);
         }
 
-        [_renderPassManager setRuntimeContext:NULL];
-        [_renderPassManager shutdown];
-        _renderPassManager = nil;
+        mglPassManagerSetRuntimeContext(_renderPassManager, NULL);
+        mglPassManagerDestroy(_renderPassManager);
+        _renderPassManager = NULL;
 
         mglRenderDetachRuntimeOwners(ctx);
 

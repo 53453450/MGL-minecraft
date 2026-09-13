@@ -443,7 +443,7 @@ int mglDrawSupportCaptureEncoderReady(void *renderer)
     MGLRenderer *host = (__bridge MGLRenderer *)renderer;
     if (!host) return 0;
     return mglRenderEncoderOwnerHasCurrent(
-               mglRendererRenderPassManager(host).state->currentRenderEncoderOwner) == 1
+               mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner) == 1
                ? 1
                : 0;
 }
@@ -454,7 +454,7 @@ void mglDrawSupportCaptureBindSlots(void *renderer, void *capture,
     MGLRenderer *host = (__bridge MGLRenderer *)renderer;
     if (!host || !capture || !params) return;
     mglTessBindCaptureSlots(
-        mglRendererRenderPassManager(host).state->currentRenderEncoderOwner, capture,
+        mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner, capture,
         params);
 }
 
@@ -479,7 +479,7 @@ static MGLRenderer *mglStageHostSelf(void *renderer)
  * and the other encode ports. */
 MGLRenderPassManager *mglRendererRenderPassManager(MGLRenderer *r)
 {
-    return r ? r->_renderPassManager : nil;
+    return r ? r->_renderPassManager : NULL;
 }
 
 /* C port (ObjC-zeroing T4): the render pass state owner of a renderer handle,
@@ -645,7 +645,7 @@ static int mglStageEncoderHasCurrent(void *renderer)
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return 0;
     return mglRenderEncoderOwnerHasCurrent(
-               self->_renderPassManager.state->currentRenderEncoderOwner)
+               self->_renderPassManager->state->currentRenderEncoderOwner)
                ? 1
                : 0;
 }
@@ -805,7 +805,7 @@ static void *mglStageGetControlPointIndex(void *renderer)
 static void *mglStageEncoderOwner(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? self->_renderPassManager.state->currentRenderEncoderOwner
+    return self ? self->_renderPassManager->state->currentRenderEncoderOwner
                 : NULL;
 }
 
@@ -982,7 +982,7 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
 static void *mglGsMetalCmdOwner(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? self->_renderPassManager.state->currentCommandBufferOwner : NULL;
+    return self ? self->_renderPassManager->state->currentCommandBufferOwner : NULL;
 }
 
 static void *mglGsMetalRecoveryOwner(void *renderer)
@@ -1017,7 +1017,7 @@ static void *mglGsMetalBeginBlit(void *renderer)
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return NULL;
     id blit = mglDrawSupportCreateBlitEncoder(
-        self->_renderPassManager.state->currentCommandBufferOwner);
+        self->_renderPassManager->state->currentCommandBufferOwner);
     return (__bridge_retained void *)blit;
 }
 
@@ -1049,7 +1049,7 @@ static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
     if (!self || !ctx) return 0;
     MGLEncodeContext gsEncCtx = {
         .render_encoder_owner =
-            self->_renderPassManager.state->currentRenderEncoderOwner,
+            self->_renderPassManager->state->currentRenderEncoderOwner,
     };
     [self bindFragmentBuffersToCurrentRenderEncoder:&gsEncCtx];
     (void)mglRendererBindBufferSizeConstantsForRenderEncoder(renderer);
@@ -1815,7 +1815,7 @@ bool mglDrawHostEncodeCullDistanceArray(void *renderer, GLenum mode,
     }
     MGLEncodeContext encCtx = {
         .render_encoder_owner =
-            mglRendererRenderPassManager(host).state->currentRenderEncoderOwner,
+            mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner,
     };
     MGLCullDistanceHostOps ops = mglStageMakeCullOps(renderer);
     return mglDrawEncodeCullDistanceArray(host->ctx, mode, first, count,
@@ -1826,7 +1826,7 @@ bool mglDrawHostEncodeCullDistanceArray(void *renderer, GLenum mode,
 void *mglDrawHostEncoderOwner(void *renderer)
 {
     MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host ? mglRendererRenderPassManager(host).state->currentRenderEncoderOwner
+    return host ? mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner
                 : NULL;
 }
 
@@ -1853,9 +1853,9 @@ void mglDrawHostWatchdogArrays(void *renderer, GLMContext ctx)
     }
     mglLogDrawWithoutSwapWatchdog(
         "arrays", 0, ctx,
-        mglRendererRenderPassManager(host).state->currentCommandBufferOwner,
-        mglRendererRenderPassManager(host).state->currentRenderEncoderOwner,
-        mglRendererRenderPassManager(host).state->renderPassStateOwner);
+        mglRendererRenderPassManager(host)->state->currentCommandBufferOwner,
+        mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner,
+        mglRendererRenderPassManager(host)->state->renderPassStateOwner);
 }
 
 
@@ -1952,9 +1952,9 @@ void mglDrawHostWatchdogElements(void *renderer, GLMContext ctx)
     }
     mglLogDrawWithoutSwapWatchdog(
         "elements", 0, ctx,
-        mglRendererRenderPassManager(host).state->currentCommandBufferOwner,
-        mglRendererRenderPassManager(host).state->currentRenderEncoderOwner,
-        mglRendererRenderPassManager(host).state->renderPassStateOwner);
+        mglRendererRenderPassManager(host)->state->currentCommandBufferOwner,
+        mglRendererRenderPassManager(host)->state->currentRenderEncoderOwner,
+        mglRendererRenderPassManager(host)->state->renderPassStateOwner);
 }
 
 bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,

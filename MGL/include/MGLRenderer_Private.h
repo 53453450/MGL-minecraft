@@ -81,7 +81,7 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 /* State container types and independent renderer subsystems. */
 #import "MGLRenderer_State.h"
 #import "MGLPipelineCache.h"
-#import "MGLRenderPassManager.h"
+#include "mgl_render_pass_manager.h"  /* the manager is a C struct now */
 
 /* Value geometry types (MGLSizeValue / MGLOriginValue / MGLRegionValue) and
  * their pure-C constructors now live in mgl_region_value.h — a C++-safe header

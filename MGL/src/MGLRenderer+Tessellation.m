@@ -496,7 +496,7 @@ typedef struct {
     }
     MGLRenderCommandBufferState commandState = {0};
     const int hasCommandState = mglRenderCommandBufferOwnerHasState(
-        _renderPassManager.state->currentCommandBufferOwner, &commandState);
+        _renderPassManager->state->currentCommandBufferOwner, &commandState);
     if (!mglTessCommandBufferCanInitBlit(hasCommandState, commandState.status)) {
         return false;
     }
@@ -517,7 +517,7 @@ typedef struct {
         };
     }
     return mglTessEncodeBufferCopiesForOwner(
-        _renderPassManager.state->currentCommandBufferOwner,
+        _renderPassManager->state->currentCommandBufferOwner,
         copyEntries, copyEntryCount);
 }
 
@@ -550,11 +550,11 @@ typedef struct {
         return true;
     }
     if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner))) {
+            _renderPassManager->state->currentRenderEncoderOwner))) {
         [self endRenderEncoding];
     }
     return mglTessEncodeBufferCopiesForOwner(
-        _renderPassManager.state->currentCommandBufferOwner,
+        _renderPassManager->state->currentCommandBufferOwner,
         copyEntries, copyEntryCount);
 }
 
@@ -870,7 +870,7 @@ typedef struct {
     if (!mglTessPassthroughRasterReady(
             stateReady ? 1 : 0,
             mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner),
+                _renderPassManager->state->currentRenderEncoderOwner),
             mglDrawRasterizationIsEmpty((__bridge void *)self) ? 1 : 0)) {
         NSLog(@"MGL TESS ERROR: TES-vertex raster skip program=%u",
               (unsigned)tesProgram->name);
@@ -901,7 +901,7 @@ typedef struct {
               (int)instanceCount, (int)(tesProgram->tess_gen_point_mode != 0));
     }
     mglDrawApplyPolygonOffset((__bridge void *)self, tessRasterMode);
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
+    void *owner = _renderPassManager->state->currentRenderEncoderOwner;
 
     [self bindTessStageBufferBindingsToRenderEncoderOwner:owner
                                                bindings:&stageBufferBindings];
@@ -1178,7 +1178,7 @@ typedef struct {
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
     if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner))) {
+            _renderPassManager->state->currentRenderEncoderOwner))) {
         [self endRenderEncoding];
     }
 
@@ -1188,7 +1188,7 @@ typedef struct {
      * committed the previous command buffer. */
     MGLRenderCommandBufferState commandState = {0};
     const int hasCommandState = mglRenderCommandBufferOwnerHasState(
-        _renderPassManager.state->currentCommandBufferOwner, &commandState);
+        _renderPassManager->state->currentCommandBufferOwner, &commandState);
     if (mglTessCommandBufferNeedsNew(hasCommandState, commandState.status)) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TCS dispatch");
@@ -1364,7 +1364,7 @@ typedef struct {
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _renderPassManager->state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
                 &executionResult, executionError,
@@ -1558,12 +1558,12 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
 
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
     if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager.state->currentRenderEncoderOwner))) {
+            _renderPassManager->state->currentRenderEncoderOwner))) {
         [self endRenderEncoding];
     }
     MGLRenderCommandBufferState commandState = {0};
     const int hasCommandState = mglRenderCommandBufferOwnerHasState(
-        _renderPassManager.state->currentCommandBufferOwner, &commandState);
+        _renderPassManager->state->currentCommandBufferOwner, &commandState);
     if (mglTessCommandBufferNeedsNew(hasCommandState, commandState.status)) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TES compute");
@@ -1826,7 +1826,7 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
         MGLRenderComputeExecutionResult executionResult = {0};
         char executionError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
-                _renderPassManager.state->currentCommandBufferOwner,
+                _renderPassManager->state->currentCommandBufferOwner,
                 _gpuRecovery.commandRecoveryOwner,
                 &executionPlan, copyBackEntries, copyBackEntryCount, 1u,
                 &executionResult, executionError,
@@ -2057,13 +2057,13 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
     if (!mglTessPassthroughRasterReady(
             stateReady ? 1 : 0,
             mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager.state->currentRenderEncoderOwner),
+                _renderPassManager->state->currentRenderEncoderOwner),
             mglDrawRasterizationIsEmpty((__bridge void *)self) ? 1 : 0)) {
         NSLog(@"MGL TESS ERROR: TES compute raster skip program=%u stateReady=%d encoder=%d empty=%d clip0=%d",
               (unsigned)tesProgram->name,
               (int)stateReady,
               mglRenderEncoderOwnerHasCurrent(
-                  _renderPassManager.state->currentRenderEncoderOwner),
+                  _renderPassManager->state->currentRenderEncoderOwner),
               (int)mglDrawRasterizationIsEmpty((__bridge void *)self),
               ctx && MGL_STATE(ctx)->caps.clip_distances[0] ? 1 : 0);
         _tessellation.tessComputeActive = NO;
@@ -2083,10 +2083,10 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
         NSUInteger instanceOffset = (NSUInteger)mglTessPassthroughInstanceOffset(
             (uint32_t)i, itemsPerInstanceU, (uint32_t)outStride);
         mglTessSetRenderVertexBuffer(
-            encoder, _renderPassManager.state->currentRenderEncoderOwner,
+            encoder, _renderPassManager->state->currentRenderEncoderOwner,
             outBuffer, instanceOffset, 0u);
         mglTessDrawPrimitives(
-            encoder, _renderPassManager.state->currentRenderEncoderOwner,
+            encoder, _renderPassManager->state->currentRenderEncoderOwner,
             primType, 0u, (NSUInteger)itemsPerInstanceU, 1u,
             (NSUInteger)baseInstance + (NSUInteger)i);
     }

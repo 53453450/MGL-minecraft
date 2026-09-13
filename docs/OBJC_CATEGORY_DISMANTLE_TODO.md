@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 四十九刀** + trace 清零 后；第 68–74 轮见 §0.24/§0.26–§0.31）**：
-文件 **53 → 10**、空 TU **3 → 0**、行数 **43,989 → 32,462**、ObjC 语法 **2,268 → 1,850**、词汇 **4,353 → 3,645**；
-**shim：43 → 15 个端口 / 唯一壳 TU 1,756 行 / 272 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；`MGLRenderer*.m` **34,604 → 28,948**）。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十刀** + trace 清零 后；第 68–75 轮见 §0.24/§0.26–§0.32）**：
+文件 **53 → 9**、空 TU **3 → 0**、行数 **43,989 → 32,020**、ObjC 语法 **2,268 → 1,774**、词汇 **4,353 → 3,621**；
+**shim：43 → 15 个端口 / 唯一壳 TU 1,756 行 / 233 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -3022,3 +3022,37 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
 ② `MGLRenderPassManager.m`（类 → C handle，顺带把 `+RenderPass.m` 的 270 处读数换成 `areas.command`）→
 ③ `mgl_draw_metal_port.m`（纯语法，100 语法 + 97 词汇）→ ④ `+Tessellation.m` / `+BindingState.m` →
 ⑤ 三厚块与 `MGLRenderer.m`（多刀，按簇搬）。
+
+106. **P0-1 第五十刀：`MGLRenderPassManager` 类 → C struct（**文件 10 → 9**，语法 −76）**：
+     ① 该类是"**一个 ivar + 28 个纯转发方法**"（`_state` 是 `MGLCommandState` 值，方法体全是 `mglRender*(…)`），
+     所以整类转 C：新 TU **`mgl_render_pass_manager.{h,c}`**（511 + 96 行）定义
+     `typedef struct MGLRenderPassManager_t { MGLCommandState *state; MGLCommandState command_state; } MGLRenderPassManager;`
+     + 28 个 `mglPassManager*` 入口（含 `mglPassManagerCreate/Destroy`：`calloc` + `state = &command_state` + 清 identity；
+     `Destroy` 先 `Shutdown` 再 `free`）。原文件里 3 个 file-static（`CreateCommandBuffer` / `CreateRenderEncoder` /
+     `SyncRuntimeOwners` / `SyncIdentityView` / `StoreIdentity`）随之内迁（`CreateRenderEncoder` 改名为
+     `mglPassManagerMakeRenderEncoder`，避免与**同名对外的** `mglPassManagerCreateRenderEncoder` 撞名——**编译期就报出来了**）。
+     ② **`state` 是指针成员，不是值成员**（关键设计点）：这样 9 个 ObjC 文件里 **468 处**
+     `…renderPassManager.state->字段` / `…renderPassManager.state`（作实参传给 `const MGLCommandState *` 形参）
+     只需把 `.state` 机械换成 `->state`——**一条替换规则同时覆盖"取字段"和"当实参"两种用法**，无需 `&`、无需改形参类型。
+     替换脚本实测：`+RenderPass.m` 348、`MGLRenderer.m` 32、`+BindingState.m` 22、`+Blit.m` 17、`+Tessellation.m` 16、
+     `mgl_draw_metal_port.m` 15、`+Texture.m` 9、壳 7、`+Compute.m` 2；另有局部变量形（`renderPassManager.state->`，`+Blit.m` 1 处）
+     与 `[mglRendererRenderPassManager(r) state]`（壳 1 处）两类**编译器逐个抓出来**的漏网，已单独修。
+     ③ **49 处消息发送**按选择器映射成 C 调用（`discardCurrentCommandBuffer` 6、`clearCurrentRenderEncoder` 4、
+     `detachCurrentCommandBufferForSubmission` 6、`installNewCommandBufferFromQueue` 3、`commitCommandBufferTransaction:…` 3、
+     `releaseDetachedCommandBufferIfOwned:` 4、`hasLastSubmittedCommandBuffer` 2、`waitForLastSubmittedCommandBuffer:` 2、
+     `setCurrentDrawUsesRTSampledCopy:` 2、`setRuntimeContext:` 2、`installRenderEncoder:` 2、`updateRenderPassIdentityForContext:` 2、
+     `setFboMatchCacheResult:fboName:generation:` 1、`detachPendingEventWithSyncName:` 1、`installNewRenderPassDescriptor` 1、
+     `clearCurrentCommandBufferSyncListEntries` 1、`consumeTransactionCreatedCurrentCommandBuffer` 1、
+     `incrementDontCareFrameGenerationWithWrap` 1、`setDontCareFrameGeneration:` 1、`shutdown` 1、`createRenderEncoder` 2 等），
+     `BOOL` 实参按 `YES/NO → 1/0` 转换。
+     ④ 头文件：删 `MGLRenderPassManager.{h,m}`，`MGLRenderer_Private.h` 的 `#import` 换 `#include "mgl_render_pass_manager.h"`；
+     壳里的创建/销毁改 `mglPassManagerCreate()` / `mglPassManagerDestroy()`（`= NULL` 代替 `= nil`）；
+     `mglRendererRenderPassManager()` 仍定义在 `mgl_draw_metal_port.m`，返回类型换成 C struct 指针。
+     ⑤ **度量**：文件 **10 → 9**、行数 **32,462 → 32,020（−442）**、语法 **1,850 → 1,774（−76）**、词汇 **3,645 → 3,621（−24）**；
+     壳 TU 1,756 行不变（语法 272 → 233，因为 7 处发送与 7 处 `.state` 换成 C 调用）；端口 15 不变；
+     `MGLRenderer*.m` **28,948 → 28,504**；C 侧新增 607 行。
+     ⑥ **oracle**：旧库 = 提交 `22f0577` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,270/5,271 与 5,805/5,807 → `processGLState.slow` **289/290 与 291/293**，两臂几乎同值），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑦ 下一刀：按 §0.32 排序——`MGLRenderer+Compute.m`（1,246 行 / 84 语法 / 11 方法）或 `mgl_draw_metal_port.m`（纯语法清扫）。
