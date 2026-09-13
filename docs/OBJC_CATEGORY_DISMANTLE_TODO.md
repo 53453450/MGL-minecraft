@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十八刀** + trace 清零 后；第 68–92 轮见 §0.24/§0.26–§0.49）**：
-文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 29,004**、ObjC 语法 **2,268 → 1,645**、词汇 **4,353 → 3,186**；
-**shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 六十九刀** + trace 清零 后；第 68–95 轮见 §0.24/§0.26–§0.52）**：
+文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 28,587**、ObjC 语法 **2,268 → 1,625**、词汇 **4,353 → 3,176**；
+**shim：43 → 33 个端口 / 唯一壳 TU 2,054 行 / 289 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀（第六十九刀）0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；`MGLRenderer*.m` **34,604 → 26,533**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -3702,3 +3702,73 @@ A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔
 **收束说明**：本轮次预算（90 轮）已到末轮，目标**未达成**且**不是阻塞**（没有"同一外部阻塞连续三轮"的情形，
 只是剩余量大：5 个厚文件约 24k 行 / 约 1,150 语法，需要大量轮次）。**目标保持 active**，
 按 §0.51 的八步闭环与本节的三条整块切口继续即可。
+
+125. **P0-1 第六十九刀：`+Tessellation.m` 的「细分 stage 绑定 / 纹理绑定规划」整簇转 C（新 TU `mgl_tess_stage_bind.{h,c}`）**：
+     ① 按 §0.52 的结论**不再按"小方法"零敲，改整块搬**。本刀搬走的是 §0.49 记的那一族阻塞点：
+     - 两个原先**只在本文件 `@implementation` 内部**的私有记录 `MGLTessStageBufferBinding` / `...List`
+       （含 `id __strong buffer`、`id __strong size_buffer`）→ 落到 C 头 `mgl_tess_stage_bind.h`，
+       `id __strong` → `void *`、`BOOL` → `int`。**这正是 §0.49 里"挡住 4 个小方法"的那块石头**：
+       字段所有权不变（创建出来的 +1 直接存进记录字段，ARC 的 `__strong` 语义等价）。
+     - 五个方法转 C：`-prepareTessStageBufferBindings:stage:copyBacks:`（205 行 / 19 语法）→
+       `mglTessPrepareStageBufferBindings`；`-flushTessStageBindingInitializationBlit:` → `mglTessFlushStageBindingInitializationBlit`；
+       `-bindTessStageBufferBindingsToRenderEncoderOwner:bindings:` → `mglTessBindStageBufferBindingsToRenderEncoderOwner`；
+       `-bindPreparedTessStageBufferBindings:toComputeEncoder:executionPlan:temporaries:` → `mglTessBindPreparedStageBufferBindings`；
+       `-planTessTextureBinds:count:ctx:plan:temporaries:`（13 语法）→ `mglTessPlanTextureBinds`。
+     ② **没有新增任何端口**：`self` → renderer 句柄；`_renderPassManager->state` / `_tessellation.tessVertexRenderActive`
+     → `MGLRendererStateAreas`（`areas.command` / `areas.tessellation`，第 113 刀的那条路正是为此铺的）；
+     裸 `ctx` → **`areas.ctx`**；`MGL_STATE(ctx)` → **C twin**（与 `mgl_compute_bind.c` 同一写法）；
+     `[self clearStageBindingCopyBack:atIndex:]` / `[self recordStageBindingCopyBack:…]` / `[self endRenderEncoding]`
+     → **既有端口** `mglRendererClearStageBindingCopyBackPort` / `mglRendererRecordStageBindingCopyBackPort` /
+     `mglRendererEndRenderEncodingPort`；`NSMutableArray *temporaries` → **`void *` + `mglRendererTemporaries*`**
+     （该入口收 `CFTypeRef`，句柄本身就是那个数组）。
+     ③ **.m 里保留 `id` 版静态助手，C TU 用同名不同前缀的 twin**：`mglTessCreateBuffer` / `…WithBytes` / `…CreateSampler` /
+     `…BufferContents` / `…AppendComputeResourceOp` / `…PlanTextureOrBind` / `…PlanSamplerOrBind` /
+     `…EncodeBufferCopiesForOwner` / `…SetRenderVertexBuffer` 都只裹一层 `mglRender*` C 入口，若把 .m 的改成 `void *`
+     反而会在**剩余的 3 个大方法**（约 40 处调用点）上加 `__bridge`，得不偿失；先例是 `mgl_draw_metal_port.c` 的
+     `mglVboRangeValidationEnabled` twin。等三个大方法也搬走，两组 twin 自然合并。
+     ④ **所有权口径（本刀最容易错的地方）**：`mglTessPlanTextureBinds` 里那条 `mglTessCreateSampler()` 路径是 **+1**，
+     原 ARC 代码靠 `__bridge_transfer` 在作用域末尾释放；C 侧改为「交给 temporaries 集合（集合自己 retain）后
+     **显式 `CFRelease` 自己那份**」，**失败分支也要释放**（已写在代码注释里）。
+     `mglTextureCreateSamplerForTexParam` 在 C 侧**不再需要 `CFBridgingRetain`**（它本身返回 +1，ARC 版多一次 retain
+     是为了抵消 ARC 的自动释放）。
+     ⑤ **度量**：`MGLRenderer+Tessellation.m` **2,024 → 1,608 行**、语法 **150 → 130**、词汇 **27 → 17**；
+     全库行数 **29,004 → 28,587（−417）**、语法 **1,645 → 1,625（−20）**、词汇 **3,186 → 3,176（−10）**、
+     文件数 **7 不变**；新 C TU `mgl_tess_stage_bind.c` **580 行** + 头 **92 行**。
+     **语法只降 20（不是搬走的 40）要说清楚**：三个 `.m` 侧的调用点被改写成 C 调用，每处多一个 `(__bridge void *)self`
+     / `(__bridge void *)executionTemporaries`（共 9 个），加上两个 `prepareTessBuffer…` 调用点从"1 行消息发送"变成
+     "4 行 C 调用 + 1 个 `__bridge`"，净值就是 −20；**这不是回归，是"搬运过程的成本"，等 `.m` 里最后 3 个大方法搬完即消失**——
+     与 §0.52 的判断一致（`__bridge` 只能靠宿主文件本身转 C 才消失）。
+     ⑥ **oracle（本刀自建）**：旧库 = 提交 `6de380f` 的独立 worktree 构建（`cmp` 两库不同：`libmgl` 4,083,120 vs 4,099,216 字节）；
+     `/private/tmp/run_ab.sh` 两臂 + `ab_full.py` 全文比对：**default 臂确定性行 4,981/4,981 逐行一致**（未过滤 5,282/5,280 →
+     `processGLState.slow` **301/299**，按既定政策不构成信号）、**flushy 臂 5,514/5,514 一致**（`slow` 335/308）；
+     **stderr MGL 行 307/307 多重集一致**；两臂通过数 **default 92/0/2、flushy 91/1/2**（与基线一致）。
+     ⚠️ 第一次 A/B 两臂**都**以 `dyld: Library not loaded: @rpath/libglfw.dylib` 退出 134 —— 是**我漏拷 `libglfw.dylib` 进 A/B 目录**
+     的环境问题（两臂同时失败就是证据），补齐后即通过；记在此处以免下次再判成回归。
+     ⑦ **CTS 七簇**：`hotspot / tess / gs / refq / piq / compute / pp` 非通过集合 **diff 全空**，计数仍是
+     **58 / 1 / 0 / 59 / 13 / 39 / 4**（`LC_ALL=C sort` 后比对；注意 `base_*.txt` 是旧排序，不统一 locale 会出现
+     `clip_control.` vs `clip_control_ARB` 的**假 diff**）。
+     ⑧ **下一刀**：`+Tessellation.m` 剩 **130 语法 / 1,608 行**，只剩 3 个方法 ——
+     `-dispatchTessControlShader:`（40 语法）、`-dispatchAIRTessEvalVertexRender:`（32）、`-dispatchAIRTessEvalCompute:`（55），
+     外加 `-newTCSStageInBufferForContext:`（19）。**它们的外部调用者只有壳**（`MGLPlatformRendererShell.m` 的
+     `mglRendererDispatchTessControlShader/AIRTessEvalCompute/AIRTessEvalVertexRender` 三个端口），
+     把三个方法转 C 就能**同时退役这 3 个端口并整文件删掉这个 `.m`（文件数 7 → 6）**，是当前"一次收益最大"的切口。
+
+### 0.53 第 96 轮交接快照（**新会话请先读本节 + §0.51**）
+
+**当前状态**：`MGL/` 内 ObjC **7 个文件 / 0 空 TU / 28,587 行 / 1,625 语法 / 3,176 词汇**；壳 TU 2,054 行（上限 2,400）；
+端口 33 个；`make test-all` **0**、CTS 七簇 **diff 全空**、A/B 两臂一致（见第 125 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,842 · `+Texture.m` 289/1,086/6,489 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` 235/761/4,062 · `+BindingState.m` 129/197/2,916 · 壳 `MGLPlatformRendererShell.m` 289/287/2,054 ·
+`+Tessellation.m` **130/17/1,608**。
+
+**下一步（按"一刀的收益/风险比"排序）**：
+1. **`+Tessellation.m` 收尾（最高优先）**：见第 125 条 ⑧。搬 `-newTCSStageInBufferForContext:` + 三个 dispatch 方法，
+   顺带退役壳里 3 个端口、删掉整个 `.m`。注意两个 AIR 方法里还有 `mglTessPlanBufferOrBind` /
+   `mglTessCreateSampler` / `mglTessSetRenderVertex*` 那批 `id` 版 twin，会一起搬进 C；
+   `planTessTextureBinds` 的两处调用点（现在已是 C 调用）改回 `mglTessPlanTextureBinds` 即可（签名不变）。
+2. **`+BindingState.m` stage buffer 绑定簇**（§0.52 的整块切口 ①）：它的语法 60% 是 `__bridge`，
+   整簇转 C 才能成批下降；先抽盘再逐簇编译。
+3. **`+Blit.m` 采样拷贝/解析簇**：`mgl_blit_sampled_copy.c` 已在，同族继续搬。
+4. 壳的 `MGLPipelineCache` 归档路径需要 Foundation→POSIX 改造 + **专属 oracle**（A/B 过滤 `BINARY ARCHIVE` 行）。

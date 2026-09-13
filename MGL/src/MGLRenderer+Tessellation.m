@@ -29,6 +29,8 @@
 #include "mgl_draw_tess.h"
 #include "mgl_tess_texture.h"  /* mglTessEnsureTextureMetalData */
 #include "mgl_tess_compute_ops.h"  /* mglTessBindPointSizeParamsToComputeEncoder */
+/* The stage-binding plan and the texture binding plan are C now (log 125). */
+#include "mgl_tess_stage_bind.h"
 #include "mgl_draw_issue.h"
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
@@ -170,16 +172,6 @@ static void mglTessDrawPrimitives(id encoder,
         renderEncoderOwner, &plan, NULL, 0);
 }
 
-static bool mglTessEncodeBufferCopiesForOwner(
-    void *commandBufferOwner,
-    const MGLRenderBufferCopyEntry *entries,
-    uint32_t entryCount)
-{
-    if (!commandBufferOwner || !entries || entryCount == 0u) return false;
-    return mglRenderEncodeBufferCopiesForCommandBufferOwner(
-        commandBufferOwner, entries, entryCount) == 0;
-}
-
 static bool mglTessAppendComputeResourceOp(
     MGLRenderComputeExecutionPlan *plan,
     NSMutableArray *temporaries,
@@ -223,32 +215,6 @@ static bool mglTessPlanBufferOrBind(
         plan, temporaries, 0u, buffer, offset, index);
 }
 
-static bool mglTessPlanTextureOrBind(
-    MGLRenderComputeExecutionPlan *plan,
-    NSMutableArray *temporaries,
-    id encoder,
-    id texture,
-    size_t index)
-{
-    (void)encoder;
-    return mglTessAppendComputeResourceOp(
-        plan, temporaries, 2u, texture, 0u, index);
-}
-
-static bool mglTessPlanSamplerOrBind(
-    MGLRenderComputeExecutionPlan *plan,
-    NSMutableArray *temporaries,
-    id encoder,
-    id sampler,
-    size_t index)
-{
-    (void)encoder;
-    return mglTessAppendComputeResourceOp(
-        plan, temporaries, 3u, sampler, 0u, index);
-}
-
-
-
 static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
 {
     if (!buffer) {
@@ -266,386 +232,6 @@ static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
 }
 
 @implementation MGLRenderer (Tessellation)
-
-typedef struct {
-    id __strong buffer;
-    size_t offset;
-    id __strong initialization_source;
-    size_t initialization_source_offset;
-    size_t initialization_length;
-    BOOL valid;
-} MGLTessStageBufferBinding;
-
-typedef struct {
-    MGLTessStageBufferBinding slots[kMGLMaxBufferSlots];
-    id __strong size_buffer;
-    GLuint size_buffer_index;
-} MGLTessStageBufferBindingList;
-
-/* Tessellation shaders run as consecutive compute encoders. Prepare their
- * buffer bindings before opening the next encoder so an isolated binding can
- * be initialized by an ordered GPU copy from a buffer written by the previous
- * stage. Reading source.contents here would capture stale CPU bytes while the
- * preceding TCS encoder is still pending on the same command buffer. */
-- (bool)prepareTessStageBufferBindings:(MGLTessStageBufferBindingList *)bindings
-                                 stage:(int)stage
-                             copyBacks:(MGLStageBindingCopyBackList *)copyBacks
-{
-    MGL_ASSERT_GL_THREAD();
-    if (!bindings || !copyBacks) {
-        return false;
-    }
-
-    BufferMapList stageBufferMap = {0};
-    if (!mglRendererMapGLBuffersToMTLBufferMap((__bridge void *)self, &stageBufferMap, stage)) {
-        return false;
-    }
-
-    /* Complete every lazy allocation before creating the initialization blit
-     * encoder. bindMTLBuffer: may itself need an encoder. */
-    for (GLuint i = 0; i < stageBufferMap.count; i++) {
-        Buffer *ptr = stageBufferMap.buffers[i].buf;
-        if (ptr && !ptr->data.mtl_data) {
-            mglRendererBindMTLBuffer((__bridge void *)self, ptr);
-        }
-    }
-
-    for (GLuint i = 0; i < stageBufferMap.count; i++) {
-        BufferMap *map = &stageBufferMap.buffers[i];
-        Buffer *ptr = map->buf;
-        if (!ptr) {
-            continue;
-        }
-
-        uint32_t metalBindingIndex = 0u;
-        if (!mglRenderResolveMappedBufferSlot(
-                map->has_metal_binding ? 1 : 0, (int32_t)map->metal_binding_index,
-                (int32_t)map->buffer_base_index,
-                (uint32_t)kMGLMaxMetalVertexBufferCount, &metalBindingIndex)) {
-            continue;
-        }
-        [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
-        id buffer = ptr->data.mtl_data
-            ? (__bridge id)(ptr->data.mtl_data)
-            : NULL;
-        if (buffer && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
-            /* Consume the CPU-side initialization before a tessellation
-             * stage can write the same Metal backing. Otherwise a later
-             * stage bind would upload the stale shadow over the GPU result. */
-            if (!mglRendererUpdateDirtyBuffer((__bridge void *)self, ptr)) {
-                return false;
-            }
-            buffer = ptr->data.mtl_data
-                ? (__bridge id)(ptr->data.mtl_data)
-                : NULL;
-        }
-        MGLTessIsolatedBindingPlan bindPlan = {0};
-        GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
-        const uint64_t bufferLength = mglTessBufferLength(buffer);
-        size_t availableBytes = buffer
-            ? mglBufferMapVisibleBackingBytes(map, bufferLength)
-            : 0u;
-        size_t requiredBytes =
-            mglRendererGetProgramBindingRequiredSize(ctx, stage, (int)map->resource_type, (int)map->resource_index);
-        requiredBytes = mglTessRequiredBindingBytes((int)map->resource_type,
-                                                    (uint32_t)requiredBytes);
-        if (!mglTessPlanIsolatedBinding(
-                buffer != NULL, map->offset, bufferLength,
-                (int64_t)storageRemaining, (uint64_t)availableBytes,
-                (uint32_t)requiredBytes, (int)map->resource_type,
-                &bindPlan)) {
-            return false;
-        }
-
-        /* A TES-vertex stage reads its SSBO/UBO resources inside the render
-         * encoder, so it never writes them and never needs a copy-back.
-         * Follows the per-draw path: a program that also carries the compute
-         * kernel (indexed draws) must keep isolated bindings on the compute
-         * path. */
-        const BOOL stageReadsOnly =
-            (stage == _TESS_EVALUATION_SHADER &&
-             _tessellation.tessVertexRenderActive)
-                ? 1 : 0;
-        if (stageReadsOnly) {
-            bindPlan.isolated = 0;
-        }
-
-        MGLTessStageBufferBinding *binding = &bindings->slots[metalBindingIndex];
-        binding->buffer = NULL;
-        binding->offset = 0u;
-        binding->initialization_source = NULL;
-        binding->initialization_source_offset = 0u;
-        binding->initialization_length = 0u;
-        binding->valid = 1;
-        if (!bindPlan.isolated) {
-            binding->buffer = buffer;
-            binding->offset = (size_t)map->offset;
-            /* The GL buffer's Metal backing is about to be staged in a
-             * compute encoder: pin its snapshot-pool slot. */
-            mglNoteBufferEncoded(ptr);
-            continue;
-        }
-
-        size_t fallbackLength = bindPlan.fallback_length;
-        id isolated = mglTessCreateBuffer(
-            _device, fallbackLength, MGL_TESS_RESOURCE_STORAGE_SHARED);
-        void *isolatedContents = mglTessBufferContents(isolated);
-        if (!isolatedContents) {
-            return false;
-        }
-        memset(isolatedContents, 0, fallbackLength);
-
-        binding->buffer = isolated;
-        binding->offset = 0u;
-        if (bindPlan.init_length > 0u) {
-            binding->initialization_source = buffer;
-            binding->initialization_source_offset = (size_t)map->offset;
-            binding->initialization_length = bindPlan.init_length;
-        }
-
-        if (mglTessIsolatedNeedsCopyBack(bindPlan.writable ? 1 : 0,
-                                         buffer ? 1 : 0,
-                                         bindPlan.init_length) &&
-            ![self recordStageBindingCopyBack:copyBacks
-                                       atIndex:metalBindingIndex
-                                     temporary:isolated
-                                   destination:buffer
-                             destinationBuffer:ptr
-                            destinationOffset:(size_t)map->offset
-                                        length:availableBytes]) {
-            return false;
-        }
-    }
-
-    Program *stageProgram = mglResolveProgramForStageFromState(ctx, stage);
-    if (stageProgram &&
-        stageProgram->modules[stage].needs_runtime_array_size_buffer) {
-        bindings->size_buffer_index =
-            mglRuntimeArraySizeBufferIndexForProgram(stageProgram, stage);
-        uint32_t sizeConstants[kMGLMaxBufferSlots] = {0};
-        mglTessFillRuntimeArraySizeConstants(
-            stageBufferMap.buffers, stageBufferMap.count,
-            bindings->size_buffer_index, sizeConstants, kMGLMaxBufferSlots);
-        bindings->size_buffer = mglTessCreateBufferWithBytes(
-            _device, sizeConstants, sizeof(sizeConstants),
-            MGL_TESS_RESOURCE_STORAGE_SHARED);
-        if (!bindings->size_buffer) {
-            return false;
-        }
-    }
-
-    /* A TES-vertex stage binds its resources into the render encoder; the
-     * GPU copy that initializes an isolated binding must land before that
-     * encoder (it is encoded into the command buffer, not the render pass). */
-    const BOOL tessVertexRenderStage =
-        (stage == _TESS_EVALUATION_SHADER &&
-         _tessellation.tessVertexRenderActive)
-            ? 1 : 0;
-    if (tessVertexRenderStage) {
-        BOOL needsInitializationBlit = 0;
-        for (size_t i = 0; i < kMGLMaxBufferSlots; i++) {
-            if (bindings->slots[i].initialization_length > 0) {
-                needsInitializationBlit = 1;
-                break;
-            }
-        }
-        if (needsInitializationBlit) {
-            if (![self flushTessStageBindingInitializationBlit:bindings]) {
-                return false;
-            }
-        }
-    }
-
-    BOOL needsInitializationBlit = 0;
-    for (size_t i = 0; i < kMGLMaxBufferSlots; i++) {
-        if (bindings->slots[i].initialization_length > 0) {
-            needsInitializationBlit = 1;
-            break;
-        }
-    }
-    if (!needsInitializationBlit) {
-        return true;
-    }
-    MGLRenderCommandBufferState commandState = {0};
-    const int hasCommandState = mglRenderCommandBufferOwnerHasState(
-        _renderPassManager->state->currentCommandBufferOwner, &commandState);
-    if (!mglTessCommandBufferCanInitBlit(hasCommandState, commandState.status)) {
-        return false;
-    }
-
-    MGLRenderBufferCopyEntry copyEntries[kMGLMaxBufferSlots] = {0};
-    uint32_t copyEntryCount = 0u;
-    for (size_t i = 0; i < kMGLMaxBufferSlots; i++) {
-        MGLTessStageBufferBinding *binding = &bindings->slots[i];
-        if (binding->initialization_length == 0) {
-            continue;
-        }
-        copyEntries[copyEntryCount++] = (MGLRenderBufferCopyEntry){
-            .source_buffer = (__bridge void *)binding->initialization_source,
-            .source_offset = binding->initialization_source_offset,
-            .destination_buffer = (__bridge void *)binding->buffer,
-            .destination_offset = 0u,
-            .length = binding->initialization_length,
-        };
-    }
-    return mglTessEncodeBufferCopiesForOwner(
-        _renderPassManager->state->currentCommandBufferOwner,
-        copyEntries, copyEntryCount);
-}
-
-/* Encode the isolated-binding initialization copies into the command buffer
- * now (used by the TES-vertex path, which binds resources into a render
- * encoder rather than a compute plan). */
-- (bool)flushTessStageBindingInitializationBlit:
-    (MGLTessStageBufferBindingList *)bindings
-{
-    MGL_ASSERT_GL_THREAD();
-    if (!bindings) {
-        return false;
-    }
-    MGLRenderBufferCopyEntry copyEntries[kMGLMaxBufferSlots] = {0};
-    uint32_t copyEntryCount = 0u;
-    for (size_t i = 0; i < kMGLMaxBufferSlots; i++) {
-        MGLTessStageBufferBinding *binding = &bindings->slots[i];
-        if (binding->initialization_length == 0) {
-            continue;
-        }
-        copyEntries[copyEntryCount++] = (MGLRenderBufferCopyEntry){
-            .source_buffer = (__bridge void *)binding->initialization_source,
-            .source_offset = binding->initialization_source_offset,
-            .destination_buffer = (__bridge void *)binding->buffer,
-            .destination_offset = 0u,
-            .length = binding->initialization_length,
-        };
-    }
-    if (copyEntryCount == 0u) {
-        return true;
-    }
-    if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager->state->currentRenderEncoderOwner))) {
-        [self endRenderEncoding];
-    }
-    return mglTessEncodeBufferCopiesForOwner(
-        _renderPassManager->state->currentCommandBufferOwner,
-        copyEntries, copyEntryCount);
-}
-
-/* Bind the prepared TES stage buffers (SSBO/UBO/atomic/runtime-size) into the
- * render encoder for the TES-vertex path.  These are read-only in the vertex
- * stage; no copy-back is recorded. */
-- (bool)bindTessStageBufferBindingsToRenderEncoderOwner:(void *)renderEncoderOwner
-                                            bindings:(const MGLTessStageBufferBindingList *)bindings
-{
-    MGL_ASSERT_GL_THREAD();
-    if (!bindings) {
-        return false;
-    }
-    for (size_t i = 0; i < kMGLMaxBufferSlots; i++) {
-        const MGLTessStageBufferBinding *binding = &bindings->slots[i];
-        if (binding->valid && binding->buffer) {
-            mglTessSetRenderVertexBuffer(NULL, renderEncoderOwner,
-                                         binding->buffer, binding->offset, i);
-        }
-    }
-    if (bindings->size_buffer) {
-        mglTessSetRenderVertexBuffer(NULL, renderEncoderOwner,
-                                     bindings->size_buffer, 0u,
-                                     bindings->size_buffer_index);
-    }
-    return true;
-}
-
-- (bool)bindPreparedTessStageBufferBindings:(const MGLTessStageBufferBindingList *)bindings
-                           toComputeEncoder:(id)computeCommandEncoder
-                              executionPlan:(MGLRenderComputeExecutionPlan *)executionPlan
-                               temporaries:(NSMutableArray *)temporaries
-{
-    MGL_ASSERT_GL_THREAD();
-    (void)computeCommandEncoder;
-    if (!bindings || !executionPlan) {
-        return false;
-    }
-    for (size_t i = 0; i < kMGLMaxBufferSlots; i++) {
-        const MGLTessStageBufferBinding *binding = &bindings->slots[i];
-        if (binding->valid) {
-            if (!mglTessAppendComputeResourceOp(
-                    executionPlan, temporaries, 0u, binding->buffer,
-                    binding->offset, i)) {
-                return false;
-            }
-        }
-    }
-    if (bindings->size_buffer) {
-        if (!mglTessAppendComputeResourceOp(
-                executionPlan, temporaries, 0u, bindings->size_buffer,
-                0u, bindings->size_buffer_index)) {
-            return false;
-        }
-    }
-    return true;
-}
-
-
-
-- (BOOL)planTessTextureBinds:(const MGLTessTextureBind *)binds
-                       count:(uint32_t)count
-                         ctx:(GLMContext)drawCtx
-                        plan:(MGLRenderComputeExecutionPlan *)plan
-                 temporaries:(NSMutableArray *)temporaries
-{
-    if (!binds || !plan || !drawCtx || !drawCtx->active_state) {
-        return binds == NULL || count == 0u;
-    }
-    for (uint32_t i = 0; i < count; i++) {
-        const MGLTessTextureBind *bind = &binds[i];
-        id texture = NULL;
-        Texture *ptr = NULL;
-        if (mglTessTextureBindIsStorage(bind->kind)) {
-            ptr = MGL_STATE(drawCtx)->image_units[bind->gl_unit].tex;
-            if (ptr) {
-                texture = (__bridge id)(ptr->mtl_data);
-                texture = (__bridge id)mglRendererStorageImageTexture(
-                    (__bridge void *)texture,
-                    &MGL_STATE(drawCtx)->image_units[bind->gl_unit]);
-            }
-        } else {
-            ptr = MGL_STATE(drawCtx)->active_textures[bind->gl_unit];
-            texture = ptr ? (__bridge id)(ptr->mtl_data) : NULL;
-        }
-        if (!mglTessPlanTextureOrBind(plan, temporaries, NULL, texture,
-                                      bind->metal_slot)) {
-            return 0;
-        }
-        if (!mglTessTextureBindNeedsSampler(bind->kind,
-                                            bind->combined_sampler_slot)) {
-            continue;
-        }
-        id sampler = NULL;
-        if (MGL_STATE(drawCtx)->texture_samplers[bind->gl_unit]) {
-            Sampler *glSampler =
-                MGL_STATE(drawCtx)->texture_samplers[bind->gl_unit];
-            if (glSampler->dirty_bits && glSampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
-            }
-            if (!glSampler->mtl_data && ptr) {
-                glSampler->mtl_data = (void *)CFBridgingRetain((__bridge id)mglTextureCreateSamplerForTexParam(&glSampler->params, ptr->target));
-                glSampler->dirty_bits = 0;
-            }
-            sampler = (__bridge id)(glSampler->mtl_data);
-        } else if (ptr && ptr->params.mtl_data) {
-            sampler = (__bridge id)(ptr->params.mtl_data);
-        }
-        if (!sampler) {
-            sampler = mglTessCreateSampler(_device);
-        }
-        if (sampler &&
-            !mglTessPlanSamplerOrBind(plan, temporaries, NULL, sampler,
-                                      bind->combined_sampler_slot)) {
-            return 0;
-        }
-    }
-    return 1;
-}
 
 /* Isolines / point_mode TES as a render vertex function: the CPU domain
  * expansion seeds TessCoord records once, then the render encoder replays a
@@ -763,9 +349,10 @@ typedef struct {
      * copy-back list is discarded. */
     MGLTessStageBufferBindingList stageBufferBindings = {0};
     MGLStageBindingCopyBackList stageCopyBacks = {0};
-    if (![self prepareTessStageBufferBindings:&stageBufferBindings
-                                         stage:_TESS_EVALUATION_SHADER
-                                     copyBacks:&stageCopyBacks]) {
+    if (!mglTessPrepareStageBufferBindings((__bridge void *)self,
+                                           &stageBufferBindings,
+                                           _TESS_EVALUATION_SHADER,
+                                           &stageCopyBacks)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return 0;
     }
@@ -829,8 +416,8 @@ typedef struct {
     mglDrawApplyPolygonOffset((__bridge void *)self, tessRasterMode);
     void *owner = _renderPassManager->state->currentRenderEncoderOwner;
 
-    [self bindTessStageBufferBindingsToRenderEncoderOwner:owner
-                                               bindings:&stageBufferBindings];
+    mglTessBindStageBufferBindingsToRenderEncoderOwner(owner,
+                                                      &stageBufferBindings);
     if (tesProgram->uses_point_size_params) {
         float pointSizeParams[2] = {0.f, 0.f};
         mglTessFillPointSizeParams(
@@ -1133,9 +720,10 @@ typedef struct {
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
     MGLTessStageBufferBindingList stageBufferBindings = {0};
-    if (![self prepareTessStageBufferBindings:&stageBufferBindings
-                                         stage:_TESS_CONTROL_SHADER
-                                     copyBacks:&stageCopyBacks]) {
+    if (!mglTessPrepareStageBufferBindings((__bridge void *)self,
+                                           &stageBufferBindings,
+                                           _TESS_CONTROL_SHADER,
+                                           &stageCopyBacks)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
@@ -1145,20 +733,17 @@ typedef struct {
     id computeEncoder = NULL;
     executionPlan.pipeline = (__bridge void *)tcsPipeline;
 
-    if (![self planTessTextureBinds:tcsTextureBinds
-                              count:tcsTextureBindCount
-                                ctx:glm_ctx
-                               plan:&executionPlan
-                        temporaries:executionTemporaries]) {
+    if (!mglTessPlanTextureBinds((__bridge void *)self, tcsTextureBinds,
+                                 tcsTextureBindCount, glm_ctx, &executionPlan,
+                                 (__bridge void *)executionTemporaries)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
 
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TCS. */
-    if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
-                                  toComputeEncoder:computeEncoder
-                                     executionPlan:&executionPlan
-                                      temporaries:executionTemporaries]) {
+    if (!mglTessBindPreparedStageBufferBindings(
+            &stageBufferBindings, (__bridge void *)computeEncoder,
+            &executionPlan, (__bridge void *)executionTemporaries)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
@@ -1507,9 +1092,10 @@ static size_t mglTESXFBVertexStride(const Program *program)
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
     MGLTessStageBufferBindingList stageBufferBindings = {0};
-    if (![self prepareTessStageBufferBindings:&stageBufferBindings
-                                         stage:_TESS_EVALUATION_SHADER
-                                     copyBacks:&stageCopyBacks]) {
+    if (!mglTessPrepareStageBufferBindings((__bridge void *)self,
+                                           &stageBufferBindings,
+                                           _TESS_EVALUATION_SHADER,
+                                           &stageCopyBacks)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
@@ -1538,19 +1124,16 @@ static size_t mglTESXFBVertexStride(const Program *program)
         return false;
     }
 
-    if (![self planTessTextureBinds:tesTextureBinds
-                              count:tesTextureBindCount
-                                ctx:glm_ctx
-                               plan:&executionPlan
-                        temporaries:executionTemporaries]) {
+    if (!mglTessPlanTextureBinds((__bridge void *)self, tesTextureBinds,
+                                 tesTextureBindCount, glm_ctx, &executionPlan,
+                                 (__bridge void *)executionTemporaries)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
 
-    if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
-                                  toComputeEncoder:computeEncoder
-                                     executionPlan:&executionPlan
-                                      temporaries:executionTemporaries]) {
+    if (!mglTessBindPreparedStageBufferBindings(
+            &stageBufferBindings, (__bridge void *)computeEncoder,
+            &executionPlan, (__bridge void *)executionTemporaries)) {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
