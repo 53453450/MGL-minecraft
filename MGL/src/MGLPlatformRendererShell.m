@@ -834,6 +834,8 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->gpu_recovery_command_owner = &r->_gpuRecovery.commandRecoveryOwner;
     areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
+    areas_out->tessellation = &r->_tessellation;
+    areas_out->geometry = &r->_geometry;
     areas_out->tess_native_tes_program = (void *)r->_tessellation.nativeTESProgram;
     areas_out->tess_tcs_output_stride = (uint32_t)r->_tessellation.tcsOutputStride;
     areas_out->tess_cull_capture_first_instance =

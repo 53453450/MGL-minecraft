@@ -24,6 +24,7 @@
 #include "mgl_renderer_core_state.h" /* MGLRendererCoreState */
 #include "mgl_command_state.h"      /* MGLCommandState */
 #include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
+#include "mgl_tessellation_state.h"   /* MGLTessellationState, MGLGeometryState */
 
 /* Forward declaration: the blend record lives in mgl_render.h, which this
  * header does not need to pull in. */
@@ -208,6 +209,11 @@ typedef struct MGLRendererStateAreas {
         const struct MGLRenderPipelineBlendState_t *blend);
     int32_t tess_native_tes_active;
     void *tess_native_tes_program;
+    /* The tessellation and geometry records themselves (the C draw host port
+     * reads and writes their fields; the two scalars above are the older
+     * single-field shortcut and stay for the callers that only need those). */
+    MGLTessellationState *tessellation;
+    MGLGeometryState *geometry;
     uint32_t tess_tcs_output_stride;
     uint32_t tess_cull_capture_first_instance;
     uint32_t tess_cull_capture_instance_stride;

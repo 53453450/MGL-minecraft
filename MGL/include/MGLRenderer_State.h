@@ -43,6 +43,7 @@
 #include "mgl_binding_stage.h"  /* MGLStageBindingCopyBackList */
 #include "mgl_batching_state.h" /* MGLBatchingState */
 #include "mgl_renderer_core_state.h" /* MGLRendererCoreState */
+#include "mgl_tessellation_state.h" /* MGLTessellationState/MGLGeometryState */
 
 /* The drawable index enum moved to the C-safe mgl_renderer_core_state.h
  * (the core state sizes its drawBuffers array with _MAX_DRAW_BUFFERS). */
@@ -74,46 +75,9 @@ typedef struct MGLResourceFallbackState_t {
     MGLFragmentTextureTraceBinding fragmentTextureTraceBindings[TEXTURE_UNITS];
 } MGLResourceFallbackState;
 
-typedef struct MGLTessellationState_t {
-    NSUInteger tessVertexCaptureOffset;
-    BOOL tessVertexCaptureActive;
-    BOOL cullDistanceCaptureActive;
-    uint32_t cullDistanceCaptureFirstInstance;
-    uint32_t cullDistanceCaptureInstanceStride;
-    NSUInteger tcsOutputOffset;
-    NSUInteger tcsOutputStride;
-    GLuint tcsOutVertices;
-    BOOL nativeTESActive;
-    Program *nativeTESProgram;
-    MGLStageBindingCopyBackList nativeTESCopyBacks;
-    BOOL tessIndexedDraw;
-    /* 256-aligned per-instance record span of the VS capture, used as the
-     * per-instance draw offset when instanced native TES loops instances. */
-    NSUInteger tessInstanceRecords;
-    /* Isolines / point-mode TES: vertices expanded by the AIR TES compute
-     * kernel (per-patch dispatch, contract at slot 29) and consumed by a
-     * passthrough vertex stage drawing lines / points. */
-    BOOL tessComputeActive;
-    Program *tessComputeProgram;
-    /* True only for the draw currently taking the TES render-vertex path.
-     * A program can carry both the render-vertex function and the compute
-     * kernel (indexed draws fall back to compute), so the TES-vertex binding
-     * plan must follow the per-draw choice, not tess_eval_render_vertex. */
-    BOOL tessVertexRenderActive;
-    /* When a GS follows isolines/point-mode TES compute, the expanded
-     * records are handed to mglDrawHostHandleGeometry / mglDrawGsRunDraw instead of the
-     * TES passthrough vertex.  pendingGSInput is a retained MTLBuffer. */
-    BOOL pendingGSInputActive;
-    void *pendingGSInput;
-    NSUInteger pendingGSInputOffset;
-    NSUInteger pendingGSInputStride;
-    GLsizei pendingGSVertexCount;
-} MGLTessellationState;
+/* MGLTessellationState / MGLGeometryState moved to the C-safe
+ * mgl_tessellation_state.h (the C draw host port mutates them). */
 
-typedef struct MGLGeometryState_t {
-    BOOL expansionActive;
-    Program *program;
-} MGLGeometryState;
 
 /* MGLBatchingState moved to the C-safe mgl_batching_state.h so the C batch
  * drivers can read and write its fields directly (one port hands out the

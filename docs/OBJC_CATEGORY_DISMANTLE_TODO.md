@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十六刀** + trace 清零 后；第 68–81 轮见 §0.24/§0.26–§0.38）**：
-文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,062**、ObjC 语法 **2,268 → 1,683**、词汇 **4,353 → 3,478**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 五十七刀** + trace 清零 后；第 68–82 轮见 §0.24/§0.26–§0.39）**：
+文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,064**、ObjC 语法 **2,268 → 1,683**、词汇 **4,353 → 3,438**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3295,3 +3295,29 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      （`nativeTESCopyBacks`、`tessVertexCaptureActive`、`tessIndexedDraw`、`tessVertexCaptureOffset`、
      `tessInstanceRecords`、`geometry.expansionActive`）——按"一个状态 struct + 一个端口"的老办法，
      给 `MGLRendererStateAreas` **加字段**（字段不是端口）即可，然后 `git mv mgl_draw_metal_port.m → .c`（**文件 8 → 7**）。
+
+113. **P0-1 第五十七刀：tessellation/geometry 记录 C 化 + `mgl_draw_metal_port.m` 词汇层转 C（词汇 48 → 1）**：
+     ① **新增 C 头 `mgl_tessellation_state.h`**：把 `MGLTessellationState`（含 `nativeTESCopyBacks`、`tessVertexCaptureActive`、
+     `tessIndexedDraw`、`tessVertexCaptureOffset`、`tessInstanceRecords`、`tessComputeActive`、`pendingGSInput*` 等）
+     与 `MGLGeometryState` 从 ObjC 的 `MGLRenderer_State.h` 搬出（`BOOL → bool`、`NSUInteger → size_t`，64 位下同类型），
+     ObjC 头改为 include 它——沿用 `mgl_renderer_core_state.h` / `mgl_batching_state.h` / `mgl_command_state.h` /
+     `mgl_pipeline_cache_state.h` 的同一条路线。
+     ② **状态区加两个字段**（字段不是端口）：`MGLRendererStateAreas.tessellation` / `.geometry` 是**这两个记录本身的地址**
+     （壳的 `mglRendererStateAreasPort` 里填 `&r->_tessellation` / `&r->_geometry`），于是 C 侧既能读也能**写**
+     （`_tessellation.nativeTESActive = …` 这类赋值正是该文件需要的）；原有的两个标量字段 `tess_native_tes_active` /
+     `tess_native_tes_program` 保留给只要这两个值的调用点。
+     ③ **词汇层转换**（本刀实际改动的部分）：该文件里 `NSUInteger → size_t`、`nil → NULL`、`YES/NO → 1/0`、
+     `NSLog(@"%s", msg) → fprintf(stderr, "%s\n", msg)`（3 处）。**度量**：该文件词汇 **48 → 1**（只剩注释里的一个 `id`），
+     全库词汇 **3,478 → 3,438（−40）**；语法 1,683 不变（剩下的 37 处是 `#import`×4、`__bridge`×23、`MGLRenderer *` 局部与 2 处发送），
+     行数 31,062 → 31,064。
+     ④ **oracle**：旧库 = 提交 `d5d3786` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,277/5,273 与 5,823/5,810 → `processGLState.slow` 296/292 与 309/296），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ **最后一刀的前置已全部就位**（`mgl_draw_metal_port.m` → `.c`）：剩下的 37 处语法是"体量"问题而非"能力"问题——
+     需要把 **~100 处 `mglStageHostSelf(renderer)` / `mglDrawHostSelf(renderer)` 局部**换成 `renderer` + 状态区读取
+     （`host->ctx` → `areas.ctx`、`host->_backend` → `areas.backend`、`host->_tessellation.X` → `areas.tessellation->X`、
+     `host->_geometry.X` → `areas.geometry->X`、`host->_batching.X` → `areas.batching->X`），
+     并把 11 处发送换成第 108/112 刀的 C 入口；`#import` → `#include`（`+DrawSupportUtil.h` 已是 C 可用头，
+     `MGLRenderer_Private.h`/`+Draw_Private.h`/`+Tessellation_Private.h` 三条要么换成 C 声明、要么随最后一次改动去掉）。
+     **建议按"函数簇"分批改**（每个 host-ops 表一次），每批编译一次——这正是第 109–112 刀的节奏。

@@ -476,7 +476,7 @@ void mglDrawSupportCaptureSetActive(void *renderer, int active)
 {
     MGLRenderer *host = (__bridge MGLRenderer *)renderer;
     if (host) {
-        host->_tessellation.tessVertexCaptureActive = active ? YES : NO;
+        host->_tessellation.tessVertexCaptureActive = active ? 1 : 0;
     }
 }
 
@@ -484,7 +484,7 @@ void mglDrawSupportCaptureSetActive(void *renderer, int active)
 
 static MGLRenderer *mglStageHostSelf(void *renderer)
 {
-    return renderer ? (__bridge MGLRenderer *)renderer : nil;
+    return renderer ? (__bridge MGLRenderer *)renderer : NULL;
 }
 
 /* C-ABI accessors for the Metal-facing sub-objects (see declarations in
@@ -507,7 +507,7 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r)
 static void mglStageMarkCbHasWork(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) self->_batching.currentCommandBufferHasWork = YES;
+    if (self) self->_batching.currentCommandBufferHasWork = 1;
 }
 
 static void mglStageFlushCB(void *renderer, int wait)
@@ -580,7 +580,7 @@ static void *mglStageCreateBufferBytes(void *renderer, const void *bytes,
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return NULL;
     void *buf = mglDrawSupportCreateBufferWithBytes(mglRendererBackendGetDevice(self->_backend), bytes,
-                                                 (NSUInteger)length, 0u);
+                                                 (size_t)length, 0u);
     return buf;
 }
 
@@ -683,7 +683,7 @@ static int mglStageFlushNativeCB(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     return self && [self flushStageBindingCopyBacks:&self->_tessellation.nativeTESCopyBacks
-                                   requireCPUVisibility:NO]
+                                   requireCPUVisibility:0]
                ? 1
                : 0;
 }
@@ -693,14 +693,14 @@ static void mglStageBeginNativeTES(void *renderer, Program *tes)
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return;
     self->_tessellation.nativeTESProgram = tes;
-    self->_tessellation.nativeTESActive = YES;
+    self->_tessellation.nativeTESActive = 1;
 }
 
 static void mglStageEndNativeTES(void *renderer)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return;
-    self->_tessellation.nativeTESActive = NO;
+    self->_tessellation.nativeTESActive = 0;
     self->_tessellation.nativeTESProgram = NULL;
 }
 
@@ -711,7 +711,7 @@ static void mglStageResetTessDrawState(void *renderer)
     (void)mglRendererBackendSetTessVertexCaptureBuffer(self->_backend, NULL);
     self->_tessellation.tessVertexCaptureOffset = 0u;
     (void)mglRendererBackendSetTessControlPointIndexBuffer(self->_backend, NULL);
-    self->_tessellation.tessIndexedDraw = NO;
+    self->_tessellation.tessIndexedDraw = 0;
     self->_tessellation.tessInstanceRecords = 0u;
     (void)mglRendererBackendSetTcsOutputBuffer(self->_backend, NULL);
     self->_tessellation.tcsOutputOffset = 0u;
@@ -726,11 +726,11 @@ static void mglStageSetTessCapture(void *renderer, void *buf, uint64_t offset,
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return;
     (void)mglRendererBackendSetTessVertexCaptureBuffer(self->_backend, buf);
-    self->_tessellation.tessVertexCaptureOffset = (NSUInteger)offset;
-    self->_tessellation.tessIndexedDraw = indexed ? YES : NO;
-    self->_tessellation.tessInstanceRecords = (NSUInteger)instance_records;
+    self->_tessellation.tessVertexCaptureOffset = (size_t)offset;
+    self->_tessellation.tessIndexedDraw = indexed ? 1 : 0;
+    self->_tessellation.tessInstanceRecords = (size_t)instance_records;
     if (!buf) {
-        self->_tessellation.tessIndexedDraw = NO;
+        self->_tessellation.tessIndexedDraw = 0;
         self->_tessellation.tessInstanceRecords = 0u;
         self->_tessellation.tessVertexCaptureOffset = 0u;
         (void)mglRendererBackendSetTessControlPointIndexBuffer(self->_backend,
@@ -853,7 +853,7 @@ static void mglStageRecordQuery(GLMContext ctx, uint64_t generated,
 
 static void mglStageLogError(const char *msg)
 {
-    if (msg) NSLog(@"%s", msg);
+    if (msg) fprintf(stderr, "%s\n", msg);
 }
 
 static int mglStageEnsurePassthrough(void *renderer, Program *program,
@@ -910,7 +910,7 @@ static int mglGsMetalBindDrawTextures(void *renderer, GLMContext ctx)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !ctx) return 0;
-    for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
+    for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         Texture *image = ctx->active_state->image_units[unit].tex;
         Texture *sampled = ctx->active_state->active_textures[unit];
         if (image && ![self bindMTLTexture:image]) return 0;
@@ -999,7 +999,7 @@ static void mglGsMetalSetExpansion(void *renderer, Program *program, int active,
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self) return;
-    self->_geometry.expansionActive = active ? YES : NO;
+    self->_geometry.expansionActive = active ? 1 : 0;
     self->_geometry.program = active ? program : NULL;
     if (active && last_draw_mode) {
         self->_lastDrawPrimitiveMode = last_draw_mode;
@@ -1020,7 +1020,7 @@ static void mglGsMetalBlitCopy(void *blit, void *src, uint64_t src_off, void *ds
 {
     mglDrawSupportBlitCopyBuffer(blit, src,
                                  (size_t)src_off, dst,
-                                 (NSUInteger)dst_off, (NSUInteger)bytes);
+                                 (size_t)dst_off, (size_t)bytes);
 }
 
 static void mglGsMetalEndBlit(void *blit)
@@ -1063,16 +1063,16 @@ static void mglGsMetalRecordQueries(GLMContext ctx, uint64_t generated,
                                     const uint64_t *buffer_stride,
                                     uint64_t geometry_invocations)
 {
-    NSUInteger bw[MGL_AIR_GS_MAX_STREAMS] = {0};
-    NSUInteger bs[MGL_AIR_GS_MAX_STREAMS] = {0};
+    size_t bw[MGL_AIR_GS_MAX_STREAMS] = {0};
+    size_t bs[MGL_AIR_GS_MAX_STREAMS] = {0};
     uint32_t n = stream_count < MGL_AIR_GS_MAX_STREAMS ? stream_count
                                                        : MGL_AIR_GS_MAX_STREAMS;
     for (uint32_t i = 0; i < n; i++) {
-        if (buffer_written) bw[i] = (NSUInteger)buffer_written[i];
-        if (buffer_stride) bs[i] = (NSUInteger)buffer_stride[i];
+        if (buffer_written) bw[i] = (size_t)buffer_written[i];
+        if (buffer_stride) bs[i] = (size_t)buffer_stride[i];
     }
     mglRecordGeometryPrimitiveQueries(ctx, generated, written,
-                                      xfb_active ? YES : NO, meta, stream_count,
+                                      xfb_active ? 1 : 0, meta, stream_count,
                                       bw, bs, geometry_invocations);
 }
 
@@ -1093,7 +1093,7 @@ static void mglGsMetalSetVertexBuffer(void *encoder_owner, void *buffer,
                                       uint64_t offset, uint32_t index)
 {
     mglDrawSupportSetVertexBuffer(encoder_owner, buffer,
-                                  (NSUInteger)offset, index);
+                                  (size_t)offset, index);
 }
 
 static void mglGsMetalDrawPrims(void *encoder_owner, uint32_t output_primitive,
@@ -1110,12 +1110,12 @@ static void mglGsMetalDrawPrimsIndirect(void *encoder_owner,
 {
     mglDrawSupportDrawPrimitivesIndirect(encoder_owner, output_primitive,
                                          counts,
-                                         (NSUInteger)offset);
+                                         (size_t)offset);
 }
 
 static void mglGsMetalLogDiag(const char *msg)
 {
-    if (msg) NSLog(@"%s", msg);
+    if (msg) fprintf(stderr, "%s\n", msg);
 }
 
 /* A1: fill nested Metal expansion HostOps (no ObjC expansion middle-man). */
@@ -1180,7 +1180,7 @@ static void *mglStagePrepareElementIndex(void *renderer, void *index_buffer,
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
     if (!self || !index_buffer || !inout_offset || !inout_mtl_type) return NULL;
-    NSUInteger off = (NSUInteger)*inout_offset;
+    size_t off = (size_t)*inout_offset;
     uint64_t typ = *inout_mtl_type;
     id prepared = mglPreparedElementIndexBuffer(
         ((__bridge id)mglRendererBackendGetDevice(self->_backend)), NULL, (__bridge id)index_buffer, gl_index_type, &off,
@@ -1209,7 +1209,7 @@ static void mglStageClearCullCapture(void *renderer)
 static void mglStageSetCullCaptureActive(void *renderer, int active)
 {
     MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) self->_tessellation.cullDistanceCaptureActive = active ? YES : NO;
+    if (self) self->_tessellation.cullDistanceCaptureActive = active ? 1 : 0;
 }
 
 static void mglStageStoreCullCapture(void *renderer, void *buf,
@@ -1273,10 +1273,10 @@ static void mglStageDrawIndexedPrimsPort(void *encoder_owner,
                                          uint64_t base_instance)
 {
     mglDrawSupportDrawIndexedPrimitives(
-        encoder_owner, primitive_type, (NSUInteger)index_count,
+        encoder_owner, primitive_type, (size_t)index_count,
         index_buffer, (size_t)index_offset,
-        (NSUInteger)instance_count, (NSInteger)base_vertex,
-        (NSUInteger)base_instance);
+        (size_t)instance_count, (NSInteger)base_vertex,
+        (size_t)base_instance);
 }
 
 static int mglStageEncodeCtxActive(const void *enc_ctx)
@@ -1465,7 +1465,7 @@ static int mglStageShouldInspectPort(uint64_t draw_call, uint32_t program_key)
 
 static void mglStageValidateLogPort(const char *msg)
 {
-    if (msg) NSLog(@"%s", msg);
+    if (msg) fprintf(stderr, "%s\n", msg);
 }
 
 static MGLValidateArraysHostOps mglStageMakeValidateOps(void *renderer)
@@ -1599,7 +1599,7 @@ bool mglDrawHostHandleGeometry(void *renderer, GLMContext ctx, GLenum mode,
 
 static MGLRenderer *mglDrawHostSelf(void *renderer)
 {
-    return renderer ? (__bridge MGLRenderer *)renderer : nil;
+    return renderer ? (__bridge MGLRenderer *)renderer : NULL;
 }
 
 
@@ -1887,7 +1887,7 @@ bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
                                                 &glBuffer, &metalBuffer)) {
         return false;
     }
-    const NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const size_t offset = (size_t)(uintptr_t)indices;
     const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
         glBuffer, (__bridge MGLIndexMetalHandle)metalBuffer, type, offset,
         count);
