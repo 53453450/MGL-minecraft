@@ -3149,16 +3149,6 @@ void logDirtyBits(GLMContext ctx)
 /* flushCommandBufferLocked: moved to MGLRenderer+RenderPass.m */
 #pragma mark C interface to mtlDeleteMTLObj
 
--(void) mtlDeleteMTLObjLocked:(GLMContext) glm_ctx buffer: (void *)obj
-{
-    if (!obj)
-        return;
-
-    // Do not force-flush per-object destruction.
-    // Metal command buffers retain referenced resources, so immediate release is safe and
-    // avoids shutdown-time command-buffer storms (one commit per deleted object).
-    CFBridgingRelease(obj);
-}
 
 
 #pragma mark Draw command buffer flush
@@ -4179,51 +4169,11 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
 #pragma mark C interface to mtlBufferSubData
 
 
--(void) mtlBufferSubDataLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr
-{
-    (void)glm_ctx;
-    char error[256] = {0};
-    int result = mglRenderBufferSubDataStorage(
-        buf, offset, size, ptr, error, sizeof(error));
-    if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
-        NSLog(@"MGL ERROR: Metal-cpp buffer subdata failed buffer=%u: %s",
-              buf ? (unsigned)buf->name : 0u,
-              error[0] ? error : "not applicable");
-    }
-}
 #pragma mark C interface to mtlMapUnmapBuffer
 
 
--(void *) mtlMapUnmapBufferLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
-{
-    (void)glm_ctx;
-    void *mapped = NULL;
-    char error[256] = {0};
-    int result = mglRenderMapBufferStorage(
-        buf, offset, size, (unsigned int)access, map,
-        &mapped, error, sizeof(error));
-    if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
-        NSLog(@"MGL ERROR: Metal-cpp buffer map failed buffer=%u: %s",
-              buf ? (unsigned)buf->name : 0u,
-              error[0] ? error : "not applicable");
-        return NULL;
-    }
-    return mapped;
-}
 #pragma mark C interface to mtlFlushMappedBufferRange
 
--(void) mtlFlushMappedBufferRangeLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
-{
-    (void)glm_ctx;
-    char error[256] = {0};
-    int result = mglRenderFlushBufferRangeStorage(
-        buf, offset, length, error, sizeof(error));
-    if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
-        NSLog(@"MGL ERROR: Metal-cpp buffer range flush failed buffer=%u: %s",
-              buf ? (unsigned)buf->name : 0u,
-              error[0] ? error : "not applicable");
-    }
-}
 #pragma mark C interface to mtlReadDrawable
 
 

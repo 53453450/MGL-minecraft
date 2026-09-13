@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,614**、ObjC 语法 **2,268 → 1,973**、词汇 **4,353 → 3,839**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,564**、ObjC 语法 **2,268 → 1,973**、词汇 **4,353 → 3,836**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2266,3 +2266,20 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀：§0.18 的候选已全部处理完（9 + 8 删、2 保留）。后续回到**结构性**路线（§0.15）：`+DrawStageHost.m` 余 3 方法
      （需手工搬 + areas 两个字段）→ `+Binding.m` 的 `bindMTLTextureLocked:` → `MGLPipelineCache.m` → `+SwapDiagnostics.m`
      → `mgl_draw_metal_port.m`（0 方法、1,973 行）→ 三厚块。
+
+89. **P0-1 第三十五刀：删掉上一批"解锁壳"的 4 个 Locked 变体（**−50 行**）**：
+     ① 第 33 刀删掉了 `mtlDeleteMTLObj:` / `mtlBufferSubData:` / `mtlMapUnmapBuffer:` / `mtlFlushMappedBufferRange:`
+     四个**解锁壳**后，它们的 `…Locked` 本体就成了孤儿。用同一套三步核查确认：四个名字的全部命中只有
+     **自身定义 + `MGLRenderer+RenderPass_Private.h` 声明**（无发送、无 `@selector`、无 host-ops 引用）→ 全部删除：
+     `mtlDeleteMTLObjLocked:`(10) · `mtlBufferSubDataLocked:`(12) · `mtlMapUnmapBufferLocked:`(16) ·
+     `mtlFlushMappedBufferRangeLocked:`(12)，声明同步清理。
+     ② **本刀来源**：重跑"忽略声明"的候选扫描，专门看**上一批删除后新产生的孤儿**——这是一条可复用的收尾动作
+     （"删一层壳后，下一轮先扫一次它解锁出来的本体"）。
+     ③ **度量**：行数 **34,614 → 34,564**、语法 1,973（持平）、词汇 **3,839 → 3,836**；文件 16、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `f8989a2` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：候选扫描里剩下的都是**已知假阳性**（`.state` / `.device` / `.pipelineState` 属性语法、
+     `performOperation:`（测试目录有调用）、`mtlDispatchComputeLocked:`（`+Compute.m:134` 有真实调用）、
+     `mglBackendWillDestroy:`（同文件内 `[renderer …]` 调用））——**除非逐个手查，否则不要再动**。
+     后续回到结构性路线（§0.15）：`+DrawStageHost.m` 余 3 方法 → `+Binding.m` 的 `bindMTLTextureLocked:`
+     → `MGLPipelineCache.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块。

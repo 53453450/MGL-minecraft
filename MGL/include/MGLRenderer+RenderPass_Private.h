@@ -158,13 +158,9 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
                         customSize:(CGSize)size;
 
 // Thread Safety: *Locked variants defined in MGLRenderer.m
-- (void)mtlDeleteMTLObjLocked:(GLMContext)glm_ctx buffer:(void *)obj;
 
 // Locked variants defined in MGLRenderer.m (called from category files)
 - (void)mtlSwapBuffersLocked:(GLMContext)glm_ctx;
-- (void)mtlBufferSubDataLocked:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr;
-- (void *)mtlMapUnmapBufferLocked:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size access:(GLenum)access map:(bool)map;
-- (void)mtlFlushMappedBufferRangeLocked:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(GLintptr)offset length:(GLsizeiptr)length;
 
 // === Other methods defined in MGLRenderer.m, called from category files ===
 - (BOOL)mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)requiredWidth
