@@ -3570,3 +3570,22 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      `bindPointSizeParamsToComputeEncoder:`（27 行）、`bindPreparedTessStageBufferBindings:`（31 行）、
      `flushTessStageBindingInitializationBlit:`（37 行）；四个都不需要新桥接（copy-back 族、`mglRenderSetCompute*`、
      `mglRendererBindBufferSizeConstantsForRenderEncoder` 均已就绪），做完后该文件语法可再降约 40。
+
+### 0.49 第 91 轮实测：`+Tessellation.m` 里两个"看起来最容易"的方法其实被 ObjC 类型挡住
+
+本轮本想按第 123 条第⑤项继续搬 `bindTessStageBufferBindingsToRenderEncoderOwner:`（22 行）与
+`bindPreparedTessStageBufferBindings:…`（31 行）——两者的**方法体确实全是 C**（只调 `mglTessSetRenderVertexBuffer` /
+`mglTessAppendComputeResourceOp`），但**参数类型把它们钉在 ObjC 里**：
+
+| 阻塞 | 现状 | 结论 |
+|---|---|---|
+| `MGLTessStageBufferBinding` / `…List`（文件内 298–313 行定义） | 字段是 **`id __strong buffer` / `id __strong initialization_source` / `id __strong size_buffer`**，即 **ARC 管理的对象引用** | C 结构体只能收 `void *`（未持有），**等于把 ARC 的持有语义改掉**——这不是机械转换，需要"谁持有、何时释放"的专门设计与 oracle。**先不动** |
+| `mglTessAppendComputeBytesOp`（211 行起，`bindPointSizeParamsToComputeEncoder:` 的唯一依赖） | 体内用 **`NSData dataWithBytes:` + `[temporaries addObject:]`** | 有干净出路：C 侧用 **`CFDataCreate(NULL, bytes, length)`** 并交给 `mglRendererTemporariesAdd()`（该入口收 `CFTypeRef`，`Create` 返回 +1 正好对上），plan 的 `bytes` 字段用 `CFDataGetBytePtr()`。**这一条可以做，是 `bindPointSizeParamsToComputeEncoder:`（27 行）的前置** |
+| `id __strong` 之外，`+Tessellation.m` 绝大多数方法体已是 C | — | 说明该文件的"搬"不是逻辑问题，而是**少数几个 ObjC 类型（`id` 结构字段、`NSData`/`NSMutableArray`）的收尾问题 |
+
+**下一刀建议**：① 先把 `mglTessAppendComputeBytesOp` 的 `NSData` 换成 `CFData`（C 版助手放 `mgl_tess_texture.c`
+或新 `mgl_tess_compute_ops.{h,c}`），② 随之把 `bindPointSizeParamsToComputeEncoder:program:stage:executionPlan:temporaries:`
+（27 行，两个内部调用点）转 C；③ 之后再评估 `MGLTessStageBufferBinding*` 两个结构体的 `id __strong` 是否值得
+改成"ObjC 侧持有 + C 侧只读 `void *`"（若改，必须在同一刀里给出持有/释放的完整清单与 A/B 之外的验证口径）。
+
+**本轮未改动代码**：按纪律不把树留在半成品状态——探查用的新 TU 已删除，`git status` 干净，工作区仍在 `c3d07fa`（第 123 刀已验证状态）。
