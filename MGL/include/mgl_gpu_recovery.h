@@ -27,6 +27,10 @@ void mglRendererClearTextureCache(void);
  * 64 bytes, which is valid on macOS/arm64. */
 uint64_t mglRendererOptimalAlignmentForPixelFormat(uint32_t format);
 
+/* Command-recovery bookkeeping driven from the texture path. */
+void mglRendererRecordGPUError(void *renderer);
+void mglRendererRecordGPUSuccess(void *renderer);
+
 #ifdef __cplusplus
 }
 #endif

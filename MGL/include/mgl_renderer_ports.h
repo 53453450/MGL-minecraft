@@ -169,6 +169,10 @@ typedef struct MGLRendererStateAreas {
      * values C can hold, so they travel in the areas instead of costing a port
      * per field; the shell fills them. */
     void *pipeline_cache_object;
+    /* ADDRESS of the renderer's command-recovery owner slot (it can be swapped
+     * while a recovery runs, so dereference it at the point of use, like
+     * binding_state_owner). */
+    void **gpu_recovery_command_owner;
     /* Sets one attachment's blend factors through the cache's own setter.
      * Returns 1 on success. */
     int (*pipeline_cache_set_blend)(

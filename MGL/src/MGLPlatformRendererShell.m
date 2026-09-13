@@ -418,6 +418,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->pipeline_cache = [r->_pipelineCache state];
     areas_out->binding_state_owner = &r->_bindingStateOwner;
     areas_out->pipeline_cache_object = (__bridge void *)r->_pipelineCache;
+    areas_out->gpu_recovery_command_owner = &r->_gpuRecovery.commandRecoveryOwner;
     areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
     areas_out->tess_native_tes_program = (void *)r->_tessellation.nativeTESProgram;

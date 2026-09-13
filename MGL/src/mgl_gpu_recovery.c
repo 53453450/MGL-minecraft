@@ -11,6 +11,10 @@
  * -getOptimalAlignmentForPixelFormat:, which never needed Objective-C. */
 
 #include "mgl_gpu_recovery.h"
+#include "mgl_renderer_ports.h"
+#include "mgl_render.h"     /* mglRenderCommandRecovery* */
+
+#include <time.h>
 
 #include <stdio.h>
 
@@ -29,4 +33,46 @@ uint64_t mglRendererOptimalAlignmentForPixelFormat(uint32_t format)
      * alignment.  A conservative 64-byte value avoids EINVAL on macOS/arm64 and
      * is safe for texture rows. */
     return 64;
+}
+
+/* Wall clock in UNIX seconds, matching [[NSDate date] timeIntervalSince1970]
+ * that the Objective-C versions used for the recovery timestamps. */
+static double mglGpuRecoveryNowSeconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+}
+
+void mglRendererRecordGPUError(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *owner = areas.gpu_recovery_command_owner
+                      ? *areas.gpu_recovery_command_owner
+                      : NULL;
+    MGLRenderCommandRecoverySnapshot state = {0};
+    if (mglRenderCommandRecoveryRecordError(owner, mglGpuRecoveryNowSeconds(),
+                                            &state) == 0) {
+        fprintf(stderr, "MGL AGX: Recorded GPU error (%llu consecutive)\n",
+                (unsigned long long)state.consecutive_errors);
+    }
+}
+
+void mglRendererRecordGPUSuccess(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *owner = areas.gpu_recovery_command_owner
+                      ? *areas.gpu_recovery_command_owner
+                      : NULL;
+    MGLRenderCommandRecoverySuccess result = {0};
+    if (mglRenderCommandRecoveryRecordSuccess(owner, mglGpuRecoveryNowSeconds(),
+                                              &result) == 0 &&
+        result.sustained_recovery) {
+        fprintf(stderr,
+                "MGL AGX: Sustained GPU recovery (%llu successes), resetting error count (was %llu)\n",
+                (unsigned long long)result.recovered_successes,
+                (unsigned long long)result.previous_errors);
+    }
 }

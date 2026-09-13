@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,077**、ObjC 语法 **2,268 → 1,999**、词汇 **4,353 → 3,910**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 35,058**、ObjC 语法 **2,268 → 1,997**、词汇 **4,353 → 3,906**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1965,3 +1965,24 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      下一刀：按上面第 ② 条继续拆 `+GPURecovery.m`——先加 `_gpuRecovery` 的 areas 指针 + 用 `mglTraceNowSeconds()` 替 `[NSDate date]`，
      把 `recordGPUError` / `recordGPUSuccess` / `shouldSkipGPUOperations` 三个转 C（预计 −41 行）；再补 5 个 manager C 入口收口整文件。
+
+80. **P0-1 第二十六刀：`recordGPUError` / `recordGPUSuccess` 转 C（**−22 行**，areas 再加一个"槽地址"字段）**：
+     ① 按第 79 条的依赖表推进：两个方法的唯一 ObjC 成分是 `_gpuRecovery.commandRecoveryOwner` 与
+     `[[NSDate date] timeIntervalSince1970]`。做法：
+     - `MGLRendererStateAreas` 增加 **`void **gpu_recovery_command_owner`**——存的是**槽的地址**（不是值），
+       与既有 `binding_state_owner` 同型：owner 在恢复过程中可能被换掉，必须在用点解引用；壳 TU 填
+       `&r->_gpuRecovery.commandRecoveryOwner`（**areas 加字段不算新端口**）。
+     - 时钟：Objective-C 用的是**墙钟** `[[NSDate date] timeIntervalSince1970]`，而 `mglTraceNowSeconds()` 是**单调钟**，
+       两者 epoch 不同 → **不能用它替换**；C 侧改用 `clock_gettime(CLOCK_REALTIME)` 自算等价的秒数，
+       行为与原来一致（这是一处容易"看起来等价其实不等价"的陷阱，记下来）。
+    ② 新 C 入口 `mglRendererRecordGPUError` / `mglRendererRecordGPUSuccess` 落在 `mgl_gpu_recovery.c`；
+     3 个文件的调用点改直调（`+Texture.m`（含 `weakSelf` 形式）、`+RenderPass.m`、`MGLRenderer.m`），
+     私有头两条声明注释化。
+     ③ **度量**：行数 **35,077 → 35,058**、语法 **1,999 → 1,997**、词汇 **3,910 → 3,906**；文件 17、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `9d4007c` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：`+GPURecovery.m` 还剩 6 个方法——`shouldSkipGPUOperations`(19) 只差 `[self clearProblematicGPUState]`
+     （后者要 manager 的 `discardCurrentCommandBuffer` C 入口）；`cleanupCommandBuffer`(27) 要 3 个 manager 入口；
+     `commitCommandBufferWithAGXRecovery:`(99) 要 2 个入口 + `@try` 语义（可由壳提供 guarded C 入口）；
+     `resetMetalState`(35) 要 cache 的 `resetCaches` C 入口 + 3 个 ivar。**建议下一刀先补 manager 的 5 个 C 入口**
+     （它们是同一个文件里的小方法，一次补完，之后 `+GPURecovery.m` 可整文件转 C → 文件 17 → 16）。

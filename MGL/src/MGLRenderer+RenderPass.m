@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_draw_encode.h"
+#include "mgl_gpu_recovery.h"
 #include "mgl_binding_state_ops.h"
 #include "mgl_vertex_layout.h"  /* vertex descriptor / blend cache */
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
@@ -1866,14 +1867,14 @@ static GLenum mglPassthroughDeclType(
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to create encoder: %@",
               exception.reason);
         [_renderPassManager clearCurrentRenderEncoder];
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         return false;
     }
     if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) != 1) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload returned nil encoder reason=%s",
               reason ? reason : "(null)");
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         return false;
     }
     mglRenderSetRenderEncoderOwnerLabel(
@@ -3594,7 +3595,7 @@ static GLenum mglPassthroughDeclType(
         _renderPassManager.state->renderPassStateOwner != NULL;
     if (!hasRenderPassState) {
         NSLog(@"MGL ERROR: Cannot create render encoder - state owner is NULL");
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         return false;
     }
 
@@ -3644,7 +3645,7 @@ static GLenum mglPassthroughDeclType(
                 _renderPassManager.state, fallbackWidth, fallbackHeight);
         } else {
             NSLog(@"MGL ERROR: Failed to allocate fallback render target texture");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
     }
@@ -3733,7 +3734,7 @@ static GLenum mglPassthroughDeclType(
                 _renderPassManager.state, fallbackWidth, fallbackHeight);
         } else {
             NSLog(@"MGL ERROR: Unable to allocate fallback colorAttachment[0] texture");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
     }
@@ -3786,7 +3787,7 @@ static GLenum mglPassthroughDeclType(
             _renderPassManager.state->currentCommandBufferOwner,
             &commandState)) {
         NSLog(@"MGL ERROR: Cannot create render encoder - command buffer is NULL");
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         return false;
     }
 
@@ -3804,7 +3805,7 @@ static GLenum mglPassthroughDeclType(
         NSLog(@"MGL WARNING: Render encoder requested on finalized command buffer (status: %ld) - creating a fresh command buffer", (long)bufferStatus);
         if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer before creating render encoder");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
 
@@ -3812,14 +3813,14 @@ static GLenum mglPassthroughDeclType(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &commandState)) {
             NSLog(@"MGL ERROR: newCommandBuffer returned without a current command buffer");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
 
         bufferStatus = (uint32_t)commandState.status;
         if (bufferStatus >= MGLCommandBufferStatusCommitted) {
             NSLog(@"MGL ERROR: Fresh command buffer is still finalized (status: %ld)", (long)bufferStatus);
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
     }
@@ -3916,7 +3917,7 @@ static GLenum mglPassthroughDeclType(
             NSLog(@"MGL DEBUG: Command buffer owner: %p, Render pass state owner: %p",
                   _renderPassManager.state->currentCommandBufferOwner,
                   _renderPassManager.state->renderPassStateOwner);
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
         /* Enable visibility result mode on the encoder for all draws in this
@@ -3954,11 +3955,11 @@ static GLenum mglPassthroughDeclType(
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: Successfully created Metal render encoder");
         }
-        [self recordGPUSuccess];
+        mglRendererRecordGPUSuccess((__bridge void *)self);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception creating render encoder: %@ - continuing with degraded functionality", exception);
         NSLog(@"MGL DEBUG: Exception details - name: %@, reason: %@", exception.name, exception.reason);
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         [_renderPassManager clearCurrentRenderEncoder];
         return false;
     }
@@ -4063,7 +4064,7 @@ static GLenum mglPassthroughDeclType(
             // Successfully created - continue
         } else {
             NSLog(@"MGL ERROR: Cannot create render encoder - no command buffer available");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
     }
@@ -4158,20 +4159,20 @@ static GLenum mglPassthroughDeclType(
         if ([self bindVertexBuffersToCurrentRenderEncoder:&encCtx] == false)
         {
             DEBUG_PRINT("vertex buffer binding failed\n");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
 
         if ([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx] == false)
         {
             DEBUG_PRINT("fragment buffer binding failed\n");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
     }
 
     // Record successful render encoder creation (final success)
-    [self recordGPUSuccess];
+    mglRendererRecordGPUSuccess((__bridge void *)self);
     return true;
 
     } //     @autoreleasepool
@@ -4237,13 +4238,13 @@ static GLenum mglPassthroughDeclType(
         // CRITICAL FIX: Validate _commandQueue before dereferencing to prevent NULL pointer crashes
         if (!_commandQueue) {
             NSLog(@"MGL AGX CRITICAL: _commandQueue is NULL - cannot create command buffer");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
 
         if (![_renderPassManager installNewCommandBufferFromQueue:(__bridge void *)_commandQueue]) {
             NSLog(@"MGL AGX ERROR: Failed to create Metal command buffer - command queue may be in error state");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             // Force command queue recreation
             [self resetMetalState];
             return false;
@@ -4257,20 +4258,20 @@ static GLenum mglPassthroughDeclType(
                 _renderPassManager.state->currentCommandBufferOwner,
                 &initialState)) {
             NSLog(@"MGL AGX CRITICAL: New command buffer owner has no current buffer");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
         if (initialState.has_error) {
             NSLog(@"MGL AGX WARNING: New command buffer has immediate error: %s",
                   mglRenderCommandBufferErrorDescription(&initialState));
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             // Don't return false immediately - AGX sometimes creates error-state buffers that recover
         }
 
         // AGX DRIVER COMPATIBILITY: Enhanced validation to prevent rejections
         if (initialState.status == MGLCommandBufferStatusError) {
             NSLog(@"MGL AGX CRITICAL: Command buffer immediately in error state");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             [_renderPassManager discardCurrentCommandBuffer];
             [self resetMetalState]; // Force full reset
             return false;
@@ -4284,7 +4285,7 @@ static GLenum mglPassthroughDeclType(
         if (initialState.has_error) {
             NSLog(@"MGL AGX WARNING: Command buffer has immediate error: %s",
                   mglRenderCommandBufferErrorDescription(&initialState));
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             [_renderPassManager discardCurrentCommandBuffer];
             [self resetMetalState];
             return false;
@@ -4302,7 +4303,7 @@ static GLenum mglPassthroughDeclType(
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL AGX ERROR: Exception creating command buffer: %@", exception);
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         [_renderPassManager discardCurrentCommandBuffer];
 
         // AGX DRIVER COMPATIBILITY: Force reset on exception to clear driver state
@@ -5207,7 +5208,7 @@ static GLenum mglPassthroughDeclType(
         NSLog(@"MGL ERROR: failed to synchronize render pass for texture readback (%s): %@",
               reason ? reason : "texture_readback",
               exception.reason);
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         [self newCommandBuffer];
         return NO;
     }
@@ -5219,7 +5220,7 @@ static GLenum mglPassthroughDeclType(
         NSLog(@"MGL ERROR: render pass texture readback sync failed (%s): %s",
               reason ? reason : "texture_readback",
               mglRenderCommandBufferErrorDescription(&committedState));
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         [self newCommandBuffer];
         return NO;
     }
@@ -7001,7 +7002,7 @@ static GLenum mglPassthroughDeclType(
          * that state after releasing METAL_LOCK. */
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Command buffer commit failed in flushCommandBuffer: %@", exception);
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         [self cleanupCommandBuffer];
     }
 

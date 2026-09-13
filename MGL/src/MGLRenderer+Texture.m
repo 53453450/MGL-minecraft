@@ -667,7 +667,7 @@ static void mglTextureCopyTextureToBuffer(
                 destinationOrigin.y, destinationOrigin.z) != 0) {
             NSLog(@"MGL ERROR: C++ ordered upload encode failed (%s)",
                   reason ? reason : "texture_upload");
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
 
@@ -678,7 +678,7 @@ static void mglTextureCopyTextureToBuffer(
     if (!uploadCB) {
         NSLog(@"MGL ERROR: failed to create dedicated upload command buffer for %s",
               reason ? reason : "texture_upload");
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         return false;
     }
 
@@ -701,7 +701,7 @@ static void mglTextureCopyTextureToBuffer(
             destinationOrigin.y, destinationOrigin.z) != 0) {
         NSLog(@"MGL ERROR: C++ dedicated upload encode failed (%s)",
               reason ? reason : "texture_upload");
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         return false;
     }
 
@@ -718,7 +718,7 @@ static void mglTextureCopyTextureToBuffer(
             NSLog(@"MGL ERROR: dedicated upload command buffer failed (%s): %s",
                   reason ? reason : "texture_upload",
                   mglRenderCommandBufferErrorDescription(uploadState));
-            [weakSelf recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)weakSelf);
         }
 
         if (completionSemaphore) {
@@ -1124,7 +1124,7 @@ static void mglTextureCopyTextureToBuffer(
 
     if (uploadedAny && !failedAny) {
         tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
-        [self recordGPUSuccess];
+        mglRendererRecordGPUSuccess((__bridge void *)self);
         return true;
     }
 
@@ -5317,7 +5317,7 @@ static void mglTextureCopyTextureToBuffer(
         texture = mglTextureCreateTexture(_device, &tex_desc);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception creating texture: %@", exception);
-        [self recordGPUError];
+        mglRendererRecordGPUError((__bridge void *)self);
         return NULL;
     }
 
@@ -5416,7 +5416,7 @@ static void mglTextureCopyTextureToBuffer(
 
     [self logMTLTextureMipDiagnostics:tex metal:texture effectiveMipLevels:effective_mipmap_levels];
 
-    [self recordGPUSuccess];
+    mglRendererRecordGPUSuccess((__bridge void *)self);
 
     return texture;
 }
@@ -5666,7 +5666,7 @@ static void mglTextureCopyTextureToBuffer(
         }
     }
 
-    [self recordGPUSuccess];
+    mglRendererRecordGPUSuccess((__bridge void *)self);
     return bufferTexture;
 }
 

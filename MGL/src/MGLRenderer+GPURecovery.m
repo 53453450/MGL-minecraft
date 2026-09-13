@@ -299,29 +299,7 @@
     // The AGX driver needs time to recover from error state
 }
 
-- (void)recordGPUError
-{
-    MGLRenderCommandRecoverySnapshot state = {0};
-    if (mglRenderCommandRecoveryRecordError(
-            _gpuRecovery.commandRecoveryOwner,
-            [[NSDate date] timeIntervalSince1970], &state) == 0) {
-        NSLog(@"MGL AGX: Recorded GPU error (%llu consecutive)",
-              (unsigned long long)state.consecutive_errors);
-    }
-}
 
-- (void)recordGPUSuccess
-{
-    MGLRenderCommandRecoverySuccess result = {0};
-    if (mglRenderCommandRecoveryRecordSuccess(
-            _gpuRecovery.commandRecoveryOwner,
-            [[NSDate date] timeIntervalSince1970], &result) == 0 &&
-        result.sustained_recovery) {
-        NSLog(@"MGL AGX: Sustained GPU recovery (%llu successes), resetting error count (was %llu)",
-              (unsigned long long)result.recovered_successes,
-              (unsigned long long)result.previous_errors);
-    }
-}
 
 #pragma mark - Metal Optimization Methods
 

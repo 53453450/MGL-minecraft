@@ -34,6 +34,7 @@
 #import <objc/runtime.h>
 
 #include <mach/mach_vm.h>
+#include "mgl_gpu_recovery.h"
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
 #include <mach/mach_init.h>
 #include <mach/vm_map.h>
@@ -3645,7 +3646,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
             }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Failed to commit command buffer: %@", exception);
-            [self recordGPUError];
+            mglRendererRecordGPUError((__bridge void *)self);
         }
 
         if (traceSwap) {

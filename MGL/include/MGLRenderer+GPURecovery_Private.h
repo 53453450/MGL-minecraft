@@ -46,8 +46,8 @@
 - (void)commitCommandBufferWithAGXRecovery:(id)commandBuffer;
 - (BOOL)shouldSkipGPUOperations;
 - (void)clearProblematicGPUState;
-- (void)recordGPUError;
-- (void)recordGPUSuccess;
+/* now the C functions in mgl_gpu_recovery.h */
+/* now the C functions in mgl_gpu_recovery.h */
 /* now the C functions in mgl_gpu_recovery.h */
 
 @end
