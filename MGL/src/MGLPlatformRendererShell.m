@@ -352,18 +352,6 @@ int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
                : 0;
 }
 
-int mglRendererDispatchTessControlShaderPort(
-    void *renderer, GLMContext glm_ctx, Program *program,
-    const struct MGLAIRTessDrawContract *contract)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r dispatchTessControlShader:glm_ctx
-                                      program:program
-                                     contract:contract])
-               ? 1
-               : 0;
-}
-
 int mglRendererDispatchAIRTessEvalComputePort(
     void *renderer, GLMContext glm_ctx, Program *program,
     const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,

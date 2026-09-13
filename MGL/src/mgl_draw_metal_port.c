@@ -45,6 +45,7 @@ static inline bool mglVboRangeValidationEnabled(void)
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_compute_bind.h"    /* compute buffer binding (was a method pair) */
+#include "mgl_tess_dispatch.h"   /* TCS dispatch entry (was a shell port) */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
 #include "mgl_size_constants.h"  /* runtime-array size constants (was a method) */
 #include "mgl_draw_support.h"
@@ -629,7 +630,9 @@ static void *mglStageNativeFactors(void *renderer, void *canonical, GLenum mode,
 static int mglStageDispatchTCS(void *renderer, GLMContext ctx, Program *tcs,
                                MGLAIRTessDrawContract *contract)
 {
-    return mglRendererDispatchTessControlShaderPort(renderer, ctx, tcs, contract);
+    /* The TCS entry is C now (log 126); the shell port that forwarded to the
+     * Objective-C method is retired. */
+    return mglTessDispatchControlShader(renderer, ctx, tcs, contract) ? 1 : 0;
 }
 
 static int mglStageDispatchAirTES(void *renderer, GLMContext ctx, Program *tes,

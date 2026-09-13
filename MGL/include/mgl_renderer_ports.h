@@ -285,9 +285,6 @@ int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
 int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
                                                 Program *program,
                                                 uint32_t output_primitive);
-int mglRendererDispatchTessControlShaderPort(
-    void *renderer, GLMContext glm_ctx, Program *program,
-    const struct MGLAIRTessDrawContract *contract);
 int mglRendererDispatchAIRTessEvalComputePort(
     void *renderer, GLMContext glm_ctx, Program *program,
     const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,

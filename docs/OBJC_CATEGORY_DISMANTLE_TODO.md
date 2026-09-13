@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 六十九刀** + trace 清零 后；第 68–95 轮见 §0.24/§0.26–§0.52）**：
-文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 28,587**、ObjC 语法 **2,268 → 1,625**、词汇 **4,353 → 3,176**；
-**shim：43 → 33 个端口 / 唯一壳 TU 2,054 行 / 289 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀（第六十九刀）0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；`MGLRenderer*.m` **34,604 → 26,533**）。
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 七十刀** + trace 清零 后；第 68–96 轮见 §0.24/§0.26–§0.53）**：
+文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 28,182**、ObjC 语法 **2,268 → 1,578**、词汇 **4,353 → 3,174**；
+**shim：43 → 32 个端口 / 唯一壳 TU 2,042 行 / 287 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；`MGLRenderer*.m` **34,604 → 26,140**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -2962,6 +2962,11 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
      不再把它们当作"逐行一致"的脚注。
      ⑤ 下一刀：按 §0.30 排序（`MGLRenderPassManager.m` 仍然等 `+RenderPass.m`；建议 `+Compute.m` 或 `MGLRenderer+Lifecycle.m`）。
 
+**第 126 刀更新（2026-09-14 实测）**：壳 **2,042 行 / 287 语法**，端口面 **32 个**——本刀**净退役 1 个端口**：
+`mglRendererDispatchTessControlShaderPort` 的目标方法 `-dispatchTessControlShader:program:contract:` 已转 C，
+C 侧 `mglStageDispatchTCS`（`mgl_draw_metal_port.c`）改为直接调用 `mglTessDispatchControlShader`，
+端口与其壳包装一并删除（按 §0.04 的 T4 硬规，这是本周期少见的**净减端口**刀）。上限维持 **2,400 行**。
+
 ### 0.30 第 73 轮快照（第 104 刀后，文件 11）
 
 `MGLRenderer*.m` 已从基线 34,604 降到 **28,948**；剩下的 11 个文件里，**7 个是"整块或整类"**（可在一到两刀内消失）：
@@ -3772,3 +3777,60 @@ A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔
    整簇转 C 才能成批下降；先抽盘再逐簇编译。
 3. **`+Blit.m` 采样拷贝/解析簇**：`mgl_blit_sampled_copy.c` 已在，同族继续搬。
 4. 壳的 `MGLPipelineCache` 归档路径需要 Foundation→POSIX 改造 + **专属 oracle**（A/B 过滤 `BINARY ARCHIVE` 行）。
+
+126. **P0-1 第七十刀：TCS dispatch 入口转 C 并**净退役 1 个端口**（新 TU `mgl_tess_dispatch.{h,c}`）**：
+     ① 按 §0.53 的排序落地"收益最大"的切口的前半段：把 `+Tessellation.m` 的
+     `-dispatchTessControlShader:program:contract:`（248 行 / 40 语法）与其唯一被调者
+     `-newTCSStageInBufferForContext:…`（130 行 / 19 语法）搬进新 TU，分别成为
+     `bool mglTessDispatchControlShader(renderer, glm_ctx, program, contract)` 与文件内静态
+     `mglTessDispatchNewTCSStageInBuffer(...)`（返回 +1 的 stage_in buffer）。
+     ② **端口净减 1**：`mglRendererDispatchTessControlShaderPort` 的整个存在理由就是"把 C 侧调用转发到 ObjC 方法"，
+     方法转 C 后它连同壳里的 12 行包装一起删除，`mgl_draw_metal_port.c` 的 `mglStageDispatchTCS` 改为直调
+     `mglTessDispatchControlShader`。按 §0.04 的 T4 硬规（无净减＝拒收），本刀**计入 T4 进度**，端口 **33 → 32**。
+     另外两个 AIR TES 端口（`…AIRTessEvalComputePort` / `…AIRTessEvalVertexRenderPort`）仍指向 `.m` 里的方法，**本刀不动**。
+     ③ **两处所有权是这刀的全部风险，已在代码注释里写明**：
+     - 计算管线句柄是 **+1**，ARC 版靠 `(__bridge_transfer id)tcsPipeline` 在每条 return 路径上释放；
+       C 版改为**单一 `done:` 标签**收口（`CFRelease` 一次），因此整个方法体从"15 处 early return"重构成
+       `bool ok = false; … goto done;`；
+     - temporaries 集合是 `mglRendererTemporariesCreate()` 的 **+1**，同样在 `done:` 释放——放在
+       `mglRenderExecuteComputeExecutionPlan` 之后（该调用**同步**编码，命令缓冲此后持有这些 buffer）；
+     - copy-back 列表原本在**每条**路径各清一次，C 版在 `done:` 清一次（该清理＝backend 列表复位 + `memset`，幂等）；
+       成功路径上它与"保存 tess factor buffer 给 TES patch-draw"这两步的相对次序对调了，两者操作的是 backend 的
+       不同槽位，且 A/B 全文 trace 逐行一致（见 ⑤）——**这条次序改动已在 oracle 里被证伪不了**，故记录在案。
+     ④ `-newCommandBuffer`（`METAL_LOCK` + `-newCommandBufferLocked` + `METAL_UNLOCK`）在 C 侧走
+     `mglRendererNewCommandBufferLockedPort` + `MGL_ASSERT_GL_THREAD()`——与 `mgl_draw_metal_port.c` 对
+     `METAL_LOCK` 的既有 twin 一致（该宏只断言 GL 线程）。
+     ⑤ **oracle（本刀自建）**：旧库 = 提交 `a8f74f3` 的独立 worktree 构建（`cmp` 两库不同：4,082,800 vs 4,082,224 字节）；
+     `ab_full.py` 全文比对：**default 臂确定性行 4,981/4,981 逐行一致**（未过滤 5,281/5,282 → `slow` **300/301**）、
+     **flushy 臂 5,514/5,514 一致**（`slow` 321/298，按既定政策不是信号）；**stderr MGL 307/307 多重集一致**；
+     两臂 **default 92/0/2、flushy 91/1/2**。**该文件的两个 dispatch 方法覆盖了 CTS 的 tess 簇与 `air_geometry_xfb`
+     回归，trace 逐行一致即说明 TCS 编码路径（含 stage_in 打包、间接参数、tess factor 默认值、copy-back 收集）没有偏移。**
+     ⑥ **度量**：`MGLRenderer+Tessellation.m` **1,608 → 1,215 行**、语法 **130 → 85**、词汇 17 → 15；
+     壳 `MGLPlatformRendererShell.m` **2,054 → 2,042 行**、语法 289 → 287（退役端口包装）；
+     全库行数 **28,587 → 28,182（−405）**、语法 **1,625 → 1,578（−47）**、词汇 3,176 → **3,174**、文件数 7 不变；
+     新 C TU `mgl_tess_dispatch.c` **470 行** + 头 **40 行**。
+     ⑦ **CTS 七簇**：非通过集合 **diff 全空**，计数仍是 **58 / 1 / 0 / 59 / 13 / 39 / 4**；`make test-all` **0**（92/0/2/94）。
+     ⑧ **下一刀**：`+Tessellation.m` 只剩 **85 语法 / 1,215 行** 的两个方法
+     （`-dispatchAIRTessEvalVertexRender:` 32 语法、`-dispatchAIRTessEvalCompute:` 55 语法）与那批 `id` 版静态助手。
+     把它们搬进 `mgl_tess_dispatch.c` 后，该 `.m` 可**整文件删除（文件数 7 → 6）**，同时退役剩下的两个 AIR 端口
+     （端口 **32 → 30**）。这是下一个"一刀双收益"的切口，且两个方法的调用者同样只有壳端口一处。
+
+### 0.54 第 97 轮交接快照（**新会话请先读本节 + §0.51**）
+
+**当前状态**：`MGL/` 内 ObjC **7 个文件 / 0 空 TU / 28,182 行 / 1,578 语法 / 3,174 词汇**；壳 TU **2,042 行**（上限 2,400）；
+端口面 **32 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂一致（见第 126 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,842 · `+Texture.m` 289/1,086/6,489 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` 235/761/4,062 · `+BindingState.m` 129/197/2,916 · 壳 `MGLPlatformRendererShell.m` 287/287/2,042 ·
+`+Tessellation.m` **85/15/1,215**。
+
+**下一步（同 §0.53，第 1 项已推进一半）**：
+1. **`+Tessellation.m` 收尾**：把两个 AIR TES dispatch 方法搬进 `mgl_tess_dispatch.c`，删掉整个 `.m`，
+   退役两个 AIR 端口。注意这两个方法里还有一批 `id` 版静态助手（`mglTessPlanBufferOrBind`、`mglTessCreateSampler`、
+   `mglTessSetRenderVertex{Bytes,Texture,Sampler,Buffer}`、`mglTessDrawPrimitives`、`mglTessBufferContents`、
+   `mglTessCreateBuffer{,WithBytes}`、`mglTessBufferLength`、`mglTessTextureInfo`、`mglTESXFBVertexStride`），
+   它们与 `mgl_tess_dispatch.c`/`mgl_tess_stage_bind.c` 里已有的 C twin 合并后即可整文件删除。
+2. **`+BindingState.m` stage buffer 绑定簇**（§0.52 整块切口 ①）。
+3. **`+Blit.m` 采样拷贝/解析簇**（`mgl_blit_sampled_copy.c` 已在）。
+4. 壳的 `MGLPipelineCache` 归档路径（Foundation→POSIX + 专属 oracle）。
