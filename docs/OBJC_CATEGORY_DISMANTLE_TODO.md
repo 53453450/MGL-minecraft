@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十刀** + trace 清零 后；第 68–84 轮见 §0.24/§0.26–§0.41）**：
-文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,076**、ObjC 语法 **2,268 → 1,671**、词汇 **4,353 → 3,438**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十一刀** + trace 清零 后；第 68–85 轮见 §0.24/§0.26–§0.42）**：
+文件 **53 → 8**、空 TU **3 → 0**、行数 **43,989 → 31,101**、ObjC 语法 **2,268 → 1,669**、词汇 **4,353 → 3,438**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3406,3 +3406,24 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      全部清完后 `git mv MGL/src/mgl_draw_metal_port.m MGL/src/mgl_draw_metal_port.c`、把 4 个 `#import` 换成 `#include`
      （`+DrawSupportUtil.h` 已是 C 可用头，另两个 ObjC 头需要的声明要么已由 C 头提供、要么补进 `mgl_renderer_ports.h`），
      并去掉随之失效的 `__bridge`（**注意第 107 条：先确认那份 `+1` 原本归谁**）。
+
+117. **P0-1 第六十一刀：`mgl_draw_metal_port.m` 收尾第二至四簇（再 18 个函数，**剩余 33 个局部**）**：
+     ① 三簇合并一刀（每簇编译一次，全部通过）：
+     - **第二簇（tessellation 查询，8 个）**：`mglStageGetControlPointIndex`、`mglStageEncoderOwner`、
+       `mglStageGetTcsOutVerts`、`mglStageGetTcsOutStride`、`mglStageGetTessCaptureOff`、`mglStageGetTessInstRecords`、
+       `mglStageGetTessIndexed`、`mglStagePendingGsActive`；
+     - **第三簇（stage 辅助与缓冲创建，6 个）**：`mglStageMarkCbHasWork`、`mglStageProcessBuffer`、`mglStageCreateBuffer`、
+       `mglStageCreateBufferBytes`、`mglStageCachedFactors`、`mglStageNativeFactors`；
+     - **第四簇（pending GS 查询与 GS 缓冲，4 个）**：`mglStagePendingGsInput`、`mglStagePendingGsOff`、
+       `mglStagePendingGsStride`、`mglGsMetalMtlForBuffer`。
+     手法与第 116 刀一致（早退 + 就地取状态区 + `areas.*` 字段改写），本刀新增两种形态的处理：
+     `return self ? X : NULL;` → `if (!renderer) return NULL;` + 直返；`if (self) self->_batching… = 1;` →
+     `if (areas.batching) areas.batching->currentCommandBufferHasWork = 1;`（保持原来的空值保护语义）。
+     ② **度量**：该文件语法 **25 → 23**（顺手去掉了两处 `(__bridge void *)self`）、词汇 1（持平）、行数 1,996 → 2,021；
+     全库语法 **1,671 → 1,669**、词汇 3,438（持平）、行数 31,076 → 31,101；**`mglStageHostSelf` 局部 51 → 33**；文件数 8 不变。
+     ③ **oracle**：旧库 = 提交 `7fc6f19` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 **5,271/5,271** 与 5,813/5,807 → `processGLState.slow` **290/290** 与 299/293；
+     default 臂两臂行数完全相同，是最干净的一次），stderr `MGL` 行 **307/307 多重集一致**；
+     default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ④ 下一刀：继续剩余 33 个局部（建议下一簇：`mglGsMetal*` 一带 → `mglDrawHost*` 一带 → 最后删两个 `*HostSelf` 助手），
+     全部清完后改名 `.c`（文件 8 → 7）。

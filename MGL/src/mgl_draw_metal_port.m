@@ -506,8 +506,10 @@ MGLRendererBackendHandle *mglRendererBackend(MGLRenderer *r)
 
 static void mglStageMarkCbHasWork(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) self->_batching.currentCommandBufferHasWork = 1;
+    if (!renderer) return;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (areas.batching) areas.batching->currentCommandBufferHasWork = 1;
 }
 
 static void mglStageFlushCB(void *renderer, int wait)
@@ -561,24 +563,25 @@ static int mglStageBindProgram(void *renderer, Program *program)
 
 static int mglStageProcessBuffer(void *renderer, Buffer *buf)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && mglRendererProcessBuffer((__bridge void *)self, buf) ? 1 : 0;
+    return mglRendererProcessBuffer(renderer, buf) ? 1 : 0;
 }
 
 static void *mglStageCreateBuffer(void *renderer, uint64_t length)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return NULL;
-    void *buf = mglDrawSupportCreateBuffer(mglRendererBackendGetDevice(self->_backend), (size_t)length, 0u);
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *buf = mglDrawSupportCreateBuffer(mglRendererBackendGetDevice(areas.backend), (size_t)length, 0u);
     return buf;
 }
 
 static void *mglStageCreateBufferBytes(void *renderer, const void *bytes,
                                        uint64_t length)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return NULL;
-    void *buf = mglDrawSupportCreateBufferWithBytes(mglRendererBackendGetDevice(self->_backend), bytes,
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *buf = mglDrawSupportCreateBufferWithBytes(mglRendererBackendGetDevice(areas.backend), bytes,
                                                  (size_t)length, 0u);
     return buf;
 }
@@ -586,9 +589,10 @@ static void *mglStageCreateBufferBytes(void *renderer, const void *bytes,
 static void *mglStageCachedFactors(void *renderer, GLMContext ctx,
                                    uint32_t patch_count)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !ctx) return NULL;
-    void *buf = mglCachedDefaultTessFactorBuffer(mglRendererBackendGetDevice(self->_backend), self->_backend,
+    if (!renderer || !ctx) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *buf = mglCachedDefaultTessFactorBuffer(mglRendererBackendGetDevice(areas.backend), areas.backend,
                                               ctx->active_state, patch_count);
     /* Cached on backend — borrow only. */
     return buf;
@@ -597,9 +601,10 @@ static void *mglStageCachedFactors(void *renderer, GLMContext ctx,
 static void *mglStageNativeFactors(void *renderer, void *canonical, GLenum mode,
                                    uint32_t patch_count)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self) return NULL;
-    void *buf = mglNativeTessFactorBuffer(mglRendererBackendGetDevice(self->_backend), canonical,
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *buf = mglNativeTessFactorBuffer(mglRendererBackendGetDevice(areas.backend), canonical,
                                        mode, patch_count);
     return mglDrawSupportRetainForCaller(buf);
 }
@@ -806,47 +811,58 @@ static void *mglStageGetPatchOut(void *renderer)
 
 static void *mglStageGetControlPointIndex(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self
-               ? mglRendererBackendGetTessControlPointIndexBuffer(self->_backend)
-               : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return mglRendererBackendGetTessControlPointIndexBuffer(areas.backend);
 }
 
 static void *mglStageEncoderOwner(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? self->_renderPassManager->state->currentRenderEncoderOwner
-                : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.command ? areas.command->currentRenderEncoderOwner : NULL;
 }
 
 static uint32_t mglStageGetTcsOutVerts(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (uint32_t)self->_tessellation.tcsOutVertices : 0u;
+    if (!renderer) return 0u;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return (uint32_t)areas.tessellation->tcsOutVertices;
 }
 
 static uint64_t mglStageGetTcsOutStride(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (uint64_t)self->_tessellation.tcsOutputStride : 0u;
+    if (!renderer) return 0u;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return (uint64_t)areas.tessellation->tcsOutputStride;
 }
 
 static uint64_t mglStageGetTessCaptureOff(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (uint64_t)self->_tessellation.tessVertexCaptureOffset : 0u;
+    if (!renderer) return 0u;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return (uint64_t)areas.tessellation->tessVertexCaptureOffset;
 }
 
 static uint64_t mglStageGetTessInstRecords(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (uint64_t)self->_tessellation.tessInstanceRecords : 0u;
+    if (!renderer) return 0u;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return (uint64_t)areas.tessellation->tessInstanceRecords;
 }
 
 static int mglStageGetTessIndexed(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && self->_tessellation.tessIndexedDraw ? 1 : 0;
+    if (!renderer) return 0;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.tessellation->tessIndexedDraw ? 1 : 0;
 }
 
 static uint64_t mglStageNativePrimCount(void *canonical, Program *tes,
@@ -877,26 +893,34 @@ static int mglStageEnsurePassthrough(void *renderer, Program *program,
 
 static int mglStagePendingGsActive(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && self->_tessellation.pendingGSInputActive ? 1 : 0;
+    if (!renderer) return 0;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.tessellation->pendingGSInputActive ? 1 : 0;
 }
 
 static void *mglStagePendingGsInput(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? self->_tessellation.pendingGSInput : NULL;
+    if (!renderer) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.tessellation->pendingGSInput;
 }
 
 static uint32_t mglStagePendingGsOff(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (uint32_t)self->_tessellation.pendingGSInputOffset : 0u;
+    if (!renderer) return 0u;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return (uint32_t)areas.tessellation->pendingGSInputOffset;
 }
 
 static uint32_t mglStagePendingGsStride(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self ? (uint32_t)self->_tessellation.pendingGSInputStride : 0u;
+    if (!renderer) return 0u;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return (uint32_t)areas.tessellation->pendingGSInputStride;
 }
 
 
@@ -931,10 +955,11 @@ static int mglGsMetalBindDrawTextures(void *renderer, GLMContext ctx)
 
 static void *mglGsMetalMtlForBuffer(void *renderer, Buffer *buf)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (!self || !buf) return NULL;
+    if (!renderer || !buf) return NULL;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
     if (!buf->data.mtl_data) {
-        mglRendererBindMTLBuffer((__bridge void *)self, buf);
+        mglRendererBindMTLBuffer(renderer, buf);
     }
     return buf->data.mtl_data;
 }
