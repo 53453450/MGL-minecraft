@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,564**、ObjC 语法 **2,268 → 1,973**、词汇 **4,353 → 3,836**；
+文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,466**、ObjC 语法 **2,268 → 1,963**、词汇 **4,353 → 3,836**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2383,3 +2383,25 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
      下一刀：`+DrawStageHost.m` 余 MS 循环族（26+39）——先 C 化 `endRenderEncodingLocked`（3 个 manager 入口 + `mglPlatformShellGuardedCall`，
      注意其中 `_renderPassManager` 的三处调用已由第 81 刀的 `mglRenderPassManager*` C 入口覆盖），再把 block 参数换成 `fn + ctx`。
+
+91. **P0-1 第三十七刀：`bindCullDistanceEmulationBuffers:` 整块转 C（**−87 行**，第一个"整块搬"样本）**：
+     ① 按 §0.21 配方**手工逐段 + 每段编译**（不用正则批处理）：
+     - areas 加两个 `uint32_t`：`tess_cull_capture_first_instance` / `tess_cull_capture_instance_stride`，壳里从
+       `r->_tessellation.cullDistanceCaptureFirstInstance/…InstanceStride` 填（**加字段不算新端口**）；
+     - 体搬进 `mgl_draw_support.c` 的 `mglDrawBindCullDistanceEmulationBuffers`：`ctx` → `areas.ctx`、
+       `_backend` → `areas.backend`、`_tessellation.*` → 两个新字段、
+       **`id captureBuffer = (__bridge id)X` → `void *captureBuffer = X`**、去掉全部 `__bridge`、
+       两处 `[self …]` → 第 22 刀的 C 函数、`MIN` → 本地 `mglDrawSupportMinU32`；
+     - 三个依赖**必须本地 extern**（声明在 ObjC 头里）：`mglDrawSupportEncodeContextIsActive`（返回 `int`）、
+       `mglRendererGetValidatedVAO`、`mglResolveProgramForStageFromState`；类型头补 `mgl_encode_context.h` /
+       `mgl_vertex_attrib_binding.h` / `mgl_renderer_backend.h`；
+     - 方法与私有头声明删除；`mgl_draw_metal_port.m` 两处调用点（`MGLRenderer *host` 形式与 `mglStageHostSelf` 守卫形式）改直调。
+     ② **编译期四类错（已全部解决，供后续整块搬复用）**：缺 `mgl_encode_context.h`；helper 定义在使用点之后；
+     转换残留两处 `self`（原 `[self …]` 的接收者）；两处 ObjC 调用点仍发旧 selector——**后两类正说明"手工逐段搬 + 每段编译"不可省**。
+     ③ **度量**：行数 **34,553 → 34,466**、语法 **1,973 → 1,963**、词汇 3,836（持平）；文件 16、shim 端口 13 不变；
+     `+DrawStageHost.m` 185 → **102 行**（余 MS 循环族 26+39）。
+     ④ **oracle**：旧库 = 提交 `e1a0a1f` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：`+DrawStageHost.m` 余 MS 循环族（26+39）——先 C 化 `endRenderEncodingLocked`（3 个 manager 入口 +
+     `mglPlatformShellGuardedCall`；其中 `_renderPassManager` 的三处调用已被第 81 刀的 `mglRenderPassManager*` C 入口覆盖），
+     再把 block 参数换成 `fn + ctx`。
