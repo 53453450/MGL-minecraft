@@ -19,6 +19,7 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+DrawSupportUtil.h"
 #include "mgl_draw_cull.h"
+#include "mgl_binding_state_ops.h"
 #include "mgl_draw_support.h"  /* fragment-needs-per-sample-MS */
 #include "mgl_draw_issue.h"
 #include "mgl_draw_tess.h"
@@ -88,13 +89,12 @@
         mglRenderBindCullDistanceEmuSlots(encCtx->render_encoder_owner,
                                           (__bridge void *)captureBuffer,
                                           &params);
-        [self recordLastBoundVertexBuffer:
-                  captureBuffer
-                                   offset:0
-                                  atIndex:kMGLCullDistanceVertexBufferIndex];
+        mglBindingRecordLastBoundVertexBuffer(
+            (__bridge void *)self, (__bridge void *)captureBuffer, 0,
+            kMGLCullDistanceVertexBufferIndex);
         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-        [self invalidateLastBoundVertexBufferAtIndex:
-                  kMGLCullDistanceParamsBufferIndex];
+        mglBindingInvalidateLastBoundVertexBufferAtIndex((__bridge void *)self, 
+                  kMGLCullDistanceParamsBufferIndex);
         return;
     }
 
@@ -137,11 +137,10 @@
         0u, 0u, &params);
     mglRenderBindCullDistanceEmuSlots(encCtx->render_encoder_owner,
                                       cullMtlBuffer, &params);
-    [self recordLastBoundVertexBuffer:(__bridge id)cullMtlBuffer
-                               offset:0
-                              atIndex:kMGLCullDistanceVertexBufferIndex];
+    mglBindingRecordLastBoundVertexBuffer((__bridge void *)self, cullMtlBuffer,
+                                          0, kMGLCullDistanceVertexBufferIndex);
     MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-    [self invalidateLastBoundVertexBufferAtIndex:kMGLCullDistanceParamsBufferIndex];
+    mglBindingInvalidateLastBoundVertexBufferAtIndex((__bridge void *)self, kMGLCullDistanceParamsBufferIndex);
 }
 
 

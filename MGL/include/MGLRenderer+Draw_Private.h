@@ -261,14 +261,14 @@ typedef struct {
  * (mgl_batch_issue.h). */
 
 // === Dedup state management ===
-- (void)invalidateLastBoundState;
-- (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
-- (void)recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
-- (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index;
-- (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index;
-- (void)setViewportIfNeeded:(MGLViewportValue)viewport;
-- (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect;
-- (void)setTriangleFillModeIfNeeded:(uint32_t)mode;
+/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_binding_state_ops.h */
+/* now the C entry points in mgl_binding_state_ops.h */
 
 // === Locked draw variants ===
 

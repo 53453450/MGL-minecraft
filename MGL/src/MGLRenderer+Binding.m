@@ -407,56 +407,13 @@ static id mglBindingCreateDefaultSampler(void)
     return true;
 }
 
-- (void)invalidateLastBoundState
-{
-    mglRenderBindingInvalidate(_bindingStateOwner);
-}
 
-- (void)recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
-{
-    mglRenderBindingRecordVertexBuffer(
-        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
-}
 
-- (void)recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
-{
-    mglRenderBindingRecordFragmentBuffer(
-        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
-}
 
-- (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
-{
-    mglRenderBindingInvalidateVertexBuffer(
-        _bindingStateOwner, (uint32_t)index);
-}
 
-- (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
-{
-    mglRenderBindingInvalidateFragmentBuffer(
-        _bindingStateOwner, (uint32_t)index);
-}
 
-- (void)setViewportIfNeeded:(MGLViewportValue)viewport
-{
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderBindingSetViewportForOwner(
-        _bindingStateOwner, owner, viewport.origin_x, viewport.origin_y,
-        viewport.width, viewport.height, viewport.znear, viewport.zfar);
-}
 
-- (void)setScissorRectIfNeeded:(MGLScissorRectValue)rect
-{
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderBindingSetScissorForOwner(
-        _bindingStateOwner, owner, rect.x, rect.y, rect.width, rect.height);
-}
 
-- (void)setTriangleFillModeIfNeeded:(uint32_t)mode
-{
-    void *owner = _renderPassManager.state->currentRenderEncoderOwner;
-    mglRenderBindingSetTriangleFillForOwner(
-        _bindingStateOwner, owner, (uint32_t)mode);
-}
 
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
                            alreadyDone:(const MGLResourceSyncWork *)done

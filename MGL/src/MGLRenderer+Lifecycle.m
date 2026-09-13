@@ -13,6 +13,7 @@
 // priming, Metal frame capture, and dealloc — extracted from MGLRenderer.m.
 
 #import "MGLRenderer_Private.h"
+#include "mgl_binding_state_ops.h"
 #import "MGLRenderer+Lifecycle_Private.h"
 #import "mgl.h"
 #import "draw_command.h"
@@ -211,7 +212,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     /* Initialize last-bound render encoder dedup state to a clean slate.
      * The C++ binding state's valid bit starts false so the first bind on the first encoder is
      * never incorrectly skipped. */
-    [self invalidateLastBoundState];
+    mglBindingInvalidateLastBoundState((__bridge void *)self);
     NSLog(@"MGL INFO: AGX GPU error tracking initialized");
     NSLog(@"MGL INFO: perf gates pso_dedup=%d ds_cache=%d arena=%d "
           "same_key_restore=%d dirty_key_delta=%d (set VAR=0 to disable)",
@@ -590,7 +591,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
         /* Drop strong references held by the last-bound dedup cache before
          * releasing the underlying Metal resources below. */
-        [self invalidateLastBoundState];
+        mglBindingInvalidateLastBoundState((__bridge void *)self);
         // Cleanup command buffer and encoder
         MGLRenderCommandBufferState commandState = {0};
         if (mglRenderCommandBufferOwnerHasState(

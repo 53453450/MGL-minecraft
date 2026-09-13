@@ -12,6 +12,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_sampler.h"
+#include "mgl_binding_state_ops.h"
 #include "mgl_texture_binding_resolve.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
@@ -840,7 +841,7 @@ static BOOL mglBindingStateEmitAttribBuffer(
         };
         MGL_VPS_EMIT_BYTES(kMGLPointSizeParamBufferIndex, pointSizeParams,
                           sizeof(pointSizeParams));
-        [self invalidateLastBoundVertexBufferAtIndex:kMGLPointSizeParamBufferIndex];
+        mglBindingInvalidateLastBoundVertexBufferAtIndex((__bridge void *)self, kMGLPointSizeParamBufferIndex);
         anyBindingPresent[kMGLPointSizeParamBufferIndex] = true;
     }
 
@@ -1040,7 +1041,7 @@ static BOOL mglBindingStateEmitAttribBuffer(
 #define MGL_SMB_CLEAR_SLOT(slot) do { MGL_SMB_EMIT_BUFFER(slot, NULL, 0); MGL_BIND_STAGE_CLEAR_BINDING(frag, _bindingStateOwner, slot); } while (0)
 #define MGL_SMB_UPDATE(buf, off, slot) MGL_BIND_STAGE_UPDATE(frag, _bindingStateOwner, buf, off, slot)
 #define MGL_SMB_PERF_SKIP() MGL_BIND_STAGE_PERF_SKIP(frag)
-#define MGL_SMB_INVALIDATE(slot) do { if (isFragment) { [self invalidateLastBoundFragmentBufferAtIndex:(slot)]; } else { [self invalidateLastBoundVertexBufferAtIndex:(slot)]; } } while (0)
+#define MGL_SMB_INVALIDATE(slot) do { if (isFragment) { mglBindingInvalidateLastBoundFragmentBufferAtIndex((__bridge void *)self, (slot)); } else { mglBindingInvalidateLastBoundVertexBufferAtIndex((__bridge void *)self, (slot)); } } while (0)
 #define MGL_SMB_CLEAR_DIRTY() do { if (plan.clear_cpu_dirty && ptr) { ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA; } } while (0)
 
     GLuint mapCount = (GLuint)mglBindingStageClampMapCount(

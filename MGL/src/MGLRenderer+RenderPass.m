@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_draw_encode.h"
+#include "mgl_binding_state_ops.h"
 #include "mgl_vertex_layout.h"  /* vertex descriptor / blend cache */
 #include "mgl_attachment_binding.h"  /* FBO attachment bind */
 #include "mgl_draw_mode.h"
@@ -2400,7 +2401,7 @@ static GLenum mglPassthroughDeclType(
         state->var.polygon_mode = (GLenum)repaired;
         mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
-    [self setTriangleFillModeIfNeeded:triangleFillMode];
+    mglBindingSetTriangleFillModeIfNeeded((__bridge void *)self, triangleFillMode);
 }
 /*
  * Viewport and scissor setup extracted from updateCurrentRenderEncoder.
@@ -2529,7 +2530,7 @@ static GLenum mglPassthroughDeclType(
             rect.y = (NSUInteger)metalSy;
             rect.width = (NSUInteger)sw;
             rect.height = (NSUInteger)sh;
-            [self setScissorRectIfNeeded:rect];
+            mglBindingSetScissorRectIfNeeded((__bridge void *)self, rect.x, rect.y, rect.width, rect.height);
 
             GLdouble rawVx = (GLdouble)state->viewport[0];
             GLdouble rawVy = (GLdouble)state->viewport[1];
@@ -2746,9 +2747,7 @@ static GLenum mglPassthroughDeclType(
             if (traceEncoderState) {
                 NSLog(@"MGL WARNING: updateCurrentRenderEncoder could not resolve pass size; using raw GL viewport");
             }
-            [self setViewportIfNeeded:(MGLViewportValue){state->viewport[0], state->viewport[1],
-                                       state->viewport[2], state->viewport[3],
-                                       state->var.depth_range[0], state->var.depth_range[1]}];
+            mglBindingSetViewportIfNeeded((__bridge void *)self, state->viewport[0], state->viewport[1], state->viewport[2], state->viewport[3], state->var.depth_range[0], state->var.depth_range[1]);
         }
     }
 }
@@ -4042,7 +4041,7 @@ static GLenum mglPassthroughDeclType(
     // I can't remember why this is here...
     @autoreleasepool {
 
-    [self invalidateLastBoundState];
+    mglBindingInvalidateLastBoundState((__bridge void *)self);
 
     static uint64_t s_newRenderEncoderCallCount = 0;
     uint64_t renderEncoderCall = ++s_newRenderEncoderCallCount;
@@ -5061,7 +5060,7 @@ static GLenum mglPassthroughDeclType(
 - (void) endRenderEncodingLocked
 {
 
-    [self invalidateLastBoundState];
+    mglBindingInvalidateLastBoundState((__bridge void *)self);
 
     if (mglRenderEncoderOwnerHasCurrent(
             _renderPassManager.state->currentRenderEncoderOwner) == 1)
@@ -5684,7 +5683,7 @@ static GLenum mglPassthroughDeclType(
             fragCoordParams, sizeof(fragCoordParams),
             MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLFragCoordParamsBufferIndex);
-        [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
+        mglBindingInvalidateLastBoundFragmentBufferAtIndex((__bridge void *)self, kMGLFragCoordParamsBufferIndex);
     }
 
     if (after.bind_lod_bias_slot) {
@@ -5703,14 +5702,14 @@ static GLenum mglPassthroughDeclType(
             lodBiasArr, sizeof(lodBiasArr),
             MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLLodBiasBufferIndex);
-        [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
+        mglBindingInvalidateLastBoundFragmentBufferAtIndex((__bridge void *)self, kMGLLodBiasBufferIndex);
 
         mglRenderSetRenderBytesForOwner(
             _renderPassManager.state->currentRenderEncoderOwner,
             &biasmax, sizeof(biasmax),
             MGL_RENDER_BINDING_STAGE_FRAGMENT,
             kMGLLodBiasMaxBufferIndex);
-        [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasMaxBufferIndex];
+        mglBindingInvalidateLastBoundFragmentBufferAtIndex((__bridge void *)self, kMGLLodBiasMaxBufferIndex);
     }
 
     if (after.maybe_mark_rt_sampled_copy) {
@@ -6839,9 +6838,9 @@ static GLenum mglPassthroughDeclType(
                 (__bridge void *)vertexSizeBuffer, 0,
                 MGL_RENDER_BINDING_STAGE_VERTEX,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            [self recordLastBoundVertexBuffer:vertexSizeBuffer
-                                       offset:0
-                                      atIndex:MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX];
+            mglBindingRecordLastBoundVertexBuffer((__bridge void *)self,
+                                                  (__bridge void *)vertexSizeBuffer,
+                                                  0, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
         }
     }
@@ -6887,9 +6886,9 @@ static GLenum mglPassthroughDeclType(
                 (__bridge void *)fragmentSizeBuffer, 0,
                 MGL_RENDER_BINDING_STAGE_FRAGMENT,
                 MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
-            [self recordLastBoundFragmentBuffer:fragmentSizeBuffer
-                                         offset:0
-                                        atIndex:MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX];
+            mglBindingRecordLastBoundFragmentBuffer((__bridge void *)self,
+                                                    (__bridge void *)fragmentSizeBuffer,
+                                                    0, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
         }
     }

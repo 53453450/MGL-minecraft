@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十一刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
-行数 **43,989 → 35,160**、ObjC 语法 **2,268 → 2,007**、词汇 **4,353 → 3,919**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十二刀** + trace 清零 后）**：文件 **53 → 17**、空 TU **3 → 0**、
+行数 **43,989 → 35,117**、ObjC 语法 **2,268 → 2,007**、词汇 **4,353 → 3,913**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -1868,3 +1868,22 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 > **下一刀仍按"投入产出"排序：`+Binding.m` → `+GPURecovery.m` → `MGLPipelineCache.m` 的整文件转 C**
 > （手法见第 73 条：C 头 + C 入口，必要时 areas 加字段/函数指针，零端口），
 > 之后是 `+DrawStageHost.m` 余量与 `+Lifecycle.m` 的 T5 合并。
+
+76. **P0-1 第二十二刀：`+Binding.m` 的 8 个 binding-state 转发全部转 C（**−43 行**）**：
+     ① 新 TU **`mgl_binding_state_ops.{h,c}`**：`invalidateLastBoundState` · `recordLastBoundVertexBuffer:` ·
+     `recordLastBoundFragmentBuffer:` · `invalidateLastBoundVertexBufferAtIndex:` · `invalidateLastBoundFragmentBufferAtIndex:` ·
+     `setViewportIfNeeded:` · `setScissorRectIfNeeded:` · `setTriangleFillModeIfNeeded:` → 8 个 `mglBinding*` C 入口。
+     每条体都只是 `mglRenderBinding*` 调用：binding owner 取 `*areas.binding_state_owner`，
+     owner-aware 形式（viewport/scissor/fill）再取 `areas.command->currentRenderEncoderOwner`。**零新增端口**。
+     ② **签名坑（记一次）**：`MGLViewportValue` / `MGLScissorRectValue` 只定义在 **ObjC 头** `MGLRenderer+Draw_Private.h` 里，
+     C 头不能用它们；于是 C 入口改成**基本类型签名**（viewport 6 个 double、scissor 4 个整数），调用点传结构体字段。
+     **规则：给 C 的接口只用 C 头里有的类型，否则拆成基本类型。**
+     ③ 调用点：约 17 处（`+RenderPass.m` 7、`+DrawStageHost.m` 4、`+BindingState.m` 3（含 `MGL_SMB_INVALIDATE` 宏体内）、
+     `+Lifecycle.m` 2）全部改直调；`MGLRenderer+Draw_Private.h` 里 8 条声明注释化。`+Binding.m` 490 → **448 行**
+     （余下 `bindMTLTextureLocked:` 339 行与 `syncResourceBindingsForContext:` 27 行仍是 ObjC）。
+     ④ **度量**：行数 **35,160 → 35,117**、语法 2,007（持平）、词汇 **3,919 → 3,913**；文件 17、shim 端口 13 不变。
+     ⑤ **oracle**：旧库 = 提交 `2f3108c` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：`+Binding.m` 只剩两块 ObjC——`bindMTLTextureLocked:`(339) 与 `syncResourceBindingsForContext:`(27)；
+     前者依赖 `createMTLTextureFromGLTexture` / `createFallbackMTLTexture` / `endRenderEncodingLocked` / `NSDate`（计时），
+     建议按依赖顺序逐个转 C（每次转一个依赖后立刻编译 + 跑 A/B）；后者是 10 处发送的编排方法，可最后处理。
