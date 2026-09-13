@@ -116,10 +116,11 @@ int mglRendererBindMTLTexturePort(void *renderer, Texture *texture);
 /* The binding-state owner (the object the dyn-bind plans write bindings
  * through) is reached as `areas.binding_state_owner`, not through a port. */
 
-/* Buffer staging for the dyn-vertex path.  The dirty base-buffer list goes
- * straight to the C mglRenderUpdateDirtyBaseBufferList(ctx, list, where); the
- * Metal allocation bind below stays a port because it takes METAL_LOCK. */
-void mglRendererBindMTLBufferPort(void *renderer, void *buffer);
+/* Buffer staging for the dyn-vertex path.  Both halves are C now: the dirty
+ * base-buffer list goes to mglRenderUpdateDirtyBaseBufferList(ctx, list, where)
+ * and the Metal allocation bind to mglRendererBindMTLBuffer (METAL_LOCK() is
+ * only MGL_ASSERT_GL_THREAD(), so there is no lock to keep in Objective-C). */
+void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer);
 
 /* Binding-state push for the mapper fallback path. */
 int mglRendererMapBuffersToMTLPort(void *renderer);

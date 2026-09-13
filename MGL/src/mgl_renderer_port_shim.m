@@ -65,13 +65,6 @@ int mglRendererProcessGLStatePort(void *renderer, int draw_command)
 }
 
 
-void mglRendererBindMTLBufferPort(void *renderer, void *buffer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r && buffer) {
-        [r bindMTLBuffer:(Buffer *)buffer];
-    }
-}
 
 int mglRendererMapBuffersToMTLPort(void *renderer)
 {

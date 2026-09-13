@@ -15,7 +15,8 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_texture_sampler.h"
-#include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
+#include "mgl_renderer_ports.h"
+#include "mgl_draw_support.h"  /* draw-support predicates */  /* mglRendererProcessBuffer */
 #import "MGLRenderer+Tessellation_Private.h"
 #import "mgl_sampler_compat.h"
 #import "mgl_trace_log.h"
@@ -928,7 +929,7 @@ typedef struct {
             stateReady ? 1 : 0,
             mglRenderEncoderOwnerHasCurrent(
                 _renderPassManager.state->currentRenderEncoderOwner),
-            [self currentDrawRasterizationIsEmpty] ? 1 : 0)) {
+            mglDrawRasterizationIsEmpty((__bridge void *)self) ? 1 : 0)) {
         NSLog(@"MGL TESS ERROR: TES-vertex raster skip program=%u",
               (unsigned)tesProgram->name);
         _tessellation.tessComputeActive = NO;
@@ -957,7 +958,7 @@ typedef struct {
               (unsigned)livePatches, (unsigned)itemsPerInstanceU,
               (int)instanceCount, (int)(tesProgram->tess_gen_point_mode != 0));
     }
-    [self applyPolygonOffsetForDrawMode:tessRasterMode];
+    mglDrawApplyPolygonOffset((__bridge void *)self, tessRasterMode);
     void *owner = _renderPassManager.state->currentRenderEncoderOwner;
 
     [self bindTessStageBufferBindingsToRenderEncoderOwner:owner
@@ -2130,13 +2131,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
             stateReady ? 1 : 0,
             mglRenderEncoderOwnerHasCurrent(
                 _renderPassManager.state->currentRenderEncoderOwner),
-            [self currentDrawRasterizationIsEmpty] ? 1 : 0)) {
+            mglDrawRasterizationIsEmpty((__bridge void *)self) ? 1 : 0)) {
         NSLog(@"MGL TESS ERROR: TES compute raster skip program=%u stateReady=%d encoder=%d empty=%d clip0=%d",
               (unsigned)tesProgram->name,
               (int)stateReady,
               mglRenderEncoderOwnerHasCurrent(
                   _renderPassManager.state->currentRenderEncoderOwner),
-              (int)[self currentDrawRasterizationIsEmpty],
+              (int)mglDrawRasterizationIsEmpty((__bridge void *)self),
               ctx && MGL_STATE(ctx)->caps.clip_distances[0] ? 1 : 0);
         _tessellation.tessComputeActive = NO;
         _tessellation.tessComputeProgram = NULL;
@@ -2149,7 +2150,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         return NO;
     }
 
-    [self applyPolygonOffsetForDrawMode:tessRasterMode];
+    mglDrawApplyPolygonOffset((__bridge void *)self, tessRasterMode);
     id encoder = nil;
     for (GLsizei i = 0; i < instanceCount; i++) {
         NSUInteger instanceOffset = (NSUInteger)mglTessPassthroughInstanceOffset(

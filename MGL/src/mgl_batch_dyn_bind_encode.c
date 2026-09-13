@@ -54,7 +54,7 @@ static int mglDynVertexEnsure(void *v, const MGLBatchDynVertexStreamPlan *p, voi
         BufferMapList upload = {0}; upload.count = 1; upload.buffers[0].buf = buf;
         if (!mglRenderUpdateDirtyBaseBufferList(c->ctx, &upload, "updateDirtyBaseBufferList:")) return 0;
     }
-    if (!buf->data.mtl_data) mglRendererBindMTLBufferPort(c->r, buf);
+    if (!buf->data.mtl_data) mglRendererBindMTLBuffer(c->r, buf);
     if (!mgl_batch_replay_mtl_ptr_ok(buf->data.mtl_data)) return 0;
     void *mb = buf->data.mtl_data; MGLRenderBufferInfo info = {0};
     if (mglRenderGetBufferInfo(mb, &info) != 0) return 0;

@@ -314,9 +314,6 @@ typedef struct {
                            nilCount:(GLuint *)nilCount
                         samplerCount:(GLuint *)samplerCount
                         sampledCount:(GLuint *)sampledCountOut;
-- (BOOL)currentDrawRasterizationIsEmpty;
-- (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode;
-- (void)applyPolygonOffsetForDrawMode:(GLenum)mode;
 - (BOOL)ensureRasterEncoderForDraw;
 
 /* traceReplayCommand:... is now the C driver mglBatchTraceReplayCommand
@@ -354,10 +351,6 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                  first:(GLint)first
                                  count:(GLsizei)count
                               drawCall:(uint64_t)drawCall;
-- (BOOL)resolveIndirectBufferForDraw:(const char *)label
-                             context:(GLMContext)drawCtx
-                            glBuffer:(Buffer **)glBufferOut
-                           mtlBuffer:(id *)mtlBufferOut;
 - (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
 - (BOOL)runVertexCaptureSession:(GLMContext)drawCtx
                         capture:(id)capture

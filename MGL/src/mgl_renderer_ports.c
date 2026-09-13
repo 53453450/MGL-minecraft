@@ -144,7 +144,7 @@ int mglRendererProcessBuffer(void *renderer, Buffer *buffer)
 
     if (buffer->data.mtl_data == NULL) {
         /* The bind takes METAL_LOCK, so it stays the shim port. */
-        mglRendererBindMTLBufferPort(renderer, buffer);
+        mglRendererBindMTLBuffer(renderer, buffer);
         if (buffer->data.mtl_data == NULL) {
             return 0;
         }
@@ -272,4 +272,19 @@ void *mglRendererSamplerStateForSnapshotKey(void *renderer, const void *key)
     }
     mglReleaseMetalObjNoNull(state);   /* the backend snapshot cache retains it */
     return state;
+}
+
+/* Body of the former -[MGLRenderer bindMTLBuffer:] (+ its Locked half).
+ * METAL_LOCK() is only MGL_ASSERT_GL_THREAD() (the mutex was removed long ago),
+ * so the whole bind is C: mglRenderBindBufferStorage plus the same diagnostic. */
+void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer)
+{
+    (void)renderer;
+    char bindError[256] = {0};
+    int bindResult = mglRenderBindBufferStorage(buffer, bindError, sizeof(bindError));
+    if (bindResult != MGL_RENDER_BUFFER_BOUND) {
+        fprintf(stderr, "MGL ERROR: Metal-cpp buffer bind failed buffer=%u: %s\n",
+                buffer ? (unsigned)buffer->name : 0u,
+                bindError[0] ? bindError : "?");
+    }
 }

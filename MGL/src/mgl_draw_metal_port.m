@@ -18,6 +18,7 @@
 
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_draw_support.h"
 #include "mgl_draw_issue.h"
 #include "mgl_batch_rt_mark.h"
 #include "mgl_index_buffer.h"
@@ -652,20 +653,21 @@ static int mglStageEncoderHasCurrent(void *renderer)
 
 static int mglStageRasterEmpty(void *renderer)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self currentDrawRasterizationIsEmpty] ? 1 : 0;
+    return mglStageHostSelf(renderer)
+               ? mglDrawRasterizationIsEmpty(renderer) : 0;
 }
 
 static int mglStageFullyCulled(void *renderer, GLenum mode)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    return self && [self currentDrawModeIsFullyCulled:mode] ? 1 : 0;
+    return mglStageHostSelf(renderer)
+               ? mglDrawModeIsFullyCulled(renderer, (uint32_t)mode) : 0;
 }
 
 static void mglStageApplyPolygonOffset(void *renderer, GLenum mode)
 {
-    MGLRenderer *self = mglStageHostSelf(renderer);
-    if (self) [self applyPolygonOffsetForDrawMode:mode];
+    if (mglStageHostSelf(renderer)) {
+        mglDrawApplyPolygonOffset(renderer, (uint32_t)mode);
+    }
 }
 
 static void mglStageEndRender(void *renderer)
@@ -1742,21 +1744,19 @@ bool mglDrawHostProcessGLStateLocked(void *renderer, bool draw_command)
 
 bool mglDrawHostRasterizationIsEmpty(void *renderer)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host && [host currentDrawRasterizationIsEmpty];
+    return mglDrawHostSelf(renderer) ? mglDrawRasterizationIsEmpty(renderer) : 0;
 }
 
 bool mglDrawHostModeFullyCulled(void *renderer, GLenum mode)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    return host && [host currentDrawModeIsFullyCulled:mode];
+    return mglDrawHostSelf(renderer)
+               ? mglDrawModeIsFullyCulled(renderer, (uint32_t)mode) : 0;
 }
 
 void mglDrawHostApplyPolygonOffset(void *renderer, GLenum mode)
 {
-    MGLRenderer *host = mglDrawHostSelf(renderer);
-    if (host) {
-        [host applyPolygonOffsetForDrawMode:mode];
+    if (mglDrawHostSelf(renderer)) {
+        mglDrawApplyPolygonOffset(renderer, (uint32_t)mode);
     }
 }
 
@@ -1938,15 +1938,13 @@ bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,
     if (!host) {
         return false;
     }
-    id metalBuffer = nil;
-    if (![host resolveIndirectBufferForDraw:label ? label : "indirectDraw"
-                                   context:ctx
-                                  glBuffer:glBufferOut
-                                 mtlBuffer:&metalBuffer]) {
+    void *metalBuffer = NULL;
+    if (!mglDrawResolveIndirectBuffer(renderer, label ? label : "indirectDraw",
+                                      ctx, glBufferOut, &metalBuffer)) {
         return false;
     }
     if (metalBufferOut) {
-        *metalBufferOut = (__bridge void *)metalBuffer;
+        *metalBufferOut = metalBuffer;
     }
     return true;
 }
