@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,373**、ObjC 语法 **2,268 → 1,959**、词汇 **4,353 → 3,836**；
+文件 **53 → 16**、空 TU **3 → 0**、行数 **43,989 → 34,371**、ObjC 语法 **2,268 → 1,965**、词汇 **4,353 → 3,836**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2531,3 +2531,19 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      **同一次改动里**把 `mglLogRenderPassLifecycle` 的 `id drawable` 改为 `void *` 并给 5–6 个 ObjC 调用点补
      `(__bridge void *)_drawable`；`@try/@catch` 用 `mglPlatformShellGuardedCall`，catch 路径的清理放在守卫返回失败之后执行。
      做完后第③步 MS 循环族、第④步删 `+DrawStageHost.m`（**文件 16 → 15**）。
+
+95. **P0-1 第四十一刀：`mglLogRenderPassLifecycle` 的 `id drawable` 改 `void *`（**为整块搬迁扫清 item 2；语法 +6，如实记账**）**：
+     ① 按第 62/94 条判断，"日志函数的 drawable"必须与整块搬迁一起做；本轮**单独把它先做完**，让下一刀的改动面更小：
+     - `MGLRenderer.m` 里的函数签名 `id drawable` → **`void *drawable`**，体内
+       `mglPlatformRendererShellTextureForDrawable((__bridge void *)drawable)` → **去掉桥接**（C 指针直传）；
+     - 声明（`MGLRenderer+RenderPass_Private.h`）同步改；
+     - `+RenderPass.m` 里 **6 个调用点**的 `_drawable` 实参补 `(__bridge void *)_drawable`。
+     ② **踩坑**：全局替换把**另一个函数**（`+RenderPass.m:1209` 附近的 trace 辅助函数）里的
+     `mglPlatformRendererShellTextureForDrawable(drawable)` 也改掉了 → 编译报 implicit conversion；已按行号定位并单独回改。
+     **规则：改签名时不要用全局字符串替换，先按签名行定位再逐个改（第 91/92 条同源）。**
+     ③ **度量（如实）**：行数 **34,373 → 34,371**、语法 **1,959 → 1,965（+6）**、词汇 3,836（持平）——**语法是净增**，
+     因为 6 个调用点各加一个桥接；本刀**不做进度宣称**，价值是"把下一刀（`endRenderEncodingLocked` 整块搬迁）的改动面缩到最小"。
+     ④ **oracle**：旧库 = 提交 `9c3d068` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ 下一刀：**整块搬迁 `endRenderEncodingLocked`**（≈91 行）——本刀 + 第 93 刀（trace 清理 C 入口）+ 第 94 刀
+     （`ClearRenderPassIdentity`）+ 第 27 刀（`End`/`Clear`/`Discard`）+ `mglPlatformShellGuardedCall` 已把它的依赖全部凑齐。

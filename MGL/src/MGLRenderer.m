@@ -1206,8 +1206,7 @@ void mglLogStateSnapshot(const char *tag,
         : mglRendererMakeClearColor(0.0, 0.0, 0.0, 0.0);
 
     id drawableTexture = drawable
-        ? (__bridge id)mglPlatformRendererShellTextureForDrawable(
-              (__bridge void *)drawable)
+        ? (__bridge id)mglPlatformRendererShellTextureForDrawable((__bridge void *)drawable)
         : nil;
 
     mglTraceLog("MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
@@ -1360,7 +1359,7 @@ void mglLogRenderPassLifecycle(const char *tag,
                                       void *commandBufferOwner,
                                       void *renderEncoderOwner,
                                       void *renderPassStateOwner,
-                                      id drawable,
+                                      void *drawable,
                                       Framebuffer *renderPassFramebuffer,
                                       GLuint renderPassFramebufferName,
                                       GLenum renderPassDrawBuffer,
@@ -1391,8 +1390,7 @@ void mglLogRenderPassLifecycle(const char *tag,
     id stencil = hasRenderPassState && renderPassState.stencil.attachment.texture
         ? (__bridge id)renderPassState.stencil.attachment.texture : nil;
     id drawableTexture = drawable
-        ? (__bridge id)mglPlatformRendererShellTextureForDrawable(
-              (__bridge void *)drawable)
+        ? (__bridge id)mglPlatformRendererShellTextureForDrawable(drawable)
         : nil;
     MGLRendererClearColorValue clear = hasRenderPassState
         ? mglRendererMakeClearColor(renderPassState.color[0].clear_red,
