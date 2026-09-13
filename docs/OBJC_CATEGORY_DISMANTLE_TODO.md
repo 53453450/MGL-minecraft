@@ -1179,10 +1179,12 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     本次 areas 归并（−2 端口）——**shim 43 → 31**。后续可继续并入 areas 的候选：`MGLRendererCoreState`（需先把
     `MGLCapability`/`MGLDrawable` 做成 C 类型）、`MGLResourceFallbackState` 其余字段、`MGLTessellationState`。
 
-### 0.09 goal 轮次用尽时的交接状态（2026-09-13 12:35 更新，P0-1 第十一刀后）
+### 0.09 goal 轮次用尽时的交接状态（2026-09-13 13:05 更新，**第 24 轮＝轮次上限**，P0-1 第十三刀后）
 
-- **tip**：本文件所在提交（`objc_zero.sh`：**21** 个 `.m` / 空 TU **0** / **35,959** 行 / 语法 **2,077** / 词汇 **3,958**；
-  shim **13 端口 / 223 行 / 37 语法**，端口**声明面与实现面都是 13，无死声明**；`MGLRenderer*.m` **32,589**）。
+- **tip（提交 `69e834c`）**：`objc_zero.sh`：**19** 个 `.m` / 空 TU **0** / **35,571** 行 / 语法 **2,032** / 词汇 **3,958**；
+  shim **13 端口 / 223 行 / 37 语法**（声明面＝实现面，无死声明）；`MGLRenderer*.m` **32,218**。
+  基线对照：文件 53 → 19、行数 43,989 → 35,571、语法 2,268 → 2,032、词汇 4,353 → 3,958、shim 43 → 13 端口。
+- **轮次上限已到（24/24）**：本轮没有再开新刀，改为把交接做扎实——下面按"下一步能直接开工"的粒度列清楚。
 - **剩余 13 个端口**（都还需要 ObjC）：`StateAreas`（核心）/ `EnsureWritableCommandBuffer`（轮转命令缓冲）/
   `FlushDrawBufferLocked`（port 里是 `@try/@catch` + METAL_LOCK）/ `BindMTLTexture`（**锁已成纸面理由**，见第 65 条）/
   `ProcessGLState`（锁定体是几百行 ObjC）、`MapBuffersToMTL`、`Bind{,Vertex,Fragment,Texture}sToCurrentRenderEncoder`、
@@ -1666,3 +1668,27 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      下一刀（轮次将尽）：按 §0.09 继续"整文件转 C / 类别合并"——`+VertexLayout.m`(203, 仅 7 语法) 与 `MGLPipelineCache.m`(446)
      的 ObjC 成分已很薄，先补 `_tessellation` 进 areas、再评估 `bindFramebufferTexture:isDrawBuffer:` 与
      `mapGLBuffersToMTLBufferMap:stage:` 两条 ObjC 链；同时保留"每刀给 net 数字 + 自跑 oracle"的纪律。
+
+### 0.11 goal 轮次用尽后的开工清单（2026-09-13 13:05，第 24 轮末）
+
+**已确认的"零成本"下一刀（按投入产出排序，均已实测过成分）**：
+
+| 目标 | 现状 | 下一步动作 | 预计收益 |
+|---|---|---|---|
+| **`+VertexLayout.m`** | 203 行 / 仅 **7** 语法；3 个方法 | `updateBlendStateCache`(90 行) 只用 `ctx->active_state` + `mglRenderBlend*` → 直接搬 C；`generateVertexDescriptorState:`(11 行) 只差 `_tessellation`（把 4 个字段并进 `MGLRendererStateAreas` 即可）；`bindFramebufferAttachmentTextures`(79 行) 需先 C 化 `bindFramebufferTexture:isDrawBuffer:` | 整个 `.m` 消失（19 → 18），−200 行 |
+| **`MGLPipelineCache.m`** | 446 行 / 62 语法 | 方法体多是 `mglRender*PipelineCacheOwner*` 转发（第 65 条同款"只差 ObjC 句柄"） | 可能整文件转 C |
+| **`processGLStateLocked:`** | `+RenderPass.m` 内数百行 | 体里 ObjC 只有 `@try/@catch`（Metal 恢复）、`_device`/`_commandQueue`（backend 句柄，areas 已有 `backend`）与少量方法发送；按第 65 条先逐一列依赖 | 退役 `ProcessGLState` 端口 + 数千行降 ObjC |
+| **`bindMTLTextureLocked:`** | `+Binding.m` ~190 行 | 依赖 `uploadDirtyCPUTextureData*` / `uploadFullCPUTextureDataIntoTexture` / `endRenderEncodingLocked` / `createMTLTextureFromGLTexture` 四条 ObjC 链；先 C 化其中最薄的一条（`endRenderEncodingLocked`） | 退役 `BindMTLTexture` 端口 |
+| **`mapGLBuffersToMTLBufferMap:stage:`** | `+Buffer.m` ~90 行 | 重活在 `mapShaderBufferResourcesToBufferMap:stage:`；逐段搬到 `mgl_binding_policy.c`/`mgl_vertex_attrib_plan.c`（plan 已是 C） | 退役 `MapBuffersToMTL` 端口 |
+| **T5 唯一壳** | shim(223) + `MGLPlatformRendererShell.m`(229) | 审计硬要求：合并成**一个**壳 TU 并写明行数上限与移除路径；shim 内已只剩 1 个 ObjC 方法（`flushDrawBuffer:`） | 满足 T5 终态形态 |
+
+**每刀固定动作**（第 51/61/66 条已固化，照抄即可）：
+1. 改前先"抽取即落盘副本"；多步编辑**基于行列表**、不要在文本长度会变的步骤间复用字符偏移（第 63 条事故）。
+2. 删/转方法后用**裸 selector 名**全树 grep（含 `self.x` 与 `[other x]` 接收者）。
+3. 旧库 = `git worktree` 到上一提交构建（借 `config.mk` + `build/aux` + `external/glfw/build`，**永不 `make clean`**），`cmp` 两库不同后再跑。
+4. oracle：`/private/tmp/run_ab<N>.sh {new,old}`（default 与 `MGL_BATCH_MAX_DRAWS=1` 两臂，均由 `test_regression` 产生）+ `/private/tmp/ab_full.py`；
+   `processGLState.slow` 行数**已知非确定**（同库双跑对照见第 64 条），报告时如实标注。
+5. 门禁：`python3 scripts/verify_gl_api.py` + 28 个 `test-*` 目标；CTS：`/private/tmp/run_t4b_battery*.sh` 后与 `/tmp/base_<cluster>.txt` 逐簇 diff。
+6. **提交纪律**：`git status` 逐条确认归属，只 `git add` 自己的路径（**禁用 `git add -A`**，见第 66 条）；推送 `git push origin main:main`
+   （22 端口不通时用 `git -c url."ssh://git@ssh.github.com:443/53453450/MGL-minecraft.git".insteadOf="git@github.com:53453450/MGL-minecraft.git" push origin main:main`）。
+7. 文档：§0.0 进度行 + §5 新条目 + §0.09 交接状态，三处同步刷新。
