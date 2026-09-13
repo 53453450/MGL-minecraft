@@ -50,8 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十六刀** + trace 清零 后；第 68–90 轮见 §0.24/§0.26–§0.47）**：
-文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 29,080**、ObjC 语法 **2,268 → 1,646**、词汇 **4,353 → 3,191**；
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 六十七刀** + trace 清零 后；第 68–91 轮见 §0.24/§0.26–§0.48）**：
+文件 **53 → 7**、空 TU **3 → 0**、行数 **43,989 → 29,059**、ObjC 语法 **2,268 → 1,645**、词汇 **4,353 → 3,190**；
 **shim：43 → 25 个端口（第 108 刀一次性补 10 个"计算/细分宿主入口"，见该条第①项的取舍说明）/ 唯一壳 TU 1,888 行 / 262 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；`MGLRenderer*.m` **34,604 → 28,504**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -3551,3 +3551,22 @@ CTS 七簇非通过集合 diff 全空 → 三处文档（§0.0 进度、§5 日�
      `bindPreparedTessStageBufferBindings` / `planTessTextureBinds` / `bindPointSizeParamsToComputeEncoder` /
      `ensureTessTextureMetalData` / `flushTessStageBindingInitializationBlit` 等 11 个方法，逐个换成 `mglTess*` C 入口，
      copy-back 族与采样器入口已就绪）。
+
+123. **P0-1 第六十七刀：`MGLRenderer+Tessellation.m` 第一个方法转 C（`ensureTessTextureMetalData:count:ctx:`，为该文件立下手法）**：
+     ① 11 个方法里最小的自足方法先做示范：19 行的 `- (BOOL)ensureTessTextureMetalData:count:ctx:` →
+     新 TU **`mgl_tess_texture.{h,c}`** 的 `int mglTessEnsureTextureMetalData(void *renderer, const MGLTessTextureBind *binds, uint32_t count, GLMContext draw_ctx)`。
+     转换点只有两个：**唯一那处 `[self bindMTLTexture:ptr]` → `mglRendererBindMTLTexture(renderer, ptr)`**（第 100 刀的 C 入口），
+     以及 `MGL_STATE(drawCtx)` → 本地 twin `mglTessTextureState(draw_ctx)`（注意这里用的是**实参** drawCtx，不是 `ctx` ivar）。
+     **返回值语义照抄**：`binds/drawCtx` 为空时方法返回 `YES`（"无事可做"），C 版返回 `1`。
+     ② 三个调用点（第 851/1203/1578 行，参数分别是 `tesTextureBinds` ×2、`tcsTextureBinds` ×1）改调 C 入口，
+     ObjC 侧传 `(__bridge void *)self`；方法、`MGLRenderer+Tessellation_Private.h` 的声明（若有）与该方法的注释一并处理。
+     ③ **度量**：该文件语法 **151 → 150**、词汇 31、行数 2,101 → 2,080；全库语法 **1,646 → 1,645**、词汇 3,191 → 3,190、
+     行数 29,080 → 29,059；C 侧新增约 70 行；文件数 7 不变。
+     ④ **oracle**：旧库 = 提交 `9a609f9` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,981/4,981 与 5,514/5,514
+     逐行保序完全一致**（未过滤 5,274/5,276 与 5,810/5,810 → `processGLState.slow` **293/295** 与 **296/296**），
+     stderr `MGL` 行 **307/307 多重集一致**；default 臂 **92/0/2**、flushy 臂 **91/1/2**（两臂同值）；
+     **CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     ⑤ 下一刀：同文件按同一手法继续小方法——`bindTessStageBufferBindingsToRenderEncoderOwner:`（22 行）、
+     `bindPointSizeParamsToComputeEncoder:`（27 行）、`bindPreparedTessStageBufferBindings:`（31 行）、
+     `flushTessStageBindingInitializationBlit:`（37 行）；四个都不需要新桥接（copy-back 族、`mglRenderSetCompute*`、
+     `mglRendererBindBufferSizeConstantsForRenderEncoder` 均已就绪），做完后该文件语法可再降约 40。

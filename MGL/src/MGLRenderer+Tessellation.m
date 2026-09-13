@@ -27,6 +27,7 @@
 #include "mgl_air_gs_abi.h"
 #include "mgl_air_tess_abi.h"
 #include "mgl_draw_tess.h"
+#include "mgl_tess_texture.h"  /* mglTessEnsureTextureMetalData */
 #include "mgl_draw_issue.h"
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
@@ -641,25 +642,6 @@ typedef struct {
         sizeof(pointSizeParams), kMGLPointSizeParamBufferIndex);
 }
 
-- (BOOL)ensureTessTextureMetalData:(const MGLTessTextureBind *)binds
-                             count:(uint32_t)count
-                               ctx:(GLMContext)drawCtx
-{
-    if (!binds || !drawCtx || !drawCtx->active_state) {
-        return 1;
-    }
-    for (uint32_t i = 0; i < count; i++) {
-        const GLuint unit = binds[i].gl_unit;
-        Texture *ptr = mglTessTextureBindIsStorage(binds[i].kind)
-            ? MGL_STATE(drawCtx)->image_units[unit].tex
-            : MGL_STATE(drawCtx)->active_textures[unit];
-        if (ptr && !ptr->mtl_data) {
-            [self bindMTLTexture:ptr];
-        }
-    }
-    return 1;
-}
-
 - (BOOL)planTessTextureBinds:(const MGLTessTextureBind *)binds
                        count:(uint32_t)count
                          ctx:(GLMContext)drawCtx
@@ -848,9 +830,8 @@ typedef struct {
     const uint32_t tesTextureBindCount = mglTessCollectTextureBinds(
         glm_ctx, tesProgram, _TESS_EVALUATION_SHADER, tesTextureBinds,
         (uint32_t)(sizeof(tesTextureBinds) / sizeof(tesTextureBinds[0])));
-    if (![self ensureTessTextureMetalData:tesTextureBinds
-                                    count:tesTextureBindCount
-                                      ctx:glm_ctx]) {
+    if (!mglTessEnsureTextureMetalData((__bridge void *)self, tesTextureBinds,
+                                       tesTextureBindCount, glm_ctx)) {
         return 0;
     }
 
@@ -1200,9 +1181,8 @@ typedef struct {
     const uint32_t tcsTextureBindCount = mglTessCollectTextureBinds(
         glm_ctx, tcsProgram, _TESS_CONTROL_SHADER, tcsTextureBinds,
         (uint32_t)(sizeof(tcsTextureBinds) / sizeof(tcsTextureBinds[0])));
-    if (![self ensureTessTextureMetalData:tcsTextureBinds
-                                    count:tcsTextureBindCount
-                                      ctx:glm_ctx]) {
+    if (!mglTessEnsureTextureMetalData((__bridge void *)self, tcsTextureBinds,
+                                       tcsTextureBindCount, glm_ctx)) {
         return false;
     }
 
@@ -1575,9 +1555,8 @@ static size_t mglTESXFBVertexStride(const Program *program)
     const uint32_t tesTextureBindCount = mglTessCollectTextureBinds(
         glm_ctx, tesProgram, _TESS_EVALUATION_SHADER, tesTextureBinds,
         (uint32_t)(sizeof(tesTextureBinds) / sizeof(tesTextureBinds[0])));
-    if (![self ensureTessTextureMetalData:tesTextureBinds
-                                    count:tesTextureBindCount
-                                      ctx:glm_ctx]) {
+    if (!mglTessEnsureTextureMetalData((__bridge void *)self, tesTextureBinds,
+                                       tesTextureBindCount, glm_ctx)) {
         return false;
     }
 
