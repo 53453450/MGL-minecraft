@@ -2345,3 +2345,19 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 `+DrawStageHost.m` 剩余 3 方法（85/26/39 行）、`bindMTLTextureLocked:`(339)、`MGLPipelineCache.m`(446)、
 `+SwapDiagnostics.m`(556)、`mgl_draw_metal_port.m`(1,973) 与三厚块；这些都需要"手工逐段搬 + 每段编译 + 整轮 A/B/CTS"，
 **建议在上下文充裕的新会话里成批推进**，并严格按 §0.14 的三种路线与 §0.17 的配方执行。
+
+### 0.21 第 55 轮复验与"下一步必须整块搬"的最终确认
+
+- **复验（提交 `24bc954`，未改代码）**：`make -j4 lib` **0 error**；`test_regression` **92/0/2**、`test_batch_icb: ok`；
+  `objc_zero.sh`：**16** 个 `.m` / 空 TU **0** / **34,553** 行 / 语法 **1,973** / 词汇 **3,836**；工作区干净。
+- **本轮再次核实的"看似可删、实则活"名单**（补进第 90 条的五类之外）：`updateDirtyBuffer:`（`+Tessellation.m` 2 处、
+  `+BindingState.m` 1 处、`+Compute.m` 1 处等 **5 处真实调用**）、`checkForDirtyBufferData:` / `updateDirtyBaseBufferList:` /
+  `clearStageBindingCopyBack(s)` / `getVertexBufferIndexWithAttributeSet`（均有头声明 + 调用）。**结论同 §0.20：没有可零风险删的余量了。**
+- **下一轮起必须按整块搬推进**（每块 = 手工逐段 + 每段编译 + 整轮 A/B/CTS），顺序建议（§0.19 表的第一、二行）：
+  1. `bindCullDistanceEmulationBuffers:`(85)：areas 加 `tess_cull_capture_first_instance` / `…_instance_stride` 两个 `uint32_t`
+     （壳里从 `r->_tessellation` 填）→ 新建 `mgl_draw_stage_host.{h,c}` → 手工把 `id captureBuffer` 改 `void *`、
+     3 处 `__bridge` 去掉 → 段内 `recordLastBoundVertexBuffer:` / `invalidateLastBoundVertexBufferAtIndex:` 改直调第 22 刀的 C 函数
+     → 删方法 + 声明 → 调用点（`mgl_draw_metal_port.m` 2 处，C）改直调。
+  2. MS 循环族（26+39）：先 C 化 `endRenderEncodingLocked`（需 3 个 manager 入口 + `mglPlatformShellGuardedCall`），
+     再把 block 参数换成 `fn + ctx`。
+  3. 之后按 §0.19 表逐行往下（`bindMTLTextureLocked:` → `MGLPipelineCache.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块）。
