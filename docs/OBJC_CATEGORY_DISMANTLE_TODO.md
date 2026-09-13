@@ -2161,3 +2161,33 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 > **建议下一刀**：改从 `runVertexCaptureSession:`(19 行、**真正零响应**) 开始——它只有一个 `self->ctx` 写入需要"方法 + 壳转发"；
 > 随后转 `runVertexCaptureSession:`(19 行) 用"方法 + 壳转发"补一个 ctx 写入；**MS 循环两方法放最后**，
 > 因为它们依赖 `endRenderEncodingLocked`（第 81 条评估为依赖深度 ≥3）。
+
+### 0.17 `runVertexCaptureSession:` 的精确转换配方（第 46 轮实测，照着做即可）
+
+```objc
+- (BOOL)runVertexCaptureSession:(GLMContext)drawCtx capture:(id)capture params:(const uint32_t *)params
+{
+    if (!drawCtx || !capture || !params) return NO;
+    self->ctx = drawCtx;                                  // ← 唯一的 ObjC-only 副作用
+    MGLTessCaptureSessionHostOps ops = {
+        .ctx = drawCtx, .renderer = (__bridge void *)self, // ← id/__bridge 各一处
+        .mark_dirty_all = mglDrawSupportCaptureMarkDirtyAll, /* …5 个函数指针，都是 C */
+    };
+    return mglTessRunCaptureSession((__bridge void *)capture, params, &ops) ? YES : NO;
+}
+```
+
+**步骤（每步后 `make -j4 lib`）**：
+1. `MGLRenderer.m` 加 `- (void)mglSetDrawContext:(GLMContext)drawCtx { ctx = drawCtx; }`，声明进 `MGLRenderer+Draw_Private.h`
+   （**必须在方法体里写，`ctx` 是私有 ivar**）。
+2. 壳 TU 加 C 入口 `void mglPlatformShellSetDrawContext(void *renderer, GLMContext ctx)` → `[r mglSetDrawContext:ctx]`。
+3. 新 C TU（或并入 `mgl_draw_support.c`）实现
+   `int mglDrawRunVertexCaptureSession(void *renderer, GLMContext drawCtx, void *capture, const uint32_t *params)`：
+   判空 → 调壳入口写 ctx → 组装 `MGLTessCaptureSessionHostOps`（`renderer = (void *)renderer`）→ 调
+   `mglTessRunCaptureSession(capture, params, &ops)`。
+4. 调用点（`mgl_draw_metal_port.m` 1 处，C）改直调；删除 ObjC 方法与 `MGLRenderer+Draw_Private.h` 声明。
+**收益预估**：−19 行方法体、+1 方法（3 行）、+1 壳 C 入口（5 行）→ **行数小幅净减，语法基本持平**；价值主要是把"写 ctx"这一副作用
+集中到壳入口，为后续两刀（`bindCullDistance…`、MS 循环族）铺路。
+
+> **注意**：本文件剩下 3 个方法（`bindCullDistanceEmulationBuffers:` 85 行含 `id`+3×`__bridge`、MS 循环族含 block）
+> 都**不能**用正则批处理（第 45 条的失败），必须手工逐段搬并逐步编译。
