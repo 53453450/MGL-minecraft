@@ -206,72 +206,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 /* Temporary backend operation targets. These remain private to the renderer
  * while draw execution is owned by the C++ backend. */
-- (void)mtlDrawArrays:(GLMContext)ctx mode:(GLenum)mode
-                 first:(GLint)first count:(GLsizei)count;
-- (void)mtlDrawElements:(GLMContext)ctx mode:(GLenum)mode
-                   count:(GLsizei)count type:(GLenum)type
-                 indices:(const void *)indices;
-- (void)mtlDrawRangeElements:(GLMContext)ctx mode:(GLenum)mode
-                         start:(GLuint)start end:(GLuint)end
-                         count:(GLsizei)count type:(GLenum)type
-                       indices:(const void *)indices;
-- (void)mtlDrawArraysInstanced:(GLMContext)ctx mode:(GLenum)mode
-                          first:(GLint)first count:(GLsizei)count
-                  instancecount:(GLsizei)instancecount;
-- (void)mtlDrawElementsInstanced:(GLMContext)ctx mode:(GLenum)mode
-                            count:(GLsizei)count type:(GLenum)type
-                          indices:(const void *)indices
-                    instancecount:(GLsizei)instancecount;
-- (void)mtlDrawElementsBaseVertex:(GLMContext)ctx mode:(GLenum)mode
-                             count:(GLsizei)count type:(GLenum)type
-                           indices:(const void *)indices
-                        basevertex:(GLint)basevertex;
-- (void)mtlDrawRangeElementsBaseVertex:(GLMContext)ctx mode:(GLenum)mode
-                                   start:(GLuint)start end:(GLuint)end
-                                   count:(GLsizei)count type:(GLenum)type
-                                 indices:(const void *)indices
-                              basevertex:(GLint)basevertex;
-- (void)mtlDrawElementsInstancedBaseVertex:(GLMContext)ctx mode:(GLenum)mode
-                                      count:(GLsizei)count type:(GLenum)type
-                                    indices:(const void *)indices
-                              instancecount:(GLsizei)instancecount
-                                 basevertex:(GLint)basevertex;
-- (void)mtlDrawArraysIndirect:(GLMContext)ctx mode:(GLenum)mode
-                       indirect:(const void *)indirect;
-- (void)mtlDrawElementsIndirect:(GLMContext)ctx mode:(GLenum)mode
-                          type:(GLenum)type indirect:(const void *)indirect;
-- (void)mtlDrawArraysInstancedBaseInstance:(GLMContext)ctx mode:(GLenum)mode
-                                      first:(GLint)first count:(GLsizei)count
-                              instancecount:(GLsizei)instancecount
-                                baseinstance:(GLuint)baseinstance;
-- (void)mtlDrawElementsInstancedBaseInstance:(GLMContext)ctx mode:(GLenum)mode
-                                        count:(GLsizei)count type:(GLenum)type
-                                      indices:(const void *)indices
-                                instancecount:(GLsizei)instancecount
-                                  baseinstance:(GLuint)baseinstance;
-- (void)mtlDrawElementsInstancedBaseVertexBaseInstance:
-            (GLMContext)ctx mode:(GLenum)mode count:(GLsizei)count
-            type:(GLenum)type indices:(const void *)indices
-            instancecount:(GLsizei)instancecount
-            basevertex:(GLint)basevertex baseinstance:(GLuint)baseinstance;
-- (void)mtlMultiDrawArrays:(GLMContext)ctx mode:(GLenum)mode
-                      first:(const GLint *)first count:(const GLsizei *)count
-                  drawcount:(GLsizei)drawcount;
-- (void)mtlMultiDrawElements:(GLMContext)ctx mode:(GLenum)mode
-                       count:(const GLsizei *)count type:(GLenum)type
-                     indices:(const void *const *)indices
-                   drawcount:(GLsizei)drawcount;
-- (void)mtlMultiDrawElementsBaseVertex:(GLMContext)ctx mode:(GLenum)mode
-                                 count:(const GLsizei *)count type:(GLenum)type
-                               indices:(const void *const *)indices
-                             drawcount:(GLsizei)drawcount
-                            basevertex:(const GLint *)basevertex;
-- (void)mtlMultiDrawArraysIndirect:(GLMContext)ctx mode:(GLenum)mode
-                           indirect:(const void *)indirect
-                          drawcount:(GLsizei)drawcount stride:(GLsizei)stride;
-- (void)mtlMultiDrawElementsIndirect:(GLMContext)ctx mode:(GLenum)mode
-                              type:(GLenum)type indirect:(const void *)indirect
-                         drawcount:(GLsizei)drawcount stride:(GLsizei)stride;
 
 // === Draw batch scheduling and execution ===
 /* scheduleDrawBatch:context: is now mglBatchScheduleDrawBatch (mgl_batch_issue.h). */
@@ -407,27 +341,6 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                     GLenum mode, GLuint first_vertex,
                                     const uint32_t *explicit_vertices,
                                     uint32_t explicit_vertex_count);
-- (BOOL)captureAIRCullDistancesForArrayDraw:(GLMContext)drawCtx
-                                      first:(GLint)first
-                                      count:(GLsizei)count
-                              instanceCount:(GLsizei)instanceCount
-                               baseInstance:(GLuint)baseInstance;
-- (BOOL)captureAIRCullDistancesForElementDraw:(GLMContext)drawCtx
-                                    indexBytes:(const uint8_t *)indexBytes
-                                     indexType:(GLenum)indexType
-                                         count:(GLsizei)count
-                                    baseVertex:(GLint)baseVertex
-                                 instanceCount:(GLsizei)instanceCount
-                                  baseInstance:(GLuint)baseInstance;
-- (BOOL)encodeCullDistanceElementDraw:(GLenum)mode
-                            indexBytes:(const uint8_t *)indexBytes
-                             indexType:(GLenum)indexType
-                                 count:(GLsizei)count
-                            baseVertex:(GLint)baseVertex
-                         instanceCount:(GLsizei)instanceCount
-                          baseInstance:(GLuint)baseInstance
-                       polygonLineMode:(BOOL)polygonLineMode
-                         encodeContext:(const MGLEncodeContext *)encCtx;
 - (BOOL)prepareAndEncodeDirectCullDistanceElementDraw:(GLenum)mode
                                            indexBytes:(const uint8_t *)indexBytes
                                             indexType:(GLenum)indexType

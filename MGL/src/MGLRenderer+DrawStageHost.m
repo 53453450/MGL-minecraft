@@ -29,34 +29,6 @@
 
 @implementation MGLRenderer (DrawStageHost)
 
-- (BOOL)captureAIRCullDistancesForArrayDraw:(GLMContext)drawCtx
-                                      first:(GLint)first
-                                      count:(GLsizei)count
-                              instanceCount:(GLsizei)instanceCount
-                               baseInstance:(GLuint)baseInstance
-{
-    return mglDrawHostCaptureCullDistanceArray((__bridge void *)self, drawCtx,
-                                               first, count, instanceCount,
-                                               baseInstance)
-               ? YES
-               : NO;
-}
-
-- (BOOL)captureAIRCullDistancesForElementDraw:(GLMContext)drawCtx
-                                    indexBytes:(const uint8_t *)indexBytes
-                                     indexType:(GLenum)indexType
-                                         count:(GLsizei)count
-                                    baseVertex:(GLint)baseVertex
-                                 instanceCount:(GLsizei)instanceCount
-                                  baseInstance:(GLuint)baseInstance
-{
-    return mglDrawHostCaptureCullDistanceElement(
-               (__bridge void *)self, drawCtx, indexBytes, indexType, count,
-               baseVertex, instanceCount, baseInstance)
-               ? YES
-               : NO;
-}
-
 - (BOOL)prepareAndEncodeDirectCullDistanceElementDraw:(GLenum)mode
                                            indexBytes:(const uint8_t *)indexBytes
                                             indexType:(GLenum)indexType

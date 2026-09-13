@@ -85,39 +85,6 @@ int mglRendererResolveElementBufferPort(void *renderer, const void *command,
     return 1;
 }
 
-int mglRendererCaptureCullArrayPort(void *renderer, GLMContext ctx, int32_t first,
-                                    int32_t count, int32_t instance_count,
-                                    uint32_t base_instance)
-{
-    return [(__bridge MGLRenderer *)renderer
-               captureAIRCullDistancesForArrayDraw:ctx
-                                             first:(GLint)first
-                                             count:(GLsizei)count
-                                     instanceCount:(GLsizei)instance_count
-                                      baseInstance:(GLuint)base_instance]
-               ? 1
-               : 0;
-}
-
-int mglRendererCaptureCullElementPort(void *renderer, GLMContext ctx,
-                                      const uint8_t *index_bytes,
-                                      uint32_t index_type, int32_t count,
-                                      int32_t base_vertex,
-                                      int32_t instance_count,
-                                      uint32_t base_instance)
-{
-    return [(__bridge MGLRenderer *)renderer
-               captureAIRCullDistancesForElementDraw:ctx
-                                          indexBytes:index_bytes
-                                           indexType:(GLenum)index_type
-                                               count:(GLsizei)count
-                                          baseVertex:(GLint)base_vertex
-                                       instanceCount:(GLsizei)instance_count
-                                        baseInstance:(GLuint)base_instance]
-               ? 1
-               : 0;
-}
-
 int mglRendererProcessGLStatePort(void *renderer, int draw_command)
 {
     return [(__bridge MGLRenderer *)renderer processGLState:draw_command ? true : false]

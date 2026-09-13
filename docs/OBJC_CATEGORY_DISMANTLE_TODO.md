@@ -47,12 +47,12 @@
 | ObjC 文件行数 | **43,989** | ≈ 平台壳 |
 | ObjC 语法出现次数（含 `#import`） | **2,268** | 0 |
 | ObjC 词汇出现次数 | **4,353** | 0 |
-| `MGLRenderer*.m` total | **34,604** | 0（当前 **33,002**） |
-| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **20 / 331**） |
+| `MGLRenderer*.m` total | **34,604** | 0（当前 **32,834**） |
+| **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **18 / 298**） |
 
-**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 八刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
-行数 **43,989 → 36,482**、ObjC 语法 **2,268 → 2,128**、词汇 **4,353 → 3,992**；
-**shim：43 → 20 个端口 / 331 行 / 47 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀端口 40 → 23，七刀 23 → 21，八刀 21 → 20）**。
+**当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 九刀** + trace 清零 后）**：文件 **53 → 21**、空 TU **3 → 0**、
+行数 **43,989 → 36,281**、ObjC 语法 **2,268 → 2,106**、词汇 **4,353 → 3,986**；
+**shim：43 → 18 个端口 / 298 行 / 45 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀端口 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -1179,17 +1179,19 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     本次 areas 归并（−2 端口）——**shim 43 → 31**。后续可继续并入 areas 的候选：`MGLRendererCoreState`（需先把
     `MGLCapability`/`MGLDrawable` 做成 C 类型）、`MGLResourceFallbackState` 其余字段、`MGLTessellationState`。
 
-### 0.09 goal 轮次用尽时的交接状态（2026-09-13 11:50 更新，P0-1 第八刀后）
+### 0.09 goal 轮次用尽时的交接状态（2026-09-13 12:05 更新，P0-1 第九刀后）
 
-- **tip**：本文件所在提交（`objc_zero.sh`：**21** 个 `.m` / 空 TU **0** / **36,482** 行 / 语法 **2,128** / 词汇 **3,992**；
-  shim **20 端口 / 331 行 / 47 语法**，端口**声明面与实现面都是 20，无死声明**；`MGLRenderer*.m` **33,002**）。
+- **tip**：本文件所在提交（`objc_zero.sh`：**21** 个 `.m` / 空 TU **0** / **36,281** 行 / 语法 **2,106** / 词汇 **3,986**；
+  shim **18 端口 / 298 行 / 45 语法**，端口**声明面与实现面都是 18，无死声明**；`MGLRenderer*.m` **32,834**）。
 - **Batch 簇已清零**：`mgl_batch_*` 全部为 C；`MGLRenderer+Batch.m`、`mgl_batch_flush_restore_encode.m` 整文件删除。
 - **A/B 设施（每刀复用）**：`git worktree add --detach /Users/fterward/MGL-ab-old HEAD` 得真旧库（借 `config.mk` +
   `build/aux` + `external/glfw/build`，**不要 `make clean`**），`cmp` 两库不同后跑
   `/private/tmp/run_ab7b.sh <side>`（default 与 `MGL_BATCH_MAX_DRAWS=1` 两臂，均由 `test_regression` 产生）
   + `/private/tmp/ab_full.py`；**只有加载 `libmgl` 的二进制才会写 trace 日志**（`test_batch_*` 系列不链接 libmgl）。
 - **下一步优先级（按审计 §0.05 与 §0.08）**：
-  1. **P0-1 三厚块**（`+RenderPass` 7.1k 行 · `+Texture` 6.5k · `+Blit` 4.1k）：抽 C++ 域 + 金样，**禁新增 ObjC 行**，
+  1. **先清"一行转发 C"的壳**（第九刀手法，低风险高产出）：`+DrawSupport.m`(351) · `+GPURecovery.m`(351) ·
+     `+SwapDiagnostics.m`(557) 等文件里凡是 `return mglX(...)` 的方法，直接让 C 调用者调 `mglX`，方法+端口一起删；
+  2. **P0-1 三厚块**（`+RenderPass` 7.1k 行 · `+Texture` 6.5k · `+Blit` 4.1k）：抽 C++ 域 + 金样，**禁新增 ObjC 行**，
      每下沉一个方法体可连带退役对应端口（净减主力）；`+Blit.m` 建议从 91 行的
      `blitFramebufferDirectColorCopyWithState` 之后的 scaled/format-conversion 簇继续；
   2. 与 GLSampled 同域的 `+Texture.m` 的 `freshGLSampledRenderTargetCopyForSampling:`（**有真实调用点**，
@@ -1518,3 +1520,31 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      scaled/format-conversion 簇**，或 `+Texture.m` 的 `freshGLSampledRenderTargetCopyForSampling:`（与
      `lazyRefresh` 同域，但**有真实调用点**，需连带把采样视图窗口逻辑一起下沉）；同时按 §0.08 推
      ICB 门禁 82/10/2 → 92/0/2 与 T5 唯一壳合并。
+
+63. **P0-1 第九刀：删掉 18 个 `mtlDraw*` 一行转发 + 退役 capture-cull 两端口（**shim 净减 2，20 → 18**）**：
+     ① **`MGLRenderer+Draw.m` 的两层转发合一**：该文件的 18 个 C 桥（`mglRendererDrawArrays` 等）原本是
+     "取 backend lease → `@autoreleasepool` → `[renderer mtlDrawArrays:…]`"，而 `mtlDraw*` 方法体**只是一行**
+     `mglIssueDraw*` / `mglDrawHostGuardIssue*` 调用。现在桥内**直接调那个 C 函数**（`self` → `(__bridge void *)renderer`，
+     方法参数名按桥参数名对齐：`ctx→glm_ctx`、`instancecount→instance_count`、`basevertex→base_vertex`、
+     `baseinstance→base_instance`、multi 版 `first/count/drawcount/basevertex→firsts/counts/draw_count/base_vertices`），
+     19 个方法与 `MGLRenderer+Draw_Private.h` 里的声明一起删除（−99 行方法 + −66 行声明）。
+     **backend lease 与 `@autoreleasepool` 保留**（逐 draw 排空临时对象是既有语义，不属本刀范围）。
+     ② **capture-cull 端口退役**：`mglRendererCaptureCullArrayPort` / `mglRendererCaptureCullElementPort` 的 ObjC 实现
+     只是转发到 `mglDrawHostCaptureCullDistanceArray/Element`（本就是 C，声明在 `mgl_draw_issue.h`），
+     于是 `mgl_batch_issue_encode.c` 的两处调用点改**直调 C**，端口 + `+DrawStageHost.m` 里两个方法（28 行，
+     全树无其它调用者）+ 私有头声明（21 行）一并删除。
+     ③ **净减账**：**端口 20 → 18**（`mgl_renderer_ports.h` 声明面与 shim 实现面都是 18）；shim **331 → 298 行**、
+     **47 → 45 语法**。全仓：ObjC 行数 **36,482 → 36,281**、语法 **2,128 → 2,106**、词汇 **3,992 → 3,986**；
+     `MGLRenderer*.m` **33,002 → 32,834**（`+Draw.m` 511 → **372**）。
+     ④ **oracle**：旧库 = 提交 `6df99ca` 的独立构建（`cmp` 两库不同）；两臂 trace 的**确定性行 4,980/4,980 与
+     5,513/5,513 逐行保序完全一致**（含全部 `RT_SAMPLE_COPY_*`、`REPLAY_*`、`IFACE DUMP` 行），
+     stderr `MGL` 行 **307/307 多重集一致**；唯一差异仍是与本刀无关的非确定行 `processGLState.slow`
+     （两侧各自数量随机，同库连跑两次同样差）。**plain 92/0/2、ICB 门禁 82/10/2 在新旧库上相同**。
+     ⑤ **门禁与 CTS**：`verify_gl_api` 离线通过 + 28 个目标全过（`GATE_EXIT=0`）；
+     **CTS 七簇非通过集合 diff 全空**（hotspot 1270/52/4/1+1cw · tess 139/1 · GS 136/0 · refq 164/54/5 ·
+     piq 17/12/1 · compute 113/38/1ns · pp 1/3/1ns）。
+     ⑥ **教训（第四次同源，值得单列）**：第一次改写时我用**字符偏移**（`len('\n'.join(lines[:i]))`）在"先改写、后删除"
+     的两步之间做切片，因为改写让文本变长，偏移全部错位 → **把文件截断成 400 行垃圾**（编译报 `missing '@end'`）。
+     **规则：同一文件的多步编辑一律基于行列表（或每步重读文件、重算位置），绝不在文本长度会变的步骤之间复用字符偏移。**
+     下一刀：`MGLRenderer+DrawSupport.m`(351) / `+GPURecovery.m`(351) / `MGLRenderer+SwapDiagnostics.m`(557) 里
+     同类"一行转发 C"的壳（先按本刀手法清掉再谈方法体下沉）；以及 §0.09 列表里的 ICB 门禁与 T5 唯一壳合并。

@@ -61,17 +61,6 @@ int mglRendererResolveElementBufferPort(void *renderer, const void *command,
                                         Buffer **gl_buffer_out,
                                         void **mtl_buffer_out);
 
-/* Cull-distance capture for a direct draw. */
-int mglRendererCaptureCullArrayPort(void *renderer, GLMContext ctx, int32_t first,
-                                    int32_t count, int32_t instance_count,
-                                    uint32_t base_instance);
-int mglRendererCaptureCullElementPort(void *renderer, GLMContext ctx,
-                                      const uint8_t *index_bytes,
-                                      uint32_t index_type, int32_t count,
-                                      int32_t base_vertex,
-                                      int32_t instance_count,
-                                      uint32_t base_instance);
-
 /* Renderer state processing (1 = a draw command). */
 int mglRendererProcessGLStatePort(void *renderer, int draw_command);
 

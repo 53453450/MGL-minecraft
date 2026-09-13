@@ -83,8 +83,8 @@ static int mglDirCullCap(void *v, uint32_t i, int cullPath)
 {
     MGLIssueEncCtx *c = v; MGLDrawCommand *cmd = &c->batch->commands[i];
     if (cullPath == MGL_BATCH_CULL_CAPTURE_ARRAYS)
-        return mglRendererCaptureCullArrayPort(c->r, c->ctx, cmd->first, cmd->count,
-            cmd->instanceCount, cmd->baseInstance);
+        return mglDrawHostCaptureCullDistanceArray(c->r, c->ctx, cmd->first,
+            cmd->count, cmd->instanceCount, cmd->baseInstance) ? 1 : 0;
     if (cullPath != MGL_BATCH_CULL_CAPTURE_ELEMENTS) return 0;
     Buffer *eb = NULL; void *meb = NULL;
     if (!mglRendererResolveElementBufferPort(c->r, cmd, "cullDistanceCapture", c->ctx,
@@ -92,8 +92,9 @@ static int mglDirCullCap(void *v, uint32_t i, int cullPath)
         return 0;
     const uint8_t *src = mglElementIndexSourceForDraw(eb, meb, cmd->indexType,
                                                       cmd->indexBufferOffset, cmd->count);
-    return mglRendererCaptureCullElementPort(c->r, c->ctx, src, cmd->indexType,
-        cmd->count, cmd->baseVertex, cmd->instanceCount, cmd->baseInstance);
+    return mglDrawHostCaptureCullDistanceElement(c->r, c->ctx, src,
+        cmd->indexType, cmd->count, cmd->baseVertex, cmd->instanceCount,
+        cmd->baseInstance) ? 1 : 0;
 }
 static int mglDirAfterCull(void *v)
 { MGLIssueEncCtx *c = v; return (mglRendererProcessGLStatePort(c->r, 1) &&
