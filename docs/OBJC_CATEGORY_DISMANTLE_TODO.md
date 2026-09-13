@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,963**、ObjC 语法 **2,268 → 1,993**、词汇 **4,353 → 3,871**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,845**、ObjC 语法 **2,268 → 1,986**、词汇 **4,353 → 3,863**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2078,3 +2078,25 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      `releaseDetachedCommandBufferIfOwned:` 放在 `@finally` 里，必须保证异常路径也执行；
      ③ `_deviceResetRequested` 的置位——先确认它是否在 `MGLRendererCoreState`（cut 54 搬进去的四个 `_Atomic` 通道之一），
      若是则 `areas.core->deviceResetRequested` 直接写，若否则再加一个方法+壳转发。
+
+85. **P0-1 第三十一刀：`MGLRenderer+GPURecovery.m` 整文件删除（**文件 17 → 16**）**：
+     ① 收口最后一刀式的三件事全部落地：
+     - manager 两个 C 入口：`mglRenderPassManagerCommitCommandBufferTransaction` /
+       `mglRenderPassManagerReleaseDetachedCommandBufferIfOwned`（都只动 `_state`，写进 `mgl_render_pass_manager_ops.c`）；
+     - 壳里新增 **带 ctx + finally 的守卫** `mglPlatformShellGuardedCallCtx(renderer, what, body, ctx, finally_fn)`
+       （`@try/@catch/@finally` 的 C 对手；`ctx` 传 command buffer，于是 finally 里能释放**正确**的那个 submission）；
+     - `_deviceResetRequested` **确认在 `MGLRendererCoreState`**（第 54 刀搬进去的 `_Atomic bool`）→ C 侧直接
+       `atomic_store_explicit(&areas.core->deviceResetRequested, …)`，无需新入口。
+     `commitCommandBufferWithAGXRecovery:`(99) → `mglRendererCommitCommandBufferWithAGXRecovery` + 裸体
+     `…Body` + finally 半片；文件里只剩注释与空 category → **`git rm` 整个 `.m`**。
+     ② **三个 C/ObjC 边界坑（记一次）**：`mglShouldTraceCall` 是 ObjC 私头里的 `static inline`（C 侧要么自带同义实现，
+     要么用 C 常量）→ 本刀把 `kMGLDiagnosticStateLogs` 以 C 常量镜像并复刻 80/500 调度；`id` 实参必须逐个
+     `(__bridge void *)`（我的批量脚本曾把已是 `void *` 的实参加成双重桥接，编译器报
+     `incompatible types casting 'void *' to 'void *'`）；`__builtin_available(macOS 11.0, *)` 是 `@available` 的 C 形式。
+     ③ **度量**：**文件 17 → 16**、行数 **34,963 → 34,845**、语法 **1,993 → 1,986**、词汇 **3,871 → 3,863**；
+     shim 端口仍 13（居唯一壳 TU）。
+     ④ **oracle**：旧库 = 提交 `a915c93` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：按 §0.12/§0.13 继续挑薄文件——`+DrawStageHost.m`(≈217，余 4 方法，含 block 与 `self->ctx` 写)、
+     `+SwapDiagnostics.m`(556，2 方法)、`+Binding.m`(431，`bindMTLTextureLocked:` 339 + `syncResourceBindings…` 27)、
+     `MGLPipelineCache.m`(446)、`MGLRenderPassManager.m`(≈500)；最后是 `mgl_draw_metal_port.m`(1,973, 0 方法) 与三厚块。

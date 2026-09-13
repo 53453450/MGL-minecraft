@@ -2090,7 +2090,7 @@ static void mglTextureCopyTextureToBuffer(
             (__bridge id)[_renderPassManager
                 detachCurrentCommandBufferForSubmission];
         @try {
-            [self commitCommandBufferWithAGXRecovery:pendingCB];
+            mglRendererCommitCommandBufferWithAGXRecovery((__bridge void *)self, (__bridge void *)pendingCB);
             mglTextureWaitCommandBuffer(pendingCB);
         } @catch (NSException *e) {
             NSLog(@"MGL WARNING: mtlGetTexImage pre-readback flush failed: %@", e.reason);

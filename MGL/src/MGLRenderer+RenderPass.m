@@ -5202,7 +5202,7 @@ static GLenum mglPassthroughDeclType(
             detachCurrentCommandBufferForSubmission];
 
     @try {
-        [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
+        mglRendererCommitCommandBufferWithAGXRecovery((__bridge void *)self, (__bridge void *)commandBufferToCommit);
         mglRenderPassWaitCommandBuffer(commandBufferToCommit);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: failed to synchronize render pass for texture readback (%s): %@",
@@ -6997,7 +6997,7 @@ static GLenum mglPassthroughDeclType(
             detachCurrentCommandBufferForSubmission];
 
     @try {
-        [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
+        mglRendererCommitCommandBufferWithAGXRecovery((__bridge void *)self, (__bridge void *)commandBufferToCommit);
         /* The owner now retains the last submit; flushCommandBuffer waits on
          * that state after releasing METAL_LOCK. */
     } @catch (NSException *exception) {

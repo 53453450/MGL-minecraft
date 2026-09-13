@@ -413,6 +413,26 @@ int mglPipelineCacheResetCaches(void *pipeline_cache_object)
 
 /* Runs a C body with the Objective-C exception guard the renderer's cleanup
  * paths always had.  Kept in the shell TU because @try/@catch has no C form. */
+/* Like mglPlatformShellGuardedCall, but with a context argument and an
+ * always-run finally - the C twin of @try/@catch/@finally. */
+int mglPlatformShellGuardedCallCtx(void *renderer, const char *what,
+                                   int (*body)(void *, void *), void *ctx,
+                                   void (*finally_fn)(void *, void *))
+{
+    @try {
+        return body ? body(renderer, ctx) : 0;
+    } @catch (NSException *exception) {
+        fprintf(stderr, "MGL ERROR: Exception during %s: %s\n",
+                what ? what : "operation",
+                exception.description ? exception.description.UTF8String : "?");
+        return 0;
+    } @finally {
+        if (finally_fn) {
+            finally_fn(renderer, ctx);
+        }
+    }
+}
+
 int mglPlatformShellGuardedCall(void *renderer, const char *what,
                                 int (*body)(void *))
 {

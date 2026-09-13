@@ -66,3 +66,37 @@ void mglRenderPassManagerDiscardCurrentCommandBuffer(void *renderer)
     mglRenderDestroyMDIScratchOwner(&cs->mdiArgsScratchOwner);
     mglRenderPassManagerSyncRuntimeOwners(cs);
 }
+
+int mglRenderPassManagerCommitCommandBufferTransaction(
+    void *renderer, void *commandBuffer, void *recoveryOwner,
+    int waitForCompletion, MGLRenderCommandBufferTransaction *result)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+    if (!cs) {
+        return -1;
+    }
+    int transactionResult = mglRenderCommitCommandBufferTransaction(
+        cs->currentCommandBufferOwner, &cs->detachedCommandBufferSubmission,
+        commandBuffer, recoveryOwner, waitForCompletion ? 1u : 0u, result);
+    mglRenderPassManagerSyncRuntimeOwners(cs);
+    return transactionResult;
+}
+
+void mglRenderPassManagerReleaseDetachedCommandBufferIfOwned(
+    void *renderer, void *commandBuffer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *cs = areas.command;
+    if (!cs || !cs->detachedCommandBufferSubmission) {
+        return;
+    }
+    if (commandBuffer &&
+        mglRenderCommandBufferSubmissionMatchesBuffer(
+            cs->detachedCommandBufferSubmission, commandBuffer) != 1) {
+        return;
+    }
+    mglRenderDestroyCommandBufferSubmission(&cs->detachedCommandBufferSubmission);
+}

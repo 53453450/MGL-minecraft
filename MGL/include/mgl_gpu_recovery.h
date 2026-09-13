@@ -58,6 +58,16 @@ int mglPlatformShellMetalObjectsPresent(void *renderer);
  * Returns 1 when operations may continue. */
 int mglRendererValidateMetalObjects(void *renderer);
 
+/* Commits a command buffer through the C++ transaction with the AGX recovery
+ * bookkeeping; the @try/@catch/@finally guard lives in the shell. */
+int mglRendererCommitCommandBufferWithAGXRecovery(void *renderer,
+                                                  void *commandBuffer);
+
+/* Guarded call with a context argument and an always-run finally (shell TU). */
+int mglPlatformShellGuardedCallCtx(void *renderer, const char *what,
+                                   int (*body)(void *, void *), void *ctx,
+                                   void (*finally_fn)(void *, void *));
+
 /* Resets the pipeline cache's caches; the cache object comes from the state
  * areas (implemented in the shell TU). */
 int mglPipelineCacheResetCaches(void *pipeline_cache_object);

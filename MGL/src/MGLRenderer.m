@@ -3640,7 +3640,7 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
                     NSLog(@"MGL ERROR: Failed to register C++ frame completion handler");
                 }
             }
-            [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
+            mglRendererCommitCommandBufferWithAGXRecovery((__bridge void *)self, (__bridge void *)commandBufferToCommit);
             if (traceSwap) {
                 mglTraceLog("MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);
             }

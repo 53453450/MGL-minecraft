@@ -12,6 +12,13 @@
 
 #include "mgl_gpu_recovery.h"
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_trace_log.h"   /* mglTraceLog / call-trace policy */
+#include "mgl_state_log.h"
+#include "mgl_trace_strategy.h"
+
+/* kMGLDiagnosticStateLogs is a static const BOOL in the Objective-C
+ * MGLRenderer_Private.h; mirrored here for the C translation unit. */
+static const int kMGLDiagnosticStateLogsC = 0;
 #include "mgl_sync.h"
 #include "mgl_thread_affinity.h"   /* MGL_ASSERT_GL_THREAD */       /* MGL_COMMAND_BUFFER_STATUS_COMMITTED */
 #include "mgl_renderer_ports.h"
@@ -254,4 +261,105 @@ int mglRendererValidateMetalObjects(void *renderer)
 {
     return mglPlatformShellGuardedCall(renderer, "Metal object validation",
                                        mglRendererValidateMetalObjectsBody);
+}
+
+/* @finally half of the commit path: release the detached submission when this
+ * command buffer owns it. */
+static void mglRendererCommitFinally(void *renderer, void *ctx)
+{
+    mglRenderPassManagerReleaseDetachedCommandBufferIfOwned(renderer, ctx);
+}
+
+static int mglRendererCommitCommandBufferWithAGXRecoveryBody(void *renderer,
+                                                             void *commandBuffer)
+{
+    static uint64_t s_commitCallCount = 0;
+    uint64_t commitCall = ++s_commitCallCount;
+    /* Same policy as the ObjC-inline mglShouldTraceCall: kMGLDiagnosticStateLogs
+     * gates it, then the 80-calls/500-period schedule. */
+    int traceCommit = (kMGLDiagnosticStateLogsC ? 1 : 0) &&
+                      ((commitCall <= 80ull) || ((commitCall % 500ull) == 0ull));
+
+    if (!commandBuffer) {
+        fprintf(stderr, "MGL ERROR: Cannot commit NULL command buffer\n");
+        return 0;
+    }
+
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *recoveryOwner = areas.gpu_recovery_command_owner
+                              ? *areas.gpu_recovery_command_owner
+                              : NULL;
+
+    if (traceCommit) {
+        char commandBufferLabel[128];
+        (void)mglRenderGetCommandBufferLabel(commandBuffer, commandBufferLabel,
+                                             sizeof(commandBufferLabel));
+        mglTraceLog("MGL TRACE commit.begin call=%llu cb=%p status=%s label=%s",
+                    (unsigned long long)commitCall, commandBuffer,
+                    mglCommandBufferStatusName(
+                        mglRenderCommandBufferStatus(commandBuffer)),
+                    commandBufferLabel);
+    }
+
+    MGLRenderCommandBufferTransaction transaction = {0};
+    int transactionResult = mglRenderPassManagerCommitCommandBufferTransaction(
+        renderer, commandBuffer, recoveryOwner, 0, &transaction);
+
+    if (transaction.result == MGL_RENDER_COMMAND_BUFFER_TRANSACTION_NESTED) {
+        fprintf(stderr,
+                "MGL AGX WARNING: Commit already in progress, skipping nested commit\n");
+        if (traceCommit) {
+            mglTraceLog("MGL TRACE commit.skip.nested call=%llu",
+                        (unsigned long long)commitCall);
+        }
+        return 0;
+    }
+    if (transaction.result == MGL_RENDER_COMMAND_BUFFER_TRANSACTION_SKIPPED) {
+        if (transaction.has_error) {
+            fprintf(stderr,
+                    "MGL AGX WARNING: C++ transaction skipped failed command buffer: %s (domain=%s code=%lld, consecutive=%llu)\n",
+                    transaction.before.error_description,
+                    transaction.before.error_domain,
+                    (long long)transaction.before.error_code,
+                    (unsigned long long)transaction.recovery.consecutive_errors);
+        } else {
+            fprintf(stderr,
+                    "MGL AGX WARNING: C++ transaction skipped finalized command buffer (status: %u)\n",
+                    transaction.before.status);
+        }
+        if (transaction.device_reset_requested) {
+            atomic_store_explicit(&areas.core->deviceResetRequested, true,
+                                  memory_order_release);
+        }
+        return 0;
+    }
+    if (transactionResult != 0 || transaction.has_error) {
+        fprintf(stderr,
+                "MGL AGX ERROR: C++ command-buffer transaction failed (before=%u after=%u submission=%u consecutive=%llu)\n",
+                transaction.before.status, transaction.after.status,
+                transaction.used_submission,
+                (unsigned long long)transaction.recovery.consecutive_errors);
+        if (transaction.device_reset_requested) {
+            atomic_store_explicit(&areas.core->deviceResetRequested, true,
+                                  memory_order_release);
+        }
+        return 0;
+    }
+    /* kMGLVerboseFrameLoopLogs is NO (MGLRenderer+RenderPass_Private.h). */
+    if (traceCommit) {
+        mglTraceLog("MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
+                    (unsigned long long)commitCall, commandBuffer,
+                    mglCommandBufferStatusName(transaction.after.status));
+    }
+    return 1;
+}
+
+int mglRendererCommitCommandBufferWithAGXRecovery(void *renderer,
+                                                  void *commandBuffer)
+{
+    return mglPlatformShellGuardedCallCtx(
+        renderer, "command buffer commit",
+        mglRendererCommitCommandBufferWithAGXRecoveryBody, commandBuffer,
+        mglRendererCommitFinally);
 }

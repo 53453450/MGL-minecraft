@@ -25,6 +25,11 @@ extern "C" {
 void mglRenderPassManagerDiscardCurrentCommandBuffer(void *renderer);
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer);
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer);
+int mglRenderPassManagerCommitCommandBufferTransaction(
+    void *renderer, void *commandBuffer, void *recoveryOwner,
+    int waitForCompletion, MGLRenderCommandBufferTransaction *result);
+void mglRenderPassManagerReleaseDetachedCommandBufferIfOwned(
+    void *renderer, void *commandBuffer);
 
 #ifdef __cplusplus
 }
