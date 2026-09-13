@@ -1179,11 +1179,12 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     本次 areas 归并（−2 端口）——**shim 43 → 31**。后续可继续并入 areas 的候选：`MGLRendererCoreState`（需先把
     `MGLCapability`/`MGLDrawable` 做成 C 类型）、`MGLResourceFallbackState` 其余字段、`MGLTessellationState`。
 
-### 0.09 goal 轮次用尽时的交接状态（2026-09-13 16:45 更新，**第 40 轮＝本轮次预算上限**，P0-1 第二十八刀后）
+### 0.09 goal 交接状态（2026-09-13 19:00 更新，**第 52 轮**，P0-1 第三十五刀后）
 
-- **tip（提交 `32a80c1`）**：`objc_zero.sh`：**17** 个 `.m` / 空 TU **0** / **35,015** 行 / 语法 **1,991** / 词汇 **3,897**；
-  shim **13 端口 / 223 行 / 37 语法**（声明面＝实现面，无死声明）；`MGLRenderer*.m` ≈ **31,9xx**。
-  基线对照：文件 53 → 17、行数 43,989 → 35,015、语法 2,268 → 1,991、词汇 4,353 → 3,897、shim 43 → 13 端口。
+- **tip（提交 `28b6885`）**：`objc_zero.sh`：**16** 个 `.m` / 空 TU **0** / **34,564** 行 / 语法 **1,973** / 词汇 **3,836**；
+  shim **13 端口 / 223 行 / 37 语法**（声明面＝实现面，无死声明）。
+  基线对照：文件 53 → 16、行数 43,989 → 34,564（−21.4%）、语法 2,268 → 1,973（−13.0%）、
+  词汇 4,353 → 3,836（−11.9%）、shim 43 → 13 端口（−70%）。
 - **第 40 轮的一次失败尝试（已回退，必须记录）**：`resetMetalState` 的 C 化在补 areas 槽地址时编译失败——
   **`_commandQueue` 在壳 TU 里不可见**（`_core`/`_backend`/`_batcing`/`_pipelineCache`/`_gpuRecovery`/`_tessellation` 等都可见，
   唯独它不可见），clang 报 `expected identifier` 并连锁报 `_backend` 未声明。**已 `git checkout -- .` 全部回退，未进提交。**
@@ -2283,3 +2284,29 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
      `mglBackendWillDestroy:`（同文件内 `[renderer …]` 调用））——**除非逐个手查，否则不要再动**。
      后续回到结构性路线（§0.15）：`+DrawStageHost.m` 余 3 方法 → `+Binding.m` 的 `bindMTLTextureLocked:`
      → `MGLPipelineCache.m` → `+SwapDiagnostics.m` → `mgl_draw_metal_port.m` → 三厚块。
+
+### 0.19 目标现状总览与"下一刀"清单（第 52 轮实测）
+
+**已达成**：T0（空 TU 清零）、T1（纯 C 文件改名）、T4 主体（**端口 43 → 13**，且 **ObjC 壳 TU 唯一化**：端口与平台壳同处
+`MGLPlatformRendererShell.m`）、`+Batch` 整簇与 `+Draw.m`/`+DrawSupport.m`/`+VertexLayout.m`/`+GPURecovery.m` 四个文件消失、
+死代码两批共清 17 个方法（−262 行）。
+
+**未达成**（终态要求 `MGL/` 内零 `.m`）：**16 个 `.m` / 34,564 行 / 1,973 语法 / 3,836 词汇**。剩余 16 个文件的清单与规模见 §0.15。
+
+**下一刀候选（按 §0.14 的三种路线取最短）**：
+
+| 目标 | 行数 | 路线 | 预估 |
+|---|---|---|---|
+| `+DrawStageHost.m` 的 `bindCullDistanceEmulationBuffers:` | 85 | areas 加两个 `_tessellation.cullDistanceCapture*` 字段；体里 `id`/3×`__bridge` **手工**改 `void *` | −85 |
+| `+DrawStageHost.m` 的 MS 循环族（2 个方法） | 26+39 | 先 C 化 `endRenderEncodingLocked`（依赖 ≥3）→ 再把 block 换 `fn+ctx` | −65（分两步） |
+| `+Binding.m` 的 `syncResourceBindingsForContext:` | 27 | 依赖 10 处发送（多为已 C 化的绑定步骤）→ 逐个替换 | −27 |
+| `MGLPipelineCache.m` | 446 | 方法多为 `mglRender*PipelineCacheOwner*` 转发；`state`/`device` 是属性 getter（会假阳性） | 可能整文件 |
+| `MGLRenderer+Binding.m` 的 `bindMTLTextureLocked:` | 339 | 依赖 `createMTLTextureFromGLTexture` / `createFallbackMTLTexture` / `endRenderEncodingLocked` / `NSDate` | 分多刀 |
+| `+SwapDiagnostics.m` | 556 | 2 方法都在 swap 路径，依赖 `_drawable`（私有 ivar → 方法+壳转发） | 分两步 |
+| `mgl_draw_metal_port.m` | 1,973 | **0 方法**，纯 host-ops 适配；把表改成纯 C 函数指针 + 被调类别方法逐个 C 化 | 最后阶段 |
+| 三厚块（`+RenderPass` 7,017 / `+Texture` 6.4k / `+Blit` 4.0k） | ~17.5k | 先"叶子方法"（只调 C 与 areas 的），再向上收口 | 最后阶段 |
+
+**两条工具盲区（必须记住）**：① `scripts/objc_dead_methods.py` 的 `bare` 检查把"头声明"当引用 → **"只有声明、无调用"的方法它不报**，
+需手工"定义 vs 调用点"核查（第 86 条）；② 反过来的启发式（忽略声明）会产生 3 类假阳性——属性语法、框架回调、跨行/复杂接收者
+（第 48 条），**每删一个都必须跑"三步核查"**（第 88 条）；已知仍会假阳性的名字：`.state` / `.device` / `.pipelineState` /
+`performOperation:` / `mtlDispatchComputeLocked:` / `mglBackendWillDestroy:`。
