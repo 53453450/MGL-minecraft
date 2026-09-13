@@ -3673,3 +3673,32 @@ ObjC 语法 **1,645**（2,268 起）、词汇 **3,186**（4,353 起）；端口 
 - 壳内 `MGLPipelineCache` 类的**归档路径**（Foundation：`NSSearchPath…`/`NSBundle`/`NSFileManager`/`NSURL`）→
   转 C 会改变归档文件名与 `NSError` 文案，而 **A/B 恰好过滤 `BINARY ARCHIVE` 行**（§0.103①）→ 必须先建专用 oracle；
 - `syncResourceBindingsForContext:` 一类"成本倒挂"项（§0.23）→ 除非顺带解锁整文件删除，否则不动。
+
+### 0.52 第 95 轮：预算末轮的收束说明与"下一批必须整块搬"的最后清单
+
+**本轮复验（未改代码，`df24b67`）**：两个库构建无错、`make test-all` **0**（`PASS 92 / FAIL 0 / SKIP 2`）；
+文件 **7**、行数 **29,004**、语法 **1,645**、词汇 **3,186**；端口 33、壳 2,054 行。
+A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔提交都只改文档）。
+
+**语法构成实测（决定下一批怎么做）**——本轮把剩下两个"中块"文件的语法来源拆开数了一遍：
+
+| 文件 | 语法总数 | `[receiver selector]` 消息发送 | `__bridge` | `#import` | `@implementation/@end` |
+|---|---|---|---|---|---|
+| `MGLRenderer+BindingState.m` | 129 | 43 | **78** | 3 | 2 |
+| `MGLRenderer+Tessellation.m` | 150 | 58 | **80** | 5 | 2 |
+
+**结论**：这两个文件的语法**大头是 `__bridge`（60%）**，而 `__bridge` 是"把 ObjC 指针交给 C 入口"的桥，
+**只有把宿主代码本身搬成 C 才能连带消掉**——单个 `__bridge` 无法"就地删除"（删了就编不过）。
+所以下一批**不能按"小方法"零敲**（本周期第 123/124 刀证明：搬 19–27 行的方法只能降 0–1 个语法），
+**必须整块搬**：一次搬掉一个方法簇 + 其 `self`/`__bridge`/`id` 使用面，让语法数字成批下降。
+
+**建议的整块切口（按"语法/行数比"排序）**：
+1. `MGLRenderer+BindingState.m` 的 **stage buffer 绑定簇**（`bindStageBufferMapEntriesForStage:` /
+   `bindStageFallbackBuffersForStage:` / `finalizeStageBufferPresentMask:` 等，约 400 行、含约 20 个 `__bridge`）；
+2. `MGLRenderer+Tessellation.m` 的 **`planTessTextureBinds:` + 三个 `mglTessPlan*`/`mglTessCreateSampler` 静态助手**
+   （约 120 行，`id texture/sampler` + `NSMutableArray` → `void *` + keep-alive 集，机制在第 124 刀已跑通）；
+3. `MGLRenderer+Blit.m` 的 **采样拷贝/解析簇**（`mgl_blit_sampled_copy.c` 已经存在，可继续把同族方法搬过去）。
+
+**收束说明**：本轮次预算（90 轮）已到末轮，目标**未达成**且**不是阻塞**（没有"同一外部阻塞连续三轮"的情形，
+只是剩余量大：5 个厚文件约 24k 行 / 约 1,150 语法，需要大量轮次）。**目标保持 active**，
+按 §0.51 的八步闭环与本节的三条整块切口继续即可。
