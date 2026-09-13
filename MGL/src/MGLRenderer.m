@@ -3054,14 +3054,6 @@ void logDirtyBits(GLMContext ctx)
 }
 
 #pragma mark render encoder and command buffer init code
-- (uint32_t) mtlStencilOpForGLOp:(GLenum) op
-{
-    uint32_t mtlOp = 0u;
-    if (!mglRenderStencilOpFromGL((uint32_t)op, &mtlOp)) {
-        NSLog(@"MGL WARNING: Unknown stencil operation 0x%x, falling back to KEEP", op);
-    }
-    return mtlOp;
-}
 
 /* updateCurrentRenderEncoder moved to MGLRenderer+RenderPass.m */
 
@@ -3091,33 +3083,7 @@ void logDirtyBits(GLMContext ctx)
 /* generateVertexDescriptorState moved to MGLRenderer+VertexLayout.m */
 
 #pragma mark utility funcs for processGLState
-- (uint32_t) blendFactorFromGL:(GLenum)gl_blend
-{
-    uint32_t factor = 0u;
-    if (!mglRenderBlendFactorFromGL((uint32_t)gl_blend, &factor)) {
-        static uint64_t s_unknownBlendFactorCount = 0;
-        uint64_t hit = ++s_unknownBlendFactorCount;
-        if (hit <= 32 || (hit % 512) == 0) {
-            NSLog(@"MGL ERROR: Unknown blend factor 0x%x hit=%llu",
-                  gl_blend, (unsigned long long)hit);
-        }
-    }
-    return factor;
-}
 
-- (uint32_t) blendOperationFromGL:(GLenum)gl_blend_op
-{
-    uint32_t op = 0u;
-    if (!mglRenderBlendOperationFromGL((uint32_t)gl_blend_op, &op)) {
-        static uint64_t s_unknownBlendOperationCount = 0;
-        uint64_t hit = ++s_unknownBlendOperationCount;
-        if (hit <= 32 || (hit % 512) == 0) {
-            NSLog(@"MGL ERROR: Unknown blend operation 0x%x hit=%llu",
-                  gl_blend_op, (unsigned long long)hit);
-        }
-    }
-    return op;
-}
 
 /* updateBlendStateCache moved to MGLRenderer+RenderPass.m */
 
@@ -3182,12 +3148,6 @@ void logDirtyBits(GLMContext ctx)
 
 /* flushCommandBufferLocked: moved to MGLRenderer+RenderPass.m */
 #pragma mark C interface to mtlDeleteMTLObj
--(void) mtlDeleteMTLObj:(GLMContext) glm_ctx buffer: (void *)obj
-{
-    METAL_LOCK();
-    [self mtlDeleteMTLObjLocked:glm_ctx buffer:obj];
-    METAL_UNLOCK();
-}
 
 -(void) mtlDeleteMTLObjLocked:(GLMContext) glm_ctx buffer: (void *)obj
 {
@@ -3245,10 +3205,6 @@ void logDirtyBits(GLMContext ctx)
 /* issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx moved to MGLRenderer+Draw.m */
 
 #pragma mark C interface to mtlFlush
--(void) mtlFlush:(GLMContext) glm_ctx finish:(bool)finish
-{
-    [self flushCommandBuffer: finish];
-}
 
 #pragma mark C interface to mtlSwapBuffers
 void mglRendererSwapBuffers(GLMContext glm_ctx)
@@ -4222,12 +4178,6 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
 
 #pragma mark C interface to mtlBufferSubData
 
--(void) mtlBufferSubData:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr
-{
-    METAL_LOCK();
-    [self mtlBufferSubDataLocked:glm_ctx buf:buf offset:offset size:size ptr:ptr];
-    METAL_UNLOCK();
-}
 
 -(void) mtlBufferSubDataLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr
 {
@@ -4242,19 +4192,8 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     }
 }
 #pragma mark C interface to mtlMapUnmapBuffer
--(void *) mtlMapUnmapBuffer:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
-{
-    METAL_LOCK();
-    void *result = [self mtlMapUnmapBufferLocked:glm_ctx buf:buf offset:offset size:size access:access map:map];
-    METAL_UNLOCK();
-    return result;
-}
 
 
-- (void)mtlReadBackBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size
-{
-    mglRenderReadBackBuffer(glm_ctx, buf, offset, size);
-}
 -(void *) mtlMapUnmapBufferLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
 {
     (void)glm_ctx;
@@ -4272,12 +4211,6 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
     return mapped;
 }
 #pragma mark C interface to mtlFlushMappedBufferRange
--(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
-{
-    METAL_LOCK();
-    [self mtlFlushMappedBufferRangeLocked:glm_ctx buf:buf offset:offset length:length];
-    METAL_UNLOCK();
-}
 
 -(void) mtlFlushMappedBufferRangeLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
 {

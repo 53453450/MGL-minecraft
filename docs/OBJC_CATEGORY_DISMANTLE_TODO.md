@@ -51,7 +51,7 @@
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **13 / 223**） |
 
 **当前进度（2026-09-13，T0–T2′ + T4 十三切片 + **P0-1 二十四刀** + trace 清零 后；第 35 轮为分析与交接，未开新刀）**：
-文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,826**、ObjC 语法 **2,268 → 1,984**、词汇 **4,353 → 3,859**；
+文件 **53 → 17**、空 TU **3 → 0**、行数 **43,989 → 34,759**、ObjC 语法 **2,268 → 1,979**、词汇 **4,353 → 3,856**；
 **shim：43 → 13 个端口 / 223 行 / 37 语法；shim 内 ObjC 方法 5 → 1（P0-1 六刀 40 → 23，七刀 → 21，八刀 → 20，九刀 → 18，十刀 → 14，十一刀 → 13）**。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -2231,3 +2231,20 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 **核查方法（每个候选 3 步，缺一不可）**：① `grep -rn "<sel>" --include='*.m' --include='*.mm' --include='*.c' --include='*.cpp' --include='*.h'`，
 逐条看清命中是"调用"还是"声明/注释"；② 查属性语法（getter 看 `.name`，setter 看 `.name =`）；③ 查 `@selector(<sel>)` 与函数指针表
 （`mgl_draw_metal_port.m` 的 host-ops 表）、以及 `respondsToSelector`。**三步都确认无调用，才可删除**。
+
+87. **P0-1 第三十三刀：按 §0.18 三步法核实并删除 9 个死方法（**−67 行**）**：
+     ① 对 §0.18 的次级候选逐个跑"三步核查"：**9 个候选的全部 grep 命中都只是"自己的定义 + 私有头声明 + 无关注释"**
+     （例：`mtlFlush:` 在 `mgl_gl_extensions.c:5782` 的命中是**注释**；`mtlFlushMappedBufferRangeLocked:` 是**另一个方法名**），
+     既无属性语法调用、也无 `@selector`/host-ops 表引用 → 判定为死代码并删除：
+     `MGLRenderer.m` 的 `mtlReadBackBuffer:`(4) · `mtlFlush:`(4) · `mtlDeleteMTLObj:`(6) · `mtlBufferSubData:`(6) ·
+     `mtlMapUnmapBuffer:`(7) · `mtlFlushMappedBufferRange:`(6) · `mtlStencilOpForGLOp:`(8) · `blendFactorFromGL:`(13) ·
+     `blendOperationFromGL:`(13)；两个私有头里的对应声明一并清理。
+     ② **刻意不动**：`mtlDispatchComputeLocked:`(26) 虽然也被启发式扫成候选，但 `+Compute.m:134` 有
+     `[renderer mtlDispatchComputeLocked:…]` 的**真实调用**——这正是"启发式只配当候选"的例子，已写进文档。
+     ③ **度量**：行数 **34,826 → 34,759**、语法 **1,984 → 1,979**、词汇 **3,859 → 3,856**；文件 16、shim 端口 13 不变。
+     ④ **oracle**：旧库 = 提交 `64d5f19` 的独立构建（`cmp` 两库不同）；两臂 trace **确定性行 4,980/4,980 与 5,513/5,513
+     逐行保序完全一致**，stderr `MGL` 行 **307/307 多重集一致**；plain **92/0/2**；**CTS 七簇非通过集合 diff 全空**；28 目标门禁 `GATE=0`。
+     下一刀：§0.18 里还剩 `MGLRenderPassManager.m` 的 5 个候选（`beginCommandBufferCommit`(5) · `clearPendingEvent`(7) ·
+     `commitDetachedCommandBufferIfOwned:`(15) · `appendSyncToCurrentCommandBuffer:`(15) · `preparePendingEventWithDevice:`(17)）与
+     `+RenderPass.m` 的 `newCommandBufferAndRenderEncoder`(37) · `mtlInvalidateRenderPass:`(45)、`MGLPlatformRendererShell.m` 的
+     `mglTextureForDrawable:`(4) · `performOperation:`(21)——**同样先跑三步核查再删**。

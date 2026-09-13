@@ -151,14 +151,11 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 - (id)createFallbackMTLTexture:(Texture *)tex;
 /* createMTLSamplerForTexParam:target: is now
  * mglTextureCreateSamplerForTexParam (mgl_texture_sampler.h). */
-- (uint32_t)mtlStencilOpForGLOp:(GLenum)op;
 - (bool)checkDrawBufferSize:(GLuint)index;
 - (id)newDrawBuffer:(uint32_t)pixelFormat isDepthStencil:(bool)depthStencil;
 - (id)newDrawBufferWithCustomSize:(uint32_t)pixelFormat
                      isDepthStencil:(bool)depthStencil
                         customSize:(CGSize)size;
-- (uint32_t)blendFactorFromGL:(GLenum)gl_blend;
-- (uint32_t)blendOperationFromGL:(GLenum)gl_blend_op;
 
 // Thread Safety: *Locked variants defined in MGLRenderer.m
 - (void)mtlDeleteMTLObjLocked:(GLMContext)glm_ctx buffer:(void *)obj;
