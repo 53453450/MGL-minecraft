@@ -1211,3 +1211,55 @@ Batch 簇已清空，剩余 ObjC 面集中在 **shim（40 端口 + 5 方法 / 51
     结论：**本机不要跑 `make clean`**（要清依赖用 `find build -name '*.d' -delete`，这也是 A/B 固定动作）。
     剩余 shim 端口路线：`_resourceFallback` 其余字段、`_tessellation`（P0-1 下沉时并入）、`_bindingStateOwner`
     已在 areas 内、`mglRendererCommandStatePort`/`BatchingStatePort` 可并入 areas（但调用点多，收益 −2）。
+
+### 0.10 三厚块（`+RenderPass`/`+Texture`/`+Blit`）转换评估（2026-09-13 实测）
+
+**问题**：它们能否整文件删除、改在 AIR 前后端实现？
+
+**实测成分**（脚本口径：方法体按 `^- (`/`^+ (` 到行首 `}` 计；"含 ObjC 发送的代码行"= 去掉注释/空行后含 `[recv sel]` 的行）：
+
+| 文件 | 行数 | ObjC 方法 | 方法体行数 | 文件内 C 风格函数 | 含 ObjC 发送的代码行 | 调 `mglRender*` C facade | 调 C 计划模块 | `__bridge` |
+|---|---|---|---|---|---|---|---|---|
+| `+RenderPass.m` | 7,100 | 51 | 6,181（87%） | 45 个 / 643 行 | 290 = **4.8%** | 665 次 / **193 个入口** | 24 次 / 10 个 | 86 |
+| `+Texture.m` | 6,981 | 53 | 6,392（92%） | 33 个 / 406 行 | 168 = **3.0%** | 307 次 / **150 个入口** | 19 次 / 12 个 | 92 |
+| `+Blit.m` | 4,941 | 30 | 4,302（87%） | 36 个 / 458 行 | 115 = **2.7%** | 175 次 / **80 个入口** | 21 次 / 11 个 | 94 |
+
+**结论一：可以最终删除，但做法是"转换"而不是"删除后重写"。**
+87–92% 的行在方法体里，而方法体里只有 3–5% 的代码行含 ObjC 消息发送——其余是 GL 状态读写、格式/区域数学、
+以及对 **C facade（`mgl_render.cpp`，metal-cpp）** 和 **C 计划模块** 的调用。这三个文件本质是
+"**C 代码套了 `.m` 外壳**"。P0-1 的"禁止整文件 Delete"正是指不能跳过转换直接删。
+
+**结论二：不应该放进 AIR 前后端。**
+AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer,parser,sema}.c` /
+`mgl_metallib_writer.cpp` / `mgl_air_loader.cpp`）；render-pass / texture / blit 是**运行时 GL→Metal** 语义，
+其 Metal 物化已经在 `mgl_render.cpp` 里，并被这三文件以 193/150/80 个 C 入口调用。把它们塞进 AIR 会
+(a) 与 `mgl_render.cpp` 重复实现，(b) 直接违反 P0-0「禁再胀 `mgl_air_backend.cpp`」。
+
+**结论三：哪些"本来就已经实现"？**
+- **已实现且已在用**：Metal 物化（`mgl_render.cpp`）；O3.1 的 render-pass load/store/clear/match 计划、
+  O4.4 的 depth/stencil blit gate、pixel-format/region/readback 计划——但合计只 64 个调用点，
+  占三文件方法体逻辑 **远不到 1%**（联合报告说的 "plan@C 贴皮" 在这里成立）。
+- **没有在别处实现**：方法体里那 **~16.9k 行**域内编排（GL 校验、上传路径、格式转换决策、区域裁剪、
+  blit 参数推导、render-pass 状态机）。删除它们必须把这些逻辑**原样搬走**。
+- **纯外壳可去掉**：79 个外部 `[self …]` 依赖（115/68/69 次）+ 19 处 `NSString/NSError` + 272 处 `__bridge`；
+  其中已有 C 端口的 8 个，以及本周期刚做成 C 可见的 `_renderPassManager.state` / `_pipelineCache.state`。
+
+**关键点（决定本项与 P0-2 相容）**：**端口只在 C→ObjC 时才是必需的**。把方法转成 C 函数之后，
+**ObjC 调用点可以直接调 C 函数**（传 `(__bridge void *)self`），因此这三文件的转换**不会让 shim 变大**，
+反而随方法搬走而净减。
+
+**分阶段路径（每刀都要给出 shim wrapper 净减）**
+1. **A：零/极低依赖方法先行**——如 `+RenderPass.m` 的 `newRenderEncoder`(4 行)、`newRenderEncoderLocked`(4)、
+   `endRenderEncoding`(6)、`framebufferAttachmentTexture`(6)、`bindMTLProgram`(7)、`ensureWritableCommandBuffer`(7)；
+   `+Texture.m` 的 `textureIndexForExpectedMetalType`(4)、`swizzleTexDesc`(8)、`textureUnitForSampledBinding`(4)；
+   `+Blit.m` 的 `releaseGLSampledRenderTargetCopyForTexture`(17)、`clearRectDepthState`(24)、
+   `scaledBlitPipelineForPixelFormat`(29)。注意这些方法全仓被调用 25/35/23 次不等（跨 4–8 个文件），
+   转 C 后要同步改这些 ObjC 调用点为直调。
+2. **B：高频外部依赖做成 C 入口并删掉原 ObjC 方法**——`recordGPUError`(30 次/3 文件)、`mglDrawableTexture`(26/4)、
+   `bindMTLTexture`(42/10)、`resetMetalState`(8/3)、`newCommandBuffer`(15/5)、`flushCommandBuffer`(11/5)、
+   `mglNextDrawable`(8/4)、`getOptimalAlignmentForPixelFormat`(6/1)。
+3. **C：`NSString/NSError` → C 字符串**（19 处）。
+4. **D：文件清空 → 删除**（此时才允许整文件删）。
+
+**工作量估计**：134 个方法 / ~16.9k 行 / 79 个外部依赖（去重后约 40 个）。按当前"每刀 300–500 行 + 端口面"的节奏，
+约 **8–12 个切片**；前 3–4 刀应专挑"零依赖 + 调用点集中"的方法，保证每刀都能报出 shim 净减。
