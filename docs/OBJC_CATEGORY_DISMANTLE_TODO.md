@@ -2504,6 +2504,12 @@ AIR 层是 shader 路径（`mgl_air_backend.cpp` / `mgl_ir.c` / `mgl_glsl_{lexer
 | `[_renderPassManager clearRenderPassIdentity]` | 无 C 入口（第 27 刀只做了 `End`/`Clear`/`Discard` 三个） | 在 `mgl_render_pass_manager_ops.c` 加第 4 个入口（体应是 `mglRenderClearRenderPassIdentity(cs->renderPassIdentityOwner)` 一类调用） |
 | `mglLogRenderPassLifecycle(…, id drawable, …)` | 签名带 **`id drawable`**（定义在 `MGLRenderer.m`），而 `_drawable` 是**私有 ivar**、且**不在 `MGLRendererCoreState`**（该结构只有 `drawBuffers[]` / 尺寸交接通道） | 二选一：① 给日志函数加一个 `void *` 版 C 变体；② 用"方法 + 壳转发"提供 `mglPlatformShellDrawable(void *)`，再让 C 版日志收 `void *` |
 
-**结论**：这两件都是小改动（各 ~10 行），但必须先做；做完后第 93 条的"半块"与它们合起来就是 §0.22 第②步的完整内容，
+**第 62 轮实测修正（重要）**：**item 2 没有"便宜解"**——我原以为可以加个壳助手 `mglPlatformShellLogRenderPassEnd` 包一层，
+实测它是**净增行数**（去掉 11 行块、新增 ~20 行壳函数）；另一条路是**把 `mglLogRenderPassLifecycle` 的 `id drawable` 改成 `void *`**，
+但那会让 **5–6 个 ObjC 调用点各加一个 `(__bridge void *)_drawable`**（+6 语法）。**结论：item 2 必须作为"整块搬迁"的一部分一起做**
+（改签名 + 调用点桥接），**不要**为它单独开一刀；而 item 1（`clearRenderPassIdentity` 的 C 入口，体是
+`mglRenderClearFboMatchCache` + 组装 identity + `mglRenderPassManagerStoreIdentity`）是**真正可加性**的前置，值得单独落地。
+
+**结论**：item 1 是小改动（~10 行）且可单独落地；**item 2 与整块搬迁绑定**；做完后第 93 条的"半块"与它们合起来就是 §0.22 第②步的完整内容，
 之后第③步 MS 循环族、第④步删除 `+DrawStageHost.m`（**文件 16 → 15**）。**本轮不做代码改动**：可用上下文已不足以在一次闭环内完成
 "补两处 + 搬 91 行 + 门禁/CTS/A/B"，按既定纪律不把树留在半成品状态。
