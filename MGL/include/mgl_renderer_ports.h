@@ -301,6 +301,13 @@ void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
                                     void *pixel_bytes, size_t bytes_per_row,
                                     size_t bytes_per_image,
                                     MGLRegionValue region);
+/* Sampled-texture readback trace.  The target method takes two NSStrings, so
+ * the port takes C strings and the shell makes the NSStrings (P0-1, log 155). */
+void mglRendererTraceSampledTextureReadbackPort(
+    void *renderer, void *texture, Texture *gl_tex, TextureLevel *level0,
+    GLuint program, GLuint binding, const char *stage, const char *reason,
+    uint64_t hit);
+
 /* Whether the current render pass references `texture` (used by the sampled
  * render-target copy repair path, P0-1 log 150). */
 int mglRendererCurrentRenderPassUsesTexturePort(void *renderer, void *texture);

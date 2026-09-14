@@ -327,6 +327,26 @@ void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
     }
 }
 
+void mglRendererTraceSampledTextureReadbackPort(
+    void *renderer, void *texture, Texture *gl_tex, TextureLevel *level0,
+    GLuint program, GLuint binding, const char *stage, const char *reason,
+    uint64_t hit)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r traceSampledTextureReadback:(__bridge id)texture
+                                 glTex:gl_tex
+                                 level:level0
+                               program:program
+                               binding:binding
+                                 stage:(stage ? [NSString stringWithUTF8String:stage]
+                                              : @"")
+                                reason:(reason ? [NSString stringWithUTF8String:reason]
+                                               : @"")
+                                   hit:hit];
+    }
+}
+
 void mglRendererNextDrawablePort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

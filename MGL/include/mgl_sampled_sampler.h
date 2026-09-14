@@ -30,6 +30,19 @@
 extern "C" {
 #endif
 
+/* Sampled-binding diagnostics emission (focused/trace-file logs + readback
+ * trace).  Was -emitSampledDiagPortsForProgram:stage:…. */
+void mglSampledEmitDiagPorts(
+    void *renderer, Program *program, const char *stage, int stage_is_fragment,
+    const char *sampled_name, GLuint spirv_binding, GLuint texture_unit,
+    MGLShaderResource *sampled_resource, Texture *ptr, void *texture,
+    void *sampler, int used_fallback, uint32_t expected_type,
+    uint32_t lookup_type, uint64_t bind_call, GLuint program_name,
+    GLuint vertex_program_name, GLuint fragment_program_name,
+    int used_sampled_copy_trace, void *direct_texture_for_trace,
+    void *sampled_copy_for_trace, uint64_t *focused_counter,
+    uint64_t *trace_file_counter);
+
 /* Depth-texture recovery for fragment sampling.  Was
  * -recoverFragmentSampledDepthTexture:texture:sampledName:spirvBinding:
  * textureUnit:expectedType:expectedKind:fragmentProgramName:
