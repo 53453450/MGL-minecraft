@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "glm_context.h"        /* GLMContext, GLint/GLsizei */
+#include "mgl_region_value.h"    /* MGLRegionValue */
 #include "mgl_sync.h"           /* MGLMetalAttachmentSubresource */
 #include "mgl_types_texture.h"  /* Texture */
 
@@ -43,6 +44,14 @@ bool mglBlitResolveMsaaSource(void *renderer, void **read_texid_ptr,
                               size_t src_tex_w, size_t src_tex_h,
                               Texture *read_texture_object,
                               int *out_did_msaa_resolve);
+
+/* Read a texture region back through a blit encoder into `bytes`.
+ * Was -readTextureRegionViaBlit:region:slice:level:bytes:bytesPerRow:
+ * bytesPerImage:reason:.  Returns true when the readback landed. */
+bool mglBlitReadTextureRegion(void *renderer, void *texture,
+                              MGLRegionValue region, size_t slice, size_t level,
+                              void *bytes, size_t bytes_per_row,
+                              size_t bytes_per_image, const char *reason);
 
 /* Raw CPU-to-CPU copy between matching-format textures that both have CPU
  * data.  Returns true when the copy succeeded (the caller then returns). */

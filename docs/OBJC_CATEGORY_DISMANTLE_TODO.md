@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 八十刀** + trace 清零 后；第 68–108 轮见 §0.24/§0.26–§0.65）**：
-文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 24,453**、
-ObjC 语法 **2,268 → 1,385**、词汇 **4,353 → 2,819**；**第 103/104 两轮两次尝试的采样绑定刀均被 CTS 拦下并回滚
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 八十一刀** + trace 清零 后；第 68–109 轮见 §0.24/§0.26–§0.66）**：
+文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 24,374**、
+ObjC 语法 **2,268 → 1,378**、词汇 **4,353 → 2,798**；**第 103/104 两轮两次尝试的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮改从 `+Blit.m` 推进**；
 **shim：43 → 28 个端口 / 唯一壳 TU 1,988 行 / 279 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；`MGLRenderer*.m` **34,604 → 24,925**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
@@ -4540,3 +4540,55 @@ A/B 两臂逐行一致（见第 135 条）。
    最后该文件整文件消失（**6 → 5**，本周期最大的一次文件数下降）。
 3. `+Texture.m`（271 语法 / 1,052 词汇，词汇最多）与 `MGLRenderer.m`（168 语法）；
    壳的 `MGLPipelineCache` 归档路径（Foundation→POSIX + 专属 oracle）。
+
+139. **P0-1 第八十一刀：纹理回读路径转 C（`readTextureRegionViaBlit:`；**零新增端口**，并踩到一个"guarded-call finally 必跑"的坑）**：
+     ① `-readTextureRegionViaBlit:region:slice:level:bytes:bytesPerRow:bytesPerImage:reason:`
+     （72 行 / 9 语法）→ **`mglBlitReadTextureRegion`**（落在 `mgl_blit_drivers.c`），两处调用点
+     （`copyImageSubDataFormatConversion:` 与 `copyImageSubData3DFallback:`）改直调。
+     ② **规矩 10 再次奏效（省掉一个端口）**：方法里 `mglPassManagerWaitForLastSubmittedCommandBuffer(_renderPassManager, &state)`
+     看名字需要 render-pass-manager，读实现发现**它只是转发**
+     `mglRenderWaitCommandBufferOwnerLastSubmitted(manager->state->currentCommandBufferOwner, state)`，
+     于是 C twin 直接用 `mglBdCommandBufferOwner(&areas)`（在使用点读取）——**端口 28 不变**。
+     ③ ⚠️ **新坑（本轮真 bug，`make test-all` 抓到）**：`@try { copy; endEncoder; } @catch { @try { endEncoder; } @catch {} ; log; }`
+     搬到 `mglPlatformShellGuardedCallCtx(…, finally_fn)` 时，我把"catch 里的 endEncoder"写成了 **finally 回调**——
+     但 **finally 是无条件执行的**，于是正常路径也再 end 一次，AGX 在
+     `-[AGXG16GFamilyBlitContext endEncoding]` 直接崩（`agx_3d_texture_workarounds` 段错误）。
+     **正确做法**：body 里 end 并置 `ended` 标志；失败分支再包一层 guarded-call 做"只补一次 end"的清理。
+     已写入 §0.66 规矩表第 11 条。
+     ④ **度量**：`+Blit.m` **3,072 → 2,993 行**、语法 **191 → 184（−7）**、词汇 **567 → 546（−21）**；
+     全库行数 **24,453 → 24,374（−79）**、ObjC 语法 **1,385 → 1,378（−7）**、词汇 **2,819 → 2,798（−21）**；
+     文件数 6、端口 **28（0 退役 0 新增，T4 中性）**。
+     ⑤ **oracle**：旧库 = 提交 `ae0c402` 的独立 worktree 构建（两库不同；先清 `.o/.d`）；
+     `ab_full.py`：**default 4,981/4,981、flushy 5,514/5,514 逐行一致**（未过滤 5,364/5,356 与 6,133/6,149 →
+     `slow` 383/375、619/635）、**stderr MGL 307/307 多重集一致**、两臂 **92/0/2、91/1/2**。
+     ⑥ **CTS 七簇**：非通过集合 **diff 全空**（58 / 1 / 0 / 59 / 13 / 39 / 4）；`make test-all` **0**（92/0/2/94）。
+     ⚠️ 第一次七簇电池是在**未修复**的构建上启动的，已作废重跑（修复后七簇才全绿）——**改了代码就要重跑电池，不能沿用旧电池结果**。
+     ⑦ 遗留告警（记在案，非新引入语义）：`mgl_blit_drivers.c` 两处 `-Wpointer-bool-conversion`
+     （`src_tex->faces && dst_tex->faces` 恒真）——**原 ObjC 代码就是这个写法**，C 化后编译器才报出来；
+     保持与原实现一致，不改语义。
+
+### 0.66 第 109 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.65**）
+
+**当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 24,374 行 / 1,378 语法 / 2,798 词汇**；
+壳 TU **1,988 行 / 279 语法**（上限 2,400）；端口面 **28 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂逐行一致（第 139 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,843 · `+Texture.m` 271/1,052/6,256 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` **184/546/2,993** · 壳 `MGLPlatformRendererShell.m` 279/287/1,988 · `+BindingState.m` **91/85/1,678**。
+
+**规矩表（§0.62/§0.65 十条仍然有效）＋ 本轮第十一条**：
+11. **`mglPlatformShellGuardedCallCtx` 的 `finally_fn` 是无条件执行的**，不能拿它当 `@catch` 用：
+    body 里正常收尾（并置标志），失败分支再包一层 guarded-call 只补一次清理（第 139 条 ③）。
+12. **改了代码就要重跑七簇电池**：不能沿用"上一次启动但对应旧二进制"的电池结果（第 139 条 ⑥）。
+
+**下一步（按收益排序）**：
+1. **`+Blit.m` 剩余叶子**：`copyImageSubDataPostBlitReadback:`（22 语法）、`copyImageSubData3DFallback:`（14）、
+   `copyImageSubDataFormatConversion:`（14）、`blitFramebufferScaledColorWithState:`（9，需 `-mglDrawableTexture` 的 C 入口
+   或照规矩 10 找替代）、`resolvedReadbackTextureForMultisampleTexture:`（3）、
+   `depthFloatTextureForDepthStencilReadback:`（7）；两个调度器（`-mtlBlitFramebuffer:` 12、`-mtlCopyImageSubData:` 24）留到最后。
+   注意 `mglBlitScaledPipelineForPixelFormat` / `mglBlitScaledSamplerForFilter` / `mglBlitClearRectDepthState`
+   已是 C 入口（`mgl_blit_pipelines.h`）✓。
+2. **`+BindingState.m` 采样簇**：先做**纯修复刀**（回退调用后重新取 `ptr` 或整段改用调用前字段快照），
+   探针 8 次 + 七簇通过后再按 compat → sampler（退役端口 28 → 27）→ separate samplers 转换，
+   最后该文件整文件消失（**6 → 5**）。
+3. `+Texture.m`（271 语法 / 1,052 词汇）与 `MGLRenderer.m`（168 语法）；壳的 `MGLPipelineCache` 归档路径。

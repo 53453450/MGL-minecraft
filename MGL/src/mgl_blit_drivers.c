@@ -255,6 +255,165 @@ bool mglBlitResolveMsaaSource(void *renderer, void **read_texid_ptr,
     return true;
 }
 
+/* --- -readTextureRegionViaBlit:… ----------------------------------------- */
+
+static void mglBdCopyTextureToBuffer(void *encoder, void *source,
+                                    size_t source_slice, size_t source_level,
+                                    MGLOriginValue source_origin,
+                                    MGLSizeValue source_size, void *destination,
+                                    size_t destination_offset,
+                                    size_t bytes_per_row, size_t bytes_per_image);
+
+typedef struct {
+    void *encoder;
+    void *texture;
+    size_t slice;
+    size_t level;
+    MGLOriginValue origin;
+    MGLSizeValue size;
+    void *staging_buffer;
+    size_t bytes_per_row;
+    size_t bytes_per_image;
+    int ended;
+} MglBdReadBlitCtx;
+
+static int mglBdReadBlitGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdReadBlitCtx *ctx = (MglBdReadBlitCtx *)ctx_raw;
+    mglBdCopyTextureToBuffer(ctx->encoder, ctx->texture, ctx->slice, ctx->level,
+                            ctx->origin, ctx->size, ctx->staging_buffer, 0,
+                            ctx->bytes_per_row, ctx->bytes_per_image);
+    mglBdEndBlitEncoder(ctx->encoder);
+    ctx->ended = 1;
+    return 1;
+}
+
+/* The method's @catch re-ended the encoder inside its own @try/@catch: only a
+ * throw can leave it open, and ending it twice is what AGX asserts on, so this
+ * runs only when the body did not reach its own end. */
+static int mglBdReadBlitCleanupGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdReadBlitCtx *ctx = (MglBdReadBlitCtx *)ctx_raw;
+    if (!ctx->ended) {
+        mglBdEndBlitEncoder(ctx->encoder);
+        ctx->ended = 1;
+    }
+    return 1;
+}
+
+static void *mglBdCreateBuffer(size_t length, uint64_t options)
+{
+    void *buffer = NULL;
+    if (mglRenderCreateBuffer((uint64_t)length, options, NULL, &buffer) == 0 &&
+        buffer) {
+        return buffer;
+    }
+    return NULL;
+}
+
+static void mglBdCopyTextureToBuffer(void *encoder, void *source, size_t source_slice,
+                                    size_t source_level, MGLOriginValue source_origin,
+                                    MGLSizeValue source_size, void *destination,
+                                    size_t destination_offset, size_t bytes_per_row,
+                                    size_t bytes_per_image)
+{
+    (void)mglRenderBlitCopyTextureToBuffer(
+        encoder, source, source_slice, source_level, source_origin.x,
+        source_origin.y, source_origin.z, source_size.width, source_size.height,
+        source_size.depth, destination, destination_offset, bytes_per_row,
+        bytes_per_image);
+}
+
+/* -readTextureRegionViaBlit:region:slice:level:bytes:bytesPerRow:
+ *  bytesPerImage:reason: */
+bool mglBlitReadTextureRegion(void *renderer, void *texture,
+                              MGLRegionValue region, size_t slice, size_t level,
+                              void *bytes, size_t bytes_per_row,
+                              size_t bytes_per_image, const char *reason)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    size_t depth = region.size.depth > 1u ? (size_t)region.size.depth : 1u;
+    if (!texture || !bytes || bytes_per_row == 0 || bytes_per_image == 0 ||
+        depth > SIZE_MAX / bytes_per_image) {
+        return false;
+    }
+
+    size_t total_bytes = bytes_per_image * depth;
+    void *staging_buffer = mglBdCreateBuffer(
+        total_bytes, MGLResourceStorageModeShared);
+    if (!staging_buffer) {
+        return false;
+    }
+
+    mglRendererEndRenderEncodingPort(renderer);
+    if (!mglRendererEnsureWritableCommandBufferPort(
+            renderer, reason ? reason : "texture_readback_blit")) {
+        mglSafeReleaseMetalObj(&staging_buffer);
+        return false;
+    }
+
+    void *read_encoder = mglRenderCreateBlitEncoderBorrowed(
+        mglBdCommandBufferOwner(&areas));
+    if (!read_encoder) {
+        mglSafeReleaseMetalObj(&staging_buffer);
+        return false;
+    }
+    /* A blit encoder is now active on the current CB.  Mark it as having
+     * work so flushCommandBuffer:YES below does not skip the commit. */
+    if (areas.batching) {
+        areas.batching->currentCommandBufferHasWork = 1;
+    }
+
+    MglBdReadBlitCtx blit_ctx = {
+        .encoder = read_encoder,
+        .texture = texture,
+        .slice = slice,
+        .level = level,
+        .origin = region.origin,
+        .size = region.size,
+        .staging_buffer = staging_buffer,
+        .bytes_per_row = bytes_per_row,
+        .bytes_per_image = bytes_per_image,
+    };
+    if (!mglPlatformShellGuardedCallCtx(renderer, "texture readback blit",
+                                        mglBdReadBlitGuarded, &blit_ctx, NULL)) {
+        (void)mglPlatformShellGuardedCallCtx(renderer,
+                                             "texture readback blit cleanup",
+                                             mglBdReadBlitCleanupGuarded,
+                                             &blit_ctx, NULL);
+        fprintf(stderr,
+                "MGL WARNING: texture readback blit failed (%s): caught "
+                "exception\n",
+                reason ? reason : "texture_readback_blit");
+        mglSafeReleaseMetalObj(&staging_buffer);
+        return false;
+    }
+
+    mglRendererFlushCommandBufferPort(renderer, 1);
+    MGLRenderCommandBufferState read_state = {0};
+    if (mglRenderWaitCommandBufferOwnerLastSubmitted(
+            mglBdCommandBufferOwner(&areas), &read_state) != 0 ||
+        read_state.has_error) {
+        mglSafeReleaseMetalObj(&staging_buffer);
+        return false;
+    }
+    void *staging_contents = NULL;
+    uint64_t staging_length = 0;
+    if (mglRenderGetBufferContents(staging_buffer, &staging_contents,
+                                   &staging_length) != 0 ||
+        !staging_contents || staging_length < total_bytes) {
+        mglSafeReleaseMetalObj(&staging_buffer);
+        return false;
+    }
+    memcpy(bytes, staging_contents, total_bytes);
+    mglSafeReleaseMetalObj(&staging_buffer);
+    return true;
+}
+
 /* --- the CPU-to-CPU path ------------------------------------------------- */
 
 typedef struct {

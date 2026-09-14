@@ -1862,75 +1862,6 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
 
 #pragma mark C interface to mtlCopyImageSubData
 
-- (BOOL)readTextureRegionViaBlit:(id)texture
-                          region:(MGLRegionValue)region
-                           slice:(NSUInteger)slice
-                           level:(NSUInteger)level
-                           bytes:(void *)bytes
-                     bytesPerRow:(NSUInteger)bytesPerRow
-                   bytesPerImage:(NSUInteger)bytesPerImage
-                          reason:(const char *)reason
-{
-    NSUInteger depth = MAX(region.size.depth, 1u);
-    if (!texture || !bytes || bytesPerRow == 0 || bytesPerImage == 0 ||
-        depth > NSUIntegerMax / bytesPerImage) {
-        return NO;
-    }
-
-    NSUInteger totalBytes = bytesPerImage * depth;
-    id stagingBuffer = mglBlitCreateBuffer(
-        _device, totalBytes, MGLResourceStorageModeShared);
-    if (!stagingBuffer) {
-        return NO;
-    }
-
-    [self endRenderEncoding];
-    if (![self ensureWritableCommandBuffer:reason ? reason : "texture_readback_blit"]) {
-        return NO;
-    }
-
-    id readEncoder =
-        (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-            _renderPassManager->state->currentCommandBufferOwner);
-    if (!readEncoder) {
-        return NO;
-    }
-    /* A blit encoder is now active on the current CB.  Mark it as having
-     * work so flushCommandBuffer:YES below does not skip the commit. */
-    _batching.currentCommandBufferHasWork = YES;
-
-    @try {
-        mglBlitCopyTextureToBuffer(readEncoder, texture, slice, level,
-                                   region.origin, region.size, stagingBuffer,
-                                   0, bytesPerRow, bytesPerImage);
-        mglBlitEndBlitEncoder(readEncoder);
-    } @catch (NSException *exception) {
-        @try {
-            mglBlitEndBlitEncoder(readEncoder);
-        } @catch (__unused NSException *endException) {
-        }
-        NSLog(@"MGL WARNING: texture readback blit failed (%s): %@",
-              reason ? reason : "texture_readback_blit", exception.reason);
-        return NO;
-    }
-
-    [self flushCommandBuffer:YES];
-    MGLRenderCommandBufferState readState = {0};
-    if (mglPassManagerWaitForLastSubmittedCommandBuffer(_renderPassManager, &readState) != 0 ||
-        readState.has_error) {
-        return NO;
-    }
-    void *stagingContents = NULL;
-    uint64_t stagingLength = 0;
-    if (mglRenderGetBufferContents((__bridge void *)stagingBuffer,
-                                      &stagingContents,
-                                      &stagingLength) != 0 ||
-        !stagingContents || stagingLength < totalBytes) {
-        return NO;
-    }
-    memcpy(bytes, stagingContents, totalBytes);
-    return YES;
-}
 
 /* CPU-to-CPU copy path for mtlCopyImageSubData.
  * Raw memcpy between matching-format textures that both have CPU data.
@@ -2053,14 +1984,9 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                         if (srcType == MGLTextureType3D &&
                             MGLCapabilityHasBug(&_capability,
                                                 MGL_BUG_3D_GETBYTES_SLICE_OOB)) {
-                            if (![self readTextureRegionViaBlit:srcTexture
-                                                        region:srcRegion
-                                                         slice:srcMtlSlice
-                                                         level:(NSUInteger)srcLevel
-                                                         bytes:stagingBuf
-                                                   bytesPerRow:rowBytes
-                                                 bytesPerImage:imageBytes
-                                                        reason:"copyImageSubData.formatConv3DReadback"]) {
+                            if (!mglBlitReadTextureRegion(
+                (__bridge void *)self, (__bridge void *)srcTexture, srcRegion,
+                srcMtlSlice, (NSUInteger)srcLevel, stagingBuf, rowBytes, imageBytes, "copyImageSubData.formatConv3DReadback")) {
                                 metalCopyOK = false;
                                 break;
                             }
@@ -2344,14 +2270,9 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
                     mglBlitGetTextureBytes(
                         srcTexture, stagingBytes, rowBytes, imageBytes,
                         srcRegion, (NSUInteger)srcLevel, 0, YES);
-                } else if (![self readTextureRegionViaBlit:srcTexture
-                                                        region:srcRegion
-                                                         slice:0
-                                                         level:(NSUInteger)srcLevel
-                                                         bytes:stagingBytes
-                                                   bytesPerRow:rowBytes
-                                                 bytesPerImage:imageBytes
-                                                        reason:"copyImageSubData.3DReadback"]) {
+                } else if (!mglBlitReadTextureRegion(
+                (__bridge void *)self, (__bridge void *)srcTexture, srcRegion,
+                0, (NSUInteger)srcLevel, stagingBytes, rowBytes, imageBytes, "copyImageSubData.3DReadback")) {
                     free(stagingBytes);
                     mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
                     return YES;
