@@ -28,6 +28,7 @@
 #include "pixel_utils.h"     /* mtlFormatForGLInternalFormat */
 #include "mgl_frame_activity.h" /* MGL_FRAME_LOAD / draw-since-swap */
 #include "mgl_index_buffer.h"    /* mglGLIndexElementSize */
+#include "mgl_sync.h"            /* mglCommandBufferStatusName */
 
 /* Restated from the ObjC private headers (rules 7 / 26). */
 extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
@@ -379,4 +380,95 @@ Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
     }
 
     return NULL;
+}
+
+
+/* === draws-without-swap watchdog (P0-1, log 162) ========================= */
+
+typedef struct MGLRendererClearColorValue {
+    double red;
+    double green;
+    double blue;
+    double alpha;
+} MGLRendererClearColorValue;
+
+static MGLRendererClearColorValue mglRendererMakeClearColor(double red,
+                                                            double green,
+                                                            double blue,
+                                                            double alpha)
+{
+    return (MGLRendererClearColorValue){red, green, blue, alpha};
+}
+
+void mglLogDrawWithoutSwapWatchdog(const char *kind,
+                                          uint64_t drawCall,
+                                          GLMContext ctx,
+                                          void *commandBufferOwner,
+                                          void *renderEncoderOwner,
+                                          void *renderPassStateOwner)
+{
+    uint64_t drawArrays = MGL_FRAME_LOAD(g_mglDrawArraysSinceSwap);
+    uint64_t drawElements = MGL_FRAME_LOAD(g_mglDrawElementsSinceSwap);
+    uint64_t totalDraws = drawArrays + drawElements;
+    if (totalDraws < 16384ull || (totalDraws % 16384ull) != 0ull) {
+        return;
+    }
+
+    double now = mglTraceNowSeconds();
+    double lastSwap = MGL_FRAME_LOAD(g_mglLastSwapSeconds);
+    double lastSwapAgeMs = (lastSwap > 0.0) ? ((now - lastSwap) * 1000.0) : -1.0;
+    if (lastSwapAgeMs >= 0.0 && lastSwapAgeMs < 250.0) {
+        return;
+    }
+    MGLRenderCommandBufferState commandState = {0};
+    int hasCommandBuffer = mglRenderCommandBufferOwnerHasState(
+        commandBufferOwner, &commandState);
+    uint32_t cbStatus = hasCommandBuffer
+        ? (uint32_t)commandState.status
+        : MGL_RENDERER_CB_NOT_ENQUEUED;
+    int hasRenderEncoder =
+        mglRenderEncoderOwnerHasCurrent(renderEncoderOwner) == 1;
+    MGLRenderPassState renderPassState = {0};
+    int hasRenderPassState = renderPassStateOwner &&
+        mglRenderGetRenderPassStateOwner(
+            renderPassStateOwner, &renderPassState) == 0;
+    void *rpColor0 = hasRenderPassState && renderPassState.color[0].attachment.texture
+        ? renderPassState.color[0].attachment.texture : NULL;
+    uint32_t colorLoadAction = hasRenderPassState
+        ? (uint32_t)renderPassState.color[0].attachment.load_action : MGL_RENDERER_LOAD_DONT_CARE;
+    uint32_t colorStoreAction = hasRenderPassState
+        ? (uint32_t)renderPassState.color[0].attachment.store_action : MGL_RENDERER_STORE_DONT_CARE;
+    MGLRendererClearColorValue clear = hasRenderPassState
+        ? mglRendererMakeClearColor(renderPassState.color[0].clear_red,
+                            renderPassState.color[0].clear_green,
+                            renderPassState.color[0].clear_blue,
+                            renderPassState.color[0].clear_alpha)
+        : mglRendererMakeClearColor(0.0, 0.0, 0.0, 0.0);
+
+    fprintf(stderr, "MGL WATCHDOG: draws-without-swap kind=%s drawCall=%llu total=%llu arrays=%llu elements=%llu "
+          "swapCalls=%llu lastSwapAgeMs=%.2f program=%u drawBuf=0x%x fbo=%p vao=%p cb=%p[%s] enc=%p "
+          "rpOwner=%p c0=%p fmt=%lu la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f)",
+          kind ? kind : "draw",
+          (unsigned long long)drawCall,
+          (unsigned long long)totalDraws,
+          (unsigned long long)drawArrays,
+          (unsigned long long)drawElements,
+          (unsigned long long)MGL_FRAME_LOAD(g_mglSwapCallCount),
+          lastSwapAgeMs,
+          (unsigned)(ctx ? ctx->active_state->program_name : 0u),
+          (unsigned)(ctx ? ctx->active_state->draw_buffer : 0u),
+          ctx ? ctx->active_state->framebuffer : NULL,
+          ctx ? ctx->active_state->vao : NULL,
+          hasCommandBuffer ? commandBufferOwner : NULL,
+          mglCommandBufferStatusName(cbStatus),
+          hasRenderEncoder ? renderEncoderOwner : NULL,
+          renderPassStateOwner,
+          rpColor0,
+          (unsigned long)(rpColor0 ? mglRendererTextureFieldFormat(rpColor0) : MGL_RENDERER_PIXEL_FORMAT_INVALID),
+          mglLoadActionName(colorLoadAction),
+          mglStoreActionName(colorStoreAction),
+          clear.red,
+          clear.green,
+          clear.blue,
+          clear.alpha);
 }
