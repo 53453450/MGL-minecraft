@@ -63,6 +63,16 @@ int mglRenderPassNewCommandBufferLocked(void *renderer);
  * now (log 176). */
 /* The two AIR passthrough vertex builders are C now (log 177); their
  * ports retire with the move. */
+/* Draw-path guard cluster (log 178): pipeline invalidation, the
+ * pre-draw FBO/render-pass match check, the emergency reset and the
+ * attachment/pipeline-format validation are C now. */
+void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
+                                                 const char *reason);
+int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(
+    void *renderer);
+void mglRenderPassEmergencyResetMetalState(void *renderer);
+int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
+                                                       int traceProcess);
 int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
     void *renderer, Program *program, uint32_t outputPrimitive);
 int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(

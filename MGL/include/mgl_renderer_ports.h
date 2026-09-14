@@ -213,6 +213,9 @@ typedef struct MGLRendererStateAreas {
     int (*pipeline_cache_blend_state)(
         void *pipeline_cache_object, uint32_t index,
         struct MGLRenderPipelineBlendState_t *blend);
+    /* Drops the cache's active pipeline state (the Objective-C method also
+     * logs; the shell keeps that in the forwarder). */
+    void (*pipeline_cache_invalidate)(void *pipeline_cache_object);
     int32_t tess_native_tes_active;
     void *tess_native_tes_program;
     /* The tessellation and geometry records themselves (the C draw host port

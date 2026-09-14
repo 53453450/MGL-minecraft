@@ -1060,6 +1060,13 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
 /* Defined in MGLRenderer.m; declared in the Objective-C
  * MGLRenderer+RenderPass_Private.h. */
 extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
+/* Shell forwarder: the drawable is a property on the shell class. */
+extern void mglPlatformShellSetDrawable(void *renderer, void *drawable);
+extern void mglLogStateSnapshot(const char *tag, GLMContext ctx,
+                             void *commandBufferOwner,
+                             void *renderEncoderOwner,
+                             void *renderPassStateOwner,
+                             void *drawable);
 
 /* C twins of the .m statics the moved method used. */
 static void *mglPdDepthTextureFor(const MGLCommandState *commandState)
@@ -3606,4 +3613,296 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
 done:
     mglPdSourceFree(&src);
     return result;
+}
+
+/* === draw-path guard cluster (log 178) ================================= */
+
+/* -invalidateCurrentPipelineStateForReason:. */
+void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
+                                                 const char *reason)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (areas.pipeline_cache && areas.pipeline_cache->pipelineState) {
+        static uint64_t s_pipelineInvalidateCount = 0;
+        const uint64_t hit = ++s_pipelineInvalidateCount;
+        if (hit <= 16ull || (hit % 512ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL WARNING: Invalidating current pipeline state after %s hit=%llu\n",
+                    reason ? reason : "pipeline failure",
+                    (unsigned long long)hit);
+        }
+    }
+    if (areas.pipeline_cache_invalidate) {
+        areas.pipeline_cache_invalidate(areas.pipeline_cache_object);
+    }
+}
+
+/* -ensureCurrentRenderPassMatchesFramebufferForDraw. */
+int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGLCommandState *commandState = areas.command;
+
+    if (!ctx) {
+        return 1;
+    }
+
+    if (mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) != 1) {
+        return 1;
+    }
+
+    if (mglRendererCurrentRenderPassMatchesFramebufferPort(renderer)) {
+        return 1;
+    }
+
+    static uint64_t s_fboPassMismatchCount = 0;
+    const uint64_t hit = ++s_fboPassMismatchCount;
+    if (hit <= 32ull || (hit % 256ull) == 0ull) {
+        Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+        void *color0 = mglPdColorTextureFor(commandState, 0);
+        const GLuint mglDefaultDrawbuffer =
+            fbo ? 0u
+                : mglDefaultDrawBufferIndexForGL(mglPdState(&areas)->draw_buffer);
+        void *expectedDefaultColor0 = NULL;
+        if (!fbo) {
+            expectedDefaultColor0 =
+                mglRenderDefaultDrawBufferIsFront(mglDefaultDrawbuffer)
+                    ? mglRendererDrawableTexturePort(renderer)
+                    : (mglRenderDefaultDrawBufferIsOffscreen(
+                           mglDefaultDrawbuffer, _MAX_DRAW_BUFFERS)
+                           ? mglRenderPassDefaultDrawBufferAttachment(
+                                 areas.backend, mglDefaultDrawbuffer,
+                                 MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR)
+                           : NULL);
+        }
+        const GLuint fboName = fbo ? fbo->name : 0u;
+        const GLuint attachment0Name =
+            (fbo && (fbo->color_attachment_bitfield & 1u))
+                ? fbo->color_attachments[0].texture
+                : 0u;
+        fprintf(stderr,
+                "MGL WARNING: render pass/FBO mismatch before draw hit=%llu fbo=%u drawBuffer=0x%x attachment0=%u passColor0=%p expectedDefaultColor0=%p defaultDrawBuffer=%u; rebuilding encoder\n",
+                (unsigned long long)hit, (unsigned)fboName,
+                (unsigned)(ctx ? mglPdState(&areas)->draw_buffer : 0u),
+                (unsigned)attachment0Name, color0, expectedDefaultColor0,
+                (unsigned)mglDefaultDrawbuffer);
+        mglLogRenderPassLifecycle(
+            fbo ? "fbo-mismatch-before-rebuild"
+                : "default-fbo-mismatch-before-rebuild",
+            hit, ctx, commandState->currentCommandBufferOwner,
+            commandState->currentRenderEncoderOwner,
+            commandState->renderPassStateOwner, areas.drawable,
+            commandState->renderPassFramebuffer,
+            commandState->renderPassFramebufferName,
+            commandState->renderPassDrawBuffer,
+            commandState->renderPassDrawBufferCount);
+    }
+
+    mglRendererEndRenderEncodingPort(renderer);
+    mglMarkRendererDirtyBits(ctx->active_state,
+                             DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE |
+                                 DIRTY_VAO);
+    return mglRendererNewRenderEncoderLockedWithReasonPort(
+        renderer, MGL_ENC_REASON_FBO);
+}
+
+/* -emergencyResetMetalState. */
+typedef struct MglPdEmergencyResetCtx_t {
+    int result;
+} MglPdEmergencyResetCtx;
+
+static int mglPdEmergencyResetTryBody(void *renderer, void *rawCtx)
+{
+    MglPdEmergencyResetCtx *ctx = (MglPdEmergencyResetCtx *)rawCtx;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRenderPassManager *manager = areas.render_pass_manager;
+
+    /* Force cleanup of all Metal objects */
+    mglRendererEndRenderEncodingLocked(renderer);
+
+    mglPassManagerDiscardCurrentCommandBuffer(manager);
+    mglPassManagerClearCurrentRenderEncoder(manager);
+    mglPlatformShellSetDrawable(renderer, NULL);
+
+    /* Re-initialize basic Metal objects */
+    if (mglRendererBackendGetDevice(areas.backend) &&
+        mglRendererBackendGetCommandQueue(areas.backend)) {
+        fprintf(stderr, "MGL CRITICAL: Re-creating Metal command buffer\n");
+        (void)mglPassManagerInstallNewCommandBufferFromQueue(
+            manager, mglRendererBackendGetCommandQueue(areas.backend));
+
+        if (mglRenderCommandBufferOwnerHasCurrent(
+                areas.command->currentCommandBufferOwner) != 1) {
+            fprintf(stderr,
+                    "MGL CRITICAL: Failed to create new command buffer during recovery\n");
+        }
+    }
+    ctx->result = 1;
+    return 1;
+}
+
+void mglRenderPassEmergencyResetMetalState(void *renderer)
+{
+    fprintf(stderr, "MGL CRITICAL: Performing emergency Metal state reset\n");
+
+    MglPdEmergencyResetCtx ctx = {0};
+    /* @catch (NSException *exception) only logs and returns. */
+    (void)mglPlatformShellGuardedCallCtx(renderer, "emergency metal reset",
+                                         mglPdEmergencyResetTryBody, &ctx,
+                                         NULL);
+}
+
+/* -validateRenderPassAttachmentsAndPipelineFormatsLocked:. */
+int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
+                                                       int traceProcess)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGLCommandState *commandState = areas.command;
+
+    /* Guard against invalid render pass state before binding pipeline.  Metal
+     * debug validation can abort the process if the encoder/render pass is
+     * incompatible. */
+    const int hasRenderPassState =
+        commandState->renderPassStateOwner != NULL;
+    if (!hasRenderPassState) {
+        fprintf(stderr,
+                "MGL ERROR: processGLState - render pass state owner is nil before pipeline bind\n");
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.nil_rpd", ctx,
+                                commandState->currentCommandBufferOwner,
+                                commandState->currentRenderEncoderOwner,
+                                commandState->renderPassStateOwner,
+                                areas.drawable);
+        }
+        return 0;
+    }
+    int passHasAnyAttachment = 0;
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        void *colorAttachment = mglPdColorTextureFor(commandState, (size_t)i);
+        if (colorAttachment) {
+            passHasAnyAttachment = 1;
+            if ((mglPdTextureInfo(colorAttachment).usage &
+                 MGLTextureUsageRenderTarget) == 0) {
+                fprintf(stderr,
+                        "MGL WARNING: processGLState - color attachment %d missing RenderTarget usage (usage=0x%lx); skipping draw\n",
+                        i,
+                        (unsigned long)mglPdTextureInfo(colorAttachment).usage);
+                if (traceProcess) {
+                    mglLogStateSnapshot("processGLState.fail.color_usage", ctx,
+                                        commandState->currentCommandBufferOwner,
+                                        commandState->currentRenderEncoderOwner,
+                                        commandState->renderPassStateOwner,
+                                        areas.drawable);
+                }
+                return 0;
+            }
+        }
+    }
+    if (mglPdDepthTextureFor(commandState) ||
+        mglPdStencilTextureFor(commandState)) {
+        passHasAnyAttachment = 1;
+    }
+
+    if (!passHasAnyAttachment) {
+        fprintf(stderr,
+                "MGL WARNING: processGLState - render pass has no attachments, skipping draw to avoid Metal assert\n");
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.no_attachments", ctx,
+                                commandState->currentCommandBufferOwner,
+                                commandState->currentRenderEncoderOwner,
+                                commandState->renderPassStateOwner,
+                                areas.drawable);
+        }
+        return 0;
+    }
+
+    uint32_t currentColor0Format = mglRenderInvalidPixelFormat();
+    uint32_t currentDepthFormat = mglRenderInvalidPixelFormat();
+    uint32_t currentStencilFormat = mglRenderInvalidPixelFormat();
+
+    void *rpColor0 = mglPdColorTextureFor(commandState, 0);
+    void *rpDepth = mglPdDepthTextureFor(commandState);
+    void *rpStencil = mglPdStencilTextureFor(commandState);
+    if (rpColor0) {
+        currentColor0Format = mglPdTextureInfo(rpColor0).pixel_format;
+    }
+    if (rpDepth) {
+        currentDepthFormat = mglPdTextureInfo(rpDepth).pixel_format;
+    }
+    if (rpStencil) {
+        currentStencilFormat = mglPdTextureInfo(rpStencil).pixel_format;
+    }
+
+    /* IMPORTANT: never mutate depth/stencil attachments here to "fit" an
+     * existing pipeline.  The active Metal render encoder was already created
+     * with a render-pass descriptor, and changing attachments after encoder
+     * creation does not make that encoder compatible.  We must instead reject
+     * mismatched pipeline/pass combinations and rebuild safely. */
+    if (mglRenderPipelinePassColorMismatch(
+            (uint32_t)areas.pipeline_cache->pipelineColor0Format,
+            currentColor0Format)) {
+        static uint64_t s_colorFormatMismatchCount = 0;
+        s_colorFormatMismatchCount++;
+        if (s_colorFormatMismatchCount <= 16 ||
+            (s_colorFormatMismatchCount % 250) == 0) {
+            fprintf(stderr,
+                    "MGL WARNING: Pipeline/pass color format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild\n",
+                    (unsigned long)areas.pipeline_cache->pipelineColor0Format,
+                    (unsigned long)currentColor0Format);
+        }
+        mglRenderPassInvalidateCurrentPipelineState(
+            renderer, "pipeline/pass color format mismatch");
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO |
+                                     DIRTY_RENDER_STATE);
+        return 0;
+    }
+
+    if (mglRenderPipelinePassAttachmentMismatch(
+            (uint32_t)areas.pipeline_cache->pipelineDepthFormat,
+            currentDepthFormat)) {
+        static uint64_t s_depthFormatMismatchCount = 0;
+        s_depthFormatMismatchCount++;
+        if (s_depthFormatMismatchCount <= 16 ||
+            (s_depthFormatMismatchCount % 250) == 0) {
+            fprintf(stderr,
+                    "MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild\n",
+                    (unsigned long)areas.pipeline_cache->pipelineDepthFormat,
+                    (unsigned long)currentDepthFormat);
+        }
+        mglRenderPassInvalidateCurrentPipelineState(
+            renderer, "pipeline/pass depth format mismatch");
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO |
+                                     DIRTY_RENDER_STATE);
+        return 0;
+    }
+
+    if (mglRenderPipelinePassAttachmentMismatch(
+            (uint32_t)areas.pipeline_cache->pipelineStencilFormat,
+            currentStencilFormat)) {
+        static uint64_t s_stencilFormatMismatchCount = 0;
+        s_stencilFormatMismatchCount++;
+        if (s_stencilFormatMismatchCount <= 16 ||
+            (s_stencilFormatMismatchCount % 250) == 0) {
+            fprintf(stderr,
+                    "MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild\n",
+                    (unsigned long)areas.pipeline_cache->pipelineStencilFormat,
+                    (unsigned long)currentStencilFormat);
+        }
+        mglRenderPassInvalidateCurrentPipelineState(
+            renderer, "pipeline/pass stencil format mismatch");
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO |
+                                     DIRTY_RENDER_STATE);
+        return 0;
+    }
+    return 1;
 }

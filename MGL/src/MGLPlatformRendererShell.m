@@ -780,6 +780,24 @@ int mglPlatformShellGuardedCall(void *renderer, const char *what,
     }
 }
 
+/* Clears the cache's active pipeline state (log 178). */
+void mglPlatformShellPipelineCacheInvalidate(void *pipeline_cache_object)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (cache) {
+        [cache invalidatePipelineState];
+    }
+}
+
+/* The drawable is a property on this class, so C can only clear it here. */
+void mglPlatformShellSetDrawable(void *renderer, void *drawable)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        r.drawable = (__bridge id)drawable;
+    }
+}
+
 /* The cache's C++ owner holds the blend record; C reads it through this
  * forwarder, the counterpart of mglPlatformShellPipelineCacheSetBlend. */
 int mglPlatformShellPipelineCacheBlendState(void *pipeline_cache_object,
@@ -836,6 +854,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->gpu_recovery_command_owner = &r->_gpuRecovery.commandRecoveryOwner;
     areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
     areas_out->pipeline_cache_blend_state = mglPlatformShellPipelineCacheBlendState;
+    areas_out->pipeline_cache_invalidate = mglPlatformShellPipelineCacheInvalidate;
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
     areas_out->tessellation = &r->_tessellation;
     areas_out->geometry = &r->_geometry;

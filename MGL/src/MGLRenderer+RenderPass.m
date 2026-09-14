@@ -630,53 +630,13 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
 
 @implementation MGLRenderer (RenderPass)
 
-static const char *mglGeometryPassthroughType(GLenum type)
-{
-    return mglRenderGLSLTypeName((uint32_t)type);
-}
-
 /* Matrix column count / row count for stage-out record layout (GL 4.6
  * §4.4.1: one location per column).  Returns 0 for non-matrix types. */
-static unsigned mglGeometryPassthroughMatrixCols(GLenum type)
-{
-    return (unsigned)mglRenderGLSLMatrixCols((uint32_t)type);
-}
-
-static unsigned mglGeometryPassthroughMatrixRows(GLenum type)
-{
-    return (unsigned)mglRenderGLSLMatrixRows((uint32_t)type);
-}
-
-static const char *mglGeometryPassthroughColumnSwizzle(unsigned rows)
-{
-    return mglRenderGLSLColumnSwizzle(rows);
-}
-
-static const char *mglGeometryPassthroughColumnType(unsigned rows)
-{
-    return mglRenderGLSLColumnType(rows);
-}
-
-static const char *mglGeometryPassthroughSwizzle(GLenum type)
-{
-    return mglRenderGLSLTypeSwizzle((uint32_t)type);
-}
-
-static const char *mglGeometryPassthroughFloatType(GLenum type)
-{
-    return mglRenderGLSLIntegerAsFloatType((uint32_t)type);
-}
-
 /* Integer varyings are stored as SIToFP/UIToFP float carriers in the
  * stage-out record (see air backend).  The passthrough VS therefore
  * declares float attributes and forwards the float swizzle as-is; the
  * fragment stage converts with fptosi/fptoui.  GLSL still requires the
  * `flat` qualifier on integer varyings. */
-static bool mglGeometryPassthroughNeedsFlat(GLenum type)
-{
-    return mglRenderGLSLNeedsFlat((uint32_t)type) != 0;
-}
-
 /* MSAA array textures are represented by a 2D array whose physical slices
  * are laid out as [gl_layer][sample] with a fixed eight-slice stride.  A
  * layered render pass therefore needs to translate the logical GL layer
@@ -711,17 +671,6 @@ static uint32_t mglGeometryPassthroughLayerStride(GLMContext context)
  * target layer convention in the key so switching between ordinary and
  * emulated-MSAA layered FBOs cannot reuse a function compiled for the other
  * convention. */
-static uint64_t mglGeometryPassthroughCacheKey(
-    const Program *program, uint32_t layerStride)
-{
-    uint64_t hash = 1469598103934665603ull;
-    hash = mglHashStepU64(hash,
-                          program ? program->pipeline_cache_instance_id : 0u);
-    hash = mglHashStepU64(hash,
-                          program ? program->pipeline_cache_generation : 0u);
-    return mglHashStepU64(hash, layerStride);
-}
-
 static uint64_t mglGeometryPipelineFunctionKey(
     const Program *vertexProgram, const Program *geometryProgram,
     uint32_t layerStride)
@@ -744,26 +693,6 @@ static uint64_t mglGeometryPipelineFunctionKey(
  * (legal GL: GS out vec3 + FS in vec3), the passthrough VS must declare
  * the interface with the fragment type -- Metal rejects a pipeline whose
  * vertex output type differs from the fragment input. */
-static GLenum mglPassthroughDeclType(
-    const MGLShaderResourceList *fsInputs,
-    const MGLShaderResource *output)
-{
-    uint32_t decl = output->gl_type;
-    for (GLuint fi = 0; fsInputs && fsInputs->list && fi < fsInputs->count;
-         fi++) {
-        const MGLShaderResource *in = &fsInputs->list[fi];
-        decl = mglDrawGsPassthroughDeclType(
-            decl, in->gl_type,
-            output->name && in->name && strcmp(in->name, output->name) == 0
-                ? 1
-                : 0);
-        if (decl != output->gl_type) {
-            return (GLenum)decl;
-        }
-    }
-    return (GLenum)decl;
-}
-
 /* TES-compute twin of ensureAIRGeometryPassthroughFunctionForProgram: the
  * isolines/point-mode TES kernel expands one vertex record per work item,
  * so the raster stage is a GLSL passthrough vertex reading the same
@@ -811,68 +740,6 @@ static GLenum mglPassthroughDeclType(
     return result;
 }
 
-
-- (bool)ensureCurrentRenderPassMatchesFramebufferForDraw
-{
-    if (!ctx) {
-        return true;
-    }
-
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager->state->currentRenderEncoderOwner) != 1) {
-        return true;
-    }
-
-    if ([self currentRenderPassMatchesCurrentFramebuffer]) {
-        return true;
-    }
-
-    static uint64_t s_fboPassMismatchCount = 0;
-    uint64_t hit = ++s_fboPassMismatchCount;
-    if (hit <= 32ull || (hit % 256ull) == 0ull) {
-        Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
-        id color0 = mglRenderPassColorTextureFor(_renderPassManager->state, 0);
-        GLuint mglDefaultDrawbuffer = fbo ? 0u : mglDefaultDrawBufferIndexForGL(MGL_STATE(ctx)->draw_buffer);
-        id expectedDefaultColor0 = nil;
-        if (!fbo) {
-            expectedDefaultColor0 = mglRenderDefaultDrawBufferIsFront(mglDefaultDrawbuffer)
-                ? (_drawable ? [self mglDrawableTexture] : nil)
-                : (mglRenderDefaultDrawBufferIsOffscreen(
-                       mglDefaultDrawbuffer, _MAX_DRAW_BUFFERS)
-                    ? mglRenderPassDefaultDrawBufferAttachment(
-                          _backend, mglDefaultDrawbuffer,
-                          MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR)
-                    : nil);
-        }
-        GLuint fboName = fbo ? fbo->name : 0u;
-        GLuint attachment0Name = (fbo && (fbo->color_attachment_bitfield & 1u)) ? fbo->color_attachments[0].texture : 0u;
-        NSLog(@"MGL WARNING: render pass/FBO mismatch before draw hit=%llu fbo=%u drawBuffer=0x%x attachment0=%u passColor0=%p expectedDefaultColor0=%p defaultDrawBuffer=%u; rebuilding encoder",
-              (unsigned long long)hit,
-              (unsigned)fboName,
-              (unsigned)(ctx ? MGL_STATE(ctx)->draw_buffer : 0u),
-              (unsigned)attachment0Name,
-              color0,
-              expectedDefaultColor0,
-              (unsigned)mglDefaultDrawbuffer);
-        mglLogRenderPassLifecycle(fbo ? "fbo-mismatch-before-rebuild" : "default-fbo-mismatch-before-rebuild",
-                                  hit,
-                                  ctx,
-                                  _renderPassManager->state->currentCommandBufferOwner,
-                                  _renderPassManager->state->currentRenderEncoderOwner,
-                                  _renderPassManager->state->renderPassStateOwner,
-                                  (__bridge void *)_drawable,
-                                  _renderPassManager->state->renderPassFramebuffer,
-                                  _renderPassManager->state->renderPassFramebufferName,
-                                  _renderPassManager->state->renderPassDrawBuffer,
-                                  _renderPassManager->state->renderPassDrawBufferCount);
-    }
-
-    [self endRenderEncoding];
-    mglMarkRendererDirtyBits(ctx->active_state,
-                             DIRTY_FBO | DIRTY_PROGRAM |
-                             DIRTY_RENDER_STATE | DIRTY_VAO);
-    return [self newRenderEncoderWithReason:MGL_ENC_REASON_FBO];
-}
 
 - (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall
 {
@@ -1043,20 +910,6 @@ static GLenum mglPassthroughDeclType(
     return true;
 }
 
-
-- (void)invalidateCurrentPipelineStateForReason:(NSString *)reason
-{
-    if (_pipelineCache.state->pipelineState) {
-        static uint64_t s_pipelineInvalidateCount = 0;
-        uint64_t hit = ++s_pipelineInvalidateCount;
-        if (hit <= 16ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL WARNING: Invalidating current pipeline state after %@ hit=%llu",
-                  reason ?: @"pipeline failure",
-                  (unsigned long long)hit);
-        }
-    }
-    [_pipelineCache invalidatePipelineState];
-}
 
 -(bool)bindMTLProgram:(Program *)ptr
 {
@@ -2789,33 +2642,6 @@ static GLenum mglPassthroughDeclType(
 }
 
 // ULTIMATE FAILSAFE: Emergency Metal state reset to recover from corruption
-- (void) emergencyResetMetalState
-{
-    NSLog(@"MGL CRITICAL: Performing emergency Metal state reset");
-
-    @try {
-        // Force cleanup of all Metal objects
-        mglRendererEndRenderEncodingLocked((__bridge void *)self);
-
-        mglPassManagerDiscardCurrentCommandBuffer(_renderPassManager);
-        mglPassManagerClearCurrentRenderEncoder(_renderPassManager);
-        _drawable = NULL;
-
-        // Re-initialize basic Metal objects
-        if (_device && _commandQueue) {
-            NSLog(@"MGL CRITICAL: Re-creating Metal command buffer");
-            mglPassManagerInstallNewCommandBufferFromQueue(_renderPassManager, (__bridge void *)_commandQueue);
-
-            if (mglRenderCommandBufferOwnerHasCurrent(
-                    _renderPassManager->state->currentCommandBufferOwner) != 1) {
-                NSLog(@"MGL CRITICAL: Failed to create new command buffer during recovery");
-            }
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"MGL CRITICAL: Emergency Metal reset failed: %@", exception);
-    }
-}
-
 - (bool) processGLState: (bool) draw_command
 {
     METAL_LOCK();
@@ -2882,7 +2708,7 @@ static GLenum mglPassthroughDeclType(
             NSLog(@"MGL CRITICAL: Attempting Metal state recovery (%d/%d)",
                   corruption_recovery_count + 1, max_recovery_attempts);
             @try {
-                [self emergencyResetMetalState];
+                mglRenderPassEmergencyResetMetalState((__bridge void *)self);
                 corruption_recovery_count++;
                 deviceOk = (_device && ((uintptr_t)_device >= 0x1000)) ? 1 : 0;
                 queueOk = (_commandQueue && ((uintptr_t)_commandQueue >= 0x1000)) ? 1 : 0;
@@ -3102,7 +2928,7 @@ static GLenum mglPassthroughDeclType(
     }
 
     if (after.ensure_pass_matches_fbo) {
-        RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
+        RETURN_FALSE_ON_FAILURE(mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw((__bridge void *)self));
         [self updateCurrentRenderEncoder];
     }
 
@@ -3153,7 +2979,8 @@ static GLenum mglPassthroughDeclType(
     }
 
     if (after.validate_attachments) {
-        RETURN_FALSE_ON_FAILURE([self validateRenderPassAttachmentsAndPipelineFormatsLocked:traceProcess]);
+        RETURN_FALSE_ON_FAILURE(mglRenderPassValidateAttachmentsAndPipelineFormats(
+            (__bridge void *)self, traceProcess ? 1 : 0));
     }
 
     if (after.set_pipeline) {
@@ -3309,136 +3136,6 @@ static GLenum mglPassthroughDeclType(
  * pipeline/pass color, depth, and stencil format compatibility. Returns
  * false to skip the draw on validation failure, true to continue.
  */
-- (bool)validateRenderPassAttachmentsAndPipelineFormatsLocked:(BOOL)traceProcess
-{
-    // Guard against invalid render pass state before binding pipeline.
-    // Metal debug validation can abort the process if the encoder/render pass is incompatible.
-    BOOL hasRenderPassState =
-        _renderPassManager->state->renderPassStateOwner != NULL;
-    if (!hasRenderPassState) {
-        NSLog(@"MGL ERROR: processGLState - render pass state owner is nil before pipeline bind");
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.nil_rpd",
-                                ctx,
-                                _renderPassManager->state->currentCommandBufferOwner,
-                                _renderPassManager->state->currentRenderEncoderOwner,
-                                _renderPassManager->state->renderPassStateOwner,
-                                _drawable);
-        }
-        return false;
-    }
-    BOOL passHasAnyAttachment = NO;
-    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        id colorAttachment = mglRenderPassColorTextureFor(_renderPassManager->state, i);
-        if (colorAttachment) {
-            passHasAnyAttachment = YES;
-            if ((mglRenderPassTextureInfo(colorAttachment).usage & MGLTextureUsageRenderTarget) == 0) {
-                NSLog(@"MGL WARNING: processGLState - color attachment %d missing RenderTarget usage (usage=0x%lx); skipping draw",
-                      i,
-                      (unsigned long)mglRenderPassTextureInfo(colorAttachment).usage);
-                if (traceProcess) {
-                    mglLogStateSnapshot("processGLState.fail.color_usage",
-                                        ctx,
-                                        _renderPassManager->state->currentCommandBufferOwner,
-                                        _renderPassManager->state->currentRenderEncoderOwner,
-                                        _renderPassManager->state->renderPassStateOwner,
-                                        _drawable);
-                }
-                return false;
-            }
-        }
-    }
-    if (mglRenderPassDepthTextureFor(_renderPassManager->state) ||
-        mglRenderPassStencilTextureFor(_renderPassManager->state)) {
-        passHasAnyAttachment = YES;
-    }
-
-    if (!passHasAnyAttachment) {
-        NSLog(@"MGL WARNING: processGLState - render pass has no attachments, skipping draw to avoid Metal assert");
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.no_attachments",
-                                ctx,
-                                _renderPassManager->state->currentCommandBufferOwner,
-                                _renderPassManager->state->currentRenderEncoderOwner,
-                                _renderPassManager->state->renderPassStateOwner,
-                                _drawable);
-        }
-        return false;
-    }
-
-    uint32_t currentColor0Format = mglRenderInvalidPixelFormat();
-    uint32_t currentDepthFormat = mglRenderInvalidPixelFormat();
-    uint32_t currentStencilFormat = mglRenderInvalidPixelFormat();
-
-    id rpColor0 = mglRenderPassColorTextureFor(_renderPassManager->state, 0);
-    id rpDepth = mglRenderPassDepthTextureFor(_renderPassManager->state);
-    id rpStencil = mglRenderPassStencilTextureFor(_renderPassManager->state);
-    if (rpColor0) {
-        currentColor0Format = mglRenderPassTextureInfo(rpColor0).pixel_format;
-    }
-    if (rpDepth) {
-        currentDepthFormat = mglRenderPassTextureInfo(rpDepth).pixel_format;
-    }
-    if (rpStencil) {
-        currentStencilFormat = mglRenderPassTextureInfo(rpStencil).pixel_format;
-    }
-
-    // IMPORTANT:
-    // Never mutate depth/stencil attachments here to "fit" an existing pipeline.
-    // The active Metal render encoder was already created with a render-pass descriptor,
-    // and changing attachments after encoder creation does not make that encoder compatible.
-    // We must instead reject mismatched pipeline/pass combinations and rebuild safely.
-
-    if (mglRenderPipelinePassColorMismatch(
-            (uint32_t)_pipelineCache.state->pipelineColor0Format,
-            currentColor0Format)) {
-        static uint64_t s_colorFormatMismatchCount = 0;
-        s_colorFormatMismatchCount++;
-	        if (s_colorFormatMismatchCount <= 16 || (s_colorFormatMismatchCount % 250) == 0) {
-	            NSLog(@"MGL WARNING: Pipeline/pass color format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	                  (unsigned long)_pipelineCache.state->pipelineColor0Format, (unsigned long)currentColor0Format);
-	        }
-	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass color format mismatch"];
-	        mglMarkRendererDirtyBits(ctx->active_state,
-	                                 DIRTY_PROGRAM | DIRTY_VAO |
-	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
-	        return false;
-	    }
-
-    if (mglRenderPipelinePassAttachmentMismatch(
-            (uint32_t)_pipelineCache.state->pipelineDepthFormat,
-            currentDepthFormat)) {
-	            static uint64_t s_depthFormatMismatchCount = 0;
-	            s_depthFormatMismatchCount++;
-	            if (s_depthFormatMismatchCount <= 16 || (s_depthFormatMismatchCount % 250) == 0) {
-	                NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	                      (unsigned long)_pipelineCache.state->pipelineDepthFormat, (unsigned long)currentDepthFormat);
-	            }
-	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass depth format mismatch"];
-	        mglMarkRendererDirtyBits(ctx->active_state,
-	                                 DIRTY_PROGRAM | DIRTY_VAO |
-	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
-	        return false;
-	    }
-
-    if (mglRenderPipelinePassAttachmentMismatch(
-            (uint32_t)_pipelineCache.state->pipelineStencilFormat,
-            currentStencilFormat)) {
-	            static uint64_t s_stencilFormatMismatchCount = 0;
-	            s_stencilFormatMismatchCount++;
-	            if (s_stencilFormatMismatchCount <= 16 || (s_stencilFormatMismatchCount % 250) == 0) {
-	                NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	                      (unsigned long)_pipelineCache.state->pipelineStencilFormat, (unsigned long)currentStencilFormat);
-	            }
-	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass stencil format mismatch"];
-	        mglMarkRendererDirtyBits(ctx->active_state,
-	                                 DIRTY_PROGRAM | DIRTY_VAO |
-	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
-	        return false;
-	    }
-    return true;
-}
-
 /*
  * Pipeline Sync domain (Pipeline Sync domain). PSO build/reuse logic moved verbatim from processGLStateLocked:
  * generates pipeline+vertex descriptor, queries/builds PSO cache, interface-mismatch
@@ -3555,7 +3252,8 @@ static GLenum mglPassthroughDeclType(
             if (!mglRenderPassGeneratePipelineDescriptorState(
                     (__bridge void *)self, &psoState, &psoFunctions)) {
                 NSLog(@"MGL PIPELINE CREATE fail error=generatePipelineDescriptorState returned NO");
-                [self invalidateCurrentPipelineStateForReason:@"pipeline descriptor failure"];
+                mglRenderPassInvalidateCurrentPipelineState(
+                (__bridge void *)self, "pipeline descriptor failure");
                 _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
                 mglMarkRendererDirtyBits(state,
                                          DIRTY_PROGRAM | DIRTY_VAO |
@@ -3963,7 +3661,8 @@ static GLenum mglPassthroughDeclType(
                         (unsigned)_gpuRecovery.interfaceMismatchBlockedStreak);
                     }
 
-                    [self invalidateCurrentPipelineStateForReason:@"interface mismatch pipeline failure"];
+                    mglRenderPassInvalidateCurrentPipelineState(
+                (__bridge void *)self, "interface mismatch pipeline failure");
                     _gpuRecovery.pipelineRetryAfter = (_gpuRecovery.interfaceMismatchBlockedUntil > _gpuRecovery.interfaceMismatchRetryAfter)
                     ? _gpuRecovery.interfaceMismatchBlockedUntil
                     : _gpuRecovery.interfaceMismatchRetryAfter;
@@ -3975,7 +3674,8 @@ static GLenum mglPassthroughDeclType(
             if (!compiledPSO &&
             MGLCapabilityHasBug(&_capability,
             MGL_BUG_MSL_PIPELINE_REJECTION)) {
-                [self invalidateCurrentPipelineStateForReason:@"pipeline creation failure"];
+                mglRenderPassInvalidateCurrentPipelineState(
+                (__bridge void *)self, "pipeline creation failure");
 
                 // AGX VIRTUALIZATION FALLBACK: Try with minimal state
                 @try {
@@ -4036,7 +3736,8 @@ static GLenum mglPassthroughDeclType(
             mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE");
         if (!MGLCapabilityHasBug(&_capability,
         MGL_BUG_MSL_PIPELINE_REJECTION) && !forceSafeFallback) {
-            [self invalidateCurrentPipelineStateForReason:@"pipeline creation exception"];
+            mglRenderPassInvalidateCurrentPipelineState(
+                (__bridge void *)self, "pipeline creation exception");
             _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
             state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return false;
@@ -4126,7 +3827,8 @@ static GLenum mglPassthroughDeclType(
 
         if (!compiledPSO) {
             NSLog(@"MGL CRITICAL: VIRTUALIZED AGX - All pipeline creation attempts failed, disabling rendering");
-            [self invalidateCurrentPipelineStateForReason:@"all pipeline fallbacks failed"];
+            mglRenderPassInvalidateCurrentPipelineState(
+                (__bridge void *)self, "all pipeline fallbacks failed");
             _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
             state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
             return false;
@@ -4136,7 +3838,8 @@ static GLenum mglPassthroughDeclType(
     if (!compiledPSO) {
         NSLog(@"MGL ERROR: Failed to create pipeline state: %s", cppError[0] ? cppError : "unknown error");
         NSLog(@"MGL WARNING: Skipping draw for this pipeline build failure; will retry later");
-        [self invalidateCurrentPipelineStateForReason:@"pipeline state is nil after creation"];
+        mglRenderPassInvalidateCurrentPipelineState(
+                (__bridge void *)self, "pipeline state is nil after creation");
         _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
         state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
         return false;
