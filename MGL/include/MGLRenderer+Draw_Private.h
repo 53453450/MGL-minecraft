@@ -284,20 +284,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 /* applySamplerSnapshotForCommand:... is now the C driver
  * mglBatchApplySamplerSnapshot (mgl_batch_issue.h). */
 - (bool)bindTexturesToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
-- (bool)bindSampledTexturesForStage:(int)shaderStage
-                    isFragmentStage:(BOOL)isFragment
-                            program:(Program *)program
-                        programName:(GLuint)programName
-                   vertexProgramName:(GLuint)vertexProgramName
-                 fragmentProgramName:(GLuint)fragmentProgramName
-                     defaultSampler:(id)defaultSampler
-                            bindCall:(uint64_t)bindCall
-                          traceBind:(bool)traceBind
-                         boundCount:(GLuint *)boundCount
-                      fallbackCount:(GLuint *)fallbackCount
-                           nilCount:(GLuint *)nilCount
-                        samplerCount:(GLuint *)samplerCount
-                        sampledCount:(GLuint *)sampledCountOut;
+/* bindSampledTexturesForStage: is C now (log 156). */
 - (BOOL)ensureRasterEncoderForDraw;
 
 /* traceReplayCommand:... is now the C driver mglBatchTraceReplayCommand

@@ -30,6 +30,17 @@
 extern "C" {
 #endif
 
+/* Bind every sampled texture of one stage (gate plan, depth recovery, RT copy
+ * plan, compat fallback, sampler materialize, resource queueing, diagnostics).
+ * Was -bindSampledTexturesForStage:isFragmentStage:….  Returns false when the
+ * caller must abandon the stage. */
+bool mglSampledBindTexturesForStage(
+    void *renderer, int shader_stage, int is_fragment, Program *program,
+    GLuint program_name, GLuint vertex_program_name,
+    GLuint fragment_program_name, void *default_sampler, uint64_t bind_call,
+    int trace_bind, GLuint *bound_count, GLuint *fallback_count,
+    GLuint *nil_count, GLuint *sampler_count, GLuint *sampled_count_out);
+
 /* Sampled-binding diagnostics emission (focused/trace-file logs + readback
  * trace).  Was -emitSampledDiagPortsForProgram:stage:…. */
 void mglSampledEmitDiagPorts(
