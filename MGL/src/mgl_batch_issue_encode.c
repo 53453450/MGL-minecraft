@@ -3,6 +3,7 @@
  * A3: MDI/direct issue — loops in mgl_batch_mtl_issue_mdi_batch / issue_direct_batch.
  */
 #include "mgl_renderer_ports.h"  /* C port surface (T4) */
+#include "mgl_render_pass_manager_ops.h" /* mglRenderPassProcessGLStateLocked */
 #include "mgl_types_program.h"    /* Program */
 #include "mgl_draw_issue.h"       /* draw host ports: device / cull-distance */
 #include "mgl_env_flag.h"
@@ -97,7 +98,7 @@ static int mglDirCullCap(void *v, uint32_t i, int cullPath)
         cmd->baseInstance) ? 1 : 0;
 }
 static int mglDirAfterCull(void *v)
-{ MGLIssueEncCtx *c = v; return (mglRendererProcessGLStatePort(c->r, 1) &&
+{ MGLIssueEncCtx *c = v; return (mglRenderPassProcessGLStateLocked(c->r, 1) &&
       mglRenderEncoderOwnerHasCurrent(mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner))
       ? 1 : 0; }
 static int mglDirDyn(void *v, uint32_t i)

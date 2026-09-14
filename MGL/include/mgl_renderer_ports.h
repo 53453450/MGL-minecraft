@@ -82,7 +82,6 @@ int mglRendererResolveElementBuffer(void *renderer, Buffer *gl_element_buffer,
                                     Buffer **gl_out, void **mtl_out);
 
 /* Renderer state processing (1 = a draw command). */
-int mglRendererProcessGLStatePort(void *renderer, int draw_command);
 
 /* Vertex / element / indirect buffer upload for a draw's buffer object: bind
  * the Metal storage when it is missing, then push dirty data.  C, not a port
@@ -229,6 +228,12 @@ typedef struct MGLRendererStateAreas {
      * pointer the render encoder attaches visibility results from. */
     void *drawable;
     void *query_state_owner;
+    /* Snapshots of fields that live in Objective-C-only records: the GPU
+     * recovery quarantine gate and the emulated-MS forced sample id.  Both are
+     * read-only at the point of use. */
+    uint32_t gpu_interface_mismatch_blocked_program;
+    double gpu_interface_mismatch_blocked_until;
+    int32_t mssample_forced_id;
     uint32_t tess_cull_capture_instance_stride;
 } MGLRendererStateAreas;
 
@@ -260,7 +265,6 @@ int mglPlatformShellNewCommandBuffer(void *renderer);
 
 int mglRendererBindMTLProgramPort(void *renderer, Program *program);
 void mglRendererEndRenderEncodingPort(void *renderer);
-int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command);
 
 /* the Clear*CopyBack port(s) are gone: those methods are C now
  * (mgl_stage_copy_back.h, log 158). */

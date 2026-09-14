@@ -9,6 +9,7 @@
  * mglRendererFlushDrawBufferLockedPort.
  */
 #include "mgl_renderer_ports.h"   /* C port surface (T4) */
+#include "mgl_render_pass_manager_ops.h" /* mglRenderPassProcessGLStateLocked */
 #include "mgl_draw_issue.h"       /* mglDrawHost{BindContext,RasterizationIsEmpty,...} */
 #include "mgl_batch_restore.h"
 #include "mgl_batch_rt_mark.h"
@@ -106,7 +107,7 @@ static void cBegin(void *v)
 static int cFbo(void *v)
 { CCtx *c = v; return mglRendererPrepareRenderPassIfFBOChangedPort(c->r, c->batch, c->ctx,
       c->err); }
-static int cProc(void *v) { return mglRendererProcessGLStatePort(((CCtx *)v)->r, 1); }
+static int cProc(void *v) { return mglRenderPassProcessGLStateLocked(((CCtx *)v)->r, 1); }
 static void cErr(void *v)
 { CCtx *c = v; if (!mglRenderErrorIsNone((uint32_t)c->ctx->active_state->error))
       *c->err = c->ctx->active_state->error; }

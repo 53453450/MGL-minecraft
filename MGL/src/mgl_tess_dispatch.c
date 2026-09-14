@@ -862,7 +862,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
 
     areas.tessellation->tessComputeActive = 1;
     areas.tessellation->tessComputeProgram = tes_program;
-    const int state_ready = mglRendererProcessGLStatePort(renderer, 1);
+    const int state_ready = mglRenderPassProcessGLStateLocked(renderer, 1);
     if (!mglTessPassthroughRasterReady(
             state_ready ? 1 : 0,
             mglRenderEncoderOwnerHasCurrent(
@@ -1708,7 +1708,7 @@ bool mglTessDispatchAIRTessEvalCompute(
 
     areas.tessellation->tessComputeActive = 1;
     areas.tessellation->tessComputeProgram = tes_program;
-    const int state_ready = mglRendererProcessGLStatePort(renderer, 1);
+    const int state_ready = mglRenderPassProcessGLStateLocked(renderer, 1);
     if (!mglTessPassthroughRasterReady(
             state_ready ? 1 : 0,
             mglRenderEncoderOwnerHasCurrent(

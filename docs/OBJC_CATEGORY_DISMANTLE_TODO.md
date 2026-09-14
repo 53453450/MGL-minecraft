@@ -50,10 +50,10 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百一十刀** + trace 清零 后；第 68–148 轮见 §0.24/§0.26–§0.105；（第 134–136 轮五次尝试回退；第 137/138/139 轮按依赖拓扑做出第一百零六/一百零七/一百零八刀，`+RenderPass.m` 385 → 359、端口 35 → 34；**第 140 轮（第一百零九刀）把 `mglRenderPassMatchesFramebufferImpl:` 整块转 C 并顺带铺 5 个 twin，`+RenderPass.m` 359 → 337、全库语法 1,063 → 1,041**；**第 141 轮（第一百一十刀）把 `configureUserFBOAttachmentsLocked` 整块转 C 并一次铺 8 个 twin，`+RenderPass.m` 337 → 328、全库语法 1,041 → 1,033**；**第 142 轮（第一百一十一刀）把零 self 的 `finalizeRenderPassDescriptorLocked:` 整块转 C（再铺 12 个 twin）并按第 38 条级联删掉 3 个归零 static，`+RenderPass.m` 328 → 323、全库语法 1,033 → 1,028、词汇 2,087 → 2,044、行数 −280**；**第 143 轮（第一百一十二刀）把 513 行的 `generatePipelineDescriptorState:` 整块转 C，`+RenderPass.m` 323 → 307、全库语法 1,028 → 1,014、词汇 2,044 → 1,994、行数 −484**；**第 144 轮（第一百一十三刀）把 `newCommandBufferLocked` 整块转 C 并退役 `mglRendererNewCommandBufferLockedPort`（端口 34 → 33，全库语法 1,014 → 991、词汇 1,994 → 1,964、行数 −194）**；**第 145 轮（第一百一十四刀）把 246 行的 `createRenderEncoderLocked:` 整块转 C（areas 加 `drawable` / `query_state_owner` 两个字段），并顺手修掉一处既存 `sizeof(指针)` 清零缺陷（语法 991 → 977、词汇 1,964 → 1,951、行数 −243）**；**第 146 轮（第一百一十五刀）把 `ensureWritableCommandBufferLocked:` 与 `flushCommandBufferLocked:` 一起转 C （并删掉它们在 ObjC 私有头里的两条声明；语法 977 → 958、词汇 1,951 → 1,935、行数 −144）**；**第 147 轮（第一百一十六刀）把两个 AIR passthrough VS 生成器转 C（`NSMutableString`+`appendFormat:` 换成 C 字符串缓冲），并退役 `mglRendererEnsureAIRGeometryPassthroughPort` / `mglRendererEnsureAIRTessEvalPassthroughPort` 两个端口（端口 33 → 31；语法 958 → 922、词汇 1,935 → 1,880、行数 −543）**；**第 148 轮（第一百一十七刀）把 draw-path 守卫簇四块转 C（`invalidateCurrentPipelineStateForReason:` / `ensureCurrentRenderPassMatchesFramebufferForDraw` / `emergencyResetMetalState` / `validateRenderPassAttachmentsAndPipelineFormatsLocked:`），并按第 38 条级联删掉 10 个归零 static（语法 922 → 913、词汇 1,880 → 1,856、行数 −278）**）
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百一十刀** + trace 清零 后；第 68–149 轮见 §0.24/§0.26–§0.106；（第 134–136 轮五次尝试回退；第 137/138/139 轮按依赖拓扑做出第一百零六/一百零七/一百零八刀，`+RenderPass.m` 385 → 359、端口 35 → 34；**第 140 轮（第一百零九刀）把 `mglRenderPassMatchesFramebufferImpl:` 整块转 C 并顺带铺 5 个 twin，`+RenderPass.m` 359 → 337、全库语法 1,063 → 1,041**；**第 141 轮（第一百一十刀）把 `configureUserFBOAttachmentsLocked` 整块转 C 并一次铺 8 个 twin，`+RenderPass.m` 337 → 328、全库语法 1,041 → 1,033**；**第 142 轮（第一百一十一刀）把零 self 的 `finalizeRenderPassDescriptorLocked:` 整块转 C（再铺 12 个 twin）并按第 38 条级联删掉 3 个归零 static，`+RenderPass.m` 328 → 323、全库语法 1,033 → 1,028、词汇 2,087 → 2,044、行数 −280**；**第 143 轮（第一百一十二刀）把 513 行的 `generatePipelineDescriptorState:` 整块转 C，`+RenderPass.m` 323 → 307、全库语法 1,028 → 1,014、词汇 2,044 → 1,994、行数 −484**；**第 144 轮（第一百一十三刀）把 `newCommandBufferLocked` 整块转 C 并退役 `mglRendererNewCommandBufferLockedPort`（端口 34 → 33，全库语法 1,014 → 991、词汇 1,994 → 1,964、行数 −194）**；**第 145 轮（第一百一十四刀）把 246 行的 `createRenderEncoderLocked:` 整块转 C（areas 加 `drawable` / `query_state_owner` 两个字段），并顺手修掉一处既存 `sizeof(指针)` 清零缺陷（语法 991 → 977、词汇 1,964 → 1,951、行数 −243）**；**第 146 轮（第一百一十五刀）把 `ensureWritableCommandBufferLocked:` 与 `flushCommandBufferLocked:` 一起转 C （并删掉它们在 ObjC 私有头里的两条声明；语法 977 → 958、词汇 1,951 → 1,935、行数 −144）**；**第 147 轮（第一百一十六刀）把两个 AIR passthrough VS 生成器转 C（`NSMutableString`+`appendFormat:` 换成 C 字符串缓冲），并退役 `mglRendererEnsureAIRGeometryPassthroughPort` / `mglRendererEnsureAIRTessEvalPassthroughPort` 两个端口（端口 33 → 31；语法 958 → 922、词汇 1,935 → 1,880、行数 −543）**；**第 148 轮（第一百一十七刀）把 draw-path 守卫簇四块转 C（`invalidateCurrentPipelineStateForReason:` / `ensureCurrentRenderPassMatchesFramebufferForDraw` / `emergencyResetMetalState` / `validateRenderPassAttachmentsAndPipelineFormatsLocked:`），并按第 38 条级联删掉 10 个归零 static（语法 922 → 913、词汇 1,880 → 1,856、行数 −278）**；**第 149 轮（第一百一十八刀）把 472 行的 `processGLStateLocked:` 整块转 C，并退役 `mglRendererProcessGLStatePort` / `mglRendererProcessGLStateLockedPort` 两个端口（端口 31 → 29；语法 913 → 885、词汇 1,856 → 1,822、行数 −485）**）
 **第 113–120 轮（第八十三～九十刀）把 `+Blit.m` 整文件删除（6 → 5）；第 121/122 轮（第九十一/九十二刀）用「单方法二分 + 单例探针」破解采样簇阻塞并连续两刀一次通过**）**：
-文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 16,475**、
-ObjC 语法 **2,268 → 913**、词汇 **4,353 → 1,856**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
+文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 15,990**、
+ObjC 语法 **2,268 → 885**、词汇 **4,353 → 1,822**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮起改从 `+Blit.m` 推进**；
 **shim：43 → 31 个端口 / 唯一壳 TU 2,069 行 / 293 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；**P0-1 第八十三刀（`+Blit.m` 的 `mtlCopyTexSubImageViaTextureBlit:` 转 C，见第 143 条）0 退役 0 新增**——入口全部复用既有端口与 twin；**P0-1 第八十四刀（两个 copyImageSubData 叶子转 C，见第 144 条）0 退役、新增 1**——`synchronizeRenderPassForTextureReadback:` 尚无 C 入口，故新增该端口（T4 如实记 +1），`_capability` 靠 `areas.core->capability` 零结构改动解决；**P0-1 第八十五刀（后置回读叶子 + copyImageSubData dispatcher 一起转 C，见第 145 条）0 退役、新增 1**——唯一新增的是 `endRenderPassIfFramebufferChangedForNonDraw:` 的端口，另外两个桥（`ctx = glm_ctx` 的 `mglPlatformShellSetContext`、`bindMTLTexture` 的 `mglRendererBindMTLTexture`）都是**既有**入口；**P0-1 第八十六刀（blitFramebuffer 附着解析叶子转 C，见第 146 条）0 退役、新增 3**——`_drawable` 是 property 宏（`self.drawable`），没有 core 字段可借，故必须补 `mglNextDrawable` / `mglDrawableTexture` / `mglEnsureLayerDrawableSizeAtLeastWidth` 三个端口；**P0-1 第八十七刀（scaled color blit 叶子转 C，见第 147 条）0 退役 0 新增**——并顺带补齐 12 个 render-encoder twin；**P0-1 第八十八刀（`mtlBlitFramebuffer:` dispatcher 转 C，见第 148 条）0 退役 0 新增**——被调方法全在 C 里，`+Blit.m` 只剩 68 语法；**P0-1 第八十九刀（`mtlCopyTexSubImage:` 转 C，见第 149 条）0 退役、新增 2**——`mtlReadDrawable` 与 `copyTextureUploadWithDedicatedCommandBuffer` 两个桥，端口头首次引入 `mgl_region_value.h`；**P0-1 第九十刀（整文件删除 `MGLRenderer+Blit.m`，见第 150 条）0 退役、新增 1**——`currentRenderPassUsesTexture:` 的端口，其余三块（采样拷贝修复入口、`mglRendererBlitFramebuffer` 后端入口、27 个 helper 与文件头）随文件消失；**P0-1 第九十一刀（采样簇 compat + sampler 转 C，见第 151 条）退役 1、新增 0**——`mglRendererMaterializeSampledSamplerPort` 随目标方法 C 化一起删除，C 侧直调 `mglSampledSamplerMaterialize`；**P0-1 第九十二刀（`applySampledRenderTargetCopyPlan:` 转 C，见第 152 条）0 退役 0 新增**；**P0-1 第九十三刀（`bindSeparateSamplersAndArrayTextures:` 转 C，见第 153 条）0 退役 0 新增**；**P0-1 第九十四刀（`recoverFragmentSampledDepthTexture:` 转 C，见第 154 条）0 退役 0 新增**——第 142 条的头号嫌疑方法整体 C 化后探针 8/8，嫌疑排除；**P0-1 第九十五刀（`emitSampledDiagPortsForProgram:` 转 C，见第 155 条）0 退役、新增 1**——目标方法带 `NSString *` 参数，故新增一个"只收 C 字符串"的端口；**P0-1 第九十六刀（`bindSampledTexturesForStage:` 整块转 C，见第 156 条）0 退役 0 新增、净 −45 语法**——前六刀引入的 20 处调用点桥接随方法整体搬走而消失；**P0-1 第九十七刀（整文件删除 `MGLRenderer+BindingState.m`，见第 157 条）退役 1、新增 0**——`mglRendererBindTexturesToCurrentRenderEncoderPort` 随目标方法 C 化删除；**P0-1 第九十八刀（copy-back 列表两个 helper 转 C，见第 158 条）退役 2、新增 0**——`mglRendererClearStageBindingCopyBacksPort` / `…CopyBackPort` 连同 13 处 C 调用点一起改直调；**P0-1 第九十九刀（copy-back 的 record + flush 转 C，见第 159 条）退役 2、新增 0、净 −34 语法**——areas 首次加 `render_pass_manager` 字段（零端口）；**P0-1 第一百刀（两个对外采样符号转 C + 新建 `mgl_renderer_host` TU，见第 160 条）0 退役 0 新增、净 −2 语法**；**P0-1 第一百零一刀（再搬 3 个对外符号，见第 161 条）0 退役 0 新增、净 −3 语法**；**P0-1 第一百零二刀（watchdog 转 C，见第 162 条）0 退役 0 新增、净 −1 语法**；**P0-1 第一百零三刀（`mglEnsureNewCommandBuffer` 转 C，见第 163 条）0 退役 0 新增、净 −3 语法**；`MGLRenderer*.m` **34,604 → 24,779**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
@@ -7017,6 +7017,36 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 `mglApplyPendingDrawableSize` / `mglNextDrawable` / `newDrawBuffer:isDepthStencil:` / `newDrawBufferWithCustomSize:isDepthStencil:customSize:` /
 `newRenderEncoderWithReason:`）列成"要新入口"清单再决定是否分两轮。
 
+179. **第 149 轮（P0-1 第一百一十八刀）：472 行的 `processGLStateLocked:` 整块转 C——**退役两个端口**（31 → 29），本轮最大的单块**：
+      ① **前置**：第 148 刀把 `emergencyResetMetalState` / `ensureCurrentRenderPassMatchesFramebufferForDraw` /
+      `validateRenderPassAttachmentsAndPipelineFormatsLocked:` 变成 C 之后，本方法的 self 只剩 4 处，
+      而且**全部有既有端口/入口**（`endRenderPassIfFramebufferChangedForNonDraw:` 端口、
+      `newRenderEncoderLockedWithReason:` 端口、`updateCurrentRenderEncoder` 端口、`newCommandBufferLocked` 已是 C）⇒ **miss=0**。
+      它同时让**公开入口 `processGLState:`** 只剩一行转发 ⇒ 连同 `mglRendererProcessGLStatePort`（6 个 C 调用点）与
+      `mglRendererProcessGLStateLockedPort`（1 个）**一起退役**，7 个调用点全部改直调 `mglRenderPassProcessGLStateLocked()`：
+      `mgl_batch_flush_restore_encode.c` 1 / `mgl_batch_issue_encode.c` 1 / `mgl_draw_metal_port.c` 3 / `mgl_tess_dispatch.c` 2（另加本文件内 `flushCommandBufferLocked` 的 1 处）。
+      ② **三个"ObjC-only 记录"字段的处理（新规第 49 条 (a)）**：`_gpuRecovery.interfaceMismatchBlockedProgram/Until` 与
+      `_mglForcedMSSampleId` 都在 ObjC-only 的结构/ivar 里，本方法**只读**它们 ⇒ 按第 45 条 (d) 往 areas 加三个**快照字段**
+      （`gpu_interface_mismatch_blocked_program` / `..._until` / `mssample_forced_id`，壳各 1 行填充，**零端口**）。
+      判断标准很简单：**这个调用里会不会写它？** 只读 → 快照；要写 → 壳 setter（第 48 条 (a)）。
+      ③ **`static inline` 不是函数（新规第 49 条 (b)）**：`mglShouldTraceCall` 在 `MGLRenderer+Draw_Private.h` 里是
+      `static inline`，本刀先按"文件局部 extern"声明它，**编译过、链接报 `"_mglShouldTraceCall", referenced from`**；
+      正确做法是在 C 宿主里写**同义 twin**（`mglPdShouldTraceCall`，体内就是 `kMGLDiagnosticStateLogs` + `(count <= 80) || (count % 500 == 0)`）。
+      **凡是头文件里的 `static inline` / 宏，C 侧只能重写，不能 extern。**
+      ④ **函数内 static 要提到文件作用域**：`.m` 里那 9 个 `static uint64_t s_*`（调用计数、旋转计数、nil 编码器恢复计数等）在 C 里全部提为文件作用域
+      `s_pd*`（其中 `corruption_recovery_count` / `max_recovery_attempts` 被 try 体内外共用 ⇒ 必须提到文件作用域才看得见）。
+      ⑤ **三个 `@try` 的最简形态**：第一个（Metal 恢复）体内有失败分支 ⇒ 用"body 返回 0/1 + wrapper 返回 0 即异常"的两态即可
+      （两条路径都是 `return false`，只有日志文案不同）；第二个（清空路径建编码器）catch 只记日志 ⇒ `(void)` 调 guarded；
+      第三个（set render pipeline）体内无失败分支 ⇒ `!guarded(...)` 即异常，在调用方补 catch 的副作用（dirty bits + 快照）。
+      **不是每个 `@try` 都要三态**——第 44 条的三态只在"体内失败与异常要区别对待"时才需要。
+      ⑥ **度量**：全库语法 **913 → 885（−28）**、词汇 **1,856 → 1,822（−34）**、行数 **16,475 → 15,990（−485）**；
+      `+RenderPass.m` **207 → 182 语法 / 4,058 → 3,587 行**；壳 2,078 → 2,063 行 / 294 → 291 语法；
+      宿主 `.c` 3,907 → 4,497 行；**端口面 31 → 29（退役 2、新增 0）**；文件数 **4**、空 TU **0**。
+      ⑦ **验证**：`make -j8` **0 error**（无新增 unused 警告）；单例探针 **4/4**；`./build/test_dirty_hash` **PASS**；
+      `make test-all` 按第 45 条 (c) 绕行（`verify_gl_api.py` ok + 余下 28 个目标逐条跑，退出码 0，`PASS: 92 FAIL: 0 SKIP: 2 / 94`）；
+      CTS 七簇 **diff 全空**（58/1/0/59/13/39/4，逐簇 `completed == total`）；
+      A/B（新库 vs `f3a8b1a`）**逐行一致**——default **4981/4981**、flushy **5514/5514**，stderr MGL 多重集 **307/307**。
+
 ### 0.105 第 148 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.103/§0.104**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 16,475 行 / 913 语法 / 1,856 词汇**；
@@ -7053,4 +7083,40 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 
 **下一步**：按上表做 `processGLStateLocked:`（25 语法 / 485 行）——它现在 **miss=0** 且能**退役 1 个端口**（31 → 30），
 是本阶段"收益/风险"最好的一块；开工前用第 46 条 (b) 全仓 grep 它的 7 个 self 选择器，确认没有跨文件调用点。
+
+### 0.106 第 149 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.104/§0.105**）
+
+**当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 15,990 行 / 885 语法 / 1,822 词汇**；
+壳 TU **2,063 行 / 291 语法**（上限 2,400）；**端口面 29 个**（第一百一十八刀退役 2 / 新增 0）；`make test-all`：见第 45 条 (c)；
+CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第一百一十八刀的实测值）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` **182/249/3,587** · `+Texture.m` **279/1,052/6,248** · `MGLRenderer.m` **133/228/4,092** ·
+壳 `MGLPlatformRendererShell.m` **291/293/2,063**。
+
+**下一刀的顺序**：
+
+| 文件 | 语法 | 行数 | 方法 | 备注 |
+|---|---|---|---|---|
+| `MGLRenderer.m` | 37 | 464 | `mtlSwapBuffersLocked:` | **本表首推**：该文件最大两块之一；需要的壳 forwarder 已知（`mglSwapInterval` / `mglShouldSkipPresentForUnlockedSwap` / `mglApplyPendingDrawableSize` / drawable 指针读 / layer 读），`dispatch_async` 用 `dispatch_async_f`，`ctx = glm_ctx` 走既有 `mglPlatformShellSetContext`，`_deviceResetRequested` 走 `areas.core` |
+| `MGLRenderer.m` | 37 | 554 | `mtlClearBuffer:type:` | 12 selfs / 9 miss；先把 `newDrawBuffer:isDepthStencil:`（33 行）与 `newDrawBufferWithCustomSize:isDepthStencil:customSize:`（25 行）搬掉可省两个端口 |
+| `+RenderPass.m` | 42 | 443 | `buildPipelineStateOnCacheMissWithState:` | 单块语法最大：3 `@try` + 23 `NSLog` + 40 `@"` + `NSString`/`NSException`（`NSString` 要逐条改 C 字符串） |
+| `+Texture.m` | 17 | 311 | `mtlGetTexImage:tex:` | `+Texture.m` 是当前最大单文件（279 语法 / 6,248 行）；建议整体规划成下一个"整文件"战役 |
+| `+Texture.m` | 17 | 150 | `mtlReadDrawable:` | 8 selfs / 7 miss（`endRenderEncoding` 端口已有、`mglNextDrawable` 端口已有） |
+| 壳 | 71 | 457 | `performOperation:` | **T5 保留面** |
+
+**规矩表（§0.62/§0.65–§0.105 四十八条仍然有效）＋ 本轮第四十九条**：
+49. **搬"核心状态机"这一类方法时，三类符号要分别处理**：
+   **(a) ObjC-only 记录里的字段（`_gpuRecovery.x` / `_mglForcedMSSampleId`）**：**只读**就加 areas 快照字段（零端口、壳 1 行）；
+   **要写**就必须壳 setter。判断口径只有一句："这个调用里会不会写它？"
+   **(b) 头文件里的 `static inline` / 宏不能 extern**：本刀 `mglShouldTraceCall` 是 `static inline`，
+   extern 声明能过编译但**链接期报 `"_mglShouldTraceCall", referenced from`**；正确做法是在 C 宿主写同义 twin。
+   **(c) 函数内 `static` 提到文件作用域**：被 `@try` 体内外共用的计数器尤其要注意（本刀 9 个 `s_*` → `s_pd*`）。
+   **(d) `@try` 的形态按"体内有没有失败分支"选**：有 ⇒ 两态（body 0/1 + wrapper 0 = 异常）；无 ⇒ `!guarded(...)` 即异常，
+   catch 的副作用写在调用方。只有"体内失败与异常要区别对待"时才上第 44 条的三态。
+   **(e) 退役端口的红利**：一个方法搬走常常让"公开包装 + 专用端口"成对消失（本刀 2 个端口 / 7 个调用点），
+   所以**先 grep 端口名**，别急着为 C 侧新增入口（第 36/46 条）。
+
+**下一步**：按上表做 `mtlSwapBuffersLocked:`（37 语法 / 464 行）——它是 `MGLRenderer.m` 里最大的一块，
+搬完 `MGLRenderer.m` 就只剩 `mtlClearBuffer:type:` 一个大块（该文件 133 语法里两块占 74）。
 

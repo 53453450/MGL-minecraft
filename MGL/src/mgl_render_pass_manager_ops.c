@@ -33,6 +33,9 @@
 #include "mgl_shader_abi.h"         /* mglAIRPerVertexStrideForResources, mglShaderCompileGLSL */
 #include "mgl_metal_ref.h"         /* mglReleaseMetalObjNoNull */
 #include "mgl_draw_gs.h"           /* mglDrawGsPassthroughDeclType */
+#include "mgl_render_pass_plan.h"    /* mglRenderProcessGLState*, plans */
+#include "mgl_buffer_slots.h"        /* kMGL*BufferIndex */
+#include "mgl_binding_state_ops.h"  /* mglRendererSyncResourceBindingsForContext */
 #include "mgl_trace_log.h"         /* mglTraceLog, kMGLDiagnosticStateLogs */
 #include "mgl_gpu_recovery.h"      /* mglRendererRecordGPUError */
 #include "mgl_pso_format_class.h"  /* mglRenderDefaultColorPixelFormat */
@@ -2806,7 +2809,7 @@ void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish)
 
     mglRendererFlushDrawBufferLockedPort(renderer, ctx);
 
-    if (!mglRendererProcessGLStatePort(renderer, 0)) {
+    if (!mglRenderPassProcessGLStateLocked(renderer, 0)) {
         fprintf(stderr,
                 "MGL WARNING: processGLState failed in flushCommandBuffer, continuing with cleanup\n");
     }
@@ -3903,6 +3906,597 @@ int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
                                  DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO |
                                      DIRTY_RENDER_STATE);
         return 0;
+    }
+    return 1;
+}
+
+/* === processGLStateLocked (log 179) ==================================== */
+
+/* Declared in the Objective-C MGLRenderer+Draw_Private.h. */
+/* MGLRenderer+Draw_Private.h has this as a `static inline`; C needs its own
+ * twin (kMGLDiagnosticStateLogs is 0 in mgl_trace_log.h). */
+static bool mglPdShouldTraceCall(uint64_t count)
+{
+    if (!kMGLDiagnosticStateLogs) {
+        return false;
+    }
+    return (count <= 80ull) || ((count % 500ull) == 0ull);
+}
+extern void mglLogLoopHeartbeat(const char *tag, uint64_t call,
+                                double now_seconds, double *last_time,
+                                uint64_t *last_count, double interval);
+extern Program *mglResolveProgramFromState(GLMContext ctx);
+
+/* File-scope twins of the .m's function-local statics. */
+static uint64_t s_pdProcessGLStateCallCount = 0;
+static double s_pdProcessGLStateLastCallTime = 0.0;
+static uint64_t s_pdProcessGLStateLastCallCount = 0;
+static int s_pdCorruptionRecoveryCount = 0;
+static const int kMglPdMaxRecoveryAttempts = 3;
+static uint64_t s_pdQuarantineSkipCount = 0;
+static uint64_t s_pdRotateFinalizedCount = 0;
+static uint64_t s_pdNilEncoderRecoveryCount = 0;
+static uint64_t s_pdDrawPipelineLookupCount = 0;
+static uint64_t s_pdNilPipelineCount = 0;
+
+
+/* @try of the corruption-recovery block: 1 = device and queue are usable. */
+static int mglPdRecoveryTryBody(void *renderer)
+{
+    mglRenderPassEmergencyResetMetalState(renderer);
+    s_pdCorruptionRecoveryCount++;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    const int deviceOk =
+        mglRendererBackendGetDevice(areas.backend) &&
+        ((uintptr_t)mglRendererBackendGetDevice(areas.backend) >= 0x1000);
+    const int queueOk =
+        mglRendererBackendGetCommandQueue(areas.backend) &&
+        ((uintptr_t)mglRendererBackendGetCommandQueue(areas.backend) >= 0x1000);
+    if (!deviceOk || !queueOk) {
+        fprintf(stderr,
+                "MGL CRITICAL: Metal recovery failed, aborting operation\n");
+        return 0;
+    }
+    return 1;
+}
+
+/* @try of the no-VAO clear path: the catch only logs. */
+static int mglPdNoVaoEncoderTryBody(void *renderer)
+{
+    (void)mglRendererNewRenderEncoderLockedWithReasonPort(renderer,
+                                                          MGL_ENC_REASON_CLEAR);
+    return 1;
+}
+
+typedef struct MglPdSetPipelineCtx_t {
+    MGLRendererStateAreas *areas;
+} MglPdSetPipelineCtx;
+
+/* @try of the set-pipeline block: the body has no failure path, so 0 from the
+ * guarded call means "an exception was thrown". */
+static int mglPdSetPipelineTryBody(void *renderer, void *rawCtx)
+{
+    MglPdSetPipelineCtx *ctx = (MglPdSetPipelineCtx *)rawCtx;
+    MGLCommandState *commandState = ctx->areas->command;
+    if (mglRenderBindingSetPipelineIfNeededForOwner(
+            ctx->areas->binding_state_owner,
+            commandState->currentRenderEncoderOwner,
+            ctx->areas->pipeline_cache
+                ? ctx->areas->pipeline_cache->pipelineState
+                : NULL) > 0) {
+        MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+    } else {
+        MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
+    }
+    return 1;
+}
+
+/* -processGLStateLocked:. */
+int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGLRenderPassManager *manager = areas.render_pass_manager;
+    MGLCommandState *commandState = areas.command;
+    GLMState *glState = mglPdState(&areas);
+
+    const uint64_t processCall = ++s_pdProcessGLStateCallCount;
+    const double processStartSeconds = mglTraceNowSeconds();
+    const uint64_t processStartNS = mglTraceClockNS();
+    const bool traceProcess = mglPdShouldTraceCall(processCall);
+    mglLogLoopHeartbeat("processGLState.loop", processCall, processStartSeconds,
+                        &s_pdProcessGLStateLastCallTime,
+                        &s_pdProcessGLStateLastCallCount, 0.25);
+    if (traceProcess) {
+        mglTraceLog("MGL TRACE processGLState.begin call=%llu draw=%d",
+                    (unsigned long long)processCall, draw_command ? 1 : 0);
+        mglLogStateSnapshot("processGLState.enter", ctx,
+                            commandState->currentCommandBufferOwner,
+                            commandState->currentRenderEncoderOwner,
+                            commandState->renderPassStateOwner, areas.drawable);
+    }
+    if (!ctx) {
+        fprintf(stderr, "MGL ERROR: NULL context detected in processGLState\n");
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.null_ctx", ctx,
+                                commandState->currentCommandBufferOwner,
+                                commandState->currentRenderEncoderOwner,
+                                commandState->renderPassStateOwner,
+                                areas.drawable);
+        }
+        return 0;
+    }
+
+    const uintptr_t earlyCtxAddr = (uintptr_t)ctx;
+    const int ctxPtrSane = earlyCtxAddr >= 0x1000 ? 1 : 0;
+    if (!ctxPtrSane) {
+        fprintf(stderr, "MGL ERROR: Invalid context pointer detected: 0x%lx\n",
+                (unsigned long)earlyCtxAddr);
+        return 0;
+    }
+
+    /* Metal corruption recovery is platform materialization - try before plan. */
+    int deviceOk = mglRendererBackendGetDevice(areas.backend) &&
+                   ((uintptr_t)mglRendererBackendGetDevice(areas.backend) >=
+                    0x1000);
+    int queueOk = mglRendererBackendGetCommandQueue(areas.backend) &&
+                  ((uintptr_t)mglRendererBackendGetCommandQueue(areas.backend) >=
+                   0x1000);
+    if (!deviceOk || !queueOk) {
+        fprintf(stderr,
+                "MGL CRITICAL: Metal state corruption detected in processGLState!\n");
+        fprintf(stderr, "MGL CRITICAL: device=0x%lx, queue=0x%lx\n",
+                (unsigned long)(uintptr_t)mglRendererBackendGetDevice(
+                    areas.backend),
+                (unsigned long)(uintptr_t)mglRendererBackendGetCommandQueue(
+                    areas.backend));
+        if (s_pdCorruptionRecoveryCount < kMglPdMaxRecoveryAttempts) {
+            fprintf(stderr,
+                    "MGL CRITICAL: Attempting Metal state recovery (%d/%d)\n",
+                    s_pdCorruptionRecoveryCount + 1, kMglPdMaxRecoveryAttempts);
+            if (!mglPlatformShellGuardedCall(renderer, "metal state recovery",
+                                             mglPdRecoveryTryBody)) {
+                return 0;
+            }
+            deviceOk = mglRendererBackendGetDevice(areas.backend) &&
+                       ((uintptr_t)mglRendererBackendGetDevice(areas.backend) >=
+                        0x1000);
+            queueOk =
+                mglRendererBackendGetCommandQueue(areas.backend) &&
+                ((uintptr_t)mglRendererBackendGetCommandQueue(areas.backend) >=
+                 0x1000);
+            if (!deviceOk || !queueOk) {
+                fprintf(stderr,
+                        "MGL CRITICAL: Metal recovery failed, aborting operation\n");
+                return 0;
+            }
+        } else {
+            fprintf(stderr,
+                    "MGL CRITICAL: Maximum recovery attempts exceeded, permanently disabling Metal operations\n");
+            return 0;
+        }
+    }
+
+    int quarantineBlocks = 0;
+    if (draw_command) {
+        const GLuint blockedProgramKey = mglCurrentRenderProgramKey(ctx);
+        if (blockedProgramKey != 0u &&
+            areas.gpu_interface_mismatch_blocked_program != 0 &&
+            blockedProgramKey == areas.gpu_interface_mismatch_blocked_program) {
+            const double now = CFAbsoluteTimeGetCurrent();
+            if (now < areas.gpu_interface_mismatch_blocked_until) {
+                quarantineBlocks = 1;
+                s_pdQuarantineSkipCount++;
+                if (s_pdQuarantineSkipCount <= 16 ||
+                    (s_pdQuarantineSkipCount % 1000) == 0) {
+                    double remaining =
+                        areas.gpu_interface_mismatch_blocked_until - now;
+                    if (remaining < 0.0) remaining = 0.0;
+                    fprintf(stderr,
+                            "MGL WARNING: Program %u quarantined due to interface mismatch (%.2fs remaining), skipping draw\n",
+                            (unsigned)areas
+                                .gpu_interface_mismatch_blocked_program,
+                            remaining);
+                }
+            }
+        }
+    }
+
+    MGLRenderCommandBufferState processCommandState = {0};
+    const int processHasCommand =
+        mglRenderGetCommandBufferOwnerState(
+            commandState->currentCommandBufferOwner,
+            &processCommandState) == 0;
+    const int encoderCurrent =
+        mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1
+            ? 1
+            : 0;
+
+    MGLProcessGLStateInputs planIn = {0};
+    planIn.has_ctx = 1u;
+    planIn.draw_command = draw_command ? 1u : 0u;
+    planIn.has_vao = glState->vao != NULL ? 1u : 0u;
+    planIn.dirty_state = (glState->dirty_bits & DIRTY_STATE) ? 1u : 0u;
+    planIn.ctx_ptr_sane = 1u;
+    planIn.device_ok = deviceOk ? 1u : 0u;
+    planIn.queue_ok = queueOk ? 1u : 0u;
+    planIn.quarantine_blocks_draw = quarantineBlocks ? 1u : 0u;
+    planIn.has_command_buffer = processHasCommand ? 1u : 0u;
+    planIn.encoder_has_current = encoderCurrent ? 1u : 0u;
+    planIn.command_buffer_status =
+        processHasCommand ? (uint32_t)processCommandState.status : 0u;
+
+    MGLProcessGLStatePlan plan = {0};
+    if (mglRenderProcessGLState(&planIn, &plan) != 0) {
+        return 0;
+    }
+
+    if (plan.clear_rt_sampled_copy) {
+        /* This flag is derived from the current draw's final fragment sampler
+         * binding.  Clear it before any early render-state refresh so the
+         * previous draw cannot disable culling while DIRTY_VAO/FBO is handled. */
+        mglPassManagerSetCurrentDrawUsesRTSampledCopy(manager, 0);
+        MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
+    }
+
+    if (plan.result == MGL_PGL_RESULT_ABORT) {
+        if (draw_command && !planIn.has_vao &&
+            plan.process_class == MGL_PROCESS_GL_ABORT) {
+            fprintf(stderr, "Error: No VAO defined for ctx\n\n");
+        }
+        return 0;
+    }
+
+    if (plan.non_draw_end_pass_if_fbo_changed) {
+        mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(renderer,
+                                                                   processCall);
+    }
+    if (plan.no_vao_clear_path) {
+        mglRendererEndRenderEncodingLocked(renderer);
+        if (!mglRendererValidateMetalObjects(renderer)) {
+            fprintf(stderr,
+                    "MGL WARNING: GPU throttling active - deferring render encoder creation\n");
+            glState->dirty_bits &= ~DIRTY_STATE;
+            return 1;
+        }
+        (void)mglPlatformShellGuardedCall(renderer, "clear-path render encoder",
+                                          mglPdNoVaoEncoderTryBody);
+        glState->dirty_bits &= ~DIRTY_STATE;
+        return 1;
+    }
+    if (plan.result == MGL_PGL_RESULT_EARLY_OK) {
+        return 1;
+    }
+
+    if (plan.rotate_finalized_command_buffer) {
+        const uint64_t rotateHit = ++s_pdRotateFinalizedCount;
+        if (rotateHit <= 16ull || (rotateHit % 500ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL INFO: processGLState rotating finalized command buffer (status: %ld) hit=%llu\n",
+                    (long)planIn.command_buffer_status,
+                    (unsigned long long)rotateHit);
+        }
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
+            fprintf(stderr,
+                    "MGL ERROR: processGLState failed to create a fresh command buffer\n");
+            if (traceProcess) {
+                mglLogStateSnapshot(
+                    "processGLState.fail.new_cb_rotate", ctx,
+                    commandState->currentCommandBufferOwner,
+                    commandState->currentRenderEncoderOwner,
+                    commandState->renderPassStateOwner, areas.drawable);
+            }
+            return 0;
+        }
+    } else if (plan.create_initial_command_buffer) {
+        if (kMglPdVerboseFrameLoopLogs) {
+            fprintf(stderr,
+                    "MGL INFO: processGLState found NULL command buffer, creating one\n");
+        }
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
+            fprintf(stderr,
+                    "MGL ERROR: processGLState could not create initial command buffer\n");
+            if (traceProcess) {
+                mglLogStateSnapshot(
+                    "processGLState.fail.new_cb_initial", ctx,
+                    commandState->currentCommandBufferOwner,
+                    commandState->currentRenderEncoderOwner,
+                    commandState->renderPassStateOwner, areas.drawable);
+            }
+            return 0;
+        }
+    }
+
+    MGLResourceSyncWork resourceSyncWork = {false, false, false};
+    if (plan.process_dirty_domains) {
+        if (!mglRenderPassProcessDirtyStateDomains(renderer,
+                                                   draw_command ? 1 : 0,
+                                                   &resourceSyncWork)) {
+            fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+            return 0;
+        }
+    }
+
+    /* Phase 2: re-sample encoder/pipeline after dirty-domain materialization. */
+    Program *fragmentProgram =
+        mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    MGLProcessGLStateAfterInputs afterIn = {0};
+    afterIn.draw_command = draw_command ? 1u : 0u;
+    afterIn.encoder_has_current =
+        mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1
+            ? 1u
+            : 0u;
+    afterIn.has_pipeline_state =
+        (areas.pipeline_cache && areas.pipeline_cache->pipelineState) ? 1u : 0u;
+    afterIn.frag_needs_fragcoord =
+        fragmentProgram && mglRenderSamplerUnitExplicit(
+                               (uint32_t)fragmentProgram->usesFragCoordParams)
+            ? 1u
+            : 0u;
+    afterIn.frag_needs_sample =
+        ((fragmentProgram && mglRenderSamplerUnitExplicit(
+                                 (uint32_t)fragmentProgram->uses_sample_params)) ||
+         mglPlatformShellMSSampleInLoop(renderer))
+            ? 1u
+            : 0u;
+    afterIn.frag_needs_lod_bias =
+        fragmentProgram && mglRenderSamplerUnitExplicit(
+                               (uint32_t)fragmentProgram->uses_lod_bias)
+            ? 1u
+            : 0u;
+    afterIn.fragment_trace_uses_rt_sampled_copy =
+        mglFragmentTextureTraceBindingsUseRTSampledCopy(
+            areas.fragment_trace_bindings, TEXTURE_UNITS)
+            ? 1u
+            : 0u;
+
+    MGLProcessGLStateAfterPlan after = {0};
+    if (mglRenderProcessGLStateAfterDirty(&afterIn, &after) != 0) {
+        return 0;
+    }
+
+    if (after.recover_nil_encoder) {
+        const uint64_t nilHit = ++s_pdNilEncoderRecoveryCount;
+        if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL WARNING: processGLState - current render encoder is nil, attempting recovery hit=%llu\n",
+                    (unsigned long long)nilHit);
+            mglLogRenderPassLifecycle(
+                "nil-encoder-before-recovery", nilHit, ctx,
+                commandState->currentCommandBufferOwner,
+                commandState->currentRenderEncoderOwner,
+                commandState->renderPassStateOwner, areas.drawable,
+                commandState->renderPassFramebuffer,
+                commandState->renderPassFramebufferName,
+                commandState->renderPassDrawBuffer,
+                commandState->renderPassDrawBufferCount);
+        }
+        if (!mglRendererNewRenderEncoderLockedWithReasonPort(
+                renderer, MGL_ENC_REASON_NIL)) {
+            fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+            return 0;
+        }
+        if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
+            mglLogRenderPassLifecycle(
+                "nil-encoder-after-recovery", nilHit, ctx,
+                commandState->currentCommandBufferOwner,
+                commandState->currentRenderEncoderOwner,
+                commandState->renderPassStateOwner, areas.drawable,
+                commandState->renderPassFramebuffer,
+                commandState->renderPassFramebufferName,
+                commandState->renderPassDrawBuffer,
+                commandState->renderPassDrawBufferCount);
+        }
+    }
+
+    if (after.ensure_pass_matches_fbo) {
+        if (!mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(
+                renderer)) {
+            fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+            return 0;
+        }
+        mglRendererUpdateCurrentRenderEncoderPort(renderer);
+    }
+
+    if (draw_command && kMglPdVerbosePipelineLogs) {
+        s_pdDrawPipelineLookupCount++;
+        if (s_pdDrawPipelineLookupCount <= 256ull ||
+            (s_pdDrawPipelineLookupCount % 1000ull) == 0ull) {
+            Program *lookupProgram = mglResolveProgramFromState(ctx);
+            Program *lookupVertexProgram =
+                mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+            Program *lookupFragmentProgram =
+                mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+            const GLuint lookupProgramName = mglCurrentRenderProgramKey(ctx);
+            Framebuffer *lookupFBO = glState->framebuffer;
+            const GLuint lookupFBOName = lookupFBO ? lookupFBO->name : 0;
+            fprintf(stderr, "MGL Draw current program key=%u mono=%p vs=%u fs=%u\n",
+                    (unsigned)lookupProgramName, (void *)lookupProgram,
+                    lookupVertexProgram ? (unsigned)lookupVertexProgram->name
+                                        : 0u,
+                    lookupFragmentProgram
+                        ? (unsigned)lookupFragmentProgram->name
+                        : 0u);
+            fprintf(stderr,
+                    "MGL DRAW pipeline lookup result=%p key=%u vs=%u fs=%u vao=%p fbo=%u\n",
+                    areas.pipeline_cache ? areas.pipeline_cache->pipelineState
+                                         : NULL,
+                    (unsigned)lookupProgramName,
+                    lookupVertexProgram ? (unsigned)lookupVertexProgram->name
+                                        : 0u,
+                    lookupFragmentProgram
+                        ? (unsigned)lookupFragmentProgram->name
+                        : 0u,
+                    glState->vao, (unsigned)lookupFBOName);
+        }
+    }
+
+    if (after.fail_nil_pipeline) {
+        s_pdNilPipelineCount++;
+        if (s_pdNilPipelineCount <= 8 || (s_pdNilPipelineCount % 1000) == 0) {
+            mglTraceLog(
+                "MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
+                (unsigned long long)s_pdNilPipelineCount);
+        }
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO |
+                                     DIRTY_RENDER_STATE);
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.nil_pipeline", ctx,
+                                commandState->currentCommandBufferOwner,
+                                commandState->currentRenderEncoderOwner,
+                                commandState->renderPassStateOwner,
+                                areas.drawable);
+        }
+        return 0;
+    }
+
+    if (after.validate_attachments) {
+        if (!mglRenderPassValidateAttachmentsAndPipelineFormats(
+                renderer, traceProcess ? 1 : 0)) {
+            fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+            return 0;
+        }
+    }
+
+    if (after.set_pipeline) {
+        MglPdSetPipelineCtx setCtx = {&areas};
+        if (!mglPlatformShellGuardedCallCtx(renderer, "set render pipeline state",
+                                            mglPdSetPipelineTryBody, &setCtx,
+                                            NULL)) {
+            /* @catch (NSException *exception) */
+            fprintf(stderr,
+                    "MGL ERROR: processGLState - setRenderPipelineState failed\n");
+            mglMarkRendererDirtyBits(ctx->active_state,
+                                     DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO |
+                                         DIRTY_RENDER_STATE);
+            if (traceProcess) {
+                mglLogStateSnapshot("processGLState.fail.set_pipeline", ctx,
+                                    commandState->currentCommandBufferOwner,
+                                    commandState->currentRenderEncoderOwner,
+                                    commandState->renderPassStateOwner,
+                                    areas.drawable);
+            }
+            return 0;
+        }
+    }
+
+    if (after.sync_resources) {
+        if (!mglRendererSyncResourceBindingsForContext(renderer, ctx,
+                                                       &resourceSyncWork)) {
+            fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+            return 0;
+        }
+    }
+
+    if (after.bind_frag_coord_slot) {
+        const int useFragCoordParams = afterIn.frag_needs_fragcoord ? 1 : 0;
+        const int useSampleParams = afterIn.frag_needs_sample ? 1 : 0;
+        uint64_t passHeight = mglPdRenderTargetHeightFor(commandState);
+        if (passHeight == 0) {
+            for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
+                void *color = mglPdColorTextureFor(commandState, (size_t)i);
+                passHeight = color ? mglPdTextureInfo(color).height : 0;
+            }
+            if (passHeight == 0 && mglPdDepthTextureFor(commandState)) {
+                passHeight =
+                    mglPdTextureInfo(mglPdDepthTextureFor(commandState)).height;
+            }
+            if (passHeight == 0 && mglPdStencilTextureFor(commandState)) {
+                passHeight = mglPdTextureInfo(mglPdStencilTextureFor(commandState))
+                                 .height;
+            }
+        }
+
+        uint32_t numSamples = 1;
+        uint32_t sampleBuffers = 0;
+        Framebuffer *fbo = glState->framebuffer;
+        if (fbo && (fbo->color_attachment_bitfield & 1u)) {
+            FBOAttachment *att = &fbo->color_attachments[0];
+            Texture *tex = NULL;
+            if (mglRenderTargetIsRenderbuffer((uint32_t)att->textarget) &&
+                att->buf.rbo) {
+                tex = att->buf.rbo->tex;
+            } else {
+                tex = att->buf.tex;
+            }
+            if (tex) {
+                (void)mglRenderTextureSampleParams(
+                    (uint32_t)tex->target, tex->samples, &numSamples,
+                    &sampleBuffers);
+            }
+        } else {
+            void *rpColor0 = mglPdColorTextureFor(commandState, 0);
+            if (rpColor0) {
+                const uint64_t sc = mglPdTextureInfo(rpColor0).sample_count;
+                if (sc > 1) {
+                    sampleBuffers = 1;
+                    numSamples = (uint32_t)sc;
+                }
+            }
+        }
+        float fragCoordParams[4] = {0.f, 0.f, 0.f, 0.f};
+        mglRenderFillFragCoordSlot(
+            useFragCoordParams, useSampleParams, (uint32_t)passHeight,
+            mglRenderClipOriginIsLowerLeft(
+                (uint32_t)glState->var.clip_origin),
+            numSamples, sampleBuffers, mglPlatformShellMSSampleInLoop(renderer),
+            (uint32_t)areas.mssample_forced_id, fragCoordParams);
+        mglRenderSetRenderBytesForOwner(
+            commandState->currentRenderEncoderOwner, fragCoordParams,
+            sizeof(fragCoordParams), MGL_RENDER_BINDING_STAGE_FRAGMENT,
+            kMGLFragCoordParamsBufferIndex);
+        mglBindingInvalidateLastBoundFragmentBufferAtIndex(
+            renderer, kMGLFragCoordParamsBufferIndex);
+    }
+
+    if (after.bind_lod_bias_slot) {
+        const GLfloat biasmax = ctx->active_state->var.max_texture_lod_bias;
+        float lodBiasArr[TEXTURE_UNITS];
+        for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
+            Texture *tex = glState->active_textures[unit];
+            Sampler *smp = glState->texture_samplers[unit];
+
+            lodBiasArr[unit] = smp ? smp->params.lod_bias
+                                   : (tex ? tex->params.lod_bias : 0.0f);
+        }
+        mglRenderClampLodBiasArray(lodBiasArr, TEXTURE_UNITS, biasmax);
+        mglRenderSetRenderBytesForOwner(
+            commandState->currentRenderEncoderOwner, lodBiasArr,
+            sizeof(lodBiasArr), MGL_RENDER_BINDING_STAGE_FRAGMENT,
+            kMGLLodBiasBufferIndex);
+        mglBindingInvalidateLastBoundFragmentBufferAtIndex(
+            renderer, kMGLLodBiasBufferIndex);
+
+        mglRenderSetRenderBytesForOwner(
+            commandState->currentRenderEncoderOwner, &biasmax, sizeof(biasmax),
+            MGL_RENDER_BINDING_STAGE_FRAGMENT, kMGLLodBiasMaxBufferIndex);
+        mglBindingInvalidateLastBoundFragmentBufferAtIndex(
+            renderer, kMGLLodBiasMaxBufferIndex);
+    }
+
+    if (after.maybe_mark_rt_sampled_copy) {
+        mglPassManagerSetCurrentDrawUsesRTSampledCopy(manager, 1);
+        mglRendererUpdateCurrentRenderEncoderPort(renderer);
+    }
+
+    const double processElapsedUs = (mglTraceClockNS() - processStartNS) / 1000.0;
+    if (traceProcess) {
+        mglTraceLog("MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.1fus",
+                    (unsigned long long)processCall, draw_command ? 1 : 0,
+                    processElapsedUs);
+        mglLogStateSnapshot("processGLState.exit.ok", ctx,
+                            commandState->currentCommandBufferOwner,
+                            commandState->currentRenderEncoderOwner,
+                            commandState->renderPassStateOwner, areas.drawable);
+    } else if (processElapsedUs >= 25.0) {
+        mglTraceLog("MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.1fus",
+                    (unsigned long long)processCall, draw_command ? 1 : 0,
+                    processElapsedUs);
     }
     return 1;
 }

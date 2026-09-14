@@ -66,6 +66,9 @@ int mglRenderPassNewCommandBufferLocked(void *renderer);
 /* Draw-path guard cluster (log 178): pipeline invalidation, the
  * pre-draw FBO/render-pass match check, the emergency reset and the
  * attachment/pipeline-format validation are C now. */
+/* -processGLStateLocked: is C now (log 179); both processGLState ports
+ * retired with it. */
+int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command);
 void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
                                                  const char *reason);
 int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(

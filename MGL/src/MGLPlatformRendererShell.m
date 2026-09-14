@@ -273,16 +273,6 @@ void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
 }
 
 
-int mglRendererProcessGLStatePort(void *renderer, int draw_command)
-{
-    return [(__bridge MGLRenderer *)renderer processGLState:draw_command ? true : false]
-               ? 1
-               : 0;
-}
-
-
-
-
 int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
                                                           const char *label)
 {
@@ -509,16 +499,6 @@ void mglRendererEndRenderEncodingPort(void *renderer)
         [r endRenderEncoding];
     }
 }
-
-int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r processGLStateLocked:draw_command ? true : false]) ? 1 : 0;
-}
-
-
-
-
 
 void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
                                                 const BufferMap *map,
@@ -862,6 +842,11 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->tess_tcs_output_stride = (uint32_t)r->_tessellation.tcsOutputStride;
     areas_out->drawable = (__bridge void *)r.drawable;
     areas_out->query_state_owner = r->_queryStateOwner;
+    areas_out->gpu_interface_mismatch_blocked_program =
+        (uint32_t)r->_gpuRecovery.interfaceMismatchBlockedProgram;
+    areas_out->gpu_interface_mismatch_blocked_until =
+        (double)r->_gpuRecovery.interfaceMismatchBlockedUntil;
+    areas_out->mssample_forced_id = (int32_t)r->_mglForcedMSSampleId;
     areas_out->tess_cull_capture_first_instance =
         (uint32_t)r->_tessellation.cullDistanceCaptureFirstInstance;
     areas_out->tess_cull_capture_instance_stride =

@@ -480,7 +480,7 @@ void mglDrawSupportCaptureMarkDirtyAll(void *ctx_ptr)
 
 int mglDrawSupportCaptureProcessGL(void *renderer)
 {
-    return mglRendererProcessGLStatePort(renderer, 1);
+    return mglRenderPassProcessGLStateLocked(renderer, 1);
 }
 
 int mglDrawSupportCaptureEncoderReady(void *renderer)
@@ -670,7 +670,7 @@ static int mglStageDispatchAirTESVertex(void *renderer, GLMContext ctx,
 
 static int mglStageProcessGL(void *renderer)
 {
-    return mglRendererProcessGLStatePort(renderer, 1);
+    return mglRenderPassProcessGLStateLocked(renderer, 1);
 }
 
 static int mglStageEncoderHasCurrent(void *renderer)
@@ -1836,7 +1836,7 @@ bool mglDrawHostProcessGLStateLocked(void *renderer, bool draw_command)
     if (!renderer) {
         return false;
     }
-    return mglRendererProcessGLStateLockedPort(renderer, draw_command) ? true : false;
+    return mglRenderPassProcessGLStateLocked(renderer, draw_command) ? true : false;
 }
 
 bool mglDrawHostRasterizationIsEmpty(void *renderer)

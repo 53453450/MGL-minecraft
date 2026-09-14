@@ -3029,7 +3029,8 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
     {
         mglRendererFlushDrawBufferLockedPort((__bridge void *)self, activeCtx);
 
-        if (![self processGLStateLocked: false]) {
+        if (!mglRenderPassProcessGLStateLocked(
+                (__bridge void *)self, 0)) {
             static uint64_t s_swapProcessStateFailCount = 0;
             s_swapProcessStateFailCount++;
             if (s_swapProcessStateFailCount <= 16 || (s_swapProcessStateFailCount % 500) == 0) {
