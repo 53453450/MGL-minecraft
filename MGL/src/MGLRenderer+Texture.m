@@ -22,6 +22,7 @@
 #include "mgl_render.h"
 #include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
 #include "mgl_blit_sampled_copy.h"  /* sampled RT copy refresh */
+#include "mgl_blit_drivers.h"   /* mglBlitCopyImageSubData (log 145) */
 #include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
 
 enum {
@@ -258,12 +259,11 @@ void mglRendererCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer mtlCopyImageSubData:glm_ctx srcTexture:source_texture
-                             srcLevel:source_level srcX:source_x srcY:source_y
-                                 srcZ:source_z dstTexture:destination_texture
-                             dstLevel:destination_level dstX:destination_x
-                                 dstY:destination_y dstZ:destination_z
-                                width:width height:height depth:depth];
+        mglBlitCopyImageSubData(
+            (__bridge void *)renderer, glm_ctx, source_texture, source_level,
+            source_x, source_y, source_z, destination_texture,
+            destination_level, destination_x, destination_y, destination_z,
+            width, height, depth);
     }
     mglRendererBackendEnd(&_backend_lease);
 }

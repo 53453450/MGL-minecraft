@@ -280,6 +280,12 @@ void mglRendererFlushCommandBufferPort(void *renderer, int finish);
 int mglRendererSynchronizeRenderPassForTextureReadbackPort(void *renderer,
                                                            void *texture,
                                                            const char *reason);
+/* Close a stale render pass when the encoder's FBO no longer matches the
+ * current context FBO (the `endRenderPassIfFramebufferChangedForNonDraw:`
+ * calls the blit dispatchers make before encoding).  Added for the
+ * mtlCopyImageSubData dispatch (P0-1, log 145). */
+void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
+    void *renderer, uint64_t process_call);
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer);
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,

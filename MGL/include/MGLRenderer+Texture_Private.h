@@ -130,13 +130,7 @@ void mglMetalCopyRows(const uint8_t *src,
                    xoffset:(NSInteger)xoffset yoffset:(NSInteger)yoffset
                          x:(NSInteger)x y:(NSInteger)y
                      width:(NSUInteger)width height:(NSUInteger)height;
-- (void)mtlCopyImageSubData:(GLMContext)glm_ctx
-                 srcTexture:(Texture *)srcTex srcLevel:(GLint)srcLevel
-                       srcX:(GLint)srcX srcY:(GLint)srcY srcZ:(GLint)srcZ
-                 dstTexture:(Texture *)dstTex dstLevel:(GLint)dstLevel
-                       dstX:(GLint)dstX dstY:(GLint)dstY dstZ:(GLint)dstZ
-                      width:(GLsizei)width height:(GLsizei)height
-                      depth:(GLsizei)depth;
+
 
 // === Pending FBO clear application for readback ===
 

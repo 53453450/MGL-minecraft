@@ -318,6 +318,15 @@ int mglRendererSynchronizeRenderPassForTextureReadbackPort(void *renderer,
                : 0;
 }
 
+void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
+    void *renderer, uint64_t process_call)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r endRenderPassIfFramebufferChangedForNonDraw:process_call];
+    }
+}
+
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

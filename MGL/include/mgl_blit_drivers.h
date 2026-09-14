@@ -92,6 +92,26 @@ bool mglBlitCopyImageSubData3DFallback(
     GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
     GLsizei depth);
 
+/* Post-blit CPU readback for copyImageSubData: read the blitted region back
+ * from the destination Metal texture so the CPU data stays authoritative.
+ * Was -copyImageSubDataPostBlitReadback:dstTexture:….  Returns true when the
+ * readback landed (the method's YES). */
+bool mglBlitCopyImageSubDataPostBlitReadback(
+    void *renderer, Texture *dst_tex, void *dst_texture, uint32_t dst_type,
+    GLint dst_level, GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width,
+    GLsizei height, GLsizei depth);
+
+/* The whole glCopyImageSubData dispatch: 3D-destination workaround, CPU-to-CPU,
+ * format conversion, then the blit encoder path plus the post-blit readback.
+ * Was -(void)mtlCopyImageSubData:srcTexture:… (the caller in
+ * MGLRenderer+Texture.m used to send it as a message). */
+void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx,
+                             Texture *src_tex, GLint src_level, GLint src_x,
+                             GLint src_y, GLint src_z, Texture *dst_tex,
+                             GLint dst_level, GLint dst_x, GLint dst_y,
+                             GLint dst_z, GLsizei width, GLsizei height,
+                             GLsizei depth);
+
 #ifdef __cplusplus
 }
 #endif

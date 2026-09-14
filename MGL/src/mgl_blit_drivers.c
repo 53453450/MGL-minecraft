@@ -1800,3 +1800,609 @@ bool mglBlitCopyImageSubData3DFallback(
         return true;
     }
 }
+
+/* === copyImageSubData: post-blit readback + the dispatch itself (log 145) ==
+ *
+ * Mechanical translation of -copyImageSubDataPostBlitReadback:… and
+ * -(void)mtlCopyImageSubData:….  The dispatcher's `ctx = glm_ctx;` becomes
+ * mglPlatformShellSetContext (the existing entry for that ivar), `_capability`
+ * is core->capability, the current command buffer owner comes from
+ * areas.command, and the three @try/@catch frames become shell guarded calls.
+ */
+
+/* -copyImageSubDataPostBlitReadback:dstTexture:dstType:dstLevel:dstX:dstY:
+ *  dstZ:width:height:depth: */
+bool mglBlitCopyImageSubDataPostBlitReadback(
+    void *renderer, Texture *dst_tex, void *dst_texture, uint32_t dst_type,
+    GLint dst_level, GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width,
+    GLsizei height, GLsizei depth)
+{
+    /* After blit, read back the blitted region from dst Metal to dst CPU so
+     * that CPU data is authoritative.  This avoids the need for the
+     * metal_data_authoritative flag, which causes "modified contents outside
+     * of copied region" / "wrong layer" errors when non-blitted regions of the
+     * same level have stale Metal data.
+     *
+     * Skip readback for 3D destinations (AGX getBytes bug on 3D textures,
+     * tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB)) and fall
+     * back to per-level authoritative instead. */
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererCoreState *core = areas.core;
+
+    int readback_done = 0;
+    int skip_3d_readback =
+        MGLCapabilityHasBug(&core->capability, MGL_BUG_3D_GETBYTES_SLICE_OOB);
+    if ((!skip_3d_readback || dst_type != MGLTextureType3D) &&
+        mglBdTextureInfo(dst_texture).storage_mode != MGLStorageModePrivate &&
+        dst_tex->faces && (size_t)dst_level < dst_tex->num_levels) {
+        /* Check that dst has CPU data for this level */
+        TextureLevel *dst_lvl0 = dst_tex->faces[0].levels
+                                     ? &dst_tex->faces[0].levels[dst_level]
+                                     : NULL;
+        if (dst_lvl0 && dst_lvl0->data && dst_lvl0->pitch > 0 &&
+            dst_lvl0->width > 0) {
+            size_t dst_metal_bpp = mglMetalReadbackBytesPerPixel(
+                mglBdTextureInfo(dst_texture).pixel_format);
+            size_t dst_cpu_bpp = dst_lvl0->pitch / dst_lvl0->width;
+            if (dst_metal_bpp > 0 && dst_cpu_bpp == dst_metal_bpp) {
+                (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+                    renderer, dst_texture, "copyImageSubData.blitReadback");
+                mglRendererFlushCommandBufferPort(renderer, 1);
+
+                size_t copy_width = mglBdMaxSize((size_t)width, 1u);
+                size_t copy_height = mglBdMaxSize((size_t)height, 1u);
+                size_t num_slices = mglBdMaxSize((size_t)depth, 1u);
+                size_t row_bytes = copy_width * dst_metal_bpp;
+                size_t image_bytes = row_bytes * copy_height;
+                void *staging = malloc(image_bytes);
+
+                if (staging) {
+                    int readback_ok = 1;
+                    for (size_t s = 0; s < num_slices && readback_ok; s++) {
+                        size_t dst_mtl_slice = 0;
+                        GLuint dst_face = 0;
+                        MGLRegionValue dst_region;
+
+                        if (dst_type == MGLTextureTypeCube ||
+                            dst_type == MGLTextureTypeCubeArray) {
+                            dst_mtl_slice = ((size_t)dst_z + s) % 6;
+                            dst_face = (GLuint)dst_mtl_slice;
+                            dst_region = mglBlitRegion2D(
+                                (size_t)dst_x, (size_t)dst_y, copy_width,
+                                copy_height);
+                        } else if (dst_type == MGLTextureType2DArray) {
+                            dst_mtl_slice = (size_t)dst_z + s;
+                            dst_face = 0;
+                            dst_region = mglBlitRegion2D(
+                                (size_t)dst_x, (size_t)dst_y, copy_width,
+                                copy_height);
+                        } else {
+                            dst_mtl_slice = 0;
+                            dst_face = 0;
+                            dst_region = mglBlitRegion2D(
+                                (size_t)dst_x, (size_t)dst_y, copy_width,
+                                copy_height);
+                        }
+
+                        MglBdGetBytesCtx read_ctx = {
+                            .texture = dst_texture,
+                            .bytes = staging,
+                            .bytes_per_row = row_bytes,
+                            .bytes_per_image = image_bytes,
+                            .region = dst_region,
+                            .level = (size_t)dst_level,
+                            .slice = dst_mtl_slice,
+                        };
+                        if (!mglPlatformShellGuardedCallCtx(
+                                renderer, "blit readback getBytes",
+                                mglBdGetBytesGuarded, &read_ctx, NULL)) {
+                            fprintf(stderr,
+                                    "MGL WARNING: blit readback getBytes "
+                                    "failed: caught exception\n");
+                            readback_ok = 0;
+                            break;
+                        }
+
+                        /* Update dst CPU data for this slice */
+                        TextureLevel *cur_dst_lvl =
+                            (dst_face < 6 && dst_tex->faces[dst_face].levels)
+                                ? &dst_tex->faces[dst_face].levels[dst_level]
+                                : NULL;
+                        if (cur_dst_lvl && cur_dst_lvl->data &&
+                            cur_dst_lvl->pitch > 0 && cur_dst_lvl->width > 0) {
+                            size_t cur_cpu_bpp =
+                                cur_dst_lvl->pitch / cur_dst_lvl->width;
+                            if (cur_cpu_bpp == dst_metal_bpp) {
+                                size_t slice_pitch =
+                                    cur_dst_lvl->pitch *
+                                    mglBdMaxSize(cur_dst_lvl->height, 1u);
+                                size_t dst_slice_off = 0;
+                                if (dst_type == MGLTextureType2DArray) {
+                                    dst_slice_off =
+                                        ((size_t)dst_z + s) * slice_pitch;
+                                }
+                                for (size_t y = 0; y < copy_height; y++) {
+                                    size_t dst_off =
+                                        dst_slice_off +
+                                        ((size_t)dst_y + y) * cur_dst_lvl->pitch +
+                                        (size_t)dst_x * dst_metal_bpp;
+                                    if (dst_off + row_bytes <=
+                                        cur_dst_lvl->data_size) {
+                                        memcpy(
+                                            (uint8_t *)(uintptr_t)
+                                                    cur_dst_lvl->data +
+                                                dst_off,
+                                            (const uint8_t *)staging +
+                                                y * row_bytes,
+                                            row_bytes);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    free(staging);
+
+                    if (readback_ok) {
+                        for (int f = 0; f < 6; f++) {
+                            if (dst_tex->faces[f].levels) {
+                                dst_tex->faces[f]
+                                    .levels[dst_level]
+                                    .metal_data_authoritative =
+                                    (GLboolean)mglRenderGLBoolean(0);
+                            }
+                        }
+                        readback_done = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Format-converting readback fallback for bpp mismatch cases (e.g.
+     * R3_G3_B2, RGB12, RGB32F where CPU bpp != Metal bpp).  Read the blitted
+     * region from dst Metal and convert to CPU storage format so that CPU data
+     * is authoritative without setting per-texture metal_data_authoritative
+     * (which would corrupt non-blitted levels). */
+    if (!readback_done && dst_type != MGLTextureType3D &&
+        mglBdTextureInfo(dst_texture).storage_mode != MGLStorageModePrivate &&
+        dst_tex->faces && (size_t)dst_level < dst_tex->num_levels) {
+        GLenum cpu_format = 0;
+        GLenum cpu_type = 0;
+        if (mglGetCPUFormatTypeForInternalFormat(dst_tex->internalformat,
+                                                 &cpu_format, &cpu_type)) {
+            TextureLevel *dst_lvl0 = dst_tex->faces[0].levels
+                                         ? &dst_tex->faces[0].levels[dst_level]
+                                         : NULL;
+            if (dst_lvl0 && dst_lvl0->data && dst_lvl0->pitch > 0 &&
+                dst_lvl0->width > 0) {
+                size_t dst_metal_bpp = mglMetalReadbackBytesPerPixel(
+                    mglBdTextureInfo(dst_texture).pixel_format);
+                size_t cpu_bpp = (size_t)sizeForFormatType(cpu_format, cpu_type);
+                if (dst_metal_bpp > 0 && cpu_bpp > 0) {
+                    (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+                        renderer, dst_texture,
+                        "copyImageSubData.fmtConvReadback");
+                    mglRendererFlushCommandBufferPort(renderer, 1);
+
+                    size_t copy_width = mglBdMaxSize((size_t)width, 1u);
+                    size_t copy_height = mglBdMaxSize((size_t)height, 1u);
+                    size_t num_slices = mglBdMaxSize((size_t)depth, 1u);
+                    size_t metal_row_bytes = copy_width * dst_metal_bpp;
+                    size_t metal_image_bytes = metal_row_bytes * copy_height;
+                    size_t cpu_row_bytes = copy_width * cpu_bpp;
+                    void *metal_staging = malloc(metal_image_bytes);
+                    void *cpu_staging = malloc(cpu_row_bytes * copy_height);
+
+                    if (metal_staging && cpu_staging) {
+                        int fmt_readback_ok = 1;
+                        for (size_t s = 0;
+                             s < num_slices && fmt_readback_ok; s++) {
+                            size_t dst_mtl_slice = 0;
+                            MGLRegionValue dst_region;
+                            if (dst_type == MGLTextureTypeCube ||
+                                dst_type == MGLTextureTypeCubeArray) {
+                                dst_mtl_slice = ((size_t)dst_z + s) % 6;
+                                dst_region = mglBlitRegion2D(
+                                    (size_t)dst_x, (size_t)dst_y, copy_width,
+                                    copy_height);
+                            } else if (dst_type == MGLTextureType2DArray) {
+                                dst_mtl_slice = (size_t)dst_z + s;
+                                dst_region = mglBlitRegion2D(
+                                    (size_t)dst_x, (size_t)dst_y, copy_width,
+                                    copy_height);
+                            } else {
+                                dst_mtl_slice = 0;
+                                dst_region = mglBlitRegion2D(
+                                    (size_t)dst_x, (size_t)dst_y, copy_width,
+                                    copy_height);
+                            }
+
+                            MglBdGetBytesCtx read_ctx = {
+                                .texture = dst_texture,
+                                .bytes = metal_staging,
+                                .bytes_per_row = metal_row_bytes,
+                                .bytes_per_image = metal_image_bytes,
+                                .region = dst_region,
+                                .level = (size_t)dst_level,
+                                .slice = dst_mtl_slice,
+                            };
+                            if (!mglPlatformShellGuardedCallCtx(
+                                    renderer, "fmt-conv readback getBytes",
+                                    mglBdGetBytesGuarded, &read_ctx, NULL)) {
+                                fprintf(stderr,
+                                        "MGL WARNING: fmt-conv readback "
+                                        "getBytes failed: caught exception\n");
+                                fmt_readback_ok = 0;
+                                break;
+                            }
+
+                            /* Convert from Metal format to CPU format */
+                            if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL(
+                                    (const uint8_t *)metal_staging,
+                                    metal_row_bytes, (uint8_t *)cpu_staging,
+                                    cpu_row_bytes, copy_width, copy_height,
+                                    mglBdTextureInfo(dst_texture).pixel_format,
+                                    cpu_format, cpu_type, 0)) {
+                                fprintf(stderr,
+                                        "MGL WARNING: fmt-conv readback "
+                                        "conversion failed for fmt=0x%x\n",
+                                        (unsigned)dst_tex->internalformat);
+                                fmt_readback_ok = 0;
+                                break;
+                            }
+
+                            /* Write to dst CPU data for this slice */
+                            GLuint dst_face = 0;
+                            if (dst_type == MGLTextureTypeCube ||
+                                dst_type == MGLTextureTypeCubeArray) {
+                                dst_face =
+                                    (GLuint)(((size_t)dst_z + s) % 6);
+                            }
+                            TextureLevel *cur_dst_lvl =
+                                (dst_face < 6 &&
+                                 dst_tex->faces[dst_face].levels)
+                                    ? &dst_tex->faces[dst_face]
+                                           .levels[dst_level]
+                                    : NULL;
+                            if (cur_dst_lvl && cur_dst_lvl->data &&
+                                cur_dst_lvl->pitch > 0 &&
+                                cur_dst_lvl->width > 0) {
+                                size_t cur_cpu_bpp =
+                                    cur_dst_lvl->pitch / cur_dst_lvl->width;
+                                if (cur_cpu_bpp == cpu_bpp) {
+                                    size_t slice_pitch =
+                                        cur_dst_lvl->pitch *
+                                        mglBdMaxSize(cur_dst_lvl->height, 1u);
+                                    size_t dst_slice_off = 0;
+                                    if (dst_type == MGLTextureType2DArray) {
+                                        dst_slice_off =
+                                            ((size_t)dst_z + s) * slice_pitch;
+                                    }
+                                    for (size_t y = 0; y < copy_height; y++) {
+                                        size_t dst_off =
+                                            dst_slice_off +
+                                            ((size_t)dst_y + y) *
+                                                cur_dst_lvl->pitch +
+                                            (size_t)dst_x * cpu_bpp;
+                                        if (dst_off + cpu_row_bytes <=
+                                            cur_dst_lvl->data_size) {
+                                            memcpy(
+                                                (uint8_t *)(uintptr_t)
+                                                        cur_dst_lvl->data +
+                                                    dst_off,
+                                                (const uint8_t *)cpu_staging +
+                                                    y * cpu_row_bytes,
+                                                cpu_row_bytes);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (fmt_readback_ok) {
+                            for (int f = 0; f < 6; f++) {
+                                if (dst_tex->faces[f].levels) {
+                                    dst_tex->faces[f]
+                                        .levels[dst_level]
+                                        .metal_data_authoritative =
+                                        (GLboolean)mglRenderGLBoolean(0);
+                                }
+                            }
+                            readback_done = 1;
+                        }
+                    }
+                    free(metal_staging);
+                    free(cpu_staging);
+                }
+            }
+        }
+    }
+    return readback_done ? true : false;
+}
+
+typedef struct {
+    void *encoder;
+    void *source;
+    void *destination;
+    uint32_t src_type;
+    uint32_t dst_type;
+    GLint src_level;
+    GLint dst_level;
+    GLint src_x;
+    GLint src_y;
+    GLint dst_x;
+    GLint dst_y;
+    GLsizei width;
+    GLsizei height;
+    size_t src_slice;
+    size_t dst_slice;
+    size_t src_depth_plane;
+    size_t dst_depth_plane;
+    size_t iterations;
+    size_t src_size_depth;
+} MglBdCopyImageDispatchCtx;
+
+static int mglBdCopyImageDispatchGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdCopyImageDispatchCtx *c = (MglBdCopyImageDispatchCtx *)ctx_raw;
+    for (size_t i = 0; i < c->iterations; i++) {
+        size_t cur_src_slice = c->src_slice;
+        size_t cur_src_depth = c->src_depth_plane;
+        size_t cur_dst_slice = c->dst_slice;
+        size_t cur_dst_depth = c->dst_depth_plane;
+
+        if (c->src_type == MGLTextureType3D && c->dst_type != MGLTextureType3D) {
+            /* 3D -> 2D/array: read depth plane i from src */
+            cur_src_depth = c->src_depth_plane + i;
+            cur_src_slice = 0;
+            cur_dst_slice = c->dst_slice + i;
+        } else if (c->src_type != MGLTextureType3D &&
+                   c->dst_type == MGLTextureType3D) {
+            /* 2D/array -> 3D: read slice i from src, write to dst depth */
+            cur_src_slice = c->src_slice + i;
+            cur_dst_depth = c->dst_depth_plane + i;
+            cur_dst_slice = 0;
+        } else if (c->src_type != MGLTextureType3D &&
+                   c->dst_type != MGLTextureType3D) {
+            /* 2D/array -> 2D/array: copy slice i to slice i */
+            cur_src_slice = c->src_slice + i;
+            cur_dst_slice = c->dst_slice + i;
+        }
+
+        mglBdCopyTexture(
+            c->encoder, c->source, cur_src_slice, (size_t)c->src_level,
+            mglBlitOrigin((uint64_t)c->src_x, (uint64_t)c->src_y,
+                          (uint64_t)cur_src_depth),
+            mglBlitSize((uint64_t)c->width, (uint64_t)c->height,
+                        (uint64_t)c->src_size_depth),
+            c->destination, cur_dst_slice, (size_t)c->dst_level,
+            mglBlitOrigin((uint64_t)c->dst_x, (uint64_t)c->dst_y,
+                          (uint64_t)cur_dst_depth));
+    }
+    mglBdEndBlitEncoder(c->encoder);
+    return 1;
+}
+
+typedef struct {
+    void *encoder;
+} MglBdEncoderCtx;
+
+static int mglBdEndBlitEncoderGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdEncoderCtx *ctx = (MglBdEncoderCtx *)ctx_raw;
+    mglBdEndBlitEncoder(ctx->encoder);
+    return 1;
+}
+
+/* -(void)mtlCopyImageSubData:srcTexture:srcLevel:srcX:srcY:srcZ:dstTexture:
+ *  dstLevel:dstX:dstY:dstZ:width:height:depth: */
+void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_tex,
+                             GLint src_level, GLint src_x, GLint src_y,
+                             GLint src_z, Texture *dst_tex, GLint dst_level,
+                             GLint dst_x, GLint dst_y, GLint dst_z,
+                             GLsizei width, GLsizei height, GLsizei depth)
+{
+    mglPlatformShellSetContext(renderer, glm_ctx);
+
+    if (!src_tex || !dst_tex || width <= 0 || height <= 0 || depth <= 0) {
+        return;
+    }
+
+    if (!mglRendererBindMTLTexture(renderer, src_tex)) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+    if (!mglRendererBindMTLTexture(renderer, dst_tex)) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    void *src_texture = src_tex->mtl_data;
+    void *dst_texture = dst_tex->mtl_data;
+    if (!src_texture || !dst_texture) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    uint32_t src_type = mglBdTextureInfo(src_texture).texture_type;
+    uint32_t dst_type = mglBdTextureInfo(dst_texture).texture_type;
+
+    if ((size_t)src_level >= mglBdTextureInfo(src_texture).mipmap_level_count ||
+        (size_t)dst_level >= mglBdTextureInfo(dst_texture).mipmap_level_count) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidValue());
+        return;
+    }
+
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererCoreState *core = areas.core;
+
+    int needs_3d_destination_workaround =
+        dst_type == MGLTextureType3D &&
+        (MGLCapabilityHasBug(&core->capability, MGL_BUG_3D_GETBYTES_SLICE_OOB) ||
+         MGLCapabilityHasBug(&core->capability,
+                             MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN) ||
+         MGLCapabilityHasBug(&core->capability,
+                             MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB));
+    if (needs_3d_destination_workaround) {
+        mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(renderer, 0);
+        mglRendererEndRenderEncodingPort(renderer);
+        RETURN_ON_FAILURE(mglRendererEnsureWritableCommandBufferPort(
+            renderer, "mtlCopyImageSubData.3D"));
+        if (mglBlitCopyImageSubData3DFallback(
+                renderer, glm_ctx, src_tex, src_texture, src_type, src_level,
+                src_x, src_y, src_z, dst_tex, dst_texture, dst_type, dst_level,
+                dst_x, dst_y, dst_z, width, height, depth)) {
+            return;
+        }
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    /* The CPU-to-CPU path is C now (log 135). */
+    if (mglBlitCopyImageSubDataCpuToCpu(
+            renderer, glm_ctx, src_tex, src_texture, src_type, src_level, src_x,
+            src_y, src_z, dst_tex, dst_texture, dst_type, dst_level, dst_x,
+            dst_y, dst_z, width, height, depth)) {
+        return;
+    }
+
+    if (mglBlitCopyImageSubDataFormatConversion(
+            renderer, glm_ctx, src_tex, src_texture, src_type, src_level, src_x,
+            src_y, src_z, dst_tex, dst_texture, dst_type, dst_level, dst_x,
+            dst_y, dst_z, width, height, depth)) {
+        return;
+    }
+
+    /* End a stale render pass (if the render encoder's FBO no longer matches
+     * the current context FBO) so the blit encoder is not interleaved with a
+     * live render encoder.  This is the only GL state the blit path depends
+     * on; the full processGLState:false sync is unnecessary here. */
+    mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(renderer, 0);
+    mglRendererEndRenderEncodingPort(renderer);
+    RETURN_ON_FAILURE(
+        mglRendererEnsureWritableCommandBufferPort(renderer, "mtlCopyImageSubData"));
+
+    /* For cube / cube-array / 2D-array / 1D-array targets, srcZ selects the
+     * slice.  For 3D textures, srcZ is the depth origin. */
+    size_t src_slice = 0;
+    size_t dst_slice = 0;
+    size_t src_depth_plane = 0;
+    size_t dst_depth_plane = 0;
+    size_t copy_depth = mglBdMaxSize((size_t)depth, 1u);
+
+    if (src_type == MGLTextureType3D) {
+        src_depth_plane = (size_t)src_z;
+        src_slice = 0;
+    } else {
+        src_slice = (size_t)src_z;
+        src_depth_plane = 0;
+    }
+
+    if (dst_type == MGLTextureType3D) {
+        dst_depth_plane = (size_t)dst_z;
+        dst_slice = 0;
+    } else {
+        dst_slice = (size_t)dst_z;
+        dst_depth_plane = 0;
+    }
+
+    size_t iterations;
+    size_t src_size_depth;
+
+    if (src_type == MGLTextureType3D && dst_type == MGLTextureType3D) {
+        iterations = 1u;
+        src_size_depth = copy_depth;
+    } else {
+        iterations = copy_depth;
+        src_size_depth = 1u;
+    }
+
+    /* Debug: read source renderbuffer data before blit to verify it has
+     * content */
+    if (src_tex->is_render_target || dst_tex->is_render_target) {
+        (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+            renderer, src_texture, "copyImageSubData.srcCheck");
+        mglRendererEndRenderEncodingPort(renderer);
+    }
+
+    void *blit_encoder = mglRenderCreateBlitEncoderBorrowed(
+        mglBdCommandBufferOwner(&areas));
+    if (!blit_encoder) {
+        fprintf(stderr,
+                "MGL ERROR: mtlCopyImageSubData failed to create blit "
+                "encoder\n");
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return;
+    }
+
+    MglBdCopyImageDispatchCtx dispatch_ctx = {
+        .encoder = blit_encoder,
+        .source = src_texture,
+        .destination = dst_texture,
+        .src_type = src_type,
+        .dst_type = dst_type,
+        .src_level = src_level,
+        .dst_level = dst_level,
+        .src_x = src_x,
+        .src_y = src_y,
+        .dst_x = dst_x,
+        .dst_y = dst_y,
+        .width = width,
+        .height = height,
+        .src_slice = src_slice,
+        .dst_slice = dst_slice,
+        .src_depth_plane = src_depth_plane,
+        .dst_depth_plane = dst_depth_plane,
+        .iterations = iterations,
+        .src_size_depth = src_size_depth,
+    };
+    if (!mglPlatformShellGuardedCallCtx(renderer, "mtlCopyImageSubData blit",
+                                        mglBdCopyImageDispatchGuarded,
+                                        &dispatch_ctx, NULL)) {
+        /* The method's @catch re-ended the encoder inside its own @try/@catch */
+        MglBdEncoderCtx end_ctx = {.encoder = blit_encoder};
+        if (!mglPlatformShellGuardedCallCtx(
+                renderer, "mtlCopyImageSubData blit encoder end",
+                mglBdEndBlitEncoderGuarded, &end_ctx, NULL)) {
+            fprintf(stderr,
+                    "MGL WARNING: mtlCopyImageSubData failed to end blit "
+                    "encoder: caught exception\n");
+        }
+        fprintf(stderr,
+                "MGL ERROR: mtlCopyImageSubData blit failed: caught "
+                "exception\n");
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    /* Flush the command buffer to ensure the blit is executed before any
+     * subsequent readback (e.g. glGetTexImage).  Without this, the blit may
+     * still be pending in the command buffer when the readback occurs. */
+    mglRendererFlushCommandBufferPort(renderer, 0);
+
+    bool readback_done = mglBlitCopyImageSubDataPostBlitReadback(
+        renderer, dst_tex, dst_texture, dst_type, dst_level, dst_x, dst_y, dst_z,
+        width, height, depth);
+
+    if (!readback_done) {
+        if (dst_type == MGLTextureType3D && dst_tex->faces &&
+            (size_t)dst_level < dst_tex->num_levels && dst_tex->faces[0].levels) {
+            dst_tex->faces[0].levels[dst_level].metal_data_authoritative =
+                (GLboolean)mglRenderGLBoolean(1);
+        } else {
+            dst_tex->metal_data_authoritative =
+                (GLboolean)mglRenderGLBoolean(1);
+        }
+    }
+}
