@@ -40,6 +40,9 @@
 #include "mgl_region_value.h"     /* MGLOriginValue / MGLSizeValue / regions */
 #include "mgl_gpu_recovery.h"      /* guarded call (@try/@catch) */
 #include "mgl_metal_ref.h"        /* mglSafeReleaseMetalObj */
+#include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
+#include "mgl_texture_readback_clear.h" /* pending FBO clear application */
+#include "mgl_blit_sampled_copy.h" /* mglBlitUpdateGLSampledRenderTargetCopy */
 #include "mgl_trace_log.h"         /* mglTraceLog */
 #include "mgl_types_state.h"       /* GL boolean helper */
 
@@ -717,4 +720,249 @@ bool mglBlitCopyImageSubDataCpuToCpu(
         }
     }
     return false;
+}
+
+/* Declared next to its definition in the Objective-C
+ * MGLRenderer+Blit_Private.h; repeated here for the C twin below. */
+extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
+
+/* The ObjC-private header's inline RT Metal-fill marker, in C (same body). */
+static void mglBdMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
+                                            size_t upload_size)
+{
+    TextureLevel *tex_level = mglTextureAttachmentLevel(tex, level);
+    if (!tex_level) {
+        return;
+    }
+    mglRenderMarkTextureLevelWritten(&tex_level->ever_written,
+                                     &tex_level->has_initialized_data,
+                                     &tex_level->suspicious_zero_upload);
+    tex_level->last_init_source = kTexMetalFill;
+    tex_level->last_upload_size = upload_size;
+    tex_level->last_src_ptr = NULL;
+    tex_level->last_src_hash = 0ull;
+    if (tex->is_render_target) {
+        tex->mtl_render_target_write_version++;
+        mglMarkGLSampledCopyLevelDirty(tex, level);
+    }
+}
+
+/* --- -mtlCopyTexSubImageViaTextureBlit:… --------------------------------- */
+
+typedef struct {
+    void *blit_encoder;
+    void *src_texture;
+    MGLMetalAttachmentSubresource src_subresource;
+    void *dest_texture;
+    size_t slice;
+    size_t level;
+    size_t x;
+    size_t src_y;
+    size_t xoffset;
+    size_t yoffset;
+    size_t width;
+    size_t height;
+    int ended;
+} MglBdCopyTexBlitCtx;
+
+static int mglBdCopyTexBlitGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdCopyTexBlitCtx *ctx = (MglBdCopyTexBlitCtx *)ctx_raw;
+    mglBdCopyTexture(ctx->blit_encoder, ctx->src_texture,
+                     ctx->src_subresource.slice, ctx->src_subresource.level,
+                     mglBlitOrigin(ctx->x, ctx->src_y, 0u),
+                     mglBlitSize(ctx->width, ctx->height, 1u),
+                     ctx->dest_texture, ctx->slice, ctx->level,
+                     mglBlitOrigin(ctx->xoffset, ctx->yoffset, 0u));
+    mglBdEndBlitEncoder(ctx->blit_encoder);
+    ctx->ended = 1;
+    return 1;
+}
+
+static int mglBdCopyTexBlitCleanupGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdCopyTexBlitCtx *ctx = (MglBdCopyTexBlitCtx *)ctx_raw;
+    if (!ctx->ended) {
+        mglBdEndBlitEncoder(ctx->blit_encoder);
+        ctx->ended = 1;
+    }
+    return 1;
+}
+
+/* -(BOOL)mtlCopyTexSubImageViaTextureBlit:tex:destTexture:slice:level:xoffset:
+ *  yoffset:x:y:width:height: */
+bool mglBlitCopyTexSubImageViaTextureBlit(
+    void *renderer, GLMContext glm_ctx, Texture *tex, void *dest_texture,
+    size_t slice, size_t level, int64_t xoffset, int64_t yoffset, int64_t x,
+    int64_t y, size_t width, size_t height)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    if (!glm_ctx || !tex || !dest_texture || width == 0u || height == 0u) {
+        return false;
+    }
+
+    uint32_t dest_format = mglBdTextureInfo(dest_texture).pixel_format;
+    int dest_is_depth = mglMetalPixelFormatIsDepthOrStencil(dest_format);
+
+    /* Resolve the source framebuffer attachment. For depth destinations we
+     * read from the depth attachment; for color destinations we read from
+     * the current read buffer's color attachment. */
+    Framebuffer *fbo = glm_ctx->active_state->readbuffer;
+    if (!fbo) {
+        /* Default framebuffer: not supported via this path. */
+        return false;
+    }
+
+    FBOAttachment *src_attachment = NULL;
+    if (dest_is_depth) {
+        src_attachment = &fbo->depth;
+    } else {
+        GLenum read_buffer = glm_ctx->active_state->read_buffer;
+        uint32_t attachment_index = 0u;
+        if (!mglRenderDrawBufferIsColorAttachment(
+                (uint32_t)read_buffer, (uint32_t)MAX_COLOR_ATTACHMENTS,
+                &attachment_index)) {
+            return false;
+        }
+        if (((fbo->color_attachment_bitfield >> attachment_index) & 1u) == 0u) {
+            return false;
+        }
+        src_attachment = &fbo->color_attachments[attachment_index];
+    }
+
+    Texture *src_tex_obj =
+        mglRendererAttachmentTextureFor(glm_ctx, src_attachment);
+    if (!src_tex_obj) {
+        return false;
+    }
+    src_tex_obj->is_render_target = true;
+    if (!mglRendererBindMTLTexture(renderer, src_tex_obj) ||
+        !src_tex_obj->mtl_data) {
+        return false;
+    }
+    void *src_texture = src_tex_obj->mtl_data;
+    if (!src_texture) {
+        return false;
+    }
+
+    /* Only blit when source and destination Metal pixel formats match. */
+    if (mglBdTextureInfo(src_texture).pixel_format != dest_format) {
+        return false;
+    }
+
+    if (mglRenderTextureIsFramebufferOnly(src_tex_obj->mtl_data)) {
+        return false;
+    }
+
+    if (level >= mglBdTextureInfo(dest_texture).mipmap_level_count) {
+        mglDispatchError(
+            glm_ctx,
+            "-[MGLRenderer(Blit) mtlCopyTexSubImageViaTextureBlit:tex:"
+            "destTexture:slice:level:xoffset:yoffset:x:y:width:height:]",
+            (GLenum)mglRenderErrorInvalidValue());
+        return true; /* Consumed the call; report an error. */
+    }
+
+    size_t dest_level_width = mglMetalTextureLevelDimension(
+        mglBdTextureInfo(dest_texture).width, level);
+    size_t dest_level_height = mglMetalTextureLevelDimension(
+        mglBdTextureInfo(dest_texture).height, level);
+    if ((size_t)xoffset > dest_level_width ||
+        (size_t)yoffset > dest_level_height ||
+        width > dest_level_width - (size_t)xoffset ||
+        height > dest_level_height - (size_t)yoffset) {
+        mglDispatchError(
+            glm_ctx,
+            "-[MGLRenderer(Blit) mtlCopyTexSubImageViaTextureBlit:tex:"
+            "destTexture:slice:level:xoffset:yoffset:x:y:width:height:]",
+            (GLenum)mglRenderErrorInvalidValue());
+        return true;
+    }
+
+    MGLMetalAttachmentSubresource src_subresource =
+        mglMetalAttachmentSubresourceForAttachment(src_attachment);
+
+    /* Metal's texture coordinate origin is top-left, GL's is bottom-left.
+     * Flip the source Y so the copied region matches GL semantics. */
+    size_t src_level_height = mglMetalTextureLevelDimension(
+        mglBdTextureInfo(src_texture).height, src_subresource.level);
+    int64_t src_y = (int64_t)src_level_height - (y + (int64_t)height);
+    if (src_y < 0) {
+        src_y = 0;
+    }
+
+    /* End any active render encoder so the blit encoder can run. */
+    mglRendererEndRenderEncodingPort(renderer);
+    if (!mglRendererEnsureWritableCommandBufferPort(
+            renderer, "mtlCopyTexSubImageViaTextureBlit")) {
+        mglDispatchError(
+            glm_ctx,
+            "-[MGLRenderer(Blit) mtlCopyTexSubImageViaTextureBlit:tex:"
+            "destTexture:slice:level:xoffset:yoffset:x:y:width:height:]",
+            (GLenum)mglRenderErrorInvalidOperation());
+        return true;
+    }
+
+    /* Apply any pending FBO clear so the source texture has authoritative
+     * data before the blit reads from it. */
+    if (dest_is_depth) {
+        mglTextureApplyPendingFBODepthClearForReadback(
+            renderer, fbo, src_attachment, src_tex_obj, src_texture);
+    } else {
+        GLenum read_buffer = glm_ctx->active_state->read_buffer;
+        mglTextureApplyPendingFBOColorClearForReadback(
+            renderer, fbo, src_attachment, src_tex_obj, src_texture,
+            read_buffer);
+    }
+
+    void *blit_encoder =
+        mglRenderCreateBlitEncoderBorrowed(mglBdCommandBufferOwner(&areas));
+    if (!blit_encoder) {
+        mglDispatchError(
+            glm_ctx,
+            "-[MGLRenderer(Blit) mtlCopyTexSubImageViaTextureBlit:tex:"
+            "destTexture:slice:level:xoffset:yoffset:x:y:width:height:]",
+            (GLenum)mglRenderErrorInvalidOperation());
+        return true;
+    }
+
+    MglBdCopyTexBlitCtx blit_ctx = {
+        .blit_encoder = blit_encoder,
+        .src_texture = src_texture,
+        .src_subresource = src_subresource,
+        .dest_texture = dest_texture,
+        .slice = slice,
+        .level = level,
+        .x = (size_t)x,
+        .src_y = (size_t)src_y,
+        .xoffset = (size_t)xoffset,
+        .yoffset = (size_t)yoffset,
+        .width = width,
+        .height = height,
+        .ended = 0,
+    };
+    if (!mglPlatformShellGuardedCallCtx(renderer, "copyTexSubImage texture blit",
+                                        mglBdCopyTexBlitGuarded, &blit_ctx,
+                                        NULL)) {
+        (void)mglPlatformShellGuardedCallCtx(
+            renderer, "copyTexSubImage texture blit cleanup",
+            mglBdCopyTexBlitCleanupGuarded, &blit_ctx, NULL);
+        mglDispatchError(
+            glm_ctx,
+            "-[MGLRenderer(Blit) mtlCopyTexSubImageViaTextureBlit:tex:"
+            "destTexture:slice:level:xoffset:yoffset:x:y:width:height:]",
+            (GLenum)mglRenderErrorInvalidOperation());
+        return true;
+    }
+
+    mglBdMarkTextureLevelMetalFilled(tex, (GLuint)level, 0);
+    (void)mglBlitUpdateGLSampledRenderTargetCopy(
+        renderer, tex, dest_texture, "copy_tex_sub_image_blit");
+    tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
+    mglMarkRendererDirtyBits(&glm_ctx->state, DIRTY_TEX | DIRTY_TEX_BINDING);
+    return true;
 }

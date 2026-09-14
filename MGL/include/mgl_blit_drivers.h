@@ -53,6 +53,13 @@ bool mglBlitReadTextureRegion(void *renderer, void *texture,
                               void *bytes, size_t bytes_per_row,
                               size_t bytes_per_image, const char *reason);
 
+/* Texture-to-texture copyTexSubImage blit (source = the current read
+ * framebuffer attachment).  Was -mtlCopyTexSubImageViaTextureBlit:tex:… */
+bool mglBlitCopyTexSubImageViaTextureBlit(
+    void *renderer, GLMContext glm_ctx, Texture *tex, void *dest_texture,
+    size_t slice, size_t level, int64_t xoffset, int64_t yoffset, int64_t x,
+    int64_t y, size_t width, size_t height);
+
 /* Raw CPU-to-CPU copy between matching-format textures that both have CPU
  * data.  Returns true when the copy succeeded (the caller then returns). */
 bool mglBlitCopyImageSubDataCpuToCpu(
