@@ -39,6 +39,8 @@
 #include "mgl_render_values.h"    /* storage/usage enums */
 #include "mgl_region_value.h"     /* MGLOriginValue / MGLSizeValue / regions */
 #include "mgl_gpu_recovery.h"      /* guarded call (@try/@catch) */
+#include "mgl_capability.h"        /* MGLCapabilityHasBug + MGL_BUG_* (log 144) */
+#include "mgl_renderer_core_state.h" /* core area (capability snapshot) */
 #include "mgl_metal_ref.h"        /* mglSafeReleaseMetalObj */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
 #include "mgl_texture_readback_clear.h" /* pending FBO clear application */
@@ -965,4 +967,836 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     mglMarkRendererDirtyBits(&glm_ctx->state, DIRTY_TEX | DIRTY_TEX_BINDING);
     return true;
+}
+
+/* === copyImageSubData: format conversion + 3D fallback (P0-1, log 144) ====
+ *
+ * Mechanical translation of -copyImageSubDataFormatConversion:… and
+ * -copyImageSubData3DFallback:… out of MGLRenderer+Blit.m.  `self` becomes the
+ * renderer handle; `_capability` is the core area's snapshot (the .m reaches it
+ * through the `#define _capability _core.capability` alias), the current command
+ * buffer owner comes from areas.command, `_batching` from areas.batching.  Each
+ * `@try/@catch` frame becomes a shell guarded call, and the NSException object
+ * the old NSLog printed is reported as "caught exception".  `__FUNCTION__` now
+ * reports these C entries.
+ */
+
+/* The .m's helper from MGLRenderer+Blit_Private.h, restated for this TU. */
+extern GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
+                                                      GLenum *outFormat,
+                                                      GLenum *outType);
+
+/* MAX() on size_t, without pulling in a macro. */
+static size_t mglBdMaxSize(size_t a, size_t b) { return a > b ? a : b; }
+
+static void mglBdGetTextureBytes(void *texture, void *bytes,
+                                 size_t bytes_per_row, size_t bytes_per_image,
+                                 MGLRegionValue region, size_t level,
+                                 size_t slice, int use_slice)
+{
+    (void)mglRenderTextureGetBytes(
+        texture, bytes, bytes_per_row, bytes_per_image, region.origin.x,
+        region.origin.y, region.origin.z, region.size.width, region.size.height,
+        region.size.depth, level, slice, use_slice ? 1 : 0);
+}
+
+typedef struct {
+    void *texture;
+    void *bytes;
+    size_t bytes_per_row;
+    size_t bytes_per_image;
+    MGLRegionValue region;
+    size_t level;
+    size_t slice;
+} MglBdGetBytesCtx;
+
+static int mglBdGetBytesGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdGetBytesCtx *ctx = (MglBdGetBytesCtx *)ctx_raw;
+    mglBdGetTextureBytes(ctx->texture, ctx->bytes, ctx->bytes_per_row,
+                         ctx->bytes_per_image, ctx->region, ctx->level,
+                         ctx->slice, 1);
+    return 1;
+}
+
+typedef struct {
+    void *texture;
+    MGLRegionValue region;
+    size_t level;
+    size_t slice;
+    const void *bytes;
+    size_t bytes_per_row;
+    size_t bytes_per_image;
+} MglBdReplaceRegionCtx;
+
+static int mglBdReplaceRegionGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBdReplaceRegionCtx *ctx = (MglBdReplaceRegionCtx *)ctx_raw;
+    mglBdReplaceTextureRegion(ctx->texture, ctx->region, ctx->level, ctx->slice,
+                              ctx->bytes, ctx->bytes_per_row,
+                              ctx->bytes_per_image, 1);
+    return 1;
+}
+
+/* -copyImageSubDataFormatConversion:srcTex:srcTexture:srcType:srcLevel:srcX:
+ *  srcY:srcZ:dstTex:dstTexture:dstType:dstLevel:dstX:dstY:dstZ:width:height:
+ *  depth:
+ *
+ * The method only ever answered NO for "pixel formats match"; every other exit
+ * was YES (handled), so the nested guards collapse into early returns. */
+bool mglBlitCopyImageSubDataFormatConversion(
+    void *renderer, GLMContext glm_ctx, Texture *src_tex, void *src_texture,
+    uint32_t src_type, GLint src_level, GLint src_x, GLint src_y, GLint src_z,
+    Texture *dst_tex, void *dst_texture, uint32_t dst_type, GLint dst_level,
+    GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
+    GLsizei depth)
+{
+    /* Metal-to-Metal copy path for format conversion cases (different Metal
+     * pixel formats).  Read source pixels from Metal via getBytes, then write
+     * to destination Metal via replaceRegion.  GL CopyImageSubData does raw
+     * memcpy of pixel data, so format reinterpretation is OK.  This path has
+     * proper render pass synchronization, which the blit path lacks for
+     * renderbuffer sources. */
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererCoreState *core = areas.core;
+    if (mglBdTextureInfo(src_texture).pixel_format ==
+        mglBdTextureInfo(dst_texture).pixel_format) {
+        return false;
+    }
+    if (mglBdTextureInfo(dst_texture).storage_mode == MGLStorageModePrivate) {
+        return true;
+    }
+    size_t src_metal_bpp =
+        mglMetalReadbackBytesPerPixel(mglBdTextureInfo(src_texture).pixel_format);
+    size_t dst_metal_bpp =
+        mglMetalReadbackBytesPerPixel(mglBdTextureInfo(dst_texture).pixel_format);
+    if (src_metal_bpp == 0 || dst_metal_bpp == 0 ||
+        src_metal_bpp != dst_metal_bpp) {
+        return true;
+    }
+
+    /* Ensure any pending render passes are flushed before reading from the
+     * source (especially important for renderbuffers). */
+    mglRendererEndRenderEncodingPort(renderer);
+    (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+        renderer, src_texture, "copyImageSubData.formatConv");
+    mglRendererFlushCommandBufferPort(renderer, 1);
+
+    size_t copy_width = mglBdMaxSize((size_t)width, 1u);
+    size_t copy_height = mglBdMaxSize((size_t)height, 1u);
+    size_t num_slices = mglBdMaxSize((size_t)depth, 1u);
+    size_t row_bytes = copy_width * src_metal_bpp;
+    size_t image_bytes = row_bytes * copy_height;
+    void *staging = malloc(image_bytes);
+    int metal_copy_ok = (staging != NULL);
+
+    for (size_t s = 0; s < num_slices && metal_copy_ok; s++) {
+        /* Read source slice.  Prefer CPU data when available
+         * (metal_data_authoritative == false) to avoid AGX getBytes bugs on 3D
+         * and 2D-array textures. */
+        size_t src_mtl_slice = 0;
+        MGLRegionValue src_region;
+        if (src_type == MGLTextureType3D) {
+            src_mtl_slice = 0;
+            src_region = mglBlitRegion3D((size_t)src_x, (size_t)src_y,
+                                         (size_t)src_z + s, copy_width,
+                                         copy_height, 1);
+        } else if (src_type == MGLTextureTypeCube ||
+                   src_type == MGLTextureTypeCubeArray) {
+            src_mtl_slice = ((size_t)src_z + s) % 6;
+            src_region = mglBlitRegion2D((size_t)src_x, (size_t)src_y, copy_width,
+                                         copy_height);
+        } else {
+            src_mtl_slice = (size_t)src_z + s;
+            src_region = mglBlitRegion2D((size_t)src_x, (size_t)src_y, copy_width,
+                                         copy_height);
+        }
+
+        int src_read_from_cpu = 0;
+        if (!src_tex->metal_data_authoritative && src_tex->faces &&
+            (size_t)src_level < src_tex->num_levels) {
+            GLuint src_face = 0;
+            if (src_type == MGLTextureTypeCube ||
+                src_type == MGLTextureTypeCubeArray) {
+                src_face = ((GLuint)src_z + (GLuint)s) % 6;
+            }
+            TextureLevel *src_lvl =
+                (src_face < 6 && src_tex->faces[src_face].levels)
+                    ? &src_tex->faces[src_face].levels[src_level]
+                    : NULL;
+            if (src_lvl && src_lvl->data && src_lvl->pitch > 0 &&
+                src_lvl->width > 0) {
+                size_t src_cpu_bpp = src_lvl->pitch / src_lvl->width;
+                if (src_cpu_bpp == src_metal_bpp) {
+                    size_t src_cpu_pitch = src_lvl->pitch;
+                    size_t src_cpu_img_size =
+                        src_cpu_pitch * mglBdMaxSize(src_lvl->height, 1u);
+                    size_t src_cpu_off = 0;
+                    if (src_type == MGLTextureType3D) {
+                        src_cpu_off = ((size_t)src_z + s) * src_cpu_img_size +
+                                      (size_t)src_y * src_cpu_pitch +
+                                      (size_t)src_x * src_cpu_bpp;
+                    } else if (src_type == MGLTextureType2DArray ||
+                               src_type == MGLTextureTypeCubeArray) {
+                        /* 2D array: all slices in one TextureLevel */
+                        GLuint array_slice = (src_type == MGLTextureTypeCubeArray)
+                                                 ? ((GLuint)src_z + (GLuint)s) / 6
+                                                 : ((GLuint)src_z + (GLuint)s);
+                        src_cpu_off = array_slice * src_cpu_img_size +
+                                      (size_t)src_y * src_cpu_pitch +
+                                      (size_t)src_x * src_cpu_bpp;
+                    } else {
+                        src_cpu_off = (size_t)src_y * src_cpu_pitch +
+                                      (size_t)src_x * src_cpu_bpp;
+                    }
+                    size_t last_row_end =
+                        src_cpu_off +
+                        (copy_height > 0 ? (copy_height - 1) * src_cpu_pitch : 0) +
+                        row_bytes;
+                    if (last_row_end <= src_lvl->data_size) {
+                        for (size_t y = 0; y < copy_height; y++) {
+                            memcpy((uint8_t *)staging + y * row_bytes,
+                                   (const uint8_t *)(uintptr_t)src_lvl->data +
+                                       src_cpu_off + y * src_cpu_pitch,
+                                   row_bytes);
+                        }
+                        src_read_from_cpu = 1;
+                    }
+                }
+            }
+        }
+
+        if (!src_read_from_cpu) {
+            if (src_type == MGLTextureType3D &&
+                MGLCapabilityHasBug(&core->capability,
+                                    MGL_BUG_3D_GETBYTES_SLICE_OOB)) {
+                if (!mglBlitReadTextureRegion(
+                        renderer, src_texture, src_region, src_mtl_slice,
+                        (size_t)src_level, staging, row_bytes, image_bytes,
+                        "copyImageSubData.formatConv3DReadback")) {
+                    metal_copy_ok = 0;
+                    break;
+                }
+            } else {
+                MglBdGetBytesCtx read_ctx = {
+                    .texture = src_texture,
+                    .bytes = staging,
+                    .bytes_per_row = row_bytes,
+                    .bytes_per_image = image_bytes,
+                    .region = src_region,
+                    .level = (size_t)src_level,
+                    .slice = src_mtl_slice,
+                };
+                if (!mglPlatformShellGuardedCallCtx(
+                        renderer, "format conv renderbuffer readback",
+                        mglBdGetBytesGuarded, &read_ctx, NULL)) {
+                    fprintf(stderr,
+                            "MGL WARNING: format conv renderbuffer readback "
+                            "failed: caught exception\n");
+                    metal_copy_ok = 0;
+                    break;
+                }
+            }
+        }
+
+        /* Write to destination Metal via replaceRegion */
+        {
+            size_t dst_mtl_slice = 0;
+            MGLRegionValue dst_region;
+            if (dst_type == MGLTextureType3D) {
+                dst_mtl_slice = 0;
+                dst_region = mglBlitRegion3D((size_t)dst_x, (size_t)dst_y,
+                                             (size_t)dst_z + s, copy_width,
+                                             copy_height, 1);
+            } else if (dst_type == MGLTextureTypeCube ||
+                       dst_type == MGLTextureTypeCubeArray) {
+                dst_mtl_slice = ((size_t)dst_z + s) % 6;
+                dst_region = mglBlitRegion2D((size_t)dst_x, (size_t)dst_y,
+                                             copy_width, copy_height);
+            } else {
+                dst_mtl_slice = (size_t)dst_z + s;
+                dst_region = mglBlitRegion2D((size_t)dst_x, (size_t)dst_y,
+                                             copy_width, copy_height);
+            }
+            MglBdReplaceRegionCtx write_ctx = {
+                .texture = dst_texture,
+                .region = dst_region,
+                .level = (size_t)dst_level,
+                .slice = dst_mtl_slice,
+                .bytes = staging,
+                .bytes_per_row = row_bytes,
+                .bytes_per_image = image_bytes,
+            };
+            if (!mglPlatformShellGuardedCallCtx(
+                    renderer, "format conv renderbuffer Metal update",
+                    mglBdReplaceRegionGuarded, &write_ctx, NULL)) {
+                fprintf(stderr,
+                        "MGL WARNING: format conv renderbuffer Metal update "
+                        "failed: caught exception\n");
+            }
+        }
+
+        /* Also update dst CPU data if available */
+        if (dst_tex->faces && (size_t)dst_level < dst_tex->num_levels) {
+            GLuint dst_face = 0;
+            if (dst_type == MGLTextureTypeCube ||
+                dst_type == MGLTextureTypeCubeArray) {
+                dst_face = ((GLuint)dst_z + (GLuint)s) % 6;
+            }
+            TextureLevel *cur_dst_lvl =
+                (dst_face < 6 && dst_tex->faces[dst_face].levels)
+                    ? &dst_tex->faces[dst_face].levels[dst_level]
+                    : NULL;
+            if (cur_dst_lvl && cur_dst_lvl->data && cur_dst_lvl->pitch > 0 &&
+                cur_dst_lvl->width > 0) {
+                size_t dst_cpu_bpp = cur_dst_lvl->pitch / cur_dst_lvl->width;
+                if (dst_cpu_bpp == dst_metal_bpp) {
+                    size_t dst_slice_pitch =
+                        cur_dst_lvl->pitch * mglBdMaxSize(cur_dst_lvl->height, 1u);
+                    int dst_sliced = (dst_type == MGLTextureType3D ||
+                                      dst_type == MGLTextureType2DArray);
+                    size_t dst_slice_off =
+                        dst_sliced ? ((size_t)dst_z + s) * dst_slice_pitch : 0;
+                    for (size_t y = 0; y < copy_height; y++) {
+                        size_t dst_off = dst_slice_off +
+                                         ((size_t)dst_y + y) * cur_dst_lvl->pitch +
+                                         (size_t)dst_x * dst_metal_bpp;
+                        if (dst_off + row_bytes <= cur_dst_lvl->data_size) {
+                            memcpy((uint8_t *)(uintptr_t)cur_dst_lvl->data +
+                                       dst_off,
+                                   (const uint8_t *)staging + y * row_bytes,
+                                   row_bytes);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    free(staging);
+    if (metal_copy_ok) {
+        /* Do NOT set metal_data_authoritative = GL_TRUE here.
+         *
+         * Previously, this code set the destination level's
+         * metal_data_authoritative flag to force glGetTexImage to read from
+         * Metal.  However, this causes failures for destination textures whose
+         * Metal data may not be fully initialized (e.g., RGB9_E5 2D-array
+         * textures where replaceRegion only updates the copied region, leaving
+         * non-copied regions with stale Metal data).
+         *
+         * glCopyImageSubData does a raw bit copy.  The CPU data was updated
+         * above with the source's raw bits at the copy region, and non-copied
+         * regions retain their original values from glTexImage*.  This is
+         * correct for both memcmp and float-epsilon comparisons used by CTS.
+         * Keeping CPU data authoritative avoids AGX Metal readback bugs on 3D
+         * and certain packed formats. */
+        return true;
+    }
+    return true;
+}
+
+/* The 3D fallback's two @try frames.  The first one carries the reads (and the
+ * method's own `return YES` exits, reported through `early_exit`); the second
+ * one only wraps the replaceRegion writes.  Neither body frees the staging
+ * buffer: the caller owns it and frees once on every path. */
+typedef struct {
+    void *renderer;
+    GLMContext glm_ctx;
+    void *src_texture;
+    uint32_t src_type;
+    GLint src_level;
+    GLint src_x;
+    GLint src_y;
+    GLint src_z;
+    size_t copy_width;
+    size_t copy_height;
+    size_t copy_depth;
+    size_t row_bytes;
+    size_t image_bytes;
+    void *staging;
+    MGLRendererStateAreas areas;
+    MGLRendererCoreState *core;
+    int early_exit;
+} MglBd3DReadCtx;
+
+static int mglBd3DReadGuarded(void *renderer, void *ctx_raw)
+{
+    MglBd3DReadCtx *c = (MglBd3DReadCtx *)ctx_raw;
+    /* Read from source Metal texture.  For 3D sources, read the entire 3D
+     * region in one call.  For non-3D sources (2D array, cube, etc.), loop
+     * over slices and read each slice separately. */
+    if (c->src_type == MGLTextureType3D) {
+        MGLRegionValue src_region =
+            mglBlitRegion3D((size_t)c->src_x, (size_t)c->src_y,
+                            (size_t)c->src_z, c->copy_width, c->copy_height,
+                            c->copy_depth);
+        if (mglBdTextureInfo(c->src_texture).storage_mode !=
+                MGLStorageModePrivate &&
+            !MGLCapabilityHasBug(&c->core->capability,
+                                 MGL_BUG_3D_GETBYTES_SLICE_OOB)) {
+            mglBdGetTextureBytes(c->src_texture, c->staging, c->row_bytes,
+                                 c->image_bytes, src_region,
+                                 (size_t)c->src_level, 0, 1);
+        } else if (!mglBlitReadTextureRegion(c->renderer, c->src_texture,
+                                             src_region, 0,
+                                             (size_t)c->src_level, c->staging,
+                                             c->row_bytes, c->image_bytes,
+                                             "copyImageSubData.3DReadback")) {
+            c->early_exit = 1;
+            return 1;
+        }
+    } else {
+        /* Non-3D source (2D array, cube, rectangle, etc.): read each slice
+         * separately and place at the correct offset. */
+        for (size_t z = 0; z < c->copy_depth; z++) {
+            size_t slice_offset = z * c->image_bytes;
+            size_t src_slice = (size_t)c->src_z + z;
+            MGLRegionValue slice_region =
+                mglBlitRegion3D((size_t)c->src_x, (size_t)c->src_y, 0,
+                                c->copy_width, c->copy_height, 1u);
+            if (mglBdTextureInfo(c->src_texture).storage_mode !=
+                MGLStorageModePrivate) {
+                mglBdGetTextureBytes(c->src_texture,
+                                     (uint8_t *)c->staging + slice_offset,
+                                     c->row_bytes, c->image_bytes, slice_region,
+                                     (size_t)c->src_level, src_slice, 1);
+            } else {
+                void *slice_buffer =
+                    mglBdCreateBuffer(c->image_bytes,
+                                      MGLResourceStorageModeShared);
+                if (!slice_buffer) {
+                    c->early_exit = 1;
+                    return 1;
+                }
+                void *read_encoder = mglRenderCreateBlitEncoderBorrowed(
+                    mglBdCommandBufferOwner(&c->areas));
+                if (!read_encoder) {
+                    mglSafeReleaseMetalObj(&slice_buffer);
+                    c->early_exit = 1;
+                    return 1;
+                }
+                c->areas.batching->currentCommandBufferHasWork = 1;
+                mglBdCopyTextureToBuffer(
+                    read_encoder, c->src_texture, src_slice,
+                    (size_t)c->src_level, slice_region.origin, slice_region.size,
+                    slice_buffer, 0, c->row_bytes, c->image_bytes);
+                mglBdEndBlitEncoder(read_encoder);
+                mglRendererFlushCommandBufferPort(c->renderer, 1);
+                void *slice_contents = NULL;
+                uint64_t slice_length = 0;
+                if (mglRenderGetBufferContents(slice_buffer, &slice_contents,
+                                               &slice_length) != 0 ||
+                    !slice_contents || slice_length < c->image_bytes) {
+                    mglSafeReleaseMetalObj(&slice_buffer);
+                    c->early_exit = 1;
+                    return 1;
+                }
+                memcpy((uint8_t *)c->staging + slice_offset, slice_contents,
+                       c->image_bytes);
+                mglSafeReleaseMetalObj(&slice_buffer);
+            }
+        }
+    }
+    return 1;
+}
+
+typedef struct {
+    void *dst_texture;
+    Texture *dst_tex;
+    GLint dst_level;
+    int bpp_mismatch;
+    GLuint level_width;
+    GLuint level_height;
+    GLuint level_depth;
+    size_t level_pitch;
+    size_t level_image_bytes;
+    const void *full_level_bytes;
+} MglBd3DWriteCtx;
+
+static int mglBd3DWriteGuarded(void *renderer, void *ctx_raw)
+{
+    (void)renderer;
+    MglBd3DWriteCtx *c = (MglBd3DWriteCtx *)ctx_raw;
+    /* Write the full level back with origin (0,0,0).  For bpp mismatch, expand
+     * CPU data to Metal format first. */
+    MGLRegionValue full_region = mglBlitRegion3D(
+        0, 0, 0, c->level_width, c->level_height, c->level_depth);
+    if (c->bpp_mismatch) {
+        size_t expanded_bpr = 0;
+        size_t expanded_bpi = 0;
+        uint8_t *expanded_data = NULL;
+        if (mglTextureInternalFormatNeedsRGBA8Expansion(
+                c->dst_tex->internalformat,
+                mglBdTextureInfo(c->dst_texture).pixel_format)) {
+            expanded_data = mglCreateRGBA8ExpandedUpload(
+                c->dst_tex, (const uint8_t *)c->full_level_bytes,
+                c->level_width, c->level_height * c->level_depth,
+                c->level_pitch, &expanded_bpr, &expanded_bpi);
+        } else if (mglTextureNeedsChannelExpansion(
+                       c->dst_tex->internalformat,
+                       mglBdTextureInfo(c->dst_texture).pixel_format)) {
+            expanded_data = mglCreateChannelExpandedUpload(
+                c->dst_tex, mglBdTextureInfo(c->dst_texture).pixel_format,
+                (const uint8_t *)c->full_level_bytes, c->level_width,
+                c->level_height * c->level_depth, c->level_pitch, &expanded_bpr,
+                &expanded_bpi);
+        }
+        if (expanded_data) {
+            size_t expanded_image_bytes = expanded_bpr * c->level_height;
+            mglBdReplaceTextureRegion(c->dst_texture, full_region,
+                                      (size_t)c->dst_level, 0, expanded_data,
+                                      expanded_bpr, expanded_image_bytes, 1);
+            free(expanded_data);
+        } else {
+            mglBdReplaceTextureRegion(c->dst_texture, full_region,
+                                      (size_t)c->dst_level, 0,
+                                      c->full_level_bytes, c->level_pitch,
+                                      c->level_image_bytes, 1);
+        }
+    } else {
+        mglBdReplaceTextureRegion(c->dst_texture, full_region,
+                                  (size_t)c->dst_level, 0, c->full_level_bytes,
+                                  c->level_pitch, c->level_image_bytes, 1);
+    }
+    return 1;
+}
+
+/* -copyImageSubData3DFallback:srcTex:srcTexture:srcType:srcLevel:srcX:srcY:
+ *  srcZ:dstTex:dstTexture:dstType:dstLevel:dstX:dstY:dstZ:width:height:depth: */
+bool mglBlitCopyImageSubData3DFallback(
+    void *renderer, GLMContext glm_ctx, Texture *src_tex, void *src_texture,
+    uint32_t src_type, GLint src_level, GLint src_x, GLint src_y, GLint src_z,
+    Texture *dst_tex, void *dst_texture, uint32_t dst_type, GLint dst_level,
+    GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
+    GLsizei depth)
+{
+    /* Fallback for 3D texture destinations: AGX drivers have a bug where
+     * copyFromTexture:toTexture: triggers "slice OOB" assertions when the
+     * destination is a 3D texture.  Use a buffer-mediated copy instead:
+     *   1. Read source region into a staging buffer (getBytes for shared
+     *      textures, or blit-to-buffer for private textures)
+     *   2. Write staging buffer to 3D destination via replaceRegion
+     * This bypasses the buggy blit path entirely.  Private 3D destinations
+     * cannot use replaceRegion and fall through to the blit path below.
+     * Driver bug is tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB). */
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererCoreState *core = areas.core;
+    int needs_3d_workaround =
+        MGLCapabilityHasBug(&core->capability, MGL_BUG_3D_GETBYTES_SLICE_OOB) ||
+        MGLCapabilityHasBug(&core->capability,
+                            MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN) ||
+        MGLCapabilityHasBug(&core->capability,
+                            MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB);
+    if (!needs_3d_workaround || dst_type != MGLTextureType3D ||
+        mglBdTextureInfo(dst_texture).storage_mode == MGLStorageModePrivate) {
+        return false;
+    }
+
+    size_t bpp =
+        mglMetalReadbackBytesPerPixel(mglBdTextureInfo(src_texture).pixel_format);
+    if (bpp == 0u) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return true;
+    }
+
+    TextureLevel *early_dst_level_info = NULL;
+    if (dst_tex->faces && dst_tex->faces[0].levels &&
+        (size_t)dst_level < dst_tex->num_levels) {
+        early_dst_level_info = &dst_tex->faces[0].levels[dst_level];
+    }
+    if (!early_dst_level_info || !early_dst_level_info->data ||
+        dst_tex->metal_data_authoritative) {
+        return false; /* fall through to blit path */
+    }
+    int bpp_mismatch = 0;
+    size_t cpu_bpp = 0;
+    {
+        size_t early_pitch = early_dst_level_info->pitch;
+        if (early_pitch == 0) {
+            early_pitch = (size_t)early_dst_level_info->width * bpp;
+        }
+        cpu_bpp = (early_dst_level_info->width > 0)
+                      ? (early_pitch / early_dst_level_info->width)
+                      : 0;
+        if (cpu_bpp == 0) {
+            return false; /* fall through to blit path */
+        }
+        if (cpu_bpp != bpp) {
+            bpp_mismatch = 1;
+        }
+    }
+
+    size_t copy_width = mglBdMaxSize((size_t)width, 1u);
+    size_t copy_height = mglBdMaxSize((size_t)height, 1u);
+    size_t copy_depth = mglBdMaxSize((size_t)depth, 1u);
+    size_t row_bytes = copy_width * bpp;
+    size_t image_bytes = row_bytes * copy_height;
+    size_t total_bytes = image_bytes * copy_depth;
+
+    void *staging = malloc(total_bytes);
+    if (!staging) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return true;
+    }
+
+    /* Read from source into staging buffer.  Prefer CPU data when available
+     * (metal_data_authoritative == false) to avoid Metal getBytes/blit issues
+     * with certain texture types.  Fall back to Metal readback for Private
+     * textures or when Metal data is authoritative (e.g. renderbuffers). */
+    int src_read_from_cpu = 0;
+    if (!src_tex->metal_data_authoritative && src_tex->faces &&
+        src_tex->faces[0].levels && (size_t)src_level < src_tex->num_levels) {
+        TextureLevel *src_level_info = &src_tex->faces[0].levels[src_level];
+        if (src_level_info->data && src_level_info->width > 0 &&
+            src_level_info->height > 0 && src_level_info->pitch > 0) {
+            size_t src_bpp = src_level_info->pitch / src_level_info->width;
+            if (src_bpp == bpp) {
+                /* Read source pixels from CPU data */
+                size_t src_pitch = src_level_info->pitch;
+                size_t src_image_bytes = src_pitch * src_level_info->height;
+                if (src_type == MGLTextureType3D) {
+                    /* 3D source: srcZ is depth origin */
+                    for (size_t z = 0; z < copy_depth; z++) {
+                        for (size_t y = 0; y < copy_height; y++) {
+                            size_t src_off = ((size_t)src_z + z) * src_image_bytes +
+                                             ((size_t)src_y + y) * src_pitch +
+                                             (size_t)src_x * bpp;
+                            size_t dst_off = z * image_bytes + y * row_bytes;
+                            if (src_off + row_bytes <=
+                                    src_image_bytes * src_level_info->depth &&
+                                dst_off + row_bytes <= total_bytes) {
+                                memcpy((uint8_t *)staging + dst_off,
+                                       (const uint8_t *)src_level_info->data +
+                                           src_off,
+                                       row_bytes);
+                            }
+                        }
+                    }
+                } else {
+                    /* Non-3D source (2D array, cube, etc.): srcZ is slice */
+                    for (size_t z = 0; z < copy_depth; z++) {
+                        size_t face = 0;
+                        if (src_type == MGLTextureTypeCube ||
+                            src_type == MGLTextureTypeCubeArray) {
+                            face = (size_t)src_z + z;
+                        }
+                        TextureLevel *slice_level =
+                            (face < 6 && src_tex->faces[face].levels)
+                                ? &src_tex->faces[face].levels[src_level]
+                                : src_level_info;
+                        if (!slice_level || !slice_level->data) {
+                            src_read_from_cpu = 0;
+                            break;
+                        }
+                        size_t s_pitch = slice_level->pitch;
+                        size_t s_bpp = (slice_level->width > 0)
+                                           ? (s_pitch / slice_level->width)
+                                           : 0;
+                        if (s_bpp != bpp) {
+                            src_read_from_cpu = 0;
+                            break;
+                        }
+                        /* For 2D array, all slices are in one TextureLevel;
+                         * add slice offset. */
+                        size_t src_slice_off = 0;
+                        if (src_type == MGLTextureType2DArray) {
+                            src_slice_off =
+                                ((size_t)src_z + z) * s_pitch *
+                                mglBdMaxSize(slice_level->height, 1u);
+                        }
+                        for (size_t y = 0; y < copy_height; y++) {
+                            size_t src_off = src_slice_off +
+                                             ((size_t)src_y + y) * s_pitch +
+                                             (size_t)src_x * bpp;
+                            size_t dst_off = z * image_bytes + y * row_bytes;
+                            if (src_off + row_bytes <= slice_level->data_size &&
+                                dst_off + row_bytes <= total_bytes) {
+                                memcpy((uint8_t *)staging + dst_off,
+                                       (const uint8_t *)slice_level->data +
+                                           src_off,
+                                       row_bytes);
+                            }
+                        }
+                    }
+                }
+                src_read_from_cpu = 1;
+            }
+        }
+    }
+
+    if (!src_read_from_cpu) {
+        MglBd3DReadCtx read_ctx = {
+            .renderer = renderer,
+            .glm_ctx = glm_ctx,
+            .src_texture = src_texture,
+            .src_type = src_type,
+            .src_level = src_level,
+            .src_x = src_x,
+            .src_y = src_y,
+            .src_z = src_z,
+            .copy_width = copy_width,
+            .copy_height = copy_height,
+            .copy_depth = copy_depth,
+            .row_bytes = row_bytes,
+            .image_bytes = image_bytes,
+            .staging = staging,
+            .areas = areas,
+            .core = core,
+            .early_exit = 0,
+        };
+        if (!mglPlatformShellGuardedCallCtx(renderer,
+                                            "copyImageSubData 3D read",
+                                            mglBd3DReadGuarded, &read_ctx,
+                                            NULL)) {
+            free(staging);
+            fprintf(stderr,
+                    "MGL ERROR: mtlCopyImageSubData 3D fallback read failed: "
+                    "caught exception\n");
+            mglDispatchError(glm_ctx, __FUNCTION__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return true;
+        }
+        if (read_ctx.early_exit) {
+            free(staging);
+            mglDispatchError(glm_ctx, __FUNCTION__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return true;
+        }
+    }
+
+    /* For bpp mismatch formats, convert staging from Metal format to CPU
+     * storage format so the RMW merge uses matching pixel sizes. */
+    if (bpp_mismatch) {
+        GLenum cpu_format = 0;
+        GLenum cpu_type = 0;
+        if (mglGetCPUFormatTypeForInternalFormat(dst_tex->internalformat,
+                                                 &cpu_format, &cpu_type)) {
+            size_t cpu_row_bytes = copy_width * cpu_bpp;
+            size_t cpu_image_bytes = cpu_row_bytes * copy_height;
+            size_t cpu_total_bytes = cpu_image_bytes * copy_depth;
+            void *cpu_staging = malloc(cpu_total_bytes);
+            if (cpu_staging) {
+                int conv_ok = 1;
+                for (size_t z = 0; z < copy_depth && conv_ok; z++) {
+                    const uint8_t *metal_src =
+                        (const uint8_t *)staging + z * image_bytes;
+                    uint8_t *cpu_dst = (uint8_t *)cpu_staging + z * cpu_image_bytes;
+                    if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL(
+                            metal_src, row_bytes, cpu_dst, cpu_row_bytes,
+                            copy_width, copy_height,
+                            mglBdTextureInfo(src_texture).pixel_format,
+                            cpu_format, cpu_type, 0)) {
+                        conv_ok = 0;
+                    }
+                }
+                if (conv_ok) {
+                    free(staging);
+                    staging = cpu_staging;
+                    row_bytes = cpu_row_bytes;
+                    image_bytes = cpu_image_bytes;
+                    total_bytes = cpu_total_bytes;
+                    bpp = cpu_bpp;
+                } else {
+                    free(cpu_staging);
+                    free(staging);
+                    mglDispatchError(glm_ctx, __FUNCTION__,
+                                     (GLenum)mglRenderErrorInvalidOperation());
+                    return true;
+                }
+            }
+        }
+    }
+
+    /* Write to 3D destination via CPU-data read-modify-write.  AGX drivers have
+     * bugs where replaceRegion with non-zero origin, getBytes,
+     * copyFromTexture:toTexture:, and copyFromBuffer:toTexture: all trigger
+     * "slice OOB" assertions on 3D textures.  The only safe Metal write path
+     * for 3D textures is replaceRegion with origin (0,0,0).  So we use the
+     * CPU-side level data as the base, merge the source pixels into it, and
+     * write the entire level back. */
+    {
+        /* Early checks already verified: dstLevelInfo exists, has data,
+         * metal_data_authoritative == false, and cpuBpp == bpp. */
+        TextureLevel *dst_level_info = &dst_tex->faces[0].levels[dst_level];
+        GLuint level_width = dst_level_info->width;
+        GLuint level_height = dst_level_info->height;
+        GLuint level_depth = dst_level_info->depth;
+        size_t level_pitch = dst_level_info->pitch;
+        if (level_pitch == 0) {
+            level_pitch = (size_t)level_width * bpp;
+        }
+        size_t level_image_bytes = level_pitch * level_height;
+        size_t full_total_bytes = level_image_bytes * level_depth;
+
+        void *full_level_bytes = malloc(full_total_bytes);
+        if (!full_level_bytes) {
+            free(staging);
+            mglDispatchError(glm_ctx, __FUNCTION__,
+                             (GLenum)mglRenderErrorOutOfMemory());
+            return true;
+        }
+
+        /* Copy CPU data as the base */
+        memcpy(full_level_bytes, (const void *)(uintptr_t)dst_level_info->data,
+               full_total_bytes);
+
+        /* Merge source pixels into the full level buffer */
+        for (size_t z = 0; z < copy_depth; z++) {
+            for (size_t y = 0; y < copy_height; y++) {
+                size_t src_off = z * image_bytes + y * row_bytes;
+                size_t dst_off = ((size_t)dst_z + z) * level_image_bytes +
+                                 ((size_t)dst_y + y) * level_pitch +
+                                 (size_t)dst_x * bpp;
+                if (dst_off + row_bytes <= full_total_bytes &&
+                    src_off + row_bytes <= total_bytes) {
+                    memcpy((uint8_t *)full_level_bytes + dst_off,
+                           (uint8_t *)staging + src_off, row_bytes);
+                }
+            }
+        }
+
+        MglBd3DWriteCtx write_ctx = {
+            .dst_texture = dst_texture,
+            .dst_tex = dst_tex,
+            .dst_level = dst_level,
+            .bpp_mismatch = bpp_mismatch,
+            .level_width = level_width,
+            .level_height = level_height,
+            .level_depth = level_depth,
+            .level_pitch = level_pitch,
+            .level_image_bytes = level_image_bytes,
+            .full_level_bytes = full_level_bytes,
+        };
+        if (!mglPlatformShellGuardedCallCtx(renderer,
+                                            "copyImageSubData 3D replaceRegion",
+                                            mglBd3DWriteGuarded, &write_ctx,
+                                            NULL)) {
+            free(staging);
+            free(full_level_bytes);
+            fprintf(stderr,
+                    "MGL ERROR: mtlCopyImageSubData 3D replaceRegion failed: "
+                    "caught exception\n");
+            mglDispatchError(glm_ctx, __FUNCTION__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return true;
+        }
+
+        /* Update CPU data to reflect the merged result */
+        memcpy((void *)(uintptr_t)dst_level_info->data, full_level_bytes,
+               full_total_bytes);
+
+        free(full_level_bytes);
+        free(staging);
+        /* Do NOT set metal_data_authoritative = GL_TRUE here.  The AGX driver
+         * corrupts 3D texture readback (getBytes triggers "slice OOB"), so
+         * subsequent glGetTexImage calls must read from CPU data instead.  The
+         * Metal texture was updated via replaceRegion for sampling, but CPU
+         * data remains the authoritative source. */
+        return true;
+    }
 }

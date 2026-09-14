@@ -69,6 +69,29 @@ bool mglBlitCopyImageSubDataCpuToCpu(
     GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
     GLsizei depth);
 
+/* Metal-to-Metal format-conversion copy for copyImageSubData (source and
+ * destination have different Metal pixel formats: read the source through
+ * getBytes, write the destination through replaceRegion).  Was
+ * -copyImageSubDataFormatConversion:….  Returns true when the path was taken
+ * (the caller then returns) — the method's YES/NO. */
+bool mglBlitCopyImageSubDataFormatConversion(
+    void *renderer, GLMContext glm_ctx, Texture *src_tex, void *src_texture,
+    uint32_t src_type, GLint src_level, GLint src_x, GLint src_y, GLint src_z,
+    Texture *dst_tex, void *dst_texture, uint32_t dst_type, GLint dst_level,
+    GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
+    GLsizei depth);
+
+/* Buffer-mediated 3D-destination fallback for copyImageSubData (works around
+ * the AGX "slice OOB" assertions).  Was -copyImageSubData3DFallback:….
+ * Returns true when the fallback handled the copy, false to fall through to
+ * the blit path — the method's YES/NO. */
+bool mglBlitCopyImageSubData3DFallback(
+    void *renderer, GLMContext glm_ctx, Texture *src_tex, void *src_texture,
+    uint32_t src_type, GLint src_level, GLint src_x, GLint src_y, GLint src_z,
+    Texture *dst_tex, void *dst_texture, uint32_t dst_type, GLint dst_level,
+    GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
+    GLsizei depth);
+
 #ifdef __cplusplus
 }
 #endif

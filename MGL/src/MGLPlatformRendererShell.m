@@ -307,6 +307,17 @@ void mglRendererFlushCommandBufferPort(void *renderer, int finish)
     }
 }
 
+int mglRendererSynchronizeRenderPassForTextureReadbackPort(void *renderer,
+                                                           void *texture,
+                                                           const char *reason)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r synchronizeRenderPassForTextureReadback:(__bridge id)texture
+                                                     reason:reason])
+               ? 1
+               : 0;
+}
+
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

@@ -274,6 +274,12 @@ void *mglRendererMaterializeSampledSamplerPort(
  * that file can finish converting.  Thin forwards; retirement follows their
  * targets in MGLRenderer+RenderPass.m / +Tessellation.m / +BindingState.m. */
 void mglRendererFlushCommandBufferPort(void *renderer, int finish);
+/* Flush any render pass that is currently sampling/drawing into `texture`
+ * before it is read back (the method's YES when there was nothing to do).
+ * Added for the copyImageSubData leaves (P0-1, log 144). */
+int mglRendererSynchronizeRenderPassForTextureReadbackPort(void *renderer,
+                                                           void *texture,
+                                                           const char *reason);
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer);
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,
