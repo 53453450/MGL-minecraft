@@ -6496,5 +6496,9 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
     换完后用 `grep -c` 对**每个** `_ivar` / `areas.` 前缀再扫一遍，比等编译器报错快。
     配套：新宿主的 include 要**逐符号查头**（`mglMetalDrawBuffer*` 在 `mgl_draw_buffer.h`、`MGLMetalAttachmentSubresource`
     在 `mgl_sync.h`），不要因为"上次在 `mgl_render.h`"就照抄。
+40. **A/B 目录必须放齐三个 dylib**（`libmgl.dylib` + `libglfw.dylib` + `libmgl_es.dylib`）：
+    只复制 `libmgl.dylib` 会让**两臂**都在 `dyld: Library not loaded: @rpath/libglfw.dylib` 处 abort（exit 134），
+    看上去像"改动把测试跑崩了"。**两臂同时崩＝环境问题**：先读 `$D/<side>_default.txt` 的 `dyld` 报错，再怀疑代码
+    （第 170 条 ⑦ 的实测记录）。
 
 **下一步**：按上面 1 做 `newCommandBufferLocked`（先查它的 self 选择器 C 入口与那段 `@try` 的形状）。
