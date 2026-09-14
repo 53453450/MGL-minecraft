@@ -267,6 +267,15 @@ static void mglBcEncodeDrawPrimitives(void *encoder, uint32_t primitive_type,
                               NULL, 0);
 }
 
+static void *mglBcCreateTexture(const MGLRenderTextureDescriptorState *desc)
+{
+    void *texture = NULL;
+    if (mglRenderCreateTextureFromState(desc, NULL, &texture) == 0 && texture) {
+        return texture;
+    }
+    return NULL;
+}
+
 /* --- -resolveIntegerMultisampleTexture:… --------------------------------- */
 
 bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_texture,
@@ -978,4 +987,215 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
         }
     }
     return mask;
+}
+
+/* --- readPixels helper leaves -------------------------------------------- */
+
+/* OWNERSHIP (log 140 rule 13): both entries return a uniform +1 handle — a
+ * newly created texture owns one, and the borrowed passthrough gets a retain —
+ * so the Objective-C callers adopt the result with __bridge_transfer. */
+
+void *mglBlitResolvedReadbackTexture(void *renderer, void *source_texture,
+                                     size_t source_level, size_t source_slice,
+                                     size_t source_depth_plane,
+                                     const char *reason)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    if (!source_texture || mglBcTextureInfo(source_texture).sample_count <= 1u) {
+        if (source_texture) {
+            CFRetain((CFTypeRef)source_texture);
+        }
+        return source_texture;
+    }
+
+    if (source_level != 0u || source_depth_plane != 0u ||
+        (mglBcTextureInfo(source_texture).texture_type !=
+             MGLTextureType2DMultisample &&
+         mglBcTextureInfo(source_texture).texture_type !=
+             MGLTextureType2DMultisampleArray)) {
+        fprintf(stderr,
+                "MGL WARNING: readPixels cannot resolve MSAA texture for %s "
+                "level=%lu slice=%lu depth=%lu type=%lu\n",
+                reason ? reason : "unknown", (unsigned long)source_level,
+                (unsigned long)source_slice, (unsigned long)source_depth_plane,
+                (unsigned long)mglBcTextureInfo(source_texture).texture_type);
+        mglDispatchError(
+            areas.ctx,
+            "-[MGLRenderer(Blit) resolvedReadbackTextureForMultisampleTexture:"
+            "sourceLevel:sourceSlice:sourceDepthPlane:reason:]",
+            (GLenum)mglRenderErrorInvalidOperation());
+        return NULL;
+    }
+
+    MGLRenderTextureDescriptorState desc = {0};
+    desc.texture_type = MGLTextureType2D;
+    desc.pixel_format = mglBcTextureInfo(source_texture).pixel_format;
+    desc.width = mglBcTextureInfo(source_texture).width;
+    desc.height = mglBcTextureInfo(source_texture).height;
+    desc.depth = 1;
+    desc.mipmap_level_count = 1;
+    desc.sample_count = 1;
+    desc.array_length = 1;
+    desc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
+    desc.storage_mode = MGLStorageModePrivate;
+
+    void *resolved_texture = mglBcCreateTexture(&desc);
+    if (!resolved_texture) {
+        fprintf(stderr,
+                "MGL WARNING: readPixels failed to allocate MSAA resolve texture "
+                "for %s fmt=%lu size=%lux%lu samples=%lu\n",
+                reason ? reason : "unknown",
+                (unsigned long)mglBcTextureInfo(source_texture).pixel_format,
+                (unsigned long)mglBcTextureInfo(source_texture).width,
+                (unsigned long)mglBcTextureInfo(source_texture).height,
+                (unsigned long)mglBcTextureInfo(source_texture).sample_count);
+        mglDispatchError(
+            areas.ctx,
+            "-[MGLRenderer(Blit) resolvedReadbackTextureForMultisampleTexture:"
+            "sourceLevel:sourceSlice:sourceDepthPlane:reason:]",
+            (GLenum)mglRenderErrorOutOfMemory());
+        return NULL;
+    }
+
+    if (!mglRendererEnsureWritableCommandBufferPort(renderer,
+                                                    "readPixels.msaaResolve")) {
+        mglDispatchError(
+            areas.ctx,
+            "-[MGLRenderer(Blit) resolvedReadbackTextureForMultisampleTexture:"
+            "sourceLevel:sourceSlice:sourceDepthPlane:reason:]",
+            (GLenum)mglRenderErrorInvalidOperation());
+        mglSafeReleaseMetalObj(&resolved_texture);
+        return NULL;
+    }
+
+    int resolves_depth = mglMetalPixelFormatIsDepthOrStencil(
+        mglBcTextureInfo(source_texture).pixel_format);
+    if (mglRenderEncodeMultisampleResolveForCommandBufferOwner(
+            mglBcCommandBufferOwner(&areas),
+            resolves_depth ? MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH
+                           : MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+            source_texture, source_level, source_slice, source_depth_plane,
+            resolved_texture, 0, 0, 0,
+            resolves_depth
+                ? (uint32_t)MGLMultisampleDepthResolveFilterSample0
+                : 0u) == 0) {
+        return resolved_texture;
+    }
+    fprintf(stderr,
+            "MGL WARNING: readPixels failed to encode MSAA resolve for %s\n",
+            reason ? reason : "unknown");
+    mglDispatchError(
+        areas.ctx,
+        "-[MGLRenderer(Blit) resolvedReadbackTextureForMultisampleTexture:"
+        "sourceLevel:sourceSlice:sourceDepthPlane:reason:]",
+        (GLenum)mglRenderErrorInvalidOperation());
+    mglSafeReleaseMetalObj(&resolved_texture);
+    return NULL;
+}
+
+void *mglBlitDepthFloatTextureForReadback(void *renderer, void *source_texture,
+                                          const char *reason)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    if (!source_texture || mglBcTextureInfo(source_texture).sample_count > 1u ||
+        !mglRenderPixelFormatIsPackedDepthStencil(
+            (uint32_t)mglBcTextureInfo(source_texture).pixel_format)) {
+        if (source_texture) {
+            CFRetain((CFTypeRef)source_texture);
+        }
+        return source_texture;
+    }
+
+    MGLRenderTextureDescriptorState desc = {0};
+    desc.texture_type = MGLTextureType2D;
+    desc.pixel_format = mglRenderDefaultDepthPixelFormat();
+    desc.width = mglBcTextureInfo(source_texture).width;
+    desc.height = mglBcTextureInfo(source_texture).height;
+    desc.depth = 1;
+    desc.mipmap_level_count = 1;
+    desc.sample_count = 1;
+    desc.array_length = 1;
+    desc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
+    desc.storage_mode = MGLStorageModePrivate;
+    void *depth_texture = mglBcCreateTexture(&desc);
+    if (!depth_texture) {
+        mglDispatchError(areas.ctx,
+                         "-[MGLRenderer(Blit) depthFloatTextureForDepthStencil"
+                         "Readback:reason:]",
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return NULL;
+    }
+
+    void *pipeline = mglBlitScaledDepthPipelineForPixelFormat(
+        renderer, mglRenderDefaultDepthPixelFormat());
+    void *sampler = mglBlitScaledSamplerForFilter(
+        renderer, (GLuint)mglRenderNearestFilter());
+    if (!pipeline || !sampler) {
+        fprintf(stderr,
+                "MGL WARNING: readPixels DS depth extract unavailable for %s "
+                "pipeline=%p sampler=%p\n",
+                reason ? reason : "unknown", pipeline, sampler);
+        mglDispatchError(areas.ctx,
+                         "-[MGLRenderer(Blit) depthFloatTextureForDepthStencil"
+                         "Readback:reason:]",
+                         (GLenum)mglRenderErrorInvalidOperation());
+        mglSafeReleaseMetalObj(&depth_texture);
+        return NULL;
+    }
+
+    if (!mglRendererEnsureWritableCommandBufferPort(
+            renderer, "readPixels.depthStencilExtract")) {
+        mglDispatchError(areas.ctx,
+                         "-[MGLRenderer(Blit) depthFloatTextureForDepthStencil"
+                         "Readback:reason:]",
+                         (GLenum)mglRenderErrorInvalidOperation());
+        mglSafeReleaseMetalObj(&depth_texture);
+        return NULL;
+    }
+
+    MGLScaledBlitParams params;
+    params.uvRect = (vector_float4){0.0f, 0.0f, 1.0f, 1.0f};
+    params.forceOpaqueAlpha = 0.0f;
+    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
+
+    MGLRenderPassState pass_state = mglBcDefaultRenderPassState();
+    pass_state.depth.attachment = mglBcRenderPassAttachment(
+        depth_texture, 0u, 0u, 0u, MGLLoadActionDontCare, MGLStoreActionStore);
+
+    void *encoder = mglBcCreateRenderEncoder(&areas, &pass_state);
+    if (!encoder) {
+        mglDispatchError(areas.ctx,
+                         "-[MGLRenderer(Blit) depthFloatTextureForDepthStencil"
+                         "Readback:reason:]",
+                         (GLenum)mglRenderErrorInvalidOperation());
+        mglSafeReleaseMetalObj(&depth_texture);
+        return NULL;
+    }
+
+    mglBcSetRenderPipeline(encoder, pipeline);
+    mglBcSetRenderDepthStencilState(encoder,
+                                    mglBlitClearRectDepthState(renderer));
+    mglBcSetRenderBytes(encoder, &params, sizeof(params),
+                        MGL_RENDER_BINDING_STAGE_VERTEX, 0);
+    mglBcSetRenderBytes(encoder, &params, sizeof(params),
+                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+    mglBcSetRenderTexture(encoder, source_texture,
+                          MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+    mglBcSetRenderSampler(encoder, sampler, MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                          0);
+    mglBcSetRenderViewport(encoder, (MGLViewportValue){
+                                        .origin_x = 0.0,
+                                        .origin_y = 0.0,
+                                        .width = (double)mglBcTextureInfo(source_texture).width,
+                                        .height = (double)mglBcTextureInfo(source_texture).height,
+                                        .znear = 0.0,
+                                        .zfar = 1.0});
+    mglBcEncodeDrawPrimitives(encoder, MGLPrimitiveTypeTriangleStrip, 0, 4);
+    mglBcEndRenderEncoder(encoder);
+
+    return depth_texture;
 }

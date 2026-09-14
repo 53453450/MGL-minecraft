@@ -4640,3 +4640,50 @@ A/B 两臂逐行一致（见第 135 条）。
    探针 8 次 + 七簇通过后再按 compat → sampler（退役端口 28 → 27）→ separate samplers 转换，
    最后该文件整文件消失（**6 → 5**）。
 3. `+Texture.m`（271 语法 / 1,052 词汇）与 `MGLRenderer.m`（168 语法）；壳的 `MGLPipelineCache` 归档路径。
+
+141. **P0-1 第八十二刀：readPixels 的两个"创建并返回纹理"叶子转 C（按规矩 13 做成统一 +1 契约）**：
+     ① `-resolvedReadbackTextureForMultisampleTexture:sourceLevel:sourceSlice:sourceDepthPlane:reason:`
+     （74 行 / 3 语法）→ **`mglBlitResolvedReadbackTexture`**；
+     `-depthFloatTextureForDepthStencilReadback:reason:`（86 行 / 7 语法）→ **`mglBlitDepthFloatTextureForReadback`**。
+     两者都落在 `mgl_blit_color_paths.c`（渲染pass/编码器 twin 已在该 TU）。
+     ② **本刀是规矩 13 的第一次实战**：两个方法都会**创建并返回**一张纹理（MSAA 解析纹理 / 深度浮点提取纹理），
+     也可能**原样返回借用**的输入纹理。C 入口统一为 **+1 契约**：新建的本来就 +1；借用路径返回前
+     `CFRetain`；错误路径 `mglSafeReleaseMetalObj` 后返回 NULL。调用点（`+Texture.m` 的 4 处，全部是
+     `sourceTexture = …` 强局部赋值）改用 **`(__bridge_transfer id)`** 接管，ARC 同时释放旧值——与原 ARC 语义一致且无泄漏。
+     ③ **oracle**：旧库 = 提交 `55dfd97` 的独立 worktree 构建（两库不同；先清 `.o/.d`）；
+     `ab_full.py`：**default 4,981/4,981、flushy 5,514/5,514 逐行一致**（未过滤 5,386/5,360 与 6,164/6,163 →
+     `slow` 405/379、650/649）、**stderr MGL 307/307 多重集一致**、两臂 **92/0/2、91/1/2**。
+     ④ **CTS 七簇**：非通过集合 **diff 全空**（58 / 1 / 0 / 59 / 13 / 39 / 4）；`make test-all` **0**（92/0/2/94）。
+     ⑤ **度量（语法净 −2，如实拆账）**：`+Blit.m` **2,993 → 2,836 行**、语法 **184 → 174（−10）**、词汇 **546 → 530**；
+     `+Texture.m` 6,256 → 6,248 行、语法 **271 → 279（+8，4 处调用点的 `__bridge_transfer`/`__bridge void *` 桥接）**、
+     词汇持平；全库行数 **24,375 → 24,209（−166）**、ObjC 语法 **1,378 → 1,376（−2）**、词汇 **2,798 → 2,782（−16）**；
+     文件数 6、端口 **28（0 退役 0 新增，T4 中性）**；新 TU 无告警。
+     ⑥ **下一刀**：`+Blit.m` 剩 **174 语法**——`copyImageSubData3DFallback:`（14 语法 / 410 行，**零新增端口**，
+     其依赖 `readTextureRegionViaBlit` 已 C 化）、`copyImageSubDataFormatConversion:`（14）、
+     `copyImageSubDataPostBlitReadback:`（22，后两者需 `synchronizeRenderPassForTextureReadback` 的 C 入口）、
+     `blitFramebufferScaledColorWithState:`（9，需 `-mglDrawableTexture` 的 C 入口）；
+     两个调度器（`-mtlBlitFramebuffer:` 12、`-mtlCopyImageSubData:` 24）留到最后。
+
+### 0.68 第 111 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.67**）
+
+**当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 24,209 行 / 1,376 语法 / 2,782 词汇**；
+壳 TU **1,988 行 / 279 语法**（上限 2,400）；端口面 **28 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂逐行一致（第 141 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,843 · `+Texture.m` **279/1,052/6,248** · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` **174/530/2,836** · 壳 `MGLPlatformRendererShell.m` 279/287/1,988 · `+BindingState.m` **91/85/1,678**。
+
+**规矩表（§0.62/§0.65/§0.66/§0.67 十三条仍然有效）＋ 本轮观察第十四条**：
+14. **搬"创建并返回对象"的方法时，调用点一侧的语法会小幅上升**（`__bridge_transfer` + `__bridge void *` 桥接）。
+    第 141 刀就是 `+Blit.m` −10、`+Texture.m` +8；**要按两文件合算**，别只看被搬文件（同 §0.64 规矩 9 的账法）。
+
+**下一步（按收益排序）**：
+1. **`+BindingState.m` 采样簇（本周期最大的一次文件数下降）**：先做**纯修复刀**（回退调用后重新取 `ptr`
+   或整段改用调用前字段快照），探针 8 次 + 七簇通过后，再按 compat → sampler（退役端口 28 → 27）→
+   separate samplers 转换，最后该文件整文件消失（**6 → 5**）。
+2. **`+Blit.m` 续刀**：`copyImageSubData3DFallback:`（14 语法 / 410 行，零新增端口）；
+   `copyImageSubDataFormatConversion:`（14）与 `copyImageSubDataPostBlitReadback:`（22）需
+   `synchronizeRenderPassForTextureReadback` 的 C 入口（补端口记 T4 −1）；
+   `blitFramebufferScaledColorWithState:`（9）需 `-mglDrawableTexture` 的 C 入口。
+3. `+Texture.m`（279 语法 / 1,052 词汇，词汇最多）与 `MGLRenderer.m`（168 语法）；
+   壳的 `MGLPipelineCache` 归档路径（Foundation→POSIX + 专属 oracle）。

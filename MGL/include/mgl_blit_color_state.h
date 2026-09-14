@@ -71,6 +71,15 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
                                              MGLSizeValue size,
                                              const char *reason);
 
+/* Readback helpers: both return a uniform +1 handle (created or retained), so
+ * the Objective-C callers adopt the result with __bridge_transfer. */
+void *mglBlitResolvedReadbackTexture(void *renderer, void *source_texture,
+                                     size_t source_level, size_t source_slice,
+                                     size_t source_depth_plane,
+                                     const char *reason);
+void *mglBlitDepthFloatTextureForReadback(void *renderer, void *source_texture,
+                                          const char *reason);
+
 /* -blitFramebufferDepthStencil:srcX0:… (returns the remaining clear mask). */
 GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                GLint src_y0, GLint src_x1, GLint src_y1,

@@ -12,6 +12,7 @@
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_blit_color_state.h" /* readback helper entries (log 141) */
 #include "mgl_texture_readback_clear.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_pixel_format.h"
@@ -1268,11 +1269,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (mglTextureInfo(sourceTexture).sample_count > 1u) {
-        sourceTexture = [self resolvedReadbackTextureForMultisampleTexture:sourceTexture
-                                                               sourceLevel:sourceLevel
-                                                               sourceSlice:sourceSlice
-                                                           sourceDepthPlane:sourceDepthPlane
-                                                                    reason:reason];
+        sourceTexture = (__bridge_transfer id)mglBlitResolvedReadbackTexture(
+            (__bridge void *)self, (__bridge void *)sourceTexture, sourceLevel, sourceSlice, sourceDepthPlane, reason);
         if (!sourceTexture) {
             return NO;
         }
@@ -1422,11 +1420,8 @@ static void mglTextureCopyTextureToBuffer(
     BOOL sourceIsDepth16 = isDepth16 != 0;
 
     if (mglTextureInfo(sourceTexture).sample_count > 1u) {
-        sourceTexture = [self resolvedReadbackTextureForMultisampleTexture:sourceTexture
-                                                               sourceLevel:sourceLevel
-                                                               sourceSlice:sourceSlice
-                                                           sourceDepthPlane:sourceDepthPlane
-                                                                    reason:reason];
+        sourceTexture = (__bridge_transfer id)mglBlitResolvedReadbackTexture(
+            (__bridge void *)self, (__bridge void *)sourceTexture, sourceLevel, sourceSlice, sourceDepthPlane, reason);
         if (!sourceTexture) {
             return NO;
         }
@@ -1436,8 +1431,8 @@ static void mglTextureCopyTextureToBuffer(
     }
 
     if (sourceIsDepthStencil) {
-        sourceTexture = [self depthFloatTextureForDepthStencilReadback:sourceTexture
-                                                                reason:reason];
+        sourceTexture = (__bridge_transfer id)mglBlitDepthFloatTextureForReadback(
+            (__bridge void *)self, (__bridge void *)sourceTexture, reason);
         if (!sourceTexture) {
             return NO;
         }
@@ -1587,11 +1582,8 @@ static void mglTextureCopyTextureToBuffer(
     BOOL sourceRGB10A2Uint = src.source_rgb10a2_uint != 0;
 
     if (mglTextureInfo(sourceTexture).sample_count > 1u) {
-        sourceTexture = [self resolvedReadbackTextureForMultisampleTexture:sourceTexture
-                                                               sourceLevel:mipmapLevel
-                                                               sourceSlice:mtlSlice
-                                                           sourceDepthPlane:0u
-                                                                    reason:"integer FBO readback"];
+        sourceTexture = (__bridge_transfer id)mglBlitResolvedReadbackTexture(
+            (__bridge void *)self, (__bridge void *)sourceTexture, mipmapLevel, mtlSlice, 0u, "integer FBO readback");
         if (!sourceTexture) {
             return NO;
         }
