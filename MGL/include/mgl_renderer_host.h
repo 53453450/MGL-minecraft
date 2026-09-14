@@ -27,17 +27,11 @@
 extern "C" {
 #endif
 
-/* BOOL returns are signed char on macOS (rule 26). */
-signed char mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
-                                                       Texture *tex,
-                                                       uint32_t expected_type,
-                                                       uint32_t expected_kind);
-signed char mglRendererGLSampledCopyLooksUsable(Texture *tex,
-                                                uint32_t expected_type,
-                                                uint32_t expected_kind,
-                                                int allow_previous_write_version,
-                                                void **copy_out,
-                                                signed char *used_previous_out);
+/* The three BOOL-returning symbols (mglRendererTextureLooksRecoverableSampled2D,
+ * mglRendererGLSampledCopyLooksUsable, mglRendererTextureLooksLikeSampledColor2D)
+ * keep their ObjC-header declarations; the C TUs that need them restate them
+ * locally as `signed char` (rule 26), so they are not declared here to avoid
+ * clashing with MGLRenderer+Draw_Private.h when the .m includes this header. */
 void mglLogDrawWithoutSwapWatchdog(const char *kind, uint64_t draw_call,
                                    GLMContext ctx, void *command_buffer_owner,
                                    void *render_encoder_owner,
@@ -45,6 +39,12 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind, uint64_t draw_call,
 Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
                                                        Texture *depth_texture,
                                                        GLuint *fbo_name_out);
+
+void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
+                                                const char *caller, int line);
+/* mglTraceReplayCommandVertexAttribSamples keeps its mgl_trace_strategy.h
+ * declaration; mglFindFramebufferColorTexturePairedWithDepth keeps its
+ * MGLRenderer+Draw_Private.h one. */
 
 #ifdef __cplusplus
 }

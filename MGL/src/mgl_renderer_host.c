@@ -27,6 +27,11 @@
 #include "mgl_safety.h"       /* mglPointerRangeIsReadable */
 #include "pixel_utils.h"     /* mtlFormatForGLInternalFormat */
 #include "mgl_frame_activity.h" /* MGL_FRAME_LOAD / draw-since-swap */
+#include "mgl_index_buffer.h"    /* mglGLIndexElementSize */
+
+/* Restated from the ObjC private headers (rules 7 / 26). */
+extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
+extern signed char mglEnvFlagEnabled(const char *name);
 
 /* The .m's file-local constants this TU needs (values copied verbatim). */
 enum {
@@ -176,3 +181,202 @@ signed char mglRendererGLSampledCopyLooksUsable(Texture *tex,
 }
 
 
+
+
+
+
+void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
+                                                 GLuint level,
+                                                 const char *caller,
+                                                 int line)
+{
+    TextureLevel *texLevel = mglTextureAttachmentLevel(tex, level);
+    if (!texLevel) {
+        return;
+    }
+
+    GLuint oldRenderTargetWriteVersion = tex->mtl_render_target_write_version;
+
+    mglRenderMarkTextureLevelWritten(&texLevel->ever_written,
+                                     &texLevel->has_initialized_data,
+                                     &texLevel->suspicious_zero_upload);
+    texLevel->last_init_source = kTexRenderTargetWrite;
+    texLevel->last_upload_size = 0u;
+    texLevel->last_src_ptr = NULL;
+    texLevel->last_src_hash = 0ull;
+
+    tex->mtl_render_target_write_version++;
+    mglMarkGLSampledCopyLevelDirty(tex, level);
+
+
+    tex->mtl_render_yflip_authority = (tex->mtl_render_target_write_version << 1);
+
+    if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
+        void *mtlTexture = tex->mtl_data ? (tex->mtl_data) : NULL;
+        mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x sampledVer=%u copy=%p",
+                    (unsigned)tex->name,
+                    (unsigned)level,
+                    (unsigned)oldRenderTargetWriteVersion,
+                    (unsigned)tex->mtl_render_target_write_version,
+                    caller ? caller : "(unknown)",
+                    line,
+                    mtlTexture,
+                    (unsigned long)(mtlTexture ? mglRendererTextureFieldFormat(mtlTexture) : MGL_RENDERER_PIXEL_FORMAT_INVALID),
+                    (unsigned long)(mtlTexture ? mglRendererTextureFieldWidth(mtlTexture) : 0),
+                    (unsigned long)(mtlTexture ? mglRendererTextureFieldHeight(mtlTexture) : 0),
+                    (unsigned)tex->dirty_bits,
+                    (unsigned)tex->mtl_gl_sampled_write_version,
+                    tex->mtl_gl_sampled_data);
+    }
+
+    /*
+     * Once Metal has rendered into a texture, the CPU-side backing copy is stale.
+     * Keeping DIRTY_TEXTURE_DATA set lets a later sampler bind recreate the Metal
+     * texture and upload old all-zero or placeholder bytes over the rendered
+     * contents. Minecraft 1.21.8's item atlas and post-chain render targets hit
+     * this path frequently.
+     */
+    tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+}
+
+signed char mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx,
+                                                      Texture *tex)
+{
+    if (!glctx || !tex) {
+        return 0;
+    }
+    if (!mglRendererObjectPointerLikelyValid(tex) ||
+        !mglRendererPointerInHashTable(&glctx->active_state->texture_table, tex) ||
+        !mglPointerRangeIsReadable(tex, sizeof(*tex))) {
+        return 0;
+    }
+    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
+        tex->index != _TEXTURE_2D ||
+        mglRendererGLInternalFormatLooksDepthOrStencil(tex->internalformat)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
+                                                              Texture *depthTexture,
+                                                              GLuint *fboNameOut)
+{
+    if (fboNameOut) {
+        *fboNameOut = 0u;
+    }
+    if (!glctx || !depthTexture) {
+        return NULL;
+    }
+
+    Framebuffer *currentFbo = glctx->active_state->framebuffer;
+    if (currentFbo &&
+        mglRendererObjectPointerLikelyValid(currentFbo) &&
+        mglPointerRangeIsReadable(currentFbo, sizeof(*currentFbo))) {
+        int depthMatches =
+            currentFbo->depth.buf.tex == depthTexture ||
+            currentFbo->stencil.buf.tex == depthTexture ||
+            currentFbo->depth.texture == depthTexture->name ||
+            currentFbo->stencil.texture == depthTexture->name;
+        if (depthMatches && (currentFbo->color_attachment_bitfield & 1u) != 0u) {
+            FBOAttachment *colorAttachment = &currentFbo->color_attachments[0];
+            Texture *colorTexture = colorAttachment->buf.tex;
+            if (!colorTexture && colorAttachment->texture != 0u) {
+                colorTexture = (Texture *)searchHashTable(&glctx->active_state->texture_table,
+                                                          colorAttachment->texture);
+            }
+            /* Validate raw pointer is still registered (see table-scan path). */
+            if (colorTexture) {
+                Texture *verified = (Texture *)searchHashTable(&glctx->active_state->texture_table,
+                                                                colorTexture->name);
+                if (verified != colorTexture) {
+                    colorAttachment->buf.tex = NULL;
+                    colorAttachment->texture = 0u;
+                    colorTexture = NULL;
+                }
+            }
+            if (colorTexture &&
+                colorTexture != depthTexture &&
+                mglRendererObjectPointerLikelyValid(colorTexture) &&
+                mglPointerRangeIsReadable(colorTexture, sizeof(*colorTexture)) &&
+                (!colorTexture->mtl_data ||
+                 !mglMetalPixelFormatIsDepthOrStencil(
+                     mglRendererTextureFieldFormat(colorTexture->mtl_data)))) {
+                if (fboNameOut) {
+                    *fboNameOut = currentFbo->name;
+                }
+                return colorTexture;
+            }
+        }
+    }
+
+    HashTable *table = &glctx->active_state->framebuffer_table;
+    if (!mglHashTableValidateStorage(table, "findPairedFramebufferColor") ||
+        !table->keys || !table->states || table->size == 0u) {
+        return NULL;
+    }
+
+    for (size_t slot = 0; slot < table->size; slot++) {
+        if (table->states[slot] != 1u || !table->keys[slot].data) {
+            continue;
+        }
+
+        Framebuffer *fbo = (Framebuffer *)table->keys[slot].data;
+        if (!mglRendererObjectPointerLikelyValid(fbo) ||
+            !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
+            continue;
+        }
+
+        int depthMatches =
+            fbo->depth.buf.tex == depthTexture ||
+            fbo->stencil.buf.tex == depthTexture ||
+            fbo->depth.texture == depthTexture->name ||
+            fbo->stencil.texture == depthTexture->name;
+        if (!depthMatches) {
+            continue;
+        }
+
+        FBOAttachment *colorAttachment = &fbo->color_attachments[0];
+        Texture *colorTexture = colorAttachment->buf.tex;
+        if (!colorTexture && colorAttachment->texture != 0u) {
+            colorTexture = (Texture *)searchHashTable(&glctx->active_state->texture_table,
+                                                      colorAttachment->texture);
+        }
+
+        /* Validate that the raw pointer is still registered in the texture
+         * table.  glDeleteTextures frees the Texture struct but stale raw
+         * pointers can survive in FBO attachments (and mglPointerRangeIsReadable
+         * cannot reliably detect freed-but-mapped malloc memory). */
+        if (colorTexture) {
+            Texture *verified = (Texture *)searchHashTable(&glctx->active_state->texture_table,
+                                                            colorTexture->name);
+            if (verified != colorTexture) {
+
+                colorAttachment->buf.tex = NULL;
+                colorAttachment->texture = 0u;
+                continue;
+            }
+        }
+
+        if (!colorTexture ||
+            colorTexture == depthTexture ||
+            !mglRendererObjectPointerLikelyValid(colorTexture) ||
+            !mglPointerRangeIsReadable(colorTexture, sizeof(*colorTexture))) {
+            continue;
+        }
+
+        if (colorTexture->mtl_data &&
+            mglMetalPixelFormatIsDepthOrStencil(
+                mglRendererTextureFieldFormat(colorTexture->mtl_data))) {
+            continue;
+        }
+
+        if (fboNameOut) {
+            *fboNameOut = fbo->name;
+        }
+        return colorTexture;
+    }
+
+    return NULL;
+}

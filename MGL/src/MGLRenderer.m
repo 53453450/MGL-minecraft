@@ -57,6 +57,7 @@
 #include "mgl_blit_pipelines.h"
 #include "mgl_swap_diagnostics.h"  /* swap-time diagnostics (was the SwapDiagnostics category) */
 #include "mgl_buffer_map.h"  /* buffer mapping + frame-generation gates */
+#include "mgl_renderer_host.h"  /* shared buffer helpers (log 161) */
 #include "mgl_stage_copy_back.h"  /* copy-back list helpers (log 158) */
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_tess.h"
@@ -139,20 +140,6 @@ static uint64_t mglRendererTextureFieldUsage(id texture)
 { return mglRendererTextureInfo(texture).usage; }
 static uint32_t mglRendererTextureFieldType(id texture)
 { return mglRendererTextureInfo(texture).texture_type; }
-static uint64_t mglRendererBufferLength(id buffer)
-{
-    MGLRenderBufferInfo info = {0};
-    return buffer && mglRenderGetBufferInfo((__bridge void *)buffer, &info) == 0
-        ? info.length : 0u;
-}
-static void *mglRendererBufferContents(id buffer)
-{
-    void *contents = NULL;
-    uint64_t length = 0u;
-    return buffer && mglRenderGetBufferContents((__bridge void *)buffer,
-                                                   &contents, &length) == 0
-        ? contents : NULL;
-}
 
 typedef struct MGLRendererClearColorValue {
     double red, green, blue, alpha;
@@ -907,59 +894,6 @@ void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level)
     }
 }
 
-void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
-                                                 GLuint level,
-                                                 const char *caller,
-                                                 int line)
-{
-    TextureLevel *texLevel = mglTextureAttachmentLevel(tex, level);
-    if (!texLevel) {
-        return;
-    }
-
-    GLuint oldRenderTargetWriteVersion = tex->mtl_render_target_write_version;
-
-    mglRenderMarkTextureLevelWritten(&texLevel->ever_written,
-                                     &texLevel->has_initialized_data,
-                                     &texLevel->suspicious_zero_upload);
-    texLevel->last_init_source = kTexRenderTargetWrite;
-    texLevel->last_upload_size = 0u;
-    texLevel->last_src_ptr = NULL;
-    texLevel->last_src_hash = 0ull;
-
-    tex->mtl_render_target_write_version++;
-    mglMarkGLSampledCopyLevelDirty(tex, level);
-
-
-    tex->mtl_render_yflip_authority = (tex->mtl_render_target_write_version << 1);
-
-    if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
-        id mtlTexture = tex->mtl_data ? (__bridge id)(tex->mtl_data) : nil;
-        mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x sampledVer=%u copy=%p",
-                    (unsigned)tex->name,
-                    (unsigned)level,
-                    (unsigned)oldRenderTargetWriteVersion,
-                    (unsigned)tex->mtl_render_target_write_version,
-                    caller ? caller : "(unknown)",
-                    line,
-                    mtlTexture,
-                    (unsigned long)(mtlTexture ? mglRendererTextureFieldFormat(mtlTexture) : MGL_RENDERER_PIXEL_FORMAT_INVALID),
-                    (unsigned long)(mtlTexture ? mglRendererTextureFieldWidth(mtlTexture) : 0),
-                    (unsigned long)(mtlTexture ? mglRendererTextureFieldHeight(mtlTexture) : 0),
-                    (unsigned)tex->dirty_bits,
-                    (unsigned)tex->mtl_gl_sampled_write_version,
-                    tex->mtl_gl_sampled_data);
-    }
-
-    /*
-     * Once Metal has rendered into a texture, the CPU-side backing copy is stale.
-     * Keeping DIRTY_TEXTURE_DATA set lets a later sampler bind recreate the Metal
-     * texture and upload old all-zero or placeholder bytes over the rendered
-     * contents. Minecraft 1.21.8's item atlas and post-chain render targets hit
-     * this path frequently.
-     */
-    tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
-}
 
 /* mglMarkTextureLevelRenderTargetWritten macro moved to MGLRenderer_Private.h */
 
@@ -978,25 +912,6 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
 
 
 
-BOOL mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx,
-                                                      Texture *tex)
-{
-    if (!glctx || !tex) {
-        return NO;
-    }
-    if (!mglRendererObjectPointerLikelyValid(tex) ||
-        !mglRendererPointerInHashTable(&glctx->active_state->texture_table, tex) ||
-        !mglPointerRangeIsReadable(tex, sizeof(*tex))) {
-        return NO;
-    }
-    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
-        tex->index != _TEXTURE_2D ||
-        mglRendererGLInternalFormatLooksDepthOrStencil(tex->internalformat)) {
-        return NO;
-    }
-
-    return YES;
-}
 
 
 /* mglNowSeconds moved to MGLRenderer_Private.h as static inline */
@@ -1398,127 +1313,6 @@ BOOL mglRendererPointerInHashTable(HashTable *table, const void *ptr)
            mglHashTableContainsData(table, ptr);
 }
 
-Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
-                                                              Texture *depthTexture,
-                                                              GLuint *fboNameOut)
-{
-    if (fboNameOut) {
-        *fboNameOut = 0u;
-    }
-    if (!glctx || !depthTexture) {
-        return NULL;
-    }
-
-    Framebuffer *currentFbo = glctx->active_state->framebuffer;
-    if (currentFbo &&
-        mglRendererObjectPointerLikelyValid(currentFbo) &&
-        mglPointerRangeIsReadable(currentFbo, sizeof(*currentFbo))) {
-        BOOL depthMatches =
-            currentFbo->depth.buf.tex == depthTexture ||
-            currentFbo->stencil.buf.tex == depthTexture ||
-            currentFbo->depth.texture == depthTexture->name ||
-            currentFbo->stencil.texture == depthTexture->name;
-        if (depthMatches && (currentFbo->color_attachment_bitfield & 1u) != 0u) {
-            FBOAttachment *colorAttachment = &currentFbo->color_attachments[0];
-            Texture *colorTexture = colorAttachment->buf.tex;
-            if (!colorTexture && colorAttachment->texture != 0u) {
-                colorTexture = (Texture *)searchHashTable(&glctx->active_state->texture_table,
-                                                          colorAttachment->texture);
-            }
-            /* Validate raw pointer is still registered (see table-scan path). */
-            if (colorTexture) {
-                Texture *verified = (Texture *)searchHashTable(&glctx->active_state->texture_table,
-                                                                colorTexture->name);
-                if (verified != colorTexture) {
-                    colorAttachment->buf.tex = NULL;
-                    colorAttachment->texture = 0u;
-                    colorTexture = NULL;
-                }
-            }
-            if (colorTexture &&
-                colorTexture != depthTexture &&
-                mglRendererObjectPointerLikelyValid(colorTexture) &&
-                mglPointerRangeIsReadable(colorTexture, sizeof(*colorTexture)) &&
-                (!colorTexture->mtl_data ||
-                 !mglMetalPixelFormatIsDepthOrStencil(
-                     mglRendererTextureFieldFormat((__bridge id)colorTexture->mtl_data)))) {
-                if (fboNameOut) {
-                    *fboNameOut = currentFbo->name;
-                }
-                return colorTexture;
-            }
-        }
-    }
-
-    HashTable *table = &glctx->active_state->framebuffer_table;
-    if (!mglHashTableValidateStorage(table, "findPairedFramebufferColor") ||
-        !table->keys || !table->states || table->size == 0u) {
-        return NULL;
-    }
-
-    for (size_t slot = 0; slot < table->size; slot++) {
-        if (table->states[slot] != 1u || !table->keys[slot].data) {
-            continue;
-        }
-
-        Framebuffer *fbo = (Framebuffer *)table->keys[slot].data;
-        if (!mglRendererObjectPointerLikelyValid(fbo) ||
-            !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
-            continue;
-        }
-
-        BOOL depthMatches =
-            fbo->depth.buf.tex == depthTexture ||
-            fbo->stencil.buf.tex == depthTexture ||
-            fbo->depth.texture == depthTexture->name ||
-            fbo->stencil.texture == depthTexture->name;
-        if (!depthMatches) {
-            continue;
-        }
-
-        FBOAttachment *colorAttachment = &fbo->color_attachments[0];
-        Texture *colorTexture = colorAttachment->buf.tex;
-        if (!colorTexture && colorAttachment->texture != 0u) {
-            colorTexture = (Texture *)searchHashTable(&glctx->active_state->texture_table,
-                                                      colorAttachment->texture);
-        }
-
-        /* Validate that the raw pointer is still registered in the texture
-         * table.  glDeleteTextures frees the Texture struct but stale raw
-         * pointers can survive in FBO attachments (and mglPointerRangeIsReadable
-         * cannot reliably detect freed-but-mapped malloc memory). */
-        if (colorTexture) {
-            Texture *verified = (Texture *)searchHashTable(&glctx->active_state->texture_table,
-                                                            colorTexture->name);
-            if (verified != colorTexture) {
-
-                colorAttachment->buf.tex = NULL;
-                colorAttachment->texture = 0u;
-                continue;
-            }
-        }
-
-        if (!colorTexture ||
-            colorTexture == depthTexture ||
-            !mglRendererObjectPointerLikelyValid(colorTexture) ||
-            !mglPointerRangeIsReadable(colorTexture, sizeof(*colorTexture))) {
-            continue;
-        }
-
-        if (colorTexture->mtl_data &&
-            mglMetalPixelFormatIsDepthOrStencil(
-                mglRendererTextureFieldFormat((__bridge id)colorTexture->mtl_data))) {
-            continue;
-        }
-
-        if (fboNameOut) {
-            *fboNameOut = fbo->name;
-        }
-        return colorTexture;
-    }
-
-    return NULL;
-}
 
 BOOL mglCurrentDrawFramebufferUsesColorTexture(GLMContext glctx,
                                                       Texture *texture,
@@ -2589,139 +2383,6 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     }
 }
 
-void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
-                                                     Program *program,
-                                                     const MGLDrawCommand *cmd,
-                                                     Buffer *ebo,
-                                                     uint64_t flushId,
-                                                     uint32_t batchIndex,
-                                                     uint32_t commandIndex,
-                                                     bool forceTrace)
-{
-    if (!mglTraceLogIsEnabled() ||
-        !traceCtx ||
-        !program ||
-        !cmd ||
-        !ebo ||
-        !mglDrawCommandUsesElements(cmd) ||
-        cmd->count <= 0) {
-        return;
-    }
-
-    if (!forceTrace && !mglProgramNeedsTraceLog(program)) {
-        return;
-    }
-
-    static uint64_t s_replayAttribSampleLogs = 0;
-    if (!forceTrace && !mglShouldLogFocusedBinding(&s_replayAttribSampleLogs)) {
-        return;
-    }
-
-    const uint8_t *indexBytes = NULL;
-    NSUInteger indexBytesAvailable = 0u;
-    if (ebo->data.buffer_data && ((uintptr_t)ebo->data.buffer_data >= 0x1000ull)) {
-        indexBytes = (const uint8_t *)ebo->data.buffer_data;
-        indexBytesAvailable = (ebo->size > 0) ? (NSUInteger)ebo->size : 0u;
-    } else if (ebo->data.mtl_data) {
-        id indexBuffer = (__bridge id)(ebo->data.mtl_data);
-        if (indexBuffer && mglRendererBufferContents(indexBuffer)) {
-            indexBytes = (const uint8_t *)mglRendererBufferContents(indexBuffer);
-            indexBytesAvailable = mglRendererBufferLength(indexBuffer);
-        }
-    }
-
-    if (!indexBytes) {
-        mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d ebo=%u reason=no_index_bytes",
-                    (unsigned long long)flushId,
-                    (unsigned)batchIndex,
-                    (unsigned)commandIndex,
-                    (unsigned)program->name,
-                    mglDrawCommandTypeName(cmd->type),
-                    (int)cmd->count,
-                    (unsigned)cmd->indexType,
-                    (unsigned)cmd->indexBufferOffset,
-                    (int)cmd->baseVertex,
-                    (unsigned)ebo->name);
-        return;
-    }
-
-    NSUInteger indexOffset = (NSUInteger)cmd->indexBufferOffset;
-    NSUInteger indexStride = mglGLIndexElementSize(cmd->indexType);
-    if (indexStride == 0u ||
-        indexOffset > indexBytesAvailable ||
-        indexBytesAvailable - indexOffset < indexStride) {
-        mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d ebo=%u available=%lu reason=index_oob",
-                    (unsigned long long)flushId,
-                    (unsigned)batchIndex,
-                    (unsigned)commandIndex,
-                    (unsigned)program->name,
-                    mglDrawCommandTypeName(cmd->type),
-                    (int)cmd->count,
-                    (unsigned)cmd->indexType,
-                    (unsigned)cmd->indexBufferOffset,
-                    (int)cmd->baseVertex,
-                    (unsigned)ebo->name,
-                    (unsigned long)indexBytesAvailable);
-        return;
-    }
-
-    VertexArray *vao = mglRendererGetValidatedVAO(traceCtx, "replay.attrib.trace");
-    if (!vao) {
-        mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d ebo=%u reason=no_vao",
-                    (unsigned long long)flushId,
-                    (unsigned)batchIndex,
-                    (unsigned)commandIndex,
-                    (unsigned)program->name,
-                    mglDrawCommandTypeName(cmd->type),
-                    (int)cmd->count,
-                    (unsigned)cmd->indexType,
-                    (unsigned)cmd->indexBufferOffset,
-                    (int)cmd->baseVertex,
-                    (unsigned)ebo->name);
-        return;
-    }
-
-    const uint8_t *start = indexBytes + indexOffset;
-    uint32_t firstIndex = mglReadGLIndexValue(start, cmd->indexType, 0u);
-    mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d firstIndex=%u ebo=%u vao=%p enabled=0x%x forceRTCopy=%d",
-                (unsigned long long)flushId,
-                (unsigned)batchIndex,
-                (unsigned)commandIndex,
-                (unsigned)program->name,
-                mglDrawCommandTypeName(cmd->type),
-                (int)cmd->count,
-                (unsigned)cmd->indexType,
-                (unsigned)cmd->indexBufferOffset,
-                (int)cmd->baseVertex,
-                (unsigned)firstIndex,
-                (unsigned)ebo->name,
-                vao,
-                (unsigned)vao->enabled_attribs,
-                forceTrace ? 1 : 0);
-
-    NSUInteger sampleCount = forceTrace ? MIN((NSUInteger)cmd->count, (NSUInteger)6u) : (NSUInteger)1u;
-    GLuint traceAttribLimit = MIN((GLuint)6u, traceCtx->state.max_vertex_attribs);
-    for (NSUInteger sample = 0; sample < sampleCount; sample++) {
-        if (indexBytesAvailable - indexOffset < ((sample + 1u) * indexStride)) {
-            break;
-        }
-        for (GLuint attrib = 0; attrib < traceAttribLimit; attrib++) {
-            if (!mglRendererProgramUsesVertexAttrib(program, attrib)) {
-                continue;
-            }
-            mglTraceDrawElementsAttrib(traceCtx,
-                                       vao,
-                                       flushId,
-                                       program->name,
-                                       start,
-                                       cmd->indexType,
-                                       sample,
-                                       cmd->baseVertex,
-                                       attrib,
-                                       true);
-        }
-    }
-}
 
 #pragma mark debug code
 void printDirtyBit(unsigned dirty_bits, unsigned dirty_flag, const char *name)
@@ -3113,6 +2774,155 @@ void logDirtyBits(GLMContext ctx)
 #pragma mark C interface to mtlFlush
 
 #pragma mark C interface to mtlSwapBuffers
+void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
+                                                     Program *program,
+                                                     const MGLDrawCommand *cmd,
+                                                     Buffer *ebo,
+                                                     uint64_t flushId,
+                                                     uint32_t batchIndex,
+                                                     uint32_t commandIndex,
+                                                     bool forceTrace)
+{
+    if (!mglTraceLogIsEnabled() ||
+        !traceCtx ||
+        !program ||
+        !cmd ||
+        !ebo ||
+        !mglDrawCommandUsesElements(cmd) ||
+        cmd->count <= 0) {
+        return;
+    }
+
+    if (!forceTrace && !mglProgramNeedsTraceLog(program)) {
+        return;
+    }
+
+    static uint64_t s_replayAttribSampleLogs = 0;
+    if (!forceTrace && !mglShouldLogFocusedBinding(&s_replayAttribSampleLogs)) {
+        return;
+    }
+
+    const uint8_t *indexBytes = NULL;
+    NSUInteger indexBytesAvailable = 0u;
+    if (ebo->data.buffer_data && ((uintptr_t)ebo->data.buffer_data >= 0x1000ull)) {
+        indexBytes = (const uint8_t *)ebo->data.buffer_data;
+        indexBytesAvailable = (ebo->size > 0) ? (NSUInteger)ebo->size : 0u;
+    } else if (ebo->data.mtl_data) {
+        id indexBuffer = (__bridge id)(ebo->data.mtl_data);
+        if (indexBuffer && mglRendererBufferContents(indexBuffer)) {
+            indexBytes = (const uint8_t *)mglRendererBufferContents(indexBuffer);
+            indexBytesAvailable = mglRendererBufferLength(indexBuffer);
+        }
+    }
+
+    if (!indexBytes) {
+        mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d ebo=%u reason=no_index_bytes",
+                    (unsigned long long)flushId,
+                    (unsigned)batchIndex,
+                    (unsigned)commandIndex,
+                    (unsigned)program->name,
+                    mglDrawCommandTypeName(cmd->type),
+                    (int)cmd->count,
+                    (unsigned)cmd->indexType,
+                    (unsigned)cmd->indexBufferOffset,
+                    (int)cmd->baseVertex,
+                    (unsigned)ebo->name);
+        return;
+    }
+
+    NSUInteger indexOffset = (NSUInteger)cmd->indexBufferOffset;
+    NSUInteger indexStride = mglGLIndexElementSize(cmd->indexType);
+    if (indexStride == 0u ||
+        indexOffset > indexBytesAvailable ||
+        indexBytesAvailable - indexOffset < indexStride) {
+        mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d ebo=%u available=%lu reason=index_oob",
+                    (unsigned long long)flushId,
+                    (unsigned)batchIndex,
+                    (unsigned)commandIndex,
+                    (unsigned)program->name,
+                    mglDrawCommandTypeName(cmd->type),
+                    (int)cmd->count,
+                    (unsigned)cmd->indexType,
+                    (unsigned)cmd->indexBufferOffset,
+                    (int)cmd->baseVertex,
+                    (unsigned)ebo->name,
+                    (unsigned long)indexBytesAvailable);
+        return;
+    }
+
+    VertexArray *vao = mglRendererGetValidatedVAO(traceCtx, "replay.attrib.trace");
+    if (!vao) {
+        mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d ebo=%u reason=no_vao",
+                    (unsigned long long)flushId,
+                    (unsigned)batchIndex,
+                    (unsigned)commandIndex,
+                    (unsigned)program->name,
+                    mglDrawCommandTypeName(cmd->type),
+                    (int)cmd->count,
+                    (unsigned)cmd->indexType,
+                    (unsigned)cmd->indexBufferOffset,
+                    (int)cmd->baseVertex,
+                    (unsigned)ebo->name);
+        return;
+    }
+
+    const uint8_t *start = indexBytes + indexOffset;
+    uint32_t firstIndex = mglReadGLIndexValue(start, cmd->indexType, 0u);
+    mglTraceLog("VATTR_REPLAY_BEGIN flush=%llu batch=%u cmd=%u program=%u type=%s count=%d indexType=0x%x indexOffset=%u baseVertex=%d firstIndex=%u ebo=%u vao=%p enabled=0x%x forceRTCopy=%d",
+                (unsigned long long)flushId,
+                (unsigned)batchIndex,
+                (unsigned)commandIndex,
+                (unsigned)program->name,
+                mglDrawCommandTypeName(cmd->type),
+                (int)cmd->count,
+                (unsigned)cmd->indexType,
+                (unsigned)cmd->indexBufferOffset,
+                (int)cmd->baseVertex,
+                (unsigned)firstIndex,
+                (unsigned)ebo->name,
+                vao,
+                (unsigned)vao->enabled_attribs,
+                forceTrace ? 1 : 0);
+
+    NSUInteger sampleCount = forceTrace ? MIN((NSUInteger)cmd->count, (NSUInteger)6u) : (NSUInteger)1u;
+    GLuint traceAttribLimit = MIN((GLuint)6u, traceCtx->state.max_vertex_attribs);
+    for (NSUInteger sample = 0; sample < sampleCount; sample++) {
+        if (indexBytesAvailable - indexOffset < ((sample + 1u) * indexStride)) {
+            break;
+        }
+        for (GLuint attrib = 0; attrib < traceAttribLimit; attrib++) {
+            if (!mglRendererProgramUsesVertexAttrib(program, attrib)) {
+                continue;
+            }
+            mglTraceDrawElementsAttrib(traceCtx,
+                                       vao,
+                                       flushId,
+                                       program->name,
+                                       start,
+                                       cmd->indexType,
+                                       sample,
+                                       cmd->baseVertex,
+                                       attrib,
+                                       true);
+        }
+    }
+}
+
+static uint64_t mglRendererBufferLength(id buffer)
+{
+    MGLRenderBufferInfo info = {0};
+    return buffer && mglRenderGetBufferInfo((__bridge void *)buffer, &info) == 0
+        ? info.length : 0u;
+}
+static void *mglRendererBufferContents(id buffer)
+{
+    void *contents = NULL;
+    uint64_t length = 0u;
+    return buffer && mglRenderGetBufferContents((__bridge void *)buffer,
+                                                   &contents, &length) == 0
+        ? contents : NULL;
+}
+
 void mglRendererSwapBuffers(GLMContext glm_ctx)
 {
     MGLRendererBackendLease _backend_lease = {};
