@@ -3081,7 +3081,7 @@ static GLenum mglPassthroughDeclType(
         (uint32_t)commandState.status;
     if (bufferStatus >= MGLCommandBufferStatusCommitted) {
         NSLog(@"MGL WARNING: Render encoder requested on finalized command buffer (status: %ld) - creating a fresh command buffer", (long)bufferStatus);
-        if (![self newCommandBufferLocked]) {
+        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer before creating render encoder");
             mglRendererRecordGPUError((__bridge void *)self);
             return false;
@@ -3337,7 +3337,7 @@ static GLenum mglPassthroughDeclType(
     if (mglRenderCommandBufferOwnerHasCurrent(
             _renderPassManager->state->currentCommandBufferOwner) != 1) {
         // Attempt recovery: create a new command buffer instead of failing immediately
-        if ([self newCommandBufferLocked]) {
+        if (mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
             // Successfully created - continue
         } else {
             NSLog(@"MGL ERROR: Cannot create render encoder - no command buffer available");
@@ -3459,197 +3459,9 @@ static GLenum mglPassthroughDeclType(
 - (bool) newCommandBuffer
 {
     METAL_LOCK();
-    bool result = [self newCommandBufferLocked];
+    bool result = mglRenderPassNewCommandBufferLocked((__bridge void *)self);
     METAL_UNLOCK();
     return result;
-}
-
-- (bool) newCommandBufferLocked
-{
-    // CRITICAL FIX: Proper encoder cleanup BEFORE creating new command buffer
-    // Metal API requires ending encoders before creating new command buffers
-
-    // STEP 0: End any existing render encoder to prevent MTLReleaseAssertionFailure
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager->state->currentRenderEncoderOwner) == 1) {
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: Ending existing render encoder before creating new command buffer");
-        }
-        mglRendererEndRenderEncodingLocked((__bridge void *)self);
-    }
-
-    // STEP 1: Clean up sync tracking list safely.
-    // IMPORTANT: Do NOT dereference Sync* entries here. Sync objects are owned by GL sync lifecycle
-    // and may already be deleted by glDeleteSync on other paths.
-    // Both this read/clear path and the backend sync append path run on the GL
-    // calling thread, so no lock is needed.
-    mglPassManagerClearCurrentCommandBufferSyncListEntries(_renderPassManager);
-
-    /* A successful C++ submit transaction rotates the owner to the next
-     * current command buffer before returning. Consume that exact buffer so
-     * the ObjC adapter does not immediately allocate and release another one.
-     * Unmarked current buffers still follow the ordinary fresh-rotate path. */
-    if (mglPassManagerConsumeTransactionCreatedCurrentCommandBuffer(_renderPassManager)) {
-        _batching.currentCommandBufferHasWork = NO;
-        return true;
-    }
-
-    // CRITICAL SAFETY: Validate command queue before creating buffer
-    if (!_commandQueue) {
-        NSLog(@"MGL ERROR: Cannot create command buffer - command queue is NULL");
-        mglPassManagerDiscardCurrentCommandBuffer(_renderPassManager);
-        return false;
-    }
-
-    // STEP 1: Create fresh command buffer FIRST with comprehensive AGX driver validation
-    @try {
-        // AGX DRIVER COMPATIBILITY: Validate command queue health before creating buffer
-        if (!_commandQueue) {
-            NSLog(@"MGL AGX ERROR: Command queue is NULL - recreating");
-            mglRendererResetMetalState((__bridge void *)self);
-            if (!_commandQueue) {
-                NSLog(@"MGL AGX CRITICAL: Cannot recreate command queue");
-                return false;
-            }
-        }
-
-        // CRITICAL FIX: Validate _commandQueue before dereferencing to prevent NULL pointer crashes
-        if (!_commandQueue) {
-            NSLog(@"MGL AGX CRITICAL: _commandQueue is NULL - cannot create command buffer");
-            mglRendererRecordGPUError((__bridge void *)self);
-            return false;
-        }
-
-        if (!mglPassManagerInstallNewCommandBufferFromQueue(_renderPassManager, (__bridge void *)_commandQueue)) {
-            NSLog(@"MGL AGX ERROR: Failed to create Metal command buffer - command queue may be in error state");
-            mglRendererRecordGPUError((__bridge void *)self);
-            // Force command queue recreation
-            mglRendererResetMetalState((__bridge void *)self);
-            return false;
-        }
-
-        _batching.currentCommandBufferHasWork = NO;
-
-        // AGX Driver Validation: Check if the command buffer is immediately invalid
-        MGLRenderCommandBufferState initialState = {0};
-        if (!mglRenderCommandBufferOwnerHasState(
-                _renderPassManager->state->currentCommandBufferOwner,
-                &initialState)) {
-            NSLog(@"MGL AGX CRITICAL: New command buffer owner has no current buffer");
-            mglRendererRecordGPUError((__bridge void *)self);
-            return false;
-        }
-        if (initialState.has_error) {
-            NSLog(@"MGL AGX WARNING: New command buffer has immediate error: %s",
-                  mglRenderCommandBufferErrorDescription(&initialState));
-            mglRendererRecordGPUError((__bridge void *)self);
-            // Don't return false immediately - AGX sometimes creates error-state buffers that recover
-        }
-
-        // AGX DRIVER COMPATIBILITY: Enhanced validation to prevent rejections
-        if (initialState.status == MGLCommandBufferStatusError) {
-            NSLog(@"MGL AGX CRITICAL: Command buffer immediately in error state");
-            mglRendererRecordGPUError((__bridge void *)self);
-            mglPassManagerDiscardCurrentCommandBuffer(_renderPassManager);
-            mglRendererResetMetalState((__bridge void *)self); // Force full reset
-            return false;
-        }
-
-        // Additional AGX validation: Check for buffer properties that cause rejections
-        memset(&initialState, 0, sizeof(initialState));
-        (void)mglRenderCommandBufferOwnerHasState(
-            _renderPassManager->state->currentCommandBufferOwner,
-            &initialState);
-        if (initialState.has_error) {
-            NSLog(@"MGL AGX WARNING: Command buffer has immediate error: %s",
-                  mglRenderCommandBufferErrorDescription(&initialState));
-            mglRendererRecordGPUError((__bridge void *)self);
-            mglPassManagerDiscardCurrentCommandBuffer(_renderPassManager);
-            mglRendererResetMetalState((__bridge void *)self);
-            return false;
-        }
-
-        // Validate command queue health
-        if (!_commandQueue) {
-            NSLog(@"MGL AGX CRITICAL: Command queue became NULL");
-            mglRendererResetMetalState((__bridge void *)self);
-            return false;
-        }
-
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: Successfully created new Metal command buffer (AGX validated)");
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"MGL AGX ERROR: Exception creating command buffer: %@", exception);
-        mglRendererRecordGPUError((__bridge void *)self);
-        mglPassManagerDiscardCurrentCommandBuffer(_renderPassManager);
-
-        // AGX DRIVER COMPATIBILITY: Force reset on exception to clear driver state
-        mglRendererResetMetalState((__bridge void *)self);
-        return false;
-    }
-
-    // STEP 2: Now handle pending event waits on the FRESH command buffer.
-    GLuint cachedSyncName = 0;
-    id cachedEvent =
-        (__bridge_transfer id)mglPassManagerDetachPendingEventWithSyncName(_renderPassManager, &cachedSyncName);
-    if (cachedEvent) {
-        if (!cachedSyncName) {
-            NSLog(@"MGL WARNING: dropping pending shared-event wait with no sync name");
-            return true;
-        }
-
-        if (kMGLDisableSharedEventSync) {
-            NSLog(@"MGL INFO: Shared event wait disabled (debug no-op), skipping wait encode event=%p syncName=%u",
-                  cachedEvent, cachedSyncName);
-            return true;
-        }
-
-        // SAFELY ENCODE: Event wait functionality on the new command buffer
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: Encoding event wait on fresh command buffer");
-        }
-
-        // Validate event pointer looks like a valid object address
-        uintptr_t eventPtr = (uintptr_t)cachedEvent;
-        if (eventPtr == 0x10 || eventPtr == 0x30 || eventPtr == 0x1000) {
-            NSLog(@"MGL CRITICAL ERROR: Known corrupted event pointer pattern detected: 0x%lx", eventPtr);
-            NSLog(@"MGL CRITICAL ERROR: Skipping event wait to prevent crash");
-            return false;
-        }
-
-        if (eventPtr < 0x1000 || (eventPtr & 0x7) != 0) {
-            NSLog(@"MGL ERROR: Suspicious event pointer value: %p", cachedEvent);
-            NSLog(@"MGL INFO: Skipping event wait for safety");
-            return false;
-        }
-
-        // ADDITIONAL SAFETY: Validate command buffer is still valid before encoding
-        if (mglRenderCommandBufferOwnerHasCurrent(
-                _renderPassManager->state->currentCommandBufferOwner) != 1) {
-            NSLog(@"MGL ERROR: Command buffer became NULL before event wait encoding");
-            return false;
-        }
-
-        @try {
-            NSLog(@"MGL INFO: Encoding safe event wait: event=%p, syncName=%u",
-                  cachedEvent, cachedSyncName);
-            if (mglRenderEncodeWaitForEventForCommandBufferOwner(
-                    _renderPassManager->state->currentCommandBufferOwner,
-                    (__bridge void *)cachedEvent, cachedSyncName) != 0) {
-                NSLog(@"MGL ERROR: Event wait owner facade rejected the request");
-                return false;
-            }
-            NSLog(@"MGL SUCCESS: Event wait encoded successfully on fresh command buffer");
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: Event wait failed - %@: %@", exception.name, exception.reason);
-            NSLog(@"MGL INFO: Continuing without event wait to maintain stability");
-            // Continue without event wait - system remains stable
-        }
-
-    }
-
-    return true;
 }
 
 - (bool)ensureWritableCommandBuffer:(const char *)reason
@@ -3669,7 +3481,7 @@ static GLenum mglPassthroughDeclType(
         if (kMGLDiagnosticStateLogs) {
             mglTraceLog("MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
         }
-        if (![self newCommandBufferLocked]) {
+        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
             NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
             return false;
         }
@@ -3687,7 +3499,7 @@ static GLenum mglPassthroughDeclType(
     if (status >= MGLCommandBufferStatusCommitted) {
         NSLog(@"MGL INFO: %s requested on finalized command buffer (status: %ld), rotating", reason ? reason : "operation", (long)status);
         mglRendererEndRenderEncodingLocked((__bridge void *)self);
-        if (![self newCommandBufferLocked]) {
+        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer for %s", reason ? reason : "operation");
             return false;
         }
@@ -4006,7 +3818,7 @@ static GLenum mglPassthroughDeclType(
                   (long)planIn.command_buffer_status,
                   (unsigned long long)rotateHit);
         }
-        if (![self newCommandBufferLocked]) {
+        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
             NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
             if (traceProcess) {
                 mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
@@ -4022,7 +3834,7 @@ static GLenum mglPassthroughDeclType(
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: processGLState found NULL command buffer, creating one");
         }
-        if (![self newCommandBufferLocked]) {
+        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
             NSLog(@"MGL ERROR: processGLState could not create initial command buffer");
             if (traceProcess) {
                 mglLogStateSnapshot("processGLState.fail.new_cb_initial",
@@ -5305,7 +5117,7 @@ static GLenum mglPassthroughDeclType(
         (uint32_t)currentState.status;
     if (currentStatus != MGLCommandBufferStatusNotEnqueued) {
         NSLog(@"MGL INFO: flushCommandBuffer found finalized buffer (status=%ld), rotating", (long)currentStatus);
-        if (![self newCommandBufferLocked]) {
+        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer in flushCommandBuffer");
         }
         return;
@@ -5339,7 +5151,7 @@ static GLenum mglPassthroughDeclType(
     }
 
     if (!finish) {
-        [self newCommandBufferLocked];
+        mglRenderPassNewCommandBufferLocked((__bridge void *)self);
     }
 }
 

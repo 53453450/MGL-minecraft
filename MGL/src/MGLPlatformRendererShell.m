@@ -530,12 +530,6 @@ void mglRendererEndRenderEncodingPort(void *renderer)
     }
 }
 
-int mglRendererNewCommandBufferLockedPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r newCommandBufferLocked]) ? 1 : 0;
-}
-
 int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

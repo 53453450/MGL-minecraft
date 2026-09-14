@@ -32,6 +32,7 @@
  */
 
 #include <stdatomic.h>
+#include "mgl_render_pass_manager_ops.h" /* mglRenderPassNewCommandBufferLocked */
 #include <stdio.h>
 #include <string.h>
 
@@ -501,7 +502,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
         /* -newCommandBuffer was METAL_LOCK + -newCommandBufferLocked +
          * METAL_UNLOCK; the lock is the GL-thread assertion. */
         MGL_ASSERT_GL_THREAD();
-        if (!mglRendererNewCommandBufferLockedPort(renderer)) {
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
             fprintf(stderr,
                     "MGL TESS ERROR: failed to create command buffer for TCS "
                     "dispatch\n");
@@ -1226,7 +1227,7 @@ bool mglTessDispatchAIRTessEvalCompute(
         /* -newCommandBuffer was METAL_LOCK + -newCommandBufferLocked +
          * METAL_UNLOCK; the lock is the GL-thread assertion. */
         MGL_ASSERT_GL_THREAD();
-        if (!mglRendererNewCommandBufferLockedPort(renderer)) {
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
             fprintf(stderr,
                     "MGL TESS ERROR: failed to create command buffer for TES "
                     "compute\n");

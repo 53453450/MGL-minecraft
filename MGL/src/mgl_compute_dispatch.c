@@ -25,6 +25,7 @@
  */
 
 #include <stdio.h>
+#include "mgl_render_pass_manager_ops.h" /* mglRenderPassNewCommandBufferLocked */
 #include <string.h>
 #include <stdatomic.h>
 
@@ -313,7 +314,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
         return false;
     }
     if (useExecutionPlan && hasCopyBackEntries &&
-        !mglRendererNewCommandBufferLockedPort(renderer)) {
+        !mglRenderPassNewCommandBufferLocked(renderer)) {
         fprintf(stderr,
                 "MGL COMPUTE ERROR: failed to install post-compute command buffer after %s\n",
                 reason ? reason : "dispatch");

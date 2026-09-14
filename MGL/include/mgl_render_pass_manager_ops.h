@@ -54,6 +54,9 @@ typedef struct MGLRenderPassPipelineFunctions_t {
     void *fragment_function;
 } MGLRenderPassPipelineFunctions;
 
+/* -newCommandBufferLocked is C now (log 174); its port wrapper is gone and
+ * every caller links straight to this entry. */
+int mglRenderPassNewCommandBufferLocked(void *renderer);
 int mglRenderPassGeneratePipelineDescriptorState(
     void *renderer, void *state, MGLRenderPassPipelineFunctions *functions_out);
 bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,

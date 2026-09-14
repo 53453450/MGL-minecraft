@@ -16,6 +16,7 @@
  */
 
 #include <stddef.h>
+#include "mgl_render_pass_manager_ops.h" /* mglRenderPassNewCommandBufferLocked */
 #include <stdint.h>
 #include <string.h>
 
@@ -208,7 +209,7 @@ bool mglFlushStageBindingCopyBacks(void *renderer,
                     "MGL BUFFER RANGE: stage synchronization failed: caught "
                     "exception\n");
             mglClearStageBindingCopyBacks(renderer, copy_backs);
-            (void)mglRendererNewCommandBufferLockedPort(renderer);
+            (void)mglRenderPassNewCommandBufferLocked(renderer);
             return false;
         }
         if (tx_ctx.failed) {
@@ -225,7 +226,7 @@ bool mglFlushStageBindingCopyBacks(void *renderer,
             mglPassManagerReleaseDetachedCommandBufferIfOwned(
                 areas.render_pass_manager, stage_command_buffer);
             mglClearStageBindingCopyBacks(renderer, copy_backs);
-            (void)mglRendererNewCommandBufferLockedPort(renderer);
+            (void)mglRenderPassNewCommandBufferLocked(renderer);
             return false;
         }
     }
@@ -236,7 +237,7 @@ bool mglFlushStageBindingCopyBacks(void *renderer,
         fprintf(stderr, "MGL BUFFER RANGE: stage command failed: %s\n",
               mglRenderCommandBufferErrorDescription(&stage_state));
         mglClearStageBindingCopyBacks(renderer, copy_backs);
-        (mglRendererNewCommandBufferLockedPort(renderer) != 0);
+        (mglRenderPassNewCommandBufferLocked(renderer) != 0);
         return false;
     }
 
@@ -254,8 +255,8 @@ bool mglFlushStageBindingCopyBacks(void *renderer,
               (unsigned long long)(failed ? failed->length : 0ull),
               (unsigned long long)(failedBuffer ? failedBuffer->data.buffer_size : 0ull));
         mglClearStageBindingCopyBacks(renderer, copy_backs);
-        (mglRendererNewCommandBufferLockedPort(renderer) != 0);
+        (mglRenderPassNewCommandBufferLocked(renderer) != 0);
         return false;
     }
     mglClearStageBindingCopyBacks(renderer, copy_backs);
-    return (mglRendererNewCommandBufferLockedPort(renderer) != 0);}
+    return (mglRenderPassNewCommandBufferLocked(renderer) != 0);}

@@ -14,6 +14,7 @@
  */
 
 #include <stdint.h>
+#include "mgl_render_pass_manager_ops.h" /* mglRenderPassNewCommandBufferLocked */
 #include <stdio.h>
 #include <string.h>
 
@@ -477,5 +478,5 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
  * forwards here now (P0-1, log 163). */
 int mglRendererEnsureNewCommandBuffer(void *renderer)
 {
-    return mglRendererNewCommandBufferLockedPort(renderer) != 0 ? 1 : 0;
+    return mglRenderPassNewCommandBufferLocked(renderer) != 0 ? 1 : 0;
 }

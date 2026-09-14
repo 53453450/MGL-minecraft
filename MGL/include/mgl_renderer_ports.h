@@ -253,7 +253,6 @@ int mglPlatformShellNewCommandBuffer(void *renderer);
 
 int mglRendererBindMTLProgramPort(void *renderer, Program *program);
 void mglRendererEndRenderEncodingPort(void *renderer);
-int mglRendererNewCommandBufferLockedPort(void *renderer);
 int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command);
 
 /* the Clear*CopyBack port(s) are gone: those methods are C now

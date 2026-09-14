@@ -27,6 +27,7 @@
 #include "mgl_byte_hash.h"         /* mglHashStepU64 */
 #include "mgl_draw_tess.h"         /* mglTessRasterGLMode */
 #include "mgl_vertex_layout.h"     /* mglRendererGenerateVertexDescriptorState */
+#include "mgl_render_pass_manager.h" /* pass-manager transaction entries */
 #include "mgl_trace_log.h"         /* mglTraceLog, kMGLDiagnosticStateLogs */
 #include "mgl_gpu_recovery.h"      /* mglRendererRecordGPUError */
 #include "mgl_pso_format_class.h"  /* mglRenderDefaultColorPixelFormat */
@@ -2070,5 +2071,279 @@ int mglRenderPassGeneratePipelineDescriptorState(
 
     functions_out->vertex_function = vertexFunction;
     functions_out->fragment_function = fragmentFunction;
+    return 1;
+}
+
+/* === new command buffer (log 174) ====================================== */
+
+/* MGLRenderer+RenderPass_Private.h: `static const BOOL
+ * kMGLDisableSharedEventSync = YES;` - kept so the branch stays verbatim. */
+static const int kMglPdDisableSharedEventSync = 1;
+
+/* The two @try blocks of -newCommandBufferLocked travel through the shell's
+ * guarded-call twin.  `result` tells the three outcomes apart: 1 = the body
+ * fell through, -1 = the body failed on its own (it applied the side effects
+ * the original wrote inline) and 0 = an exception was thrown (the original's
+ * @catch). */
+typedef struct MglPdNewCommandBufferCtx_t {
+    void *renderer;
+    MGLRendererStateAreas *areas;
+    int result;
+} MglPdNewCommandBufferCtx;
+
+static int mglPdNewCommandBufferTryBody(void *renderer, void *rawCtx)
+{
+    MglPdNewCommandBufferCtx *ctx = (MglPdNewCommandBufferCtx *)rawCtx;
+    MGLRendererStateAreas *areas = ctx->areas;
+    MGLRenderPassManager *manager = areas->render_pass_manager;
+
+    /* AGX DRIVER COMPATIBILITY: Validate command queue health before creating
+     * buffer */
+    if (!mglRendererBackendGetCommandQueue(areas->backend)) {
+        fprintf(stderr, "MGL AGX ERROR: Command queue is NULL - recreating\n");
+        mglRendererResetMetalState(renderer);
+        if (!mglRendererBackendGetCommandQueue(areas->backend)) {
+            fprintf(stderr, "MGL AGX CRITICAL: Cannot recreate command queue\n");
+            ctx->result = -1;
+            return 0;
+        }
+    }
+
+    /* CRITICAL FIX: Validate the command queue before dereferencing it to
+     * prevent NULL pointer crashes */
+    if (!mglRendererBackendGetCommandQueue(areas->backend)) {
+        fprintf(stderr,
+                "MGL AGX CRITICAL: _commandQueue is NULL - cannot create command buffer\n");
+        mglRendererRecordGPUError(renderer);
+        ctx->result = -1;
+        return 0;
+    }
+
+    if (!mglPassManagerInstallNewCommandBufferFromQueue(
+            manager, mglRendererBackendGetCommandQueue(areas->backend))) {
+        fprintf(stderr,
+                "MGL AGX ERROR: Failed to create Metal command buffer - command queue may be in error state\n");
+        mglRendererRecordGPUError(renderer);
+        /* Force command queue recreation */
+        mglRendererResetMetalState(renderer);
+        ctx->result = -1;
+        return 0;
+    }
+
+    areas->batching->currentCommandBufferHasWork = 0;
+
+    /* AGX Driver Validation: Check if the command buffer is immediately
+     * invalid */
+    MGLRenderCommandBufferState initialState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
+            areas->command->currentCommandBufferOwner, &initialState)) {
+        fprintf(stderr,
+                "MGL AGX CRITICAL: New command buffer owner has no current buffer\n");
+        mglRendererRecordGPUError(renderer);
+        ctx->result = -1;
+        return 0;
+    }
+    if (initialState.has_error) {
+        fprintf(stderr,
+                "MGL AGX WARNING: New command buffer has immediate error: %s\n",
+                mglRenderCommandBufferErrorDescription(&initialState));
+        mglRendererRecordGPUError(renderer);
+        /* Don't return false immediately - AGX sometimes creates error-state
+         * buffers that recover */
+    }
+
+    /* AGX DRIVER COMPATIBILITY: Enhanced validation to prevent rejections */
+    if (initialState.status == MGLCommandBufferStatusError) {
+        fprintf(stderr,
+                "MGL AGX CRITICAL: Command buffer immediately in error state\n");
+        mglRendererRecordGPUError(renderer);
+        mglPassManagerDiscardCurrentCommandBuffer(manager);
+        mglRendererResetMetalState(renderer); /* Force full reset */
+        ctx->result = -1;
+        return 0;
+    }
+
+    /* Additional AGX validation: check for buffer properties that cause
+     * rejections */
+    memset(&initialState, 0, sizeof(initialState));
+    (void)mglRenderCommandBufferOwnerHasState(
+        areas->command->currentCommandBufferOwner, &initialState);
+    if (initialState.has_error) {
+        fprintf(stderr,
+                "MGL AGX WARNING: Command buffer has immediate error: %s\n",
+                mglRenderCommandBufferErrorDescription(&initialState));
+        mglRendererRecordGPUError(renderer);
+        mglPassManagerDiscardCurrentCommandBuffer(manager);
+        mglRendererResetMetalState(renderer);
+        ctx->result = -1;
+        return 0;
+    }
+
+    /* Validate command queue health */
+    if (!mglRendererBackendGetCommandQueue(areas->backend)) {
+        fprintf(stderr, "MGL AGX CRITICAL: Command queue became NULL\n");
+        mglRendererResetMetalState(renderer);
+        ctx->result = -1;
+        return 0;
+    }
+
+    if (kMglPdVerboseFrameLoopLogs) {
+        fprintf(stderr,
+                "MGL INFO: Successfully created new Metal command buffer (AGX validated)\n");
+    }
+    ctx->result = 1;
+    return 1;
+}
+
+typedef struct MglPdEventWaitCtx_t {
+    MGLRendererStateAreas *areas;
+    void *event;
+    uint32_t sync_name;
+    int result;
+} MglPdEventWaitCtx;
+
+static int mglPdEventWaitTryBody(void *renderer, void *rawCtx)
+{
+    MglPdEventWaitCtx *ctx = (MglPdEventWaitCtx *)rawCtx;
+    (void)renderer;
+    fprintf(stderr, "MGL INFO: Encoding safe event wait: event=%p, syncName=%u\n",
+            ctx->event, ctx->sync_name);
+    if (mglRenderEncodeWaitForEventForCommandBufferOwner(
+            ctx->areas->command->currentCommandBufferOwner, ctx->event,
+            ctx->sync_name) != 0) {
+        fprintf(stderr,
+                "MGL ERROR: Event wait owner facade rejected the request\n");
+        ctx->result = -1;
+        return 0;
+    }
+    fprintf(stderr,
+            "MGL SUCCESS: Event wait encoded successfully on fresh command buffer\n");
+    ctx->result = 1;
+    return 1;
+}
+
+/* -newCommandBufferLocked (the retired mglRendererNewCommandBufferLockedPort). */
+int mglRenderPassNewCommandBufferLocked(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRenderPassManager *manager = areas.render_pass_manager;
+    MGLCommandState *commandState = areas.command;
+
+    /* CRITICAL FIX: Proper encoder cleanup BEFORE creating new command buffer
+     * Metal API requires ending encoders before creating new command buffers
+     *
+     * STEP 0: End any existing render encoder to prevent
+     * MTLReleaseAssertionFailure */
+    if (mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1) {
+        if (kMglPdVerboseFrameLoopLogs) {
+            fprintf(stderr,
+                    "MGL INFO: Ending existing render encoder before creating new command buffer\n");
+        }
+        mglRendererEndRenderEncodingLocked(renderer);
+    }
+
+    /* STEP 1: Clean up sync tracking list safely.
+     * IMPORTANT: Do NOT dereference Sync* entries here. Sync objects are owned
+     * by GL sync lifecycle and may already be deleted by glDeleteSync on other
+     * paths.  Both this read/clear path and the backend sync append path run on
+     * the GL calling thread, so no lock is needed. */
+    mglPassManagerClearCurrentCommandBufferSyncListEntries(manager);
+
+    /* A successful C++ submit transaction rotates the owner to the next current
+     * command buffer before returning. Consume that exact buffer so the adapter
+     * does not immediately allocate and release another one.  Unmarked current
+     * buffers still follow the ordinary fresh-rotate path. */
+    if (mglPassManagerConsumeTransactionCreatedCurrentCommandBuffer(manager)) {
+        areas.batching->currentCommandBufferHasWork = 0;
+        return 1;
+    }
+
+    /* CRITICAL SAFETY: Validate command queue before creating buffer */
+    if (!mglRendererBackendGetCommandQueue(areas.backend)) {
+        fprintf(stderr,
+                "MGL ERROR: Cannot create command buffer - command queue is NULL\n");
+        mglPassManagerDiscardCurrentCommandBuffer(manager);
+        return 0;
+    }
+
+    /* STEP 1: Create fresh command buffer FIRST with comprehensive AGX driver
+     * validation */
+    MglPdNewCommandBufferCtx ctx = {renderer, &areas, 0};
+    if (!mglPlatformShellGuardedCallCtx(renderer, "new command buffer",
+                                        mglPdNewCommandBufferTryBody, &ctx,
+                                        NULL)) {
+        if (ctx.result != -1) {
+            /* @catch (NSException *exception) */
+            mglRendererRecordGPUError(renderer);
+            mglPassManagerDiscardCurrentCommandBuffer(manager);
+            /* AGX DRIVER COMPATIBILITY: Force reset on exception to clear
+             * driver state */
+            mglRendererResetMetalState(renderer);
+        }
+        return 0;
+    }
+
+    /* STEP 2: Now handle pending event waits on the FRESH command buffer. */
+    uint32_t cachedSyncName = 0;
+    void *cachedEvent =
+        mglPassManagerDetachPendingEventWithSyncName(manager, &cachedSyncName);
+    if (cachedEvent) {
+        if (!cachedSyncName) {
+            fprintf(stderr,
+                    "MGL WARNING: dropping pending shared-event wait with no sync name\n");
+            return 1;
+        }
+
+        if (kMglPdDisableSharedEventSync) {
+            fprintf(stderr,
+                    "MGL INFO: Shared event wait disabled (debug no-op), skipping wait encode event=%p syncName=%u\n",
+                    cachedEvent, cachedSyncName);
+            return 1;
+        }
+
+        /* SAFELY ENCODE: Event wait functionality on the new command buffer */
+        if (kMglPdVerboseFrameLoopLogs) {
+            fprintf(stderr,
+                    "MGL INFO: Encoding event wait on fresh command buffer\n");
+        }
+
+        /* Validate event pointer looks like a valid object address */
+        const uintptr_t eventPtr = (uintptr_t)cachedEvent;
+        if (eventPtr == 0x10 || eventPtr == 0x30 || eventPtr == 0x1000) {
+            fprintf(stderr,
+                    "MGL CRITICAL ERROR: Known corrupted event pointer pattern detected: 0x%lx\n",
+                    (unsigned long)eventPtr);
+            fprintf(stderr,
+                    "MGL CRITICAL ERROR: Skipping event wait to prevent crash\n");
+            return 0;
+        }
+
+        if (eventPtr < 0x1000 || (eventPtr & 0x7) != 0) {
+            fprintf(stderr, "MGL ERROR: Suspicious event pointer value: %p\n",
+                    cachedEvent);
+            fprintf(stderr, "MGL INFO: Skipping event wait for safety\n");
+            return 0;
+        }
+
+        /* ADDITIONAL SAFETY: Validate command buffer is still valid before
+         * encoding */
+        if (mglRenderCommandBufferOwnerHasCurrent(
+                areas.command->currentCommandBufferOwner) != 1) {
+            fprintf(stderr,
+                    "MGL ERROR: Command buffer became NULL before event wait encoding\n");
+            return 0;
+        }
+
+        MglPdEventWaitCtx evt = {&areas, cachedEvent, cachedSyncName, 0};
+        (void)mglPlatformShellGuardedCallCtx(renderer, "shared event wait",
+                                             mglPdEventWaitTryBody, &evt, NULL);
+        if (evt.result == -1) {
+            return 0;
+        }
+        /* @catch: continue without event wait - the system stays stable. */
+    }
+
     return 1;
 }
