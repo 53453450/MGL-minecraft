@@ -57,6 +57,10 @@ typedef struct MGLRenderPassPipelineFunctions_t {
 /* -newCommandBufferLocked is C now (log 174); its port wrapper is gone and
  * every caller links straight to this entry. */
 int mglRenderPassNewCommandBufferLocked(void *renderer);
+/* -createRenderEncoderLocked: is C now (log 175); areas gained the
+ * drawable and query-state-owner fields it reads. */
+int mglRenderPassCreateRenderEncoderLocked(void *renderer,
+                                           uint64_t renderEncoderCall);
 int mglRenderPassGeneratePipelineDescriptorState(
     void *renderer, void *state, MGLRenderPassPipelineFunctions *functions_out);
 bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,

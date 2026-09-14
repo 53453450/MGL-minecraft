@@ -222,6 +222,10 @@ typedef struct MGLRendererStateAreas {
     MGLGeometryState *geometry;
     uint32_t tess_tcs_output_stride;
     uint32_t tess_cull_capture_first_instance;
+    /* The current drawable (trace logging only) and the query-state owner
+     * pointer the render encoder attaches visibility results from. */
+    void *drawable;
+    void *query_state_owner;
     uint32_t tess_cull_capture_instance_stride;
 } MGLRendererStateAreas;
 

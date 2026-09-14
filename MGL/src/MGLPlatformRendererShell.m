@@ -861,6 +861,8 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->geometry = &r->_geometry;
     areas_out->tess_native_tes_program = (void *)r->_tessellation.nativeTESProgram;
     areas_out->tess_tcs_output_stride = (uint32_t)r->_tessellation.tcsOutputStride;
+    areas_out->drawable = (__bridge void *)r.drawable;
+    areas_out->query_state_owner = r->_queryStateOwner;
     areas_out->tess_cull_capture_first_instance =
         (uint32_t)r->_tessellation.cullDistanceCaptureFirstInstance;
     areas_out->tess_cull_capture_instance_stride =

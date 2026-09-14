@@ -28,6 +28,7 @@
 #include "mgl_draw_tess.h"         /* mglTessRasterGLMode */
 #include "mgl_vertex_layout.h"     /* mglRendererGenerateVertexDescriptorState */
 #include "mgl_render_pass_manager.h" /* pass-manager transaction entries */
+#include "mgl_render_pass_clear.h"   /* mglRenderPassPlanClearValues */
 #include "mgl_trace_log.h"         /* mglTraceLog, kMGLDiagnosticStateLogs */
 #include "mgl_gpu_recovery.h"      /* mglRendererRecordGPUError */
 #include "mgl_pso_format_class.h"  /* mglRenderDefaultColorPixelFormat */
@@ -2345,5 +2346,353 @@ int mglRenderPassNewCommandBufferLocked(void *renderer)
         /* @catch: continue without event wait - the system stays stable. */
     }
 
+    return 1;
+}
+
+/* === render encoder creation (log 175) ================================= */
+
+/* Twins of the .m clear-value statics. */
+static bool mglPdClearValuesFor(const MGLCommandState *commandState,
+                                uint32_t attachmentKind, size_t colorIndex,
+                                double *clearColorOut, double *clearDepthOut,
+                                uint32_t *clearStencilOut)
+{
+    MGLRenderPassState state = {0};
+    if (!mglRenderPassGetPersistentState(commandState, &state)) return false;
+    return mglRenderPassPlanClearValues(&state, attachmentKind,
+                                        (uint32_t)colorIndex, clearColorOut,
+                                        clearDepthOut, clearStencilOut) != 0;
+}
+
+static double mglPdClearDepthFor(const MGLCommandState *commandState,
+                                 double fallback)
+{
+    double depth = 0.0;
+    if (mglPdClearValuesFor(commandState,
+                            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0u, NULL,
+                            &depth, NULL)) {
+        return depth;
+    }
+    return fallback;
+}
+
+static uint32_t mglPdVisibilityResultTypeFor(
+    const MGLCommandState *commandState)
+{
+    MGLRenderPassState state = {0};
+    if (mglRenderPassGetPersistentState(commandState, &state)) {
+        return state.visibility_result_type;
+    }
+    return 0u;
+}
+
+/* The @try/@catch of -createRenderEncoderLocked keeps the three-state result
+ * convention of log 174: 1 = body fell through, -1 = in-body failure (its
+ * side effects already applied), 0 = exception (the original @catch). */
+typedef struct MglPdCreateEncoderCtx_t {
+    void *renderer;
+    MGLRendererStateAreas *areas;
+    int result;
+} MglPdCreateEncoderCtx;
+
+static int mglPdCreateRenderEncoderTryBody(void *renderer, void *rawCtx)
+{
+    MglPdCreateEncoderCtx *ctx = (MglPdCreateEncoderCtx *)rawCtx;
+    MGLRendererStateAreas *areas = ctx->areas;
+    MGLRenderPassManager *manager = areas->render_pass_manager;
+    MGLCommandState *commandState = areas->command;
+
+    void *renderEncoder = mglPassManagerCreateRenderEncoder(manager);
+    mglPassManagerInstallRenderEncoder(manager, renderEncoder);
+    if (mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) != 1) {
+        fprintf(stderr,
+                "MGL ERROR: Failed to create render encoder - invalid render pass state or command buffer\n");
+        fprintf(stderr,
+                "MGL DEBUG: Command buffer owner: %p, Render pass state owner: %p\n",
+                commandState->currentCommandBufferOwner,
+                commandState->renderPassStateOwner);
+        mglRendererRecordGPUError(renderer);
+        ctx->result = -1;
+        return 0;
+    }
+    /* Enable visibility result mode on the encoder for all draws in this pass
+     * when a sample query is active. MTLVisibilityResultModeBoolean writes 1 to
+     * the buffer if any samples pass per-fragment tests. */
+    if (areas->query_state_owner &&
+        mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1) {
+        uint32_t visibilityMode = 0;
+        uint64_t visibilityOffset = 0;
+        if (mglRenderAcquireSampleQuerySlot(areas->query_state_owner,
+                                            &visibilityMode,
+                                            &visibilityOffset) == 0) {
+            mglRenderSetVisibilityResultModeForRenderEncoderOwner(
+                commandState->currentRenderEncoderOwner, visibilityMode,
+                visibilityOffset);
+        }
+    }
+    mglPassManagerUpdateRenderPassIdentityForContext(manager, areas->ctx);
+    /* When trace is disabled, skip the full-struct memset and trace call and
+     * clear only the functional flag fields. */
+    if (mglTraceLogIsEnabled()) {
+        mglTraceFragmentTextureTraceBindings(
+            "CLEAR", "new_render_encoder", areas->fragment_trace_bindings,
+            TEXTURE_UNITS, areas->ctx ? mglCurrentRenderProgramKey(areas->ctx) : 0u,
+            areas->pipeline_cache->pipelineProgramName);
+        memset(areas->fragment_trace_bindings, 0,
+               sizeof(*areas->fragment_trace_bindings) * TEXTURE_UNITS);
+    } else {
+        mglClearFragmentTextureTraceFunctionalFlags(
+            areas->fragment_trace_bindings, TEXTURE_UNITS);
+    }
+    if (kMglPdVerboseFrameLoopLogs) {
+        fprintf(stderr,
+                "MGL INFO: Successfully created Metal render encoder\n");
+    }
+    mglRendererRecordGPUSuccess(renderer);
+    ctx->result = 1;
+    return 1;
+}
+
+/* -createRenderEncoderLocked:. */
+int mglRenderPassCreateRenderEncoderLocked(void *renderer,
+                                           uint64_t renderEncoderCall)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGLRenderPassManager *manager = areas.render_pass_manager;
+    MGLCommandState *commandState = areas.command;
+
+    /* CRITICAL FIX: Validate command buffer state before creating render
+     * encoder */
+    MGLRenderCommandBufferState commandStateInfo = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
+            commandState->currentCommandBufferOwner, &commandStateInfo)) {
+        fprintf(stderr,
+                "MGL ERROR: Cannot create render encoder - command buffer is NULL\n");
+        mglRendererRecordGPUError(renderer);
+        return 0;
+    }
+
+    /* Check if command buffer already has an active encoder (Metal API
+     * violation) */
+    if (mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1) {
+        fprintf(stderr,
+                "MGL WARNING: Active render encoder detected - ending it before creating new one\n");
+        mglRendererEndRenderEncodingLocked(renderer);
+    }
+
+    /* Validate command buffer status. If already committed/completed, rotate to
+     * a new buffer. */
+    uint32_t bufferStatus = (uint32_t)commandStateInfo.status;
+    if (bufferStatus >= MGLCommandBufferStatusCommitted) {
+        fprintf(stderr,
+                "MGL WARNING: Render encoder requested on finalized command buffer (status: %ld) - creating a fresh command buffer\n",
+                (long)bufferStatus);
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to rotate command buffer before creating render encoder\n");
+            mglRendererRecordGPUError(renderer);
+            return 0;
+        }
+
+        if (!mglRenderCommandBufferOwnerHasState(
+                commandState->currentCommandBufferOwner, &commandStateInfo)) {
+            fprintf(stderr,
+                    "MGL ERROR: newCommandBuffer returned without a current command buffer\n");
+            mglRendererRecordGPUError(renderer);
+            return 0;
+        }
+
+        bufferStatus = (uint32_t)commandStateInfo.status;
+        if (bufferStatus >= MGLCommandBufferStatusCommitted) {
+            fprintf(stderr,
+                    "MGL ERROR: Fresh command buffer is still finalized (status: %ld)\n",
+                    (long)bufferStatus);
+            mglRendererRecordGPUError(renderer);
+            return 0;
+        }
+    }
+
+    if (kMglPdVerboseFrameLoopLogs) {
+        fprintf(stderr,
+                "MGL DEBUG: About to create render encoder with descriptor and command buffer\n");
+    }
+    {
+        static uint64_t s_renderPassPreCreateLogCount = 0;
+        const uint64_t hit = ++s_renderPassPreCreateLogCount;
+        if (mglTraceLogIsEnabled() &&
+            (hit <= 128ull || (hit % 512ull) == 0ull)) {
+            mglLogRenderPassLifecycle(
+                "pre-create", hit, ctx,
+                commandState->currentCommandBufferOwner,
+                commandState->currentRenderEncoderOwner,
+                commandState->renderPassStateOwner, areas.drawable,
+                commandState->renderPassFramebuffer,
+                commandState->renderPassFramebufferName,
+                commandState->renderPassDrawBuffer,
+                commandState->renderPassDrawBufferCount);
+            if (mglTraceLogIsEnabled()) {
+                void *c0 = mglPdColorTextureFor(commandState, 0);
+                void *depth = mglPdDepthTextureFor(commandState);
+                MGLRenderPassState rpSnapshot = {0};
+                (void)mglRenderPassGetPersistentState(commandState, &rpSnapshot);
+                mglTraceLog(
+                    "RENDERPASS_PRE_CREATE hit=%llu call=%llu program=%u fbo=%u drawBuf=0x%x readBuf=0x%x arrayLen=%lu colorLayered=%d depthLayered=%d stencilLayered=%d "
+                    "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d) "
+                    "c0=%p fmt=%lu size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s clearDepth=%.6f "
+                    "depthState(test=%d write=%d func=0x%x) pending(default=0x%x depth=0x%x)",
+                    (unsigned long long)hit,
+                    (unsigned long long)renderEncoderCall,
+                    (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
+                    (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
+                    (unsigned)(ctx ? mglPdState(&areas)->draw_buffer : 0u),
+                    (unsigned)(ctx ? mglPdState(&areas)->read_buffer : 0u),
+                    (unsigned long)rpSnapshot.render_target_array_length,
+                    (int)rpSnapshot.color[0].attachment.layered,
+                    (int)rpSnapshot.depth.attachment.layered,
+                    (int)rpSnapshot.stencil.attachment.layered,
+                    (int)(ctx ? mglPdState(&areas)->viewport[0] : 0),
+                    (int)(ctx ? mglPdState(&areas)->viewport[1] : 0),
+                    (int)(ctx ? mglPdState(&areas)->viewport[2] : 0),
+                    (int)(ctx ? mglPdState(&areas)->viewport[3] : 0),
+                    (ctx && mglPdState(&areas)->caps.scissor_test) ? 1 : 0,
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[0] : 0),
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[1] : 0),
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[2] : 0),
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[3] : 0),
+                    c0,
+                    (unsigned long)(c0 ? mglPdTextureInfo(c0).pixel_format
+                                       : mglRenderInvalidPixelFormat()),
+                    (unsigned long)(c0 ? mglPdTextureInfo(c0).width : 0),
+                    (unsigned long)(c0 ? mglPdTextureInfo(c0).height : 0),
+                    mglLoadActionName(mglPdLoadActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        0, MGLLoadActionDontCare)),
+                    mglStoreActionName(mglPdStoreActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        0, MGLStoreActionDontCare)),
+                    depth,
+                    (unsigned long)(depth ? mglPdTextureInfo(depth).pixel_format
+                                          : mglRenderInvalidPixelFormat()),
+                    (unsigned long)(depth ? mglPdTextureInfo(depth).width : 0),
+                    (unsigned long)(depth ? mglPdTextureInfo(depth).height : 0),
+                    mglLoadActionName(mglPdLoadActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH,
+                        0, MGLLoadActionDontCare)),
+                    mglStoreActionName(mglPdStoreActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH,
+                        0, MGLStoreActionDontCare)),
+                    mglPdClearDepthFor(commandState, 0.0),
+                    (ctx && mglPdState(&areas)->caps.depth_test) ? 1 : 0,
+                    (ctx && mglPdState(&areas)->var.depth_writemask) ? 1 : 0,
+                    (unsigned)(ctx ? mglPdState(&areas)->var.depth_func : 0u),
+                    (unsigned)(ctx ? mglPdState(&areas)->default_fbo_clear_bitmask
+                                   : 0u),
+                    (unsigned)(ctx && mglPdState(&areas)->framebuffer
+                                   ? mglPdState(&areas)
+                                         ->framebuffer->depth.clear_bitmask
+                                   : 0u));
+            }
+        }
+    }
+    /* When a GL sample query (GL_SAMPLES_PASSED / GL_ANY_SAMPLES_PASSED) is
+     * active, attach the visibility result buffer to the render-pass owner
+     * state so the GPU accumulates a fresh count. */
+    void *queryVisibilityBuffer = NULL;
+    if (areas.query_state_owner &&
+        mglRenderGetQueryVisibilityBuffer(areas.query_state_owner,
+                                          &queryVisibilityBuffer) == 0 &&
+        queryVisibilityBuffer) {
+        const uint32_t visibilityResultType =
+            mglPdVisibilityResultTypeFor(commandState);
+        mglRenderSetRenderPassStateVisibility(commandState->renderPassStateOwner,
+                                             queryVisibilityBuffer,
+                                             visibilityResultType);
+    }
+    MglPdCreateEncoderCtx encCtx = {renderer, &areas, 0};
+    if (!mglPlatformShellGuardedCallCtx(renderer, "render encoder creation",
+                                        mglPdCreateRenderEncoderTryBody, &encCtx,
+                                        NULL)) {
+        if (encCtx.result != -1) {
+            /* @catch (NSException *exception) */
+            fprintf(stderr,
+                    "MGL ERROR: Exception creating render encoder - continuing with degraded functionality\n");
+            mglRendererRecordGPUError(renderer);
+            mglPassManagerClearCurrentRenderEncoder(manager);
+        }
+        return 0;
+    }
+    mglRenderSetRenderEncoderOwnerLabel(
+        commandState->currentRenderEncoderOwner, "GL Render Encoder");
+    {
+        static uint64_t s_renderPassCreatedLogCount = 0;
+        const uint64_t hit = ++s_renderPassCreatedLogCount;
+        if (mglTraceLogIsEnabled() &&
+            (hit <= 128ull || (hit % 512ull) == 0ull)) {
+            mglLogRenderPassLifecycle(
+                "created", hit, ctx, commandState->currentCommandBufferOwner,
+                commandState->currentRenderEncoderOwner,
+                commandState->renderPassStateOwner, areas.drawable,
+                commandState->renderPassFramebuffer,
+                commandState->renderPassFramebufferName,
+                commandState->renderPassDrawBuffer,
+                commandState->renderPassDrawBufferCount);
+            if (mglTraceLogIsEnabled()) {
+                void *c0 = mglPdColorTextureFor(commandState, 0);
+                void *depth = mglPdDepthTextureFor(commandState);
+                mglTraceLog(
+                    "RENDERPASS_CREATED hit=%llu call=%llu program=%u fbo=%u rpFbo=%u drawBuf=0x%x readBuf=0x%x "
+                    "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d) "
+                    "c0=%p fmt=%lu size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s clearDepth=%.6f "
+                    "depthState(test=%d write=%d func=0x%x)",
+                    (unsigned long long)hit,
+                    (unsigned long long)renderEncoderCall,
+                    (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
+                    (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
+                    (unsigned)commandState->renderPassFramebufferName,
+                    (unsigned)(ctx ? mglPdState(&areas)->draw_buffer : 0u),
+                    (unsigned)(ctx ? mglPdState(&areas)->read_buffer : 0u),
+                    (int)(ctx ? mglPdState(&areas)->viewport[0] : 0),
+                    (int)(ctx ? mglPdState(&areas)->viewport[1] : 0),
+                    (int)(ctx ? mglPdState(&areas)->viewport[2] : 0),
+                    (int)(ctx ? mglPdState(&areas)->viewport[3] : 0),
+                    (ctx && mglPdState(&areas)->caps.scissor_test) ? 1 : 0,
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[0] : 0),
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[1] : 0),
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[2] : 0),
+                    (int)(ctx ? mglPdState(&areas)->var.scissor_box[3] : 0),
+                    c0,
+                    (unsigned long)(c0 ? mglPdTextureInfo(c0).pixel_format
+                                       : mglRenderInvalidPixelFormat()),
+                    (unsigned long)(c0 ? mglPdTextureInfo(c0).width : 0),
+                    (unsigned long)(c0 ? mglPdTextureInfo(c0).height : 0),
+                    mglLoadActionName(mglPdLoadActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        0, MGLLoadActionDontCare)),
+                    mglStoreActionName(mglPdStoreActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        0, MGLStoreActionDontCare)),
+                    depth,
+                    (unsigned long)(depth ? mglPdTextureInfo(depth).pixel_format
+                                          : mglRenderInvalidPixelFormat()),
+                    (unsigned long)(depth ? mglPdTextureInfo(depth).width : 0),
+                    (unsigned long)(depth ? mglPdTextureInfo(depth).height : 0),
+                    mglLoadActionName(mglPdLoadActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH,
+                        0, MGLLoadActionDontCare)),
+                    mglStoreActionName(mglPdStoreActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH,
+                        0, MGLStoreActionDontCare)),
+                    mglPdClearDepthFor(commandState, 0.0),
+                    (ctx && mglPdState(&areas)->caps.depth_test) ? 1 : 0,
+                    (ctx && mglPdState(&areas)->var.depth_writemask) ? 1 : 0,
+                    (unsigned)(ctx ? mglPdState(&areas)->var.depth_func : 0u));
+            }
+        }
+    }
     return 1;
 }

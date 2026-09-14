@@ -1839,8 +1839,10 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
                                              ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
                                              areas.pipeline_cache->pipelineProgramName);
 
+        /* The areas field is a pointer, so sizeof() would zero 8 bytes; the
+         * .m original zeroed the whole TEXTURE_UNITS-entry array. */
         memset(areas.fragment_trace_bindings, 0,
-               sizeof(areas.fragment_trace_bindings));
+               sizeof(*areas.fragment_trace_bindings) * TEXTURE_UNITS);
     } else {
         mglClearFragmentTextureTraceFunctionalFlags(
             areas.fragment_trace_bindings, TEXTURE_UNITS);
