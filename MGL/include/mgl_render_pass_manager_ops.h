@@ -61,6 +61,12 @@ int mglRenderPassNewCommandBufferLocked(void *renderer);
  * drawable and query-state-owner fields it reads. */
 /* -ensureWritableCommandBufferLocked: and -flushCommandBufferLocked: are C
  * now (log 176). */
+/* The two AIR passthrough vertex builders are C now (log 177); their
+ * ports retire with the move. */
+int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
+    void *renderer, Program *program, uint32_t outputPrimitive);
+int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(
+    void *renderer, Program *program);
 int mglRenderPassEnsureWritableCommandBufferLocked(void *renderer,
                                                   const char *reason);
 void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish);

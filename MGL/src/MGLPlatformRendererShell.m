@@ -457,26 +457,6 @@ int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
     return (r && [r prepareEmulatedIndirectCPURead:draw_ctx label:label]) ? 1 : 0;
 }
 
-int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
-                                                Program *program,
-                                                uint32_t output_primitive)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r ensureAIRGeometryPassthroughFunctionForProgram:program
-                                                  outputPrimitive:output_primitive])
-               ? 1
-               : 0;
-}
-
-int mglRendererEnsureAIRTessEvalPassthroughPort(void *renderer,
-                                                 Program *program)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r ensureAIRTessEvalPassthroughFunctionForProgram:program]) ? 1
-                                                                            : 0;
-}
-
-
 /* GPU capture: the capture session lives on the shell object, which owns the
  * MTLCaptureManager descriptor/start/stop calls. */
 void mglPlatformShellGpuCaptureStart(void *renderer)

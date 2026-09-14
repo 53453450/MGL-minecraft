@@ -1690,7 +1690,7 @@ bool mglTessDispatchAIRTessEvalCompute(
         ok = true;
         goto done;
     }
-    if (!mglRendererEnsureAIRTessEvalPassthroughPort(renderer, tes_program)) {
+    if (!mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(renderer, tes_program)) {
         fprintf(stderr,
                 "MGL TESS ERROR: TES passthrough vertex unavailable program=%u",
                 (unsigned)tes_program->name);

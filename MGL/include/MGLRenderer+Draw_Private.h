@@ -301,10 +301,9 @@ void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                     uint32_t explicit_vertex_count);
 - (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
 /* runVertexCaptureSession: had no caller left and was removed */
-/* now the C functions in mgl_draw_support.h */
-- (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
-                                      outputPrimitive:(uint32_t)outputPrimitive;
-- (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program;
+/* ensureAIRGeometryPassthroughFunctionForProgram:outputPrimitive: and
+ * ensureAIRTessEvalPassthroughFunctionForProgram: are the C functions
+ * mglRenderPassEnsureAIR*PassthroughFunctionForProgram (log 177). */
 /* the compute texture/sampler binding is the C entry
  * mglComputeBindTexturesToEncoder (mgl_compute_bind.h) now */
 

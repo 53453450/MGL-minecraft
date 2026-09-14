@@ -918,7 +918,7 @@ static void mglStageLogError(const char *msg)
 static int mglStageEnsurePassthrough(void *renderer, Program *program,
                                      uint32_t output_primitive)
 {
-    return mglRendererEnsureAIRGeometryPassthroughPort(renderer, program,
+    return mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(renderer, program,
                                                        output_primitive);
 }
 

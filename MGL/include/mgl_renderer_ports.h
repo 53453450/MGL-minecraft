@@ -339,12 +339,8 @@ int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,
                                                   const char *label);
-int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
-                                                Program *program,
-                                                uint32_t output_primitive);
 /* The TES-vertex passthrough function is still an Objective-C method in
  * MGLRenderer+RenderPass.m; this port retires with it.  Added by log 128. */
-int mglRendererEnsureAIRTessEvalPassthroughPort(void *renderer, Program *program);
 
 
 /* GPU capture (the MGLPlatformRendererShell class owns the Metal capture
