@@ -35,6 +35,7 @@
 #include "mgl_blit_sampled_copy.h" /* mglBlitUpdateGLSampledRenderTargetCopy */
 #include "mgl_readback.h"          /* integer-color format predicates */
 #include "mgl_texture_compat.h"   /* mglMarkTextureLevelRenderTargetWritten */
+#include "mgl_state_compat.h"   /* mglNearlyEqual */
 #include "mgl_types_texture.h"
 #include "mgl_region_value.h"      /* regions / origins / sizes */
 #include "error.h"               /* mglDispatchError */
@@ -296,4 +297,141 @@ void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
             renderer, read_texture_object, readtexid,
             "blit_framebuffer_copy_src");
     }
+}
+
+/* --- -blitFramebufferIntegerColorWithState: ------------------------------ */
+
+bool mglBlitIntegerColorWithState(void *renderer, const MGLBlitColorState *st)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    void *readtexid = st->readtexid;
+    void *drawtexid = st->drawtexid;
+    MGLMetalAttachmentSubresource read_subresource = st->readSubresource;
+    MGLMetalAttachmentSubresource draw_subresource = st->drawSubresource;
+    int64_t copy_w = st->copyW;
+    int64_t copy_h = st->copyH;
+    int64_t copy_src_x = st->copySrcX;
+    int64_t src_metal_y = st->srcMetalY;
+    int64_t copy_dst_x = st->copyDstX;
+    int64_t dst_metal_y = st->dstMetalY;
+    size_t src_tex_w = st->srcTexW;
+    size_t src_tex_h = st->srcTexH;
+    size_t dst_tex_w = st->dstTexW;
+    size_t dst_tex_h = st->dstTexH;
+    Texture *read_texture_object = st->readTextureObject;
+    Texture *draw_texture_object = st->drawTextureObject;
+    FBOAttachment *draw_fbo_attachment = st->drawFBOAttachment;
+    int blit_needs_flip = st->blitNeedsFlip;
+    double src_w = st->srcW;
+    double src_h = st->srcH;
+    double dst_w = st->dstW;
+    double dst_h = st->dstH;
+    if (mglBcTextureInfo(readtexid).sample_count > 1u &&
+        mglBcTextureInfo(drawtexid).sample_count <= 1u &&
+        mglMetalPixelFormatIsIntegerColor(
+            mglBcTextureInfo(readtexid).pixel_format)) {
+        if (copy_w <= 0 || copy_h <= 0 || copy_src_x < 0 || src_metal_y < 0 ||
+            copy_dst_x < 0 || dst_metal_y < 0 ||
+            copy_src_x + copy_w > (int64_t)src_tex_w ||
+            src_metal_y + copy_h > (int64_t)src_tex_h ||
+            copy_dst_x + copy_w > (int64_t)dst_tex_w ||
+            dst_metal_y + copy_h > (int64_t)dst_tex_h) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer integer MSAA resolve invalid "
+                    "src=(%ld,%ld %ldx%ld) dst=(%ld,%ld) srcTex=%lux%lu "
+                    "dstTex=%lux%lu\n",
+                    (long)copy_src_x, (long)src_metal_y, (long)copy_w,
+                    (long)copy_h, (long)copy_dst_x, (long)dst_metal_y,
+                    (unsigned long)src_tex_w, (unsigned long)src_tex_h,
+                    (unsigned long)dst_tex_w, (unsigned long)dst_tex_h);
+            return true;
+        }
+
+        bool resolved_integer = mglBlitResolveIntegerMultisampleTexture(
+            renderer, readtexid, drawtexid,
+            mglBlitOrigin((size_t)copy_src_x, (size_t)src_metal_y,
+                          read_subresource.depthPlane),
+            mglBlitOrigin((size_t)copy_dst_x, (size_t)dst_metal_y,
+                          draw_subresource.depthPlane),
+            mglBlitSize((size_t)copy_w, (size_t)copy_h, 1u),
+            "blitFramebuffer.integerMsaa");
+        if (!resolved_integer) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer integer MSAA resolve failed "
+                    "fmt=%lu\n",
+                    (unsigned long)mglBcTextureInfo(readtexid).pixel_format);
+            return true;
+        }
+        if (draw_texture_object && draw_fbo_attachment) {
+            mglMarkTextureLevelRenderTargetWrittenImpl(
+                draw_texture_object, draw_fbo_attachment->level,
+                "mgl_blit_color_paths.c", __LINE__);
+            (void)mglBlitUpdateGLSampledRenderTargetCopy(
+                renderer, draw_texture_object, drawtexid,
+                "blit_framebuffer_integer_msaa");
+        }
+        return true;
+    }
+
+    if (mglBcTextureInfo(readtexid).sample_count <= 1u &&
+        mglBcTextureInfo(drawtexid).sample_count <= 1u &&
+        mglBcTextureInfo(readtexid).pixel_format ==
+            mglBcTextureInfo(drawtexid).pixel_format &&
+        mglMetalPixelFormatIsIntegerColor(
+            mglBcTextureInfo(readtexid).pixel_format) &&
+        !blit_needs_flip && mglNearlyEqual(src_w, dst_w) &&
+        mglNearlyEqual(src_h, dst_h)) {
+        if (copy_w <= 0 || copy_h <= 0 || copy_src_x < 0 || src_metal_y < 0 ||
+            copy_dst_x < 0 || dst_metal_y < 0 ||
+            copy_src_x + copy_w > (int64_t)src_tex_w ||
+            src_metal_y + copy_h > (int64_t)src_tex_h ||
+            copy_dst_x + copy_w > (int64_t)dst_tex_w ||
+            dst_metal_y + copy_h > (int64_t)dst_tex_h) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer integer direct blit invalid "
+                    "src=(%ld,%ld %ldx%ld) dst=(%ld,%ld) srcTex=%lux%lu "
+                    "dstTex=%lux%lu\n",
+                    (long)copy_src_x, (long)src_metal_y, (long)copy_w,
+                    (long)copy_h, (long)copy_dst_x, (long)dst_metal_y,
+                    (unsigned long)src_tex_w, (unsigned long)src_tex_h,
+                    (unsigned long)dst_tex_w, (unsigned long)dst_tex_h);
+            return true;
+        }
+
+        void *integer_blit =
+            mglRenderCreateBlitEncoderBorrowed(mglBcCommandBufferOwner(&areas));
+        if (!integer_blit) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer failed to create integer direct "
+                    "blit encoder\n");
+            return true;
+        }
+        if (read_texture_object && read_texture_object->is_render_target) {
+            mglBcSynchronizeTexture(integer_blit, readtexid,
+                                    read_subresource.slice,
+                                    read_subresource.level);
+        }
+        mglBcCopyTexture(
+            integer_blit, readtexid, read_subresource.slice,
+            read_subresource.level,
+            mglBlitOrigin((size_t)copy_src_x, (size_t)src_metal_y,
+                          read_subresource.depthPlane),
+            mglBlitSize((size_t)copy_w, (size_t)copy_h, 1u), drawtexid,
+            draw_subresource.slice, draw_subresource.level,
+            mglBlitOrigin((size_t)copy_dst_x, (size_t)dst_metal_y,
+                          draw_subresource.depthPlane));
+        mglBcEndBlitEncoder(integer_blit);
+        if (draw_texture_object && draw_fbo_attachment) {
+            mglMarkTextureLevelRenderTargetWrittenImpl(
+                draw_texture_object, draw_fbo_attachment->level,
+                "mgl_blit_color_paths.c", __LINE__);
+            (void)mglBlitUpdateGLSampledRenderTargetCopy(
+                renderer, draw_texture_object, drawtexid,
+                "blit_framebuffer_integer_direct");
+        }
+        return true;
+    }
+    return false;
 }

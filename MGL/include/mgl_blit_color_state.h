@@ -71,6 +71,10 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
                                              MGLSizeValue size,
                                              const char *reason);
 
+/* -blitFramebufferIntegerColorWithState: */
+bool mglBlitIntegerColorWithState(void *renderer,
+                                  const MGLBlitColorState *state);
+
 /* -blitFramebufferDirectColorCopyWithState: */
 void mglBlitDirectColorWithState(void *renderer,
                                  const MGLBlitColorState *state);

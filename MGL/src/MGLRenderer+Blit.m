@@ -1220,125 +1220,6 @@ static void mglBlitSynchronizeTexture(id encoder,
  * Handles MSAA-resolve and direct-blit for integer pixel formats via
  * resolveIntegerMultisampleTexture: or MTLBlitCommandEncoder.
  * Returns YES if a path was taken (caller should return). */
-- (BOOL)blitFramebufferIntegerColorWithState:(MGLBlitColorState *)st
-{
-    id readtexid = (__bridge id)st->readtexid;
-    id drawtexid = (__bridge id)st->drawtexid;
-    MGLMetalAttachmentSubresource readSubresource = st->readSubresource;
-    MGLMetalAttachmentSubresource drawSubresource = st->drawSubresource;
-    NSInteger copyW = st->copyW;
-    NSInteger copyH = st->copyH;
-    NSInteger copySrcX = st->copySrcX;
-    NSInteger srcMetalY = st->srcMetalY;
-    NSInteger copyDstX = st->copyDstX;
-    NSInteger dstMetalY = st->dstMetalY;
-    NSUInteger srcTexW = st->srcTexW;
-    NSUInteger srcTexH = st->srcTexH;
-    NSUInteger dstTexW = st->dstTexW;
-    NSUInteger dstTexH = st->dstTexH;
-    Texture *readTextureObject = st->readTextureObject;
-    Texture *drawTextureObject = st->drawTextureObject;
-    FBOAttachment *drawFBOAttachment = st->drawFBOAttachment;
-    BOOL blitNeedsFlip = st->blitNeedsFlip;
-    double srcW = st->srcW;
-    double srcH = st->srcH;
-    double dstW = st->dstW;
-    double dstH = st->dstH;
-    if (mglBlitTextureInfo(readtexid).sample_count > 1u &&
-        mglBlitTextureInfo(drawtexid).sample_count <= 1u &&
-        mglMetalPixelFormatIsIntegerColor(mglBlitTextureInfo(readtexid).pixel_format)) {
-        if (copyW <= 0 || copyH <= 0 ||
-            copySrcX < 0 || srcMetalY < 0 || copyDstX < 0 || dstMetalY < 0 ||
-            copySrcX + copyW > (NSInteger)srcTexW ||
-            srcMetalY + copyH > (NSInteger)srcTexH ||
-            copyDstX + copyW > (NSInteger)dstTexW ||
-            dstMetalY + copyH > (NSInteger)dstTexH) {
-            NSLog(@"MGL WARN: mtlBlitFramebuffer integer MSAA resolve invalid src=(%ld,%ld %ldx%ld) dst=(%ld,%ld) srcTex=%lux%lu dstTex=%lux%lu",
-                  (long)copySrcX, (long)srcMetalY, (long)copyW, (long)copyH,
-                  (long)copyDstX, (long)dstMetalY,
-                  (unsigned long)srcTexW,
-                  (unsigned long)srcTexH,
-                  (unsigned long)dstTexW,
-                  (unsigned long)dstTexH);
-            return YES;
-        }
-
-        BOOL resolvedInteger =
-            /* The integer MSAA resolve is C now (log 136). */
-            mglBlitResolveIntegerMultisampleTexture(
-                (__bridge void *)self, (__bridge void *)readtexid,
-                (__bridge void *)drawtexid,
-                mglBlitOrigin((size_t)copySrcX, (size_t)srcMetalY,
-                              readSubresource.depthPlane),
-                mglBlitOrigin((size_t)copyDstX, (size_t)dstMetalY,
-                              drawSubresource.depthPlane),
-                mglBlitSize((size_t)copyW, (size_t)copyH, 1u),
-                "blitFramebuffer.integerMsaa");
-        if (!resolvedInteger) {
-            NSLog(@"MGL WARN: mtlBlitFramebuffer integer MSAA resolve failed fmt=%lu",
-                  (unsigned long)mglBlitTextureInfo(readtexid).pixel_format);
-            return YES;
-        }
-        if (drawTextureObject && drawFBOAttachment) {
-            mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
-            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, drawTextureObject, (__bridge void *)drawtexid, "blit_framebuffer_integer_msaa");
-        }
-        return YES;
-    }
-
-    if (mglBlitTextureInfo(readtexid).sample_count <= 1u &&
-        mglBlitTextureInfo(drawtexid).sample_count <= 1u &&
-        mglBlitTextureInfo(readtexid).pixel_format == mglBlitTextureInfo(drawtexid).pixel_format &&
-        mglMetalPixelFormatIsIntegerColor(mglBlitTextureInfo(readtexid).pixel_format) &&
-        !blitNeedsFlip &&
-        mglNearlyEqual(srcW, dstW) &&
-        mglNearlyEqual(srcH, dstH)) {
-        if (copyW <= 0 || copyH <= 0 ||
-            copySrcX < 0 || srcMetalY < 0 || copyDstX < 0 || dstMetalY < 0 ||
-            copySrcX + copyW > (NSInteger)srcTexW ||
-            srcMetalY + copyH > (NSInteger)srcTexH ||
-            copyDstX + copyW > (NSInteger)dstTexW ||
-            dstMetalY + copyH > (NSInteger)dstTexH) {
-            NSLog(@"MGL WARN: mtlBlitFramebuffer integer direct blit invalid src=(%ld,%ld %ldx%ld) dst=(%ld,%ld) srcTex=%lux%lu dstTex=%lux%lu",
-                  (long)copySrcX, (long)srcMetalY, (long)copyW, (long)copyH,
-                  (long)copyDstX, (long)dstMetalY,
-                  (unsigned long)srcTexW,
-                  (unsigned long)srcTexH,
-                  (unsigned long)dstTexW,
-                  (unsigned long)dstTexH);
-            return YES;
-        }
-
-        id integerBlit =
-            (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                _renderPassManager->state->currentCommandBufferOwner);
-        if (!integerBlit) {
-            NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create integer direct blit encoder");
-            return YES;
-        }
-        if (readTextureObject && readTextureObject->is_render_target) {
-            mglBlitSynchronizeTexture(integerBlit, readtexid,
-                                      readSubresource.slice,
-                                      readSubresource.level);
-        }
-        mglBlitCopyTexture(
-            integerBlit, readtexid, readSubresource.slice,
-            readSubresource.level,
-            mglBlitOrigin((NSUInteger)copySrcX, (NSUInteger)srcMetalY,
-                          readSubresource.depthPlane),
-            mglBlitSize((NSUInteger)copyW, (NSUInteger)copyH, 1u),
-            drawtexid, drawSubresource.slice, drawSubresource.level,
-            mglBlitOrigin((NSUInteger)copyDstX, (NSUInteger)dstMetalY,
-                          drawSubresource.depthPlane));
-        mglBlitEndBlitEncoder(integerBlit);
-        if (drawTextureObject && drawFBOAttachment) {
-            mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
-            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, drawTextureObject, (__bridge void *)drawtexid, "blit_framebuffer_integer_direct");
-        }
-        return YES;
-    }
-    return NO;
-}
 
 /* Scaled / format-converted / Y-flipped color blit for mtlBlitFramebuffer.
  * Uses a render pass with a scaled-blit shader pipeline.
@@ -1956,7 +1837,7 @@ static void mglBlitSynchronizeTexture(id encoder,
     st.dstMetalY = dstMetalY;
     st.scaledDstMetalY = scaledDstMetalY;
 
-    if ([self blitFramebufferIntegerColorWithState:&st]) {
+    if (mglBlitIntegerColorWithState((__bridge void *)self, &st)) {
         return;
     }
 
