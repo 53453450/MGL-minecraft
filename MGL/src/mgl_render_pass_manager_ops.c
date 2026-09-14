@@ -23,6 +23,9 @@
 #include "mgl_batch_issue.h"          /* mglBatchBindActiveTexturesToMTL */
 #include "mgl_stage_encode_drivers.h" /* stage encode bind drivers */
 #include "mgl_frame_activity.h"     /* MGL_ENC_REASON_* */
+#include "mgl_trace_log.h"         /* mglTraceLog, kMGLDiagnosticStateLogs */
+#include "mgl_gpu_recovery.h"      /* mglRendererRecordGPUError */
+#include "mgl_pso_format_class.h"  /* mglRenderDefaultColorPixelFormat */
 #include "mgl_render.h"           /* attachment kinds, MS plane adjust */
 #include "mgl_texture_compat.h"   /* mglMetalTextureLevelDimension */
 
@@ -1034,6 +1037,448 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
                 commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
                 tex->mtl_data, subresource.level, subresource.slice,
                 subresource.depthPlane, fbo->stencil.layered ? 1 : 0);
+        }
+    }
+    return true;
+}
+
+/* === render-pass descriptor finalization (log 171) ====================== */
+
+/* Defined in MGLRenderer.m; declared in the Objective-C
+ * MGLRenderer+RenderPass_Private.h. */
+extern GLuint mglRendererSafeFramebufferName(GLMContext ctx);
+
+/* C twins of the .m statics the moved method used. */
+static void *mglPdDepthTextureFor(const MGLCommandState *commandState)
+{
+    return mglPdAttachmentTextureFor(
+        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0u);
+}
+
+static void *mglPdStencilTextureFor(const MGLCommandState *commandState)
+{
+    return mglPdAttachmentTextureFor(
+        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0u);
+}
+
+static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
+{
+    MGLRenderTextureInfo info = {0};
+    if (texture) {
+        (void)mglRenderGetTextureInfo(texture, &info);
+    }
+    return info;
+}
+
+static bool mglPdActionsFor(const MGLCommandState *commandState,
+                            uint32_t attachmentKind, size_t colorIndex,
+                            uint32_t *loadActionOut, uint32_t *storeActionOut,
+                            uint64_t *storeActionOptionsOut)
+{
+    MGLRenderPassAttachmentState attachment = {0};
+    if (mglPdGetPersistentAttachmentState(commandState, attachmentKind,
+                                          colorIndex, &attachment)) {
+        if (loadActionOut) *loadActionOut = attachment.load_action;
+        if (storeActionOut) *storeActionOut = attachment.store_action;
+        if (storeActionOptionsOut) {
+            *storeActionOptionsOut = attachment.store_action_options;
+        }
+        return true;
+    }
+    return false;
+}
+
+static uint32_t mglPdLoadActionFor(const MGLCommandState *commandState,
+                                   uint32_t attachmentKind, size_t colorIndex,
+                                   uint32_t fallback)
+{
+    uint32_t action = 0u;
+    if (mglPdActionsFor(commandState, attachmentKind, colorIndex, &action, NULL,
+                        NULL)) {
+        return action;
+    }
+    return fallback;
+}
+
+static uint32_t mglPdStoreActionFor(const MGLCommandState *commandState,
+                                    uint32_t attachmentKind, size_t colorIndex,
+                                    uint32_t fallback)
+{
+    uint32_t action = 0u;
+    if (mglPdActionsFor(commandState, attachmentKind, colorIndex, NULL, &action,
+                        NULL)) {
+        return action;
+    }
+    return fallback;
+}
+
+static void mglPdSetPersistentActions(const MGLCommandState *commandState,
+                                      uint32_t attachmentKind,
+                                      size_t colorIndex, uint32_t loadAction,
+                                      uint32_t storeAction)
+{
+    if (!commandState) return;
+    MGLRenderPassAttachmentState state = {0};
+    if (!mglPdGetPersistentAttachmentState(commandState, attachmentKind,
+                                           colorIndex, &state)) {
+        return;
+    }
+    if (commandState->renderPassStateOwner) {
+        (void)mglRenderSetRenderPassStateAttachmentActions(
+            commandState->renderPassStateOwner, attachmentKind,
+            (uint32_t)colorIndex, loadAction, storeAction,
+            state.store_action_options);
+    }
+}
+
+static void mglPdSetPersistentStoreAction(const MGLCommandState *commandState,
+                                          uint32_t attachmentKind,
+                                          size_t colorIndex,
+                                          uint32_t storeAction)
+{
+    uint32_t loadAction = (uint32_t)MGLLoadActionDontCare;
+    MGLRenderPassAttachmentState state = {0};
+    if (mglPdGetPersistentAttachmentState(commandState, attachmentKind,
+                                          colorIndex, &state)) {
+        loadAction = (uint32_t)state.load_action;
+    } else {
+        return;
+    }
+    mglPdSetPersistentActions(commandState, attachmentKind, colorIndex,
+                              loadAction, storeAction);
+}
+
+static MGLRendererBackendHandle *mglPdBackend(GLMContext ctx)
+{
+    return ctx ? (MGLRendererBackendHandle *)ctx->renderer_backend : NULL;
+}
+
+static void *mglPdFallbackRenderTarget(GLMContext ctx)
+{
+    return mglRendererBackendGetFallbackRenderTargetTexture(mglPdBackend(ctx));
+}
+
+/* The .m twin returns (__bridge_transfer id): ARC consumes the +1 the creator
+ * hands back.  C has no ARC, so the reference is left to the backend's own
+ * ownership - the texture is reusable and the context creates at most one. */
+static void *mglPdCreateTexture(
+    const MGLRenderTextureDescriptorState *descriptor)
+{
+    void *texture = NULL;
+    if (mglRenderCreateTextureFromState(descriptor, NULL, &texture) == 0 &&
+        texture) {
+        return texture;
+    }
+    return NULL;
+}
+
+static uint64_t mglPdMax(uint64_t a, uint64_t b) { return a > b ? a : b; }
+
+static void *mglPdFallbackRenderTargetForSize(GLMContext ctx, uint64_t width,
+                                              uint64_t height,
+                                              uint64_t layerCount,
+                                              uint64_t sampleCount)
+{
+    width = mglPdMax(width, 1u);
+    height = mglPdMax(height, 1u);
+    sampleCount = mglPdMax(sampleCount, 1u);
+    const int layered = layerCount > 0u;
+    const uint64_t arrayLength = layered ? mglPdMax(layerCount, 1u) : 1u;
+    const uint32_t textureType =
+        layered ? (uint32_t)MGLTextureType2DArray : (uint32_t)MGLTextureType2D;
+    void *texture = mglPdFallbackRenderTarget(ctx);
+    MGLRenderTextureInfo info = mglPdTextureInfo(texture);
+    if (texture && info.width == width && info.height == height &&
+        info.array_length == arrayLength && info.texture_type == textureType &&
+        info.sample_count == sampleCount) {
+        return texture;
+    }
+
+    MGLRenderTextureDescriptorState desc = {0};
+    desc.texture_type = textureType;
+    desc.pixel_format = mglRenderDefaultColorPixelFormat();
+    desc.width = width;
+    desc.height = height;
+    desc.depth = 1;
+    desc.mipmap_level_count = 1;
+    desc.sample_count = sampleCount;
+    desc.array_length = arrayLength;
+    desc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
+    desc.storage_mode = MGLStorageModeShared;
+    void *replacement = mglPdCreateTexture(&desc);
+    if (!replacement ||
+        mglRendererBackendSetFallbackRenderTargetTexture(mglPdBackend(ctx),
+                                                         replacement) != 0) {
+        return NULL;
+    }
+    return mglPdFallbackRenderTarget(ctx);
+}
+
+/* MGLRenderer+RenderPass_Private.h: `static const BOOL
+ * kMGLVerboseFrameLoopLogs = NO;` - kept so the branch below stays verbatim. */
+static const int kMglPdVerboseFrameLoopLogs = 0;
+
+/* -finalizeRenderPassDescriptorLocked:traceRenderEncoder:. */
+bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
+                                               uint64_t renderEncoderCall,
+                                               int traceRenderEncoder)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGLCommandState *commandState = areas.command;
+
+    mglPdSetPersistentStoreAction(commandState,
+                                 MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                                 MGLStoreActionStore);
+
+    if (kMGLDiagnosticStateLogs && traceRenderEncoder) {
+        void *c0Tex = mglPdAttachmentTextureFor(
+            commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+        void *dTex = mglPdDepthTextureFor(commandState);
+        void *sTex = mglPdStencilTextureFor(commandState);
+        mglTraceLog(
+            "MGL TRACE renderpass.attach call=%llu fbo=%u drawBuf=0x%x rt=%lux%lu "
+            "c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s stencil=%p fmt=%lu size=%lux%lu la/sa=%s/%s",
+            (unsigned long long)renderEncoderCall,
+            (unsigned)mglRendererSafeFramebufferName(ctx),
+            (unsigned)mglPdState(&areas)->draw_buffer,
+            (unsigned long)mglPdRenderTargetWidthFor(commandState),
+            (unsigned long)mglPdRenderTargetHeightFor(commandState), c0Tex,
+            (unsigned long)(c0Tex ? mglPdTextureInfo(c0Tex).pixel_format
+                                  : mglRenderInvalidPixelFormat()),
+            (unsigned long)(c0Tex ? mglPdTextureInfo(c0Tex).usage : 0),
+            (unsigned long)(c0Tex ? mglPdTextureInfo(c0Tex).width : 0),
+            (unsigned long)(c0Tex ? mglPdTextureInfo(c0Tex).height : 0),
+            mglLoadActionName(mglPdLoadActionFor(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGLLoadActionDontCare)),
+            mglStoreActionName(mglPdStoreActionFor(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGLStoreActionDontCare)),
+            dTex,
+            (unsigned long)(dTex ? mglPdTextureInfo(dTex).pixel_format
+                                 : mglRenderInvalidPixelFormat()),
+            (unsigned long)(dTex ? mglPdTextureInfo(dTex).width : 0),
+            (unsigned long)(dTex ? mglPdTextureInfo(dTex).height : 0),
+            mglLoadActionName(mglPdLoadActionFor(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                MGLLoadActionDontCare)),
+            mglStoreActionName(mglPdStoreActionFor(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                MGLStoreActionDontCare)),
+            sTex,
+            (unsigned long)(sTex ? mglPdTextureInfo(sTex).pixel_format
+                                 : mglRenderInvalidPixelFormat()),
+            (unsigned long)(sTex ? mglPdTextureInfo(sTex).width : 0),
+            (unsigned long)(sTex ? mglPdTextureInfo(sTex).height : 0),
+            mglLoadActionName(mglPdLoadActionFor(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MGLLoadActionDontCare)),
+            mglStoreActionName(mglPdStoreActionFor(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MGLStoreActionDontCare)));
+    }
+
+    /* create a render encoder from the renderpass descriptor
+     * CRITICAL SAFETY: Validate inputs before creating render encoder */
+    const int hasRenderPassState =
+        commandState->renderPassStateOwner != NULL;
+    if (!hasRenderPassState) {
+        fprintf(stderr,
+                "MGL ERROR: Cannot create render encoder - state owner is NULL\n");
+        mglRendererRecordGPUError(renderer);
+        return false;
+    }
+
+    /* Metal debug layer crashes if render pass has no output attachment.
+     * Provide a tiny fallback color attachment for targetless/invalid passes. */
+    bool hasOutputAttachment = false;
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        if (mglPdAttachmentTextureFor(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                (size_t)i)) {
+            hasOutputAttachment = true;
+            break;
+        }
+    }
+    if (!hasOutputAttachment &&
+        (mglPdDepthTextureFor(commandState) ||
+         mglPdStencilTextureFor(commandState))) {
+        hasOutputAttachment = true;
+    }
+
+    if (!hasOutputAttachment) {
+        Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+        const uint64_t fallbackWidth =
+            fbo && fbo->default_width > 0 ? (uint64_t)fbo->default_width : 1u;
+        const uint64_t fallbackHeight =
+            fbo && fbo->default_height > 0 ? (uint64_t)fbo->default_height : 1u;
+        const uint64_t fallbackLayers =
+            fbo && fbo->default_layers > 0 ? (uint64_t)fbo->default_layers : 0u;
+        const uint64_t fallbackSamples =
+            fbo && fbo->default_samples > 0 ? (uint64_t)fbo->default_samples : 1u;
+        void *fallbackRenderTarget = mglPdFallbackRenderTargetForSize(
+            ctx, fallbackWidth, fallbackHeight, fallbackLayers,
+            fallbackSamples);
+
+        if (fallbackRenderTarget) {
+            fprintf(stderr,
+                    "MGL WARNING: Render pass had no attachments; binding %lux%lu fallback color target\n",
+                    (unsigned long)fallbackWidth, (unsigned long)fallbackHeight);
+            mglPdSetPersistentAttachment(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                fallbackRenderTarget, 0, 0, 0,
+                fallbackLayers > 0u ? 1 : 0);
+            mglPdSetPersistentActions(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGLLoadActionLoad, MGLStoreActionStore);
+            mglPdSetPersistentDimensions(commandState, fallbackWidth,
+                                         fallbackHeight);
+        } else {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to allocate fallback render target texture\n");
+            mglRendererRecordGPUError(renderer);
+            return false;
+        }
+    }
+
+    /* Final guard: Metal will assert if a color attachment texture is missing
+     * RenderTarget usage. */
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        void *attTex = mglPdAttachmentTextureFor(
+            commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, (size_t)i);
+        if (attTex &&
+            (mglPdTextureInfo(attTex).usage & MGLTextureUsageRenderTarget) == 0) {
+            fprintf(stderr,
+                    "MGL WARNING: colorAttachment[%d] usage=0x%lx lacks RenderTarget; clearing attachment to avoid Metal assert\n",
+                    i, (unsigned long)mglPdTextureInfo(attTex).usage);
+            uint64_t clearLevel = 0u, clearSlice = 0u, clearDepthPlane = 0u;
+            (void)mglRenderGetRenderPassAttachmentSubresourceOwner(
+                commandState->renderPassStateOwner,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, (uint32_t)i,
+                &clearLevel, &clearSlice, &clearDepthPlane);
+            mglPdSetPersistentAttachment(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                (size_t)i, NULL, clearLevel, clearSlice, clearDepthPlane, 0);
+        }
+    }
+
+    /* Default-framebuffer paths expect color attachment 0 specifically.
+     * FBO draw-buffer mappings may intentionally leave slot 0 as GL_NONE. */
+    if (!mglPdState(&areas)->framebuffer &&
+        !mglPdAttachmentTextureFor(commandState,
+                                   MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                                   0)) {
+        for (int i = 1; i < MAX_COLOR_ATTACHMENTS; i++) {
+            if (mglPdAttachmentTextureFor(
+                    commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                    (size_t)i)) {
+                fprintf(stderr,
+                        "MGL WARNING: colorAttachment[0] missing; remapping colorAttachment[%d] -> [0]\n",
+                        i);
+                uint64_t srcLevel = 0u, srcSlice = 0u, srcDepthPlane = 0u;
+                (void)mglRenderGetRenderPassAttachmentSubresourceOwner(
+                    commandState->renderPassStateOwner,
+                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, (uint32_t)i,
+                    &srcLevel, &srcSlice, &srcDepthPlane);
+                mglPdSetPersistentAttachment(
+                    commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    mglPdAttachmentTextureFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        (size_t)i),
+                    srcLevel, srcSlice, srcDepthPlane, 0);
+                mglPdSetPersistentActions(
+                    commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    mglPdLoadActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        (size_t)i, MGLLoadActionLoad),
+                    mglPdStoreActionFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        (size_t)i, MGLStoreActionStore));
+                break;
+            }
+        }
+    }
+
+    /* Ultimate slot-0 fallback to keep draw path alive and avoid black frame. */
+    if (!hasOutputAttachment &&
+        !mglPdAttachmentTextureFor(commandState,
+                                   MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                                   0)) {
+        Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+        const uint64_t fallbackWidth =
+            fbo && fbo->default_width > 0 ? (uint64_t)fbo->default_width : 1u;
+        const uint64_t fallbackHeight =
+            fbo && fbo->default_height > 0 ? (uint64_t)fbo->default_height : 1u;
+        const uint64_t fallbackLayers =
+            fbo && fbo->default_layers > 0 ? (uint64_t)fbo->default_layers : 0u;
+        const uint64_t fallbackSamples =
+            fbo && fbo->default_samples > 0 ? (uint64_t)fbo->default_samples : 1u;
+        void *fallbackRenderTarget = mglPdFallbackRenderTargetForSize(
+            ctx, fallbackWidth, fallbackHeight, fallbackLayers,
+            fallbackSamples);
+        if (fallbackRenderTarget) {
+            fprintf(stderr,
+                    "MGL WARNING: colorAttachment[0] unavailable; binding %lux%lu fallback\n",
+                    (unsigned long)fallbackWidth, (unsigned long)fallbackHeight);
+            mglPdSetPersistentAttachment(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                fallbackRenderTarget, 0, 0, 0,
+                fallbackLayers > 0u ? 1 : 0);
+            mglPdSetPersistentActions(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MGLLoadActionLoad, MGLStoreActionStore);
+            mglPdSetPersistentDimensions(commandState, fallbackWidth,
+                                         fallbackHeight);
+        } else {
+            fprintf(stderr,
+                    "MGL ERROR: Unable to allocate fallback colorAttachment[0] texture\n");
+            mglRendererRecordGPUError(renderer);
+            return false;
+        }
+    }
+
+    /* Ensure renderTargetWidth/Height are always coherent with the active
+     * attachments. */
+    {
+        void *sizeTex = mglPdAttachmentTextureFor(
+            commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+        if (!sizeTex) {
+            for (int i = 1; i < MAX_COLOR_ATTACHMENTS; i++) {
+                if (mglPdAttachmentTextureFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        (size_t)i)) {
+                    sizeTex = mglPdAttachmentTextureFor(
+                        commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                        (size_t)i);
+                    break;
+                }
+            }
+        }
+        if (!sizeTex) {
+            sizeTex = mglPdDepthTextureFor(commandState);
+        }
+        if (!sizeTex) {
+            sizeTex = mglPdStencilTextureFor(commandState);
+        }
+
+        if (sizeTex) {
+            const uint64_t texWidth = mglPdTextureInfo(sizeTex).width;
+            const uint64_t texHeight = mglPdTextureInfo(sizeTex).height;
+            if (mglPdRenderTargetWidthFor(commandState) == 0 ||
+                mglPdRenderTargetHeightFor(commandState) == 0 ||
+                mglPdRenderTargetWidthFor(commandState) > texWidth ||
+                mglPdRenderTargetHeightFor(commandState) > texHeight) {
+                if (kMglPdVerboseFrameLoopLogs) {
+                    fprintf(stderr,
+                            "MGL INFO: Normalizing renderTarget size from %lux%lu to %lux%lu\n",
+                            (unsigned long)mglPdRenderTargetWidthFor(commandState),
+                            (unsigned long)mglPdRenderTargetHeightFor(commandState),
+                            (unsigned long)texWidth, (unsigned long)texHeight);
+                }
+                mglPdSetPersistentDimensions(commandState, texWidth, texHeight);
+            }
         }
     }
     return true;
