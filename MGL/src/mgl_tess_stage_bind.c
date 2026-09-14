@@ -326,7 +326,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
         if (mglTessIsolatedNeedsCopyBack(bind_plan.writable ? 1 : 0,
                                          buffer ? 1 : 0,
                                          bind_plan.init_length) &&
-            !mglRendererRecordStageBindingCopyBackPort(
+            !mglRecordStageBindingCopyBack(
                 renderer, copy_backs, metal_binding_index, isolated, buffer, ptr,
                 (size_t)map->offset, available_bytes)) {
             return false;

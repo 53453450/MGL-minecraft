@@ -329,7 +329,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             /* The copy-back writes where the caller's binding starts, not at
              * the plan's bind offset (an isolated binding is always @0). */
             if (plan_out.needs_copy_back &&
-                !mglRendererRecordStageBindingCopyBackPort(
+                !mglRecordStageBindingCopyBack(
                     renderer, copy_backs, (uint64_t)metalBindingIndex,
                     isolated, buffer, ptr, (uint64_t)map->offset,
                     (uint64_t)availableBytes)) {

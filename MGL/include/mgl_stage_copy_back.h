@@ -25,11 +25,28 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include "glm_context.h"       /* GLMContext (mgl_types_buffer.h needs it) */
 #include "mgl_binding_stage.h" /* MGLStageBindingCopyBackList */
+#include "mgl_types_buffer.h"  /* Buffer */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Record one copy-back slot and flush the whole list (P0-1, log 159). */
+bool mglRecordStageBindingCopyBack(void *renderer,
+                                   MGLStageBindingCopyBackList *copy_backs,
+                                   size_t index, void *temporary,
+                                   void *destination,
+                                   Buffer *destination_buffer,
+                                   size_t destination_offset, size_t length);
+bool mglFlushStageBindingCopyBacks(void *renderer,
+                                   MGLStageBindingCopyBackList *copy_backs,
+                                   int require_cpu_visibility);
 
 void mglClearStageBindingCopyBacks(void *renderer,
                                    MGLStageBindingCopyBackList *copy_backs);

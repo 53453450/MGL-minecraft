@@ -35,6 +35,7 @@
 #include <string.h>
 
 #include "mgl_stage_buffer_bind.h"
+#include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas, isolated buffer, copy-back */
 #include "mgl_renderer_backend.h"   /* program binding sizes/counts, fallback buffer */
 #include "mgl_render.h"             /* snapshot encode, slot + map predicates */
@@ -432,7 +433,7 @@ bool mglBindingStateBindStageBufferMapEntries(
             }
             if (needs_copy_back_on_isolate && plan.needs_copy_back && buffer &&
                 plan.available_bytes > 0 &&
-                !mglRendererRecordStageBindingCopyBackPort(
+                !mglRecordStageBindingCopyBack(
                     renderer, &areas.tessellation->nativeTESCopyBacks,
                     binding_index, isolated, buffer, ptr, (uint64_t)offset,
                     plan.available_bytes)) {

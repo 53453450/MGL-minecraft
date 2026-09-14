@@ -515,32 +515,7 @@ int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command)
 
 
 
-int mglRendererRecordStageBindingCopyBackPort(
-    void *renderer, void *copy_backs, uint64_t index, void *temporary,
-    void *destination, Buffer *destination_buffer, uint64_t destination_offset,
-    uint64_t length)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copy_backs
-                                       atIndex:(NSUInteger)index
-                                     temporary:(__bridge id)temporary
-                                   destination:(__bridge id)destination
-                             destinationBuffer:destination_buffer
-                            destinationOffset:(NSUInteger)destination_offset
-                                        length:(NSUInteger)length])
-               ? 1
-               : 0;
-}
 
-int mglRendererFlushStageBindingCopyBacksPort(void *renderer, void *copy_backs,
-                                              int require_cpu_visibility)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r flushStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copy_backs
-                          requireCPUVisibility:require_cpu_visibility ? YES : NO])
-               ? 1
-               : 0;
-}
 
 void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
                                                 const BufferMap *map,
@@ -826,6 +801,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     }
     areas_out->core = &r->_core;
     areas_out->backend = r->_backend;
+    areas_out->render_pass_manager = (void *)r->_renderPassManager;
     areas_out->ctx = r->ctx;
     areas_out->batching = &r->_batching;
     /* The manager exposes a const pointer; the record itself is mutable and

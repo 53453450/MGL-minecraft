@@ -183,6 +183,10 @@ typedef struct MGLRendererStateAreas {
     /* The backend handle and the owning context: blit/texture code needs both
      * (cache lookups and error dispatch) and they are plain C pointers. */
     void *backend;
+    /* The render pass manager object itself (the .m's `_renderPassManager`); the
+     * copy-back flush needs it whole for the pass-manager entry points, not just
+     * its `state` (log 159). */
+    void *render_pass_manager;
     GLMContext ctx;
     MGLBatchingState *batching;
     /* Mutable: the trace-replay identity is written by the flush driver. */
@@ -255,12 +259,10 @@ int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command);
  * (mgl_stage_copy_back.h, log 158). */
 /* the Clear*CopyBack port(s) are gone: those methods are C now
  * (mgl_stage_copy_back.h, log 158). */
-int mglRendererRecordStageBindingCopyBackPort(
-    void *renderer, void *copy_backs, uint64_t index, void *temporary,
-    void *destination, Buffer *destination_buffer, uint64_t destination_offset,
-    uint64_t length);
-int mglRendererFlushStageBindingCopyBacksPort(void *renderer, void *copy_backs,
-                                              int require_cpu_visibility);
+/* The stage copy-back Record and Flush ports are gone: those methods are C
+ * now (mgl_stage_copy_back.h, log 159). */
+/* The stage copy-back Record and Flush ports are gone: those methods are C
+ * now (mgl_stage_copy_back.h, log 159). */
 void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
                                                 const BufferMap *map,
                                                 void *source,

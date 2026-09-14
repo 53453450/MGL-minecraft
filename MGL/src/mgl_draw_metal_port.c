@@ -718,7 +718,7 @@ static int mglStageFlushNativeCB(void *renderer)
     MGLRendererStateAreas areas;
     if (!renderer) return 0;
     mglRendererStateAreasPort(renderer, &areas);
-    return mglRendererFlushStageBindingCopyBacksPort(
+    return mglFlushStageBindingCopyBacks(
         renderer, &areas.tessellation->nativeTESCopyBacks, 0);
 }
 

@@ -304,7 +304,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
     }
 
     if (!useExecutionPlan &&
-        !mglRendererFlushStageBindingCopyBacksPort(renderer, &copyBacks, 0)) {
+        !mglFlushStageBindingCopyBacks(renderer, &copyBacks, 0)) {
         fprintf(stderr,
                 "MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after %s\n",
                 reason ? reason : "dispatch");
