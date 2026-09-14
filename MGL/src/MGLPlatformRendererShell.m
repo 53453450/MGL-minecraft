@@ -280,26 +280,6 @@ int mglRendererProcessGLStatePort(void *renderer, int draw_command)
 
 
 
-int mglRendererBindVertexBuffersToCurrentRenderEncoderPort(void *renderer,
-                                                           const void *encode_context)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r bindVertexBuffersToCurrentRenderEncoder:
-                       (const MGLEncodeContext *)encode_context])
-               ? 1
-               : 0;
-}
-
-int mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(void *renderer,
-                                                             const void *encode_context)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r bindFragmentBuffersToCurrentRenderEncoder:
-                       (const MGLEncodeContext *)encode_context])
-               ? 1
-               : 0;
-}
-
 int mglRendererBindTexturesToCurrentRenderEncoderPort(void *renderer,
                                                       const void *encode_context)
 {

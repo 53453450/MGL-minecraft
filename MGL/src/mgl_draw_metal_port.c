@@ -44,6 +44,7 @@ static inline bool mglVboRangeValidationEnabled(void)
 
 #include "mgl_draw_cull.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_compute_bind.h"    /* compute buffer binding (was a method pair) */
 #include "mgl_tess_dispatch.h"   /* TCS dispatch entry (was a shell port) */
 #include "mgl_storage_image_bind.h" /* storage-image driver (was a shell port) */
@@ -1119,7 +1120,7 @@ static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
         .render_encoder_owner =
             areas.command ? areas.command->currentRenderEncoderOwner : NULL,
     };
-    (void)mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(renderer,
+    (void)mglStageEncodeBindFragmentBuffers(renderer,
                                                                    &gsEncCtx);
     (void)mglRendererBindBufferSizeConstantsForRenderEncoder(renderer);
     Program *gsVertexProgram =

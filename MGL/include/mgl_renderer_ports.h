@@ -157,10 +157,6 @@ void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer);
 /* Binding-state push for the mapper fallback path. */
 /* mglRendererMapBuffersToMTLPort is gone: the buffer mapping is the C function
  * mglRendererMapBuffersToMTL (mgl_buffer_map.h). */
-int mglRendererBindVertexBuffersToCurrentRenderEncoderPort(void *renderer,
-                                                           const void *encode_context);
-int mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(void *renderer,
-                                                             const void *encode_context);
 int mglRendererBindTexturesToCurrentRenderEncoderPort(void *renderer,
                                                       const void *encode_context);
 int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,

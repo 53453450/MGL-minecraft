@@ -12,6 +12,7 @@
 // Render pass lifecycle methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_draw_encode.h"
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_trace_strategy.h"
@@ -1883,8 +1884,8 @@ static GLenum mglPassthroughDeclType(
     MGLEncodeContext encCtx = {
         .render_encoder_owner = _renderPassManager->state->currentRenderEncoderOwner,
     };
-    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
-    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
+    RETURN_FALSE_ON_FAILURE(mglStageEncodeBindVertexBuffers((__bridge void *)self, &encCtx));
+    RETURN_FALSE_ON_FAILURE(mglStageEncodeBindFragmentBuffers((__bridge void *)self, &encCtx));
     return true;
 }
 
@@ -4111,14 +4112,14 @@ static GLenum mglPassthroughDeclType(
         MGLEncodeContext encCtx = {
             .render_encoder_owner = _renderPassManager->state->currentRenderEncoderOwner,
         };
-        if ([self bindVertexBuffersToCurrentRenderEncoder:&encCtx] == false)
+        if (mglStageEncodeBindVertexBuffers((__bridge void *)self, &encCtx) == false)
         {
             DEBUG_PRINT("vertex buffer binding failed\n");
             mglRendererRecordGPUError((__bridge void *)self);
             return false;
         }
 
-        if ([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx] == false)
+        if (mglStageEncodeBindFragmentBuffers((__bridge void *)self, &encCtx) == false)
         {
             DEBUG_PRINT("fragment buffer binding failed\n");
             mglRendererRecordGPUError((__bridge void *)self);
@@ -5622,14 +5623,14 @@ static GLenum mglPassthroughDeclType(
         {
             RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list));
 
-            RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
+            RETURN_FALSE_ON_FAILURE(mglStageEncodeBindVertexBuffers((__bridge void *)self, &encCtx));
         }
 
         if( mglRendererCheckForDirtyBufferData((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list))
         {
             RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list));
 
-            RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
+            RETURN_FALSE_ON_FAILURE(mglStageEncodeBindFragmentBuffers((__bridge void *)self, &encCtx));
         }
     }
     return true;

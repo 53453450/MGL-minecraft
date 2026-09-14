@@ -5,7 +5,8 @@
  * Formerly mgl_batch_dyn_bind_encode.m.  The six entry points are C drivers
  * now; every renderer operation they need goes through mgl_renderer_ports.h.
  */
-#include "mgl_renderer_ports.h"       /* C port surface (T4) */
+#include "mgl_renderer_ports.h"
+#include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */       /* C port surface (T4) */
 #include "mgl_buffer_map.h"    /* mglRendererMapBuffersToMTL */
 #include "mgl_draw_issue.h"           /* mglDrawHostDevice */
 #include "mgl_vertex_attrib_query.h"  /* mglRendererResolveVertexAttributeBufferIndex */
@@ -140,10 +141,10 @@ static int mglDynApplyMapperFallback(void *v)
     if (c->cmd->dynamic_vertex_binding_count > 0) c->ctx->active_state->vao = c->draw_vao;
     mglDynApplyRefresh(v);
     int ok = (mglRendererMapBuffersToMTL(c->r) &&
-              mglRendererBindVertexBuffersToCurrentRenderEncoderPort(c->r, c->enc)) ? 1 : 0;
+              mglStageEncodeBindVertexBuffers(c->r, c->enc)) ? 1 : 0;
     mglDynApplyRefresh(v);
     if (ok && c->cmd->dynamic_uniform_binding_count > 0) {
-        ok = mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(c->r, c->enc) ? 1 : 0;
+        ok = mglStageEncodeBindFragmentBuffers(c->r, c->enc) ? 1 : 0;
         mglDynApplyRefresh(v);
     }
     c->ctx->active_state->vao = c->saved_vao; return ok;

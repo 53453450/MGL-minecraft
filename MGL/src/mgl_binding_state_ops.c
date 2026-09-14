@@ -16,6 +16,7 @@
 
 #include "mgl_binding_state_ops.h"
 #include "mgl_renderer_ports.h"
+#include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_buffer_map.h"        /* map/update-dirty entries */
 #include "mgl_size_constants.h"    /* runtime-array size constants */
 #include "mgl_encode_context.h"    /* MGLEncodeContext */
@@ -137,9 +138,9 @@ bool mglRendererSyncResourceBindingsForContext(
             areas.command ? areas.command->currentRenderEncoderOwner : NULL,
     };
     RETURN_FALSE_ON_FAILURE(
-        mglRendererBindVertexBuffersToCurrentRenderEncoderPort(renderer, &encCtx));
+        mglStageEncodeBindVertexBuffers(renderer, &encCtx));
     RETURN_FALSE_ON_FAILURE(
-        mglRendererBindFragmentBuffersToCurrentRenderEncoderPort(renderer, &encCtx));
+        mglStageEncodeBindFragmentBuffers(renderer, &encCtx));
     RETURN_FALSE_ON_FAILURE(
         mglRendererBindBufferSizeConstantsForRenderEncoder(renderer));
     if (!done || !done->boundActiveTextures) {
