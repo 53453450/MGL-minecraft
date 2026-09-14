@@ -23,8 +23,16 @@
  * through the state areas (the owner is re-read at the point of use).
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
+
+#ifndef MAX
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
 
 #include "mgl_blit_color_state.h"
 #include "mgl_renderer_ports.h"    /* state areas, writable command buffer */
@@ -40,6 +48,8 @@
 #include "mgl_region_value.h"      /* regions / origins / sizes */
 #include "error.h"               /* mglDispatchError */
 #include "mgl_metal_ref.h"         /* metal reference helpers */
+#include "mgl_texture_bind.h"      /* mglRendererBindMTLTexture */
+#include "mgl_texture_readback_clear.h" /* pending FBO depth clear */
 
 /* Repeated from MGLRenderer+Blit_Private.h (an Objective-C header a .c file
  * cannot include): the MSAA-integer-resolve compute parameters. */
@@ -49,6 +59,24 @@ typedef struct MGLMSAAIntegerResolveParams_t {
     vector_uint2 size;
     vector_uint2 _padding;
 } MGLMSAAIntegerResolveParams;
+
+/* Repeated from the Objective-C MGLRenderer+Draw_Private.h (a .c file cannot
+ * include it): the viewport / scissor value structs. */
+typedef struct MGLViewportValue_t {
+    double origin_x;
+    double origin_y;
+    double width;
+    double height;
+    double znear;
+    double zfar;
+} MGLViewportValue;
+
+typedef struct MGLScissorRectValue_t {
+    uint64_t x;
+    uint64_t y;
+    uint64_t width;
+    uint64_t height;
+} MGLScissorRectValue;
 
 /* --- twins of the .m statics --------------------------------------------- */
 
@@ -121,9 +149,122 @@ static void mglBcEndBlitEncoder(void *encoder)
     (void)mglRenderEndBlitEncoder(encoder);
 }
 
+static void mglBcEndRenderEncodingPort(void *renderer);
+
 static void *mglBcCommandBufferOwner(const MGLRendererStateAreas *areas)
 {
     return areas->command ? areas->command->currentCommandBufferOwner : NULL;
+}
+
+static void mglBcEndRenderEncodingPort(void *renderer)
+{
+    mglRendererEndRenderEncodingPort(renderer);
+}
+
+/* --- render-pass + render-encoder twins (depth/stencil path) ------------- */
+
+static MGLRenderPassState mglBcDefaultRenderPassState(void)
+{
+    MGLRenderPassState state;
+    mglRenderInitDefaultRenderPassState(&state);
+    return state;
+}
+
+static MGLRenderPassAttachmentState mglBcRenderPassAttachment(
+    void *texture, size_t level, size_t slice, size_t depth_plane,
+    uint32_t load_action, uint32_t store_action)
+{
+    MGLRenderPassAttachmentState attachment = {0};
+    attachment.texture = texture;
+    attachment.level = level;
+    attachment.slice = slice;
+    attachment.depth_plane = depth_plane;
+    attachment.load_action = load_action;
+    attachment.store_action = store_action;
+    return attachment;
+}
+
+/* The .m statics took the pass manager but only ever used its command-buffer
+ * owner, so the twin takes the owner directly (re-read at each use). */
+static void *mglBcCreateRenderEncoder(const MGLRendererStateAreas *areas,
+                                      const MGLRenderPassState *state)
+{
+    if (!state) {
+        return NULL;
+    }
+    void *encoder = NULL;
+    if (mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
+            mglBcCommandBufferOwner(areas), state, &encoder) == 0 &&
+        encoder) {
+        return encoder;
+    }
+    return NULL;
+}
+
+static void mglBcEndRenderEncoder(void *encoder)
+{
+    if (!encoder) {
+        return;
+    }
+    (void)mglRenderEndRenderEncoder(encoder);
+}
+
+static void mglBcSetRenderPipeline(void *encoder, void *pipeline)
+{
+    (void)mglRenderSetRenderPipelineState(encoder, pipeline);
+}
+
+static void mglBcSetRenderDepthStencilState(void *encoder, void *state)
+{
+    (void)mglRenderSetRenderDepthStencilState(encoder, state);
+}
+
+static void mglBcSetRenderBytes(void *encoder, const void *bytes, size_t length,
+                                uint32_t stage, size_t index)
+{
+    (void)mglRenderSetRenderBytes(encoder, bytes, length, stage,
+                                  (uint32_t)index);
+}
+
+static void mglBcSetRenderTexture(void *encoder, void *texture, uint32_t stage,
+                                  size_t index)
+{
+    (void)mglRenderSetRenderTexture(encoder, texture, stage, (uint32_t)index);
+}
+
+static void mglBcSetRenderSampler(void *encoder, void *sampler, uint32_t stage,
+                                  size_t index)
+{
+    (void)mglRenderSetRenderSampler(encoder, sampler, stage, (uint32_t)index);
+}
+
+static void mglBcSetRenderViewport(void *encoder, MGLViewportValue viewport)
+{
+    (void)mglRenderSetRenderViewport(encoder, viewport.origin_x,
+                                     viewport.origin_y, viewport.width,
+                                     viewport.height, viewport.znear,
+                                     viewport.zfar);
+}
+
+static void mglBcSetRenderScissor(void *encoder, MGLScissorRectValue rect)
+{
+    (void)mglRenderSetRenderScissor(encoder, rect.x, rect.y, rect.width,
+                                    rect.height);
+}
+
+static void mglBcEncodeDrawPrimitives(void *encoder, uint32_t primitive_type,
+                                      size_t vertex_start, size_t vertex_count)
+{
+    (void)mglRenderEncodeDraw(encoder,
+                              &(MGLRenderDrawPlan){
+                                  .kind = MGL_RENDER_DRAW_ARRAY,
+                                  .primitive_type = (uint32_t)primitive_type,
+                                  .vertex_start = vertex_start,
+                                  .vertex_count = vertex_count,
+                                  .instance_count = 1u,
+                                  .base_instance = 0u,
+                              },
+                              NULL, 0);
 }
 
 /* --- -resolveIntegerMultisampleTexture:… --------------------------------- */
@@ -434,4 +575,407 @@ bool mglBlitIntegerColorWithState(void *renderer, const MGLBlitColorState *st)
         return true;
     }
     return false;
+}
+
+/* --- -blitFramebufferDepthStencil:… -------------------------------------- */
+
+GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
+                               GLint src_y0, GLint src_x1, GLint src_y1,
+                               GLint dst_x0, GLint dst_y0, GLint dst_x1,
+                               GLint dst_y1, GLbitfield mask, GLenum filter)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    GLbitfield depth_stencil_mask =
+        (GLbitfield)mglRenderClearMaskDepthStencilBits((uint32_t)mask);
+    if (depth_stencil_mask != 0u && glm_ctx->active_state->readbuffer &&
+        glm_ctx->active_state->framebuffer) {
+        Framebuffer *depth_read_fbo = glm_ctx->active_state->readbuffer;
+        Framebuffer *depth_draw_fbo = glm_ctx->active_state->framebuffer;
+        FBOAttachment *depth_read_attachment =
+            mglRenderClearMaskHasDepth((uint32_t)depth_stencil_mask)
+                ? &depth_read_fbo->depth
+                : &depth_read_fbo->stencil;
+        FBOAttachment *depth_draw_attachment =
+            mglRenderClearMaskHasDepth((uint32_t)depth_stencil_mask)
+                ? &depth_draw_fbo->depth
+                : &depth_draw_fbo->stencil;
+        Texture *depth_read_object =
+            mglRendererAttachmentTextureFor(glm_ctx, depth_read_attachment);
+        Texture *depth_draw_object =
+            mglRendererAttachmentTextureFor(glm_ctx, depth_draw_attachment);
+
+        if (depth_read_object && depth_draw_object &&
+            mglRendererBindMTLTexture(renderer, depth_read_object) &&
+            mglRendererBindMTLTexture(renderer, depth_draw_object)) {
+            void *depth_read_texture = depth_read_object->mtl_data;
+            void *depth_draw_texture = depth_draw_object->mtl_data;
+            MGLMetalAttachmentSubresource depth_read_subresource =
+                mglMetalAttachmentSubresourceForAttachment(depth_read_attachment);
+            MGLMetalAttachmentSubresource depth_draw_subresource =
+                mglMetalAttachmentSubresourceForAttachment(depth_draw_attachment);
+            const MGLRenderTextureInfo ds_read_info =
+                mglBcTextureInfo(depth_read_texture);
+            const MGLRenderTextureInfo ds_draw_info =
+                mglBcTextureInfo(depth_draw_texture);
+
+            /* Which of the three depth/stencil paths this rectangle and these
+             * textures allow, plus the scissor-clipped copy rectangle: the
+             * gates live in the plan (O4.4). */
+            MGLBlitDSInput ds_in;
+            mglBlitFillDSTextureInput(
+                &ds_in, (uint32_t)ds_read_info.pixel_format,
+                (uint32_t)ds_draw_info.pixel_format,
+                (uint32_t)ds_read_info.sample_count,
+                (uint32_t)ds_draw_info.sample_count,
+                (uint32_t)ds_read_info.texture_type,
+                (uint32_t)ds_draw_info.texture_type, (uint32_t)ds_read_info.width,
+                (uint32_t)ds_read_info.height, (uint32_t)ds_draw_info.width,
+                (uint32_t)ds_draw_info.height,
+                mglRenderPixelFormatIsPackedDepthStencil(
+                    (uint32_t)ds_read_info.pixel_format));
+            mglBlitFillDSSubresourceInput(
+                &ds_in, (uint32_t)depth_read_subresource.level,
+                (uint32_t)depth_read_subresource.slice,
+                (uint32_t)depth_read_subresource.depthPlane,
+                (uint32_t)depth_draw_subresource.level,
+                (uint32_t)depth_draw_subresource.slice,
+                (uint32_t)depth_draw_subresource.depthPlane);
+            mglBlitFillDSRectInput(
+                &ds_in, src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1,
+                dst_y1, glm_ctx->active_state->caps.scissor_test ? 1 : 0,
+                glm_ctx->active_state->var.scissor_box[0],
+                glm_ctx->active_state->var.scissor_box[1],
+                glm_ctx->active_state->var.scissor_box[2],
+                glm_ctx->active_state->var.scissor_box[3]);
+            mglBlitFillDSMaskInput(
+                &ds_in, mglRenderClearMaskHasDepth((uint32_t)depth_stencil_mask),
+                mglRenderClearMaskHasStencil((uint32_t)depth_stencil_mask),
+                mglRenderFilterIsNearest((uint32_t)filter));
+            MGLBlitDSPlan ds_plan = {0};
+            if (mglBlitPlanDepthStencil(&ds_in, &ds_plan) != 0) {
+                return mask;
+            }
+
+            if (depth_read_texture && depth_draw_texture &&
+                ds_plan.msaa_resolve) {
+                mglBcEndRenderEncodingPort(renderer);
+                if (mglRendererEnsureWritableCommandBufferPort(
+                        renderer, "mtlBlitFramebuffer.depthMsaaResolve")) {
+                    if (ds_plan.resolve_depth) {
+                        mglTextureApplyPendingFBODepthClearForReadback(
+                            renderer, depth_read_fbo, depth_read_attachment,
+                            depth_read_object, depth_read_texture);
+                    }
+
+                    const int resolved_any =
+                        (ds_plan.resolve_depth || ds_plan.resolve_stencil) ? 1 : 0;
+
+                    if (resolved_any) {
+                        MGLRenderPassState resolve_state =
+                            mglBcDefaultRenderPassState();
+                        if (ds_plan.resolve_depth) {
+                            resolve_state.depth.attachment =
+                                mglBcRenderPassAttachment(
+                                    depth_read_texture, 0u,
+                                    depth_read_subresource.slice, 0u,
+                                    MGLLoadActionLoad,
+                                    MGLStoreActionMultisampleResolve);
+                            resolve_state.depth.attachment.resolve_texture =
+                                depth_draw_texture;
+                            resolve_state.depth.attachment.resolve_slice =
+                                depth_draw_subresource.slice;
+                            resolve_state.depth.resolve_filter =
+                                (uint32_t)MGLMultisampleDepthResolveFilterSample0;
+                        }
+                        if (ds_plan.resolve_stencil) {
+                            resolve_state.stencil.attachment =
+                                mglBcRenderPassAttachment(
+                                    depth_read_texture, 0u,
+                                    depth_read_subresource.slice, 0u,
+                                    MGLLoadActionLoad,
+                                    MGLStoreActionMultisampleResolve);
+                            resolve_state.stencil.attachment.resolve_texture =
+                                depth_draw_texture;
+                            resolve_state.stencil.attachment.resolve_slice =
+                                depth_draw_subresource.slice;
+                            resolve_state.stencil.resolve_filter =
+                                (uint32_t)MGLMultisampleStencilResolveFilterSample0;
+                        }
+                        void *resolve_encoder =
+                            mglBcCreateRenderEncoder(&areas, &resolve_state);
+                        if (resolve_encoder) {
+                            mglBcEndRenderEncoder(resolve_encoder);
+                            mglMarkTextureLevelRenderTargetWrittenImpl(
+                                depth_draw_object, depth_draw_attachment->level,
+                                "mgl_blit_color_paths.c", __LINE__);
+                            if (ds_plan.resolve_depth) {
+                                mask = (GLbitfield)mglRenderClearMaskClearDepth(
+                                    (uint32_t)mask);
+                            }
+                            if (ds_plan.resolve_stencil) {
+                                mask = (GLbitfield)mglRenderClearMaskClearStencil(
+                                    (uint32_t)mask);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (depth_read_texture && depth_draw_texture &&
+                (ds_plan.same_size_copy || ds_plan.scaled_render)) {
+                if (ds_plan.same_size_copy) {
+                    /* Same-size depth blit via MTLBlitCommandEncoder; the plan
+                     * already clipped the rectangle by the scissor box. */
+                    const GLint copy_dst_x0 = ds_plan.copy_dst_x0;
+                    const GLint copy_dst_y0 = ds_plan.copy_dst_y0;
+                    const GLint copy_dst_x1 = ds_plan.copy_dst_x1;
+                    const GLint copy_dst_y1 = ds_plan.copy_dst_y1;
+                    const GLint copy_width = copy_dst_x1 - copy_dst_x0;
+                    const GLint copy_height = copy_dst_y1 - copy_dst_y0;
+                    const GLint copy_src_x = ds_plan.copy_src_x0;
+                    const GLint copy_src_y = ds_plan.copy_src_y0;
+                    if (ds_plan.copy_valid) {
+                        mglBcEndRenderEncodingPort(renderer);
+                        if (mglRendererEnsureWritableCommandBufferPort(
+                                renderer, "mtlBlitFramebuffer.depthStencil")) {
+                            if (mglRenderClearMaskHasDepth(
+                                    (uint32_t)depth_stencil_mask)) {
+                                mglTextureApplyPendingFBODepthClearForReadback(
+                                    renderer, depth_read_fbo,
+                                    depth_read_attachment, depth_read_object,
+                                    depth_read_texture);
+                                mglTextureApplyPendingFBODepthClearForReadback(
+                                    renderer, depth_draw_fbo,
+                                    depth_draw_attachment, depth_draw_object,
+                                    depth_draw_texture);
+                            }
+                            void *depth_blit = mglRenderCreateBlitEncoderBorrowed(
+                                mglBcCommandBufferOwner(&areas));
+                            if (depth_blit) {
+                                size_t source_metal_y =
+                                    ds_read_info.height -
+                                    (size_t)(copy_src_y + copy_height);
+                                size_t destination_metal_y =
+                                    ds_draw_info.height -
+                                    (size_t)(copy_dst_y0 + copy_height);
+                                mglBcCopyTexture(
+                                    depth_blit, depth_read_texture,
+                                    depth_read_subresource.slice,
+                                    depth_read_subresource.level,
+                                    mglBlitOrigin((size_t)copy_src_x,
+                                                  source_metal_y,
+                                                  depth_read_subresource.depthPlane),
+                                    mglBlitSize((size_t)copy_width,
+                                                (size_t)copy_height, 1u),
+                                    depth_draw_texture,
+                                    depth_draw_subresource.slice,
+                                    depth_draw_subresource.level,
+                                    mglBlitOrigin((size_t)copy_dst_x0,
+                                                  destination_metal_y,
+                                                  depth_draw_subresource.depthPlane));
+                                mglBcEndBlitEncoder(depth_blit);
+                                mglMarkTextureLevelRenderTargetWrittenImpl(
+                                    depth_draw_object,
+                                    depth_draw_attachment->level,
+                                    "mgl_blit_color_paths.c", __LINE__);
+                            }
+                        }
+                    }
+                } else {
+                    /* Scaled depth blit via render pass with depth-writing
+                     * shader.  Only GL_NEAREST is supported (GL_LINEAR for depth
+                     * is not allowed by the GL spec; filter must be GL_NEAREST
+                     * when depth/stencil is in the mask). */
+                    if (ds_plan.scaled_render) {
+                        /* Apply pending depth clears before the scaled blit so
+                         * the source texture reflects any lazy glClear. */
+                        if (ds_in.has_depth) {
+                            mglBcEndRenderEncodingPort(renderer);
+                            if (mglRendererEnsureWritableCommandBufferPort(
+                                    renderer,
+                                    "mtlBlitFramebuffer.depthScaledClear")) {
+                                mglTextureApplyPendingFBODepthClearForReadback(
+                                    renderer, depth_read_fbo,
+                                    depth_read_attachment, depth_read_object,
+                                    depth_read_texture);
+                                mglTextureApplyPendingFBODepthClearForReadback(
+                                    renderer, depth_draw_fbo,
+                                    depth_draw_attachment, depth_draw_object,
+                                    depth_draw_texture);
+                            }
+                        }
+
+                        void *depth_pipeline =
+                            mglBlitScaledDepthPipelineForPixelFormat(
+                                renderer, mglBcTextureInfo(depth_draw_texture)
+                                              .pixel_format);
+                        void *sampler = mglBlitScaledSamplerForFilter(
+                            renderer, (GLuint)mglRenderNearestFilter());
+                        if (depth_pipeline && sampler) {
+                            mglBcEndRenderEncodingPort(renderer);
+                            if (mglRendererEnsureWritableCommandBufferPort(
+                                    renderer, "mtlBlitFramebuffer.depthScaled")) {
+                                /* For packed depth+stencil formats, also set the
+                                 * stencil attachment to the same texture so
+                                 * Metal preserves the stencil component during
+                                 * the render pass. */
+                                int is_packed_depth_stencil =
+                                    mglRenderPixelFormatIsPackedDepthStencil(
+                                        (uint32_t)ds_draw_info.pixel_format);
+
+                                MGLRenderPassState scaled_depth_state =
+                                    mglBcDefaultRenderPassState();
+                                scaled_depth_state.depth.attachment =
+                                    mglBcRenderPassAttachment(
+                                        depth_draw_texture, 0u, 0u, 0u,
+                                        MGLLoadActionLoad, MGLStoreActionStore);
+                                if (is_packed_depth_stencil) {
+                                    scaled_depth_state.stencil.attachment =
+                                        mglBcRenderPassAttachment(
+                                            depth_draw_texture, 0u, 0u, 0u,
+                                            MGLLoadActionLoad,
+                                            MGLStoreActionStore);
+                                }
+
+                                void *depth_encoder =
+                                    mglBcCreateRenderEncoder(&areas,
+                                                             &scaled_depth_state);
+                                if (depth_encoder) {
+                                    mglBcSetRenderPipeline(depth_encoder,
+                                                           depth_pipeline);
+                                    mglBcSetRenderDepthStencilState(
+                                        depth_encoder,
+                                        mglBlitClearRectDepthState(renderer));
+
+                                    /* Compute UVs for the source region in
+                                     * Metal's texture coordinate space
+                                     * (Y-flipped). */
+                                    size_t src_tex_w = ds_read_info.width;
+                                    size_t src_tex_h = ds_read_info.height;
+                                    float inv_src_w = src_tex_w
+                                                          ? (1.0f / (float)src_tex_w)
+                                                          : 0.0f;
+                                    float inv_src_h = src_tex_h
+                                                          ? (1.0f / (float)src_tex_h)
+                                                          : 0.0f;
+                                    float src_min_xf = (float)src_x0;
+                                    float src_max_xf = (float)src_x1;
+                                    float src_min_yf = (float)src_y0;
+                                    float src_max_yf = (float)src_y1;
+                                    float uv_left = MAX(0.0f, MIN(1.0f, src_min_xf * inv_src_w));
+                                    float uv_right = MAX(0.0f, MIN(1.0f, src_max_xf * inv_src_w));
+                                    /* Metal Y is top-down; GL Y is bottom-up.
+                                     * uvTop maps to the top of the source region
+                                     * in Metal space: (srcTexH - srcMaxY). */
+                                    float uv_top = MAX(0.0f, MIN(1.0f, (float)((double)src_tex_h - src_max_yf) * inv_src_h));
+                                    float uv_bottom = MAX(0.0f, MIN(1.0f, (float)((double)src_tex_h - src_min_yf) * inv_src_h));
+
+                                    MGLScaledBlitParams params;
+                                    params.uvRect = (vector_float4){
+                                        uv_left, uv_top, uv_right, uv_bottom};
+                                    params.forceOpaqueAlpha = 0.0f;
+                                    params._padding =
+                                        (vector_float3){0.0f, 0.0f, 0.0f};
+
+                                    mglBcSetRenderBytes(
+                                        depth_encoder, &params, sizeof(params),
+                                        MGL_RENDER_BINDING_STAGE_VERTEX, 0);
+                                    mglBcSetRenderBytes(
+                                        depth_encoder, &params, sizeof(params),
+                                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+                                    mglBcSetRenderTexture(
+                                        depth_encoder, depth_read_texture,
+                                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+                                    mglBcSetRenderSampler(
+                                        depth_encoder, sampler,
+                                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+
+                                    /* Set the viewport to the destination region
+                                     * in Metal's coordinate space (Y-flipped). */
+                                    float dst_min_xf = (float)dst_x0;
+                                    float dst_max_xf = (float)dst_x1;
+                                    float dst_min_yf = (float)dst_y0;
+                                    float dst_max_yf = (float)dst_y1;
+                                    size_t dst_tex_w = ds_draw_info.width;
+                                    size_t dst_tex_h = ds_draw_info.height;
+                                    double dst_min_xd = fmin(dst_min_xf, dst_max_xf);
+                                    double dst_max_xd = fmax(dst_min_xf, dst_max_xf);
+                                    double dst_min_yd = fmin(dst_min_yf, dst_max_yf);
+                                    double dst_max_yd = fmax(dst_min_yf, dst_max_yf);
+                                    double dst_wd = dst_max_xd - dst_min_xd;
+                                    double dst_hd = dst_max_yd - dst_min_yd;
+                                    double scaled_dst_metal_y =
+                                        (double)dst_tex_h - dst_max_yd;
+
+                                    /* Scissor rect to limit writes to the
+                                     * destination region. */
+                                    int64_t scissor_x0 = (int64_t)floor(dst_min_xd + 0.00001);
+                                    int64_t scissor_x1 = (int64_t)ceil(dst_max_xd - 0.00001);
+                                    int64_t scissor_y0 = (int64_t)floor(scaled_dst_metal_y + 0.00001);
+                                    int64_t scissor_y1 = (int64_t)ceil(scaled_dst_metal_y + dst_hd - 0.00001);
+                                    scissor_x0 = MAX((int64_t)0, MIN(scissor_x0, (int64_t)dst_tex_w));
+                                    scissor_x1 = MAX((int64_t)0, MIN(scissor_x1, (int64_t)dst_tex_w));
+                                    scissor_y0 = MAX((int64_t)0, MIN(scissor_y0, (int64_t)dst_tex_h));
+                                    scissor_y1 = MAX((int64_t)0, MIN(scissor_y1, (int64_t)dst_tex_h));
+                                    if (glm_ctx && glm_ctx->active_state->caps.scissor_test) {
+                                        int64_t gl_scissor_x0 = glm_ctx->active_state->var.scissor_box[0];
+                                        int64_t gl_scissor_y0 = glm_ctx->active_state->var.scissor_box[1];
+                                        int64_t gl_scissor_x1 = gl_scissor_x0 + glm_ctx->active_state->var.scissor_box[2];
+                                        int64_t gl_scissor_y1 = gl_scissor_y0 + glm_ctx->active_state->var.scissor_box[3];
+                                        int64_t metal_scissor_y0 = (int64_t)dst_tex_h - gl_scissor_y1;
+                                        int64_t metal_scissor_y1 = (int64_t)dst_tex_h - gl_scissor_y0;
+                                        scissor_x0 = MAX(scissor_x0, gl_scissor_x0);
+                                        scissor_x1 = MIN(scissor_x1, gl_scissor_x1);
+                                        scissor_y0 = MAX(scissor_y0, metal_scissor_y0);
+                                        scissor_y1 = MIN(scissor_y1, metal_scissor_y1);
+                                    }
+                                    if (scissor_x1 > scissor_x0 &&
+                                        scissor_y1 > scissor_y0) {
+                                        mglBcSetRenderViewport(
+                                            depth_encoder,
+                                            (MGLViewportValue){
+                                                .origin_x = dst_min_xd,
+                                                .origin_y = scaled_dst_metal_y,
+                                                .width = dst_wd,
+                                                .height = dst_hd,
+                                                .znear = 0.0,
+                                                .zfar = 1.0});
+                                        mglBcSetRenderScissor(
+                                            depth_encoder,
+                                            (MGLScissorRectValue){
+                                                .x = (size_t)scissor_x0,
+                                                .y = (size_t)scissor_y0,
+                                                .width = (size_t)(scissor_x1 - scissor_x0),
+                                                .height = (size_t)(scissor_y1 - scissor_y0)});
+                                        mglBcEncodeDrawPrimitives(
+                                            depth_encoder,
+                                            MGLPrimitiveTypeTriangleStrip, 0, 4);
+                                    }
+                                    mglBcEndRenderEncoder(depth_encoder);
+                                    mglMarkTextureLevelRenderTargetWrittenImpl(
+                                        depth_draw_object,
+                                        depth_draw_attachment->level,
+                                        "mgl_blit_color_paths.c", __LINE__);
+                                }
+                            }
+                        } else {
+                            static uint64_t s_scaled_depth_blit_skip_count = 0;
+                            uint64_t hit = ++s_scaled_depth_blit_skip_count;
+                            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                                fprintf(stderr,
+                                        "MGL WARN: mtlBlitFramebuffer scaled "
+                                        "depth blit unavailable pipeline=%p "
+                                        "sampler=%p hit=%llu\n",
+                                        depth_pipeline, sampler,
+                                        (unsigned long long)hit);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return mask;
 }

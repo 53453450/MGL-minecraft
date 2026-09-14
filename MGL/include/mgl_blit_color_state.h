@@ -71,6 +71,12 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
                                              MGLSizeValue size,
                                              const char *reason);
 
+/* -blitFramebufferDepthStencil:srcX0:… (returns the remaining clear mask). */
+GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
+                               GLint src_y0, GLint src_x1, GLint src_y1,
+                               GLint dst_x0, GLint dst_y0, GLint dst_x1,
+                               GLint dst_y1, GLbitfield mask, GLenum filter);
+
 /* -blitFramebufferIntegerColorWithState: */
 bool mglBlitIntegerColorWithState(void *renderer,
                                   const MGLBlitColorState *state);
