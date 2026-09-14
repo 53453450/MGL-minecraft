@@ -4249,6 +4249,24 @@ A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔
      需要查清 `params.mtl_data` 的 retain/release 链（`tex_param.c` 写入、`textures.c` 置 NULL 的路径、
      以及 mglSafeReleaseMetalObj 的调用点），这很可能是 `+BindingState.m` 采样簇能不能安全收尾的关键。
 
+### 0.61 第 104 轮的合成结论（**开工前必读**）
+
+**第 103/104 两轮把 `+BindingState.m` 采样簇的阻塞点收敛为一句话**：
+`bindSampledTexturesForStage:` 循环里的 `Texture *ptr` **不能跨 `applySampledCompatFallbackPlan:` 使用**——
+该调用（通过其回退链）会分配纹理，之后对 `ptr` 的任何解引用都可能命中失效内存（第 133/134 条，两轮各一次 CTS 拦截）。
+旧 ObjC 构建只是**碰巧**把 `ptr->target` 的取值提前了，这个隐患一直在。
+
+**因此下一刀的固定顺序**：
+1. 先做**纯修复刀**：在 `applySampledCompatFallbackPlan:` 调用之后重新取 `ptr`（或整段改用调用前的字段快照），
+   两处调用点都要；用**8 次深度用例探针** + `make test-all` + CTS 七簇 + A/B 验证，**单独提交**；
+2. 再做**转换刀**：`applySampledCompatFallbackPlan:` → C（0 语法，先做）；探针 8 次通过后，
+   再 `materializeSampledSamplerForTexture:` → C（退役 `mglRendererMaterializeSampledSamplerPort`，28 → 27）；
+   最后 `bindSeparateSamplersAndArrayTextures:` → C，`+BindingState.m` 才可能整文件消失（6 → 5）。
+
+**本轮新增的两条操作习惯**：
+- **单用例重复探针**：先用被 CTS 抓到过的那个用例跑 5–8 次（约 2 分钟）判断是否仍有概率性崩溃，再决定是否跑整簇电池；
+- **反证实验**：怀疑某个返回值/某次解引用时，把它临时退化为 NULL 或提前预取，观察崩溃是否消失（第 133 条 ③、第 134 条 ③ 各用了一次）。
+
 ### 0.60 第 103 轮交接快照（**新会话请先读本节 + §0.51 + §0.55 + §0.58**）
 
 **当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 25,443 行 / 1,429 语法 / 3,013 词汇**；
@@ -4275,3 +4293,33 @@ A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔
     验证时**重点跑 depth 用例 5 次**；
 (c) `bindSeparateSamplersAndArrayTextures:`（17 语法）→ C。
 另需单独查清 `Texture::params.mtl_data` 的 retain/release 链（第 133 条 ⑤ 末段），它是采样簇收尾的前置问题。
+
+134. **第 104 轮：按 §0.60 的三步拆分复做，定位到"`ptr` 跨分配失效"这个根因，但**转换再次被 CTS 拦下并回滚**
+     （工作区仍在 `520691f`；本轮**只产出定位结论，未改动代码**）：
+     ① **第一步就复现**：这一步只把 `applySampledCompatFallbackPlan:`（47 行 / 0 语法）搬成 C，其余（采样器物化、
+     `bindSeparateSamplersAndArrayTextures:`）**保持 ObjC 不动**，深度用例
+     `KHR-GL46.internalformat.copy_tex_image.depth_component24` 仍然 **2/5 崩溃**（旧库 5/5 通过）。
+     说明**触发点不是采样器那一半**，而是这个"回退规划"调用本身。
+     ② **插桩证据（决定性）**：在调用点前后各打印一次 `ptr` 与它的字段：
+     - 调用前：`ptr=0x766af5e080 name=2 target=3553`（有效）；
+     - **C 被调者收到的是同一个指针**（在被调者入口打印，值完全一致）→ 参数传递没问题；
+     - 调用后：调用点的 `ptr` 变成 `0x766a000000 name=0xFFFFFF7F target=0xFFFFFFFF`（无效），
+       随后的 `ptr->target` 取值就在 `ptr+0x18` 处 `EXC_BAD_ACCESS`。
+     即：**回退链会在调用期间分配纹理（`mglSampledFallbackTextureForExpectedType`），
+     而调用点持有的 `Texture *ptr` 不能跨这次分配使用**——旧 ObjC 构建之所以没崩，是编译器把
+     `ptr ? ptr->target : 0u` 的取值**提前到调用之前**（同一个 `ptr` 在旧构建里没有被"调用后再读"的形态）。
+     ③ **两个单点修复尝试（都只改调用点，不改转换）**：
+     - 在回退调用**之前**把 `ptr->target` 预取到局部变量、后面用该局部（8 次复跑 **8/8 通过**）→
+       证明"调用后再解引用 `ptr`"确实是崩溃来源；
+     - 但把该预取与转换**一起**放开后，8 次复跑仍有 **4/8 崩溃** → 说明调用点后面**还有其它对同一 `ptr` 的解引用**
+       （`mglMipDiagEnabled` 段的 `ptr->params`、以及被调 C 函数内部对 `ptr->name/width/height/params.mtl_data` 的读取），
+       单点预取不够。
+     ④ **结论（下一刀的正确做法）**：转换这一簇之前，必须先修掉"`ptr` 跨回退调用"这个**既有隐患**，
+     二选一：**(a)** 回退调用之后**重新取一次** `ptr`（用循环开头那次 `mglTextureForSampledResource(...)` 的同一查法）；
+     **(b)** 把该段所需字段在调用前一次性快照成局部量并全部改用局部量（`ptr` 本身不再在调用后解引用）。
+     修完必须用**转换后的构建**跑 8 次深度用例探针 + CTS 七簇双证据，再继续搬
+     `materializeSampledSamplerForTexture:` 与 `bindSeparateSamplersAndArrayTextures:`。
+     ⑤ **新增验证手法（便宜且有效，已并入 §0.61）**：本轮用"**单用例 8 次探针**"代替整簇电池做早期判定——
+     被 CTS 抓到过的那个用例在旧库上 5/5 通过、在新构建上概率性崩溃，**重复跑 5–8 次即可在 2 分钟量级判定回归存在**，
+     比等 10 分钟电池快得多（但**最终判据仍是七簇电池**）。
+     ⑥ 回滚复验：`make test-all` **0**（92/0/2/94）、深度用例 **5/5 通过**、工作区与 `520691f` 一致。
