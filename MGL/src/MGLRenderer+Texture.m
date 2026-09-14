@@ -242,9 +242,9 @@ void mglRendererCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer mtlCopyTexSubImage:glm_ctx tex:texture slice:slice
-                        mipmapLevel:level xoffset:x_offset yoffset:y_offset
-                                  x:x y:y width:width height:height];
+        mglBlitCopyTexSubImage((__bridge void *)renderer, glm_ctx, texture,
+                               slice, level, x_offset, y_offset, x, y, width,
+                               height);
     }
     mglRendererBackendEnd(&_backend_lease);
 }

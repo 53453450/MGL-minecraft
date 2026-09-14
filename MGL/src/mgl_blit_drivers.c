@@ -3359,3 +3359,219 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
     mglBlitDirectColorWithState(renderer, &st);
     mglSafeReleaseMetalObj(&readtexid);
 }
+
+/* === copyTexSubImage BGRA8 readback + upload (P0-1, log 149) ============= */
+
+/* -(void)mtlCopyTexSubImage:tex:slice:mipmapLevel:xoffset:yoffset:x:y:width:
+ *  height: */
+void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
+                            size_t slice, size_t level, int64_t xoffset,
+                            int64_t yoffset, int64_t x, int64_t y, size_t width,
+                            size_t height)
+{
+    mglPlatformShellSetContext(renderer, glm_ctx);
+
+    if (!tex || width == 0u || height == 0u) {
+        return;
+    }
+    if ((int64_t)level < 0 || xoffset < 0 || yoffset < 0) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidValue());
+        return;
+    }
+
+    /* Bind the destination texture so we can inspect its Metal pixel format. */
+    if (!tex->mtl_data && !mglRendererBindMTLTexture(renderer, tex)) {
+        fprintf(stderr,
+                "MGL ERROR: mtlCopyTexSubImage failed to bind destination "
+                "texture %u\n",
+                tex->name);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+    void *dest_texture = tex->mtl_data;
+    if (!dest_texture) {
+        fprintf(stderr,
+                "MGL ERROR: mtlCopyTexSubImage destination texture %u has no "
+                "Metal texture\n",
+                tex->name);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    /* Fast path: try a direct GPU texture-to-texture blit from the matching
+     * framebuffer attachment. This handles glCopyTexImage2D/glCopyTexSubImage
+     * for depth, integer, and packed internal formats where the source FBO
+     * attachment shares the same Metal pixel format as the destination
+     * texture. For BGRA8/RGBA8 destinations the CPU path below is sufficient,
+     * so we skip the blit attempt to avoid unnecessary encoder churn. */
+    int dest_is_plain_bgra8 =
+        mglRenderPixelFormatIsUnorm8Color(
+            (uint32_t)mglBdTextureInfo(dest_texture).pixel_format) != 0;
+    if (!dest_is_plain_bgra8) {
+        int blitted = mglBlitCopyTexSubImageViaTextureBlit(
+            renderer, glm_ctx, tex, dest_texture, slice, level, xoffset, yoffset,
+            x, y, width, height);
+        if (blitted) {
+            return;
+        }
+        /* Fall through to the BGRA8 path if the blit was not applicable. */
+    }
+
+    if (width > (size_t)(SIZE_MAX / 4u)) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return;
+    }
+    size_t bgra_row_bytes = (size_t)width * 4u;
+    if (height > 0u && bgra_row_bytes > SIZE_MAX / (size_t)height) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return;
+    }
+    size_t bgra_size = bgra_row_bytes * (size_t)height;
+
+    /* NSMutableData dataWithLength: is a zero-filled allocation. */
+    void *bgra_readback = calloc(1u, bgra_size);
+    void *upload_data = calloc(1u, bgra_size);
+    if (!bgra_readback || !upload_data) {
+        free(bgra_readback);
+        free(upload_data);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return;
+    }
+
+    /*
+     * Reuse the readPixels read-buffer resolver so default/FBO, clipping,
+     * clears, and GL bottom-left row order all follow the same path as
+     * glReadPixels.
+     */
+    mglRendererMTLReadDrawablePort(renderer, glm_ctx, bgra_readback,
+                                   bgra_row_bytes, bgra_size,
+                                   mglBlitRegion2D((size_t)x, (size_t)y,
+                                                   width, height));
+
+    void *texture = dest_texture;
+    if (!mglMetalReadbackFormatIsBGRA8Compatible(
+            mglBdTextureInfo(texture).pixel_format)) {
+        fprintf(stderr,
+                "MGL ERROR: mtlCopyTexSubImage unsupported destination Metal "
+                "format=%lu texture=%u\n",
+                (unsigned long)mglBdTextureInfo(texture).pixel_format, tex->name);
+        free(bgra_readback);
+        free(upload_data);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+    if (level >= mglBdTextureInfo(texture).mipmap_level_count) {
+        free(bgra_readback);
+        free(upload_data);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidValue());
+        return;
+    }
+
+    size_t level_width =
+        mglMetalTextureLevelDimension(mglBdTextureInfo(texture).width, level);
+    size_t level_height =
+        mglMetalTextureLevelDimension(mglBdTextureInfo(texture).height, level);
+    size_t level_depth =
+        mglMetalTextureLevelDimension(mglBdTextureInfo(texture).depth, level);
+    if ((size_t)xoffset > level_width || (size_t)yoffset > level_height ||
+        width > level_width - (size_t)xoffset ||
+        height > level_height - (size_t)yoffset) {
+        free(bgra_readback);
+        free(upload_data);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidValue());
+        return;
+    }
+
+    uint32_t texture_type = mglBdTextureInfo(texture).texture_type;
+    size_t destination_slice = slice;
+    size_t copy_depth = 1u;
+    MGLOriginValue destination_origin =
+        mglBlitOrigin((size_t)xoffset, 0u, 0u);
+    if (texture_type == MGLTextureType3D) {
+        if (slice >= level_depth) {
+            free(bgra_readback);
+            free(upload_data);
+            mglDispatchError(glm_ctx, __FUNCTION__,
+                             (GLenum)mglRenderErrorInvalidValue());
+            return;
+        }
+        destination_slice = 0u;
+        destination_origin = mglBlitOrigin((size_t)xoffset, 0u, slice);
+    } else {
+        size_t max_destination_slices = mglBdTextureInfo(texture).array_length;
+        if (texture_type == MGLTextureTypeCube) {
+            max_destination_slices = 6u;
+        } else if (texture_type == MGLTextureTypeCubeArray) {
+            max_destination_slices = mglBdTextureInfo(texture).array_length * 6u;
+        }
+        if (destination_slice >= max_destination_slices) {
+            free(bgra_readback);
+            free(upload_data);
+            mglDispatchError(glm_ctx, __FUNCTION__,
+                             (GLenum)mglRenderErrorInvalidValue());
+            return;
+        }
+    }
+
+    int destination_is_render_target = tex->is_render_target ? 1 : 0;
+    size_t destination_y = (size_t)yoffset;
+    if (destination_is_render_target) {
+        destination_y = level_height - ((size_t)yoffset + height);
+    }
+    destination_origin.y = destination_y;
+
+    if (!mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(
+            (const uint8_t *)bgra_readback, bgra_row_bytes,
+            (uint8_t *)upload_data, bgra_row_bytes, width, height,
+            mglBdTextureInfo(texture).pixel_format,
+            destination_is_render_target)) {
+        free(bgra_readback);
+        free(upload_data);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    void *upload_buffer =
+        mglBdCreateBufferWithBytes(upload_data, bgra_size,
+                                   MGLResourceStorageModeShared);
+    if (!upload_buffer) {
+        free(bgra_readback);
+        free(upload_data);
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return;
+    }
+
+    int uploaded =
+        mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
+            renderer, upload_buffer, 0u, bgra_row_bytes, bgra_size, 0u, 1u,
+            mglBlitSize(width, height, copy_depth), texture, destination_slice,
+            level, destination_origin, "copy_tex_sub_image");
+    mglSafeReleaseMetalObj(&upload_buffer);
+    free(bgra_readback);
+    free(upload_data);
+    if (!uploaded) {
+        mglDispatchError(glm_ctx, __FUNCTION__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    mglBdMarkTextureLevelMetalFilled(tex, (GLuint)level, bgra_size);
+    (void)mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, texture,
+                                                 "copy_tex_sub_image");
+    tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
+    if (glm_ctx) {
+        mglMarkRendererDirtyBits(&glm_ctx->state,
+                                 DIRTY_TEX | DIRTY_TEX_BINDING);
+    }
+}

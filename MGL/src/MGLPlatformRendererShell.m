@@ -356,6 +356,47 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                : 0;
 }
 
+void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
+                                    void *pixel_bytes, size_t bytes_per_row,
+                                    size_t bytes_per_image, MGLRegionValue region)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r mtlReadDrawable:glm_ctx
+                pixelBytes:pixel_bytes
+               bytesPerRow:(NSUInteger)bytes_per_row
+             bytesPerImage:(NSUInteger)bytes_per_image
+                fromRegion:region];
+    }
+}
+
+int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
+    void *renderer, void *source_buffer, size_t source_offset,
+    size_t source_bytes_per_row, size_t source_bytes_per_image,
+    size_t source_layer_stride, size_t layer_count, MGLSizeValue source_size,
+    void *texture, size_t destination_slice, size_t destination_level,
+    MGLOriginValue destination_origin, const char *reason)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (!r) {
+        return 0;
+    }
+    return [r copyTextureUploadWithDedicatedCommandBuffer:(__bridge id)source_buffer
+                                             sourceOffset:(NSUInteger)source_offset
+                                        sourceBytesPerRow:(NSUInteger)source_bytes_per_row
+                                      sourceBytesPerImage:(NSUInteger)source_bytes_per_image
+                                       sourceLayerStride:(NSUInteger)source_layer_stride
+                                               layerCount:(NSUInteger)layer_count
+                                               sourceSize:source_size
+                                                toTexture:(__bridge id)texture
+                                         destinationSlice:(NSUInteger)destination_slice
+                                         destinationLevel:(NSUInteger)destination_level
+                                        destinationOrigin:destination_origin
+                                                   reason:reason]
+               ? 1
+               : 0;
+}
+
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

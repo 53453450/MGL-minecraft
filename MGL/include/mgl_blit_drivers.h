@@ -122,6 +122,15 @@ bool mglBlitResolveFramebufferAttachments(
     GLint src_y1, GLint dst_x0, GLint dst_y0, GLint dst_x1, GLint dst_y1,
     MGLBlitColorState *st, GLenum *out_read_attachment);
 
+/* glCopyTexSubImage CPU path: read the framebuffer region back as BGRA8, flip /
+ * convert it for the destination Metal format and upload it.  Was
+ * -(void)mtlCopyTexSubImage:tex:slice:mipmapLevel:xoffset:yoffset:x:y:width:
+ * height:. */
+void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
+                            size_t slice, size_t level, int64_t xoffset,
+                            int64_t yoffset, int64_t x, int64_t y, size_t width,
+                            size_t height);
+
 /* The whole glBlitFramebuffer dispatch: depth/stencil pre-pass, attachment
  * resolve, pending read clear, MSAA resolve, the blit plan, then the integer /
  * scaled / direct color paths.  Was -(void)mtlBlitFramebuffer:srcX0:…. */

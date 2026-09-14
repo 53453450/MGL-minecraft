@@ -25,6 +25,7 @@
 #include "mgl_command_state.h"      /* MGLCommandState */
 #include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
 #include "mgl_tessellation_state.h"   /* MGLTessellationState, MGLGeometryState */
+#include "mgl_region_value.h"       /* MGLRegionValue / MGLSizeValue / MGLOriginValue (log 149) */
 
 /* Forward declaration: the blend record lives in mgl_render.h, which this
  * header does not need to pull in. */
@@ -297,6 +298,17 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                                                        size_t required_width,
                                                        size_t required_height,
                                                        const char *reason);
+/* copyTexSubImage read-back / upload bridges (P0-1, log 149). */
+void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
+                                    void *pixel_bytes, size_t bytes_per_row,
+                                    size_t bytes_per_image,
+                                    MGLRegionValue region);
+int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
+    void *renderer, void *source_buffer, size_t source_offset,
+    size_t source_bytes_per_row, size_t source_bytes_per_image,
+    size_t source_layer_stride, size_t layer_count, MGLSizeValue source_size,
+    void *texture, size_t destination_slice, size_t destination_level,
+    MGLOriginValue destination_origin, const char *reason);
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer);
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,
