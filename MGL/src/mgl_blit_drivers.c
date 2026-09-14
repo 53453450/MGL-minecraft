@@ -249,6 +249,14 @@ bool mglBlitResolveMsaaSource(void *renderer, void **read_texid_ptr,
         read_subresource.depthPlane = 0u;
         did_msaa_resolve = 1;
     }
+    /* OWNERSHIP CONTRACT (log 140): the returned handle always carries a +1.
+     * A newly created resolve texture already owns one; the borrowed original
+     * gets a retain so both paths look the same to the Objective-C caller,
+     * which adopts it with __bridge_transfer.  Without this the created
+     * texture's +1 leaked (the caller's __bridge assignment only retained). */
+    if (read_texid) {
+        CFRetain((CFTypeRef)read_texid);
+    }
     *read_texid_ptr = read_texid;
     *read_subresource_ptr = read_subresource;
     *out_did_msaa_resolve = did_msaa_resolve;

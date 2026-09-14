@@ -1285,7 +1285,8 @@ static void mglBlitSynchronizeTexture(id encoder,
                                   &didMsaaResolveRaw)) {
         return;
     }
-    readtexid = (__bridge id)readtexidHandle;
+    /* The C entry returns a +1 handle (created or retained); ARC adopts it. */
+    readtexid = (__bridge_transfer id)readtexidHandle;
     didMsaaResolve = didMsaaResolveRaw ? YES : NO;
 
     MGLBlitAxis axisX = { (double)srcX0, (double)srcX1, (double)dstX0, (double)dstX1 };

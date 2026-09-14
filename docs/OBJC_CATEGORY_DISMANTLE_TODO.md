@@ -50,7 +50,7 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 八十一刀** + trace 清零 后；第 68–109 轮见 §0.24/§0.26–§0.66）**：
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 八十一刀** + 第 110 轮所有权修复 + trace 清零 后；第 68–110 轮见 §0.24/§0.26–§0.67）**：
 文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 24,374**、
 ObjC 语法 **2,268 → 1,378**、词汇 **4,353 → 2,798**；**第 103/104 两轮两次尝试的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮改从 `+Blit.m` 推进**；
@@ -4588,6 +4588,54 @@ A/B 两臂逐行一致（见第 135 条）。
    `depthFloatTextureForDepthStencilReadback:`（7）；两个调度器（`-mtlBlitFramebuffer:` 12、`-mtlCopyImageSubData:` 24）留到最后。
    注意 `mglBlitScaledPipelineForPixelFormat` / `mglBlitScaledSamplerForFilter` / `mglBlitClearRectDepthState`
    已是 C 入口（`mgl_blit_pipelines.h`）✓。
+2. **`+BindingState.m` 采样簇**：先做**纯修复刀**（回退调用后重新取 `ptr` 或整段改用调用前字段快照），
+   探针 8 次 + 七簇通过后再按 compat → sampler（退役端口 28 → 27）→ separate samplers 转换，
+   最后该文件整文件消失（**6 → 5**）。
+3. `+Texture.m`（271 语法 / 1,052 词汇）与 `MGLRenderer.m`（168 语法）；壳的 `MGLPipelineCache` 归档路径。
+
+140. **第 110 轮：修掉第 135 刀埋下的"创建对象 +1 泄漏"（所有权契约刀，无文件/语法变化）**：
+     ① **发现**：复盘第 135 刀的 `mglBlitResolveMsaaSource` 时看出一个真 bug——该 C 入口在 MSAA 解析路径上
+     `mglBdCreateTexture` 拿到 **+1** 的解析纹理并把它交给调用点的 `void *` 句柄，而 ObjC 调用点用
+     `readtexid = (__bridge id)readtexidHandle;` 只是**保留**（retain），**没有接管那个 +1** →
+     每次 `glBlitFramebuffer` 的 MSAA 解析都会**泄漏一个纹理引用**（功能正常，但内存只增不减）。
+     ② **修法（对称契约，避免"有时 +1 有时借用"）**：C 入口在返回前对**借用**的原纹理补一次 `CFRetain`，
+     于是**所有返回路径都带 +1**；调用点改用 `__bridge_transfer` 接管（ARC 会同时释放旧值）。
+     这样解析路径与非解析路径的所有权语义一致，既无泄漏也不会过度释放。
+     ③ **oracle**：旧库 = 提交 `495a36e` 的独立 worktree 构建（两库不同；先清 `.o/.d`）；
+     `ab_full.py`：**default 4,981/4,981、flushy 5,514/5,514 逐行一致**（未过滤 5,335/5,339 与 6,112/6,119 →
+     `slow` 354/358、598/605）、**stderr MGL 307/307 多重集一致**、两臂 **92/0/2、91/1/2**。
+     ④ **CTS 七簇**：非通过集合 **diff 全空**（58 / 1 / 0 / 59 / 13 / 39 / 4）；`make test-all` **0**（92/0/2/94）。
+     ⑤ **度量（本刀刻意零变化，如实记账）**：文件 6、行数 **24,375**（+1 注释）、语法 **1,378**、词汇 **2,798**、
+     端口 **28**；收益是**修掉一个每帧级别的引用泄漏**与一条可复用契约。
+     ⑥ **新增规矩（§0.67 第 13 条）**：**C 入口若可能返回"新创建的对象"，要么把 +1 明确交给调用方接管
+     （调用点用 `__bridge_transfer`），要么统一补 retain 使所有路径都是 +1**；绝不能出现
+     "`__bridge id` + 有时带 +1"，那必然泄漏。凡是 `*_ptr`/`void *` 出参返回 Metal 对象的刀，都要先问一句：
+     **这个句柄带不带 +1、调用点是 `__bridge` 还是 `__bridge_transfer`**。
+
+### 0.67 第 110 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.66**）
+
+**当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 24,375 行 / 1,378 语法 / 2,798 词汇**；
+壳 TU **1,988 行 / 279 语法**（上限 2,400）；端口面 **28 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂逐行一致（第 140 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,843 · `+Texture.m` 271/1,052/6,256 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` **184/546/2,993** · 壳 `MGLPlatformRendererShell.m` 279/287/1,988 · `+BindingState.m` **91/85/1,678**。
+
+**规矩表（§0.62/§0.65/§0.66 十二条仍然有效）＋ 本轮第十三条（所有权契约）**：
+13. **C 入口返回 Metal 对象时的 +1 契约必须明确且对称**：要么统一 +1（借用路径补 `CFRetain`）＋ 调用点
+    `__bridge_transfer`，要么统一借用；**绝不允许"`__bridge id` + 有时带 +1"**（第 135 刀的泄漏就是这么来的）。
+    转换任何"创建并返回对象"的方法前，先查调用点是 `__bridge` 还是 `__bridge_transfer`。
+
+**下一步（按收益排序）**：
+1. **`+Blit.m` 剩余叶子**（两个调度器 `-mtlBlitFramebuffer:` 12 语法 / `-mtlCopyImageSubData:` 24 语法留到最后）：
+   - `resolvedReadbackTextureForMultisampleTexture:`（3 语法 / 74 行）与
+     `depthFloatTextureForDepthStencilReadback:`（7 语法 / 86 行）——**两者都"创建并返回纹理"**，
+     按规矩 13 把入口做成统一 +1 契约（借用/新建都补 retain）＋ 调用点 `__bridge_transfer`；
+   - `copyImageSubData3DFallback:`（14 语法 / 410 行）——**零新增端口**（自建 staging 缓冲自己释放），
+     依赖的 `readTextureRegionViaBlit` 已 C 化（第 139 刀）；
+   - `copyImageSubDataFormatConversion:`（14）、`copyImageSubDataPostBlitReadback:`（22）需要
+     `synchronizeRenderPassForTextureReadback` 的 C 入口（补端口则记 T4 −1）；
+   - `blitFramebufferScaledColorWithState:`（9）需要 `-mglDrawableTexture` 的 C 入口。
 2. **`+BindingState.m` 采样簇**：先做**纯修复刀**（回退调用后重新取 `ptr` 或整段改用调用前字段快照），
    探针 8 次 + 七簇通过后再按 compat → sampler（退役端口 28 → 27）→ separate samplers 转换，
    最后该文件整文件消失（**6 → 5**）。
