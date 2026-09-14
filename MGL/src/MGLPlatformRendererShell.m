@@ -370,6 +370,12 @@ void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
     }
 }
 
+int mglRendererCurrentRenderPassUsesTexturePort(void *renderer, void *texture)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r currentRenderPassUsesTexture:(__bridge id)texture]) ? 1 : 0;
+}
+
 int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
     void *renderer, void *source_buffer, size_t source_offset,
     size_t source_bytes_per_row, size_t source_bytes_per_image,

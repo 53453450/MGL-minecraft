@@ -45,6 +45,8 @@
 #include "mgl_blit_color_state.h"   /* MGLBlitColorState (log 146) */
 #include "mgl_blit_pipelines.h"    /* scaled blit pipeline/sampler + params (log 147) */
 #include "mgl_blit_clip.h"         /* MGLBlitAxis / mglClipBlitAxis (log 148) */
+#include "mgl_rt_sync.h"           /* sampled-copy eligibility + FBO attachment (log 150) */
+#include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked (log 150) */
 #include "mgl_env_flag.h"         /* mglEnvFlagEnabled (log 148) */
 #include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_metal_ref.h"        /* mglSafeReleaseMetalObj */
@@ -988,6 +990,16 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
  */
 
 /* The .m's helper from MGLRenderer+Blit_Private.h, restated for this TU. */
+/* Twin of the MGLRenderer+Blit_Private.h static inline (version match alone is
+ * not freshness: dirty mips must be empty too). */
+static int mglBdGLSampledCopyContentFresh(const Texture *tex)
+{
+    return tex != NULL && tex->mtl_gl_sampled_data != NULL &&
+           tex->mtl_gl_sampled_write_version ==
+               tex->mtl_render_target_write_version &&
+           tex->mtl_gl_sampled_dirty_mip_mask == 0u;
+}
+
 /* MGLRenderer_Private.h declares this BOOL (signed char on macOS). */
 extern signed char mglEnvFlagEnabled(const char *name);
 
@@ -3574,4 +3586,187 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         mglMarkRendererDirtyBits(&glm_ctx->state,
                                  DIRTY_TEX | DIRTY_TEX_BINDING);
     }
+}
+
+/* === sampled render-target copy repair (P0-1, log 150) =================== */
+
+/* -freshGLSampledRenderTargetCopyForSampling:source:stage:program:binding:
+ *  unit:expectedType:expectedKind:
+ *
+ * Returns a BORROWED handle (the texture or the renderer owns the sampled
+ * copy), or NULL — the method's +0 `id` return. */
+void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
+    void *renderer, Texture *tex, void *source, const char *stage,
+    GLuint program_name, GLuint binding, GLuint unit, uint32_t expected_type,
+    uint32_t expected_kind)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    if (!tex || !source || !mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
+        return NULL;
+    }
+    if (tex->mtl_render_target_write_version == 0u) {
+        return NULL;
+    }
+
+    void *sampled_copy = tex->mtl_gl_sampled_data;
+    int copy_type_ok =
+        sampled_copy &&
+        (expected_type == 0 ||
+         mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
+        mglTexturePixelFormatCompatibleWithExpectedDataKind(
+            mglBdTextureInfo(sampled_copy).pixel_format, expected_kind);
+    if (sampled_copy && mglBdGLSampledCopyContentFresh(tex) && copy_type_ok) {
+        return sampled_copy;
+    }
+
+    int is_fb_attachment = mglTextureIsAttachmentOfFramebuffer(
+        areas.command ? areas.command->renderPassFramebuffer : NULL, tex);
+
+    /* Feedback sampling of a color attachment mid-pass must keep the pre-pass
+     * Y-flip copy.  Rebuilding from the live RT between drawArrays (version miss
+     * after MarkRenderTargetWritten) feeds already-written texels back into
+     * later draws and breaks KHR-GL46.texture_barrier same-texel-rw (cover-once
+     * across multiple draws, no barrier).  glTextureBarrier / end_render_pass
+     * refresh the copy instead. */
+    if (is_fb_attachment && copy_type_ok) {
+        if (mglTraceLogIsEnabled()) {
+            mglTraceLog(
+                "RT_SAMPLE_COPY_REPAIR_KEEP stage=%s program=%u binding=%u "
+                "unit=%u tex=%u label=\"%s\" "
+                "reason=fb-attachment-prepass-copy writeVer=%u rtVer=%u",
+                stage ? stage : "", (unsigned)program_name, (unsigned)binding,
+                (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
+                (unsigned)tex->mtl_gl_sampled_write_version,
+                (unsigned)tex->mtl_render_target_write_version);
+        }
+        return sampled_copy;
+    }
+
+    if (mglRendererCurrentRenderPassUsesTexturePort(renderer, source) &&
+        !is_fb_attachment) {
+        /* The texture is used by the current render pass in a non-attachment
+         * role (e.g. bound to another sampler).  We cannot safely end and
+         * restore the pass in this case because the texture might be written by
+         * the pass itself. */
+        if (mglTraceLogIsEnabled()) {
+            mglTraceLog(
+                "RT_SAMPLE_COPY_REPAIR_SKIP stage=%s program=%u binding=%u "
+                "unit=%u tex=%u label=\"%s\" "
+                "reason=current-pass-uses-texture writeVer=%u rtVer=%u",
+                stage ? stage : "", (unsigned)program_name, (unsigned)binding,
+                (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
+                (unsigned)tex->mtl_gl_sampled_write_version,
+                (unsigned)tex->mtl_render_target_write_version);
+        }
+        return NULL;
+    }
+
+    if (is_fb_attachment) {
+        if (mglTraceLogIsEnabled()) {
+            mglTraceLog(
+                "RT_SAMPLE_COPY_REPAIR_ATTEMPT stage=%s program=%u binding=%u "
+                "unit=%u tex=%u label=\"%s\" reason=fb-attachment writeVer=%u "
+                "rtVer=%u",
+                stage ? stage : "", (unsigned)program_name, (unsigned)binding,
+                (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
+                (unsigned)tex->mtl_gl_sampled_write_version,
+                (unsigned)tex->mtl_render_target_write_version);
+        }
+    }
+
+    int had_render_encoder =
+        mglRenderEncoderOwnerHasCurrent(
+            areas.command ? areas.command->currentRenderEncoderOwner : NULL) == 1;
+    if (had_render_encoder) {
+        mglRendererEndRenderEncodingLocked(renderer);
+    }
+
+    /* texSubImage may leave DIRTY_TEXTURE_DATA after releasing the sampled copy
+     * (direct MTL upload skipped/failed).  Rebuild the Y-flip copy from Metal
+     * only after flushing CPU backing, otherwise feedback sampling sees the
+     * previous clear/RT contents (KHR-GL46.texture_barrier). */
+    if ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0 && tex->mtl_data &&
+        !tex->metal_data_authoritative) {
+        void *dirty_metal = tex->mtl_data;
+        int flushed = 0;
+        if (mglRenderTextureTargetIs2D((uint32_t)tex->target) &&
+            mglBdTextureInfo(dirty_metal).texture_type == MGLTextureType2D &&
+            !mglTextureUploadNeedsSwizzleBake(tex)) {
+            flushed = mglRendererUploadFullCPUTextureDataPort(
+                renderer, tex, dirty_metal, "sample_gate_miss_repair.dirty");
+        }
+        if (flushed) {
+            tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+            if (tex->is_render_target) {
+                tex->mtl_render_target_write_version++;
+                mglMarkGLSampledCopyLevelDirty(tex, 0u);
+            }
+        }
+    }
+
+    sampled_copy = tex->mtl_gl_sampled_data;
+    if (!(sampled_copy && mglBdGLSampledCopyContentFresh(tex) &&
+          (expected_type == 0 ||
+           mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
+          mglTexturePixelFormatCompatibleWithExpectedDataKind(
+              mglBdTextureInfo(sampled_copy).pixel_format, expected_kind))) {
+        source = tex->mtl_data;
+        if (source) {
+            (void)mglBlitUpdateGLSampledRenderTargetCopy(
+                renderer, tex, source, "sample_gate_miss_repair");
+        }
+        sampled_copy = tex->mtl_gl_sampled_data;
+    }
+
+    if (had_render_encoder &&
+        mglRenderEncoderOwnerHasCurrent(
+            areas.command ? areas.command->currentRenderEncoderOwner : NULL) !=
+            1) {
+        if (!mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+                renderer, "sample_gate_miss_repair")) {
+            return NULL;
+        }
+    }
+
+    int fresh =
+        sampled_copy && mglBdGLSampledCopyContentFresh(tex) &&
+        (expected_type == 0 ||
+         mglBdTextureInfo(sampled_copy).texture_type == expected_type) &&
+        mglTexturePixelFormatCompatibleWithExpectedDataKind(
+            mglBdTextureInfo(sampled_copy).pixel_format, expected_kind);
+    if (mglTraceLogIsEnabled()) {
+        mglTraceLog(
+            "RT_SAMPLE_COPY_REPAIR stage=%s program=%u binding=%u unit=%u tex=%u "
+            "label=\"%s\" ok=%d copy=%p writeVer=%u rtVer=%u expectedType=%lu",
+            stage ? stage : "", (unsigned)program_name, (unsigned)binding,
+            (unsigned)unit, (unsigned)tex->name, mglTraceTextureLabel(tex),
+            fresh ? 1 : 0, sampled_copy,
+            (unsigned)tex->mtl_gl_sampled_write_version,
+            (unsigned)tex->mtl_render_target_write_version,
+            (unsigned long)expected_type);
+    }
+    return fresh ? sampled_copy : NULL;
+}
+
+/* The glBlitFramebuffer backend entry (was the tail of MGLRenderer+Blit.m).
+ * The Objective-C side had a two-line lease inline in MGLRenderer_Private.h;
+ * C uses mglRendererBackendBeginContext directly, like mgl_draw_entry.c. */
+void mglRendererBlitFramebuffer(GLMContext glm_ctx, int32_t src_x0,
+                                int32_t src_y0, int32_t src_x1, int32_t src_y1,
+                                int32_t dst_x0, int32_t dst_y0, int32_t dst_x1,
+                                int32_t dst_y1, uint32_t mask, uint32_t filter)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) {
+        return;
+    }
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
+    if (renderer && glm_ctx) {
+        mglBlitFramebufferDispatch(renderer, glm_ctx, src_x0, src_y0, src_x1,
+                                   src_y1, dst_x0, dst_y0, dst_x1, dst_y1,
+                                   (GLbitfield)mask, (GLenum)filter);
+    }
+    mglRendererBackendEnd(&backend_lease);
 }

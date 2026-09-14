@@ -122,6 +122,15 @@ bool mglBlitResolveFramebufferAttachments(
     GLint src_y1, GLint dst_x0, GLint dst_y0, GLint dst_x1, GLint dst_y1,
     MGLBlitColorState *st, GLenum *out_read_attachment);
 
+/* Repair/refresh the Y-flip sampled copy of a render target and return it for
+ * sampling.  Was -freshGLSampledRenderTargetCopyForSampling:source:stage:
+ * program:binding:unit:expectedType:expectedKind:.  Returns a BORROWED handle
+ * (or NULL) — the method's +0 `id` return. */
+void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
+    void *renderer, Texture *tex, void *source, const char *stage,
+    GLuint program_name, GLuint binding, GLuint unit, uint32_t expected_type,
+    uint32_t expected_kind);
+
 /* glCopyTexSubImage CPU path: read the framebuffer region back as BGRA8, flip /
  * convert it for the destination Metal format and upload it.  Was
  * -(void)mtlCopyTexSubImage:tex:slice:mipmapLevel:xoffset:yoffset:x:y:width:

@@ -303,6 +303,10 @@ void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
                                     void *pixel_bytes, size_t bytes_per_row,
                                     size_t bytes_per_image,
                                     MGLRegionValue region);
+/* Whether the current render pass references `texture` (used by the sampled
+ * render-target copy repair path, P0-1 log 150). */
+int mglRendererCurrentRenderPassUsesTexturePort(void *renderer, void *texture);
+
 int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
     void *renderer, void *source_buffer, size_t source_offset,
     size_t source_bytes_per_row, size_t source_bytes_per_image,

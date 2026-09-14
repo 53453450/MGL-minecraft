@@ -141,14 +141,9 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
  * mglBlitTextureCanUseGLSampledRenderTargetCopy (mgl_blit_sampled_copy.h). */
 /* updateGLSampledRenderTargetCopyForTexture:source:reason: is now the C
  * function mglBlitUpdateGLSampledRenderTargetCopy (mgl_blit_sampled_copy.h). */
-- (id)freshGLSampledRenderTargetCopyForSampling:(Texture *)tex
-                                                     source:(id)source
-                                                      stage:(const char *)stage
-                                                    program:(GLuint)programName
-                                                    binding:(GLuint)binding
-                                                       unit:(GLuint)unit
-                                               expectedType:(uint32_t)expectedType
-                                               expectedKind:(MGLTextureDataKind)expectedKind;
+/* freshGLSampledRenderTargetCopyForSampling:… is C now
+ * (mglBlitFreshGLSampledRenderTargetCopyForSampling, mgl_blit_drivers.h);
+ * its only caller is MGLRenderer+BindingState.m. */
 
 @end
 

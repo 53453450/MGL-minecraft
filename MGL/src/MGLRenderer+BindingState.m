@@ -11,6 +11,7 @@
 // MGLRenderer+BindingState.m — V/F buffer, attrib, texture bind ports
 
 #import "MGLRenderer_Private.h"
+#include "mgl_blit_drivers.h"   /* sampled RT copy repair (log 150) */
 #include "mgl_stage_buffer_bind.h"  /* stage-buffer binding drivers (log 129) */
 #include "mgl_storage_image_bind.h" /* storage-image driver (log 130) */
 #include "mgl_sampled_fallback.h" /* sampled-texture fallback chain (log 132) */
@@ -1474,14 +1475,10 @@ done:
 
     if (plan.action == MGL_ST_ACTION_RT_REPAIR) {
         id repairedCopy =
-            [self freshGLSampledRenderTargetCopyForSampling:ptr
-                                                      source:texture
-                                                       stage:stage
-                                                     program:programName
-                                                     binding:spirvBinding
-                                                        unit:textureUnit
-                                                expectedType:expectedType
-                                                expectedKind:expectedKind];
+            (__bridge id)mglBlitFreshGLSampledRenderTargetCopyForSampling(
+                (__bridge void *)self, ptr, (__bridge void *)texture, stage,
+                programName, spirvBinding, textureUnit, expectedType,
+                (uint32_t)expectedKind);
         if (!repairedCopy) {
             return true;
         }
