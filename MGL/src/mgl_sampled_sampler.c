@@ -41,6 +41,8 @@
 #include "mgl_binding_policy.h"  /* mglRenderTextureBindingStageForShader */
 #include "mgl_texture_bind.h"    /* mglRendererBindMTLTexture */
 #include "mgl_texture_binding_resolve.h" /* mglTextureForSampledResourceForStage */
+#include "mgl_safety.h"          /* mglObjectPointerLooksPlausible / range check */
+#include "mgl_types_state.h"      /* MGLState / history depth */
 #include "mgl_trace_strategy.h" /* mglWriteProgramMSLDump */
 
 /* The .m's file-local sampler slot ceiling (MGLRenderer+BindingState.m). */
@@ -589,5 +591,512 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
                                     &resource_snapshot)) {
         return false;
     }
+    return true;
+}
+
+/* === depth-texture recovery for fragment sampling (P0-1, log 154) ======== */
+
+/* The ObjC-private-header C symbols this path needs, restated for this TU.
+ * BOOL is signed char on macOS, so BOOL returns/out-params are declared as
+ * such (not int) to keep the ABI exact. */
+extern signed char mglRendererGLSampledCopyLooksUsable(
+    Texture *tex, uint32_t expected_type, MGLTextureDataKind expected_kind,
+    signed char allow_previous_write_version, void **copy_out,
+    signed char *used_previous_write_version_out);
+extern signed char mglRendererTextureLooksLikeSampledColor2D(
+    GLMContext glctx, Texture *tex);
+extern signed char mglRendererTextureLooksRecoverableSampled2D(
+    GLMContext glctx, Texture *tex, uint32_t expected_type,
+    MGLTextureDataKind expected_kind);
+extern Texture *mglFindFramebufferColorTexturePairedWithDepth(
+    GLMContext glctx, Texture *depth_texture, GLuint *fbo_name_out);
+extern signed char mglCurrentDrawFramebufferUsesColorTexture(
+    GLMContext glctx, Texture *texture, GLuint expected_fbo_name,
+    size_t *attachment_index_out);
+
+/* Twin of the +BindingState.m static (NSUInteger* is size_t* on macOS). */
+static signed char mglSsRenderPassUsesColorTexture(void *owner, void *texture,
+                                                   size_t *attachment_index_out)
+{
+    uint32_t attachment_index = MAX_COLOR_ATTACHMENTS;
+    const signed char found =
+        (signed char)mglRenderPassUsesColorTextureOwner(owner, texture,
+                                                        &attachment_index);
+    if (attachment_index_out) {
+        *attachment_index_out = attachment_index;
+    }
+    return found;
+}
+
+/* The .m's MGL_ABORT_TBIND_IF_ENCODER_CLOSED().  The owner is re-read at every
+ * use, like the macro did (rule: a cached render-encoder owner goes stale). */
+#define MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED()                                 \
+    do {                                                                       \
+        if (mglRenderEncoderOwnerHasCurrent(                                   \
+                areas.command ? areas.command->currentRenderEncoderOwner       \
+                              : NULL) == 0) {                                  \
+            if (ctx) {                                                         \
+                mglMarkRendererDirtyBits(ctx->active_state,                    \
+                                         (DIRTY_TEX | DIRTY_TEX_BINDING |      \
+                                          DIRTY_RENDER_STATE));                \
+            }                                                                  \
+            return false;                                                      \
+        }                                                                      \
+    } while (0)
+
+bool mglSampledRecoverFragmentDepthTexture(
+    void *renderer, Texture **ptr_ptr, void **texture_ptr,
+    const char *sampled_name, GLuint spirv_binding, GLuint texture_unit,
+    uint32_t expected_type, uint32_t expected_kind,
+    GLuint fragment_program_name, int *suppress_missing_ptr,
+    int *used_fallback_ptr)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+
+    Texture *ptr = *ptr_ptr;
+    void *texture = *texture_ptr;
+    int suppress_missing = *suppress_missing_ptr;
+    int used_fallback = *used_fallback_ptr;
+
+    RETURN_FALSE_ON_FAILURE(mglRendererBindMTLTexture(renderer, ptr));
+    MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
+    if (ptr->mtl_data) {
+        texture = ptr->mtl_data;
+        /* Defer RT base-level views until Y-flip (avoids MRT view races). */
+        if (!ptr->is_render_target) {
+            texture = mglSampledTextureViewForBaseLevel(ptr, texture);
+        }
+    }
+
+    TextureLevel *depth_sample_level0 = mglTraceTextureBaseLevel(ptr);
+    MGLDepthRecoverInput gin = {0};
+    mglBindingTextureFillDepthRecoverGateInput(
+        &gin, texture ? 1 : 0,
+        mglBindingTextureSampledNameIsInSampler(sampled_name),
+        texture && mglMetalPixelFormatIsDepthOrStencil(
+                       mglSsTexturePixelFormat(texture)),
+        ptr && ptr->is_render_target ? 1 : 0,
+        depth_sample_level0 && depth_sample_level0->ever_written,
+        depth_sample_level0 && depth_sample_level0->has_initialized_data);
+    MGLDepthRecoverPlan gplan = {0};
+    if (mglBindingTexturePlanDepthRecover(&gin, &gplan) != 0 ||
+        gplan.action == MGL_DR_ACTION_KEEP) {
+        goto done;
+    }
+
+    if (gplan.action == MGL_DR_ACTION_ENTER_INSAMPLER) {
+        GLuint paired_fbo_name = 0u;
+        Texture *paired_color = mglFindFramebufferColorTexturePairedWithDepth(
+            ctx, ptr, &paired_fbo_name);
+        Texture *recover_texture = NULL;
+        void *recover_mtl = NULL;
+        const char *recover_reason = "none";
+        int recovered_from_sampled_copy = 0;
+        int recovered_from_previous_version = 0;
+        size_t recover_att = MAX_COLOR_ATTACHMENTS;
+        size_t cur_att = MAX_COLOR_ATTACHMENTS;
+        int paired_cur = mglCurrentDrawFramebufferUsesColorTexture(
+            ctx, paired_color, paired_fbo_name, &cur_att);
+        void *paired_mtl = NULL;
+        if (paired_color) {
+            RETURN_FALSE_ON_FAILURE(
+                mglRendererBindMTLTexture(renderer, paired_color));
+            MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
+            paired_mtl = paired_color->mtl_data;
+            if (!paired_cur && paired_mtl) {
+                paired_cur = mglSsRenderPassUsesColorTexture(
+                    areas.command ? areas.command->renderPassStateOwner : NULL,
+                    paired_mtl, &cur_att);
+            }
+        }
+        MGLDepthRecoverInput iin = {0};
+        mglBindingTextureFillDepthRecoverInSamplerInput(
+            &iin, paired_color ? 1 : 0, paired_cur ? 1 : 0, paired_mtl ? 1 : 0,
+            paired_mtl && mglMetalPixelFormatIsDepthOrStencil(
+                              mglSsTexturePixelFormat(paired_mtl)),
+            texture_unit < TEXTURE_UNITS ? 1 : 0);
+        MGLDepthRecoverPlan iplan = {0};
+        (void)mglBindingTexturePlanDepthRecover(&iin, &iplan);
+
+        if (iplan.action == MGL_DR_ACTION_PROBE_PAIRED_COPY) {
+            static uint64_t s_hist_sup = 0;
+            if (mglBindingTextureDepthRecoverLogHit(&s_hist_sup)) {
+                MGL_EMIT_DR_LOG(.kind = MGL_DR_LOG_HIST_SUPPRESSED,
+                                .hit = s_hist_sup,
+                                .program = fragment_program_name,
+                                .binding = spirv_binding, .unit = texture_unit,
+                                .fbo = paired_fbo_name, .color_att = cur_att,
+                                .depth_tex = ptr ? ptr->name : 0u,
+                                .paired_color = paired_color ? paired_color->name
+                                                             : 0u);
+            }
+            void *paired_copy = NULL;
+            signed char used_prev = 0;
+            int usable =
+                paired_color &&
+                mglRendererGLSampledCopyLooksUsable(
+                    paired_color, expected_type,
+                    (MGLTextureDataKind)expected_kind, 1, &paired_copy,
+                    &used_prev);
+            MGLDepthRecoverInput cin = {0};
+            mglBindingTextureFillDepthRecoverCopyInput(&cin, usable ? 1 : 0);
+            MGLDepthRecoverPlan cplan = {0};
+            (void)mglBindingTexturePlanDepthRecover(&cin, &cplan);
+            if (cplan.action == MGL_DR_ACTION_USE_RECOVER) {
+                recover_texture = paired_color;
+                recover_mtl = paired_copy;
+                recover_reason =
+                    cplan.reason_tag ? cplan.reason_tag : "paired-current-copy";
+                recovered_from_sampled_copy = 1;
+                recovered_from_previous_version = used_prev ? 1 : 0;
+                recover_att = cur_att;
+            } else {
+                static uint64_t s_no_copy = 0;
+                if (mglBindingTextureDepthRecoverLogHit(&s_no_copy)) {
+                    MGL_EMIT_DR_LOG(
+                        .kind = MGL_DR_LOG_NO_COPY, .hit = s_no_copy,
+                        .program = fragment_program_name,
+                        .binding = spirv_binding, .unit = texture_unit,
+                        .fbo = paired_fbo_name, .color_att = cur_att,
+                        .depth_tex = ptr ? ptr->name : 0u,
+                        .color_tex = paired_color ? paired_color->name : 0u,
+                        .depth_fmt = mglSsTexturePixelFormat(texture),
+                        .sampled_ver = paired_color
+                                           ? paired_color
+                                                 ->mtl_gl_sampled_write_version
+                                           : 0u,
+                        .rt_ver = paired_color
+                                      ? paired_color
+                                            ->mtl_render_target_write_version
+                                      : 0u);
+                }
+                texture = NULL;
+                suppress_missing = 1;
+            }
+        } else if (iplan.action == MGL_DR_ACTION_USE_PAIRED_DIRECT) {
+            static uint64_t s_rec = 0;
+            if (mglBindingTextureDepthRecoverLogHit(&s_rec)) {
+                MGL_EMIT_DR_LOG(
+                    .kind = MGL_DR_LOG_PAIRED_DIRECT, .hit = s_rec,
+                    .program = fragment_program_name,
+                    .binding = spirv_binding, .unit = texture_unit,
+                    .fbo = paired_fbo_name, .depth_tex = ptr ? ptr->name : 0u,
+                    .color_tex = paired_color->name,
+                    .depth_fmt = mglSsTexturePixelFormat(texture),
+                    .color_fmt = mglSsTexturePixelFormat(paired_mtl),
+                    .w = mglSsTextureWidth(paired_mtl),
+                    .h = mglSsTextureHeight(paired_mtl));
+            }
+            ptr = paired_color;
+            texture = paired_mtl;
+        } else if (iplan.action == MGL_DR_ACTION_SCAN_HISTORY) {
+            for (GLuint hi = 0; hi < MGL_RECENT_SAMPLED_2D_HISTORY; hi++) {
+                Texture *cand =
+                    mglSsState(&areas)->recent_sampled_2d_textures[texture_unit]
+                                                              [hi];
+                if (!cand || cand == ptr || cand == paired_color ||
+                    !mglRendererTextureLooksLikeSampledColor2D(ctx, cand)) {
+                    continue;
+                }
+                void *cand_mtl = cand->mtl_data;
+                size_t cand_att = MAX_COLOR_ATTACHMENTS;
+                int cand_cur = mglCurrentDrawFramebufferUsesColorTexture(
+                                   ctx, cand, 0u, &cand_att) ||
+                               mglSsRenderPassUsesColorTexture(
+                                   areas.command
+                                       ? areas.command->renderPassStateOwner
+                                       : NULL,
+                                   cand_mtl, &cand_att);
+                if (!cand_cur && (!cand->mtl_data || cand->dirty_bits)) {
+                    RETURN_FALSE_ON_FAILURE(
+                        mglRendererBindMTLTexture(renderer, cand));
+                    MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
+                    cand_mtl = cand->mtl_data;
+                    cand_att = MAX_COLOR_ATTACHMENTS;
+                    cand_cur = mglCurrentDrawFramebufferUsesColorTexture(
+                                   ctx, cand, 0u, &cand_att) ||
+                               mglSsRenderPassUsesColorTexture(
+                                   areas.command
+                                       ? areas.command->renderPassStateOwner
+                                       : NULL,
+                                   cand_mtl, &cand_att);
+                }
+                void *cand_copy = NULL;
+                signed char used_prev = 0;
+                int copy_ok =
+                    cand->is_render_target &&
+                    mglRendererGLSampledCopyLooksUsable(
+                        cand, expected_type, (MGLTextureDataKind)expected_kind,
+                        cand_cur ? 1 : 0, &cand_copy, &used_prev);
+                MGLDepthRecoverInput hin = {0};
+                mglBindingTextureFillDepthRecoverHistoryInput(
+                    &hin, 1, cand->is_render_target ? 1 : 0, cand_cur ? 1 : 0,
+                    cand_mtl ? 1 : 0, copy_ok ? 1 : 0,
+                    cand_mtl && mglMetalPixelFormatIsDepthOrStencil(
+                                    mglSsTexturePixelFormat(cand_mtl)),
+                    !cand_mtl || expected_type == 0 ||
+                        mglSsTextureType(cand_mtl) == expected_type,
+                    !cand_mtl ||
+                        mglTexturePixelFormatCompatibleWithExpectedDataKind(
+                            mglSsTexturePixelFormat(cand_mtl), expected_kind));
+                MGLDepthRecoverPlan hplan = {0};
+                (void)mglBindingTexturePlanDepthRecover(&hin, &hplan);
+                if (hplan.action == MGL_DR_ACTION_HISTORY_USE_COPY) {
+                    recover_texture = cand;
+                    recover_mtl = cand_copy;
+                    recover_reason =
+                        hplan.reason_tag ? hplan.reason_tag : "history-copy";
+                    recovered_from_sampled_copy = 1;
+                    recovered_from_previous_version = used_prev ? 1 : 0;
+                    recover_att = cand_att;
+                    break;
+                }
+                if (hplan.action == MGL_DR_ACTION_HISTORY_USE_DIRECT) {
+                    recover_texture = cand;
+                    recover_mtl = cand_mtl;
+                    recover_reason =
+                        hplan.reason_tag ? hplan.reason_tag : "history-direct";
+                    recover_att = cand_att;
+                    break;
+                }
+            }
+        } else if (iplan.action == MGL_DR_ACTION_LOG_UNPAIRED) {
+            static uint64_t s_unp = 0;
+            if (mglBindingTextureDepthRecoverLogHit(&s_unp)) {
+                MGL_EMIT_DR_LOG(.kind = MGL_DR_LOG_UNPAIRED, .hit = s_unp,
+                                .program = fragment_program_name,
+                                .binding = spirv_binding, .unit = texture_unit,
+                                .depth_tex = ptr ? ptr->name : 0u,
+                                .depth_fmt = mglSsTexturePixelFormat(texture),
+                                .w = mglSsTextureWidth(texture),
+                                .h = mglSsTextureHeight(texture));
+            }
+        }
+
+        if (recover_texture && recover_mtl) {
+            static uint64_t s_hist_rec = 0;
+            if (mglBindingTextureDepthRecoverLogHit(&s_hist_rec)) {
+                MGL_EMIT_DR_LOG(
+                    .kind = MGL_DR_LOG_HISTORY_RECOVERY, .hit = s_hist_rec,
+                    .reason = recover_reason, .program = fragment_program_name,
+                    .binding = spirv_binding, .unit = texture_unit,
+                    .fbo = paired_fbo_name, .color_att = recover_att,
+                    .depth_tex = ptr ? ptr->name : 0u,
+                    .recover_tex = recover_texture ? recover_texture->name : 0u,
+                    .depth_fmt = mglSsTexturePixelFormat(texture),
+                    .recover_fmt = mglSsTexturePixelFormat(recover_mtl),
+                    .w = mglSsTextureWidth(recover_mtl),
+                    .h = mglSsTextureHeight(recover_mtl),
+                    .copy = recovered_from_sampled_copy ? 1 : 0,
+                    .prev_ver = recovered_from_previous_version ? 1 : 0,
+                    .sampled_ver = recover_texture
+                                       ? recover_texture
+                                             ->mtl_gl_sampled_write_version
+                                       : 0u,
+                    .rt_ver = recover_texture
+                                  ? recover_texture
+                                        ->mtl_render_target_write_version
+                                  : 0u,
+                    .paired_color = paired_color ? paired_color->name : 0u,
+                    .paired_current = paired_cur ? 1 : 0);
+            }
+            ptr = recover_texture;
+            texture = recover_mtl;
+        }
+        goto done;
+    }
+
+    /* ENTER_RT — plan@C rt_sub 0/1/2 + thin bind/fallback ports. */
+    {
+        Texture *unit_active = texture_unit < TEXTURE_UNITS
+                                   ? mglSsState(&areas)->active_textures[texture_unit]
+                                   : NULL;
+        Texture *unit_2d =
+            texture_unit < TEXTURE_UNITS
+                ? mglSsState(&areas)
+                      ->texture_units[texture_unit]
+                      .textures[_TEXTURE_2D]
+                : NULL;
+        Texture *last_2d = texture_unit < TEXTURE_UNITS
+                               ? mglSsState(&areas)
+                                     ->last_sampled_2d_textures[texture_unit]
+                               : NULL;
+        Texture *recover_texture = NULL;
+        const char *recover_reason = "none";
+        GLuint recover_fbo_name = 0u;
+        Texture *paired_color = mglFindFramebufferColorTexturePairedWithDepth(
+            ctx, ptr, &recover_fbo_name);
+        size_t draw_att = MAX_COLOR_ATTACHMENTS;
+        if (paired_color) {
+            RETURN_FALSE_ON_FAILURE(
+                mglRendererBindMTLTexture(renderer, paired_color));
+            MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
+            void *paired_mtl = paired_color->mtl_data;
+            int paired_cur = mglSsRenderPassUsesColorTexture(
+                areas.command ? areas.command->renderPassStateOwner : NULL,
+                paired_mtl, &draw_att);
+            MGLDepthRecoverInput rin = {0};
+            mglBindingTextureFillDepthRecoverRTInput(
+                &rin, 0, 1, paired_mtl ? 1 : 0, paired_cur ? 1 : 0,
+                paired_mtl && mglMetalPixelFormatIsDepthOrStencil(
+                                  mglSsTexturePixelFormat(paired_mtl)),
+                !paired_mtl || expected_type == 0 ||
+                    mglSsTextureType(paired_mtl) == expected_type,
+                !paired_mtl ||
+                    mglTexturePixelFormatCompatibleWithExpectedDataKind(
+                        mglSsTexturePixelFormat(paired_mtl), expected_kind),
+                0, 0, 0, 0);
+            MGLDepthRecoverPlan rplan = {0};
+            (void)mglBindingTexturePlanDepthRecover(&rin, &rplan);
+            if (rplan.action == MGL_DR_ACTION_RT_USE_PAIRED) {
+                recover_texture = paired_color;
+                recover_reason =
+                    rplan.reason_tag ? rplan.reason_tag : "paired-color";
+            } else if (rplan.action == MGL_DR_ACTION_RT_SKIP_CURRENT) {
+                static uint64_t s_skip = 0;
+                if (mglBindingTextureDepthRecoverLogHit(&s_skip)) {
+                    MGL_EMIT_DR_LOG(.kind = MGL_DR_LOG_RT_SKIP, .hit = s_skip,
+                                    .program = fragment_program_name,
+                                    .name = sampled_name,
+                                    .binding = spirv_binding,
+                                    .unit = texture_unit, .fbo = recover_fbo_name,
+                                    .depth_tex = ptr ? ptr->name : 0u,
+                                    .color_tex = paired_color ? paired_color->name
+                                                              : 0u);
+                }
+            }
+        }
+        int still_depth = texture && mglMetalPixelFormatIsDepthOrStencil(
+                                         mglSsTexturePixelFormat(texture));
+        MGLDepthRecoverInput r1 = {0};
+        mglBindingTextureFillDepthRecoverRTInput(
+            &r1, 1, 0, 0, 0, 0, 0, 0, recover_texture ? 1 : 0,
+            (!recover_texture &&
+             mglRendererTextureLooksRecoverableSampled2D(
+                 ctx, last_2d, expected_type,
+                 (MGLTextureDataKind)expected_kind))
+                ? 1
+                : 0,
+            still_depth ? 1 : 0, 0);
+        MGLDepthRecoverPlan p1 = {0};
+        (void)mglBindingTexturePlanDepthRecover(&r1, &p1);
+        if (p1.action == MGL_DR_ACTION_RT_SUPPRESS_LAST2D) {
+            static uint64_t s_sup = 0;
+            if (mglBindingTextureDepthRecoverLogHit(&s_sup)) {
+                MGL_EMIT_DR_LOG(.kind = MGL_DR_LOG_RT_SUPPRESS_LAST2D,
+                                .hit = s_sup, .program = fragment_program_name,
+                                .name = sampled_name, .binding = spirv_binding,
+                                .unit = texture_unit,
+                                .depth_tex = ptr ? ptr->name : 0u,
+                                .last2d = last_2d->name);
+            }
+            mglBindingTextureFillDepthRecoverRTInput(
+                &r1, 1, 0, 0, 0, 0, 0, 0, recover_texture ? 1 : 0, 0,
+                still_depth ? 1 : 0, 0);
+            (void)mglBindingTexturePlanDepthRecover(&r1, &p1);
+        }
+        if (p1.action == MGL_DR_ACTION_RT_APPLY && recover_texture) {
+            RETURN_FALSE_ON_FAILURE(
+                mglRendererBindMTLTexture(renderer, recover_texture));
+            MGL_SS_ABORT_TBIND_IF_ENCODER_CLOSED();
+            void *recover_mtl = recover_texture->mtl_data;
+            int recover_ok =
+                recover_mtl &&
+                !mglMetalPixelFormatIsDepthOrStencil(
+                    mglSsTexturePixelFormat(recover_mtl)) &&
+                (expected_type == 0 ||
+                 mglSsTextureType(recover_mtl) == expected_type) &&
+                mglTexturePixelFormatCompatibleWithExpectedDataKind(
+                    mglSsTexturePixelFormat(recover_mtl), expected_kind);
+            MGLDepthRecoverInput r2 = {0};
+            mglBindingTextureFillDepthRecoverRTInput(
+                &r2, 2, 0, 0, 0, 0, 0, 0, 0, 0, still_depth ? 1 : 0,
+                recover_ok ? 1 : 0);
+            MGLDepthRecoverPlan p2 = {0};
+            (void)mglBindingTexturePlanDepthRecover(&r2, &p2);
+            if (p2.action == MGL_DR_ACTION_USE_RECOVER) {
+                Framebuffer *current_fbo =
+                    ctx ? mglSsState(&areas)->framebuffer : NULL;
+                GLuint color_tex_name = 0u;
+                GLuint depth_tex_name = 0u;
+                if (current_fbo &&
+                    mglObjectPointerLooksPlausible(current_fbo) &&
+                    mglPointerRangeIsReadable(current_fbo, sizeof(*current_fbo))) {
+                    color_tex_name = current_fbo->color_attachments[0].texture;
+                    depth_tex_name = current_fbo->depth.texture;
+                }
+                static uint64_t s_rt = 0;
+                if (mglBindingTextureDepthRecoverLogHit(&s_rt)) {
+                    MGL_EMIT_DR_LOG(
+                        .kind = MGL_DR_LOG_RT_RECOVER, .hit = s_rt,
+                        .reason = recover_reason,
+                        .program = fragment_program_name, .name = sampled_name,
+                        .binding = spirv_binding, .unit = texture_unit,
+                        .depth_tex = ptr ? ptr->name : 0u,
+                        .recover_tex = recover_texture->name,
+                        .depth_fmt = mglSsTexturePixelFormat(texture),
+                        .recover_fmt = mglSsTexturePixelFormat(recover_mtl),
+                        .w = mglSsTextureWidth(texture),
+                        .h = mglSsTextureHeight(texture),
+                        .level = depth_sample_level0,
+                        .ever = depth_sample_level0
+                                    ? depth_sample_level0->ever_written
+                                    : 0u,
+                        .init = depth_sample_level0
+                                    ? depth_sample_level0->has_initialized_data
+                                    : 0u,
+                        .unit_active = mglTraceTextureName(unit_active),
+                        .unit_tex2d = mglTraceTextureName(unit_2d),
+                        .unit_last2d = mglTraceTextureName(last_2d),
+                        .recover_fbo = recover_fbo_name,
+                        .current_fbo = current_fbo ? current_fbo->name : 0u,
+                        .color_tex = color_tex_name,
+                        .fbo_depth_tex = depth_tex_name);
+                }
+                ptr = recover_texture;
+                texture = recover_mtl;
+                still_depth = 0;
+            }
+        }
+        if (still_depth ||
+            (texture && mglMetalPixelFormatIsDepthOrStencil(
+                            mglSsTexturePixelFormat(texture)))) {
+            void *fallback_texture = mglSampledFallbackTextureForExpectedType(
+                renderer, expected_type, expected_kind);
+            if (fallback_texture) {
+                static uint64_t s_fb = 0;
+                if (mglBindingTextureDepthRecoverLogHit(&s_fb)) {
+                    MGL_EMIT_DR_LOG(
+                        .kind = MGL_DR_LOG_RT_FALLBACK, .hit = s_fb,
+                        .program = fragment_program_name, .name = sampled_name,
+                        .binding = spirv_binding, .unit = texture_unit,
+                        .depth_tex = ptr ? ptr->name : 0u,
+                        .depth_fmt = mglSsTexturePixelFormat(texture),
+                        .w = mglSsTextureWidth(texture),
+                        .h = mglSsTextureHeight(texture),
+                        .level = depth_sample_level0,
+                        .ever = depth_sample_level0
+                                    ? depth_sample_level0->ever_written
+                                    : 0u,
+                        .init = depth_sample_level0
+                                    ? depth_sample_level0->has_initialized_data
+                                    : 0u,
+                        .unit_active = mglTraceTextureName(unit_active),
+                        .unit_tex2d = mglTraceTextureName(unit_2d),
+                        .unit_last2d = mglTraceTextureName(last_2d));
+                }
+                texture = fallback_texture;
+                used_fallback = 1;
+            }
+        }
+    }
+
+done:
+    *ptr_ptr = ptr;
+    *texture_ptr = texture;
+    *suppress_missing_ptr = suppress_missing;
+    *used_fallback_ptr = used_fallback;
     return true;
 }

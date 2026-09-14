@@ -30,6 +30,20 @@
 extern "C" {
 #endif
 
+/* Depth-texture recovery for fragment sampling.  Was
+ * -recoverFragmentSampledDepthTexture:texture:sampledName:spirvBinding:
+ * textureUnit:expectedType:expectedKind:fragmentProgramName:
+ * suppressMissingTextureFallback:usedFallbackTexture:.  `ptr_ptr` is an in/out
+ * Texture handle, `texture_ptr` an in/out BORROWED texture handle, and the two
+ * BOOL out-params are ints in C.  Returns false when the caller must abandon
+ * the stage. */
+bool mglSampledRecoverFragmentDepthTexture(
+    void *renderer, Texture **ptr_ptr, void **texture_ptr,
+    const char *sampled_name, GLuint spirv_binding, GLuint texture_unit,
+    uint32_t expected_type, uint32_t expected_kind,
+    GLuint fragment_program_name, int *suppress_missing_ptr,
+    int *used_fallback_ptr);
+
 /* Separate samplers (fragment) plus array-element textures/samplers for both
  * stages.  Was -bindSeparateSamplersAndArrayTextures:fragmentProgram:
  * fragmentProgramName:vertexProgramName:defaultSampler:bindCall:traceBind:
