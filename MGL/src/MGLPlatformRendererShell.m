@@ -391,20 +391,6 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                : 0;
 }
 
-void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
-                                    void *pixel_bytes, size_t bytes_per_row,
-                                    size_t bytes_per_image, MGLRegionValue region)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r mtlReadDrawable:glm_ctx
-                pixelBytes:pixel_bytes
-               bytesPerRow:(NSUInteger)bytes_per_row
-             bytesPerImage:(NSUInteger)bytes_per_image
-                fromRegion:region];
-    }
-}
-
 int mglRendererCurrentRenderPassUsesTexturePort(void *renderer, void *texture)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

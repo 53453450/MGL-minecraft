@@ -315,10 +315,6 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                                                        size_t required_height,
                                                        const char *reason);
 /* copyTexSubImage read-back / upload bridges (P0-1, log 149). */
-void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
-                                    void *pixel_bytes, size_t bytes_per_row,
-                                    size_t bytes_per_image,
-                                    MGLRegionValue region);
 /* Render-pass dirty-domain drivers (P0-1, log 167).  Their targets are still
  * Objective-C methods in MGLRenderer+RenderPass.m. */
 int mglRendererSyncRenderPassStateForContextPort(void *renderer, GLMContext ctx);

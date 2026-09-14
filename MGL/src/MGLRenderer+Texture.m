@@ -21,6 +21,7 @@
 #import "mgl_texture_readback_ops.h" /* the readback family is C now (log 181) */
 #import "mgl_texture_create_ops.h" /* completeness / packed-DS upload / texel buffer (log 182) */
 #import "mgl_texture_upload_ops.h" /* slice upload + dedicated CB copy (log 183) */
+#import "mgl_texture_readback_ops.h" /* readPixels family is C (log 185) */
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
@@ -41,40 +42,6 @@ enum {
     MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW = 16u,
 };
 
-typedef void (^MGLTextureCommandCompletionBlock)(
-    const MGLRenderCommandBufferState *state);
-
-static void mglTextureCommandCompletionCallback(
-    void *context,
-    const MGLRenderCommandBufferState *state)
-{
-    MGLTextureCommandCompletionBlock block =
-        (__bridge MGLTextureCommandCompletionBlock)context;
-    if (block) block(state);
-}
-
-static void mglTextureCommandCompletionDestroy(void *context)
-{
-    if (!context) return;
-    (void)CFBridgingRelease(context);
-}
-
-static int mglTextureAddCommandBufferCompletion(
-    void *commandBuffer,
-    MGLTextureCommandCompletionBlock block)
-{
-    if (!commandBuffer || !block) return -1;
-    MGLTextureCommandCompletionBlock copied = [block copy];
-    void *context = (__bridge_retained void *)copied;
-    int result = mglRenderAddCommandBufferCompletion(
-        commandBuffer,
-        mglTextureCommandCompletionCallback,
-        context,
-        mglTextureCommandCompletionDestroy);
-    if (result != 0) mglTextureCommandCompletionDestroy(context);
-    return result;
-}
-
 static MGLRegionValue mglRendererCompatRegion(int32_t x, int32_t y,
                                          int32_t width, int32_t height)
 {
@@ -92,9 +59,9 @@ void mglRendererReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer mtlReadDrawable:glm_ctx pixelBytes:pixel_bytes
-                      bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                       fromRegion:mglRendererCompatRegion(x, y, width, height)];
+        mglTextureReadDrawable((__bridge void *)renderer, glm_ctx,
+                               pixel_bytes, bytes_per_row, bytes_per_image,
+                               mglRendererCompatRegion(x, y, width, height));
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -108,10 +75,11 @@ void mglRendererReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer mtlReadIntegerPixels:glm_ctx pixelBytes:pixel_bytes
-                           bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                            fromRegion:mglRendererCompatRegion(x, y, width, height)
-                                format:format type:type];
+        mglTextureReadIntegerPixels((__bridge void *)renderer, glm_ctx,
+                                    pixel_bytes, bytes_per_row,
+                                    bytes_per_image,
+                                    mglRendererCompatRegion(x, y, width, height),
+                                    format, type);
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -124,9 +92,9 @@ void mglRendererReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer mtlReadDepthPixels:glm_ctx pixelBytes:pixel_bytes
-                         bytesPerRow:bytes_per_row bytesPerImage:bytes_per_image
-                          fromRegion:mglRendererCompatRegion(x, y, width, height)];
+        mglTextureReadDepthPixels((__bridge void *)renderer, glm_ctx,
+                                  pixel_bytes, bytes_per_row, bytes_per_image,
+                                  mglRendererCompatRegion(x, y, width, height));
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -613,271 +581,6 @@ static void mglTextureCopyTextureToBuffer(
     return false;
 }
 
-
-- (void)mtlReadDepthPixels:(GLMContext)glm_ctx
-                pixelBytes:(void *)pixelBytes
-               bytesPerRow:(NSUInteger)bytesPerRow
-             bytesPerImage:(NSUInteger)bytesPerImage
-                fromRegion:(MGLRegionValue)region
-{
-    MGL_ASSERT_GL_THREAD();
-    ctx = glm_ctx;
-
-    NSUInteger readSize = bytesPerImage;
-    if (readSize == 0u && bytesPerRow > 0u) {
-        readSize = bytesPerRow * region.size.height;
-    }
-    if (!pixelBytes || readSize == 0u) {
-        return;
-    }
-
-    if (glm_ctx->active_state->readbuffer) {
-        Framebuffer *fbo = glm_ctx->active_state->readbuffer;
-        FBOAttachment *attachment = fbo ? &fbo->depth : NULL;
-        Texture *readTextureObject = [self framebufferAttachmentTexture:attachment];
-        if (!readTextureObject) {
-            NSLog(@"MGL WARNING: readPixels FBO has no depth attachment fbo=%u",
-                  fbo ? (unsigned)fbo->name : 0u);
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-
-        readTextureObject->is_render_target = true;
-        if (![self bindMTLTexture:readTextureObject] || !readTextureObject->mtl_data) {
-            NSLog(@"MGL WARNING: readPixels could not bind FBO depth texture fbo=%u tex=%u",
-                  fbo ? (unsigned)fbo->name : 0u,
-                  (unsigned)readTextureObject->name);
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-
-        id texture = (__bridge id)(readTextureObject->mtl_data);
-        MGLMetalAttachmentSubresource subresource =
-            mglMetalAttachmentSubresourceForAttachment(attachment);
-
-        [self endRenderEncoding];
-        if (![self ensureWritableCommandBuffer:"mtlReadDepthPixels.fbo"]) {
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-        mglTextureApplyPendingFBODepthClearForReadback((__bridge void *)self, fbo, attachment, readTextureObject, (__bridge void *)texture);
-        mglTextureReadDepthAsFloat(
-            (__bridge void *)self, (__bridge void *)texture, subresource.level, subresource.slice, subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage, region, "FBO depth readback");
-        return;
-    }
-
-    GLuint drawBufferIndex = mglDefaultDrawBufferIndexForGL(glm_ctx->active_state->read_buffer);
-    id texture = nil;
-    if (drawBufferIndex < _MAX_DRAW_BUFFERS) {
-        texture = (__bridge id)
-            mglRendererBackendGetDefaultDrawBufferAttachment(
-                _backend, drawBufferIndex,
-                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH);
-    }
-
-    if (!texture) {
-        NSLog(@"MGL WARNING: readPixels default framebuffer has no depth texture slot=%u",
-              (unsigned)drawBufferIndex);
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-
-    [self endRenderEncoding];
-    if (![self ensureWritableCommandBuffer:"mtlReadDepthPixels.default"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-    mglTextureApplyPendingDefaultDepthClear((__bridge void *)self, (__bridge void *)texture);
-    mglTextureReadDepthAsFloat(
-            (__bridge void *)self, (__bridge void *)texture, 0u, 0u, 0u, pixelBytes, bytesPerRow, bytesPerImage, region, "default framebuffer depth readback");
-}
-
--(void)mtlReadIntegerPixels:(GLMContext)glm_ctx
-                 pixelBytes:(void *)pixelBytes
-                bytesPerRow:(NSUInteger)bytesPerRow
-              bytesPerImage:(NSUInteger)bytesPerImage
-                 fromRegion:(MGLRegionValue)region
-                     format:(GLenum)format
-                       type:(GLenum)type
-{
-    ctx = glm_ctx;
-    Framebuffer *fbo = glm_ctx ? glm_ctx->active_state->readbuffer : NULL;
-    GLenum readBuffer = glm_ctx ? glm_ctx->active_state->read_buffer : (GLenum)mglRenderEmptyDrawBuffer();
-    uint32_t att = 0u;
-    if (!fbo ||
-        !mglRenderDrawBufferIsColorAttachment(
-            (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS, &att)) {
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-
-    FBOAttachment *attachment = &fbo->color_attachments[att];
-    Texture *textureObj = [self framebufferAttachmentTexture:attachment];
-    if (!textureObj || ![self bindMTLTexture:textureObj] || !textureObj->mtl_data) {
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-
-    id texture = (__bridge id)(textureObj->mtl_data);
-    MGLMetalAttachmentSubresource subresource =
-        mglMetalAttachmentSubresourceForAttachment(attachment);
-
-    [self endRenderEncoding];
-    if (![self ensureWritableCommandBuffer:"mtlReadIntegerPixels.fbo"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-    mglTextureApplyPendingFBOColorClearForReadback((__bridge void *)self, fbo, attachment, textureObj, (__bridge void *)texture, readBuffer);
-
-    /* Determine output component count and component mapping.
-     * componentMap[c] = source component index for output component c, or -1. */
-    NSUInteger outputComponents = 4u;
-    int componentMap[4] = {0, 1, 2, 3};
-    outputComponents = (NSUInteger)mglRenderIntegerFormatComponentMap(
-        (uint32_t)format, componentMap);
-
-    NSUInteger outputComponentBytes =
-        (NSUInteger)mglRenderIntegerTypeComponentBytes((uint32_t)type);
-
-    mglTextureReadIntegerAsRGBA32(
-            (__bridge void *)self, (__bridge void *)texture, pixelBytes, bytesPerRow, bytesPerImage, region, outputComponents, outputComponentBytes, componentMap, type, subresource.level, subresource.slice, 1);
-}
-
--(void) mtlReadDrawable:(GLMContext) glm_ctx pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MGLRegionValue)region
-{
-    ctx = glm_ctx;
-
-    NSUInteger readSize = bytesPerImage;
-    if (readSize == 0 && bytesPerRow > 0) {
-        readSize = bytesPerRow * region.size.height;
-    }
-    if (!pixelBytes || readSize == 0) {
-        return;
-    }
-
-    if (glm_ctx->active_state->readbuffer)
-    {
-        Framebuffer *fbo = glm_ctx->active_state->readbuffer;
-        GLenum readBuffer = glm_ctx->active_state->read_buffer;
-        if (!fbo ||
-            !mglRenderFBOReadBufferValid(
-                (uint32_t)readBuffer,
-                (uint32_t)glm_ctx->active_state->max_color_attachments,
-                (uint32_t)MAX_COLOR_ATTACHMENTS)) {
-            static uint64_t s_invalidReadFBOCount = 0;
-            uint64_t hit = ++s_invalidReadFBOCount;
-            if (hit <= 32ull || (hit % 256ull) == 0ull) {
-                NSLog(@"MGL WARNING: readPixels invalid FBO read buffer=0x%x maxColor=%u hit=%llu; returning zero data",
-                      (unsigned)readBuffer,
-                      (unsigned)glm_ctx->active_state->max_color_attachments,
-                      (unsigned long long)hit);
-            }
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-
-        uint32_t attachmentIndex = 0u;
-        if (!mglRenderDrawBufferIsColorAttachment(
-                (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS,
-                &attachmentIndex) ||
-            !mglRenderColorAttachmentBitSet(
-                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
-            static uint64_t s_missingReadAttachmentCount = 0;
-            uint64_t hit = ++s_missingReadAttachmentCount;
-            if (hit <= 32ull || (hit % 256ull) == 0ull) {
-                NSLog(@"MGL WARNING: readPixels FBO read attachment 0x%x is not attached fbo=%u hit=%llu; returning zero data",
-                      (unsigned)readBuffer,
-                      (unsigned)fbo->name,
-                      (unsigned long long)hit);
-            }
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-
-        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
-        Texture *readTextureObject = [self framebufferAttachmentTexture:attachment];
-        if (!readTextureObject) {
-            NSLog(@"MGL WARNING: readPixels FBO attachment has no texture fbo=%u attachment=0x%x",
-                  (unsigned)fbo->name,
-                  (unsigned)readBuffer);
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-
-        readTextureObject->is_render_target = true;
-        if (![self bindMTLTexture:readTextureObject] || !readTextureObject->mtl_data) {
-            NSLog(@"MGL WARNING: readPixels could not bind FBO read texture fbo=%u attachment=0x%x tex=%u",
-                  (unsigned)fbo->name,
-                  (unsigned)readBuffer,
-                  (unsigned)readTextureObject->name);
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-
-        id texture = (__bridge id)(readTextureObject->mtl_data);
-        MGLMetalAttachmentSubresource subresource =
-            mglMetalAttachmentSubresourceForAttachment(attachment);
-        [self endRenderEncoding];
-        if (![self ensureWritableCommandBuffer:"mtlReadDrawable.fbo"]) {
-            mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-            return;
-        }
-        mglTextureApplyPendingFBOColorClearForReadback((__bridge void *)self, fbo, attachment, readTextureObject, (__bridge void *)texture, readBuffer);
-        mglTextureReadColorAsBGRA8(
-            (__bridge void *)self, (__bridge void *)texture, subresource.level, subresource.slice, subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage, region, "FBO color readback");
-        return;
-    }
-
-    GLuint mgl_drawbuffer;
-    id texture = nil;
-
-    uint32_t mappedDraw = 0u;
-    if (!mglRenderDefaultReadBufferIndex(
-            (uint32_t)glm_ctx->active_state->read_buffer, &mappedDraw)) {
-        NSLog(@"MGL WARNING: readPixels unsupported default read buffer=0x%x; returning zero data",
-              (unsigned)glm_ctx->active_state->read_buffer);
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-    mgl_drawbuffer = (int)mappedDraw;
-
-    if (mglRenderDefaultDrawBufferIsFront((uint32_t)mgl_drawbuffer))
-    {
-        if (!_drawable) {
-            (void)[self mglApplyPendingDrawableSize];
-            _drawable = [self mglNextDrawable];
-        }
-        texture = _drawable ? [self mglDrawableTexture] : nil;
-    }
-    else if (mglRenderDefaultDrawBufferIsOffscreen((uint32_t)mgl_drawbuffer,
-                                                   _MAX_DRAW_BUFFERS))
-    {
-        texture = (__bridge id)
-            mglRendererBackendGetDefaultDrawBufferAttachment(
-                _backend, mgl_drawbuffer,
-                MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
-    }
-
-    if (!texture)
-    {
-        NSLog(@"MGL WARNING: readPixels default drawbuffer slot=%u has no texture; returning zero data",
-              (unsigned)mgl_drawbuffer);
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-
-    [self endRenderEncoding];
-    if (![self ensureWritableCommandBuffer:"mtlReadDrawable.default"]) {
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-    if (mglRenderDefaultDrawBufferIsFront((uint32_t)mgl_drawbuffer)) {
-        mglTextureApplyPendingDefaultColorClear((__bridge void *)self, (__bridge void *)texture);
-    }
-    mglTextureReadColorAsBGRA8(
-            (__bridge void *)self, (__bridge void *)texture, 0u, 0u, 0u, pixelBytes, bytesPerRow, bytesPerImage, region, "default framebuffer readback");
-    return;
-}
 
 -(void) mtlGetTexImage:(GLMContext) glm_ctx tex: (Texture *)tex pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MGLRegionValue)region format:(GLenum)format type:(GLenum)type mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice
 {

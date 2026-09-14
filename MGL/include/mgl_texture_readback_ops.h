@@ -51,6 +51,23 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
                                uint64_t bytesPerRow, uint64_t bytesPerImage,
                                MGLRegionValue region, const char *reason);
 
+/* -mtlReadDepthPixels:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
+void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
+                               void *pixelBytes, uint64_t bytesPerRow,
+                               uint64_t bytesPerImage, MGLRegionValue region);
+
+/* -mtlReadIntegerPixels:pixelBytes:bytesPerRow:bytesPerImage:fromRegion:
+ *  format:type: */
+void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
+                                 void *pixelBytes, uint64_t bytesPerRow,
+                                 uint64_t bytesPerImage, MGLRegionValue region,
+                                 GLenum format, GLenum type);
+
+/* -mtlReadDrawable:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
+void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
+                            void *pixelBytes, uint64_t bytesPerRow,
+                            uint64_t bytesPerImage, MGLRegionValue region);
+
 int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
                                   void *pixelBytes, uint64_t bytesPerRow,
                                   uint64_t bytesPerImage, MGLRegionValue region,

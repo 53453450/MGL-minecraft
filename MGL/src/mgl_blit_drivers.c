@@ -25,6 +25,7 @@
  */
 
 #include <math.h>
+#include "mgl_texture_readback_ops.h" /* mglTextureReadDrawable */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -3461,7 +3462,7 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
      * clears, and GL bottom-left row order all follow the same path as
      * glReadPixels.
      */
-    mglRendererMTLReadDrawablePort(renderer, glm_ctx, bgra_readback,
+    mglTextureReadDrawable(renderer, glm_ctx, bgra_readback,
                                    bgra_row_bytes, bgra_size,
                                    mglBlitRegion2D((size_t)x, (size_t)y,
                                                    width, height));

@@ -30,6 +30,12 @@
 
 #include "mgl_render.h"
 #include "mgl_render_pass_manager_ops.h" /* mglRenderPass* C entries */
+#include "mgl_thread_affinity.h"        /* MGL_ASSERT_GL_THREAD */
+#include "mgl_texture_bind.h"           /* mglRendererBindMTLTexture */
+#include "mgl_draw_buffer.h"            /* mglDefaultDrawBufferIndexForGL */
+#include "mgl_texture_readback_clear.h" /* pending-clear helpers */
+#include "mgl_pso_format_class.h"       /* mglRenderColorAttachmentBitSet */
+#include "error.h"
 #include "mgl_gpu_recovery.h"
 
 #include <stdio.h>
@@ -41,6 +47,7 @@ enum {
 };
 
 extern void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx);
+extern MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer);
 
 /* MGLRenderer.m defines this; the only declaration is in the Objective-C
  * MGLRenderer+Texture_Private.h. */
@@ -798,4 +805,313 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
 done:
     if (ownedResolved) mglReleaseMetalObjNoNull(ownedResolved);
     return result;
+}
+
+/* === readPixels family (log 185) ======================================= */
+
+/* -mtlReadDepthPixels:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
+void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
+                               void *pixelBytes, uint64_t bytesPerRow,
+                               uint64_t bytesPerImage, MGLRegionValue region)
+{
+    MGL_ASSERT_GL_THREAD();
+    mglPlatformShellSetContext(renderer, glm_ctx);
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    uint64_t readSize = bytesPerImage;
+    if (readSize == 0u && bytesPerRow > 0u) {
+        readSize = bytesPerRow * region.size.height;
+    }
+    if (!pixelBytes || readSize == 0u) {
+        return;
+    }
+
+    if (glm_ctx->active_state->readbuffer) {
+        Framebuffer *fbo = glm_ctx->active_state->readbuffer;
+        FBOAttachment *attachment = fbo ? &fbo->depth : NULL;
+        Texture *readTextureObject =
+            mglRendererAttachmentTextureFor(glm_ctx, attachment);
+        if (!readTextureObject) {
+            fprintf(stderr,
+                    "MGL WARNING: readPixels FBO has no depth attachment fbo=%u\n",
+                    fbo ? (unsigned)fbo->name : 0u);
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+
+        readTextureObject->is_render_target = 1;
+        if (!mglRendererBindMTLTexture(renderer, readTextureObject) ||
+            !readTextureObject->mtl_data) {
+            fprintf(stderr,
+                    "MGL WARNING: readPixels could not bind FBO depth texture fbo=%u tex=%u\n",
+                    fbo ? (unsigned)fbo->name : 0u,
+                    (unsigned)readTextureObject->name);
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+
+        void *texture = readTextureObject->mtl_data;
+        const MGLMetalAttachmentSubresource subresource =
+            mglMetalAttachmentSubresourceForAttachment(attachment);
+
+        mglRendererEndRenderEncodingPort(renderer);
+        if (!mglRenderPassEnsureWritableCommandBufferLocked(
+                renderer, "mtlReadDepthPixels.fbo")) {
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+        mglTextureApplyPendingFBODepthClearForReadback(renderer, fbo, attachment,
+                                                       readTextureObject,
+                                                       texture);
+        (void)mglTextureReadDepthAsFloat(
+            renderer, texture, subresource.level, subresource.slice,
+            subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage,
+            region, "FBO depth readback");
+        return;
+    }
+
+    const GLuint drawBufferIndex =
+        mglDefaultDrawBufferIndexForGL(glm_ctx->active_state->read_buffer);
+    void *texture = NULL;
+    if (drawBufferIndex < _MAX_DRAW_BUFFERS) {
+        texture = mglRendererBackendGetDefaultDrawBufferAttachment(
+            areas.backend, drawBufferIndex,
+            MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH);
+    }
+
+    if (!texture) {
+        fprintf(stderr,
+                "MGL WARNING: readPixels default framebuffer has no depth texture slot=%u\n",
+                (unsigned)drawBufferIndex);
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    mglRendererEndRenderEncodingPort(renderer);
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
+            renderer, "mtlReadDepthPixels.default")) {
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+    mglTextureApplyPendingDefaultDepthClear(renderer, texture);
+    (void)mglTextureReadDepthAsFloat(renderer, texture, 0u, 0u, 0u, pixelBytes,
+                                     bytesPerRow, bytesPerImage, region,
+                                     "default framebuffer depth readback");
+}
+
+/* -mtlReadIntegerPixels:pixelBytes:bytesPerRow:bytesPerImage:fromRegion:
+ *  format:type: */
+void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
+                                 void *pixelBytes, uint64_t bytesPerRow,
+                                 uint64_t bytesPerImage, MGLRegionValue region,
+                                 GLenum format, GLenum type)
+{
+    mglPlatformShellSetContext(renderer, glm_ctx);
+    Framebuffer *fbo = glm_ctx ? glm_ctx->active_state->readbuffer : NULL;
+    const GLenum readBuffer = glm_ctx ? glm_ctx->active_state->read_buffer
+                                      : (GLenum)mglRenderEmptyDrawBuffer();
+    uint32_t att = 0u;
+    if (!fbo ||
+        !mglRenderDrawBufferIsColorAttachment(
+            (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS, &att)) {
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    FBOAttachment *attachment = &fbo->color_attachments[att];
+    Texture *textureObj = mglRendererAttachmentTextureFor(glm_ctx, attachment);
+    if (!textureObj || !mglRendererBindMTLTexture(renderer, textureObj) ||
+        !textureObj->mtl_data) {
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    void *texture = textureObj->mtl_data;
+    const MGLMetalAttachmentSubresource subresource =
+        mglMetalAttachmentSubresourceForAttachment(attachment);
+
+    mglRendererEndRenderEncodingPort(renderer);
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
+            renderer, "mtlReadIntegerPixels.fbo")) {
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+    mglTextureApplyPendingFBOColorClearForReadback(renderer, fbo, attachment,
+                                                   textureObj, texture,
+                                                   readBuffer);
+
+    /* Determine output component count and component mapping.
+     * componentMap[c] = source component index for output component c, or -1. */
+    int componentMap[4] = {0, 1, 2, 3};
+    const uint64_t outputComponents =
+        (uint64_t)mglRenderIntegerFormatComponentMap((uint32_t)format,
+                                                     componentMap);
+    const uint64_t outputComponentBytes =
+        (uint64_t)mglRenderIntegerTypeComponentBytes((uint32_t)type);
+
+    (void)mglTextureReadIntegerAsRGBA32(
+        renderer, texture, pixelBytes, bytesPerRow, bytesPerImage, region,
+        outputComponents, outputComponentBytes, componentMap, type,
+        subresource.level, subresource.slice, 1);
+}
+
+/* -mtlReadDrawable:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
+void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
+                            void *pixelBytes, uint64_t bytesPerRow,
+                            uint64_t bytesPerImage, MGLRegionValue region)
+{
+    mglPlatformShellSetContext(renderer, glm_ctx);
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    uint64_t readSize = bytesPerImage;
+    if (readSize == 0 && bytesPerRow > 0) {
+        readSize = bytesPerRow * region.size.height;
+    }
+    if (!pixelBytes || readSize == 0) {
+        return;
+    }
+
+    if (glm_ctx->active_state->readbuffer) {
+        Framebuffer *fbo = glm_ctx->active_state->readbuffer;
+        const GLenum readBuffer = glm_ctx->active_state->read_buffer;
+        if (!fbo ||
+            !mglRenderFBOReadBufferValid(
+                (uint32_t)readBuffer,
+                (uint32_t)glm_ctx->active_state->max_color_attachments,
+                (uint32_t)MAX_COLOR_ATTACHMENTS)) {
+            static uint64_t s_invalidReadFBOCount = 0;
+            const uint64_t hit = ++s_invalidReadFBOCount;
+            if (hit <= 32ull || (hit % 256ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL WARNING: readPixels invalid FBO read buffer=0x%x maxColor=%u hit=%llu; returning zero data\n",
+                        (unsigned)readBuffer,
+                        (unsigned)glm_ctx->active_state->max_color_attachments,
+                        (unsigned long long)hit);
+            }
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+
+        uint32_t attachmentIndex = 0u;
+        if (!mglRenderDrawBufferIsColorAttachment(
+                (uint32_t)readBuffer, (uint32_t)MAX_COLOR_ATTACHMENTS,
+                &attachmentIndex) ||
+            !mglRenderColorAttachmentBitSet(
+                (uint32_t)fbo->color_attachment_bitfield, attachmentIndex)) {
+            static uint64_t s_missingReadAttachmentCount = 0;
+            const uint64_t hit = ++s_missingReadAttachmentCount;
+            if (hit <= 32ull || (hit % 256ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL WARNING: readPixels FBO read attachment 0x%x is not attached fbo=%u hit=%llu; returning zero data\n",
+                        (unsigned)readBuffer, (unsigned)fbo->name,
+                        (unsigned long long)hit);
+            }
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+
+        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
+        Texture *readTextureObject =
+            mglRendererAttachmentTextureFor(glm_ctx, attachment);
+        if (!readTextureObject) {
+            fprintf(stderr,
+                    "MGL WARNING: readPixels FBO attachment has no texture fbo=%u attachment=0x%x\n",
+                    (unsigned)fbo->name, (unsigned)readBuffer);
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+
+        readTextureObject->is_render_target = 1;
+        if (!mglRendererBindMTLTexture(renderer, readTextureObject) ||
+            !readTextureObject->mtl_data) {
+            fprintf(stderr,
+                    "MGL WARNING: readPixels could not bind FBO read texture fbo=%u attachment=0x%x tex=%u\n",
+                    (unsigned)fbo->name, (unsigned)readBuffer,
+                    (unsigned)readTextureObject->name);
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+
+        void *texture = readTextureObject->mtl_data;
+        const MGLMetalAttachmentSubresource subresource =
+            mglMetalAttachmentSubresourceForAttachment(attachment);
+        mglRendererEndRenderEncodingPort(renderer);
+        if (!mglRenderPassEnsureWritableCommandBufferLocked(
+                renderer, "mtlReadDrawable.fbo")) {
+            mglDispatchError(glm_ctx, __func__,
+                             (GLenum)mglRenderErrorInvalidOperation());
+            return;
+        }
+        mglTextureApplyPendingFBOColorClearForReadback(
+            renderer, fbo, attachment, readTextureObject, texture, readBuffer);
+        (void)mglTextureReadColorAsBGRA8(
+            renderer, texture, subresource.level, subresource.slice,
+            subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage,
+            region, "FBO color readback");
+        return;
+    }
+
+    void *texture = NULL;
+
+    uint32_t mappedDraw = 0u;
+    if (!mglRenderDefaultReadBufferIndex(
+            (uint32_t)glm_ctx->active_state->read_buffer, &mappedDraw)) {
+        fprintf(stderr,
+                "MGL WARNING: readPixels unsupported default read buffer=0x%x; returning zero data\n",
+                (unsigned)glm_ctx->active_state->read_buffer);
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+    const GLuint mgl_drawbuffer = (GLuint)(int)mappedDraw;
+
+    if (mglRenderDefaultDrawBufferIsFront(mgl_drawbuffer)) {
+        if (!areas.drawable) {
+            (void)mglPlatformShellApplyPendingDrawableSize(renderer);
+            (void)mglRendererNextDrawablePort(renderer);
+        }
+        texture = areas.drawable ? mglRendererDrawableTexturePort(renderer) : NULL;
+    } else if (mglRenderDefaultDrawBufferIsOffscreen(mgl_drawbuffer,
+                                                    _MAX_DRAW_BUFFERS)) {
+        texture = mglRendererBackendGetDefaultDrawBufferAttachment(
+            areas.backend, mgl_drawbuffer,
+            MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
+    }
+
+    if (!texture) {
+        fprintf(stderr,
+                "MGL WARNING: readPixels default drawbuffer slot=%u has no texture; returning zero data\n",
+                (unsigned)mgl_drawbuffer);
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    mglRendererEndRenderEncodingPort(renderer);
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
+            renderer, "mtlReadDrawable.default")) {
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+    if (mglRenderDefaultDrawBufferIsFront(mgl_drawbuffer)) {
+        mglTextureApplyPendingDefaultColorClear(renderer, texture);
+    }
+    (void)mglTextureReadColorAsBGRA8(renderer, texture, 0u, 0u, 0u, pixelBytes,
+                                     bytesPerRow, bytesPerImage, region,
+                                     "default framebuffer readback");
 }

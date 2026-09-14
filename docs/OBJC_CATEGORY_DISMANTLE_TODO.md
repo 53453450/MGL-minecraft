@@ -50,10 +50,10 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百一十刀** + trace 清零 后；第 68–154 轮见 §0.24/§0.26–§0.111；（第 134–136 轮五次尝试回退；第 137/138/139 轮按依赖拓扑做出第一百零六/一百零七/一百零八刀，`+RenderPass.m` 385 → 359、端口 35 → 34；**第 140 轮（第一百零九刀）把 `mglRenderPassMatchesFramebufferImpl:` 整块转 C 并顺带铺 5 个 twin，`+RenderPass.m` 359 → 337、全库语法 1,063 → 1,041**；**第 141 轮（第一百一十刀）把 `configureUserFBOAttachmentsLocked` 整块转 C 并一次铺 8 个 twin，`+RenderPass.m` 337 → 328、全库语法 1,041 → 1,033**；**第 142 轮（第一百一十一刀）把零 self 的 `finalizeRenderPassDescriptorLocked:` 整块转 C（再铺 12 个 twin）并按第 38 条级联删掉 3 个归零 static，`+RenderPass.m` 328 → 323、全库语法 1,033 → 1,028、词汇 2,087 → 2,044、行数 −280**；**第 143 轮（第一百一十二刀）把 513 行的 `generatePipelineDescriptorState:` 整块转 C，`+RenderPass.m` 323 → 307、全库语法 1,028 → 1,014、词汇 2,044 → 1,994、行数 −484**；**第 144 轮（第一百一十三刀）把 `newCommandBufferLocked` 整块转 C 并退役 `mglRendererNewCommandBufferLockedPort`（端口 34 → 33，全库语法 1,014 → 991、词汇 1,994 → 1,964、行数 −194）**；**第 145 轮（第一百一十四刀）把 246 行的 `createRenderEncoderLocked:` 整块转 C（areas 加 `drawable` / `query_state_owner` 两个字段），并顺手修掉一处既存 `sizeof(指针)` 清零缺陷（语法 991 → 977、词汇 1,964 → 1,951、行数 −243）**；**第 146 轮（第一百一十五刀）把 `ensureWritableCommandBufferLocked:` 与 `flushCommandBufferLocked:` 一起转 C （并删掉它们在 ObjC 私有头里的两条声明；语法 977 → 958、词汇 1,951 → 1,935、行数 −144）**；**第 147 轮（第一百一十六刀）把两个 AIR passthrough VS 生成器转 C（`NSMutableString`+`appendFormat:` 换成 C 字符串缓冲），并退役 `mglRendererEnsureAIRGeometryPassthroughPort` / `mglRendererEnsureAIRTessEvalPassthroughPort` 两个端口（端口 33 → 31；语法 958 → 922、词汇 1,935 → 1,880、行数 −543）**；**第 148 轮（第一百一十七刀）把 draw-path 守卫簇四块转 C（`invalidateCurrentPipelineStateForReason:` / `ensureCurrentRenderPassMatchesFramebufferForDraw` / `emergencyResetMetalState` / `validateRenderPassAttachmentsAndPipelineFormatsLocked:`），并按第 38 条级联删掉 10 个归零 static（语法 922 → 913、词汇 1,880 → 1,856、行数 −278）**；**第 149 轮（第一百一十八刀）把 472 行的 `processGLStateLocked:` 整块转 C，并退役 `mglRendererProcessGLStatePort` / `mglRendererProcessGLStateLockedPort` 两个端口（端口 31 → 29；语法 913 → 885、词汇 1,856 → 1,822、行数 −485）**；**第 150 轮（第一百一十九刀）把 `MGLRenderer.m` 最大的一块 `mtlSwapBuffersLocked:`（455 行 / 37 语法）整块转 C，该文件语法 133 → 96（语法 885 → 856、词汇 1,822 → 1,795、行数 −440）**；**第 151 轮（第一百二十刀）新建 `mgl_texture_readback_ops.c`，把 `+Texture.m` 的读回族四块（`readbackStageAndWaitTexture:` / `mglReadColorTextureAsBGRA8:` / `mglReadDepthTextureAsFloat:` / `mglReadIntegerTextureAsRGBA32:`，585 行）整簇转 C（语法 856 → 829、词汇 1,795 → 1,582、行数 −632）**；**第 152 轮（第一百二十一刀）新建 `mgl_texture_create_ops.c`，把 `+Texture.m` 三个"零 self"块（`checkTextureCompleteness:` / `uploadPackedDepthStencilStencilPlane:` / `createMTLTexelBufferTexture:`，496 行）转 C（语法 829 → 818、词汇 1,582 → 1,498、行数 −524）**；**第 153 轮（第一百二十二刀）新建 `mgl_texture_upload_ops.c`，把上传族的两片根叶（`uploadTextureSliceViaBlit:` 270 行 / `copyTextureUploadWithDedicatedCommandBuffer:` 126 行，13 个调用点）转 C（语法 818 → 805、词汇 1,498 → 1,453、行数 −565）**；**第 154 轮（第一百二十三刀）新建 `mgl_clear_buffer_ops.c`，把 `MGLRenderer.m` 最后的大块 `mtlClearBuffer:type:mask:`（448 行 / 37 语法）连同两个 `newDrawBuffer*` 一起转 C，**零新端口**（语法 805 → 769、词汇 1,453 → 1,413、行数 −503）**）
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百一十刀** + trace 清零 后；第 68–155 轮见 §0.24/§0.26–§0.112；（第 134–136 轮五次尝试回退；第 137/138/139 轮按依赖拓扑做出第一百零六/一百零七/一百零八刀，`+RenderPass.m` 385 → 359、端口 35 → 34；**第 140 轮（第一百零九刀）把 `mglRenderPassMatchesFramebufferImpl:` 整块转 C 并顺带铺 5 个 twin，`+RenderPass.m` 359 → 337、全库语法 1,063 → 1,041**；**第 141 轮（第一百一十刀）把 `configureUserFBOAttachmentsLocked` 整块转 C 并一次铺 8 个 twin，`+RenderPass.m` 337 → 328、全库语法 1,041 → 1,033**；**第 142 轮（第一百一十一刀）把零 self 的 `finalizeRenderPassDescriptorLocked:` 整块转 C（再铺 12 个 twin）并按第 38 条级联删掉 3 个归零 static，`+RenderPass.m` 328 → 323、全库语法 1,033 → 1,028、词汇 2,087 → 2,044、行数 −280**；**第 143 轮（第一百一十二刀）把 513 行的 `generatePipelineDescriptorState:` 整块转 C，`+RenderPass.m` 323 → 307、全库语法 1,028 → 1,014、词汇 2,044 → 1,994、行数 −484**；**第 144 轮（第一百一十三刀）把 `newCommandBufferLocked` 整块转 C 并退役 `mglRendererNewCommandBufferLockedPort`（端口 34 → 33，全库语法 1,014 → 991、词汇 1,994 → 1,964、行数 −194）**；**第 145 轮（第一百一十四刀）把 246 行的 `createRenderEncoderLocked:` 整块转 C（areas 加 `drawable` / `query_state_owner` 两个字段），并顺手修掉一处既存 `sizeof(指针)` 清零缺陷（语法 991 → 977、词汇 1,964 → 1,951、行数 −243）**；**第 146 轮（第一百一十五刀）把 `ensureWritableCommandBufferLocked:` 与 `flushCommandBufferLocked:` 一起转 C （并删掉它们在 ObjC 私有头里的两条声明；语法 977 → 958、词汇 1,951 → 1,935、行数 −144）**；**第 147 轮（第一百一十六刀）把两个 AIR passthrough VS 生成器转 C（`NSMutableString`+`appendFormat:` 换成 C 字符串缓冲），并退役 `mglRendererEnsureAIRGeometryPassthroughPort` / `mglRendererEnsureAIRTessEvalPassthroughPort` 两个端口（端口 33 → 31；语法 958 → 922、词汇 1,935 → 1,880、行数 −543）**；**第 148 轮（第一百一十七刀）把 draw-path 守卫簇四块转 C（`invalidateCurrentPipelineStateForReason:` / `ensureCurrentRenderPassMatchesFramebufferForDraw` / `emergencyResetMetalState` / `validateRenderPassAttachmentsAndPipelineFormatsLocked:`），并按第 38 条级联删掉 10 个归零 static（语法 922 → 913、词汇 1,880 → 1,856、行数 −278）**；**第 149 轮（第一百一十八刀）把 472 行的 `processGLStateLocked:` 整块转 C，并退役 `mglRendererProcessGLStatePort` / `mglRendererProcessGLStateLockedPort` 两个端口（端口 31 → 29；语法 913 → 885、词汇 1,856 → 1,822、行数 −485）**；**第 150 轮（第一百一十九刀）把 `MGLRenderer.m` 最大的一块 `mtlSwapBuffersLocked:`（455 行 / 37 语法）整块转 C，该文件语法 133 → 96（语法 885 → 856、词汇 1,822 → 1,795、行数 −440）**；**第 151 轮（第一百二十刀）新建 `mgl_texture_readback_ops.c`，把 `+Texture.m` 的读回族四块（`readbackStageAndWaitTexture:` / `mglReadColorTextureAsBGRA8:` / `mglReadDepthTextureAsFloat:` / `mglReadIntegerTextureAsRGBA32:`，585 行）整簇转 C（语法 856 → 829、词汇 1,795 → 1,582、行数 −632）**；**第 152 轮（第一百二十一刀）新建 `mgl_texture_create_ops.c`，把 `+Texture.m` 三个"零 self"块（`checkTextureCompleteness:` / `uploadPackedDepthStencilStencilPlane:` / `createMTLTexelBufferTexture:`，496 行）转 C（语法 829 → 818、词汇 1,582 → 1,498、行数 −524）**；**第 153 轮（第一百二十二刀）新建 `mgl_texture_upload_ops.c`，把上传族的两片根叶（`uploadTextureSliceViaBlit:` 270 行 / `copyTextureUploadWithDedicatedCommandBuffer:` 126 行，13 个调用点）转 C（语法 818 → 805、词汇 1,498 → 1,453、行数 −565）**；**第 154 轮（第一百二十三刀）新建 `mgl_clear_buffer_ops.c`，把 `MGLRenderer.m` 最后的大块 `mtlClearBuffer:type:mask:`（448 行 / 37 语法）连同两个 `newDrawBuffer*` 一起转 C，**零新端口**（语法 805 → 769、词汇 1,453 → 1,413、行数 −503）**；**第 155 轮（第一百二十四刀）把 `+Texture.m` 的 readPixels 三件套（`mtlReadDepthPixels:` / `mtlReadIntegerPixels:` / `mtlReadDrawable:`，265 行 / 43 语法）整簇转 C，并退役 `mglRendererMTLReadDrawablePort`（端口 29 → 28；语法 769 → 721、词汇 1,413 → 1,387、行数 −311）**）
 **第 113–120 轮（第八十三～九十刀）把 `+Blit.m` 整文件删除（6 → 5）；第 121/122 轮（第九十一/九十二刀）用「单方法二分 + 单例探针」破解采样簇阻塞并连续两刀一次通过**）**：
-文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 13,326**、
-ObjC 语法 **2,268 → 769**、词汇 **4,353 → 1,413**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
+文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 13,015**、
+ObjC 语法 **2,268 → 721**、词汇 **4,353 → 1,387**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮起改从 `+Blit.m` 推进**；
 **shim：43 → 31 个端口 / 唯一壳 TU 2,069 行 / 293 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；**P0-1 第八十三刀（`+Blit.m` 的 `mtlCopyTexSubImageViaTextureBlit:` 转 C，见第 143 条）0 退役 0 新增**——入口全部复用既有端口与 twin；**P0-1 第八十四刀（两个 copyImageSubData 叶子转 C，见第 144 条）0 退役、新增 1**——`synchronizeRenderPassForTextureReadback:` 尚无 C 入口，故新增该端口（T4 如实记 +1），`_capability` 靠 `areas.core->capability` 零结构改动解决；**P0-1 第八十五刀（后置回读叶子 + copyImageSubData dispatcher 一起转 C，见第 145 条）0 退役、新增 1**——唯一新增的是 `endRenderPassIfFramebufferChangedForNonDraw:` 的端口，另外两个桥（`ctx = glm_ctx` 的 `mglPlatformShellSetContext`、`bindMTLTexture` 的 `mglRendererBindMTLTexture`）都是**既有**入口；**P0-1 第八十六刀（blitFramebuffer 附着解析叶子转 C，见第 146 条）0 退役、新增 3**——`_drawable` 是 property 宏（`self.drawable`），没有 core 字段可借，故必须补 `mglNextDrawable` / `mglDrawableTexture` / `mglEnsureLayerDrawableSizeAtLeastWidth` 三个端口；**P0-1 第八十七刀（scaled color blit 叶子转 C，见第 147 条）0 退役 0 新增**——并顺带补齐 12 个 render-encoder twin；**P0-1 第八十八刀（`mtlBlitFramebuffer:` dispatcher 转 C，见第 148 条）0 退役 0 新增**——被调方法全在 C 里，`+Blit.m` 只剩 68 语法；**P0-1 第八十九刀（`mtlCopyTexSubImage:` 转 C，见第 149 条）0 退役、新增 2**——`mtlReadDrawable` 与 `copyTextureUploadWithDedicatedCommandBuffer` 两个桥，端口头首次引入 `mgl_region_value.h`；**P0-1 第九十刀（整文件删除 `MGLRenderer+Blit.m`，见第 150 条）0 退役、新增 1**——`currentRenderPassUsesTexture:` 的端口，其余三块（采样拷贝修复入口、`mglRendererBlitFramebuffer` 后端入口、27 个 helper 与文件头）随文件消失；**P0-1 第九十一刀（采样簇 compat + sampler 转 C，见第 151 条）退役 1、新增 0**——`mglRendererMaterializeSampledSamplerPort` 随目标方法 C 化一起删除，C 侧直调 `mglSampledSamplerMaterialize`；**P0-1 第九十二刀（`applySampledRenderTargetCopyPlan:` 转 C，见第 152 条）0 退役 0 新增**；**P0-1 第九十三刀（`bindSeparateSamplersAndArrayTextures:` 转 C，见第 153 条）0 退役 0 新增**；**P0-1 第九十四刀（`recoverFragmentSampledDepthTexture:` 转 C，见第 154 条）0 退役 0 新增**——第 142 条的头号嫌疑方法整体 C 化后探针 8/8，嫌疑排除；**P0-1 第九十五刀（`emitSampledDiagPortsForProgram:` 转 C，见第 155 条）0 退役、新增 1**——目标方法带 `NSString *` 参数，故新增一个"只收 C 字符串"的端口；**P0-1 第九十六刀（`bindSampledTexturesForStage:` 整块转 C，见第 156 条）0 退役 0 新增、净 −45 语法**——前六刀引入的 20 处调用点桥接随方法整体搬走而消失；**P0-1 第九十七刀（整文件删除 `MGLRenderer+BindingState.m`，见第 157 条）退役 1、新增 0**——`mglRendererBindTexturesToCurrentRenderEncoderPort` 随目标方法 C 化删除；**P0-1 第九十八刀（copy-back 列表两个 helper 转 C，见第 158 条）退役 2、新增 0**——`mglRendererClearStageBindingCopyBacksPort` / `…CopyBackPort` 连同 13 处 C 调用点一起改直调；**P0-1 第九十九刀（copy-back 的 record + flush 转 C，见第 159 条）退役 2、新增 0、净 −34 语法**——areas 首次加 `render_pass_manager` 字段（零端口）；**P0-1 第一百刀（两个对外采样符号转 C + 新建 `mgl_renderer_host` TU，见第 160 条）0 退役 0 新增、净 −2 语法**；**P0-1 第一百零一刀（再搬 3 个对外符号，见第 161 条）0 退役 0 新增、净 −3 语法**；**P0-1 第一百零二刀（watchdog 转 C，见第 162 条）0 退役 0 新增、净 −1 语法**；**P0-1 第一百零三刀（`mglEnsureNewCommandBuffer` 转 C，见第 163 条）0 退役 0 新增、净 −3 语法**；`MGLRenderer*.m` **34,604 → 24,779**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
@@ -7391,6 +7391,30 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 **下一步**：按上表搬完 `+Texture.m` 上传树的中间层（合计约 1,665 行 / 21 语法），最后收 `createMTLTextureFromGLTexture:`；
 届时 `+Texture.m` 只剩少量方法，可以开始规划"整文件删除"。
 
+185. **第 155 轮（P0-1 第一百二十四刀）：`+Texture.m` 的 readPixels 三件套整簇转 C——语法一次降 48（769 → 721），退役 1 个端口**：
+      ① **为什么是这三件套**：本轮先做了一次"全文件按语法排序"（第 36 条），发现 `+Texture.m` 里**语法最高的三块**不是上传树，而是
+      `mtlReadDrawable:`（19 语法 / 136 行）、`mtlGetTexImage:tex:`（18 / 301）、`mtlReadDepthPixels:`（16 / 78）——
+      而这三块的 self **全部**已被前几刀 C 化（读回族第 120/153 刀、`bindMTLTexture`/`framebufferAttachmentTexture:`/`ensureWritableCommandBuffer:`/
+      `endRenderEncoding`/`mglNextDrawable`/`mglDrawableTexture` 全部有 C 入口或端口）⇒ **miss≈0**，闭着眼也能搬。
+      本刀先做前三块中的三块（`mtlReadDepthPixels:` 78 + `mtlReadIntegerPixels:` 51 + `mtlReadDrawable:` 136 = 265 行 / 43 语法），
+      `mtlGetTexImage:tex:` 留作下一刀。
+      ② **退役 `mglRendererMTLReadDrawablePort`（29 → 28）**：它的唯一 C 调用点在 `mgl_blit_drivers.c`，改直调 `mglTextureReadDrawable` ✓；
+      同时 `.m` 里那三个 C 入口（`mglRendererReadDrawable` / `ReadIntegerPixels` / `ReadDepthPixels`）也一并改直调（它们原本是 ObjC 消息包裹）。
+      ③ **顺手清掉 ARC 时代的 block 包装（第 38 条）**：`mglTextureAddCommandBufferCompletion` + 它的 block typedef / callback / destroy
+      在第 122 刀把 `copyTextureUploadWithDedicatedCommandBuffer:` 搬走后就归零了（当时未清），本刀删掉（34 行，含 `CFBridgingRelease` 包装）。
+      ④ **regex 改写又踩一次（第 53 条教训的复现）**：`[(renderer|self) sel:…];` 的多行实参替换在本刀**两边都失败过**——
+      一次是因为关键字实参里含 `mglRendererCompatRegion(x, y, width, height)`，我的 `(.*?)\];` 把 `];` 匹配到了更远处；
+      处置办法：**先 `git checkout` 回滚，再对每个调用点写"逐字面量替换"**（样本只有 3 处，手写比通用正则稳）。
+      **大范围改写失败时，回滚 + 手写小样本 > 继续调试正则**。
+      ⑤ **度量**：全库语法 **769 → 721（−48）**、词汇 **1,413 → 1,387（−26）**、行数 **13,326 → 13,015（−311）**；
+      `+Texture.m` **228 → 182 语法 / 4,527 → 4,230 行**；壳 2,091 → 2,077 行；宿主 `.c` 1,115 行；**端口面 29 → 28（退役 1、新增 0）**；文件数 **4**、空 TU **0**。
+      ⑥ **验证（含一次"假 DIFF"的复现）**：`make -j8` **0 error**；单例探针 **4/4**；`./build/test_dirty_hash` **PASS**；
+      `make test-all` 按第 45 条 (c) 绕行（`verify_gl_api.py` ok + 余下 28 个目标逐条跑，退出码 0，`PASS: 92 FAIL: 0 SKIP: 2 / 94`）；
+      CTS 七簇 **diff 全空**（58/1/0/59/13/39/4，逐簇 `completed == total`）——
+      **注意**：本轮第一次采样时 `pp` 簇**还在跑**（`completed=1/5`），对比脚本立刻报出 4 条 DIFF，
+      等 `BATTERY DONE` 出现后重测才是全空；**"采样对比"之前必须先确认 `BATTERY DONE`**（这条纪律第 N 次被证明必要）；
+      A/B（新库 vs `526bd9a`）**逐行一致**——default **4981/4981**、flushy **5514/5514**，stderr MGL 多重集 **307/307**。
+
 ### 0.111 第 154 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.109/§0.110**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 13,326 行 / 769 语法 / 1,413 词汇**；
@@ -7427,4 +7451,36 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 **下一步**：按上表做 `buildPipelineStateOnCacheMissWithState:`（448 行 / 42 语法）——先给它唯一缺的缓存桥
 （`insertPipelineStateIntoCacheWithWords:pipelineCacheKeyWords`，按 `pipeline_cache_set_blend` 先例做成 areas 函数指针），
 `NSString`/`NSException` 的 3 处 `@try` 按第 44/52 条处理。
+
+### 0.112 第 155 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.110/§0.111**）
+
+**当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 13,015 行 / 721 语法 / 1,387 词汇**；
+壳 TU **2,077 行 / 297 语法**（上限 2,400）；**端口面 28 个**（第一百二十四刀退役 1 / 新增 0）；`make test-all`：见第 45 条 (c)；
+CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第一百二十四刀的实测值）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+Texture.m` **182/686/4,230** · `+RenderPass.m` **184/249/3,584** · `MGLRenderer.m` **58/161/3,124** ·
+壳 `MGLPlatformRendererShell.m` **297/291/2,077**。
+
+**下一刀的顺序**：
+
+| 文件 | 语法 | 行数 | 方法 | 备注 |
+|---|---|---|---|---|
+| `+Texture.m` | 18 | 301 | `mtlGetTexImage:tex:` | **本表首推**：readPixels 三件套刚搬完 ⇒ 它的 self 现在全有入口；含 staging buffer/blit + BGRA8 转换分支 |
+| `+RenderPass.m` | 42 | 448 | `buildPipelineStateOnCacheMissWithState:` | 全库最大非壳块；缺 3 个缓存桥 + `_gpuRecovery` 写通道（需把 `MGLGPURecoveryState` 提到 C 安全头，或加 areas 指针） |
+| `+RenderPass.m` | 26 | 149 | `newRenderEncoderLockedWithReason:` | 5-6 个 miss 是中间层方法；搬完可退役 `mglRendererNewRenderEncoderLockedWithReasonPort`（28 → 27） |
+| `+RenderPass.m` | 15 | 54 | `synchronizeRenderPassForTextureReadback:` | 稠密；2 miss |
+| `+Texture.m` | 12 | 389 | `createMTLTextureFromGLTexture:` | 上传树收口（5 miss 都在上传树里） |
+| `+Texture.m` | 10 | 493 | `uploadDirtyCPUTextureDataNon3DLevel:` | 上传树最大中间层（36 NSLog） |
+| `MGLRenderer.m` | 7 | 227 | `mglSetActiveContext:` | 该文件剩余语法里最大的一块 |
+| 壳 | 71/46 | 457/272 | `performOperation:` / `flushDrawBuffer:` | **T5 保留面** |
+
+**规矩表（§0.62/§0.65–§0.111 五十四条仍然有效）＋ 本轮第五十五条**：
+55. **"哪块语法最高"要定期重测，别沿用旧表**：上一轮的快照把上传树列为优先，但本轮按语法重排后发现
+   **readPixels 三件套（19/18/16 语法）才是 `+Texture.m` 的头三名**，且它们的 miss 早已被前面的刀清空 ⇒ 一轮 −48 语法。
+   配套两条：
+   **(a)** 大范围正则改写失败时**回滚 + 手写小样本**（本刀 3 处调用点，手写比调正则快；第 53 条 (a) 的实战版本）；
+   **(b)** 采样式对比（七簇 diff / A/B）之前**必须确认 `BATTERY DONE`**：本轮 `pp` 簇未跑完就采样，立刻出现 4 条假 DIFF。
+
+**下一步**：按上表做 `mtlGetTexImage:tex:`（301 行 / 18 语法），之后 `+Texture.m` 只剩上传树与 `createMTLTextureFromGLTexture:`。
 
