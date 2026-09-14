@@ -34,6 +34,10 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                                            MGLResourceSyncWork *work);
 /* -ensureRasterEncoderForDraw is C now (log 168). */
 int mglRenderPassEnsureRasterEncoderForDraw(void *renderer);
+/* -mglRenderPassMatchesFramebufferImpl:name: is C now (log 169): the render
+ * pass the context currently has must still describe `framebuffer`. */
+int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
+                                        unsigned int framebuffer_name);
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer);
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer);
 int mglRenderPassManagerCommitCommandBufferTransaction(
