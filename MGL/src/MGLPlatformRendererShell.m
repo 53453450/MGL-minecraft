@@ -769,6 +769,27 @@ void mglPlatformShellPipelineCacheInvalidate(void *pipeline_cache_object)
     }
 }
 
+/* Swap-path queries and effects that must run on the shell object (log 180). */
+int mglPlatformShellShouldSkipPresentForUnlockedSwap(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? ([r mglShouldSkipPresentForUnlockedSwap] ? 1 : 0) : 0;
+}
+
+void mglPlatformShellApplyPendingDrawableSize(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        (void)[r mglApplyPendingDrawableSize];
+    }
+}
+
+void *mglPlatformShellDrawablePointer(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? (__bridge void *)r.drawable : NULL;
+}
+
 /* The drawable is a property on this class, so C can only clear it here. */
 void mglPlatformShellSetDrawable(void *renderer, void *drawable)
 {
@@ -847,6 +868,8 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->gpu_interface_mismatch_blocked_until =
         (double)r->_gpuRecovery.interfaceMismatchBlockedUntil;
     areas_out->mssample_forced_id = (int32_t)r->_mglForcedMSSampleId;
+    areas_out->layer = (__bridge void *)r.layer;
+    areas_out->swap_interval = r ? (int32_t)[r mglSwapInterval] : 0;
     areas_out->tess_cull_capture_first_instance =
         (uint32_t)r->_tessellation.cullDistanceCaptureFirstInstance;
     areas_out->tess_cull_capture_instance_stride =

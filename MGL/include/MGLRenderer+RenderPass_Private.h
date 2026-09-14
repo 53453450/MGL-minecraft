@@ -154,7 +154,6 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 // Thread Safety: *Locked variants defined in MGLRenderer.m
 
 // Locked variants defined in MGLRenderer.m (called from category files)
-- (void)mtlSwapBuffersLocked:(GLMContext)glm_ctx;
 
 // === Other methods defined in MGLRenderer.m, called from category files ===
 - (BOOL)mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)requiredWidth

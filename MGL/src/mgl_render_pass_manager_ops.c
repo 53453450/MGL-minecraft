@@ -36,6 +36,8 @@
 #include "mgl_render_pass_plan.h"    /* mglRenderProcessGLState*, plans */
 #include "mgl_buffer_slots.h"        /* kMGL*BufferIndex */
 #include "mgl_binding_state_ops.h"  /* mglRendererSyncResourceBindingsForContext */
+#include "mgl_swap_diagnostics.h"     /* swap colour copy + diagnostics */
+#include <dispatch/dispatch.h>       /* dispatch_async_f */
 #include "mgl_trace_log.h"         /* mglTraceLog, kMGLDiagnosticStateLogs */
 #include "mgl_gpu_recovery.h"      /* mglRendererRecordGPUError */
 #include "mgl_pso_format_class.h"  /* mglRenderDefaultColorPixelFormat */
@@ -4499,4 +4501,584 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
                     processElapsedUs);
     }
     return 1;
+}
+
+/* === mtlSwapBuffersLocked (log 180) ==================================== */
+
+/* Shell forwarders for swap-path state that must be computed on the shell
+ * object (the interval and the layer travel in the areas instead). */
+extern int mglPlatformShellShouldSkipPresentForUnlockedSwap(void *renderer);
+extern void mglPlatformShellApplyPendingDrawableSize(void *renderer);
+extern void *mglPlatformShellDrawablePointer(void *renderer);
+
+/* The .m's file-local constants this TU needs (values copied verbatim from
+ * MGLRenderer.m's enum, as mgl_renderer_host.c already does). */
+enum {
+    MGL_PD_CB_NOT_ENQUEUED = 0u,
+    MGL_PD_CB_ERROR = 5u,
+};
+
+/* MGLRenderer.m had this as a static inline. */static bool mglPdContextLikelyValid(GLMContext ctx)
+{
+    return (ctx != NULL) && ((uintptr_t)ctx >= 0x10000u);
+}
+
+/* Moved out of MGLRenderer.m (it was that file's static, used only here). */
+static void mglPdRecordFrameCommandBufferCompleted(
+    void *context, const MGLRenderCommandBufferState *state)
+{
+    (void)state;
+    mglRecordFrameCompleted((uint64_t)(uintptr_t)context);
+}
+
+/* File-scope twins of the .m's function-local statics. */
+static uint64_t s_pdSwapCallCount = 0;
+static double s_pdSwapLastCallTime = 0.0;
+static uint64_t s_pdSwapLastCallCount = 0;
+static volatile double s_pdMainThreadHeartbeatSeconds = 0.0;
+static volatile uint64_t s_pdMainThreadPingCount = 0;
+static uint64_t s_pdSwapProcessStateFailCount = 0;
+static uint64_t s_pdSwapFinalizedBufferCount = 0;
+
+/* dispatch_async(dispatch_get_main_queue(), ^{ ... }) became dispatch_async_f:
+ * the block only touched these two statics, so no context is needed. */
+static void mglPdMainThreadPing(void *unused)
+{
+    (void)unused;
+    s_pdMainThreadHeartbeatSeconds = mglTraceNowSeconds();
+    s_pdMainThreadPingCount++;
+}
+
+typedef struct MglPdPresentCtx_t {
+    void *command_state_owner;
+    void *drawable;
+    int result;
+} MglPdPresentCtx;
+
+/* @try of the drawable presentation.  -1 = in-body failure (already logged and
+ * the caller just returns), 0 = exception (the caller runs the @catch block). */
+static int mglPdPresentTryBody(void *renderer, void *rawCtx)
+{
+    MglPdPresentCtx *ctx = (MglPdPresentCtx *)rawCtx;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *commandState = areas.command;
+    GLMContext glmCtx = areas.ctx;
+
+    if (!mglRendererDrawableTexturePort(renderer)) {
+        fprintf(stderr,
+                "MGL ERROR: Drawable texture is NULL, cannot present\n");
+        ctx->result = -1;
+        return 0;
+    }
+
+    void *currentDrawableTexture = mglRendererDrawableTexturePort(renderer);
+    MGLRenderTextureInfo currentDrawableInfo =
+        mglPdTextureInfo(currentDrawableTexture);
+    if (currentDrawableInfo.width == 0 || currentDrawableInfo.height == 0) {
+        fprintf(stderr, "MGL ERROR: Drawable has invalid dimensions: %dx%d\n",
+                (int)currentDrawableInfo.width,
+                (int)currentDrawableInfo.height);
+        ctx->result = -1;
+        return 0;
+    }
+
+    if (kMglPdVerboseFrameLoopLogs) {
+        fprintf(stderr,
+                "MGL INFO: Presenting drawable with texture: %dx%d, format: %lu\n",
+                (int)currentDrawableInfo.width,
+                (int)currentDrawableInfo.height,
+                (unsigned long)currentDrawableInfo.pixel_format);
+    }
+
+    if (mglRenderPresentDrawableForCommandBufferOwner(
+            commandState->currentCommandBufferOwner, ctx->drawable, NULL) != 0) {
+        fprintf(stderr,
+                "MGL ERROR: No command buffer available for drawable presentation\n");
+        ctx->result = -1;
+        return 0;
+    }
+    (void)glmCtx;
+    ctx->result = 1;
+    return 1;
+}
+
+typedef struct MglPdCommitSwapCtx_t {
+    MGLRendererStateAreas *areas;
+    void *command_buffer;
+    uint64_t committed_generation;
+    uint64_t swap_call;
+    int trace_swap;
+} MglPdCommitSwapCtx;
+
+/* @try of the frame commit; the catch records a GPU error. */
+static int mglPdCommitSwapTryBody(void *renderer, void *rawCtx)
+{
+    MglPdCommitSwapCtx *ctx = (MglPdCommitSwapCtx *)rawCtx;
+    MGLCommandState *commandState = ctx->areas->command;
+
+    if (ctx->trace_swap) {
+        char commandBufferLabel[256] = {0};
+        if (ctx->command_buffer) {
+            (void)mglRenderGetCommandBufferLabel(
+                ctx->command_buffer, commandBufferLabel,
+                sizeof(commandBufferLabel));
+        }
+        mglTraceLog(
+            "MGL TRACE swap.commit.begin call=%llu cb=%p status=%s label=%s",
+            (unsigned long long)ctx->swap_call, ctx->command_buffer,
+            mglCommandBufferStatusName(
+                ctx->command_buffer
+                    ? (uint32_t)mglRenderCommandBufferStatus(ctx->command_buffer)
+                    : MGL_PD_CB_ERROR),
+            commandBufferLabel[0] ? commandBufferLabel : "(nil)");
+    }
+    /* Register the frame-completion handler BEFORE commit:
+     * commitCommandBufferWithAGXRecovery: commits the CB, and Metal asserts if
+     * addCompletedHandler: is called after commit. */
+    if (ctx->command_buffer) {
+        const int completionResult = mglRenderAddCommandBufferCompletion(
+            ctx->command_buffer, mglPdRecordFrameCommandBufferCompleted,
+            (void *)(uintptr_t)ctx->committed_generation, NULL);
+        if (completionResult != 0) {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to register C++ frame completion handler\n");
+        }
+    }
+    mglRendererCommitCommandBufferWithAGXRecovery(renderer,
+                                                  ctx->command_buffer);
+    if (ctx->trace_swap) {
+        mglTraceLog("MGL TRACE swap.commit.end call=%llu",
+                    (unsigned long long)ctx->swap_call);
+    }
+    (void)commandState;
+    return 1;
+}
+
+/* -mtlSwapBuffersLocked:. */
+void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRenderPassManager *manager = areas.render_pass_manager;
+    MGLCommandState *commandState = areas.command;
+
+    const uint64_t swapCall = ++s_pdSwapCallCount;
+    const double swapStartSeconds = mglTraceNowSeconds();
+    const uint64_t swapStartNS = mglTraceClockNS();
+    const bool traceSwap = mglPdShouldTraceCall(swapCall);
+    mglTraceNoteFrameBoundary();
+    MGL_FRAME_STORE(g_mglSwapCallCount, swapCall);
+    /* advance the DontCare frame generation. Any color attachment written
+     * before this point belongs to the previous frame, so its next write this
+     * frame is a "first use" that may skip loading prior contents.  Skips 0 so
+     * a zero-initialized texture stamp never matches. */
+    mglPassManagerIncrementDontCareFrameGenerationWithWrap(manager);
+    MGL_FRAME_STORE(g_mglLastSwapSeconds, swapStartSeconds);
+    if (swapCall <= 20ull || (swapCall % 60ull) == 0ull) {
+        mglTraceLog(
+            "SWAP_RENDERER_ENTRY call=%llu drawArraysSinceSwap=%llu drawElementsSinceSwap=%llu processDrawCallsSinceSwap=%llu",
+            (unsigned long long)swapCall,
+            (unsigned long long)MGL_FRAME_LOAD(g_mglDrawArraysSinceSwap),
+            (unsigned long long)MGL_FRAME_LOAD(g_mglDrawElementsSinceSwap),
+            (unsigned long long)MGL_FRAME_LOAD(g_mglProcessDrawCallsSinceSwap));
+    }
+    mglLogLoopHeartbeat("swap.loop", swapCall, swapStartSeconds,
+                        &s_pdSwapLastCallTime, &s_pdSwapLastCallCount, 0.25);
+
+    if (!mglPdContextLikelyValid(glm_ctx)) {
+        fprintf(stderr, "MGL CRITICAL: swap.begin invalid glm_ctx=%p\n",
+                (void *)glm_ctx);
+        return;
+    }
+
+    if (areas.ctx != glm_ctx) {
+        mglTraceLog("MGL TRACE swap.contextSync old=%p new=%p", (void *)areas.ctx,
+                    (void *)glm_ctx);
+        mglPlatformShellSetContext(renderer, glm_ctx);
+    }
+    /* The .m rebinds its `ctx` ivar; C keeps the fresh value in the snapshot and
+     * in `activeCtx`. */
+    areas.ctx = glm_ctx;
+    GLMContext activeCtx = glm_ctx;
+    const GLenum drawBuffer = activeCtx->state.draw_buffer;
+    const bool shouldPresent =
+        mglRenderShouldPresentDrawBuffer((uint32_t)drawBuffer) != 0;
+    if (traceSwap) {
+        mglTraceLog("MGL TRACE swap.begin call=%llu shouldPresent=%d draw_buffer=0x%x",
+                    (unsigned long long)swapCall, shouldPresent ? 1 : 0,
+                    (unsigned)drawBuffer);
+        mglLogStateSnapshot("swap.enter", activeCtx,
+                            commandState->currentCommandBufferOwner,
+                            commandState->currentRenderEncoderOwner,
+                            commandState->renderPassStateOwner, areas.drawable);
+    }
+
+    /* Main-thread responsiveness probe for beachball diagnostics.  Render thread
+     * periodically posts a ping to main queue; stale heartbeat means main thread
+     * is blocked. */
+    if (kMGLDiagnosticStateLogs &&
+        (swapCall <= 20ull || (swapCall % 30ull) == 0ull)) {
+        dispatch_async_f(dispatch_get_main_queue(), NULL, mglPdMainThreadPing);
+
+        const double hb = s_pdMainThreadHeartbeatSeconds;
+        if (hb > 0.0) {
+            const double lagMs = (swapStartSeconds - hb) * 1000.0;
+            if (lagMs > 500.0) {
+                mglTraceLog(
+                    "MGL TRACE mainthread.stall suspected lag=%.2fms swapCall=%llu pingCount=%llu",
+                    lagMs, (unsigned long long)swapCall,
+                    (unsigned long long)s_pdMainThreadPingCount);
+                if (traceSwap || (swapCall % 120ull) == 0ull) {
+                    mglLogStateSnapshot("mainthread.stall.snapshot", activeCtx,
+                                        commandState->currentCommandBufferOwner,
+                                        commandState->currentRenderEncoderOwner,
+                                        commandState->renderPassStateOwner,
+                                        areas.drawable);
+                }
+            } else if (traceSwap) {
+                mglTraceLog(
+                    "MGL TRACE mainthread.heartbeat lag=%.2fms swapCall=%llu pingCount=%llu",
+                    lagMs, (unsigned long long)swapCall,
+                    (unsigned long long)s_pdMainThreadPingCount);
+            }
+        } else if (traceSwap) {
+            mglTraceLog(
+                "MGL TRACE mainthread.heartbeat uninitialized swapCall=%llu",
+                (unsigned long long)swapCall);
+        }
+    }
+
+    if (kMGLDiagnosticStateLogs) {
+        MGLSwapDrawCounters frameCounters = mglSnapshotSwapDrawCounters();
+        mglResetSwapDrawCounters();
+
+        const uint64_t lastDrawArraysCall =
+            MGL_FRAME_LOAD(g_mglLastDrawArraysCall);
+        const uint64_t lastDrawElementsCall =
+            MGL_FRAME_LOAD(g_mglLastDrawElementsCall);
+        const double lastDrawArraysSeconds =
+            MGL_FRAME_LOAD(g_mglLastDrawArraysSeconds);
+        const double lastDrawElementsSeconds =
+            MGL_FRAME_LOAD(g_mglLastDrawElementsSeconds);
+        const GLuint lastDrawArraysProgram =
+            MGL_FRAME_LOAD(g_mglLastDrawArraysProgram);
+        const GLuint lastDrawArraysMode =
+            MGL_FRAME_LOAD(g_mglLastDrawArraysMode);
+        const GLsizei lastDrawArraysCount =
+            MGL_FRAME_LOAD(g_mglLastDrawArraysCount);
+        const GLuint lastDrawElementsProgram =
+            MGL_FRAME_LOAD(g_mglLastDrawElementsProgram);
+        const GLuint lastDrawElementsMode =
+            MGL_FRAME_LOAD(g_mglLastDrawElementsMode);
+        const GLsizei lastDrawElementsCount =
+            MGL_FRAME_LOAD(g_mglLastDrawElementsCount);
+        const double drawArraysAgeMs =
+            (lastDrawArraysSeconds > 0.0)
+                ? ((swapStartSeconds - lastDrawArraysSeconds) * 1000.0)
+                : -1.0;
+        const double drawElementsAgeMs =
+            (lastDrawElementsSeconds > 0.0)
+                ? ((swapStartSeconds - lastDrawElementsSeconds) * 1000.0)
+                : -1.0;
+        const int hasFrameWork =
+            (frameCounters.draw_arrays > 0 ||
+             frameCounters.draw_elements > 0 ||
+             frameCounters.draw_arrays_skipped > 0 ||
+             frameCounters.draw_elements_skipped > 0 ||
+             frameCounters.process_draw_calls > 0);
+        if (traceSwap || hasFrameWork || swapCall <= 20ull ||
+            (swapCall % 20ull) == 0ull) {
+            mglTraceLog(
+                "MGL TRACE swap.drawActivity call=%llu processDrawCalls=%llu drawArrays=%llu verts=%llu "
+                "drawElements=%llu indices=%llu skipArrays=%llu skipElements=%llu "
+                "lastDrawArrays=%llu prog=%u mode=0x%x count=%d age=%.2fms "
+                "lastDrawElements=%llu prog=%u mode=0x%x count=%d age=%.2fms",
+                (unsigned long long)swapCall,
+                (unsigned long long)frameCounters.process_draw_calls,
+                (unsigned long long)frameCounters.draw_arrays,
+                (unsigned long long)frameCounters.array_vertices,
+                (unsigned long long)frameCounters.draw_elements,
+                (unsigned long long)frameCounters.element_indices,
+                (unsigned long long)frameCounters.draw_arrays_skipped,
+                (unsigned long long)frameCounters.draw_elements_skipped,
+                (unsigned long long)lastDrawArraysCall,
+                (unsigned)lastDrawArraysProgram, (unsigned)lastDrawArraysMode,
+                (int)lastDrawArraysCount, drawArraysAgeMs,
+                (unsigned long long)lastDrawElementsCall,
+                (unsigned)lastDrawElementsProgram, (unsigned)lastDrawElementsMode,
+                (int)lastDrawElementsCount, drawElementsAgeMs);
+        }
+    }
+
+    if (shouldPresent) {
+        mglRendererFlushDrawBufferLockedPort(renderer, activeCtx);
+
+        if (!mglRenderPassProcessGLStateLocked(renderer, 0)) {
+            s_pdSwapProcessStateFailCount++;
+            if (s_pdSwapProcessStateFailCount <= 16 ||
+                (s_pdSwapProcessStateFailCount % 500) == 0) {
+                fprintf(stderr,
+                        "MGL WARNING: mtlSwapBuffers continuing despite processGLState failure (occurrence=%llu)\n",
+                        (unsigned long long)s_pdSwapProcessStateFailCount);
+            }
+        }
+
+        mglRendererEndRenderEncodingLocked(renderer);
+
+        /* Deferred device reset drain.  This is the only safe reset point: the
+         * render encoder is closed and the command buffer has not been rebuilt
+         * yet, so resetMetalState can swap the command queue / clear caches
+         * without racing an active encoder.  The request flag is set by the
+         * Metal completion handler (GPURecovery.m) via release-store. */
+        /* Completion workers latch recovery requests in the C++ owner on both
+         * gates; consume them only at this GL-thread frame boundary. */
+        if (areas.gpu_recovery_command_owner &&
+            mglRenderCommandRecoveryTakeResetRequest(
+                *areas.gpu_recovery_command_owner) == 1) {
+            atomic_store_explicit(&areas.core->deviceResetRequested, true,
+                                  memory_order_release);
+        }
+        if (atomic_exchange_explicit(&areas.core->deviceResetRequested, false,
+                                     memory_order_acquire)) {
+            mglRendererResetMetalState(renderer);
+        }
+
+        if (!mglRenderPassEnsureWritableCommandBufferLocked(
+                renderer, "mtlSwapBuffers")) {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to obtain writable command buffer in mtlSwapBuffers\n");
+            return;
+        }
+
+        const int swapInterval = areas.swap_interval;
+        const int skipPresent =
+            (swapInterval == 0) &&
+            mglPlatformShellShouldSkipPresentForUnlockedSwap(renderer);
+
+        if (mglPlatformShellDrawablePointer(renderer) == NULL) {
+            if (traceSwap) {
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present",
+                    (unsigned long long)swapCall);
+            }
+            mglPlatformShellApplyPendingDrawableSize(renderer);
+            (void)mglRendererNextDrawablePort(renderer);
+            if (traceSwap) {
+                void *tex = mglRendererDrawableTexturePort(renderer);
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present drawable=%p tex=%p size=%lux%lu",
+                    (unsigned long long)swapCall,
+                    mglPlatformShellDrawablePointer(renderer), tex,
+                    (unsigned long)(tex ? mglPdTextureInfo(tex).width : 0),
+                    (unsigned long)(tex ? mglPdTextureInfo(tex).height : 0));
+            }
+        }
+
+        if (mglPlatformShellDrawablePointer(renderer) == NULL) {
+            fprintf(stderr,
+                    "MGL WARNING: Drawable is NULL in mtlSwapBuffers, getting new drawable\n");
+            if (traceSwap) {
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present_retry",
+                    (unsigned long long)swapCall);
+            }
+            mglPlatformShellApplyPendingDrawableSize(renderer);
+            (void)mglRendererNextDrawablePort(renderer);
+            if (traceSwap) {
+                void *tex = mglRendererDrawableTexturePort(renderer);
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present_retry drawable=%p tex=%p size=%lux%lu",
+                    (unsigned long long)swapCall,
+                    mglPlatformShellDrawablePointer(renderer), tex,
+                    (unsigned long)(tex ? mglPdTextureInfo(tex).width : 0),
+                    (unsigned long)(tex ? mglPdTextureInfo(tex).height : 0));
+            }
+            if (mglPlatformShellDrawablePointer(renderer) == NULL) {
+                fprintf(stderr,
+                        "MGL ERROR: Failed to obtain any drawable from Metal layer\n");
+                return;
+            }
+        }
+
+        void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
+            commandState->renderPassStateOwner,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
+        void *drawableTexture = mglRendererDrawableTexturePort(renderer);
+        if (!skipPresent) {
+            mglSwapCopyRenderPassColorToDrawableIfNeeded(
+                renderer, rpColor0, drawableTexture, swapCall, traceSwap ? 1 : 0);
+
+            mglSwapScheduleTextureSampleDiagnostics(renderer, rpColor0,
+                                                    drawableTexture, swapCall);
+        }
+
+        if (areas.layer == NULL) {
+            fprintf(stderr,
+                    "MGL ERROR: Metal layer is NULL, cannot present drawable\n");
+            return;
+        }
+
+        MGLRenderCommandBufferState presentCommandState = {0};
+        if (!mglRenderCommandBufferOwnerHasState(
+                commandState->currentCommandBufferOwner,
+                &presentCommandState)) {
+            fprintf(stderr,
+                    "MGL ERROR: No command buffer available for presentation\n");
+            return;
+        }
+
+        const uint32_t bufferStatus = (uint32_t)presentCommandState.status;
+        if (bufferStatus != MGL_PD_CB_NOT_ENQUEUED) {
+            const uint64_t swapFinHit = ++s_pdSwapFinalizedBufferCount;
+            if (swapFinHit <= 16ull || (swapFinHit % 500ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL WARNING: mtlSwapBuffers found finalized command buffer (status: %ld), rotating (hit=%llu)\n",
+                        (long)bufferStatus, (unsigned long long)swapFinHit);
+            }
+            mglRendererEndRenderEncodingLocked(renderer);
+            (void)mglRenderPassNewCommandBufferLocked(renderer);
+            if (!mglRenderCommandBufferOwnerHasState(
+                    commandState->currentCommandBufferOwner,
+                    &presentCommandState)) {
+                fprintf(stderr,
+                        "MGL ERROR: Failed to create new command buffer for presentation\n");
+                return;
+            }
+        }
+
+        MglPdPresentCtx presentCtx = {commandState->currentCommandBufferOwner,
+                                      mglPlatformShellDrawablePointer(renderer), 0};
+        if (!skipPresent) {
+            if (!mglPlatformShellGuardedCallCtx(renderer, "drawable presentation",
+                                                mglPdPresentTryBody, &presentCtx,
+                                                NULL)) {
+                if (presentCtx.result != -1) {
+                    /* @catch (NSException *exception) */
+                    fprintf(stderr,
+                            "MGL ERROR: Critical drawable presentation failure\n");
+                    (void)mglPlatformShellGuardedCall(
+                        renderer, "command buffer cleanup",
+                        mglRendererCleanupCommandBufferBody);
+                }
+                return;
+            }
+            if (traceSwap) {
+                mglTraceLog("MGL TRACE swap.present call=%llu cbOwner=%p drawable=%p",
+                            (unsigned long long)swapCall,
+                            commandState->currentCommandBufferOwner,
+                            presentCtx.drawable);
+            }
+        } else if (traceSwap) {
+            mglTraceLog(
+                "MGL TRACE swap.present.skipped call=%llu reason=unlocked_hidden",
+                (unsigned long long)swapCall);
+        }
+
+        void *commandBufferToCommit =
+            mglPassManagerDetachCurrentCommandBufferForSubmission(manager);
+        const uint64_t committedGeneration = mglAdvanceFrameGeneration();
+        /* Sweep the bound buffer maps so base/attrib/uniform/SSBO buffers that
+         * were encoded this frame keep their pool slots pinned for the committed
+         * command buffer (copy-on-write snapshot reuse). */
+        BufferMapList *boundLists[3] = {
+            &mglPdState(&areas)->vertex_buffer_map_list,
+            &mglPdState(&areas)->fragment_buffer_map_list,
+            &mglPdState(&areas)->compute_buffer_map_list,
+        };
+        for (int li = 0; li < 3; ++li) {
+            for (GLuint mi = 0; mi < boundLists[li]->count; ++mi) {
+                mglNoteBufferEncoded(boundLists[li]->buffers[mi].buf);
+            }
+        }
+        MglPdCommitSwapCtx commitCtx = {&areas, commandBufferToCommit,
+                                        committedGeneration, swapCall,
+                                        traceSwap ? 1 : 0};
+        if (!mglPlatformShellGuardedCallCtx(renderer, "command buffer commit",
+                                            mglPdCommitSwapTryBody, &commitCtx,
+                                            NULL)) {
+            /* @catch (NSException *exception) */
+            fprintf(stderr, "MGL ERROR: Failed to commit command buffer\n");
+            mglRendererRecordGPUError(renderer);
+        }
+
+        if (traceSwap) {
+            mglTraceLog(
+                "MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit",
+                (unsigned long long)swapCall);
+        }
+        if (skipPresent) {
+            /* Keep the current drawable: nothing was presented, so the surface
+             * remains a valid render target for the next frame. */
+            if (traceSwap) {
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.reuse call=%llu stage=post_commit",
+                    (unsigned long long)swapCall);
+            }
+        } else if (swapInterval == 0) {
+            /* Visible unlocked: defer acquisition off the critical path. */
+            mglPlatformShellSetDrawable(renderer, NULL);
+            if (traceSwap) {
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.deferred call=%llu stage=post_commit",
+                    (unsigned long long)swapCall);
+            }
+        } else {
+            (void)mglRendererNextDrawablePort(renderer);
+            if (traceSwap) {
+                void *tex = mglRendererDrawableTexturePort(renderer);
+                mglTraceLog(
+                    "MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
+                    (unsigned long long)swapCall,
+                    mglPlatformShellDrawablePointer(renderer), tex,
+                    (unsigned long)(tex ? mglPdTextureInfo(tex).width : 0),
+                    (unsigned long)(tex ? mglPdTextureInfo(tex).height : 0));
+            }
+            if (mglPlatformShellDrawablePointer(renderer) == NULL) {
+                fprintf(stderr,
+                        "MGL WARNING: Failed to get next drawable in mtlSwapBuffers\n");
+                return;
+            }
+        }
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to create post-swap command buffer\n");
+            return;
+        }
+        areas.core->defaultDrawableWrittenSinceLastSwap = 0;
+        mglMarkRendererDirtyBits(areas.ctx->active_state,
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
+        const double swapElapsedUs = (mglTraceClockNS() - swapStartNS) / 1000.0;
+        if (traceSwap) {
+            mglTraceLog("MGL TRACE swap.end call=%llu elapsed=%.1fus",
+                        (unsigned long long)swapCall, swapElapsedUs);
+            mglLogStateSnapshot("swap.exit.ok", areas.ctx,
+                                commandState->currentCommandBufferOwner,
+                                commandState->currentRenderEncoderOwner,
+                                commandState->renderPassStateOwner,
+                                areas.drawable);
+        } else if (swapElapsedUs >= 25000.0) {
+            mglTraceLog("MGL TRACE swap.slow call=%llu elapsed=%.1fus",
+                        (unsigned long long)swapCall, swapElapsedUs);
+        }
+    } else if (kMglPdVerboseFrameLoopLogs || traceSwap) {
+        fprintf(stderr,
+                "MGL INFO: mtlSwapBuffers skipped present because draw_buffer is GL_NONE\n");
+    }
+
+    /* Perf summary: snapshot + reset per-frame counters at the swap boundary.
+     * Runs on every normal exit path (present + GL_NONE skip).  Early-return
+     * error paths intentionally skip this so their counters roll into the next
+     * successful frame. */
+    if (mglPerfSummaryEnabled()) {
+        const double now = mglTraceNowSeconds();
+        static _Atomic double s_last_swap_time = 0.0;
+        double interval = 0.0;
+        const double prev =
+            atomic_load_explicit(&s_last_swap_time, memory_order_relaxed);
+        if (prev > 0.0) interval = (now - prev) * 1000.0;
+        atomic_store_explicit(&s_last_swap_time, now, memory_order_relaxed);
+        mglPrintPerfSummary(interval);
+        mglResetPerfCounters();
+    }
 }

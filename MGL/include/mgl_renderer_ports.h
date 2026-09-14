@@ -234,6 +234,10 @@ typedef struct MGLRendererStateAreas {
     uint32_t gpu_interface_mismatch_blocked_program;
     double gpu_interface_mismatch_blocked_until;
     int32_t mssample_forced_id;
+    /* The CAMetalLayer (trace/present checks) and the swap interval: both are
+     * stable for the duration of a call, so a snapshot is enough. */
+    void *layer;
+    int32_t swap_interval;
     uint32_t tess_cull_capture_instance_stride;
 } MGLRendererStateAreas;
 

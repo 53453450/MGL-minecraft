@@ -69,6 +69,9 @@ int mglRenderPassNewCommandBufferLocked(void *renderer);
 /* -processGLStateLocked: is C now (log 179); both processGLState ports
  * retired with it. */
 int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command);
+/* -mtlSwapBuffersLocked: is C now (log 180). */
+void mglRenderPassMTLSwapBuffersLocked(void *renderer,
+                                       GLMContext glm_ctx);
 void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
                                                  const char *reason);
 int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(
