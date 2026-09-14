@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "glm_context.h"        /* GLMContext, GLint/GLsizei */
+#include "mgl_blit_color_state.h" /* MGLBlitColorState (log 146) */
 #include "mgl_region_value.h"    /* MGLRegionValue */
 #include "mgl_sync.h"           /* MGLMetalAttachmentSubresource */
 #include "mgl_types_texture.h"  /* Texture */
@@ -111,6 +112,15 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx,
                              GLint dst_level, GLint dst_x, GLint dst_y,
                              GLint dst_z, GLsizei width, GLsizei height,
                              GLsizei depth);
+
+/* Resolve the read/draw framebuffer attachments for the blitFramebuffer path
+ * (drawable fallback included) and publish them into `st`.  Was
+ * -resolveBlitFramebufferAttachments:srcX0:…:outState:outReadAttachment:.
+ * Returns false when the caller must abandon the blit (the method's NO). */
+bool mglBlitResolveFramebufferAttachments(
+    void *renderer, GLMContext glm_ctx, GLint src_x0, GLint src_y0, GLint src_x1,
+    GLint src_y1, GLint dst_x0, GLint dst_y0, GLint dst_x1, GLint dst_y1,
+    MGLBlitColorState *st, GLenum *out_read_attachment);
 
 #ifdef __cplusplus
 }

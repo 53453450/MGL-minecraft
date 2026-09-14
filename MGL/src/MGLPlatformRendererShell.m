@@ -327,6 +327,35 @@ void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
     }
 }
 
+void mglRendererNextDrawablePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        /* -mglNextDrawable assigns self.drawable itself (which is what
+         * `_drawable = [self mglNextDrawable]` did). */
+        (void)[r mglNextDrawable];
+    }
+}
+
+void *mglRendererDrawableTexturePort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? (__bridge void *)[r mglDrawableTexture] : NULL;
+}
+
+int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
+                                                       size_t required_width,
+                                                       size_t required_height,
+                                                       const char *reason)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)required_width
+                                                    height:(NSUInteger)required_height
+                                                    reason:reason])
+               ? 1
+               : 0;
+}
+
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

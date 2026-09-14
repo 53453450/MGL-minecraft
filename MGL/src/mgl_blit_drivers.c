@@ -41,6 +41,8 @@
 #include "mgl_gpu_recovery.h"      /* guarded call (@try/@catch) */
 #include "mgl_capability.h"        /* MGLCapabilityHasBug + MGL_BUG_* (log 144) */
 #include "mgl_renderer_core_state.h" /* core area (capability snapshot) */
+#include "mgl_blit_color_state.h"   /* MGLBlitColorState (log 146) */
+#include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_metal_ref.h"        /* mglSafeReleaseMetalObj */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
 #include "mgl_texture_readback_clear.h" /* pending FBO clear application */
@@ -2405,4 +2407,176 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
                 (GLboolean)mglRenderGLBoolean(1);
         }
     }
+}
+
+/* === blitFramebuffer attachment resolve (P0-1, log 146) =================== */
+
+/* The .m's two private helpers, restated for this TU. */
+extern bool isColorAttachment(GLMContext ctx, GLuint attachment);
+extern FBOAttachment *getFBOAttachment(GLMContext ctx, Framebuffer *fbo,
+                                       GLenum attachment);
+
+/* -resolveBlitFramebufferAttachments:srcX0:srcY0:srcX1:srcY1:dstX0:dstY0:
+ *  dstX1:dstY1:outState:outReadAttachment: */
+bool mglBlitResolveFramebufferAttachments(
+    void *renderer, GLMContext glm_ctx, GLint src_x0, GLint src_y0, GLint src_x1,
+    GLint src_y1, GLint dst_x0, GLint dst_y0, GLint dst_x1, GLint dst_y1,
+    MGLBlitColorState *st, GLenum *out_read_attachment)
+{
+    MGL_ASSERT_GL_THREAD();
+    Framebuffer *readfbo, *drawfbo;
+    GLenum read_attachment, draw_attachment;
+    FBOAttachment *read_fbo_attachment = NULL;
+    Texture *read_texture_object = NULL;
+    FBOAttachment *draw_fbo_attachment = NULL;
+    Texture *draw_texture_object = NULL;
+    MGLMetalAttachmentSubresource read_subresource = {0u, 0u, 0u};
+    MGLMetalAttachmentSubresource draw_subresource = {0u, 0u, 0u};
+
+    readfbo = glm_ctx->active_state->readbuffer;
+    drawfbo = glm_ctx->active_state->framebuffer;
+
+    if (drawfbo == NULL) {
+        int max_dst_x = dst_x0 > dst_x1 ? dst_x0 : dst_x1;
+        int max_dst_y = dst_y0 > dst_y1 ? dst_y0 : dst_y1;
+        size_t requested_drawable_width = (size_t)(max_dst_x > 0 ? max_dst_x : 0);
+        size_t requested_drawable_height =
+            (size_t)(max_dst_y > 0 ? max_dst_y : 0);
+        if (mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(
+                renderer, requested_drawable_width, requested_drawable_height,
+                "blitFramebuffer.defaultDraw")) {
+            mglRendererNextDrawablePort(renderer);
+        }
+    }
+
+    void *readtexid;
+
+    if (readfbo == NULL) {
+        readtexid = mglRendererDrawableTexturePort(renderer);
+        if (!readtexid) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer has no drawable source "
+                    "texture\n");
+            return false;
+        }
+    } else {
+        read_attachment = glm_ctx->active_state->read_buffer;
+        if (mglRenderDrawBufferIsNone((uint32_t)read_attachment)) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer skipped color blit with "
+                    "GL_READ_BUFFER=GL_NONE\n");
+            return false;
+        }
+        read_attachment = (GLenum)mglRenderFBOBlitAttachmentOrColor0(
+            (uint32_t)read_attachment,
+            isColorAttachment(glm_ctx, read_attachment) ? 1 : 0);
+
+        read_fbo_attachment = getFBOAttachment(glm_ctx, readfbo, read_attachment);
+        if (!read_fbo_attachment) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer read attachment missing\n");
+            return false;
+        }
+        read_subresource =
+            mglMetalAttachmentSubresourceForAttachment(read_fbo_attachment);
+        if (mglRenderTargetIsRenderbuffer(
+                (uint32_t)read_fbo_attachment->textarget)) {
+            read_texture_object = read_fbo_attachment->buf.rbo->tex;
+        } else {
+            read_texture_object = read_fbo_attachment->buf.tex;
+        }
+        if (!read_texture_object) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer read texture object "
+                    "missing\n");
+            return false;
+        }
+        if (!read_texture_object->mtl_data || read_texture_object->dirty_bits) {
+            if (!mglRendererBindMTLTexture(renderer, read_texture_object)) {
+                fprintf(stderr,
+                        "MGL WARN: mtlBlitFramebuffer failed to bind read "
+                        "texture to Metal\n");
+                return false;
+            }
+        }
+        readtexid = read_texture_object->mtl_data;
+        if (!readtexid) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer read MTL texture missing\n");
+            return false;
+        }
+    }
+
+    void *drawtexid;
+    if (drawfbo == NULL) {
+        drawtexid = mglRendererDrawableTexturePort(renderer);
+        if (!drawtexid) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer has no drawable destination "
+                    "texture\n");
+            return false;
+        }
+    } else {
+        draw_attachment = glm_ctx->active_state->draw_buffer;
+        if (mglRenderDrawBufferIsNone((uint32_t)draw_attachment)) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer skipped color blit with "
+                    "GL_DRAW_BUFFER=GL_NONE\n");
+            return false;
+        }
+        draw_attachment = (GLenum)mglRenderFBOBlitAttachmentOrColor0(
+            (uint32_t)draw_attachment,
+            isColorAttachment(glm_ctx, draw_attachment) ? 1 : 0);
+
+        draw_fbo_attachment = getFBOAttachment(glm_ctx, drawfbo, draw_attachment);
+        if (!draw_fbo_attachment) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer draw attachment missing\n");
+            return false;
+        }
+        draw_subresource =
+            mglMetalAttachmentSubresourceForAttachment(draw_fbo_attachment);
+        if (mglRenderTargetIsRenderbuffer(
+                (uint32_t)draw_fbo_attachment->textarget)) {
+            draw_texture_object = draw_fbo_attachment->buf.rbo->tex;
+        } else {
+            draw_texture_object = draw_fbo_attachment->buf.tex;
+        }
+        if (!draw_texture_object) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer draw texture object "
+                    "missing\n");
+            return false;
+        }
+        draw_texture_object->is_render_target = true;
+        /* The texture may already have a sampled-only Metal backing from
+         * glTexStorage.  Setting is_render_target above changes the required
+         * Metal usage even when mtl_data is otherwise clean, so always run the
+         * binding transition before creating the blit encoder. */
+        if (!mglRendererBindMTLTexture(renderer, draw_texture_object)) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer failed to bind draw texture "
+                    "to Metal\n");
+            return false;
+        }
+        drawtexid = draw_texture_object->mtl_data;
+        if (!drawtexid) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer draw MTL texture missing\n");
+            return false;
+        }
+    }
+
+    st->readfbo = readfbo;
+    st->drawfbo = drawfbo;
+    st->readFBOAttachment = read_fbo_attachment;
+    st->drawFBOAttachment = draw_fbo_attachment;
+    st->readTextureObject = read_texture_object;
+    st->drawTextureObject = draw_texture_object;
+    st->readSubresource = read_subresource;
+    st->drawSubresource = draw_subresource;
+    st->readtexid = readtexid;
+    st->drawtexid = drawtexid;
+    *out_read_attachment = read_attachment;
+    return true;
 }

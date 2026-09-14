@@ -286,6 +286,17 @@ int mglRendererSynchronizeRenderPassForTextureReadbackPort(void *renderer,
  * mtlCopyImageSubData dispatch (P0-1, log 145). */
 void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
     void *renderer, uint64_t process_call);
+/* Drawable access for the blitFramebuffer attachment resolve (P0-1, log 146).
+ * `_drawable` is the `self.drawable` property: next_drawable runs
+ * -mglNextDrawable (which assigns the property itself), and drawable_texture
+ * is its `.texture` — NULL when there is no drawable, so one NULL check covers
+ * both `!_drawable` and `![self mglDrawableTexture]`. */
+void mglRendererNextDrawablePort(void *renderer);
+void *mglRendererDrawableTexturePort(void *renderer);
+int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
+                                                       size_t required_width,
+                                                       size_t required_height,
+                                                       const char *reason);
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer);
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,
