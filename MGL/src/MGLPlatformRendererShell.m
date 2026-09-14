@@ -19,6 +19,7 @@
 #import "MGLRenderer+RenderPass_Private.h"
 #import "MGLRenderer+Texture_Private.h"  /* texture upload ports */
 #import "MGLRenderer+Binding_Private.h"
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_renderer_host.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_batch_restore.h"
@@ -449,8 +450,7 @@ int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
 
 int mglRendererEnsureRasterEncoderForDrawPort(void *renderer)
 {
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r ensureRasterEncoderForDraw]) ? 1 : 0;
+    return mglRenderPassEnsureRasterEncoderForDraw(renderer);
 }
 
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,

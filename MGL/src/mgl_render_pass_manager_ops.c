@@ -393,3 +393,76 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
     }
     return true;
 }
+
+/* -ensureRasterEncoderForDraw (P0-1, log 168).  Replaces
+ * mglRendererEnsureRasterEncoderForDrawPort. */
+int mglRenderPassEnsureRasterEncoderForDraw(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    if (mglRenderEncoderOwnerHasCurrent(
+            areas.command->currentRenderEncoderOwner) == 1) {
+        return 1;
+    }
+    (void)mglRendererNewRenderEncoderLockedWithReasonPort(renderer, MGL_ENC_REASON_DRAW);
+    if (mglRenderEncoderOwnerHasCurrent(
+            areas.command->currentRenderEncoderOwner) != 1) {
+        return 0;
+    }
+    if (!areas.pipeline_cache->pipelineState) {
+        return 0;
+    }
+
+    uint32_t rpColor0Format = 0u;
+    uint32_t rpDepthFormat = 0u;
+    uint32_t rpStencilFormat = 0u;
+    MGLRenderPassAttachmentState colorAttachment = {0};
+    MGLRenderPassAttachmentState depthAttachment = {0};
+    MGLRenderPassAttachmentState stencilAttachment = {0};
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        areas.command->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, &colorAttachment);
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        areas.command->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, &depthAttachment);
+    (void)mglRenderGetRenderPassAttachmentStateOwner(
+        areas.command->renderPassStateOwner,
+        MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0, &stencilAttachment);
+    void *rpColor0 = colorAttachment.texture;
+    void *rpDepth = depthAttachment.texture;
+    void *rpStencil = stencilAttachment.texture;
+    MGLRenderTextureInfo textureInfo = {0};
+    if (rpColor0 && mglRenderGetTextureInfo(
+            rpColor0, &textureInfo) == 0) {
+        rpColor0Format = textureInfo.pixel_format;
+    }
+    if (rpDepth && mglRenderGetTextureInfo(
+            rpDepth, &textureInfo) == 0) {
+        rpDepthFormat = textureInfo.pixel_format;
+    }
+    if (rpStencil && mglRenderGetTextureInfo(
+            rpStencil, &textureInfo) == 0) {
+        rpStencilFormat = textureInfo.pixel_format;
+    }
+
+    const int colorMismatch =
+        (areas.pipeline_cache->pipelineColor0Format != 0u &&
+         rpColor0Format != 0u &&
+         areas.pipeline_cache->pipelineColor0Format != rpColor0Format);
+    const int depthMismatch =
+        (areas.pipeline_cache->pipelineDepthFormat != rpDepthFormat);
+    const int stencilMismatch =
+        (areas.pipeline_cache->pipelineStencilFormat != rpStencilFormat);
+    if (colorMismatch || depthMismatch || stencilMismatch) {
+        return 0;
+    }
+    if (mglRenderSetRenderPipelineStateForOwner(
+            areas.command->currentRenderEncoderOwner,
+            areas.pipeline_cache->pipelineState) != 0) {
+        return 0;
+    }
+    mglRenderBindingSetPipelineState((areas.binding_state_owner ? *areas.binding_state_owner : NULL),
+                                     areas.pipeline_cache->pipelineState);
+    MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+    return 1;
+}

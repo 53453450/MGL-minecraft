@@ -32,6 +32,8 @@ void mglRendererEndRenderEncodingLocked(void *renderer);
 /* -processDirtyStateDomainsLocked:work: is C now (log 167). */
 bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                                            MGLResourceSyncWork *work);
+/* -ensureRasterEncoderForDraw is C now (log 168). */
+int mglRenderPassEnsureRasterEncoderForDraw(void *renderer);
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer);
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer);
 int mglRenderPassManagerCommitCommandBufferTransaction(
