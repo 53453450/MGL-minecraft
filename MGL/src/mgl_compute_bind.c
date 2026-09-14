@@ -30,6 +30,7 @@
 
 #include "mgl_compute_bind.h"
 #include "mgl_texture_bind.h"        /* mglRendererBindMTLTexture */
+#include "mgl_sampled_sampler.h" /* sampler materialize (log 151) */
 #include "mgl_renderer_ports.h"     /* state areas + the host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes */
 #include "mgl_binding_policy.h"
@@ -605,7 +606,7 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                     /* Sampler cascade (GL sampler object → texture parameters
                      * → default) is the shared materialize port the
                      * vertex / fragment spine uses. */
-                    void *sampler = mglRendererMaterializeSampledSamplerPort(
+                    void *sampler = mglSampledSamplerMaterialize(
                         renderer, ptr, glUnit, NULL, 0, (uint32_t)ptr->target,
                         computeProgram ? computeProgram->name : 0u,
                         resource ? mglMetalResourceSlot(resource) : metalBinding,
@@ -693,7 +694,7 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
                  * skip the "dirty sampler" release the others do, so a
                  * re-parameterized sampler could keep its old Metal object;
                  * going through the port makes it consistent. */
-                void *sampler = mglRendererMaterializeSampledSamplerPort(
+                void *sampler = mglSampledSamplerMaterialize(
                     renderer, ptr, glUnit, NULL, 0, (uint32_t)ptr->target,
                     computeProgram ? computeProgram->name : 0u, metalSlot,
                     "compute", texture);

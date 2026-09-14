@@ -12,6 +12,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_blit_drivers.h"   /* sampled RT copy repair (log 150) */
+#include "mgl_sampled_sampler.h"   /* sampler materialize (log 151) */
 #include "mgl_stage_buffer_bind.h"  /* stage-buffer binding drivers (log 129) */
 #include "mgl_storage_image_bind.h" /* storage-image driver (log 130) */
 #include "mgl_sampled_fallback.h" /* sampled-texture fallback chain (log 132) */
@@ -514,28 +515,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                       sampledCopyForTrace:&sampledCopyForTrace]) {
                     return false;
                 }
-                texture = [self applySampledCompatFallbackPlan:ptr
-                                                       texture:texture
-                                                  expectedType:expectedType
-                                                  expectedKind:expectedKind
-                                                         stage:stageTag
-                                                   programName:programName
-                                                  spirvBinding:spirvBinding
-                                                 sampleProgram:sampleProgram
-                                              usedFallbackOut:&usedFallback];
+                {
+                    /* BOOL out-params take an int temporary in C (rule 4). */
+                    int used_fallback_raw = usedFallback ? 1 : 0;
+                    texture = (__bridge id)mglSampledCompatFallbackPlan(
+                        (__bridge void *)self, ptr, (__bridge void *)texture,
+                        expectedType, (uint32_t)expectedKind, stageTag,
+                        programName, spirvBinding, sampleProgram,
+                        &used_fallback_raw);
+                    usedFallback = used_fallback_raw ? YES : NO;
+                }
                 if (usedFallback) {
                     usedSampledCopy = NO;
                 }
-                sampler = [self materializeSampledSamplerForTexture:ptr
-                                                        textureUnit:textureUnit
-                                                    defaultSampler:sampler
-                                                      forceDefault:NO
-                                                     samplerTarget:ptr ? ptr->target
-                                                                       : 0u
-                                                       programName:programName
-                                                      spirvBinding:spirvBinding
-                                                             stage:stageTag
-                                                           texture:texture];
+                sampler = (__bridge id)mglSampledSamplerMaterialize(
+                    (__bridge void *)self, ptr, textureUnit,
+                    (__bridge void *)sampler, 0, ptr ? ptr->target : 0u,
+                    programName, spirvBinding, stageTag,
+                    (__bridge void *)texture);
                 if (mglMipDiagEnabled() && textureUnit < TEXTURE_UNITS) {
                     Sampler *glSampler =
                         MGL_STATE(ctx)->texture_samplers[textureUnit];
@@ -580,25 +577,21 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     texture = (__bridge id)mglSampledTextureViewForBaseLevel(
                         ptr, (__bridge void *)texture);
                 }
-                texture = [self applySampledCompatFallbackPlan:ptr
-                                                       texture:texture
-                                                  expectedType:expectedType
-                                                  expectedKind:expectedKind
-                                                         stage:stageTag
-                                                   programName:programName
-                                                  spirvBinding:spirvBinding
-                                                 sampleProgram:sampleProgram
-                                              usedFallbackOut:&usedFallback];
-                sampler = [self materializeSampledSamplerForTexture:ptr
-                                                        textureUnit:textureUnit
-                                                    defaultSampler:defaultSampler
-                                                      forceDefault:NO
-                                                     samplerTarget:ptr ? ptr->target
-                                                                       : 0u
-                                                       programName:programName
-                                                      spirvBinding:spirvBinding
-                                                             stage:stageTag
-                                                           texture:texture];
+                {
+                    /* BOOL out-params take an int temporary in C (rule 4). */
+                    int used_fallback_raw = usedFallback ? 1 : 0;
+                    texture = (__bridge id)mglSampledCompatFallbackPlan(
+                        (__bridge void *)self, ptr, (__bridge void *)texture,
+                        expectedType, (uint32_t)expectedKind, stageTag,
+                        programName, spirvBinding, sampleProgram,
+                        &used_fallback_raw);
+                    usedFallback = used_fallback_raw ? YES : NO;
+                }
+                sampler = (__bridge id)mglSampledSamplerMaterialize(
+                    (__bridge void *)self, ptr, textureUnit,
+                    (__bridge void *)defaultSampler, 0, ptr ? ptr->target : 0u,
+                    programName, spirvBinding, stageTag,
+                    (__bridge void *)texture);
                 if (![self applySampledRenderTargetCopyPlan:ptr
                                                     texture:&texture
                                               sampleProgram:sampleProgram
@@ -1282,119 +1275,7 @@ done:
     }
 }
 
-- (id)applySampledCompatFallbackPlan:(Texture *)ptr
-                             texture:(id)texture
-                        expectedType:(uint32_t)expectedType
-                        expectedKind:(MGLTextureDataKind)expectedKind
-                               stage:(const char *)stage
-                         programName:(GLuint)programName
-                        spirvBinding:(GLuint)spirvBinding
-                       sampleProgram:(Program *)sampleProgram
-                    usedFallbackOut:(BOOL *)usedFallbackOut
-{
-    MGLSampledTextureBindInput cin = {0};
-    mglBindingTextureFillSampledCompatInput(
-        &cin, texture ? 1 : 0,
-        texture ? mglBindingStateTextureType(texture) : 0u, expectedType,
-        !texture ||
-                mglTexturePixelFormatCompatibleWithExpectedDataKind(
-                    mglBindingStateTexturePixelFormat(texture), expectedKind)
-            ? 1
-            : 0);
-    MGLSampledTextureBindPlan cplan = {0};
-    if (mglBindingTexturePlanSampled(&cin, &cplan) != 0 ||
-        (cplan.action != MGL_ST_ACTION_TYPE_FALLBACK &&
-         cplan.action != MGL_ST_ACTION_KIND_FALLBACK)) {
-        return texture;
-    }
-    static uint64_t s_compatMismatchLogCount = 0;
-    if (mglBindingTextureRateLogHit(&s_compatMismatchLogCount, 32ull, 512ull)) {
-        mglBindingLogTexCompatMismatch(
-            cplan.action == MGL_ST_ACTION_TYPE_FALLBACK ? "TYPE" : "DATA",
-            stage, spirvBinding, programName, ptr ? ptr->name : 0u, cin.mtl_type,
-            expectedType, s_compatMismatchLogCount);
-    }
-    if (sampleProgram) {
-        char dumpReason[128];
-        snprintf(dumpReason, sizeof(dumpReason), "tex-%s-mismatch-%s-binding-%u",
-                 cplan.action == MGL_ST_ACTION_TYPE_FALLBACK ? "type" : "data",
-                 stage ? stage : "x", spirvBinding);
-        mglWriteProgramMSLDump(sampleProgram, dumpReason);
-    }
-    texture = (__bridge id)mglSampledFallbackTextureForExpectedType((__bridge void *)self, expectedType, expectedKind);
-    if (usedFallbackOut) {
-        *usedFallbackOut = YES;
-    }
-    return texture;
-}
 
-- (id)materializeSampledSamplerForTexture:(Texture *)ptr
-                              textureUnit:(GLuint)textureUnit
-                          defaultSampler:(id)defaultSampler
-                            forceDefault:(BOOL)forceDefault
-                           samplerTarget:(GLuint)samplerTarget
-                             programName:(GLuint)programName
-                            spirvBinding:(GLuint)spirvBinding
-                                   stage:(const char *)stage
-                                 texture:(id)texture
-{
-    Sampler *glSampler = (textureUnit < TEXTURE_UNITS)
-                             ? MGL_STATE(ctx)->texture_samplers[textureUnit]
-                             : NULL;
-    MGLSamplerMaterializeInput in = {0};
-    mglBindingTextureFillSamplerMaterializeInput(
-        &in, forceDefault ? 1 : 0, textureUnit < TEXTURE_UNITS ? 1 : 0,
-        glSampler ? 1 : 0, glSampler && glSampler->dirty_bits ? 1 : 0,
-        glSampler && glSampler->mtl_data ? 1 : 0,
-        ptr && ptr->params.mtl_data ? 1 : 0,
-        (stage && stage[0] == 'v') ? 1 : 0);
-    MGLSamplerMaterializePlan plan = {0};
-    if (mglBindingTexturePlanSamplerMaterialize(&in, &plan) != 0) {
-        return defaultSampler;
-    }
-    if (plan.action == MGL_SM_ACTION_USE_DEFAULT) {
-        return defaultSampler;
-    }
-    id sampler = defaultSampler;
-    const TextureParameter *params = NULL;
-    GLuint samplerName = 0u;
-    if (plan.action == MGL_SM_ACTION_USE_GL_SAMPLER && glSampler) {
-        if (plan.recreate_gl_sampler_mtl) {
-            if (glSampler->mtl_data) {
-                mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
-            }
-            GLuint target = samplerTarget
-                                ? samplerTarget
-                                : (ptr ? ptr->target : GL_TEXTURE_2D);
-            glSampler->mtl_data = (void *)CFBridgingRetain((__bridge id)mglTextureCreateSamplerForTexParam(&glSampler->params, target));
-        }
-        if (plan.clear_gl_sampler_dirty) {
-            glSampler->dirty_bits = 0;
-        }
-        sampler = (__bridge id)(glSampler->mtl_data);
-        params = &glSampler->params;
-        samplerName = glSampler->name;
-    } else if (plan.action == MGL_SM_ACTION_USE_TEX_PARAMS && ptr) {
-        sampler = (__bridge id)(ptr->params.mtl_data);
-        params = &ptr->params;
-    } else {
-        return defaultSampler;
-    }
-    if (params && mglTraceLogIsEnabled()) {
-        mglBindingLogSamplerResolve(
-            mglBindingTextureSamplerStageTag(stage), programName,
-            spirvBinding, textureUnit, plan.source_tag ? plan.source_tag : "?",
-            samplerName, params->min_filter, params->mag_filter, params->wrap_s,
-            params->wrap_t, params->min_lod, params->max_lod,
-            ptr ? ptr->name : 0u, ptr ? ptr->params.base_level : 0u,
-            ptr ? ptr->params.max_level : 0u, ptr ? ptr->width : 0u,
-            ptr ? ptr->height : 0u,
-            texture ? mglBindingStateTextureWidth(texture) : 0u,
-            texture ? mglBindingStateTextureHeight(texture) : 0u,
-            texture ? mglBindingStateTextureMipmapLevelCount(texture) : 0u);
-    }
-    return sampler;
-}
 
 - (bool)applySampledRenderTargetCopyPlan:(Texture *)ptr
                                  texture:(id *)texturePtr
@@ -1553,15 +1434,11 @@ done:
         }
         GLuint textureUnit = mglTextureUnitForSampledResource(samplerResource, mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER), spirvBinding, _FRAGMENT_SHADER);
 
-        id sampler = [self materializeSampledSamplerForTexture:NULL
-                                                   textureUnit:textureUnit
-                                               defaultSampler:defaultSampler
-                                                 forceDefault:NO
-                                                samplerTarget:(GLuint)mglRenderSamplerObjectTarget()
-                                                  programName:fragmentProgramName
-                                                 spirvBinding:spirvBinding
-                                                        stage:"fragment"
-                                                      texture:nil];
+        id sampler = (__bridge id)mglSampledSamplerMaterialize(
+            (__bridge void *)self, NULL, textureUnit,
+            (__bridge void *)defaultSampler, 0,
+            (GLuint)mglRenderSamplerObjectTarget(), fragmentProgramName,
+            spirvBinding, "fragment", NULL);
         if (sampler && spirvBinding < kMaxFragmentSamplerSlots) {
             if (!mglBindingStateQueueResourceBinding(
                     useResourceSnapshot, _bindingStateOwner,
@@ -1621,15 +1498,11 @@ done:
                 id metalSampler = defaultSampler;
                 if (arrayTexture && [self bindMTLTexture:arrayTexture]) {
                     metalTexture = (__bridge id)(arrayTexture->mtl_data);
-                    metalSampler = [self materializeSampledSamplerForTexture:arrayTexture
-                                                                 textureUnit:textureUnit
-                                                             defaultSampler:defaultSampler
-                                                               forceDefault:NO
-                                                             samplerTarget:arrayTexture->target
-                                                                programName:arrayProgram->name
-                                                               spirvBinding:metalSlot
-                                                                      stage:"vertex"
-                                                                    texture:metalTexture];
+                    metalSampler = (__bridge id)mglSampledSamplerMaterialize(
+                        (__bridge void *)self, arrayTexture, textureUnit,
+                        (__bridge void *)defaultSampler, 0, arrayTexture->target,
+                        arrayProgram->name, metalSlot, "vertex",
+                        (__bridge void *)metalTexture);
                 }
                 if (!metalTexture) {
                     metalTexture = (__bridge id)mglSampledFallbackTextureForExpectedType((__bridge void *)self, expectedType, MGLTextureDataKindFloat);

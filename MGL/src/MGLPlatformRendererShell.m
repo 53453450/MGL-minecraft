@@ -563,28 +563,6 @@ void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
     return (void *)CFBridgingRetain(isolated);
 }
 
-void *mglRendererMaterializeSampledSamplerPort(
-    void *renderer, Texture *texture, uint32_t texture_unit,
-    void *default_sampler, int force_default, uint32_t sampler_target,
-    uint32_t program_name, uint32_t spirv_binding, const char *stage,
-    void *texture_handle)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r) {
-        return NULL;
-    }
-    /* Borrowed sampler: the renderer keeps it (GL sampler object, texture
-     * parameters or the default sampler). */
-    return (__bridge void *)[r materializeSampledSamplerForTexture:texture
-                                                       textureUnit:texture_unit
-                                                   defaultSampler:(__bridge id)default_sampler
-                                                     forceDefault:force_default ? YES : NO
-                                                    samplerTarget:sampler_target
-                                                      programName:program_name
-                                                     spirvBinding:spirv_binding
-                                                            stage:stage
-                                                          texture:(__bridge id)texture_handle];
-}
 
 void *mglRendererTemporariesCreate(void)
 {

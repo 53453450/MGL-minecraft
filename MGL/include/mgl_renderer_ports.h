@@ -264,11 +264,9 @@ void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
                                                 const BufferMap *map,
                                                 void *source,
                                                 uint64_t required_length);
-void *mglRendererMaterializeSampledSamplerPort(
-    void *renderer, Texture *texture, uint32_t texture_unit,
-    void *default_sampler, int force_default, uint32_t sampler_target,
-    uint32_t program_name, uint32_t spirv_binding, const char *stage,
-    void *texture_handle);
+/* mglRendererMaterializeSampledSamplerPort is gone: the sampler materialize
+ * leaf is C now (mglSampledSamplerMaterialize, mgl_sampled_sampler.h) and its
+ * callers link straight to it (P0-1, log 151). */
 
 /* === draw / tessellation host entries (phase 2) ==========================
  * The remaining calls mgl_draw_metal_port.m makes into renderer methods, so

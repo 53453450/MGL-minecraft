@@ -41,15 +41,7 @@
  * vertex / fragment spine and the compute texture loop (O5.2); `stage` only
  * feeds the decision "vertex requires texture parameters" and the trace tag
  * (see mglBindingTextureSamplerStageTag). */
-- (id)materializeSampledSamplerForTexture:(Texture *)ptr
-                              textureUnit:(GLuint)textureUnit
-                          defaultSampler:(id)defaultSampler
-                            forceDefault:(BOOL)forceDefault
-                           samplerTarget:(GLuint)samplerTarget
-                             programName:(GLuint)programName
-                            spirvBinding:(GLuint)spirvBinding
-                                   stage:(const char *)stage
-                                 texture:(id)texture;
+/* materializeSampledSamplerForTexture: is C now (mglSampledSamplerMaterialize). */
 
 @end
 
