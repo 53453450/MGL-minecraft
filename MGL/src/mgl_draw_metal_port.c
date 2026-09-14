@@ -44,6 +44,7 @@ static inline bool mglVboRangeValidationEnabled(void)
 
 #include "mgl_draw_cull.h"
 #include "mgl_stage_copy_back.h"
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_compute_bind.h"    /* compute buffer binding (was a method pair) */
@@ -1858,7 +1859,7 @@ void mglDrawHostApplyPolygonOffset(void *renderer, GLenum mode)
 
 bool mglDrawHostEnsureRasterEncoder(void *renderer)
 {
-    return mglRendererEnsureRasterEncoderForDrawPort(renderer) ? true : false;
+    return mglRenderPassEnsureRasterEncoderForDraw(renderer) ? true : false;
 }
 
 bool mglDrawHostValidateArrayVertexInputs(void *renderer, GLMContext ctx,

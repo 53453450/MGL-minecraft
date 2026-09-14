@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零六刀** + trace 清零 后；第 68–138 轮见 §0.24/§0.26–§0.95；（第 134–136 轮五次尝试回退；第 137/138 轮按依赖拓扑连续做出第一百零六/一百零七刀，`+RenderPass.m` 385 → 359）
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零六刀** + trace 清零 后；第 68–139 轮见 §0.24/§0.26–§0.96；（第 134–136 轮五次尝试回退；第 137/138/139 轮按依赖拓扑做出第一百零六/一百零七/一百零八刀，`+RenderPass.m` 385 → 359、端口 35 → 34）
 **第 113–120 轮（第八十三～九十刀）把 `+Blit.m` 整文件删除（6 → 5）；第 121/122 轮（第九十一/九十二刀）用「单方法二分 + 单例探针」破解采样簇阻塞并连续两刀一次通过**）**：
-文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 19,043**、
+文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 19,039**、
 ObjC 语法 **2,268 → 1,063**、词汇 **4,353 → 2,113**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮起改从 `+Blit.m` 推进**；
 **shim：43 → 31 个端口 / 唯一壳 TU 2,033 行 / 288 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；**P0-1 第八十三刀（`+Blit.m` 的 `mtlCopyTexSubImageViaTextureBlit:` 转 C，见第 143 条）0 退役 0 新增**——入口全部复用既有端口与 twin；**P0-1 第八十四刀（两个 copyImageSubData 叶子转 C，见第 144 条）0 退役、新增 1**——`synchronizeRenderPassForTextureReadback:` 尚无 C 入口，故新增该端口（T4 如实记 +1），`_capability` 靠 `areas.core->capability` 零结构改动解决；**P0-1 第八十五刀（后置回读叶子 + copyImageSubData dispatcher 一起转 C，见第 145 条）0 退役、新增 1**——唯一新增的是 `endRenderPassIfFramebufferChangedForNonDraw:` 的端口，另外两个桥（`ctx = glm_ctx` 的 `mglPlatformShellSetContext`、`bindMTLTexture` 的 `mglRendererBindMTLTexture`）都是**既有**入口；**P0-1 第八十六刀（blitFramebuffer 附着解析叶子转 C，见第 146 条）0 退役、新增 3**——`_drawable` 是 property 宏（`self.drawable`），没有 core 字段可借，故必须补 `mglNextDrawable` / `mglDrawableTexture` / `mglEnsureLayerDrawableSizeAtLeastWidth` 三个端口；**P0-1 第八十七刀（scaled color blit 叶子转 C，见第 147 条）0 退役 0 新增**——并顺带补齐 12 个 render-encoder twin；**P0-1 第八十八刀（`mtlBlitFramebuffer:` dispatcher 转 C，见第 148 条）0 退役 0 新增**——被调方法全在 C 里，`+Blit.m` 只剩 68 语法；**P0-1 第八十九刀（`mtlCopyTexSubImage:` 转 C，见第 149 条）0 退役、新增 2**——`mtlReadDrawable` 与 `copyTextureUploadWithDedicatedCommandBuffer` 两个桥，端口头首次引入 `mgl_region_value.h`；**P0-1 第九十刀（整文件删除 `MGLRenderer+Blit.m`，见第 150 条）0 退役、新增 1**——`currentRenderPassUsesTexture:` 的端口，其余三块（采样拷贝修复入口、`mglRendererBlitFramebuffer` 后端入口、27 个 helper 与文件头）随文件消失；**P0-1 第九十一刀（采样簇 compat + sampler 转 C，见第 151 条）退役 1、新增 0**——`mglRendererMaterializeSampledSamplerPort` 随目标方法 C 化一起删除，C 侧直调 `mglSampledSamplerMaterialize`；**P0-1 第九十二刀（`applySampledRenderTargetCopyPlan:` 转 C，见第 152 条）0 退役 0 新增**；**P0-1 第九十三刀（`bindSeparateSamplersAndArrayTextures:` 转 C，见第 153 条）0 退役 0 新增**；**P0-1 第九十四刀（`recoverFragmentSampledDepthTexture:` 转 C，见第 154 条）0 退役 0 新增**——第 142 条的头号嫌疑方法整体 C 化后探针 8/8，嫌疑排除；**P0-1 第九十五刀（`emitSampledDiagPortsForProgram:` 转 C，见第 155 条）0 退役、新增 1**——目标方法带 `NSString *` 参数，故新增一个"只收 C 字符串"的端口；**P0-1 第九十六刀（`bindSampledTexturesForStage:` 整块转 C，见第 156 条）0 退役 0 新增、净 −45 语法**——前六刀引入的 20 处调用点桥接随方法整体搬走而消失；**P0-1 第九十七刀（整文件删除 `MGLRenderer+BindingState.m`，见第 157 条）退役 1、新增 0**——`mglRendererBindTexturesToCurrentRenderEncoderPort` 随目标方法 C 化删除；**P0-1 第九十八刀（copy-back 列表两个 helper 转 C，见第 158 条）退役 2、新增 0**——`mglRendererClearStageBindingCopyBacksPort` / `…CopyBackPort` 连同 13 处 C 调用点一起改直调；**P0-1 第九十九刀（copy-back 的 record + flush 转 C，见第 159 条）退役 2、新增 0、净 −34 语法**——areas 首次加 `render_pass_manager` 字段（零端口）；**P0-1 第一百刀（两个对外采样符号转 C + 新建 `mgl_renderer_host` TU，见第 160 条）0 退役 0 新增、净 −2 语法**；**P0-1 第一百零一刀（再搬 3 个对外符号，见第 161 条）0 退役 0 新增、净 −3 语法**；**P0-1 第一百零二刀（watchdog 转 C，见第 162 条）0 退役 0 新增、净 −1 语法**；**P0-1 第一百零三刀（`mglEnsureNewCommandBuffer` 转 C，见第 163 条）0 退役 0 新增、净 −3 语法**；`MGLRenderer*.m` **34,604 → 24,779**）。
@@ -6294,6 +6294,40 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 
 **下一步**：按上面 1→2→3 推进 `+RenderPass.m`；同时可用"双份 twin"路线开 `+Texture.m`。
 
+169. **第 139 轮（P0-1 第一百零八刀）：退役 `mglRendererEnsureRasterEncoderForDrawPort`——第 34 条"顺手收尾"的兑现**：
+     ① **为什么这一刀是"零语法收益"但仍值得做**：上一刀把 `ensureRasterEncoderForDraw` 转成 C 后，
+     那个端口就**只剩转发**（`return mglRenderPassEnsureRasterEncoderForDraw(renderer);`）。
+     按第 34 条，**等它唯一的 C 调用者（`mgl_draw_metal_port.c` 1 处）改直调时再退役**——本刀就是这个时机：
+     调用者改为 `mglRenderPassEnsureRasterEncoderForDraw(renderer)`，端口声明与壳实现一起删除。
+     **端口面 35 → 34**（净退役 1），壳 −4 行；**ObjC 语法数不变（1,063）**——所以本刀按 §0.04 的 T4 口径
+     只记"端口净减 1"，不记语法收益。
+     ② **本轮同时勘明了 `+RenderPass.m` 的"零收益区"**：对它做四类扫描后，`miss=0 且无 @try/NSString/NSLog`
+     的干净段共 13 个（合计 **20 语法**），但**逐段算净收益都是 ≤0**：
+     - `endRenderPassIfFramebufferChangedForNonDraw:`（3 语法 / 44 行）：selfs 两端口都有 ✅，
+       但 `_drawable`（property）要新端口、调用点 4 处 ⇒ **净 −4**；
+     - `mglRenderPassMatchesFramebufferImpl:`（22 语法 / 261 行）：4 个 static 依赖有 **29 处调用点** ⇒ 走 twin 要
+       360 行（超单轮）；直接搬 ⇒ **净 −7**；
+     - `insertPipelineStateIntoCacheWithWords:`（3 语法 / 32 行）：`[_pipelineCache storePipeline:…]` 要端口；
+     - `endRenderEncoding`（1 语法）：**16 调用点**（第 165 条已证伪）。
+     **结论：`+RenderPass.m` 的"捡漏期"结束了**——剩下的段落要么依赖网深、要么调用点多。
+     ③ **因此下一阶段的正确做法（第三十五条）**：**转"双份 twin 铺设 + 整块方法搬运"的多轮刀**，
+     而不是继续找单轮小刀。具体到 `+RenderPass.m`：先为用户最多的 5 个 static
+     （`mglRenderPassTextureFromSnapshot` 10 处 / `mglRenderPassDefaultDrawBufferAttachment` 7 /
+     `mglRenderPassGetPersistentState` 7 / `mglRenderPassAttachmentStateFromSnapshot` 4 /
+     `mglRenderPassIdentitySnapshot` 1）在 C TU 建同名 twin，`.m` 原样保留 ⇒ **调用点零改动**，
+     然后 `mglRenderPassMatchesFramebufferImpl:` 就能整块搬（净 +22）。
+     `+Texture.m` 同理（14 个 static、156 调用点）。
+     ④ **度量**：端口 **35 → 34**；壳 TU **2,065 → 2,061 行**（语法 292 不变）；
+     `+RenderPass.m` 与另外两个文件不变；全库 **19,043 → 19,039 行（−4）**、
+     语法 **1,063（不变）**、词汇 **2,113（不变）**；文件数 **4**、空 TU **0**。
+     ⑤ **验证（四件套全绿）**：`make -j8` **0 error**（仓库根）；单例探针 **4/4**；
+     `make test-all` **0**（92/0/2/94）；**CTS 七簇 diff 全空**（58/1/0/59/13/39/4，各簇 `completed == total`）；
+     A/B（新库 vs `468e669`）两臂 default **4981/4981**、flushy **5514/5514** 逐行一致、
+     stderr 多重集 **307/307**。
+     ⑥ **两条流程坑（本轮踩到，记下来）**：**(a)** `make test-all` 不能包在 `timeout …` 里——macOS 没有 GNU
+     `timeout`，会得到 `EXIT=127`；**(b)** 用 shell 超时杀掉一条"先 test-all 后 nohup 批测"的复合命令，
+     会让批测**根本没启动**（日志文件都不存在），误判成"七簇全 DIFF"。**批测启动后要立刻确认日志文件存在**。
+
 ### 0.95 第 138 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.94**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 19,043 行 / 1,063 语法 / 2,113 词汇**；
@@ -6321,3 +6355,33 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
     配套：**结束一刀时不要急着删刚变"纯转发"的端口**，等它的 C 调用者也改直调时一起退役（第 168 条 ④）。
 
 **下一步**：做 `mglRenderPassMatchesFramebufferImpl:`（纯机械 22 语法），再评估 `+Texture.m` 的 twin 路线。
+
+### 0.96 第 139 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.95**）
+
+**当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 19,039 行 / 1,063 语法 / 2,113 词汇**；
+壳 TU **2,061 行 / 292 语法**（上限 2,400）；端口面 **34 个**；`make test-all` **0**；
+CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第一百零八刀的实测值）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` **359/541/6,640** · `+Texture.m` **279/1,052/6,248** · `MGLRenderer.m` **133/228/4,090** ·
+壳 `MGLPlatformRendererShell.m` **292/292/2,061**。
+
+**下一阶段的做法（第 169 条 ③ 的结论）：twin 铺设 + 整块搬运**
+1. **`+RenderPass.m`**：先为 5 个高频 static 建 **C TU 同名 twin**（`.m` 原样保留 ⇒ 调用点零改动）：
+   `mglRenderPassTextureFromSnapshot`(10 调用点) / `mglRenderPassDefaultDrawBufferAttachment`(7) /
+   `mglRenderPassGetPersistentState`(7) / `mglRenderPassAttachmentStateFromSnapshot`(4) /
+   `mglRenderPassIdentitySnapshot`(1)；铺完后 `mglRenderPassMatchesFramebufferImpl:`（22 语法 / 261 行）
+   可整块搬（净 +22）。
+2. **`+Texture.m`**：同法为 14 个 static 建 twin（156 调用点），再自上而下转方法。
+3. 仍可做的"顺手收尾"：查还有哪些端口已变成**纯转发到 C**（本刀退役了 1 个），逐个把 C 调用者改直调后退役。
+
+**规矩表（§0.62/§0.65–§0.95 三十四条仍然有效）＋ 本轮第三十五条**：
+35. **"捡漏期"结束后要用 twin 铺设，而不是继续找单轮小刀**（第 169 条 ②③）：
+    当一个文件里"干净段"的净收益全部 ≤0（自检方法：四类扫描后逐段套
+    `净收益 = 体语法 − 调用点 − 端口/常量成本`，全为负），就说明**该进入"twin 铺设 + 整块搬运"模式**：
+    先在 C TU 建**同名 twin**（原文件保留自己那份，调用点零改动），铺完依赖后再整块搬方法。
+    这样每刀可以只铺 1–3 个 twin（行数可控、四件套可验证），**多轮累积成一次大刀**。
+    配套流程纪律：`make test-all` 不要包 `timeout`（macOS 无 GNU timeout，会得到 127）；
+    复合命令被超时杀掉时，**要确认后台批测真的启动了**（检查日志文件是否存在）。
+
+**下一步**：按上面 1 开始铺 `+RenderPass.m` 的 5 个 twin（每刀 2–3 个 + 四件套）。

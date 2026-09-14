@@ -326,7 +326,8 @@ int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
     size_t source_layer_stride, size_t layer_count, MGLSizeValue source_size,
     void *texture, size_t destination_slice, size_t destination_level,
     MGLOriginValue destination_origin, const char *reason);
-int mglRendererEnsureRasterEncoderForDrawPort(void *renderer);
+/* mglRendererEnsureRasterEncoderForDrawPort is gone: its target is C now
+ * (mglRenderPassEnsureRasterEncoderForDraw, log 169). */
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,
                                                   const char *label);

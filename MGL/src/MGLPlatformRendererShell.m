@@ -448,10 +448,6 @@ int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
                : 0;
 }
 
-int mglRendererEnsureRasterEncoderForDrawPort(void *renderer)
-{
-    return mglRenderPassEnsureRasterEncoderForDraw(renderer);
-}
 
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,
