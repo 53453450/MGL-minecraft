@@ -67,10 +67,11 @@ static void *mglPdTextureCreateTexture(
     return NULL;
 }
 
-/* Twin of the .m's mglTextureReplaceRegion.  The .m raised NSException on
- * failure so the caller's @try/@catch could report it; the C twin reports the
- * failure instead and every caller maps it to the same "upload failed" path. */
-static int mglPdTextureReplaceRegion(void *texture, MGLRegionValue region,
+/* Twin of the .m's mglTextureReplaceRegion, exposed to the other C hosts
+ * (log 183).  The .m raised NSException on failure so the caller's @try/@catch
+ * could report it; this twin reports the failure instead and every caller maps
+ * it to the same "upload failed" path. */
+int mglTextureReplaceRegionValue(void *texture, MGLRegionValue region,
                                      uint64_t level, uint64_t slice,
                                      const void *bytes, uint64_t bytesPerRow,
                                      uint64_t bytesPerImage, int useSlice)
@@ -331,7 +332,7 @@ int mglTextureUploadPackedDepthStencilStencilPlane(
         stencilViewRaw) {
         /* The .m wrapped the upload in @try/@catch and only logged the failure;
          * the C twin reports it instead (see mglPdTextureReplaceRegion). */
-        uploaded = mglPdTextureReplaceRegion(
+        uploaded = mglTextureReplaceRegionValue(
             stencilViewRaw, mglTextureRegion2D(xorigin, yorigin, width, height),
             0u, 0u, stencilBytes, stencilBytesPerRow, stencilBytesPerImage, 0);
         mglReleaseMetalObjNoNull(stencilViewRaw);
@@ -363,7 +364,7 @@ static int mglPdTexelBufferTryBody(void *renderer, void *rawCtx)
     (void)renderer;
     ctx->created = mglPdTextureCreateTexture(&ctx->descriptor);
     if (ctx->created) {
-        if (!mglPdTextureReplaceRegion(
+        if (!mglTextureReplaceRegionValue(
                 ctx->created,
                 mglTextureRegion2D(0, 0, ctx->tex_width, ctx->tex_height), 0, 0,
                 ctx->upload_bytes, ctx->bytes_per_row, 0, 0)) {

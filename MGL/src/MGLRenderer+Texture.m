@@ -20,6 +20,7 @@
 #import "MGLRenderer+Texture_Private.h"
 #import "mgl_texture_readback_ops.h" /* the readback family is C now (log 181) */
 #import "mgl_texture_create_ops.h" /* completeness / packed-DS upload / texel buffer (log 182) */
+#import "mgl_texture_upload_ops.h" /* slice upload + dedicated CB copy (log 183) */
 #include "mgl_env_flag.h"
 #include "mgl_render.h"
 #include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
@@ -518,402 +519,6 @@ static void mglTextureCopyTextureToBuffer(
 
 @implementation MGLRenderer (Texture)
 
-- (bool)copyTextureUploadWithDedicatedCommandBuffer:(id)sourceBuffer
-                                        sourceOffset:(NSUInteger)sourceOffset
-                                   sourceBytesPerRow:(NSUInteger)sourceBytesPerRow
-                                 sourceBytesPerImage:(NSUInteger)sourceBytesPerImage
-                                  sourceLayerStride:(NSUInteger)sourceLayerStride
-                                          layerCount:(NSUInteger)layerCount
-                                           sourceSize:(MGLSizeValue)sourceSize
-                                            toTexture:(id)texture
-                                     destinationSlice:(NSUInteger)destinationSlice
-                                     destinationLevel:(NSUInteger)destinationLevel
-                                    destinationOrigin:(MGLOriginValue)destinationOrigin
-                                               reason:(const char *)reason
-{
-    MGL_ASSERT_GL_THREAD();
-    if (!sourceBuffer || !texture || !_commandQueue || layerCount == 0u ||
-        sourceBytesPerRow == 0u || sourceBytesPerImage == 0u ||
-        sourceSize.width == 0u || sourceSize.height == 0u ||
-        sourceSize.depth == 0u ||
-        (layerCount > 1u && sourceLayerStride == 0u)) {
-        NSLog(@"MGL ERROR: dedicated texture upload prerequisites missing (source=%p texture=%p queue=%p)",
-              sourceBuffer, texture, _commandQueue);
-        return false;
-    }
-
-    if (!kMGLUseDedicatedTextureUploadCommandBuffer) {
-        /*
-         * Texture uploads are GL commands and must stay ordered with draws in the
-         * same context.  Committing a standalone upload command buffer here can
-         * leapfrog an open render command buffer, so encode the blit into the
-         * current command buffer after closing the active render encoder.
-         */
-        [self endRenderEncoding];
-
-        if (![self ensureWritableCommandBuffer:reason ? reason : "texture_upload"]) {
-            NSLog(@"MGL ERROR: failed to obtain current command buffer for %s",
-                  reason ? reason : "texture_upload");
-            return false;
-        }
-
-        if (mglRenderEncodeTextureUploadLayersForCommandBufferOwner(
-                _renderPassManager->state->currentCommandBufferOwner,
-                (__bridge void *)sourceBuffer, sourceOffset,
-                sourceBytesPerRow, sourceBytesPerImage, sourceLayerStride,
-                sourceSize.width, sourceSize.height, sourceSize.depth,
-                (__bridge void *)texture, destinationSlice, layerCount,
-                destinationLevel, destinationOrigin.x,
-                destinationOrigin.y, destinationOrigin.z) != 0) {
-            NSLog(@"MGL ERROR: C++ ordered upload encode failed (%s)",
-                  reason ? reason : "texture_upload");
-            mglRendererRecordGPUError((__bridge void *)self);
-            return false;
-        }
-
-        return true;
-    }
-
-    id uploadCB = mglTextureCreateCommandBuffer(_commandQueue);
-    if (!uploadCB) {
-        NSLog(@"MGL ERROR: failed to create dedicated upload command buffer for %s",
-              reason ? reason : "texture_upload");
-        mglRendererRecordGPUError((__bridge void *)self);
-        return false;
-    }
-
-    if (reason) {
-        NSString *label = [NSString stringWithFormat:@"MGL.%s", reason];
-        (void)mglRenderSetCommandBufferLabel(
-            (__bridge void *)uploadCB, label.UTF8String);
-    } else {
-        (void)mglRenderSetCommandBufferLabel(
-            (__bridge void *)uploadCB, "MGL.texture_upload");
-    }
-
-    if (mglRenderEncodeTextureUploadLayers(
-            (__bridge void *)uploadCB, (__bridge void *)sourceBuffer,
-            sourceOffset, sourceBytesPerRow, sourceBytesPerImage,
-            sourceLayerStride,
-            sourceSize.width, sourceSize.height, sourceSize.depth,
-            (__bridge void *)texture, destinationSlice, layerCount,
-            destinationLevel, destinationOrigin.x,
-            destinationOrigin.y, destinationOrigin.z) != 0) {
-        NSLog(@"MGL ERROR: C++ dedicated upload encode failed (%s)",
-              reason ? reason : "texture_upload");
-        mglRendererRecordGPUError((__bridge void *)self);
-        return false;
-    }
-
-    dispatch_semaphore_t completionSemaphore = kMGLSynchronizeTextureUploads
-        ? dispatch_semaphore_create(0)
-        : NULL;
-    __block BOOL uploadError = NO;
-    __weak typeof(self) weakSelf = self;
-    mglTextureAddCommandBufferCompletion(
-        (__bridge void *)uploadCB,
-        ^(const MGLRenderCommandBufferState *uploadState) {
-        if (uploadState->has_error) {
-            uploadError = YES;
-            NSLog(@"MGL ERROR: dedicated upload command buffer failed (%s): %s",
-                  reason ? reason : "texture_upload",
-                  mglRenderCommandBufferErrorDescription(uploadState));
-            mglRendererRecordGPUError((__bridge void *)weakSelf);
-        }
-
-        if (completionSemaphore) {
-            dispatch_semaphore_signal(completionSemaphore);
-        }
-    });
-
-    mglTextureCommitCommandBuffer(uploadCB);
-
-    if (!kMGLSynchronizeTextureUploads) {
-        // Keep uploads ordered on the same queue but avoid stalling the render thread.
-        return true;
-    }
-
-    dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW,
-                                             (int64_t)(kMGLTextureUploadWaitTimeoutSeconds * NSEC_PER_SEC));
-    if (dispatch_semaphore_wait(completionSemaphore, deadline) != 0) {
-        NSLog(@"MGL WARNING: dedicated upload wait timed out (%s), continuing asynchronously",
-              reason ? reason : "texture_upload");
-        return true;
-    }
-
-    return !uploadError;
-}
-
-- (bool)uploadTextureSliceViaBlit:(id)texture
-                          texName:(GLuint)texName
-                         texTarget:(GLenum)texTarget
-                            bytes:(const void *)bytes
-                      bytesPerRow:(NSUInteger)bytesPerRow
-                    bytesPerImage:(NSUInteger)bytesPerImage
-                            width:(NSUInteger)width
-                           height:(NSUInteger)height
-                            depth:(NSUInteger)depth
-                            level:(NSUInteger)level
-                            slice:(NSUInteger)slice
-{
-    if (!texture || !bytes || bytesPerRow == 0 || bytesPerImage == 0 || width == 0) {
-        return false;
-    }
-
-
-    if (mglRendererShouldSkipGPUOperations((__bridge void *)self)) {
-        NSLog(@"MGL AGX: Skipping texture upload during recovery");
-        return false;
-    }
-
-    uint32_t textureType = mglTextureInfo(texture).texture_type;
-    MGLRenderTextureUploadPlan uploadPlan = {0};
-    if (mglRenderBuildTextureUploadPlan(
-            (uint32_t)texTarget, (uint32_t)textureType,
-            (uint32_t)mglTextureInfo(texture).usage, (uint32_t)mglTextureInfo(texture).pixel_format,
-            MGLCapabilityHasBug(&_capability,
-                                MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB) ? 1 : 0,
-            width, height, depth, bytesPerRow, bytesPerImage, level, slice,
-            &uploadPlan) != 0) {
-        NSLog(@"MGL WARNING: Rejecting invalid texture upload plan (tex=%u target=0x%x level=%lu slice=%lu)",
-              (unsigned)texName, (unsigned)texTarget, (unsigned long)level,
-              (unsigned long)slice);
-        return false;
-    }
-
-    if (mglTraceLogIsEnabled() &&
-        mglRenderPixelFormatIsPackedDepthStencil(
-            (uint32_t)mglTextureInfo(texture).pixel_format) &&
-        (mglRenderTextureTargetIsArrayOr3D((uint32_t)texTarget)) &&
-        bytesPerRow >= 16) {
-        const uint8_t *probe = (const uint8_t *)bytes;
-        mglTraceLog("TEXTURE_UPLOAD_DS tex=%u target=0x%x fmt=%lu slice=%lu level=%lu size=%lux%lu bpr=%lu bpi=%lu first=%02x %02x %02x %02x %02x %02x %02x %02x next=%02x %02x %02x %02x %02x %02x %02x %02x",
-                    (unsigned)texName, (unsigned)texTarget,
-                    (unsigned long)mglTextureInfo(texture).pixel_format,
-                    (unsigned long)slice, (unsigned long)level,
-                    (unsigned long)width, (unsigned long)height,
-                    (unsigned long)bytesPerRow, (unsigned long)bytesPerImage,
-                    probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7],
-                    probe[8], probe[9], probe[10], probe[11], probe[12], probe[13], probe[14], probe[15]);
-    }
-
-    if (textureType == MGLTextureTypeCube || textureType == MGLTextureTypeCubeArray) {
-        static uint64_t s_cubeUploadLogs = 0;
-        uint64_t hit = ++s_cubeUploadLogs;
-        if (hit <= 4ull || (hit % 2048ull) == 0ull) {
-            NSLog(@"MGL CUBE UPLOAD tex=%u glTarget=0x%x face=%lu slice=%lu level=%lu origin=(0,0,0) size=%lux%lux%lu bpr=%lu bpi=%lu ptr=%p",
-                  texName,
-                  texTarget,
-                  (unsigned long)slice,
-                  (unsigned long)slice,
-                  (unsigned long)level,
-                  (unsigned long)width,
-                  (unsigned long)uploadPlan.normalized_height,
-                  (unsigned long)uploadPlan.copy_depth,
-                  (unsigned long)bytesPerRow,
-                  (unsigned long)uploadPlan.normalized_bytes_per_image,
-                  bytes);
-        }
-    }
-
-    const uint32_t uploadRoute = uploadPlan.route;
-
-    /* Shared packed depth/stencil textures can be updated directly for the
-     * depth plane.  AGX requires a separate X32_Stencil8 view upload for the
-     * stencil plane, using a 2D view over the selected array slice. */
-    if (mglRenderPixelFormatIsPackedDepthStencil(
-            (uint32_t)mglTextureInfo(texture).pixel_format) &&
-        mglTextureInfo(texture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE) {
-        bool uploaded = false;
-        @try {
-            mglTextureReplaceRegion(texture,
-                                    mglTextureRegion2D(0, 0, width, uploadPlan.normalized_height),
-                                    level, slice, bytes, bytesPerRow,
-                                    uploadPlan.normalized_bytes_per_image, YES);
-            uploaded = true;
-        } @catch (NSException *exception) {
-            NSLog(@"MGL WARNING: depth/stencil replaceRegion upload failed tex=%u: %@",
-                  (unsigned)texName, exception.reason);
-        }
-        if (uploaded && bytesPerRow >= width * 5u) {
-            uploaded = mglTextureUploadPackedDepthStencilStencilPlane(
-                (__bridge void *)texture, texName, bytes, width,
-                uploadPlan.normalized_height, bytesPerRow, level, slice, 0u,
-                0u);
-        }
-        return uploaded;
-    }
-
-    /* Shared 2D array uploads via replaceRegion: the blit path can leave array
-     * slices unpopulated on some AGX drivers when uploading CPU data during
-     * initial texture creation.  Shared storage is safe here because bind
-     * happens before the first draw that samples this texture. */
-    if (textureType == MGLTextureType2DArray &&
-        mglTextureInfo(texture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE) {
-        @try {
-            mglTextureReplaceRegion(
-                texture,
-                mglTextureRegion2D(0, 0, width, uploadPlan.normalized_height),
-                uploadPlan.destination_level, uploadPlan.destination_slice,
-                bytes, bytesPerRow, uploadPlan.normalized_bytes_per_image, YES);
-            return true;
-        } @catch (NSException *exception) {
-            NSLog(@"MGL WARNING: 2D array replaceRegion upload failed (tex=%u level=%lu slice=%lu): %@",
-                  (unsigned)texName, (unsigned long)level,
-                  (unsigned long)slice, exception.reason);
-            return false;
-        }
-    }
-
-    /* 1D texture upload via replaceRegion branch:
-     * - 1D textures are a low-frequency update path; replaceRegion is safe in this scenario;
-     * - Before entering this function, the caller has already flushed CPU-side deferred
-     *   draws via mglFlushPendingDrawsBeforeTextureWrite, avoiding ordering races between
-     *   the upload and uncommitted render command buffers;
-     * - Only available for shared storage; Private storage (e.g. MSAA) must fall back to the blit path. */
-    if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_1D) {
-        @try {
-            MGLRegionValue region = uploadPlan.replace_region_dimension == 1u
-                ? mglTextureRegion1D(0, width)
-                : mglTextureRegion2D(0, 0, width,
-                                  uploadPlan.normalized_height);
-            mglTextureReplaceRegion(
-                texture, region, uploadPlan.destination_level,
-                uploadPlan.destination_slice, bytes, bytesPerRow,
-                uploadPlan.normalized_bytes_per_image,
-                uploadPlan.replace_use_slice != 0u);
-            if (mglTraceLogIsEnabled() &&
-                mglTextureInfo(texture).pixel_format == MGLPixelFormatR8Unorm &&
-                width > 0) {
-                const uint8_t *first = (const uint8_t *)bytes;
-                mglTraceLog("TEXTURE_UPLOAD_1D_REPLACE tex=%u target=0x%x mtlType=%lu size=%lux%lu bpr=%lu bpi=%lu first=%u",
-                            (unsigned)texName,
-                            (unsigned)texTarget,
-                            (unsigned long)textureType,
-                            (unsigned long)width,
-                            (unsigned long)uploadPlan.normalized_height,
-                            (unsigned long)bytesPerRow,
-                            (unsigned long)uploadPlan.normalized_bytes_per_image,
-                            first ? first[0] : 0u);
-            }
-            return true;
-        } @catch (NSException *exception) {
-            NSLog(@"MGL WARNING: 1D texture replaceRegion upload failed, falling back to blit (tex=%u level=%lu slice=%lu): %@",
-                  (unsigned)texName,
-                  (unsigned long)level,
-                  (unsigned long)slice,
-                  exception.reason);
-        }
-    }
-
-    /* 3D texture upload via replaceRegion branch:
-     * - 3D uses replaceRegion to work around the AGX driver's copyFromBuffer:toTexture: slice OOB
-     *   assertion (triggered even when destinationSlice=0);
-     *   Driver bug tracked via MGLCapabilityHasBug(MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB).
-     * - Metal requires bytesPerImage for 3D replaceRegion uploads, so padded
-     *   depth planes are repacked and uploaded with the tight image stride.
-     * - Only shared storage supports replaceRegion.  Do not fall back to the
-     *   known-bad copyFromBuffer path while the AGX bug marker is active.
-     * - The route already rejects private storage while the bug marker is up;
-     *   reaching this branch means the upload is shared and must use
-     *   replaceRegion (never the known-bad blit). */
-    if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
-        const void *replaceBytes = bytes;
-        void *tightlyPackedBytes = NULL;
-        if (uploadPlan.requires_repack) {
-
-            tightlyPackedBytes = mglRenderTextureRepackDepthPlanes(
-                bytes, uploadPlan.normalized_bytes_per_image,
-                uploadPlan.expected_bytes_per_image, uploadPlan.copy_depth);
-            if (!tightlyPackedBytes) {
-                return false;
-            }
-            replaceBytes = tightlyPackedBytes;
-        }
-
-        @try {
-            MGLRegionValue region = mglTextureRegion3D(
-                0, 0, 0, width, uploadPlan.normalized_height,
-                uploadPlan.copy_depth);
-            mglTextureReplaceRegion(
-                texture, region, uploadPlan.destination_level,
-                uploadPlan.destination_slice, replaceBytes, bytesPerRow,
-                uploadPlan.expected_bytes_per_image, YES);
-            free(tightlyPackedBytes);
-            return true;
-        } @catch (NSException *exception) {
-            free(tightlyPackedBytes);
-            NSLog(@"MGL WARNING: 3D texture replaceRegion upload failed (tex=%u level=%lu): %@",
-                  (unsigned)texName, (unsigned long)level,
-                  exception.reason);
-            return false;
-        }
-    }
-
-    /* 3D + Private while the AGX copyFromBuffer workaround is required:
-     * rejected by the C++ route (blit is known-bad and replaceRegion does
-     * not support private storage). */
-    if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REJECT) {
-        NSLog(@"MGL WARNING: Rejecting private 3D upload while AGX copyFromBuffer workaround is required (tex=%u level=%lu)",
-              (unsigned)texName, (unsigned long)level);
-        return false;
-    }
-
-    /* 2D / 2DArray / Cube texture upload via blit path (dedicated CB + completion handler):
-     * - replaceRegion must not be used: when the texture is being sampled by an in-flight
-     *   command buffer, replaceRegion's CPU direct writes are not subject to GPU-side
-     *   ordering constraints, causing data races with in-flight sampling draws (this
-     *   previously caused Minecraft GUI item rendering corruption);
-     * - The blit path is required to guarantee GPU-side ordering: copyTextureUploadWithDedicatedCommandBuffer
-     *   calls endRenderEncoding to close the current render encoder, and encodes
-     *   copyFromBuffer:toTexture: on a dedicated CB, with the Metal command queue
-     *   guaranteeing submission order relative to existing render CBs;
-     * - The 1D/3D branches do not hit this precondition (low-frequency or driver bug
-     *   workaround) and have already returned earlier. */
-    void *stagingOwner = NULL;
-    void *borrowedStagingBuffer = NULL;
-    __unsafe_unretained id uploadBuffer = nil;
-    if (mglRenderCreateTextureStagingOwner(
-            bytes, uploadPlan.buffer_size, MGL_TEXTURE_RESOURCE_STORAGE_SHARED,
-            &stagingOwner, &borrowedStagingBuffer) == 0 &&
-        stagingOwner && borrowedStagingBuffer) {
-        uploadBuffer = (__bridge id)borrowedStagingBuffer;
-    }
-    if (!uploadBuffer) {
-        mglRenderDestroyTextureStagingOwner(&stagingOwner);
-        NSLog(@"MGL WARNING: Failed to allocate upload buffer for texture blit");
-        return false;
-    }
-
-    bool uploaded = [self copyTextureUploadWithDedicatedCommandBuffer:uploadBuffer
-                                                         sourceOffset:0
-                                                    sourceBytesPerRow:bytesPerRow
-                                                  sourceBytesPerImage:uploadPlan.normalized_bytes_per_image
-                                                   sourceLayerStride:0
-                                                           layerCount:1
-                                                            sourceSize:mglTextureSize(width, uploadPlan.normalized_height, uploadPlan.copy_depth)
-                                                             toTexture:texture
-                                                      destinationSlice:uploadPlan.destination_slice
-                                                      destinationLevel:uploadPlan.destination_level
-                                                     destinationOrigin:mglTextureOrigin(0, 0, 0)
-                                                                reason:"texture_upload_blit"];
-    /* The encoded blit retains its source resource until command-buffer
-     * completion; release the C++ staging owner as soon as encoding ends. */
-    mglRenderDestroyTextureStagingOwner(&stagingOwner);
-    if (!uploaded) {
-        NSLog(@"MGL WARNING: Dedicated texture upload failed (level=%lu slice=%lu)",
-              (unsigned long)level, (unsigned long)slice);
-        return false;
-    }
-    if (mglRenderPixelFormatIsPackedDepthStencil(
-            (uint32_t)mglTextureInfo(texture).pixel_format) &&
-        bytesPerRow >= width * 5u) {
-        (void)mglTextureUploadPackedDepthStencilStencilPlane(
-        (__bridge void *)texture, texName, bytes, width, uploadPlan.normalized_height, bytesPerRow, level, slice, 0u, 0u);
-    }
-    return true;
-}
-
 - (bool)uploadFullCPUTextureDataIntoTexture:(Texture *)tex
                                       metal:(id)texture
                                      reason:(const char *)reason
@@ -969,17 +574,8 @@ static void mglTextureCopyTextureToBuffer(
             continue;
         }
 
-        bool uploaded = [self uploadTextureSliceViaBlit:texture
-                                                texName:tex->name
-                                             texTarget:tex->target
-                                                 bytes:op->data
-                                           bytesPerRow:(NSUInteger)op->bytes_per_row
-                                         bytesPerImage:(NSUInteger)op->bytes_per_image
-                                                 width:(NSUInteger)op->width
-                                                height:(NSUInteger)op->height
-                                                 depth:(NSUInteger)op->copy_depth
-                                                 level:op->level
-                                                 slice:0];
+        bool uploaded = mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, op->data, (NSUInteger)op->bytes_per_row, (NSUInteger)op->bytes_per_image, (NSUInteger)op->width, (NSUInteger)op->height, (NSUInteger)op->copy_depth, op->level, 0);
         if (op->owns_data) {
             free((void *)op->data);
         }
@@ -1751,20 +1347,10 @@ static void mglTextureCopyTextureToBuffer(
         return false;
     }
 
-    return [self copyTextureUploadWithDedicatedCommandBuffer:buffer
-                                                sourceOffset:sourceOffset
-                                           sourceBytesPerRow:sourceBytesPerRow
-                                         sourceBytesPerImage:copyBytesPerImage
-                                          sourceLayerStride:sourceLayerStride
-                                                  layerCount:layerCount
-                                                   sourceSize:mglTextureSize(
+    return mglTextureCopyUploadWithDedicatedCommandBuffer(
+            (__bridge void *)self, (__bridge void *)buffer, sourceOffset, sourceBytesPerRow, copyBytesPerImage, sourceLayerStride, layerCount, mglTextureSize(
                                                        (NSUInteger)uploadPlan.copy_width,
-                                                       copyHeight, copyDepth)
-                                                    toTexture:texture
-                                             destinationSlice:destinationSlice
-                                             destinationLevel:level
-                                            destinationOrigin:destinationOrigin
-                                                       reason:reason ? reason : "texture_sub_upload"];
+                                                       copyHeight, copyDepth), (__bridge void *)texture, destinationSlice, level, destinationOrigin, reason ? reason : "texture_sub_upload");
 }
 
 -(void)mtlTexSubImage:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset
@@ -2428,27 +2014,8 @@ static void mglTextureCopyTextureToBuffer(
 
                         }
 
-                        [self uploadTextureSliceViaBlit:texture
-
-                                               texName:tex->name
-
-                                             texTarget:tex->target
-
-                                                 bytes:alignedData
-
-                                           bytesPerRow:alignedBytesPerRow
-
-                                         bytesPerImage:alignedSliceBPI
-
-                                                 width:lvlWidth
-
-                                                height:lvlHeight
-
-                                                 depth:uploadDepth
-
-                                                 level:level
-
-                                                 slice:face];
+                        mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedSliceBPI, lvlWidth, lvlHeight, uploadDepth, level, face);
 
                         free(alignedData);
 
@@ -2458,27 +2025,8 @@ static void mglTextureCopyTextureToBuffer(
 
             } else {
 
-                [self uploadTextureSliceViaBlit:texture
-
-                                       texName:tex->name
-
-                                     texTarget:tex->target
-
-                                         bytes:srcData
-
-                                   bytesPerRow:bytesPerRow
-
-                                 bytesPerImage:bytesPerImage
-
-                                         width:lvlWidth
-
-                                        height:lvlHeight
-
-                                         depth:uploadDepth
-
-                                         level:level
-
-                                         slice:face];
+                mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, lvlWidth, lvlHeight, uploadDepth, level, face);
 
             }
 
@@ -2806,29 +2354,8 @@ static void mglTextureCopyTextureToBuffer(
 
                                     } else {
 
-                                        BOOL uploaded = [self copyTextureUploadWithDedicatedCommandBuffer:tempBuffer
-
-                                                                                              sourceOffset:0
-
-                                                                                         sourceBytesPerRow:properBytesPerRow
-
-                                                                                       sourceBytesPerImage:fillSize
-
-                                                                                        sourceLayerStride:0
-
-                                                                                                layerCount:1
-
-                                                                                                 sourceSize:mglTextureSize(properRegion.size.width, properRegion.size.height, 1)
-
-                                                                                                  toTexture:texture
-
-                                                                                           destinationSlice:0
-
-                                                                                           destinationLevel:0
-
-                                                                                          destinationOrigin:mglTextureOrigin(0, 0, 0)
-
-                                                                                                     reason:"texture_fill_initialization"];
+                                        BOOL uploaded = mglTextureCopyUploadWithDedicatedCommandBuffer(
+            (__bridge void *)self, (__bridge void *)tempBuffer, 0, properBytesPerRow, fillSize, 0, 1, mglTextureSize(properRegion.size.width, properRegion.size.height, 1), (__bridge void *)texture, 0, 0, mglTextureOrigin(0, 0, 0), "texture_fill_initialization");
 
                                         if (uploaded) {
 
@@ -3263,27 +2790,8 @@ static void mglTextureCopyTextureToBuffer(
 
                                 }
 
-                                [self uploadTextureSliceViaBlit:texture
-
-                                                       texName:tex->name
-
-                                                     texTarget:tex->target
-
-                                                         bytes:alignedData
-
-                                                   bytesPerRow:alignedBytesPerRow
-
-                                                 bytesPerImage:alignedSize
-
-                                                         width:lvlWidth
-
-                                                        height:lvlHeight
-
-                                                         depth:1
-
-                                                         level:level
-
-                                                         slice:layer];
+                                mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedSize, lvlWidth, lvlHeight, 1, level, layer);
 
                                 free(alignedData);
 
@@ -3293,27 +2801,8 @@ static void mglTextureCopyTextureToBuffer(
 
                     } else {
 
-                        [self uploadTextureSliceViaBlit:texture
-
-                                               texName:tex->name
-
-                                             texTarget:tex->target
-
-                                                 bytes:layerSrcData
-
-                                           bytesPerRow:effectiveBytesPerRow
-
-                                         bytesPerImage:effectiveBytesPerImage
-
-                                                 width:lvlWidth
-
-                                                height:lvlHeight
-
-                                                 depth:1
-
-                                                 level:level
-
-                                                 slice:layer];
+                        mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, layerSrcData, effectiveBytesPerRow, effectiveBytesPerImage, lvlWidth, lvlHeight, 1, level, layer);
 
                     }
 
@@ -3656,17 +3145,8 @@ static void mglTextureCopyTextureToBuffer(
                                 return YES;
                             }
                             @try {
-                                BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                       texName:tex->name
-                                                                     texTarget:tex->target
-                                                                         bytes:alignedData
-                                                                   bytesPerRow:alignedBytesPerRow
-                                                                 bytesPerImage:alignedBytesPerImage
-                                                                         width:width
-                                                                        height:height
-                                                                         depth:depth
-                                                                         level:level
-                                                                         slice:0];
+                                BOOL uploaded = mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, depth, level, 0);
                                 if (!uploaded) {
                                     NSLog(@"MGL WARNING: 3D aligned blit upload failed (level %d, face %d)", level, face);
                                 }
@@ -3694,17 +3174,8 @@ static void mglTextureCopyTextureToBuffer(
                             return YES;
                         }
                         @try {
-                            BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                   texName:tex->name
-                                                                 texTarget:tex->target
-                                                                     bytes:srcData
-                                                               bytesPerRow:bytesPerRow
-                                                             bytesPerImage:bytesPerImage
-                                                                     width:width
-                                                                    height:height
-                                                                     depth:depth
-                                                                     level:level
-                                                                     slice:0];
+                            BOOL uploaded = mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, depth, level, 0);
                             if (!uploaded) {
                                 NSLog(@"MGL WARNING: 3D direct blit upload failed (level %d, face %d)", level, face);
                             }
@@ -3968,17 +3439,8 @@ static void mglTextureCopyTextureToBuffer(
                                     }
                                     @try {
                                         if (hasExplicitDataSize) {
-                                            BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                                   texName:tex->name
-                                                                                 texTarget:tex->target
-                                                                                     bytes:alignedData
-                                                                               bytesPerRow:alignedBytesPerRow
-                                                                             bytesPerImage:alignedBytesPerImage
-                                                                                     width:width
-                                                                                    height:uploadSliceHeight
-                                                                                     depth:1
-                                                                                     level:level
-                                                                                     slice:layer];
+                                            BOOL uploaded = mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, uploadSliceHeight, 1, level, layer);
                                             if (!uploaded) {
                                                 NSLog(@"MGL WARNING: Array texture blit upload failed (level %d, layer %d)", level, layer);
                                             }
@@ -4012,17 +3474,8 @@ static void mglTextureCopyTextureToBuffer(
                                     continue;
                                 }
                                 if (hasExplicitDataSize) {
-                                    BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                           texName:tex->name
-                                                                         texTarget:tex->target
-                                                                             bytes:srcData
-                                                                       bytesPerRow:effectiveBytesPerRow
-                                                                     bytesPerImage:effectiveBytesPerImage
-                                                                             width:width
-                                                                            height:uploadSliceHeight
-                                                                             depth:1
-                                                                             level:level
-                                                                             slice:layer];
+                                    BOOL uploaded = mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, srcData, effectiveBytesPerRow, effectiveBytesPerImage, width, uploadSliceHeight, 1, level, layer);
                                     if (!uploaded) {
                                         NSLog(@"MGL WARNING: Array texture direct blit upload failed (level %d, layer %d)", level, layer);
                                     }
@@ -4180,17 +3633,8 @@ static void mglTextureCopyTextureToBuffer(
                                     return YES;
                                 }
                                 if (hasExplicitDataSize) {
-                                    BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                           texName:tex->name
-                                                                         texTarget:tex->target
-                                                                             bytes:alignedData
-                                                                       bytesPerRow:alignedBytesPerRow
-                                                                     bytesPerImage:alignedBytesPerImage
-                                                                             width:width
-                                                                            height:height
-                                                                             depth:1
-                                                                             level:level
-                                                                             slice:face];
+                                    BOOL uploaded = mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, 1, level, face);
                                     if (!uploaded) {
                                         NSLog(@"MGL WARNING: Aligned 2D blit upload failed (level %d, face %d)", level, face);
                                     }
@@ -4218,17 +3662,8 @@ static void mglTextureCopyTextureToBuffer(
                                 return YES;
                             }
                             if (hasExplicitDataSize) {
-                                BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                       texName:tex->name
-                                                                     texTarget:tex->target
-                                                                         bytes:srcData
-                                                                   bytesPerRow:bytesPerRow
-                                                                 bytesPerImage:bytesPerImage
-                                                                         width:width
-                                                                        height:height
-                                                                         depth:1
-                                                                         level:level
-                                                                         slice:face];
+                                BOOL uploaded = mglTextureUploadSliceViaBlit(
+            (__bridge void *)self, (__bridge void *)texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, 1, level, face);
                                 if (!uploaded) {
                                     NSLog(@"MGL WARNING: 2D direct blit upload failed (level %d, face %d)", level, face);
                                 }

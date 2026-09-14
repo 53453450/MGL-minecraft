@@ -16,12 +16,20 @@
 #define MGL_TEXTURE_CREATE_OPS_H
 
 #include "glm_context.h"
+#include "mgl_region_value.h"
 
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Twin of the .m's mglTextureReplaceRegion (log 183); returns 1 on success
+ * instead of raising.  It is also the C home of the region write path. */
+int mglTextureReplaceRegionValue(void *texture, MGLRegionValue region,
+                                 uint64_t level, uint64_t slice,
+                                 const void *bytes, uint64_t bytesPerRow,
+                                 uint64_t bytesPerImage, int useSlice);
 
 /* -checkTextureCompleteness:texType:numFaces:effectiveMipmapLevels:
  *  storageMipmapped: */
