@@ -38,6 +38,10 @@ int mglRenderPassEnsureRasterEncoderForDraw(void *renderer);
  * pass the context currently has must still describe `framebuffer`. */
 int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
                                         unsigned int framebuffer_name);
+/* -configureUserFBOAttachmentsLocked is C now (log 170): the renderer state
+ * areas carry the command state and the context, and every helper it needs
+ * is already C. */
+bool mglRenderPassConfigureUserFBOAttachments(void *renderer);
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer);
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer);
 int mglRenderPassManagerCommitCommandBufferTransaction(

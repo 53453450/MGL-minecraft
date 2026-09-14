@@ -710,6 +710,14 @@ int mglPlatformShellMSSampleInLoop(void *renderer)
     return r ? [r mglMSSampleInLoop] : 0;
 }
 
+/* The plane offset is the second half of the emulated-MS-sample loop state and
+ * has no Objective-C getter; C reads the ivar through this forwarder. */
+int mglPlatformShellMSSamplePlaneOffset(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return r ? (int)r->_mglMSSamplePlaneOffset : 0;
+}
+
 void mglPlatformShellSetMSSampleState(void *renderer, int in_loop,
                                       int32_t forced, int32_t offset)
 {

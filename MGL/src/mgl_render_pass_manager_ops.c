@@ -23,6 +23,8 @@
 #include "mgl_batch_issue.h"          /* mglBatchBindActiveTexturesToMTL */
 #include "mgl_stage_encode_drivers.h" /* stage encode bind drivers */
 #include "mgl_frame_activity.h"     /* MGL_ENC_REASON_* */
+#include "mgl_render.h"           /* attachment kinds, MS plane adjust */
+#include "mgl_texture_compat.h"   /* mglMetalTextureLevelDimension */
 
 #include "mgl_renderer_ports.h"
 #include "mgl_binding_state_ops.h"      /* mglBindingInvalidateLastBoundState */
@@ -806,4 +808,233 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     }
 
     return 1;
+}
+
+/* === user-FBO attachment configuration (log 170) ======================== */
+
+/* MGLRenderer+RenderPass_Private.h (Objective-C) declares this one with `id`;
+ * the C twin restates the pointer-typed ABI. */
+extern void *mglApplySRGBStateToRenderTarget(void *texture, GLMContext ctx);
+
+/* The _mgl* sample-loop ivars travel through the shell forwarders, exactly as
+ * in mgl_ms_sample_loop.c. */
+extern int mglPlatformShellMSSampleInLoop(void *renderer);
+extern int mglPlatformShellMSSamplePlaneOffset(void *renderer);
+
+/* C twins of the .m statics the moved methods used. */
+static bool mglPdGetPersistentAttachmentState(
+    const MGLCommandState *commandState, uint32_t attachmentKind,
+    size_t colorIndex, MGLRenderPassAttachmentState *attachmentOut)
+{
+    if (!attachmentOut) return false;
+    MGLRenderPassState state = {0};
+    if (!mglRenderPassGetPersistentState(commandState, &state)) return false;
+    const MGLRenderPassAttachmentState *attachment =
+        mglRenderPassAttachmentStateFromSnapshot(&state, attachmentKind,
+                                                 colorIndex);
+    if (!attachment) return false;
+    *attachmentOut = *attachment;
+    return true;
+}
+
+static void *mglPdAttachmentTextureFor(const MGLCommandState *commandState,
+                                       uint32_t attachmentKind,
+                                       size_t colorIndex)
+{
+    MGLRenderPassAttachmentState attachment = {0};
+    if (mglPdGetPersistentAttachmentState(commandState, attachmentKind,
+                                          colorIndex, &attachment)) {
+        return attachment.texture;
+    }
+    return NULL;
+}
+
+static bool mglPdRenderTargetSizeFor(const MGLCommandState *commandState,
+                                     uint64_t *widthOut, uint64_t *heightOut)
+{
+    MGLRenderPassState state = {0};
+    if (!mglRenderPassGetPersistentState(commandState, &state)) return false;
+    if (widthOut) *widthOut = state.render_target_width;
+    if (heightOut) *heightOut = state.render_target_height;
+    return true;
+}
+
+static uint64_t mglPdRenderTargetWidthFor(const MGLCommandState *commandState)
+{
+    uint64_t width = 0;
+    if (mglPdRenderTargetSizeFor(commandState, &width, NULL)) return width;
+    return 0;
+}
+
+static uint64_t mglPdRenderTargetHeightFor(const MGLCommandState *commandState)
+{
+    uint64_t height = 0;
+    if (mglPdRenderTargetSizeFor(commandState, NULL, &height)) return height;
+    return 0;
+}
+
+static void mglPdSetPersistentAttachment(const MGLCommandState *commandState,
+                                         uint32_t attachmentKind,
+                                         size_t colorIndex, void *texture,
+                                         uint64_t level, uint64_t slice,
+                                         uint64_t depthPlane, int layered)
+{
+    if (commandState && commandState->renderPassStateOwner) {
+        (void)mglRenderSetRenderPassStateAttachmentTexture(
+            commandState->renderPassStateOwner, attachmentKind,
+            (uint32_t)colorIndex, texture, level, slice, depthPlane,
+            layered ? 1u : 0u);
+    }
+}
+
+static void mglPdSetPersistentDimensions(const MGLCommandState *commandState,
+                                         uint64_t width, uint64_t height)
+{
+    if (commandState && commandState->renderPassStateOwner) {
+        (void)mglRenderSetRenderPassStateDimensions(
+            commandState->renderPassStateOwner, width, height);
+    }
+}
+
+static uint64_t mglPdMin(uint64_t a, uint64_t b) { return a < b ? a : b; }
+
+/* -configureUserFBOAttachmentsLocked. */
+bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGLCommandState *commandState = areas.command;
+    Framebuffer *fbo = mglPdState(&areas)->framebuffer;
+
+    const GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
+    for (int i = 0; i < drawBufferCount; i++) {
+        GLuint attachmentIndex = 0u;
+        const GLuint colorSlot =
+            mglMetalColorSlotForDrawBuffer(ctx, (GLuint)i);
+        if (colorSlot >= MAX_COLOR_ATTACHMENTS) {
+            continue;
+        }
+        if (mglMetalResolveFboDrawAttachmentIndex(
+                ctx, mglMetalDrawBufferAt(ctx, (GLuint)i), &attachmentIndex) &&
+            attachmentIndex < MAX_COLOR_ATTACHMENTS &&
+            (fbo->color_attachment_bitfield & (1u << attachmentIndex)) &&
+            fbo->color_attachments[attachmentIndex].texture) {
+            Texture *tex = mglRendererAttachmentTextureFor(
+                ctx, &fbo->color_attachments[attachmentIndex]);
+            if (!tex) {
+                continue;
+            }
+
+            /* Ensure attachment textures are created with RenderTarget usage. */
+            tex->is_render_target = 1;
+            if (!mglRendererBindMTLTexture(renderer, tex)) {
+                fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+                return false;
+            }
+            if (!tex->mtl_data) {
+                continue;
+            }
+
+            MGLMetalAttachmentSubresource subresource =
+                mglMetalAttachmentSubresourceForAttachment(
+                    &fbo->color_attachments[attachmentIndex]);
+            const int32_t msOffset =
+                mglPlatformShellMSSamplePlaneOffset(renderer);
+            if (mglRenderMSSamplePlaneAdjust(
+                    mglPlatformShellMSSampleInLoop(renderer) ? 1 : 0,
+                    (uint32_t)tex->target, msOffset)) {
+                subresource.slice += (uint32_t)msOffset;
+            }
+            mglPdSetPersistentAttachment(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                mglApplySRGBStateToRenderTarget(tex->mtl_data, ctx),
+                subresource.level, subresource.slice, subresource.depthPlane,
+                fbo->color_attachments[attachmentIndex].layered ? 1 : 0);
+
+            if (mglRenderTextureTargetIsMSOr2DArray((uint32_t)tex->target)) {
+                void *rpTex = mglPdAttachmentTextureFor(
+                    commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                    (size_t)colorSlot);
+                (void)rpTex;
+            }
+
+            /* Keep render pass dimensions aligned with attached color targets.
+             * Some FBO paths use textures (not renderbuffers), and Metal still
+             * requires scissor/viewport to be bounded by the attachment
+             * dimensions. */
+            const uint64_t attWidth = mglMetalTextureLevelDimension(
+                (size_t)tex->width, subresource.level);
+            const uint64_t attHeight = mglMetalTextureLevelDimension(
+                (size_t)tex->height, subresource.level);
+            if (attWidth > 0 && attHeight > 0) {
+                if (mglPdRenderTargetWidthFor(commandState) == 0 ||
+                    mglPdRenderTargetHeightFor(commandState) == 0) {
+                    mglPdSetPersistentDimensions(commandState, attWidth,
+                                                 attHeight);
+                } else if (mglPdRenderTargetWidthFor(commandState) != attWidth ||
+                           mglPdRenderTargetHeightFor(commandState) !=
+                               attHeight) {
+                    const uint64_t oldWidth =
+                        mglPdRenderTargetWidthFor(commandState);
+                    const uint64_t oldHeight =
+                        mglPdRenderTargetHeightFor(commandState);
+                    mglPdSetPersistentDimensions(
+                        commandState,
+                        mglPdMin(mglPdRenderTargetWidthFor(commandState),
+                                 attWidth),
+                        mglPdMin(mglPdRenderTargetHeightFor(commandState),
+                                 attHeight));
+                    fprintf(stderr,
+                            "MGL WARNING: FBO color attachment size mismatch "
+                            "slot=%d old=%lux%lu new=%lux%lu resolved=%lux%lu\n",
+                            i, (unsigned long)oldWidth, (unsigned long)oldHeight,
+                            (unsigned long)attWidth, (unsigned long)attHeight,
+                            (unsigned long)mglPdRenderTargetWidthFor(commandState),
+                            (unsigned long)mglPdRenderTargetHeightFor(commandState));
+                }
+            }
+        }
+    }
+
+    /* depth attachment */
+    if (fbo->depth.texture) {
+        Texture *tex = mglRendererAttachmentTextureFor(ctx, &fbo->depth);
+        if (tex) {
+            tex->is_render_target = 1;
+            if (!mglRendererBindMTLTexture(renderer, tex)) {
+                fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+                return false;
+            }
+        }
+        if (tex && tex->mtl_data) {
+            MGLMetalAttachmentSubresource subresource =
+                mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
+            mglPdSetPersistentAttachment(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                tex->mtl_data, subresource.level, subresource.slice,
+                subresource.depthPlane, fbo->depth.layered ? 1 : 0);
+        }
+    }
+
+    /* stencil attachment */
+    if (fbo->stencil.texture) {
+        Texture *tex = mglRendererAttachmentTextureFor(ctx, &fbo->stencil);
+        if (tex) {
+            tex->is_render_target = 1;
+            if (!mglRendererBindMTLTexture(renderer, tex)) {
+                fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
+                return false;
+            }
+        }
+        if (tex && tex->mtl_data) {
+            MGLMetalAttachmentSubresource subresource =
+                mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
+            mglPdSetPersistentAttachment(
+                commandState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                tex->mtl_data, subresource.level, subresource.slice,
+                subresource.depthPlane, fbo->stencil.layered ? 1 : 0);
+        }
+    }
+    return true;
 }
