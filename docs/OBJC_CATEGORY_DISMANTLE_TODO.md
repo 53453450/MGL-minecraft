@@ -2962,10 +2962,11 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
      不再把它们当作"逐行一致"的脚注。
      ⑤ 下一刀：按 §0.30 排序（`MGLRenderPassManager.m` 仍然等 `+RenderPass.m`；建议 `+Compute.m` 或 `MGLRenderer+Lifecycle.m`）。
 
-**第 126 刀更新（2026-09-14 实测）**：壳 **2,042 行 / 287 语法**，端口面 **32 个**——本刀**净退役 1 个端口**：
-`mglRendererDispatchTessControlShaderPort` 的目标方法 `-dispatchTessControlShader:program:contract:` 已转 C，
-C 侧 `mglStageDispatchTCS`（`mgl_draw_metal_port.c`）改为直接调用 `mglTessDispatchControlShader`，
-端口与其壳包装一并删除（按 §0.04 的 T4 硬规，这是本周期少见的**净减端口**刀）。上限维持 **2,400 行**。
+**第 126–127 刀更新（2026-09-14 实测）**：壳 **2,026 行 / 285 语法**，端口面 **31 个**——两刀**各净退役 1 个端口**：
+`mglRendererDispatchTessControlShaderPort`（第 126 刀）与 `mglRendererDispatchAIRTessEvalVertexRenderPort`（第 127 刀）的
+目标方法都已转 C，两个端口与其壳包装一并删除，C 侧 `mglStageDispatchTCS` / `mglStageDispatchAirTESVertex` 改直调
+（按 §0.04 的 T4 硬规，这是本周期少见的**净减端口**刀）。最后一个 AIR 端口随 `+Tessellation.m` 整文件删除时退役（31 → 30），
+届时壳应再降约 12 行。上限维持 **2,400 行**。
 
 ### 0.30 第 73 轮快照（第 104 刀后，文件 11）
 
