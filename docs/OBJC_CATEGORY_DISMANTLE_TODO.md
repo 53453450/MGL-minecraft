@@ -50,7 +50,8 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 八十二刀** + trace 清零 后；第 68–111 轮见 §0.24/§0.26–§0.68）**：
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 八十二刀** + trace 清零 后；第 68–112 轮见 §0.24/§0.26–§0.69；
+**第 112 轮第四次尝试采样簇仍被 CTS 拦下并回滚，度量与 `004c9e4` 相同**）**：
 文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 24,209**、
 ObjC 语法 **2,268 → 1,376**、词汇 **4,353 → 2,782**；**第 103/104 两轮两次尝试的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮改从 `+Blit.m` 推进**；
@@ -4687,3 +4688,53 @@ A/B 两臂逐行一致（见第 135 条）。
    `blitFramebufferScaledColorWithState:`（9）需 `-mglDrawableTexture` 的 C 入口。
 3. `+Texture.m`（279 语法 / 1,052 词汇，词汇最多）与 `MGLRenderer.m`（168 语法）；
    壳的 `MGLPipelineCache` 归档路径（Foundation→POSIX + 专属 oracle）。
+
+142. **第 112 轮：第四次尝试采样绑定簇（compat + sampler）——仍然被 CTS 拦下并回滚；但本轮把嫌疑范围收窄到
+     `recoverFragmentSampledDepthTexture:` 的出参写入**（工作区仍在 `004c9e4`，**未改动代码**）：
+     ① 本轮按 §0.61 方案先做"纯修复刀"：在 `bindSampledTexturesForStage:` 里、**调用
+     `applySampledRenderTargetCopyPlan:` / `applySampledCompatFallbackPlan:` 之前**把
+     `Texture *ptr` 复制成局部快照并把 `ptr` 指向快照（这一段之后只读 `ptr`，所以副本精确），
+     再叠加 compat + sampler 两个方法的 C 化（新 TU `mgl_sampled_bind.{h,c}`，端口退役 28 → 27 的版本）。
+     ② **结果：仍然 5/8 段错误**（同一用例 `KHR-GL46.internalformat.copy_tex_image.depth_component24`；
+     不叠加转换时该用例 8/8 通过）。**说明快照修复并不能解除阻塞**——快照把调用"之后"的读取固定住了，
+     但崩溃依旧，意味着**传给这些计划的 `ptr` 在调用"之前"就已经不是有效记录了**。
+     ③ **新的嫌疑对象（下一刀从这里查）**：`recoverFragmentSampledDepthTexture:(Texture **)ptrPtr` ——
+     它是**唯一**能写穿 `&ptr` 的方法，且只在 **depth / depth-stencil** 用例上走这条路径，
+     与本轮崩溃用例全是 depth 用例完美吻合。它内部会把 `*ptrPtr` 指向"配对颜色纹理"或"历史候选纹理"
+     （`MGL_STATE(ctx)->recent_sampled_2d_textures[...]`、`mglFindFramebufferColorTexturePairedWithDepth`），
+     而下面这些来源**都可能是已经失效的快照/历史槽位**：
+     - 历史上第 133/134 轮测得"调用点 `ptr` 在 compat 调用前后发生变化"（`0x766af5e080` → `0x766a000000`）
+       也与"`ptr` 早在 recover 阶段就被写成了失效值"一致（当时打印的 pre 值是寄存器里的旧值，
+       内存槽里已经是坏值——正好解释了"指针在调用前后不一致"这个反常现象）。
+     ④ **下一刀的正确查法**：先给 `recoverFragmentSampledDepthTexture:` 的**每个 `*ptrPtr` 写入点**加断言/日志
+     （或在 C 侧用 `mglRendererObjectPointerLikelyValid` 之类的现成判据过滤），确认它在 depth 用例上写出的
+     到底是哪一类纹理、是否已失效；**先修这个方法（或它的候选来源），再回头转换采样簇**。
+     ⑤ 回滚复验：`make test-all` **0**（92/0/2/94）、该 depth 用例 **3/3 通过**、工作区与 `004c9e4` 一致、
+     度量不变（6 文件 / 24,209 行 / 1,376 语法 / 2,782 词汇 / 28 端口）。
+     ⑥ **代价与教训**：这是采样簇第四次被拦（第 103/104/112 轮两次转换尝试 + 第 112 轮修复尝试）。
+     已把"先证明 `ptr` 在进入该段之前就是有效的"写进 §0.69 的开工检查清单——**不要再用"在调用后补救"的思路**。
+
+### 0.69 第 112 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.68**）
+
+**当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 24,209 行 / 1,376 语法 / 2,782 词汇**；
+壳 TU **1,988 行 / 279 语法**（上限 2,400）；端口面 **28 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂逐行一致（`004c9e4` 的实测值）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,843 · `+Texture.m` 279/1,052/6,248 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` **174/530/2,836** · 壳 `MGLPlatformRendererShell.m` 279/287/1,988 · `+BindingState.m` **91/85/1,678**。
+
+**规矩表（§0.62/§0.65/§0.66/§0.67/§0.68 十四条仍然有效）＋ 本轮第十五条**：
+15. **"在调用之后补救"解决不了本簇的问题**（第 112 轮实测）：快照修复 + 转换仍然 5/8 崩溃 ⇒
+    嫌疑在**进入该段之前**就产生的失效 `ptr`。开工前必须先证明"`ptr` 在进入采样循环时是有效记录"，
+    即查 `recoverFragmentSampledDepthTexture:` 的每个 `*ptrPtr` 写入点（**只在 depth/depth-stencil 用例上走**）。
+
+**下一步（把采样簇的嫌疑对象查清，再谈转换）**：
+1. **第一优先：审 `recoverFragmentSampledDepthTexture:` 的 `*ptrPtr` 写入点**（第 142 条 ③④）：
+   给每个写入点加日志/有效性判据（现成有 `mglRendererObjectPointerLikelyValid`、
+   `mglRendererTextureLooksLikeSampledColor2D` 等），在 `KHR-GL46.internalformat.copy_tex_image.depth_component24`
+   上跑 5–8 次，确认写出的纹理来源（配对着色纹理 / 历史候选）以及是否失效；**先修它**。
+2. 采样簇其余方法（compat → sampler → separate samplers）在 1 修好之前**不要再试**。
+3. 并行可做的安全刀（都已解锁，零新增端口）：
+   `+Blit.m` 的 `copyImageSubData3DFallback:`（14 语法 / 410 行）；
+   `+Texture.m` 里词汇最多的一批（1,052 词汇，主要是 `NSLog`→`fprintf`、`BOOL`→`int` 的成批替换）；
+   `+RenderPass.m` / `MGLRenderer.m` 的叶子方法。
