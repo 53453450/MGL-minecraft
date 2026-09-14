@@ -15,6 +15,7 @@
  */
 
 #include "mgl_binding_state_ops.h"
+#include "mgl_sampled_sampler.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_buffer_map.h"        /* map/update-dirty entries */
@@ -150,12 +151,12 @@ bool mglRendererSyncResourceBindingsForContext(
     RETURN_FALSE_ON_FAILURE(
         mglRendererRestoreRenderEncoderAfterTextureUploadPort(
             renderer, "final-active-texture-bind"));
-    if (!mglRendererBindTexturesToCurrentRenderEncoderPort(renderer, &encCtx)) {
+    if (!mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx)) {
         RETURN_FALSE_ON_FAILURE(
             mglRendererRestoreRenderEncoderAfterTextureUploadPort(
                 renderer, "final-sampled-texture-bind"));
         RETURN_FALSE_ON_FAILURE(
-            mglRendererBindTexturesToCurrentRenderEncoderPort(renderer, &encCtx));
+            mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx));
     }
     return true;
 }

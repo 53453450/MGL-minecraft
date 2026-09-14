@@ -24,11 +24,18 @@
 #include <stdint.h>
 
 #include "glm_context.h"        /* GLMContext, GLuint */
+#include "mgl_encode_context.h" /* MGLEncodeContext */
 #include "mgl_types_texture.h"  /* Texture */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Bind every texture/sampler/storage-image the current encoder needs (the
+ * whole per-encoder binding pass).  Was -bindTexturesToCurrentRenderEncoder:;
+ * replaces mglRendererBindTexturesToCurrentRenderEncoderPort (log 157). */
+bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
+                                           const MGLEncodeContext *enc_ctx);
 
 /* Bind every sampled texture of one stage (gate plan, depth recovery, RT copy
  * plan, compat fallback, sampler materialize, resource queueing, diagnostics).

@@ -280,15 +280,6 @@ int mglRendererProcessGLStatePort(void *renderer, int draw_command)
 
 
 
-int mglRendererBindTexturesToCurrentRenderEncoderPort(void *renderer,
-                                                      const void *encode_context)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r bindTexturesToCurrentRenderEncoder:
-                       (const MGLEncodeContext *)encode_context])
-               ? 1
-               : 0;
-}
 
 int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
                                                           const char *label)

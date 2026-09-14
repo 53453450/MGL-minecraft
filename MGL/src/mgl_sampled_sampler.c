@@ -48,6 +48,9 @@
 #include "mgl_byte_hash.h"       /* mglTraceHashBytes */
 #include "mgl_focus_program.h"   /* mglIsFocusedLoadingProgram */
 #include "mgl_state_log.h"       /* mglMipDiagEnabled */
+#include "pixel_utils.h"          /* mtlFormatForGLInternalFormat */
+#include "mgl_encode_context.h"   /* MGLEncodeContext */
+#include "mgl_storage_image_bind.h" /* mglBindingStateBindStorageImagesForVertexProgram */
 #include "mgl_trace_strategy.h" /* mglWriteProgramMSLDump */
 
 /* The .m's file-local invalid-pixel-format sentinel (MGLRenderer+BindingState.m). */
@@ -1677,5 +1680,282 @@ bool mglSampledBindTexturesForStage(
         *sampler_count = bound_samplers;
     }
     return true;
+    return true;
+}
+
+/* === whole-encoder texture binding + storage-image views (P0-1, log 157) == */
+
+/* Twins of the remaining +BindingState.m statics. */
+static MGLRenderTextureInfo mglSsTextureInfo(void *texture)
+{
+    MGLRenderTextureInfo info = {0};
+    if (texture) {
+        (void)mglRenderGetTextureInfo(texture, &info);
+    }
+    return info;
+}
+
+static uint64_t mglSsTextureArrayLength(void *texture)
+{
+    return mglSsTextureInfo(texture).array_length;
+}
+
+static void *mglSsCacheImageUnitView(ImageUnit *iu, void *fallback, void *view)
+{
+    if (!view) {
+        return fallback;
+    }
+    if (iu->mtl_image_view) {
+        mglRenderReleaseMetalObject(iu->mtl_image_view);
+        iu->mtl_image_view = NULL;
+    }
+    iu->mtl_image_view = view; /* +1 from newTextureView */
+    return iu->mtl_image_view;
+}
+
+/* BindImageTexture <format> -> PixelFormatView (CTS advanced-cast). */
+static uint32_t mglSsImageBindPixelFormat(const ImageUnit *iu,
+                                          uint32_t native_format)
+{
+    if (!iu) {
+        return native_format;
+    }
+    const uint32_t bind_format = mtlFormatForGLInternalFormat(iu->internalformat);
+    return mglRenderImageBindPixelFormat(iu->internalformat, native_format,
+                                         bind_format);
+}
+
+static int mglSsHasActiveEncoder(const MGLEncodeContext *enc_ctx)
+{
+    if (!enc_ctx) {
+        return 0;
+    }
+    return mglRenderEncoderOwnerHasCurrent(enc_ctx->render_encoder_owner) != 0;
+}
+
+/* MGLRenderer+Draw_Private.h's static inline. */
+static int mglSsShouldTraceCall(uint64_t count)
+{
+    if (!kMGLDiagnosticStateLogs) {
+        return 0;
+    }
+    return (count <= 80ull) || ((count % 500ull) == 0ull);
+}
+
+/* Storage-image view: non-layered slice + format/mip PixelFormatView (CTS).
+ * Keeps its exported name (mgl_renderer_backend.h). */
+void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
+{
+    void *texture = base_texture;
+    if (!texture || !iu) {
+        return base_texture;
+    }
+    if (iu->mtl_image_view) {
+        return iu->mtl_image_view;
+    }
+    const MGLRenderTextureInfo info = mglSsTextureInfo(texture);
+    if (info.width == 0u) {
+        return base_texture;
+    }
+    const size_t level = (size_t)iu->level;
+    /* CTS incomplete_textures: mip past mipmapLevelCount → unbound. */
+    if (!mglRenderImageLevelInRange((uint32_t)level,
+                                    (uint32_t)info.mipmap_level_count)) {
+        return NULL;
+    }
+    const uint32_t srcType = info.texture_type;
+    const uint32_t bindFormat =
+        mglSsImageBindPixelFormat(iu, info.pixel_format);
+    const GLenum glTarget = iu->tex ? iu->tex->target : (GLenum)0;
+    const int isMsTarget = mglRenderImageTargetIsMultisample((uint32_t)glTarget);
+    uint32_t dstType = 0u;
+    if (mglRenderImageNeedsNonLayeredSlice(iu->layered ? 1 : 0, isMsTarget,
+                                           srcType, &dstType)) {
+            void *view = NULL;
+            int rc = mglRenderCreateTextureViewRange(
+                    base_texture, bindFormat, dstType,
+                    level, 1u, (uint64_t)iu->layer, 1u,
+                    0, 0, 0, 0, 0, &view);
+            if (rc == 0 && view) {
+                return mglSsCacheImageUnitView(
+                    iu, texture, view);
+            }
+    }
+
+    if (mglRenderImageNeedsFormatOrMipView(level, bindFormat,
+                                           info.pixel_format)) {
+        size_t slice_count = (size_t)mglRenderImageViewSliceCount(
+            srcType, mglSsTextureArrayLength(texture));
+        void *view = NULL;
+        if (mglRenderCreateTextureViewRange(
+                base_texture, bindFormat,
+                info.texture_type, level, 1u, 0u, slice_count,
+                0, 0, 0, 0, 0, &view) == 0 && view) {
+            return mglSsCacheImageUnitView(
+                iu, texture, view);
+        }
+    }
+    return base_texture;
+}
+
+/* -bindTexturesToCurrentRenderEncoder: */
+bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
+                                           const MGLEncodeContext *enc_ctx)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    void *binding_state_owner =
+        areas.binding_state_owner ? *areas.binding_state_owner : NULL;
+    static uint64_t s_bindTexturesCallCount = 0;
+    uint64_t bindCall = ++s_bindTexturesCallCount;
+    bool traceBind = mglSsShouldTraceCall(bindCall);
+    GLuint vertexSampledCount = 0;
+    GLuint vertexBoundTextures = 0;
+    GLuint vertexFallbackTextures = 0;
+    GLuint boundSampledTextures = 0;
+    GLuint nilSampledTextures = 0;
+    GLuint fallbackSampledTextures = 0;
+    GLuint boundSampledSamplers = 0;
+    Program *vertexProgram = NULL;
+    Program *fragmentProgram = NULL;
+    GLuint vertexProgramName = 0u;
+    GLuint fragmentProgramName = 0u;
+    const int use_resource_snapshot = 1;
+    MGLRenderResourceBindingSnapshot resource_snapshot = {0};
+
+    if (!mglSsHasActiveEncoder(enc_ctx)) {
+        // No active render encoder yet (or it was rotated). Texture/sampler binding
+        // can be deferred until the next encoder is created.
+        return true;
+    }
+
+    /* Per-draw sampler snapshot for replay / RT-copy cull; clear stale slots. */
+    if (mglTraceLogIsEnabled()) {
+        mglTraceFragmentTextureTraceBindings("CLEAR",
+                                             "bind_textures_begin",
+                                             areas.fragment_trace_bindings,
+                                             TEXTURE_UNITS,
+                                             ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
+                                             areas.pipeline_cache->pipelineProgramName);
+
+        memset(areas.fragment_trace_bindings, 0,
+               sizeof(areas.fragment_trace_bindings));
+    } else {
+        mglClearFragmentTextureTraceFunctionalFlags(
+            areas.fragment_trace_bindings, TEXTURE_UNITS);
+    }
+
+    const int vertexResourceStage = areas.tess_native_tes_active
+        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
+    vertexProgram = areas.tess_native_tes_active
+        ? areas.tess_native_tes_program
+        : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    vertexProgramName = vertexProgram ? vertexProgram->name : mglCurrentRenderProgramKey(ctx);
+    fragmentProgramName = fragmentProgram ? fragmentProgram->name : mglCurrentRenderProgramKey(ctx);
+
+    void *default_sampler = mglTextureFallbackSamplerState(renderer);
+    if (default_sampler) {
+        if (vertexProgram) {
+            (void)mglProgramSamplesTextureUnit(vertexProgram, 0);
+        }
+        if (fragmentProgram && fragmentProgram != vertexProgram) {
+            (void)mglProgramSamplesTextureUnit(fragmentProgram, 0);
+        }
+        MGLSamplerWarmupPlan warm = {0};
+        mglBindingTexturePlanSamplerWarmup(
+            1, vertexProgram ? 1 : 0, fragmentProgram ? 1 : 0,
+            vertexProgram ? vertexProgram->sampled_texture_unit_mask : NULL,
+            (fragmentProgram && fragmentProgram != vertexProgram)
+                ? fragmentProgram->sampled_texture_unit_mask
+                : NULL,
+            (uint32_t)TEXTURE_UNITS, (uint32_t)kMaxFragmentSamplerSlots, &warm);
+        for (uint32_t s = 0; s < warm.warmup_count; s++) {
+            if (warm.mode == MGL_SW_MODE_MASK &&
+                !mglBindingTextureSamplerWarmupSlotActive(warm.mask, s)) {
+                continue;
+            }
+            if (!mglSsQueueResourceBinding(
+                    use_resource_snapshot, binding_state_owner,
+                    (areas.command ? areas.command->currentRenderEncoderOwner : NULL),
+                    &resource_snapshot, MGL_RENDER_BINDING_STAGE_VERTEX,
+                    MGL_RENDER_RESOURCE_BINDING_SAMPLER,
+                    default_sampler, s) ||
+                !mglSsQueueResourceBinding(
+                    use_resource_snapshot, binding_state_owner,
+                    (areas.command ? areas.command->currentRenderEncoderOwner : NULL),
+                    &resource_snapshot, MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                    MGL_RENDER_RESOURCE_BINDING_SAMPLER,
+                    default_sampler, s)) {
+                return false;
+            }
+        }
+    }
+
+    if (use_resource_snapshot &&
+        !mglSsFlushResourceBindings(
+            binding_state_owner,
+            (areas.command ? areas.command->currentRenderEncoderOwner : NULL),
+            &resource_snapshot)) {
+        return false;
+    }
+
+    GLuint sampledCount = 0;
+    GLuint separateSamplerCount = 0;
+    GLuint boundSeparateSamplers = 0;
+
+    /* Bind VS+FS sampled images (Metal validates every active stage). */
+    if (!mglSampledBindTexturesForStage(
+            renderer, vertexResourceStage, 0, vertexProgram,
+            vertexProgramName, vertexProgramName, 0u,
+            default_sampler, bindCall, traceBind ? 1 : 0,
+            &vertexBoundTextures, &vertexFallbackTextures, NULL, NULL,
+            &vertexSampledCount)) {
+        return false;
+    }
+    if (!mglSampledBindTexturesForStage(
+            renderer, _FRAGMENT_SHADER, 1, fragmentProgram,
+            fragmentProgramName, vertexProgramName, fragmentProgramName,
+            default_sampler, bindCall, traceBind ? 1 : 0,
+            &boundSampledTextures, &fallbackSampledTextures,
+            &nilSampledTextures, &boundSampledSamplers, &sampledCount)) {
+        return false;
+    }
+
+    /* The storage-image driver is C now (log 130). */
+    if (!mglBindingStateBindStorageImagesForVertexProgram(
+            renderer, vertexProgram, fragmentProgram)) {
+        return false;
+    }
+
+    if (!mglSampledBindSeparateSamplersAndArrayTextures(
+            renderer, vertexProgram, fragmentProgram,
+            fragmentProgramName, vertexProgramName,
+            default_sampler, bindCall, traceBind ? 1 : 0,
+            &separateSamplerCount, &boundSeparateSamplers)) {
+        return false;
+    }
+
+    int interesting = (sampledCount > 0 && boundSampledTextures == 0) ||
+                       fallbackSampledTextures > 0 || vertexFallbackTextures > 0;
+    static uint64_t s_interestingTextureSummaryCount = 0;
+    if (traceBind ||
+        (interesting && mglBindingTextureRateLogHit(
+                            &s_interestingTextureSummaryCount, 64ull, 512ull))) {
+        mglTraceLog(
+            "texbind.summary call=%llu program=%u vertexSampled=%u "
+            "vertexBoundTex=%u vertexFallback=%u sampled=%u boundTex=%u "
+            "nilTex=%u fallbackTex=%u sampledSamplers=%u separateSamplers=%u "
+            "boundSeparate=%u",
+            (unsigned long long)bindCall,
+            (unsigned)mglCurrentRenderProgramKey(ctx),
+            (unsigned)vertexSampledCount, (unsigned)vertexBoundTextures,
+            (unsigned)vertexFallbackTextures, (unsigned)sampledCount,
+            (unsigned)boundSampledTextures, (unsigned)nilSampledTextures,
+            (unsigned)fallbackSampledTextures, (unsigned)boundSampledSamplers,
+            (unsigned)separateSamplerCount, (unsigned)boundSeparateSamplers);
+    }
+
     return true;
 }
