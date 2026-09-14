@@ -806,6 +806,19 @@ int mglPlatformShellGuardedCall(void *renderer, const char *what,
     }
 }
 
+/* The cache's C++ owner holds the blend record; C reads it through this
+ * forwarder, the counterpart of mglPlatformShellPipelineCacheSetBlend. */
+int mglPlatformShellPipelineCacheBlendState(void *pipeline_cache_object,
+                                           uint32_t index,
+                                           MGLRenderPipelineBlendState *blend)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache || !blend || index >= MAX_COLOR_ATTACHMENTS) {
+        return 0;
+    }
+    return [cache blendStateForAttachment:(NSUInteger)index out:blend] ? 1 : 0;
+}
+
 int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
                                           uint32_t index,
                                           const MGLRenderPipelineBlendState *blend)
@@ -848,6 +861,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->pipeline_cache_object = (__bridge void *)r->_pipelineCache;
     areas_out->gpu_recovery_command_owner = &r->_gpuRecovery.commandRecoveryOwner;
     areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
+    areas_out->pipeline_cache_blend_state = mglPlatformShellPipelineCacheBlendState;
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
     areas_out->tessellation = &r->_tessellation;
     areas_out->geometry = &r->_geometry;

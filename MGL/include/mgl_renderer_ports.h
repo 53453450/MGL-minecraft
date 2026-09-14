@@ -208,6 +208,11 @@ typedef struct MGLRendererStateAreas {
     int (*pipeline_cache_set_blend)(
         void *pipeline_cache_object, uint32_t index,
         const struct MGLRenderPipelineBlendState_t *blend);
+    /* Reads one attachment's blend state back out of the cache's C++ owner
+     * (the setter's counterpart).  Returns 1 on success. */
+    int (*pipeline_cache_blend_state)(
+        void *pipeline_cache_object, uint32_t index,
+        struct MGLRenderPipelineBlendState_t *blend);
     int32_t tess_native_tes_active;
     void *tess_native_tes_program;
     /* The tessellation and geometry records themselves (the C draw host port

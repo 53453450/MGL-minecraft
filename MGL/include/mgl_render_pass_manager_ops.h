@@ -44,6 +44,18 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
 bool mglRenderPassConfigureUserFBOAttachments(void *renderer);
 /* -finalizeRenderPassDescriptorLocked:traceRenderEncoder: is C now
  * (log 171): it had no self sends at all, only render-pass-state twins. */
+/* -generatePipelineDescriptorState:vertexFunction:fragmentFunction: is C
+ * now (log 172); the out-parameters are the two Metal functions. */
+/* The two Metal functions the descriptor plan resolves.  They are borrowed:
+ * the program/cache still owns them, so the Objective-C caller takes them
+ * with a __bridge cast instead of ARC writing into an id slot from C. */
+typedef struct MGLRenderPassPipelineFunctions_t {
+    void *vertex_function;
+    void *fragment_function;
+} MGLRenderPassPipelineFunctions;
+
+int mglRenderPassGeneratePipelineDescriptorState(
+    void *renderer, void *state, MGLRenderPassPipelineFunctions *functions_out);
 bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
                                                uint64_t renderEncoderCall,
                                                int traceRenderEncoder);
