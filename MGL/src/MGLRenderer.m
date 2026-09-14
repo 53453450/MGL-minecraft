@@ -57,6 +57,7 @@
 #include "mgl_blit_pipelines.h"
 #include "mgl_swap_diagnostics.h"  /* swap-time diagnostics (was the SwapDiagnostics category) */
 #include "mgl_buffer_map.h"  /* buffer mapping + frame-generation gates */
+#include "mgl_stage_copy_back.h"  /* copy-back list helpers (log 158) */
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_tess.h"
 #include "mgl_air_loader.h"
@@ -4365,29 +4366,10 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     return isolated;
 }
 
-- (void)clearStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks
-{
-    if (!copyBacks) {
-        return;
-    }
-    (void)mglRendererBackendClearStageCopyBackList(_backend, copyBacks);
-    memset(copyBacks, 0, sizeof(*copyBacks));
-}
 
 _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry),
                "copy-back slot ABI matches C entry");
 
-- (void)clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
-                           atIndex:(NSUInteger)index
-{
-    if (!copyBacks || index >= kMGLMaxBufferSlots) {
-        return;
-    }
-    (void)mglRendererBackendClearStageCopyBackSlot(
-        _backend, copyBacks, (uint32_t)index);
-    MGLStageBindingCopyBack *entry = &copyBacks->slots[index];
-    memset(entry, 0, sizeof(*entry));
-}
 
 - (bool)recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
                            atIndex:(NSUInteger)index
@@ -4400,7 +4382,7 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
     if (!copyBacks || index >= kMGLMaxBufferSlots) {
         return false;
     }
-    [self clearStageBindingCopyBack:copyBacks atIndex:index];
+    mglClearStageBindingCopyBackAtIndex((__bridge void *)self, copyBacks, index);
     if (length == 0) {
         return true;
     }
@@ -4442,12 +4424,12 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
 
     if (mglRenderEncodeStageBindingCopyBacks(
             entries, entryCount, NULL) != 0) {
-        [self clearStageBindingCopyBacks:copyBacks];
+        mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
         return false;
     }
 
     if (!hasCopies && !requireCPUVisibility) {
-        [self clearStageBindingCopyBacks:copyBacks];
+        mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
         return true;
     }
     MGLRenderCommandBufferState copyBackCommandState = {0};
@@ -4455,7 +4437,7 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
             _renderPassManager->state->currentCommandBufferOwner,
             &copyBackCommandState) ||
         copyBackCommandState.status != MGL_RENDERER_CB_NOT_ENQUEUED) {
-        [self clearStageBindingCopyBacks:copyBacks];
+        mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
         return false;
     }
 
@@ -4464,13 +4446,13 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
             (__bridge id)mglRenderCreateBlitEncoderBorrowed(
                 _renderPassManager->state->currentCommandBufferOwner);
         if (!blit) {
-            [self clearStageBindingCopyBacks:copyBacks];
+            mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
             return false;
         }
         if (mglRenderEncodeStageBindingCopyBacks(
                 entries, entryCount, (__bridge void *)blit) != 0) {
             mglRendererEndBlitEncoder(blit);
-            [self clearStageBindingCopyBacks:copyBacks];
+            mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
             return false;
         }
         mglRendererEndBlitEncoder(blit);
@@ -4493,14 +4475,14 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
                                       memory_order_release);
             }
             mglPassManagerReleaseDetachedCommandBufferIfOwned(_renderPassManager, (__bridge void *)stageCommandBuffer);
-            [self clearStageBindingCopyBacks:copyBacks];
+            mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
             [self newCommandBufferLocked];
             return false;
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL BUFFER RANGE: stage synchronization failed: %@",
               exception.reason);
-        [self clearStageBindingCopyBacks:copyBacks];
+        mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
         [self newCommandBufferLocked];
         return false;
     }
@@ -4510,7 +4492,7 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
     if (stageState.has_error) {
         NSLog(@"MGL BUFFER RANGE: stage command failed: %s",
               mglRenderCommandBufferErrorDescription(&stageState));
-        [self clearStageBindingCopyBacks:copyBacks];
+        mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
         [self newCommandBufferLocked];
         return false;
     }
@@ -4528,11 +4510,11 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
               (unsigned long long)(failed ? failed->destination_offset : 0ull),
               (unsigned long long)(failed ? failed->length : 0ull),
               (unsigned long long)(failedBuffer ? failedBuffer->data.buffer_size : 0ull));
-        [self clearStageBindingCopyBacks:copyBacks];
+        mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
         [self newCommandBufferLocked];
         return false;
     }
-    [self clearStageBindingCopyBacks:copyBacks];
+    mglClearStageBindingCopyBacks((__bridge void *)self, copyBacks);
     return [self newCommandBufferLocked];
 }
 

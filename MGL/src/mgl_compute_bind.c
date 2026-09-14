@@ -31,6 +31,7 @@
 #include "mgl_compute_bind.h"
 #include "mgl_texture_bind.h"        /* mglRendererBindMTLTexture */
 #include "mgl_sampled_sampler.h" /* sampler materialize (log 151) */
+#include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas + the host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes */
 #include "mgl_binding_policy.h"
@@ -248,7 +249,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
         }
 
         size_t metalBindingIndex = (size_t)plan_out.metal_slot;
-        mglRendererClearStageBindingCopyBackPort(renderer, copy_backs,
+        mglClearStageBindingCopyBackAtIndex(renderer, copy_backs,
                                                  (uint64_t)metalBindingIndex);
 
         /* ---- materialize the Metal backing the plan asked for ---- */

@@ -513,23 +513,7 @@ int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command)
     return (r && [r processGLStateLocked:draw_command ? true : false]) ? 1 : 0;
 }
 
-void mglRendererClearStageBindingCopyBacksPort(void *renderer, void *copy_backs)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r clearStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copy_backs];
-    }
-}
 
-void mglRendererClearStageBindingCopyBackPort(void *renderer, void *copy_backs,
-                                              uint64_t index)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copy_backs
-                             atIndex:(NSUInteger)index];
-    }
-}
 
 int mglRendererRecordStageBindingCopyBackPort(
     void *renderer, void *copy_backs, uint64_t index, void *temporary,

@@ -30,6 +30,7 @@
 
 #include "mgl_compute_dispatch.h"
 #include "mgl_compute_bind.h"
+#include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas + host entries */
 #include "mgl_renderer_backend.h"   /* mglRendererProcessBuffer, context lookup */
 #include "mgl_texture_bind.h"       /* mglRendererBindMTLTexture */
@@ -201,7 +202,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
         if (computeCommandEncoder) {
             (void)mglRenderEndComputeEncoder(computeCommandEncoder);
         }
-        mglRendererClearStageBindingCopyBacksPort(renderer, &copyBacks);
+        mglClearStageBindingCopyBacks(renderer, &copyBacks);
         mglRendererTemporariesRelease(executionTemporaries);
         return false;
     }
@@ -214,7 +215,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
         if (computeCommandEncoder) {
             (void)mglRenderEndComputeEncoder(computeCommandEncoder);
         }
-        mglRendererClearStageBindingCopyBacksPort(renderer, &copyBacks);
+        mglClearStageBindingCopyBacks(renderer, &copyBacks);
         mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
         mglRendererTemporariesRelease(executionTemporaries);
         return false;
@@ -270,12 +271,12 @@ bool mglComputeRunDispatchOrchestrationLocked(
                     "MGL COMPUTE ERROR: C++ %s execution transaction failed: %s\n",
                     reason ? reason : "dispatch",
                     executionError[0] ? executionError : "unknown error");
-            mglRendererClearStageBindingCopyBacksPort(renderer, &copyBacks);
+            mglClearStageBindingCopyBacks(renderer, &copyBacks);
             mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
             mglRendererTemporariesRelease(executionTemporaries);
             return false;
         }
-        mglRendererClearStageBindingCopyBacksPort(renderer, &copyBacks);
+        mglClearStageBindingCopyBacks(renderer, &copyBacks);
     } else {
         MGLRenderThreadgroupSize tg = {0};
         mglRenderThreadgroupSize(

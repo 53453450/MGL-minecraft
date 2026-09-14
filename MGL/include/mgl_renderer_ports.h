@@ -251,9 +251,10 @@ void mglRendererEndRenderEncodingPort(void *renderer);
 int mglRendererNewCommandBufferLockedPort(void *renderer);
 int mglRendererProcessGLStateLockedPort(void *renderer, int draw_command);
 
-void mglRendererClearStageBindingCopyBacksPort(void *renderer, void *copy_backs);
-void mglRendererClearStageBindingCopyBackPort(void *renderer, void *copy_backs,
-                                              uint64_t index);
+/* the Clear*CopyBack port(s) are gone: those methods are C now
+ * (mgl_stage_copy_back.h, log 158). */
+/* the Clear*CopyBack port(s) are gone: those methods are C now
+ * (mgl_stage_copy_back.h, log 158). */
 int mglRendererRecordStageBindingCopyBackPort(
     void *renderer, void *copy_backs, uint64_t index, void *temporary,
     void *destination, Buffer *destination_buffer, uint64_t destination_offset,

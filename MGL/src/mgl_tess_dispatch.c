@@ -41,6 +41,7 @@
 #include "mgl_tess_stage_bind.h"         /* stage-binding + texture plan (log 125) */
 #include "mgl_tess_texture.h"            /* mglTessEnsureTextureMetalData */
 #include "mgl_tess_compute_ops.h"        /* mglTessBindPointSizeParamsToComputeEncoder */
+#include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"          /* state areas, command buffer, processBuffer */
 #include "mgl_renderer_backend.h"        /* tcs output / patch-out / capture slots */
 #include "mgl_render.h"                  /* buffer creation, copy encodings, execute */
@@ -673,7 +674,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     ok = true;
 
 done:
-    mglRendererClearStageBindingCopyBacksPort(renderer, &stage_copy_backs);
+    mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
     if (temporaries) {
         mglRendererTemporariesRelease(temporaries);
     }
@@ -831,11 +832,11 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     if (!mglTessPrepareStageBufferBindings(renderer, &stage_buffer_bindings,
                                            _TESS_EVALUATION_SHADER,
                                            &stage_copy_backs)) {
-        mglRendererClearStageBindingCopyBacksPort(renderer, &stage_copy_backs);
+        mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
         ok = false;
         goto done;
     }
-    mglRendererClearStageBindingCopyBacksPort(renderer, &stage_copy_backs);
+    mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
 
     MGLTessTextureBind tes_texture_binds[TEXTURE_UNITS * 2u];
     const uint32_t tes_texture_bind_count = mglTessCollectTextureBinds(
@@ -1758,7 +1759,7 @@ done:
      * same.  The temporaries set and the pipeline (+1 each) are released
      * after the plan has been encoded, and the kernel's stage-in keep-alive
      * block lives in the set for exactly as long as the plan does. */
-    mglRendererClearStageBindingCopyBacksPort(renderer, &stage_copy_backs);
+    mglClearStageBindingCopyBacks(renderer, &stage_copy_backs);
     if (temporaries) {
         mglRendererTemporariesRelease(temporaries);
     }

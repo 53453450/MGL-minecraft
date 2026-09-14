@@ -255,9 +255,8 @@ static inline double mglNowSeconds(void)
 - (id)isolatedStageBindingBufferForMap:(const BufferMap *)map
                                            source:(id)source
                                    requiredLength:(NSUInteger)requiredLength;
-- (void)clearStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks;
-- (void)clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
-                           atIndex:(NSUInteger)index;
+/* clearStageBindingCopyBack(s): are C now (mgl_stage_copy_back.h). */
+/* clearStageBindingCopyBack(s): are C now (mgl_stage_copy_back.h). */
 - (bool)recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
                            atIndex:(NSUInteger)index
                          temporary:(id)temporary

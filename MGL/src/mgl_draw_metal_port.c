@@ -43,6 +43,7 @@ static inline bool mglVboRangeValidationEnabled(void)
 #include "mgl_draw_tess.h"
 
 #include "mgl_draw_cull.h"
+#include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_compute_bind.h"    /* compute buffer binding (was a method pair) */
@@ -709,7 +710,7 @@ static void mglStageClearNativeCB(void *renderer)
     MGLRendererStateAreas areas;
     if (!renderer) return;
     mglRendererStateAreasPort(renderer, &areas);
-    mglRendererClearStageBindingCopyBacksPort(renderer, &areas.tessellation->nativeTESCopyBacks);
+    mglClearStageBindingCopyBacks(renderer, &areas.tessellation->nativeTESCopyBacks);
 }
 
 static int mglStageFlushNativeCB(void *renderer)
@@ -1012,7 +1013,7 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
         renderer, _GEOMETRY_SHADER, compute, plan, temps);
     if (!buffersOK || !texturesOK) {
         if (compute) mglDrawSupportEndComputeEncoder(compute);
-        mglRendererClearStageBindingCopyBacksPort(renderer, &stageCopyBacks);
+        mglClearStageBindingCopyBacks(renderer, &stageCopyBacks);
         mglRendererTemporariesRelease(temps);
         return 0;
     }
@@ -1020,7 +1021,7 @@ static int mglGsMetalFillComputeBindings(void *renderer, GLMContext ctx,
         (const MGLRenderCopyBackEntry *)stageCopyBacks.slots,
         kMGLMaxBufferSlots, copybacks, copybacks_cap);
     *copybacks_count = n;
-    mglRendererClearStageBindingCopyBacksPort(renderer, &stageCopyBacks);
+    mglClearStageBindingCopyBacks(renderer, &stageCopyBacks);
     /* The plan only stores borrowed MTL pointers, and this function returns
      * before the C++ side encodes/dispatches it.  Hand the keep-alive set back
      * as a +1 reference so the caller can hold it across the encode; releasing

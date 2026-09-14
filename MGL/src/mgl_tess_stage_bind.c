@@ -34,6 +34,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "mgl_tess_stage_bind.h"
+#include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas + stage-binding host entries */
 #include "mgl_renderer_backend.h"   /* program binding sizes, storage-image texture */
 #include "mgl_render.h"             /* buffer/texture creation, copy encoding */
@@ -245,7 +246,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
                 (uint32_t)kMGLMaxMetalVertexBufferCount, &metal_binding_index)) {
             continue;
         }
-        mglRendererClearStageBindingCopyBackPort(renderer, copy_backs,
+        mglClearStageBindingCopyBackAtIndex(renderer, copy_backs,
                                                  metal_binding_index);
         void *buffer = ptr->data.mtl_data;
         if (buffer && mglRenderBufferHasCPUDirty(ptr->data.dirty_bits)) {
