@@ -50,7 +50,7 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零三刀** + trace 清零 后；第 68–133 轮见 §0.24/§0.26–§0.90；
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零三刀** + trace 清零 后；第 68–134 轮见 §0.24/§0.26–§0.91；（第 134 轮尝试勘察不足、已回退，度量不变）
 **第 113–120 轮（第八十三～九十刀）把 `+Blit.m` 整文件删除（6 → 5）；第 121/122 轮（第九十一/九十二刀）用「单方法二分 + 单例探针」破解采样簇阻塞并连续两刀一次通过**）**：
 文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 19,214**、
 ObjC 语法 **2,268 → 1,083**、词汇 **4,353 → 2,125**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
@@ -6005,6 +6005,30 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 **下一步**：先打两块大肉（1），再清长尾（2、3）→ **文件数 4 → 3**；之后 `+Texture.m`（279）、
 壳（288，含 `MGLPipelineCache` 归档路径）、`+RenderPass.m`（385）。
 
+164. **第 134 轮（第一百零四刀尝试）：`+Texture.m` 三个零 selector 叶子——勘察后**主动回退**，并强化第二十九条**：
+     ① **本来看中的目标**（零 selector、零端口）：`-uploadPackedDepthStencilStencilPlane:…`（102 行）、
+     `-fillSmallRGBA8TextureWithGradient:tex:`（80 行）、`-createFallbackMTLTexture:`（71 行）
+     ＋ 4 个 `.m` static（`mglDepthStencilAlignedBytesPerRow` / `mglTextureInfo` /
+     `mglTextureReplaceRegion` / `mglTextureCreateTexture`，共 47 行）＝ **12 语法 / 300 行**，
+     且 `createFallbackMTLTexture:` 还带一个可退役的 port（`mglRendererCreateFallbackMTLTexturePort`，1 处 C 调用者）。
+     **依赖闭包扫描（只扫 `mgl*` 符号）显示"零遗留"**——4 个 static 的 own-miss 全空。
+     ② **实施后连续 4 次构建失败**，暴露扫描**没覆盖**的两类东西：
+     - **ObjC 语法**：三个方法各有 **2–3 个 `@try/@catch`**（要转 `mglPlatformShellGuardedCallCtx`），
+       还有 `[NSException raise:…]`、`NSLog`（**其中两条格式串带 `%@`**，不能直接换 `fprintf`）；
+     - **文件局部常量**：`kMGLDepthStencilUploadRowAlignment = 256u`（`static const NSUInteger`），
+       我第一次把它加在了**使用点之后**（C 要求先声明）——白跑一次构建。
+     ③ **处置：回退**。删除新建的 `mgl_texture_upload.{h,c}`（`+Texture.m` 全程未被修改，所以回退是净零改动），
+     `make -j8` 复核 **0 error**、`git status` 干净。**没有把半成品留在树里。**
+     ④ **规矩 29 强化为**：依赖扫描必须**同时扫三类**——
+     **(a) `mgl*` 符号**（判"在 C 头里还是 .m 里"）、
+     **(b) ObjC 语法**（`@try`/`@catch`/`@autoreleasepool`/`[X …]`/`NSException`/`NSLog`/`%@`），
+     **(c) 文件局部常量与 typedef**（它们不在任何头里，扫描符号时最容易漏）。
+     扫描命令可直接用：对函数体逐行打印"命中 `mgl*` 或 ObjC 语法的行"，再据此估工作量。
+     ⑤ **为什么值得记下来**：这是"勘察不充分导致的高成本尝试"的第二次（第一次是第 160 条的 6 次失败）。
+     **两次的共同点**：都是"符号扫描干净"但"语言/常量层有隐藏依赖"。**下次开新文件/新簇前先跑三类扫描。**
+     ⑥ **本轮度量不变**（净零改动）：4 个文件 / 19,214 行 / 1,083 语法 / 2,125 词汇 / 31 端口；
+     `make -j8` **0 error**；工作区干净（未跑四件套——因为代码没有变化，`+Texture.m` 与 HEAD 一致）。
+
 ### 0.90 第 133 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.89**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 19,214 行 / 1,083 语法 / 2,125 词汇**；
@@ -6037,3 +6061,33 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 
 **下一步**：按上面"两块大肉的前置"准备（drawable 尺寸组 + 端口），再打 `mtlClearBuffer:` 与
 `mtlSwapBuffersLocked:`；之后长尾与剩余对外符号 → **文件数 4 → 3**。
+
+### 0.91 第 134 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.90**）
+
+**当前状态**（与 §0.90 相同，本轮净零改动）：`MGL/` 内 ObjC
+**4 个文件 / 0 空 TU / 19,214 行 / 1,083 语法 / 2,125 词汇**；壳 TU **2,033 行 / 286 语法**（上限 2,400）；
+端口面 **31 个**；`make test-all` **0**；CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` **385/553/6,843** · `+Texture.m` **279/1,052/6,248** · `MGLRenderer.m` **133/228/4,090** ·
+壳 `MGLPlatformRendererShell.m` **286/292/2,033**。
+
+**已勘察好、可以开刀的两簇（都带准确依赖清单）**：
+1. **`+Texture.m` 的三个零 selector 叶子**（12 语法 / 300 行 + 1 个可退役 port）——依赖清单：
+   4 个 `.m` static（`mglDepthStencilAlignedBytesPerRow` / `mglTextureInfo` / `mglTextureReplaceRegion` /
+   `mglTextureCreateTexture`，互相无依赖、共 47 行）、**常量** `kMGLDepthStencilUploadRowAlignment = 256u`、
+   **6 个 `@try/@catch`**（要转 `mglPlatformShellGuardedCallCtx`）、若干 `NSLog`（**两条带 `%@`**，需改成固定文案）、
+   1 处 `[NSException raise:…]`。**`_device` 已有 C 路径**：`mglRendererBackendGetDevice(areas.backend)`。
+   调用点：`+Texture.m` 内 4 处（3 处 `uploadPacked…` + 1 处 `fillSmallRGBA8…`）+ shell 的
+   `mglRendererCreateFallbackMTLTexturePort`（`mgl_texture_bind.c` 1 处）。
+2. **`MGLRenderer.m` 的两块大肉**（各 37 语法）：依赖清单见 §0.90（各自需要若干端口/areas 字段）。
+
+**规矩表（§0.62/§0.65–§0.90 二十九条仍然有效）＋ 本轮第三十一条（第二十九条的强化）**：
+31. **新簇开工前的"三类扫描"**（第 164 轮的代价换来）：对一个候选函数体逐行打印并分类
+    **(a) `mgl*` 符号**（在 C 头 / 在 .m）、**(b) ObjC 语法**（`@try`/`@catch`/`@autoreleasepool`/`[X …]`/
+    `NSException`/`NSLog`/`%@`）、**(c) 文件局部常量与 typedef**。三者齐了再动手；
+    **只看 (a) 会在实施阶段连撞 4–6 次**（第 160 条与第 164 条各一次）。
+    配套：**回退要做到净零改动**——先确认目标文件"只读未写"，再删新建的 TU（第 164 条 ③）。
+
+**下一步**：按上面 1（`+Texture.m` 三叶子，含 6 个 guarded call）或 2（`MGLRenderer.m` 大肉）开刀；
+两者都建议**先把端口/常量/guarded-call 的前置一次做完**。
