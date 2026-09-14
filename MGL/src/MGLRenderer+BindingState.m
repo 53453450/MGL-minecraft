@@ -13,6 +13,7 @@
 #import "MGLRenderer_Private.h"
 #include "mgl_stage_buffer_bind.h"  /* stage-buffer binding drivers (log 129) */
 #include "mgl_storage_image_bind.h" /* storage-image driver (log 130) */
+#include "mgl_sampled_fallback.h" /* sampled-texture fallback chain (log 132) */
 #include "mgl_texture_sampler.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_buffer_map.h"  /* buffer mapping entries (was MGLRenderer+Buffer.m) */
@@ -630,8 +631,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                        : 0);
 
         if (!texture && !suppressMissing) {
-            texture = [self fallbackSampledTextureForExpectedType:expectedType
-                                                         dataKind:expectedKind];
+            texture = (__bridge id)mglSampledFallbackTextureForExpectedType((__bridge void *)self, expectedType, expectedKind);
             if (texture) {
                 sin.has_bound_texture = 1;
                 fallback++;
@@ -1136,8 +1136,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             (texture && mglMetalPixelFormatIsDepthOrStencil(
                             mglBindingStateTexturePixelFormat(texture)))) {
             id fallbackTexture =
-                [self fallbackSampledTextureForExpectedType:expectedType
-                                                   dataKind:expectedKind];
+                (__bridge id)mglSampledFallbackTextureForExpectedType((__bridge void *)self, expectedType, expectedKind);
             if (fallbackTexture) {
                 static uint64_t s_fb = 0;
                 if (mglBindingTextureDepthRecoverLogHit(&s_fb)) {
@@ -1321,8 +1320,7 @@ done:
                  stage ? stage : "x", spirvBinding);
         mglWriteProgramMSLDump(sampleProgram, dumpReason);
     }
-    texture = [self fallbackSampledTextureForExpectedType:expectedType
-                                                 dataKind:expectedKind];
+    texture = (__bridge id)mglSampledFallbackTextureForExpectedType((__bridge void *)self, expectedType, expectedKind);
     if (usedFallbackOut) {
         *usedFallbackOut = YES;
     }
@@ -1637,8 +1635,7 @@ done:
                                                                     texture:metalTexture];
                 }
                 if (!metalTexture) {
-                    metalTexture = [self fallbackSampledTextureForExpectedType:expectedType
-                                                                      dataKind:MGLTextureDataKindFloat];
+                    metalTexture = (__bridge id)mglSampledFallbackTextureForExpectedType((__bridge void *)self, expectedType, MGLTextureDataKindFloat);
                 }
 
                 uint32_t bindStage =

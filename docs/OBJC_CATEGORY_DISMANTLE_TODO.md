@@ -50,9 +50,9 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 七十五刀** + trace 清零 后；第 68–101 轮见 §0.24/§0.26–§0.58）**：
-文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 25,679**、
-ObjC 语法 **2,268 → 1,443**、词汇 **4,353 → 3,047**；
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 七十六刀** + trace 清零 后；第 68–102 轮见 §0.24/§0.26–§0.59）**：
+文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 25,443**、
+ObjC 语法 **2,268 → 1,429**、词汇 **4,353 → 3,013**；
 **shim：43 → 28 个端口 / 唯一壳 TU 1,988 行 / 279 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；`MGLRenderer*.m` **34,604 → 24,925**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -4141,3 +4141,72 @@ A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔
 3. `+Texture.m`（289 语法 / 1,086 词汇，词汇最多）。
 4. `+RenderPass.m`（385 语法，最大块）与 `MGLRenderer.m`（168）。
 5. 壳的 `MGLPipelineCache` 归档路径（Foundation→POSIX + 专属 oracle）。
+
+132. **P0-1 第七十六刀：采样纹理回退链转 C（`+Texture.m` 的 5 个方法），为 `+BindingState.m` 的收尾刀解开"无端口被调者"这个结**：
+     ① 新 TU **`mgl_sampled_fallback.{h,c}`**：把 `+Texture.m` 里的
+     `-fallbackSampledTextureForExpectedType:dataKind:`（68 行）、`-fallbackSampledTextureForExpectedType:`（13）、
+     `-fallbackSampledTexture`（38）、`-fallbackCubeSampledTexture`（40）、`-fallbackTextureBufferSampledTexture`（65）
+     整体搬成 C：`mglSampledFallbackTextureForExpectedType(renderer, expected_type, data_kind)` /
+     `mglSampledFallbackTextureForType` / `mglSampledFallbackTexture` / `mglSampledFallbackCubeTexture` /
+     `mglSampledFallbackTextureBuffer`。**动机是端口账**：这五个方法是 `+BindingState.m` 采样簇里
+     `applySampledCompatFallbackPlan:`（4 处调用点）唯一的"外部且无端口"被调者；先把它转 C，
+     收尾刀就**不需要新增端口**。本刀**端口 28 → 28（T4 中性，如实记账）**。
+     ② 机械替换：`self`/`_backend`/`_device` 走状态区；`+Texture.m` 的文件静态
+     （`mglTextureCreateTexture` / `…CreateBuffer` / `…CreateBufferTexture` / `…BufferContents` / `…ReplaceRegion`）
+     与枚举（`MGL_TEXTURE_USAGE_SHADER_READ=1`、`MGL_TEXTURE_RESOURCE_STORAGE_SHARED=0`、
+     `kMGLEnableSampledTextureFallback=YES`）各写 C twin；`NSLog` → `fprintf(stderr, …)`；
+     `%@`/`[NSString stringWithUTF8String:]` → `%s`。
+     **`@try/@catch`（纹理缓冲纹理创建）改用既有端口 `mglPlatformShellGuardedCallCtx`**（§0.14 路线 ③，
+     该回调签名是 `int (*)(void *renderer, void *ctx)`，签名不符会直接编译报错，本轮已修）。
+     ③ **所有权（§0.128 铁律的又一次应用）**：5 个入口全部**返回借用指针**（与原方法 ARC 的 +0 一致）：
+     `mglRenderCreateTextureFromState` 等给出 **+1**，写进 backend 缓存（Set/Put 内部 retain）之后
+     **放掉自己那份**；失败路径同样放掉再返回 NULL。四个调用点改调 C 入口后，`+BindingState.m` 里每处多一个
+     `(__bridge id)`（ARC 需要显式桥接）——**这也是该文件语法 87 → 91（+4）的原因**，全库仍降 14。
+     ④ **oracle**：旧库 = 提交 `baebfe9` 的独立 worktree 构建（两库不同；先清 `.o/.d`）；
+     `ab_full.py`：**default 4,981/4,981、flushy 5,514/5,514 逐行一致**（未过滤 5,323/5,323 与 6,116/6,115 →
+     `slow` 342/342、602/601，本刀两臂几乎相同）、**stderr MGL 307/307 多重集一致**、两臂 **92/0/2、91/1/2**。
+     ⚠️ 本轮 `make test-all` 又一次先撞 GitHub 网络噪声（`fetch_opengl_registry.sh`），**重跑即 0**。
+     ⑤ **CTS 七簇**：非通过集合 **diff 全空**（58 / 1 / 0 / 59 / 13 / 39 / 4）；`make test-all` **0**（92/0/2/94）。
+     ⑥ **度量**：`+Texture.m` **6,489 → 6,256 行**、语法 **289 → 271**、词汇 **1,086 → 1,052**；
+     `+BindingState.m` 1,681 → 1,678 行、语法 87 → 91（见 ③）、词汇 85 → 85；
+     全库行数 **25,679 → 25,443（−236）**、语法 **1,443 → 1,429（−14）**、词汇 **3,047 → 3,013（−34）**；
+     文件数 **6 不变**；端口 **28 不变**；新增 C 面约 330 + 40 行。
+     ⑦ **下一刀**：`materializeSampledSamplerForTexture:`（4 语法 / 68 行）→ C 并**退役既有端口
+     `mglRendererMaterializeSampledSamplerPort`（28 → 27）**；随后按 §0.59 把其余采样方法逐个搬走，
+     最后 `+BindingState.m` 整文件删除（6 → 5）。
+
+### 0.59 第 102 轮交接快照（**新会话请先读本节 + §0.51 + §0.55 + §0.58**）
+
+**当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 25,443 行 / 1,429 语法 / 3,013 词汇**；
+壳 TU **1,988 行 / 279 语法**（上限 2,400）；端口面 **28 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂逐行一致（见第 132 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,843 · `+Texture.m` 271/1,052/6,256 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` 235/761/4,062 · 壳 `MGLPlatformRendererShell.m` 279/287/1,988 ·
+`+BindingState.m` **91/85/1,678**。
+
+**`+BindingState.m` 收尾清单（8 个方法 / 91 语法）与其"外部被调者"账**（这是决定端口增减的唯一变量）：
+| 方法 | 语法 | 外部被调者 | 现状 |
+|---|---|---|---|
+| `bindTexturesToCurrentRenderEncoder:` | 4 | `bindSampledTexturesForStage:`（同文件） | 同簇一起搬即可 |
+| `bindSampledTexturesForStage:` | 17 | 同文件 5 个 + `mglBindingStateResourceAtOrdinal`（弱依赖） | 同簇 |
+| `recoverFragmentSampledDepthTexture:` | 23 | `[self bindMTLTexture:]`（有 C 入口）、fallback 链（**已 C**） | 可搬 |
+| `emitSampledDiagPortsForProgram:` | 13 | `[self traceSampledTextureReadback:…]`（`+Texture.m`，**无端口**，参数含 `NSString`） | **需先转它或补端口** |
+| `applySampledCompatFallbackPlan:` | 0 | fallback 链（**已 C**，本刀解决） | 可搬 |
+| `materializeSampledSamplerForTexture:` | 4 | 全部 C | **可搬并可退役 1 端口** |
+| `applySampledRenderTargetCopyPlan:` | 9 | `[self freshGLSampledRenderTargetCopyForSampling:…]`（`+Blit.m`，**无端口**） | **需先转它或补端口** |
+| `bindSeparateSamplersAndArrayTextures:` | 17 | `materializeSampledSamplerForTexture:`（同文件）、fallback 链（已 C） | 同簇 |
+
+**建议的两刀**：
+1. 本清单里"可搬"的 5 个（含 `materializeSampledSamplerForTexture:` → 退役 `mglRendererMaterializeSampledSamplerPort`，28 → 27）；
+2. 把 `traceSampledTextureReadback:`（`+Texture.m`）与 `freshGLSampledRenderTargetCopyForSampling:`（`+Blit.m`）
+   转 C（后者内部还会碰 `[self currentRenderPassUsesTexture:]`、`[self uploadFullCPUTextureDataIntoTexture:…]`，
+   **转之前先列它的外部被调者**），再搬剩下两个方法 → **`+BindingState.m` 整文件消失（6 → 5）**。
+
+**累积开工规矩（§0.55 / §0.57 / §0.58 + 本节）**：
+1. 每个 `id` 局部判保活；端口返回值与方法返回值可能差一个 +1。
+2. `currentRenderEncoderOwner` 在使用点重新读取。
+3. 转换前**全树搜该选择器的所有调用点**（`.m` + `.c`）；删方法后 `make test-all` 是最后一道网。
+4. **新：入口返回值契约照抄 ARC**——ObjC 方法返回 +0/借用时，C 入口也必须返回借用指针（创建的 +1 交给缓存后立刻放掉），
+   ObjC 调用点用 `(__bridge id)` 桥接（会让该文件语法略升，属正常）。
+5. CTS 单次状态不是判决（抖动用例 `KHR-GL46…advanced-memory-order`），diff 异常先做两臂受控复跑。
