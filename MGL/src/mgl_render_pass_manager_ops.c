@@ -4508,7 +4508,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
 /* Shell forwarders for swap-path state that must be computed on the shell
  * object (the interval and the layer travel in the areas instead). */
 extern int mglPlatformShellShouldSkipPresentForUnlockedSwap(void *renderer);
-extern void mglPlatformShellApplyPendingDrawableSize(void *renderer);
+extern MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer);
 extern void *mglPlatformShellDrawablePointer(void *renderer);
 
 /* The .m's file-local constants this TU needs (values copied verbatim from
@@ -4862,7 +4862,7 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     "MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present",
                     (unsigned long long)swapCall);
             }
-            mglPlatformShellApplyPendingDrawableSize(renderer);
+            (void)mglPlatformShellApplyPendingDrawableSize(renderer);
             (void)mglRendererNextDrawablePort(renderer);
             if (traceSwap) {
                 void *tex = mglRendererDrawableTexturePort(renderer);
@@ -4883,7 +4883,7 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     "MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present_retry",
                     (unsigned long long)swapCall);
             }
-            mglPlatformShellApplyPendingDrawableSize(renderer);
+            (void)mglPlatformShellApplyPendingDrawableSize(renderer);
             (void)mglRendererNextDrawablePort(renderer);
             if (traceSwap) {
                 void *tex = mglRendererDrawableTexturePort(renderer);

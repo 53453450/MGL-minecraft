@@ -12,6 +12,7 @@
 // Render pass lifecycle methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#import "mgl_clear_buffer_ops.h" /* draw-buffer creators (log 184) */
 #include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_draw_encode.h"
 #include "mgl_render_pass_manager_ops.h"
@@ -1789,8 +1790,8 @@ static uint64_t mglGeometryPipelineFunctionKey(
             _backend, mgl_drawbuffer,
             MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR);
         if (!texture) {
-            texture = [self newDrawBuffer:ctx->pixel_format.mtl_pixel_format
-                           isDepthStencil:false];
+            texture = (__bridge id)mglRendererNewDrawBuffer(
+                (__bridge void *)self, ctx->pixel_format.mtl_pixel_format, 0);
             (void)mglRendererBackendSetDefaultDrawBufferAttachment(
                 _backend, mgl_drawbuffer,
                 MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_COLOR,
@@ -1819,10 +1820,8 @@ static uint64_t mglGeometryPipelineFunctionKey(
         else
         {
             MGLRenderTextureInfo textureInfo = mglRenderPassTextureInfo(texture);
-            depth_texture = [self newDrawBufferWithCustomSize:depthFormat
-                                                   isDepthStencil:true
-                                                     customSize:CGSizeMake(textureInfo.width,
-                                                                           textureInfo.height)];
+            depth_texture = (__bridge id)mglRendererNewDrawBufferWithCustomSize(
+                depthFormat, 1, textureInfo.width, textureInfo.height);
             (void)mglRendererBackendSetDefaultDrawBufferAttachment(
                 _backend, mgl_drawbuffer,
                 MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_DEPTH,
@@ -1861,10 +1860,8 @@ static uint64_t mglGeometryPipelineFunctionKey(
         else
         {
             MGLRenderTextureInfo textureInfo = mglRenderPassTextureInfo(texture);
-            stencil_texture = [self newDrawBufferWithCustomSize:stencilFormat
-                                                     isDepthStencil:true
-                                                       customSize:CGSizeMake(textureInfo.width,
-                                                                             textureInfo.height)];
+            stencil_texture = (__bridge id)mglRendererNewDrawBufferWithCustomSize(
+                    stencilFormat, 1, textureInfo.width, textureInfo.height);
             (void)mglRendererBackendSetDefaultDrawBufferAttachment(
                 _backend, mgl_drawbuffer,
                 MGL_RENDERER_BACKEND_DEFAULT_DRAW_BUFFER_STENCIL,

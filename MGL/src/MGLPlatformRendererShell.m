@@ -776,12 +776,17 @@ int mglPlatformShellShouldSkipPresentForUnlockedSwap(void *renderer)
     return r ? ([r mglShouldSkipPresentForUnlockedSwap] ? 1 : 0) : 0;
 }
 
-void mglPlatformShellApplyPendingDrawableSize(void *renderer)
+MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        (void)[r mglApplyPendingDrawableSize];
+    MGLSizeValue size = {0};
+    if (!r) {
+        return size;
     }
+    CGSize applied = [r mglApplyPendingDrawableSize];
+    size.width = (uint64_t)applied.width;
+    size.height = (uint64_t)applied.height;
+    return size;
 }
 
 void *mglPlatformShellDrawablePointer(void *renderer)
