@@ -30,6 +30,17 @@
 extern "C" {
 #endif
 
+/* Separate samplers (fragment) plus array-element textures/samplers for both
+ * stages.  Was -bindSeparateSamplersAndArrayTextures:fragmentProgram:
+ * fragmentProgramName:vertexProgramName:defaultSampler:bindCall:traceBind:
+ * separateSamplerCount:boundSeparateSamplers:.  Returns false when the caller
+ * must abandon the stage. */
+bool mglSampledBindSeparateSamplersAndArrayTextures(
+    void *renderer, Program *vertex_program, Program *fragment_program,
+    GLuint fragment_program_name, GLuint vertex_program_name,
+    void *default_sampler, uint64_t bind_call, int trace_bind,
+    GLuint *separate_sampler_count, GLuint *bound_separate_samplers);
+
 /* Compat fallback plan for a sampled texture whose type/kind does not match the
  * shader.  Was -applySampledCompatFallbackPlan:texture:expectedType:
  * expectedKind:stage:programName:spirvBinding:sampleProgram:usedFallbackOut:.

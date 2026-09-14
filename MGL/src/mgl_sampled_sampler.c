@@ -36,7 +36,15 @@
 #include "mgl_trace_log.h"       /* mglTraceLogIsEnabled */
 #include "mgl_blit_drivers.h"    /* mglBlitFreshGLSampledRenderTargetCopyForSampling */
 #include "mgl_types_program.h"   /* Program */
+#include "mgl_renderer_backend.h" /* mglRendererGetProgramBinding* */
+#include "mgl_shader_resource.h" /* mglMetalCombinedSamplerSlotForElement */
+#include "mgl_binding_policy.h"  /* mglRenderTextureBindingStageForShader */
+#include "mgl_texture_bind.h"    /* mglRendererBindMTLTexture */
+#include "mgl_texture_binding_resolve.h" /* mglTextureForSampledResourceForStage */
 #include "mgl_trace_strategy.h" /* mglWriteProgramMSLDump */
+
+/* The .m's file-local sampler slot ceiling (MGLRenderer+BindingState.m). */
+enum { kMaxFragmentSamplerSlots = 16 };
 
 /* MGLRenderer_Private.h declares this BOOL (signed char on macOS). */
 extern signed char mglEnvFlagEnabled(const char *name);
@@ -360,6 +368,226 @@ bool mglSampledRenderTargetCopyPlan(
         if (plan.apply_base_level_view && texture) {
             *texture_ptr = mglSampledTextureViewForBaseLevel(ptr, texture);
         }
+    }
+    return true;
+}
+
+/* Twins of the MGLRenderer+Draw_Private.h resource-binding statics (rule 7). */
+static int mglSsCollectResourceBinding(MGLRenderResourceBindingSnapshot *snapshot,
+                                       uint32_t stage, uint32_t kind,
+                                       void *resource, uint32_t index)
+{
+    if (!snapshot || stage > MGL_RENDER_BINDING_STAGE_FRAGMENT ||
+        kind > MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
+        return 0;
+    }
+    uint32_t *count = stage == MGL_RENDER_BINDING_STAGE_VERTEX
+                          ? &snapshot->vertex_op_count
+                          : &snapshot->fragment_op_count;
+    MGLRenderResourceBindingOp *ops = stage == MGL_RENDER_BINDING_STAGE_VERTEX
+                                          ? snapshot->vertex_ops
+                                          : snapshot->fragment_ops;
+    if (*count >= MGL_RENDER_RESOURCE_BINDING_SNAPSHOT_MAX_OPS) {
+        return 0;
+    }
+    ops[(*count)++] = (MGLRenderResourceBindingOp){
+        .kind = kind,
+        .index = index,
+        .resource = resource,
+    };
+    return 1;
+}
+
+static int mglSsQueueResourceBinding(int collect, void *binding_state_owner,
+                                     void *render_encoder_owner,
+                                     MGLRenderResourceBindingSnapshot *snapshot,
+                                     uint32_t stage, uint32_t kind,
+                                     void *resource, uint32_t index)
+{
+    if (collect) {
+        return mglSsCollectResourceBinding(snapshot, stage, kind, resource,
+                                           index);
+    }
+    if (kind == MGL_RENDER_RESOURCE_BINDING_TEXTURE) {
+        return mglRenderBindingSetTextureForOwner(binding_state_owner,
+                                                  render_encoder_owner,
+                                                  resource, stage, index) >= 0;
+    }
+    if (kind == MGL_RENDER_RESOURCE_BINDING_SAMPLER) {
+        return mglRenderBindingSetSamplerForOwner(binding_state_owner,
+                                                  render_encoder_owner,
+                                                  resource, stage, index) >= 0;
+    }
+    return 0;
+}
+
+static int mglSsFlushResourceBindings(void *binding_state_owner,
+                                      void *render_encoder_owner,
+                                      MGLRenderResourceBindingSnapshot *snapshot)
+{
+    if (!snapshot || (snapshot->vertex_op_count == 0 &&
+                      snapshot->fragment_op_count == 0)) {
+        return 1;
+    }
+    if (mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
+            binding_state_owner, render_encoder_owner, snapshot, NULL, 0) != 0) {
+        return 0;
+    }
+    *snapshot = (MGLRenderResourceBindingSnapshot){0};
+    return 1;
+}
+
+bool mglSampledBindSeparateSamplersAndArrayTextures(
+    void *renderer, Program *vertex_program, Program *fragment_program,
+    GLuint fragment_program_name, GLuint vertex_program_name,
+    void *default_sampler, uint64_t bind_call, int trace_bind,
+    GLuint *separate_sampler_count, GLuint *bound_separate_samplers)
+{
+    (void)vertex_program_name;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    void *binding_state_owner =
+        areas.binding_state_owner ? *areas.binding_state_owner : NULL;
+    void *render_encoder_owner =
+        areas.command ? areas.command->currentRenderEncoderOwner : NULL;
+
+    const int use_resource_snapshot = 1;
+    MGLRenderResourceBindingSnapshot resource_snapshot = {0};
+
+    *separate_sampler_count = mglRendererGetProgramBindingCount(
+        ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES);
+    *bound_separate_samplers = 0;
+    for (GLuint i = 0; i < *separate_sampler_count; i++) {
+        GLuint spirv_binding = mglRendererGetProgramBinding(
+            ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES, (int)i);
+        GLuint gl_binding = mglRendererGetProgramGLBinding(
+            ctx, _FRAGMENT_SHADER, _SEPARATE_SAMPLERS_RES, (int)i);
+        if (!mglBindingTextureSeparateSamplerInRange(spirv_binding, gl_binding,
+                                                     TEXTURE_UNITS)) {
+            continue;
+        }
+        Program *sample_program = fragment_program;
+        MGLShaderResource *sampler_resource = NULL;
+        if (sample_program &&
+            i < sample_program->shader_resources_list[_FRAGMENT_SHADER]
+                    [_SEPARATE_SAMPLERS_RES]
+                        .count) {
+            sampler_resource =
+                &sample_program->shader_resources_list[_FRAGMENT_SHADER]
+                     [_SEPARATE_SAMPLERS_RES]
+                         .list[i];
+        }
+        GLuint texture_unit = mglTextureUnitForSampledResource(
+            sampler_resource,
+            mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER),
+            spirv_binding, _FRAGMENT_SHADER);
+
+        void *sampler = mglSampledSamplerMaterialize(
+            renderer, NULL, texture_unit, default_sampler, 0,
+            (GLuint)mglRenderSamplerObjectTarget(), fragment_program_name,
+            spirv_binding, "fragment", NULL);
+        if (sampler && spirv_binding < kMaxFragmentSamplerSlots) {
+            if (!mglSsQueueResourceBinding(
+                    use_resource_snapshot, binding_state_owner,
+                    render_encoder_owner, &resource_snapshot,
+                    MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                    MGL_RENDER_RESOURCE_BINDING_SAMPLER, sampler,
+                    spirv_binding)) {
+                return false;
+            }
+            (*bound_separate_samplers)++;
+        }
+
+        if (trace_bind && i < 6) {
+            mglTraceLog("texbind.separateSampler call=%llu idx=%u binding=%u "
+                        "unit=%u sampler=%p",
+                        (unsigned long long)bind_call, (unsigned)i,
+                        (unsigned)spirv_binding, (unsigned)texture_unit,
+                        sampler);
+        }
+    }
+
+    Program *array_programs[] = {vertex_program, fragment_program};
+    int array_stages[] = {areas.tess_native_tes_active ? _TESS_EVALUATION_SHADER
+                                                       : _VERTEX_SHADER,
+                          _FRAGMENT_SHADER};
+    for (size_t program_index = 0; program_index < 2; program_index++) {
+        Program *array_program = array_programs[program_index];
+        int array_stage = array_stages[program_index];
+        if (!array_program) {
+            continue;
+        }
+
+        MGLShaderResourceList *array_resources =
+            &array_program->shader_resources_list[array_stage][_SAMPLED_IMAGE_RES];
+        for (GLuint resource_index = 0;
+             array_resources->list && resource_index < array_resources->count;
+             resource_index++) {
+            MGLShaderResource *resource = &array_resources->list[resource_index];
+            if (resource->gl_array_size <= 1) {
+                continue;
+            }
+
+            uint32_t expected_type = (uint32_t)mglRendererGetProgramExpectedTextureType(
+                ctx, array_stage, _SAMPLED_IMAGE_RES, (int)resource_index);
+            for (GLint element = 1; element < resource->gl_array_size; element++) {
+                GLuint metal_slot = resource->binding + (GLuint)element;
+                GLuint sampler_slot = mglMetalCombinedSamplerSlotForElement(
+                    resource, (GLuint)element);
+                if (!mglBindingTextureArrayElementSlotOk(metal_slot,
+                                                         TEXTURE_UNITS)) {
+                    break;
+                }
+
+                GLuint texture_unit = mglTextureUnitForSampledResource(
+                    NULL, mglResolveProgramForStageFromState(ctx, array_stage),
+                    metal_slot, array_stage);
+                Texture *array_texture = mglTextureForSampledResourceForStage(
+                    ctx, NULL, metal_slot, array_stage, expected_type);
+                void *metal_texture = NULL;
+                void *metal_sampler = default_sampler;
+                if (array_texture &&
+                    mglRendererBindMTLTexture(renderer, array_texture)) {
+                    metal_texture = array_texture->mtl_data;
+                    metal_sampler = mglSampledSamplerMaterialize(
+                        renderer, array_texture, texture_unit, default_sampler, 0,
+                        array_texture->target, array_program->name, metal_slot,
+                        "vertex", metal_texture);
+                }
+                if (!metal_texture) {
+                    metal_texture = mglSampledFallbackTextureForExpectedType(
+                        renderer, expected_type, MGLTextureDataKindFloat);
+                }
+
+                uint32_t bind_stage =
+                    mglRenderTextureBindingStageForShader(array_stage);
+                if (!mglSsQueueResourceBinding(
+                        use_resource_snapshot, binding_state_owner,
+                        render_encoder_owner, &resource_snapshot, bind_stage,
+                        MGL_RENDER_RESOURCE_BINDING_TEXTURE, metal_texture,
+                        metal_slot)) {
+                    return false;
+                }
+                if (mglBindingTextureShouldBindCombinedSampler(
+                        resource->has_combined_sampler ? 1 : 0,
+                        metal_sampler ? 1 : 0, sampler_slot,
+                        kMaxFragmentSamplerSlots)) {
+                    if (!mglSsQueueResourceBinding(
+                            use_resource_snapshot, binding_state_owner,
+                            render_encoder_owner, &resource_snapshot,
+                            bind_stage, MGL_RENDER_RESOURCE_BINDING_SAMPLER,
+                            metal_sampler, sampler_slot)) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    if (use_resource_snapshot &&
+        !mglSsFlushResourceBindings(binding_state_owner, render_encoder_owner,
+                                    &resource_snapshot)) {
+        return false;
     }
     return true;
 }
