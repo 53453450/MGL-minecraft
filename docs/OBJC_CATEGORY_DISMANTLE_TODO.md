@@ -50,9 +50,10 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 七十六刀** + trace 清零 后；第 68–102 轮见 §0.24/§0.26–§0.59）**：
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 七十六刀** + trace 清零 后；第 68–103 轮见 §0.24/§0.26–§0.60）**：
 文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 25,443**、
-ObjC 语法 **2,268 → 1,429**、词汇 **4,353 → 3,013**；
+ObjC 语法 **2,268 → 1,429**、词汇 **4,353 → 3,013**；**第 103 轮尝试的采样绑定刀被 CTS 拦下并整体回滚，
+度量与 `2643227` 相同**；
 **shim：43 → 28 个端口 / 唯一壳 TU 1,988 行 / 279 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；`MGLRenderer*.m` **34,604 → 24,925**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
@@ -4210,3 +4211,67 @@ A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔
 4. **新：入口返回值契约照抄 ARC**——ObjC 方法返回 +0/借用时，C 入口也必须返回借用指针（创建的 +1 交给缓存后立刻放掉），
    ObjC 调用点用 `(__bridge id)` 桥接（会让该文件语法略升，属正常）。
 5. CTS 单次状态不是判决（抖动用例 `KHR-GL46…advanced-memory-order`），diff 异常先做两臂受控复跑。
+
+133. **本轮（第 103 轮）尝试把 `materializeSampledSamplerForTexture:` + `applySampledCompatFallbackPlan:` +
+     `bindSeparateSamplersAndArrayTextures:` 转 C 并退役 `mglRendererMaterializeSampledSamplerPort`（28 → 27）——
+     **被 CTS 拦下，已整体回滚，未改动代码**（工作区仍在 `2643227`）**：
+     ① 转换本身完成且能构建：新 TU `mgl_sampled_bind.{h,c}`（约 470 行）把三个方法搬成
+     `mglBindingStateMaterializeSampledSampler` / `…ApplySampledCompatFallbackPlan` /
+     `…BindSeparateSamplersAndArrayTextures`，端口包装与声明一并删除，`mgl_compute_bind.c` 两处调用点改直调；
+     `make test-all` 通过（92/0/2/94），**A/B 全文逐行一致**（4,981/4,981、5,514/5,514，stderr 307/307）。
+     ② **CTS 立刻报出真回归**：hotspot 簇非通过集合从 58 涨到 **65**，多出的全是**深度/深度模板纹理**用例
+     （`KHR-GL46.internalformat.copy_tex_image.depth_component24/32`、
+     `…internalformat.texture2d.depth_component_unsigned_*`、
+     `packed_depth_stencil.stencil_texturing/verify_read_pixels.depth24_stencil8` 等 8 例），
+     且状态由 `fail` 变 **`crash`**（进程 -10/-11）。
+     ③ **定位过程与证据**：
+     - 复现：`KHR-GL46.internalformat.copy_tex_image.depth_component24` 单跑 5 次 ——
+       旧库 **5/5 通过**，新库 **2–3/5 段错误**（不是抖动用例，是确定性的内存错误）；
+     - lldb 回溯：崩溃在 `objc_retain`，frame#1 = `-[MGLRenderer bindSampledTexturesForStage:…]` 第 520 行
+       第 40 列，即 **ARC 对 `mglBindingStateMaterializeSampledSampler()` 返回值的保留**；
+     - 插桩：该次调用的 `plan.action=2`（`USE_TEX_PARAMS`）、返回 `ptr->params.mtl_data`（非 NULL），
+       其 isa 读出来是 `0x2800000000`（已被释放/复用的对象）；
+     - **反证实验**：把该分支临时改成返回 NULL 后**仍然 2/5 崩溃** →
+       **崩溃不是这个返回值造成的**，而在同一刀的其他改动里（`applySampledCompatFallbackPlan:` 的调用点重写，
+       或 `bindSeparateSamplersAndArrayTextures:` 的整段搬移）。
+     - 回滚后复验：`make test-all` **0**、该用例 **5/5 通过**。
+     ④ **本轮两条新规矩（已并入 §0.60）**：
+     - **"C 入口返回借用指针"这条规矩有盲区**：当 ObjC 调用点会把返回值赋给 `id __strong` 时，ARC 会对它 `retain`；
+       若返回的对象恰好已经悬空，崩溃点会出现在**调用点**而不是 C 入口里，容易被误判成"转换错了"。
+       排查办法就是本轮的**反证实验**（先让可疑返回值退化为 NULL，看崩溃是否消失）。
+     - **A/B（`test_regression`）+ `make test-all` 双绿仍然挡不住这类回归**——本轮两套全绿，**只有 CTS 抓到**；
+       与第 128/130 条同一结论，已第三次被验证。
+     ⑤ **下一刀建议（把这一刀拆成三步，每步单独跑 CTS）**：
+     (a) 先只搬 `applySampledCompatFallbackPlan:`（0 语法、无对象返回，风险最低）；
+     (b) 再只搬 `materializeSampledSamplerForTexture:`（退役端口；搬完重点看 depth 用例是否仍 5/5 通过）；
+     (c) 最后搬 `bindSeparateSamplersAndArrayTextures:`。
+     同时值得单独追一条线索：`Texture::params.mtl_data` 指向的对象在本轮新构建里会**在采样器物化之前**被释放——
+     需要查清 `params.mtl_data` 的 retain/release 链（`tex_param.c` 写入、`textures.c` 置 NULL 的路径、
+     以及 mglSafeReleaseMetalObj 的调用点），这很可能是 `+BindingState.m` 采样簇能不能安全收尾的关键。
+
+### 0.60 第 103 轮交接快照（**新会话请先读本节 + §0.51 + §0.55 + §0.58**）
+
+**当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 25,443 行 / 1,429 语法 / 3,013 词汇**；
+壳 TU **1,988 行 / 279 语法**；端口面 **28 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂逐行一致
+（以上全部是提交 `2643227` 的实测值——第 103 轮的改动**已整体回滚**，见第 133 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,843 · `+Texture.m` 271/1,052/6,256 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` 235/761/4,062 · 壳 `MGLPlatformRendererShell.m` 279/287/1,988 · `+BindingState.m` **91/85/1,678**。
+
+**开工前必读的三条**（累积 §0.55 / §0.57 / §0.58 / §0.59 + 本轮新增）：
+1. 每个 `id` 局部判保活；端口返回值与方法返回值可能差一个 +1。
+2. `currentRenderEncoderOwner` 在使用点重新读取（纹理上传会替换编码器）。
+3. 转换前**全树搜该选择器的所有调用点**（`.m` + `.c`）；删方法后 `make test-all` 只是最后一道网。
+4. C 入口的返回值契约照抄 ARC 的 +0/借用语义。
+5. **新：当 C 入口的返回值会被 ObjC 调用点的 ARC `retain` 时，崩溃可能出现在调用点**——
+   排查用它法：**先把可疑返回值临时退化为 NULL/NULL 指针，看崩溃是否消失**（第 133 条 ③ 的反证实验）。
+6. **判定口径不变**：A/B + `make test-all` 双绿**不足以**判定无回归（已三次被 CTS 打脸），
+   **CTS 七簇必须跑**；单次 CTS 状态也不是判决（抖动用例先做两臂受控复跑）。
+
+**下一步（第 133 条 ⑤ 的三步拆分）**：
+(a) `applySampledCompatFallbackPlan:`（0 语法）→ C，单独验证；
+(b) `materializeSampledSamplerForTexture:`（4 语法）→ C 并退役 `mglRendererMaterializeSampledSamplerPort`（28 → 27），
+    验证时**重点跑 depth 用例 5 次**；
+(c) `bindSeparateSamplersAndArrayTextures:`（17 语法）→ C。
+另需单独查清 `Texture::params.mtl_data` 的 retain/release 链（第 133 条 ⑤ 末段），它是采样簇收尾的前置问题。
