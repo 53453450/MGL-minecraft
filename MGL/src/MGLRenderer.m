@@ -977,49 +977,6 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
 
 
 
-BOOL mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
-                                                  Texture *tex,
-                                                  uint32_t expectedType,
-                                                  MGLTextureDataKind expectedKind)
-{
-    if (!glctx || !tex) {
-        return NO;
-    }
-    if (expectedType != 0 && expectedType != MGLTextureType2D) {
-        return NO;
-    }
-    if (!mglRendererObjectPointerLikelyValid(tex) ||
-        !mglRendererPointerInHashTable(&glctx->active_state->texture_table, tex) ||
-        !mglPointerRangeIsReadable(tex, sizeof(*tex))) {
-        return NO;
-    }
-    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
-        tex->index != _TEXTURE_2D ||
-        tex->is_render_target ||
-        mglRendererGLInternalFormatLooksDepthOrStencil(tex->internalformat)) {
-        return NO;
-    }
-
-    TextureLevel *level0 = mglTraceTextureBaseLevel(tex);
-    if (!level0 ||
-        !level0->complete ||
-        (!level0->ever_written && !level0->has_initialized_data)) {
-        return NO;
-    }
-
-    id mtlTexture = tex->mtl_data ? (__bridge id)(tex->mtl_data) : nil;
-    if (mtlTexture) {
-        if (mglMetalPixelFormatIsDepthOrStencil(mglRendererTextureFieldFormat(mtlTexture)) ||
-            !mglTexturePixelFormatCompatibleWithExpectedDataKind(mglRendererTextureFieldFormat(mtlTexture), expectedKind)) {
-            return NO;
-        }
-        if (expectedType != 0 && mglRendererTextureFieldType(mtlTexture) != expectedType) {
-            return NO;
-        }
-    }
-
-    return YES;
-}
 
 BOOL mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx,
                                                       Texture *tex)
@@ -1041,60 +998,6 @@ BOOL mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx,
     return YES;
 }
 
-BOOL mglRendererGLSampledCopyLooksUsable(Texture *tex,
-                                         uint32_t expectedType,
-                                         MGLTextureDataKind expectedKind,
-                                         BOOL allowPreviousWriteVersion,
-                                         id *copyOut,
-                                                BOOL *usedPreviousWriteVersionOut)
-{
-    if (copyOut) {
-        *copyOut = nil;
-    }
-    if (usedPreviousWriteVersionOut) {
-        *usedPreviousWriteVersionOut = NO;
-    }
-    if (!tex || !tex->mtl_gl_sampled_data) {
-        return NO;
-    }
-
-    id sampledCopy = (__bridge id)(tex->mtl_gl_sampled_data);
-    if (!sampledCopy ||
-        mglMetalPixelFormatIsDepthOrStencil(mglRendererTextureFieldFormat(sampledCopy)) ||
-        !mglTexturePixelFormatCompatibleWithExpectedDataKind(mglRendererTextureFieldFormat(sampledCopy), expectedKind) ||
-        (expectedType != 0 && mglRendererTextureFieldType(sampledCopy) != expectedType)) {
-        return NO;
-    }
-    if (tex->mtl_gl_sampled_width != (GLuint)mglRendererTextureFieldWidth(sampledCopy) ||
-        tex->mtl_gl_sampled_height != (GLuint)mglRendererTextureFieldHeight(sampledCopy) ||
-        tex->mtl_gl_sampled_format != (GLuint)mglRendererTextureFieldFormat(sampledCopy)) {
-        return NO;
-    }
-
-    if (tex->mtl_gl_sampled_dirty_mip_mask != 0u) {
-        return NO;
-    }
-
-    BOOL exactVersion =
-        tex->mtl_gl_sampled_write_version != 0u &&
-        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version;
-    BOOL previousVersion =
-        allowPreviousWriteVersion &&
-        tex->mtl_gl_sampled_write_version != 0u &&
-        tex->mtl_render_target_write_version != 0u &&
-        tex->mtl_gl_sampled_write_version + 1u == tex->mtl_render_target_write_version;
-    if (!exactVersion && !previousVersion) {
-        return NO;
-    }
-
-    if (copyOut) {
-        *copyOut = sampledCopy;
-    }
-    if (usedPreviousWriteVersionOut) {
-        *usedPreviousWriteVersionOut = previousVersion;
-    }
-    return YES;
-}
 
 /* mglNowSeconds moved to MGLRenderer_Private.h as static inline */
 
