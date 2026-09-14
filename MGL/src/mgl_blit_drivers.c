@@ -24,6 +24,7 @@
  * which is what the method's +0 return did.
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +44,8 @@
 #include "mgl_renderer_core_state.h" /* core area (capability snapshot) */
 #include "mgl_blit_color_state.h"   /* MGLBlitColorState (log 146) */
 #include "mgl_blit_pipelines.h"    /* scaled blit pipeline/sampler + params (log 147) */
+#include "mgl_blit_clip.h"         /* MGLBlitAxis / mglClipBlitAxis (log 148) */
+#include "mgl_env_flag.h"         /* mglEnvFlagEnabled (log 148) */
 #include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_metal_ref.h"        /* mglSafeReleaseMetalObj */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
@@ -985,6 +988,9 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
  */
 
 /* The .m's helper from MGLRenderer+Blit_Private.h, restated for this TU. */
+/* MGLRenderer_Private.h declares this BOOL (signed char on macOS). */
+extern signed char mglEnvFlagEnabled(const char *name);
+
 extern GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
                                                       GLenum *outFormat,
                                                       GLenum *outType);
@@ -2917,4 +2923,439 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
             "blit_framebuffer_scaled_src");
     }
     return true;
+}
+
+/* === blitFramebuffer dispatch (P0-1, log 148) ============================ */
+
+/* -(void)mtlBlitFramebuffer:srcX0:srcY0:srcX1:srcY1:dstX0:dstY0:dstX1:dstY1:
+ *  mask:filter: */
+void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0,
+                                GLint src_y0, GLint src_x1, GLint src_y1,
+                                GLint dst_x0, GLint dst_y0, GLint dst_x1,
+                                GLint dst_y1, GLbitfield mask, GLenum filter)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
+        fprintf(stderr,
+                "MGL ERROR: mtlBlitFramebuffer called with invalid glm_ctx=%p\n",
+                (void *)glm_ctx);
+        return;
+    }
+
+    if (src_x1 == src_x0 || src_y1 == src_y0 || dst_x1 == dst_x0 ||
+        dst_y1 == dst_y0) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer ignored empty rect "
+                "src=(%d,%d)-(%d,%d) dst=(%d,%d)-(%d,%d)\n",
+                src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1);
+        return;
+    }
+
+    mglPlatformShellSetContext(renderer, glm_ctx);
+
+    /* Replay pending deferred draw batches BEFORE the blit reads the source
+     * attachment: draws are queued into the batch buffer and encoded only at
+     * flush points (draw/FBO-switch/swap/finish).  FBO bind switches skip this
+     * flush while deferFboRotation is active (batches carry their own FBO
+     * snapshot), so glBlitFramebuffer right after a draw would otherwise copy
+     * stale pre-draw content.  Mirrors mtlInvalidateRenderPass (flush + end
+     * encoding); no-op when the batch buffer is empty. */
+    mglRendererFlushDrawBufferLockedPort(renderer, glm_ctx);
+    mglRendererEndRenderEncodingPort(renderer);
+
+    /* The depth/stencil blit is C now (log 138). */
+    mask = mglBlitDepthStencil(renderer, glm_ctx, src_x0, src_y0, src_x1, src_y1,
+                               dst_x0, dst_y0, dst_x1, dst_y1, mask, filter);
+
+    if (!mglRenderClearMaskHasColor((uint32_t)mask)) {
+        if (mglRenderClearMaskHasDepthStencil((uint32_t)mask)) {
+            static uint64_t s_depth_stencil_only_blit_warn_count = 0;
+            uint64_t hit = ++s_depth_stencil_only_blit_warn_count;
+            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL WARN: mtlBlitFramebuffer depth/stencil-only blit "
+                        "is not implemented; skipping mask=0x%x hit=%llu\n",
+                        mask, (unsigned long long)hit);
+            }
+        }
+        return;
+    }
+
+    if (mglRenderClearMaskHasDepthStencil((uint32_t)mask)) {
+        static uint64_t s_depth_stencil_blit_warn_count = 0;
+        uint64_t hit = ++s_depth_stencil_blit_warn_count;
+        if (hit <= 32ull || (hit % 512ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer only copies color; "
+                    "depth/stencil bits in mask=0x%x ignored hit=%llu\n",
+                    mask, (unsigned long long)hit);
+        }
+    }
+
+    /* Keep renderer ivar state consistent with the call site context. */
+    mglPlatformShellSetContext(renderer, glm_ctx);
+
+    MGLBlitColorState st;
+    memset(&st, 0, sizeof(st));
+    st.glm_ctx = glm_ctx;
+    st.filter = filter;
+    GLenum read_attachment = (GLenum)mglRenderEmptyDrawBuffer();
+    if (!mglBlitResolveFramebufferAttachments(
+            renderer, glm_ctx, src_x0, src_y0, src_x1, src_y1, dst_x0, dst_y0,
+            dst_x1, dst_y1, &st, &read_attachment)) {
+        return;
+    }
+    Framebuffer *readfbo = st.readfbo;
+    Framebuffer *drawfbo = st.drawfbo;
+    FBOAttachment *read_fbo_attachment = st.readFBOAttachment;
+    Texture *read_texture_object = st.readTextureObject;
+    FBOAttachment *draw_fbo_attachment = st.drawFBOAttachment;
+    Texture *draw_texture_object = st.drawTextureObject;
+    MGLMetalAttachmentSubresource read_subresource = st.readSubresource;
+    MGLMetalAttachmentSubresource draw_subresource = st.drawSubresource;
+    void *readtexid = st.readtexid;
+    void *drawtexid = st.drawtexid;
+
+    /* end encoding on current render encoder */
+    mglRendererEndRenderEncodingPort(renderer);
+
+    if (!mglRendererEnsureWritableCommandBufferPort(renderer,
+                                                    "mtlBlitFramebuffer")) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer could not obtain writable command "
+                "buffer\n");
+        return;
+    }
+
+    if (readfbo && read_fbo_attachment && read_texture_object && readtexid &&
+        isColorAttachment(glm_ctx, read_attachment) &&
+        mglRenderClearMaskHasColor(
+            (uint32_t)read_fbo_attachment->clear_bitmask)) {
+        int clear_encoded = mglRenderEncodeColorClearForCommandBufferOwner(
+                                mglBdCommandBufferOwner(&areas), readtexid,
+                                read_subresource.level, read_subresource.slice,
+                                read_subresource.depthPlane,
+                                read_fbo_attachment->clear_color[0],
+                                read_fbo_attachment->clear_color[1],
+                                read_fbo_attachment->clear_color[2],
+                                read_fbo_attachment->clear_color[3]) == 0;
+        if (clear_encoded) {
+            read_fbo_attachment->clear_bitmask =
+                (GLbitfield)mglRenderClearMaskClearColor(
+                    (uint32_t)read_fbo_attachment->clear_bitmask);
+            mglMarkTextureLevelRenderTargetWrittenImpl(
+                read_texture_object, read_fbo_attachment->level, __func__,
+                __LINE__);
+            mglTraceLog(
+                "MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u "
+                "attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
+                (unsigned)readfbo->name, (unsigned)read_attachment,
+                (unsigned)read_texture_object->name,
+                read_fbo_attachment->clear_color[0],
+                read_fbo_attachment->clear_color[1],
+                read_fbo_attachment->clear_color[2],
+                read_fbo_attachment->clear_color[3]);
+        } else {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer failed to apply pending read "
+                    "clear fbo=%u attachment=0x%x\n",
+                    (unsigned)readfbo->name, (unsigned)read_attachment);
+        }
+    }
+
+    /* Validate and clamp blit coordinates to avoid Metal validation aborts */
+    if (!readtexid || !drawtexid) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer missing source/destination Metal "
+                "textures\n");
+        return;
+    }
+
+    int needs_format_conversion_blit = 0;
+    if (mglBdTextureInfo(readtexid).pixel_format !=
+        mglBdTextureInfo(drawtexid).pixel_format) {
+        int rgba_bgra_pair =
+            mglRenderBlitIsRGBA8BGRA8Pair(
+                (uint32_t)mglBdTextureInfo(readtexid).pixel_format,
+                (uint32_t)mglBdTextureInfo(drawtexid).pixel_format) != 0;
+
+        if (rgba_bgra_pair) {
+            needs_format_conversion_blit = 1;
+            static uint64_t s_rgba_bgra_blit_log_count = 0;
+            uint64_t hit = ++s_rgba_bgra_blit_log_count;
+            if (hit <= 4ull || (hit % 2048ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL INFO: mtlBlitFramebuffer using shader conversion "
+                        "for RGBA/BGRA pair (src=%lu dst=%lu hit=%llu)\n",
+                        (unsigned long)mglBdTextureInfo(readtexid).pixel_format,
+                        (unsigned long)mglBdTextureInfo(drawtexid).pixel_format,
+                        (unsigned long long)hit);
+            }
+        } else {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer pixel format mismatch "
+                    "(src=%lu dst=%lu), skipping blit\n",
+                    (unsigned long)mglBdTextureInfo(readtexid).pixel_format,
+                    (unsigned long)mglBdTextureInfo(drawtexid).pixel_format);
+            return;
+        }
+    }
+
+    /* When the source texture is a render target and its sampled copy isn't
+     * current, force the blit through the render-pass (scaled) path to ensure
+     * proper Metal synchronization.  On tile-based Apple GPUs a
+     * MTLBlitCommandEncoder may read stale tile memory if the render target was
+     * recently written by a preceding render pass, leading to intermittent GUI
+     * icon / entity rendering errors. */
+    int needs_render_target_sync_blit = 0;
+    if (read_texture_object && read_texture_object->is_render_target &&
+        read_texture_object->mtl_render_target_write_version > 0u) {
+        if (read_texture_object->mtl_gl_sampled_write_version !=
+            read_texture_object->mtl_render_target_write_version) {
+            needs_render_target_sync_blit = 1;
+            static uint64_t s_rt_sync_blit_log_count = 0;
+            uint64_t hit = ++s_rt_sync_blit_log_count;
+            if (hit <= 32ull || (hit % 256ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL RT-SYNC-BLIT read-tex=%u rtVer=%u sampledVer=%u "
+                        "size=%lux%lu hit=%llu\n",
+                        (unsigned)read_texture_object->name,
+                        (unsigned)
+                            read_texture_object->mtl_render_target_write_version,
+                        (unsigned)read_texture_object
+                            ->mtl_gl_sampled_write_version,
+                        (unsigned long)mglBdTextureInfo(readtexid).width,
+                        (unsigned long)mglBdTextureInfo(readtexid).height,
+                        (unsigned long long)hit);
+            }
+        }
+    }
+
+    if (read_subresource.level >=
+            mglBdTextureInfo(readtexid).mipmap_level_count ||
+        draw_subresource.level >=
+            mglBdTextureInfo(drawtexid).mipmap_level_count) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer invalid mip level read=%lu/%lu "
+                "draw=%lu/%lu, skipping\n",
+                (unsigned long)read_subresource.level,
+                (unsigned long)mglBdTextureInfo(readtexid).mipmap_level_count,
+                (unsigned long)draw_subresource.level,
+                (unsigned long)mglBdTextureInfo(drawtexid).mipmap_level_count);
+        return;
+    }
+
+    size_t src_tex_w = mglMetalTextureLevelDimension(
+        mglBdTextureInfo(readtexid).width, read_subresource.level);
+    size_t src_tex_h = mglMetalTextureLevelDimension(
+        mglBdTextureInfo(readtexid).height, read_subresource.level);
+    size_t dst_tex_w = mglMetalTextureLevelDimension(
+        mglBdTextureInfo(drawtexid).width, draw_subresource.level);
+    size_t dst_tex_h = mglMetalTextureLevelDimension(
+        mglBdTextureInfo(drawtexid).height, draw_subresource.level);
+
+    int did_msaa_resolve = 0;
+    /* The MSAA-resolve path is C now (log 135).  ARC forbids casting the
+     * address of a strong local to void**, so the handle travels through a
+     * plain void* temporary (the object stays owned by the caller's local). */
+    void *readtexid_handle = readtexid;
+    int did_msaa_resolve_raw = did_msaa_resolve ? 1 : 0;
+    if (!mglBlitResolveMsaaSource(renderer, &readtexid_handle, drawtexid,
+                                  &read_subresource, src_tex_w, src_tex_h,
+                                  read_texture_object, &did_msaa_resolve_raw)) {
+        return;
+    }
+    /* The C entry returns a +1 handle (created or retained); the ARC local that
+     * adopted it with __bridge_transfer released it at scope end, so the C
+     * caller releases it at the end of this function (see the exit labels). */
+    readtexid = readtexid_handle;
+    did_msaa_resolve = did_msaa_resolve_raw ? 1 : 0;
+
+    MGLBlitAxis axis_x = {(double)src_x0, (double)src_x1, (double)dst_x0,
+                          (double)dst_x1};
+    MGLBlitAxis axis_y = {(double)src_y0, (double)src_y1, (double)dst_y0,
+                          (double)dst_y1};
+    if (!mglClipBlitAxis(&axis_x, (double)src_tex_w, (double)dst_tex_w) ||
+        !mglClipBlitAxis(&axis_y, (double)src_tex_h, (double)dst_tex_h)) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer clipped region is empty "
+                "srcTex=%lux%lu dstTex=%lux%lu req src=(%d,%d)-(%d,%d) "
+                "dst=(%d,%d)-(%d,%d)\n",
+                (unsigned long)src_tex_w, (unsigned long)src_tex_h,
+                (unsigned long)dst_tex_w, (unsigned long)dst_tex_h, src_x0,
+                src_y0, src_x1, src_y1, dst_x0, dst_y0, dst_x1, dst_y1);
+        mglSafeReleaseMetalObj(&readtexid);
+        return;
+    }
+
+    MGLRenderBlitFramebufferPlan plan = {0};
+    if (mglRenderBlitFramebufferPlan(
+            axis_x.src0, axis_x.src1, axis_y.src0, axis_y.src1, axis_x.dst0,
+            axis_x.dst1, axis_y.dst0, axis_y.dst1, (uint32_t)src_tex_w,
+            (uint32_t)src_tex_h, (uint32_t)dst_tex_w, (uint32_t)dst_tex_h,
+            needs_format_conversion_blit ? 1 : 0,
+            needs_render_target_sync_blit ? 1 : 0,
+            (glm_ctx && glm_ctx->active_state->caps.scissor_test) ? 1 : 0,
+            &plan) != 0) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer empty clipped region "
+                "src=%.3fx%.3f dst=%.3fx%.3f, skipping\n",
+                fabs(axis_x.src1 - axis_x.src0), fabs(axis_y.src1 - axis_y.src0),
+                fabs(axis_x.dst1 - axis_x.dst0), fabs(axis_y.dst1 - axis_y.dst0));
+        mglSafeReleaseMetalObj(&readtexid);
+        return;
+    }
+    int src_x_forward = plan.src_x_forward;
+    int src_y_forward = plan.src_y_forward;
+    int dst_x_forward = plan.dst_x_forward;
+    int dst_y_forward = plan.dst_y_forward;
+    int blit_needs_flip = plan.blit_needs_flip;
+    double src_min_x = plan.src_min_x;
+    double src_max_x = plan.src_max_x;
+    double src_min_y = plan.src_min_y;
+    double src_max_y = plan.src_max_y;
+    double dst_min_x = plan.dst_min_x;
+    double dst_max_x = plan.dst_max_x;
+    double dst_min_y = plan.dst_min_y;
+    double dst_max_y = plan.dst_max_y;
+    double src_w = plan.src_w;
+    double src_h = plan.src_h;
+    double dst_w = plan.dst_w;
+    double dst_h = plan.dst_h;
+    int needs_scaled_blit = plan.needs_scaled_blit;
+    int64_t copy_src_x = (int64_t)plan.copy_src_x;
+    int64_t copy_src_y = (int64_t)plan.copy_src_y;
+    int64_t copy_dst_x = (int64_t)plan.copy_dst_x;
+    int64_t copy_dst_y = (int64_t)plan.copy_dst_y;
+    int64_t copy_w = (int64_t)plan.copy_w;
+    int64_t copy_h = (int64_t)plan.copy_h;
+    int64_t src_metal_y = (int64_t)plan.src_metal_y;
+    int64_t dst_metal_y = (int64_t)plan.dst_metal_y;
+    double scaled_dst_metal_y = plan.scaled_dst_metal_y;
+
+    static uint64_t s_blit_diag_count = 0;
+    uint64_t blit_diag = ++s_blit_diag_count;
+    int trace_blit_to_file =
+        mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_BLIT");
+    int trace_blit = (kMglSwapPresentDiagnostics || trace_blit_to_file) &&
+                     (blit_diag <= 24ull || (blit_diag % 120ull) == 0ull ||
+                      needs_scaled_blit);
+    if (trace_blit) {
+        const char *fmt =
+            "MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%x "
+            "filter=0x%x "
+            "srcReq=(%d,%d)-(%d,%d) dstReq=(%d,%d)-(%d,%d) "
+            "copy srcGL=(%.3f,%.3f %.3fx%.3f) dstGL=(%.3f,%.3f %.3fx%.3f) "
+            "srcMTL=(%ld,%ld) dstMTL=(%ld,%ld) scaled=%d flip=%d "
+            "srcObj=%u dstObj=%u srcRT=%d dstRT=%d srcAuth=0x%x dstAuth=0x%x "
+            "srcRtVer=%u dstRtVer=%u srcCopyVer=%u dstCopyVer=%u "
+            "srcTex=%p fmt=%lu %lux%lu dstTex=%p fmt=%lu %lux%lu drawBuf=0x%x "
+            "readBuf=0x%x";
+        mglTraceLog(fmt, (unsigned long long)blit_diag, readfbo, drawfbo, mask,
+                    (unsigned)filter, src_x0, src_y0, src_x1, src_y1, dst_x0,
+                    dst_y0, dst_x1, dst_y1, src_min_x, src_min_y, src_w, src_h,
+                    dst_min_x, dst_min_y, dst_w, dst_h, (long)copy_src_x,
+                    (long)src_metal_y, (long)copy_dst_x, (long)dst_metal_y,
+                    needs_scaled_blit ? 1 : 0, blit_needs_flip ? 1 : 0,
+                    read_texture_object ? (unsigned)read_texture_object->name
+                                        : 0u,
+                    draw_texture_object ? (unsigned)draw_texture_object->name
+                                        : 0u,
+                    (read_texture_object && read_texture_object->is_render_target)
+                        ? 1
+                        : 0,
+                    (draw_texture_object && draw_texture_object->is_render_target)
+                        ? 1
+                        : 0,
+                    read_texture_object
+                        ? (unsigned)read_texture_object->mtl_render_yflip_authority
+                        : 0u,
+                    draw_texture_object
+                        ? (unsigned)draw_texture_object->mtl_render_yflip_authority
+                        : 0u,
+                    read_texture_object
+                        ? (unsigned)read_texture_object
+                              ->mtl_render_target_write_version
+                        : 0u,
+                    draw_texture_object
+                        ? (unsigned)draw_texture_object
+                              ->mtl_render_target_write_version
+                        : 0u,
+                    read_texture_object
+                        ? (unsigned)read_texture_object->mtl_gl_sampled_write_version
+                        : 0u,
+                    draw_texture_object
+                        ? (unsigned)draw_texture_object->mtl_gl_sampled_write_version
+                        : 0u,
+                    readtexid,
+                    (unsigned long)mglBdTextureInfo(readtexid).pixel_format,
+                    (unsigned long)src_tex_w, (unsigned long)src_tex_h, drawtexid,
+                    (unsigned long)mglBdTextureInfo(drawtexid).pixel_format,
+                    (unsigned long)dst_tex_w, (unsigned long)dst_tex_h,
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->draw_buffer : 0u),
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->read_buffer : 0u));
+    }
+
+    /* Fill shared state for color blit helpers. */
+    st.glm_ctx = glm_ctx;
+    st.readfbo = readfbo;
+    st.drawfbo = drawfbo;
+    st.filter = filter;
+    st.readFBOAttachment = read_fbo_attachment;
+    st.drawFBOAttachment = draw_fbo_attachment;
+    st.readTextureObject = read_texture_object;
+    st.drawTextureObject = draw_texture_object;
+    st.readSubresource = read_subresource;
+    st.drawSubresource = draw_subresource;
+    st.readtexid = readtexid;
+    st.drawtexid = drawtexid;
+    st.srcTexW = src_tex_w;
+    st.srcTexH = src_tex_h;
+    st.dstTexW = dst_tex_w;
+    st.dstTexH = dst_tex_h;
+    st.needsFormatConversionBlit = needs_format_conversion_blit;
+    st.needsRenderTargetSyncBlit = needs_render_target_sync_blit;
+    st.didMsaaResolve = did_msaa_resolve;
+    st.blitNeedsFlip = blit_needs_flip;
+    st.needsScaledBlit = needs_scaled_blit;
+    st.srcXForward = src_x_forward;
+    st.srcYForward = src_y_forward;
+    st.dstXForward = dst_x_forward;
+    st.dstYForward = dst_y_forward;
+    st.srcMinX = src_min_x;
+    st.srcMaxX = src_max_x;
+    st.srcMinY = src_min_y;
+    st.srcMaxY = src_max_y;
+    st.dstMinX = dst_min_x;
+    st.dstMaxX = dst_max_x;
+    st.dstMinY = dst_min_y;
+    st.dstMaxY = dst_max_y;
+    st.srcW = src_w;
+    st.srcH = src_h;
+    st.dstW = dst_w;
+    st.dstH = dst_h;
+    st.copySrcX = copy_src_x;
+    st.copySrcY = copy_src_y;
+    st.copyDstX = copy_dst_x;
+    st.copyDstY = copy_dst_y;
+    st.copyW = copy_w;
+    st.copyH = copy_h;
+    st.srcMetalY = src_metal_y;
+    st.dstMetalY = dst_metal_y;
+    st.scaledDstMetalY = scaled_dst_metal_y;
+
+    if (mglBlitIntegerColorWithState(renderer, &st)) {
+        mglSafeReleaseMetalObj(&readtexid);
+        return;
+    }
+
+    if (mglBlitFramebufferScaledColorWithState(renderer, &st)) {
+        mglSafeReleaseMetalObj(&readtexid);
+        return;
+    }
+
+    mglBlitDirectColorWithState(renderer, &st);
+    mglSafeReleaseMetalObj(&readtexid);
 }

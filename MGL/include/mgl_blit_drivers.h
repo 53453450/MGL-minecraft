@@ -122,6 +122,14 @@ bool mglBlitResolveFramebufferAttachments(
     GLint src_y1, GLint dst_x0, GLint dst_y0, GLint dst_x1, GLint dst_y1,
     MGLBlitColorState *st, GLenum *out_read_attachment);
 
+/* The whole glBlitFramebuffer dispatch: depth/stencil pre-pass, attachment
+ * resolve, pending read clear, MSAA resolve, the blit plan, then the integer /
+ * scaled / direct color paths.  Was -(void)mtlBlitFramebuffer:srcX0:…. */
+void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0,
+                                GLint src_y0, GLint src_x1, GLint src_y1,
+                                GLint dst_x0, GLint dst_y0, GLint dst_x1,
+                                GLint dst_y1, GLbitfield mask, GLenum filter);
+
 /* Scaled color blit for the blitFramebuffer path (render-pass shader draw).
  * Was -blitFramebufferScaledColorWithState:.  Returns true when the scaled
  * blit was performed (the caller then returns) — the method's YES/NO. */
