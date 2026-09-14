@@ -13,6 +13,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_blit_drivers.h" /* blit leaf paths (log 135) */
+#include "mgl_blit_color_state.h" /* shared blit color state (log 136) */
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_texture_readback_clear.h"
@@ -26,36 +27,9 @@
 #include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
 #include "mgl_blit_plan.h"      // depth/stencil blit gates (O4.4)
 
-/* Shared state for mtlBlitFramebuffer color blit helpers.
- * Filled after attachment resolution and clip computation, then
- * passed to the integer / scaled / direct-copy helpers. */
-typedef struct MGLBlitColorState {
-    GLMContext glm_ctx;
-    Framebuffer *readfbo;
-    Framebuffer *drawfbo;
-    GLenum filter;
-    FBOAttachment *readFBOAttachment;
-    FBOAttachment *drawFBOAttachment;
-    Texture *readTextureObject;
-    Texture *drawTextureObject;
-    MGLMetalAttachmentSubresource readSubresource;
-    MGLMetalAttachmentSubresource drawSubresource;
-    id readtexid;
-    id drawtexid;
-    NSUInteger srcTexW, srcTexH, dstTexW, dstTexH;
-    BOOL needsFormatConversionBlit;
-    BOOL needsRenderTargetSyncBlit;
-    BOOL didMsaaResolve;
-    BOOL blitNeedsFlip;
-    BOOL needsScaledBlit;
-    BOOL srcXForward, srcYForward, dstXForward, dstYForward;
-    double srcMinX, srcMaxX, srcMinY, srcMaxY;
-    double dstMinX, dstMaxX, dstMinY, dstMaxY;
-    double srcW, srcH, dstW, dstH;
-    NSInteger copySrcX, copySrcY, copyDstX, copyDstY, copyW, copyH;
-    NSInteger srcMetalY, dstMetalY;
-    double scaledDstMetalY;
-} MGLBlitColorState;
+/* MGLBlitColorState now lives in mgl_blit_color_state.h (log 136) so the C
+ * color paths can take it; its two `id` fields are opaque handles there, so
+ * the Objective-C uses below bridge them explicitly. */
 
 static MGLRenderTextureInfo mglBlitTextureInfo(id texture)
 {
@@ -407,62 +381,6 @@ static void mglBlitSynchronizeTexture(id encoder,
  * explicit level (so the full mipmap destination can be bound once).  Y-flip
  * is baked into the UV calculation: destination Metal row 0 (top) receives
  * the source's bottom row, restoring GL lower-left sampling semantics. */
-- (BOOL)resolveIntegerMultisampleTexture:(id)sourceTexture
-                               toTexture:(id)destTexture
-                                srcOrigin:(MGLOriginValue)srcOrigin
-                                dstOrigin:(MGLOriginValue)dstOrigin
-                                     size:(MGLSizeValue)size
-                                   reason:(const char *)reason
-{
-    if (!sourceTexture || !destTexture ||
-        mglBlitTextureInfo(sourceTexture).sample_count <= 1u ||
-        mglBlitTextureInfo(destTexture).sample_count > 1u ||
-        mglBlitTextureInfo(sourceTexture).pixel_format != mglBlitTextureInfo(destTexture).pixel_format ||
-        !mglMetalPixelFormatIsIntegerColor(mglBlitTextureInfo(sourceTexture).pixel_format) ||
-        size.width == 0u || size.height == 0u) {
-        return NO;
-    }
-
-    id pipeline =
-        (__bridge id)mglBlitMsaaIntegerResolvePipeline((__bridge void *)self, mglMetalPixelFormatIsSignedIntegerColor(mglBlitTextureInfo(sourceTexture).pixel_format));
-    if (!pipeline) {
-        return NO;
-    }
-
-    if (![self ensureWritableCommandBuffer:"blitFramebuffer.msaaIntegerResolve"]) {
-        mglDispatchError(ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return NO;
-    }
-
-    id encoder =
-        (__bridge id)mglRenderCreateComputeEncoderBorrowed(
-            _renderPassManager->state->currentCommandBufferOwner);
-    if (!encoder) {
-        NSLog(@"MGL WARN: failed to create MSAA integer resolve encoder for %s",
-              reason ? reason : "unknown");
-        return NO;
-    }
-
-    MGLMSAAIntegerResolveParams params;
-    params.srcOrigin = (vector_uint2){(uint32_t)srcOrigin.x, (uint32_t)srcOrigin.y};
-    params.dstOrigin = (vector_uint2){(uint32_t)dstOrigin.x, (uint32_t)dstOrigin.y};
-    params.size = (vector_uint2){(uint32_t)size.width, (uint32_t)size.height};
-    params._padding = (vector_uint2){0u, 0u};
-
-    mglBlitSetComputePipeline(encoder, pipeline);
-    mglBlitSetComputeTexture(encoder, sourceTexture, 0);
-    mglBlitSetComputeTexture(encoder, destTexture, 1);
-    mglBlitSetComputeBytes(encoder, &params, sizeof(params), 0);
-
-    MGLSizeValue threads = mglBlitSize(size.width, size.height, 1u);
-    NSUInteger w = MIN((NSUInteger)16u, mglRenderComputePipelineMaxTotalThreads((__bridge void *)pipeline));
-    NSUInteger h = MAX((NSUInteger)1u, MIN((NSUInteger)16u, mglRenderComputePipelineMaxTotalThreads((__bridge void *)pipeline) / w));
-    MGLSizeValue threadgroup = mglBlitSize(w, h, 1u);
-    mglBlitDispatchThreads(encoder, threads, threadgroup);
-    mglBlitEndComputeEncoder(encoder);
-
-    return YES;
-}
 
 - (id)resolvedReadbackTextureForMultisampleTexture:(id)sourceTexture
                                                    sourceLevel:(NSUInteger)sourceLevel
@@ -1286,8 +1204,8 @@ static void mglBlitSynchronizeTexture(id encoder,
     st->drawTextureObject = drawTextureObject;
     st->readSubresource = readSubresource;
     st->drawSubresource = drawSubresource;
-    st->readtexid = readtexid;
-    st->drawtexid = drawtexid;
+    st->readtexid = (__bridge void *)readtexid;
+    st->drawtexid = (__bridge void *)drawtexid;
     *outReadAttachment = readAttachment;
     return YES;
 }
@@ -1304,8 +1222,8 @@ static void mglBlitSynchronizeTexture(id encoder,
  * Returns YES if a path was taken (caller should return). */
 - (BOOL)blitFramebufferIntegerColorWithState:(MGLBlitColorState *)st
 {
-    id readtexid = st->readtexid;
-    id drawtexid = st->drawtexid;
+    id readtexid = (__bridge id)st->readtexid;
+    id drawtexid = (__bridge id)st->drawtexid;
     MGLMetalAttachmentSubresource readSubresource = st->readSubresource;
     MGLMetalAttachmentSubresource drawSubresource = st->drawSubresource;
     NSInteger copyW = st->copyW;
@@ -1346,18 +1264,16 @@ static void mglBlitSynchronizeTexture(id encoder,
         }
 
         BOOL resolvedInteger =
-            [self resolveIntegerMultisampleTexture:readtexid
-                                         toTexture:drawtexid
-                                         srcOrigin:mglBlitOrigin((NSUInteger)copySrcX,
-                                                                 (NSUInteger)srcMetalY,
-                                                                 readSubresource.depthPlane)
-                                         dstOrigin:mglBlitOrigin((NSUInteger)copyDstX,
-                                                                 (NSUInteger)dstMetalY,
-                                                                 drawSubresource.depthPlane)
-                                              size:mglBlitSize((NSUInteger)copyW,
-                                                               (NSUInteger)copyH,
-                                                               1u)
-                                            reason:"blitFramebuffer.integerMsaa"];
+            /* The integer MSAA resolve is C now (log 136). */
+            mglBlitResolveIntegerMultisampleTexture(
+                (__bridge void *)self, (__bridge void *)readtexid,
+                (__bridge void *)drawtexid,
+                mglBlitOrigin((size_t)copySrcX, (size_t)srcMetalY,
+                              readSubresource.depthPlane),
+                mglBlitOrigin((size_t)copyDstX, (size_t)dstMetalY,
+                              drawSubresource.depthPlane),
+                mglBlitSize((size_t)copyW, (size_t)copyH, 1u),
+                "blitFramebuffer.integerMsaa");
         if (!resolvedInteger) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer integer MSAA resolve failed fmt=%lu",
                   (unsigned long)mglBlitTextureInfo(readtexid).pixel_format);
@@ -1437,8 +1353,8 @@ static void mglBlitSynchronizeTexture(id encoder,
     Texture *drawTextureObject = st->drawTextureObject;
     MGLMetalAttachmentSubresource readSubresource = st->readSubresource;
     MGLMetalAttachmentSubresource drawSubresource = st->drawSubresource;
-    id readtexid = st->readtexid;
-    id drawtexid = st->drawtexid;
+    id readtexid = (__bridge id)st->readtexid;
+    id drawtexid = (__bridge id)st->drawtexid;
     NSUInteger srcTexW = st->srcTexW;
     NSUInteger srcTexH = st->srcTexH;
     NSUInteger dstTexW = st->dstTexW;
@@ -1632,93 +1548,6 @@ static void mglBlitSynchronizeTexture(id encoder,
 
 /* Direct MTLBlitCommandEncoder color copy for mtlBlitFramebuffer.
  * Same-size, same-format, no-flip blit via copyFromTexture:toTexture:. */
-- (void)blitFramebufferDirectColorCopyWithState:(MGLBlitColorState *)st
-{
-    Framebuffer *drawfbo = st->drawfbo;
-    FBOAttachment *drawFBOAttachment = st->drawFBOAttachment;
-    Texture *readTextureObject = st->readTextureObject;
-    Texture *drawTextureObject = st->drawTextureObject;
-    MGLMetalAttachmentSubresource readSubresource = st->readSubresource;
-    MGLMetalAttachmentSubresource drawSubresource = st->drawSubresource;
-    id readtexid = st->readtexid;
-    id drawtexid = st->drawtexid;
-    NSUInteger srcTexW = st->srcTexW;
-    NSUInteger srcTexH = st->srcTexH;
-    NSUInteger dstTexW = st->dstTexW;
-    NSUInteger dstTexH = st->dstTexH;
-    NSInteger copyW = st->copyW;
-    NSInteger copyH = st->copyH;
-    NSInteger copySrcX = st->copySrcX;
-    NSInteger copySrcY = st->copySrcY;
-    NSInteger copyDstX = st->copyDstX;
-    NSInteger copyDstY = st->copyDstY;
-    NSInteger srcMetalY = st->srcMetalY;
-    NSInteger dstMetalY = st->dstMetalY;
-    BOOL didMsaaResolve = st->didMsaaResolve;
-    // start blit encoder
-    id blitCommandEncoder;
-    blitCommandEncoder =
-        (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-            _renderPassManager->state->currentCommandBufferOwner);
-    if (!blitCommandEncoder) {
-        NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create blit encoder");
-        return;
-    }
-    if (copyW <= 0 || copyH <= 0 ||
-        copySrcX < 0 || copySrcY < 0 || copyDstX < 0 || copyDstY < 0 ||
-        srcMetalY < 0 || dstMetalY < 0 ||
-        copySrcX + copyW > (NSInteger)srcTexW ||
-        copySrcY + copyH > (NSInteger)srcTexH ||
-        copyDstX + copyW > (NSInteger)dstTexW ||
-        copyDstY + copyH > (NSInteger)dstTexH) {
-        mglBlitEndBlitEncoder(blitCommandEncoder);
-        NSLog(@"MGL WARN: mtlBlitFramebuffer direct copy invalid after clipping src=(%ld,%ld %ldx%ld) dst=(%ld,%ld) srcTex=%lux%lu dstTex=%lux%lu",
-              (long)copySrcX, (long)copySrcY, (long)copyW, (long)copyH,
-              (long)copyDstX, (long)copyDstY,
-              (unsigned long)srcTexW, (unsigned long)srcTexH,
-              (unsigned long)dstTexW, (unsigned long)dstTexH);
-        return;
-    }
-
-    // If the source is a render target, ensure all GPU writes are visible
-    // before the blit encoder reads it.  Without this synchronizeTexture
-    // call, a tile-based Apple GPU may read stale tile memory when the
-    // texture was recently written by a preceding render pass.
-    if (readTextureObject && readTextureObject->is_render_target) {
-        mglBlitSynchronizeTexture(blitCommandEncoder, readtexid,
-                                  readSubresource.slice,
-                                  readSubresource.level);
-    }
-
-    mglBlitCopyTexture(
-        blitCommandEncoder, readtexid, readSubresource.slice,
-        readSubresource.level,
-        mglBlitOrigin((NSUInteger)copySrcX, (NSUInteger)srcMetalY,
-                      readSubresource.depthPlane),
-        mglBlitSize((NSUInteger)copyW, (NSUInteger)copyH, 1u), drawtexid,
-        drawSubresource.slice, drawSubresource.level,
-        mglBlitOrigin((NSUInteger)copyDstX, (NSUInteger)dstMetalY,
-                      drawSubresource.depthPlane));
-    mglBlitEndBlitEncoder(blitCommandEncoder);
-    if (drawfbo == NULL) {
-        _defaultDrawableWrittenSinceLastSwap = YES;
-    }
-    if (drawTextureObject && drawFBOAttachment) {
-        mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
-        (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, drawTextureObject, (__bridge void *)drawtexid, "blit_framebuffer_copy");
-    }
-    // When the source is also a render target, refresh its sampled copy
-    // so future fragment-shader samples use the synchronized copy instead
-    // of falling back to the direct texture (useCopy=0). Skip this when we
-
-    // must not become the sampled copy of the (multisample) source object.
-    if (readTextureObject &&
-        readTextureObject->is_render_target &&
-        readtexid &&
-        !didMsaaResolve) {
-        (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, readTextureObject, (__bridge void *)readtexid, "blit_framebuffer_copy_src");
-    }
-}
 
 -(void)mtlBlitFramebuffer:(GLMContext)glm_ctx srcX0:(GLint)srcX0 srcY0:(GLint)srcY0 srcX1:(GLint)srcX1 srcY1:(GLint)srcY1 dstX0:(GLint)dstX0 dstY0:(GLint)dstY0 dstX1:(GLint)dstX1 dstY1:(GLint)dstY1 mask:(GLbitfield)mask filter:(GLenum)filter
 {
@@ -1797,8 +1626,8 @@ static void mglBlitSynchronizeTexture(id encoder,
     Texture *drawTextureObject = st.drawTextureObject;
     MGLMetalAttachmentSubresource readSubresource = st.readSubresource;
     MGLMetalAttachmentSubresource drawSubresource = st.drawSubresource;
-    id readtexid = st.readtexid;
-    id drawtexid = st.drawtexid;
+    id readtexid = (__bridge id)st.readtexid;
+    id drawtexid = (__bridge id)st.drawtexid;
 
     // end encoding on current render encoder
     [self endRenderEncoding];
@@ -2090,8 +1919,8 @@ static void mglBlitSynchronizeTexture(id encoder,
     st.drawTextureObject = drawTextureObject;
     st.readSubresource = readSubresource;
     st.drawSubresource = drawSubresource;
-    st.readtexid = readtexid;
-    st.drawtexid = drawtexid;
+    st.readtexid = (__bridge void *)readtexid;
+    st.drawtexid = (__bridge void *)drawtexid;
     st.srcTexW = srcTexW;
     st.srcTexH = srcTexH;
     st.dstTexW = dstTexW;
@@ -2135,7 +1964,7 @@ static void mglBlitSynchronizeTexture(id encoder,
         return;
     }
 
-    [self blitFramebufferDirectColorCopyWithState:&st];
+    mglBlitDirectColorWithState((__bridge void *)self, &st);
 }
 
 void mglRendererBlitFramebuffer(GLMContext glm_ctx,
