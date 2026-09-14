@@ -352,20 +352,12 @@ int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
                : 0;
 }
 
-int mglRendererDispatchAIRTessEvalComputePort(
-    void *renderer, GLMContext glm_ctx, Program *program,
-    const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,
-    int32_t instance_count, uint32_t base_instance)
+int mglRendererEnsureAIRTessEvalPassthroughPort(void *renderer,
+                                                 Program *program)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r dispatchAIRTessEvalCompute:glm_ctx
-                                       program:program
-                                      contract:contract
-                                    patchCount:patch_count
-                                 instanceCount:(GLsizei)instance_count
-                                  baseInstance:base_instance])
-               ? 1
-               : 0;
+    return (r && [r ensureAIRTessEvalPassthroughFunctionForProgram:program]) ? 1
+                                                                            : 0;
 }
 
 int mglRendererBindStorageImagesForVertexProgramPort(void *renderer,

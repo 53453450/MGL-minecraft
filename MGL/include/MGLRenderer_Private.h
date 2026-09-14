@@ -350,7 +350,8 @@ static inline double mglNowSeconds(void)
 #import "MGLRenderer+GPURecovery_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #import "MGLRenderer+Texture_Private.h"
-#import "MGLRenderer+Tessellation_Private.h"
+/* MGLRenderer+Tessellation_Private.h is gone: the tessellation category
+ * became the C TU mgl_tess_dispatch.c (log 128). */
 #import "MGLRenderer+Lifecycle_Private.h"
 
 #endif /* MGLRenderer_Private_h */

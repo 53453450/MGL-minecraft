@@ -285,10 +285,10 @@ int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
 int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
                                                 Program *program,
                                                 uint32_t output_primitive);
-int mglRendererDispatchAIRTessEvalComputePort(
-    void *renderer, GLMContext glm_ctx, Program *program,
-    const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,
-    int32_t instance_count, uint32_t base_instance);
+/* The TES-vertex passthrough function is still an Objective-C method in
+ * MGLRenderer+RenderPass.m; this port retires with it.  Added by log 128. */
+int mglRendererEnsureAIRTessEvalPassthroughPort(void *renderer, Program *program);
+
 int mglRendererBindStorageImagesForVertexProgramPort(void *renderer,
                                                      Program *vertex_program,
                                                      Program *fragment_program);

@@ -36,6 +36,14 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
                                   Program *tcs_program,
                                   const MGLAIRTessDrawContract *contract);
 
+/* Isolines / point-mode TES expanded by the AIR TES compute kernel, one
+ * dispatch per patch.  Was -dispatchAIRTessEvalCompute:program:contract:
+ * patchCount:instanceCount:baseInstance: (log 128). */
+bool mglTessDispatchAIRTessEvalCompute(
+    void *renderer, GLMContext glm_ctx, Program *tes_program,
+    const MGLAIRTessDrawContract *contract, GLuint patch_count,
+    GLsizei instance_count, GLuint base_instance);
+
 /* Isolines / point-mode TES as a render vertex function: the CPU domain
  * expansion seeds TessCoord records once, then the render encoder replays a
  * per-patch drawPrimitives with the TES compiled as the vertex stage.

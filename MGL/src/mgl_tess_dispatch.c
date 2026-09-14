@@ -52,6 +52,8 @@
 #include "mgl_index_buffer.h"            /* mglPrimitiveRestartIndexForType */
 #include "mgl_buffer_slots.h"            /* kMGLPointSizeBufferIndex */
 #include "mgl_draw_support.h"            /* rasterization predicates, polygon offset */
+#include "mgl_draw_issue.h"              /* mglDrawHostHandleGeometry */
+#include "mgl_buffer_map.h"              /* mglRendererUpdateDirtyBuffer, map entries */
 #include "mgl_texture_sampler.h"         /* mglTextureCreateSamplerForTexParam */
 #include "mgl_metal_ref.h"               /* mglSafeReleaseMetalObj */
 #include "mgl_env_flag.h"                /* MGL_TES_VERTEX_TRACE */
@@ -188,6 +190,48 @@ static void mglTessDispatchSetRenderVertexSampler(void *render_encoder_owner,
         (uint32_t)index);
 }
 
+/* The .m's mglTessPlanBufferOrBind / mglTessAppendComputeResourceOp pair, with
+ * the temporaries set as the C handle. */
+static bool mglTessDispatchAppendComputeResourceOp(
+    MGLRenderComputeExecutionPlan *plan, void *temporaries, uint32_t kind,
+    void *resource, size_t offset, size_t index)
+{
+    if (!plan || kind > 3u) {
+        return false;
+    }
+    if (plan->binding_op_count >= MGL_RENDER_COMPUTE_EXECUTION_MAX_OPS) {
+        fprintf(stderr, "MGL TESS ERROR: compute binding op overflow (%u)",
+                (unsigned)plan->binding_op_count);
+        return false;
+    }
+    plan->binding_ops[plan->binding_op_count++] = (MGLRenderComputeBindingOp){
+        .kind = kind,
+        .index = (uint32_t)index,
+        .offset = (uint64_t)offset,
+        .buffer = resource,
+        .bytes = NULL,
+        .length = 0u,
+    };
+    if (resource && temporaries) {
+        mglRendererTemporariesAdd(temporaries, resource);
+    }
+    return true;
+}
+
+static bool mglTessDispatchPlanBufferOrBind(
+    MGLRenderComputeExecutionPlan *plan, void *temporaries, void *buffer,
+    size_t offset, size_t index)
+{
+    return mglTessDispatchAppendComputeResourceOp(plan, temporaries, 0u, buffer,
+                                                  offset, index);
+}
+
+/* The .m's mglTESXFBVertexStride. */
+static size_t mglTESXFBVertexStride(const Program *program)
+{
+    return (size_t)mglRenderTESXFBVertexStride((const void *)program);
+}
+
 /* The .m's mglTessDrawPrimitives (the `encoder` argument was unused). */
 static void mglTessDispatchDrawPrimitives(void *render_encoder_owner,
                                           uint32_t type, size_t vertex_start,
@@ -222,6 +266,32 @@ static const uint8_t *mglTessDispatchReadableBufferBytes(Buffer *buffer)
             buffer->data.mtl_data);
     }
     return NULL;
+}
+
+/* The ARC locals this file replaces were implicit retains: an `id` local kept
+ * its object alive until the end of its scope, and a `void *` local does not.
+ * Everything the methods held that way is registered in the temporaries set,
+ * which is released at the single `done:` label:
+ *   - a borrowed handle (backend getter, buffer field) is added as-is;
+ *   - a freshly created +1 is added and the creation reference dropped, which
+ *     is exactly the ARC `__bridge_transfer` local's end-of-scope release.
+ * Without this the XFB copy-back read a Metal buffer whose only keep-alive had
+ * been the `id xfbCopyDestination` local (log 128). */
+static void mglTessDispatchKeepAlive(void *temporaries, void *object)
+{
+    if (!temporaries || !object) {
+        return;
+    }
+    mglRendererTemporariesAdd(temporaries, object);
+}
+
+static void mglTessDispatchAdopt(void *temporaries, void *object)
+{
+    if (!temporaries || !object) {
+        return;
+    }
+    mglRendererTemporariesAdd(temporaries, object);
+    CFRelease((CFTypeRef)object);
 }
 
 /* Was -newTCSStageInBufferForContext:program:first:count:indexType:indices:
@@ -492,7 +562,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     }
     memset(tcs_output_contents, 0, (size_t)tcs_layout.output_bytes);
     areas.tessellation->tcsOutputOffset = 0u;
-    mglRendererTemporariesAdd(temporaries, tcs_output_buffer);
+    mglTessDispatchAdopt(temporaries, tcs_output_buffer);
 
     void *tcs_patch_out_buffer = mglTessDispatchCreateBuffer(
         (size_t)tcs_layout.patch_out_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
@@ -504,7 +574,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
         goto done;
     }
     memset(tcs_patch_out_contents, 0, (size_t)tcs_layout.patch_out_bytes);
-    mglRendererTemporariesAdd(temporaries, tcs_patch_out_buffer);
+    mglTessDispatchAdopt(temporaries, tcs_patch_out_buffer);
 
     GLuint indirect_params[2] = {0u, 0u};
     mglTessFillTCSIndirectParams(patch_vertices, instance_count,
@@ -515,7 +585,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     if (!indirect_buffer) {
         goto done;
     }
-    mglRendererTemporariesAdd(temporaries, indirect_buffer);
+    mglTessDispatchAdopt(temporaries, indirect_buffer);
 
     void *tess_factor_buffer = mglTessDispatchCreateBuffer(
         (size_t)tcs_layout.factor_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
@@ -532,7 +602,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
             tcs_layout.patch_count) != 0) {
         goto done;
     }
-    mglRendererTemporariesAdd(temporaries, tess_factor_buffer);
+    mglTessDispatchAdopt(temporaries, tess_factor_buffer);
 
     size_t tcs_in_stride = 0u;
     void *tcs_stage_in_buffer =
@@ -627,6 +697,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     const MGLAIRTessDrawContract *contract, GLuint patch_count,
     GLsizei instance_count, GLuint base_instance)
 {
+    void *temporaries = NULL;
+    bool ok = false;
     MGL_ASSERT_GL_THREAD();
     if (!renderer || !tes_program || !glm_ctx || !contract ||
         patch_count == 0u || instance_count <= 0) {
@@ -635,6 +707,10 @@ bool mglTessDispatchAIRTessEvalVertexRender(
 
     MGLRendererStateAreas areas;
     mglRendererStateAreasPort(renderer, &areas);
+
+    /* ARC kept every `id` local of this method alive to the end of the scope;
+     * the temporaries set does that here (see mglTessDispatchKeepAlive). */
+    temporaries = mglRendererTemporariesCreate();
 
     /* This draw takes the render-vertex path: the TES stage binds its
      * resources read-only into the render encoder (no isolated copies). */
@@ -646,7 +722,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         fprintf(stderr,
                 "MGL TESS ERROR: TES-vertex program %u has no compiled function",
                 (unsigned)tes_program->name);
-        return false;
+        ok = false;
+        goto done;
     }
 
     void *tcs_output_buffer =
@@ -655,6 +732,9 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         mglRendererBackendGetCurrentTessFactorBuffer(areas.backend);
     void *capture_buffer =
         mglRendererBackendGetTessVertexCaptureBuffer(areas.backend);
+    mglTessDispatchKeepAlive(temporaries, tcs_output_buffer);
+    mglTessDispatchKeepAlive(temporaries, tess_factor_buffer);
+    mglTessDispatchKeepAlive(temporaries, capture_buffer);
     MGLTessEvalGlInPlan gl_in_plan = {0};
     if (!mglTessResolveEvalGlIn(
             contract, tcs_output_buffer ? 1 : 0,
@@ -667,7 +747,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
             (uint32_t)instance_count, &gl_in_plan)) {
         fprintf(stderr, "MGL TESS ERROR: missing TES-vertex inputs program=%u",
                 (unsigned)tes_program->name);
-        return false;
+        ok = false;
+        goto done;
     }
     void *gl_in_buffer = gl_in_plan.from_tcs ? tcs_output_buffer : capture_buffer;
     const size_t gl_in_offset = (size_t)gl_in_plan.gl_in_offset;
@@ -678,7 +759,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
                                 tess_factor_buffer ? 1 : 0)) {
         fprintf(stderr, "MGL TESS ERROR: missing TES-vertex inputs program=%u",
                 (unsigned)tes_program->name);
-        return false;
+        ok = false;
+        goto done;
     }
     if (mglTessMultiInstanceTCSReuseWarn(gl_in_plan.from_tcs ? 1 : 0,
                                          (int32_t)instance_count)) {
@@ -691,7 +773,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         }
         if (mglTessMultiInstanceTCSReuseIsError(gl_in_plan.from_tcs ? 1 : 0,
                                                 (int32_t)instance_count)) {
-            return false;
+            ok = false;
+            goto done;
         }
     }
 
@@ -704,10 +787,12 @@ bool mglTessDispatchAIRTessEvalVertexRender(
                                 &eval_plan)) {
         fprintf(stderr, "MGL TESS ERROR: TES-vertex plan failed program=%u",
                 (unsigned)tes_program->name);
-        return false;
+        ok = false;
+        goto done;
     }
     if (eval_plan.empty) {
-        return true;
+        ok = true;
+        goto done;
     }
     const GLuint eval_instance_count = eval_plan.instance_count;
     const GLuint items_per_instance = eval_plan.items_per_instance;
@@ -716,13 +801,15 @@ bool mglTessDispatchAIRTessEvalVertexRender(
 
     void *out_buffer = mglTessDispatchCreateBuffer(
         out_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    mglTessDispatchAdopt(temporaries, out_buffer);
     void *out_contents = mglTessDispatchBufferContents(out_buffer);
     if (!out_contents) {
         fprintf(stderr,
                 "MGL TESS ERROR: failed to allocate TES-vertex domain stream "
                 "(%lu bytes) program=%u",
                 (unsigned long)out_size, (unsigned)tes_program->name);
-        return false;
+        ok = false;
+        goto done;
     }
     if (mglTessSeedEvalOutputRecords(tes_program, factor_bytes, patch_count,
                                      eval_instance_count, out_contents, out_size,
@@ -731,7 +818,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         fprintf(stderr,
                 "MGL TESS ERROR: TES-vertex domain seed failed program=%u",
                 (unsigned)tes_program->name);
-        return false;
+        ok = false;
+        goto done;
     }
 
     /* The render-vertex path never writes its resources; only the isolated
@@ -744,7 +832,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
                                            _TESS_EVALUATION_SHADER,
                                            &stage_copy_backs)) {
         mglRendererClearStageBindingCopyBacksPort(renderer, &stage_copy_backs);
-        return false;
+        ok = false;
+        goto done;
     }
     mglRendererClearStageBindingCopyBacksPort(renderer, &stage_copy_backs);
 
@@ -754,7 +843,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         (uint32_t)(sizeof(tes_texture_binds) / sizeof(tes_texture_binds[0])));
     if (!mglTessEnsureTextureMetalData(renderer, tes_texture_binds,
                                        tes_texture_bind_count, glm_ctx)) {
-        return false;
+        ok = false;
+        goto done;
     }
 
     const GLenum tess_raster_mode = mglTessRasterGLMode(tes_program);
@@ -764,7 +854,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     if (mglTessDispatchState(&areas)->caps.rasterizer_discard) {
         areas.batching->currentCommandBufferHasWork = 1;
         mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
-        return true;
+        ok = true;
+        goto done;
     }
 
     areas.tessellation->tessComputeActive = 1;
@@ -779,7 +870,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
                 (unsigned)tes_program->name);
         areas.tessellation->tessComputeActive = 0;
         areas.tessellation->tessComputeProgram = NULL;
-        return false;
+        ok = false;
+        goto done;
     }
     MGLTessEvalVertexPatch *patches = (MGLTessEvalVertexPatch *)calloc(
         patch_count, sizeof(MGLTessEvalVertexPatch));
@@ -790,7 +882,8 @@ bool mglTessDispatchAIRTessEvalVertexRender(
         free(contracts);
         areas.tessellation->tessComputeActive = 0;
         areas.tessellation->tessComputeProgram = NULL;
-        return false;
+        ok = false;
+        goto done;
     }
     const uint32_t live_patches = mglTessBuildEvalVertexPatches(
         tes_program, factor_bytes, patch_count, patches, contracts);
@@ -879,6 +972,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     }
 
     void *patch_inputs = mglRendererBackendGetTcsPatchOutBuffer(areas.backend);
+    mglTessDispatchKeepAlive(temporaries, patch_inputs);
     const uint32_t prim_type = mglTessRasterPrimitiveType(tes_program);
 
     for (GLsizei i = 0; i < instance_count; i++) {
@@ -923,5 +1017,751 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
     areas.tessellation->tessComputeActive = 0;
     areas.tessellation->tessComputeProgram = NULL;
-    return true;
+    ok = true;
+    goto done;
+done:
+    /* The set releases every handle this method kept alive, plus its own
+     * reference (the ARC scope-exit releases). */
+    if (temporaries) {
+        mglRendererTemporariesRelease(temporaries);
+    }
+    return ok;
+}
+
+/* === AIR TES as a compute expansion (log 128) =============================
+ * Was -dispatchAIRTessEvalCompute:program:contract:patchCount:instanceCount:
+ * baseInstance:.  Isolines / point-mode TES expands one vertex record per work
+ * item with the AIR TES compute kernel (backend ABI: stage_in(24) factors(26)
+ * patchInputs(27) stageOut(28) indirect(29)), then rasterizes through the
+ * passthrough vertex stage as lines / points.  Each patch owns a contiguous
+ * item span; per-patch item counts differ, so the runtime dispatches per patch
+ * with the patch id and output base in the contract buffer (slot 29). */
+
+/* The method's function-static "logged once" flag. */
+static int s_multi_instance_tcs_logged = 0;
+
+bool mglTessDispatchAIRTessEvalCompute(
+    void *renderer, GLMContext glm_ctx, Program *tes_program,
+    const MGLAIRTessDrawContract *contract, GLuint patch_count,
+    GLsizei instance_count, GLuint base_instance)
+{
+    /* The three objects the method's ARC locals owned; the single `done:`
+     * label below releases them on every exit path. */
+    void *tes_pipeline = NULL;
+    void *temporaries = NULL;
+    MGLStageBindingCopyBackList stage_copy_backs = {0};
+    bool ok = false;
+
+    if (!renderer || !tes_program || !glm_ctx || !contract ||
+        patch_count == 0u || instance_count <= 0) {
+        return false;
+    }
+
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+
+    /* This draw takes the compute expansion path: the TES stage needs
+     * isolated bindings and copy-backs (the kernel writes its outputs), even
+     * when the program also carries the render-vertex function. */
+    areas.tessellation->tessVertexRenderActive = 0;
+
+    Shader *tes_shader = tes_program->shader_slots[_TESS_EVALUATION_SHADER];
+    if (!mglTessStageHasCompiledFunction(
+            tes_shader ? 1 : 0,
+            tes_program->modules[_TESS_EVALUATION_SHADER].mtl_function ? 1 : 0)) {
+        fprintf(stderr,
+                "MGL TESS WARNING: TES program %u has no compiled function",
+                tes_program->name);
+        return false;
+    }
+
+    void *tes_pipeline_handle = NULL;
+    char tes_pipeline_error[512] = {0};
+    int tes_pipeline_result = mglGetOrCreateProgramComputePipeline(
+        tes_program, _TESS_EVALUATION_SHADER, &tes_pipeline_handle,
+        tes_pipeline_error, sizeof(tes_pipeline_error));
+    if (mglTessComputePipelineReady(tes_pipeline_result,
+                                    tes_pipeline_handle ? 1 : 0)) {
+        tes_pipeline = tes_pipeline_handle;
+    }
+    if (!tes_pipeline) {
+        fprintf(stderr,
+                "MGL TESS ERROR: failed to create TES compute pipeline for "
+                "program %u: %s",
+                tes_program->name,
+                tes_pipeline_error[0] ? tes_pipeline_error : "unknown error");
+        return false;
+    }
+
+    /* The ARC locals of this method kept their objects alive until the end of
+     * the scope; the set does that here (see mglTessDispatchKeepAlive). */
+    temporaries = mglRendererTemporariesCreate();
+
+    /* Inputs: gl_in is the post-TCS control point stream (or the VS capture
+     * when there is no TCS, which the draw path already aliased into
+     * tcsOutputBuffer).  Factors and per-patch inputs come from the TCS
+     * dispatch (or defaults). */
+    void *tcs_output_buffer =
+        mglRendererBackendGetTcsOutputBuffer(areas.backend);
+    void *tess_factor_buffer =
+        mglRendererBackendGetCurrentTessFactorBuffer(areas.backend);
+    void *capture_buffer =
+        mglRendererBackendGetTessVertexCaptureBuffer(areas.backend);
+    mglTessDispatchKeepAlive(temporaries, tcs_output_buffer);
+    mglTessDispatchKeepAlive(temporaries, tess_factor_buffer);
+    mglTessDispatchKeepAlive(temporaries, capture_buffer);
+    MGLTessEvalGlInPlan gl_in_plan = {0};
+    if (!mglTessResolveEvalGlIn(
+            contract, tcs_output_buffer ? 1 : 0,
+            (uint64_t)areas.tessellation->tcsOutputOffset,
+            (uint64_t)areas.tessellation->tcsOutputStride,
+            areas.tessellation->tcsOutVertices, capture_buffer ? 1 : 0,
+            (uint64_t)areas.tessellation->tessVertexCaptureOffset,
+            areas.tessellation->tessIndexedDraw ? 1 : 0,
+            (uint32_t)areas.tessellation->tessInstanceRecords,
+            (uint32_t)instance_count, &gl_in_plan)) {
+        fprintf(stderr, "MGL TESS ERROR: missing TES compute inputs program=%u",
+                (unsigned)tes_program->name);
+        goto done;
+    }
+    void *gl_in_buffer = gl_in_plan.from_tcs ? tcs_output_buffer : capture_buffer;
+    size_t gl_in_offset = (size_t)gl_in_plan.gl_in_offset;
+    size_t gl_in_stride = (size_t)gl_in_plan.gl_in_stride;
+    GLuint gl_in_vertices = gl_in_plan.gl_in_vertices;
+    if (!mglTessEvalInputsReady(gl_in_buffer ? 1 : 0,
+                                tess_factor_buffer ? 1 : 0)) {
+        fprintf(stderr, "MGL TESS ERROR: missing TES compute inputs program=%u",
+                (unsigned)tes_program->name);
+        goto done;
+    }
+    void *control_point_index_buffer =
+        mglRendererBackendGetTessControlPointIndexBuffer(areas.backend);
+    mglTessDispatchKeepAlive(temporaries, control_point_index_buffer);
+    if (!mglTessEvalIndexedGatherReady(
+            areas.tessellation->tessIndexedDraw ? 1 : 0,
+            control_point_index_buffer ? 1 : 0,
+            (uint32_t)areas.tessellation->tessInstanceRecords)) {
+        fprintf(stderr,
+                "MGL TESS ERROR: indexed TES compute missing gather "
+                "program=%u",
+                (unsigned)tes_program->name);
+        goto done;
+    }
+    const int gl_in_from_tcs = gl_in_plan.from_tcs != 0u;
+    /* TCS currently expands one instance of control points / factors.
+     * TES still loops instances for XFB/output bases.  Reusing instance-0
+     * TCS outs is wrong when VS outputs vary by gl_InstanceID.  Until
+     * per-instance TCS re-dispatch exists: one-shot log, and hard-fail when
+     * MGL_TESS_MULTI_INSTANCE_ERROR is set. */
+    if (mglTessMultiInstanceTCSReuseWarn(gl_in_from_tcs, (int32_t)instance_count)) {
+        if (!s_multi_instance_tcs_logged) {
+            fprintf(stderr,
+                    "MGL TESS ERROR: multi-instance TES with TCS reuses "
+                    "instance-0 control points (program=%u instances=%d); "
+                    "set MGL_TESS_MULTI_INSTANCE_ERROR=1 to fail the draw",
+                    (unsigned)tes_program->name, (int)instance_count);
+            s_multi_instance_tcs_logged = 1;
+        }
+        if (mglTessMultiInstanceTCSReuseIsError(gl_in_from_tcs,
+                                                (int32_t)instance_count)) {
+            goto done;
+        }
+    }
+    const size_t gl_in_instance_stride =
+        (size_t)gl_in_plan.gl_in_instance_stride;
+
+    /* Compute per-patch item counts and the per-instance total. */
+    const uint16_t *factor_bytes =
+        (const uint16_t *)mglTessDispatchBufferContents(tess_factor_buffer);
+    MGLTessEvalComputePlan eval_plan = {0};
+    if (!mglTessPlanEvalCompute(tes_program, factor_bytes,
+                                mglTessDispatchBufferLength(tess_factor_buffer),
+                                patch_count, (uint32_t)instance_count,
+                                &eval_plan)) {
+        fprintf(stderr, "MGL TESS ERROR: TES compute plan failed program=%u",
+                (unsigned)tes_program->name);
+        goto done;
+    }
+    if (eval_plan.empty) {
+        /* Every patch discarded (outer ≤ 0, e.g. CTS isolines with
+         * outer=-1).  Empty expansion is success — do not raise
+         * GL_INVALID_OPERATION. */
+        ok = true;
+        goto done;
+    }
+    const GLuint eval_instance_count = eval_plan.instance_count;
+    const GLuint items_per_instance = eval_plan.items_per_instance;
+    size_t out_stride = eval_plan.out_stride;
+    const size_t out_size = (size_t)eval_plan.out_size;
+    void *out_buffer = mglTessDispatchCreateBuffer(
+        out_size, MGL_TESS_DISPATCH_STORAGE_SHARED);
+    mglTessDispatchAdopt(temporaries, out_buffer);
+    void *out_contents = mglTessDispatchBufferContents(out_buffer);
+    if (!out_contents) {
+        fprintf(stderr,
+                "MGL TESS ERROR: failed to allocate TES compute output "
+                "(%lu bytes) program=%u",
+                (unsigned long)out_size, (unsigned)tes_program->name);
+        goto done;
+    }
+    if (mglTessSeedEvalOutputRecords(tes_program, factor_bytes, patch_count,
+                                     eval_instance_count, out_contents, out_size,
+                                     (uint32_t)out_stride) !=
+        items_per_instance) {
+        fprintf(stderr, "MGL TESS ERROR: TES domain seed failed program=%u",
+                (unsigned)tes_program->name);
+        goto done;
+    }
+
+    /* PASS 1: pre-resolve textures before opening the compute encoder. */
+    if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
+            mglTessDispatchRenderEncoderOwner(&areas)))) {
+        mglRendererEndRenderEncodingPort(renderer);
+    }
+    MGLRenderCommandBufferState command_state = {0};
+    const int has_command_state = mglRenderCommandBufferOwnerHasState(
+        mglTessDispatchCommandBufferOwner(&areas), &command_state);
+    if (mglTessCommandBufferNeedsNew(has_command_state, command_state.status)) {
+        /* -newCommandBuffer was METAL_LOCK + -newCommandBufferLocked +
+         * METAL_UNLOCK; the lock is the GL-thread assertion. */
+        MGL_ASSERT_GL_THREAD();
+        if (!mglRendererNewCommandBufferLockedPort(renderer)) {
+            fprintf(stderr,
+                    "MGL TESS ERROR: failed to create command buffer for TES "
+                    "compute\n");
+            goto done;
+        }
+    }
+
+    MGLTessTextureBind tes_texture_binds[TEXTURE_UNITS * 2u];
+    const uint32_t tes_texture_bind_count = mglTessCollectTextureBinds(
+        glm_ctx, tes_program, _TESS_EVALUATION_SHADER, tes_texture_binds,
+        (uint32_t)(sizeof(tes_texture_binds) / sizeof(tes_texture_binds[0])));
+    if (!mglTessEnsureTextureMetalData(renderer, tes_texture_binds,
+                                       tes_texture_bind_count, glm_ctx)) {
+        goto done;
+    }
+
+    MGLTessStageBufferBindingList stage_buffer_bindings = {0};
+    if (!mglTessPrepareStageBufferBindings(renderer, &stage_buffer_bindings,
+                                           _TESS_EVALUATION_SHADER,
+                                           &stage_copy_backs)) {
+        goto done;
+    }
+
+    MGLRenderComputeExecutionPlan execution_plan = {0};
+    execution_plan.pipeline = tes_pipeline;
+    void *patch_inputs = mglRendererBackendGetTcsPatchOutBuffer(areas.backend);
+    mglTessDispatchKeepAlive(temporaries, patch_inputs);
+    if (!mglTessDispatchPlanBufferOrBind(
+            &execution_plan, temporaries, tess_factor_buffer, 0u,
+            MGL_AIR_TESS_SLOT_TESS_FACTOR) ||
+        !mglTessDispatchPlanBufferOrBind(
+            &execution_plan, temporaries,
+            patch_inputs ? patch_inputs : out_buffer, 0u,
+            MGL_AIR_TESS_SLOT_PATCH_OUT) ||
+        !mglTessDispatchPlanBufferOrBind(&execution_plan, temporaries,
+                                         out_buffer, 0u,
+                                         MGL_AIR_TESS_SLOT_TCS_OUTPUT)) {
+        goto done;
+    }
+
+    if (!mglTessPlanTextureBinds(renderer, tes_texture_binds,
+                                 tes_texture_bind_count, glm_ctx,
+                                 &execution_plan, temporaries)) {
+        goto done;
+    }
+
+    if (!mglTessBindPreparedStageBufferBindings(&stage_buffer_bindings, NULL,
+                                                &execution_plan, temporaries)) {
+        goto done;
+    }
+    mglTessBindPointSizeParamsToComputeEncoder(renderer, tes_program,
+                                               _TESS_EVALUATION_SHADER,
+                                               &execution_plan, temporaries);
+
+    /* Transform-feedback stream (slot 31): the kernel writes complete stage
+     * records. The renderer gathers selected varyings into the compact GL XFB
+     * layout and copies only the prefix containing complete primitives. */
+    TransformFeedback *xfb_state =
+        mglTessDispatchState(&areas)->transform_feedback;
+    Program *gs_program =
+        mglResolveProgramForStageFromState(glm_ctx, _GEOMETRY_SHADER);
+    /* A monolithic VS+TCS+TES program resolves to itself for the GS stage
+     * even with no GS attached.  Guard on the shader slot (same pattern as
+     * mglTessClassifyDraw for tcs/tes) so has_gs / the TES→GS handoff and
+     * mglTessPlanEvalAfterCompute only see a real geometry stage. */
+    if (gs_program && !gs_program->shader_slots[_GEOMETRY_SHADER]) {
+        gs_program = NULL;
+    }
+    const bool xfb_active = mglTessEvalOwnsXFB(glm_ctx, gs_program);
+    void *xfb_temporary = NULL;
+    void *xfb_copy_destination = NULL;
+    Buffer *xfb_destination = NULL;
+    size_t xfb_copy_destination_offset = 0u;
+    size_t xfb_compact_stride = 0u;
+    size_t xfb_copied_vertices = 0u;
+    size_t xfb_written_bytes = 0u;
+    int xfb_size_ok = 0;
+    if (xfb_active) {
+        BufferBaseTarget *xfb_slot =
+            &mglTessDispatchState(&areas)
+                 ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
+                 .buffers[0];
+        size_t capture_vertices = 0u;
+        size_t required_bytes = 0u;
+        const size_t xfb_session_offset = (size_t)mglXfbSessionOffsetOr(
+            (uint64_t)xfb_state->buffer_write_offsets[0], 0u);
+        xfb_compact_stride = mglTESXFBVertexStride(tes_program);
+        uint32_t capture_verts_u = 0u;
+        uint32_t required_bytes_u = 0u;
+        const bool size_ok = mglTessPlanEvalXfbCapture(
+                                 items_per_instance, eval_instance_count,
+                                 (uint32_t)out_stride,
+                                 (uint32_t)xfb_compact_stride,
+                                 &capture_verts_u, &required_bytes_u) != 0;
+        xfb_size_ok = size_ok ? 1 : 0;
+        capture_vertices = capture_verts_u;
+        required_bytes = required_bytes_u;
+        (void)capture_vertices;
+
+        void *xfb_mtl = NULL;
+        size_t visible_bytes = 0u;
+        if (xfb_slot->buf) {
+            if (mglRenderBufferNeedsCPUUpload(xfb_slot->buf->size,
+                                              xfb_slot->buf->data.dirty_bits)) {
+                /* Consume CPU initialization before the XFB blit writes the
+                 * same backing. Otherwise a later map can upload the stale
+                 * shadow over the captured GPU data. */
+                if (!mglRendererUpdateDirtyBuffer(renderer, xfb_slot->buf)) {
+                    goto done;
+                }
+            } else if (xfb_slot->buf->size == 0) {
+                mglRenderClearEmptyBufferDirty(xfb_slot->buf);
+            }
+            if (!xfb_slot->buf->data.mtl_data) {
+                mglRendererBindMTLBuffer(renderer, xfb_slot->buf);
+            }
+            xfb_mtl = xfb_slot->buf->data.mtl_data;
+            mglTessDispatchKeepAlive(temporaries, xfb_mtl);
+            if (xfb_mtl) {
+                BufferMap xfb_map = {0};
+                xfb_map.buf = xfb_slot->buf;
+                xfb_map.offset = xfb_slot->offset;
+                xfb_map.size = xfb_slot->size;
+                visible_bytes = mglBufferMapVisibleBackingBytes(
+                    &xfb_map, (size_t)mglTessDispatchBufferLength(xfb_mtl));
+            }
+        }
+
+        if (mglTessPlanEvalXFBSlot(xfb_active ? 1 : 0, xfb_size_ok) ==
+            MGL_TESS_EVAL_XFB_CAPTURE) {
+            const GLuint vertices_per_primitive =
+                mglTessVerticesPerPrimitive(tes_program);
+            MGLTessXFBDestPlan dest_plan = {0};
+            const int dest_plan_ok =
+                mglTessPlanXFBDestination(
+                    items_per_instance, eval_instance_count,
+                    (uint32_t)xfb_compact_stride, vertices_per_primitive,
+                    (uint64_t)xfb_session_offset, (int64_t)xfb_slot->offset,
+                    (uint64_t)visible_bytes, &dest_plan) &&
+                dest_plan.valid;
+            const int dest_ok = mglTessEvalXFBDestReady(
+                xfb_mtl ? 1 : 0, xfb_slot->buf != NULL, dest_plan_ok);
+            /* The AIR kernel writes full stage records (built-ins followed by
+             * location-based user outputs). GL XFB is a compact stream of only
+             * the selected varyings, so it can never target the GL range
+             * directly. Gather the selected fields after the dispatch. */
+            xfb_temporary = mglTessDispatchCreateBuffer(
+                required_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+            mglTessDispatchAdopt(temporaries, xfb_temporary);
+            if (!xfb_temporary) {
+                goto done;
+            }
+            if (!mglTessDispatchPlanBufferOrBind(&execution_plan, temporaries,
+                                                 xfb_temporary, 0u,
+                                                 MGL_AIR_TESS_SLOT_XFB_OUT)) {
+                goto done;
+            }
+            if (dest_ok) {
+                xfb_copied_vertices = dest_plan.copied_vertices;
+                xfb_written_bytes = dest_plan.written_bytes;
+                xfb_copy_destination = xfb_mtl;
+                xfb_copy_destination_offset = dest_plan.destination_offset;
+                xfb_destination = xfb_slot->buf;
+            }
+        }
+    }
+    if (mglTessPlanEvalXFBSlot(xfb_active ? 1 : 0, xfb_size_ok) ==
+        MGL_TESS_EVAL_XFB_DUMMY) {
+        /* The TES compute kernel always declares and writes the XFB stream
+         * slot (31); bind a 1-byte dummy so the slot is never dangling when
+         * GL feedback is inactive. */
+        const uint64_t dummy_bytes = mglTessDummyXfbBytes((uint64_t)out_size);
+        void *cached_dummy = NULL;
+        void *xfb_dummy = NULL;
+        if (mglRendererBackendGetTessXfbDummyBuffer(areas.backend, dummy_bytes,
+                                                    &cached_dummy) == 1) {
+            xfb_dummy = cached_dummy;
+            mglTessDispatchKeepAlive(temporaries, xfb_dummy);
+        }
+        if (!xfb_dummy) {
+            xfb_dummy = mglTessDispatchCreateBuffer(
+                (size_t)dummy_bytes, MGL_TESS_DISPATCH_STORAGE_SHARED);
+            mglTessDispatchAdopt(temporaries, xfb_dummy);
+            if (xfb_dummy) {
+                (void)mglRendererBackendPutTessXfbDummyBuffer(areas.backend,
+                                                              xfb_dummy);
+            }
+        }
+        if (xfb_dummy) {
+            if (!mglTessDispatchPlanBufferOrBind(&execution_plan, temporaries,
+                                                 xfb_dummy, 0u,
+                                                 MGL_AIR_TESS_SLOT_XFB_OUT)) {
+                goto done;
+            }
+        }
+    }
+
+    const int indexed = areas.tessellation->tessIndexedDraw ? 1 : 0;
+    uint32_t gather_verts = 0u;
+    uint32_t gather_prims = 0u;
+    mglTessPlanEvalGather(indexed,
+                          (uint32_t)areas.tessellation->tessInstanceRecords,
+                          contract->patch_vertices, patch_count, &gather_verts,
+                          &gather_prims);
+    MGLTessEvalPerPatchDispatchSpec patch_spec;
+    mglTessFillEvalPerPatchSpec(
+        gl_in_buffer, (uint64_t)gl_in_offset, (uint64_t)gl_in_instance_stride,
+        indexed ? control_point_index_buffer : NULL, gather_verts, gather_prims,
+        indexed, (uint32_t)gl_in_vertices, patch_count, eval_instance_count,
+        items_per_instance, &patch_spec);
+    void *patch_keep_alive = NULL;
+    if (!mglTessAppendEvalPerPatchDispatches(&execution_plan, tes_program,
+                                             factor_bytes, &patch_spec,
+                                             &patch_keep_alive)) {
+        free(patch_keep_alive);
+        goto done;
+    }
+    if (patch_keep_alive) {
+        /* The method wrapped the block in an NSData with a free() deallocator
+         * so the plan's byte pointers stayed valid; kCFAllocatorMalloc is the
+         * same contract (the block was malloc'd and is freed with free()). */
+        CFDataRef keep = CFDataCreateWithBytesNoCopy(
+            kCFAllocatorDefault, (const UInt8 *)patch_keep_alive, 1,
+            kCFAllocatorMalloc);
+        if (!keep) {
+            free(patch_keep_alive);
+            goto done;
+        }
+        mglRendererTemporariesAdd(temporaries, (void *)keep);
+        CFRelease(keep); /* the temporaries set holds its own reference */
+    }
+    {
+        MGLRenderCopyBackEntry copy_back_entries[kMGLMaxBufferSlots] = {0};
+        uint32_t copy_back_entry_count = mglRenderCollectCopyBackEntries(
+            (const MGLRenderCopyBackEntry *)stage_copy_backs.slots,
+            kMGLMaxBufferSlots, copy_back_entries, kMGLMaxBufferSlots);
+        execution_plan.barrier_scope = MGL_RENDER_COMPUTE_BARRIER_BUFFERS;
+        MGLRenderComputeExecutionResult execution_result = {0};
+        char execution_error[256] = {0};
+        if (mglRenderExecuteComputeExecutionPlan(
+                mglTessDispatchCommandBufferOwner(&areas),
+                areas.gpu_recovery_command_owner
+                    ? *areas.gpu_recovery_command_owner
+                    : NULL,
+                &execution_plan, copy_back_entries, copy_back_entry_count, 1u,
+                &execution_result, execution_error,
+                sizeof(execution_error)) != 0) {
+            if (execution_result.transaction.device_reset_requested) {
+                atomic_store_explicit(&areas.core->deviceResetRequested, true,
+                                      memory_order_release);
+            }
+            fprintf(stderr, "MGL TESS ERROR: C++ TES execution failed: %s",
+                    execution_error[0] ? execution_error : "unknown error");
+            goto done;
+        }
+    }
+
+    if (mglTessXFBCopyBackReady((uint64_t)xfb_written_bytes,
+                                xfb_temporary ? 1 : 0,
+                                xfb_destination ? 1 : 0)) {
+        const uint8_t *src_base =
+            (const uint8_t *)mglTessDispatchBufferContents(xfb_temporary);
+        if (!src_base) {
+            fprintf(stderr, "MGL TESS XFB: missing temporary contents\n");
+            goto done;
+        }
+        const bool separate_attribs =
+            mglXfbSeparateAttribs(tes_program->transform_feedback_buffer_mode) !=
+            0;
+        if (separate_attribs) {
+            /* One GL buffer binding per varying (GL 4.6 §11.1.3.2). */
+            for (GLsizei varying = 0;
+                 varying < tes_program->transform_feedback_varying_count;
+                 varying++) {
+                if (!mglXfbVaryingSlotValid((uint32_t)varying)) {
+                    break;
+                }
+                const char *name =
+                    tes_program->transform_feedback_varying_names[varying];
+                uint32_t record_offset = 0u;
+                uint32_t field_type = 0u;
+                uint32_t field_bytes = 0u;
+                if (!mglTessResolveXFBSource(tes_program, name, &record_offset,
+                                             &field_type, &field_bytes)) {
+                    continue;
+                }
+                (void)record_offset;
+                (void)field_type;
+                BufferBaseTarget *slot =
+                    &mglTessDispatchState(&areas)
+                         ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
+                         .buffers[varying];
+                Buffer *dest_buf = slot->buf;
+                if (!dest_buf) {
+                    continue;
+                }
+                if (mglRenderBufferNeedsCPUUpload(dest_buf->size,
+                                                  dest_buf->data.dirty_bits)) {
+                    if (!mglRendererUpdateDirtyBuffer(renderer, dest_buf)) {
+                        goto done;
+                    }
+                }
+                if (!dest_buf->data.mtl_data) {
+                    mglRendererBindMTLBuffer(renderer, dest_buf);
+                }
+                void *dest_mtl = dest_buf->data.mtl_data;
+                /* SubData below may replace the buffer's Metal backing, and
+                 * the ARC local was what kept this one alive (log 128). */
+                mglTessDispatchKeepAlive(temporaries, dest_mtl);
+                const uint64_t session_offset = mglXfbSessionOffsetOr(
+                    (uint64_t)xfb_state->buffer_write_offsets[varying], 0u);
+                uint64_t visible = 0u;
+                if (dest_mtl && slot->offset >= 0) {
+                    BufferMap xfb_map = {0};
+                    xfb_map.buf = dest_buf;
+                    xfb_map.offset = slot->offset;
+                    xfb_map.size = slot->size;
+                    visible = (uint64_t)mglBufferMapVisibleBackingBytes(
+                        &xfb_map, (size_t)mglTessDispatchBufferLength(dest_mtl));
+                }
+                MGLXfbVsBufferDest dest = {0};
+                if (!mglXfbPlanVsBufferDestOrUnbacked(
+                        (uint32_t)xfb_copied_vertices, field_bytes,
+                        dest_mtl ? 1 : 0, slot->offset, session_offset, visible,
+                        &dest) ||
+                    dest.skip) {
+                    continue;
+                }
+                size_t dest_offset = (size_t)dest.destination_offset;
+                size_t max_verts = dest.written_records;
+                size_t written = dest.written_bytes;
+                uint8_t *packed = (uint8_t *)calloc(1u, written);
+                if (!packed) {
+                    fprintf(stderr,
+                            "MGL TESS XFB: OOM packing separate attrib %d",
+                            (int)varying);
+                    goto done;
+                }
+                mglTessPackXFBSeparate(tes_program, name, src_base,
+                                       (uint32_t)out_stride, (uint32_t)max_verts,
+                                       packed);
+                mglRendererBufferSubData(glm_ctx, dest_buf,
+                                         (GLintptr)dest_offset,
+                                         (GLsizeiptr)written, packed);
+                if (dest_mtl) {
+                    uint8_t *live =
+                        (uint8_t *)mglTessDispatchBufferContents(dest_mtl);
+                    if (live) {
+                        memcpy(live + dest_offset, packed, written);
+                    }
+                }
+                if (mglXfbCPUShadowFits(dest_buf->data.buffer_data ? 1 : 0,
+                                        dest_buf->size, (uint64_t)dest_offset,
+                                        (uint64_t)written)) {
+                    memcpy((uint8_t *)dest_buf->data.buffer_data + dest_offset,
+                           packed, written);
+                }
+                mglRenderMarkBufferCPUWrite(dest_buf, (int64_t)dest_offset,
+                                            (int64_t)written);
+                free(packed);
+            }
+        } else {
+            uint8_t *packed = (uint8_t *)calloc(1u, xfb_written_bytes);
+            if (!packed) {
+                fprintf(stderr,
+                        "MGL TESS XFB: missing temporary contents or OOM\n");
+                goto done;
+            }
+            mglTessPackXFBInterleaved(tes_program, src_base,
+                                      (uint32_t)out_stride,
+                                      (uint32_t)xfb_copied_vertices, packed,
+                                      (uint32_t)xfb_compact_stride);
+            mglRendererBufferSubData(glm_ctx, xfb_destination,
+                                     xfb_copy_destination_offset,
+                                     xfb_written_bytes, packed);
+            /* Mirror into the live Metal allocation: SubData may land in a
+             * snapshot while glMapBufferRange serves the CPU shadow. */
+            if (xfb_copy_destination) {
+                uint8_t *live = (uint8_t *)mglTessDispatchBufferContents(
+                    xfb_copy_destination);
+                if (live) {
+                    memcpy(live + xfb_copy_destination_offset, packed,
+                           xfb_written_bytes);
+                }
+            }
+            if (mglXfbCPUShadowFits(xfb_destination->data.buffer_data ? 1 : 0,
+                                    xfb_destination->size,
+                                    (uint64_t)xfb_copy_destination_offset,
+                                    (uint64_t)xfb_written_bytes)) {
+                memcpy((uint8_t *)xfb_destination->data.buffer_data +
+                           xfb_copy_destination_offset,
+                       packed, xfb_written_bytes);
+            }
+            mglRenderMarkBufferCPUWrite(xfb_destination,
+                                        (int64_t)xfb_copy_destination_offset,
+                                        (int64_t)xfb_written_bytes);
+            free(packed);
+        }
+    }
+    if (mglXfbShouldAdvanceWriteOffset(xfb_active ? 1 : 0,
+                                       (uint64_t)xfb_written_bytes)) {
+        xfb_state->buffer_write_offsets[0] = mglXfbAdvanceWriteOffset(
+            xfb_state->buffer_write_offsets[0], (uint64_t)xfb_written_bytes);
+    }
+
+    /* Rasterize through the passthrough vertex stage, or hand the expanded
+     * records to a following geometry shader (coverage VS+TC+TE+GS path). */
+    const GLenum tess_raster_mode = mglTessRasterGLMode(tes_program);
+    MGLTessRasterQueryPlan query = {0};
+    mglTessPlanRasterQuery(tes_program, (uint64_t)instance_count,
+                           (uint64_t)items_per_instance, xfb_active ? 1 : 0,
+                           (uint64_t)xfb_written_bytes,
+                           (uint32_t)xfb_compact_stride, &query);
+    MGLTessEvalAfterComputePlan after = {0};
+    if (!mglTessPlanEvalAfterCompute(
+            gs_program ? 1 : 0,
+            mglTessDispatchState(&areas)->caps.rasterizer_discard ? 1 : 0,
+            items_per_instance, eval_instance_count, &after)) {
+        goto done;
+    }
+    if (after.action == MGL_TESS_AFTER_COMPUTE_GS) {
+        if (after.gs_empty) {
+            fprintf(stderr,
+                    "MGL TESS ERROR: TES→GS empty expansion program=%u",
+                    (unsigned)tes_program->name);
+            goto done;
+        }
+        GLsizei gs_count = (GLsizei)after.gs_vertex_count;
+        areas.tessellation->pendingGSInputActive = 1;
+        areas.tessellation->pendingGSInput =
+            (void *)CFRetain((CFTypeRef)out_buffer);
+        areas.tessellation->pendingGSInputOffset = 0u;
+        areas.tessellation->pendingGSInputStride = out_stride;
+        areas.tessellation->pendingGSVertexCount = gs_count;
+        /* O1.4: single mglIssue/host path — no ObjC dual call. */
+        const int gs_ok = mglDrawHostHandleGeometry(
+                              renderer, glm_ctx, tess_raster_mode, 0, gs_count,
+                              0, NULL, 0, 1, base_instance,
+                              "tessEvalToGeometry")
+                              ? 1
+                              : 0;
+        if (areas.tessellation->pendingGSInput) {
+            (void)CFRelease((CFTypeRef)areas.tessellation->pendingGSInput);
+            areas.tessellation->pendingGSInput = NULL;
+        }
+        areas.tessellation->pendingGSInputActive = 0;
+        areas.tessellation->pendingGSInputOffset = 0u;
+        areas.tessellation->pendingGSInputStride = 0u;
+        areas.tessellation->pendingGSVertexCount = 0;
+        ok = gs_ok != 0;
+        goto done;
+    }
+    if (after.action == MGL_TESS_AFTER_COMPUTE_DISCARD) {
+        /* GL_RASTERIZER_DISCARD: no pixels by definition, so skip the
+         * passthrough draw entirely, but the compute expansion already ran
+         * and the primitive query must still count the generated
+         * primitives (persistent query semantics). */
+        areas.batching->currentCommandBufferHasWork = 1;
+        mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
+        ok = true;
+        goto done;
+    }
+    if (!mglRendererEnsureAIRTessEvalPassthroughPort(renderer, tes_program)) {
+        fprintf(stderr,
+                "MGL TESS ERROR: TES passthrough vertex unavailable program=%u",
+                (unsigned)tes_program->name);
+        /* XFB capture already completed above; do not fail the draw and
+         * leave transform feedback active when the test only needed feedback. */
+        if (mglTessPassthroughFailIsXFBSuccess(xfb_active ? 1 : 0)) {
+            mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims,
+                                              query.written);
+            ok = true;
+            goto done;
+        }
+        goto done;
+    }
+    uint32_t prim_type = mglTessRasterPrimitiveType(tes_program);
+
+    areas.tessellation->tessComputeActive = 1;
+    areas.tessellation->tessComputeProgram = tes_program;
+    const int state_ready = mglRendererProcessGLStatePort(renderer, 1);
+    if (!mglTessPassthroughRasterReady(
+            state_ready ? 1 : 0,
+            mglRenderEncoderOwnerHasCurrent(
+                mglTessDispatchRenderEncoderOwner(&areas)),
+            mglDrawRasterizationIsEmpty(renderer) ? 1 : 0)) {
+        fprintf(stderr,
+                "MGL TESS ERROR: TES compute raster skip program=%u "
+                "stateReady=%d encoder=%d empty=%d clip0=%d",
+                (unsigned)tes_program->name, (int)state_ready,
+                mglRenderEncoderOwnerHasCurrent(
+                    mglTessDispatchRenderEncoderOwner(&areas)),
+                (int)mglDrawRasterizationIsEmpty(renderer),
+                areas.ctx && mglTessDispatchState(&areas)->caps.clip_distances[0]
+                    ? 1
+                    : 0);
+        areas.tessellation->tessComputeActive = 0;
+        areas.tessellation->tessComputeProgram = NULL;
+        if (mglTessPassthroughFailIsXFBSuccess(xfb_active ? 1 : 0)) {
+            mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims,
+                                              query.written);
+            /* Feedback already landed; returning 0 would raise
+             * INVALID_OPERATION and skip the test's EndTransformFeedback. */
+            ok = true;
+            goto done;
+        }
+        goto done;
+    }
+
+    mglDrawApplyPolygonOffset(renderer, tess_raster_mode);
+    for (GLsizei i = 0; i < instance_count; i++) {
+        size_t instance_offset = (size_t)mglTessPassthroughInstanceOffset(
+            (uint32_t)i, items_per_instance, (uint32_t)out_stride);
+        void *encoder_owner = mglTessDispatchRenderEncoderOwner(&areas);
+        mglTessDispatchSetRenderVertexBuffer(encoder_owner, out_buffer,
+                                             instance_offset, 0u);
+        mglTessDispatchDrawPrimitives(encoder_owner, prim_type, 0u,
+                                      (size_t)items_per_instance, 1u,
+                                      (size_t)base_instance + (size_t)i);
+    }
+    areas.batching->currentCommandBufferHasWork = 1;
+    mglRecordActivePrimitiveQueryDraw(glm_ctx, query.prims, query.written);
+    areas.tessellation->tessComputeActive = 0;
+    areas.tessellation->tessComputeProgram = NULL;
+    ok = true;
+
+done:
+    /* The method cleared the list on every path after a prepare attempt; an
+     * unregistered key is a no-op in the backend, so one call here is the
+     * same.  The temporaries set and the pipeline (+1 each) are released
+     * after the plan has been encoded, and the kernel's stage-in keep-alive
+     * block lives in the set for exactly as long as the plan does. */
+    mglRendererClearStageBindingCopyBacksPort(renderer, &stage_copy_backs);
+    if (temporaries) {
+        mglRendererTemporariesRelease(temporaries);
+    }
+    CFRelease((CFTypeRef)tes_pipeline);
+    return ok;
 }

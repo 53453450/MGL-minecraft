@@ -640,9 +640,13 @@ static int mglStageDispatchAirTES(void *renderer, GLMContext ctx, Program *tes,
                                   uint32_t patch_count, GLsizei instanceCount,
                                   GLuint baseInstance)
 {
-    return mglRendererDispatchAIRTessEvalComputePort(
-        renderer, ctx, tes, contract, patch_count, (int32_t)instanceCount,
-        baseInstance);
+    /* The TES compute expansion is C now (log 128); the shell port that
+     * forwarded to the Objective-C method is retired. */
+    return mglTessDispatchAIRTessEvalCompute(renderer, ctx, tes, contract,
+                                             patch_count, instanceCount,
+                                             baseInstance)
+               ? 1
+               : 0;
 }
 
 static int mglStageDispatchAirTESVertex(void *renderer, GLMContext ctx,
