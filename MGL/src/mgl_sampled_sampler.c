@@ -30,7 +30,36 @@
 #include "mgl_types_state.h"     /* Sampler */
 #include "mgl_sampled_fallback.h" /* mglSampledFallbackTextureForExpectedType */
 #include "mgl_texture_compat.h"  /* pixel-format/kind compatibility */
+#include "mgl_coordinate.h"      /* MGLYFlipDecision / mglDecideYFlipForSampledRT */
+#include "mgl_rt_sync.h"         /* mglTextureCanUseGLSampledRenderTargetCopy */
+#include "mgl_trace_strategy.h"  /* mglTraceRTYFlipDiagnosticsEnabled */
+#include "mgl_trace_log.h"       /* mglTraceLogIsEnabled */
+#include "mgl_blit_drivers.h"    /* mglBlitFreshGLSampledRenderTargetCopyForSampling */
+#include "mgl_types_program.h"   /* Program */
 #include "mgl_trace_strategy.h" /* mglWriteProgramMSLDump */
+
+/* MGLRenderer_Private.h declares this BOOL (signed char on macOS). */
+extern signed char mglEnvFlagEnabled(const char *name);
+
+/* Twins of the MGLRenderer+Draw_Private.h statics (rule 7). */
+static int mglSsTraceRTYFlipDiagnosticsEnabled(void)
+{
+    return mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_RT_YFLIP");
+}
+
+static const char *mglSsYFlipDecisionName(MGLYFlipDecision decision)
+{
+    switch (decision) {
+        case MGL_YFLIP_USE_ORIGINAL:
+            return "original";
+        case MGL_YFLIP_USE_SAMPLED_COPY:
+            return "sampled-copy";
+        case MGL_YFLIP_USE_ORIGINAL_AND_INJECT:
+            return "original-inject";
+        default:
+            return "unknown";
+    }
+}
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (same twin as mgl_tess_dispatch.c). */
 static GLMState *mglSsState(const MGLRendererStateAreas *areas)
@@ -196,4 +225,141 @@ void *mglSampledCompatFallbackPlan(void *renderer, Texture *ptr, void *texture,
         *used_fallback_out = 1;
     }
     return texture;
+}
+
+/* Twin of the MGLRenderer+Blit_Private.h static inline (see mgl_blit_drivers.c
+ * for the blit-side copy of this helper). */
+static int mglSsGLSampledCopyContentFresh(const Texture *tex)
+{
+    return tex != NULL && tex->mtl_gl_sampled_data != NULL &&
+           tex->mtl_gl_sampled_write_version ==
+               tex->mtl_render_target_write_version &&
+           tex->mtl_gl_sampled_dirty_mip_mask == 0u;
+}
+
+bool mglSampledRenderTargetCopyPlan(
+    void *renderer, Texture *ptr, void **texture_ptr, Program *sample_program,
+    uint32_t expected_type, uint32_t expected_kind, int used_type_fallback,
+    const char *stage, GLuint program_name, GLuint spirv_binding,
+    GLuint texture_unit, const char *sampled_name, int *used_sampled_copy_out,
+    void **direct_texture_for_trace, void **sampled_copy_for_trace)
+{
+    if (!texture_ptr || used_type_fallback || !ptr || !ptr->is_render_target) {
+        return true;
+    }
+    void *texture = *texture_ptr;
+    MGLYFlipDecision yflip = mglDecideYFlipForSampledRT(ptr, sample_program);
+    if (mglSsTraceRTYFlipDiagnosticsEnabled()) {
+        mglBindingLogRTYFlipDecision(
+            stage, program_name, sampled_name, spirv_binding, texture_unit,
+            ptr->name, mglTraceTextureLabel(ptr), mglSsYFlipDecisionName(yflip),
+            (int)yflip, ptr->mtl_render_yflip_authority,
+            ptr->mtl_render_target_write_version,
+            ptr->mtl_gl_sampled_write_version, ptr->mtl_gl_sampled_data ? 1 : 0,
+            mglProgramHasExistingFramebufferSampleYFlip(sample_program) ? 1 : 0);
+    }
+
+    void *sampled_copy = ptr->mtl_gl_sampled_data;
+    MGLSampledTextureBindInput in = {0};
+    mglBindingTextureFillSampledRTInput(
+        &in, used_type_fallback ? 1 : 0, 1, (int)yflip,
+        ptr->mtl_gl_sampled_data ? 1 : 0, mglSsGLSampledCopyContentFresh(ptr) ? 1 : 0,
+        mglTextureCanUseGLSampledRenderTargetCopy(ptr) ? 1 : 0,
+        (stage && stage[0] == 'f') ? 1 : 0,
+        sampled_copy && (expected_type == 0 ||
+                         mglSsTextureType(sampled_copy) == expected_type)
+            ? 1
+            : 0,
+        sampled_copy &&
+                mglTexturePixelFormatCompatibleWithExpectedDataKind(
+                    mglSsTexturePixelFormat(sampled_copy), expected_kind)
+            ? 1
+            : 0);
+
+    MGLSampledTextureBindPlan plan = {0};
+    if (mglBindingTexturePlanSampled(&in, &plan) != 0) {
+        return true;
+    }
+
+    if (plan.action == MGL_ST_ACTION_RT_USE_COPY && sampled_copy) {
+        if (direct_texture_for_trace) {
+            *direct_texture_for_trace = texture;
+        }
+        if (sampled_copy_for_trace) {
+            *sampled_copy_for_trace = sampled_copy;
+        }
+        if (mglTraceLogIsEnabled()) {
+            MGL_EMIT_RT_LOG(.kind = MGL_RT_LOG_BIND, .stage = stage,
+                            .program = program_name, .name = sampled_name,
+                            .binding = spirv_binding, .unit = texture_unit,
+                            .tex = ptr->name, .label = mglTraceTextureLabel(ptr),
+                            .original = (const void *)texture,
+                            .copy = (const void *)sampled_copy);
+        }
+        void *chosen = sampled_copy;
+        if (plan.apply_base_level_view) {
+            chosen = mglSampledTextureViewForBaseLevel(ptr, sampled_copy);
+        }
+        *texture_ptr = chosen;
+        if (used_sampled_copy_out) {
+            *used_sampled_copy_out = 1;
+        }
+        return true;
+    }
+
+    if (plan.action == MGL_ST_ACTION_RT_REPAIR) {
+        void *repaired_copy = mglBlitFreshGLSampledRenderTargetCopyForSampling(
+            renderer, ptr, texture, stage, program_name, spirv_binding,
+            texture_unit, expected_type, expected_kind);
+        if (!repaired_copy) {
+            return true;
+        }
+        in.repaired_available = 1;
+        in.repaired_fresh = mglSsGLSampledCopyContentFresh(ptr) ? 1 : 0;
+        if (mglBindingTexturePlanSampled(&in, &plan) != 0) {
+            return true;
+        }
+        if (plan.action == MGL_ST_ACTION_RT_RETRY) {
+            return false;
+        }
+        if (plan.action == MGL_ST_ACTION_RT_USE_COPY) {
+            void *chosen = repaired_copy;
+            if (plan.apply_base_level_view) {
+                chosen = mglSampledTextureViewForBaseLevel(ptr, repaired_copy);
+            }
+            *texture_ptr = chosen;
+            if (used_sampled_copy_out) {
+                *used_sampled_copy_out = 1;
+            }
+        }
+        return true;
+    }
+
+    if (plan.action == MGL_ST_ACTION_RT_GATE_MISS && mglTraceLogIsEnabled()) {
+        MGL_EMIT_RT_LOG(.kind = MGL_RT_LOG_GATE_MISS, .stage = stage,
+                        .program = program_name, .name = sampled_name,
+                        .binding = spirv_binding, .unit = texture_unit,
+                        .tex = ptr->name, .label = mglTraceTextureLabel(ptr),
+                        .is_rt = 1,
+                        .has_copy = ptr->mtl_gl_sampled_data ? 1 : 0,
+                        .can_use = in.can_use_rt_copy,
+                        .expected_type = expected_type);
+    } else if (plan.action == MGL_ST_ACTION_RT_ORIGINAL) {
+        static uint64_t s_rt_sample_copy_skip_existing_flip_log_count = 0;
+        if (mglTraceLogIsEnabled() &&
+            mglBindingTextureRateLogHit(
+                &s_rt_sample_copy_skip_existing_flip_log_count, 32ull, 512ull)) {
+            MGL_EMIT_RT_LOG(.kind = MGL_RT_LOG_SKIP_YFLIP,
+                            .hit = s_rt_sample_copy_skip_existing_flip_log_count,
+                            .stage = stage, .program = program_name,
+                            .name = sampled_name, .binding = spirv_binding,
+                            .tex = ptr ? ptr->name : 0u,
+                            .decision_name = mglSsYFlipDecisionName(yflip),
+                            .decision = (int)yflip);
+        }
+        if (plan.apply_base_level_view && texture) {
+            *texture_ptr = mglSampledTextureViewForBaseLevel(ptr, texture);
+        }
+    }
+    return true;
 }

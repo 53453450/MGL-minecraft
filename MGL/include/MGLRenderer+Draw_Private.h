@@ -234,20 +234,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                         bindStage:(uint32_t)metalBindStage;
 - (bool)bindStorageImagesForVertexProgram:(Program *)vertexProgram
                           fragmentProgram:(Program *)fragmentProgram;
-- (bool)applySampledRenderTargetCopyPlan:(Texture *)ptr
-                                 texture:(id *)texturePtr
-                             sampleProgram:(Program *)sampleProgram
-                              expectedType:(uint32_t)expectedType
-                              expectedKind:(MGLTextureDataKind)expectedKind
-                         usedTypeFallback:(BOOL)usedTypeFallback
-                                   stage:(const char *)stage
-                            programName:(GLuint)programName
-                            spirvBinding:(GLuint)spirvBinding
-                              textureUnit:(GLuint)textureUnit
-                              sampledName:(const char *)sampledName
-                     usedSampledCopyOut:(BOOL *)usedSampledCopyOut
-                   directTextureForTrace:(id *)directTextureForTrace
-                   sampledCopyForTrace:(id *)sampledCopyForTrace;
+/* applySampledRenderTargetCopyPlan:… is C now (mglSampledRenderTargetCopyPlan,
+ * mgl_sampled_sampler.h); log 152. */
 /* bindActiveTexturesToMTL is now mglBatchBindActiveTexturesToMTL
  * (mgl_batch_issue.h). */
 
