@@ -50,10 +50,10 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 七十三刀** + trace 清零 后；第 68–99 轮见 §0.24/§0.26–§0.56）**：
-文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 26,580**、
-ObjC 语法 **2,268 → 1,479**、词汇 **4,353 → 3,120**；
-**shim：43 → 31 个端口 / 唯一壳 TU 2,018 行 / 285 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；`MGLRenderer*.m` **34,604 → 24,925**）。
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 七十四刀** + trace 清零 后；第 68–100 轮见 §0.24/§0.26–§0.57）**：
+文件 **53 → 6**（**第一个 category 整文件消失**）、空 TU **3 → 0**、行数 **43,989 → 26,462**、
+ObjC 语法 **2,268 → 1,469**、词汇 **4,353 → 3,117**；
+**shim：43 → 30 个端口 / 唯一壳 TU 2,008 行 / 283 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；`MGLRenderer*.m` **34,604 → 24,925**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
 `mgl_readback` / `mgl_batch_rt_mark_port` / `mgl_trace_log` / `mgl_batch_issue_encode` / `mgl_batch_replay_trace` /
 `mgl_batch_icb_mdi_encode` / `mgl_batch_dyn_bind_encode` 七个 TU 已转入 C，
@@ -4004,3 +4004,70 @@ A/B 与 CTS 的口径证据见第 124 条（同一份代码状态；其后两笔
 3. 宏密集处按 `mgl_compute_bind.c` / `mgl_stage_buffer_bind.c` 的"小上下文函数"办法下沉，不要试图让 C TU 包含 ObjC 私有头；
 4. 收尾顺序固定：两个库构建（无新告警）→ `make test-all` → **CTS 七簇** → A/B 全文比对 → 度量 → 文档三处同步 → 提交推送。
    ⚠️ 已知环境噪声两个：`fetch_opengl_registry.sh` 访问 GitHub 失败（重跑即过）；旧 worktree 的 `.d` 陈旧依赖（先清 `.o/.d`）。
+
+130. **P0-1 第七十四刀：storage image 绑定驱动转 C，**净退役 1 个端口（31 → 30）**，并靠 CTS 抓出"缓存了编码器属主"这个真 bug**：
+     ① `-bindStorageImagesForStage:program:bindStage:` 与 `-bindStorageImagesForVertexProgram:fragmentProgram:`
+     搬进新 TU **`mgl_storage_image_bind.{h,c}`**（292 行 + 头 49 行）：
+     `mglBindingStateBindStorageImagesForStage` / `mglBindingStateBindStorageImagesForVertexProgram`。
+     **端口净减 1**：`mglRendererBindStorageImagesForVertexProgramPort` 与其壳包装（10 行）一并删除，
+     `mgl_draw_metal_port.c` 的 GS 路径改直调（按 §0.04，本刀**计入 T4 进度**）。
+     ② 按 §0.55/§0.56 的清单逐条处理：文件内静态助手 `mglBindingStateResourceAtOrdinal` /
+     `mglBindingStateCreateStorageImageView` 在 C TU 里写 twin（后者的最后一个 ObjC 调用者随本刀消失，故从 `.m` 删除）；
+     ObjC 私有头里的 `static inline`（`mglBindingStateQueueResourceBinding` / `…FlushResourceBindings` /
+     `…CollectResourceBinding`）与 `MGL_ABORT_TBIND_IF_ENCODER_CLOSED()` 同样写 twin；
+     `MGL_STATE(ctx)` 用 `mglSiState(areas)`（core.activeState 优先，再回落 `ctx->active_state`）；
+     `NSLog` 沿用 `fprintf`，`RETURN_FALSE_ON_FAILURE` 仍是 C 头 `glm_context.h` 的宏。
+     本簇无 ARC 强局部（`texture` 是借用视图、快照 flush 在本函数内完成，编码器那时已 retain）。
+     ③ ⚠️ **真 bug（CTS 抓出）**：第一次跑七簇时 compute 簇出现一处 diff——
+     `KHR-GL46.shader_image_load_store.advanced-memory-order` 由 `fail` 变成 **pass**。追查发现是**我的翻译错**：
+     原方法在每次使用时都重新读 `_renderPassManager->state->currentRenderEncoderOwner`，
+     而我在函数开头把它**缓存成局部变量**；ENSURE pass 里 `restoreRenderEncoderAfterTextureUploadForDraw:`
+     会**替换**渲染编码器，缓存值此后就是**过期的属主**，入队/flush 打到错的编码器上。
+     这正是 §0.14 里 `binding_state_owner` 的那条规矩（"值可能在驱动运行中变化，必须在使用点解引用"）——
+     **对 `currentRenderEncoderOwner` 同样成立**，已写成 `mglSiRenderEncoderOwner(&areas)` 逐点读取。
+     修复后该用例回到 `fail`（与旧库一致，见 ④ 的两臂复跑）。
+     ④ **flaky 用例登记（新增，与 `processGLState.slow` 同级）**：
+     `KHR-GL46.shader_image_load_store.advanced-memory-order` **本身是抖动用例**——同一份二进制
+     单独跑 5 次全 `fail`，而某次整簇电池里却记成 `pass`。**受控实验**：用电池同一套机制
+     （`run_mgl_cts_cases.py` + 同一 caselist/workdir/参数）分别跑 new/old 两臂各一次，**两臂都是 `fail`**；
+     重跑整簇电池后 compute 簇也回到**diff 为空**。结论：该用例的状态**不能作为单次信号**，
+     判读非通过集合 diff 时必须先做"两臂受控复跑"再定性（本轮已按此办理）。
+     ⑤ **oracle**：旧库 = 提交 `0ac1248` 的独立 worktree 构建（`cmp` 两库不同；旧 worktree 先清 `.o/.d` 再编）；
+     `ab_full.py`：**default 4,981/4,981、flushy 5,514/5,514 逐行一致**（未过滤 5,300/5,304 与 5,895/5,875 →
+     `slow` 319/323、381/361，按既定政策不是信号）、**stderr MGL 307/307 多重集一致**、两臂 **92/0/2、91/1/2**。
+     ⑥ **度量**：`+BindingState.m` **2,553 → 2,445 行**、语法 **117 → 109**、词汇 **158 → 155**；
+     壳 `MGLPlatformRendererShell.m` **2,018 → 2,008 行**、语法 285 → 283；
+     全库行数 **26,580 → 26,462（−118）**、语法 **1,479 → 1,469（−10）**、词汇 **3,120 → 3,117（−3）**；
+     文件数 **6 不变**；**端口 31 → 30**。新增 C 面 292 + 49 行。
+     ⑦ **CTS 七簇（修复后重跑）**：非通过集合 **diff 全空**（58 / 1 / 0 / 59 / 13 / 39 / 4）；`make test-all` **0**（92/0/2/94）。
+     ⑧ **下一刀**：`+BindingState.m` 剩 **109 语法 / 2,445 行**，按 §0.57 继续"采样纹理簇"
+     （可退役既有端口 `mglRendererMaterializeSampledSamplerPort`），注意 `applySampledCompatFallbackPlan:` 里的
+     `fallbackSampledTextureForExpectedType:dataKind:` 与 `applySampledRenderTargetCopyPlan:` 里的
+     `freshGLSampledRenderTargetCopyForSampling:` 目前**没有**端口——要么先补端口（会让端口数 +2），
+     要么把这两个方法一起搬（推荐：一次搬完，避免端口净增）。
+
+### 0.57 第 100 轮交接快照（**新会话请先读本节 + §0.51 + §0.55 + §0.56**）
+
+**当前状态**：`MGL/` 内 ObjC **6 个文件 / 0 空 TU / 26,462 行 / 1,469 语法 / 3,117 词汇**；
+壳 TU **2,008 行 / 283 语法**（上限 2,400）；端口面 **30 个**；`make test-all` **0**；CTS 七簇 **diff 全空**；A/B 两臂逐行一致（见第 130 条）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` 385/553/6,842 · `+Texture.m` 289/1,086/6,489 · `MGLRenderer.m` 168/275/4,616 ·
+`+Blit.m` 235/761/4,062 · `+BindingState.m` **109/155/2,445** · 壳 `MGLPlatformRendererShell.m` **283/287/2,008**。
+
+**两条新增判读规矩（第 130 条）**：
+1. **`currentRenderEncoderOwner` 必须在使用点重新读取**，不能像 `binding_state_owner` 那样缓存——
+   纹理上传路径会 restore（替换）渲染编码器；缓存值会让入队/flush 打到过期属主（本轮真 bug）。
+2. **CTS 单次状态不是判决**：`KHR-GL46.shader_image_load_store.advanced-memory-order` 是抖动用例
+   （同二进制单独 5 次全 fail、电池里可能记 pass）。任何非通过集合 diff 都要先做**两臂受控复跑**
+   （`run_mgl_cts_cases.py` + 同一 caselist/workdir）再定性。
+
+**下一步排序**：
+1. `+BindingState.m` 采样纹理簇：`recoverFragmentSampledDepthTexture:`（23 语法 / 316 行）、
+   `emitSampledDiagPortsForProgram:`（13）、`applySampledCompatFallbackPlan:`、`materializeSampledSamplerForTexture:`、
+   `applySampledRenderTargetCopyPlan:`——**一次搬完**（后两个依赖的 `fallbackSampledTextureForExpectedType:dataKind:`、
+   `freshGLSampledRenderTargetCopyForSampling:` 没有端口，分开搬会让端口净增），
+   搬完可退役 `mglRendererMaterializeSampledSamplerPort`（→ 29）。
+2. `+BindingState.m` 顶点/属性簇（`bindVertexAttributesFromVAO:` 19 语法、两个编码驱动 16+2、`finalizeStageBufferPresentMask:`）。
+3. `+Blit.m` 采样拷贝/解析簇；`+Texture.m`；`+RenderPass.m` / `MGLRenderer.m`。
+4. 壳的 `MGLPipelineCache` 归档路径（Foundation→POSIX + 专属 oracle）。

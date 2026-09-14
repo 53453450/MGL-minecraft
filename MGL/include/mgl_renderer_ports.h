@@ -289,9 +289,6 @@ int mglRendererEnsureAIRGeometryPassthroughPort(void *renderer,
  * MGLRenderer+RenderPass.m; this port retires with it.  Added by log 128. */
 int mglRendererEnsureAIRTessEvalPassthroughPort(void *renderer, Program *program);
 
-int mglRendererBindStorageImagesForVertexProgramPort(void *renderer,
-                                                     Program *vertex_program,
-                                                     Program *fragment_program);
 
 /* GPU capture (the MGLPlatformRendererShell class owns the Metal capture
  * session): start reads MGL_GPU_CAPTURE, stop is unconditional. */

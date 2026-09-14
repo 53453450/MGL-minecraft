@@ -12,6 +12,7 @@
 
 #import "MGLRenderer_Private.h"
 #include "mgl_stage_buffer_bind.h"  /* stage-buffer binding drivers (log 129) */
+#include "mgl_storage_image_bind.h" /* storage-image driver (log 130) */
 #include "mgl_texture_sampler.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_buffer_map.h"  /* buffer mapping entries (was MGLRenderer+Buffer.m) */
@@ -203,11 +204,6 @@ void *mglRendererStorageImageTexture(void *base_texture, ImageUnit *iu)
     return base_texture;
 }
 
-static id mglBindingStateCreateStorageImageView(id texture, ImageUnit *iu)
-{
-    return (__bridge id)mglRendererStorageImageTexture(
-        (__bridge void *)texture, iu);
-}
 
 /* O3.3: resolve shader-resource list ordinal → resource (+ optional element). */
 static MGLShaderResource *mglBindingStateResourceAtOrdinal(
@@ -1133,8 +1129,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         return false;
     }
 
-    if (![self bindStorageImagesForVertexProgram:vertexProgram
-                              fragmentProgram:fragmentProgram]) {
+    /* The storage-image driver is C now (log 130). */
+    if (!mglBindingStateBindStorageImagesForVertexProgram(
+            (__bridge void *)self, vertexProgram, fragmentProgram)) {
         return false;
     }
 
@@ -2293,112 +2290,7 @@ done:
     return true;
 }
 
-- (bool)bindStorageImagesForStage:(int)shaderStage
-                          program:(Program *)program
-                        bindStage:(uint32_t)metalBindStage
-{
-    const BOOL useResourceSnapshot = YES;
-    MGLRenderResourceBindingSnapshot resourceSnapshot = {0};
-    GLuint count =
-        mglRendererGetProgramBindingCount(ctx, shaderStage, _STORAGE_IMAGE_RES);
-    const char *restoreTag =
-        metalBindStage == MGL_RENDER_BINDING_STAGE_VERTEX
-            ? "vs-storage-image-bind"
-            : "storage-image-bind";
 
-    for (int pass = MGL_SI_PASS_ENSURE; pass <= MGL_SI_PASS_BIND; pass++) {
-        for (GLuint i = 0; i < count; i++) {
-            GLuint element = 0u;
-            MGLShaderResource *resource = mglBindingStateResourceAtOrdinal(
-                program, shaderStage, _STORAGE_IMAGE_RES, i, &element);
-            const uint32_t fallbackMetal =
-                (GLuint)mglRendererGetProgramBinding(ctx, shaderStage,
-                                                     _STORAGE_IMAGE_RES, (int)i);
-            const uint32_t provisionalSlot = mglRenderResourceMetalSlot(
-                resource ? 1 : 0, resource ? resource->binding : 0u, element,
-                fallbackMetal);
-            const int explicitUnit =
-                program && provisionalSlot < TEXTURE_UNITS &&
-                program->sampler_units_explicit_by_stage[shaderStage][provisionalSlot];
-            MGLStorageImageBindInput in = {0};
-            mglBindingTextureFillStorageImageInput(
-                &in, pass,
-                0, /* no skip recipe (see the sampled-texture path) */
-                resource ? 1 : 0, resource ? resource->binding : 0u, element,
-                fallbackMetal, (explicitUnit || resource) ? 1 : 0,
-                explicitUnit ? 1 : 0,
-                explicitUnit ? (uint32_t)program->sampler_units_by_stage
-                                       [shaderStage][provisionalSlot]
-                             : 0u,
-                resource ? resource->sampler_unit : -1,
-                resource ? resource->gl_binding : 0u,
-                (GLuint)mglRendererGetProgramGLBinding(
-                    ctx, shaderStage, _STORAGE_IMAGE_RES, (int)i),
-                TEXTURE_UNITS);
-            MGLStorageImageBindPlan plan = {0};
-            if (mglBindingTexturePlanStorageImage(&in, &plan) != 0 ||
-                plan.action == MGL_SI_ACTION_SKIP) {
-                continue;
-            }
-            Texture *ptr = plan.gl_unit < TEXTURE_UNITS
-                               ? MGL_STATE(ctx)->image_units[plan.gl_unit].tex
-                               : NULL;
-            if (plan.action == MGL_SI_ACTION_ENSURE_TEX) {
-                if (ptr) {
-                    RETURN_FALSE_ON_FAILURE([self bindMTLTexture:ptr]);
-                }
-                continue;
-            }
-            id texture = nil;
-            if (ptr) {
-                MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
-                texture = (__bridge id)(ptr->mtl_data);
-                texture = mglBindingStateCreateStorageImageView(
-                    texture, &MGL_STATE(ctx)->image_units[plan.gl_unit]);
-            }
-            if (!mglBindingStateQueueResourceBinding(
-                    useResourceSnapshot, _bindingStateOwner,
-                    _renderPassManager->state->currentRenderEncoderOwner,
-                    &resourceSnapshot, metalBindStage,
-                    MGL_RENDER_RESOURCE_BINDING_TEXTURE,
-                    (__bridge void *)texture, plan.metal_slot)) {
-                return false;
-            }
-        }
-        if (pass == MGL_SI_PASS_ENSURE &&
-            mglRenderEncoderOwnerHasCurrent(
-                _renderPassManager->state->currentRenderEncoderOwner) == 0) {
-            RETURN_FALSE_ON_FAILURE(
-                [self restoreRenderEncoderAfterTextureUploadForDraw:restoreTag]);
-        }
-    }
-    if (useResourceSnapshot &&
-        !mglBindingStateFlushResourceBindings(
-            _bindingStateOwner,
-            _renderPassManager->state->currentRenderEncoderOwner,
-            &resourceSnapshot)) {
-        return false;
-    }
-    return true;
-}
-
-- (bool)bindStorageImagesForVertexProgram:(Program *)vertexProgram
-                          fragmentProgram:(Program *)fragmentProgram
-{
-    const int vertexStage = _tessellation.nativeTESActive
-        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
-    if (![self bindStorageImagesForStage:vertexStage
-                                 program:vertexProgram
-                               bindStage:MGL_RENDER_BINDING_STAGE_VERTEX]) {
-        return false;
-    }
-    if (![self bindStorageImagesForStage:_FRAGMENT_SHADER
-                                 program:fragmentProgram
-                               bindStage:MGL_RENDER_BINDING_STAGE_FRAGMENT]) {
-        return false;
-    }
-    return true;
-}
 
 - (bool)bindSeparateSamplersAndArrayTextures:(Program *)vertexProgram
                               fragmentProgram:(Program *)fragmentProgram

@@ -46,6 +46,7 @@ static inline bool mglVboRangeValidationEnabled(void)
 #include "mgl_renderer_ports.h"
 #include "mgl_compute_bind.h"    /* compute buffer binding (was a method pair) */
 #include "mgl_tess_dispatch.h"   /* TCS dispatch entry (was a shell port) */
+#include "mgl_storage_image_bind.h" /* storage-image driver (was a shell port) */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
 #include "mgl_size_constants.h"  /* runtime-array size constants (was a method) */
 #include "mgl_draw_support.h"
@@ -1125,8 +1126,10 @@ static int mglGsMetalRebindFragment(void *renderer, GLMContext ctx)
         mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     Program *gsFragmentProgram =
         mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    return mglRendererBindStorageImagesForVertexProgramPort(
-        renderer, gsVertexProgram, gsFragmentProgram);
+    return mglBindingStateBindStorageImagesForVertexProgram(
+               renderer, gsVertexProgram, gsFragmentProgram)
+               ? 1
+               : 0;
 }
 
 static void mglGsMetalRecordQueries(GLMContext ctx, uint64_t generated,

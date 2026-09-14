@@ -360,16 +360,6 @@ int mglRendererEnsureAIRTessEvalPassthroughPort(void *renderer,
                                                                             : 0;
 }
 
-int mglRendererBindStorageImagesForVertexProgramPort(void *renderer,
-                                                     Program *vertex_program,
-                                                     Program *fragment_program)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r bindStorageImagesForVertexProgram:vertex_program
-                                      fragmentProgram:fragment_program])
-               ? 1
-               : 0;
-}
 
 /* GPU capture: the capture session lives on the shell object, which owns the
  * MTLCaptureManager descriptor/start/stop calls. */
