@@ -50,7 +50,7 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零三刀** + trace 清零 后；第 68–135 轮见 §0.24/§0.26–§0.92；（第 134/135 轮三次尝试均因净收益为负或勘察不足而回退，度量不变）
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零三刀** + trace 清零 后；第 68–136 轮见 §0.24/§0.26–§0.93；（第 134–136 轮五次尝试均因净收益为负 / 勘察不足 / 超出单轮余量而回退，度量不变；剩余工作的依赖拓扑已在 §0.93 勘明）
 **第 113–120 轮（第八十三～九十刀）把 `+Blit.m` 整文件删除（6 → 5）；第 121/122 轮（第九十一/九十二刀）用「单方法二分 + 单例探针」破解采样簇阻塞并连续两刀一次通过**）**：
 文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 19,214**、
 ObjC 语法 **2,268 → 1,083**、词汇 **4,353 → 2,125**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
@@ -6124,6 +6124,32 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 **下一步**：按上面 1（`+Texture.m` 三叶子，含 6 个 guarded call）或 2（`MGLRenderer.m` 大肉）开刀；
 两者都建议**先把端口/常量/guarded-call 的前置一次做完**。
 
+166. **第 136 轮（第一百零六刀尝试）：把"剩余 1,083 语法"的**依赖拓扑**勘清——本轮无代码变更，但决定了后续所有刀的开局**：
+     ① **`+RenderPass.m`（385 语法）是一张"依赖网"**：对它做四类扫描（含 `@try` 与 self-selector 计数）后，
+     56 个段里**只有 4 个是 `selfs=0`**——`newCommandBufferLocked`(21 语法) / `insertPipelineStateIntoCacheWithWords:`(3) /
+     `emergencyResetMetalState`(4) / `endRenderEncoding`(1，**已证伪：16 调用点**）。其余 52 个段各有
+     **1–13 个 self-selector**（`processDirtyStateDomainsLocked:` 19 语法需 4 个、`newRenderEncoderLockedWithReason:`
+     26 语法需 13 个、`buildPipelineStateOnCacheMissWithState:` 42 语法需 3 个）。
+     **⇒ 唯一可行的入口是 `newCommandBufferLocked`**（21 语法、selfs=0、miss=0、可退役 1 个 port、
+     port 调用点 9 处但只改函数名=零语法成本、`_commandQueue` 有 C 路径 `mglRendererBackendGetCommandQueue(areas.backend)`）。
+     **它的代价是结构性的**：`@try` #1 **包住 84 行主体**且内含多处 `return false`，
+     `@try` #2 另有 13 行；两处 catch 里的 `%@`（打印 exception）转 guarded call 后自然变成固定文案。
+     **下一刀就从它开始，且要预留整轮**（把 @try body 抽成 static + ctx 承载局部变量与返回值，照第 99 刀 `MglScbTransactionCtx` 的形状）。
+     ② **`+Texture.m`（279 语法）是"循环依赖"**：31 个 `selfs=0 且无 @try` 的段合计 49 语法，但它们**全部依赖
+     那 14 个 static helper**（`mglTextureInfo` 就有 **117 处调用点**、14 个合计 **156 处**）；
+     而这些 static 只能在**文件快空时**才搬（否则 `.m` 里有 156 处要加 `(__bridge void *)`）。
+     **⇒ 正确路线是 `+Blit.m` 的模式**：**在 C TU 里建同名 twin**（`.m` 保留自己那份 static，调用点零改动），
+     新转的 C 方法用 twin、未转的方法继续用 `.m` 的 static，**最后删文件时两份一起消失**。
+     本轮试过的两个候选都卡在别处：`traceSampledTextureReadback:`（7 语法 / 153 行）需要 **8 个 twin**，
+     `logMTLTextureMipDiagnostics:`（4 语法 / 51 行）用了 **`NSMutableString`**（`stringWithCapacity`/`appendString`/
+     `appendFormat`/`UTF8String`）——**要重写字符串拼接逻辑，不是机械转换**。
+     ③ **本轮度量不变**（无代码变更）：4 文件 / 19,214 行 / 1,083 语法 / 2,125 词汇 / 31 端口；
+     `git status` 干净（三次尝试都在写盘前或 `git checkout` 后回到 HEAD）。
+     ④ **第三十二条（本轮的正式产出）**：**剩余工作的形状是"依赖网 / 循环依赖"，不是"离散叶子"**。
+     开工顺序必须按**拓扑**：先做 `selfs=0 且无 @try 且净收益为正` 的方法（当前只剩 `+RenderPass.m` 的
+     `newCommandBufferLocked`），它做完会解锁 `processDirtyStateDomainsLocked:` 等一批；
+     `+Texture.m` 则必须先建 twin 层，再自上而下转方法。**不要再按"语法数大小"挑目标**。
+
 ### 0.92 第 135 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.91**）
 
 **当前状态**（与 §0.90 相同，本轮两次尝试均回退、净零改动）：`MGL/` 内 ObjC
@@ -6152,3 +6178,34 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 
 **下一步**：按上表做 `newCommandBufferLocked`，然后 `buildPipelineStateOnCacheMissWithState:`（42 语法），
 逐步清 `+RenderPass.m`（385 语法，占剩余总量 36%）；`+Texture.m` 的 helper 簇留到文件快空时再搬。
+
+### 0.93 第 136 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.92**）
+
+**当前状态**（与 §0.90 相同，第 134–136 轮均无代码变更）：`MGL/` 内 ObjC
+**4 个文件 / 0 空 TU / 19,214 行 / 1,083 语法 / 2,125 词汇**；壳 TU **2,033 行 / 286 语法**（上限 2,400）；
+端口面 **31 个**；`make test-all` **0**；CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` **385/553/6,843** · `+Texture.m` **279/1,052/6,248** · `MGLRenderer.m` **133/228/4,090** ·
+壳 `MGLPlatformRendererShell.m` **286/292/2,033**。
+
+**下一刀（唯一可行的入口，已完全勘明）**：`+RenderPass.m` 的
+**`- (bool) newCommandBufferLocked`（21 语法 / 188 行 / selfs=0 / miss=0）**：
+- 可**退役 `mglRendererNewCommandBufferLockedPort`**（9 处 C 调用点，只改函数名 ⇒ 零语法成本）；
+- ivar：`_batching` / `_renderPassManager` 走 areas；`_commandQueue` → `mglRendererBackendGetCommandQueue(areas.backend)`；
+- ObjC 语法：约 30 处 `NSLog`（**无 `%@`，只有 2 处在 catch 里**）→ `fprintf`；
+  **`@try` #1 包住 84 行**、`@try` #2 包 13 行 → 各抽成一个 static + ctx（照第 99 刀 `MglScbTransactionCtx` 的形状：
+  ctx 承载输入、`failed` 标志承载"该走 catch"的语义）；
+- 调用点：**查 `[self newCommandBufferLocked]` 的全树调用点**（第四类扫描）——它在本文件内可能有多处，
+  若 >5 处则每处 +1 `(__bridge void *)`，需重新算净收益。
+
+**规矩表（§0.62/§0.65–§0.92 三十一条仍然有效）＋ 本轮第三十二条**：
+32. **剩余工作是"依赖网/循环依赖"，不是离散叶子**（第 166 轮实测）：
+    - 选目标的顺序是**拓扑序**（先 `selfs=0 且无 @try 且净收益>0`），不是语法数大小；
+    - 一个文件的 helper（被大量调用）**只能最后搬**；方法要在它之前转完，**转方法时用"C TU 里建同名 twin、
+      原文件保留自己的 static"**（`+Blit.m` 的 `mglBd*` 就是这个形状，调用点零改动）；
+    - **`NSLog` 里出现 `NSMutableString`/`NSString` 拼接时不是机械转换**（第 166 条 ②），
+      要么先做该字符串设施的 C 化，要么把它当独立一刀。
+
+**下一步**：按上面做 `newCommandBufferLocked`（预留整轮），再做 `processDirtyStateDomainsLocked:`（19 语法）
+与 `buildPipelineStateOnCacheMissWithState:`（42 语法）；`+Texture.m` 走 twin 路线。
