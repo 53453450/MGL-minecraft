@@ -50,10 +50,10 @@
 | `MGLRenderer*.m` total | **34,604** | 0（当前 **32,218**） |
 | **shim 端口数 / 行数**（§0.04 记账面） | 43 / 511 | 0（当前 **16 个端口**；实现面集中在唯一壳 TU，560 → 629 行） |
 
-**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零三刀** + trace 清零 后；第 68–136 轮见 §0.24/§0.26–§0.93；（第 134–136 轮五次尝试均因净收益为负 / 勘察不足 / 超出单轮余量而回退，度量不变；剩余工作的依赖拓扑已在 §0.93 勘明）
+**当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百零六刀** + trace 清零 后；第 68–137 轮见 §0.24/§0.26–§0.94；（第 134–136 轮五次尝试回退、度量不变；第 137 轮按依赖拓扑做出第一百零六刀，`+RenderPass.m` 首次下降）
 **第 113–120 轮（第八十三～九十刀）把 `+Blit.m` 整文件删除（6 → 5）；第 121/122 轮（第九十一/九十二刀）用「单方法二分 + 单例探针」破解采样簇阻塞并连续两刀一次通过**）**：
-文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 19,214**、
-ObjC 语法 **2,268 → 1,083**、词汇 **4,353 → 2,125**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
+文件 **53 → 4**（整文件删掉 4 个：Batch/Tessellation 簇、`MGLRenderer+Blit.m`、`MGLRenderer+BindingState.m`）、空 TU **3 → 0**、行数 **43,989 → 19,111**、
+ObjC 语法 **2,268 → 1,072**、词汇 **4,353 → 2,123**；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮起改从 `+Blit.m` 推进**；
 **shim：43 → 31 个端口 / 唯一壳 TU 2,033 行 / 288 语法**（第 100 刀退役 1 个端口、新增 4 个纹理物化端口，按 §0.04 该刀只算 P0-1 结构收益、不算 T4 端口净减；**第 101/102 两刀各退役 0/1 个端口、0 新增**；第 103/104/105 三刀按 T5 依次把 `MGLPipelineCache`、纹理绑定入口、renderer 生命周期并入壳，端口均不变；第 106 刀把 `MGLRenderPassManager` 类转成 C struct；第 107 刀把 host-ops 的 25 个 `id` 门面改成 `void *`；**第 125 刀 0 退役 0 新增**——它把 `+Tessellation.m` 的绑定规划簇整块搬进 C，用的是既有端口；**第 126 刀净退役 1 个端口**——`mglRendererDispatchTessControlShaderPort` 随其目标方法转 C 一起删除，C 侧改直调；**第 127 刀再净退役 1 个端口**——`mglRendererDispatchAIRTessEvalVertexRenderPort` 同理；**第 128 刀退役 1、新增 1（T4 净减 0，如实记账）**——AIR TES compute 端口退役，但新方法内部仍要调 `+RenderPass.m` 里的 `ensureAIRTessEvalPassthroughFunctionForProgram:`，故补了一个随它退役的端口；**P0-1 第八十三刀（`+Blit.m` 的 `mtlCopyTexSubImageViaTextureBlit:` 转 C，见第 143 条）0 退役 0 新增**——入口全部复用既有端口与 twin；**P0-1 第八十四刀（两个 copyImageSubData 叶子转 C，见第 144 条）0 退役、新增 1**——`synchronizeRenderPassForTextureReadback:` 尚无 C 入口，故新增该端口（T4 如实记 +1），`_capability` 靠 `areas.core->capability` 零结构改动解决；**P0-1 第八十五刀（后置回读叶子 + copyImageSubData dispatcher 一起转 C，见第 145 条）0 退役、新增 1**——唯一新增的是 `endRenderPassIfFramebufferChangedForNonDraw:` 的端口，另外两个桥（`ctx = glm_ctx` 的 `mglPlatformShellSetContext`、`bindMTLTexture` 的 `mglRendererBindMTLTexture`）都是**既有**入口；**P0-1 第八十六刀（blitFramebuffer 附着解析叶子转 C，见第 146 条）0 退役、新增 3**——`_drawable` 是 property 宏（`self.drawable`），没有 core 字段可借，故必须补 `mglNextDrawable` / `mglDrawableTexture` / `mglEnsureLayerDrawableSizeAtLeastWidth` 三个端口；**P0-1 第八十七刀（scaled color blit 叶子转 C，见第 147 条）0 退役 0 新增**——并顺带补齐 12 个 render-encoder twin；**P0-1 第八十八刀（`mtlBlitFramebuffer:` dispatcher 转 C，见第 148 条）0 退役 0 新增**——被调方法全在 C 里，`+Blit.m` 只剩 68 语法；**P0-1 第八十九刀（`mtlCopyTexSubImage:` 转 C，见第 149 条）0 退役、新增 2**——`mtlReadDrawable` 与 `copyTextureUploadWithDedicatedCommandBuffer` 两个桥，端口头首次引入 `mgl_region_value.h`；**P0-1 第九十刀（整文件删除 `MGLRenderer+Blit.m`，见第 150 条）0 退役、新增 1**——`currentRenderPassUsesTexture:` 的端口，其余三块（采样拷贝修复入口、`mglRendererBlitFramebuffer` 后端入口、27 个 helper 与文件头）随文件消失；**P0-1 第九十一刀（采样簇 compat + sampler 转 C，见第 151 条）退役 1、新增 0**——`mglRendererMaterializeSampledSamplerPort` 随目标方法 C 化一起删除，C 侧直调 `mglSampledSamplerMaterialize`；**P0-1 第九十二刀（`applySampledRenderTargetCopyPlan:` 转 C，见第 152 条）0 退役 0 新增**；**P0-1 第九十三刀（`bindSeparateSamplersAndArrayTextures:` 转 C，见第 153 条）0 退役 0 新增**；**P0-1 第九十四刀（`recoverFragmentSampledDepthTexture:` 转 C，见第 154 条）0 退役 0 新增**——第 142 条的头号嫌疑方法整体 C 化后探针 8/8，嫌疑排除；**P0-1 第九十五刀（`emitSampledDiagPortsForProgram:` 转 C，见第 155 条）0 退役、新增 1**——目标方法带 `NSString *` 参数，故新增一个"只收 C 字符串"的端口；**P0-1 第九十六刀（`bindSampledTexturesForStage:` 整块转 C，见第 156 条）0 退役 0 新增、净 −45 语法**——前六刀引入的 20 处调用点桥接随方法整体搬走而消失；**P0-1 第九十七刀（整文件删除 `MGLRenderer+BindingState.m`，见第 157 条）退役 1、新增 0**——`mglRendererBindTexturesToCurrentRenderEncoderPort` 随目标方法 C 化删除；**P0-1 第九十八刀（copy-back 列表两个 helper 转 C，见第 158 条）退役 2、新增 0**——`mglRendererClearStageBindingCopyBacksPort` / `…CopyBackPort` 连同 13 处 C 调用点一起改直调；**P0-1 第九十九刀（copy-back 的 record + flush 转 C，见第 159 条）退役 2、新增 0、净 −34 语法**——areas 首次加 `render_pass_manager` 字段（零端口）；**P0-1 第一百刀（两个对外采样符号转 C + 新建 `mgl_renderer_host` TU，见第 160 条）0 退役 0 新增、净 −2 语法**；**P0-1 第一百零一刀（再搬 3 个对外符号，见第 161 条）0 退役 0 新增、净 −3 语法**；**P0-1 第一百零二刀（watchdog 转 C，见第 162 条）0 退役 0 新增、净 −1 语法**；**P0-1 第一百零三刀（`mglEnsureNewCommandBuffer` 转 C，见第 163 条）0 退役 0 新增、净 −3 语法**；`MGLRenderer*.m` **34,604 → 24,779**）。
 （已建 C 端口面 `mgl_renderer_ports.*` + 单一 ObjC 端口 shim `mgl_renderer_port_shim.m`；
@@ -6179,6 +6179,36 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 **下一步**：按上表做 `newCommandBufferLocked`，然后 `buildPipelineStateOnCacheMissWithState:`（42 语法），
 逐步清 `+RenderPass.m`（385 语法，占剩余总量 36%）；`+Texture.m` 的 helper 簇留到文件快空时再搬。
 
+167. **第 137 轮（P0-1 第一百零六刀）：`processDirtyStateDomainsLocked:` 转 C——`+RenderPass.m` 首次下降（385 → 366）；A/B 抓到一处真实差异**：
+     ① **按拓扑序选目标**（第 166 条的结论）：`-processDirtyStateDomainsLocked:work:`（**19 语法 / 130 行**，
+     selfs=4、miss=0、**调用点仅 1 处**）。选中它是因为**净收益为正**：19 − 1（调用点）− 12（4 个新端口）
+     ≈ +6。
+     ② **新增 4 个端口**（31 → 35）：`syncRenderPassStateForContext:` / `updateCurrentRenderEncoder` /
+     `newRenderEncoderLockedWithReason:` / `syncPipelineStateWithDeferredBufferMap:`——它们的目标方法都还在
+     `+RenderPass.m` 里（26 / 未测 / 8 语法），属于"先接端口、后转目标"的过渡账。
+     ③ **C 侧的设施**：`MGL_STATE(ctx)` 写 C 孪生 `mglPdState(&areas)`（照 `mgl_tess_dispatch.c`）；
+     `_pipelineCache` → **`areas.pipeline_cache->`**（注意它在 areas 里是**指针**，不是结构体，
+     写成 `.state->` 编译不过）；`_renderPassManager->state->X` → **`areas.command->X`**（3 处）；
+     `newRenderEncoderLockedWithReason:` 的返回值原本被忽略，端口返回 int 需丢掉返回值。
+     ④ **A/B oracle 抓到了一处真实差异（本轮最重要的收获）**：机械替换 `nil → NULL` **误伤了 `NSLog`
+     格式串里的字面量**——`"MGL DRAW SKIP: pipelineState is nil (…)"` 被改成 `"… is NULL (…)"`，
+     `ab_full.py` 报 `flushy: deterministic lines equal=False`，并精确指出第 35 行差异。
+     **新规矩 33：替换规则绝不能作用于字符串字面量内部**（`nil`/`YES`/`NO`/`NSUInteger` 这类词
+     在日志文案里很常见）。修法：把那句改回 `nil`，A/B 随即恢复逐行一致。
+     ⑤ **两个流程教训**：
+     - **`make -j8` 的增量构建不足以验证头改动**：本轮改了 `mgl_render_pass_manager_ops.h` 而
+       `make -j8` 通过，是 `make test-all` 的**全量重建**才报出 `MGLResourceSyncWork` 未声明
+       （缺 `#include "mgl_binding_state_ops.h"`）——**`test-all` 不可省**；
+     - **批测运行期间绝不能重建库**：本轮第一次批测在重建后作废，换 TAG `p064` 重跑才拿到有效结果。
+       另外 `make test-all` 必须在**仓库根**跑（在 `MGL/` 子目录会报 `No rule to make target`）。
+     ⑥ **度量（两文件合算）**：`+RenderPass.m` 语法 **385 → 366**、词汇 **553 → 551**、行 **6,843 → 6,708**；
+     壳 TU **2,033 → 2,065 行 / 286 → 294 语法**（4 个端口）；全库 **19,214 → 19,111 行（−103）**、
+     语法 **1,083 → 1,072（−11）**、词汇 **2,125 → 2,123（−2）**；文件数 **4**、空 TU **0**、端口 **31 → 35**。
+     ⑦ **验证（四件套全绿）**：`make -j8` **0 error**（仓库根）；单例探针 **4/4 与 8/8 两轮均通过**；
+     `make test-all` **0**（92/0/2/94）；**CTS 七簇 diff 全空**（58/1/0/59/13/39/4，各簇 `completed == total`）；
+     A/B（新库 vs `a0aad2e`）修掉日志文案后两臂 default **4981/4981**、flushy **5514/5514** 逐行一致、
+     stderr 多重集 **307/307**。
+
 ### 0.93 第 136 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.92**）
 
 **当前状态**（与 §0.90 相同，第 134–136 轮均无代码变更）：`MGL/` 内 ObjC
@@ -6209,3 +6239,31 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
 
 **下一步**：按上面做 `newCommandBufferLocked`（预留整轮），再做 `processDirtyStateDomainsLocked:`（19 语法）
 与 `buildPipelineStateOnCacheMissWithState:`（42 语法）；`+Texture.m` 走 twin 路线。
+
+### 0.94 第 137 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.93**）
+
+**当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 19,111 行 / 1,072 语法 / 2,123 词汇**；
+壳 TU **2,065 行 / 294 语法**（上限 2,400）；端口面 **35 个**；`make test-all` **0**；
+CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第一百零六刀的实测值）。
+
+**逐文件剩余（语法 / 词汇 / 行数）**：
+`+RenderPass.m` **366/551/6,708** · `+Texture.m` **279/1,052/6,248** · `MGLRenderer.m` **133/228/4,090** ·
+壳 `MGLPlatformRendererShell.m` **294/292/2,065**。
+
+**下一刀（按拓扑序，`+RenderPass.m` 继续）**：
+1. **`- (bool) newRenderEncoderLockedWithReason:`（26 语法 / 147 行，selfs=13）**——**本刀刚给它接了端口**
+   （`mglRendererNewRenderEncoderLockedWithReasonPort`），转它时那 13 个 self-selector 里在本刀已建端口的可直接用；
+   开工前**先跑四类扫描**（尤其调用点数）；
+2. **`- (bool) buildPipelineStateOnCacheMissWithState:`（42 语法 / 443 行，selfs=3 / miss=6）**——本文件最大块；
+3. **`- (bool) newCommandBufferLocked`（21 语法 / 188 行，selfs=0）**——调用点 13 处（净收益仅 +8），
+   且含 84 行 `@try`；**排在 1、2 之后**。
+
+**规矩表（§0.62/§0.65–§0.93 三十二条仍然有效）＋ 本轮第三十三条**：
+33. **替换规则绝不能作用于字符串字面量内部**（第 167 条 ④，A/B 实测抓到）：`nil` / `YES` / `NO` /
+    `NSUInteger` / `NSInteger` 这些词在**日志文案**里很常见（`"… is nil (…)"`），机械替换会把它们一起改掉，
+    表现为 `ab_full.py` 报"deterministic lines equal=False"且差异行就是那句日志。
+    **做法**：替换后再 `grep` 一遍被改的词是否出现在引号内；或先剥离字符串字面量再替换。
+    配套两条流程纪律：**`make test-all` 必须在仓库根跑且不可省**（增量 `make -j8` 看不到头改动引发的缺 include），
+    **批测运行期间不能重建库**（会让整轮批测作废，须换 TAG 重跑）。
+
+**下一步**：按上面 1→2→3 推进 `+RenderPass.m`；同时可用"双份 twin"路线开 `+Texture.m`。

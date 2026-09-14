@@ -98,6 +98,8 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 
 // === Render pass state sync ===
 - (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx;
+/* Defined in MGLRenderer+RenderPass.m; the shell port forwards to it (log 167). */
+- (void)updateCurrentRenderEncoder;
 - (bool)rotateRenderEncoderForCurrentFramebufferLocked;
 - (bool)syncPipelineStateWithDeferredBufferMap:(bool)deferredBufferMapForPipelineBuild;
 - (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex

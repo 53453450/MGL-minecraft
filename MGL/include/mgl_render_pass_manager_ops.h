@@ -14,6 +14,7 @@
 #define MGL_RENDER_PASS_MANAGER_OPS_H
 
 #include "glm_context.h"
+#include "mgl_binding_state_ops.h" /* MGLResourceSyncWork (log 167) */
 #include "mgl_render.h"
 
 #ifdef __cplusplus
@@ -28,6 +29,9 @@ void mglRenderPassManagerClearRenderPassIdentity(void *renderer);
 /* End the current render encoding: encoder teardown, trace-bindings cleanup and
  * render-pass identity reset, guarded like the Objective-C method was. */
 void mglRendererEndRenderEncodingLocked(void *renderer);
+/* -processDirtyStateDomainsLocked:work: is C now (log 167). */
+bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
+                                           MGLResourceSyncWork *work);
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer);
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer);
 int mglRenderPassManagerCommitCommandBufferTransaction(

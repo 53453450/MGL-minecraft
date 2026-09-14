@@ -5226,8 +5226,8 @@ static GLenum mglPassthroughDeclType(
 
     MGLResourceSyncWork resourceSyncWork = {false, false, false};
     if (plan.process_dirty_domains) {
-        RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command
-                                                                work:&resourceSyncWork]);
+        RETURN_FALSE_ON_FAILURE(mglRenderPassProcessDirtyStateDomains(
+            (__bridge void *)self, draw_command ? 1 : 0, &resourceSyncWork));
     }
 
     /* Phase 2: re-sample encoder/pipeline after dirty-domain materialization. */
@@ -5500,141 +5500,6 @@ static GLenum mglPassthroughDeclType(
  * pipeline sync call. Returns false on failure (caller should skip this
  * draw), true on success.
  */
-- (bool)processDirtyStateDomainsLocked:(bool)draw_command
-                                  work:(MGLResourceSyncWork *)work
-{
-    int fboBindingDirty = 0;
-    if ((MGL_STATE(ctx)->dirty_bits & (DIRTY_STATE | DIRTY_FBO)) ==
-        (DIRTY_STATE | DIRTY_FBO)) {
-        Framebuffer *framebuffer =
-            mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyStateFBO");
-        if (framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING)) {
-            fboBindingDirty = 1;
-        }
-    }
-    MGLDirtyDomainPlan plan = {0};
-    if (mglRenderPlanDirtyDomains(
-            MGL_STATE(ctx)->dirty_bits, draw_command ? 1 : 0,
-            _pipelineCache.state->pipelineState != nil ? 1 : 0, fboBindingDirty,
-            &plan) != 0) {
-        return false;
-    }
-
-    bool deferredBufferMapForPipelineBuild = plan.defer_buffer_map;
-    if (plan.has_dirty)
-    {
-        if (plan.sync_render_pass)
-        {
-            RETURN_FALSE_ON_FAILURE([self syncRenderPassStateForContext:ctx]);
-        }
-
-        if (plan.bind_fbo_attachments)
-        {
-            RETURN_FALSE_ON_FAILURE(mglRendererBindFramebufferAttachmentTextures((__bridge void *)self));
-            Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(
-                ctx, "processGLState.dirtyStateFBO.afterBind");
-            if (framebuffer) {
-                framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
-            }
-        }
-
-        if (MGL_STATE(ctx)->dirty_bits & DIRTY_STATE)
-        {
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_STATE;
-        }
-
-        if (plan.remap_buffers)
-        {
-            if (plan.defer_buffer_map) {
-                static uint64_t s_deferredMapCount = 0;
-                s_deferredMapCount++;
-                if (s_deferredMapCount <= 16 || (s_deferredMapCount % 1000ull) == 0ull) {
-                    mglTraceLog("MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
-                                  (unsigned long long)s_deferredMapCount);
-                }
-            } else {
-                RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL((__bridge void *)self));
-                if (work) work->mappedBuffers = true;
-            }
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
-        }
-
-        if (plan.bind_textures)
-        {
-            RETURN_FALSE_ON_FAILURE(mglBatchBindActiveTexturesToMTL((__bridge void *)self, ctx));
-            if (work) work->boundActiveTextures = true;
-
-            MGL_STATE(ctx)->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
-        }
-
-        if (plan.vao_path)
-        {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list));
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list));
-            if (work) work->updatedBaseLists = true;
-
-            if (mglRenderEncoderOwnerHasCurrent(
-                    _renderPassManager->state->currentRenderEncoderOwner) != 1) {
-                RETURN_FALSE_ON_FAILURE(
-                    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_VAO]);
-            }
-
-            [self updateCurrentRenderEncoder];
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_RENDER_STATE;
-        }
-        else if (plan.buffer_path)
-        {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list));
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list));
-            if (work) work->updatedBaseLists = true;
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER;
-        }
-        else if (plan.render_state_path)
-        {
-            if (mglRenderEncoderOwnerHasCurrent(
-                    _renderPassManager->state->currentRenderEncoderOwner) != 1)
-            {
-                RETURN_FALSE_ON_FAILURE(
-                    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_RS]);
-            }
-
-            [self updateCurrentRenderEncoder];
-
-            MGL_STATE(ctx)->dirty_bits &= ~DIRTY_RENDER_STATE;
-        }
-
-        if (plan.sync_pipeline)
-        {
-            RETURN_FALSE_ON_FAILURE([self syncPipelineStateWithDeferredBufferMap:deferredBufferMapForPipelineBuild]);
-        }
-
-        MGL_STATE(ctx)->dirty_bits = 0;
-    }
-    else
-    {
-        MGLEncodeContext encCtx = {
-            .render_encoder_owner = _renderPassManager->state->currentRenderEncoderOwner,
-        };
-
-        if( mglRendererCheckForDirtyBufferData((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list))
-        {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->vertex_buffer_map_list));
-
-            RETURN_FALSE_ON_FAILURE(mglStageEncodeBindVertexBuffers((__bridge void *)self, &encCtx));
-        }
-
-        if( mglRendererCheckForDirtyBufferData((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list))
-        {
-            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList((__bridge void *)self, &MGL_STATE(ctx)->fragment_buffer_map_list));
-
-            RETURN_FALSE_ON_FAILURE(mglStageEncodeBindFragmentBuffers((__bridge void *)self, &encCtx));
-        }
-    }
-    return true;
-}
 
 /*
  * Render pass descriptor and pipeline format validation extracted from

@@ -300,6 +300,15 @@ void mglRendererMTLReadDrawablePort(void *renderer, GLMContext glm_ctx,
                                     void *pixel_bytes, size_t bytes_per_row,
                                     size_t bytes_per_image,
                                     MGLRegionValue region);
+/* Render-pass dirty-domain drivers (P0-1, log 167).  Their targets are still
+ * Objective-C methods in MGLRenderer+RenderPass.m. */
+int mglRendererSyncRenderPassStateForContextPort(void *renderer, GLMContext ctx);
+void mglRendererUpdateCurrentRenderEncoderPort(void *renderer);
+int mglRendererNewRenderEncoderLockedWithReasonPort(void *renderer,
+                                                    uint32_t reason);
+int mglRendererSyncPipelineStateWithDeferredBufferMapPort(void *renderer,
+                                                          int deferred);
+
 /* Sampled-texture readback trace.  The target method takes two NSStrings, so
  * the port takes C strings and the shell makes the NSStrings (P0-1, log 155). */
 void mglRendererTraceSampledTextureReadbackPort(

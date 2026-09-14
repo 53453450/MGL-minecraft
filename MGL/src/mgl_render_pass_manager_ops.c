@@ -14,6 +14,12 @@
  */
 
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_attachment_binding.h"   /* mglRendererBindFramebufferAttachmentTextures */
+#include "mgl_buffer_map.h"           /* map / dirty base buffers */
+#include "mgl_batch_issue.h"          /* mglBatchBindActiveTexturesToMTL */
+#include "mgl_stage_encode_drivers.h" /* stage encode bind drivers */
+#include "mgl_frame_activity.h"     /* MGL_ENC_REASON_* */
+
 #include "mgl_renderer_ports.h"
 #include "mgl_binding_state_ops.h"      /* mglBindingInvalidateLastBoundState */
 #include "mgl_trace_strategy.h"         /* mglClearFragmentTraceBindingsForRenderer */
@@ -231,4 +237,159 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
         mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
             renderer, endedFramebuffer, "end_render_pass");
     }
+}
+
+/* Declared in MGLRenderer+Draw_Private.h; a real C function in the .m. */
+extern Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx,
+                                                      const char *where);
+
+/* === dirty state domain processing (P0-1, log 167) ====================== */
+
+/* MGL_STATE() from MGLRenderer_Private.h, in C (same twin as mgl_tess_dispatch.c). */
+static GLMState *mglPdState(const MGLRendererStateAreas *areas)
+{
+    if (areas->core && areas->core->activeState) {
+        return areas->core->activeState;
+    }
+    return areas->ctx ? areas->ctx->active_state : NULL;
+}
+
+/* -processDirtyStateDomainsLocked:work: */
+bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
+                                           MGLResourceSyncWork *work)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    int fboBindingDirty = 0;
+    if ((mglPdState(&areas)->dirty_bits & (DIRTY_STATE | DIRTY_FBO)) ==
+        (DIRTY_STATE | DIRTY_FBO)) {
+        Framebuffer *framebuffer =
+            mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyStateFBO");
+        if (framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING)) {
+            fboBindingDirty = 1;
+        }
+    }
+    MGLDirtyDomainPlan plan = {0};
+    if (mglRenderPlanDirtyDomains(
+            mglPdState(&areas)->dirty_bits, draw_command ? 1 : 0,
+            areas.pipeline_cache->pipelineState != NULL ? 1 : 0, fboBindingDirty,
+            &plan) != 0) {
+        return false;
+    }
+
+    bool deferredBufferMapForPipelineBuild = plan.defer_buffer_map;
+    if (plan.has_dirty)
+    {
+        if (plan.sync_render_pass)
+        {
+            RETURN_FALSE_ON_FAILURE(mglRendererSyncRenderPassStateForContextPort(renderer, ctx));
+        }
+
+        if (plan.bind_fbo_attachments)
+        {
+            RETURN_FALSE_ON_FAILURE(mglRendererBindFramebufferAttachmentTextures(renderer));
+            Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(
+                ctx, "processGLState.dirtyStateFBO.afterBind");
+            if (framebuffer) {
+                framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
+            }
+        }
+
+        if (mglPdState(&areas)->dirty_bits & DIRTY_STATE)
+        {
+            mglPdState(&areas)->dirty_bits &= ~DIRTY_STATE;
+        }
+
+        if (plan.remap_buffers)
+        {
+            if (plan.defer_buffer_map) {
+                static uint64_t s_deferredMapCount = 0;
+                s_deferredMapCount++;
+                if (s_deferredMapCount <= 16 || (s_deferredMapCount % 1000ull) == 0ull) {
+                    mglTraceLog("MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
+                                  (unsigned long long)s_deferredMapCount);
+                }
+            } else {
+                RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL(renderer));
+                if (work) work->mappedBuffers = true;
+            }
+
+            mglPdState(&areas)->dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
+        }
+
+        if (plan.bind_textures)
+        {
+            RETURN_FALSE_ON_FAILURE(mglBatchBindActiveTexturesToMTL(renderer, ctx));
+            if (work) work->boundActiveTextures = true;
+
+            mglPdState(&areas)->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
+        }
+
+        if (plan.vao_path)
+        {
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->vertex_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->fragment_buffer_map_list));
+            if (work) work->updatedBaseLists = true;
+
+            if (mglRenderEncoderOwnerHasCurrent(
+                    areas.command->currentRenderEncoderOwner) != 1) {
+                RETURN_FALSE_ON_FAILURE(
+                    mglRendererNewRenderEncoderLockedWithReasonPort(renderer, MGL_ENC_REASON_VAO));
+            }
+
+            mglRendererUpdateCurrentRenderEncoderPort(renderer);
+
+            mglPdState(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
+        }
+        else if (plan.buffer_path)
+        {
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->vertex_buffer_map_list));
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->fragment_buffer_map_list));
+            if (work) work->updatedBaseLists = true;
+
+            mglPdState(&areas)->dirty_bits &= ~DIRTY_BUFFER;
+        }
+        else if (plan.render_state_path)
+        {
+            if (mglRenderEncoderOwnerHasCurrent(
+                    areas.command->currentRenderEncoderOwner) != 1)
+            {
+                RETURN_FALSE_ON_FAILURE(
+                    mglRendererNewRenderEncoderLockedWithReasonPort(renderer, MGL_ENC_REASON_RS));
+            }
+
+            mglRendererUpdateCurrentRenderEncoderPort(renderer);
+
+            mglPdState(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
+        }
+
+        if (plan.sync_pipeline)
+        {
+            RETURN_FALSE_ON_FAILURE(mglRendererSyncPipelineStateWithDeferredBufferMapPort(renderer, deferredBufferMapForPipelineBuild));
+        }
+
+        mglPdState(&areas)->dirty_bits = 0;
+    }
+    else
+    {
+        MGLEncodeContext encCtx = {
+            .render_encoder_owner = areas.command->currentRenderEncoderOwner,
+        };
+
+        if( mglRendererCheckForDirtyBufferData(renderer, &mglPdState(&areas)->vertex_buffer_map_list))
+        {
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->vertex_buffer_map_list));
+
+            RETURN_FALSE_ON_FAILURE(mglStageEncodeBindVertexBuffers(renderer, &encCtx));
+        }
+
+        if( mglRendererCheckForDirtyBufferData(renderer, &mglPdState(&areas)->fragment_buffer_map_list))
+        {
+            RETURN_FALSE_ON_FAILURE(mglRendererUpdateDirtyBaseBufferList(renderer, &mglPdState(&areas)->fragment_buffer_map_list));
+
+            RETURN_FALSE_ON_FAILURE(mglStageEncodeBindFragmentBuffers(renderer, &encCtx));
+        }
+    }
+    return true;
 }

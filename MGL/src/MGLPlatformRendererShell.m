@@ -319,6 +319,38 @@ void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
     }
 }
 
+int mglRendererSyncRenderPassStateForContextPort(void *renderer, GLMContext ctx)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r syncRenderPassStateForContext:ctx]) ? 1 : 0;
+}
+
+void mglRendererUpdateCurrentRenderEncoderPort(void *renderer)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    if (r) {
+        [r updateCurrentRenderEncoder];
+    }
+}
+
+int mglRendererNewRenderEncoderLockedWithReasonPort(void *renderer,
+                                                    uint32_t reason)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r newRenderEncoderLockedWithReason:(MGLEncoderCreateReason)reason])
+               ? 1
+               : 0;
+}
+
+int mglRendererSyncPipelineStateWithDeferredBufferMapPort(void *renderer,
+                                                          int deferred)
+{
+    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
+    return (r && [r syncPipelineStateWithDeferredBufferMap:deferred ? true : false])
+               ? 1
+               : 0;
+}
+
 void mglRendererTraceSampledTextureReadbackPort(
     void *renderer, void *texture, Texture *gl_tex, TextureLevel *level0,
     GLuint program, GLuint binding, const char *stage, const char *reason,
