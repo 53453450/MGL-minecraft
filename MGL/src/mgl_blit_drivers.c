@@ -42,6 +42,7 @@
 #include "mgl_capability.h"        /* MGLCapabilityHasBug + MGL_BUG_* (log 144) */
 #include "mgl_renderer_core_state.h" /* core area (capability snapshot) */
 #include "mgl_blit_color_state.h"   /* MGLBlitColorState (log 146) */
+#include "mgl_blit_pipelines.h"    /* scaled blit pipeline/sampler + params (log 147) */
 #include "mgl_thread_affinity.h"    /* MGL_ASSERT_GL_THREAD */
 #include "mgl_metal_ref.h"        /* mglSafeReleaseMetalObj */
 #include "mgl_texture_bind.h"     /* mglRendererBindMTLTexture */
@@ -2578,5 +2579,342 @@ bool mglBlitResolveFramebufferAttachments(
     st->readtexid = readtexid;
     st->drawtexid = drawtexid;
     *out_read_attachment = read_attachment;
+    return true;
+}
+
+/* === blitFramebuffer scaled color blit (P0-1, log 147) =================== */
+
+/* The .m's render-encoder file statics, in C (thin wrappers over the C render
+ * entries).  mglBdCreateRenderEncoder takes the command buffer owner directly:
+ * the .m passed `_renderPassManager` only to read `->state->currentCommandBufferOwner`. */
+static void *mglBdCreateTextureView(void *texture, uint32_t pixel_format,
+                                    uint32_t texture_type, uint64_t level,
+                                    uint64_t level_count, uint64_t slice,
+                                    uint64_t slice_count)
+{
+    void *view = NULL;
+    if (mglRenderCreateTextureViewRange(texture, pixel_format, texture_type,
+                                        level, level_count, slice, slice_count, 0,
+                                        0, 0, 0, 0, &view) == 0 &&
+        view) {
+        return view;
+    }
+    return NULL;
+}
+
+static MGLRenderPassState mglBdDefaultRenderPassState(void)
+{
+    MGLRenderPassState state;
+    mglRenderInitDefaultRenderPassState(&state);
+    return state;
+}
+
+static MGLRenderPassAttachmentState mglBdRenderPassAttachment(
+    void *texture, size_t level, size_t slice, size_t depth_plane,
+    uint32_t load_action, uint32_t store_action)
+{
+    MGLRenderPassAttachmentState attachment = {0};
+    attachment.texture = texture;
+    attachment.level = level;
+    attachment.slice = slice;
+    attachment.depth_plane = depth_plane;
+    attachment.load_action = load_action;
+    attachment.store_action = store_action;
+    return attachment;
+}
+
+static void *mglBdCreateRenderEncoder(void *command_buffer_owner,
+                                      const MGLRenderPassState *state)
+{
+    if (!state) {
+        return NULL;
+    }
+    void *encoder = NULL;
+    if (mglRenderCreateRenderEncoderFromCommandBufferOwnerState(
+            command_buffer_owner, state, &encoder) == 0 &&
+        encoder) {
+        return encoder;
+    }
+    return NULL;
+}
+
+static void mglBdSetRenderPipeline(void *encoder, void *pipeline)
+{
+    (void)mglRenderSetRenderPipelineState(encoder, pipeline);
+}
+
+static void mglBdSetRenderBytes(void *encoder, const void *bytes, size_t length,
+                                uint32_t stage, size_t index)
+{
+    (void)mglRenderSetRenderBytes(encoder, bytes, length, stage,
+                                  (uint32_t)index);
+}
+
+static void mglBdSetRenderTexture(void *encoder, void *texture, uint32_t stage,
+                                  size_t index)
+{
+    (void)mglRenderSetRenderTexture(encoder, texture, stage, (uint32_t)index);
+}
+
+static void mglBdSetRenderSampler(void *encoder, void *sampler, uint32_t stage,
+                                  size_t index)
+{
+    (void)mglRenderSetRenderSampler(encoder, sampler, stage, (uint32_t)index);
+}
+
+static void mglBdSetRenderViewport(void *encoder, double origin_x,
+                                   double origin_y, double width, double height,
+                                   double znear, double zfar)
+{
+    (void)mglRenderSetRenderViewport(encoder, origin_x, origin_y, width, height,
+                                     znear, zfar);
+}
+
+static void mglBdSetRenderScissor(void *encoder, size_t x, size_t y,
+                                  size_t width, size_t height)
+{
+    (void)mglRenderSetRenderScissor(encoder, x, y, width, height);
+}
+
+static void mglBdDrawPrimitives(void *encoder, uint32_t primitive_type,
+                                size_t vertex_start, size_t vertex_count)
+{
+    (void)mglRenderEncodeDraw(encoder,
+                              &(MGLRenderDrawPlan){
+                                  .kind = MGL_RENDER_DRAW_ARRAY,
+                                  .primitive_type = primitive_type,
+                                  .vertex_start = vertex_start,
+                                  .vertex_count = vertex_count,
+                                  .instance_count = 1u,
+                                  .base_instance = 0u,
+                              },
+                              NULL, 0);
+}
+
+static void mglBdEndRenderEncoder(void *encoder)
+{
+    if (!encoder) {
+        return;
+    }
+    (void)mglRenderEndRenderEncoder(encoder);
+}
+
+/* -blitFramebufferScaledColorWithState: */
+bool mglBlitFramebufferScaledColorWithState(void *renderer,
+                                            MGLBlitColorState *st)
+{
+    GLMContext glm_ctx = st->glm_ctx;
+    Framebuffer *drawfbo = st->drawfbo;
+    GLenum filter = st->filter;
+    FBOAttachment *draw_fbo_attachment = st->drawFBOAttachment;
+    Texture *read_texture_object = st->readTextureObject;
+    Texture *draw_texture_object = st->drawTextureObject;
+    MGLMetalAttachmentSubresource read_subresource = st->readSubresource;
+    MGLMetalAttachmentSubresource draw_subresource = st->drawSubresource;
+    void *readtexid = st->readtexid;
+    void *drawtexid = st->drawtexid;
+    size_t src_tex_w = st->srcTexW;
+    size_t src_tex_h = st->srcTexH;
+    size_t dst_tex_w = st->dstTexW;
+    size_t dst_tex_h = st->dstTexH;
+    int src_x_forward = st->srcXForward;
+    int src_y_forward = st->srcYForward;
+    int dst_x_forward = st->dstXForward;
+    int dst_y_forward = st->dstYForward;
+    double src_min_x = st->srcMinX;
+    double src_max_x = st->srcMaxX;
+    double src_min_y = st->srcMinY;
+    double src_max_y = st->srcMaxY;
+    double dst_min_x = st->dstMinX;
+    double dst_max_x = st->dstMaxX;
+    double dst_min_y = st->dstMinY;
+    double dst_max_y = st->dstMaxY;
+    double dst_w = st->dstW;
+    double dst_h = st->dstH;
+    double scaled_dst_metal_y = st->scaledDstMetalY;
+    int needs_scaled_blit = st->needsScaledBlit;
+
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererCoreState *core = areas.core;
+
+    if (!needs_scaled_blit) {
+        return false;
+    }
+    if (readtexid == drawtexid) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer scaled self-blit unsupported "
+                "texture=%p, skipping\n",
+                readtexid);
+        return true;
+    }
+    const MGLRenderTextureInfo read_info = mglBdTextureInfo(readtexid);
+    if (read_subresource.depthPlane != 0u) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer scaled source subresource/type "
+                "unsupported level=%lu slice=%lu depth=%lu type=%lu, "
+                "skipping\n",
+                (unsigned long)read_subresource.level,
+                (unsigned long)read_subresource.slice,
+                (unsigned long)read_subresource.depthPlane,
+                (unsigned long)read_info.texture_type);
+        return true;
+    }
+
+    /* The scaled-blit fragment shader consumes texture2d<float>.  A
+     * layered/cube framebuffer attachment is backed by an array or cube Metal
+     * texture, so expose the selected GL subresource as a single 2D view.
+     * Keep readtexid unchanged for render-target bookkeeping; the local view is
+     * retained by the encoder until the command is complete and released
+     * automatically at scope end. */
+    void *scaled_read_texture = readtexid;
+    if (read_subresource.level != 0u || read_subresource.slice != 0u ||
+        read_info.texture_type != MGLTextureType2D) {
+        const int viewable_array_source =
+            read_info.texture_type == MGLTextureType2DArray ||
+            read_info.texture_type == MGLTextureTypeCube ||
+            read_info.texture_type == MGLTextureTypeCubeArray;
+        size_t slice_count = (size_t)read_info.array_length;
+        if (read_info.texture_type == MGLTextureTypeCube ||
+            read_info.texture_type == MGLTextureTypeCubeArray) {
+            slice_count *= 6u;
+        }
+        if (!viewable_array_source || read_subresource.slice >= slice_count) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer scaled source subresource/type "
+                    "unsupported level=%lu slice=%lu depth=%lu type=%lu "
+                    "slices=%lu, skipping\n",
+                    (unsigned long)read_subresource.level,
+                    (unsigned long)read_subresource.slice,
+                    (unsigned long)read_subresource.depthPlane,
+                    (unsigned long)read_info.texture_type,
+                    (unsigned long)slice_count);
+            return true;
+        }
+        scaled_read_texture = mglBdCreateTextureView(
+            readtexid, read_info.pixel_format, MGLTextureType2D,
+            (uint64_t)read_subresource.level, 1u,
+            (uint64_t)read_subresource.slice, 1u);
+        if (!scaled_read_texture) {
+            fprintf(stderr,
+                    "MGL WARN: mtlBlitFramebuffer failed to create scaled "
+                    "source 2D view level=%lu slice=%lu type=%lu\n",
+                    (unsigned long)read_subresource.level,
+                    (unsigned long)read_subresource.slice,
+                    (unsigned long)read_info.texture_type);
+            return true;
+        }
+    }
+
+    void *pipeline = mglBlitScaledPipelineForPixelFormat(
+        renderer, mglBdTextureInfo(drawtexid).pixel_format);
+    void *sampler = mglBlitScaledSamplerForFilter(renderer, filter);
+    if (!pipeline || !sampler) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer scaled path unavailable "
+                "pipeline=%p sampler=%p\n",
+                pipeline, sampler);
+        return true;
+    }
+
+    MGLRenderScaledBlitUVs uvs = {0};
+    mglRenderScaledBlitUVs((uint32_t)src_tex_w, (uint32_t)src_tex_h, src_min_x,
+                           src_max_x, src_min_y, src_max_y,
+                           src_x_forward ? 1 : 0, src_y_forward ? 1 : 0,
+                           dst_x_forward ? 1 : 0, dst_y_forward ? 1 : 0, &uvs);
+    MGLScaledBlitParams params;
+    params.uvRect = (vector_float4){
+        uvs.uv_left,
+        uvs.uv_top,
+        uvs.uv_right,
+        uvs.uv_bottom,
+    };
+    params.forceOpaqueAlpha =
+        (drawfbo == NULL &&
+         drawtexid == mglRendererDrawableTexturePort(renderer))
+            ? 1.0f
+            : 0.0f;
+    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
+
+    MGLRenderPassState scaled_state = mglBdDefaultRenderPassState();
+    scaled_state.color[0].attachment = mglBdRenderPassAttachment(
+        drawtexid, draw_subresource.level, draw_subresource.slice,
+        draw_subresource.depthPlane, MGLLoadActionLoad, MGLStoreActionStore);
+
+    void *encoder = mglBdCreateRenderEncoder(
+        mglBdCommandBufferOwner(&areas), &scaled_state);
+    if (!encoder) {
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer failed to create scaled render "
+                "encoder\n");
+        return true;
+    }
+
+    mglBdSetRenderPipeline(encoder, pipeline);
+    mglBdSetRenderBytes(encoder, &params, sizeof(params),
+                        MGL_RENDER_BINDING_STAGE_VERTEX, 0);
+    mglBdSetRenderBytes(encoder, &params, sizeof(params),
+                        MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+    mglBdSetRenderTexture(encoder, scaled_read_texture,
+                          MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
+    mglBdSetRenderSampler(encoder, sampler, MGL_RENDER_BINDING_STAGE_FRAGMENT,
+                          0);
+
+    MGLRenderBlitScissorRect scissor_base = {0};
+    mglRenderBlitScissorRect(dst_min_x, dst_max_x, scaled_dst_metal_y, dst_h,
+                             (uint32_t)dst_tex_w, (uint32_t)dst_tex_h,
+                             &scissor_base);
+    int64_t scissor_x0 = (int64_t)scissor_base.x0;
+    int64_t scissor_x1 = (int64_t)scissor_base.x1;
+    int64_t scissor_y0 = (int64_t)scissor_base.y0;
+    int64_t scissor_y1 = (int64_t)scissor_base.y1;
+    if (glm_ctx && glm_ctx->active_state->caps.scissor_test) {
+        int64_t gl_scissor_x0 = glm_ctx->active_state->var.scissor_box[0];
+        int64_t gl_scissor_y0 = glm_ctx->active_state->var.scissor_box[1];
+        int64_t gl_scissor_x1 =
+            gl_scissor_x0 + glm_ctx->active_state->var.scissor_box[2];
+        int64_t gl_scissor_y1 =
+            gl_scissor_y0 + glm_ctx->active_state->var.scissor_box[3];
+        int64_t metal_scissor_y0 = (int64_t)dst_tex_h - gl_scissor_y1;
+        int64_t metal_scissor_y1 = (int64_t)dst_tex_h - gl_scissor_y0;
+        scissor_x0 = scissor_x0 > gl_scissor_x0 ? scissor_x0 : gl_scissor_x0;
+        scissor_x1 = scissor_x1 < gl_scissor_x1 ? scissor_x1 : gl_scissor_x1;
+        scissor_y0 = scissor_y0 > metal_scissor_y0 ? scissor_y0 : metal_scissor_y0;
+        scissor_y1 = scissor_y1 < metal_scissor_y1 ? scissor_y1 : metal_scissor_y1;
+    }
+    if (scissor_x1 <= scissor_x0 || scissor_y1 <= scissor_y0) {
+        mglBdEndRenderEncoder(encoder);
+        fprintf(stderr,
+                "MGL WARN: mtlBlitFramebuffer scaled scissor is empty after "
+                "clipping, skipping draw\n");
+        return true;
+    }
+
+    mglBdSetRenderViewport(encoder, dst_min_x, scaled_dst_metal_y, dst_w, dst_h,
+                           0.0, 1.0);
+    mglBdSetRenderScissor(encoder, (size_t)scissor_x0, (size_t)scissor_y0,
+                          (size_t)(scissor_x1 - scissor_x0),
+                          (size_t)(scissor_y1 - scissor_y0));
+    mglBdDrawPrimitives(encoder, MGLPrimitiveTypeTriangleStrip, 0, 4);
+    mglBdEndRenderEncoder(encoder);
+    if (drawfbo == NULL) {
+        core->defaultDrawableWrittenSinceLastSwap = 1;
+    }
+    if (draw_texture_object && draw_fbo_attachment) {
+        mglMarkTextureLevelRenderTargetWrittenImpl(
+            draw_texture_object, draw_fbo_attachment->level, __func__,
+            __LINE__);
+        (void)mglBlitUpdateGLSampledRenderTargetCopy(
+            renderer, draw_texture_object, drawtexid, "blit_framebuffer_scaled");
+    }
+    /* When the source is also a render target, refresh its sampled copy so
+     * future fragment-shader samples see useCopy=1 instead of falling back to
+     * the direct texture (useCopy=0). */
+    if (read_texture_object && read_texture_object->is_render_target &&
+        readtexid) {
+        (void)mglBlitUpdateGLSampledRenderTargetCopy(
+            renderer, read_texture_object, readtexid,
+            "blit_framebuffer_scaled_src");
+    }
     return true;
 }

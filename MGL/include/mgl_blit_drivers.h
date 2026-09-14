@@ -122,6 +122,12 @@ bool mglBlitResolveFramebufferAttachments(
     GLint src_y1, GLint dst_x0, GLint dst_y0, GLint dst_x1, GLint dst_y1,
     MGLBlitColorState *st, GLenum *out_read_attachment);
 
+/* Scaled color blit for the blitFramebuffer path (render-pass shader draw).
+ * Was -blitFramebufferScaledColorWithState:.  Returns true when the scaled
+ * blit was performed (the caller then returns) — the method's YES/NO. */
+bool mglBlitFramebufferScaledColorWithState(void *renderer,
+                                            MGLBlitColorState *st);
+
 #ifdef __cplusplus
 }
 #endif
