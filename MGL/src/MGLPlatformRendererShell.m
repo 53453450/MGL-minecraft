@@ -19,6 +19,7 @@
 #import "MGLRenderer+RenderPass_Private.h"
 #import "MGLRenderer+Texture_Private.h"  /* texture upload ports */
 #import "MGLRenderer+Binding_Private.h"
+#include "mgl_renderer_host.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_batch_restore.h"
 #include "mgl_texture_sampler.h"
@@ -692,8 +693,7 @@ void mglPlatformShellSetMSSampleState(void *renderer, int in_loop,
 
 int mglPlatformShellNewCommandBuffer(void *renderer)
 {
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [r mglEnsureNewCommandBuffer] : 0;
+    return renderer ? mglRendererEnsureNewCommandBuffer(renderer) : 0;
 }
 
 void *mglPlatformShellDrawable(void *renderer)

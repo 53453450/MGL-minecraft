@@ -246,10 +246,6 @@ void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx);
  * declared locally until now). */
 int mglPlatformShellNewCommandBuffer(void *renderer);
 
-/* Fresh writing command buffer of the shell (the C entry mgl_ms_sample_loop.c
- * declared locally until now). */
-int mglPlatformShellNewCommandBuffer(void *renderer);
-
 int mglRendererBindMTLProgramPort(void *renderer, Program *program);
 void mglRendererEndRenderEncodingPort(void *renderer);
 int mglRendererNewCommandBufferLockedPort(void *renderer);

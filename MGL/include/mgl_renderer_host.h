@@ -32,19 +32,16 @@ extern "C" {
  * keep their ObjC-header declarations; the C TUs that need them restate them
  * locally as `signed char` (rule 26), so they are not declared here to avoid
  * clashing with MGLRenderer+Draw_Private.h when the .m includes this header. */
-void mglLogDrawWithoutSwapWatchdog(const char *kind, uint64_t draw_call,
-                                   GLMContext ctx, void *command_buffer_owner,
-                                   void *render_encoder_owner,
-                                   void *render_pass_state_owner);
-Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
-                                                       Texture *depth_texture,
-                                                       GLuint *fbo_name_out);
+
+
 
 void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
                                                 const char *caller, int line);
 /* mglTraceReplayCommandVertexAttribSamples keeps its mgl_trace_strategy.h
  * declaration; mglFindFramebufferColorTexturePairedWithDepth keeps its
  * MGLRenderer+Draw_Private.h one. */
+
+int mglRendererEnsureNewCommandBuffer(void *renderer);
 
 #ifdef __cplusplus
 }

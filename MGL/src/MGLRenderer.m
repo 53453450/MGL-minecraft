@@ -3368,10 +3368,6 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
     _mglMSSamplePlaneOffset = offset;
 }
 
-- (int)mglEnsureNewCommandBuffer
-{
-    return [self newCommandBufferLocked] ? 1 : 0;
-}
 
 - (void *)mglDrawablePointer
 {

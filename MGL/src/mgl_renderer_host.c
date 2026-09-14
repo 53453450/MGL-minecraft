@@ -472,3 +472,10 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
           clear.blue,
           clear.alpha);
 }
+
+/* - (int)mglEnsureNewCommandBuffer — the shell's mglPlatformShellNewCommandBuffer
+ * forwards here now (P0-1, log 163). */
+int mglRendererEnsureNewCommandBuffer(void *renderer)
+{
+    return mglRendererNewCommandBufferLockedPort(renderer) != 0 ? 1 : 0;
+}
