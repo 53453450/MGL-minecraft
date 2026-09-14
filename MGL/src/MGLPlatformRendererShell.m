@@ -368,22 +368,6 @@ int mglRendererDispatchAIRTessEvalComputePort(
                : 0;
 }
 
-int mglRendererDispatchAIRTessEvalVertexRenderPort(
-    void *renderer, GLMContext glm_ctx, Program *program,
-    const struct MGLAIRTessDrawContract *contract, uint32_t patch_count,
-    int32_t instance_count, uint32_t base_instance)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r dispatchAIRTessEvalVertexRender:glm_ctx
-                                            program:program
-                                           contract:contract
-                                         patchCount:patch_count
-                                      instanceCount:(GLsizei)instance_count
-                                       baseInstance:base_instance])
-               ? 1
-               : 0;
-}
-
 int mglRendererBindStorageImagesForVertexProgramPort(void *renderer,
                                                      Program *vertex_program,
                                                      Program *fragment_program)

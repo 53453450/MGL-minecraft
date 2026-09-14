@@ -651,9 +651,13 @@ static int mglStageDispatchAirTESVertex(void *renderer, GLMContext ctx,
                                         uint32_t patch_count, GLsizei instanceCount,
                                         GLuint baseInstance)
 {
-    return mglRendererDispatchAIRTessEvalVertexRenderPort(
-        renderer, ctx, tes, contract, patch_count, (int32_t)instanceCount,
-        baseInstance);
+    /* The TES-vertex render entry is C now (log 127); the shell port that
+     * forwarded to the Objective-C method is retired. */
+    return mglTessDispatchAIRTessEvalVertexRender(renderer, ctx, tes, contract,
+                                                  patch_count, instanceCount,
+                                                  baseInstance)
+               ? 1
+               : 0;
 }
 
 static int mglStageProcessGL(void *renderer)
