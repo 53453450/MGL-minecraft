@@ -2696,3 +2696,191 @@ int mglRenderPassCreateRenderEncoderLocked(void *renderer,
     }
     return 1;
 }
+
+/* === flush / writable command buffer (log 176) ========================= */
+
+/* -ensureWritableCommandBufferLocked:. */
+int mglRenderPassEnsureWritableCommandBufferLocked(void *renderer,
+                                                   const char *reason)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *commandState = areas.command;
+
+    MGLRenderCommandBufferState bufferState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
+            commandState->currentCommandBufferOwner, &bufferState)) {
+        if (kMGLDiagnosticStateLogs) {
+            mglTraceLog(
+                "MGL INFO: %s requested with NULL command buffer, creating one",
+                reason ? reason : "operation");
+        }
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to create command buffer for %s\n",
+                    reason ? reason : "operation");
+            return 0;
+        }
+        if (!mglRenderCommandBufferOwnerHasState(
+                commandState->currentCommandBufferOwner, &bufferState)) {
+            fprintf(stderr,
+                    "MGL ERROR: Created command buffer owner has no current buffer for %s\n",
+                    reason ? reason : "operation");
+            return 0;
+        }
+    }
+
+    const uint32_t status = (uint32_t)bufferState.status;
+    if (status >= MGLCommandBufferStatusCommitted) {
+        fprintf(stderr,
+                "MGL INFO: %s requested on finalized command buffer (status: %ld), rotating\n",
+                reason ? reason : "operation", (long)status);
+        mglRendererEndRenderEncodingLocked(renderer);
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to rotate command buffer for %s\n",
+                    reason ? reason : "operation");
+            return 0;
+        }
+
+        memset(&bufferState, 0, sizeof(bufferState));
+        if (!mglRenderCommandBufferOwnerHasState(
+                commandState->currentCommandBufferOwner, &bufferState) ||
+            bufferState.status >= MGLCommandBufferStatusCommitted) {
+            fprintf(stderr,
+                    "MGL ERROR: Unable to obtain writable command buffer for %s\n",
+                    reason ? reason : "operation");
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+typedef struct MglPdCommitCtx_t {
+    void *command_buffer;
+    int result;
+} MglPdCommitCtx;
+
+static int mglPdCommitCommandBufferTryBody(void *renderer, void *rawCtx)
+{
+    MglPdCommitCtx *ctx = (MglPdCommitCtx *)rawCtx;
+    mglRendererCommitCommandBufferWithAGXRecovery(renderer, ctx->command_buffer);
+    /* The owner now retains the last submit; flushCommandBuffer waits on that
+     * state after releasing METAL_LOCK. */
+    ctx->result = 1;
+    return 1;
+}
+
+/* -flushCommandBufferLocked:.  It calls the public -processGLState: through
+ * the existing port: METAL_LOCK() is only a GL-thread assertion, so the
+ * *Locked contract is preserved. */
+void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGLRenderPassManager *manager = areas.render_pass_manager;
+    MGLCommandState *commandState = areas.command;
+
+    if (!mglRendererBackendGetDevice(areas.backend) ||
+        !mglRendererBackendGetCommandQueue(areas.backend)) {
+        fprintf(stderr,
+                "MGL ERROR: Metal device or queue is NULL in flushCommandBuffer\n");
+        return;
+    }
+
+    mglRendererFlushDrawBufferLockedPort(renderer, ctx);
+
+    if (!mglRendererProcessGLStatePort(renderer, 0)) {
+        fprintf(stderr,
+                "MGL WARNING: processGLState failed in flushCommandBuffer, continuing with cleanup\n");
+    }
+
+    /* If processGLStateLocked: left a render encoder active, mark the CB as
+     * having work so the commit below is not skipped. */
+    if (mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1) {
+        areas.batching->currentCommandBufferHasWork = 1;
+    }
+
+    mglRendererEndRenderEncodingLocked(renderer);
+
+    /* Skip empty-CB commit when finish!=0: wait on the owner's last submit
+     * instead (Metal CBs execute serially on the same queue).  Any path that
+     * encodes work (draws/render/blit/compute) into the current CB MUST set
+     * currentCommandBufferHasWork before calling flushCommandBuffer:YES, else
+     * the skip drops uncommitted work. */
+    if (finish && !areas.batching->currentCommandBufferHasWork &&
+        mglPassManagerHasLastSubmittedCommandBuffer(manager)) {
+        return;
+    }
+    if (finish && !areas.batching->currentCommandBufferHasWork &&
+        !mglPassManagerHasLastSubmittedCommandBuffer(manager)) {
+        return;
+    }
+
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(renderer,
+                                                        "flushCommandBuffer")) {
+        fprintf(stderr,
+                "MGL ERROR: Unable to obtain writable command buffer in flushCommandBuffer\n");
+        return;
+    }
+
+    MGLRenderCommandBufferState currentState = {0};
+    if (!mglRenderCommandBufferOwnerHasState(
+            commandState->currentCommandBufferOwner, &currentState)) {
+        fprintf(stderr,
+                "MGL WARNING: No current command buffer in flushCommandBuffer\n");
+        return;
+    }
+
+    const uint32_t currentStatus = (uint32_t)currentState.status;
+    if (currentStatus != MGLCommandBufferStatusNotEnqueued) {
+        fprintf(stderr,
+                "MGL INFO: flushCommandBuffer found finalized buffer (status=%ld), rotating\n",
+                (long)currentStatus);
+        if (!mglRenderPassNewCommandBufferLocked(renderer)) {
+            fprintf(stderr,
+                    "MGL ERROR: Failed to rotate command buffer in flushCommandBuffer\n");
+        }
+        return;
+    }
+
+    const MGLRenderCommandBufferState preCommitState = currentState;
+    if (preCommitState.has_error) {
+        fprintf(stderr,
+                "MGL ERROR: Command buffer has error before commit: %s\n",
+                mglRenderCommandBufferErrorDescription(&preCommitState));
+        (void)mglPlatformShellGuardedCall(renderer, "command buffer cleanup",
+                                          mglRendererCleanupCommandBufferBody);
+        return;
+    }
+
+    if (!mglRendererValidateMetalObjects(renderer)) {
+        fprintf(stderr,
+                "MGL WARNING: GPU throttling active - skipping command buffer commit\n");
+        (void)mglPlatformShellGuardedCall(renderer, "command buffer cleanup",
+                                          mglRendererCleanupCommandBufferBody);
+        return;
+    }
+
+    void *commandBufferToCommit =
+        mglPassManagerDetachCurrentCommandBufferForSubmission(manager);
+
+    MglPdCommitCtx commitCtx = {commandBufferToCommit, 0};
+    if (!mglPlatformShellGuardedCallCtx(renderer, "command buffer commit",
+                                        mglPdCommitCommandBufferTryBody,
+                                        &commitCtx, NULL)) {
+        /* @catch (NSException *exception) */
+        fprintf(stderr,
+                "MGL ERROR: Command buffer commit failed in flushCommandBuffer\n");
+        mglRendererRecordGPUError(renderer);
+        (void)mglPlatformShellGuardedCall(renderer, "command buffer cleanup",
+                                          mglRendererCleanupCommandBufferBody);
+    }
+
+    if (!finish) {
+        (void)mglRenderPassNewCommandBufferLocked(renderer);
+    }
+}

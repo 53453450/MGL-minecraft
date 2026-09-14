@@ -3056,7 +3056,8 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
             mglRendererResetMetalState((__bridge void *)self);
         }
 
-        if (![self ensureWritableCommandBufferLocked:"mtlSwapBuffers"]) {
+        if (!mglRenderPassEnsureWritableCommandBufferLocked(
+                (__bridge void *)self, "mtlSwapBuffers")) {
             NSLog(@"MGL ERROR: Failed to obtain writable command buffer in mtlSwapBuffers");
             return;
         }

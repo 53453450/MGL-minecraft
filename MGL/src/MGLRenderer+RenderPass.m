@@ -3212,54 +3212,10 @@ static GLenum mglPassthroughDeclType(
 - (bool)ensureWritableCommandBuffer:(const char *)reason
 {
     METAL_LOCK();
-    bool result = [self ensureWritableCommandBufferLocked:reason];
+    bool result = mglRenderPassEnsureWritableCommandBufferLocked(
+        (__bridge void *)self, reason) != 0;
     METAL_UNLOCK();
     return result;
-}
-
-- (bool)ensureWritableCommandBufferLocked:(const char *)reason
-{
-    MGLRenderCommandBufferState commandState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager->state->currentCommandBufferOwner,
-            &commandState)) {
-        if (kMGLDiagnosticStateLogs) {
-            mglTraceLog("MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
-        }
-        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
-            NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
-            return false;
-        }
-        if (!mglRenderCommandBufferOwnerHasState(
-                _renderPassManager->state->currentCommandBufferOwner,
-                &commandState)) {
-            NSLog(@"MGL ERROR: Created command buffer owner has no current buffer for %s",
-                  reason ? reason : "operation");
-            return false;
-        }
-    }
-
-    uint32_t status =
-        (uint32_t)commandState.status;
-    if (status >= MGLCommandBufferStatusCommitted) {
-        NSLog(@"MGL INFO: %s requested on finalized command buffer (status: %ld), rotating", reason ? reason : "operation", (long)status);
-        mglRendererEndRenderEncodingLocked((__bridge void *)self);
-        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
-            NSLog(@"MGL ERROR: Failed to rotate command buffer for %s", reason ? reason : "operation");
-            return false;
-        }
-
-        memset(&commandState, 0, sizeof(commandState));
-        if (!mglRenderCommandBufferOwnerHasState(
-                _renderPassManager->state->currentCommandBufferOwner,
-                &commandState) ||
-            commandState.status >= MGLCommandBufferStatusCommitted) {
-            NSLog(@"MGL ERROR: Unable to obtain writable command buffer for %s", reason ? reason : "operation");
-            return false;
-        }
-    }
-
-    return true;
 }
 
 
@@ -4791,7 +4747,8 @@ static GLenum mglPassthroughDeclType(
 -(void) flushCommandBuffer: (bool) finish
 {
     METAL_LOCK();
-    [self flushCommandBufferLocked:finish];
+    mglRenderPassFlushCommandBufferLocked((__bridge void *)self,
+                                        finish ? 1 : 0);
     METAL_UNLOCK();
 
     /* The C++ command owner retains the last accepted submission. Waiting
@@ -4805,98 +4762,6 @@ static GLenum mglPassthroughDeclType(
                   finishState.status, finishState.error_domain,
                   (long long)finishState.error_code);
         }
-    }
-}
-
--(void) flushCommandBufferLocked: (bool) finish
-{
-    if (!_device || !_commandQueue) {
-        NSLog(@"MGL ERROR: Metal device or queue is NULL in flushCommandBuffer");
-        return;
-    }
-
-    mglRendererFlushDrawBufferLockedPort((__bridge void *)self, ctx);
-
-    if (![self processGLStateLocked: false]) {
-        NSLog(@"MGL WARNING: processGLState failed in flushCommandBuffer, continuing with cleanup");
-    }
-
-    /* If processGLStateLocked: left a render encoder active, mark the CB as
-     * having work so the commit below is not skipped. */
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager->state->currentRenderEncoderOwner) == 1) {
-        _batching.currentCommandBufferHasWork = YES;
-    }
-
-    mglRendererEndRenderEncodingLocked((__bridge void *)self);
-
-    /* Skip empty-CB commit when finish=true: wait on the owner's last submit
-     * instead (Metal CBs execute serially on the same queue).  Any path
-     * that encodes work (draws/render/blit/compute) into the current CB
-     * MUST set _batching.currentCommandBufferHasWork before calling flushCommandBuffer:YES,
-     * else the skip drops uncommitted work. */
-    if (finish && !_batching.currentCommandBufferHasWork &&
-        mglPassManagerHasLastSubmittedCommandBuffer(_renderPassManager)) {
-        return;
-    }
-    if (finish && !_batching.currentCommandBufferHasWork &&
-        !mglPassManagerHasLastSubmittedCommandBuffer(_renderPassManager)) {
-
-        return;
-    }
-
-    if (![self ensureWritableCommandBufferLocked:"flushCommandBuffer"]) {
-        NSLog(@"MGL ERROR: Unable to obtain writable command buffer in flushCommandBuffer");
-        return;
-    }
-
-    MGLRenderCommandBufferState currentState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager->state->currentCommandBufferOwner,
-            &currentState)) {
-        NSLog(@"MGL WARNING: No current command buffer in flushCommandBuffer");
-        return;
-    }
-
-    uint32_t currentStatus =
-        (uint32_t)currentState.status;
-    if (currentStatus != MGLCommandBufferStatusNotEnqueued) {
-        NSLog(@"MGL INFO: flushCommandBuffer found finalized buffer (status=%ld), rotating", (long)currentStatus);
-        if (!mglRenderPassNewCommandBufferLocked((__bridge void *)self)) {
-            NSLog(@"MGL ERROR: Failed to rotate command buffer in flushCommandBuffer");
-        }
-        return;
-    }
-
-    MGLRenderCommandBufferState preCommitState = currentState;
-    if (preCommitState.has_error) {
-        NSLog(@"MGL ERROR: Command buffer has error before commit: %s",
-              mglRenderCommandBufferErrorDescription(&preCommitState));
-        mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
-        return;
-    }
-
-    if (!mglRendererValidateMetalObjects((__bridge void *)self)) {
-        NSLog(@"MGL WARNING: GPU throttling active - skipping command buffer commit");
-        mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
-        return;
-    }
-
-    id commandBufferToCommit =
-        (__bridge id)mglPassManagerDetachCurrentCommandBufferForSubmission(_renderPassManager);
-
-    @try {
-        mglRendererCommitCommandBufferWithAGXRecovery((__bridge void *)self, (__bridge void *)commandBufferToCommit);
-        /* The owner now retains the last submit; flushCommandBuffer waits on
-         * that state after releasing METAL_LOCK. */
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: Command buffer commit failed in flushCommandBuffer: %@", exception);
-        mglRendererRecordGPUError((__bridge void *)self);
-        mglPlatformShellGuardedCall((__bridge void *)self, "command buffer cleanup", mglRendererCleanupCommandBufferBody);
-    }
-
-    if (!finish) {
-        mglRenderPassNewCommandBufferLocked((__bridge void *)self);
     }
 }
 

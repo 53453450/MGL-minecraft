@@ -130,8 +130,6 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 - (bool)bindMTLProgram:(Program *)ptr;
 - (bool)bindMTLProgramLocked:(Program *)ptr;
 - (bool)newCommandBufferLocked;
-- (bool)ensureWritableCommandBufferLocked:(const char *)reason;
-- (void)flushCommandBufferLocked:(bool)finish;
 - (bool)processGLStateLocked:(bool)draw_command;
 
 // === Public wrapper methods (non-locking; call the *Locked variants) ===

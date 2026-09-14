@@ -59,6 +59,11 @@ typedef struct MGLRenderPassPipelineFunctions_t {
 int mglRenderPassNewCommandBufferLocked(void *renderer);
 /* -createRenderEncoderLocked: is C now (log 175); areas gained the
  * drawable and query-state-owner fields it reads. */
+/* -ensureWritableCommandBufferLocked: and -flushCommandBufferLocked: are C
+ * now (log 176). */
+int mglRenderPassEnsureWritableCommandBufferLocked(void *renderer,
+                                                  const char *reason);
+void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish);
 int mglRenderPassCreateRenderEncoderLocked(void *renderer,
                                            uint64_t renderEncoderCall);
 int mglRenderPassGeneratePipelineDescriptorState(
