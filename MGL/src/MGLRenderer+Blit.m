@@ -12,6 +12,7 @@
 // Blit/copy/resolve operations extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_blit_drivers.h" /* blit leaf paths (log 135) */
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_texture_readback_clear.h"
@@ -1296,119 +1297,6 @@ static void mglBlitSynchronizeTexture(id encoder,
  * resolves the source to a temporary single-sample texture.
  * Updates *readtexidPtr / *readSubresourcePtr to the resolved texture.
  * Returns NO on failure (caller should return); YES on success. */
-- (BOOL)blitFramebufferResolveMsaaSource:(id *)readtexidPtr
-                                drawtexid:(id)drawtexid
-                        readSubresource:(MGLMetalAttachmentSubresource *)readSubresourcePtr
-                                  srcTexW:(NSUInteger)srcTexW srcTexH:(NSUInteger)srcTexH
-                       readTextureObject:(Texture *)readTextureObject
-                       outDidMsaaResolve:(BOOL *)outDidMsaaResolve
-{
-    id readtexid = *readtexidPtr;
-    MGLMetalAttachmentSubresource readSubresource = *readSubresourcePtr;
-    BOOL didMsaaResolve = NO;
-    const MGLRenderTextureInfo readInfo = mglBlitTextureInfo(readtexid);
-    const MGLRenderTextureInfo drawInfo = mglBlitTextureInfo(drawtexid);
-    /* Native Metal MSAA, or the AIR FBO path that stores MS planes as a
-     * 2DArray (sample_count==1, array_length==GL samples). */
-    const BOOL nativeMsaa = readInfo.sample_count > 1u;
-    const BOOL emulatedMsaa =
-        !nativeMsaa &&
-        readTextureObject &&
-        readTextureObject->samples > 1u &&
-        readInfo.texture_type == MGLTextureType2DArray &&
-        drawInfo.sample_count <= 1u;
-    if ((nativeMsaa || emulatedMsaa) && drawInfo.sample_count <= 1u &&
-        !mglMetalPixelFormatIsIntegerColor(readInfo.pixel_format)) {
-        MGLRenderTextureDescriptorState resolveDesc = {0};
-        resolveDesc.texture_type = MGLTextureType2D;
-        resolveDesc.pixel_format = readInfo.pixel_format;
-        resolveDesc.width = srcTexW;
-        resolveDesc.height = srcTexH;
-        resolveDesc.depth = 1;
-        resolveDesc.mipmap_level_count = 1;
-        resolveDesc.sample_count = 1;
-        resolveDesc.array_length = 1;
-        resolveDesc.usage = MGLTextureUsageRenderTarget | MGLTextureUsageShaderRead;
-        resolveDesc.storage_mode = MGLStorageModePrivate;
-        id resolveTex =
-            mglBlitCreateTexture(_device, &resolveDesc);
-        if (!resolveTex) {
-            NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create MSAA resolve texture srcSamples=%lu emulated=%d",
-                  (unsigned long)(nativeMsaa ? readInfo.sample_count
-                                             : (NSUInteger)readTextureObject->samples),
-                  emulatedMsaa ? 1 : 0);
-            return NO;
-        }
-
-        BOOL resolveEncoded = NO;
-        if (nativeMsaa) {
-            resolveEncoded =
-                mglRenderEncodeMultisampleResolveForCommandBufferOwner(
-                    _renderPassManager->state->currentCommandBufferOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
-                    (__bridge void *)readtexid, readSubresource.level,
-                    readSubresource.slice, readSubresource.depthPlane,
-                    (__bridge void *)resolveTex, 0, 0, 0, 0) == 0;
-        } else {
-            /* Emulated MS: GL NEAREST resolve picks one sample; use plane 0. */
-            id copyBlit =
-                (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                    _renderPassManager->state->currentCommandBufferOwner);
-            if (copyBlit) {
-                if (readTextureObject->is_render_target) {
-                    mglBlitSynchronizeTexture(copyBlit, readtexid,
-                                              readSubresource.slice,
-                                              readSubresource.level);
-                }
-                mglBlitCopyTexture(
-                    copyBlit, readtexid, readSubresource.slice,
-                    readSubresource.level,
-                    mglBlitOrigin(0u, 0u, 0u),
-                    mglBlitSize(srcTexW, srcTexH, 1u),
-                    resolveTex, 0u, 0u,
-                    mglBlitOrigin(0u, 0u, 0u));
-                mglBlitEndBlitEncoder(copyBlit);
-                resolveEncoded = YES;
-            }
-        }
-        if (!resolveEncoded) return NO;
-
-        /* Synchronize the resolved texture so the subsequent blit/shader can
-         * read it on a tile-based Apple GPU without stale tile memory. */
-        id syncBlit =
-            (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                _renderPassManager->state->currentCommandBufferOwner);
-        if (syncBlit) {
-            mglBlitSynchronizeTexture(syncBlit, resolveTex, 0, 0);
-            mglBlitEndBlitEncoder(syncBlit);
-        }
-
-        static uint64_t s_msaaResolveLogCount = 0;
-        uint64_t msaaHit = ++s_msaaResolveLogCount;
-        if (msaaHit <= 8ull || (msaaHit % 256ull) == 0ull) {
-            mglTraceLog("MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu emulated=%d srcTex=%lux%lu srcObj=%u",
-                  (unsigned long long)msaaHit,
-                  (unsigned long)(nativeMsaa ? readInfo.sample_count
-                                             : (NSUInteger)readTextureObject->samples),
-                  emulatedMsaa ? 1 : 0,
-                  (unsigned long)srcTexW, (unsigned long)srcTexH,
-                  readTextureObject ? (unsigned)readTextureObject->name : 0u);
-        }
-
-        /* Replace the source with the resolved single-sample texture. The
-         * resolved texture has the same dimensions, so srcTexW/srcTexH remain
-         * valid. Reset the subresource to {0,0,0} (fresh 2D texture). */
-        readtexid = resolveTex;
-        readSubresource.level = 0u;
-        readSubresource.slice = 0u;
-        readSubresource.depthPlane = 0u;
-        didMsaaResolve = YES;
-    }
-    *readtexidPtr = readtexid;
-    *readSubresourcePtr = readSubresource;
-    *outDidMsaaResolve = didMsaaResolve;
-    return YES;
-}
 
 /* Integer-color blit paths for mtlBlitFramebuffer.
  * Handles MSAA-resolve and direct-blit for integer pixel formats via
@@ -2028,14 +1916,19 @@ static void mglBlitSynchronizeTexture(id encoder,
 
 
     BOOL didMsaaResolve = NO;
-    if (![self blitFramebufferResolveMsaaSource:&readtexid
-                                        drawtexid:drawtexid
-                                readSubresource:&readSubresource
-                                          srcTexW:srcTexW srcTexH:srcTexH
-                               readTextureObject:readTextureObject
-                               outDidMsaaResolve:&didMsaaResolve]) {
+    /* The MSAA-resolve path is C now (log 135).  ARC forbids casting the
+     * address of a strong local to void**, so the handle travels through a
+     * plain void* temporary (the object stays owned by the caller's local). */
+    void *readtexidHandle = (__bridge void *)readtexid;
+    int didMsaaResolveRaw = didMsaaResolve ? 1 : 0;
+    if (!mglBlitResolveMsaaSource((__bridge void *)self, &readtexidHandle,
+                                  (__bridge void *)drawtexid, &readSubresource,
+                                  srcTexW, srcTexH, readTextureObject,
+                                  &didMsaaResolveRaw)) {
         return;
     }
+    readtexid = (__bridge id)readtexidHandle;
+    didMsaaResolve = didMsaaResolveRaw ? YES : NO;
 
     MGLBlitAxis axisX = { (double)srcX0, (double)srcX1, (double)dstX0, (double)dstX1 };
     MGLBlitAxis axisY = { (double)srcY0, (double)srcY1, (double)dstY0, (double)dstY1 };
@@ -2684,241 +2577,6 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
 /* CPU-to-CPU copy path for mtlCopyImageSubData.
  * Raw memcpy between matching-format textures that both have CPU data.
  * Returns YES if the copy succeeded (caller should return). */
-- (BOOL)copyImageSubDataCpuToCpu:(GLMContext)glm_ctx
-                          srcTex:(Texture *)srcTex
-                      srcTexture:(id)srcTexture
-                         srcType:(uint32_t)srcType
-                        srcLevel:(GLint)srcLevel
-                            srcX:(GLint)srcX srcY:(GLint)srcY srcZ:(GLint)srcZ
-                          dstTex:(Texture *)dstTex
-                      dstTexture:(id)dstTexture
-                         dstType:(uint32_t)dstType
-                        dstLevel:(GLint)dstLevel
-                            dstX:(GLint)dstX dstY:(GLint)dstY dstZ:(GLint)dstZ
-                           width:(GLsizei)width height:(GLsizei)height depth:(GLsizei)depth
-{
-
-    if (!srcTex->metal_data_authoritative && !srcTex->is_render_target &&
-        srcTex->faces && dstTex->faces &&
-        (NSUInteger)srcLevel < srcTex->num_levels &&
-        (NSUInteger)dstLevel < dstTex->num_levels) {
-
-            GLuint srcPixelSize = sizeForInternalFormat(srcTex->internalformat, 0, 0);
-            GLuint dstPixelSize = sizeForInternalFormat(dstTex->internalformat, 0, 0);
-            if (srcPixelSize > 0 && srcPixelSize == dstPixelSize &&
-                mglBlitTextureInfo(srcTexture).pixel_format == mglBlitTextureInfo(dstTexture).pixel_format) {
-                NSUInteger copyWidth = MAX((NSUInteger)width, 1u);
-                NSUInteger copyHeight = MAX((NSUInteger)height, 1u);
-                NSUInteger rowBytes = copyWidth * srcPixelSize;
-                NSUInteger numSlices = MAX((NSUInteger)depth, 1u);
-
-                bool cpuCopyOK = true;
-                for (NSUInteger s = 0; s < numSlices && cpuCopyOK; s++) {
-                    /* Determine src face/level */
-                    GLuint srcFace = 0;
-                    if (srcType == MGLTextureTypeCube || srcType == MGLTextureTypeCubeArray) {
-                        srcFace = ((GLuint)srcZ + s) % 6;
-                    }
-                    TextureLevel *srcLvl = (srcFace < 6 && srcTex->faces[srcFace].levels) ?
-                        &srcTex->faces[srcFace].levels[srcLevel] : NULL;
-
-                    /* Determine dst face/level */
-                    GLuint dstFace = 0;
-                    if (dstType == MGLTextureTypeCube || dstType == MGLTextureTypeCubeArray) {
-                        dstFace = ((GLuint)dstZ + s) % 6;
-                    }
-                    TextureLevel *dstLvl = (dstFace < 6 && dstTex->faces[dstFace].levels) ?
-                        &dstTex->faces[dstFace].levels[dstLevel] : NULL;
-
-                    if (!srcLvl || !dstLvl || !srcLvl->data || !dstLvl->data ||
-                        srcLvl->width <= 0 || dstLvl->width <= 0) {
-                        cpuCopyOK = false;
-                        break;
-                    }
-
-                    /* For 3D and 2D-array textures, slices are depth planes
-                     * within one level.  For cube textures, each slice is a
-                     * separate face.  For 2D/rectangle, there is only one
-                     * slice. */
-                    size_t srcSlicePitch = srcLvl->pitch * MAX(srcLvl->height, 1u);
-                    size_t dstSlicePitch = dstLvl->pitch * MAX(dstLvl->height, 1u);
-                    bool srcSliced = (srcType == MGLTextureType3D ||
-                                      srcType == MGLTextureType2DArray);
-                    bool dstSliced = (dstType == MGLTextureType3D ||
-                                      dstType == MGLTextureType2DArray);
-                    size_t srcSliceOff = srcSliced ?
-                        ((NSUInteger)srcZ + s) * srcSlicePitch : 0;
-                    size_t dstSliceOff = dstSliced ?
-                        ((NSUInteger)dstZ + s) * dstSlicePitch : 0;
-
-                    /* Copy region row by row */
-                    for (NSUInteger y = 0; y < copyHeight; y++) {
-                        size_t srcOff = srcSliceOff +
-                                        ((NSUInteger)srcY + y) * srcLvl->pitch +
-                                        (NSUInteger)srcX * srcPixelSize;
-                        size_t dstOff = dstSliceOff +
-                                        ((NSUInteger)dstY + y) * dstLvl->pitch +
-                                        (NSUInteger)dstX * dstPixelSize;
-                        if (srcOff + rowBytes > srcLvl->data_size ||
-                            dstOff + rowBytes > dstLvl->data_size) {
-                            cpuCopyOK = false;
-                            break;
-                        }
-                        memcpy((uint8_t *)(uintptr_t)dstLvl->data + dstOff,
-                               (const uint8_t *)(uintptr_t)srcLvl->data + srcOff,
-                               rowBytes);
-                    }
-
-
-                    if (cpuCopyOK) {
-                        NSUInteger mtlSlice = 0;
-                        MGLRegionValue region;
-                        if (dstType == MGLTextureType3D) {
-                            mtlSlice = 0;
-                            region = mglBlitRegion3D((NSUInteger)dstX,
-                                                      (NSUInteger)dstY,
-                                                      (NSUInteger)dstZ + s,
-                                                      copyWidth, copyHeight, 1);
-                        } else {
-                            mtlSlice = (dstType == MGLTextureTypeCube ||
-                                        dstType == MGLTextureTypeCubeArray) ?
-                                dstFace : ((NSUInteger)dstZ + s);
-                            region = mglBlitRegion2D((NSUInteger)dstX,
-                                                      (NSUInteger)dstY,
-                                                      copyWidth, copyHeight);
-                        }
-                        if (mglBlitTextureInfo(dstTexture).storage_mode != MGLStorageModePrivate) {
-                            /* For CPU-backed RGB8-family / RGB16 / RGB32 family destinations,
-                             * CPU bpp (3/6/12) != Metal bpp (4/8/16).  The CPU memcpy
-                             * above preserved the CPU layout, so expand the copied
-                             * region to Metal texel layout before replaceRegion,
-                             * otherwise N-byte rows are uploaded to a 4/8/16-byte
-                             * Metal texture (pixel shift / stripes).  Mirrors the
-                             * private-storage sibling below. */
-                            NSUInteger dstMetalBpp = mglMetalReadbackBytesPerPixel(mglBlitTextureInfo(dstTexture).pixel_format);
-                            size_t dstCpuBpp = (dstLvl->width > 0) ?
-                                (dstLvl->pitch / dstLvl->width) : 0;
-
-                            const void *upSrcPtr = (const uint8_t *)(uintptr_t)dstLvl->data + dstSliceOff;
-                            NSUInteger upBytesPerRow = dstLvl->pitch;
-                            NSUInteger upBytesPerImage = dstSlicePitch;
-                            void *expandedData = NULL;
-                            if (dstMetalBpp > 0 && dstCpuBpp != dstMetalBpp) {
-                                if (mglTextureInternalFormatNeedsRGBA8Expansion(
-                                        dstTex->internalformat, mglBlitTextureInfo(dstTexture).pixel_format)) {
-                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
-                                    expandedData = mglCreateRGBA8ExpandedUpload(
-                                        dstTex, (const uint8_t *)upSrcPtr,
-                                        copyWidth, copyHeight, upBytesPerRow,
-                                        &expandedBPR, &expandedBPI);
-                                    if (expandedData) {
-                                        upSrcPtr = expandedData;
-                                        upBytesPerRow = expandedBPR;
-                                        upBytesPerImage = expandedBPI;
-                                    }
-                                } else if (mglTextureNeedsChannelExpansion(
-                                        dstTex->internalformat, mglBlitTextureInfo(dstTexture).pixel_format)) {
-                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
-                                    expandedData = mglCreateChannelExpandedUpload(
-                                        dstTex, mglBlitTextureInfo(dstTexture).pixel_format,
-                                        (const uint8_t *)upSrcPtr,
-                                        copyWidth, copyHeight, upBytesPerRow,
-                                        &expandedBPR, &expandedBPI);
-                                    if (expandedData) {
-                                        upSrcPtr = expandedData;
-                                        upBytesPerRow = expandedBPR;
-                                        upBytesPerImage = expandedBPI;
-                                    }
-                                }
-                            }
-                            @try {
-                                mglBlitReplaceTextureRegion(
-                                    dstTexture, region, (NSUInteger)dstLevel,
-                                    mtlSlice, upSrcPtr, upBytesPerRow,
-                                    upBytesPerImage, YES);
-                            } @catch (NSException *exception) {
-                                NSLog(@"MGL WARNING: CPU-to-CPU Metal update failed: %@",
-                                      exception);
-                            }
-                            free(expandedData);
-                        } else {
-                            /* Private storage: blit from a staging buffer.
-                             * For bpp mismatch formats (CPU bpp != Metal bpp),
-                             * expand CPU data to Metal format before blitting,
-                             * otherwise sourceBytesPerRow won't match the
-                             * Metal texture's expected row stride. */
-                            NSUInteger dstMetalBpp = mglMetalReadbackBytesPerPixel(mglBlitTextureInfo(dstTexture).pixel_format);
-                            size_t dstCpuBpp = (dstLvl->width > 0) ?
-                                (dstLvl->pitch / dstLvl->width) : 0;
-
-                            const void *srcPtr = (const uint8_t *)(uintptr_t)dstLvl->data + dstSliceOff;
-                            NSUInteger srcBytesPerRow = dstLvl->pitch;
-                            NSUInteger srcImageBytes = srcBytesPerRow * copyHeight;
-
-                            void *expandedData = NULL;
-                            if (dstMetalBpp > 0 && dstCpuBpp != dstMetalBpp) {
-                                if (mglTextureInternalFormatNeedsRGBA8Expansion(
-                                        dstTex->internalformat, mglBlitTextureInfo(dstTexture).pixel_format)) {
-                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
-                                    expandedData = mglCreateRGBA8ExpandedUpload(
-                                        dstTex, (const uint8_t *)srcPtr,
-                                        copyWidth, copyHeight, srcBytesPerRow,
-                                        &expandedBPR, &expandedBPI);
-                                    if (expandedData) {
-                                        srcPtr = expandedData;
-                                        srcBytesPerRow = expandedBPR;
-                                        srcImageBytes = expandedBPI;
-                                    }
-                                } else if (mglTextureNeedsChannelExpansion(
-                                        dstTex->internalformat, mglBlitTextureInfo(dstTexture).pixel_format)) {
-                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
-                                    expandedData = mglCreateChannelExpandedUpload(
-                                        dstTex, mglBlitTextureInfo(dstTexture).pixel_format,
-                                        (const uint8_t *)srcPtr,
-                                        copyWidth, copyHeight, srcBytesPerRow,
-                                        &expandedBPR, &expandedBPI);
-                                    if (expandedData) {
-                                        srcPtr = expandedData;
-                                        srcBytesPerRow = expandedBPR;
-                                        srcImageBytes = expandedBPI;
-                                    }
-                                }
-                            }
-
-                            id stagingBuf =
-                                mglBlitCreateBufferWithBytes(
-                                    _device, srcPtr, srcImageBytes,
-                                    MGLResourceStorageModeShared);
-                            if (stagingBuf) {
-                                id uploadEncoder =
-                                    (__bridge id)mglRenderCreateBlitEncoderBorrowed(
-                                        _renderPassManager->state->currentCommandBufferOwner);
-                                if (uploadEncoder) {
-                                    mglBlitCopyBufferToTexture(
-                                        uploadEncoder, stagingBuf, 0,
-                                        srcBytesPerRow, srcImageBytes,
-                                        mglBlitSize(copyWidth, copyHeight, 1),
-                                        dstTexture, mtlSlice,
-                                        (NSUInteger)dstLevel, region.origin);
-                                    mglBlitEndBlitEncoder(uploadEncoder);
-                                }
-                            }
-                            free(expandedData);
-                        }
-                    }
-                }
-
-                if (cpuCopyOK) {
-                    /* CPU data is now authoritative for dst level */
-                    if (dstTex->faces[0].levels) {
-                        dstTex->faces[0].levels[dstLevel].metal_data_authoritative = (GLboolean)mglRenderGLBoolean(0);
-                    }
-                    return YES;
-                }
-            }
-        }
-    return NO;
-}
 
 /* Metal-to-Metal format-conversion copy for mtlCopyImageSubData.
  * Reads source via getBytes and writes destination via replaceRegion when
@@ -3897,18 +3555,12 @@ void mglRendererBlitFramebuffer(GLMContext glm_ctx,
         return;
     }
 
-    if ([self copyImageSubDataCpuToCpu:glm_ctx
-                                srcTex:srcTex
-                            srcTexture:srcTexture
-                               srcType:srcType
-                              srcLevel:srcLevel
-                                  srcX:srcX srcY:srcY srcZ:srcZ
-                                dstTex:dstTex
-                            dstTexture:dstTexture
-                               dstType:dstType
-                              dstLevel:dstLevel
-                                  dstX:dstX dstY:dstY dstZ:dstZ
-                                 width:width height:height depth:depth]) {
+    /* The CPU-to-CPU path is C now (log 135). */
+    if (mglBlitCopyImageSubDataCpuToCpu(
+            (__bridge void *)self, glm_ctx, srcTex,
+            (__bridge void *)srcTexture, srcType, srcLevel, srcX, srcY, srcZ,
+            dstTex, (__bridge void *)dstTexture, dstType, dstLevel, dstX, dstY,
+            dstZ, width, height, depth)) {
         return;
     }
 
