@@ -63,6 +63,14 @@ void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
                                  uint64_t bytesPerImage, MGLRegionValue region,
                                  GLenum format, GLenum type);
 
+/* -mtlGetTexImage:tex:pixelBytes:bytesPerRow:bytesPerImage:fromRegion:format:
+ *  type:mipmapLevel:slice: */
+void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
+                           void *pixelBytes, uint64_t bytesPerRow,
+                           uint64_t bytesPerImage, MGLRegionValue region,
+                           GLenum format, GLenum type, uint64_t level,
+                           uint64_t slice);
+
 /* -mtlReadDrawable:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
 void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
                             void *pixelBytes, uint64_t bytesPerRow,
