@@ -1,36 +1,44 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
  */
 
-// MGLRenderer+Texture.m
-// Texture upload/download Metal path methods extracted from MGLRenderer.m
+/*
+ * mgl_texture_entries.c - the GL-API entry surface of the former
+ * MGLRenderer+Texture.m (P0-1, log 200).  Every one of these functions was
+ * already plain C except for the renderer lookup and the backend lease, which
+ * the Objective-C file spelled with mglRendererForContext() and
+ * mglRendererEnterBackendLease(); C uses glm_ctx->platform_renderer_shell and
+ * mglRendererBackendBeginContext() directly, the same way
+ * mgl_blit_drivers.c's BlitFramebuffer entry does.
+ *
+ * With them re-homed the .m had nothing left but an empty @implementation, so
+ * the file is deleted (file count 3 -> 2).
+ */
 
-#include "mgl_texture_mip_ops.h"
-#include "mgl_render_pass_sync_ops.h"
-#include "mgl_render_pass_manager_ops.h"
-#import "MGLRenderer_Private.h"
-#include "mgl_blit_color_state.h" /* readback helper entries (log 141) */
-#include "mgl_texture_readback_clear.h"
+#include "glm_context.h"
+#include "mgl_blit_color_state.h"
+#include "mgl_blit_drivers.h"
+#include "mgl_blit_sampled_copy.h"
+#include "mgl_env_flag.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_pixel_format.h"
-#include "mgl_texture_binding_resolve.h"
-#import "MGLRenderer+Texture_Private.h"
-#import "mgl_texture_readback_ops.h" /* the readback family is C now (log 181) */
-#import "mgl_texture_create_ops.h" /* completeness / packed-DS upload / texel buffer (log 182) */
-#import "mgl_texture_upload_ops.h" /* slice upload + dedicated CB copy (log 183) */
-#import "mgl_texture_readback_ops.h" /* readPixels family is C (log 185) */
-#include "mgl_env_flag.h"
+#include "mgl_region_value.h"
 #include "mgl_render.h"
-#include "mgl_renderer_ports.h"  /* mglRendererProcessBuffer */
-#include "mgl_blit_sampled_copy.h"  /* sampled RT copy refresh */
-#include "mgl_blit_drivers.h"   /* mglBlitCopyImageSubData (log 145) */
-#include "mgl_region_value.h"   // canonical region/origin/size constructors (O4 dedup sink)
+#include "mgl_render_pass_manager_ops.h"
+#include "mgl_render_pass_sync_ops.h"
+#include "mgl_renderer_backend.h"
+#include "mgl_renderer_ports.h"
+#include "mgl_texture_binding_resolve.h"
+#include "mgl_texture_create_ops.h"
+#include "mgl_texture_mip_ops.h"
+#include "mgl_texture_readback_clear.h"
+#include "mgl_texture_readback_ops.h"
+#include "mgl_texture_upload_ops.h"
 
 enum {
     MGL_TEXTURE_RESOURCE_STORAGE_SHARED = 0u,
@@ -58,15 +66,15 @@ void mglRendererReadDrawable(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTextureReadDrawable((__bridge void *)renderer, glm_ctx,
+        mglTextureReadDrawable(renderer, glm_ctx,
                                pixel_bytes, bytes_per_row, bytes_per_image,
                                mglRendererCompatRegion(x, y, width, height));
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
@@ -74,32 +82,32 @@ void mglRendererReadIntegerPixels(GLMContext glm_ctx, void *pixel_bytes,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTextureReadIntegerPixels((__bridge void *)renderer, glm_ctx,
+        mglTextureReadIntegerPixels(renderer, glm_ctx,
                                     pixel_bytes, bytes_per_row,
                                     bytes_per_image,
                                     mglRendererCompatRegion(x, y, width, height),
                                     format, type);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
     uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTextureReadDepthPixels((__bridge void *)renderer, glm_ctx,
+        mglTextureReadDepthPixels(renderer, glm_ctx,
                                   pixel_bytes, bytes_per_row, bytes_per_image,
                                   mglRendererCompatRegion(x, y, width, height));
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererGetTexImage(GLMContext glm_ctx, Texture *texture,
@@ -107,60 +115,60 @@ void mglRendererGetTexImage(GLMContext glm_ctx, Texture *texture,
     int32_t x, int32_t y, int32_t width, int32_t height,
     uint32_t format, uint32_t type, uint32_t level, uint32_t slice)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTextureGetTexImage((__bridge void *)renderer, glm_ctx, texture,
+        mglTextureGetTexImage(renderer, glm_ctx, texture,
                               pixel_bytes, bytes_per_row, bytes_per_image,
                               mglRendererCompatRegion(x, y, width, height),
                               format, type, level, slice);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTextureGenerateMipmaps((__bridge void *)renderer, glm_ctx, texture);
+        mglTextureGenerateMipmaps(renderer, glm_ctx, texture);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererSyncTextureBufferFromImage(GLMContext glm_ctx, Texture *texture)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx && texture) {
-        mglTextureSyncBufferFromImage((__bridge void *)renderer, glm_ctx, texture);
+        mglTextureSyncBufferFromImage(renderer, glm_ctx, texture);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererPrepareImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTexturePrepareImageUnitSlice((__bridge void *)renderer, glm_ctx, unit);
+        mglTexturePrepareImageUnitSlice(renderer, glm_ctx, unit);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererFlushImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTextureFlushImageUnitSlice((__bridge void *)renderer, glm_ctx, unit);
+        mglTextureFlushImageUnitSlice(renderer, glm_ctx, unit);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer,
@@ -169,16 +177,16 @@ void mglRendererTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglTextureSubImage((__bridge void *)renderer, glm_ctx, texture, buffer,
+        mglTextureSubImage(renderer, glm_ctx, texture, buffer,
                               source_offset, source_pitch, source_image_size,
                               source_size, slice, level, width, height, depth,
                               x_offset, y_offset, z_offset);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 bool mglRendererTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
@@ -188,18 +196,18 @@ bool mglRendererTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
     size_t width, size_t height, size_t depth,
     size_t x_offset, size_t y_offset, size_t z_offset)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return false;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return false;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     bool result = false;
     if (renderer && glm_ctx) {
-        result = mglTextureSubImageBytes((__bridge void *)renderer, glm_ctx, texture, bytes,
+        result = mglTextureSubImageBytes(renderer, glm_ctx, texture, bytes,
                                    bytes_size, source_offset, source_pitch,
                                    source_image_size, slice, level, width,
                                    height, depth, x_offset, y_offset,
                                    z_offset) != 0;
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
     return result;
 }
 
@@ -207,15 +215,15 @@ void mglRendererCopyTexSubImage(GLMContext glm_ctx, Texture *texture,
     uint32_t slice, int32_t level, int32_t x_offset, int32_t y_offset,
     int32_t x, int32_t y, int32_t width, int32_t height)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglBlitCopyTexSubImage((__bridge void *)renderer, glm_ctx, texture,
+        mglBlitCopyTexSubImage(renderer, glm_ctx, texture,
                                slice, level, x_offset, y_offset, x, y, width,
                                height);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 void mglRendererCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
@@ -224,17 +232,17 @@ void mglRendererCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
     int32_t destination_x, int32_t destination_y, int32_t destination_z,
     int32_t width, int32_t height, int32_t depth)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
         mglBlitCopyImageSubData(
-            (__bridge void *)renderer, glm_ctx, source_texture, source_level,
+            renderer, glm_ctx, source_texture, source_level,
             source_x, source_y, source_z, destination_texture,
             destination_level, destination_x, destination_y, destination_z,
             width, height, depth);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 
@@ -266,39 +274,3 @@ void mglRendererCopyImageSubData(GLMContext glm_ctx, Texture *source_texture,
 
 
 
-@implementation MGLRenderer (Texture)
-
-
-
-
-
-
-
-
-
-#pragma mark - Extracted from createMTLTextureFromGLTexture:
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// AGX-SAFE Fallback texture creation for GPU error recovery scenarios
-
-// Helper function to calculate bytes per pixel for different OpenGL formats
-
-
-
-
-
-@end
