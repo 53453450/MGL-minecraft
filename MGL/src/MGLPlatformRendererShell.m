@@ -35,6 +35,7 @@
 #include "mgl_aux_assets.h"
 #include "mgl_shader_resource.h"  /* mglShaderCompileGLSL, mglRenderCreateAuxFunctions */
 #include "mgl_air_loader.h"      /* MGLRenderPipelineDescriptorState */
+#include "mgl_pipeline_cache_path.h"  /* archive path (log 203) */
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
 
@@ -1772,13 +1773,15 @@ static NSString * const kMGLPipelineArchiveBuildSchema = @"v5-tsan";
 #else
 static NSString * const kMGLPipelineArchiveBuildSchema = @"v5";
 #endif
+/* The C twin of the schema constant (the C path builder takes a C string). */
+#if __has_feature(address_sanitizer)
+static const char * const kMGLPipelineArchiveBuildSchemaC = "v5-asan";
+#elif __has_feature(thread_sanitizer)
+static const char * const kMGLPipelineArchiveBuildSchemaC = "v5-tsan";
+#else
+static const char * const kMGLPipelineArchiveBuildSchemaC = "v5";
+#endif
 
-static NSString *MGLSafeArchivePathComponent(NSString *value)
-{
-    if (value.length == 0) return @"unknown";
-    NSCharacterSet *unsafe = [[NSCharacterSet alphanumericCharacterSet] invertedSet];
-    return [[value componentsSeparatedByCharactersInSet:unsafe] componentsJoinedByString:@"_"];
-}
 
 @implementation MGLPipelineCache
 
@@ -1953,39 +1956,24 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
             _owner, (uint32_t)index, outState) == 0;
 }
 
+/* The path itself is built in C now (mgl_pipeline_cache_path.c): Foundation's
+ * directory search, bundle id lookup and file manager are POSIX + CF there, and
+ * the result is byte-for-byte the same string.  Only the NSURL the Metal-cpp
+ * archive API takes is still constructed here. */
+- (NSString *)binaryArchivePath
+{
+    char path[PATH_MAX] = {0};
+    if (mglPipelineCacheArchiveKey(_cacheDevice, kMGLPipelineArchiveBuildSchemaC,
+                                   path, sizeof(path)) != 0) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:path];
+}
+
 - (NSURL *)binaryArchiveURL
 {
-    NSArray *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory,
-                                                          NSUserDomainMask, YES);
-    NSString *baseDir = caches.firstObject ?: NSTemporaryDirectory();
-    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
-    if (bundleID.length == 0) bundleID = NSProcessInfo.processInfo.processName;
-    NSString *mglDir = [[baseDir stringByAppendingPathComponent:@"MGL"]
-                        stringByAppendingPathComponent:MGLSafeArchivePathComponent(bundleID)];
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    if (![fileManager fileExistsAtPath:mglDir]) {
-        [fileManager createDirectoryAtPath:mglDir
-               withIntermediateDirectories:YES
-                                attributes:nil
-                                     error:NULL];
-    }
-
-    uint64_t registryID = 0;
-    char deviceName[256] = {0};
-    (void)mglRenderGetDeviceIdentity(_cacheDevice,
-                                        &registryID, deviceName,
-                                        sizeof(deviceName));
-    NSString *deviceNameString = deviceName[0]
-        ? [NSString stringWithUTF8String:deviceName]
-        : @"unknown";
-    NSString *deviceID = registryID != 0
-        ? [NSString stringWithFormat:@"%016llx", (unsigned long long)registryID]
-        : MGLSafeArchivePathComponent(deviceNameString);
-    NSString *schema = [NSString stringWithFormat:@"%@-cpp",
-                        kMGLPipelineArchiveBuildSchema];
-    NSString *filename = [NSString stringWithFormat:@"pipeline-%@-%@.binaryarchive",
-                          schema, deviceID];
-    return [NSURL fileURLWithPath:[mglDir stringByAppendingPathComponent:filename]];
+    NSString *path = [self binaryArchivePath];
+    return path ? [NSURL fileURLWithPath:path] : nil;
 }
 
 - (void)loadBinaryArchive
@@ -1994,27 +1982,27 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         ![self ensureOwnerCreated]) return;
 
     NSURL *archiveURL = [self binaryArchiveURL];
-    NSString *archiveKey = archiveURL.path;
-    NSFileManager *fileManager = NSFileManager.defaultManager;
-    BOOL archiveExists = [fileManager fileExistsAtPath:archiveKey];
+    char archiveKey[PATH_MAX] = {0};
+    (void)mglPipelineCacheArchiveKey(_cacheDevice, kMGLPipelineArchiveBuildSchemaC,
+                                     archiveKey, sizeof(archiveKey));
+    int archiveExists = mglPipelineCacheArchiveExists(archiveKey);
     int reused = 0;
     char message[512] = {0};
     int result = mglRenderLoadPipelineBinaryArchive(
-        _owner, archiveKey.UTF8String, (__bridge void *)archiveURL,
+        _owner, archiveKey, (__bridge void *)archiveURL,
         archiveExists ? 1 : 0, &reused, message, sizeof(message));
     if (result != 0 && archiveExists) {
-        NSError *removeError = nil;
-        if (![fileManager removeItemAtURL:archiveURL error:&removeError]) {
-            NSLog(@"MGL BINARY ARCHIVE: failed to remove incompatible archive: %@",
-                  removeError.localizedDescription);
+        if (!mglPipelineCacheArchiveRemove(archiveKey)) {
+            NSLog(@"MGL BINARY ARCHIVE: failed to remove incompatible archive: %s",
+                  strerror(errno));
         }
         NSLog(@"MGL BINARY ARCHIVE: rebuilding incompatible archive: %s",
               message[0] ? message : "unknown error");
         archiveExists = NO;
         message[0] = '\0';
         result = mglRenderLoadPipelineBinaryArchive(
-            _owner, archiveKey.UTF8String, (__bridge void *)archiveURL,
-            0, &reused, message, sizeof(message));
+            _owner, archiveKey, (__bridge void *)archiveURL, 0, &reused,
+            message, sizeof(message));
     }
     if (result == 0) {
         NSLog(@"MGL BINARY ARCHIVE: %@ %@",
@@ -2034,19 +2022,18 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
             _owner, NULL, &present) != 0 || !present) return;
 
     NSURL *archiveURL = [self binaryArchiveURL];
-    NSString *archiveKey = archiveURL.path;
-    NSError *removeError = nil;
+    char archiveKey[PATH_MAX] = {0};
+    (void)mglPipelineCacheArchiveKey(_cacheDevice, kMGLPipelineArchiveBuildSchemaC,
+                                     archiveKey, sizeof(archiveKey));
     char message[512] = {0};
     BOOL ok = mglRenderSerializePipelineBinaryArchive(
         _owner, (__bridge void *)archiveURL,
         message, sizeof(message)) == 0;
     BOOL discarded = NO;
     if (!ok) {
-        NSFileManager *fileManager = NSFileManager.defaultManager;
-        discarded = ![fileManager fileExistsAtPath:archiveKey] ||
-            [fileManager removeItemAtURL:archiveURL error:&removeError];
-        mglRenderDiscardPipelineBinaryArchive(
-            _owner, archiveKey.UTF8String);
+        discarded = !mglPipelineCacheArchiveExists(archiveKey) ||
+                    mglPipelineCacheArchiveRemove(archiveKey);
+        mglRenderDiscardPipelineBinaryArchive(_owner, archiveKey);
     }
     if (ok) {
         NSLog(@"MGL BINARY ARCHIVE: saved to %@", archiveURL.lastPathComponent);
@@ -2057,9 +2044,8 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
             NSLog(@"MGL BINARY ARCHIVE: discarded unserializable archive: %@",
                   description);
         } else {
-            NSLog(@"MGL BINARY ARCHIVE: serialize failed: %@; removal failed: %@",
-                  description,
-                  removeError.localizedDescription);
+            NSLog(@"MGL BINARY ARCHIVE: serialize failed: %@; removal failed: %s",
+                  description, strerror(errno));
         }
     }
 }
