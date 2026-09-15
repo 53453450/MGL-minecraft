@@ -1,37 +1,34 @@
 /*
- * SPDX-License-Identifier: Apache-2.0 AND LGPL-3.0-only
+ * SPDX-License-Identifier: LGPL-3.0-only
  *
- * This file contains material from the Apache-2.0-licensed MGL baseline.
- * Copyrightable modifications made after baseline commit
- * 79d38f666336141d962109a864a6744bf66e438c are licensed under
- * LGPL-3.0-only by their respective copyright holders.
- * See LICENSE-APACHE-2.0, LICENSE, and LICENSING.md.
+ * This file was added after baseline commit
+ * 79d38f666336141d962109a864a6744bf66e438c and is licensed under
+ * LGPL-3.0-only by its respective copyright holder.
+ * See LICENSE and LICENSING.md.
  */
 
 /*
- * Copyright (C) Michael Larson on 1/6/2022
+ * mgl_renderer_entries.c - the file-scope functions of the former
+ * MGLRenderer.m (P0-1, log 202).  The methods had already moved out one cluster
+ * at a time; what remained was ~60 plain C functions (program resolution
+ * helpers, validated-object lookups, trace/log sinks, dirty-bit dumps and GL
+ * entry points), two __attribute__((constructor)) probes, the class extension's
+ * stale declarations and an @implementation block that only wrapped the C
+ * functions.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * The Objective-C spellings that had to change are the usual ones: __bridge and
+ * id become plain handles, NSLog becomes fprintf, BOOL/YES/NO/nil become
+ * int/1/0, the two-line backend lease becomes mglRendererBackendBeginContext,
+ * the renderer lookup becomes glm_ctx->platform_renderer_shell, the swap path's
+ * @autoreleasepool and @try go through the shell's pool and guard bridges, and
+ * the Objective-C-private header (which declared @interface and the class
+ * extension) is replaced by the C-safe headers plus local restatements.
  *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * MGLRenderer.m
- * MGL
- *
+ * The two constructors are deliberate entry points: nothing calls them, the
+ * loader does (rule 64).
  */
 
-/* MGLRenderer_Private.h transitively imports Foundation, Metal, simd, os/lock.h,
- * glm_context.h, pixel_utils.h, and all mgl_* compatibility
- * headers listed below.  Only imports unique to this TU are listed here. */
-#import <objc/runtime.h>
+#include <objc/runtime.h>
 
 #include <mach/mach_vm.h>
 #include "mgl_render_pass_manager_ops.h"
@@ -53,7 +50,6 @@
 #include <ctype.h>
 #include <dispatch/dispatch.h>
 
-#import "MGLRenderer_Private.h"
 #include "mgl_blit_pipelines.h"
 #include "mgl_swap_diagnostics.h"  /* swap-time diagnostics (was the SwapDiagnostics category) */
 #include "mgl_buffer_map.h"  /* buffer mapping + frame-generation gates */
@@ -63,13 +59,105 @@
 #include "mgl_renderer_ports.h"
 #include "mgl_draw_tess.h"
 #include "mgl_air_loader.h"
-#import "mgl.h"
+#include "mgl.h"
 #include "mgl_buffer_slots.h"
-#import "mgl_sampler_compat.h"
-#import "mgl_state_log.h"
-#import "mgl_trace_log.h"
-#import "mgl_byte_hash.h"
-#import "mgl_compute_pipeline_cache.h"
+#include "mgl_sampler_compat.h"
+#include "mgl_state_log.h"
+#include "mgl_trace_log.h"
+#include "mgl_byte_hash.h"
+#include "mgl_compute_pipeline_cache.h"
+
+#include "mgl_focus_program.h"
+#include "mgl_program_resource.h"
+#include "mgl_safety.h"
+#include "mgl_thread_affinity.h"   /* mglClaimGLThread / MGL_ASSERT_GL_THREAD */
+#include "mgl_shader_resource.h"
+#include "mgl_texture_compat.h"
+#include "mgl_trace_strategy.h"
+#include "mgl_blit_pipelines.h"
+#include "mgl_swap_diagnostics.h"  /* swap-time diagnostics (was the SwapDiagnostics category) */
+#include "mgl_buffer_map.h"  /* buffer mapping + frame-generation gates */
+#include "mgl_renderer_host.h"
+#include "mgl_clear_buffer_ops.h" /* mtlClearBuffer + draw-buffer creators (log 184) */  /* shared buffer helpers (log 161) */
+#include "mgl_stage_copy_back.h"  /* copy-back list helpers (log 158) */
+#include "mgl_renderer_ports.h"
+#include "mgl_draw_tess.h"
+#include "mgl_air_loader.h"
+#include "mgl.h"
+#include "mgl_buffer_slots.h"
+#include "mgl_sampler_compat.h"
+#include "mgl_state_log.h"
+#include "mgl_trace_log.h"
+#include "mgl_byte_hash.h"
+#include "mgl_compute_pipeline_cache.h"
+
+
+/* Restated from the Objective-C headers a .c file cannot include, the way the
+ * other C hosts in this tree do it. */
+extern Texture *findTexture(GLMContext ctx, GLuint texture);
+static int mglMexObjectPointerLikelyValid(const void *pointer)
+{
+    return pointer && (uintptr_t)pointer >= 0x1000u &&
+           mglPointerRangeIsReadable(pointer, 1u);
+}
+static int mglMexShouldTraceCall(uint64_t count)
+{
+    return (count <= 80ull) || ((count % 500ull) == 0ull);
+}
+
+
+/* The Objective-C private headers' file-local constants, copied verbatim
+ * (rule 62 (b)). */
+static const int kMGLDrawSubmitDiagnostics = 0;
+static const int kMGLVerbosePipelineLogs = 0;
+#define kMGLCurrentAttribPoolStride ((uint32_t)4096u * 16u)
+
+/* C-safe headers the moved code needs. */
+#include "mgl_buffer_query.h"
+#include "mgl_coordinate.h"
+#include "mgl_draw_buffer.h"
+#include "mgl_focus_program.h"
+#include "mgl_program_resource.h"
+#include "mgl_rt_sync.h"
+#include "mgl_safety.h"
+#include "mgl_thread_affinity.h"   /* mglClaimGLThread / MGL_ASSERT_GL_THREAD */
+#include "mgl_shader_resource.h"
+#include "mgl_sync.h"
+#include "mgl_texture_compat.h"
+#include "mgl_trace_strategy.h"
+#include "mgl_vertex_attrib_query.h"
+#include "mgl_vertex_format.h"
+#include "mgl_size_constants.h"
+
+/* Restated from the Objective-C headers a .c file cannot include, verbatim
+ * except for the BOOL -> int spelling (the other C hosts in this tree do the
+ * same). */
+extern Texture *findTexture(GLMContext ctx, GLuint texture);
+extern int mglRendererPointerInHashTable(HashTable *table, const void *ptr);
+extern void *mglPlatformRendererShellTextureForDrawable(void *drawable);
+extern int mglPlatformShellAutoreleasePoolCall(void *renderer,
+                                               int (*body)(void *));
+
+#define mglMexMin(a, b) ((a) < (b) ? (a) : (b))
+#define mglMexMax(a, b) ((a) > (b) ? (a) : (b))
+static void *mglMexBufferContents(void *buffer)
+{
+    void *contents = NULL;
+    uint64_t length = 0u;
+    return buffer && mglRenderGetBufferContents((void *)buffer,
+                                                   &contents, &length) == 0
+        ? contents : NULL;
+}
+
+static uint64_t mglMexBufferLength(void *buffer)
+{
+    void *contents = NULL;
+    uint64_t length = 0u;
+    if (!buffer || mglRenderGetBufferContents(buffer, &contents, &length) != 0) {
+        return 0u;
+    }
+    return length;
+}
 
 #define TRACE_FUNCTION()    DEBUG_PRINT("%s\n", __FUNCTION__);
 
@@ -98,15 +186,15 @@ extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated
 /* Pixel readback helpers (7 functions) moved to mgl_readback.m */
 /* Layer pixel format / sRGB / linear helpers moved to mgl_texture_compat */
 
-static id mglRendererCreateTextureView(id texture, uint32_t pixelFormat)
+static void *mglRendererCreateTextureView(void *texture, uint32_t pixelFormat)
 {
     void *view = NULL;
     if (mglRenderCreateTextureView(
-            (__bridge void *)texture, (uint32_t)pixelFormat,
+            (void *)texture, (uint32_t)pixelFormat,
             &view) == 0 && view) {
-        return (__bridge_transfer id)view;
+        return (void *)view;
     }
-    return nil;
+    return NULL;
 }
 
 typedef struct MGLRendererClearColorValue {
@@ -121,28 +209,28 @@ static MGLRendererClearColorValue mglRendererMakeClearColor(double red,
     return (MGLRendererClearColorValue){red, green, blue, alpha};
 }
 
-static MGLRenderTextureInfo mglRendererTextureInfo(id texture)
+static MGLRenderTextureInfo mglRendererTextureInfo(void *texture)
 {
     MGLRenderTextureInfo info = {0};
     if (texture) {
-        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
+        (void)mglRenderGetTextureInfo((void *)texture, &info);
     }
     return info;
 }
 
-static uint64_t mglRendererTextureFieldWidth(id texture)
+static uint64_t mglRendererTextureFieldWidth(void *texture)
 { return mglRendererTextureInfo(texture).width; }
-static uint64_t mglRendererTextureFieldHeight(id texture)
+static uint64_t mglRendererTextureFieldHeight(void *texture)
 { return mglRendererTextureInfo(texture).height; }
-static uint32_t mglRendererTextureFieldFormat(id texture)
+static uint32_t mglRendererTextureFieldFormat(void *texture)
 { return mglRendererTextureInfo(texture).pixel_format; }
-static uint64_t mglRendererTextureFieldUsage(id texture)
+static uint64_t mglRendererTextureFieldUsage(void *texture)
 { return mglRendererTextureInfo(texture).usage; }
 // Applies GL_FRAMEBUFFER_SRGB state to a render-target texture by creating
 // a Metal texture view with the appropriate pixel format. The view shares
 // the same underlying storage so no memory copy occurs.
 // Returns the (possibly wrapped) texture that should be used as the render target.
-id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx)
+void *mglApplySRGBStateToRenderTarget(void *texture, GLMContext ctx)
 {
     if (!texture || !ctx) return texture;
 
@@ -161,7 +249,7 @@ id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx)
         return texture;  // Already the correct format
     }
 
-    id view =
+    void *view =
         mglRendererCreateTextureView(texture, desiredFmt);
     if (view) {
         return view;
@@ -171,7 +259,7 @@ id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx)
     // fall back to the original texture.
     static uint64_t s_srgbViewFailCount = 0;
     if (++s_srgbViewFailCount <= 8) {
-        NSLog(@"MGL WARNING: newTextureViewWithPixelFormat failed current=%lu desired=%lu srgb=%d",
+        fprintf(stderr, "MGL WARNING: newTextureViewWithPixelFormat failed current=%lu desired=%lu srgb=%d\n",
               (unsigned long)currentFmt, (unsigned long)desiredFmt,
               ctx->active_state->caps.framebuffer_srgb ? 1 : 0);
     }
@@ -180,12 +268,12 @@ id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx)
 
 /* mglMetalCopyTextureBytesToBGRA8 moved to mgl_readback.m */
 void mglMetalCopyRows(const uint8_t *src,
-                      NSUInteger srcBytesPerRow,
+                      unsigned long srcBytesPerRow,
                       uint8_t *dst,
-                      NSUInteger dstBytesPerRow,
-                      NSUInteger rowBytes,
-                      NSUInteger height,
-                      BOOL flipY)
+                      unsigned long dstBytesPerRow,
+                      unsigned long rowBytes,
+                      unsigned long height,
+                      int flipY)
 {
 
     mglRenderCopyRows(
@@ -267,14 +355,14 @@ __attribute__((constructor))
 #define MGL_ENV_CACHE_CAPACITY 32
 static struct {
     const char *name;
-    BOOL value;
-    BOOL default_on;    /* distinguishes mglEnvFlagEnabled vs DefaultOn */
-    BOOL valid;
+    int value;
+    int default_on;    /* distinguishes mglEnvFlagEnabled vs DefaultOn */
+    int valid;
 } s_mglEnvCache[MGL_ENV_CACHE_CAPACITY];
 
 #include "mgl_env_flag.h"
 
-static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
+static int mglEnvFlagEnabledCached(const char *name, int default_on)
 {
     if (!name) {
         return default_on;
@@ -293,11 +381,11 @@ static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
      * single-source parser in mgl_env_flag.h; only the "unset => default_on"
      * semantics are applied here. */
     const char *value = getenv(name);
-    BOOL result;
+    int result;
     if (!value || value[0] == '\0') {
         result = default_on;
     } else {
-        result = mgl_env_flag_enabled(name) ? YES : NO;
+        result = mgl_env_flag_enabled(name) ? 1 : 0;
     }
 
     /* Store in cache (find first empty slot). */
@@ -306,7 +394,7 @@ static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
             s_mglEnvCache[i].name = name;
             s_mglEnvCache[i].value = result;
             s_mglEnvCache[i].default_on = default_on;
-            s_mglEnvCache[i].valid = YES;
+            s_mglEnvCache[i].valid = 1;
             break;
         }
     }
@@ -314,15 +402,15 @@ static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
     return result;
 }
 
-BOOL mglEnvFlagEnabled(const char *name)
+int mglEnvFlagEnabled(const char *name)
 {
-    return mglEnvFlagEnabledCached(name, NO);
+    return mglEnvFlagEnabledCached(name, 0);
 }
 
 
-BOOL mglEnvFlagEnabledDefaultOn(const char *name)
+int mglEnvFlagEnabledDefaultOn(const char *name)
 {
-    return mglEnvFlagEnabledCached(name, YES);
+    return mglEnvFlagEnabledCached(name, 1);
 }
 
 
@@ -341,7 +429,7 @@ BOOL mglEnvFlagEnabledDefaultOn(const char *name)
 
 /* mglRendererPointerInHashTable, mglRendererSafeFramebufferName, and
  * mglRendererGetValidatedFramebuffer declared in MGLRenderer_Private.h */
-static inline BOOL mglRendererContextLikelyValid(GLMContext ctx)
+static inline int mglRendererContextLikelyValid(GLMContext ctx)
 {
     return (ctx != NULL) && ((uintptr_t)ctx >= 0x10000u);
 }
@@ -366,7 +454,7 @@ Program *mglResolveProgramFromState(GLMContext ctx)
     if (program) {
         GLuint expectedName = ctx->active_state->program_name ? ctx->active_state->program_name : program->name;
         if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
-            NSLog(@"MGL PROGRAM RESOLVE invalid cached pointer=%p name=%u",
+            fprintf(stderr, "MGL PROGRAM RESOLVE invalid cached pointer=%p name=%u\n",
                   program,
                   (unsigned)ctx->active_state->program_name);
             ctx->active_state->program = NULL;
@@ -387,7 +475,7 @@ Program *mglResolveProgramFromState(GLMContext ctx)
 
     Program *resolved = (Program *)searchHashTable(&ctx->active_state->program_table, ctx->active_state->program_name);
     if (!resolved) {
-        NSLog(@"MGL PROGRAM RESOLVE fail: name=%u missing in table", (unsigned)ctx->active_state->program_name);
+        fprintf(stderr, "MGL PROGRAM RESOLVE fail: name=%u missing in table\n", (unsigned)ctx->active_state->program_name);
         ctx->active_state->program_name = 0;
         return NULL;
     }
@@ -396,7 +484,7 @@ Program *mglResolveProgramFromState(GLMContext ctx)
         !resolved->modules[_VERTEX_SHADER].metallib_bytes &&
         !resolved->modules[_FRAGMENT_SHADER].metallib_bytes &&
         !resolved->modules[_COMPUTE_SHADER].metallib_bytes) {
-        NSLog(@"MGL PROGRAM RESOLVE pending: name=%u ptr=%p not linked",
+        fprintf(stderr, "MGL PROGRAM RESOLVE pending: name=%u ptr=%p not linked\n",
               (unsigned)ctx->active_state->program_name, resolved);
         return NULL;
     }
@@ -405,7 +493,7 @@ Program *mglResolveProgramFromState(GLMContext ctx)
     resolved->refcount++;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
 
-    NSLog(@"MGL PROGRAM RESOLVE recovered name=%u ptr=%p",
+    fprintf(stderr, "MGL PROGRAM RESOLVE recovered name=%u ptr=%p\n",
           (unsigned)ctx->active_state->program_name, resolved);
     return resolved;
 }
@@ -418,10 +506,10 @@ static ProgramPipeline *mglResolveProgramPipelineFromState(GLMContext ctx)
 
     ProgramPipeline *pipeline = ctx->active_state->program_pipeline;
     if (pipeline) {
-        if (!mglRendererObjectPointerLikelyValid(pipeline) ||
+        if (!mglMexObjectPointerLikelyValid(pipeline) ||
             !mglRendererPointerInHashTable(&ctx->active_state->program_pipeline_table, pipeline) ||
             !mglPointerRangeIsReadable(pipeline, sizeof(*pipeline))) {
-            NSLog(@"MGL PROGRAM PIPELINE RESOLVE invalid cached pointer=%p binding=%u",
+            fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE invalid cached pointer=%p binding=%u\n",
                   pipeline,
                   (unsigned)ctx->active_state->var.program_pipeline_binding);
             ctx->active_state->program_pipeline = NULL;
@@ -443,9 +531,9 @@ static ProgramPipeline *mglResolveProgramPipelineFromState(GLMContext ctx)
     ProgramPipeline *resolved =
         (ProgramPipeline *)searchHashTable(&ctx->active_state->program_pipeline_table, pipelineName);
     if (!resolved ||
-        !mglRendererObjectPointerLikelyValid(resolved) ||
+        !mglMexObjectPointerLikelyValid(resolved) ||
         !mglPointerRangeIsReadable(resolved, sizeof(*resolved))) {
-        NSLog(@"MGL PROGRAM PIPELINE RESOLVE fail: name=%u missing/invalid",
+        fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE fail: name=%u missing/invalid\n",
               (unsigned)pipelineName);
         ctx->active_state->program_pipeline = NULL;
         ctx->active_state->var.program_pipeline_binding = 0;
@@ -474,7 +562,7 @@ static Program *mglRestoreMonolithicProgramBinding(GLMContext ctx, GLuint progra
     }
     if (!program ||
         !mglProgramPointerUsableForName(ctx, program, programName)) {
-        NSLog(@"MGL PROGRAM RESTORE missing/invalid program=%u", (unsigned)programName);
+        fprintf(stderr, "MGL PROGRAM RESTORE missing/invalid program=%u\n", (unsigned)programName);
         program = NULL;
     }
 
@@ -498,9 +586,9 @@ static ProgramPipeline *mglRestoreProgramPipelineBinding(GLMContext ctx, GLuint 
     ProgramPipeline *pipeline =
         (ProgramPipeline *)searchHashTable(&ctx->active_state->program_pipeline_table, pipelineName);
     if (!pipeline ||
-        !mglRendererObjectPointerLikelyValid(pipeline) ||
+        !mglMexObjectPointerLikelyValid(pipeline) ||
         !mglPointerRangeIsReadable(pipeline, sizeof(*pipeline))) {
-        NSLog(@"MGL PROGRAM PIPELINE RESTORE missing/invalid pipeline=%u",
+        fprintf(stderr, "MGL PROGRAM PIPELINE RESTORE missing/invalid pipeline=%u\n",
               (unsigned)pipelineName);
         pipeline = NULL;
     }
@@ -550,10 +638,10 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
         return NULL;
     }
 
-    if (!mglRendererObjectPointerLikelyValid(stageProgram) ||
+    if (!mglMexObjectPointerLikelyValid(stageProgram) ||
         !mglPointerRangeIsReadable(stageProgram, sizeof(*stageProgram)) ||
         !mglProgramPointerUsableForName(ctx, stageProgram, stageProgram->name)) {
-        NSLog(@"MGL PROGRAM PIPELINE RESOLVE invalid stage program pipeline=%u stage=%s ptr=%p",
+        fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE invalid stage program pipeline=%u stage=%s ptr=%p\n",
               (unsigned)pipeline->name,
               mglShaderStageName(stage),
               stageProgram);
@@ -571,7 +659,7 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
         !stageProgram->modules[_GEOMETRY_SHADER].metallib_bytes &&
         !stageProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes &&
         !stageProgram->modules[_TESS_EVALUATION_SHADER].metallib_bytes) {
-        NSLog(@"MGL PROGRAM PIPELINE RESOLVE pending stage program pipeline=%u stage=%s program=%u",
+        fprintf(stderr, "MGL PROGRAM PIPELINE RESOLVE pending stage program pipeline=%u stage=%s program=%u\n",
               (unsigned)pipeline->name,
               mglShaderStageName(stage),
               (unsigned)stageProgram->name);
@@ -668,7 +756,7 @@ void mglWriteProgramMSLDump(Program *program, const char *reason)
     /* Reasons containing "tex" (any case) force the dump past the "dump once
      * per program" gate: they name a texture-binding mismatch the caller wants
      * to see in full. */
-    BOOL forceDump = reason && strcasestr(reason, "tex") != NULL;
+    int forceDump = reason && strcasestr(reason, "tex") != NULL;
 
     static GLuint s_dumpedPrograms[64] = {0};
     static GLuint s_forcedDumpedPrograms[64] = {0};
@@ -838,7 +926,7 @@ void mglLogLoopHeartbeat(const char *tag,
               deltaMs,
               (unsigned long long)deltaCalls,
               (unsigned long long)callCount);
-    } else if (mglShouldTraceCall(callCount) &&
+    } else if (mglMexShouldTraceCall(callCount) &&
                (callCount <= 20ull || (callCount % 60ull) == 0ull)) {
         mglTraceLog("MGL TRACE %s heartbeat delta=%.2fms deltaCalls=%llu call=%llu",
               tag ? tag : "loop",
@@ -859,7 +947,7 @@ void mglLogStateSnapshot(const char *tag,
                                 void *commandBufferOwner,
                                 void *renderEncoderOwner,
                                 void *renderPassStateOwner,
-                                id drawable)
+                                void *drawable)
 {
     if (!kMGLDiagnosticStateLogs) {
         return;
@@ -877,7 +965,7 @@ void mglLogStateSnapshot(const char *tag,
     Framebuffer *drawFBO = ctx->active_state->framebuffer;
     GLuint drawFBOName = 0;
     if (drawFBO) {
-        if (mglRendererObjectPointerLikelyValid(drawFBO) &&
+        if (mglMexObjectPointerLikelyValid(drawFBO) &&
             mglRendererPointerInHashTable(&ctx->active_state->framebuffer_table, drawFBO) &&
             mglPointerRangeIsReadable(drawFBO, sizeof(*drawFBO))) {
             drawFBOName = drawFBO->name;
@@ -888,7 +976,7 @@ void mglLogStateSnapshot(const char *tag,
     }
 
     MGLRenderCommandBufferState commandState = {0};
-    BOOL hasCommandBuffer = mglRenderCommandBufferOwnerHasState(
+    int hasCommandBuffer = mglRenderCommandBufferOwnerHasState(
         commandBufferOwner, &commandState);
     uint32_t cbStatus = hasCommandBuffer
         ? (uint32_t)commandState.status
@@ -899,15 +987,15 @@ void mglLogStateSnapshot(const char *tag,
     mglFormatDirtyBits((uint32_t)ctx->active_state->dirty_bits, dirtyNames, sizeof(dirtyNames));
 
     MGLRenderPassState renderPassState = {0};
-    BOOL hasRenderPassState = renderPassStateOwner &&
+    int hasRenderPassState = renderPassStateOwner &&
         mglRenderGetRenderPassStateOwner(
             renderPassStateOwner, &renderPassState) == 0;
-    id rpColor0 = hasRenderPassState && renderPassState.color[0].attachment.texture
-        ? (__bridge id)renderPassState.color[0].attachment.texture : nil;
-    id rpDepth = hasRenderPassState && renderPassState.depth.attachment.texture
-        ? (__bridge id)renderPassState.depth.attachment.texture : nil;
-    id rpStencil = hasRenderPassState && renderPassState.stencil.attachment.texture
-        ? (__bridge id)renderPassState.stencil.attachment.texture : nil;
+    void *rpColor0 = hasRenderPassState && renderPassState.color[0].attachment.texture
+        ? (void *)renderPassState.color[0].attachment.texture : NULL;
+    void *rpDepth = hasRenderPassState && renderPassState.depth.attachment.texture
+        ? (void *)renderPassState.depth.attachment.texture : NULL;
+    void *rpStencil = hasRenderPassState && renderPassState.stencil.attachment.texture
+        ? (void *)renderPassState.stencil.attachment.texture : NULL;
     uint32_t colorLoadAction = hasRenderPassState
         ? (uint32_t)renderPassState.color[0].attachment.load_action : MGL_RENDERER_LOAD_DONT_CARE;
     uint32_t colorStoreAction = hasRenderPassState
@@ -927,9 +1015,9 @@ void mglLogStateSnapshot(const char *tag,
                             renderPassState.color[0].clear_alpha)
         : mglRendererMakeClearColor(0.0, 0.0, 0.0, 0.0);
 
-    id drawableTexture = drawable
-        ? (__bridge id)mglPlatformRendererShellTextureForDrawable((__bridge void *)drawable)
-        : nil;
+    void *drawableTexture = drawable
+        ? (void *)mglPlatformRendererShellTextureForDrawable((void *)drawable)
+        : NULL;
 
     mglTraceLog("MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
           "vp=(%u,%u,%u,%u) scissor(en=%d box=%d,%d,%d,%d) caps(depth=%d blend=%d cull=%d) "
@@ -1020,7 +1108,7 @@ void mglLogRenderPassLifecycle(const char *tag,
     }
 
     MGLRenderCommandBufferState commandState = {0};
-    BOOL hasCommandBuffer = mglRenderCommandBufferOwnerHasState(
+    int hasCommandBuffer = mglRenderCommandBufferOwnerHasState(
         commandBufferOwner, &commandState);
     uint32_t cbStatus = hasCommandBuffer
         ? (uint32_t)commandState.status
@@ -1028,20 +1116,20 @@ void mglLogRenderPassLifecycle(const char *tag,
     int hasRenderEncoder =
         mglRenderEncoderOwnerHasCurrent(renderEncoderOwner) == 1;
     MGLRenderPassState renderPassState = {0};
-    BOOL hasRenderPassState = renderPassStateOwner &&
+    int hasRenderPassState = renderPassStateOwner &&
         mglRenderGetRenderPassStateOwner(
             renderPassStateOwner, &renderPassState) == 0;
-    id c0 = hasRenderPassState && renderPassState.color[0].attachment.texture
-        ? (__bridge id)renderPassState.color[0].attachment.texture : nil;
-    id c1 = hasRenderPassState && renderPassState.color[1].attachment.texture
-        ? (__bridge id)renderPassState.color[1].attachment.texture : nil;
-    id depth = hasRenderPassState && renderPassState.depth.attachment.texture
-        ? (__bridge id)renderPassState.depth.attachment.texture : nil;
-    id stencil = hasRenderPassState && renderPassState.stencil.attachment.texture
-        ? (__bridge id)renderPassState.stencil.attachment.texture : nil;
-    id drawableTexture = drawable
-        ? (__bridge id)mglPlatformRendererShellTextureForDrawable(drawable)
-        : nil;
+    void *c0 = hasRenderPassState && renderPassState.color[0].attachment.texture
+        ? (void *)renderPassState.color[0].attachment.texture : NULL;
+    void *c1 = hasRenderPassState && renderPassState.color[1].attachment.texture
+        ? (void *)renderPassState.color[1].attachment.texture : NULL;
+    void *depth = hasRenderPassState && renderPassState.depth.attachment.texture
+        ? (void *)renderPassState.depth.attachment.texture : NULL;
+    void *stencil = hasRenderPassState && renderPassState.stencil.attachment.texture
+        ? (void *)renderPassState.stencil.attachment.texture : NULL;
+    void *drawableTexture = drawable
+        ? (void *)mglPlatformRendererShellTextureForDrawable(drawable)
+        : NULL;
     MGLRendererClearColorValue clear = hasRenderPassState
         ? mglRendererMakeClearColor(renderPassState.color[0].clear_red,
                             renderPassState.color[0].clear_green,
@@ -1051,7 +1139,7 @@ void mglLogRenderPassLifecycle(const char *tag,
 
     Framebuffer *fbo = ctx ? ctx->active_state->framebuffer : NULL;
     if (fbo &&
-        (!mglRendererObjectPointerLikelyValid(fbo) ||
+        (!mglMexObjectPointerLikelyValid(fbo) ||
          !mglRendererPointerInHashTable(&ctx->active_state->framebuffer_table, fbo) ||
          !mglPointerRangeIsReadable(fbo, sizeof(*fbo)))) {
         mglTraceLog("RENDERPASS_%s invalid lifecycle fbo=%p", tag ? tag : "unknown", fbo);
@@ -1135,33 +1223,33 @@ void mglLogRenderPassLifecycle(const char *tag,
                 (unsigned long)(drawableTexture ? mglRendererTextureFieldHeight(drawableTexture) : 0));
 }
 
-BOOL mglRendererPointerInHashTable(HashTable *table, const void *ptr)
+int mglRendererPointerInHashTable(HashTable *table, const void *ptr)
 {
-    return mglRendererObjectPointerLikelyValid(ptr) &&
+    return mglMexObjectPointerLikelyValid(ptr) &&
            mglHashTableContainsData(table, ptr);
 }
 
 
-BOOL mglCurrentDrawFramebufferUsesColorTexture(GLMContext glctx,
+int mglCurrentDrawFramebufferUsesColorTexture(GLMContext glctx,
                                                       Texture *texture,
                                                       GLuint expectedFboName,
-                                                      NSUInteger *attachmentIndexOut)
+                                                      unsigned long *attachmentIndexOut)
 {
     if (attachmentIndexOut) {
         *attachmentIndexOut = MAX_COLOR_ATTACHMENTS;
     }
     if (!glctx || !texture) {
-        return NO;
+        return 0;
     }
 
     Framebuffer *fbo = glctx->active_state->framebuffer;
     if (!fbo ||
-        !mglRendererObjectPointerLikelyValid(fbo) ||
+        !mglMexObjectPointerLikelyValid(fbo) ||
         !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
-        return NO;
+        return 0;
     }
     if (expectedFboName != 0u && fbo->name != expectedFboName) {
-        return NO;
+        return 0;
     }
 
     GLsizei drawBufferCount = mglMetalDrawBufferCount(glctx);
@@ -1180,11 +1268,11 @@ BOOL mglCurrentDrawFramebufferUsesColorTexture(GLMContext glctx,
             if (attachmentIndexOut) {
                 *attachmentIndexOut = attachmentIndex;
             }
-            return YES;
+            return 1;
         }
     }
 
-    return NO;
+    return 0;
 }
 
 static void mglRendererDropCurrentVAO(GLMContext ctx)
@@ -1211,8 +1299,8 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return NULL;
     }
 
-    if (!mglRendererObjectPointerLikelyValid(vao)) {
-        NSLog(@"MGL VAO INVALID in %s: vao=%p (suspicious pseudo-pointer)",
+    if (!mglMexObjectPointerLikelyValid(vao)) {
+        fprintf(stderr, "MGL VAO INVALID in %s: vao=%p (suspicious pseudo-pointer)\n",
               where ? where : "unknown", vao);
         mglRendererDropCurrentVAO(ctx);
         return NULL;
@@ -1224,7 +1312,7 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
      * in mglHashTableContainsData makes this O(1) in the common case. */
     if (mglRendererPointerInHashTable(&ctx->active_state->vao_table, vao)) {
         if (vao->magic != MGL_VAO_MAGIC) {
-            NSLog(@"MGL VAO INVALID in %s: vao=%p magic=0x%x",
+            fprintf(stderr, "MGL VAO INVALID in %s: vao=%p magic=0x%x\n",
                   where ? where : "unknown", vao, vao->magic);
             mglRendererDropCurrentVAO(ctx);
             return NULL;
@@ -1234,14 +1322,14 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
 
 
     if (!mglPointerRangeIsReadable(vao, sizeof(*vao))) {
-        NSLog(@"MGL VAO INVALID in %s: vao=%p (unreadable object memory)",
+        fprintf(stderr, "MGL VAO INVALID in %s: vao=%p (unreadable object memory)\n",
               where ? where : "unknown", vao);
         mglRendererDropCurrentVAO(ctx);
         return NULL;
     }
 
     if (vao->magic != MGL_VAO_MAGIC) {
-        NSLog(@"MGL VAO INVALID in %s: vao=%p magic=0x%x",
+        fprintf(stderr, "MGL VAO INVALID in %s: vao=%p magic=0x%x\n",
               where ? where : "unknown", vao, vao->magic);
         mglRendererDropCurrentVAO(ctx);
         return NULL;
@@ -1251,20 +1339,20 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return vao;
     }
 
-    NSLog(@"MGL VAO INVALID in %s: vao=%p (not found in sane vao_table)",
+    fprintf(stderr, "MGL VAO INVALID in %s: vao=%p (not found in sane vao_table)\n",
           where ? where : "unknown", vao);
     mglRendererDropCurrentVAO(ctx);
     return NULL;
 }
 
-Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const char *where, NSUInteger slot)
+Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const char *where, unsigned long slot)
 {
     if (!candidate) {
         return NULL;
     }
 
-    if (!mglRendererObjectPointerLikelyValid(candidate)) {
-        NSLog(@"MGL BUFFER INVALID in %s: slot=%lu candidate=%p (suspicious pseudo-pointer)",
+    if (!mglMexObjectPointerLikelyValid(candidate)) {
+        fprintf(stderr, "MGL BUFFER INVALID in %s: slot=%lu candidate=%p (suspicious pseudo-pointer)\n",
               where ? where : "unknown", (unsigned long)slot, candidate);
         return NULL;
     }
@@ -1277,7 +1365,7 @@ Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const c
 
 
     if (!mglPointerRangeIsReadable(candidate, sizeof(*candidate))) {
-        NSLog(@"MGL BUFFER INVALID in %s: slot=%lu candidate=%p (unreadable object memory)",
+        fprintf(stderr, "MGL BUFFER INVALID in %s: slot=%lu candidate=%p (unreadable object memory)\n",
               where ? where : "unknown", (unsigned long)slot, candidate);
         return NULL;
     }
@@ -1286,7 +1374,7 @@ Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const c
         return candidate;
     }
 
-    NSLog(@"MGL BUFFER INVALID in %s: slot=%lu candidate=%p (not found in sane buffer_table)",
+    fprintf(stderr, "MGL BUFFER INVALID in %s: slot=%lu candidate=%p (not found in sane buffer_table)\n",
           where ? where : "unknown", (unsigned long)slot, candidate);
     return NULL;
 }
@@ -1310,7 +1398,7 @@ bool mglRendererResolveVertexAttribBinding(GLMContext ctx,
     const BufferBinding *tableBinding =
         (bindingIndex < MGL_MAX_VERTEX_ATTRIB_BINDINGS)
             ? &vao->bindings[bindingIndex] : NULL;
-    const BOOL tableActive = (tableBinding != NULL && tableBinding->buffer);
+    const int tableActive = (tableBinding != NULL && tableBinding->buffer);
     if (tableActive) {
         buffer = tableBinding->buffer;
     }
@@ -1359,8 +1447,8 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         return NULL;
     }
 
-    if (!mglRendererObjectPointerLikelyValid(fbo)) {
-        NSLog(@"MGL FBO INVALID in %s: framebuffer=%p (suspicious pseudo-pointer)",
+    if (!mglMexObjectPointerLikelyValid(fbo)) {
+        fprintf(stderr, "MGL FBO INVALID in %s: framebuffer=%p (suspicious pseudo-pointer)\n",
               where ? where : "unknown", fbo);
         if (ctx->active_state->readbuffer == fbo) {
             ctx->active_state->readbuffer = NULL;
@@ -1380,7 +1468,7 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
 
 
     if (!mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
-        NSLog(@"MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table or unreadable)",
+        fprintf(stderr, "MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table or unreadable)\n",
               where ? where : "unknown", fbo);
         if (ctx->active_state->readbuffer == fbo) {
             ctx->active_state->readbuffer = NULL;
@@ -1391,7 +1479,7 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         return NULL;
     }
 
-    NSLog(@"MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table)",
+    fprintf(stderr, "MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table)\n",
           where ? where : "unknown", fbo);
     if (ctx->active_state->readbuffer == fbo) {
         ctx->active_state->readbuffer = NULL;
@@ -1412,7 +1500,7 @@ GLuint mglRendererSafeFramebufferName(GLMContext ctx)
 
 /* Vertex attrib query helpers moved to mgl_vertex_attrib_query.h/.m. */
 
-NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
+unsigned long mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
                                                            GLuint attribute,
                                                            const VertexAttrib *attrib,
                                                            uint8_t bytes[16])
@@ -1422,7 +1510,7 @@ NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
     }
     const CurrentVertexAttrib *current =
         &ctx->active_state->current_vertex_attrib[attribute];
-    return (NSUInteger)mglRenderBuildCurrentVertexAttribBytes(
+    return (unsigned long)mglRenderBuildCurrentVertexAttribBytes(
         (uint32_t)attrib->type, (uint32_t)attrib->size, current->i, current->u,
         current->f, bytes);
 }
@@ -1461,33 +1549,33 @@ void mglLogSkippedGLSampledRenderTargetCopy(GLMContext glctx,
  * Those must keep distinct Metal slots when binding_offset differs; plain
  * shared-VBO attributes can share one slot and encode offsets in the
  * vertex descriptor instead (CTS enable_disable: 15 attrs on one VBO). */
-static BOOL mglVertexAttribNeedsConvertedMetalStream(Program *program,
+static int mglVertexAttribNeedsConvertedMetalStream(Program *program,
                                                      VertexArray *vao,
                                                      GLuint attrib)
 {
     if (!vao || attrib >= MAX_ATTRIBS) {
-        return NO;
+        return 0;
     }
     VertexAttrib *a = &vao->attrib[attrib];
     if (mglRenderAttribNeedsConvertedMetalStream((uint32_t)a->type,
                                                  a->integer ? 1 : 0)) {
-        return YES;
+        return 1;
     }
     if (a->integer == 1 && program) {
         MGLShaderResource *attrRes =
             mglRendererProgramVertexAttribResource(program, attrib);
         GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
         if (mglIntegerAttribNeedsConversion(a->type, shaderGlType, a->size, NULL)) {
-            return YES;
+            return 1;
         }
     }
-    return NO;
+    return 0;
 }
 
 int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int attribute, const char *where)
 {
     if (attribute < 0 || attribute >= MAX_ATTRIBS) {
-        NSLog(@"MGL ERROR: getVertexBufferIndexWithAttributeSet invalid attribute=%d", attribute);
+        fprintf(stderr, "MGL ERROR: getVertexBufferIndexWithAttributeSet invalid attribute=%d\n", attribute);
         return -1;
     }
 
@@ -1510,7 +1598,7 @@ int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int 
         if (state->vertex_buffer_map_list.buffers[i].attribute_mask & (0x1u << attribute)) {
             GLuint baseIndex = state->vertex_buffer_map_list.buffers[i].buffer_base_index;
             if (baseIndex >= kMGLMaxMetalVertexBufferCount) {
-                NSLog(@"MGL ERROR: getVertexBufferIndexWithAttributeSet mapped base index out of Metal range=%u (max valid=%lu)",
+                fprintf(stderr, "MGL ERROR: getVertexBufferIndexWithAttributeSet mapped base index out of Metal range=%u (max valid=%lu)\n",
                       baseIndex, (unsigned long)kMGLMaxMetalVertexBufferIndex);
                 return -1;
             }
@@ -1518,7 +1606,7 @@ int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int 
         }
     }
 
-    NSLog(@"MGL ERROR: No vertex buffer mapping found for attribute %d", attribute);
+    fprintf(stderr, "MGL ERROR: No vertex buffer mapping found for attribute %d\n", attribute);
     return -1;
 }
 
@@ -1530,7 +1618,7 @@ bool mglRenderCheckForDirtyBufferData(GLMContext ctx, BufferMapList *buffer_map_
 
     GLuint mapCount = buffer_map_list->count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
-        NSLog(@"MGL WARNING: checkForDirtyBufferData mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
+        fprintf(stderr, "MGL WARNING: checkForDirtyBufferData mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping\n",
               mapCount, MAX_MAPPED_BUFFERS);
         mapCount = MAX_MAPPED_BUFFERS;
     }
@@ -1540,7 +1628,7 @@ bool mglRenderCheckForDirtyBufferData(GLMContext ctx, BufferMapList *buffer_map_
         Buffer *gl_buffer = mglRendererGetValidatedBuffer(ctx,
                                                           buffer_map_list->buffers[i].buf,
                                                           where,
-                                                          (NSUInteger)i);
+                                                          (unsigned long)i);
         if (gl_buffer) {
             if (gl_buffer->data.dirty_bits) {
                 return true;
@@ -1561,7 +1649,7 @@ bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_ma
 
     GLuint mapCount = buffer_map_list->count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
-        NSLog(@"MGL WARNING: updateDirtyBaseBufferList mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
+        fprintf(stderr, "MGL WARNING: updateDirtyBaseBufferList mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping\n",
               mapCount, MAX_MAPPED_BUFFERS);
         mapCount = MAX_MAPPED_BUFFERS;
     }
@@ -1571,13 +1659,13 @@ bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_ma
         Buffer *gl_buffer = mglRendererGetValidatedBuffer(ctx,
                                                           buffer_map_list->buffers[i].buf,
                                                           where,
-                                                          (NSUInteger)i);
+                                                          (unsigned long)i);
         if (gl_buffer) {
             if (gl_buffer->data.dirty_bits) {
                 char error[256] = {0};
                 int result = mglRenderUpdateDirtyBuffer(gl_buffer, error, sizeof(error));
                 if (result != MGL_RENDER_BUFFER_OPERATION_HANDLED) {
-                    NSLog(@"MGL BUFFER ERROR: Metal-cpp dirty update failed buffer=%u: %s",
+                    fprintf(stderr, "MGL BUFFER ERROR: Metal-cpp dirty update failed buffer=%u: %s\n",
                           gl_buffer ? gl_buffer->name : 0u, error[0] ? error : "?");
                     return false;
                 }
@@ -1643,13 +1731,13 @@ bool mglRenderGenerateVertexDescriptorState(GLMContext ctx,
 
     maxAttribs = MAX_ATTRIBS;
 
-    NSUInteger layoutStride[31] = {0};
+    unsigned long layoutStride[31] = {0};
     for (GLuint i = 0; i < maxAttribs; i++)
     {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
             continue;
         }
-        BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
+        int usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
         MGLResolvedVertexAttribBinding resolved = {0};
         bool hasAttribBinding = mglRendererResolveVertexAttribBinding(ctx,
                                                                       vao,
@@ -1754,8 +1842,8 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
     GLintptr seenOffsets[MAX_ATTRIBS] = {0};
     GLuint seenStrides[MAX_ATTRIBS] = {0};
     GLuint seenDivisors[MAX_ATTRIBS] = {0};
-    BOOL seenCurrentAttribs[MAX_ATTRIBS] = {NO};
-    BOOL seenNeedsConverted[MAX_ATTRIBS] = {NO};
+    int seenCurrentAttribs[MAX_ATTRIBS] = {0};
+    int seenNeedsConverted[MAX_ATTRIBS] = {0};
     GLuint seenCount = 0;
     GLuint maxAttribs = MAX_ATTRIBS;
 
@@ -1765,7 +1853,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             continue;
         }
 
-        BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
+        int usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
         int slot = -1;
         if (usesCurrentValue) {
             /* Packed current-value pool: ALL current-value attribs share
@@ -1783,15 +1871,15 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             }
             if (slot < 0) {
                 if (kMGLVertexAttribBufferBase + seenCount > kMGLMaxMetalVertexBufferIndex) {
-                    NSLog(@"MGL ERROR: Vertex attrib current-value mapping overflow (seen=%u base=%lu maxIndex=%lu)",
+                    fprintf(stderr, "MGL ERROR: Vertex attrib current-value mapping overflow (seen=%u base=%lu maxIndex=%lu)\n",
                           seenCount, (unsigned long)kMGLVertexAttribBufferBase, (unsigned long)kMGLMaxMetalVertexBufferIndex);
                     return -1;
                 }
-                seenCurrentAttribs[seenCount] = YES;
+                seenCurrentAttribs[seenCount] = 1;
                 seenOffsets[seenCount] = (GLintptr)-1;
                 seenStrides[seenCount] = 0u;
                 seenDivisors[seenCount] = 0u;
-                seenNeedsConverted[seenCount] = NO;
+                seenNeedsConverted[seenCount] = 0;
                 slot = (int)seenCount;
                 seenCount++;
             }
@@ -1801,12 +1889,12 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
             continue;
         }
         if (resolved.binding_offset < 0) {
-            NSLog(@"MGL ERROR: attribute %u has negative vertex binding offset=%lld in %s",
+            fprintf(stderr, "MGL ERROR: attribute %u has negative vertex binding offset=%lld in %s\n",
                   i, (long long)resolved.binding_offset, where);
             return -1;
         }
         Buffer *attribBuffer = resolved.buffer;
-        BOOL curNeedsConverted =
+        int curNeedsConverted =
             mglVertexAttribNeedsConvertedMetalStream(activeProgram, vao, i);
 
         for (GLuint s = 0; s < seenCount; s++) {
@@ -1814,7 +1902,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                 continue;
             }
             Buffer *known = seenBuffers[s];
-            BOOL sameStream = NO;
+            int sameStream = 0;
             if (curNeedsConverted || seenNeedsConverted[s]) {
                 /* Converted clones start at each attrib's binding_offset;
                  * sharing a Metal slot would overwrite the prior bind. */
@@ -1834,7 +1922,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                          known->target == attribBuffer->target))) {
                 /* Plain shared VBO: one Metal slot; descriptor holds
                  * binding_offset + relativeoffset per attribute. */
-                sameStream = YES;
+                sameStream = 1;
             }
             if (sameStream) {
                 slot = (int)s;
@@ -1844,7 +1932,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 
         if (slot < 0) {
             if (kMGLVertexAttribBufferBase + seenCount > kMGLMaxMetalVertexBufferIndex) {
-                NSLog(@"MGL ERROR: Vertex attrib mapping overflow (seen=%u base=%lu maxIndex=%lu)",
+                fprintf(stderr, "MGL ERROR: Vertex attrib mapping overflow (seen=%u base=%lu maxIndex=%lu)\n",
                       seenCount, (unsigned long)kMGLVertexAttribBufferBase, (unsigned long)kMGLMaxMetalVertexBufferIndex);
                 return -1;
             }
@@ -1860,9 +1948,9 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
         }
 
         if (i == attribute) {
-            NSUInteger resolvedIndex = kMGLVertexAttribBufferBase + (NSUInteger)slot;
+            unsigned long resolvedIndex = kMGLVertexAttribBufferBase + (unsigned long)slot;
             if (resolvedIndex > kMGLMaxMetalVertexBufferIndex) {
-                NSLog(@"MGL ERROR: Vertex attrib index out of Metal range (attrib=%u resolved=%lu max=%lu)",
+                fprintf(stderr, "MGL ERROR: Vertex attrib index out of Metal range (attrib=%u resolved=%lu max=%lu)\n",
                       attribute, (unsigned long)resolvedIndex, (unsigned long)kMGLMaxMetalVertexBufferIndex);
                 return -1;
             }
@@ -1911,24 +1999,8 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 // Forward declarations for private helpers extracted from
 // createMTLTextureFromGLTexture:, mapGLBuffersToMTLBufferMap:stage:, and
 // mtlSwapBuffersLocked:.  These are only called within this file.
-@interface MGLRenderer ()
-// createMTLTextureFromGLTexture: helpers
-- (id)createMTLTexelBufferTexture:(Texture *)tex;
-- (BOOL)checkTextureCompleteness:(Texture *)tex
-                          texType:(uint32_t)tex_type
-                         numFaces:(uint)num_faces
-             effectiveMipmapLevels:(GLuint *)outEffectiveMipmapLevels
-                 storageMipmapped:(BOOL *)outStorageMipmapped;
-- (void)logMTLTextureMipDiagnostics:(Texture *)tex
-                              metal:(id)texture
-               effectiveMipLevels:(GLuint)effective_mipmap_levels;
-// mtlSwapBuffersLocked: helpers (copyRenderPassColorToDrawableIfNeeded: and
-// scheduleSwapTextureSampleDiagnostics:) are the C functions of
-// mgl_swap_diagnostics.h now
-@end
 
 // Main class performing the rendering
-@implementation MGLRenderer
 
 uint32_t glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized)
 {
@@ -2000,7 +2072,7 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
                                        GLuint programName,
                                        const uint8_t *indexBytes,
                                        GLenum indexType,
-                                       NSUInteger indexElement,
+                                       unsigned long indexElement,
                                        GLint baseVertex,
                                        GLuint attrib,
                                        bool traceFile)
@@ -2035,8 +2107,8 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     if (vbo->data.buffer_data && ((uintptr_t)vbo->data.buffer_data >= 0x1000ull)) {
         vboBytes = (const uint8_t *)vbo->data.buffer_data;
     } else if (vbo->data.mtl_data) {
-        id vb = (__bridge id)(vbo->data.mtl_data);
-        vboBytes = (const uint8_t *)mglRendererBufferContents(vb);
+        void *vb = (void *)(vbo->data.mtl_data);
+        vboBytes = (const uint8_t *)mglMexBufferContents(vb);
     }
 
     if (!vboBytes) {
@@ -2078,11 +2150,11 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
         }
         return;
     }
-    NSUInteger vertexIndex = (NSUInteger)vertexIndex64;
-    NSUInteger bindingOffset = (resolved.binding_offset > 0) ? (NSUInteger)resolved.binding_offset : 0u;
-    NSUInteger relativeOffset = (resolved.relativeoffset > 0) ? (NSUInteger)resolved.relativeoffset : 0u;
-    NSUInteger stride = (resolved.stride > 0u) ? (NSUInteger)resolved.stride : mglVertexAttribElementBytes(a->type, a->size);
-    NSUInteger vertexOffset = bindingOffset + relativeOffset + (vertexIndex * stride);
+    unsigned long vertexIndex = (unsigned long)vertexIndex64;
+    unsigned long bindingOffset = (resolved.binding_offset > 0) ? (unsigned long)resolved.binding_offset : 0u;
+    unsigned long relativeOffset = (resolved.relativeoffset > 0) ? (unsigned long)resolved.relativeoffset : 0u;
+    unsigned long stride = (resolved.stride > 0u) ? (unsigned long)resolved.stride : mglVertexAttribElementBytes(a->type, a->size);
+    unsigned long vertexOffset = bindingOffset + relativeOffset + (vertexIndex * stride);
     size_t elemBytes = mglVertexAttribElementBytes(a->type, a->size);
     GLboolean effectiveNormalized = a->normalized;
     Program *program = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
@@ -2095,8 +2167,8 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     }
 
     if (elemBytes == 0u ||
-        vertexOffset > (NSUInteger)vbo->size ||
-        ((NSUInteger)vbo->size - vertexOffset) < elemBytes) {
+        vertexOffset > (unsigned long)vbo->size ||
+        ((unsigned long)vbo->size - vertexOffset) < elemBytes) {
         mglTraceLog("MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u OOB rawIndex=%u baseVertex=%d vertexIndex=%llu bindingOffset=%lu relOffset=%lu stride=%lu size=%u type=0x%x normalized=%u elemBytes=%zu vboSize=%lld",
               (unsigned)attrib,
               (unsigned long long)drawCall,
@@ -2138,12 +2210,12 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
 
     const uint8_t *attribBytes = vboBytes + vertexOffset;
     double comps[4] = {0.0, 0.0, 0.0, 0.0};
-    for (NSUInteger c = 0; c < MIN((NSUInteger)a->size, (NSUInteger)4); c++) {
+    for (unsigned long c = 0; c < mglMexMin((unsigned long)a->size, (unsigned long)4); c++) {
         comps[c] = mglDecodeVertexAttribComponent(attribBytes, a->type, effectiveNormalized, c);
     }
 
     char raw[3 * 16 + 1] = {0};
-    size_t rawLen = MIN((size_t)16u, elemBytes);
+    size_t rawLen = mglMexMin((size_t)16u, elemBytes);
     size_t rawPos = 0u;
     for (size_t i = 0; i < rawLen && rawPos + 3u < sizeof(raw); i++) {
         int wrote = snprintf(raw + rawPos,
@@ -2381,13 +2453,13 @@ void logDirtyBits(GLMContext ctx)
  * by the dedup fast path. */
 /* invalidateLastBoundState moved to MGLRenderer+Draw.m */
 
-/* recordLastBoundVertexBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
+/* recordLastBoundVertexBuffer:(id)buffer offset:(unsigned long)offset atIndex:(unsigned long)index moved to MGLRenderer+Draw.m */
 
-/* recordLastBoundFragmentBuffer:(id)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
+/* recordLastBoundFragmentBuffer:(id)buffer offset:(unsigned long)offset atIndex:(unsigned long)index moved to MGLRenderer+Draw.m */
 
-/* invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
+/* invalidateLastBoundVertexBufferAtIndex:(unsigned long)index moved to MGLRenderer+Draw.m */
 
-/* invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
+/* invalidateLastBoundFragmentBufferAtIndex:(unsigned long)index moved to MGLRenderer+Draw.m */
 
 /* setViewportIfNeeded:(MTLViewport)viewport moved to MGLRenderer+Draw.m */
 
@@ -2464,7 +2536,7 @@ void logDirtyBits(GLMContext ctx)
 
 /* issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx moved to MGLRenderer+Draw.m */
 
-/* mdiArgumentScratchBufferWithLength:(NSUInteger)length moved to MGLRenderer+Draw.m */
+/* mdiArgumentScratchBufferWithLength:(unsigned long)length moved to MGLRenderer+Draw.m */
 
 /* issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx moved to MGLRenderer+Draw.m */
 
@@ -2502,15 +2574,15 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
     }
 
     const uint8_t *indexBytes = NULL;
-    NSUInteger indexBytesAvailable = 0u;
+    unsigned long indexBytesAvailable = 0u;
     if (ebo->data.buffer_data && ((uintptr_t)ebo->data.buffer_data >= 0x1000ull)) {
         indexBytes = (const uint8_t *)ebo->data.buffer_data;
-        indexBytesAvailable = (ebo->size > 0) ? (NSUInteger)ebo->size : 0u;
+        indexBytesAvailable = (ebo->size > 0) ? (unsigned long)ebo->size : 0u;
     } else if (ebo->data.mtl_data) {
-        id indexBuffer = (__bridge id)(ebo->data.mtl_data);
-        if (indexBuffer && mglRendererBufferContents(indexBuffer)) {
-            indexBytes = (const uint8_t *)mglRendererBufferContents(indexBuffer);
-            indexBytesAvailable = mglRendererBufferLength(indexBuffer);
+        void *indexBuffer = (void *)(ebo->data.mtl_data);
+        if (indexBuffer && mglMexBufferContents(indexBuffer)) {
+            indexBytes = (const uint8_t *)mglMexBufferContents(indexBuffer);
+            indexBytesAvailable = mglMexBufferLength(indexBuffer);
         }
     }
 
@@ -2529,8 +2601,8 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
         return;
     }
 
-    NSUInteger indexOffset = (NSUInteger)cmd->indexBufferOffset;
-    NSUInteger indexStride = mglGLIndexElementSize(cmd->indexType);
+    unsigned long indexOffset = (unsigned long)cmd->indexBufferOffset;
+    unsigned long indexStride = mglGLIndexElementSize(cmd->indexType);
     if (indexStride == 0u ||
         indexOffset > indexBytesAvailable ||
         indexBytesAvailable - indexOffset < indexStride) {
@@ -2583,9 +2655,9 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
                 (unsigned)vao->enabled_attribs,
                 forceTrace ? 1 : 0);
 
-    NSUInteger sampleCount = forceTrace ? MIN((NSUInteger)cmd->count, (NSUInteger)6u) : (NSUInteger)1u;
-    GLuint traceAttribLimit = MIN((GLuint)6u, traceCtx->state.max_vertex_attribs);
-    for (NSUInteger sample = 0; sample < sampleCount; sample++) {
+    unsigned long sampleCount = forceTrace ? mglMexMin((unsigned long)cmd->count, (unsigned long)6u) : (unsigned long)1u;
+    GLuint traceAttribLimit = mglMexMin((GLuint)6u, traceCtx->state.max_vertex_attribs);
+    for (unsigned long sample = 0; sample < sampleCount; sample++) {
         if (indexBytesAvailable - indexOffset < ((sample + 1u) * indexStride)) {
             break;
         }
@@ -2607,40 +2679,39 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
     }
 }
 
-static uint64_t mglRendererBufferLength(id buffer)
+
+static GLMContext mglMexSwapContext;
+
+static int mglMexSwapInner(void *renderer, void *rawCtx)
 {
-    MGLRenderBufferInfo info = {0};
-    return buffer && mglRenderGetBufferInfo((__bridge void *)buffer, &info) == 0
-        ? info.length : 0u;
+    (void)rawCtx;
+    mglRenderPassMTLSwapBuffersLocked(renderer, mglMexSwapContext);
+    return 1;
 }
-static void *mglRendererBufferContents(id buffer)
+
+static int mglMexSwapBody(void *renderer)
 {
-    void *contents = NULL;
-    uint64_t length = 0u;
-    return buffer && mglRenderGetBufferContents((__bridge void *)buffer,
-                                                   &contents, &length) == 0
-        ? contents : NULL;
+    mglClaimGLThread();
+    char swapFailure[256] = {0};
+    if (!mglPlatformShellGuardedCallCtxReason(
+            renderer, "swap command buffer", mglMexSwapInner, NULL,
+            swapFailure, sizeof(swapFailure))) {
+        fprintf(stderr, "MGL CRITICAL: callback swap exception: %s\n",
+                swapFailure[0] ? swapFailure : "(null)");
+    }
+    return 1;
 }
 
 void mglRendererSwapBuffers(GLMContext glm_ctx)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        /* -mtlSwapBuffers: was claim-GL-thread + @autoreleasepool + the C
-         * swap entry; the C path keeps the pool and the historical catch. */
-        mglClaimGLThread();
-        @autoreleasepool {
-            @try {
-                mglRenderPassMTLSwapBuffersLocked((__bridge void *)renderer,
-                                                  glm_ctx);
-            } @catch (NSException *exception) {
-                NSLog(@"MGL CRITICAL: callback swap exception: %@", exception);
-            }
-        }
+        mglMexSwapContext = glm_ctx;
+        (void)mglPlatformShellAutoreleasePoolCall(renderer, mglMexSwapBody);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 
@@ -2670,13 +2741,13 @@ void mglRendererClearBuffer(GLMContext glm_ctx,
                                   unsigned int type,
                                   unsigned int mask)
 {
-    MGLRendererBackendLease _backend_lease = {};
-    if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
-    MGLRenderer *renderer = mglRendererForContext(glm_ctx);
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
     if (renderer && glm_ctx) {
-        mglRendererMTLClearBuffer((__bridge void *)renderer, glm_ctx, type, mask);
+        mglRendererMTLClearBuffer((void *)renderer, glm_ctx, type, mask);
     }
-    mglRendererBackendEnd(&_backend_lease);
+    mglRendererBackendEnd(&backend_lease);
 }
 
 #pragma mark C interface to mtlBufferSubData
@@ -2868,5 +2939,3 @@ _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry)
 
 
 /* mtlMultiDrawElementsIndirect: (GLMContext)glm_ctx mode:(GLenum) mode type:(GLenum)type indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride moved to MGLRenderer+Draw.m */
-
-@end

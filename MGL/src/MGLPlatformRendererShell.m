@@ -1733,6 +1733,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
 @end
 
+/* === The MGLRenderer class itself (log 202) ================================
+ * The class implementation had to come with the class extension: the @package
+ * ivars are declared in the MGLRenderer () extension inside
+ * MGLRenderer_Private.h, and an extension's ivars only materialise in the TU
+ * that also holds the @implementation.  Every method has already moved to C or
+ * into this shell, so the implementation is deliberately empty -- deleting
+ * MGLRenderer.m without this block left the class undefined and the linker
+ * reported "_OBJC_CLASS_$_MGLRenderer referenced from MGLPlatformRendererShell". */
+@implementation MGLRenderer
+@end
+
 /* === MGLPipelineCache (T5 merge from MGLPipelineCache.m) ====================
  * The pipeline cache is a platform object: its state record is already
  * C (MGLPipelineCacheState), its owner is a C++ handle and the rest is
