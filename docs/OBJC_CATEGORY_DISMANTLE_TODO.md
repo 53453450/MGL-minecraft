@@ -8164,6 +8164,32 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
        ⑧ **剩余**：只剩 T1（`MGLPlatformRendererShell` 类，约 200 行 / 16 语法）与 T6（空 `@implementation MGLRenderer`），
        两者必须**同一刀**收口（父类符号，见 §0.132），并同时改 Makefile 的 `test_metalcpp_smoke` 编译目标。
 
+209. **第 178 轮（P0-1 第一百四十七刀）：**收口刀的前置——消费方改为**按名取类**（实测证明占位符号不可行）****：
+       ① **为什么必须做这一步**：最后一刀要把 `MGLPlatformRendererShell` 与 `MGLRenderer` 改成运行时注册，
+       而编译器生成的 **类符号**（`_OBJC_CLASS_$_MGLRenderer`）随之消失。本仓库里还有两处**消费方**会发射该符号：
+       `external/glfw/src/mgl_context.m:245`（`[[MGLRenderer alloc] init]`）与
+       `test_legacy_compat/test_metalcpp_smoke.mm:9438`（`[[MGLPlatformRendererShell alloc] initWithView:]`）。
+       ② **先做了可行性实验（`/private/tmp/classsym2`）**：试图用 `extern Class mglFooClassSym __asm("_OBJC_CLASS_$_Foo");`
+       定义一个**占位符号**（构造函数里赋成运行时注册的类），让消费方的类引用照旧链接。**实测失败**：
+       消费方的类引用是 **classref**（`__DATA,__objc_classrefs`），由运行时在**镜像加载时按名重定位**——
+       那时我们的构造函数还没跑，于是它指向占位变量本身而不是类对象，`[[Foo alloc] init]` 直接把 `alloc` 发给野指针：
+       `-[Foo alloc]: unrecognized selector sent to instance 0x…`（exit 134）。结论：**运行时注册的类无法被编译期类引用使用**，
+       消费方必须按名解析（与第 205 条 `MGLPipelineCache` 在库内的处理同一道理）。
+       ③ **本刀改动（只碰消费方，不碰库）**：三处都改成 `NSClassFromString(@"…")` + 空值保护，静态类型只用于访问已声明的方法/属性：
+       `external/glfw/src/mgl_context.m`（`Class mglRendererClass = NSClassFromString(@"MGLRenderer"); id renderer = …`）、
+       `test_legacy_compat/test_metalcpp_smoke.mm`（同上，`MGLPlatformRendererShell`；三条断言原样保留）、
+       `scratch/kvo_probe.mm`（第 208 条的窗口观察 oracle，同步改）。
+       ④ **闸门口径**：本刀**没有改任何库源码**（`git diff --stat` 只列消费方两文件），因此上一刀（p152）的
+       A/B 逐行一致、归档 oracle 三项全等、CTS 七簇非通过集合 diff 全空**继续有效**；本刀单独验证消费方面：
+       `build/libglfw.dylib` 与 `build/test_mgl` 重新构建 0 error；窗口化 `test_mgl` 走到与旧库**同一个既存 abort 点**
+       （`mglSetSwapInterval:`，见第 208 条 ⑥）；`make test-all` 绕行后 **exit 0**（其中 `test-metalcpp` 会**重新构建并运行**
+       改过的冒烟闸门，其 `performOperation:` 异常断言仍通过；`test-regression` **PASS 92 FAIL 0 SKIP 2 / 94**、`test-es-smoke: ok`）；
+       单例探针 **2/2**；窗口观察 oracle 仍绿。
+       ⑤ **度量**：不变（壳仍 **315 行 / 29 语法 / 42 词汇**、1 个 `.m`、端口 0）。顺带把第 208 条的 oracle 源码
+       `scratch/kvo_probe.mm` **强制入库**（`scratch/` 在 `.gitignore` 里，上一刀只进了文档说明、文件本身没进，本刀 `git add -f` 补上）。
+       ⑥ **剩余**：最后一刀（T1+T6）——两个类同一刀改运行时注册、16 个 `@package` ivar 用 `class_addIvar` 重建、
+       删 `MGL/src/MGLPlatformRendererShell.m`、改 Makefile 的 `test_metalcpp_smoke` 编译目标。清单见 §0.134。
+
 ### 0.114 第 157 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.112/§0.113**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 11,849 行 / 653 语法 / 1,289 词汇**；

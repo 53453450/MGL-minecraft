@@ -242,7 +242,13 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
 
     [window->ns.view wantsLayer];
 
-    MGLRenderer *renderer = [[MGLRenderer alloc] init];
+    /* The renderer class is registered with the Objective-C runtime by libmgl
+     * at load time (MGL holds no .m any more), so it has to be looked up by
+     * name: a compiler-generated class reference would be a symbol that no
+     * longer exists.  The methods used below are still declared in
+     * MGLRenderer.h / MGLRenderer+Lifecycle_Private.h. */
+    Class mglRendererClass = NSClassFromString(@"MGLRenderer");
+    id renderer = mglRendererClass ? [[mglRendererClass alloc] init] : nil;
     if (!renderer)
     {
         destroyGLMContext(window->context.mgl.ctx);

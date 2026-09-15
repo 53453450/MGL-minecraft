@@ -9435,8 +9435,13 @@ static int smokePlatformException(void *) {
 
 static int verifyPlatformRendererShell(void) {
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 8, 8)];
+    /* The shell class is registered with the Objective-C runtime by libmgl at
+     * load time (MGL holds no .m any more): it is looked up by name rather than
+     * referenced as a class symbol, and the static type below is only used for
+     * the declared properties and methods. */
+    Class shellClass = NSClassFromString(@"MGLPlatformRendererShell");
     MGLPlatformRendererShell *shell =
-        [[MGLPlatformRendererShell alloc] initWithView:view];
+        shellClass ? [[shellClass alloc] initWithView:view] : nil;
     NSObject *drawableToken = [[NSObject alloc] init];
     shell.drawable = (id<CAMetalDrawable>)drawableToken;
     MGLPlatformRendererShellResult result = {};
