@@ -8815,6 +8815,9 @@ pp 5/5（1 / **4**）——与上一刀（`p150`）非通过集合 `diff` 逐条
 端口 **0**；本刀四件套 + 三个专属 oracle 全绿（A/B 4981/4981 与 5514/5514、stderr 307/307；归档 oracle 三项全等；
 **窗口观察 oracle 三库一致**；`make test-all` exit 0、`test-regression` 92/0/2）。
 
+**窗口观察 oracle 已入库**：`scratch/kvo_probe.mm`（构建与期望输出写在文件头；本轮三库一致：原始基线 / 上一刀 / 本刀）。
+运行：`/usr/bin/clang++ -x objective-c++ -fno-objc-arc -g -O0 -isysroot $(xcrun --show-sdk-path) -IMGL/include -IMGL/src -IMGL/include/GL -arch arm64 scratch/kvo_probe.mm -Lbuild -lmgl -framework Cocoa -framework Metal -framework QuartzCore -framework Foundation -o /tmp/kvo_probe && DYLD_LIBRARY_PATH=$PWD/build /tmp/kvo_probe`
+
 **本刀 CTS 实测（`TAG=p152`）**：hotspot 1328/1328（pass 1270 / 非通过 **58**）、tess 140/140（139 / **1**）、gs 136/136（136 / **0**）、
 refq 223/223（164 / **59**）、piq 30/30（17 / **13**）、compute 152/152（113 / **39**）、pp 5/5（1 / **4**）——
 与上一刀（`p151`）非通过集合 `diff` 逐条为空，`completed == total`，无 timeout / harness_error。
