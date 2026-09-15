@@ -14,13 +14,9 @@
 #import <QuartzCore/QuartzCore.h>
 #include <stdint.h>
 
-typedef struct MGLPlatformRendererShellResult {
-    int32_t status;
-    char exception_name[128];
-    char exception_reason[512];
-} MGLPlatformRendererShellResult;
-
-typedef int (*MGLPlatformRendererShellOperation)(void *context);
+/* The result record, the operation type and the drawable bridge moved to the
+ * C-safe mgl_platform_shell_result.h (the shell class is C++ now, log 210). */
+#include "mgl_platform_shell_result.h"
 
 @interface MGLPlatformRendererShell : NSObject
 {
@@ -56,16 +52,5 @@ typedef int (*MGLPlatformRendererShellOperation)(void *context);
                  result:(MGLPlatformRendererShellResult *)result;
 
 @end
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* Platform-only drawable bridge used by renderer diagnostics. */
-void *mglPlatformRendererShellTextureForDrawable(void *drawable);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif

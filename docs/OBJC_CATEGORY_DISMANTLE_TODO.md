@@ -8190,6 +8190,47 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
        ⑥ **剩余**：最后一刀（T1+T6）——两个类同一刀改运行时注册、16 个 `@package` ivar 用 `class_addIvar` 重建、
        删 `MGL/src/MGLPlatformRendererShell.m`、改 Makefile 的 `test_metalcpp_smoke` 编译目标。清单见 §0.134。
 
+210. **第 179 轮（P0-1 第一百四十八刀，**终局**）：**运行时注册两个类、删除 `MGLPlatformRendererShell.m`——`MGL/` 内 ObjC 清零****：
+       ① **成果**：`scripts/objc_zero.sh` 输出 **文件数 0 / 语法 0 / 词汇 0**（基线 53 文件 / 2,268 语法 / 4,353 词汇 / 43,989 行）。
+       `MGL/src/MGLPlatformRendererShell.m`（315 行 / 29 语法 / 42 词汇）删除，其中
+       `MGLPlatformRendererShell` 类（约 200 行 / 16 语法）落入 `MGL/src/mgl_platform_shell.cpp`，
+       `@implementation MGLRenderer`（空实现）由运行时建类替代。
+       ② **做法**：新构造函数 `__attribute__((constructor(101)))` 里
+       `objc_allocateClassPair(NSObject, "MGLPlatformRendererShell")` + 4 个 ivar + 24 个方法（含 `view`/`setView:` 等属性存取器，
+       强引用语义由 `mglShellStoreObject` 手工实现：retain 新值 / release 旧值），`objc_registerClassPair`；
+       随后 `objc_allocateClassPair(壳类, "MGLRenderer")` + **16 个 `@package` ivar**（`ctx`/`_backend`/`_observedWindow`/`_core`/
+       `_gpuRecovery`/`_pipelineCache`/`_queryStateOwner`/`_renderPassManager`/`_resourceFallback`/`_bindingStateOwner`/
+       `_tessellation`/`_geometry`/`_mglForcedMSSampleId`/`_mglMSSamplePlaneOffset`/`_mglInMSSampleDrawLoop`/`_batching`）。
+       优先级 101 保证它先于本文件另外两个构造函数（类别方法/lifecycle 方法安装器）运行——它们仍用默认优先级，此时类已存在。
+       ③ **踩到并修掉的三个真 bug（都是"编译器替我们做过的事"）**：
+       **(a) `class_addIvar` 的 alignment 参数是 log2**：我按 `alignof(T)` 传，于是每个 ivar 都被 256 字节对齐
+       （实测 `_view` 在 offset 256、`_batching` 在 17408），镜像结构体 `MGLRendererIvars` 的紧凑视图整体错位 ⇒ 段错误。
+       改为 `mglIvarAlignLog2(alignof(T))` 后实测：壳类 `_swapInterval`@8/`_view`@16/`_layer`@24/`_drawable`@32、
+       renderer `ctx`@40/`_backend`@48/`_core`@64/`_batching`@14024，且 `class_getInstanceSize` 恰好 = 基址 + 镜像 sizeof（40+14024）✓。
+       **(b) `[super dealloc]` 的锚点**：C 实现里用 `class_getSuperclass(object_getClass(self))` 取父类，
+       在**父类自己的方法**里 `object_getClass(self)` 仍返回**最派生类** ⇒ 壳类的 dealloc 调用了自己（实测同一对象 0x79d11a4000 打了 3 次 dealloc 日志），
+       随之是 `objc_release`/dyld 名字表里的野指针崩溃。改为在注册时保存 `s_mglShellClass`/`s_mglRendererClass`，
+       用 `class_getSuperclass(s_mglShellClass)` 作父类锚点（init/observeValueForKeyPath 同理）。
+       **(c) 借用值不能自动释放（第 68 条的第二次命中）**：`mglDrawableTexture` 返回的是 drawable 持有的对象，
+       我照 ARC 返回值约定写了 `mglAutoreleaseObject(...)` ⇒ 池子一泄把 drawable 唯一的引用减掉 ⇒ 崩溃；改为直接返回借用指针。
+       ④ **C 面整理**：`MGLPlatformRendererShellResult`/`Operation` 与 `mglPlatformRendererShellTextureForDrawable` 迁到 C 安全的
+       `MGL/include/mgl_platform_shell_result.h`（壳类头 `#import <AppKit/…>`，C++ TU 引不了）；`CGPointZero/CGRectZero/CGSizeZero`
+       改 `CGPointMake/CGRectMake/CGSizeMake`（CoreGraphics 数据符号不再是链接依赖）；
+       `MTLCreateSystemDefaultDevice` 与 `kCAFilterNearest` 用 `extern "C"` 直接声明；
+       `LIBS` 显式加 `-framework AppKit -framework QuartzCore`（原先靠 `.m` 的隐式引用）。
+       ⑤ **Makefile**：`test_metalcpp_smoke` 不再 `-x objective-c++ -fobjc-arc` 编译壳 TU，改为用独立规则把
+       `mgl_platform_shell.cpp` + `mgl_objc_exception_bridge.cpp` 编成对象（`-x c++ -DMGL_PLATFORM_SHELL_SMOKE`），
+       再以 `-x none` 参与链接；冒烟闸门实测 **`PLATFORM_SHELL_OK` / `SMOKE_DONE`**（它的三条断言正是：`initWithView:` + 属性存取 +
+       `performOperation:` 抛出 `MGLSmokeException` 的名字被写进结果结构——运行时类与异常桥端到端可用）。
+       ⑥ **保留面（有意为之）**：`MGL/include/MGLRenderer.h`、`MGLPlatformRendererShell.h`、`MGLPipelineCache.h` 等
+       **ObjC 头文件**仍在（它们是消费方与 `.m` 之外的 API 声明面；`objc_zero.sh` 的口径只统计 `MGL/**/*.m`/`*.mm`），
+       但类本体已由运行时注册，消费方按名解析（第 209 条）。
+       ⑦ **验证（终局全套）**：`make -j8` 两个库 **0 error**；单例探针 **2/2**（`air_cull_distance`、`draw_arrays_indirect`，**exit 0**）；
+       `make test-all` 绕行后 **exit 0**（`test-metalcpp` 重建并运行通过、`test-es-smoke: ok`、`test-regression` **PASS 92 FAIL 0 SKIP 2 / 94**）；
+       **A/B 逐行一致**（default **4981/4981**、flushy **5514/5514**、stderr MGL 多重集 **307/307**）；
+       **归档 oracle 三项全等**；**窗口观察 oracle**（`scratch/kvo_probe.mm`）与原始基线**逐行一致**；
+       **CTS 七簇（`TAG=p153`）非通过集合 diff 逐条为空**：58/1/0/59/13/39/4，七簇 `completed == total`，无 timeout/harness_error。
+
 ### 0.114 第 157 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.112/§0.113**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 11,849 行 / 653 语法 / 1,289 词汇**；
@@ -8711,14 +8752,15 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致；**�
 
 | 要素 | 目标 | 实测（本轮 HEAD） | 证据 |
 |---|---|---|---|
-| `MGL/` 内 `.m`/`.mm` 数 | 0，或**至多一个**平台壳 TU | **1**（唯一 T5 壳 `MGLPlatformRendererShell.m`） | `ls MGL/src/*.m MGL/src/*.mm`；`scripts/objc_zero.sh` 文件数 = 1 |
-| ObjC 语法 / 词汇 | 壳以外为 0 | **29 / 42，全部在壳内** | `scripts/objc_zero.sh` 逐文件表只有壳一行（第 206–208 条） |
-| 壳的行数上限 | 必须写明 | **2,400 行**（当前 **315**，余量 2,085） | §0.128 + §0.132 + T5 表 |
-| 壳的移除路径 | 必须写明 | **(a)** `objc_msgSend` 在 C++ 内实现 ⇒ `.m` 数清零；**(b)** 移交消费方 | §0.128 + T5 表 |
-| shim 端口数 | **0** | **0**（壳对外 7 个 C 入口，实现面全在壳内） | §0.5 第 204 条；`grep -cE "\*Port\(" MGL/include/mgl_renderer_ports.h` = 0 |
+| `MGL/` 内 `.m`/`.mm` 数 | **0** | **0**（`MGLPlatformRendererShell.m` 已删除，见第 210 条） | `find MGL -name '*.m' -o -name '*.mm'` 为空；`scripts/objc_zero.sh` **文件数 = 0** |
+| ObjC 语法 / 词汇 | **0** | **0 / 0** | `scripts/objc_zero.sh` **语法 0 / 词汇 0**（无逐文件行） |
+| 壳的行数上限 | 不再适用（壳已不存在） | 迁移前 2,400 行上限 / 实际 315 行 → **0** | §0.134 + §0.135 |
+| 壳的移除路径 | 写明 | **(a) 已执行**：`objc_allocateClassPair` + `class_addMethod` + `class_addIvar` 在 C++ 内重建两个类 ⇒ `.m` 清零 | §0.132 + §0.135、第 210 条 |
+| shim 端口数 | **0** | **0** | `grep -cE "\*Port\(" MGL/include/mgl_renderer_ports.h` = 0 |
 
-**累计度量（基线 2026-09-12 @ `8e64afb`）**：文件 **53 → 1**（删除 9 个 `.m`）、空 TU **3 → 0**、行数 **43,989 → 315（−99.3%）**、
-ObjC 语法 **2,268 → 29（−98.7%）**、词汇 **4,353 → 42（−99.0%）**、端口 **43 → 0（−100%）**。
+**累计度量（基线 2026-09-12 @ `8e64afb`，终态）**：文件 **53 → 0**（删除 10 个 `.m`）、空 TU **3 → 0**、ObjC 壳行数 **43,989 → 0（−100%）**、
+ObjC 语法 **2,268 → 0（−100%）**、词汇 **4,353 → 0（−100%）**、端口 **43 → 0（−100%）**。
+（判定口径：`scripts/objc_zero.sh` 只统计 `MGL/**/*.m`、`*.mm`；本目标终态即该三项为 0，`ObjC` 头文件按其"API 声明面"保留，见第 210 条 ⑥。）
 
 **每刀的质量闸门（142 刀全程执行）**：`make -j8` 两个库 0 error；单例 CTS 探针；`make test-all` 绕行后 **PASS 92 / FAIL 0 / SKIP 2**；
 **CTS 七簇非通过集合 diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）；
@@ -8731,8 +8773,9 @@ ObjC 语法 **2,268 → 29（−98.7%）**、词汇 **4,353 → 42（−99.0%）
 **63（改多行 ObjC 调用点的三步前置检查）**、**64（"无调用点"≠死代码：constructor）**、
 **66（被 A/B 过滤的观测面必须自带专属 oracle）**。
 
-**若继续推进（可选，不属终态必需）**：壳内 `NSView`/`NSWindow`/`NSNotificationCenter` 是 T5 的正当范围；
-`NSLog` 68 处、`NSException`/`@try` 11 处可按第 66 条的节奏逐步收敛（会改动 A/B 观测行，需专属 oracle）。
+**若继续推进（可选，不属终态必需）**：ObJC 头文件面（`MGL/include/MGLRenderer.h`、`MGLPlatformRendererShell.h`、`MGLPipelineCache.h`、
+`MGLRenderer_Private.h` 等）仍在，可按需要把"仅剩声明、无实现"的部分继续收窄；`external/glfw/src/mgl_context.m`
+的 `mglSetSwapInterval:` 缺口（第 208 条 ⑥记录，属既存问题）也可单独处理。
 
 ### 0.131 第 174 轮交接快照（**T5 选项 (a)：壳转 C++ 的进度与切片表**）
 
@@ -8879,4 +8922,29 @@ refq 223/223（164 / **59**）、piq 30/30（17 / **13**）、compute 152/152（
 5. `MGL/include/MGLRenderer.h` / `MGLPlatformRendererShell.h` 里的 `@interface` 声明保留（消费方 `external/glfw` 仍在用），但**它们不再对应任何编译器生成的类**：
    运行时注册的类用**同名** `objc_allocateClassPair(..., "MGLPlatformRendererShell")` / `"MGLRenderer"`，所以 `@interface` 只作 API 声明。
    注意 `.h` 里的 ivar 块（`{ int _swapInterval; }`）与属性声明仍是消费方的编译期契约，不能删。
+
+### 0.135 终局快照（**`MGL/` 内 ObjC 清零：文件 0 / 语法 0 / 词汇 0**）
+
+**终态证据（一条命令）**：`scripts/objc_zero.sh` →
+`文件数 0`、`其中空 TU 0`、`文件行数合计 0`、`ObjC 语法出现次数 0`、`ObjC 词汇出现次数 0`（无逐文件行）。
+`find MGL -name '*.m' -o -name '*.mm'` 为空。
+
+**现在的平台层结构（全部 C++，无 ObjC 语法）**：
+
+| 文件 | 角色 |
+|---|---|
+| `MGL/src/mgl_platform_shell.cpp`（2,783 行） | 两个运行时注册的类（`MGLPlatformRendererShell` 24 方法 + `MGLRenderer` 16 ivar）、全部 C 端口、十个管线缓存桥、状态区组装、compute/绑定入口、窗口生命周期（KVO/通知/dealloc） |
+| `MGL/src/mgl_objc_bridge.h` | `mglSend<R>`、`MGL_SEL`、桥接 retain/release、`MGLScopedAutoreleasePool`、`MGLScopeExitGuard`、`MGL_IVAR` |
+| `MGL/src/mgl_renderer_ivars.h` | `MGLRendererIvars`/`MGLPlatformShellIvars` 镜像结构体（运行时偏移按名解析） |
+| `MGL/src/mgl_objc_exception_bridge.cpp` | `objc_setExceptionPreprocessor` 钩子（`catch (...)` 里取回 `NSException`） |
+| `MGL/src/mgl_pipeline_cache_class.cpp` | 运行时注册的 `MGLPipelineCache`（第 205 条） |
+| `MGL/include/mgl_platform_shell_result.h` | 壳的 C 面（结果结构 + 操作类型 + drawable 桥） |
+
+**四个专属 oracle（都在 `MGL/` 之外，可复现）**：
+`/private/tmp/run_ab.sh` + `ab_full.py`（A/B 全文逐行）、`/private/tmp/archive_oracle.sh`（归档路径，A/B 会过滤它）、
+`scratch/kvo_probe.mm`（窗口/KVO/通知，A/B 与 CTS 都覆盖不到）、本文件 §0.5 的七簇 CTS 电池脚本（`/private/tmp/run_t4b_battery_z.sh`）。
+
+**给后来者的两条硬约束（新规矩的浓缩）**：
+① **父类锚点**：C 实现的方法里 `[super …]` 必须用**注册时保存的类**取父类，不能用 `object_getClass(self)`（父类方法里它返回最派生类 ⇒ 自递归）；
+② **`class_addIvar` 的 alignment 是 log2**，且"编译器替我们做过的事"（ARC 强引用/弱引用、dealloc 链、返回值约定）在运行时建类后都要**逐条补回**。
 

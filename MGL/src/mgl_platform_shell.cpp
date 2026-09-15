@@ -23,6 +23,7 @@
  */
 
 #include "mgl_objc_bridge.h"
+#include "mgl_platform_shell_result.h"   /* MGLPlatformRendererShellResult */
 #include "mgl_renderer_ivars.h"
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -55,6 +56,671 @@
 #include "mgl_shader_resource.h"
 #include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_thread_affinity.h"
+
+
+/* ==========================================================================
+ * MGLPlatformRendererShell, registered with the Objective-C runtime.
+ *
+ * This is the last piece of the platform layer: the class used to be the .m
+ * this file replaces.  Both it and MGLRenderer are created with
+ * objc_allocateClassPair at load time (log 210), which is why
+ * MGL/src/MGLPlatformRendererShell.m could be deleted - and why consumers look
+ * the classes up by name instead of referencing a class symbol (log 209).
+ *
+ * This block is deliberately outside MGL_PLATFORM_SHELL_SMOKE: the smoke gate
+ * builds it standalone to check that the shell keeps building and behaving.
+ * ========================================================================== */
+
+/* Metal's device factory and CoreAnimation's filter constant are C symbols;
+ * their Objective-C headers cannot be included from C++. */
+extern "C" MGLObjectId MTLCreateSystemDefaultDevice(void);
+extern "C" MGLObjectId const kCAFilterNearest;
+
+/* MTLCaptureDestinationGPUTraceDocument (Metal) and
+ * NSWindowOcclusionStateVisible (AppKit). */
+enum { kMGLMTLCaptureDestinationGPUTraceDocument = 2 };
+enum { kMGLNSWindowOcclusionStateVisible = 2u };
+
+/* The registered classes: a C implementation of a method cannot recover the
+ * class it was installed on from the receiver (object_getClass returns the most
+ * derived class), and [super ...] needs exactly that - measured as an infinite
+ * self-call in dealloc before these were kept (log 210). */
+static Class s_mglShellClass = Nil;
+static Class s_mglRendererClass = Nil;
+
+
+static SEL s_shellSelInit = NULL;
+static SEL s_shellSelView = NULL;
+static SEL s_shellSelSetView = NULL;
+static SEL s_shellSelLayer = NULL;
+static SEL s_shellSelSetLayer = NULL;
+static SEL s_shellSelDrawable = NULL;
+static SEL s_shellSelSetDrawable = NULL;
+static SEL s_shellSelWindow = NULL;
+static SEL s_shellSelIsVisible = NULL;
+static SEL s_shellSelOcclusionState = NULL;
+static SEL s_shellSelIsMainThread = NULL;
+static SEL s_shellSelSetDevice = NULL;
+static SEL s_shellSelSetPixelFormat = NULL;
+static SEL s_shellSelSetOpaque = NULL;
+static SEL s_shellSelSetFramebufferOnly = NULL;
+static SEL s_shellSelSetAllowsTimeout = NULL;
+static SEL s_shellSelSetMagnification = NULL;
+static SEL s_shellSelSetPresentsWithTransaction = NULL;
+static SEL s_shellSelSetDisplaySync = NULL;
+static SEL s_shellSelDrawableSize = NULL;
+static SEL s_shellSelSetDrawableSize = NULL;
+static SEL s_shellSelSetContentsScale = NULL;
+static SEL s_shellSelFrameRect = NULL;
+static SEL s_shellSelSetFrame = NULL;
+static SEL s_shellSelRemoveFromSuperlayer = NULL;
+static SEL s_shellSelAddSublayer = NULL;
+static SEL s_shellSelNextDrawable = NULL;
+static SEL s_shellSelTexture = NULL;
+static SEL s_shellSelLength = NULL;
+static SEL s_shellSelFileURLWithPath = NULL;
+static SEL s_shellSelSetDestination = NULL;
+static SEL s_shellSelSetOutputURL = NULL;
+static SEL s_shellSelSetCaptureObject = NULL;
+static SEL s_shellSelSharedCaptureManager = NULL;
+static SEL s_shellSelStartCapture = NULL;
+static SEL s_shellSelStopCapture = NULL;
+static SEL s_shellSelAlloc = NULL;
+
+/* ARC's strong property store: retain the new value, release the old one. */
+static void mglShellStoreObject(void **slot, MGLObjectId value)
+{
+    if (value) {
+        (void)mglSend<MGLObjectId>(value, sel_registerName("retain"));
+    }
+    void *previous = *slot;
+    *slot = (void *)value;
+    if (previous) {
+        mglReleaseObject((MGLObjectId)previous);
+    }
+}
+
+static MGLObjectId mglShellViewOf(MGLObjectId self)
+{
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    return ivars ? (MGLObjectId)ivars->_view : NULL;
+}
+
+static MGLObjectId mglShellLayerOf(MGLObjectId self)
+{
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    return ivars ? (MGLObjectId)ivars->_layer : NULL;
+}
+
+static MGLObjectId mglShellDrawableOf(MGLObjectId self)
+{
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    return ivars ? (MGLObjectId)ivars->_drawable : NULL;
+}
+
+/* - (instancetype)initWithView:(NSView *)view */
+static MGLObjectId mglShellInitWithView(MGLObjectId self, SEL cmd, MGLObjectId view)
+{
+    (void)cmd;
+    struct objc_super super = {
+        self, s_mglShellClass ? class_getSuperclass(s_mglShellClass)
+                              : class_getSuperclass(object_getClass(self))
+    };
+    self = ((MGLObjectId(*)(struct objc_super *, SEL))objc_msgSendSuper)(
+        &super, MGL_SEL(s_shellSelInit, "init"));
+    if (!self) {
+        return NULL;
+    }
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    if (ivars) {
+        mglShellStoreObject(&ivars->_view, view);
+        /* Match CAMetalLayer default (display sync on) until glfwSwapInterval. */
+        ivars->_swapInterval = 1;
+    }
+    return self;
+}
+
+static MGLObjectId mglShellGetView(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    return mglShellViewOf(self);
+}
+
+static void mglShellSetView(MGLObjectId self, SEL cmd, MGLObjectId value)
+{
+    (void)cmd;
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    if (ivars) {
+        mglShellStoreObject(&ivars->_view, value);
+    }
+}
+
+static MGLObjectId mglShellGetLayer(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    return mglShellLayerOf(self);
+}
+
+static void mglShellSetLayer(MGLObjectId self, SEL cmd, MGLObjectId value)
+{
+    (void)cmd;
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    if (ivars) {
+        mglShellStoreObject(&ivars->_layer, value);
+    }
+}
+
+static MGLObjectId mglShellGetDrawable(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    return mglShellDrawableOf(self);
+}
+
+static void mglShellSetDrawable(MGLObjectId self, SEL cmd, MGLObjectId value)
+{
+    (void)cmd;
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    if (ivars) {
+        mglShellStoreObject(&ivars->_drawable, value);
+    }
+}
+
+static int mglShellSwapInterval(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    return ivars ? ivars->_swapInterval : 0;
+}
+
+static signed char mglShellShouldSkipPresent(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    /* interval==0 + hidden/occluded window: skip CA present so the drawable
+     * pool is not paced by the display. Visible windows still present with
+     * displaySyncEnabled=NO. Override with MGL_UNLOCKED_SKIP_PRESENT=0/1. */
+    static int envMode = -2; /* -2 unset, -1 auto, 0 force off, 1 force on */
+    if (envMode == -2) {
+        const char *v = getenv("MGL_UNLOCKED_SKIP_PRESENT");
+        if (v && v[0] == '0' && v[1] == '\0') {
+            envMode = 0;
+        } else if (v && v[0] == '1' && v[1] == '\0') {
+            envMode = 1;
+        } else {
+            envMode = -1;
+        }
+    }
+    if (envMode == 0) {
+        return 0;
+    }
+    if (envMode == 1) {
+        return 1;
+    }
+    MGLObjectId view = mglShellViewOf(self);
+    MGLObjectId window =
+        view ? mglSend<MGLObjectId>(view, MGL_SEL(s_shellSelWindow, "window")) : NULL;
+    if (!window) {
+        return 1;
+    }
+    if (!mglSend<signed char>(window, MGL_SEL(s_shellSelIsVisible, "isVisible"))) {
+        return 1;
+    }
+    if ((mglSend<unsigned long>(window, MGL_SEL(s_shellSelOcclusionState,
+                                                "occlusionState")) &
+         (unsigned long)kMGLNSWindowOcclusionStateVisible) == 0) {
+        return 1;
+    }
+    return 0;
+}
+
+static MGLObjectId mglShellCreateSystemDefaultDevice(MGLObjectId self, SEL cmd)
+{
+    (void)self;
+    (void)cmd;
+    /* MTLCreateSystemDefaultDevice returns +1; the method returns it the way
+     * ARC did, autoreleased. */
+    return mglAutoreleaseObject(MTLCreateSystemDefaultDevice());
+}
+
+static signed char mglShellConfigureMetalLayer(MGLObjectId self, SEL cmd,
+                                              MGLObjectId device,
+                                              uint32_t requestedPixelFormat,
+                                              uint32_t *actualPixelFormat)
+{
+    (void)cmd;
+    if (!device) return 0;
+
+    const uint32_t fallbackPixelFormat = 80u;
+    uint32_t pixelFormat = mglRenderMetalLayerPixelFormatIsSupported(
+                               requestedPixelFormat)
+                               ? requestedPixelFormat
+                               : fallbackPixelFormat;
+    MGLObjectId layerClass = (MGLObjectId)objc_getClass("CAMetalLayer");
+    MGLObjectId layer =
+        layerClass ? mglSend<MGLObjectId>(mglSend<MGLObjectId>(
+                                              layerClass,
+                                              MGL_SEL(s_shellSelAlloc, "alloc")),
+                                          MGL_SEL(s_shellSelInit, "init"))
+                   : NULL;
+    if (!layer) return 0;
+
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetDevice, "setDevice:"), device);
+    try {
+        (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetPixelFormat, "setPixelFormat:"),
+                            pixelFormat);
+    } catch (...) {
+        fprintf(stderr,
+                "MGL CAMetalLayer invalid pixelFormat=%u requested=%u exception=%s; falling back to BGRA8Unorm\n",
+                pixelFormat, requestedPixelFormat,
+                mglCaughtExceptionDescription(mglTakeCaughtException()));
+        pixelFormat = fallbackPixelFormat;
+        (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetPixelFormat, "setPixelFormat:"),
+                            pixelFormat);
+    }
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetOpaque, "setOpaque:"), (signed char)1);
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetFramebufferOnly,
+                                       "setFramebufferOnly:"),
+                        (signed char)0);
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetAllowsTimeout,
+                                       "setAllowsNextDrawableTimeout:"),
+                        (signed char)1);
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetMagnification,
+                                       "setMagnificationFilter:"),
+                        kCAFilterNearest);
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetPresentsWithTransaction,
+                                       "setPresentsWithTransaction:"),
+                        (signed char)0);
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetDisplaySync,
+                                       "setDisplaySyncEnabled:"),
+                        (signed char)((ivars && ivars->_swapInterval > 0) ? 1 : 0));
+    mglShellSetLayer(self, MGL_SEL(s_shellSelSetLayer, "setLayer:"), layer);
+
+    MGLObjectId view = mglShellViewOf(self);
+    MGLObjectId viewLayer =
+        view ? mglSend<MGLObjectId>(view, MGL_SEL(s_shellSelLayer, "layer")) : NULL;
+    if (viewLayer) {
+        (void)mglSend<void>(viewLayer, MGL_SEL(s_shellSelAddSublayer, "addSublayer:"),
+                            layer);
+    } else if (view) {
+        (void)mglSend<void>(view, MGL_SEL(s_shellSelSetLayer, "setLayer:"), layer);
+    }
+    /* The class owns the layer through its property; ARC's local +1 is gone. */
+    mglReleaseObject(layer);
+    if (actualPixelFormat) *actualPixelFormat = pixelFormat;
+    return 1;
+}
+
+static void mglShellDetachMetalLayer(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    mglShellSetDrawable(self, MGL_SEL(s_shellSelSetDrawable, "setDrawable:"),
+                        (MGLObjectId)NULL);
+    MGLObjectId layer = mglShellLayerOf(self);
+    if (layer) {
+        (void)mglSend<void>(layer, MGL_SEL(s_shellSelRemoveFromSuperlayer,
+                                           "removeFromSuperlayer"));
+    }
+    mglShellSetLayer(self, MGL_SEL(s_shellSelSetLayer, "setLayer:"),
+                     (MGLObjectId)NULL);
+}
+
+static MGLObjectId mglShellCaptureDescriptor(MGLObjectId self, SEL cmd,
+                                            MGLObjectId device,
+                                            MGLObjectId outputPath)
+{
+    (void)self;
+    (void)cmd;
+    const unsigned long length =
+        outputPath ? mglSend<unsigned long>(outputPath, MGL_SEL(s_shellSelLength, "length"))
+                   : 0ul;
+    if (!device || length == 0) return NULL;
+    MGLObjectId descriptorClass = (MGLObjectId)objc_getClass("MTLCaptureDescriptor");
+    MGLObjectId descriptor =
+        descriptorClass
+            ? mglSend<MGLObjectId>(mglSend<MGLObjectId>(
+                                       descriptorClass,
+                                       MGL_SEL(s_shellSelAlloc, "alloc")),
+                                   MGL_SEL(s_shellSelInit, "init"))
+            : NULL;
+    if (!descriptor) return NULL;
+    (void)mglSend<void>(descriptor, MGL_SEL(s_shellSelSetDestination, "setDestination:"),
+                        (unsigned long)kMGLMTLCaptureDestinationGPUTraceDocument);
+    MGLObjectId urlClass = (MGLObjectId)objc_getClass("NSURL");
+    MGLObjectId url =
+        urlClass ? mglSend<MGLObjectId>(urlClass,
+                                        MGL_SEL(s_shellSelFileURLWithPath,
+                                                "fileURLWithPath:"),
+                                        outputPath)
+                 : NULL;
+    (void)mglSend<void>(descriptor, MGL_SEL(s_shellSelSetOutputURL, "setOutputURL:"), url);
+    (void)mglSend<void>(descriptor, MGL_SEL(s_shellSelSetCaptureObject,
+                                            "setCaptureObject:"),
+                        device);
+    return mglAutoreleaseObject(descriptor);
+}
+
+static signed char mglShellStartCapture(MGLObjectId self, SEL cmd, MGLObjectId descriptor,
+                                       MGLObjectId *error)
+{
+    (void)self;
+    (void)cmd;
+    if (!descriptor) return 0;
+    MGLObjectId managerClass = (MGLObjectId)objc_getClass("MTLCaptureManager");
+    MGLObjectId manager =
+        managerClass ? mglSend<MGLObjectId>(managerClass,
+                                            MGL_SEL(s_shellSelSharedCaptureManager,
+                                                    "sharedCaptureManager"))
+                     : NULL;
+    if (!manager) return 0;
+    return mglSend<signed char>(manager, MGL_SEL(s_shellSelStartCapture,
+                                                 "startCaptureWithDescriptor:error:"),
+                                descriptor, error);
+}
+
+static void mglShellStopCapture(MGLObjectId self, SEL cmd)
+{
+    (void)self;
+    (void)cmd;
+    MGLObjectId managerClass = (MGLObjectId)objc_getClass("MTLCaptureManager");
+    MGLObjectId manager =
+        managerClass ? mglSend<MGLObjectId>(managerClass,
+                                            MGL_SEL(s_shellSelSharedCaptureManager,
+                                                    "sharedCaptureManager"))
+                     : NULL;
+    if (manager) {
+        (void)mglSend<void>(manager, MGL_SEL(s_shellSelStopCapture, "stopCapture"));
+    }
+}
+
+static MGLObjectId mglShellNextDrawable(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLObjectId layer = mglShellLayerOf(self);
+    MGLObjectId drawable =
+        layer ? mglSend<MGLObjectId>(layer, MGL_SEL(s_shellSelNextDrawable,
+                                                    "nextDrawable"))
+              : NULL;
+    mglShellSetDrawable(self, MGL_SEL(s_shellSelSetDrawable, "setDrawable:"), drawable);
+    return mglShellDrawableOf(self);
+}
+
+static MGLObjectId mglShellDrawableTexture(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLObjectId drawable = mglShellDrawableOf(self);
+    /* Borrowed from the drawable: it must NOT be autoreleased here, because the
+     * drawable owns the only reference (rule 68). */
+    return drawable ? mglSend<MGLObjectId>(drawable, MGL_SEL(s_shellSelTexture, "texture"))
+                    : NULL;
+}
+
+static signed char mglShellHasMetalLayer(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    return mglShellLayerOf(self) ? 1 : 0;
+}
+
+static CGSize mglShellLayerDrawableSize(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLObjectId layer = mglShellLayerOf(self);
+    return layer ? mglSend<CGSize>(layer, MGL_SEL(s_shellSelDrawableSize,
+                                                  "drawableSize"))
+                 : CGSizeMake(0.0, 0.0);
+}
+
+static CGRect mglShellLayerFrame(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLObjectId layer = mglShellLayerOf(self);
+    return layer ? mglSend<CGRect>(layer, MGL_SEL(s_shellSelFrameRect, "frame"))
+                 : CGRectMake(0.0, 0.0, 0.0, 0.0);
+}
+
+static void mglShellSetLayerFrame(MGLObjectId self, SEL cmd, CGRect frame,
+                                  double scale)
+{
+    (void)cmd;
+    MGLObjectId layer = mglShellLayerOf(self);
+    if (!layer) return;
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetFrame, "setFrame:"), frame);
+    (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetContentsScale,
+                                       "setContentsScale:"),
+                        scale);
+}
+
+static void mglShellSetLayerDrawableSize(MGLObjectId self, SEL cmd, CGSize size)
+{
+    (void)cmd;
+    MGLObjectId layer = mglShellLayerOf(self);
+    if (layer) {
+        (void)mglSend<void>(layer, MGL_SEL(s_shellSelSetDrawableSize,
+                                           "setDrawableSize:"),
+                            size);
+    }
+}
+
+/* - (int)performOperation:(MGLPlatformRendererShellOperation)operation
+ *                 context:(void *)context
+ *                  result:(MGLPlatformRendererShellResult *)result */
+static int mglShellPerformOperation(MGLObjectId self, SEL cmd,
+                                    MGLPlatformRendererShellOperation operation,
+                                    void *context,
+                                    MGLPlatformRendererShellResult *result)
+{
+    (void)self;
+    (void)cmd;
+    if (result) memset(result, 0, sizeof(*result));
+    if (!operation) return -1;
+    try {
+        int status = operation(context);
+        if (result) result->status = status;
+        return status;
+    } catch (...) {
+        MGLObjectId exception = mglTakeCaughtException();
+        if (result) {
+            result->status = -1;
+            mglFillCaughtException(exception, result->exception_name,
+                                   sizeof(result->exception_name),
+                                   result->exception_reason,
+                                   sizeof(result->exception_reason));
+        }
+        return -1;
+    }
+}
+
+/* The C bridge the renderer diagnostics use. */
+void *mglPlatformRendererShellTextureForDrawable(void *drawable)
+{
+    if (!drawable) return NULL;
+    MGLObjectId texture = mglSend<MGLObjectId>((MGLObjectId)drawable,
+                                               MGL_SEL(s_shellSelTexture, "texture"));
+    return (void *)texture;
+}
+
+/* The class and its ivars, in the order the @implementation used to have them:
+ * _swapInterval is the declared ivar, the other three come from the properties.
+ * class_addIvar takes size and alignment explicitly, which is what lets the
+ * @package records below mirror the old compiler layout exactly. */
+struct MGLIvarSpec {
+    const char *name;
+    size_t size;
+    uint8_t alignment;   /* log2 of the alignment: class_addIvar's convention */
+};
+
+/* class_addIvar takes the alignment as a power of two, not the alignment
+ * itself: passing alignof(T) made every ivar 256-byte aligned and broke the
+ * mirror-struct view of the @package block (measured, log 210). */
+static constexpr uint8_t mglIvarAlignLog2(size_t alignment)
+{
+    uint8_t shift = 0;
+    while (((size_t)1 << shift) < alignment) {
+        shift++;
+    }
+    return shift;
+}
+
+static const MGLIvarSpec kMGLShellIvars[] = {
+    { "_swapInterval", sizeof(int), mglIvarAlignLog2(alignof(int)) },
+    { "_view", sizeof(void *), mglIvarAlignLog2(alignof(void *)) },
+    { "_layer", sizeof(void *), mglIvarAlignLog2(alignof(void *)) },
+    { "_drawable", sizeof(void *), mglIvarAlignLog2(alignof(void *)) },
+};
+
+/* The sixteen @package ivars of `@interface MGLRenderer ()` in
+ * MGLRenderer_Private.h, in order, with the exact sizes and alignments the
+ * mirror struct MGLRendererIvars is compiled with. */
+static const MGLIvarSpec kMGLRendererIvars[] = {
+    { "ctx", sizeof(((MGLRendererIvars *)0)->ctx),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->ctx))) },
+    { "_backend", sizeof(((MGLRendererIvars *)0)->_backend),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_backend))) },
+    { "_observedWindow", sizeof(((MGLRendererIvars *)0)->_observedWindow),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_observedWindow))) },
+    { "_core", sizeof(((MGLRendererIvars *)0)->_core),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_core))) },
+    { "_gpuRecovery", sizeof(((MGLRendererIvars *)0)->_gpuRecovery),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_gpuRecovery))) },
+    { "_pipelineCache", sizeof(((MGLRendererIvars *)0)->_pipelineCache),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_pipelineCache))) },
+    { "_queryStateOwner", sizeof(((MGLRendererIvars *)0)->_queryStateOwner),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_queryStateOwner))) },
+    { "_renderPassManager", sizeof(((MGLRendererIvars *)0)->_renderPassManager),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_renderPassManager))) },
+    { "_resourceFallback", sizeof(((MGLRendererIvars *)0)->_resourceFallback),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_resourceFallback))) },
+    { "_bindingStateOwner", sizeof(((MGLRendererIvars *)0)->_bindingStateOwner),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_bindingStateOwner))) },
+    { "_tessellation", sizeof(((MGLRendererIvars *)0)->_tessellation),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_tessellation))) },
+    { "_geometry", sizeof(((MGLRendererIvars *)0)->_geometry),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_geometry))) },
+    { "_mglForcedMSSampleId", sizeof(((MGLRendererIvars *)0)->_mglForcedMSSampleId),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_mglForcedMSSampleId))) },
+    { "_mglMSSamplePlaneOffset",
+      sizeof(((MGLRendererIvars *)0)->_mglMSSamplePlaneOffset),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_mglMSSamplePlaneOffset))) },
+    { "_mglInMSSampleDrawLoop",
+      sizeof(((MGLRendererIvars *)0)->_mglInMSSampleDrawLoop),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_mglInMSSampleDrawLoop))) },
+    { "_batching", sizeof(((MGLRendererIvars *)0)->_batching),
+      mglIvarAlignLog2(alignof(decltype(((MGLRendererIvars *)0)->_batching))) },
+};
+
+
+/* - (void)dealloc: NSObject's dealloc does not release this class's strong
+ * ivars (a runtime-registered class has no ARC destructor), so the shell does it
+ * and then hands the object to the superclass, the way ARC's dealloc did. */
+static void mglPlatformShellDealloc(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars(self);
+    if (ivars) {
+        mglShellStoreObject(&ivars->_drawable, NULL);
+        mglShellStoreObject(&ivars->_layer, NULL);
+        mglShellStoreObject(&ivars->_view, NULL);
+    }
+    /* Search starts at NSObject: s_mglShellClass is the class this method is
+     * installed on, so its superclass is where the shell's dealloc continues. */
+    struct objc_super super = {
+        self, s_mglShellClass ? class_getSuperclass(s_mglShellClass)
+                              : class_getSuperclass(object_getClass(self))
+    };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(
+        &super, sel_registerName("dealloc"));
+}
+
+/* Rule 64: nothing calls this - the constructor attribute is the only entry
+ * point.  Priority 101 runs it before the other constructors in this file (the
+ * category and lifecycle method installers, which need the class to exist) and
+ * before anything outside the library can look the classes up. */
+__attribute__((constructor(101)))
+static void mglInstallPlatformShellClasses(void)
+{
+    Class shellClass = objc_allocateClassPair(objc_getClass("NSObject"),
+                                              "MGLPlatformRendererShell", 0);
+    if (!shellClass) {
+        fprintf(stderr, "MGL ERROR: could not register MGLPlatformRendererShell\n");
+        return;
+    }
+    for (size_t i = 0; i < sizeof(kMGLShellIvars) / sizeof(kMGLShellIvars[0]); i++) {
+        class_addIvar(shellClass, kMGLShellIvars[i].name, kMGLShellIvars[i].size,
+                      kMGLShellIvars[i].alignment, "?");
+    }
+    class_addMethod(shellClass, sel_registerName("initWithView:"),
+                    (IMP)mglShellInitWithView, "@@:@");
+    class_addMethod(shellClass, sel_registerName("view"), (IMP)mglShellGetView, "@@:");
+    class_addMethod(shellClass, sel_registerName("setView:"), (IMP)mglShellSetView,
+                    "v@:@");
+    class_addMethod(shellClass, sel_registerName("layer"), (IMP)mglShellGetLayer, "@@:");
+    class_addMethod(shellClass, sel_registerName("setLayer:"), (IMP)mglShellSetLayer,
+                    "v@:@");
+    class_addMethod(shellClass, sel_registerName("drawable"), (IMP)mglShellGetDrawable,
+                    "@@:");
+    class_addMethod(shellClass, sel_registerName("setDrawable:"),
+                    (IMP)mglShellSetDrawable, "v@:@");
+    class_addMethod(shellClass, sel_registerName("mglSwapInterval"),
+                    (IMP)mglShellSwapInterval, "i@:");
+    class_addMethod(shellClass, sel_registerName("mglShouldSkipPresentForUnlockedSwap"),
+                    (IMP)mglShellShouldSkipPresent, "c@:");
+    class_addMethod(shellClass, sel_registerName("mglCreateSystemDefaultDevice"),
+                    (IMP)mglShellCreateSystemDefaultDevice, "@@:");
+    class_addMethod(shellClass,
+                    sel_registerName("mglConfigureMetalLayerWithDevice:"
+                                     "requestedPixelFormat:actualPixelFormat:"),
+                    (IMP)mglShellConfigureMetalLayer, "c@:^vI^I");
+    class_addMethod(shellClass, sel_registerName("mglDetachMetalLayer"),
+                    (IMP)mglShellDetachMetalLayer, "v@:");
+    class_addMethod(shellClass,
+                    sel_registerName("mglCaptureDescriptorForDevice:outputPath:"),
+                    (IMP)mglShellCaptureDescriptor, "@@:@@");
+    class_addMethod(shellClass,
+                    sel_registerName("mglStartCaptureWithDescriptor:error:"),
+                    (IMP)mglShellStartCapture, "c@:@^@");
+    class_addMethod(shellClass, sel_registerName("mglStopCapture"),
+                    (IMP)mglShellStopCapture, "v@:");
+    class_addMethod(shellClass, sel_registerName("mglNextDrawable"),
+                    (IMP)mglShellNextDrawable, "@@:");
+    class_addMethod(shellClass, sel_registerName("mglDrawableTexture"),
+                    (IMP)mglShellDrawableTexture, "@@:");
+    class_addMethod(shellClass, sel_registerName("mglHasMetalLayer"),
+                    (IMP)mglShellHasMetalLayer, "c@:");
+    class_addMethod(shellClass, sel_registerName("mglMetalLayerDrawableSize"),
+                    (IMP)mglShellLayerDrawableSize, "{CGSize=dd}@:");
+    class_addMethod(shellClass, sel_registerName("mglMetalLayerFrame"),
+                    (IMP)mglShellLayerFrame, "{CGRect={CGPoint=dd}{CGSize=dd}}@:");
+    class_addMethod(shellClass,
+                    sel_registerName("mglSetMetalLayerFrame:contentsScale:"),
+                    (IMP)mglShellSetLayerFrame,
+                    "v@:{CGRect={CGPoint=dd}{CGSize=dd}}d");
+    class_addMethod(shellClass, sel_registerName("mglSetMetalLayerDrawableSize:"),
+                    (IMP)mglShellSetLayerDrawableSize, "v@:{CGSize=dd}");
+    class_addMethod(shellClass, sel_registerName("performOperation:context:result:"),
+                    (IMP)mglShellPerformOperation, "i@:^?^v^v");
+    class_addMethod(shellClass, sel_registerName("dealloc"),
+                    (IMP)mglPlatformShellDealloc, "v@:");
+    objc_registerClassPair(shellClass);
+    s_mglShellClass = shellClass;
+
+    Class rendererClass =
+        objc_allocateClassPair(shellClass, "MGLRenderer", 0);
+    if (!rendererClass) {
+        fprintf(stderr, "MGL ERROR: could not register MGLRenderer\n");
+        return;
+    }
+    for (size_t i = 0; i < sizeof(kMGLRendererIvars) / sizeof(kMGLRendererIvars[0]);
+         i++) {
+        class_addIvar(rendererClass, kMGLRendererIvars[i].name,
+                      kMGLRendererIvars[i].size, kMGLRendererIvars[i].alignment,
+                      "?");
+    }
+    /* The methods themselves are installed by the two constructors below (the
+     * category pair and the lifecycle block): they run at default priority, that
+     * is, after this one, and find both classes in the runtime. */
+    objc_registerClassPair(rendererClass);
+    s_mglRendererClass = rendererClass;
+}
 
 #ifndef MGL_PLATFORM_SHELL_SMOKE
 
@@ -439,7 +1105,7 @@ CGSize mglPlatformShellApplyPendingDrawableSizeCGSize(void *renderer)
     MGL_ASSERT_GL_THREAD();
     MGLRendererIvars *ivars = mglRendererIvars(r);
     if (!ivars) {
-        return CGSizeZero;
+        return CGSizeMake(0.0, 0.0);
     }
     if (atomic_exchange_explicit(&ivars->_core.drawableSizeDirty, false,
                                  memory_order_acquire)) {
@@ -1601,7 +2267,7 @@ static void mglShellMainThreadSyncViewGeometry(MGLObjectId self, SEL cmd)
     CGRect bounds = mglSend<CGRect>(view, MGL_SEL(s_selBounds, "bounds"));
     if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
         bounds = mglSend<CGRect>(view, MGL_SEL(s_selFrameRect, "frame"));
-        bounds.origin = CGPointZero;   /* NSZeroPoint */
+        bounds.origin = CGPointMake(0.0, 0.0);   /* NSZeroPoint */
     }
 
     CGRect backingBounds =

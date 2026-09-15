@@ -68,7 +68,12 @@ CFLAGS += -arch $(HOST_ARCH)
 LIBS += -arch $(HOST_ARCH)
 
 LIBS += -F$(SDK_ROOT)/System/Library/Frameworks
-LIBS += -framework Metal -framework OpenGL -framework Foundation
+LIBS += -framework Metal -framework OpenGL -framework Foundation \
+        -framework AppKit -framework QuartzCore
+# The platform shell is C++ now (no .m): it references AppKit's window
+# notification constants and CoreAnimation's filter constant directly, so those
+# frameworks are named explicitly instead of arriving through an Objective-C
+# translation unit (log 210).
 
 CFLAGS += -IMGL/include
 CFLAGS += -IMGL/include/GL # "glcorearb.h"
@@ -1020,11 +1025,21 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # linked into the smoke target with -x none (they used to be Objective-C, which
 # the smoke gate compiled itself; ObjC-zeroing moved them to C).
 METALCPP_C_SRC := MGL/src/mgl_binding_texture_log.c MGL/src/mgl_trace_log.c
+# The platform shell is C++ (log 210): it cannot go through the smoke gate's
+# -x objective-c++ -fobjc-arc invocation any more, so it is compiled to its own
+# objects first and linked with -x none like the other C sources.
+METALCPP_PLATFORM_SHELL_SRC := MGL/src/mgl_platform_shell.cpp \
+                               MGL/src/mgl_objc_exception_bridge.cpp
+METALCPP_PLATFORM_SHELL_OBJ := $(patsubst MGL/src/%.cpp,$(build_dir)/metalcpp_%.o,$(METALCPP_PLATFORM_SHELL_SRC))
 METALCPP_C_OBJ := $(patsubst MGL/src/%.c,$(build_dir)/metalcpp_%.o,$(METALCPP_C_SRC))
 
 $(build_dir)/metalcpp_%.o: MGL/src/%.c
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -MMD $(CFLAGS_GL_CORE) -c $< -o $@
+
+$(build_dir)/metalcpp_%.o: MGL/src/%.cpp
+	@mkdir -p $(dir $@)
+	$(LLVM_CXX) -x c++ -g -O0 $(LLVM_CXXFLAGS) -DMGL_PLATFORM_SHELL_SMOKE -c $< -o $@
 
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
@@ -1041,7 +1056,10 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/include/mgl_tess_domain.h \
 	MGL/src/mgl_renderer_backend.cpp MGL/src/mgl_renderer_backend.h \
 	MGL/include/mgl_backend_handles.h \
-	MGL/src/MGLPlatformRendererShell.m MGL/include/MGLPlatformRendererShell.h \
+	$(METALCPP_PLATFORM_SHELL_OBJ) $(METALCPP_PLATFORM_SHELL_SRC) \
+	MGL/include/mgl_platform_shell_result.h \
+	MGL/src/mgl_objc_bridge.h MGL/src/mgl_renderer_ivars.h \
+	MGL/include/MGLPlatformRendererShell.h \
 	MGL/src/mgl_aux_assets.c \
 	MGL/src/mgl_buffer_slots.c \
 	MGL/src/mgl_sync.c \
@@ -1060,11 +1078,10 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_tess_factor_normalize.c \
 		MGL/src/mgl_tess_domain_gen.c \
 		MGL/src/mgl_renderer_backend.cpp \
-		MGL/src/MGLPlatformRendererShell.m \
 		MGL/src/mgl_aux_assets.c \
 		MGL/src/mgl_buffer_slots.c \
 		MGL/src/mgl_sync.c \
-		-x none $(METALCPP_C_OBJ) \
+		-x none $(METALCPP_C_OBJ) $(METALCPP_PLATFORM_SHELL_OBJ) \
 		-o $@
 
 test-metalcpp: $(build_dir)/test_metalcpp_smoke
