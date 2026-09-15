@@ -67,6 +67,25 @@ void mglTextureFillSmallGradient(void *renderer, void *texture, Texture *tex);
 void mglTextureFillSafeInitialContents(void *renderer, void *texture,
                                        Texture *tex, uint32_t pixel_format);
 
+
+/* The dirty-CPU-data upload tree moved in log 196. */
+int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
+                          uint32_t pixel_format, uint32_t num_faces,
+                          uint32_t upload_level_count, int is_array,
+                          int texture1DBackedBy2D,
+                          int texture1DArrayBackedBy2DArray, uint32_t tex_type,
+                          int *out_all_levels_uploaded);
+int mglTextureUploadDirty3DLevel(void *renderer, Texture *tex, void *texture,
+                                 uint32_t pixel_format, int face, int level,
+                                 uint64_t width, uint64_t height, uint64_t depth,
+                                 int *out_skipped);
+int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
+                                    uint32_t pixel_format, int face, int level,
+                                    uint64_t width, uint64_t height,
+                                    uint64_t depth, int is_array,
+                                    int texture1DArrayBackedBy2DArray,
+                                    uint32_t tex_type, int *out_skipped);
+
 #ifdef __cplusplus
 }
 #endif

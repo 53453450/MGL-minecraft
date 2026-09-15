@@ -153,16 +153,7 @@ void mglMetalCopyRows(const uint8_t *src,
                                          tex:(Texture *)tex
                                  pixelFormat:(uint32_t)pixelFormat;
 
-- (BOOL)uploadDirtyCPUTextureData:(Texture *)tex
-                            metal:(id)texture
-                      pixelFormat:(uint32_t)pixelFormat
-                        numFaces:(uint)num_faces
-                uploadLevelCount:(GLuint)upload_level_count
-                         isArray:(BOOL)is_array
-              texture1DBackedBy2D:(BOOL)texture1DBackedBy2D
-        texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray
-                         texType:(uint32_t)tex_type
-            outAllLevelsUploaded:(BOOL *)outAllLevelsUploaded;
+/* -uploadDirtyCPUTextureData: is C now (log 196; mgl_texture_upload_ops.h). */
 
 @end
 

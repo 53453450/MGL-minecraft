@@ -204,7 +204,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                     const uint32_t levelCount = mglTextureBindUploadLevelCount(
                         newInfo.mipmap_level_count,
                         tex->num_levels ? tex->num_levels : 1u);
-                    if (mglRendererUploadDirtyCPUTextureDataPort(
+                    if (mglTextureUploadDirty(
                             renderer, tex, (void *)metalTexture,
                             (uint32_t)newInfo.pixel_format, 1, levelCount,
                             isArray ? 1 : 0,
@@ -294,7 +294,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                             metalInfo.mipmap_level_count,
                             tex->num_levels ? tex->num_levels : 1u);
                         uploadedDirty =
-                            mglRendererUploadDirtyCPUTextureDataPort(
+                            mglTextureUploadDirty(
                                 renderer, tex, existingTexture,
                                 (uint32_t)metalInfo.pixel_format, 1, levelCount,
                                 isArray ? 1 : 0,

@@ -548,39 +548,6 @@ void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex)
     return (void *)CFBridgingRetain([r createFallbackMTLTexture:tex]);
 }
 
-int mglRendererUploadDirtyCPUTextureDataPort(void *renderer, Texture *tex,
-                                             void *texture,
-                                             uint32_t pixel_format,
-                                             uint32_t num_faces,
-                                             uint32_t upload_level_count,
-                                             int is_array,
-                                             int texture1d_backed_by_2d,
-                                             int texture1d_array_backed_by_2d_array,
-                                             uint32_t tex_type,
-                                             int *out_all_levels_uploaded)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || !tex) {
-        return 0;
-    }
-    BOOL allLevelsUploaded = NO;
-    BOOL uploaded = [r
-        uploadDirtyCPUTextureData:tex
-                            metal:(__bridge id)texture
-                      pixelFormat:pixel_format
-                        numFaces:(uint)num_faces
-                uploadLevelCount:(GLuint)upload_level_count
-                         isArray:(BOOL)(is_array != 0)
-              texture1DBackedBy2D:(BOOL)(texture1d_backed_by_2d != 0)
-        texture1DArrayBackedBy2DArray:(BOOL)(texture1d_array_backed_by_2d_array != 0)
-                         texType:tex_type
-            outAllLevelsUploaded:&allLevelsUploaded];
-    if (out_all_levels_uploaded) {
-        *out_all_levels_uploaded = allLevelsUploaded ? 1 : 0;
-    }
-    return uploaded ? 1 : 0;
-}
-
 /* === Batch replay shell (former MGLRenderer+Batch.m) =====================
  * These members are pure renderer plumbing: the dual-proxy invariant, the
  * replay-workspace switch, the lock/exception frame around a flush and the

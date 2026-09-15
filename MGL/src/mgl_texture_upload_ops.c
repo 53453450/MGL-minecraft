@@ -80,6 +80,16 @@ static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
 /* mglUpMax() is an Objective-C header macro; use the C maximum inline. */
 #define mglUpMax(a, b) ((a) > (b) ? (a) : (b))
 
+/* The renderer's capability snapshot through the state areas (the .m read its
+ * own ivar; the C caller has the renderer handle). */
+static const MGLCapability *mglUpCapability(void *renderer)
+{
+    static MGLCapability fallback;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    return areas.core ? &areas.core->capability : &fallback;
+}
+
 /* Twin of the .m's mglDepthStencilAlignedBytesPerRow (the row alignment
  * constant lives in the Objective-C header). */
 #define kMglUpDepthStencilUploadRowAlignment 256u
@@ -1825,4 +1835,958 @@ void mglTextureFillSafeInitialContents(void *renderer, void *texture,
         }
 
     }
+}
+
+
+/* === The dirty-CPU-data upload tree (log 196) =============================
+ * -uploadDirtyCPUTextureData:…, -uploadDirtyCPUTextureData3DLevel:… and
+ * -uploadDirtyCPUTextureDataNon3DLevel:… moved from MGLRenderer+Texture.m.
+ * Signatures come from the port that wrapped the dispatcher and from the two
+ * callees' own selector lists (rule 63 (c)).
+ */
+
+/* ctx of the per-slice blit each level loader runs inside an @try. */
+typedef struct MglUpSliceBlitCtx_t {
+    void *renderer;
+    void *texture;
+    GLuint tex_name;
+    GLenum tex_target;
+    const void *data;
+    uint64_t bytes_per_row;
+    uint64_t bytes_per_image;
+    uint64_t width;
+    uint64_t height;
+    uint64_t depth;
+    uint64_t level;
+    uint64_t slice;
+    int *uploaded_out;
+} MglUpSliceBlitCtx;
+
+static int mglUpSliceBlitBody(void *renderer, void *rawCtx)
+{
+    MglUpSliceBlitCtx *ctx = (MglUpSliceBlitCtx *)rawCtx;
+    *ctx->uploaded_out = mglTextureUploadSliceViaBlit(
+        renderer, ctx->texture, ctx->tex_name, ctx->tex_target, ctx->data,
+        ctx->bytes_per_row, ctx->bytes_per_image, ctx->width, ctx->height,
+        ctx->depth, ctx->level, ctx->slice);
+    return 1;
+}
+
+/* -uploadDirtyCPUTextureData3DLevel:… */
+int mglTextureUploadDirty3DLevel(void *renderer, Texture *tex, void *texture,
+                                 uint32_t pixelFormat, int face, int level,
+                                 uint64_t width, uint64_t height, uint64_t depth,
+                                 int *outSkipped)
+{
+    uint64_t bytesPerRow;
+    uint64_t bytesPerImage;
+
+                bytesPerRow = tex->faces[face].levels[level].pitch;
+                if (bytesPerRow == 0) {
+                    fprintf(stderr, "MGL WARNING: Invalid 3D bytesPerRow (0), skipping upload (tex=%d face=%d level=%d)\n", tex->name, face, level);
+                    if (outSkipped) *outSkipped = 1;
+                    return 1;
+                }
+
+                uint64_t uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, mglUpMax((uint64_t)height, 1UL));
+                if (uploadRows == 0 || bytesPerRow > (UINT64_MAX / uploadRows)) {
+                    fprintf(stderr, "MGL WARNING: Invalid 3D bytesPerImage overflow (tex=%d face=%d level=%d rows=%lu bpr=%lu)\n",
+                          tex->name,
+                          face,
+                          level,
+                          (unsigned long)uploadRows,
+                          (unsigned long)bytesPerRow);
+                    if (outSkipped) *outSkipped = 1;
+                    return 1;
+                }
+                bytesPerImage = bytesPerRow * uploadRows;
+
+                if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
+                    void *srcData = (void *)tex->faces[face].levels[level].data;
+                    uintptr_t addr = (uintptr_t)srcData;
+
+                    uint8_t *swizzled3DUploadData = NULL;
+                    if (level == 0 && face == 0 &&
+                        mglTextureUploadNeedsSwizzleBake(tex)) {
+                        uint64_t texDepth = mglUpMax((uint64_t)depth, 1UL);
+                        uint64_t texHeight = mglUpMax((uint64_t)height, 1UL);
+                        uint64_t swzBPR = 0;
+                        uint64_t swzBPI = 0;
+                        uint8_t *firstSlice =
+                            mglCreateSwizzledUpload(
+                                tex, (const uint8_t *)srcData, width, texHeight,
+                                bytesPerRow, &swzBPR, &swzBPI);
+                        if (firstSlice) {
+                            uint64_t totalSize = swzBPI * texDepth;
+                            if (totalSize > 0 &&
+                                totalSize <= (512 * 1024 * 1024)) {
+                                swizzled3DUploadData =
+                                    (uint8_t *)malloc(totalSize);
+                                if (swizzled3DUploadData) {
+                                    memcpy(swizzled3DUploadData, firstSlice,
+                                           swzBPI);
+                                    for (uint64_t z = 1; z < texDepth; z++) {
+                                        const uint8_t *sliceSrc =
+                                            (const uint8_t *)srcData +
+                                            z * bytesPerImage;
+                                        uint8_t *sliceDst =
+                                            swizzled3DUploadData + z * swzBPI;
+                                        uint8_t *sliceSwz =
+                                            mglCreateSwizzledUpload(
+                                                tex, sliceSrc, width, texHeight,
+                                                bytesPerRow, &swzBPR, &swzBPI);
+                                        if (sliceSwz) {
+                                            memcpy(sliceDst, sliceSwz, swzBPI);
+                                            free(sliceSwz);
+                                        } else {
+                                            memset(sliceDst, 0, swzBPI);
+                                        }
+                                    }
+                                    srcData = swizzled3DUploadData;
+                                    bytesPerRow = swzBPR;
+                                    bytesPerImage = swzBPI;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+                            free(firstSlice);
+                        }
+                    }
+
+                    uint8_t *expanded3DUploadData = NULL;
+                    if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                        uint64_t expandedBytesPerRow = 0;
+                        uint64_t expandedBytesPerImagePerSlice = 0;
+                        uint64_t texDepth = mglUpMax((uint64_t)depth, 1UL);
+                        uint64_t texHeight = mglUpMax((uint64_t)height, 1UL);
+
+                        uint8_t *firstSlice = mglCreateRGBA8ExpandedUpload(tex,
+                                                                           (const uint8_t *)srcData,
+                                                                           width,
+                                                                           texHeight,
+                                                                           bytesPerRow,
+                                                                           &expandedBytesPerRow,
+                                                                           &expandedBytesPerImagePerSlice);
+                        if (firstSlice) {
+                            uint64_t totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
+                            if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
+                                expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
+                                if (expanded3DUploadData) {
+                                    memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
+                                    for (uint64_t z = 1; z < texDepth; z++) {
+                                        const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
+                                        uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
+                                        uint64_t dummyRow = 0, dummyImage = 0;
+                                        uint8_t *sliceExpanded = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                             sliceSrc,
+                                                                                             width,
+                                                                                             texHeight,
+                                                                                             bytesPerRow,
+                                                                                             &dummyRow,
+                                                                                             &dummyImage);
+                                        if (sliceExpanded) {
+                                            memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
+                                            free(sliceExpanded);
+                                        } else {
+                                            memset(sliceDst, 0, expandedBytesPerImagePerSlice);
+                                        }
+                                    }
+                                    srcData = expanded3DUploadData;
+                                    bytesPerRow = expandedBytesPerRow;
+                                    bytesPerImage = expandedBytesPerImagePerSlice;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+                            free(firstSlice);
+                        }
+                    } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                        uint64_t expandedBytesPerRow = 0;
+                        uint64_t expandedBytesPerImagePerSlice = 0;
+                        uint64_t texDepth = mglUpMax((uint64_t)depth, 1UL);
+                        uint64_t texHeight = mglUpMax((uint64_t)height, 1UL);
+
+                        uint8_t *firstSlice = mglCreateChannelExpandedUpload(tex,
+                                                                              pixelFormat,
+                                                                              (const uint8_t *)srcData,
+                                                                              width,
+                                                                              texHeight,
+                                                                              bytesPerRow,
+                                                                              &expandedBytesPerRow,
+                                                                              &expandedBytesPerImagePerSlice);
+                        if (firstSlice) {
+                            uint64_t totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
+                            if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
+                                expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
+                                if (expanded3DUploadData) {
+                                    memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
+                                    for (uint64_t z = 1; z < texDepth; z++) {
+                                        const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
+                                        uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
+                                        uint64_t dummyRow = 0, dummyImage = 0;
+                                        uint8_t *sliceExpanded = mglCreateChannelExpandedUpload(tex,
+                                                                                                 pixelFormat,
+                                                                                                 sliceSrc,
+                                                                                                 width,
+                                                                                                 texHeight,
+                                                                                                 bytesPerRow,
+                                                                                                 &dummyRow,
+                                                                                                 &dummyImage);
+                                        if (sliceExpanded) {
+                                            memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
+                                            free(sliceExpanded);
+                                        } else {
+                                            memset(sliceDst, 0, expandedBytesPerImagePerSlice);
+                                        }
+                                    }
+                                    srcData = expanded3DUploadData;
+                                    bytesPerRow = expandedBytesPerRow;
+                                    bytesPerImage = expandedBytesPerImagePerSlice;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+                            free(firstSlice);
+                        }
+                    }
+
+                    uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
+                    uint64_t alignedBytesPerRow = bytesPerRow;
+                    if (alignedBytesPerRow % alignment != 0) {
+                        alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                    }
+
+                    uint64_t addrAlignment = MGLCapabilityTextureAlignment(mglUpCapability(renderer));
+                    if (addr % addrAlignment != 0 || alignedBytesPerRow != bytesPerRow) {
+                        uint64_t alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, mglUpMax((uint64_t)height, 1UL));
+                        if (alignedUploadRows == 0 || alignedBytesPerRow > (UINT64_MAX / alignedUploadRows)) {
+                            fprintf(stderr, "MGL WARNING: Rejecting aligned 3D upload row overflow (tex=%d level=%d rows=%lu bpr=%lu)\n",
+                                  tex->name,
+                                  level,
+                                  (unsigned long)alignedUploadRows,
+                                  (unsigned long)alignedBytesPerRow);
+                            if (outSkipped) *outSkipped = 1;
+                            return 1;
+                        }
+                        uint64_t alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
+                        uint64_t alignedDepth = mglUpMax((uint64_t)depth, 1UL);
+                        if (alignedBytesPerImage > (UINT64_MAX / alignedDepth)) {
+                            fprintf(stderr, "MGL WARNING: Rejecting aligned 3D upload size overflow (tex=%d level=%d bpi=%lu depth=%lu)\n",
+                                  tex->name,
+                                  level,
+                                  (unsigned long)alignedBytesPerImage,
+                                  (unsigned long)alignedDepth);
+                            if (outSkipped) *outSkipped = 1;
+                            return 1;
+                        }
+                        uint64_t alignedSize = alignedBytesPerImage * alignedDepth;
+                        if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
+                            fprintf(stderr, "MGL WARNING: Rejecting aligned 3D upload staging size=%lu (tex=%d level=%d)\n",
+                                  (unsigned long)alignedSize, tex->name, level);
+                            if (outSkipped) *outSkipped = 1;
+                            return 1;
+                        }
+                        void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                        if (alignedData) {
+                            memset(alignedData, 0, alignedSize);
+                            uint64_t srcRowSize = bytesPerRow;
+                            uint64_t dstRowSize = alignedBytesPerRow;
+                            uint64_t texUploadRows = alignedUploadRows;
+                            uint64_t texDepth = mglUpMax((uint64_t)depth, 1UL);
+                            uint8_t *srcPtr = (uint8_t *)srcData;
+                            uint8_t *dstPtr = (uint8_t *)alignedData;
+
+                            for (uint64_t z = 0; z < texDepth; z++) {
+                                for (uint64_t row = 0; row < texUploadRows; row++) {
+                                    uint64_t copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
+                                    uint64_t dstOffset = z * alignedBytesPerImage + row * dstRowSize;
+                                    uint64_t srcOffset = z * bytesPerImage + row * srcRowSize;
+                                    memcpy(dstPtr + dstOffset, srcPtr + srcOffset, copySize);
+                                    if (dstRowSize > copySize) {
+                                        memset(dstPtr + dstOffset + copySize, 0, dstRowSize - copySize);
+                                    }
+                                }
+                            }
+
+                            if (!alignedData) {
+                                fprintf(stderr, "MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash\n", level);
+                                if (outSkipped) *outSkipped = 1;
+                                return 1;
+                            }
+                            if (alignedBytesPerRow == 0) {
+                                fprintf(stderr, "MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash\n", level);
+                                if (outSkipped) *outSkipped = 1;
+                                return 1;
+                            }
+                            { /* the .m wrapped this blit in @try/@catch; the guarded call keeps the catch logic (rule 58 (b)) */
+
+                                int uploaded = 0;
+
+                                MglUpSliceBlitCtx blitCtx = { renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, depth, level, 0, &uploaded };
+
+                                char blitFailure[256] = {0};
+
+                                if (!mglPlatformShellGuardedCallCtxReason(
+
+                                        renderer, "3D aligned blit upload", mglUpSliceBlitBody, &blitCtx,
+
+                                        blitFailure, sizeof(blitFailure))) {
+
+                                    fprintf(stderr,
+
+                                            "MGL ERROR: Failed to upload aligned 3D texture data (level %d, face %d): %s\n",
+
+                                            level, face, blitFailure[0] ? blitFailure : "(null)");
+
+                                } else if (!uploaded) {
+
+                                    fprintf(stderr, "MGL WARNING: 3D aligned blit upload failed (level %d, face %d)\n", level, face);
+
+                                }
+
+                            }
+                            free(alignedData);
+                        } else {
+                            fprintf(stderr, "MGL ERROR: Failed to allocate aligned memory for 3D texture upload\n");
+                        }
+                    } else {
+                        if (!srcData) {
+                            fprintf(stderr, "MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash\n", level);
+                            if (outSkipped) *outSkipped = 1;
+                            return 1;
+                        }
+                        if (bytesPerRow == 0) {
+                            fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash\n", level);
+                            if (outSkipped) *outSkipped = 1;
+                            return 1;
+                        }
+                        if (bytesPerImage == 0) {
+                            fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash\n", level);
+                            if (outSkipped) *outSkipped = 1;
+                            return 1;
+                        }
+                        { /* the .m wrapped this blit in @try/@catch; the guarded call keeps the catch logic (rule 58 (b)) */
+
+                            int uploaded = 0;
+
+                            MglUpSliceBlitCtx blitCtx = { renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, depth, level, 0, &uploaded };
+
+                            char blitFailure[256] = {0};
+
+                            if (!mglPlatformShellGuardedCallCtxReason(
+
+                                    renderer, "3D direct blit upload", mglUpSliceBlitBody, &blitCtx,
+
+                                    blitFailure, sizeof(blitFailure))) {
+
+                                fprintf(stderr,
+
+                                        "MGL ERROR: Failed to upload 3D texture data (level %d, face %d): %s\n",
+
+                                        level, face, blitFailure[0] ? blitFailure : "(null)");
+
+                            } else if (!uploaded) {
+
+                                fprintf(stderr, "MGL WARNING: 3D direct blit upload failed (level %d, face %d)\n", level, face);
+
+                            }
+
+                        }
+                    }
+                    free(expanded3DUploadData);
+                    free(swizzled3DUploadData);
+                } else {
+                    fprintf(stderr, "MGL WARNING: Skipping 3D texture upload due to invalid data or parameters\n");
+                }
+
+    return 1;
+}
+
+/* -uploadDirtyCPUTextureDataNon3DLevel:… */
+int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
+                                    uint32_t pixelFormat, int face, int level,
+                                    uint64_t width, uint64_t height,
+                                    uint64_t depth, int is_array,
+                                    int texture1DArrayBackedBy2DArray,
+                                    uint32_t tex_type, int *outSkipped)
+{
+    uint64_t bytesPerRow;
+    uint64_t bytesPerImage;
+    bool hasExplicitDataSize = false;
+    MGLRegionValue region;
+
+                bytesPerRow = tex->faces[face].levels[level].pitch;
+                if (bytesPerRow == 0) {
+                    fprintf(stderr, "MGL WARNING: Invalid bytesPerRow (0), skipping upload (tex=%d face=%d level=%d)\n", tex->name, face, level);
+                    if (outSkipped) *outSkipped = 1;
+                    return 1;
+                }
+
+                bytesPerImage = tex->faces[face].levels[level].data_size;
+                hasExplicitDataSize = (bytesPerImage > 0);
+                if (bytesPerImage == 0) {
+                    uint64_t fallbackHeight = (height > 0) ? (uint64_t)height : 1;
+                    bytesPerImage = bytesPerRow * fallbackHeight;
+                    fprintf(stderr, "MGL WARNING: data_size was 0, using fallback bytesPerImage=%lu (tex=%d face=%d level=%d)\n",
+                          (unsigned long)bytesPerImage, tex->name, face, level);
+                }
+                if (bytesPerImage == 0) {
+                    fprintf(stderr, "MGL WARNING: Invalid bytesPerImage (0), skipping upload (tex=%d face=%d level=%d)\n", tex->name, face, level);
+                    if (outSkipped) *outSkipped = 1;
+                    return 1;
+                }
+
+                if (is_array)
+                {
+                    GLuint num_layers;
+                    size_t offset;
+                    GLubyte *tex_data;
+                    int arraySliceIs1D;
+                    uint64_t uploadSliceHeight;
+                    uint64_t backingBytes;
+                    uint64_t logicalBytesPerImage;
+
+                    num_layers = (tex_type == MGLTextureType1DArray || texture1DArrayBackedBy2DArray)
+                        ? tex->faces[face].levels[level].height
+                        : tex->faces[face].levels[level].depth;
+                    if (num_layers == 0) {
+                        fprintf(stderr, "MGL WARNING: Array texture has 0 layers, skipping upload (tex=%d face=%d level=%d)\n", tex->name, face, level);
+                        if (outSkipped) *outSkipped = 1;
+                        return 1;
+                    }
+
+                    arraySliceIs1D = (tex_type == MGLTextureType1DArray || texture1DArrayBackedBy2DArray);
+                    uploadSliceHeight = arraySliceIs1D ? 1UL : mglUpMax((uint64_t)height, 1UL);
+                    backingBytes = bytesPerImage;
+                    uint64_t uploadSliceRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                    if (uploadSliceRows == 0 || bytesPerRow > (UINT64_MAX / uploadSliceRows)) {
+                        fprintf(stderr, "MGL WARNING: Array texture invalid row layout tex=%d face=%d level=%d bpr=%lu rows=%lu\n",
+                              tex->name,
+                              face,
+                              level,
+                              (unsigned long)bytesPerRow,
+                              (unsigned long)uploadSliceRows);
+                        if (outSkipped) *outSkipped = 1;
+                        return 1;
+                    }
+                    logicalBytesPerImage = bytesPerRow * uploadSliceRows;
+                    /* data_size is page-rounded; do not treat the slack as
+                     * layer stride or reads land in the wrong slice. */
+                    uint64_t requiredArrayBytes = 0;
+                    uint64_t safeLayerCount = mglUpMax((uint64_t)num_layers, 1UL);
+                    if (logicalBytesPerImage == 0 ||
+                        logicalBytesPerImage > (UINT64_MAX / safeLayerCount) ||
+                        backingBytes < (requiredArrayBytes = logicalBytesPerImage * safeLayerCount)) {
+                        fprintf(stderr, "MGL WARNING: Array texture backing too small for logical slices tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u\n",
+                              tex->name,
+                              face,
+                              level,
+                              (unsigned long)backingBytes,
+                              (unsigned long)logicalBytesPerImage,
+                              num_layers);
+                        if (outSkipped) *outSkipped = 1;
+                        return 1;
+                    }
+                    bytesPerImage = logicalBytesPerImage;
+
+                    if (!arraySliceIs1D)
+                        region = mglTextureRegion2D(0,0,width,height);
+                    else if (height >= 1)
+                        region = mglTextureRegion2D(0,0,width,1);
+                    else {
+                        fprintf(stderr, "MGL TEXTURE ERROR: invalid array texture height=%lu for tex=%u face=%d level=%d\n",
+                              (unsigned long)height,
+                              tex->name,
+                              face,
+                              level);
+                        return 0;
+                    }
+
+                    for(int layer=0; layer<num_layers; layer++)
+                    {
+                        offset = bytesPerImage * layer;
+
+                        tex_data = (GLubyte *)tex->faces[face].levels[level].data;
+                        tex_data += offset;
+
+                        if (tex_data && bytesPerRow > 0 && bytesPerImage > 0) {
+                            void *srcData = (void *)tex_data;
+                            void *expandedUploadData = NULL;
+                            void *swizzledUploadData = NULL;
+                            uintptr_t addr = (uintptr_t)srcData;
+
+                            uint64_t effectiveBytesPerRow = bytesPerRow;
+                            uint64_t effectiveBytesPerImage = bytesPerImage;
+                            if (mglTextureUploadNeedsSwizzleBake(tex)) {
+                                uint64_t swzBPR = 0;
+                                uint64_t swzBPI = 0;
+                                swizzledUploadData =
+                                    mglCreateSwizzledUpload(
+                                        tex, (const uint8_t *)srcData, width,
+                                        uploadSliceHeight, bytesPerRow, &swzBPR,
+                                        &swzBPI);
+                                if (swizzledUploadData) {
+                                    srcData = swizzledUploadData;
+                                    effectiveBytesPerRow = swzBPR;
+                                    effectiveBytesPerImage = swzBPI;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+
+                            if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                    mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                                uint64_t expandedBytesPerRow = 0;
+                                uint64_t expandedBytesPerImage = 0;
+                                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                   (const uint8_t *)srcData,
+                                                                                   width,
+                                                                                   uploadSliceHeight,
+                                                                                   bytesPerRow,
+                                                                                   &expandedBytesPerRow,
+                                                                                   &expandedBytesPerImage);
+                                if (expandedUploadData) {
+                                    srcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBytesPerRow;
+                                    effectiveBytesPerImage = expandedBytesPerImage;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            } else if (!mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                           mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                                uint64_t expandedBytesPerRow = 0;
+                                uint64_t expandedBytesPerImage = 0;
+                                expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                     pixelFormat,
+                                                                                     (const uint8_t *)srcData,
+                                                                                     width,
+                                                                                     uploadSliceHeight,
+                                                                                     bytesPerRow,
+                                                                                     &expandedBytesPerRow,
+                                                                                     &expandedBytesPerImage);
+                                if (expandedUploadData) {
+                                    srcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBytesPerRow;
+                                    effectiveBytesPerImage = expandedBytesPerImage;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+
+                            uint64_t dsBytesPerRow = 0;
+                            uint64_t dsBytesPerImage = 0;
+                            void *dsUploadData = mglUpCreateDepthStencilMetalUpload(
+                                tex, pixelFormat, (const uint8_t *)srcData,
+                                width, uploadSliceHeight, effectiveBytesPerRow,
+                                &dsBytesPerRow, &dsBytesPerImage);
+                            if (dsUploadData) {
+                                free(expandedUploadData);
+                                expandedUploadData = dsUploadData;
+                                srcData = dsUploadData;
+                                effectiveBytesPerRow = dsBytesPerRow;
+                                effectiveBytesPerImage = dsBytesPerImage;
+                                addr = (uintptr_t)srcData;
+                            }
+
+                            uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
+                            uint64_t alignedBytesPerRow = effectiveBytesPerRow;
+                            if (alignedBytesPerRow % alignment != 0) {
+                                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                            }
+
+                            if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
+                                uint64_t alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                                if (alignedUploadRows == 0 || alignedBytesPerRow > (UINT64_MAX / alignedUploadRows)) {
+                                    fprintf(stderr, "MGL WARNING: Rejecting aligned array upload row layout bpr=%lu rows=%lu (tex=%d level=%d layer=%d)\n",
+                                          (unsigned long)alignedBytesPerRow,
+                                          (unsigned long)alignedUploadRows,
+                                          tex->name,
+                                          level,
+                                          layer);
+                                    free(swizzledUploadData);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                uint64_t alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
+                                uint64_t alignedSize = alignedBytesPerImage;
+                                if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
+                                    fprintf(stderr, "MGL WARNING: Rejecting aligned array upload staging size=%lu (tex=%d level=%d layer=%d)\n",
+                                          (unsigned long)alignedSize, tex->name, level, layer);
+                                    free(swizzledUploadData);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                                if (alignedData) {
+                                    memset(alignedData, 0, alignedSize);
+                                    uint64_t srcRowSize = effectiveBytesPerRow;
+                                    uint64_t dstRowSize = alignedBytesPerRow;
+                                    uint8_t *srcPtr = (uint8_t *)srcData;
+                                    uint8_t *dstPtr = (uint8_t *)alignedData;
+
+                                    for (uint64_t row = 0; row < alignedUploadRows; row++) {
+                                        uint64_t copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
+                                        memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
+                                        if (dstRowSize > copySize) {
+                                            memset(dstPtr + (row * dstRowSize) + copySize, 0, dstRowSize - copySize);
+                                        }
+                                    }
+
+                                    if (!alignedData) {
+                                        fprintf(stderr, "MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash\n", level, layer);
+                                        continue;
+                                    }
+                                    if (alignedBytesPerRow == 0) {
+                                        fprintf(stderr, "MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash\n", level, layer);
+                                        continue;
+                                    }
+                                    if (bytesPerImage == 0) {
+                                        fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash\n", level, layer);
+                                        continue;
+                                    }
+                                    /* the .m wrapped this blit in @try/@catch; the
+                                     * guarded call keeps the catch logic (rule 58 (b)) */
+                                    {
+                                        int uploaded = 0;
+                                        MglUpSliceBlitCtx blitCtx = { renderer, texture,
+                                            tex->name, tex->target, alignedData,
+                                            alignedBytesPerRow, alignedBytesPerImage,
+                                            width, uploadSliceHeight, 1, level, layer,
+                                            &uploaded };
+                                        char blitFailure[256] = {0};
+                                        if (!mglPlatformShellGuardedCallCtxReason(
+                                                renderer, "array texture blit upload",
+                                                mglUpSliceBlitBody, &blitCtx,
+                                                blitFailure, sizeof(blitFailure))) {
+                                            fprintf(stderr,
+                                                    "MGL ERROR: Failed to upload aligned array texture data (level %d, layer %d): %s\n",
+                                                    level, layer,
+                                                    blitFailure[0] ? blitFailure : "(null)");
+                                        } else if (hasExplicitDataSize) {
+                                            if (!uploaded) {
+                                                fprintf(stderr, "MGL WARNING: Array texture blit upload failed (level %d, layer %d)\n", level, layer);
+                                            }
+                                        } else {
+                                            fprintf(stderr, "MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)\n", level, layer);
+                                        }
+                                    }
+                                    free(alignedData);
+                                } else {
+                                    fprintf(stderr, "MGL ERROR: Failed to allocate aligned memory for array texture upload (level %d, layer %d)\n", level, layer);
+                                }
+                            } else {
+                                if (!srcData) {
+                                    fprintf(stderr, "MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash\n", level, layer);
+                                    free(swizzledUploadData);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                if (effectiveBytesPerRow == 0) {
+                                    fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash\n", level, layer);
+                                    free(swizzledUploadData);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                if (effectiveBytesPerImage == 0) {
+                                    fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash\n", level, layer);
+                                    free(swizzledUploadData);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                if (hasExplicitDataSize) {
+                                    int uploaded = mglTextureUploadSliceViaBlit(
+            renderer, texture, tex->name, tex->target, srcData, effectiveBytesPerRow, effectiveBytesPerImage, width, uploadSliceHeight, 1, level, layer);
+                                    if (!uploaded) {
+                                        fprintf(stderr, "MGL WARNING: Array texture direct blit upload failed (level %d, layer %d)\n", level, layer);
+                                    }
+                                } else {
+                                    fprintf(stderr, "MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)\n", level, layer);
+                                }
+                            }
+                            free(swizzledUploadData);
+                            free(expandedUploadData);
+                        } else {
+                            fprintf(stderr, "MGL WARNING: Skipping array texture upload due to invalid data or parameters\n");
+                        }
+                    }
+                }
+                else
+                {
+                    DEBUG_PRINT("tex void *data update %d\n", tex->name);
+
+                    if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
+                        void *srcData = (void *)tex->faces[face].levels[level].data;
+                        void *swizzledUploadData = NULL;
+                        void *expandedUploadData = NULL;
+                        uintptr_t addr = (uintptr_t)srcData;
+                        if (level == 0 && face == 0 && mglTextureUploadNeedsSwizzleBake(tex)) {
+                            uint64_t swizzledBytesPerRow = 0;
+                            uint64_t swizzledBytesPerImage = 0;
+                            swizzledUploadData = mglCreateSwizzledUpload(tex,
+                                                                                      (const uint8_t *)srcData,
+                                                                                      width,
+                                                                                      mglUpMax((uint64_t)height, 1UL),
+                                                                                      bytesPerRow,
+                                                                                      &swizzledBytesPerRow,
+                                                                                      &swizzledBytesPerImage);
+                            if (swizzledUploadData) {
+                                srcData = swizzledUploadData;
+                                bytesPerRow = swizzledBytesPerRow;
+                                bytesPerImage = swizzledBytesPerImage;
+                                addr = (uintptr_t)srcData;
+                                if (mglTraceLogIsEnabled()) {
+                                    const uint8_t *swz = (const uint8_t *)swizzledUploadData;
+                                    mglTraceLog("TEXTURE_SWIZZLE_UPLOAD_R8 tex=%u target=0x%x swzR=0x%x size=%lux%lu bpr=%lu first=%u",
+                                                (unsigned)tex->name,
+                                                (unsigned)tex->target,
+                                                (unsigned)tex->params.swizzle_r,
+                                                (unsigned long)width,
+                                                (unsigned long)mglUpMax((uint64_t)height, 1UL),
+                                                (unsigned long)bytesPerRow,
+                                                swz[0]);
+                                }
+                            }
+                        }
+                        if (!swizzledUploadData &&
+                            !mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                            mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                            uint64_t expandedBytesPerRow = 0;
+                            uint64_t expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                               (const uint8_t *)srcData,
+                                                                               width,
+                                                                               mglUpMax((uint64_t)height, 1UL),
+                                                                               bytesPerRow,
+                                                                               &expandedBytesPerRow,
+                                                                               &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                                addr = (uintptr_t)srcData;
+                            }
+                        } else if (!swizzledUploadData &&
+                                   !mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) &&
+                                   mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                            uint64_t expandedBytesPerRow = 0;
+                            uint64_t expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                 pixelFormat,
+                                                                                 (const uint8_t *)srcData,
+                                                                                 width,
+                                                                                 mglUpMax((uint64_t)height, 1UL),
+                                                                                 bytesPerRow,
+                                                                                 &expandedBytesPerRow,
+                                                                                 &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                                addr = (uintptr_t)srcData;
+                            }
+                        }
+
+                        uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
+                        uint64_t alignedBytesPerRow = bytesPerRow;
+                        if (alignedBytesPerRow % alignment != 0) {
+                            alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                        }
+
+                        if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
+                            uint64_t texHeight = mglUpMax((uint64_t)height, 1UL);
+                            uint64_t uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, texHeight);
+                            if (uploadRows == 0 || alignedBytesPerRow > (UINT64_MAX / uploadRows)) {
+                                fprintf(stderr, "MGL WARNING: Rejecting aligned 2D upload row layout bpr=%lu rows=%lu (tex=%d level=%d face=%d)\n",
+                                      (unsigned long)alignedBytesPerRow,
+                                      (unsigned long)uploadRows,
+                                      tex->name,
+                                      level,
+                                      face);
+                                free(swizzledUploadData);
+                                free(expandedUploadData);
+                                if (outSkipped) *outSkipped = 1;
+                                return 1;
+                            }
+                            uint64_t alignedBytesPerImage = alignedBytesPerRow * uploadRows;
+                            uint64_t alignedSize = alignedBytesPerImage;
+                            if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
+                                fprintf(stderr, "MGL WARNING: Rejecting aligned 2D upload staging size=%lu (tex=%d level=%d face=%d)\n",
+                                      (unsigned long)alignedSize, tex->name, level, face);
+                                free(swizzledUploadData);
+                                free(expandedUploadData);
+                                if (outSkipped) *outSkipped = 1;
+                                return 1;
+                            }
+                            void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                            if (alignedData) {
+                                memset(alignedData, 0, alignedSize);
+                                uint64_t srcRowSize = bytesPerRow;
+                                uint64_t dstRowSize = alignedBytesPerRow;
+                                uint8_t *srcPtr = (uint8_t *)srcData;
+                                uint8_t *dstPtr = (uint8_t *)alignedData;
+
+                                for (uint64_t row = 0; row < uploadRows; row++) {
+                                    uint64_t copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
+                                    memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
+                                    if (dstRowSize > copySize) {
+                                        memset(dstPtr + (row * dstRowSize) + copySize, 0, dstRowSize - copySize);
+                                    }
+                                }
+
+                                if (!alignedData) {
+                                    fprintf(stderr, "MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash\n", level, face);
+                                    free(alignedData);
+                                    if (outSkipped) *outSkipped = 1;
+                                    return 1;
+                                }
+                                if (alignedBytesPerRow == 0) {
+                                    fprintf(stderr, "MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash\n", level, face);
+                                    free(alignedData);
+                                    if (outSkipped) *outSkipped = 1;
+                                    return 1;
+                                }
+                                if (bytesPerImage == 0) {
+                                    fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash\n", level, face);
+                                    free(alignedData);
+                                    if (outSkipped) *outSkipped = 1;
+                                    return 1;
+                                }
+                                if (hasExplicitDataSize) {
+                                    int uploaded = mglTextureUploadSliceViaBlit(
+            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, 1, level, face);
+                                    if (!uploaded) {
+                                        fprintf(stderr, "MGL WARNING: Aligned 2D blit upload failed (level %d, face %d)\n", level, face);
+                                    }
+                                } else {
+                                    fprintf(stderr, "MGL INFO: Skipping 2D upload with synthesized data size (level %d, face %d)\n", level, face);
+                                }
+                                free(alignedData);
+                            } else {
+                                fprintf(stderr, "MGL ERROR: Failed to allocate aligned memory for 2D texture upload (level %d, face %d)\n", level, face);
+                            }
+                        } else {
+                            if (!srcData) {
+                                fprintf(stderr, "MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash\n", level, face);
+                                if (outSkipped) *outSkipped = 1;
+                                return 1;
+                            }
+                            if (bytesPerRow == 0) {
+                                fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash\n", level, face);
+                                if (outSkipped) *outSkipped = 1;
+                                return 1;
+                            }
+                            if (bytesPerImage == 0) {
+                                fprintf(stderr, "MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash\n", level, face);
+                                if (outSkipped) *outSkipped = 1;
+                                return 1;
+                            }
+                            if (hasExplicitDataSize) {
+                                int uploaded = mglTextureUploadSliceViaBlit(
+            renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, 1, level, face);
+                                if (!uploaded) {
+                                    fprintf(stderr, "MGL WARNING: 2D direct blit upload failed (level %d, face %d)\n", level, face);
+                                }
+                            } else {
+                                fprintf(stderr, "MGL INFO: Skipping 2D upload with synthesized data size (level %d, face %d)\n", level, face);
+                            }
+                        }
+                        free(swizzledUploadData);
+                        free(expandedUploadData);
+                    } else {
+                        fprintf(stderr, "MGL WARNING: Skipping 2D texture upload due to invalid data or parameters\n");
+                    }
+                }
+
+    return 1;
+}
+
+/* -uploadDirtyCPUTextureData:… */
+int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
+                          uint32_t pixelFormat, uint32_t num_faces,
+                          uint32_t upload_level_count, int is_array,
+                          int texture1DBackedBy2D,
+                          int texture1DArrayBackedBy2DArray, uint32_t tex_type,
+                          int *outAllLevelsUploaded)
+{
+    MGL_ASSERT_GL_THREAD();
+
+    if (kMGLDiagnosticStateLogs) {
+        mglTraceLog("MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
+        mglTraceLog("MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
+                      tex->target, tex->internalformat, tex->num_levels, upload_level_count);
+    }
+
+    MGLRegionValue region;
+    uint64_t width, height, depth;
+    int anyLevelSkipped = 0;
+
+    for(int face=0; face<num_faces; face++)
+    {
+        for (int level=0; level<upload_level_count; level++)
+        {
+            TextureLevel *uploadLevel = &tex->faces[face].levels[level];
+            if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
+                static uint64_t s_skipStaleUploadLogs = 0;
+                uint64_t hit = ++s_skipStaleUploadLogs;
+                if (hit <= 8ull || (hit % 2048ull) == 0ull) {
+                    fprintf(stderr, "MGL TEXTURE SKIP stale CPU upload tex=%u face=%d level=%d source=%u ever=%u init=%u hit=%llu\n",
+                          (unsigned)tex->name,
+                          face,
+                          level,
+                          uploadLevel ? (unsigned)uploadLevel->last_init_source : 0u,
+                          uploadLevel ? (unsigned)uploadLevel->ever_written : 0u,
+                          uploadLevel ? (unsigned)uploadLevel->has_initialized_data : 0u,
+                          (unsigned long long)hit);
+                }
+                anyLevelSkipped = 1;
+                continue;
+            }
+
+            width = tex->faces[face].levels[level].width;
+            height = tex->faces[face].levels[level].height;
+            depth = tex->faces[face].levels[level].depth;
+
+            if (texture1DBackedBy2D)
+                region = mglTextureRegion2D(0,0,width,1);
+            else if (depth > 1)
+                region = mglTextureRegion3D(0,0,0,width,height,depth);
+            else if (height > 1)
+                region = mglTextureRegion2D(0,0,width,height);
+            else
+                region = mglTextureRegion1D(0,width);
+
+            uint64_t bytesPerRow;
+            uint64_t bytesPerImage;
+            bool hasExplicitDataSize = false;
+
+            int levelSkipped = 0;
+
+            if (tex_type == MGLTextureType3D)
+            {
+                if (!mglTextureUploadDirty3DLevel(
+                        renderer, tex, texture, pixelFormat, face, level, width,
+                        height, depth, &levelSkipped)) {
+                    return 0;
+                }
+            }
+            else
+            {
+                if (!mglTextureUploadDirtyNon3DLevel(
+                        renderer, tex, texture, pixelFormat, face, level, width,
+                        height, depth, is_array, texture1DArrayBackedBy2DArray,
+                        tex_type, &levelSkipped)) {
+                    return 0;
+                }
+            }
+
+            if (levelSkipped)
+                anyLevelSkipped = 1;
+            else
+                mglMarkGLSampledCopyLevelDirty(tex, (GLuint)level);
+        }
+    }
+
+    if (outAllLevelsUploaded)
+        *outAllLevelsUploaded = !anyLevelSkipped;
+
+    return 1;
 }

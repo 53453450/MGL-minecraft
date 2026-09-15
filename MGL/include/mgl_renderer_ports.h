@@ -138,16 +138,8 @@ void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex);
 /* mglRendererUploadFullCPUTextureDataPort is gone (log 195):
  * -uploadFullCPUTextureDataIntoTexture:metal:reason: is C now
  * (mglTextureUploadFullCPUData). */
-int mglRendererUploadDirtyCPUTextureDataPort(void *renderer, Texture *tex,
-                                             void *texture,
-                                             uint32_t pixel_format,
-                                             uint32_t num_faces,
-                                             uint32_t upload_level_count,
-                                             int is_array,
-                                             int texture1d_backed_by_2d,
-                                             int texture1d_array_backed_by_2d_array,
-                                             uint32_t tex_type,
-                                             int *out_all_levels_uploaded);
+/* mglRendererUploadDirtyCPUTextureDataPort is gone (log 196):
+ * -uploadDirtyCPUTextureData:… is C now (mglTextureUploadDirty). */
 
 /* ---- dyn-bind / sampler ports ------------------------------------------ */
 
