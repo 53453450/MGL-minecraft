@@ -548,21 +548,6 @@ void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex)
     return (void *)CFBridgingRetain([r createFallbackMTLTexture:tex]);
 }
 
-int mglRendererUploadFullCPUTextureDataPort(void *renderer, Texture *tex,
-                                            void *texture,
-                                            const char *reason)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || !tex) {
-        return 0;
-    }
-    return [r uploadFullCPUTextureDataIntoTexture:tex
-                                            metal:(__bridge id)texture
-                                           reason:reason]
-               ? 1
-               : 0;
-}
-
 int mglRendererUploadDirtyCPUTextureDataPort(void *renderer, Texture *tex,
                                              void *texture,
                                              uint32_t pixel_format,

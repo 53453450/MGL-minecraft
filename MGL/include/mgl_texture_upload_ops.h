@@ -41,6 +41,32 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
                                  uint64_t height, uint64_t depth, uint64_t level,
                                  uint64_t slice);
 
+
+/* The upload tree moved in log 195. */
+int mglTextureUploadFullCPUData(void *renderer, Texture *tex, void *texture,
+                                const char *reason);
+int mglTextureEncodeBytesUpload(void *renderer, Texture *tex, void *buffer,
+                                uint64_t source_offset,
+                                uint64_t source_bytes_per_row,
+                                uint64_t source_bytes_per_image, uint64_t width,
+                                uint64_t height, uint64_t depth, uint64_t slice,
+                                uint64_t level, uint64_t xoffset,
+                                uint64_t yoffset, uint64_t zoffset,
+                                const char *reason);
+void mglTextureReUploadExisting(void *renderer, Texture *tex, void *texture,
+                                uint32_t pixel_format, uint32_t num_faces,
+                                uint32_t upload_level_count, int is_array,
+                                int texture1DBackedBy2D,
+                                int texture1DArrayBackedBy2DArray,
+                                uint32_t tex_type);
+void mglTextureReUploadArrayLevel(void *renderer, Texture *tex, void *texture,
+                                  uint32_t pixel_format, int face, int level,
+                                  int texture1DArrayBackedBy2DArray,
+                                  uint32_t tex_type);
+void mglTextureFillSmallGradient(void *renderer, void *texture, Texture *tex);
+void mglTextureFillSafeInitialContents(void *renderer, void *texture,
+                                       Texture *tex, uint32_t pixel_format);
+
 #ifdef __cplusplus
 }
 #endif

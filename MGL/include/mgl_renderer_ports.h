@@ -135,9 +135,9 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
  * *out_all_levels_uploaded when it is non-NULL. */
 void *mglRendererCreateMTLTextureFromGLTexturePort(void *renderer, Texture *tex);
 void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex);
-int mglRendererUploadFullCPUTextureDataPort(void *renderer, Texture *tex,
-                                            void *texture,
-                                            const char *reason);
+/* mglRendererUploadFullCPUTextureDataPort is gone (log 195):
+ * -uploadFullCPUTextureDataIntoTexture:metal:reason: is C now
+ * (mglTextureUploadFullCPUData). */
 int mglRendererUploadDirtyCPUTextureDataPort(void *renderer, Texture *tex,
                                              void *texture,
                                              uint32_t pixel_format,

@@ -36,6 +36,7 @@
 #include <stdio.h>
 
 #include "glm_context.h"         /* GLMContext, before the type headers that need it */
+#include "mgl_texture_upload_ops.h"
 #include "mgl_texture_bind.h"
 #include "mgl_renderer_ports.h"  /* state areas + creation/upload ports */
 #include "mgl_render.h"          /* mglRender* texture predicates and queries */
@@ -273,7 +274,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                         metalInfo.texture_type == MGLTextureType2D &&
                         !mglTextureUploadNeedsSwizzleBake(tex)) {
                         uploadedDirty =
-                            mglRendererUploadFullCPUTextureDataPort(
+                            mglTextureUploadFullCPUData(
                                 renderer, tex, existingTexture,
                                 "bindMTLTexture.dirtyData") != 0;
                     }

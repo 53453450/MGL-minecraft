@@ -3697,7 +3697,7 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
         if (mglRenderTextureTargetIs2D((uint32_t)tex->target) &&
             mglBdTextureInfo(dirty_metal).texture_type == MGLTextureType2D &&
             !mglTextureUploadNeedsSwizzleBake(tex)) {
-            flushed = mglRendererUploadFullCPUTextureDataPort(
+            flushed = mglTextureUploadFullCPUData(
                 renderer, tex, dirty_metal, "sample_gate_miss_repair.dirty");
         }
         if (flushed) {
