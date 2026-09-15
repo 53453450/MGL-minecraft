@@ -8066,6 +8066,41 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
        T3/T4 两个空类别（23 行）、**T5 Lifecycle 类别（638 行 / 78 语法 / 46 处 AppKit）**、T6 空 `@implementation MGLRenderer`
        （它承载类扩展的 `@package` ivar，最后一步要用运行时建类 + ivar 列表顶替）。
 
+206. **第 175 轮（P0-1 第一百四十四刀）：**壳的端口层先出 `.m`——新建 `mgl_platform_shell.cpp` + 三件 C++ 桥接件****：
+       ① **本刀范围（第一步只搬"不碰类"的部分）**：把壳里**纯 C 端口**整段搬到新 TU `MGL/src/mgl_platform_shell.cpp`：
+       `mglRendererCreateIndirectCommandBuffer`、光栅丢弃桩 FS 工厂（`…ForClass` + `mglRenderPassDiscardStubFragmentFunction`）、
+       `mglRendererLayerMetrics`/`NextDrawable`/`DrawableTexture`/`EnsureLayerDrawableSizeAtLeastWidth`、
+       `mglPlatformShellGpuCaptureStart/Stop`、`mglPlatformShellSetContext`、`mglRendererTemporariesCreate/Add/Release`、
+       `mglPlatformShellShouldSkipPresentForUnlockedSwap`、`mglPlatformShellApplyPendingDrawableSize(CGSize)`、`…DrawablePointer`/`SetDrawable`。
+       ② **新建的桥接层（三件）**：`MGL/src/mgl_objc_bridge.h`（`mglSend<R>` 模板 = `objc_msgSend` 按签名强转、`MGL_SEL` 选择器缓存、
+       `mglBridgingRetain/Release`、`mglNewUTF8String`、`MGLScopedAutoreleasePool`、`MGL_IVAR` 惰性偏移）、
+       `MGL/src/mgl_renderer_ivars.h`（**16 个 `@package` ivar 的镜像结构体** + `mglRendererIvars()`：用 `ctx` 的运行时偏移做基址，
+       转换后的代码写 `r->ctx` 变 `mglRendererIvars(r)->ctx`）、`MGL/src/mgl_objc_exception_bridge.cpp`
+       （异常预处理器钩子，见 ③）。另把 `MGLRenderer_State.h` 里最后的 `MGLResourceFallbackState` 迁到 C 安全的
+       `MGL/include/mgl_resource_fallback_state.h`（该头 `#import <Foundation/…>`，镜像结构体不能引它）。
+       ③ **异常对象怎么在一刀里拿到（本刀最有价值的发现）**：`catch (...)` 能抓 `NSException`，但**抓不到对象**——
+       `catch (objc_object *)` 不匹配、`__cxa_current_exception_type()` 为 null、`objc_begin_catch()` 需要编译器生成的 landing pad。
+       可行解是 `objc_setExceptionPreprocessor()`（公开 API，`objc_exception_throw` 前回调）：链式调用前一个处理器、
+       把异常对象记进 `_Thread_local`，`catch (...)` 里用 `mglTakeCaughtException()` 取回。
+       实测覆盖：显式 `objc_exception_throw`、真实 Foundation 异常（`-[__NSArray0 objectAtIndex:]`）、嵌套 throw、无异常时槽位为空。
+       **这是 `performOperation:` 的硬需求**：`test_metalcpp_smoke.mm` 断言 `result.exception_name == "MGLSmokeException"`。
+       ④ **本刀踩到并修掉的真回归（新规矩 68 的来源）**：桩 FS 工厂里我把 ARC 的返回值约定照字面翻成 `mglAutoreleaseObject(s_fs[类])`，
+       而那个静态缓存持的是**创建调用给的那一个 +1**——自动释放等于把缓存唯一的引用交给池子，池子一泄对象就死，
+       下一次调用就是给已释放对象发消息。症状：`air_cull_distance` **段错误**（`objc_msgSend` receiver 野指针、栈已损坏），
+       `NSZombieEnabled=YES` 直接点名：`-[_MTLFunctionInternal autorelease]: message sent to deallocated instance`。
+       修法：**返回借用指针**（两个 C 调用方本来就只借用：`mgl_pso_build_ops.c`、`mgl_render_pass_manager_ops.c`）。
+       **四件套在这一刀全部是绿的、只有单例探针抓到了它**——所以探针不能省。
+       ⑤ **验证**：`make -j8` **0 error**；单例探针 **2/2**（`draw_arrays_indirect`、`draw_elements`；另加被本刀修好的 `air_cull_distance`）；
+       `make test-all` 绕行后 **22 + 6 个目标 exit 0**（`test-metalcpp` 冒烟 = 壳仍以 ObjC++ 单文件编译通过、`test-es-smoke` ok、`test-regression` **PASS 92 FAIL 0 SKIP 2 / 94**）；
+       A/B 逐行一致（**4981/4981**、**5514/5514**、stderr MGL 多重集 **307/307**）；归档专属 oracle 三项全等；
+       CTS 七簇（`TAG=p150`）**非通过集合 diff 逐条为空**：**58/1/0/59/13/39/4**，七簇 `completed == total`（1328/140/136/223/30/152/5）。另做**选择器反向扫描**：新 TU 里 15 个 `MGL_SEL` 字符串逐部件都能在
+       壳/头文件里找到定义（第 60 条口径），无拼写型选择器。
+       ⑥ **度量**：壳 **1,803 → 1,485 行（−318）**、语法 **220 → 180（−40）**、词汇 **206 → 183（−23）**；
+       新增 `mgl_platform_shell.cpp`（约 430 行）、桥接头/异常桥（约 320 行）。全库仍 **1 个 `.m`**、端口 **0**。
+       ⑦ **剩余**：T2 余段（BatchZeroShell/BindingShell 两个类别方法体 + 缓存桥 + `@finally` 两处）、
+       T5 Lifecycle（约 570 行、46 处 AppKit）、T1/T6 两个类（最后一步：两个类一起改运行时注册后删 `.m`，
+       因为 `MGLRenderer : MGLPlatformRendererShell` 的父类符号在链接期必须有定义，详见 §0.132）。
+
 ### 0.114 第 157 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.112/§0.113**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 11,849 行 / 653 语法 / 1,289 词汇**；
@@ -8588,13 +8623,13 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致；**�
 | 要素 | 目标 | 实测（本轮 HEAD） | 证据 |
 |---|---|---|---|
 | `MGL/` 内 `.m`/`.mm` 数 | 0，或**至多一个**平台壳 TU | **1**（唯一 T5 壳 `MGLPlatformRendererShell.m`） | `ls MGL/src/*.m MGL/src/*.mm`；`scripts/objc_zero.sh` 文件数 = 1 |
-| ObjC 语法 / 词汇 | 壳以外为 0 | **266 / 261，全部在壳内** | `scripts/objc_zero.sh` 逐文件表只有壳一行 |
-| 壳的行数上限 | 必须写明 | **2,400 行**（当前 **2,174**，余量 226） | §0.128 + T5 表 |
+| ObjC 语法 / 词汇 | 壳以外为 0 | **180 / 183，全部在壳内** | `scripts/objc_zero.sh` 逐文件表只有壳一行（第 206 条） |
+| 壳的行数上限 | 必须写明 | **2,400 行**（当前 **1,485**，余量 915） | §0.128 + §0.132 + T5 表 |
 | 壳的移除路径 | 必须写明 | **(a)** `objc_msgSend` 在 C++ 内实现 ⇒ `.m` 数清零；**(b)** 移交消费方 | §0.128 + T5 表 |
 | shim 端口数 | **0** | **0**（壳对外 7 个 C 入口，实现面全在壳内） | §0.5 第 204 条；`grep -cE "\*Port\(" MGL/include/mgl_renderer_ports.h` = 0 |
 
-**累计度量（基线 2026-09-12 @ `8e64afb`）**：文件 **53 → 1**（删除 9 个 `.m`）、空 TU **3 → 0**、行数 **43,989 → 2,174（−95.1%）**、
-ObjC 语法 **2,268 → 266（−88.3%）**、词汇 **4,353 → 261（−94.0%）**、端口 **43 → 0（−100%）**。
+**累计度量（基线 2026-09-12 @ `8e64afb`）**：文件 **53 → 1**（删除 9 个 `.m`）、空 TU **3 → 0**、行数 **43,989 → 1,485（−96.6%）**、
+ObjC 语法 **2,268 → 180（−92.1%）**、词汇 **4,353 → 183（−95.8%）**、端口 **43 → 0（−100%）**。
 
 **每刀的质量闸门（142 刀全程执行）**：`make -j8` 两个库 0 error；单例 CTS 探针；`make test-all` 绕行后 **PASS 92 / FAIL 0 / SKIP 2**；
 **CTS 七簇非通过集合 diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）；
@@ -8635,4 +8670,50 @@ ObjC 语法 **2,268 → 266（−88.3%）**、词汇 **4,353 → 261（−94.0%�
 ⇒ 该刀除标准四闸门外，**必须**加一个"窗口/生命周期"专项 oracle（例如对 `MGLPlatformRendererShell` 的
 `performOperation:`/`mglShouldSkipPresentForUnlockedSwap` 等做小驱动测试，或用 CTS 的窗口相关簇作为代理）。
 **T6 完成前不要动 `MGLRenderer_Private.h`**：它是当前 ivar 布局的唯一来源。
+
+### 0.132 第 175 轮交接快照（**壳的端口层已出 `.m`；两个类为什么必须最后一起改**）
+
+**当前状态**：`MGL/` 内仍 **1 个 `.m`**（`MGLPlatformRendererShell.m`，**1,485 行 / 180 语法 / 183 词汇**，上限 2,400 行、余量 915）；
+端口 **0**；本刀四件套全绿（A/B 4981/4981 与 5514/5514、stderr 307/307；归档 oracle 三项全等；`make test-all` 22+6 目标 exit 0；CTS 七簇见文末）。
+
+**新的宿主 TU 与桥接件（本刀建立，后续每一刀都复用）**：
+
+| 文件 | 作用 |
+|---|---|
+| `MGL/src/mgl_platform_shell.cpp` | 壳的 C++ 宿主：本刀已放入端口层（430 行），后续 T2/T5/T1/T6 都往这里搬 |
+| `MGL/src/mgl_objc_bridge.h` | `mglSend<R>`（`objc_msgSend` 强转）、`MGL_SEL` 缓存、`mglBridgingRetain/Release`、`MGLScopedAutoreleasePool`、`MGL_IVAR` |
+| `MGL/src/mgl_renderer_ivars.h` | `MGLRendererIvars`（16 个 `@package` ivar 的镜像）+ `mglRendererIvars()`：按 `ctx` 的**运行时偏移**取基址 |
+| `MGL/src/mgl_objc_exception_bridge.cpp` | `objc_setExceptionPreprocessor` 钩子 + `_Thread_local`，让 `catch (...)` 能取回 `NSException` 对象 |
+| `MGL/src/mgl_platform_shell_internal.h` | 壳两半共享的 C 声明（pending-size apply） |
+| `MGL/include/mgl_resource_fallback_state.h` | 从 `MGLRenderer_State.h` 迁出的 C 安全结构体（镜像 ivar 不能引 Foundation 头） |
+
+**规矩 67（ARC 语义不是风格问题）**：`__bridge`/`__bridge_transfer`/`CFBridgingRetain`/`CFBridgingRelease`/方法返回值约定
+（`objc_autoreleaseReturnValue`）在转换里都必须有对应物，否则就是泄漏或提前释放。
+**规矩 68（缓存持有唯一引用时，返回值不能照字面自动释放）**：静态缓存持有创建调用给的那一个 +1，`return cache[x];`
+在 ARC 里经返回值约定（借用方会握手吞掉 autorelease）是安全的，翻成裸 `-autorelease` 就会把缓存唯一的引用交出去
+⇒ 池子一泄对象即死、下次调用发消息给已释放对象（本刀实测：`air_cull_distance` 段错误 + NSZombie 点名 `_MTLFunctionInternal`）。
+**返回借用指针**才是等价物。
+
+**为什么 T1（壳类）与 T6（`MGLRenderer` 类）必须同一刀落地**：`MGLRenderer.h` 里
+`@interface MGLRenderer : MGLPlatformRendererShell` 的父类引用会发射 `_OBJC_CLASS_$_MGLPlatformRendererShell` **类符号**，
+而运行时注册的类**没有这个符号**；本仓库链接是 `-dynamiclib`（`LDFLAGS` 无 `-undefined dynamic_lookup`，见 Makefile 第 354 行），
+所以"先删壳类的 `@implementation`、`MGLRenderer` 还是编译器生成"这一步会**链接失败**。
+⇒ 顺序只能是：先把 T2/T5 全部搬出，最后**一刀**同时把两个类改成运行时注册并删掉 `.m`。
+最后那一刀还要处理：`MGLRenderer` 的 16 个 ivar 用 `class_addIvar(cls, name, size, alignment, "?")` 逐个重建
+（size/alignment 由镜像结构体裁剪出来，偏移语义与今天一致）、`_observedWindow` 用 `objc_storeWeak/objc_loadWeak` 保弱语义、
+分类方法体用 `class_addMethod` 挂到 `MGLRenderer` 上（`initialize`/`dealloc`/KVO/通知回调都必须是真方法）。
+`MGLPlatformRendererShell.h` 的 4 个 ivar（`_swapInterval` 显式 + `_view`/`_layer`/`_drawable` 属性合成）同理。
+另：Makefile 的 `test_metalcpp_smoke` 目标现在仍以 `-x objective-c++ -fobjc-arc` 编译这个 `.m`（第 1050 行 `-DMGL_PLATFORM_SHELL_SMOKE`），
+最后一刀要把它改成编译 `mgl_platform_shell.cpp`（C++，无 ARC），且该目标里的 `verifyPlatformRendererShell()` 会断言
+`performOperation:` 的 `exception_name == "MGLSmokeException"` —— 这正是异常桥必须成立的原因（第 206 条 ③）。
+
+**本刀闸门实测（`TAG=p150` 七簇电池 17:02–17:10）**：hotspot 1328/1328（pass 1270 / 非通过 **58**）、
+tess 140/140（139 / **1**）、gs 136/136（136 / **0**）、refq 223/223（164 / **59**）、piq 30/30（17 / **13**）、
+compute 152/152（113 / **39**）、pp 5/5（1 / **4**）——**七簇与上一刀（`p145`）的非通过集合 `diff` 逐条为空**，
+无 timeout / harness_error，`completed == total`。
+
+**下一刀建议顺序**：① T2 余段（`MGLRenderer (BatchZeroShell)` 的 `flushDrawBuffer:`、`(BindingShell)` 的 `bindMTLTexture:`
+两个方法体 + 缓存桥 + `mglPlatformShellGuardedCall*` 三处 `@try` + `mglRendererFlushDrawBufferLocked`、
+`mglPipelineCacheResetCaches` 两处 `@finally` ⇒ C++ `try/catch` + 作用域守卫，方法体用 `class_addMethod` 挂回
+`MGLRenderer`）；② T5 Lifecycle（构造/销毁 + KVO/通知 + `dealloc`）；③ T1+T6 一刀收口并删 `.m`。
 

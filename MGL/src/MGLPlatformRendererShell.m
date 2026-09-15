@@ -36,6 +36,7 @@
 #include "mgl_shader_resource.h"  /* mglShaderCompileGLSL, mglRenderCreateAuxFunctions */
 #include "mgl_air_loader.h"      /* MGLRenderPipelineDescriptorState */
 #include "mgl_pipeline_cache_path.h"  /* archive path (log 203) */
+#include "mgl_platform_shell_internal.h"  /* pending-size apply (log 206) */
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
 #import <objc/message.h>          /* objc_msgSend (runtime-created classes) */
@@ -246,281 +247,13 @@ void *mglPlatformRendererShellTextureForDrawable(void *drawable)
 /* The C++ smoke harness compiles this file standalone to check that the shell
  * keeps building as Objective-C++; the port wrappers below need the
  * batch/replay half of the library, so they are compiled out there. */
-/* === renderer port shim (merged from MGLPlatformRendererShell.m, T5) =========
- * The Objective-C surface C talks to now lives in this single platform TU:
- * the shell above plus the port wrappers below.  The port count is unchanged
- * (13) - this is the T5 consolidation into one shell translation unit, not a
- * port reduction. */
-void *mglRendererCreateIndirectCommandBuffer(void *renderer, int indexed,
-                                                 uint64_t count,
-                                                 int *failed_out)
-{
-    (void)renderer;
-    if (failed_out) {
-        *failed_out = 0;
-    }
-    /* The @try/@catch is the reason this one stays ObjC for now: Metal raises
-     * when an indirect command buffer cannot be allocated, and that has to
-     * become a NULL result the replay path can fall back from. */
-    @try {
-        return mgl_batch_mtl_create_icb(indexed, count);
-    } @catch (NSException *ex) {
-        static uint64_t s_hit = 0;
-        uint64_t hit = ++s_hit;
-        if (hit <= 8ull || (hit % 256ull) == 0ull) {
-            NSLog(@"MGL WARNING: ICB creation failed, falling back: %@", ex);
-        }
-        if (failed_out) {
-            *failed_out = 1;
-        }
-        return NULL;
-    }
-}
-
-
-/* === draw / tessellation host entries (phase 2) ========================= */
-/* The rasterizer-discard stub fragment function (moved out of
- * MGLRenderer+RenderPass.m so that file could be deleted, log 193).  The
- * dispatch_once + aux-asset/self-hosted-GLSL compile path is Objective-C by
- * construction; C callers reach it through
- * mglRenderPassDiscardStubFragmentFunction below. */
-typedef NS_ENUM(uint32_t, MGLStubFSValueClass) {
-    MGLStubFSFloat = 0,
-    MGLStubFSInt,
-    MGLStubFSUint,
-};
-
-static id mglRasterizerDiscardStubFragmentFunctionForClass(
-    MGLStubFSValueClass valueClass)
-{
-    static id s_fs[MGLStubFSUint + 1] = { nil, nil, nil };
-    static dispatch_once_t once[MGLStubFSUint + 1];
-
-    dispatch_once(&once[valueClass], ^{
-        void *fs = NULL;
-        char err[256] = {0};
-        if (valueClass == MGLStubFSFloat) {
-            /* Precompiled aux asset (no runtime source compile). */
-            const MGLAuxShaderAsset *safe =
-                mglAuxShaderAssetFind("safe_fallback");
-            void *vs = NULL;
-            if (!safe || !safe->data || safe->size == 0 ||
-                mglRenderCreateAuxFunctions(
-                    safe->data, safe->size, safe->hash,
-                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
-                    &vs, &fs, err, sizeof(err)) != 0 || !fs) {
-                NSLog(@"MGL ERROR: discard stub FS unavailable: %s",
-                      err[0] ? err : "asset missing");
-                if (vs) {
-                    (void)(__bridge_transfer id)vs;
-                }
-                return;
-            }
-            (void)(__bridge_transfer id)vs;
-        } else {
-            /* Integer-format targets reject a float4 output, and no
-             * precompiled integer stub asset ships in the aux table.
-             * Compile the integer zero stub at runtime through the
-             * self-hosted GLSL->AIR backend (the same path real programs
-             * take; its fragment output carries the correct
-             * air.render_target int/uint type). */
-            static const char *s_stubSource[MGLStubFSUint + 1] = {
-                NULL,
-                "#version 330\n"
-                "out ivec4 mgl_stub_color_int;\n"
-                "void main() { mgl_stub_color_int = ivec4(0); }\n",
-                "#version 330\n"
-                "out uvec4 mgl_stub_color_uint;\n"
-                "void main() { mgl_stub_color_uint = uvec4(0u); }\n",
-            };
-            unsigned char *bytes = NULL;
-            size_t size = 0;
-            if (mglShaderCompileGLSL(
-                    s_stubSource[valueClass], MGL_STAGE_FRAGMENT,
-                    &bytes, &size, err, sizeof(err)) != 0 || !bytes) {
-                NSLog(@"MGL ERROR: stub FS compile failed: %s",
-                      err[0] ? err : "unknown");
-                return;
-            }
-            /* mglRenderCreateAuxFunctions supports fragment-only blobs by
-             * accepting a NULL vertex entry, but the vertex output argument
-             * itself is still required so the API can publish both results.
-             * Passing NULL here made every integer render target fail with
-             * "bad args" before the stub function was even looked up. */
-            void *unusedVertex = NULL;
-            if (mglRenderCreateAuxFunctions(
-                    bytes, size, 0u, NULL, "main",
-                    &unusedVertex, &fs, err, sizeof(err)) != 0 || !fs) {
-                NSLog(@"MGL ERROR: stub FS function load failed: %s",
-                      err[0] ? err : "unknown");
-                if (unusedVertex) {
-                    (void)(__bridge_transfer id)unusedVertex;
-                }
-                free(bytes);
-                return;
-            }
-            if (unusedVertex) {
-                (void)(__bridge_transfer id)unusedVertex;
-            }
-            free(bytes);
-        }
-        s_fs[valueClass] = (__bridge_transfer id)fs;
-    });
-    return s_fs[valueClass];
-}
-
-/* C-callable bridge for the C pipeline-descriptor host: the stub factory itself
- * stays Objective-C (dispatch_once + blocks). */
-void *mglRenderPassDiscardStubFragmentFunction(uint32_t valueClass)
-{
-    return (__bridge void *)mglRasterizerDiscardStubFragmentFunctionForClass(
-        (MGLStubFSValueClass)valueClass);
-}
-
-int mglRendererLayerMetrics(void *renderer,
-                                MGLRendererLayerMetricsValue *metrics_out)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r) {
-        return 0;
-    }
-    const BOOL hasLayer = [r mglHasMetalLayer];
-    if (metrics_out) {
-        CGSize drawableSize = [r mglMetalLayerDrawableSize];
-        NSRect frame = [r mglMetalLayerFrame];
-        metrics_out->drawable_width = (double)drawableSize.width;
-        metrics_out->drawable_height = (double)drawableSize.height;
-        metrics_out->frame_width = (double)frame.size.width;
-        metrics_out->frame_height = (double)frame.size.height;
-    }
-    return hasLayer ? 1 : 0;
-}
-
-void mglRendererNextDrawable(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        /* -mglNextDrawable assigns self.drawable itself (which is what
-         * `_drawable = [self mglNextDrawable]` did). */
-        (void)[r mglNextDrawable];
-    }
-}
-
-void *mglRendererDrawableTexture(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? (__bridge void *)[r mglDrawableTexture] : NULL;
-}
-
-/* Forward declaration: the pending-size apply lives further down this TU. */
-static CGSize mglPlatformShellApplyPendingDrawableSizeCGSize(MGLRenderer *r);
-
-int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
-                                                       size_t required_width,
-                                                       size_t required_height,
-                                                       const char *reason)
-{
-    /* -mglEnsureLayerDrawableSizeAtLeastWidth:height:reason: moved here for the
-     * same reason as the pending-size apply above (log 201). */
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || ![r mglHasMetalLayer] || required_width == 0 ||
-        required_height == 0) {
-        return 0;
-    }
-
-    CGSize viewDrawableSize = mglPlatformShellApplyPendingDrawableSizeCGSize(r);
-    uint64_t targetWidth = required_width;
-    uint64_t viewW = (uint64_t)(viewDrawableSize.width > 1.0 ? viewDrawableSize.width : 1.0);
-    if (viewW > targetWidth) targetWidth = viewW;
-    uint64_t targetHeight = required_height;
-    uint64_t viewH = (uint64_t)(viewDrawableSize.height > 1.0 ? viewDrawableSize.height : 1.0);
-    if (viewH > targetHeight) targetHeight = viewH;
-    CGSize oldDrawableSize = [r mglMetalLayerDrawableSize];
-
-    if ((uint64_t)oldDrawableSize.width == targetWidth &&
-        (uint64_t)oldDrawableSize.height == targetHeight) {
-        return 0;
-    }
-
-    [r mglSetMetalLayerDrawableSize:CGSizeMake((CGFloat)targetWidth,
-                                               (CGFloat)targetHeight)];
-    if (r.drawable) {
-        r.drawable = nil;
-    }
-
-    static uint64_t s_forcedDrawableResizeCount = 0;
-    uint64_t hit = ++s_forcedDrawableResizeCount;
-    if (hit <= 32ull || (hit % 120ull) == 0ull) {
-        NSLog(@"MGL SIZE force drawable reason=%s hit=%llu required=%lux%lu viewSync=%.0fx%.0f old=%.0fx%.0f new=%lux%lu",
-              reason ? reason : "unknown", (unsigned long long)hit,
-              (unsigned long)required_width, (unsigned long)required_height,
-              viewDrawableSize.width, viewDrawableSize.height,
-              oldDrawableSize.width, oldDrawableSize.height,
-              (unsigned long)targetWidth, (unsigned long)targetHeight);
-    }
-
-    return 1;
-}
-/* GPU capture: the capture session lives on the shell object, which owns the
- * MTLCaptureManager descriptor/start/stop calls. */
-void mglPlatformShellGpuCaptureStart(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    /* MGLRenderer carries the capture methods (they come from the platform
-     * shell class), and the renderer owns the backend ivar holding the device. */
-    if (!r || !getenv("MGL_GPU_CAPTURE")) {
-        return;
-    }
-    id desc = [r mglCaptureDescriptorForDevice:(__bridge id)mglRendererBackendGetDevice(r->_backend)
-                                    outputPath:[NSString stringWithUTF8String:getenv("MGL_GPU_CAPTURE")]];
-    NSError *capErr = nil;
-    if (desc && [r mglStartCaptureWithDescriptor:desc error:&capErr]) {
-        NSLog(@"MGL GPU capture started -> %s", getenv("MGL_GPU_CAPTURE"));
-    } else {
-        NSLog(@"MGL GPU capture start failed: %@", capErr.localizedDescription);
-    }
-}
-
-void mglPlatformShellGpuCaptureStop(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r mglStopCapture];
-    }
-}
-
-/* === compute / tessellation host entries =================================
- * Thin forwards for the stages that are still Objective-C; see the ownership
- * notes next to their declarations in mgl_renderer_ports.h. */
-void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        /* -mglSetActiveContext: was one assignment to this @package ivar; the
-         * shell does it directly so the method can go (log 201). */
-        r->ctx = glm_ctx;
-    }
-}
-
-void *mglRendererTemporariesCreate(void)
-{
-    return (void *)CFBridgingRetain([NSMutableArray array]);
-}
-
-void mglRendererTemporariesAdd(void *temporaries, void *object)
-{
-    if (!temporaries || !object) {
-        return;
-    }
-    [(__bridge NSMutableArray *)temporaries addObject:(__bridge id)object];
-}
-
-void mglRendererTemporariesRelease(void *temporaries)
-{
-    if (temporaries) {
-        CFBridgingRelease(temporaries);
-    }
-}
+/* === renderer port shim (moved out, log 206) =============================
+ * The Objective-C surface C talks to - the indirect-command-buffer entry, the
+ * rasterizer-discard stub factory, the layer metrics/drawable ports, the GPU
+ * capture pair, the context/temporaries helpers and the swap-path queries -
+ * is now C++ in MGL/src/mgl_platform_shell.cpp.  What is left below is the
+ * part that still needs Objective-C: the two shell classes and the ports that
+ * send them messages. */
 
 /* The former mglRendererBindMTLTexturePort is gone: the body is the C function
  * mglRendererBindMTLTexture (mgl_texture_bind.h), and so is
@@ -867,59 +600,8 @@ int mglPlatformShellAutoreleasePoolCall(void *renderer,
     return result;
 }
 
-/* Swap-path queries and effects that must run on the shell object (log 180). */
-int mglPlatformShellShouldSkipPresentForUnlockedSwap(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? ([r mglShouldSkipPresentForUnlockedSwap] ? 1 : 0) : 0;
-}
-
-/* -mglApplyPendingDrawableSize moved here (log 201): it only touches the
- * core-state atomics and the layer helpers this TU already owns. */
-static CGSize mglPlatformShellApplyPendingDrawableSizeCGSize(MGLRenderer *r)
-{
-    MGL_ASSERT_GL_THREAD();
-    if (atomic_exchange_explicit(&r->_drawableSizeDirty, false,
-                                 memory_order_acquire)) {
-        uint32_t w = atomic_load_explicit(&r->_pendingDrawableW,
-                                          memory_order_relaxed);
-        uint32_t h = atomic_load_explicit(&r->_pendingDrawableH,
-                                          memory_order_relaxed);
-        CGSize s = CGSizeMake((CGFloat)(w > 1u ? w : 1u),
-                              (CGFloat)(h > 1u ? h : 1u));
-        [r mglSetMetalLayerDrawableSize:s];
-        return s;
-    }
-    return [r mglMetalLayerDrawableSize];
-}
-
-MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    MGLSizeValue size = {0};
-    if (!r) {
-        return size;
-    }
-    CGSize applied = mglPlatformShellApplyPendingDrawableSizeCGSize(r);
-    size.width = (uint64_t)applied.width;
-    size.height = (uint64_t)applied.height;
-    return size;
-}
-
-void *mglPlatformShellDrawablePointer(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? (__bridge void *)r.drawable : NULL;
-}
-
-/* The drawable is a property on this class, so C can only clear it here. */
-void mglPlatformShellSetDrawable(void *renderer, void *drawable)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        r.drawable = (__bridge id)drawable;
-    }
-}
+/* Swap-path queries and effects that must run on the shell object (log 180)
+ * moved to MGL/src/mgl_platform_shell.cpp (log 206). */
 
 /* The cache's C++ owner holds the blend record; C reads it through this
  * forwarder, the counterpart of mglPlatformShellPipelineCacheSetBlend. */
@@ -1483,7 +1165,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     if (NSThread.isMainThread) {
         [self mglMainThreadSyncViewGeometry];
     } else {
-        (void)mglPlatformShellApplyPendingDrawableSizeCGSize(self);
+        (void)mglPlatformShellApplyPendingDrawableSizeCGSize((__bridge void *)self);
     }
 
     /* Observe view geometry changes so the GL thread never needs to touch

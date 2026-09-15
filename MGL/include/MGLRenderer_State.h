@@ -58,9 +58,11 @@
 /* MGLGPURecoveryState moved to the C-safe mgl_gpu_recovery_state.h (the PSO
  * build path writes it from C). */
 
-typedef struct MGLResourceFallbackState_t {
-    MGLFragmentTextureTraceBinding fragmentTextureTraceBindings[TEXTURE_UNITS];
-} MGLResourceFallbackState;
+/* MGLResourceFallbackState moved to the C-safe mgl_resource_fallback_state.h
+ * (the converted platform shell mirrors the renderer's ivar layout from C++,
+ * log 206). */
+
+#include "mgl_resource_fallback_state.h"
 
 /* MGLTessellationState / MGLGeometryState moved to the C-safe
  * mgl_tessellation_state.h (the C draw host port mutates them). */
