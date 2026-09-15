@@ -7597,6 +7597,34 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
       CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B（新库 vs `8c4e578`）**逐行一致**——default **4981/4981**、flushy **5514/5514**，
       stderr MGL 多重集 **307/307**（首跑曾因合成异常的日志文案 305/307，按 ③ 对齐后恢复）。
 
+189. **第 158 轮附刀：修掉前几刀引入的"漏解引用"缺陷（`areas.binding_state_owner` 是槽地址，不是句柄）**：
+       ① **发现**：准备第一百二十八刀时按第 36 条做"逐 call site 扫 self 选择器"，顺手核对 binding 调用惯例，
+       发现 `mgl_clear_buffer_ops.c` 的 6 处 binding 调用与 `mgl_render_pass_manager_ops.c:3986` 的 1 处，
+       把 areas 字段 **`binding_state_owner`（= `&r->_bindingStateOwner` 的地址）**当句柄直接传给了
+       `mglRenderBindingSetPipelineState` / `…SetViewportForOwner` / `…SetDepthStencilState` / `…SetPipelineIfNeededForOwner` /
+       `…InvalidateVertexBuffer` / `…InvalidateFragmentBuffer`；同一字段的其它 20+ 处调用（`mgl_binding_state_ops.c`、
+       `mgl_batch_dyn_bind_encode.c`、`mgl_stage_encode_drivers.c` …）**都写成 `*areas.binding_state_owner`**。
+       对照被删掉的 `.m` 原文（`526bd9a` 前的 `MGLRenderer.m`）确认：**原代码传的是 `_bindingStateOwner` 本身**，
+       是转 C 时**漏了一个 `*`**（`526bd9a` 的 clear 路径、`060088a` 的 set-pipeline 块各一处）。
+       ② **后果（用运行时探针量出来的，不是猜的）**：`mgl_render.cpp:14090` 直接
+       `static_cast<mgl::BindingState*>(binding_state)`，无有效性检查；`offsetof(BindingState, pipelineState) = 216`，
+       而 `&_bindingStateOwner`（ivar offset 12616）+216 = `_tessellation + 208`——**落在 `nativeTESCopyBacks`
+       （offset 56、size 1240）里面**。于是 `replaceObject` 会把该处 8 字节当成 `MTL::RenderPipelineState*`：
+       非空就 `->release()`（对野指针发消息），然后把真 PSO 写进去；`depthStencilState` 同理落在 +216/+224。
+       `sizeof(MGLTessellationState) = 1368` 与 ivar 间距（13992−12624）一致，**这条偏移链是可复算的**。
+       ③ **为什么测试没抓到**：`canReuseCurrentEncoder` 这条 clear 复用路径在测试矩阵里没被走到
+       （修前修后 A/B **逐行完全一致**），所以它是一颗**未引爆的地雷**，不是当前失败源。
+       ④ **修法**：7 处一律改成在**使用点**解引用（`void *bindingOwner = areas.binding_state_owner ? *areas.binding_state_owner : NULL;`），
+       与字段注释（`mgl_renderer_ports.h`："ADDRESS of the owner slot … dereference it at the point of use"）和第 36 条一致。
+       **0 行 ObjC 增减**（纯 `.c`），端口面不变。
+       ⑤ **验证**：`make -j8` 0 error；单例探针 **2/2**；`make test-all` 绕行后 **PASS: 92 FAIL: 0 SKIP: 2 / 94**；
+       A/B（新库 vs `8c4e578`）**逐行一致**——default **4981/4981**、flushy **5514/5514**、stderr MGL 多重集 **307/307**
+       （即：这刀是"修好但不改变可观测行为"）。CTS 七簇随第一百二十八刀一起跑（同一二进制）。
+       ⑥ **新规第 59 条：areas 里的"槽地址"字段，转 C 时最容易漏 `*`**。
+       凡是 areas 字段名以 `_owner` 结尾且注释写了 "ADDRESS of … slot"（`binding_state_owner`、`gpu_recovery_command_owner`），
+       **每次使用都要解引用**；核对办法：同一字段在别的 `.c` 里怎么用（全库一致性），
+       以及对被删的 `.m` 原文（`git show <commit>^:<file>`）——**惯例不能凭记忆，必须看原文**。
+
 ### 0.114 第 157 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.112/§0.113**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 11,849 行 / 653 语法 / 1,289 词汇**；

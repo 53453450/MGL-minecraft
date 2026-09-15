@@ -3982,8 +3982,13 @@ static int mglPdSetPipelineTryBody(void *renderer, void *rawCtx)
 {
     MglPdSetPipelineCtx *ctx = (MglPdSetPipelineCtx *)rawCtx;
     MGLCommandState *commandState = ctx->areas->command;
+    /* The areas field is the ADDRESS of the owner slot (mgl_renderer_ports.h);
+     * the .m this block came from passed the ivar. */
+    void *bindingOwner = ctx->areas->binding_state_owner
+                             ? *ctx->areas->binding_state_owner
+                             : NULL;
     if (mglRenderBindingSetPipelineIfNeededForOwner(
-            ctx->areas->binding_state_owner,
+            bindingOwner,
             commandState->currentRenderEncoderOwner,
             ctx->areas->pipeline_cache
                 ? ctx->areas->pipeline_cache->pipelineState

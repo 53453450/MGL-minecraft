@@ -535,34 +535,38 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     }
 
     if (canReuseCurrentEncoder) {
+        /* areas.binding_state_owner is the ADDRESS of the owner slot (see
+         * mgl_renderer_ports.h); every binding call needs the handle.  The .m
+         * this path came from passed the ivar itself. */
+        void *bindingOwner =
+            areas.binding_state_owner ? *areas.binding_state_owner : NULL;
         mglRenderBindingSetViewportForOwner(
-            areas.binding_state_owner, commandState->currentRenderEncoderOwner,
+            bindingOwner, commandState->currentRenderEncoderOwner,
             viewport.origin_x, viewport.origin_y, viewport.width, viewport.height,
             viewport.znear, viewport.zfar);
         mglRenderBindingSetScissorForOwner(
-            areas.binding_state_owner, commandState->currentRenderEncoderOwner,
+            bindingOwner, commandState->currentRenderEncoderOwner,
             scissor.x, scissor.y, scissor.width, scissor.height);
         mglRenderSetRenderPipelineStateForOwner(
             commandState->currentRenderEncoderOwner, pipeline);
-        mglRenderBindingSetPipelineState(areas.binding_state_owner, pipeline);
+        mglRenderBindingSetPipelineState(bindingOwner, pipeline);
         if (wantsDepth) {
             void *depthState = mglBlitClearRectDepthState(renderer);
             if (depthState) {
                 mglRenderSetRenderDepthStencilStateForOwner(
                     commandState->currentRenderEncoderOwner, depthState);
-                mglRenderBindingSetDepthStencilState(areas.binding_state_owner,
-                                                     depthState);
+                mglRenderBindingSetDepthStencilState(bindingOwner, depthState);
             }
         }
         mglRenderSetRenderBytesForOwner(
             commandState->currentRenderEncoderOwner, &params, sizeof(params),
             MGL_RENDER_BINDING_STAGE_VERTEX, 0);
-        mglRenderBindingInvalidateVertexBuffer(areas.binding_state_owner, 0);
+        mglRenderBindingInvalidateVertexBuffer(bindingOwner, 0);
         if (wantsColor) {
             mglRenderSetRenderBytesForOwner(
                 commandState->currentRenderEncoderOwner, &params, sizeof(params),
                 MGL_RENDER_BINDING_STAGE_FRAGMENT, 0);
-            mglRenderBindingInvalidateFragmentBuffer(areas.binding_state_owner, 0);
+            mglRenderBindingInvalidateFragmentBuffer(bindingOwner, 0);
         }
         const MGLRenderDrawPlan clearDraw = {
             .kind = MGL_RENDER_DRAW_ARRAY,
