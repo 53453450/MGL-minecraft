@@ -38,6 +38,7 @@
 #include "mgl_pipeline_cache_path.h"  /* archive path (log 203) */
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
+#import <objc/message.h>          /* objc_msgSend (runtime-created classes) */
 
 #include <string.h>   /* mglBatchFlushBegin/RunBatches/TeardownReplay */
 
@@ -645,7 +646,9 @@ int mglPlatformShellRecreateCommandQueue(void *renderer)
  * setter: the cache object travels in the state areas). */
 int mglPipelineCacheResetCaches(void *pipeline_cache_object)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache) {
         return 0;
     }
@@ -719,7 +722,9 @@ int mglPlatformShellGuardedCall(void *renderer, const char *what,
 /* Clears the cache's active pipeline state (log 178). */
 void mglPlatformShellPipelineCacheInvalidate(void *pipeline_cache_object)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (cache) {
         [cache invalidatePipelineState];
     }
@@ -730,7 +735,9 @@ int mglPlatformShellPipelineCacheDescriptorStateForWords(
     void *pipeline_cache_object, const uint64_t *words,
     MGLRenderPipelineDescriptorState *state_out)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache || !words || !state_out) {
         return 0;
     }
@@ -742,7 +749,9 @@ int mglPlatformShellPipelineCacheCreatePSO(
     void *vertex_function, void *fragment_function, void **pipeline_out,
     char *error_message, size_t error_capacity)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache || !state || !pipeline_out) {
         return -1;
     }
@@ -758,7 +767,9 @@ void mglPlatformShellPipelineCacheStorePipeline(
     void *pipeline_cache_object, void *pipeline, void *vertex_function,
     void *fragment_function, const uint64_t *words)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache || !words) {
         return;
     }
@@ -772,7 +783,9 @@ void mglPlatformShellPipelineCacheStoreDescriptorState(
     void *pipeline_cache_object, const MGLRenderPipelineDescriptorState *state,
     const uint64_t *words)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache || !state || !words) {
         return;
     }
@@ -784,7 +797,9 @@ void mglPlatformShellPipelineCacheDepthStencilStateForValueState(
     const MGLRenderDepthStencilDescriptorState *state, void **out)
 {
     if (out) *out = NULL;
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache || !state) {
         return;
     }
@@ -796,7 +811,9 @@ int mglPlatformShellPipelineCacheLookupPipeline(
     void *pipeline_cache_object, const uint64_t *words, void **pipeline_out,
     void **vertex_function_out, void **fragment_function_out)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache) {
         return 0;
     }
@@ -820,7 +837,9 @@ void mglPlatformShellPipelineCacheActivate(
     uint32_t depth_format, uint32_t stencil_format, uint32_t program_name,
     void *vertex_function, void *fragment_function)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache) {
         return;
     }
@@ -908,7 +927,9 @@ int mglPlatformShellPipelineCacheBlendState(void *pipeline_cache_object,
                                            uint32_t index,
                                            MGLRenderPipelineBlendState *blend)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache || !blend || index >= MAX_COLOR_ATTACHMENTS) {
         return 0;
     }
@@ -919,7 +940,9 @@ int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
                                           uint32_t index,
                                           const MGLRenderPipelineBlendState *blend)
 {
-    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    /* id, not the class type: the class is created by the runtime now, so no
+     * _OBJC_CLASS_$_MGLPipelineCache symbol exists to reference (log 205). */
+    id cache = (__bridge id)pipeline_cache_object;
     if (!cache || !blend || index >= MAX_COLOR_ATTACHMENTS) {
         return 0;
     }
@@ -1260,10 +1283,24 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     BOOL binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
-    _pipelineCache = [[MGLPipelineCache alloc]
-        initWithPSODedupEnabled:psoDedupEnabled
-      depthStencilCacheEnabled:depthStencilCacheEnabled
-           binaryArchiveEnabled:binaryArchiveEnabled];
+    /* The cache class is registered by the runtime (log 205), so it is created
+     * through objc_getClass + objc_msgSend rather than with a class symbol. */
+    {
+        Class cacheClass = objc_getClass("MGLPipelineCache");
+        id cache = cacheClass
+                       ? ((id (*)(id, SEL))objc_msgSend)(
+                             ((id (*)(id, SEL))objc_msgSend)(
+                                 (id)cacheClass, sel_registerName("alloc")),
+                             sel_registerName(
+                                 "initWithPSODedupEnabled:"
+                                 "depthStencilCacheEnabled:"
+                                 "binaryArchiveEnabled:"))
+                       : nil;
+        /* Two hops: id -> void* (unretained) -> the ivar's class type.  The
+         * class symbol itself is never referenced, which is the point. */
+        void *cacheOpaque = (__bridge void *)cache;
+        _pipelineCache = (__bridge MGLPipelineCache *)cacheOpaque;
+    }
     /* Snapshot arena: batch snapshot/commands from bump allocator. */
     _batching.arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
     if (_batching.arenaSnapshotEnabled) {
@@ -1757,418 +1794,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
  * code whose observable behaviour the A/B oracle deliberately filters out
  * ("BINARY ARCHIVE" lines), so that conversion wants its own oracle first. */
 
-@interface MGLPipelineCache ()
-- (BOOL)ensureOwnerCreated;
-- (BOOL)ensureOwner;
-@end
 
-/* v5 excludes either kind of incomplete render pipeline and isolates both
- * sanitizer builds and archive producers. The producer boundary prevents the
- * temporary A/B implementations from sharing mutable state; the archive-aware
- * PSO creation path below separately prevents repeated adds on cache hits. */
-#if __has_feature(address_sanitizer)
-static NSString * const kMGLPipelineArchiveBuildSchema = @"v5-asan";
-#elif __has_feature(thread_sanitizer)
-static NSString * const kMGLPipelineArchiveBuildSchema = @"v5-tsan";
-#else
-static NSString * const kMGLPipelineArchiveBuildSchema = @"v5";
-#endif
-/* The C twin of the schema constant (the C path builder takes a C string). */
-#if __has_feature(address_sanitizer)
-static const char * const kMGLPipelineArchiveBuildSchemaC = "v5-asan";
-#elif __has_feature(thread_sanitizer)
-static const char * const kMGLPipelineArchiveBuildSchemaC = "v5-tsan";
-#else
-static const char * const kMGLPipelineArchiveBuildSchemaC = "v5";
-#endif
-
-
-@implementation MGLPipelineCache
-
-- (instancetype)initWithPSODedupEnabled:(BOOL)psoDedupEnabled
-                depthStencilCacheEnabled:(BOOL)depthStencilCacheEnabled
-                     binaryArchiveEnabled:(BOOL)binaryArchiveEnabled
-{
-    self = [super init];
-    if (!self) return nil;
-
-    _state.pipelineColor0Format = 0u;
-    _state.pipelineDepthFormat = 0u;
-    _state.pipelineStencilFormat = 0u;
-    _state.psoDedupEnabled = psoDedupEnabled;
-    _state.dsCacheEnabled = depthStencilCacheEnabled;
-    _binaryArchiveRequested = binaryArchiveEnabled;
-    return self;
-}
-
-- (const MGLPipelineCacheState *)state
-{
-    return &_state;
-}
-
-- (BOOL)ensureOwnerCreated
-{
-    if (_owner) return YES;
-    if (!_cacheDevice) return NO;
-    if (mglRenderCreatePipelineCacheOwner(
-            _state.psoDedupEnabled ? 1 : 0,
-            _state.dsCacheEnabled ? 1 : 0,
-            _binaryArchiveRequested ? 1 : 0,
-            &_owner) != 0 || !_owner) {
-        _owner = NULL;
-        return NO;
-    }
-
-    MGLRenderPipelineActiveState active = {
-        .pipeline_state = _state.pipelineState,
-        .vertex_function = _state.pipelineVertexFunction,
-        .fragment_function = _state.pipelineFragmentFunction,
-        .color0_format = (uint32_t)_state.pipelineColor0Format,
-        .depth_format = (uint32_t)_state.pipelineDepthFormat,
-        .stencil_format = (uint32_t)_state.pipelineStencilFormat,
-        .program_name = _state.pipelineProgramName,
-    };
-    mglRenderActivatePipelineState(_owner, &active);
-    return YES;
-}
-
-- (BOOL)ensureOwner
-{
-    return [self ensureOwnerCreated];
-}
-
-- (BOOL)isBinaryArchiveEnabled
-{
-    int enabled = _binaryArchiveRequested ? 1 : 0;
-    if (_owner) {
-        mglRenderGetPipelineBinaryArchiveState(
-            _owner, &enabled, NULL);
-    }
-    return enabled != 0;
-}
-
-- (id)device
-{
-    return (__bridge id)_cacheDevice;
-}
-
-- (void)setDevice:(id)device
-{
-    void *opaqueDevice = (__bridge void *)device;
-    if (_cacheDevice != opaqueDevice) {
-        mglRenderDestroyPipelineCacheOwner(&_owner);
-    }
-    _cacheDevice = opaqueDevice;
-    if (_cacheDevice) [self ensureOwnerCreated];
-}
-
-- (id)depthStencilStateForValueState:
-    (const MGLRenderDepthStencilDescriptorState *)descriptorState
-{
-    if (!descriptorState || !_cacheDevice || ![self ensureOwner]) return nil;
-    void *statePtr = NULL;
-    if (_state.dsCacheEnabled) {
-        int created = 0;
-        if (mglRenderGetOrCreateDepthStencilState(
-                _owner, descriptorState, &statePtr, &created) == 0 &&
-            statePtr) {
-            if (created) MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-            return (__bridge id)statePtr;
-        }
-        return nil;
-    }
-    if (mglRenderCreateDepthStencilStateFromState(
-            descriptorState, &statePtr) == 0 && statePtr) {
-        MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
-        return (__bridge_transfer id)statePtr;
-    }
-    return nil;
-}
-
-- (BOOL)lookupPipelineForWords:(const uint64_t *)words
-                      pipeline:(id *)pipelineOut
-                vertexFunction:(id *)vertexFunctionOut
-              fragmentFunction:(id *)fragmentFunctionOut
-{
-    if (pipelineOut) *pipelineOut = nil;
-    if (vertexFunctionOut) *vertexFunctionOut = nil;
-    if (fragmentFunctionOut) *fragmentFunctionOut = nil;
-    if (!words || !pipelineOut || !vertexFunctionOut ||
-        !fragmentFunctionOut) {
-        return NO;
-    }
-    if (![self ensureOwner]) return NO;
-    MGLRenderPipelineActiveState cached = {0};
-    if (mglRenderLookupPipeline(_owner, words, &cached) != 1 ||
-        !cached.pipeline_state) {
-        return NO;
-    }
-    *pipelineOut = (__bridge id)cached.pipeline_state;
-    *vertexFunctionOut = (__bridge id)cached.vertex_function;
-    *fragmentFunctionOut = (__bridge id)cached.fragment_function;
-    return YES;
-}
-
-- (NSUInteger)storePipeline:(id)pipeline
-              vertexFunction:(id)vertexFunction
-            fragmentFunction:(id)fragmentFunction
-                    forWords:(const uint64_t *)words
-{
-    if (!pipeline || !words) return 0;
-    if (![self ensureOwner]) return 0;
-    MGLRenderPipelineActiveState state = {
-        .pipeline_state = (__bridge void *)pipeline,
-        .vertex_function = (__bridge void *)vertexFunction,
-        .fragment_function = (__bridge void *)fragmentFunction,
-    };
-    uint32_t removed = 0;
-    if (mglRenderStorePipeline(
-            _owner, words, &state, &removed) != 0) {
-        return 0;
-    }
-    MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
-    return (NSUInteger)removed;
-}
-
-- (BOOL)pipelineDescriptorStateForWords:(const uint64_t *)words
-                                  state:(MGLRenderPipelineDescriptorState *)stateOut
-{
-    if (!words || !stateOut) return NO;
-    return [self ensureOwner] &&
-        mglRenderLookupPipelineDescriptorState(
-            _owner, words, stateOut) == 1;
-}
-
-- (void)storePipelineDescriptorState:(const MGLRenderPipelineDescriptorState *)state
-                            forWords:(const uint64_t *)words
-{
-    if (!state || !words) return;
-    if (![self ensureOwner]) return;
-    mglRenderStorePipelineDescriptorState(_owner, words, state);
-}
-
-- (BOOL)blendStateForAttachment:(NSUInteger)index
-                            out:(MGLRenderPipelineBlendState *)outState
-{
-    if (index >= MAX_COLOR_ATTACHMENTS || !outState) return NO;
-    return [self ensureOwner] &&
-        mglRenderGetPipelineBlendState(
-            _owner, (uint32_t)index, outState) == 0;
-}
-
-/* The path itself is built in C now (mgl_pipeline_cache_path.c): Foundation's
- * directory search, bundle id lookup and file manager are POSIX + CF there, and
- * the result is byte-for-byte the same string.  Only the NSURL the Metal-cpp
- * archive API takes is still constructed here. */
-- (NSString *)binaryArchivePath
-{
-    char path[PATH_MAX] = {0};
-    if (mglPipelineCacheArchiveKey(_cacheDevice, kMGLPipelineArchiveBuildSchemaC,
-                                   path, sizeof(path)) != 0) {
-        return nil;
-    }
-    return [NSString stringWithUTF8String:path];
-}
-
-- (NSURL *)binaryArchiveURL
-{
-    NSString *path = [self binaryArchivePath];
-    return path ? [NSURL fileURLWithPath:path] : nil;
-}
-
-- (void)loadBinaryArchive
-{
-    if (!self.binaryArchiveEnabled || !_cacheDevice ||
-        ![self ensureOwnerCreated]) return;
-
-    NSURL *archiveURL = [self binaryArchiveURL];
-    char archiveKey[PATH_MAX] = {0};
-    (void)mglPipelineCacheArchiveKey(_cacheDevice, kMGLPipelineArchiveBuildSchemaC,
-                                     archiveKey, sizeof(archiveKey));
-    int archiveExists = mglPipelineCacheArchiveExists(archiveKey);
-    int reused = 0;
-    char message[512] = {0};
-    int result = mglRenderLoadPipelineBinaryArchive(
-        _owner, archiveKey, (__bridge void *)archiveURL,
-        archiveExists ? 1 : 0, &reused, message, sizeof(message));
-    if (result != 0 && archiveExists) {
-        if (!mglPipelineCacheArchiveRemove(archiveKey)) {
-            NSLog(@"MGL BINARY ARCHIVE: failed to remove incompatible archive: %s",
-                  strerror(errno));
-        }
-        NSLog(@"MGL BINARY ARCHIVE: rebuilding incompatible archive: %s",
-              message[0] ? message : "unknown error");
-        archiveExists = NO;
-        message[0] = '\0';
-        result = mglRenderLoadPipelineBinaryArchive(
-            _owner, archiveKey, (__bridge void *)archiveURL, 0, &reused,
-            message, sizeof(message));
-    }
-    if (result == 0) {
-        NSLog(@"MGL BINARY ARCHIVE: %@ %@",
-              reused ? @"reused" : (archiveExists ? @"loaded" : @"created"),
-              archiveURL.lastPathComponent);
-    } else {
-        NSLog(@"MGL BINARY ARCHIVE: unavailable, PSO compile will continue without it: %s",
-              message[0] ? message : "unknown error");
-    }
-}
-
-- (void)saveBinaryArchive
-{
-    int present = 0;
-    if (!_owner ||
-        mglRenderGetPipelineBinaryArchiveState(
-            _owner, NULL, &present) != 0 || !present) return;
-
-    NSURL *archiveURL = [self binaryArchiveURL];
-    char archiveKey[PATH_MAX] = {0};
-    (void)mglPipelineCacheArchiveKey(_cacheDevice, kMGLPipelineArchiveBuildSchemaC,
-                                     archiveKey, sizeof(archiveKey));
-    char message[512] = {0};
-    BOOL ok = mglRenderSerializePipelineBinaryArchive(
-        _owner, (__bridge void *)archiveURL,
-        message, sizeof(message)) == 0;
-    BOOL discarded = NO;
-    if (!ok) {
-        discarded = !mglPipelineCacheArchiveExists(archiveKey) ||
-                    mglPipelineCacheArchiveRemove(archiveKey);
-        mglRenderDiscardPipelineBinaryArchive(_owner, archiveKey);
-    }
-    if (ok) {
-        NSLog(@"MGL BINARY ARCHIVE: saved to %@", archiveURL.lastPathComponent);
-    } else {
-        NSString *description = message[0]
-            ? [NSString stringWithUTF8String:message] : @"unknown error";
-        if (discarded) {
-            NSLog(@"MGL BINARY ARCHIVE: discarded unserializable archive: %@",
-                  description);
-        } else {
-            NSLog(@"MGL BINARY ARCHIVE: serialize failed: %@; removal failed: %s",
-                  description, strerror(errno));
-        }
-    }
-}
-
-- (int)createRenderPipelineFromState:
-    (const MGLRenderPipelineDescriptorState *)state
-    vertexFunction:(void *)vertexFunction
-    fragmentFunction:(void *)fragmentFunction
-    pipelineOut:(void **)pipelineOut
-    errorMessage:(char *)errorMessage
-    errorCapacity:(size_t)errorCapacity
-{
-    if (![self ensureOwnerCreated]) return -1;
-    return mglRenderCreateRenderPipelineFromStateWithArchiveOwner(
-        _owner, vertexFunction, fragmentFunction, state,
-        pipelineOut, errorMessage, errorCapacity);
-}
-
-- (void)invalidatePipelineState
-{
-    if ([self ensureOwner]) {
-        mglRenderInvalidatePipelineActiveState(_owner);
-    }
-    _state.pipelineState = NULL;
-    _state.pipelineColor0Format = 0u;
-    _state.pipelineDepthFormat = 0u;
-    _state.pipelineStencilFormat = 0u;
-    _state.pipelineProgramName = 0u;
-    _state.pipelineVertexFunction = NULL;
-    _state.pipelineFragmentFunction = NULL;
-}
-
-- (void)setPipelineState:(id)pipelineState
-{
-    if ([self ensureOwner]) {
-        mglRenderSetPipelineActiveObject(
-            _owner, (__bridge void *)pipelineState);
-    }
-    _state.pipelineState = (__bridge void *)pipelineState;
-}
-
-- (void)activatePipelineState:(id)pipelineState
-                 color0Format:(uint32_t)color0Format
-                  depthFormat:(uint32_t)depthFormat
-                stencilFormat:(uint32_t)stencilFormat
-                  programName:(GLuint)programName
-               vertexFunction:(id)vertexFunction
-             fragmentFunction:(id)fragmentFunction
-{
-    if ([self ensureOwner]) {
-        MGLRenderPipelineActiveState active = {
-            .pipeline_state = (__bridge void *)pipelineState,
-            .vertex_function = (__bridge void *)vertexFunction,
-            .fragment_function = (__bridge void *)fragmentFunction,
-            .color0_format = (uint32_t)color0Format,
-            .depth_format = (uint32_t)depthFormat,
-            .stencil_format = (uint32_t)stencilFormat,
-            .program_name = programName,
-        };
-        mglRenderActivatePipelineState(_owner, &active);
-    }
-    _state.pipelineState = (__bridge void *)pipelineState;
-    _state.pipelineColor0Format = (uint64_t)color0Format;
-    _state.pipelineDepthFormat = (uint64_t)depthFormat;
-    _state.pipelineStencilFormat = (uint64_t)stencilFormat;
-    _state.pipelineProgramName = programName;
-    _state.pipelineVertexFunction = (__bridge void *)vertexFunction;
-    _state.pipelineFragmentFunction = (__bridge void *)fragmentFunction;
-}
-
-- (void)setBlendFactorsForAttachment:(NSUInteger)index
-                        srcRgbFactor:(uint32_t)srcRgbFactor
-                      srcAlphaFactor:(uint32_t)srcAlphaFactor
-                        dstRgbFactor:(uint32_t)dstRgbFactor
-                      dstAlphaFactor:(uint32_t)dstAlphaFactor
-                        rgbOperation:(uint32_t)rgbOperation
-                      alphaOperation:(uint32_t)alphaOperation
-                           colorMask:(uint32_t)colorMask
-{
-    if (index >= MAX_COLOR_ATTACHMENTS) return;
-    if ([self ensureOwner]) {
-        MGLRenderPipelineBlendState blend = {
-            .source_rgb_factor = (uint32_t)srcRgbFactor,
-            .destination_rgb_factor = (uint32_t)dstRgbFactor,
-            .source_alpha_factor = (uint32_t)srcAlphaFactor,
-            .destination_alpha_factor = (uint32_t)dstAlphaFactor,
-            .rgb_operation = (uint32_t)rgbOperation,
-            .alpha_operation = (uint32_t)alphaOperation,
-            .color_write_mask = (uint32_t)colorMask,
-        };
-        mglRenderSetPipelineBlendState(
-            _owner, (uint32_t)index, &blend);
-    }
-}
-
-- (void)disableBinaryArchive
-{
-    _binaryArchiveRequested = NO;
-    if ([self ensureOwnerCreated]) {
-        mglRenderDisablePipelineBinaryArchive(_owner);
-    }
-}
-
-- (void)resetCaches
-{
-    mglRenderResetPipelineCacheOwner(_owner);
-    _state.pipelineState = NULL;
-    _state.pipelineVertexFunction = NULL;
-    _state.pipelineFragmentFunction = NULL;
-}
-
-- (void)shutdown
-{
-    [self resetCaches];
-    _cacheDevice = NULL;
-    mglRenderDestroyPipelineCacheOwner(&_owner);
-}
-
-- (void)dealloc
-{
-    mglRenderDestroyPipelineCacheOwner(&_owner);
-}
-
-@end
+/* === MGLPipelineCache: the class moved to mgl_pipeline_cache_class.cpp =====
+ * It is registered with the Objective-C runtime at load time now (no .m), so the
+ * extension declaration and the build schema constants live there too.  Callers
+ * keep sending it messages, which a runtime-registered class supports. */
 
 #endif /* MGL_PLATFORM_SHELL_SMOKE */

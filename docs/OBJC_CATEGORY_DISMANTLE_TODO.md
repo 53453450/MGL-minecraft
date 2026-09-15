@@ -8043,6 +8043,29 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
        **归档专属 oracle 三项全等**；A/B（新库 vs `8c4e578`）**逐行一致**——default **4981/4981**、flushy **5514/5514**、
        stderr MGL 多重集 **307/307**；CTS 七簇 **diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）。
 
+205. **第 174 轮（P0-1 第一百四十三刀）：**T5 选项 (a) 开工——`MGLPipelineCache` 类改为运行时注册的 C++ 类（无 `.m`）****：
+       ① **背景**：用户要求"连壳也删掉"，即把 `MGL/` 内 `.m` 数真正做到 **0**。先做**可行性实验**（结论已写入本节）：
+       **(a)** C++ `catch (...)` **能**捕获 ObjC 异常（`NSException` 走 Itanium C++ EH 个性）⇒ 11 处 `@try` 可换 C++ try/catch；
+       **(b)** `.cpp` 内 `objc_msgSend` + 按签名强转可用；**(c)** `CFSTR` 可当 `NSString` 常量（toll-free bridged）；
+       **(d)** `objc_autoreleasePoolPush/Pop` 可用（需本地 extern）；**(e)** `objc_allocateClassPair` + `class_addIvar`（结构体 ivar 用 `"?"` 编码）+
+       `class_addMethod` + `objc_registerClassPair` + `ivar_getOffset` **全部可用**（实验程序 `sum=48886` 正确）。
+       ② **本刀做法**：新建 `MGL/src/mgl_pipeline_cache_class.cpp`（约 640 行），把 `MGLPipelineCache` **整个类**搬过去：
+       运行时建类 + 4 个 ivar（`_state`/`_cacheDevice`/`_owner`/`_binaryArchiveRequested`）+ 25 个方法（每个是一个 C 函数，
+       用 `mglPcSend<R>(obj, SEL, args…)` 模板做 `objc_msgSend` 强转）+ `[super init]`→`objc_msgSendSuper` +
+       `NSLog`→`fprintf` + `@"…"`→`CFSTR`/`stringWithUTF8String:`；`_state` 等 ivar 一律走注册时缓存的偏移。
+       `.m` 里删掉 `@implementation MGLPipelineCache … @end`、类扩展声明与 schema 常量，只留墓碑注释。
+       ③ **一处必须处理的连锁**：`.m` 里 11 处 `MGLPipelineCache *cache = (__bridge MGLPipelineCache *)…` 与
+       `[[MGLPipelineCache alloc] init…]` 会发射 **`_OBJC_CLASS_$_MGLPipelineCache` 类符号**，而运行时建类没有该符号
+       ⇒ 全部改用 `id` + `objc_getClass("MGLPipelineCache")` + `objc_msgSend`（并用"id → void* → 目标类型"两级桥接绕开 ARC 类型检查）。
+       ④ **验证（本刀全套）**：`make -j8` **0 error**；单例探针 **2/2**；**归档专属 oracle 三项全等**（该类的主要观测面）；
+       `make test-all` 绕行后 **exit 0 / PASS: 92 FAIL: 0 SKIP: 2 / 94**；A/B **逐行一致**（4981/4981、5514/5514、stderr 307/307）；
+       CTS 七簇 **diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）。
+       ⑤ **度量**：壳 **2,174 → 1,803 行（−371）**、语法 **266 → 220（−46）**、词汇 **261 → 206（−55）**；
+       新宿主 `mgl_pipeline_cache_class.cpp` ~640 行；全库仍 **1 个 `.m`**、端口 **0**。
+       ⑥ **剩余（下一个目标的切片表）**：壳里还剩 T1 壳类（198 行 / 16 语法）、T2 入口与 `@try` 守卫（296 行 / 32 语法）、
+       T3/T4 两个空类别（23 行）、**T5 Lifecycle 类别（638 行 / 78 语法 / 46 处 AppKit）**、T6 空 `@implementation MGLRenderer`
+       （它承载类扩展的 `@package` ivar，最后一步要用运行时建类 + ivar 列表顶替）。
+
 ### 0.114 第 157 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.112/§0.113**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 11,849 行 / 653 语法 / 1,289 词汇**；
@@ -8586,4 +8609,30 @@ ObjC 语法 **2,268 → 266（−88.3%）**、词汇 **4,353 → 261（−94.0%�
 
 **若继续推进（可选，不属终态必需）**：壳内 `NSView`/`NSWindow`/`NSNotificationCenter` 是 T5 的正当范围；
 `NSLog` 68 处、`NSException`/`@try` 11 处可按第 66 条的节奏逐步收敛（会改动 A/B 观测行，需专属 oracle）。
+
+### 0.131 第 174 轮交接快照（**T5 选项 (a)：壳转 C++ 的进度与切片表**）
+
+**当前状态**：`MGL/` 内仍 **1 个 `.m`**（`MGLPlatformRendererShell.m`），已从 **2,174 行 / 266 语法** 降到 **1,803 行 / 220 语法 / 206 词汇**；
+端口 **0**；`make test-all`、CTS 七簇、A/B、归档专属 oracle 全部绿（第一百四十三刀）。
+
+**已确立的机制（实验验证，见第 205 条 ①）**：`.cpp` 里可以
+`objc_allocateClassPair`/`class_addIvar`（结构体 ivar 用 `"?"`）/`class_addMethod`/`objc_registerClassPair`/`ivar_getOffset`，
+`objc_msgSend` 按签名强转，`CFSTR` 当 NSString，`objc_autoreleasePoolPush/Pop`，**C++ `catch (...)` 能捕获 NSException**。
+
+**新的宿主 TU**：`MGL/src/mgl_pipeline_cache_class.cpp`（`MGLPipelineCache` 类，注册在 `__attribute__((constructor))` 里）。
+
+**壳的剩余切片（按风险从低到高）**：
+
+| 顺序 | 切片 | 行数 | 语法 | 关键点 |
+|---|---|---|---|---|
+| 1 | **T1 `MGLPlatformRendererShell` 类** | 198 | 16 | 运行时建类 + 2 个 ivar（`_view`/`_swapInterval`）+ 属性存取的 `objc_msgSend`；`@try`→C++ try/catch；`MTLCreateSystemDefaultDevice()` 是 C 函数 |
+| 2 | **T3/T4 两个空类别** | 23 | 4 | `MGLRenderer (BatchZeroShell)` / `(BindingShell)`：方法用 `class_addMethod` 加到 MGLRenderer 上 |
+| 3 | **T2 入口与 `@try` 守卫** | 296 | 32 | `@try/@catch/@finally` → C++ try/catch（`@finally` → catch + rethrow 或 RAII）；有一个 `@autoreleasepool` → `objc_autoreleasePoolPush/Pop` |
+| 4 | **T5 Lifecycle 类别** | 638 | 78 | 46 处 AppKit（NSView/NSWindow/NSScreen/NSNotificationCenter）→ `id` + `objc_msgSend`；通知名用同内容字符串（`CFSTR("NSWindowDidResizeNotification")` 等） |
+| 5 | **T6 空 `@implementation MGLRenderer`** | 2 | 1 | **最后一步**：类扩展的 `@package` ivar 列表改为运行时建类（ivar 顺序/大小/对齐照 `MGLRenderer_Private.h`），此后 `MGLRenderer_Private.h` 不再被任何 TU 以 ivar 方式使用 ⇒ 删除 `.m` |
+
+**风险与对策**：T5 是唯一 AppKit 重的块，且通知/窗口行为不易由 A/B 直接覆盖（A/B 是 headless CLI 路径）
+⇒ 该刀除标准四闸门外，**必须**加一个"窗口/生命周期"专项 oracle（例如对 `MGLPlatformRendererShell` 的
+`performOperation:`/`mglShouldSkipPresentForUnlockedSwap` 等做小驱动测试，或用 CTS 的窗口相关簇作为代理）。
+**T6 完成前不要动 `MGLRenderer_Private.h`**：它是当前 ivar 布局的唯一来源。
 
