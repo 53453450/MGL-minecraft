@@ -13,6 +13,7 @@
  * and clear-resolve layers it drives (P0-1, log 186).
  */
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_render_encoder_ops.h"
 
 #include "mgl_binding_state_ops.h"   /* mglBindingInvalidateLastBoundState */
@@ -1193,7 +1194,7 @@ static int mglPdNewRenderEncoderBody(void *renderer)
     }
 
     /* Apply dynamic state that is not part of the render-pass owner state. */
-    mglRendererUpdateCurrentRenderEncoderPort(renderer);
+    mglRenderPassUpdateCurrentRenderEncoder(renderer);
 
     /* Only bind buffers when creating the encoder. Sampled textures depend on
      * the current GL program/MSL reflection and are rebound after the pipeline

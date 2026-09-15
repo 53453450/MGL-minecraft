@@ -291,12 +291,23 @@ void mglRendererFlushCommandBufferPort(void *renderer, int finish)
     }
 }
 
-void mglRendererUpdateCurrentRenderEncoderPort(void *renderer)
+int mglRendererLayerMetricsPort(void *renderer,
+                                MGLRendererLayerMetricsValue *metrics_out)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r updateCurrentRenderEncoder];
+    if (!r) {
+        return 0;
     }
+    const BOOL hasLayer = [r mglHasMetalLayer];
+    if (metrics_out) {
+        CGSize drawableSize = [r mglMetalLayerDrawableSize];
+        NSRect frame = [r mglMetalLayerFrame];
+        metrics_out->drawable_width = (double)drawableSize.width;
+        metrics_out->drawable_height = (double)drawableSize.height;
+        metrics_out->frame_width = (double)frame.size.width;
+        metrics_out->frame_height = (double)frame.size.height;
+    }
+    return hasLayer ? 1 : 0;
 }
 
 void mglRendererTraceSampledTextureReadbackPort(
@@ -749,6 +760,19 @@ void mglPlatformShellPipelineCacheStoreDescriptorState(
     [cache storePipelineDescriptorState:state forWords:words];
 }
 
+void mglPlatformShellPipelineCacheDepthStencilStateForValueState(
+    void *pipeline_cache_object,
+    const MGLRenderDepthStencilDescriptorState *state, void **out)
+{
+    if (out) *out = NULL;
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache || !state) {
+        return;
+    }
+    id dsState = [cache depthStencilStateForValueState:state];
+    if (out) *out = (__bridge void *)dsState;
+}
+
 int mglPlatformShellPipelineCacheLookupPipeline(
     void *pipeline_cache_object, const uint64_t *words, void **pipeline_out,
     void **vertex_function_out, void **fragment_function_out)
@@ -907,6 +931,8 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
         mglPlatformShellPipelineCacheStoreDescriptorState;
     areas_out->pipeline_cache_lookup_pipeline =
         mglPlatformShellPipelineCacheLookupPipeline;
+    areas_out->pipeline_cache_depth_stencil_state_for_value_state =
+        mglPlatformShellPipelineCacheDepthStencilStateForValueState;
     areas_out->pipeline_cache_activate = mglPlatformShellPipelineCacheActivate;
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
     areas_out->tessellation = &r->_tessellation;

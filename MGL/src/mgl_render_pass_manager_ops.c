@@ -368,7 +368,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                     mglRenderPassNewRenderEncoderLockedWithReason(renderer, MGL_ENC_REASON_VAO));
             }
 
-            mglRendererUpdateCurrentRenderEncoderPort(renderer);
+            mglRenderPassUpdateCurrentRenderEncoder(renderer);
 
             mglPdState(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
         }
@@ -389,7 +389,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                     mglRenderPassNewRenderEncoderLockedWithReason(renderer, MGL_ENC_REASON_RS));
             }
 
-            mglRendererUpdateCurrentRenderEncoderPort(renderer);
+            mglRenderPassUpdateCurrentRenderEncoder(renderer);
 
             mglPdState(&areas)->dirty_bits &= ~DIRTY_RENDER_STATE;
         }
@@ -4310,7 +4310,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
             fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
             return 0;
         }
-        mglRendererUpdateCurrentRenderEncoderPort(renderer);
+        mglRenderPassUpdateCurrentRenderEncoder(renderer);
     }
 
     if (draw_command && kMglPdVerbosePipelineLogs) {
@@ -4492,7 +4492,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
 
     if (after.maybe_mark_rt_sampled_copy) {
         mglPassManagerSetCurrentDrawUsesRTSampledCopy(manager, 1);
-        mglRendererUpdateCurrentRenderEncoderPort(renderer);
+        mglRenderPassUpdateCurrentRenderEncoder(renderer);
     }
 
     const double processElapsedUs = (mglTraceClockNS() - processStartNS) / 1000.0;

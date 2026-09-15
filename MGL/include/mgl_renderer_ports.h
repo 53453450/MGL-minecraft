@@ -247,6 +247,13 @@ typedef struct MGLRendererStateAreas {
         void *pipeline_cache_object, const uint64_t *words,
         void **pipeline_out, void **vertex_function_out,
         void **fragment_function_out);
+    /* Reads (or builds) one depth-stencil state from value state, the setter's
+     * counterpart for the encoder-state block.  `out` receives a borrowed
+     * handle; NULL when the cache has no state for it. */
+    void (*pipeline_cache_depth_stencil_state_for_value_state)(
+        void *pipeline_cache_object,
+        const struct MGLRenderDepthStencilDescriptorState_t *state,
+        void **out);
     void (*pipeline_cache_activate)(void *pipeline_cache_object, void *pipeline,
                                     uint32_t color0_format,
                                     uint32_t depth_format,
@@ -281,6 +288,21 @@ typedef struct MGLRendererStateAreas {
 } MGLRendererStateAreas;
 
 void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out);
+
+/* The Metal layer facts the encoder-state block needs, in one call: whether
+ * there is a layer, the drawable size it reports, and its frame size.  Both
+ * sizes come back as plain C values so the caller never sees CGSize/NSRect
+ * (log 192). */
+typedef struct MGLRendererLayerMetricsValue_t {
+    double drawable_width;
+    double drawable_height;
+    double frame_width;
+    double frame_height;
+} MGLRendererLayerMetricsValue;
+
+/* Fills `metrics_out`; returns 1 when the renderer has a Metal layer. */
+int mglRendererLayerMetricsPort(void *renderer,
+                                MGLRendererLayerMetricsValue *metrics_out);
 
 /* Make sure the current command buffer is writable (rotating it when it was
  * already committed).  A port: the rotation runs -newCommandBufferLocked /
@@ -349,9 +371,9 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                                                        size_t required_height,
                                                        const char *reason);
 /* copyTexSubImage read-back / upload bridges (P0-1, log 149). */
-/* Render-pass dirty-domain driver (P0-1, log 167).  Its target is still an
- * Objective-C method in MGLRenderer+RenderPass.m. */
-void mglRendererUpdateCurrentRenderEncoderPort(void *renderer);
+/* mglRendererUpdateCurrentRenderEncoderPort is gone (log 192): both encoder
+ * state blocks are C now (mglRenderPassUpdateCurrentRenderEncoder /
+ * mglRenderPassUpdateViewportAndScissorLocked, mgl_render_pass_sync_ops.h). */
 /* mglRendererSyncRenderPassStateForContextPort is gone (log 191): the sync unit
  * is C now (mglRenderPassSyncRenderPassStateForContext). */
 /* mglRendererSyncPipelineStateWithDeferredBufferMapPort is gone (log 189): the
