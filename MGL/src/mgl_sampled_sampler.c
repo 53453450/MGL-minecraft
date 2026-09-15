@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "mgl_texture_upload_ops.h"
 #include "mgl_sampled_sampler.h"
 #include "mgl_binding_texture.h" /* sampler materialize plan + logging */
 #include "mgl_texture_sampler.h" /* mglTextureCreateSamplerForTexParam */
@@ -1223,7 +1224,7 @@ void mglSampledEmitDiagPorts(
     MGLSampledDiagEmitResult eres = {0};
     mglBindingTextureEmitSampledDiagPorts(&ein, &eres);
     if (eres.want_readback && texture && level0) {
-        mglRendererTraceSampledTextureReadbackPort(
+        mglTextureTraceSampledReadback(
             renderer, texture, ptr, level0, program_name, spirv_binding,
             stage_is_fragment ? "fragment" : "vertex",
             eres.readback_reason ? eres.readback_reason : "",

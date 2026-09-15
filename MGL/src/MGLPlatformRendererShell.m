@@ -394,26 +394,6 @@ int mglRendererLayerMetricsPort(void *renderer,
     return hasLayer ? 1 : 0;
 }
 
-void mglRendererTraceSampledTextureReadbackPort(
-    void *renderer, void *texture, Texture *gl_tex, TextureLevel *level0,
-    GLuint program, GLuint binding, const char *stage, const char *reason,
-    uint64_t hit)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r traceSampledTextureReadback:(__bridge id)texture
-                                 glTex:gl_tex
-                                 level:level0
-                               program:program
-                               binding:binding
-                                 stage:(stage ? [NSString stringWithUTF8String:stage]
-                                              : @"")
-                                reason:(reason ? [NSString stringWithUTF8String:reason]
-                                               : @"")
-                                   hit:hit];
-    }
-}
-
 void mglRendererNextDrawablePort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -529,15 +509,6 @@ void mglRendererTemporariesRelease(void *temporaries)
  * The remaining Objective-C half of the texture bind: creation (both paths),
  * the two CPU-data uploads and the default sampler.  MGLRenderer+Texture.m owns
  * the bodies; the CREATE ports hand the +1 back to C through CFBridgingRetain. */
-
-void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || !tex) {
-        return NULL;
-    }
-    return (void *)CFBridgingRetain([r createFallbackMTLTexture:tex]);
-}
 
 /* === Batch replay shell (former MGLRenderer+Batch.m) =====================
  * These members are pure renderer plumbing: the dual-proxy invariant, the

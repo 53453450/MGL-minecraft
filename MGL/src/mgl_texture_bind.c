@@ -363,7 +363,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                         s_fallbackTextureCount);
                 /* Create a simple fallback texture to prevent crashes */
                 tex->mtl_data =
-                    mglRendererCreateFallbackMTLTexturePort(renderer, tex);
+                    mglTextureCreateFallback(renderer, tex);
 
                 if (tex->mtl_data) {
                     fprintf(stderr, "MGL SUCCESS: Fallback texture created successfully\n");

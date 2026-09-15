@@ -59,6 +59,7 @@ static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
  * there; this is the C twin (same shape as mgl_blit_drivers.c's). */
 extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
 extern int mglRendererShouldSkipGPUOperations(void *renderer);
+extern const char *mglCommandBufferStatusName(uint32_t status);
 extern int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
                                                 void *texture,
                                                 const char *reason);
@@ -167,6 +168,76 @@ static void *mglUpCreateDepthStencilMetalUpload(
 /* mglUpMin() is an Objective-C header macro; C has no same-named inline. */
 #define mglUpMin(a, b) ((a) < (b) ? (a) : (b))
 #define mglUpMax(a, b) ((a) > (b) ? (a) : (b))
+
+/* Twins of the .m's blit helpers (the trace path reads a sample back). */
+static void mglUpEndBlitEncoder(void *encoder)
+{
+    if (!encoder) return;
+    (void)mglRenderEndBlitEncoder(encoder);
+}
+
+static void mglUpCommitCommandBuffer(void *commandBuffer)
+{
+    if (!commandBuffer) return;
+    if (mglRenderCommitCommandBuffer(commandBuffer) != 0) {
+        fprintf(stderr,
+                "MGL ERROR: Metal-cpp texture command-buffer commit failed\n");
+    }
+}
+
+static void mglUpWaitCommandBuffer(void *commandBuffer)
+{
+    if (!commandBuffer) return;
+    if (mglRenderWaitCommandBuffer(commandBuffer) != 0) {
+        fprintf(stderr,
+                "MGL ERROR: Metal-cpp texture command-buffer wait failed\n");
+    }
+}
+
+static void mglUpCopyTextureToBuffer(
+    void *encoder, void *source, uint64_t sourceSlice, uint64_t sourceLevel,
+    MGLOriginValue sourceOrigin, MGLSizeValue sourceSize, void *destination,
+    uint64_t destinationOffset, uint64_t bytesPerRow, uint64_t bytesPerImage)
+{
+    (void)mglRenderBlitCopyTextureToBuffer(
+        encoder, source, sourceSlice, sourceLevel, sourceOrigin.x,
+        sourceOrigin.y, sourceOrigin.z, sourceSize.width, sourceSize.height,
+        sourceSize.depth, destination, destinationOffset, bytesPerRow,
+        bytesPerImage);
+}
+
+/* Twins of the .m's mglTextureCreateBuffer / mglTextureCreateCommandBuffer /
+ * mglTextureCreateBlitEncoder (the +1 handles the .m returned as id). */
+static void *mglUpCreateBuffer(uint64_t length, uint64_t options)
+{
+    void *buffer = NULL;
+    if (mglRenderCreateBuffer((size_t)length, options, NULL, &buffer) == 0 &&
+        buffer) {
+        return buffer;
+    }
+    return NULL;
+}
+
+static void *mglUpCreateCommandBuffer(void *queue)
+{
+    if (!queue) return NULL;
+    void *commandBuffer = NULL;
+    if (mglRenderCreateCommandBuffer(queue, &commandBuffer) == 0 &&
+        commandBuffer) {
+        return commandBuffer;
+    }
+    return NULL;
+}
+
+static void *mglUpCreateBlitEncoder(void *commandBuffer)
+{
+    if (!commandBuffer) return NULL;
+    void *encoder = NULL;
+    if (mglRenderCreateBlitEncoder(commandBuffer, &encoder) == 0 && encoder) {
+        return encoder;
+    }
+    return NULL;
+}
 
 /* Twin of the .m's mglTextureBufferContents. */
 static void *mglUpTextureBufferContents(void *buffer)
@@ -3743,4 +3814,265 @@ int mglTextureSubImageDispatch(void *renderer, GLMContext glm_ctx, Texture *tex,
     return mglTextureSubImage(renderer, glm_ctx, tex, buf, src_offset,
                               src_pitch, src_image_size, src_size, slice, level,
                               width, height, depth, xoffset, yoffset, zoffset);
+}
+
+/* -traceSampledTextureReadback:glTex:level:program:binding:stage:reason:hit:
+ * (log 199).  The .m took two NSStrings; the C entry takes the C strings the
+ * port already carried and prints them directly (its cold path used to pass the
+ * NSString pointer to a %s conversion). */
+void mglTextureTraceSampledReadback(void *renderer, void *texture, Texture *glTex,
+                                    TextureLevel *level0, uint32_t program,
+                                    uint32_t binding, const char *stage,
+                                    const char *reason, uint64_t hit)
+{
+    if (!renderer) {
+        return;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *device = mglRendererBackendGetDevice(areas.backend);
+    void *commandQueue = mglRendererBackendGetCommandQueue(areas.backend);
+    if (!texture || !device || !commandQueue) {
+        return;
+    }
+
+    MGLRenderTextureInfo textureInfo = {0};
+    if (mglRenderGetTextureInfo(texture,
+                                   &textureInfo) != 0) {
+        return;
+    }
+    uint32_t fmt = textureInfo.pixel_format;
+    int fourByteColor =
+        mglRenderPixelFormatIsUnorm8Color(fmt) != 0;
+    if (!fourByteColor) {
+        mglTraceLog("MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%s fmt=%lu type=%lu size=%lux%lu hit=%llu",
+              (unsigned)program,
+              (unsigned)binding,
+              glTex ? (unsigned)glTex->name : 0u,
+              reason,
+              (unsigned long)fmt,
+              (unsigned long)textureInfo.texture_type,
+              (unsigned long)textureInfo.width,
+              (unsigned long)textureInfo.height,
+              (unsigned long long)hit);
+        return;
+    }
+
+    uint64_t texWidth = (uint64_t)textureInfo.width;
+    uint64_t texHeight = (uint64_t)textureInfo.height;
+    if (texWidth == 0 || texHeight == 0) {
+        return;
+    }
+
+    uint64_t sampleWidth = mglUpMin(texWidth, 8u);
+    uint64_t sampleHeight = mglUpMin(texHeight, 8u);
+    uint64_t bytesPerPixel = 4u;
+    uint64_t bytesPerRow = sampleWidth * bytesPerPixel;
+    uint64_t byteCount = bytesPerRow * sampleHeight;
+    if (byteCount == 0) {
+        return;
+    }
+
+    void *readback = mglUpCreateBuffer(byteCount, MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
+    void *cb = mglUpCreateCommandBuffer(commandQueue);
+    void *blit = mglUpCreateBlitEncoder(cb);
+    if (!readback || !cb || !blit) {
+        mglTraceLog("MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%s readback=%p cb=%p blit=%p hit=%llu",
+              (unsigned)program,
+              (unsigned)binding,
+              glTex ? (unsigned)glTex->name : 0u,
+              reason,
+              readback,
+              cb,
+              blit,
+              (unsigned long long)hit);
+        return;
+    }
+
+    mglUpCopyTextureToBuffer(
+        blit, texture, 0, 0, mglTextureOrigin(0, 0, 0),
+        mglTextureSize(sampleWidth, sampleHeight, 1), readback, 0,
+        bytesPerRow, byteCount);
+    mglUpEndBlitEncoder(blit);
+    mglUpCommitCommandBuffer(cb);
+    mglUpWaitCommandBuffer(cb);
+
+    const uint8_t *p = (const uint8_t *)mglUpTextureBufferContents(readback);
+    uint64_t byteSum = 0;
+    uint64_t nonZeroBytes = 0;
+    uint32_t firstPixel = 0;
+    uint32_t pixelXor = 0;
+    uint32_t minPixel = UINT32_MAX;
+    uint32_t maxPixel = 0;
+    uint64_t pixelCount = byteCount / sizeof(uint32_t);
+
+    if (p) {
+        for (uint64_t i = 0; i < byteCount; i++) {
+            byteSum += (uint64_t)p[i];
+            if (p[i] != 0) {
+                nonZeroBytes++;
+            }
+        }
+        if (byteCount >= sizeof(firstPixel)) {
+            memcpy(&firstPixel, p, sizeof(firstPixel));
+        }
+        for (uint64_t i = 0; i < pixelCount; i++) {
+            uint32_t pixel = 0;
+            memcpy(&pixel, p + (i * sizeof(pixel)), sizeof(pixel));
+            pixelXor ^= pixel;
+            if (pixel < minPixel) {
+                minPixel = pixel;
+            }
+            if (pixel > maxPixel) {
+                maxPixel = pixel;
+            }
+        }
+    }
+
+    MGLRenderCommandBufferState sampledState = {0};
+    (void)mglRenderGetCommandBufferState(
+        cb, &sampledState);
+    /* NSString stringWithFormat: -> a stack buffer (only used when the
+     * command buffer reports an error). */
+    char sampledError[256] = {0};
+    if (sampledState.has_error) {
+        snprintf(sampledError, sizeof(sampledError), "%s (domain=%s code=%lld)",
+                 sampledState.error_description, sampledState.error_domain,
+                 (long long)sampledState.error_code);
+    }
+    mglTraceLog("MGL TRACE sampled.readback stage=%s program=%u binding=%u glTex=%u reason=%s hit=%llu "
+          "mtl=%p fmt=%lu type=%lu size=%lux%lu sample=%lux%lu status=%s error=%s "
+          "nonZero=%lu/%lu sum=%llu first=0x%08x min=0x%08x max=0x%08x xor=0x%08x "
+          "level(init ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx)",
+          stage,
+          (unsigned)program,
+          (unsigned)binding,
+          glTex ? (unsigned)glTex->name : 0u,
+          reason,
+          (unsigned long long)hit,
+          texture,
+          (unsigned long)fmt,
+          (unsigned long)textureInfo.texture_type,
+          (unsigned long)texWidth,
+          (unsigned long)texHeight,
+          (unsigned long)sampleWidth,
+          (unsigned long)sampleHeight,
+          mglCommandBufferStatusName(
+              (uint32_t)sampledState.status),
+          sampledError,
+          (unsigned long)nonZeroBytes,
+          (unsigned long)byteCount,
+          (unsigned long long)byteSum,
+          firstPixel,
+          minPixel == UINT32_MAX ? 0u : minPixel,
+          maxPixel,
+          pixelXor,
+          level0 ? (unsigned)level0->ever_written : 0u,
+          level0 ? (unsigned)level0->has_initialized_data : 0u,
+          level0 ? (unsigned)level0->suspicious_zero_upload : 0u,
+          level0 ? (unsigned)level0->last_init_source : 0u,
+          (unsigned long)(level0 ? level0->last_upload_size : 0u),
+          level0 ? (void *)level0->last_src_ptr : NULL,
+          (unsigned long long)(level0 ? level0->last_src_hash : 0ull));
+}
+
+/* @try of the fallback create: the guarded body publishes the +1 handle. */
+typedef struct MglUpFallbackCtx_t {
+    Texture *tex;
+    void *out_texture;
+} MglUpFallbackCtx;
+
+static int mglUpFallbackBody(void *renderer, void *rawCtx);
+
+/* -createFallbackMTLTexture: (log 199). */
+void *mglTextureCreateFallback(void *renderer, Texture *tex)
+{
+    if (!renderer) {
+        return NULL;
+    }
+    // Validate texture parameters before creating Metal texture to prevent Metal assertion failures
+    if (!tex || tex->width <= 0 || tex->height <= 0 || tex->width > 32768 || tex->height > 32768) {
+        fprintf(stderr, "MGL AGX: Skipping fallback texture creation - invalid dimensions %dx%d\n",
+              tex ? tex->width : 0, tex ? tex->height : 0);
+        return NULL;
+    }
+
+    fprintf(stderr, "MGL AGX: Creating emergency fallback texture (size: %dx%dx%d)\n", tex->width, tex->height, tex->depth);
+
+    char fallbackFailure[256] = {0};
+    MglUpFallbackCtx fallbackCtx = { tex, NULL };
+    if (!mglPlatformShellGuardedCallCtxReason(
+            renderer, "fallback texture creation", mglUpFallbackBody,
+            &fallbackCtx, fallbackFailure, sizeof(fallbackFailure))) {
+        fprintf(stderr, "MGL AGX: Even fallback texture creation failed: %s\n",
+                fallbackFailure[0] ? fallbackFailure : "(null)");
+        return NULL;
+    }
+    return fallbackCtx.out_texture;
+}
+
+static int mglUpFallbackBody(void *renderer, void *rawCtx)
+{
+    MglUpFallbackCtx *fallback = (MglUpFallbackCtx *)rawCtx;
+    Texture *tex = fallback->tex;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    void *device = mglRendererBackendGetDevice(areas.backend);
+    (void)device;
+    {
+        uint32_t fallbackFormat = mglRenderFallbackPixelFormat(
+            mtlPixelFormatForGLTex(tex), (uint32_t)tex->internalformat);
+
+        int isDepthOrStencilFormat =
+            mglRenderPixelFormatIsDepthOrStencil(fallbackFormat) != 0;
+
+        MGLRenderTextureDescriptorState fallbackDesc = {
+            .texture_type = MGLTextureType2D,
+            .pixel_format = fallbackFormat,
+            .width = mglUpMax(tex->width, 1), .height = mglUpMax(tex->height, 1),
+            .depth = 1u, .mipmap_level_count = 1u,
+            .sample_count = 1u, .array_length = 1u,
+            .usage = MGL_TEXTURE_USAGE_SHADER_READ,
+        };
+        if (tex->is_render_target || isDepthOrStencilFormat) {
+            fallbackDesc.usage |= MGL_TEXTURE_USAGE_RENDER_TARGET;
+        }
+
+        void *fallbackTexture =
+            mglUpCreateTexture(&fallbackDesc);
+
+        if (fallbackTexture) {
+            // Fill with simple gradient pattern using a simple approach
+            uint64_t width = mglPdTextureInfo(fallbackTexture).width;
+            uint64_t height = mglPdTextureInfo(fallbackTexture).height;
+
+            if (!isDepthOrStencilFormat && width <= 512 && height <= 512) {
+                uint32_t *gradientData = calloc(width * height, sizeof(uint32_t));
+                if (gradientData) {
+                    // Create simple red-blue gradient
+                    for (uint64_t y = 0; y < height; y++) {
+                        for (uint64_t x = 0; x < width; x++) {
+                            uint64_t index = y * width + x;
+                            uint8_t r = (uint8_t)((x * 255) / width);
+                            uint8_t g = 128;
+                            uint8_t b = (uint8_t)((y * 255) / height);
+                            uint8_t a = 255;
+                            gradientData[index] = ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
+                        }
+                    }
+
+                    MGLRegionValue region = mglTextureRegion2D(0, 0, width, height);
+                    (void)mglTextureReplaceRegionValue(
+                        fallbackTexture, region, 0, 0, gradientData,
+                        width * sizeof(uint32_t), 0, 0);
+
+                    free(gradientData);
+                    fprintf(stderr, "MGL AGX: Fallback color texture created with gradient pattern\n");
+                }
+            }
+        }
+
+        fallback->out_texture = fallbackTexture;
+        return 1;
+    }
 }

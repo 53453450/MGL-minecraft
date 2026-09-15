@@ -135,7 +135,8 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
  * *out_all_levels_uploaded when it is non-NULL. */
 /* mglRendererCreateMTLTextureFromGLTexturePort is gone (log 197):
  * -createMTLTextureFromGLTexture: is C now (mglTextureCreateFromGLTexture). */
-void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex);
+/* mglRendererCreateFallbackMTLTexturePort is gone (log 199):
+ * -createFallbackMTLTexture: is C now (mglTextureCreateFallback). */
 /* mglRendererUploadFullCPUTextureDataPort is gone (log 195):
  * -uploadFullCPUTextureDataIntoTexture:metal:reason: is C now
  * (mglTextureUploadFullCPUData). */
@@ -381,10 +382,8 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
 
 /* Sampled-texture readback trace.  The target method takes two NSStrings, so
  * the port takes C strings and the shell makes the NSStrings (P0-1, log 155). */
-void mglRendererTraceSampledTextureReadbackPort(
-    void *renderer, void *texture, Texture *gl_tex, TextureLevel *level0,
-    GLuint program, GLuint binding, const char *stage, const char *reason,
-    uint64_t hit);
+/* mglRendererTraceSampledTextureReadbackPort is gone (log 199): the method is C
+ * now (mglTextureTraceSampledReadback) and takes the C strings directly. */
 
 /* mglRendererCurrentRenderPassUsesTexturePort is gone (log 191): the predicate
  * is C now (mglRenderPassCurrentRenderPassUsesTexture). */

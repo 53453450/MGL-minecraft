@@ -107,6 +107,16 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx, Texture *tex,
                             uint64_t depth, uint64_t xoffset, uint64_t yoffset,
                             uint64_t zoffset);
 
+
+/* The last two methods of MGLRenderer+Texture.m moved in log 199. */
+struct TextureLevel_t;
+void mglTextureTraceSampledReadback(void *renderer, void *texture, Texture *gl_tex,
+                                    struct TextureLevel_t *level0,
+                                    uint32_t program, uint32_t binding,
+                                    const char *stage, const char *reason,
+                                    uint64_t hit);
+void *mglTextureCreateFallback(void *renderer, Texture *tex);
+
 #ifdef __cplusplus
 }
 #endif
