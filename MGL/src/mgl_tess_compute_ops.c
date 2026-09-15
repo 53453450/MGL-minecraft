@@ -69,7 +69,7 @@ void mglTessBindPointSizeParamsToComputeEncoder(
         return;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *state = areas.core && areas.core->activeState
         ? areas.core->activeState
         : (areas.ctx ? areas.ctx->active_state : NULL);

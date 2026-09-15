@@ -286,7 +286,7 @@ static inline double mglNowSeconds(void)
 - (void)flushDrawBuffer:(GLMContext)glm_ctx;
 /* flushDrawBufferLocked: is now the C driver pair mglBatchFlushBegin /
  * mglBatchFlushRunBatches plus mglBatchTeardownReplay, framed by
- * mglRendererFlushDrawBufferLockedPort (mgl_batch_restore.h). */
+ * mglRendererFlushDrawBufferLocked (mgl_batch_restore.h). */
 
 /* Drawable-geometry hand-off (component 3 of the lock replacement).
  * mglMainThreadSyncViewGeometry: main-thread only; reads NSView/NSWindow/

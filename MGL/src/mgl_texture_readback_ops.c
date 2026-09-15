@@ -181,7 +181,7 @@ void *mglTextureReadbackStageAndWait(void *renderer, void *sourceTexture,
                                      const char *logKind, int *outSuccess)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -276,7 +276,7 @@ int mglTextureReadColorAsBGRA8(void *renderer, void *sourceTexture,
                                MGLRegionValue region, const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     int result = 0;
@@ -448,7 +448,7 @@ int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
                                MGLRegionValue region, const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     int result = 0;
     void *ownedResolved = NULL;
@@ -643,7 +643,7 @@ int mglTextureReadIntegerAsRGBA32(void *renderer, void *sourceTexture,
                                   int isRenderTarget)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -837,7 +837,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
     MGL_ASSERT_GL_THREAD();
     mglPlatformShellSetContext(renderer, glm_ctx);
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     uint64_t readSize = bytesPerImage;
     if (readSize == 0u && bytesPerRow > 0u) {
@@ -991,7 +991,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
 {
     mglPlatformShellSetContext(renderer, glm_ctx);
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     uint64_t readSize = bytesPerImage;
     if (readSize == 0 && bytesPerRow > 0) {
@@ -1102,9 +1102,9 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
     if (mglRenderDefaultDrawBufferIsFront(mgl_drawbuffer)) {
         if (!areas.drawable) {
             (void)mglPlatformShellApplyPendingDrawableSize(renderer);
-            (void)mglRendererNextDrawablePort(renderer);
+            (void)mglRendererNextDrawable(renderer);
         }
-        texture = areas.drawable ? mglRendererDrawableTexturePort(renderer) : NULL;
+        texture = areas.drawable ? mglRendererDrawableTexture(renderer) : NULL;
     } else if (mglRenderDefaultDrawBufferIsOffscreen(mgl_drawbuffer,
                                                     _MAX_DRAW_BUFFERS)) {
         texture = mglRendererBackendGetDefaultDrawBufferAttachment(
@@ -1159,7 +1159,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                            uint64_t slice)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     void *texture = NULL;
 

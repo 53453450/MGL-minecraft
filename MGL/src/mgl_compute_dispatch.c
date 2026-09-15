@@ -65,7 +65,7 @@ bool mglComputeProcess(void *renderer, void *encoder,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeDispatchState(&areas, ctx);
 
@@ -150,7 +150,7 @@ bool mglComputeRunDispatchOrchestrationLocked(
     size_t indirect_offset, const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
     void *command_buffer_owner =
         areas.command ? areas.command->currentCommandBufferOwner : NULL;
@@ -362,7 +362,7 @@ void mglComputeMtlDispatchLocked(void *renderer, GLMContext glm_ctx,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
     for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         ImageUnit *imageUnit = &state->image_units[unit];
@@ -393,7 +393,7 @@ void mglComputeMtlDispatchIndirectLocked(void *renderer, GLMContext glm_ctx,
     mglPlatformShellSetContext(renderer, glm_ctx);
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *state = mglComputeDispatchState(&areas, glm_ctx);
 
     Buffer *glIndirectBuffer = state->buffers[_DISPATCH_INDIRECT_BUFFER];

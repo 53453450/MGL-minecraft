@@ -392,7 +392,7 @@ static uint64_t mglPdMaxU64(uint64_t a, uint64_t b) { return a > b ? a : b; }
 int mglRenderPassCheckDrawBufferSize(void *renderer, unsigned int index)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     const MGLSizeValue drawableSize =
         mglPlatformShellApplyPendingDrawableSize(renderer);
 
@@ -413,7 +413,7 @@ int mglRenderPassCheckDrawBufferSize(void *renderer, unsigned int index)
 int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -451,7 +451,7 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
             return 0;
         }
 
-        texture = mglRendererDrawableTexturePort(renderer);
+        texture = mglRendererDrawableTexture(renderer);
 
         /* sleep mode will return a null texture - handle gracefully without
          * crashing */
@@ -460,9 +460,9 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
                     "MGL WARNING: Drawable texture is NULL (sleep mode or window not visible), attempting to get new drawable\n");
 
             /* Try to get a new drawable */
-            (void)mglRendererNextDrawablePort(renderer);
+            (void)mglRendererNextDrawable(renderer);
             if (mglPlatformShellDrawablePointer(renderer)) {
-                texture = mglRendererDrawableTexturePort(renderer);
+                texture = mglRendererDrawableTexture(renderer);
                 fprintf(stderr,
                         "MGL INFO: Successfully obtained new drawable with texture\n");
             } else {
@@ -567,7 +567,7 @@ int mglRenderPassConfigureDefaultFramebufferAttachments(void *renderer)
 void mglRenderPassEnsureTransientDepthForDefaultFramebuffer(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -657,7 +657,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
     unsigned int *outFboColorAttachment0ClearMask)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -872,7 +872,7 @@ void mglRenderPassConfigureUserFBOLoadStoreActions(
 void mglRenderPassConfigureDefaultFramebufferLoadStoreActions(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
 
@@ -955,7 +955,7 @@ void mglRenderPassLogClearResolve(
     struct Framebuffer_t *fboRaw)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -1067,7 +1067,7 @@ void mglRenderPassLogClearResolve(
 static int mglPdNewRenderEncoderBody(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *glState = mglPdStateOf(&areas);
     MGLCommandState *commandState = areas.command;
@@ -1113,17 +1113,17 @@ static int mglPdNewRenderEncoderBody(void *renderer)
 
         const MGLSizeValue expectedDrawableSize =
             mglPlatformShellApplyPendingDrawableSize(renderer);
-        (void)mglRendererNextDrawablePort(renderer);
+        (void)mglRendererNextDrawable(renderer);
 
         /* late init of gl scissor box on attachment to window system */
         uint64_t drawableWidth = mglPdMaxU64(1u, expectedDrawableSize.width);
         uint64_t drawableHeight = mglPdMaxU64(1u, expectedDrawableSize.height);
         if (mglPlatformShellDrawablePointer(renderer) &&
-            mglRendererDrawableTexturePort(renderer)) {
+            mglRendererDrawableTexture(renderer)) {
             drawableWidth =
-                mglPdTextureInfo(mglRendererDrawableTexturePort(renderer)).width;
+                mglPdTextureInfo(mglRendererDrawableTexture(renderer)).width;
             drawableHeight =
-                mglPdTextureInfo(mglRendererDrawableTexturePort(renderer)).height;
+                mglPdTextureInfo(mglRendererDrawableTexture(renderer)).height;
         }
 
         if (!glState->caps.scissor_test) {

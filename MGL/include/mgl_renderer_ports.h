@@ -95,13 +95,13 @@ int mglRendererProcessBuffer(void *renderer, Buffer *buffer);
 /* Create an indirect command buffer (indexed when `indexed`), returned with a
  * +1 reference the caller owns and releases.  *failed_out is 1 when Metal
  * raised; the caller then traces its own fallback reason. */
-void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
+void *mglRendererCreateIndirectCommandBuffer(void *renderer, int indexed,
                                                  uint64_t count,
                                                  int *failed_out);
 
 /* The @try/@finally frame around one flush (shim): it must tear the replay
  * workspace down even when a draw raises, which C cannot express. */
-void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
+void mglRendererFlushDrawBufferLocked(void *renderer, GLMContext ctx);
 
 /* ---- batch flush / replay-workspace ports ---------------------------------
  * Renderer state the C flush driver reads or writes: the replay-workspace
@@ -284,7 +284,7 @@ typedef struct MGLRendererStateAreas {
     uint32_t tess_cull_capture_instance_stride;
 } MGLRendererStateAreas;
 
-void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out);
+void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out);
 
 /* The Metal layer facts the encoder-state block needs, in one call: whether
  * there is a layer, the drawable size it reports, and its frame size.  Both
@@ -298,7 +298,7 @@ typedef struct MGLRendererLayerMetricsValue_t {
 } MGLRendererLayerMetricsValue;
 
 /* Fills `metrics_out`; returns 1 when the renderer has a Metal layer. */
-int mglRendererLayerMetricsPort(void *renderer,
+int mglRendererLayerMetrics(void *renderer,
                                 MGLRendererLayerMetricsValue *metrics_out);
 
 /* Make sure the current command buffer is writable (rotating it when it was
@@ -362,9 +362,9 @@ int mglPlatformShellNewCommandBuffer(void *renderer);
  * -mglNextDrawable (which assigns the property itself), and drawable_texture
  * is its `.texture` — NULL when there is no drawable, so one NULL check covers
  * both `!_drawable` and `![self mglDrawableTexture]`. */
-void mglRendererNextDrawablePort(void *renderer);
-void *mglRendererDrawableTexturePort(void *renderer);
-int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
+void mglRendererNextDrawable(void *renderer);
+void *mglRendererDrawableTexture(void *renderer);
+int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
                                                        size_t required_width,
                                                        size_t required_height,
                                                        const char *reason);

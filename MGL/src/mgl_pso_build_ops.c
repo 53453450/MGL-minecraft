@@ -142,7 +142,7 @@ void mglRenderPassInsertPipelineStateIntoCache(
     void *vertexFunction, void *fragmentFunction, int stateFromCache)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     (void)pipelineSig;
     (void)vertexSig;
 
@@ -174,7 +174,7 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
     CFTimeInterval now)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = areas.core && areas.core->activeState
                           ? areas.core->activeState
@@ -535,9 +535,9 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             safeColor0Format =
                 mglPdTextureInfo(mglPdColorTextureFor(areas.command, 0))
                     .pixel_format;
-        } else if (mglRendererDrawableTexturePort(renderer)) {
+        } else if (mglRendererDrawableTexture(renderer)) {
             safeColor0Format =
-                mglPdTextureInfo(mglRendererDrawableTexturePort(renderer))
+                mglPdTextureInfo(mglRendererDrawableTexture(renderer))
                     .pixel_format;
         }
         safeColor0Format = mglRenderColorFormatOrBGRA(safeColor0Format);
@@ -743,7 +743,7 @@ int mglRenderPassSyncPipelineState(void *renderer,
                                    int deferredBufferMapForPipelineBuild)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = areas.core && areas.core->activeState
                           ? areas.core->activeState

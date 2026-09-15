@@ -29,7 +29,7 @@ int mglRendererBindFramebufferTexture(void *renderer, FBOAttachment *attachment,
                                       int is_draw_buffer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     Texture *tex = mglRendererAttachmentTextureFor(areas.ctx, attachment);
     if (!tex) {
@@ -51,7 +51,7 @@ int mglRendererBindFramebufferTexture(void *renderer, FBOAttachment *attachment,
 int mglRendererBindFramebufferAttachmentTextures(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     /* MEMORY SAFETY: Validate context and framebuffer.  Only the pointer lower

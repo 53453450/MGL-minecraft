@@ -84,7 +84,7 @@ int mglDrawResolveIndirectBuffer(void *renderer, const char *label,
 int mglDrawRasterizationIsEmpty(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *cs = areas.command;
     if (!ctx || !cs) {
@@ -154,7 +154,7 @@ int mglDrawRasterizationIsEmpty(void *renderer)
 void mglDrawApplyPolygonOffset(void *renderer, uint32_t mode)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *cs = areas.command;
     if (!ctx || !cs) {
@@ -211,7 +211,7 @@ void mglDrawApplyPolygonOffset(void *renderer, uint32_t mode)
 int mglDrawModeIsFullyCulled(void *renderer, uint32_t mode)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     if (!ctx) {
         return 0;
@@ -274,7 +274,7 @@ void mglDrawBindCullDistanceEmulationBuffers(void *renderer, uint32_t mode,
                                              const MGLEncodeContext *encCtx)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     if (!areas.ctx || !mglDrawSupportEncodeContextIsActive(encCtx)) {
         return;
     }

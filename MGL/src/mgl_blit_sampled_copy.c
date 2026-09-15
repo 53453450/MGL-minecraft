@@ -125,7 +125,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
 
     /* Copy the full GL mip chain of the RT (capped to the source's
@@ -542,7 +542,7 @@ void mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
     void *renderer, Framebuffer *fbo, const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!areas.ctx || !fbo) {
         return;

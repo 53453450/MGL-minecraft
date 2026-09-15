@@ -279,7 +279,7 @@ int mglBatchDynBindVertexDirect(void *renderer, VertexArray *vao,
     MGLBatchDynVertexBindOps ops = {
         .ctx = &c, .binding_count = cmd->dynamic_vertex_binding_count,
         .max_metal_slots = (int)kMGLMaxMetalVertexBufferCount,
-        .binding_state_owner = *(mglRendererStateAreasPort(renderer, &areas), areas.binding_state_owner),
+        .binding_state_owner = *(mglRendererFillStateAreas(renderer, &areas), areas.binding_state_owner),
         .render_encoder_owner = encCtx->render_encoder_owner,
         .plan_binding = mglDynVertexPlan, .resolve_slot = mglDynVertexResolve,
         .stream_can_bind = mglDynVertexCanBind, .ensure_mtl = mglDynVertexEnsure,
@@ -296,7 +296,7 @@ int mglBatchDynBindUniformDirect(void *renderer, const MGLDrawCommand *cmd,
     if (!cmd || !glm_ctx || !encCtx) return 0;
     MGLDynUniformCtx c = {.r = renderer, .cmd = cmd, .ctx = glm_ctx};
     MGLBatchDynUniformBindOps ops = {
-        .ctx = &c, .binding_state_owner = *(mglRendererStateAreasPort(renderer, &areas), areas.binding_state_owner),
+        .ctx = &c, .binding_state_owner = *(mglRendererFillStateAreas(renderer, &areas), areas.binding_state_owner),
         .render_encoder_owner = encCtx->render_encoder_owner,
         .min_stage_binding_size = (uint64_t)kMGLMinimumStageBindingSize,
         .max_buffer_slots = (uint32_t)kMGLMaxBufferSlots,
@@ -314,7 +314,7 @@ int mglBatchDynBindSampledDirect(void *renderer, const bool *touched_units,
     if (!touched_units || !glm_ctx || !mglBatchReplayHasActiveEncoder(encCtx)) return 0;
     MGLDynSampledCtx c = {.r = renderer, .ctx = glm_ctx};
     MGLBatchDynSampledBindOps ops = {
-        .ctx = &c, .binding_state_owner = *(mglRendererStateAreasPort(renderer, &areas), areas.binding_state_owner),
+        .ctx = &c, .binding_state_owner = *(mglRendererFillStateAreas(renderer, &areas), areas.binding_state_owner),
         .render_encoder_owner = encCtx->render_encoder_owner,
         .max_sampler_slots = kMaxFragmentSamplerSlots, .glm_ctx = glm_ctx,
         .resolve_candidate = mglDynSampledResolve, .touched_units = touched_units,
@@ -336,7 +336,7 @@ int mglBatchApplySamplerSnapshot(void *renderer, const MGLDrawCommand *cmd,
     if (set->count > MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES) return 0;
     MGLSampSnapCtx c = {.r = renderer, .ctx = glm_ctx, .set = set, .cb = cb};
     MGLBatchSamplerSnapshotApplyOps ops = {
-        .ctx = &c, .binding_state_owner = *(mglRendererStateAreasPort(renderer, &areas), areas.binding_state_owner),
+        .ctx = &c, .binding_state_owner = *(mglRendererFillStateAreas(renderer, &areas), areas.binding_state_owner),
         .render_encoder_owner = encCtx->render_encoder_owner,
         .entry_count = set->count, .max_sampler_slots = 16u,
         .resolve_entry = mglSampResolve, .after_resolved = mglSampAfter,

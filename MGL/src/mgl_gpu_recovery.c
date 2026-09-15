@@ -57,7 +57,7 @@ static double mglGpuRecoveryNowSeconds(void)
 void mglRendererRecordGPUError(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *owner = areas.gpu_recovery_command_owner
                       ? *areas.gpu_recovery_command_owner
                       : NULL;
@@ -72,7 +72,7 @@ void mglRendererRecordGPUError(void *renderer)
 void mglRendererRecordGPUSuccess(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *owner = areas.gpu_recovery_command_owner
                       ? *areas.gpu_recovery_command_owner
                       : NULL;
@@ -90,7 +90,7 @@ void mglRendererRecordGPUSuccess(void *renderer)
 void mglRendererClearProblematicGPUState(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
 
     fprintf(stderr, "MGL AGX: Clearing problematic GPU state for recovery\n");
@@ -107,7 +107,7 @@ void mglRendererClearProblematicGPUState(void *renderer)
 int mglRendererShouldSkipGPUOperations(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *owner = areas.gpu_recovery_command_owner
                       ? *areas.gpu_recovery_command_owner
                       : NULL;
@@ -136,7 +136,7 @@ int mglRendererShouldSkipGPUOperations(void *renderer)
 int mglRendererCleanupCommandBufferBody(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return 0;
@@ -168,7 +168,7 @@ void mglRendererResetMetalState(void *renderer)
 {
     MGL_ASSERT_GL_THREAD();
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     fprintf(stderr, "MGL INFO: Performing full Metal state reset for AGX recovery\n");
 
@@ -205,7 +205,7 @@ static int mglRendererValidateMetalObjectsBody(void *renderer)
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
 
     /* GPU ERROR THROTTLING: track recent failures to prevent error cascades. */
@@ -286,7 +286,7 @@ static int mglRendererCommitCommandBufferWithAGXRecoveryBody(void *renderer,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *recoveryOwner = areas.gpu_recovery_command_owner
                               ? *areas.gpu_recovery_command_owner
                               : NULL;

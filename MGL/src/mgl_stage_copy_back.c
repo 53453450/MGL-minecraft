@@ -37,7 +37,7 @@ void mglClearStageBindingCopyBacks(void *renderer,
         return;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     (void)mglRendererBackendClearStageCopyBackList(areas.backend, copy_backs);
     memset(copy_backs, 0, sizeof(*copy_backs));
 }
@@ -50,7 +50,7 @@ void mglClearStageBindingCopyBackAtIndex(void *renderer,
         return;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     (void)mglRendererBackendClearStageCopyBackSlot(areas.backend, copy_backs,
                                                    (uint32_t)index);
     MGLStageBindingCopyBack *entry = &copy_backs->slots[index];
@@ -102,7 +102,7 @@ bool mglRecordStageBindingCopyBack(void *renderer,
                                    size_t destination_offset, size_t length)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     if (!copy_backs || index >= kMGLMaxBufferSlots) {
         return false;
     }
@@ -136,7 +136,7 @@ bool mglFlushStageBindingCopyBacks(void *renderer,
                                    int require_cpu_visibility)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
     const int require_cpu_visibility_flag = require_cpu_visibility;
     if (!copy_backs) {

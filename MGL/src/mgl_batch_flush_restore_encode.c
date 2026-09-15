@@ -6,7 +6,7 @@
  * C now; the renderer operations they drive go through mgl_renderer_ports.h,
  * and the one ObjC-only frame (the @try/@finally that must tear the replay
  * workspace down even when a draw raises) stays in the shim as
- * mglRendererFlushDrawBufferLockedPort.
+ * mglRendererFlushDrawBufferLocked.
  */
 #include "mgl_renderer_ports.h"   /* C port surface (T4) */
 #include "mgl_render_pass_manager_ops.h" /* mglRenderPassProcessGLStateLocked */
@@ -45,11 +45,11 @@ static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
     int want = batch->has_dynamic_vertex_bindings ? 1 : 0; if (wa) *wa = want;
     in->has_encoder = mglRenderEncoderOwnerHasCurrent(
         mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner) ? 1u : 0u;
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(c->r, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(c->r, &areas);
     in->bind_valid =
         (areas.binding_state_owner && mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u;
     in->keys_equal = mglStateKeysEqual(&batch->key, &c->key) ? 1u : 0u;
-    MGLRendererStateAreas bsareas; mglRendererStateAreasPort(c->r, &bsareas);
+    MGLRendererStateAreas bsareas; mglRendererFillStateAreas(c->r, &bsareas);
     const MGLBatchingState *bs = bsareas.batching;
     in->absolute_offsets_match =
         (want == (bs && bs->absoluteVertexBindingOffsets ? 1 : 0)) ? 1u : 0u;
@@ -59,12 +59,12 @@ static void fNote(void *v, int d) { (void)v; mgl_batch_mtl_restore_note_skip_fai
 static int fOracleEq(void *v, uint32_t b) { return mglStateKeysEqual(&FB(v, b)->key, &((FCtx *)v)->key); }
 static void fOracle(void *v) { (void)v; MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap); }
 static void fApplySkip(void *v, uint32_t b)
-{ (void)b; FCtx *c = v; MGLRendererStateAreas areas; mglRendererStateAreasPort(c->r, &areas);
+{ (void)b; FCtx *c = v; MGLRendererStateAreas areas; mglRendererFillStateAreas(c->r, &areas);
   if (areas.core && areas.core->activeState != c->ctx->active_state)
       areas.core->activeState = c->ctx->active_state;
   c->ctx->active_state->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)
-{ MGLRendererStateAreas areas; mglRendererStateAreasPort(((FCtx *)v)->r, &areas);
+{ MGLRendererStateAreas areas; mglRendererFillStateAreas(((FCtx *)v)->r, &areas);
   MGLBatchingState *bs = areas.batching;
   if (bs) bs->absoluteVertexBindingOffsets = w ? 1u : 0u; }
 static void fRestore(void *v, uint32_t b, uint32_t forced)
@@ -101,7 +101,7 @@ typedef struct {
     uint64_t hit; uint32_t bi; GLenum *err; uint32_t *skipped; GLenum mode;
 } CCtx;
 static void cBegin(void *v)
-{ CCtx *c = v; MGLRendererStateAreas areas; mglRendererStateAreasPort(c->r, &areas);
+{ CCtx *c = v; MGLRendererStateAreas areas; mglRendererFillStateAreas(c->r, &areas);
   if (areas.command) { areas.command->traceReplayFlushId = c->hit;
                        areas.command->traceReplayBatchIndex = c->bi; }
   mglBatchTraceReplayBatch(c->r, c->batch, c->ctx, c->hit, c->bi, "RESTORE"); }
@@ -181,7 +181,7 @@ int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pa
 {
     if (!renderer || !glm_ctx || !pass) return 0;
     if (!mglDrawHostBindContext(renderer, glm_ctx)) return 0;
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cb->batch_count == 0) return 0;
@@ -204,7 +204,7 @@ void mglBatchFlushRunBatches(void *renderer, GLMContext glm_ctx, MGLBatchFlushPa
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     uint64_t hit = pass->hit;
     uint32_t skipped = pass->skipped;
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLBatchingState *bs = areas.batching;
     MGLBatchFlushLoopState st; memset(&st, 0, sizeof(st));
     FCtx fc = {.r = renderer, .ctx = glm_ctx, .saved = &pass->saved, .hit = hit,
@@ -279,7 +279,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
                                  const MGLStateKey *prevKey, GLuint forcedDirtyBits)
 {
     if (!renderer || !batch || !glm_ctx) return;
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLBatchingState *bs = areas.batching;
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
@@ -330,7 +330,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
 
 void mglBatchTeardownReplay(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass)
 {
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLBatchingState *bs = areas.batching;
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     const int usedReplayWorkspace = (glm_ctx->active_state == &glm_ctx->replay_state);

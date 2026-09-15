@@ -152,7 +152,7 @@ int mglRenderPassCurrentRenderPassUsesTexture(void *renderer, void *texture)
         return 0;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!texture || !commandState ||
         mglRenderEncoderOwnerHasCurrent(
@@ -189,7 +189,7 @@ int mglRenderPassMatchesCurrentFramebuffer(void *renderer)
         return 1;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     if (!ctx || !commandState || !commandState->renderPassStateOwner) {
@@ -231,7 +231,7 @@ void mglRenderPassEndIfFramebufferChangedForNonDraw(void *renderer,
         return;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     if (!ctx || !commandState ||
@@ -298,7 +298,7 @@ int mglRenderPassSynchronizeForTextureReadback(void *renderer, void *texture,
         return 0;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *commandState = areas.command;
 
     if (!mglRenderPassCurrentRenderPassUsesTexture(renderer, texture)) {
@@ -359,7 +359,7 @@ int mglRenderPassSyncRenderPassStateForContext(void *renderer,
         return 0;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *state =
         glm_ctx ? glm_ctx->active_state : mglRsState(&areas);
     Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(
@@ -407,7 +407,7 @@ int mglRenderPassRotateRenderEncoderForCurrentFramebufferLocked(void *renderer)
     }
     MGL_PERF_INC(g_mglEncoderFBORotationsSinceSwap);
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext glm_ctx = areas.ctx;
     GLuint fbo_name = 0u;
     if (glm_ctx && glm_ctx->active_state && glm_ctx->active_state->framebuffer) {
@@ -433,7 +433,7 @@ int mglRenderPassRotateRenderEncoderForCurrentFramebufferLocked(void *renderer)
  * verbatim from MGLRenderer+RenderPass.m (327 + 342 lines).  Everything they
  * touch was already C: the depth-stencil value state goes through a new areas
  * bridge (pipeline_cache_depth_stencil_state_for_value_state), the layer facts
- * through one combined port (mglRendererLayerMetricsPort), and the render-pass
+ * through one combined port (mglRendererLayerMetrics), and the render-pass
  * attachment/action helpers through the mglRs* twins below.
  */
 
@@ -593,7 +593,7 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer)
         return;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglRsState(&areas);
     MGLCommandState *commandState = areas.command;
@@ -942,7 +942,7 @@ void mglRenderPassUpdateViewportAndScissorLocked(void *renderer)
         return;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglRsState(&areas);
     MGLCommandState *commandState = areas.command;
@@ -954,7 +954,7 @@ void mglRenderPassUpdateViewportAndScissorLocked(void *renderer)
 static void mglRsUpdateViewportAndScissor(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglRsState(&areas);
     MGLCommandState *commandState = areas.command;
@@ -1007,7 +1007,7 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
         }
 
         void *drawableTexture = areas.drawable
-            ? mglRendererDrawableTexturePort(renderer)
+            ? mglRendererDrawableTexture(renderer)
             : NULL;
         if ((passWidth == 0 || passHeight == 0) && drawableTexture) {
             passWidth = mglRsTextureInfo(drawableTexture).width;
@@ -1019,7 +1019,7 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
         }
 
         MGLRendererLayerMetricsValue layerMetrics = {0};
-        int hasLayer = mglRendererLayerMetricsPort(renderer, &layerMetrics) != 0;
+        int hasLayer = mglRendererLayerMetrics(renderer, &layerMetrics) != 0;
         if ((passWidth == 0 || passHeight == 0) && hasLayer) {
             if (layerMetrics.drawable_width > 0 &&
                 layerMetrics.drawable_height > 0) {
@@ -1178,7 +1178,7 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
                     void *rpColor0 = mglRsColorTextureFor(commandState, 0);
                     void *rpDepth = mglRsDepthTextureFor(commandState);
                     void *drawableTexture =
-                        areas.drawable ? mglRendererDrawableTexturePort(renderer) : NULL;
+                        areas.drawable ? mglRendererDrawableTexture(renderer) : NULL;
 
                     mglTraceLog("MGL VIEWPORT CLAMP DETAIL hit=%llu fbo=%p valid=%d fboName=%u drawBuffer=0x%x pass=%lux%lu "
                                   "rpColor0=%p(%lux%lu) rpDepth=%p(%lux%lu) drawable=%p(%lux%lu) raw=(%.3f,%.3f,%.3f,%.3f) "
@@ -1390,7 +1390,7 @@ static int mglRsCreateRenderEncoderBody(void *renderer, void *rawCtx)
 {
     MglRsCreateEncoderCtx *ctx = (MglRsCreateEncoderCtx *)rawCtx;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(ctx->renderer, &areas);
+    mglRendererFillStateAreas(ctx->renderer, &areas);
     void *renderEncoder =
         mglPassManagerCreateRenderEncoder(areas.render_pass_manager);
     mglPassManagerInstallRenderEncoder(areas.render_pass_manager, renderEncoder);
@@ -1428,7 +1428,7 @@ int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,
         return 0;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglRsState(&areas);
     MGLCommandState *commandState = areas.command;
@@ -1711,7 +1711,7 @@ void mglRenderPassFlushCommandBuffer(void *renderer, int finish)
         return;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     mglRenderPassFlushCommandBufferLocked(renderer,
                                         finish ? 1 : 0);
 
@@ -1760,7 +1760,7 @@ int mglRenderPassPrepareEmulatedIndirectCPURead(void *renderer,
         return 0;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     if (!drawCtx) {
         fprintf(stderr, "MGL WARNING: %s skipped because context is NULL\n",

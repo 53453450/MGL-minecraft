@@ -5,7 +5,7 @@
  * Formerly mgl_batch_icb_mdi_encode.m.  The two issue entry points are C
  * drivers now; the one piece that has to stay ObjC -- the @try/@catch around
  * the Metal indirect-command-buffer allocation -- lives behind
- * mglRendererCreateIndirectCommandBufferPort in MGLPlatformRendererShell.m.
+ * mglRendererCreateIndirectCommandBuffer in MGLPlatformRendererShell.m.
  */
 #include "mgl_renderer_ports.h"   /* C port surface (T4) */
 #include "mgl_draw_issue.h"       /* mglDrawHostDevice */
@@ -77,7 +77,7 @@ static void *mglIcbCreate(void *v, int indexed, uint64_t count)
 {
     MGLIcbMdiCtx *c = (MGLIcbMdiCtx *)v;
     int failed = 0;
-    void *icb = mglRendererCreateIndirectCommandBufferPort(c->r, indexed, count,
+    void *icb = mglRendererCreateIndirectCommandBuffer(c->r, indexed, count,
                                                            &failed);
     if (failed) {
         mglIcbTrace(v, 0, "FALLBACK", "icb_create_exception");

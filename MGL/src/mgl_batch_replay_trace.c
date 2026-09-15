@@ -82,7 +82,7 @@ void mglBatchTraceReplayBatch(void *renderer, MGLDrawBatch *batch,
 {
     if (!batch || !glm_ctx) return;
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLFragmentTextureTraceBinding *earlyFs = areas.fragment_trace_bindings;
     int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
     mglBatchFsFlags(earlyFs, earlyFs + 1, earlyFs + 2, earlyFs + 3,
@@ -142,7 +142,7 @@ void mglBatchTraceReplayCommand(void *renderer, MGLDrawBatch *batch,
                                 const char *reason)
 {
     if (!batch || !cmd || !glm_ctx) return;
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLFragmentTextureTraceBinding *fs0 = areas.fragment_trace_bindings;
     int earlyFsSlotHasRT = 0, earlyFsSlotUsedCopy = 0;
     mglBatchFsFlags(fs0, fs0 + 1, fs0 + 2, fs0 + 3, &earlyFsSlotHasRT, &earlyFsSlotUsedCopy);

@@ -27,7 +27,7 @@
 void mglBindingInvalidateLastBoundState(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     mglRenderBindingInvalidate(areas.binding_state_owner
                                    ? *areas.binding_state_owner
                                    : NULL);
@@ -37,7 +37,7 @@ void mglBindingRecordLastBoundVertexBuffer(void *renderer, void *buffer,
                                            uint64_t offset, uint64_t index)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     mglRenderBindingRecordVertexBuffer(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL, buffer,
         offset, (uint32_t)index);
@@ -47,7 +47,7 @@ void mglBindingRecordLastBoundFragmentBuffer(void *renderer, void *buffer,
                                              uint64_t offset, uint64_t index)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     mglRenderBindingRecordFragmentBuffer(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL, buffer,
         offset, (uint32_t)index);
@@ -57,7 +57,7 @@ void mglBindingInvalidateLastBoundVertexBufferAtIndex(void *renderer,
                                                       uint64_t index)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     mglRenderBindingInvalidateVertexBuffer(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL,
         (uint32_t)index);
@@ -67,7 +67,7 @@ void mglBindingInvalidateLastBoundFragmentBufferAtIndex(void *renderer,
                                                         uint64_t index)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     mglRenderBindingInvalidateFragmentBuffer(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL,
         (uint32_t)index);
@@ -78,7 +78,7 @@ void mglBindingSetViewportIfNeeded(void *renderer, double origin_x,
                                    double height, double znear, double zfar)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *owner = areas.command ? areas.command->currentRenderEncoderOwner : NULL;
     mglRenderBindingSetViewportForOwner(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL, owner,
@@ -89,7 +89,7 @@ void mglBindingSetScissorRectIfNeeded(void *renderer, int64_t x, int64_t y,
                                       uint64_t width, uint64_t height)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *owner = areas.command ? areas.command->currentRenderEncoderOwner : NULL;
     mglRenderBindingSetScissorForOwner(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL, owner,
@@ -99,7 +99,7 @@ void mglBindingSetScissorRectIfNeeded(void *renderer, int64_t x, int64_t y,
 void mglBindingSetTriangleFillModeIfNeeded(void *renderer, uint32_t mode)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *owner = areas.command ? areas.command->currentRenderEncoderOwner : NULL;
     mglRenderBindingSetTriangleFillForOwner(
         areas.binding_state_owner ? *areas.binding_state_owner : NULL, owner,
@@ -121,7 +121,7 @@ bool mglRendererSyncResourceBindingsForContext(
     void *renderer, GLMContext glm_ctx, const MGLResourceSyncWork *done)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *state = mglBindingStateDerivedState(&areas, glm_ctx);
 
     if (!done || !done->mappedBuffers) {

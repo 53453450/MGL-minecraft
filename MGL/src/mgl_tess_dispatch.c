@@ -446,7 +446,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     Shader *tcs_shader = tcs_program->shader_slots[_TESS_CONTROL_SHADER];
     if (!mglTessStageHasCompiledFunction(
@@ -708,7 +708,7 @@ bool mglTessDispatchAIRTessEvalVertexRender(
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     /* ARC kept every `id` local of this method alive to the end of the scope;
      * the temporaries set does that here (see mglTessDispatchKeepAlive). */
@@ -1060,7 +1060,7 @@ bool mglTessDispatchAIRTessEvalCompute(
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     /* This draw takes the compute expansion path: the TES stage needs
      * isolated bindings and copy-backs (the kernel writes its outputs), even

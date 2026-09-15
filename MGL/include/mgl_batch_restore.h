@@ -202,7 +202,7 @@ typedef struct MGLBatchRestoreForBatchOps {
 void mgl_batch_restore_run_for_batch(const MGLBatchRestoreForBatchOps *ops);
 
 /* ---- A3: flush pass state shared by the C driver and the ObjC @try frame ----
- * The frame itself stays in the shim (mglRendererFlushDrawBufferLockedPort):
+ * The frame itself stays in the shim (mglRendererFlushDrawBufferLocked):
  * the teardown in its @finally must run even when a draw raises. */
 typedef struct MGLBatchFlushPass {
     uint64_t hit;

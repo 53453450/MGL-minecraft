@@ -143,7 +143,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeBindState(&areas);
 
@@ -470,7 +470,7 @@ bool mglComputeBindTexturesToEncoder(void *renderer, int stage, void *encoder,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglComputeBindState(&areas);
 

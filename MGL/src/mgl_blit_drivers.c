@@ -160,7 +160,7 @@ bool mglBlitResolveMsaaSource(void *renderer, void **read_texid_ptr,
                               int *out_did_msaa_resolve)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     void *read_texid = *read_texid_ptr;
     MGLMetalAttachmentSubresource read_subresource = *read_subresource_ptr;
@@ -358,7 +358,7 @@ bool mglBlitReadTextureRegion(void *renderer, void *texture,
                               size_t bytes_per_image, const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     size_t depth = region.size.depth > 1u ? (size_t)region.size.depth : 1u;
     if (!texture || !bytes || bytes_per_row == 0 || bytes_per_image == 0 ||
@@ -472,7 +472,7 @@ bool mglBlitCopyImageSubDataCpuToCpu(
 {
     (void)glm_ctx;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!src_tex->metal_data_authoritative && !src_tex->is_render_target &&
         src_tex->faces && dst_tex->faces &&
@@ -812,7 +812,7 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     int64_t y, size_t width, size_t height)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!glm_ctx || !tex || !dest_texture || width == 0u || height == 0u) {
         return false;
@@ -1084,7 +1084,7 @@ bool mglBlitCopyImageSubDataFormatConversion(
      * proper render pass synchronization, which the blit path lacks for
      * renderbuffer sources. */
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
     if (mglBdTextureInfo(src_texture).pixel_format ==
         mglBdTextureInfo(dst_texture).pixel_format) {
@@ -1506,7 +1506,7 @@ bool mglBlitCopyImageSubData3DFallback(
      * cannot use replaceRegion and fall through to the blit path below.
      * Driver bug is tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB). */
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
     int needs_3d_workaround =
         MGLCapabilityHasBug(&core->capability, MGL_BUG_3D_GETBYTES_SLICE_OOB) ||
@@ -1851,7 +1851,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
      * tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB)) and fall
      * back to per-level authoritative instead. */
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
 
     int readback_done = 0;
@@ -2265,7 +2265,7 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
 
     int needs_3d_destination_workaround =
@@ -2464,17 +2464,17 @@ bool mglBlitResolveFramebufferAttachments(
         size_t requested_drawable_width = (size_t)(max_dst_x > 0 ? max_dst_x : 0);
         size_t requested_drawable_height =
             (size_t)(max_dst_y > 0 ? max_dst_y : 0);
-        if (mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(
+        if (mglRendererEnsureLayerDrawableSizeAtLeastWidth(
                 renderer, requested_drawable_width, requested_drawable_height,
                 "blitFramebuffer.defaultDraw")) {
-            mglRendererNextDrawablePort(renderer);
+            mglRendererNextDrawable(renderer);
         }
     }
 
     void *readtexid;
 
     if (readfbo == NULL) {
-        readtexid = mglRendererDrawableTexturePort(renderer);
+        readtexid = mglRendererDrawableTexture(renderer);
         if (!readtexid) {
             fprintf(stderr,
                     "MGL WARN: mtlBlitFramebuffer has no drawable source "
@@ -2531,7 +2531,7 @@ bool mglBlitResolveFramebufferAttachments(
 
     void *drawtexid;
     if (drawfbo == NULL) {
-        drawtexid = mglRendererDrawableTexturePort(renderer);
+        drawtexid = mglRendererDrawableTexture(renderer);
         if (!drawtexid) {
             fprintf(stderr,
                     "MGL WARN: mtlBlitFramebuffer has no drawable destination "
@@ -2756,7 +2756,7 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
     int needs_scaled_blit = st->needsScaledBlit;
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
 
     if (!needs_scaled_blit) {
@@ -2852,7 +2852,7 @@ bool mglBlitFramebufferScaledColorWithState(void *renderer,
     };
     params.forceOpaqueAlpha =
         (drawfbo == NULL &&
-         drawtexid == mglRendererDrawableTexturePort(renderer))
+         drawtexid == mglRendererDrawableTexture(renderer))
             ? 1.0f
             : 0.0f;
     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
@@ -2950,7 +2950,7 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
                                 GLint dst_y1, GLbitfield mask, GLenum filter)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
         fprintf(stderr,
@@ -2977,7 +2977,7 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
      * snapshot), so glBlitFramebuffer right after a draw would otherwise copy
      * stale pre-draw content.  Mirrors mtlInvalidateRenderPass (flush + end
      * encoding); no-op when the batch buffer is empty. */
-    mglRendererFlushDrawBufferLockedPort(renderer, glm_ctx);
+    mglRendererFlushDrawBufferLocked(renderer, glm_ctx);
     mglRendererEndRenderEncodingLocked(renderer);
 
     /* The depth/stencil blit is C now (log 138). */
@@ -3604,7 +3604,7 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
     uint32_t expected_kind)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!tex || !source || !mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
         return NULL;

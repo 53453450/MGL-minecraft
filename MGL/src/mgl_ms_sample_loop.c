@@ -78,7 +78,7 @@ void mglRendererBroadcastEmulatedMSSamplePlanesAfterDrawIfNeeded(void *renderer,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs || !ctx->active_state->framebuffer) {
         return;

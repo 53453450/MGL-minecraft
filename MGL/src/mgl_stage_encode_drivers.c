@@ -282,7 +282,7 @@ static void mglSeFinalizePresentMask(
     uint64_t bind_call, uint32_t map_count, uint64_t start_clock)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
@@ -349,7 +349,7 @@ static void mglSeBindPointSizeParams(void *renderer, bool *any_binding_present,
                                      int use_snapshot)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     int needs_point_size_params = 0;
     MGLRenderBindingSnapshot *snap = binding_snapshot;
@@ -401,7 +401,7 @@ static bool mglStageEncodeBindVertexAttributes(
     MGLRenderBindingSnapshot *binding_snapshot, int use_snapshot)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
@@ -788,7 +788,7 @@ bool mglStageEncodeBindVertexBuffers(void *renderer,
                         &s_vbind_last_call_time, &s_vbind_last_call_count, 0.25);
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 
@@ -976,7 +976,7 @@ bool mglStageEncodeBindFragmentBuffers(void *renderer,
                         &s_fbind_last_call_time, &s_fbind_last_call_count, 0.25);
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
 

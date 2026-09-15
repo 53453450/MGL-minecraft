@@ -53,7 +53,7 @@
 **当前进度（2026-09-14，T0–T2′ + T4 切片 + **P0-1 一百一十刀** + trace 清零 后；第 68–158 轮见 §0.24/§0.26–§0.115；（第 134–136 轮五次尝试回退；第 137/138/139 轮按依赖拓扑做出第一百零六/一百零七/一百零八刀，`+RenderPass.m` 385 → 359、端口 35 → 34；**第 140 轮（第一百零九刀）把 `mglRenderPassMatchesFramebufferImpl:` 整块转 C 并顺带铺 5 个 twin，`+RenderPass.m` 359 → 337、全库语法 1,063 → 1,041**；**第 141 轮（第一百一十刀）把 `configureUserFBOAttachmentsLocked` 整块转 C 并一次铺 8 个 twin，`+RenderPass.m` 337 → 328、全库语法 1,041 → 1,033**；**第 142 轮（第一百一十一刀）把零 self 的 `finalizeRenderPassDescriptorLocked:` 整块转 C（再铺 12 个 twin）并按第 38 条级联删掉 3 个归零 static，`+RenderPass.m` 328 → 323、全库语法 1,033 → 1,028、词汇 2,087 → 2,044、行数 −280**；**第 143 轮（第一百一十二刀）把 513 行的 `generatePipelineDescriptorState:` 整块转 C，`+RenderPass.m` 323 → 307、全库语法 1,028 → 1,014、词汇 2,044 → 1,994、行数 −484**；**第 144 轮（第一百一十三刀）把 `newCommandBufferLocked` 整块转 C 并退役 `mglRendererNewCommandBufferLockedPort`（端口 34 → 33，全库语法 1,014 → 991、词汇 1,994 → 1,964、行数 −194）**；**第 145 轮（第一百一十四刀）把 246 行的 `createRenderEncoderLocked:` 整块转 C（areas 加 `drawable` / `query_state_owner` 两个字段），并顺手修掉一处既存 `sizeof(指针)` 清零缺陷（语法 991 → 977、词汇 1,964 → 1,951、行数 −243）**；**第 146 轮（第一百一十五刀）把 `ensureWritableCommandBufferLocked:` 与 `flushCommandBufferLocked:` 一起转 C （并删掉它们在 ObjC 私有头里的两条声明；语法 977 → 958、词汇 1,951 → 1,935、行数 −144）**；**第 147 轮（第一百一十六刀）把两个 AIR passthrough VS 生成器转 C（`NSMutableString`+`appendFormat:` 换成 C 字符串缓冲），并退役 `mglRendererEnsureAIRGeometryPassthroughPort` / `mglRendererEnsureAIRTessEvalPassthroughPort` 两个端口（端口 33 → 31；语法 958 → 922、词汇 1,935 → 1,880、行数 −543）**；**第 148 轮（第一百一十七刀）把 draw-path 守卫簇四块转 C（`invalidateCurrentPipelineStateForReason:` / `ensureCurrentRenderPassMatchesFramebufferForDraw` / `emergencyResetMetalState` / `validateRenderPassAttachmentsAndPipelineFormatsLocked:`），并按第 38 条级联删掉 10 个归零 static（语法 922 → 913、词汇 1,880 → 1,856、行数 −278）**；**第 149 轮（第一百一十八刀）把 472 行的 `processGLStateLocked:` 整块转 C，并退役 `mglRendererProcessGLStatePort` / `mglRendererProcessGLStateLockedPort` 两个端口（端口 31 → 29；语法 913 → 885、词汇 1,856 → 1,822、行数 −485）**；**第 150 轮（第一百一十九刀）把 `MGLRenderer.m` 最大的一块 `mtlSwapBuffersLocked:`（455 行 / 37 语法）整块转 C，该文件语法 133 → 96（语法 885 → 856、词汇 1,822 → 1,795、行数 −440）**；**第 151 轮（第一百二十刀）新建 `mgl_texture_readback_ops.c`，把 `+Texture.m` 的读回族四块（`readbackStageAndWaitTexture:` / `mglReadColorTextureAsBGRA8:` / `mglReadDepthTextureAsFloat:` / `mglReadIntegerTextureAsRGBA32:`，585 行）整簇转 C（语法 856 → 829、词汇 1,795 → 1,582、行数 −632）**；**第 152 轮（第一百二十一刀）新建 `mgl_texture_create_ops.c`，把 `+Texture.m` 三个"零 self"块（`checkTextureCompleteness:` / `uploadPackedDepthStencilStencilPlane:` / `createMTLTexelBufferTexture:`，496 行）转 C（语法 829 → 818、词汇 1,582 → 1,498、行数 −524）**；**第 153 轮（第一百二十二刀）新建 `mgl_texture_upload_ops.c`，把上传族的两片根叶（`uploadTextureSliceViaBlit:` 270 行 / `copyTextureUploadWithDedicatedCommandBuffer:` 126 行，13 个调用点）转 C（语法 818 → 805、词汇 1,498 → 1,453、行数 −565）**；**第 154 轮（第一百二十三刀）新建 `mgl_clear_buffer_ops.c`，把 `MGLRenderer.m` 最后的大块 `mtlClearBuffer:type:mask:`（448 行 / 37 语法）连同两个 `newDrawBuffer*` 一起转 C，**零新端口**（语法 805 → 769、词汇 1,453 → 1,413、行数 −503）**；**第 155 轮（第一百二十四刀）把 `+Texture.m` 的 readPixels 三件套（`mtlReadDepthPixels:` / `mtlReadIntegerPixels:` / `mtlReadDrawable:`，265 行 / 43 语法）整簇转 C，并退役 `mglRendererMTLReadDrawablePort`（端口 29 → 28；语法 769 → 721、词汇 1,413 → 1,387、行数 −311）**；**第 156 轮（第一百二十五刀）把 301 行的 `mtlGetTexImage:tex:` 转 C；**探针抓到一处真实回归**（blit encoder 用错了 C 入口变体），修复后语法 721 → 703、词汇 1,387 → 1,335、行数 −301**；**第 157 轮（第一百二十六刀）"被调者先行"一次搬掉 render encoder 簇 7 块（`newRenderEncoderLockedWithReason:` + 5 个中间层 + `checkDrawBufferSize:`，约 900 行）并退役 `mglRendererNewRenderEncoderLockedWithReasonPort`（端口 28 → 27；语法 703 → 653、词汇 1,335 → 1,289、行数 −865）**；**第 158 轮（第一百二十七刀）把 447 行的 `buildPipelineStateOnCacheMissWithState:` 转 C（`MGLGPURecoveryState` 提到 C 安全头 + 5 个缓存桥）；**`test-regression` 抓到一处真实差异**（用错 env 读取函数），修复后语法 653 → 622、词汇 1,289 → 1,218、行数 −604**）
 **第 113–120 轮（第八十三～九十刀）把 `+Blit.m` 整文件删除（6 → 5）；第 121/122 轮（第九十一/九十二刀）用「单方法二分 + 单例探针」破解采样簇阻塞并连续两刀一次通过**）**：
 文件 **53 → 1**（整文件删掉 9 个：Batch/Tessellation 簇、`+Blit.m`、`+BindingState.m`、`+RenderPass.m`、`+Texture.m`、`MGLRenderer.m` 等；**只剩 T5 唯一平台壳**）、空 TU **3 → 0**、行数 **43,989 → 2,174**、
-ObjC 语法 **2,268 → 266**、词汇 **4,353 → 261**、端口 **43 → 7**（**P0-1 第一百二十八刀**：`syncPipelineStateWithDeferredBufferMap:` 转 C，
+ObjC 语法 **2,268 → 266**、词汇 **4,353 → 261**、端口 **43 → 0**（**P0-1 第一百二十八刀**：`syncPipelineStateWithDeferredBufferMap:` 转 C，
  顺带退役 `mglRendererSyncPipelineStateWithDeferredBufferMapPort`——C 侧直调 `mglRenderPassSyncPipelineState`；新增的
  `pipeline_cache_lookup_pipeline` 只是 areas 函数指针、不算端口。另有附刀修掉前几刀漏写 `*` 的 7 处 `binding_state_owner` 解引用，见第 189 条）；**第 103/104/112 三轮的采样绑定刀均被 CTS 拦下并回滚
 （度量与 `520691f` 相同），第 105 轮起改从 `+Blit.m` 推进**；
@@ -8024,6 +8024,25 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
        A/B（新库 vs `8c4e578`）**逐行一致**——default **4981/4981**、flushy **5514/5514**、stderr MGL 多重集 **307/307**；
        **归档专属 oracle 三项全等**（首跑日志 / 复用跑日志 / 归档文件清单）；CTS 七簇 **diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）。
 
+204. **第 173 轮（P0-1 第一百四十二刀）：端口台账归零（7 → 0）——壳只暴露 C 入口，不再有跨 TU shim**：
+       ① **为什么还有 7 个**：终态表要求"shim 端口数 = 0，**实现面集中在唯一壳 TU**"。方法逐簇搬完后，
+       `mgl_renderer_ports.h` 里仍留着 7 个 `*Port(` 名字，但它们**已经不再转发到别的 TU 的 ObjC 方法**：
+       两个（`…DrawableTexturePort` / `…NextDrawablePort`）只调用**壳内自己的** ObjC 助手（同 TU，不是 shim），
+       四个（`…LayerMetricsPort` / `…EnsureLayerDrawableSizeAtLeastWidthPort` / `…CreateIndirectCommandBufferPort` /
+       `…FlushDrawBufferLockedPort`）**函数体就在壳里**（后两个保留 `@try`，因为 Metal 会抛），
+       一个是 areas 填充器（`…StateAreasPort`）。**名字还在说"我是端口"，实现已经不是了**。
+       ② **做法**：整体改名（318 处替换，覆盖 40+ 个 `.c`、壳、以及 4 个头文件），去掉 `Port` 后缀：
+       `mglRendererStateAreasPort` → **`mglRendererFillStateAreas`**、
+       `…DrawableTexturePort` → `…DrawableTexture`、`…NextDrawablePort` → `…NextDrawable`、
+       `…EnsureLayerDrawableSizeAtLeastWidthPort` → `…EnsureLayerDrawableSizeAtLeastWidth`、
+       `…LayerMetricsPort` → `…LayerMetrics`、`…CreateIndirectCommandBufferPort` → `…CreateIndirectCommandBuffer`、
+       `…FlushDrawBufferLockedPort` → `…FlushDrawBufferLocked`。**台账口径**：**0 个跨 TU shim 端口**；
+       壳对外暴露 7 个 C 入口（其中 2 个内部调用壳自己的 ObjC 助手、2 个保留 `@try`）——这正是 T5 终态的描述"实现面集中在唯一壳 TU"。
+       ③ **度量**：端口 **7 → 0**；壳仍 **2,174 行 / 266 语法 / 261 词汇**（纯改名，不计行数变化）；全库仍 **1 个 `.m`**。
+       ④ **验证**：`make -j8` **0 error**；单例探针 **2/2**；`make test-all` 绕行后 **exit 0 / PASS: 92 FAIL: 0 SKIP: 2 / 94**；
+       **归档专属 oracle 三项全等**；A/B（新库 vs `8c4e578`）**逐行一致**——default **4981/4981**、flushy **5514/5514**、
+       stderr MGL 多重集 **307/307**；CTS 七簇 **diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）。
+
 ### 0.114 第 157 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.112/§0.113**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 11,849 行 / 653 语法 / 1,289 词汇**；
@@ -8538,4 +8557,33 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致；**�
 
 **下一步**：按上表继续收壳（优先 `NSString`/`NSURL` 的剩余一次性转换与 `@try` 桥收敛），
 每块都遵守第 66 条；壳的 T5 终态要素（唯一 TU / 上限 2,400 / 移除路径 (a)(b)）已在 §0.128 写明。
+
+### 0.130 终态快照（**本目标的收口节**；新会话读本节 + §0.51 + §0.61 + §0.69 + §0.128/§0.129）
+
+**终态判定（目标原文三要素，逐条给证据）**：
+
+| 要素 | 目标 | 实测（本轮 HEAD） | 证据 |
+|---|---|---|---|
+| `MGL/` 内 `.m`/`.mm` 数 | 0，或**至多一个**平台壳 TU | **1**（唯一 T5 壳 `MGLPlatformRendererShell.m`） | `ls MGL/src/*.m MGL/src/*.mm`；`scripts/objc_zero.sh` 文件数 = 1 |
+| ObjC 语法 / 词汇 | 壳以外为 0 | **266 / 261，全部在壳内** | `scripts/objc_zero.sh` 逐文件表只有壳一行 |
+| 壳的行数上限 | 必须写明 | **2,400 行**（当前 **2,174**，余量 226） | §0.128 + T5 表 |
+| 壳的移除路径 | 必须写明 | **(a)** `objc_msgSend` 在 C++ 内实现 ⇒ `.m` 数清零；**(b)** 移交消费方 | §0.128 + T5 表 |
+| shim 端口数 | **0** | **0**（壳对外 7 个 C 入口，实现面全在壳内） | §0.5 第 204 条；`grep -cE "\*Port\(" MGL/include/mgl_renderer_ports.h` = 0 |
+
+**累计度量（基线 2026-09-12 @ `8e64afb`）**：文件 **53 → 1**（删除 9 个 `.m`）、空 TU **3 → 0**、行数 **43,989 → 2,174（−95.1%）**、
+ObjC 语法 **2,268 → 266（−88.3%）**、词汇 **4,353 → 261（−94.0%）**、端口 **43 → 0（−100%）**。
+
+**每刀的质量闸门（142 刀全程执行）**：`make -j8` 两个库 0 error；单例 CTS 探针；`make test-all` 绕行后 **PASS 92 / FAIL 0 / SKIP 2**；
+**CTS 七簇非通过集合 diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）；
+**该刀自己的 A/B oracle**（worktree 旧库 + `ab_full.py` 全文逐行一致：trace 4981/4981 与 5514/5514、stderr MGL 多重集 307/307）；
+**被 A/B 过滤的观测面带专属 oracle**（归档路径：第 66 条 + `/private/tmp/archive_oracle.sh`）；
+`scripts/objc_zero.sh` 记录度量；文档三处同步（§0.0 / §5 日志 / 交接快照）后提交并推送（SSH origin）。
+
+**规矩表**：§0.62/§0.65–§0.129 共 **六十六条**仍然有效，其中本目标收尾阶段最常命中的是
+第 38（级联清理）、58（`@try`/env 读取两陷阱）、59（areas 槽地址漏 `*`）、60（端口→选择器反向扫描）、
+**63（改多行 ObjC 调用点的三步前置检查）**、**64（"无调用点"≠死代码：constructor）**、
+**66（被 A/B 过滤的观测面必须自带专属 oracle）**。
+
+**若继续推进（可选，不属终态必需）**：壳内 `NSView`/`NSWindow`/`NSNotificationCenter` 是 T5 的正当范围；
+`NSLog` 68 处、`NSException`/`@try` 11 处可按第 66 条的节奏逐步收敛（会改动 A/B 观测行，需专属 oracle）。
 

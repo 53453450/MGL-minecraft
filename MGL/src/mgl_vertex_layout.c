@@ -36,7 +36,7 @@ int mglRendererGenerateVertexDescriptorState(
     void *renderer, MGLRenderPipelineDescriptorState *state)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     return mglRenderGenerateVertexDescriptorState(
                areas.ctx,
                state,
@@ -50,7 +50,7 @@ int mglRendererGenerateVertexDescriptorState(
 void mglRendererUpdateBlendStateCache(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *st = areas.ctx ? areas.ctx->active_state : NULL;
     if (!st) {
         return;

@@ -216,7 +216,7 @@ bool mglTessPrepareStageBufferBindings(void *renderer,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     BufferMapList stage_buffer_map = {0};
     if (!mglRendererMapGLBuffersToMTLBufferMap(renderer, &stage_buffer_map,
@@ -424,7 +424,7 @@ bool mglTessFlushStageBindingInitializationBlit(
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     MGLRenderBufferCopyEntry copy_entries[kMGLMaxBufferSlots] = {0};
     uint32_t copy_entry_count = 0u;
@@ -515,7 +515,7 @@ bool mglTessPlanTextureBinds(void *renderer, const MGLTessTextureBind *binds,
                              void *temporaries)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!binds || !plan || !ctx || !ctx->active_state) {
         return binds == NULL || count == 0u;

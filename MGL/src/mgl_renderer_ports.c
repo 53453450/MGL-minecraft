@@ -66,7 +66,7 @@ Texture *mglRendererAttachmentTextureFor(GLMContext ctx, FBOAttachment *att)
 const MGLCommandState *mglRendererCommandStateFor(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     return areas.command;
 }
 
@@ -81,7 +81,7 @@ void *mglRendererMdiScratchBuffer(void *renderer, uint64_t length,
         *offset_out = 0;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs || length == 0 ||
         !mglRendererBackendGetDevice(areas.backend)) {
@@ -243,7 +243,7 @@ void *mglRendererSamplerStateForSnapshotKey(void *renderer, const void *key)
         return NULL;
     }
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     void *cachedState = NULL;
     int cacheResult = mglRendererBackendGetSamplerSnapshotState(

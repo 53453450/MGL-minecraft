@@ -378,7 +378,7 @@ static int mglPdTexelBufferTryBody(void *renderer, void *rawCtx)
 void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     Texture *texture = (Texture *)tex;
     GLMState *glState = ctx ? (areas.core && areas.core->activeState

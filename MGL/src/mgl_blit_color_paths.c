@@ -287,7 +287,7 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
                                              const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!source_texture || !dest_texture ||
         mglBcTextureInfo(source_texture).sample_count <= 1u ||
@@ -358,7 +358,7 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
 void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     Framebuffer *drawfbo = st->drawfbo;
     FBOAttachment *draw_fbo_attachment = st->drawFBOAttachment;
@@ -455,7 +455,7 @@ void mglBlitDirectColorWithState(void *renderer, const MGLBlitColorState *st)
 bool mglBlitIntegerColorWithState(void *renderer, const MGLBlitColorState *st)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     void *readtexid = st->readtexid;
     void *drawtexid = st->drawtexid;
@@ -595,7 +595,7 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                                GLint dst_y1, GLbitfield mask, GLenum filter)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     GLbitfield depth_stencil_mask =
         (GLbitfield)mglRenderClearMaskDepthStencilBits((uint32_t)mask);
@@ -1002,7 +1002,7 @@ void *mglBlitResolvedReadbackTexture(void *renderer, void *source_texture,
                                      const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!source_texture || mglBcTextureInfo(source_texture).sample_count <= 1u) {
         if (source_texture) {
@@ -1100,7 +1100,7 @@ void *mglBlitDepthFloatTextureForReadback(void *renderer, void *source_texture,
                                           const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!source_texture || mglBcTextureInfo(source_texture).sample_count > 1u ||
         !mglRenderPixelFormatIsPackedDepthStencil(

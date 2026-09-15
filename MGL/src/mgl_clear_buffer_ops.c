@@ -224,7 +224,7 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMState *glState = mglPdState(&areas);
     MGLCommandState *commandState = areas.command;
     mglPlatformShellSetContext(renderer, glm_ctx);
@@ -360,9 +360,9 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
             if (mglRenderDefaultDrawBufferIsFront(drawBufferIndex)) {
                 if (!areas.drawable && areas.layer) {
                     (void)mglPlatformShellApplyPendingDrawableSize(renderer);
-                    (void)mglRendererNextDrawablePort(renderer);
+                    (void)mglRendererNextDrawable(renderer);
                 }
-                colorTexture = mglRendererDrawableTexturePort(renderer);
+                colorTexture = mglRendererDrawableTexture(renderer);
             } else if (mglRenderDefaultDrawBufferIsOffscreen(
                            drawBufferIndex, _MAX_DRAW_BUFFERS)) {
                 colorTexture = mglRendererBackendGetDefaultDrawBufferAttachment(

@@ -88,7 +88,7 @@ static void mglRenderPassManagerSyncRuntimeOwners(MGLCommandState *state)
 void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs || !cs->currentRenderEncoderOwner ||
         mglRenderEncoderOwnerHasCurrent(cs->currentRenderEncoderOwner) != 1) {
@@ -100,7 +100,7 @@ void mglRenderPassManagerEndCurrentRenderEncoder(void *renderer)
 void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;
@@ -114,7 +114,7 @@ void mglRenderPassManagerClearCurrentRenderEncoder(void *renderer)
 void mglRenderPassManagerDiscardCurrentCommandBuffer(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;
@@ -129,7 +129,7 @@ int mglRenderPassManagerCommitCommandBufferTransaction(
     int waitForCompletion, MGLRenderCommandBufferTransaction *result)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return -1;
@@ -145,7 +145,7 @@ void mglRenderPassManagerReleaseDetachedCommandBufferIfOwned(
     void *renderer, void *commandBuffer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs || !cs->detachedCommandBufferSubmission) {
         return;
@@ -191,7 +191,7 @@ static void mglRenderPassManagerStoreIdentity(
 void mglRenderPassManagerClearRenderPassIdentity(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs) {
         return;
@@ -222,7 +222,7 @@ void mglRendererEndRenderEncodingLocked(void *renderer)
     mglBindingInvalidateLastBoundState(renderer);
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *cs = areas.command;
     if (!cs ||
         mglRenderEncoderOwnerHasCurrent(cs->currentRenderEncoderOwner) != 1) {
@@ -289,7 +289,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                                            MGLResourceSyncWork *work)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     int fboBindingDirty = 0;
     if ((mglPdState(&areas)->dirty_bits & (DIRTY_STATE | DIRTY_FBO)) ==
@@ -430,7 +430,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
 int mglRenderPassEnsureRasterEncoderForDraw(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     if (mglRenderEncoderOwnerHasCurrent(
             areas.command->currentRenderEncoderOwner) == 1) {
         return 1;
@@ -563,7 +563,7 @@ static void *mglRenderPassTextureFromSnapshot(
 
 /* -mglRenderPassMatchesFramebufferImpl:name: is C now (log 169).  Its three
  * Objective-C targets were already C (mglRendererBindMTLTexture,
- * mglRendererAttachmentTextureFor, mglRendererDrawableTexturePort), and
+ * mglRendererAttachmentTextureFor, mglRendererDrawableTexture), and
  * `_renderPassManager->state` is `areas.command`, so the move was mechanical. */
 int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
                                         unsigned int framebuffer_name)
@@ -571,7 +571,7 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
     Framebuffer *fbo = (Framebuffer *)framebuffer;
     const GLuint fboName = framebuffer_name;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassState passState = {0};
     bool hasPassState =
@@ -603,7 +603,7 @@ int mglRenderPassMatchesFramebufferImpl(void *renderer, void *framebuffer,
             /* _drawable ? [self mglDrawableTexture] : nil is the same value:
              * -mglDrawableTexture is self.drawable.texture, which is nil when
              * there is no drawable. */
-            expectedColor0 = mglRendererDrawableTexturePort(renderer);
+            expectedColor0 = mglRendererDrawableTexture(renderer);
         } else if (mglRenderDefaultDrawBufferIsOffscreen(
                        mgl_drawbuffer, _MAX_DRAW_BUFFERS)) {
             expectedColor0 = mglRenderPassDefaultDrawBufferAttachment(
@@ -927,7 +927,7 @@ static uint64_t mglPdMin(uint64_t a, uint64_t b) { return a < b ? a : b; }
 bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
     Framebuffer *fbo = mglPdState(&areas)->framebuffer;
@@ -1253,7 +1253,7 @@ bool mglRenderPassFinalizeRenderPassDescriptor(void *renderer,
                                                int traceRenderEncoder)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
 
@@ -1581,7 +1581,7 @@ int mglRenderPassGeneratePipelineDescriptorState(
     void *renderer, void *state, MGLRenderPassPipelineFunctions *functions_out)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLTessellationState *tess = areas.tessellation;
     MGLGeometryState *geom = areas.geometry;
@@ -1735,9 +1735,9 @@ int mglRenderPassGeneratePipelineDescriptorState(
         } else if (commandState && mglPdColorTextureFor(commandState, 0)) {
             stubColor0 = mglPdTextureInfo(
                 mglPdColorTextureFor(commandState, 0)).pixel_format;
-        } else if (mglRendererDrawableTexturePort(renderer)) {
+        } else if (mglRendererDrawableTexture(renderer)) {
             stubColor0 = mglPdTextureInfo(
-                mglRendererDrawableTexturePort(renderer)).pixel_format;
+                mglRendererDrawableTexture(renderer)).pixel_format;
         } else {
             stubColor0 = ctx->pixel_format.mtl_pixel_format;
         }
@@ -1932,9 +1932,9 @@ int mglRenderPassGeneratePipelineDescriptorState(
             preferredColor0 =
                 mglPdTextureInfo(mglPdColorTextureFor(commandState, 0))
                     .pixel_format;
-        } else if (mglRendererDrawableTexturePort(renderer)) {
+        } else if (mglRendererDrawableTexture(renderer)) {
             preferredColor0 = mglPdTextureInfo(
-                mglRendererDrawableTexturePort(renderer)).pixel_format;
+                mglRendererDrawableTexture(renderer)).pixel_format;
         } else {
             preferredColor0 = ctx->pixel_format.mtl_pixel_format;
         }
@@ -1986,9 +1986,9 @@ int mglRenderPassGeneratePipelineDescriptorState(
             fallbackColor0 =
                 mglPdTextureInfo(mglPdColorTextureFor(commandState, 0))
                     .pixel_format;
-        } else if (mglRendererDrawableTexturePort(renderer)) {
+        } else if (mglRendererDrawableTexture(renderer)) {
             fallbackColor0 = mglPdTextureInfo(
-                mglRendererDrawableTexturePort(renderer)).pixel_format;
+                mglRendererDrawableTexture(renderer)).pixel_format;
         } else {
             fallbackColor0 = ctx->pixel_format.mtl_pixel_format;
         }
@@ -2250,7 +2250,7 @@ static int mglPdEventWaitTryBody(void *renderer, void *rawCtx)
 int mglRenderPassNewCommandBufferLocked(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
 
@@ -2483,7 +2483,7 @@ int mglRenderPassCreateRenderEncoderLocked(void *renderer,
                                            uint64_t renderEncoderCall)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -2727,7 +2727,7 @@ int mglRenderPassEnsureWritableCommandBufferLocked(void *renderer,
                                                    const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *commandState = areas.command;
 
     MGLRenderCommandBufferState bufferState = {0};
@@ -2801,7 +2801,7 @@ static int mglPdCommitCommandBufferTryBody(void *renderer, void *rawCtx)
 void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -2813,7 +2813,7 @@ void mglRenderPassFlushCommandBufferLocked(void *renderer, int finish)
         return;
     }
 
-    mglRendererFlushDrawBufferLockedPort(renderer, ctx);
+    mglRendererFlushDrawBufferLocked(renderer, ctx);
 
     if (!mglRenderPassProcessGLStateLocked(renderer, 0)) {
         fprintf(stderr,
@@ -3073,7 +3073,7 @@ int mglRenderPassEnsureAIRGeometryPassthroughFunctionForProgram(
 {
     (void)outputPrimitive;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     if (!program) return 0;
@@ -3401,7 +3401,7 @@ int mglRenderPassEnsureAIRTessEvalPassthroughFunctionForProgram(void *renderer,
                                                                 Program *program)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!program) return 0;
     void *cachedFunction = NULL;
@@ -3631,7 +3631,7 @@ void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
                                                  const char *reason)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     if (areas.pipeline_cache && areas.pipeline_cache->pipelineState) {
         static uint64_t s_pipelineInvalidateCount = 0;
         const uint64_t hit = ++s_pipelineInvalidateCount;
@@ -3651,7 +3651,7 @@ void mglRenderPassInvalidateCurrentPipelineState(void *renderer,
 int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
 
@@ -3680,7 +3680,7 @@ int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer
         if (!fbo) {
             expectedDefaultColor0 =
                 mglRenderDefaultDrawBufferIsFront(mglDefaultDrawbuffer)
-                    ? mglRendererDrawableTexturePort(renderer)
+                    ? mglRendererDrawableTexture(renderer)
                     : (mglRenderDefaultDrawBufferIsOffscreen(
                            mglDefaultDrawbuffer, _MAX_DRAW_BUFFERS)
                            ? mglRenderPassDefaultDrawBufferAttachment(
@@ -3728,7 +3728,7 @@ static int mglPdEmergencyResetTryBody(void *renderer, void *rawCtx)
 {
     MglPdEmergencyResetCtx *ctx = (MglPdEmergencyResetCtx *)rawCtx;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRenderPassManager *manager = areas.render_pass_manager;
 
     /* Force cleanup of all Metal objects */
@@ -3771,7 +3771,7 @@ int mglRenderPassValidateAttachmentsAndPipelineFormats(void *renderer,
                                                        int traceProcess)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLCommandState *commandState = areas.command;
 
@@ -3952,7 +3952,7 @@ static int mglPdRecoveryTryBody(void *renderer)
     mglRenderPassEmergencyResetMetalState(renderer);
     s_pdCorruptionRecoveryCount++;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     const int deviceOk =
         mglRendererBackendGetDevice(areas.backend) &&
         ((uintptr_t)mglRendererBackendGetDevice(areas.backend) >= 0x1000);
@@ -4007,7 +4007,7 @@ static int mglPdSetPipelineTryBody(void *renderer, void *rawCtx)
 int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
@@ -4570,18 +4570,18 @@ static int mglPdPresentTryBody(void *renderer, void *rawCtx)
 {
     MglPdPresentCtx *ctx = (MglPdPresentCtx *)rawCtx;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLCommandState *commandState = areas.command;
     GLMContext glmCtx = areas.ctx;
 
-    if (!mglRendererDrawableTexturePort(renderer)) {
+    if (!mglRendererDrawableTexture(renderer)) {
         fprintf(stderr,
                 "MGL ERROR: Drawable texture is NULL, cannot present\n");
         ctx->result = -1;
         return 0;
     }
 
-    void *currentDrawableTexture = mglRendererDrawableTexturePort(renderer);
+    void *currentDrawableTexture = mglRendererDrawableTexture(renderer);
     MGLRenderTextureInfo currentDrawableInfo =
         mglPdTextureInfo(currentDrawableTexture);
     if (currentDrawableInfo.width == 0 || currentDrawableInfo.height == 0) {
@@ -4668,7 +4668,7 @@ static int mglPdCommitSwapTryBody(void *renderer, void *rawCtx)
 void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     MGLRenderPassManager *manager = areas.render_pass_manager;
     MGLCommandState *commandState = areas.command;
 
@@ -4821,7 +4821,7 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
     }
 
     if (shouldPresent) {
-        mglRendererFlushDrawBufferLockedPort(renderer, activeCtx);
+        mglRendererFlushDrawBufferLocked(renderer, activeCtx);
 
         if (!mglRenderPassProcessGLStateLocked(renderer, 0)) {
             s_pdSwapProcessStateFailCount++;
@@ -4872,9 +4872,9 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     (unsigned long long)swapCall);
             }
             (void)mglPlatformShellApplyPendingDrawableSize(renderer);
-            (void)mglRendererNextDrawablePort(renderer);
+            (void)mglRendererNextDrawable(renderer);
             if (traceSwap) {
-                void *tex = mglRendererDrawableTexturePort(renderer);
+                void *tex = mglRendererDrawableTexture(renderer);
                 mglTraceLog(
                     "MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present drawable=%p tex=%p size=%lux%lu",
                     (unsigned long long)swapCall,
@@ -4893,9 +4893,9 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     (unsigned long long)swapCall);
             }
             (void)mglPlatformShellApplyPendingDrawableSize(renderer);
-            (void)mglRendererNextDrawablePort(renderer);
+            (void)mglRendererNextDrawable(renderer);
             if (traceSwap) {
-                void *tex = mglRendererDrawableTexturePort(renderer);
+                void *tex = mglRendererDrawableTexture(renderer);
                 mglTraceLog(
                     "MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present_retry drawable=%p tex=%p size=%lux%lu",
                     (unsigned long long)swapCall,
@@ -4913,7 +4913,7 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
         void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
             commandState->renderPassStateOwner,
             MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
-        void *drawableTexture = mglRendererDrawableTexturePort(renderer);
+        void *drawableTexture = mglRendererDrawableTexture(renderer);
         if (!skipPresent) {
             mglSwapCopyRenderPassColorToDrawableIfNeeded(
                 renderer, rpColor0, drawableTexture, swapCall, traceSwap ? 1 : 0);
@@ -5033,9 +5033,9 @@ void mglRenderPassMTLSwapBuffersLocked(void *renderer, GLMContext glm_ctx)
                     (unsigned long long)swapCall);
             }
         } else {
-            (void)mglRendererNextDrawablePort(renderer);
+            (void)mglRendererNextDrawable(renderer);
             if (traceSwap) {
-                void *tex = mglRendererDrawableTexturePort(renderer);
+                void *tex = mglRendererDrawableTexture(renderer);
                 mglTraceLog(
                     "MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
                     (unsigned long long)swapCall,

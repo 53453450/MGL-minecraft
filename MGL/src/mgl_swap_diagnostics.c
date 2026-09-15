@@ -243,7 +243,7 @@ static void mglSwapScheduleTextureSample(void *renderer, void *sample_texture,
                                          uint64_t swap_call)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (!sample_texture) {
         mglTraceLog("MGL TRACE swap.sample.%s call=%llu skipped(texture=nil)",
@@ -355,7 +355,7 @@ void mglSwapCopyRenderPassColorToDrawableIfNeeded(void *renderer, void *rp_color
                                                   bool trace_swap)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     MGLRenderTextureInfo sourceInfo = {0};
     MGLRenderTextureInfo drawableInfo = {0};

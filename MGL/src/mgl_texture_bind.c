@@ -102,7 +102,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     if (mglRenderTextureBufferNeedsDirty(
             mglRenderIsTextureBufferTarget(tex->target),

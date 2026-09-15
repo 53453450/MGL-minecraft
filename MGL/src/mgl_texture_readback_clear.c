@@ -84,7 +84,7 @@ void mglTextureApplyPendingFBOColorClearForReadback(void *renderer,
 
 void mglTextureApplyPendingDefaultDepthClear(void *renderer, void *mtl_texture)
 {
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     if (!ctx || !mtl_texture ||
         !mglRenderClearMaskHasDepth((uint32_t)ctx->active_state->default_fbo_clear_bitmask)) {
@@ -105,7 +105,7 @@ void mglTextureApplyPendingDefaultDepthClear(void *renderer, void *mtl_texture)
 
 void mglTextureApplyPendingDefaultColorClear(void *renderer, void *mtl_texture)
 {
-    MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+    MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     if (!ctx || !mtl_texture ||
         !mglRenderClearMaskHasColor((uint32_t)ctx->active_state->default_fbo_clear_bitmask)) {

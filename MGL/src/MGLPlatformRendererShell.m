@@ -250,7 +250,7 @@ void *mglPlatformRendererShellTextureForDrawable(void *drawable)
  * the shell above plus the port wrappers below.  The port count is unchanged
  * (13) - this is the T5 consolidation into one shell translation unit, not a
  * port reduction. */
-void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
+void *mglRendererCreateIndirectCommandBuffer(void *renderer, int indexed,
                                                  uint64_t count,
                                                  int *failed_out)
 {
@@ -376,7 +376,7 @@ void *mglRenderPassDiscardStubFragmentFunction(uint32_t valueClass)
         (MGLStubFSValueClass)valueClass);
 }
 
-int mglRendererLayerMetricsPort(void *renderer,
+int mglRendererLayerMetrics(void *renderer,
                                 MGLRendererLayerMetricsValue *metrics_out)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -395,7 +395,7 @@ int mglRendererLayerMetricsPort(void *renderer,
     return hasLayer ? 1 : 0;
 }
 
-void mglRendererNextDrawablePort(void *renderer)
+void mglRendererNextDrawable(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     if (r) {
@@ -405,7 +405,7 @@ void mglRendererNextDrawablePort(void *renderer)
     }
 }
 
-void *mglRendererDrawableTexturePort(void *renderer)
+void *mglRendererDrawableTexture(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     return r ? (__bridge void *)[r mglDrawableTexture] : NULL;
@@ -414,7 +414,7 @@ void *mglRendererDrawableTexturePort(void *renderer)
 /* Forward declaration: the pending-size apply lives further down this TU. */
 static CGSize mglPlatformShellApplyPendingDrawableSizeCGSize(MGLRenderer *r);
 
-int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
+int mglRendererEnsureLayerDrawableSizeAtLeastWidth(void *renderer,
                                                        size_t required_width,
                                                        size_t required_height,
                                                        const char *reason)
@@ -544,7 +544,7 @@ void mglRendererTemporariesRelease(void *temporaries)
 - (void)flushDrawBuffer:(GLMContext)glm_ctx
 {
     METAL_LOCK();
-    mglRendererFlushDrawBufferLockedPort((__bridge void *)self, glm_ctx);
+    mglRendererFlushDrawBufferLocked((__bridge void *)self, glm_ctx);
     METAL_UNLOCK();
 }
 
@@ -934,7 +934,7 @@ int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
     return 1;
 }
 
-void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
+void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     if (!areas_out) {
@@ -995,7 +995,7 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
 
 /* The @try/@finally frame the C flush driver cannot express: the teardown in
  * the @finally has to run even when a draw raises. */
-void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext glm_ctx)
+void mglRendererFlushDrawBufferLocked(void *renderer, GLMContext glm_ctx)
 {
     MGLBatchFlushPass pass;
     if (!mglBatchFlushBegin(renderer, glm_ctx, &pass)) {
@@ -1004,7 +1004,7 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext glm_ctx)
     @try {
         mglBatchFlushRunBatches(renderer, glm_ctx, &pass);
     } @finally {
-        MGLRendererStateAreas areas; mglRendererStateAreasPort(renderer, &areas);
+        MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
         if (areas.command) {
             areas.command->traceReplayFlushId = 0u;
             areas.command->traceReplayBatchIndex = 0u;

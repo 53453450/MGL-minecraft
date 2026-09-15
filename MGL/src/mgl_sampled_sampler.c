@@ -126,7 +126,7 @@ void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
                                    const char *stage, void *texture)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     Sampler *gl_sampler = (texture_unit < TEXTURE_UNITS)
@@ -459,7 +459,7 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
 {
     (void)vertex_program_name;
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -662,7 +662,7 @@ bool mglSampledRecoverFragmentDepthTexture(
     int *used_fallback_ptr)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
 
     Texture *ptr = *ptr_ptr;
@@ -1131,7 +1131,7 @@ void mglSampledEmitDiagPorts(
     uint64_t *trace_file_counter)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglSsState(&areas);
 
@@ -1272,7 +1272,7 @@ bool mglSampledBindTexturesForStage(
     GLuint *nil_count, GLuint *sampler_count, GLuint *sampled_count_out)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
@@ -1804,7 +1804,7 @@ bool mglBindTexturesToCurrentRenderEncoder(void *renderer,
                                            const MGLEncodeContext *enc_ctx)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     void *binding_state_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;

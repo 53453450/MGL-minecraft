@@ -180,7 +180,7 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     void *binding_owner =
         areas.binding_state_owner ? *areas.binding_state_owner : NULL;
     const int use_resource_snapshot = 1;
@@ -280,7 +280,7 @@ bool mglBindingStateBindStorageImagesForVertexProgram(void *renderer,
     }
 
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
 
     const int vertex_stage = areas.tessellation->nativeTESActive
                                  ? _TESS_EVALUATION_SHADER

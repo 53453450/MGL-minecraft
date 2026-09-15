@@ -110,7 +110,7 @@ static void mglSizeConstantsFillFromMapList(const BufferMapList *list,
 bool mglRendererBindBufferSizeConstantsForRenderEncoder(void *renderer)
 {
     MGLRendererStateAreas areas;
-    mglRendererStateAreasPort(renderer, &areas);
+    mglRendererFillStateAreas(renderer, &areas);
     GLMContext ctx = areas.ctx;
     GLMState *state = mglSizeConstantsState(&areas);
     void *renderEncoderOwner =
