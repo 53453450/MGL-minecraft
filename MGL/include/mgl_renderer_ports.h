@@ -112,9 +112,11 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
  * MGLRendererStateAreas (`areas.batching` / `areas.command`), which replaced six
  * per-flag wrappers plus a "set the trace identity" wrapper. */
 
-int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer);
-int mglRendererPrepareRenderPassIfFBOChangedPort(void *renderer, void *batch,
-                                                 GLMContext ctx, GLenum *replay_error);
+/* mglRendererCurrentRenderPassMatchesFramebufferPort is gone (log 193;
+ * the header carried this misspelled duplicate of the name retired in
+ * log 191): the predicate is C now (mglRenderPassMatchesCurrentFramebuffer). */
+/* mglRendererPrepareRenderPassIfFBOChangedPort is gone (log 193): the method is C
+ * now (mglRenderPassPrepareIfFBOChanged). */
 
 /* Bind one Texture's Metal object (mglRendererBindMTLTexture, mgl_texture_bind.h)
  * is C now: it was -[MGLRenderer bindMTLTextureLocked:], so the former
@@ -163,8 +165,9 @@ void mglRendererBindMTLBuffer(void *renderer, Buffer *buffer);
  * mglRendererMapBuffersToMTL (mgl_buffer_map.h). */
 /* mglRendererBindTexturesToCurrentRenderEncoderPort is gone: its target is C now
  * (mglBindTexturesToCurrentRenderEncoder, mgl_sampled_sampler.h). */
-int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
-                                                          const char *label);
+/* mglRendererRestoreRenderEncoderAfterTextureUploadPort is gone (log 193):
+ * -restoreRenderEncoderAfterTextureUploadForDraw: is C now
+ * (mglRenderPassRestoreRenderEncoderAfterTextureUpload). */
 
 /* Sampled-resource lookup for the dyn-texture plan. */
 
@@ -330,7 +333,8 @@ void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx);
  * declared locally until now). */
 int mglPlatformShellNewCommandBuffer(void *renderer);
 
-int mglRendererBindMTLProgramPort(void *renderer, Program *program);
+/* mglRendererBindMTLProgramPort is gone (log 193): -bindMTLProgram: is C now
+ * (mglRenderPassBindMTLProgram). */
 /* mglRendererEndRenderEncodingPort is gone (log 191): -endRenderEncoding was
  * METAL_LOCK + mglRendererEndRenderEncodingLocked, so every C caller links to
  * that C entry directly. */
@@ -355,7 +359,8 @@ void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
  * The remaining calls mgl_draw_metal_port.m makes into renderer methods, so
  * that file can finish converting.  Thin forwards; retirement follows their
  * targets in MGLRenderer+RenderPass.m / +Tessellation.m / +BindingState.m. */
-void mglRendererFlushCommandBufferPort(void *renderer, int finish);
+/* mglRendererFlushCommandBufferPort is gone (log 193): -flushCommandBuffer: is C
+ * now (mglRenderPassFlushCommandBuffer). */
 /* The two render-pass close/readback ports are gone (log 191): the leaves are C
  * now (mglRenderPassSynchronizeForTextureReadback /
  * mglRenderPassEndIfFramebufferChangedForNonDraw, mgl_render_pass_sync_ops.h). */
@@ -398,9 +403,8 @@ void mglRendererTraceSampledTextureReadbackPort(
  * unrecognized-selector landmine.  The caller links to the C entry now. */
 /* mglRendererEnsureRasterEncoderForDrawPort is gone: its target is C now
  * (mglRenderPassEnsureRasterEncoderForDraw, log 169). */
-int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
-                                                  GLMContext draw_ctx,
-                                                  const char *label);
+/* mglRendererPrepareEmulatedIndirectCPUReadPort is gone (log 193): the method is
+ * C now (mglRenderPassPrepareEmulatedIndirectCPURead). */
 /* The TES-vertex passthrough function is still an Objective-C method in
  * MGLRenderer+RenderPass.m; this port retires with it.  Added by log 128. */
 

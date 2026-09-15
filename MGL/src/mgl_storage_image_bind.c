@@ -30,6 +30,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_storage_image_bind.h"
 #include "mgl_renderer_ports.h"   /* state areas, texture bind, restore encoder */
 #include "mgl_renderer_backend.h" /* program binding counts/GL bindings */
@@ -257,7 +258,7 @@ bool mglBindingStateBindStorageImagesForStage(void *renderer, int shader_stage,
             mglRenderEncoderOwnerHasCurrent(mglSiRenderEncoderOwner(&areas)) ==
                 0) {
             RETURN_FALSE_ON_FAILURE(
-                mglRendererRestoreRenderEncoderAfterTextureUploadPort(renderer,
+                mglRenderPassRestoreRenderEncoderAfterTextureUpload(renderer,
                                                                        restore_tag));
         }
     }

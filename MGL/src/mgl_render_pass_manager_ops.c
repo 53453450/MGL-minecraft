@@ -1638,14 +1638,14 @@ int mglRenderPassGeneratePipelineDescriptorState(
                 (unsigned)fragmentProgramName);
     }
 
-    if (!mglRendererBindMTLProgramPort(renderer, vertexProgram)) {
+    if (!mglRenderPassBindMTLProgram(renderer, vertexProgram)) {
         fprintf(stderr,
                 "MGL PIPELINE DESC fail: bindMTLProgram failed for VS program=%u\n",
                 (unsigned)vertexProgramName);
         return 0;
     }
     if (fragmentProgram && fragmentProgram != vertexProgram &&
-        !mglRendererBindMTLProgramPort(renderer, fragmentProgram)) {
+        !mglRenderPassBindMTLProgram(renderer, fragmentProgram)) {
         fprintf(stderr,
                 "MGL PIPELINE DESC fail: bindMTLProgram failed for FS program=%u\n",
                 (unsigned)fragmentProgramName);

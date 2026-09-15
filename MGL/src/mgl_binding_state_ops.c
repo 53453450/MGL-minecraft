@@ -14,6 +14,7 @@
  * forms, the current render encoder owner from the command state.
  */
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_binding_state_ops.h"
 #include "mgl_sampled_sampler.h"
 #include "mgl_renderer_ports.h"
@@ -149,11 +150,11 @@ bool mglRendererSyncResourceBindingsForContext(
             mglBatchBindActiveTexturesToMTL(renderer, areas.ctx));
     }
     RETURN_FALSE_ON_FAILURE(
-        mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+        mglRenderPassRestoreRenderEncoderAfterTextureUpload(
             renderer, "final-active-texture-bind"));
     if (!mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx)) {
         RETURN_FALSE_ON_FAILURE(
-            mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+            mglRenderPassRestoreRenderEncoderAfterTextureUpload(
                 renderer, "final-sampled-texture-bind"));
         RETURN_FALSE_ON_FAILURE(
             mglBindTexturesToCurrentRenderEncoder(renderer, &encCtx));

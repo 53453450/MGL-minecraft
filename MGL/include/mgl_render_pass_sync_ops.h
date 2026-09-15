@@ -71,6 +71,20 @@ void mglRenderPassUpdateCurrentRenderEncoder(void *renderer);
  * conversion). */
 void mglRenderPassUpdateViewportAndScissorLocked(void *renderer);
 
+/* The close/entry leaves (log 193).  All of them used to be the last
+ * Objective-C methods of MGLRenderer+RenderPass.m. */
+int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,
+                                                        const char *reason);
+int mglRenderPassBindMTLProgram(void *renderer, struct Program_t *ptr);
+int mglRenderPassBindMTLProgramLocked(void *renderer, struct Program_t *ptr);
+int mglRenderPassProcessGLState(void *renderer, int draw_command);
+void mglRenderPassFlushCommandBuffer(void *renderer, int finish);
+int mglRenderPassPrepareIfFBOChanged(void *renderer, MGLDrawBatch *batch,
+                                     GLMContext glm_ctx, GLenum *replay_error);
+int mglRenderPassPrepareEmulatedIndirectCPURead(void *renderer,
+                                                GLMContext draw_ctx,
+                                                const char *label);
+
 #ifdef __cplusplus
 }
 #endif

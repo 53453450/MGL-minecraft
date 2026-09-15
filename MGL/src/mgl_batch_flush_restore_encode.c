@@ -106,7 +106,7 @@ static void cBegin(void *v)
                        areas.command->traceReplayBatchIndex = c->bi; }
   mglBatchTraceReplayBatch(c->r, c->batch, c->ctx, c->hit, c->bi, "RESTORE"); }
 static int cFbo(void *v)
-{ CCtx *c = v; return mglRendererPrepareRenderPassIfFBOChangedPort(c->r, c->batch, c->ctx,
+{ CCtx *c = v; return mglRenderPassPrepareIfFBOChanged(c->r, c->batch, c->ctx,
       c->err); }
 static int cProc(void *v) { return mglRenderPassProcessGLStateLocked(((CCtx *)v)->r, 1); }
 static void cErr(void *v)

@@ -32,6 +32,8 @@
 #include "mgl.h"
 #include "draw_command.h"
 #include "mgl_frame_activity.h"  /* MGL_PERF_INC/ADD (pipeline cache counters) */
+#include "mgl_aux_assets.h"
+#include "mgl_shader_resource.h"  /* mglShaderCompileGLSL, mglRenderCreateAuxFunctions */
 #include "mgl_air_loader.h"      /* MGLRenderPipelineDescriptorState */
 #include "mgl_renderer_backend.h"
 #include "mgl_batch_mtl_encode.h"  /* mgl_batch_mtl_create_icb */
@@ -274,21 +276,103 @@ void *mglRendererCreateIndirectCommandBufferPort(void *renderer, int indexed,
 }
 
 
-int mglRendererRestoreRenderEncoderAfterTextureUploadPort(void *renderer,
-                                                          const char *label)
+/* === draw / tessellation host entries (phase 2) ========================= */
+/* The rasterizer-discard stub fragment function (moved out of
+ * MGLRenderer+RenderPass.m so that file could be deleted, log 193).  The
+ * dispatch_once + aux-asset/self-hosted-GLSL compile path is Objective-C by
+ * construction; C callers reach it through
+ * mglRenderPassDiscardStubFragmentFunction below. */
+typedef NS_ENUM(uint32_t, MGLStubFSValueClass) {
+    MGLStubFSFloat = 0,
+    MGLStubFSInt,
+    MGLStubFSUint,
+};
+
+static id mglRasterizerDiscardStubFragmentFunctionForClass(
+    MGLStubFSValueClass valueClass)
 {
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r restoreRenderEncoderAfterTextureUploadForDraw:label]) ? 1 : 0;
+    static id s_fs[MGLStubFSUint + 1] = { nil, nil, nil };
+    static dispatch_once_t once[MGLStubFSUint + 1];
+
+    dispatch_once(&once[valueClass], ^{
+        void *fs = NULL;
+        char err[256] = {0};
+        if (valueClass == MGLStubFSFloat) {
+            /* Precompiled aux asset (no runtime source compile). */
+            const MGLAuxShaderAsset *safe =
+                mglAuxShaderAssetFind("safe_fallback");
+            void *vs = NULL;
+            if (!safe || !safe->data || safe->size == 0 ||
+                mglRenderCreateAuxFunctions(
+                    safe->data, safe->size, safe->hash,
+                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                    &vs, &fs, err, sizeof(err)) != 0 || !fs) {
+                NSLog(@"MGL ERROR: discard stub FS unavailable: %s",
+                      err[0] ? err : "asset missing");
+                if (vs) {
+                    (void)(__bridge_transfer id)vs;
+                }
+                return;
+            }
+            (void)(__bridge_transfer id)vs;
+        } else {
+            /* Integer-format targets reject a float4 output, and no
+             * precompiled integer stub asset ships in the aux table.
+             * Compile the integer zero stub at runtime through the
+             * self-hosted GLSL->AIR backend (the same path real programs
+             * take; its fragment output carries the correct
+             * air.render_target int/uint type). */
+            static const char *s_stubSource[MGLStubFSUint + 1] = {
+                NULL,
+                "#version 330\n"
+                "out ivec4 mgl_stub_color_int;\n"
+                "void main() { mgl_stub_color_int = ivec4(0); }\n",
+                "#version 330\n"
+                "out uvec4 mgl_stub_color_uint;\n"
+                "void main() { mgl_stub_color_uint = uvec4(0u); }\n",
+            };
+            unsigned char *bytes = NULL;
+            size_t size = 0;
+            if (mglShaderCompileGLSL(
+                    s_stubSource[valueClass], MGL_STAGE_FRAGMENT,
+                    &bytes, &size, err, sizeof(err)) != 0 || !bytes) {
+                NSLog(@"MGL ERROR: stub FS compile failed: %s",
+                      err[0] ? err : "unknown");
+                return;
+            }
+            /* mglRenderCreateAuxFunctions supports fragment-only blobs by
+             * accepting a NULL vertex entry, but the vertex output argument
+             * itself is still required so the API can publish both results.
+             * Passing NULL here made every integer render target fail with
+             * "bad args" before the stub function was even looked up. */
+            void *unusedVertex = NULL;
+            if (mglRenderCreateAuxFunctions(
+                    bytes, size, 0u, NULL, "main",
+                    &unusedVertex, &fs, err, sizeof(err)) != 0 || !fs) {
+                NSLog(@"MGL ERROR: stub FS function load failed: %s",
+                      err[0] ? err : "unknown");
+                if (unusedVertex) {
+                    (void)(__bridge_transfer id)unusedVertex;
+                }
+                free(bytes);
+                return;
+            }
+            if (unusedVertex) {
+                (void)(__bridge_transfer id)unusedVertex;
+            }
+            free(bytes);
+        }
+        s_fs[valueClass] = (__bridge_transfer id)fs;
+    });
+    return s_fs[valueClass];
 }
 
-
-/* === draw / tessellation host entries (phase 2) ========================= */
-void mglRendererFlushCommandBufferPort(void *renderer, int finish)
+/* C-callable bridge for the C pipeline-descriptor host: the stub factory itself
+ * stays Objective-C (dispatch_once + blocks). */
+void *mglRenderPassDiscardStubFragmentFunction(uint32_t valueClass)
 {
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r flushCommandBuffer:finish ? true : false];
-    }
+    return (__bridge void *)mglRasterizerDiscardStubFragmentFunctionForClass(
+        (MGLStubFSValueClass)valueClass);
 }
 
 int mglRendererLayerMetricsPort(void *renderer,
@@ -359,14 +443,6 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                : 0;
 }
 
-int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
-                                                  GLMContext draw_ctx,
-                                                  const char *label)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r prepareEmulatedIndirectCPURead:draw_ctx label:label]) ? 1 : 0;
-}
-
 /* GPU capture: the capture session lives on the shell object, which owns the
  * MTLCaptureManager descriptor/start/stop calls. */
 void mglPlatformShellGpuCaptureStart(void *renderer)
@@ -404,12 +480,6 @@ void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx)
     if (r) {
         [r mglSetActiveContext:glm_ctx];
     }
-}
-
-int mglRendererBindMTLProgramPort(void *renderer, Program *program)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && program && [r bindMTLProgram:program]) ? 1 : 0;
 }
 
 void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
@@ -953,17 +1023,6 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->tess_cull_capture_instance_stride =
         (uint32_t)r->_tessellation.cullDistanceCaptureInstanceStride;
     areas_out->fragment_trace_bindings = &r->_resourceFallback.fragmentTextureTraceBindings[0];
-}
-
-int mglRendererPrepareRenderPassIfFBOChangedPort(void *renderer, void *batch,
-                                                 GLMContext ctx, GLenum *replay_error)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
-                                          context:ctx
-                                      replayError:replay_error])
-               ? 1
-               : 0;
 }
 
 /* The @try/@finally frame the C flush driver cannot express: the teardown in

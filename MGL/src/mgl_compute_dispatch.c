@@ -29,6 +29,7 @@
 #include <string.h>
 #include <stdatomic.h>
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_compute_dispatch.h"
 #include "mgl_compute_bind.h"
 #include "mgl_stage_copy_back.h"
@@ -78,7 +79,7 @@ bool mglComputeProcess(void *renderer, void *encoder,
 
     if (program->dirty_bits)
     {
-        if (!mglRendererBindMTLProgramPort(renderer, program)) {
+        if (!mglRenderPassBindMTLProgram(renderer, program)) {
             fprintf(stderr,
                     "MGL COMPUTE ERROR: failed to bind compute program %u\n",
                     program->name);

@@ -18,6 +18,7 @@
 #include "mgl_draw_validate.h"           /* mglShouldInspectDrawCall */
 #include "mgl_env_flag.h"               /* mgl_env_flag_enabled_default_on */
 #include "mgl_thread_affinity.h"         /* MGL_ASSERT_GL_THREAD (METAL_LOCK) */
+#include "mgl_render_pass_sync_ops.h"
 #include "MGLRenderer+DrawSupportUtil.h"
 /* Declared next to their definitions in the Objective-C MGLRenderer+Draw_Private.h,
  * which a .c file cannot include; repeated here the way mgl_renderer_ports.c does. */
@@ -537,7 +538,7 @@ static void mglStageMarkCbHasWork(void *renderer)
 static void mglStageFlushCB(void *renderer, int wait)
 {
     if (!renderer) return;
-    mglRendererFlushCommandBufferPort(renderer, wait ? 1 : 0);
+    mglRenderPassFlushCommandBuffer(renderer, wait ? 1 : 0);
 }
 
 static void *mglStageBufContents(void *buffer)
@@ -580,7 +581,7 @@ static void *mglStageCaptureIndexed(void *renderer, GLMContext ctx, void *index_
 
 static int mglStageBindProgram(void *renderer, Program *program)
 {
-    return mglRendererBindMTLProgramPort(renderer, program);
+    return mglRenderPassBindMTLProgram(renderer, program);
 }
 
 static int mglStageProcessBuffer(void *renderer, Buffer *buf)
@@ -2062,7 +2063,7 @@ bool mglDrawHostResolveIndirectBuffer(void *renderer, GLMContext ctx,
 bool mglDrawHostPrepareIndirectCPURead(void *renderer, GLMContext ctx,
                                        const char *label)
 {
-    return mglRendererPrepareEmulatedIndirectCPUReadPort(
+    return mglRenderPassPrepareEmulatedIndirectCPURead(
                renderer, ctx, label ? label : "indirectDraw") ? true : false;
 }
 

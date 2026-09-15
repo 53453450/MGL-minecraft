@@ -11,6 +11,7 @@
 // MGLRenderer+Texture.m
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_render_pass_manager_ops.h"
 #import "MGLRenderer_Private.h"
 #include "mgl_blit_color_state.h" /* readback helper entries (log 141) */
@@ -593,7 +594,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    RETURN_ON_FAILURE([self processGLState: false]);
+    RETURN_ON_FAILURE(mglRenderPassProcessGLState((__bridge void *)self, 0));
 
     // end encoding on current render encoder
     mglRendererEndRenderEncodingLocked((__bridge void *)self);
@@ -3521,7 +3522,7 @@ static void mglTextureCopyTextureToBuffer(
         info.width, info.height, 1u,
         (__bridge void *)dst3d, 0u, level, 0u, 0u, layer);
     (void)mglRenderEndBlitEncoder(blit);
-    [self flushCommandBuffer:NO];
+    mglRenderPassFlushCommandBuffer((__bridge void *)self, 0);
 }
 
 - (void)prepareImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
@@ -3588,7 +3589,7 @@ static void mglTextureCopyTextureToBuffer(
         info.width, info.height, 1u,
         (__bridge void *)staging, 0u, 0u, 0u, 0u, 0u);
     (void)mglRenderEndBlitEncoder(blit);
-    [self flushCommandBuffer:NO];
+    mglRenderPassFlushCommandBuffer((__bridge void *)self, 0);
 
     iu->mtl_image_view = (__bridge_retained void *)staging;
 }

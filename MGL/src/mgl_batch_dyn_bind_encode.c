@@ -5,6 +5,7 @@
  * Formerly mgl_batch_dyn_bind_encode.m.  The six entry points are C drivers
  * now; every renderer operation they need goes through mgl_renderer_ports.h.
  */
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_sampled_sampler.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */       /* C port surface (T4) */
@@ -129,7 +130,7 @@ static int mglDynApplyBindTexDirect(void *v)
 static int mglDynApplyBindTexMapper(void *v)
 { MGLDynApplyCtx *c = v; return mglBindTexturesToCurrentRenderEncoder(c->r, c->enc) ? 1 : 0; }
 static int mglDynApplyRestoreTex(void *v)
-{ return mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+{ return mglRenderPassRestoreRenderEncoderAfterTextureUpload(
       ((MGLDynApplyCtx *)v)->r, "dynamic-sampled-texture-bind") ? 1 : 0; }
 static int mglDynApplyBindVertex(void *v)
 { MGLDynApplyCtx *c = v; return mglBatchDynBindVertexDirect(c->r, c->draw_vao, c->cmd,

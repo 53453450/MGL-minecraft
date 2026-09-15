@@ -417,7 +417,7 @@ bool mglBlitReadTextureRegion(void *renderer, void *texture,
         return false;
     }
 
-    mglRendererFlushCommandBufferPort(renderer, 1);
+    mglRenderPassFlushCommandBuffer(renderer, 1);
     MGLRenderCommandBufferState read_state = {0};
     if (mglRenderWaitCommandBufferOwnerLastSubmitted(
             mglBdCommandBufferOwner(&areas), &read_state) != 0 ||
@@ -1107,7 +1107,7 @@ bool mglBlitCopyImageSubDataFormatConversion(
     mglRendererEndRenderEncodingLocked(renderer);
     (void)mglRenderPassSynchronizeForTextureReadback(
         renderer, src_texture, "copyImageSubData.formatConv");
-    mglRendererFlushCommandBufferPort(renderer, 1);
+    mglRenderPassFlushCommandBuffer(renderer, 1);
 
     size_t copy_width = mglBdMaxSize((size_t)width, 1u);
     size_t copy_height = mglBdMaxSize((size_t)height, 1u);
@@ -1407,7 +1407,7 @@ static int mglBd3DReadGuarded(void *renderer, void *ctx_raw)
                     (size_t)c->src_level, slice_region.origin, slice_region.size,
                     slice_buffer, 0, c->row_bytes, c->image_bytes);
                 mglBdEndBlitEncoder(read_encoder);
-                mglRendererFlushCommandBufferPort(c->renderer, 1);
+                mglRenderPassFlushCommandBuffer(c->renderer, 1);
                 void *slice_contents = NULL;
                 uint64_t slice_length = 0;
                 if (mglRenderGetBufferContents(slice_buffer, &slice_contents,
@@ -1872,7 +1872,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
             if (dst_metal_bpp > 0 && dst_cpu_bpp == dst_metal_bpp) {
                 (void)mglRenderPassSynchronizeForTextureReadback(
                     renderer, dst_texture, "copyImageSubData.blitReadback");
-                mglRendererFlushCommandBufferPort(renderer, 1);
+                mglRenderPassFlushCommandBuffer(renderer, 1);
 
                 size_t copy_width = mglBdMaxSize((size_t)width, 1u);
                 size_t copy_height = mglBdMaxSize((size_t)height, 1u);
@@ -2007,7 +2007,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
                     (void)mglRenderPassSynchronizeForTextureReadback(
                         renderer, dst_texture,
                         "copyImageSubData.fmtConvReadback");
-                    mglRendererFlushCommandBufferPort(renderer, 1);
+                    mglRenderPassFlushCommandBuffer(renderer, 1);
 
                     size_t copy_width = mglBdMaxSize((size_t)width, 1u);
                     size_t copy_height = mglBdMaxSize((size_t)height, 1u);
@@ -2413,7 +2413,7 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
     /* Flush the command buffer to ensure the blit is executed before any
      * subsequent readback (e.g. glGetTexImage).  Without this, the blit may
      * still be pending in the command buffer when the readback occurs. */
-    mglRendererFlushCommandBufferPort(renderer, 0);
+    mglRenderPassFlushCommandBuffer(renderer, 0);
 
     bool readback_done = mglBlitCopyImageSubDataPostBlitReadback(
         renderer, dst_tex, dst_texture, dst_type, dst_level, dst_x, dst_y, dst_z,
@@ -3727,7 +3727,7 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
         mglRenderEncoderOwnerHasCurrent(
             areas.command ? areas.command->currentRenderEncoderOwner : NULL) !=
             1) {
-        if (!mglRendererRestoreRenderEncoderAfterTextureUploadPort(
+        if (!mglRenderPassRestoreRenderEncoderAfterTextureUpload(
                 renderer, "sample_gate_miss_repair")) {
             return NULL;
         }

@@ -44,6 +44,11 @@
 #include "mgl_sync.h"              /* mglLoadActionName / mglStoreActionName */
 #include "mgl_readback_policy.h"
 #include "mgl_byte_hash.h"
+#include "mgl_batch_issue.h"      /* MGLEncodeContext */
+#include "mgl_buffer_map.h"       /* mglRendererMapBuffersToMTL */
+#include "mgl_stage_encode_drivers.h" /* mglStageEncodeBind*Buffers */
+#include "mgl_metal_ref.h"       /* mglSafeReleaseMetalObj */
+#include "mgl_draw_gs.h"         /* mglDrawGsStageShouldBlockDraw */
 #include "mgl_renderer_backend.h"  /* mglRendererGetProgramBindingCount */
 #include "mgl_state_compat.h"      /* mglMTLCompareFunctionForGL, mglLogRenderStateRepair */
 #include "mgl_render_pass_manager_ops.h"
@@ -64,6 +69,7 @@ extern int mglFramebufferLooksLikeGLSampledCopyRenderTarget(GLMContext ctx,
                                                            Texture **color_out,
                                                            Texture **depth_out);
 extern Program *mglResolveProgramFromState(GLMContext ctx);
+extern void *mglRenderPassDiscardStubFragmentFunction(uint32_t value_class);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern int mglRendererObjectPointerLikelyValid(const void *pointer);
 extern int mglRendererPointerInHashTable(const void *table, const void *pointer);
@@ -1296,4 +1302,490 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
             mglBindingSetViewportIfNeeded(renderer, state->viewport[0], state->viewport[1], state->viewport[2], state->viewport[3], state->var.depth_range[0], state->var.depth_range[1]);
         }
     }
+}
+
+
+/* === The renderer's render-pass close/entry leaves (log 193) ===============
+ * The rest of MGLRenderer+RenderPass.m, moved so the file can be deleted:
+ * -restoreRenderEncoderAfterTextureUploadForDraw:, -bindMTLProgram: /
+ * -bindMTLProgramLocked:, -processGLState:, -flushCommandBuffer:,
+ * -prepareRenderPassIfFBOChanged:context:replayError: and
+ * -prepareEmulatedIndirectCPURead:label:.
+ */
+
+/* The .m's mglRenderPassTextureFromSnapshot, in C. */
+static void *mglRsTextureFromSnapshot(const MGLRenderPassState *state,
+                                      uint32_t attachmentKind,
+                                      uint64_t colorIndex)
+{
+    if (!state) return NULL;
+    switch (mglRenderPassAttachmentClass(attachmentKind)) {
+    case 1:
+        return mglRenderPassColorAttachmentIndexValid((uint32_t)colorIndex,
+                                                      MAX_COLOR_ATTACHMENTS)
+                   ? state->color[colorIndex].attachment.texture
+                   : NULL;
+    case 2:
+        return state->depth.attachment.texture;
+    case 3:
+        return state->stencil.attachment.texture;
+    default:
+        return NULL;
+    }
+}
+
+/* The .m's mglRenderPassSetPersistentActions, in C. */
+static void mglRsSetPersistentActions(const MGLCommandState *commandState,
+                                      uint32_t attachmentKind,
+                                      uint64_t colorIndex, uint32_t loadAction,
+                                      uint32_t storeAction)
+{
+    if (!commandState) return;
+    MGLRenderPassAttachmentState state = {0};
+    if (!mglRsPersistentAttachment(commandState, attachmentKind, colorIndex,
+                                   &state)) {
+        return;
+    }
+    if (commandState->renderPassStateOwner) {
+        mglRenderSetRenderPassStateAttachmentActions(
+            commandState->renderPassStateOwner, attachmentKind,
+            (uint32_t)colorIndex, (uint32_t)loadAction, (uint32_t)storeAction,
+            state.store_action_options);
+    }
+}
+
+/* The .m's mglLoadAIRMainFunction: the C++ loader already returns +1 handles
+ * ("+1 retained for the caller"), which is exactly what the modules keep, so
+ * the Objective-C version's __bridge_transfer / CFBridgingRetain pair
+ * collapses into storing them. */
+static bool mglRsLoadAIRMainFunction(const unsigned char *bytes, size_t size,
+                                     void **libraryOut, void **functionOut,
+                                     char *errorText, size_t errorCap)
+{
+    if (libraryOut) *libraryOut = NULL;
+    if (functionOut) *functionOut = NULL;
+    if (!bytes || size == 0u || !libraryOut || !functionOut) {
+        if (errorText && errorCap) snprintf(errorText, errorCap, "bad args");
+        return false;
+    }
+    void *libraryHandle = NULL;
+    void *functionHandle = NULL;
+    if (mglRenderLoadAIRMainFunction(bytes, size, &libraryHandle,
+                                     &functionHandle, errorText,
+                                     errorCap) != 0 ||
+        !libraryHandle || !functionHandle) {
+        return false;
+    }
+    *libraryOut = libraryHandle;
+    *functionOut = functionHandle;
+    return true;
+}
+
+/* @try of the encoder create in the restore path (rule 58 (b)). */
+typedef struct MglRsCreateEncoderCtx_t {
+    void *renderer;
+} MglRsCreateEncoderCtx;
+
+static int mglRsCreateRenderEncoderBody(void *renderer, void *rawCtx)
+{
+    MglRsCreateEncoderCtx *ctx = (MglRsCreateEncoderCtx *)rawCtx;
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(ctx->renderer, &areas);
+    void *renderEncoder =
+        mglPassManagerCreateRenderEncoder(areas.render_pass_manager);
+    mglPassManagerInstallRenderEncoder(areas.render_pass_manager, renderEncoder);
+    (void)renderer;
+    return 1;
+}
+
+/* @try of the set-pipeline block in the restore path: the body has no failure
+ * path, so 0 from the guarded call means "an exception was thrown". */
+typedef struct MglRsBindPipelineCtx_t {
+    void *binding_owner;
+    MGLCommandState *command_state;
+    const MGLPipelineCacheState *cache_state;
+} MglRsBindPipelineCtx;
+
+static int mglRsBindPipelineBody(void *renderer, void *rawCtx)
+{
+    MglRsBindPipelineCtx *ctx = (MglRsBindPipelineCtx *)rawCtx;
+    if (mglRenderBindingSetPipelineIfNeededForOwner(
+            ctx->binding_owner, ctx->command_state->currentRenderEncoderOwner,
+            ctx->cache_state ? ctx->cache_state->pipelineState : NULL) > 0) {
+        MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+    } else {
+        MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
+    }
+    (void)renderer;
+    return 1;
+}
+
+/* -restoreRenderEncoderAfterTextureUploadForDraw: */
+int mglRenderPassRestoreRenderEncoderAfterTextureUpload(void *renderer,
+                                                        const char *reason)
+{
+    if (!renderer) {
+        return 0;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    GLMState *state = mglRsState(&areas);
+    MGLCommandState *commandState = areas.command;
+    const MGLPipelineCacheState *cacheState = areas.pipeline_cache;
+    void *bindingOwner =
+        areas.binding_state_owner ? *areas.binding_state_owner : NULL;
+    if (mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) == 1) {
+        return 1;
+    }
+    MGLRenderPassState passState = {0};
+    bool hasPassState =
+        mglRsPersistentState(commandState, &passState);
+    if (!ctx || !hasPassState) {
+        return 0;
+    }
+
+    static uint64_t s_restoreAfterTextureUploadCount = 0;
+    uint64_t hit = ++s_restoreAfterTextureUploadCount;
+    if (hit <= 16ull || (hit % 2048ull) == 0ull) {
+        fprintf(stderr, "MGL TEXTURE UPLOAD closed render encoder; restoring for draw reason=%s hit=%llu\n",
+              reason ? reason : "(null)",
+              (unsigned long long)hit);
+    }
+
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
+            renderer,
+            reason ? reason : "restore_render_encoder_after_texture_upload")) {
+        return 0;
+    }
+
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        void *texture = mglRsTextureFromSnapshot(
+            &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i);
+        if (texture) {
+            mglRsSetPersistentActions(
+                commandState,
+                MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, i,
+                MGLLoadActionLoad, MGLStoreActionStore);
+        }
+    }
+    void *depthTexture = mglRsTextureFromSnapshot(
+        &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
+    if (depthTexture) {
+        mglRsSetPersistentActions(
+            commandState,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MGLLoadActionLoad, MGLStoreActionStore);
+    }
+    void *stencilTexture = mglRsTextureFromSnapshot(
+        &passState, MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0);
+    if (stencilTexture) {
+        mglRsSetPersistentActions(
+            commandState,
+            MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MGLLoadActionLoad, MGLStoreActionStore);
+    }
+
+    /* @try of the encoder create: a throwing create must run the catch's
+     * recovery instead of escaping into C (rule 58 (b)); the shell hands the
+     * exception's reason back so the original log line is replayed verbatim. */
+    char exceptionReason[256] = {0};
+    MglRsCreateEncoderCtx createCtx = { renderer };
+    if (!mglPlatformShellGuardedCallCtxReason(
+            renderer, "restore render encoder after texture upload",
+            mglRsCreateRenderEncoderBody, &createCtx, exceptionReason,
+            sizeof(exceptionReason))) {
+        fprintf(stderr,
+                "MGL ERROR: restoring render encoder after texture upload failed to create encoder: %s\n",
+                exceptionReason[0] ? exceptionReason : "(null)");
+        mglPassManagerClearCurrentRenderEncoder(areas.render_pass_manager);
+        mglRendererRecordGPUError(renderer);
+        return 0;
+    }
+    if (mglRenderEncoderOwnerHasCurrent(
+            commandState->currentRenderEncoderOwner) != 1) {
+        fprintf(stderr, "MGL ERROR: restoring render encoder after texture upload returned NULL encoder reason=%s\n",
+              reason ? reason : "(null)");
+        mglRendererRecordGPUError(renderer);
+        return 0;
+    }
+    mglRenderSetRenderEncoderOwnerLabel(
+        commandState->currentRenderEncoderOwner,
+        "GL Render Encoder");
+    /* When trace is disabled, skip the full-struct memset and trace call
+     * and clear only the functional flag fields. */
+    if (mglTraceLogIsEnabled()) {
+        mglTraceFragmentTextureTraceBindings("CLEAR",
+                                             reason ? reason : "restore_render_encoder_after_texture_upload",
+                                             areas.fragment_trace_bindings,
+                                             TEXTURE_UNITS,
+                                             ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
+                                             cacheState->pipelineProgramName);
+        memset(areas.fragment_trace_bindings, 0,
+               sizeof(areas.fragment_trace_bindings));
+    } else {
+        mglClearFragmentTextureTraceFunctionalFlags(
+            areas.fragment_trace_bindings, TEXTURE_UNITS);
+    }
+    mglPassManagerUpdateRenderPassIdentityForContext(areas.render_pass_manager, ctx);
+    mglRenderPassUpdateCurrentRenderEncoder(renderer);
+
+    if (!cacheState->pipelineState) {
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO |
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
+        return 0;
+    }
+
+    /* The set-pipeline block has no failure path: 0 from the guarded call
+     * means "an exception was thrown" (log 172's convention). */
+    MglRsBindPipelineCtx bindCtx = { bindingOwner, commandState, cacheState };
+    if (!mglPlatformShellGuardedCallCtxReason(
+            renderer, "restore render encoder after texture upload pipeline bind",
+            mglRsBindPipelineBody, &bindCtx, exceptionReason,
+            sizeof(exceptionReason))) {
+        fprintf(stderr,
+                "MGL ERROR: restoring render encoder after texture upload failed to bind pipeline: %s\n",
+                exceptionReason[0] ? exceptionReason : "(null)");
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO |
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
+        return 0;
+    }
+
+    RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL(renderer));
+    MGLEncodeContext encCtx = {
+        .render_encoder_owner = commandState->currentRenderEncoderOwner,
+    };
+    RETURN_FALSE_ON_FAILURE(mglStageEncodeBindVertexBuffers(renderer, &encCtx));
+    RETURN_FALSE_ON_FAILURE(mglStageEncodeBindFragmentBuffers(renderer, &encCtx));
+    return 1;
+}
+
+/* -bindMTLProgramLocked: */
+int mglRenderPassBindMTLProgramLocked(void *renderer, Program *ptr)
+{
+    (void)renderer;
+    if (!ptr) {
+        return 0;
+    }
+    if (ptr->dirty_bits & DIRTY_PROGRAM)
+    {
+        /* Metal libraries/functions are linked Program products and are
+         * invalidated by clearStageCompileState during relink. DIRTY_PROGRAM
+         * also covers pre-link state changes, which must not discard the
+         * currently linked executable. */
+        ptr->dirty_bits &= ~DIRTY_PROGRAM;
+    }
+
+    int failedStage = -1;
+    char bindError[256] = {0};
+    int bindResult = mglRenderBindAIRProgram(
+        ptr, &failedStage, bindError, sizeof(bindError));
+    if (bindResult == MGL_RENDER_AIR_PROGRAM_BOUND) {
+        return 1;
+    }
+    if (bindResult == MGL_RENDER_AIR_PROGRAM_ERROR) {
+        fprintf(stderr, "MGL ERROR: Failed to bind AIR program=%u stage=%d: %s\n",
+              (unsigned)ptr->name, failedStage,
+              bindError[0] ? bindError : "?");
+        return 0;
+    }
+
+	    // Compile linked Program stages on demand.
+	    for(int i=_VERTEX_SHADER; i<_MAX_SHADER_TYPES; i++)
+	    {
+	        Shader *shader;
+	        shader = ptr->shader_slots[i];
+
+        if (shader)
+        {
+            if (mglDrawGsStageShouldBlockDraw(
+                    i, (uint32_t)ptr->gs_route, ptr->modules[i].metallib_bytes,
+                    (uint32_t)ptr->modules[i].metallib_size)) {
+                static uint64_t s_geometryShaderMetalSkipCount = 0;
+                uint64_t hit = ++s_geometryShaderMetalSkipCount;
+                if (hit <= 16ull || (hit % 512ull) == 0ull) {
+                    fprintf(stderr, "MGL WARNING: Blocking draw for unsupported geometry shader program=%u hit=%llu\n",
+                          (unsigned)ptr->name,
+                          (unsigned long long)hit);
+                }
+                return 0;
+            }
+            if (ptr->modules[i].metallib_bytes && ptr->modules[i].metallib_size > 0) {
+                /* AIR path: the stage was compiled by the self-hosted
+                 * frontend into a metallib blob; load it directly. */
+                if (ptr->modules[i].mtl_library == NULL || ptr->modules[i].mtl_function == NULL) {
+                    mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function);
+                    mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_library);
+                    void *library = NULL;
+                    void *function = NULL;
+                    char loadError[256] = {0};
+                    if (!mglRsLoadAIRMainFunction(
+                            ptr->modules[i].metallib_bytes,
+                            ptr->modules[i].metallib_size, &library, &function,
+                            loadError, sizeof loadError)) {
+                        fprintf(stderr, "MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %s\n",
+                              (unsigned)ptr->name, i,
+                              loadError[0] ? loadError : "?");
+                        return 0;
+                    }
+                    ptr->modules[i].mtl_library = library;
+                    ptr->modules[i].mtl_function = function;
+                }
+                if (mglRenderVertexCaptureNeedsLoad(
+                        i, ptr->modules[i].metallib_tess_capture_bytes,
+                        ptr->modules[i].mtl_tess_capture_library,
+                        ptr->modules[i].mtl_tess_capture_function)) {
+                    void *library = NULL;
+                    void *function = NULL;
+                    char loadError[256] = {0};
+                    if (!mglRsLoadAIRMainFunction(
+                            ptr->modules[i].metallib_tess_capture_bytes,
+                            ptr->modules[i].metallib_tess_capture_size,
+                            &library, &function, loadError,
+                            sizeof loadError)) {
+                        fprintf(stderr, "MGL ERROR: Failed to load AIR tess VS capture program=%u: %s\n",
+                              (unsigned)ptr->name,
+                              loadError[0] ? loadError : "?");
+                        return 0;
+                    }
+                    ptr->modules[i].mtl_tess_capture_library = library;
+                    ptr->modules[i].mtl_tess_capture_function = function;
+                }
+                if (mglRenderVertexCaptureNeedsLoad(
+                        i, ptr->modules[i].metallib_cull_capture_bytes,
+                        ptr->modules[i].mtl_cull_capture_library,
+                        ptr->modules[i].mtl_cull_capture_function)) {
+                    void *library = NULL;
+                    void *function = NULL;
+                    char loadError[256] = {0};
+                    if (!mglRsLoadAIRMainFunction(
+                            ptr->modules[i].metallib_cull_capture_bytes,
+                            ptr->modules[i].metallib_cull_capture_size,
+                            &library, &function, loadError,
+                            sizeof loadError)) {
+                        fprintf(stderr,
+                                  "MGL ERROR: Failed to load AIR cull-distance "
+                                  "capture program=%u: %s\n",
+                              (unsigned)ptr->name,
+                              loadError[0] ? loadError : "?");
+                        return 0;
+                    }
+                    ptr->modules[i].mtl_cull_capture_library = library;
+                    ptr->modules[i].mtl_cull_capture_function = function;
+                }
+            } else {
+                fprintf(stderr, "MGL ERROR: Program %u stage %d has no AIR metallib\n",
+                      (unsigned)ptr->name, i);
+                return 0;
+            }
+        }
+    }
+
+    return 1;
+}
+
+/* -bindMTLProgram: (METAL_LOCK is the thread-affinity assertion only). */
+int mglRenderPassBindMTLProgram(void *renderer, Program *ptr)
+{
+    return mglRenderPassBindMTLProgramLocked(renderer, ptr);
+}
+
+/* -processGLState: */
+int mglRenderPassProcessGLState(void *renderer, int draw_command)
+{
+    if (!renderer) {
+        return 0;
+    }
+    bool result = mglRenderPassProcessGLStateLocked(
+        renderer, draw_command ? 1 : 0) != 0;
+    return result;
+}
+
+/* -flushCommandBuffer: */
+void mglRenderPassFlushCommandBuffer(void *renderer, int finish)
+{
+    if (!renderer) {
+        return;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    mglRenderPassFlushCommandBufferLocked(renderer,
+                                        finish ? 1 : 0);
+
+    /* The C++ command owner retains the last accepted submission. Waiting
+     * through its value-state API keeps completion lifetime out of the
+     * renderer's ObjC ivar mirror and preserves the old outside-lock wait. */
+    if (finish) {
+        MGLRenderCommandBufferState finishState = {0};
+        int waitResult = mglPassManagerWaitForLastSubmittedCommandBuffer(areas.render_pass_manager, &finishState);
+        if (waitResult < 0 || finishState.has_error) {
+            fprintf(stderr, "MGL ERROR: owner waitUntilCompleted failed status=%u domain=%s code=%lld\n",
+                  finishState.status, finishState.error_domain,
+                  (long long)finishState.error_code);
+        }
+    }
+}
+
+/* -prepareRenderPassIfFBOChanged:context:replayError: */
+int mglRenderPassPrepareIfFBOChanged(void *renderer, MGLDrawBatch *batch,
+                                     GLMContext glm_ctx, GLenum *replayError)
+{
+    (void)batch;
+    if (!renderer || !glm_ctx) {
+        return 1;
+    }
+    if (!(glm_ctx->active_state->dirty_bits & DIRTY_FBO))
+        return 1;
+
+    /* Orchestrator-driven FBO rotation (Orchestrator-driven FBO rotation) delegates to the shared
+     * RenderPass Sync unit (RenderPass Sync domain), surfacing any GL error as replayError
+     * so the batch is skipped rather than drawn against a stale pass. */
+    if (!mglRenderPassSyncRenderPassStateForContext(renderer, glm_ctx)) {
+        if (!mglRenderErrorIsNone((uint32_t)glm_ctx->active_state->error))
+            *replayError = glm_ctx->active_state->error;
+        return 0;
+    }
+    return 1;
+}
+
+/* -prepareEmulatedIndirectCPURead:label: */
+int mglRenderPassPrepareEmulatedIndirectCPURead(void *renderer,
+                                                GLMContext drawCtx,
+                                                const char *label)
+{
+    if (!renderer) {
+        return 0;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    MGLCommandState *commandState = areas.command;
+    if (!drawCtx) {
+        fprintf(stderr, "MGL WARNING: %s skipped because context is NULL\n",
+              label ? label : "indirect emulation");
+        return 0;
+    }
+
+    /* The C draw-indirect frontends already flush pending command buffers before
+     * dispatching into these Metal entry points. If processGLState has just
+     * rebuilt a render encoder, keep it; a second flush can discard the fresh
+     * pass and make state restoration fail for CPU-emulated indirect modes. */
+    if (mglRenderEncoderOwnerHasCurrent(commandState->currentRenderEncoderOwner) == 1) {
+        return 1;
+    }
+
+    mglRenderPassFlushCommandBuffer(renderer, 1);
+    if (!mglRenderPassProcessGLState(renderer, 1)) {
+        fprintf(stderr, "MGL WARNING: %s skipped because GL state could not be restored after CPU-read synchronization\n",
+              label ? label : "indirect emulation");
+        return 0;
+    }
+    if (mglRenderEncoderOwnerHasCurrent(commandState->currentRenderEncoderOwner) != 1) {
+        fprintf(stderr, "MGL WARNING: %s skipped because CPU-read synchronization left no render encoder\n",
+              label ? label : "indirect emulation");
+        return 0;
+    }
+    return 1;
 }
