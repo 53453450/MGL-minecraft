@@ -90,6 +90,23 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
 /* -createMTLTextureFromGLTexture: moved in log 197. */
 void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex);
 
+
+/* The texSubImage trio moved in log 198. */
+struct Buffer_t;
+int mglTextureSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
+                       struct Buffer_t *buf, uint64_t src_offset,
+                       uint64_t src_pitch, uint64_t src_image_size,
+                       uint64_t src_size, uint32_t slice, uint32_t level,
+                       uint64_t width, uint64_t height, uint64_t depth,
+                       uint64_t xoffset, uint64_t yoffset, uint64_t zoffset);
+int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx, Texture *tex,
+                            const void *bytes, uint64_t bytes_size,
+                            uint64_t src_offset, uint64_t src_pitch,
+                            uint64_t src_image_size, uint32_t slice,
+                            uint32_t level, uint64_t width, uint64_t height,
+                            uint64_t depth, uint64_t xoffset, uint64_t yoffset,
+                            uint64_t zoffset);
+
 #ifdef __cplusplus
 }
 #endif

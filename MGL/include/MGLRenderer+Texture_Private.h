@@ -110,27 +110,14 @@ void mglMetalCopyRows(const uint8_t *src,
                  format:(GLenum)format type:(GLenum)type
             mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice;
 /* -mtlGenerateMipmaps: is C now (log 194; mgl_texture_mip_ops.h). */
-- (void)mtlTexSubImage:(GLMContext)glm_ctx tex:(Texture *)tex
-                    buf:(Buffer *)buf src_offset:(size_t)src_offset
-              src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size
-               src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level
-                  width:(size_t)width height:(size_t)height depth:(size_t)depth
-                xoffset:(size_t)xoffset yoffset:(size_t)yoffset
-                zoffset:(size_t)zoffset;
-- (bool)mtlTexSubImageBytes:(GLMContext)glm_ctx tex:(Texture *)tex
-                      bytes:(const void *)bytes bytesSize:(size_t)bytes_size
-                 src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch
-             src_image_size:(size_t)src_image_size slice:(GLuint)slice
-                      level:(GLuint)level width:(size_t)width
-                     height:(size_t)height depth:(size_t)depth
-                    xoffset:(size_t)xoffset yoffset:(size_t)yoffset
-                    zoffset:(size_t)zoffset;
+/* -mtlTexSubImage: is C now (log 198; mgl_texture_upload_ops.h). */
+/* -mtlTexSubImageBytes: is C now (log 198; mgl_texture_upload_ops.h). */
 
 
 // === Pending FBO clear application for readback ===
 
 // === Locked texture upload variant ===
-- (void)mtlTexSubImageLocked:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset;
+/* -mtlTexSubImageLocked: is C now (log 198; mgl_texture_upload_ops.h). */
 
 // === Texture mipmap diagnostics (defined in MGLRenderer.m) ===
 - (void)logMTLTextureMipmapDiagnostics:(id)mtlTexture

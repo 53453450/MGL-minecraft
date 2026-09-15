@@ -13,6 +13,7 @@
  */
 
 #include "mgl_metal_ref.h"       /* MGLMetalKindTexture, mglMetalCountCreate */
+#include "mgl_pixel_format.h"       /* mglTextureBytesPerPixelForFormat */
 #include "mgl_texture_mip_ops.h"     /* mglTextureLogMipDiagnostics */
 #include "mgl_texture_compat.h"
 #include "mgl_texture_upload_ops.h"
@@ -58,6 +59,9 @@ static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
  * there; this is the C twin (same shape as mgl_blit_drivers.c's). */
 extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
 extern int mglRendererShouldSkipGPUOperations(void *renderer);
+extern int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
+                                                void *texture,
+                                                const char *reason);
 extern bool mglRendererBindMTLTexture(void *renderer, Texture *tex);
 
 static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
@@ -163,6 +167,16 @@ static void *mglUpCreateDepthStencilMetalUpload(
 /* mglUpMin() is an Objective-C header macro; C has no same-named inline. */
 #define mglUpMin(a, b) ((a) < (b) ? (a) : (b))
 #define mglUpMax(a, b) ((a) > (b) ? (a) : (b))
+
+/* Twin of the .m's mglTextureBufferContents. */
+static void *mglUpTextureBufferContents(void *buffer)
+{
+    void *contents = NULL;
+    uint64_t length = 0u;
+    return buffer && mglRenderGetBufferContents(buffer, &contents, &length) == 0
+               ? contents
+               : NULL;
+}
 
 /* Twin of the .m's mglTextureCreateBufferWithBytes (returns the +1 handle). */
 static void *mglUpCreateBufferWithBytes(const void *bytes, uint64_t length,
@@ -3228,4 +3242,505 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
     mglRendererRecordGPUSuccess(renderer);
 
     return texture;
+}
+
+
+/* === The texSubImage trio (log 198) =======================================
+ * -mtlTexSubImage:… (the METAL_LOCK wrapper), -mtlTexSubImageLocked:… and
+ * -mtlTexSubImageBytes:… moved from MGLRenderer+Texture.m.  Their only callers
+ * are this file's C entries, so no port moves.
+ */
+
+/* ctx + body of the depth/stencil replaceRegion the bytes path guards. */
+typedef struct MglUpReplaceCtx_t {
+    void *texture;
+    uint64_t xoffset;
+    uint64_t yoffset;
+    uint64_t width;
+    uint64_t height;
+    uint64_t level;
+    uint64_t slice;
+    const void *bytes;
+    uint64_t bytes_per_row;
+    uint64_t bytes_per_image;
+} MglUpReplaceCtx;
+
+static int mglUpReplaceBody(void *renderer, void *rawCtx)
+{
+    MglUpReplaceCtx *ctx = (MglUpReplaceCtx *)rawCtx;
+    (void)mglTextureReplaceRegionValue(
+        ctx->texture,
+        mglRegion2D(ctx->xoffset, ctx->yoffset, ctx->width, ctx->height),
+        ctx->level, ctx->slice, ctx->bytes, ctx->bytes_per_row,
+        ctx->bytes_per_image, 1);
+    (void)renderer;
+    return 1;
+}
+
+/* -mtlTexSubImageLocked:… */
+int mglTextureSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
+                       Buffer *buf, uint64_t src_offset, uint64_t src_pitch,
+                       uint64_t src_image_size, uint64_t src_size, uint32_t slice,
+                       uint32_t level, uint64_t width, uint64_t height,
+                       uint64_t depth, uint64_t xoffset, uint64_t yoffset,
+                       uint64_t zoffset)
+{
+    if (!renderer) {
+        return 0;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    void *device = mglRendererBackendGetDevice(areas.backend);
+    (void)ctx;
+    (void)device;
+    if (!tex || !buf) {
+        fprintf(stderr, "MGL ERROR: mtlTexSubImage called with null tex/buf (tex=%p buf=%p)\n", tex, buf);
+        return 0;
+    }
+
+    if (src_pitch == 0 || width == 0 || height == 0) {
+        fprintf(stderr, "MGL ERROR: mtlTexSubImage invalid dimensions/pitch tex=%u width=%zu height=%zu src_pitch=%zu\n",
+              tex->name, width, height, src_pitch);
+        return 0;
+    }
+
+    // we can deal with a null buffer but we need a texture
+    if (buf->data.mtl_data == NULL)
+    {
+        mglRendererBindMTLBuffer(renderer, buf);
+        if (buf->data.mtl_data == NULL) {
+            return 0;
+        }
+    }
+
+    void *buffer = buf->data.mtl_data;
+    if (!buffer) {
+        fprintf(stderr, "MGL ERROR: mtlTexSubImage missing Metal buffer object tex=%u\n", tex->name);
+        return 0;
+    }
+
+
+    if (tex->mtl_data) {
+        void *dstTexture = tex->mtl_data;
+        uint32_t dstPixelFormat = mglPdTextureInfo(dstTexture).pixel_format;
+        int needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat, dstPixelFormat);
+        int needsRGBA8Expand = 0;
+        if (!needsChannelExpand) {
+            needsRGBA8Expand = mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, dstPixelFormat);
+        }
+        if (needsChannelExpand || needsRGBA8Expand) {
+            uint32_t rgbDst = 0u;
+            uint64_t dstBytesPerPixel = 4u;
+            if (needsChannelExpand &&
+                mglRenderRGBExpandParams(dstPixelFormat, NULL, &rgbDst,
+                                         NULL)) {
+                dstBytesPerPixel = (uint64_t)rgbDst * 4u;
+            } else if (needsChannelExpand) {
+                dstBytesPerPixel = 16u;
+            }
+            uint64_t cpuBytesPerPixel = (tex->faces[0].levels && level < tex->num_levels &&
+                                           tex->faces[0].levels[level].width > 0u &&
+                                           tex->faces[0].levels[level].pitch > 0u)
+                ? (uint64_t)(tex->faces[0].levels[level].pitch / tex->faces[0].levels[level].width)
+                : mglTextureBytesPerPixelForFormat(tex->internalformat);
+            if (cpuBytesPerPixel == 0u) {
+                cpuBytesPerPixel = (uint64_t)sizeForInternalFormat(tex->internalformat, 0, 0);
+            }
+            if (cpuBytesPerPixel > 0u && cpuBytesPerPixel != dstBytesPerPixel) {
+                uint64_t copyHeight = mglUpMax((uint64_t)height, 1UL);
+                uint64_t copyDepth = mglUpMax((uint64_t)depth, 1UL);
+                uint64_t dstRowBytes = (uint64_t)width * dstBytesPerPixel;
+                uint64_t dstImageBytes = dstRowBytes * copyHeight;
+                size_t sourceImagePitch = src_image_size;
+                size_t minimumImagePitch = src_pitch * copyHeight;
+                if (sourceImagePitch < minimumImagePitch) {
+                    sourceImagePitch = minimumImagePitch;
+                }
+                size_t packedBytes = dstImageBytes * copyDepth;
+                if (packedBytes != 0u && packedBytes <= (512u * 1024u * 1024u)) {
+                    const uint8_t *sourceBase = (const uint8_t *)mglUpTextureBufferContents(buffer);
+                    /* NSMutableData -> calloc/free (the tree's twin); the buffer
+                     * travels as one pointer instead of a wrapper object. */
+                    void *packedUpload = calloc(1u, (size_t)packedBytes);
+                    if (packedUpload && sourceBase) {
+                        uint8_t *packedBytesPtr = (uint8_t *)packedUpload;
+                        bool expandOK = true;
+                        for (uint64_t z = 0; z < copyDepth && expandOK; z++) {
+                            size_t sliceBaseOff = src_offset + (size_t)z * sourceImagePitch;
+                            size_t lastRowOff = sliceBaseOff + (size_t)(copyHeight - 1u) * src_pitch;
+                            size_t rowBytesCpu = (uint64_t)width * cpuBytesPerPixel;
+                            if (lastRowOff > src_size || rowBytesCpu > src_size - lastRowOff) {
+                                expandOK = false;
+                                break;
+                            }
+                            const uint8_t *sliceSrc = sourceBase + sliceBaseOff;
+                            uint64_t expandedBPR = 0, expandedBPI = 0;
+                            uint8_t *expanded = NULL;
+                            if (needsRGBA8Expand) {
+                                expanded = mglCreateRGBA8ExpandedUpload(tex,
+                                                                        sliceSrc,
+                                                                        width,
+                                                                        copyHeight,
+                                                                        src_pitch,
+                                                                        &expandedBPR,
+                                                                        &expandedBPI);
+                            } else {
+                                expanded = mglCreateChannelExpandedUpload(tex,
+                                                                           dstPixelFormat,
+                                                                           sliceSrc,
+                                                                           width,
+                                                                           copyHeight,
+                                                                           src_pitch,
+                                                                           &expandedBPR,
+                                                                           &expandedBPI);
+                            }
+                            if (!expanded) {
+                                expandOK = false;
+                                break;
+                            }
+                            memcpy(packedBytesPtr + (z * dstImageBytes), expanded, expandedBPI);
+                            free(expanded);
+                        }
+                        if (expandOK) {
+                            void *uploadBuffer = mglUpCreateBufferWithBytes(
+                                packedUpload, packedBytes,
+                                MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
+                            if (uploadBuffer) {
+                                bool uploaded = mglTextureEncodeBytesUpload(
+                                    renderer, tex, uploadBuffer, 0, dstRowBytes,
+                                    dstImageBytes, width, height, depth, slice,
+                                    level, xoffset, yoffset, zoffset,
+                                    "mtlTexSubImage");
+                                if (!uploaded) {
+                                    fprintf(stderr, "MGL ERROR: mtlTexSubImage expanded PBO upload failed (tex=%u slice=%u level=%u)\n",
+                                          tex->name, slice, level);
+                                }
+                                free(packedUpload);
+                                return 0;
+                            }
+                        }
+                    }
+                    /* the .m's NSMutableData was released by ARC on every path;
+                     * the calloc twin must free the fall-through as well. */
+                    free(packedUpload);
+                }
+            }
+        }
+    }
+
+    bool uploaded = mglTextureEncodeBytesUpload(
+                                renderer, tex, buffer, src_offset, src_pitch, src_image_size, width, height, depth, slice, level, xoffset, yoffset, zoffset, "mtlTexSubImage");
+    if (!uploaded) {
+        fprintf(stderr, "MGL ERROR: mtlTexSubImage dedicated upload failed (tex=%u slice=%u level=%u)\n",
+              tex->name, slice, level);
+    }
+}
+
+/* -mtlTexSubImageBytes:… */
+int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
+                            Texture *tex, const void *bytes, uint64_t bytes_size,
+                            uint64_t src_offset, uint64_t src_pitch,
+                            uint64_t src_image_size, uint32_t slice, uint32_t level,
+                            uint64_t width, uint64_t height, uint64_t depth,
+                            uint64_t xoffset, uint64_t yoffset, uint64_t zoffset)
+{
+    if (!renderer) {
+        return 0;
+    }
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    void *device = mglRendererBackendGetDevice(areas.backend);
+    (void)ctx;
+    (void)device;
+    (void)glm_ctx;
+    if (!tex || !bytes || src_pitch == 0 || width == 0 || height == 0) {
+        return false;
+    }
+    if (src_offset > bytes_size || level >= tex->num_levels) {
+        return false;
+    }
+
+    uint64_t bytesPerPixel = mglTextureBytesPerPixelForFormat(tex->internalformat);
+    if (bytesPerPixel == 0u &&
+        tex->faces[0].levels &&
+        tex->faces[0].levels[level].width > 0u) {
+        TextureLevel *levelInfo = &tex->faces[0].levels[level];
+        if (levelInfo->pitch > 0u &&
+            (levelInfo->pitch % levelInfo->width) == 0u) {
+            bytesPerPixel = (uint64_t)(levelInfo->pitch / levelInfo->width);
+        }
+    }
+    if (bytesPerPixel == 0u) {
+        return false;
+    }
+
+    uint64_t copyHeight = mglUpMax((uint64_t)height, 1UL);
+    uint64_t copyDepth = mglUpMax((uint64_t)depth, 1UL);
+    uint64_t rowBytes = (uint64_t)width * bytesPerPixel;
+    if (rowBytes == 0u || rowBytes > src_pitch) {
+        return false;
+    }
+
+    if (!tex->mtl_data) {
+        return false;
+    }
+
+    /* Channel expansion: GL_RGB32* (12 bytes/pixel) -> Metal RGBA32* (16 bytes/pixel).
+     * The CPU backing stores 3 channels per pixel, but the Metal texture expects
+     * 4 channels. We must expand each pixel by inserting a default alpha before
+     * uploading, otherwise the data layout mismatches and pixels shift. */
+    void *dstTexture = tex->mtl_data;
+    uint32_t dstPixelFormat = mglPdTextureInfo(dstTexture).pixel_format;
+    int needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat,
+                                                              dstPixelFormat);
+    uint64_t dstBytesPerPixel = bytesPerPixel;
+    if (needsChannelExpand) {
+        uint32_t rgbDst = 0u;
+        if (mglRenderRGBExpandParams(dstPixelFormat, NULL, &rgbDst, NULL)) {
+            dstBytesPerPixel = (uint64_t)rgbDst * 4u;
+        } else {
+            needsChannelExpand = 0;
+        }
+    }
+
+    /* RGBA8 expansion: Metal has no RGB8 pixel format, so GL_RGB8-family
+     * internal formats (3 bytes/pixel in the CPU backing store) are backed
+     * by Metal RGBA8 variants (4 bytes/pixel).  Without per-pixel channel
+     * expansion the 3-byte source is uploaded directly into a 4-byte Metal
+     * texture, shifting pixels and producing vertical stripes.  Every other
+     * upload path (createMTLTextureFromGLTexture, refreshMetalTextureCPUData,
+     * mtlCopyImageSubData) expands via mglCreateRGBA8ExpandedUpload; the
+     * direct mtlTexSubImageBytes path must do the same. */
+    int needsRGBA8Expand = 0;
+    if (!needsChannelExpand) {
+        needsRGBA8Expand = mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat,
+                                                                        dstPixelFormat);
+        if (needsRGBA8Expand) {
+            dstBytesPerPixel = 4;
+        }
+    }
+
+    size_t sourceImagePitch = src_image_size;
+    size_t minimumImagePitch = src_pitch * copyHeight;
+    if (sourceImagePitch < minimumImagePitch) {
+        sourceImagePitch = minimumImagePitch;
+    }
+
+    uint64_t dstRowBytes = (uint64_t)width * dstBytesPerPixel;
+    uint64_t dstImageBytes = dstRowBytes * copyHeight;
+    size_t packedBytes = dstImageBytes * copyDepth;
+    if (packedBytes == 0u || packedBytes > (512u * 1024u * 1024u)) {
+        return false;
+    }
+
+    /* NSMutableData -> calloc/free (the tree's twin), keeping the .m's
+     * "allocated for the whole method" lifetime: every early return frees it. */
+    void *packedUpload = calloc(1u, (size_t)packedBytes);
+    if (!packedUpload) {
+        return false;
+    }
+
+    const uint8_t *sourceBase = (const uint8_t *)bytes;
+    uint8_t *packedBytesPtr = (uint8_t *)packedUpload;
+
+    if (needsChannelExpand) {
+        uint32_t srcCompU = 0u, dstCompU = 0u;
+        uint64_t alphaDefault = 0;
+        if (!mglRenderRGBExpandParams(dstPixelFormat, &srcCompU, &dstCompU,
+                                      &alphaDefault)) {
+            free(packedUpload);
+            return false;
+        }
+        uint64_t srcCompBytes = srcCompU;
+        uint64_t dstCompBytes = dstCompU;
+        uint64_t srcPixelBytes = srcCompBytes * 3;  /* 3 channels in source */
+        uint64_t dstPixelBytes = dstCompBytes * 4;  /* 4 channels in destination */
+
+        for (uint64_t z = 0; z < copyDepth; z++) {
+            for (uint64_t y = 0; y < copyHeight; y++) {
+                size_t srcRowOffset = src_offset + ((size_t)z * sourceImagePitch) + ((size_t)y * src_pitch);
+                if (srcRowOffset > bytes_size || rowBytes > bytes_size - srcRowOffset) {
+                    free(packedUpload);
+                    return false;
+                }
+                const uint8_t *srcRow = sourceBase + srcRowOffset;
+                uint8_t *dstRow = packedBytesPtr + (z * dstImageBytes) + (y * dstRowBytes);
+                for (uint64_t x = 0; x < width; x++) {
+                    const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
+                    uint8_t *dstPixel = dstRow + x * dstPixelBytes;
+                    /* Copy 3 channels (R, G, B) */
+                    memcpy(dstPixel, srcPixel, srcPixelBytes);
+                    /* Set alpha channel to default value */
+                    memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
+                }
+            }
+        }
+    } else if (needsRGBA8Expand) {
+
+        for (uint64_t z = 0; z < copyDepth; z++) {
+            size_t sliceBaseOff = src_offset + (size_t)z * sourceImagePitch;
+            size_t lastRowOff = sliceBaseOff + (size_t)(copyHeight - 1u) * src_pitch;
+            if (lastRowOff > bytes_size || rowBytes > bytes_size - lastRowOff) {
+                free(packedUpload);
+                return false;
+            }
+            const uint8_t *sliceSrc = sourceBase + sliceBaseOff;
+            uint64_t expandedBPR = 0, expandedBPI = 0;
+            uint8_t *expanded = mglCreateRGBA8ExpandedUpload(tex,
+                                                              sliceSrc,
+                                                              width,
+                                                              copyHeight,
+                                                              src_pitch,
+                                                              &expandedBPR,
+                                                              &expandedBPI);
+            if (!expanded) {
+                free(packedUpload);
+                return false;
+            }
+            memcpy(packedBytesPtr + (z * dstImageBytes), expanded, expandedBPI);
+            free(expanded);
+        }
+    } else {
+        /* No channel expansion needed - direct copy */
+        for (uint64_t z = 0; z < copyDepth; z++) {
+            for (uint64_t y = 0; y < copyHeight; y++) {
+                size_t srcRowOffset = src_offset + ((size_t)z * sourceImagePitch) + ((size_t)y * src_pitch);
+                if (srcRowOffset > bytes_size || rowBytes > bytes_size - srcRowOffset) {
+                    static uint64_t s_subUploadRangeFailLogs = 0;
+                    uint64_t hit = ++s_subUploadRangeFailLogs;
+                    if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                        fprintf(stderr, "MGL TEXSUBIMAGE BYTES range fail tex=%u level=%u off=%zu rowBytes=%lu pitch=%zu image=%zu size=%zu z=%lu y=%lu hit=%llu\n",
+                              (unsigned)tex->name,
+                              (unsigned)level,
+                              srcRowOffset,
+                              (unsigned long)rowBytes,
+                              src_pitch,
+                              sourceImagePitch,
+                              bytes_size,
+                              (unsigned long)z,
+                              (unsigned long)y,
+                              (unsigned long long)hit);
+                    }
+                    free(packedUpload);
+                    return false;
+                }
+                memcpy(packedBytesPtr + (z * dstImageBytes) + (y * dstRowBytes),
+                       sourceBase + srcRowOffset,
+                       rowBytes);
+            }
+        }
+    }
+
+    void *dsMetalUpload = NULL;
+    const void *uploadBytesPtr = packedBytesPtr;
+    uint64_t uploadRowBytes = dstRowBytes;
+    uint64_t uploadImageBytes = dstImageBytes;
+    if (mglRenderDepth32FStencil8NeedsUnpack(
+            (uint32_t)tex->internalformat, (uint32_t)dstPixelFormat,
+            (uint32_t)dstRowBytes, (uint32_t)width)) {
+        uint64_t expandedBPR = 0;
+        uint64_t expandedBPI = 0;
+        dsMetalUpload = mglUpCreateDepthStencilMetalUpload(
+            tex, dstPixelFormat, packedBytesPtr, width, copyHeight,
+            dstRowBytes, &expandedBPR, &expandedBPI);
+        if (dsMetalUpload) {
+            uploadBytesPtr = dsMetalUpload;
+            uploadRowBytes = expandedBPR;
+            uploadImageBytes = expandedBPI;
+        }
+    }
+
+    uint64_t metalSlice = slice;
+    if (mglRenderTextureTargetIsArray((uint32_t)tex->target)) {
+        metalSlice = zoffset;
+    }
+
+    if (mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
+        mglPdTextureInfo(dstTexture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE &&
+        uploadRowBytes >= width * 5u) {
+        bool uploaded = false;
+        /* The .m ran the replaceRegion inside @try so a Metal throw only
+         * logged a warning (the caller keeps going with uploaded=false); the
+         * guarded call does exactly that (rule 58 (b)). */
+        MglUpReplaceCtx replaceCtx = { dstTexture, xoffset, yoffset, width,
+                                       copyHeight, level, metalSlice,
+                                       uploadBytesPtr, uploadRowBytes,
+                                       uploadImageBytes };
+        char replaceFailure[256] = {0};
+        if (mglPlatformShellGuardedCallCtxReason(
+                renderer, "depth/stencil texSubImage replaceRegion",
+                mglUpReplaceBody, &replaceCtx, replaceFailure,
+                sizeof(replaceFailure))) {
+            uploaded = 1;
+        } else {
+            fprintf(stderr,
+                    "MGL WARNING: depth/stencil texSubImage replaceRegion failed tex=%u: %s\n",
+                    (unsigned)tex->name,
+                    replaceFailure[0] ? replaceFailure : "(null)");
+        }
+        if (uploaded) {
+            uploaded = mglTextureUploadPackedDepthStencilStencilPlane(
+        dstTexture, tex->name, uploadBytesPtr, width, copyHeight, uploadRowBytes, level, metalSlice, xoffset, yoffset);
+        }
+        free(dsMetalUpload);
+        free(packedUpload);
+        return uploaded;
+    }
+
+    size_t uploadBufferBytes = uploadImageBytes * copyDepth;
+    void *uploadBuffer = mglUpCreateBufferWithBytes(
+        uploadBytesPtr, uploadBufferBytes,
+        MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
+    if (!uploadBuffer) {
+        free(dsMetalUpload);
+        free(packedUpload);
+        return false;
+    }
+
+    bool uploaded = mglTextureEncodeBytesUpload(
+        renderer, tex, uploadBuffer, 0, uploadRowBytes, uploadImageBytes, width,
+        height, depth, slice, level, xoffset, yoffset, zoffset,
+        "mtlTexSubImageBytes");
+    if (uploaded &&
+        mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
+        uploadRowBytes >= width * 5u) {
+        (void)mglTextureUploadPackedDepthStencilStencilPlane(
+            dstTexture, tex->name, uploadBytesPtr, width, copyHeight,
+            uploadRowBytes, level, metalSlice, xoffset, yoffset);
+    }
+    free(dsMetalUpload);
+    if (uploaded && tex->is_render_target) {
+        /* Direct CPU→Metal refresh of an FBO-attached texture must invalidate
+         * the Y-flip sampled copy.  textures.c also releases the copy, but
+         * bumping write_version keeps any concurrent/lazy refresh coherent
+         * with the post-upload Metal contents (KHR-GL46.texture_barrier).
+         * Rebuild immediately so every MRT attachment has a fresh Y-flip
+         * copy before the first feedback draw (color1+ previously rebuilt
+         * only as a side-effect of color0's sample-gate repair). */
+        mglUpMarkTextureLevelMetalFilled(tex, level, packedBytes);
+        void *source = tex->mtl_data;
+        if (source) {
+            (void)mglBlitUpdateGLSampledRenderTargetCopy(
+                renderer, tex, source, "texSubImage_metal_fill");
+        }
+    }
+    free(packedUpload);
+    return uploaded;
+}
+
+/* -mtlTexSubImage:… (METAL_LOCK is the thread-affinity assertion only, so the
+ * C dispatcher links straight to the Locked entry). */
+int mglTextureSubImageDispatch(void *renderer, GLMContext glm_ctx, Texture *tex,
+                               Buffer *buf, uint64_t src_offset,
+                               uint64_t src_pitch, uint64_t src_image_size,
+                               uint64_t src_size, uint32_t slice, uint32_t level,
+                               uint64_t width, uint64_t height, uint64_t depth,
+                               uint64_t xoffset, uint64_t yoffset,
+                               uint64_t zoffset)
+{
+    return mglTextureSubImage(renderer, glm_ctx, tex, buf, src_offset,
+                              src_pitch, src_image_size, src_size, slice, level,
+                              width, height, depth, xoffset, yoffset, zoffset);
 }

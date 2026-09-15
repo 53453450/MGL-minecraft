@@ -173,12 +173,10 @@ void mglRendererTexSubImage(GLMContext glm_ctx, Texture *texture, Buffer *buffer
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer mtlTexSubImage:glm_ctx tex:texture buf:buffer
-                      src_offset:source_offset src_pitch:source_pitch
-                  src_image_size:source_image_size src_size:source_size
-                           slice:slice level:level width:width height:height
-                           depth:depth xoffset:x_offset yoffset:y_offset
-                         zoffset:z_offset];
+        mglTextureSubImage((__bridge void *)renderer, glm_ctx, texture, buffer,
+                              source_offset, source_pitch, source_image_size,
+                              source_size, slice, level, width, height, depth,
+                              x_offset, y_offset, z_offset);
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -195,14 +193,11 @@ bool mglRendererTexSubImageBytes(GLMContext glm_ctx, Texture *texture,
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     bool result = false;
     if (renderer && glm_ctx) {
-        result = [renderer mtlTexSubImageBytes:glm_ctx tex:texture
-                                    bytes:bytes bytesSize:bytes_size
-                               src_offset:source_offset src_pitch:source_pitch
-                           src_image_size:source_image_size
-                                    slice:slice level:level
-                                    width:width height:height depth:depth
-                                  xoffset:x_offset yoffset:y_offset
-                                  zoffset:z_offset];
+        result = mglTextureSubImageBytes((__bridge void *)renderer, glm_ctx, texture, bytes,
+                                   bytes_size, source_offset, source_pitch,
+                                   source_image_size, slice, level, width,
+                                   height, depth, x_offset, y_offset,
+                                   z_offset) != 0;
     }
     mglRendererBackendEnd(&_backend_lease);
     return result;
@@ -255,20 +250,6 @@ static id mglTextureCreateBuffer(id device,
     return nil;
 }
 
-static id mglTextureCreateBufferWithBytes(
-    id device,
-    const void *bytes,
-    NSUInteger length,
-    uint64_t options)
-{
-    (void)device;
-    void *buffer = NULL;
-    if (mglRenderCreateBufferWithBytes(bytes, length, options, NULL,
-                                          &buffer) == 0 && buffer) {
-        return (__bridge_transfer id)buffer;
-    }
-    return nil;
-}
 
 static id mglTextureCreateTexture(
     id device,
@@ -370,53 +351,12 @@ static MGLRenderTextureInfo mglTextureInfo(id texture)
 
 /* AGX replaceRegion/copyFromBuffer require 256-byte row alignment for many
  * depth/stencil pixel formats even when the logical row is smaller. */
-static const NSUInteger kMGLDepthStencilUploadRowAlignment = 256u;
+/* kMGLDepthStencilUploadRowAlignment moved to the C twin (log 198). */
 
-static NSUInteger mglDepthStencilAlignedBytesPerRow(NSUInteger logicalBytesPerRow)
-{
-    if (logicalBytesPerRow == 0) {
-        return 0;
-    }
-    return ((logicalBytesPerRow + kMGLDepthStencilUploadRowAlignment - 1u) /
-            kMGLDepthStencilUploadRowAlignment) * kMGLDepthStencilUploadRowAlignment;
-}
 
 /* CPU shadow storage uses five bytes per texel for GL_DEPTH32F_STENCIL8
  * (float depth plus one stencil byte), while Metal's packed depth/stencil
  * upload layout uses an eight-byte texel with stencil at byte 4. */
-static void *mglCreateDepthStencilMetalUpload(
-    Texture *tex, uint32_t pixelFormat, const uint8_t *src,
-    NSUInteger width, NSUInteger height, NSUInteger srcBytesPerRow,
-    NSUInteger *outBytesPerRow, NSUInteger *outBytesPerImage)
-{
-    if (outBytesPerRow) *outBytesPerRow = 0;
-    if (outBytesPerImage) *outBytesPerImage = 0;
-    if (!tex || !src || width == 0 || height == 0 || srcBytesPerRow == 0 ||
-        !mglRenderDepth32FStencil8NeedsUnpack(
-            (uint32_t)tex->internalformat, (uint32_t)pixelFormat,
-            (uint32_t)srcBytesPerRow, (uint32_t)width)) {
-        return NULL;
-    }
-    NSUInteger logicalBytesPerRow = width * 8u;
-    NSUInteger dstBytesPerRow = mglDepthStencilAlignedBytesPerRow(logicalBytesPerRow);
-    if (dstBytesPerRow == 0) {
-        return NULL;
-    }
-    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
-    uint8_t *dst = calloc(1u, dstBytesPerImage);
-    if (!dst) return NULL;
-    for (NSUInteger y = 0; y < height; ++y) {
-        const uint8_t *srcRow = src + y * srcBytesPerRow;
-        uint8_t *dstRow = dst + y * dstBytesPerRow;
-        for (NSUInteger x = 0; x < width; ++x) {
-            memcpy(dstRow + x * 8u, srcRow + x * 5u, 4u);
-            dstRow[x * 8u + 4u] = srcRow[x * 5u + 4u];
-        }
-    }
-    if (outBytesPerRow) *outBytesPerRow = dstBytesPerRow;
-    if (outBytesPerImage) *outBytesPerImage = dstBytesPerImage;
-    return dst;
-}
 
 
 static void *mglTextureBufferContents(id buffer)
@@ -454,400 +394,8 @@ static void mglTextureCopyTextureToBuffer(
 
 
 
--(void)mtlTexSubImage:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset
-{
-    METAL_LOCK();
-    [self mtlTexSubImageLocked:glm_ctx tex:tex buf:buf src_offset:src_offset src_pitch:src_pitch src_image_size:src_image_size src_size:src_size slice:slice level:level width:width height:height depth:depth xoffset:xoffset yoffset:yoffset zoffset:zoffset];
-    METAL_UNLOCK();
-}
-
--(void)mtlTexSubImageLocked:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset
-{
-    if (!tex || !buf) {
-        NSLog(@"MGL ERROR: mtlTexSubImage called with null tex/buf (tex=%p buf=%p)", tex, buf);
-        return;
-    }
-
-    if (src_pitch == 0 || width == 0 || height == 0) {
-        NSLog(@"MGL ERROR: mtlTexSubImage invalid dimensions/pitch tex=%u width=%zu height=%zu src_pitch=%zu",
-              tex->name, width, height, src_pitch);
-        return;
-    }
-
-    // we can deal with a null buffer but we need a texture
-    if (buf->data.mtl_data == NULL)
-    {
-        mglRendererBindMTLBuffer((__bridge void *)self, buf);
-        RETURN_ON_NULL(buf->data.mtl_data);
-    }
-
-    id buffer = (__bridge id)(buf->data.mtl_data);
-    if (!buffer) {
-        NSLog(@"MGL ERROR: mtlTexSubImage missing Metal buffer object tex=%u", tex->name);
-        return;
-    }
 
 
-    if (tex->mtl_data) {
-        id dstTexture = (__bridge id)(tex->mtl_data);
-        uint32_t dstPixelFormat = mglTextureInfo(dstTexture).pixel_format;
-        BOOL needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat, dstPixelFormat);
-        BOOL needsRGBA8Expand = NO;
-        if (!needsChannelExpand) {
-            needsRGBA8Expand = mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, dstPixelFormat);
-        }
-        if (needsChannelExpand || needsRGBA8Expand) {
-            uint32_t rgbDst = 0u;
-            NSUInteger dstBytesPerPixel = 4u;
-            if (needsChannelExpand &&
-                mglRenderRGBExpandParams(dstPixelFormat, NULL, &rgbDst,
-                                         NULL)) {
-                dstBytesPerPixel = (NSUInteger)rgbDst * 4u;
-            } else if (needsChannelExpand) {
-                dstBytesPerPixel = 16u;
-            }
-            NSUInteger cpuBytesPerPixel = (tex->faces[0].levels && level < tex->num_levels &&
-                                           tex->faces[0].levels[level].width > 0u &&
-                                           tex->faces[0].levels[level].pitch > 0u)
-                ? (NSUInteger)(tex->faces[0].levels[level].pitch / tex->faces[0].levels[level].width)
-                : mglTextureBytesPerPixelForFormat(tex->internalformat);
-            if (cpuBytesPerPixel == 0u) {
-                cpuBytesPerPixel = (NSUInteger)sizeForInternalFormat(tex->internalformat, 0, 0);
-            }
-            if (cpuBytesPerPixel > 0u && cpuBytesPerPixel != dstBytesPerPixel) {
-                NSUInteger copyHeight = MAX((NSUInteger)height, 1UL);
-                NSUInteger copyDepth = MAX((NSUInteger)depth, 1UL);
-                NSUInteger dstRowBytes = (NSUInteger)width * dstBytesPerPixel;
-                NSUInteger dstImageBytes = dstRowBytes * copyHeight;
-                size_t sourceImagePitch = src_image_size;
-                size_t minimumImagePitch = src_pitch * copyHeight;
-                if (sourceImagePitch < minimumImagePitch) {
-                    sourceImagePitch = minimumImagePitch;
-                }
-                size_t packedBytes = dstImageBytes * copyDepth;
-                if (packedBytes != 0u && packedBytes <= (512u * 1024u * 1024u)) {
-                    const uint8_t *sourceBase = (const uint8_t *)mglTextureBufferContents(buffer);
-                    NSMutableData *packedUpload = [NSMutableData dataWithLength:packedBytes];
-                    if (packedUpload && packedUpload.mutableBytes && sourceBase) {
-                        uint8_t *packedBytesPtr = (uint8_t *)packedUpload.mutableBytes;
-                        bool expandOK = true;
-                        for (NSUInteger z = 0; z < copyDepth && expandOK; z++) {
-                            size_t sliceBaseOff = src_offset + (size_t)z * sourceImagePitch;
-                            size_t lastRowOff = sliceBaseOff + (size_t)(copyHeight - 1u) * src_pitch;
-                            size_t rowBytesCpu = (NSUInteger)width * cpuBytesPerPixel;
-                            if (lastRowOff > src_size || rowBytesCpu > src_size - lastRowOff) {
-                                expandOK = false;
-                                break;
-                            }
-                            const uint8_t *sliceSrc = sourceBase + sliceBaseOff;
-                            NSUInteger expandedBPR = 0, expandedBPI = 0;
-                            uint8_t *expanded = NULL;
-                            if (needsRGBA8Expand) {
-                                expanded = mglCreateRGBA8ExpandedUpload(tex,
-                                                                        sliceSrc,
-                                                                        width,
-                                                                        copyHeight,
-                                                                        src_pitch,
-                                                                        &expandedBPR,
-                                                                        &expandedBPI);
-                            } else {
-                                expanded = mglCreateChannelExpandedUpload(tex,
-                                                                           dstPixelFormat,
-                                                                           sliceSrc,
-                                                                           width,
-                                                                           copyHeight,
-                                                                           src_pitch,
-                                                                           &expandedBPR,
-                                                                           &expandedBPI);
-                            }
-                            if (!expanded) {
-                                expandOK = false;
-                                break;
-                            }
-                            memcpy(packedBytesPtr + (z * dstImageBytes), expanded, expandedBPI);
-                            free(expanded);
-                        }
-                        if (expandOK) {
-                            id uploadBuffer =
-                                mglTextureCreateBufferWithBytes(
-                                    _device, packedUpload.bytes, packedBytes,
-                                    MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
-                            if (uploadBuffer) {
-                                bool uploaded = mglTextureEncodeBytesUpload( (__bridge void *)self, tex, (__bridge void *)uploadBuffer, 0, dstRowBytes, dstImageBytes, width, height, depth, slice, level, xoffset, yoffset, zoffset, "mtlTexSubImage");
-                                if (!uploaded) {
-                                    NSLog(@"MGL ERROR: mtlTexSubImage expanded PBO upload failed (tex=%u slice=%u level=%u)",
-                                          tex->name, slice, level);
-                                }
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    bool uploaded = mglTextureEncodeBytesUpload( (__bridge void *)self, tex, (__bridge void *)buffer, src_offset, src_pitch, src_image_size, width, height, depth, slice, level, xoffset, yoffset, zoffset, "mtlTexSubImage");
-    if (!uploaded) {
-        NSLog(@"MGL ERROR: mtlTexSubImage dedicated upload failed (tex=%u slice=%u level=%u)",
-              tex->name, slice, level);
-    }
-}
-
--(bool)mtlTexSubImageBytes:(GLMContext)glm_ctx tex:(Texture *)tex bytes:(const void *)bytes bytesSize:(size_t)bytes_size src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset
-{
-    (void)glm_ctx;
-    if (!tex || !bytes || src_pitch == 0 || width == 0 || height == 0) {
-        return false;
-    }
-    if (src_offset > bytes_size || level >= tex->num_levels) {
-        return false;
-    }
-
-    NSUInteger bytesPerPixel = mglTextureBytesPerPixelForFormat(tex->internalformat);
-    if (bytesPerPixel == 0u &&
-        tex->faces[0].levels &&
-        tex->faces[0].levels[level].width > 0u) {
-        TextureLevel *levelInfo = &tex->faces[0].levels[level];
-        if (levelInfo->pitch > 0u &&
-            (levelInfo->pitch % levelInfo->width) == 0u) {
-            bytesPerPixel = (NSUInteger)(levelInfo->pitch / levelInfo->width);
-        }
-    }
-    if (bytesPerPixel == 0u) {
-        return false;
-    }
-
-    NSUInteger copyHeight = MAX((NSUInteger)height, 1UL);
-    NSUInteger copyDepth = MAX((NSUInteger)depth, 1UL);
-    NSUInteger rowBytes = (NSUInteger)width * bytesPerPixel;
-    if (rowBytes == 0u || rowBytes > src_pitch) {
-        return false;
-    }
-
-    if (!tex->mtl_data) {
-        return false;
-    }
-
-    /* Channel expansion: GL_RGB32* (12 bytes/pixel) -> Metal RGBA32* (16 bytes/pixel).
-     * The CPU backing stores 3 channels per pixel, but the Metal texture expects
-     * 4 channels. We must expand each pixel by inserting a default alpha before
-     * uploading, otherwise the data layout mismatches and pixels shift. */
-    id dstTexture = (__bridge id)(tex->mtl_data);
-    uint32_t dstPixelFormat = mglTextureInfo(dstTexture).pixel_format;
-    BOOL needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat,
-                                                              dstPixelFormat);
-    NSUInteger dstBytesPerPixel = bytesPerPixel;
-    if (needsChannelExpand) {
-        uint32_t rgbDst = 0u;
-        if (mglRenderRGBExpandParams(dstPixelFormat, NULL, &rgbDst, NULL)) {
-            dstBytesPerPixel = (NSUInteger)rgbDst * 4u;
-        } else {
-            needsChannelExpand = NO;
-        }
-    }
-
-    /* RGBA8 expansion: Metal has no RGB8 pixel format, so GL_RGB8-family
-     * internal formats (3 bytes/pixel in the CPU backing store) are backed
-     * by Metal RGBA8 variants (4 bytes/pixel).  Without per-pixel channel
-     * expansion the 3-byte source is uploaded directly into a 4-byte Metal
-     * texture, shifting pixels and producing vertical stripes.  Every other
-     * upload path (createMTLTextureFromGLTexture, refreshMetalTextureCPUData,
-     * mtlCopyImageSubData) expands via mglCreateRGBA8ExpandedUpload; the
-     * direct mtlTexSubImageBytes path must do the same. */
-    BOOL needsRGBA8Expand = NO;
-    if (!needsChannelExpand) {
-        needsRGBA8Expand = mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat,
-                                                                        dstPixelFormat);
-        if (needsRGBA8Expand) {
-            dstBytesPerPixel = 4;
-        }
-    }
-
-    size_t sourceImagePitch = src_image_size;
-    size_t minimumImagePitch = src_pitch * copyHeight;
-    if (sourceImagePitch < minimumImagePitch) {
-        sourceImagePitch = minimumImagePitch;
-    }
-
-    NSUInteger dstRowBytes = (NSUInteger)width * dstBytesPerPixel;
-    NSUInteger dstImageBytes = dstRowBytes * copyHeight;
-    size_t packedBytes = dstImageBytes * copyDepth;
-    if (packedBytes == 0u || packedBytes > (512u * 1024u * 1024u)) {
-        return false;
-    }
-
-    NSMutableData *packedUpload = [NSMutableData dataWithLength:packedBytes];
-    if (!packedUpload || !packedUpload.mutableBytes) {
-        return false;
-    }
-
-    const uint8_t *sourceBase = (const uint8_t *)bytes;
-    uint8_t *packedBytesPtr = (uint8_t *)packedUpload.mutableBytes;
-
-    if (needsChannelExpand) {
-        uint32_t srcCompU = 0u, dstCompU = 0u;
-        uint64_t alphaDefault = 0;
-        if (!mglRenderRGBExpandParams(dstPixelFormat, &srcCompU, &dstCompU,
-                                      &alphaDefault)) {
-            return false;
-        }
-        NSUInteger srcCompBytes = srcCompU;
-        NSUInteger dstCompBytes = dstCompU;
-        NSUInteger srcPixelBytes = srcCompBytes * 3;  /* 3 channels in source */
-        NSUInteger dstPixelBytes = dstCompBytes * 4;  /* 4 channels in destination */
-
-        for (NSUInteger z = 0; z < copyDepth; z++) {
-            for (NSUInteger y = 0; y < copyHeight; y++) {
-                size_t srcRowOffset = src_offset + ((size_t)z * sourceImagePitch) + ((size_t)y * src_pitch);
-                if (srcRowOffset > bytes_size || rowBytes > bytes_size - srcRowOffset) {
-                    return false;
-                }
-                const uint8_t *srcRow = sourceBase + srcRowOffset;
-                uint8_t *dstRow = packedBytesPtr + (z * dstImageBytes) + (y * dstRowBytes);
-                for (NSUInteger x = 0; x < width; x++) {
-                    const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
-                    uint8_t *dstPixel = dstRow + x * dstPixelBytes;
-                    /* Copy 3 channels (R, G, B) */
-                    memcpy(dstPixel, srcPixel, srcPixelBytes);
-                    /* Set alpha channel to default value */
-                    memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
-                }
-            }
-        }
-    } else if (needsRGBA8Expand) {
-
-        for (NSUInteger z = 0; z < copyDepth; z++) {
-            size_t sliceBaseOff = src_offset + (size_t)z * sourceImagePitch;
-            size_t lastRowOff = sliceBaseOff + (size_t)(copyHeight - 1u) * src_pitch;
-            if (lastRowOff > bytes_size || rowBytes > bytes_size - lastRowOff) {
-                return false;
-            }
-            const uint8_t *sliceSrc = sourceBase + sliceBaseOff;
-            NSUInteger expandedBPR = 0, expandedBPI = 0;
-            uint8_t *expanded = mglCreateRGBA8ExpandedUpload(tex,
-                                                              sliceSrc,
-                                                              width,
-                                                              copyHeight,
-                                                              src_pitch,
-                                                              &expandedBPR,
-                                                              &expandedBPI);
-            if (!expanded) {
-                return false;
-            }
-            memcpy(packedBytesPtr + (z * dstImageBytes), expanded, expandedBPI);
-            free(expanded);
-        }
-    } else {
-        /* No channel expansion needed - direct copy */
-        for (NSUInteger z = 0; z < copyDepth; z++) {
-            for (NSUInteger y = 0; y < copyHeight; y++) {
-                size_t srcRowOffset = src_offset + ((size_t)z * sourceImagePitch) + ((size_t)y * src_pitch);
-                if (srcRowOffset > bytes_size || rowBytes > bytes_size - srcRowOffset) {
-                    static uint64_t s_subUploadRangeFailLogs = 0;
-                    uint64_t hit = ++s_subUploadRangeFailLogs;
-                    if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                        NSLog(@"MGL TEXSUBIMAGE BYTES range fail tex=%u level=%u off=%zu rowBytes=%lu pitch=%zu image=%zu size=%zu z=%lu y=%lu hit=%llu",
-                              (unsigned)tex->name,
-                              (unsigned)level,
-                              srcRowOffset,
-                              (unsigned long)rowBytes,
-                              src_pitch,
-                              sourceImagePitch,
-                              bytes_size,
-                              (unsigned long)z,
-                              (unsigned long)y,
-                              (unsigned long long)hit);
-                    }
-                    return false;
-                }
-                memcpy(packedBytesPtr + (z * dstImageBytes) + (y * dstRowBytes),
-                       sourceBase + srcRowOffset,
-                       rowBytes);
-            }
-        }
-    }
-
-    void *dsMetalUpload = NULL;
-    const void *uploadBytesPtr = packedBytesPtr;
-    NSUInteger uploadRowBytes = dstRowBytes;
-    NSUInteger uploadImageBytes = dstImageBytes;
-    if (mglRenderDepth32FStencil8NeedsUnpack(
-            (uint32_t)tex->internalformat, (uint32_t)dstPixelFormat,
-            (uint32_t)dstRowBytes, (uint32_t)width)) {
-        NSUInteger expandedBPR = 0;
-        NSUInteger expandedBPI = 0;
-        dsMetalUpload = mglCreateDepthStencilMetalUpload(
-            tex, dstPixelFormat, packedBytesPtr, width, copyHeight,
-            dstRowBytes, &expandedBPR, &expandedBPI);
-        if (dsMetalUpload) {
-            uploadBytesPtr = dsMetalUpload;
-            uploadRowBytes = expandedBPR;
-            uploadImageBytes = expandedBPI;
-        }
-    }
-
-    NSUInteger metalSlice = slice;
-    if (mglRenderTextureTargetIsArray((uint32_t)tex->target)) {
-        metalSlice = zoffset;
-    }
-
-    if (mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
-        mglTextureInfo(dstTexture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE &&
-        uploadRowBytes >= width * 5u) {
-        bool uploaded = false;
-        @try {
-            mglTextureReplaceRegion(
-                dstTexture,
-                mglTextureRegion2D(xoffset, yoffset, width, copyHeight),
-                level, metalSlice, uploadBytesPtr, uploadRowBytes,
-                uploadImageBytes, YES);
-            uploaded = true;
-        } @catch (NSException *exception) {
-            NSLog(@"MGL WARNING: depth/stencil texSubImage replaceRegion failed tex=%u: %@",
-                  (unsigned)tex->name, exception.reason);
-        }
-        if (uploaded) {
-            uploaded = mglTextureUploadPackedDepthStencilStencilPlane(
-        (__bridge void *)dstTexture, tex->name, uploadBytesPtr, width, copyHeight, uploadRowBytes, level, metalSlice, xoffset, yoffset);
-        }
-        free(dsMetalUpload);
-        return uploaded;
-    }
-
-    size_t uploadBufferBytes = uploadImageBytes * copyDepth;
-    id uploadBuffer = mglTextureCreateBufferWithBytes(
-        _device, uploadBytesPtr, uploadBufferBytes,
-        MGL_TEXTURE_RESOURCE_STORAGE_SHARED);
-    if (!uploadBuffer) {
-        free(dsMetalUpload);
-        return false;
-    }
-
-    bool uploaded = mglTextureEncodeBytesUpload( (__bridge void *)self, tex, (__bridge void *)uploadBuffer, 0, uploadRowBytes, uploadImageBytes, width, height, depth, slice, level, xoffset, yoffset, zoffset, "mtlTexSubImageBytes");
-    if (uploaded &&
-        mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
-        uploadRowBytes >= width * 5u) {
-        (void)mglTextureUploadPackedDepthStencilStencilPlane(
-        (__bridge void *)dstTexture, tex->name, uploadBytesPtr, width, copyHeight, uploadRowBytes, level, metalSlice, xoffset, yoffset);
-    }
-    free(dsMetalUpload);
-    if (uploaded && tex->is_render_target) {
-        /* Direct CPU→Metal refresh of an FBO-attached texture must invalidate
-         * the Y-flip sampled copy.  textures.c also releases the copy, but
-         * bumping write_version keeps any concurrent/lazy refresh coherent
-         * with the post-upload Metal contents (KHR-GL46.texture_barrier).
-         * Rebuild immediately so every MRT attachment has a fresh Y-flip
-         * copy before the first feedback draw (color1+ previously rebuilt
-         * only as a side-effect of color0's sample-gate repair). */
-        mglMarkTextureLevelMetalFilled(tex, level, packedBytes);
-        id source = (__bridge id)(tex->mtl_data);
-        if (source) {
-            (void)mglBlitUpdateGLSampledRenderTargetCopy((__bridge void *)self, tex, (__bridge void *)source, "texSubImage_metal_fill");
-        }
-    }
-    return uploaded;
-}
 
 
 #pragma mark - Extracted from createMTLTextureFromGLTexture:
