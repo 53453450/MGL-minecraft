@@ -34,6 +34,7 @@
 #define MGLRenderer_State_h
 
 #import <Foundation/Foundation.h>
+#include "mgl_gpu_recovery_state.h" /* MGLGPURecoveryState */
 
 #include "glm_context.h"
 #import "mgl_capability.h"
@@ -54,22 +55,8 @@
 /* MGLDrawable and MGLRendererCoreState moved to the C-safe
  * mgl_renderer_core_state.h (with the dual-proxy helpers). */
 
-typedef struct MGLGPURecoveryState_t {
-    void *commandRecoveryOwner;
-    GLuint interfaceMismatchBlockedProgram;
-    CFTimeInterval interfaceMismatchBlockedUntil;
-    uint32_t interfaceMismatchBlockedStreak;
-    CFTimeInterval pipelineRetryAfter;
-    CFTimeInterval interfaceMismatchRetryAfter;
-    GLuint interfaceMismatchProgramName;
-    uint32_t interfaceMismatchColor0Format;
-    uint32_t interfaceMismatchDepthFormat;
-    uint32_t interfaceMismatchStencilFormat;
-    uint32_t interfaceMismatchStreak;
-    GLuint programMismatchProgramName;
-    CFTimeInterval programMismatchRetryAfter;
-    uint32_t programMismatchStreak;
-} MGLGPURecoveryState;
+/* MGLGPURecoveryState moved to the C-safe mgl_gpu_recovery_state.h (the PSO
+ * build path writes it from C). */
 
 typedef struct MGLResourceFallbackState_t {
     MGLFragmentTextureTraceBinding fragmentTextureTraceBindings[TEXTURE_UNITS];

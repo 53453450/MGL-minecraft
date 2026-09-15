@@ -24,12 +24,16 @@
 #include "mgl_renderer_core_state.h" /* MGLRendererCoreState */
 #include "mgl_command_state.h"      /* MGLCommandState */
 #include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
+#include "mgl_gpu_recovery_state.h"   /* MGLGPURecoveryState */
 #include "mgl_tessellation_state.h"   /* MGLTessellationState, MGLGeometryState */
 #include "mgl_region_value.h"       /* MGLRegionValue / MGLSizeValue / MGLOriginValue (log 149) */
 
 /* Forward declaration: the blend record lives in mgl_render.h, which this
  * header does not need to pull in. */
 struct MGLRenderPipelineBlendState_t;
+/* The value-state descriptor lives in mgl_render.h; the bridges below only pass
+ * its address, so a forward declaration is enough here. */
+struct MGLRenderPipelineDescriptorState;
 
 #ifdef __cplusplus
 extern "C" {
@@ -215,6 +219,32 @@ typedef struct MGLRendererStateAreas {
     /* Drops the cache's active pipeline state (the Objective-C method also
      * logs; the shell keeps that in the forwarder). */
     void (*pipeline_cache_invalidate)(void *pipeline_cache_object);
+    /* The renderer's live GPU-recovery record (the PSO build path writes the
+     * interface-mismatch and quarantine fields). */
+    MGLGPURecoveryState *gpu_recovery;
+    /* Pipeline-cache value-state bridges used by the PSO build path. */
+    int (*pipeline_cache_descriptor_state_for_words)(
+        void *pipeline_cache_object, const uint64_t *words,
+        MGLRenderPipelineDescriptorState *state_out);
+    int (*pipeline_cache_create_pso)(
+        void *pipeline_cache_object,
+        const MGLRenderPipelineDescriptorState *state, void *vertex_function,
+        void *fragment_function, void **pipeline_out, char *error_message,
+        size_t error_capacity);
+    void (*pipeline_cache_store_pipeline)(void *pipeline_cache_object,
+                                          void *pipeline, void *vertex_function,
+                                          void *fragment_function,
+                                          const uint64_t *words);
+    void (*pipeline_cache_store_descriptor_state)(
+        void *pipeline_cache_object,
+        const MGLRenderPipelineDescriptorState *state, const uint64_t *words);
+    void (*pipeline_cache_activate)(void *pipeline_cache_object, void *pipeline,
+                                    uint32_t color0_format,
+                                    uint32_t depth_format,
+                                    uint32_t stencil_format,
+                                    uint32_t program_name,
+                                    void *vertex_function,
+                                    void *fragment_function);
     int32_t tess_native_tes_active;
     void *tess_native_tes_program;
     /* The tessellation and geometry records themselves (the C draw host port

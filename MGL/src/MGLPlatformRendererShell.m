@@ -746,6 +746,78 @@ void mglPlatformShellPipelineCacheInvalidate(void *pipeline_cache_object)
     }
 }
 
+/* Pipeline-cache value-state bridges for the C PSO build path (log 187). */
+int mglPlatformShellPipelineCacheDescriptorStateForWords(
+    void *pipeline_cache_object, const uint64_t *words,
+    MGLRenderPipelineDescriptorState *state_out)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache || !words || !state_out) {
+        return 0;
+    }
+    return [cache pipelineDescriptorStateForWords:words state:state_out] ? 1 : 0;
+}
+
+int mglPlatformShellPipelineCacheCreatePSO(
+    void *pipeline_cache_object, const MGLRenderPipelineDescriptorState *state,
+    void *vertex_function, void *fragment_function, void **pipeline_out,
+    char *error_message, size_t error_capacity)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache || !state || !pipeline_out) {
+        return -1;
+    }
+    return [cache createRenderPipelineFromState:state
+                                 vertexFunction:vertex_function
+                               fragmentFunction:fragment_function
+                                    pipelineOut:pipeline_out
+                                   errorMessage:error_message
+                                  errorCapacity:error_capacity];
+}
+
+void mglPlatformShellPipelineCacheStorePipeline(
+    void *pipeline_cache_object, void *pipeline, void *vertex_function,
+    void *fragment_function, const uint64_t *words)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache || !words) {
+        return;
+    }
+    (void)[cache storePipeline:(__bridge id)pipeline
+                vertexFunction:(__bridge id)vertex_function
+              fragmentFunction:(__bridge id)fragment_function
+                      forWords:words];
+}
+
+void mglPlatformShellPipelineCacheStoreDescriptorState(
+    void *pipeline_cache_object, const MGLRenderPipelineDescriptorState *state,
+    const uint64_t *words)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache || !state || !words) {
+        return;
+    }
+    [cache storePipelineDescriptorState:state forWords:words];
+}
+
+void mglPlatformShellPipelineCacheActivate(
+    void *pipeline_cache_object, void *pipeline, uint32_t color0_format,
+    uint32_t depth_format, uint32_t stencil_format, uint32_t program_name,
+    void *vertex_function, void *fragment_function)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache) {
+        return;
+    }
+    [cache activatePipelineState:(__bridge id)pipeline
+                     color0Format:color0_format
+                      depthFormat:depth_format
+                    stencilFormat:stencil_format
+                      programName:program_name
+                   vertexFunction:(__bridge id)vertex_function
+                 fragmentFunction:(__bridge id)fragment_function];
+}
+
 /* Runs a C body inside an @autoreleasepool (log 186): the render-encoder C
  * entry kept the .m's pool so autoreleased temporaries still drain there. */
 int mglPlatformShellAutoreleasePoolCall(void *renderer,
@@ -853,6 +925,15 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
     areas_out->pipeline_cache_blend_state = mglPlatformShellPipelineCacheBlendState;
     areas_out->pipeline_cache_invalidate = mglPlatformShellPipelineCacheInvalidate;
+    areas_out->gpu_recovery = &r->_gpuRecovery;
+    areas_out->pipeline_cache_descriptor_state_for_words =
+        mglPlatformShellPipelineCacheDescriptorStateForWords;
+    areas_out->pipeline_cache_create_pso = mglPlatformShellPipelineCacheCreatePSO;
+    areas_out->pipeline_cache_store_pipeline =
+        mglPlatformShellPipelineCacheStorePipeline;
+    areas_out->pipeline_cache_store_descriptor_state =
+        mglPlatformShellPipelineCacheStoreDescriptorState;
+    areas_out->pipeline_cache_activate = mglPlatformShellPipelineCacheActivate;
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
     areas_out->tessellation = &r->_tessellation;
     areas_out->geometry = &r->_geometry;
