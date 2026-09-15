@@ -220,7 +220,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                      * any writes (e.g. imageStore) that occurred before the
                      * is_render_target transition. */
                     mglRendererEndRenderEncodingLocked(renderer);
-                    if (mglRendererEnsureWritableCommandBufferPort(
+                    if (mglRenderPassEnsureWritableCommandBufferLocked(
                             renderer, "is_render_target_blit")) {
                         void *owner = areas.command
                                           ? areas.command->currentCommandBufferOwner

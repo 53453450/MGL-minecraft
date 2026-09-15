@@ -18,6 +18,7 @@
 #include "mgl_stage_encode_drivers.h" /* stage binding drivers (log 131) */
 #include "mgl_draw_encode.h"
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_render_pass_sync_ops.h" /* the sync/close leaves are C (log 191) */
 #include "mgl_trace_strategy.h"
 #include "mgl_gpu_recovery.h"
 #include "mgl_binding_state_ops.h"
@@ -160,13 +161,6 @@ void *mglRenderPassDiscardStubFragmentFunction(uint32_t valueClass)
         (MGLStubFSValueClass)valueClass);
 }
 
-static void mglRenderPassWaitCommandBuffer(id commandBuffer)
-{
-    if (mglRenderWaitCommandBuffer(
-            (__bridge void *)commandBuffer) != 0) {
-        NSLog(@"MGL ERROR: Metal-cpp render-pass wait failed");
-    }
-}
 
 static bool mglRenderPassGetPersistentState(
     const MGLCommandState *commandState,
@@ -446,90 +440,9 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
  * varyings at MGL_AIR_PER_VERTEX_STRIDE + location*16).  The records come
  * from the TES stage output resource list. */
 
-- (Texture *)framebufferAttachmentTexture: (FBOAttachment *)fbo_attachment
-{
-    /* C port (ObjC-zeroing T4): the resolution lives in
-     * mglRendererAttachmentTextureFor(). */
-    return mglRendererAttachmentTextureFor(ctx, fbo_attachment);
-}
-
-- (bool)currentRenderPassMatchesCurrentFramebuffer
-{
-    if (!ctx || !_renderPassManager->state->renderPassStateOwner) {
-        return true;
-    }
-
-    Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
-    GLuint fboName = fbo ? fbo->name : 0u;
 
 
-    if (fbo != NULL && fboName != 0u) {
-        MGLRenderFboMatchCacheState cache = {0};
-        if (_renderPassManager->state->renderPassIdentityOwner &&
-            mglRenderGetFboMatchCache(
-                _renderPassManager->state->renderPassIdentityOwner,
-                &cache) == 0 &&
-            cache.fbo_name == fboName &&
-            cache.generation == fbo->fbo_attachment_generation) {
-            return cache.result != 0;
-        }
-    }
 
-    bool result = mglRenderPassMatchesFramebufferImpl(
-                      (__bridge void *)self, fbo, fboName) != 0;
-
-    /* store cache for non-default FBOs only. */
-    if (fbo != NULL && fboName != 0u) {
-        mglPassManagerSetFboMatchCacheResult(_renderPassManager, result, fboName, fbo->fbo_attachment_generation);
-    }
-
-    return result;
-}
-
-
-- (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall
-{
-    if (!ctx || mglRenderEncoderOwnerHasCurrent(
-                    _renderPassManager->state->currentRenderEncoderOwner) != 1) {
-        return;
-    }
-
-    if ([self currentRenderPassMatchesCurrentFramebuffer]) {
-        return;
-    }
-
-    static uint64_t s_nonDrawFboMismatchCount = 0;
-    uint64_t hit = ++s_nonDrawFboMismatchCount;
-    if (mglTraceLogIsEnabled() && (hit <= 32ull || (hit % 256ull) == 0ull)) {
-        Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
-        GLuint fboName = fbo ? fbo->name : 0u;
-        mglTraceLog("RENDERPASS_NON_DRAW_MISMATCH processCall=%llu hit=%llu "
-                    "ctxFbo=%u(%p) ctxDrawBuf=0x%x rpFbo=%u(%p) rpDrawBuf=0x%x",
-                    (unsigned long long)processCall,
-                    (unsigned long long)hit,
-                    (unsigned)fboName,
-                    fbo,
-                    (unsigned)MGL_STATE(ctx)->draw_buffer,
-                    (unsigned)_renderPassManager->state->renderPassFramebufferName,
-                    _renderPassManager->state->renderPassFramebuffer,
-                    (unsigned)_renderPassManager->state->renderPassDrawBuffer);
-        mglLogRenderPassLifecycle("non-draw-mismatch-before-end",
-                                  hit,
-                                  ctx,
-                                  _renderPassManager->state->currentCommandBufferOwner,
-                                  _renderPassManager->state->currentRenderEncoderOwner,
-                                  _renderPassManager->state->renderPassStateOwner,
-                                  (__bridge void *)_drawable,
-                                  _renderPassManager->state->renderPassFramebuffer,
-                                  _renderPassManager->state->renderPassFramebufferName,
-                                  _renderPassManager->state->renderPassDrawBuffer,
-                                  _renderPassManager->state->renderPassDrawBufferCount);
-    }
-
-    [self endRenderEncoding];
-    mglMarkRendererDirtyBits(ctx->active_state,
-                             DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE);
-}
 
 - (bool)restoreRenderEncoderAfterTextureUploadForDraw:(const char *)reason
 {
@@ -552,7 +465,9 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
               (unsigned long long)hit);
     }
 
-    if (![self ensureWritableCommandBuffer:reason ? reason : "restore_render_encoder_after_texture_upload"]) {
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
+            (__bridge void *)self,
+            reason ? reason : "restore_render_encoder_after_texture_upload")) {
         return false;
     }
 
@@ -1463,43 +1378,11 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
     }
 }
 
-- (bool) newRenderEncoder
-{
-    return [self newRenderEncoderWithReason:MGL_ENC_REASON_OTHER];
-}
-
-- (bool) newRenderEncoderWithReason:(MGLEncoderCreateReason)reason
-{
-    METAL_LOCK();
-    bool result = mglRenderPassNewRenderEncoderLockedWithReason(
-        (__bridge void *)self, (uint32_t)reason) != 0;
-    METAL_UNLOCK();
-    return result;
-}
 
 
-- (bool) newRenderEncoderLocked
-{
-    return mglRenderPassNewRenderEncoderLockedWithReason(
-               (__bridge void *)self, MGL_ENC_REASON_OTHER) != 0;
-}
 
-- (bool) newCommandBuffer
-{
-    METAL_LOCK();
-    bool result = mglRenderPassNewCommandBufferLocked((__bridge void *)self);
-    METAL_UNLOCK();
-    return result;
-}
 
-- (bool)ensureWritableCommandBuffer:(const char *)reason
-{
-    METAL_LOCK();
-    bool result = mglRenderPassEnsureWritableCommandBufferLocked(
-        (__bridge void *)self, reason) != 0;
-    METAL_UNLOCK();
-    return result;
-}
+
 
 
 #pragma mark pipeline descriptor
@@ -1509,90 +1392,10 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
 #pragma mark vertex descriptor
 
 
-- (void) endRenderEncoding
-{
-    METAL_LOCK();
-    mglRendererEndRenderEncodingLocked((__bridge void *)self);
-    METAL_UNLOCK();
-}
 
 
-- (BOOL)currentRenderPassUsesTexture:(id)texture
-{
-    if (!texture || mglRenderEncoderOwnerHasCurrent(
-                        _renderPassManager->state->currentRenderEncoderOwner) != 1) {
-        return NO;
-    }
-    if (!_renderPassManager->state->renderPassStateOwner) {
-        return NO;
-    }
-
-    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        if (mglRenderPassColorTextureFor(_renderPassManager->state, i) == texture) {
-            return YES;
-        }
-    }
-    if (mglRenderPassDepthTextureFor(_renderPassManager->state) == texture ||
-        mglRenderPassStencilTextureFor(_renderPassManager->state) == texture) {
-        return YES;
-    }
-
-    return NO;
-}
 
 
-- (BOOL)synchronizeRenderPassForTextureReadback:(id)texture
-                                         reason:(const char *)reason
-{
-    BOOL usesTexture = [self currentRenderPassUsesTexture:texture];
-    if (!usesTexture) {
-        return YES;
-    }
-
-    [self endRenderEncoding];
-
-    MGLRenderCommandBufferState commandState = {0};
-    if (!mglRenderCommandBufferOwnerHasState(
-            _renderPassManager->state->currentCommandBufferOwner,
-            &commandState)) {
-        BOOL ok = [self newCommandBuffer];
-        return ok;
-    }
-
-    if (commandState.status != MGLCommandBufferStatusNotEnqueued) {
-        BOOL ok = [self newCommandBuffer];
-        return ok;
-    }
-
-    id commandBufferToCommit =
-        (__bridge id)mglPassManagerDetachCurrentCommandBufferForSubmission(_renderPassManager);
-
-    @try {
-        mglRendererCommitCommandBufferWithAGXRecovery((__bridge void *)self, (__bridge void *)commandBufferToCommit);
-        mglRenderPassWaitCommandBuffer(commandBufferToCommit);
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: failed to synchronize render pass for texture readback (%s): %@",
-              reason ? reason : "texture_readback",
-              exception.reason);
-        mglRendererRecordGPUError((__bridge void *)self);
-        [self newCommandBuffer];
-        return NO;
-    }
-
-    MGLRenderCommandBufferState committedState = {0};
-    (void)mglRenderGetCommandBufferState(
-        (__bridge void *)commandBufferToCommit, &committedState);
-    if (committedState.has_error) {
-        NSLog(@"MGL ERROR: render pass texture readback sync failed (%s): %s",
-              reason ? reason : "texture_readback",
-              mglRenderCommandBufferErrorDescription(&committedState));
-        mglRendererRecordGPUError((__bridge void *)self);
-        [self newCommandBuffer];
-        return NO;
-    }
-
-    return [self newCommandBuffer];
-}
 
 // ULTIMATE FAILSAFE: Emergency Metal state reset to recover from corruption
 - (bool) processGLState: (bool) draw_command
@@ -1654,59 +1457,8 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
     }
 }
 
-- (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx
-{
-    GLMState *state = MGL_STATE(glm_ctx);
-    Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO");
-    BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-    if (mglRenderEncoderOwnerHasCurrent(
-            _renderPassManager->state->currentRenderEncoderOwner) == 1 &&
-        !framebufferBindingDirty &&
-        [self currentRenderPassMatchesCurrentFramebuffer]) {
-        state->dirty_bits &= ~DIRTY_FBO;
-        return true;
-    }
-
-    if (framebuffer && framebufferBindingDirty)
-    {
-        RETURN_FALSE_ON_FAILURE(mglRendererBindFramebufferAttachmentTextures((__bridge void *)self));
-        framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO.afterBind");
-        if (framebuffer) {
-            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
-        }
-    }
-
-    /* instrumentation: an FBO change forced a real encoder rotation
-     * (the "already matches" fast path above returned early without counting).
-     * newRenderEncoderLocked also bumps g_mglEncoderCreationsSinceSwap, so
-     * fboRot <= new always holds; new-minus-fboRot is non-FBO creation. */
-    /* RenderPass Manager: encoder open/close is owned by the RenderPass Manager
-     * facade (rotateRenderEncoderForCurrentFramebufferLocked), not by this
-     * Sync unit directly. The Sync layer only decides that a rotation is
-     * needed and delegates the lifecycle transition. */
-    RETURN_FALSE_ON_FAILURE([self rotateRenderEncoderForCurrentFramebufferLocked]);
-    return true;
-}
 
 
-- (bool)rotateRenderEncoderForCurrentFramebufferLocked
-{
-    MGL_PERF_INC(g_mglEncoderFBORotationsSinceSwap);
-    GLMContext glm_ctx = ctx;
-    GLuint fbo_name = 0u;
-    if (glm_ctx && glm_ctx->active_state && MGL_STATE(glm_ctx)->framebuffer) {
-        fbo_name = MGL_STATE(glm_ctx)->framebuffer->name;
-    }
-    if (fbo_name == 0u) {
-        MGL_PERF_INC(g_mglEncoderFboRotDefaultSinceSwap);
-    } else {
-        MGL_PERF_INC(g_mglEncoderFboRotNamedSinceSwap);
-    }
-    mglRendererEndRenderEncodingLocked((__bridge void *)self);
-    RETURN_FALSE_ON_FAILURE(mglRenderPassNewRenderEncoderLockedWithReason(
-        (__bridge void *)self, MGL_ENC_REASON_FBO));
-    return true;
-}
 
 - (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
                               context:(GLMContext)glm_ctx
@@ -1718,7 +1470,7 @@ static bool mglLoadAIRMainFunction(const unsigned char *bytes,
     /* Orchestrator-driven FBO rotation (Orchestrator-driven FBO rotation) delegates to the shared
      * RenderPass Sync unit (RenderPass Sync domain), surfacing any GL error as replayError
      * so the batch is skipped rather than drawn against a stale pass. */
-    if (![self syncRenderPassStateForContext:glm_ctx]) {
+    if (!mglRenderPassSyncRenderPassStateForContext((__bridge void *)self, glm_ctx)) {
         if (!mglRenderErrorIsNone((uint32_t)MGL_STATE(glm_ctx)->error))
             *replayError = MGL_STATE(glm_ctx)->error;
         return NO;

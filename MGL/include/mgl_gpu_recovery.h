@@ -13,6 +13,7 @@
 #ifndef MGL_GPU_RECOVERY_H
 #define MGL_GPU_RECOVERY_H
 
+#include <stddef.h>   /* size_t (guarded-call reason buffer) */
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -67,6 +68,16 @@ int mglRendererCommitCommandBufferWithAGXRecovery(void *renderer,
 int mglPlatformShellGuardedCallCtx(void *renderer, const char *what,
                                    int (*body)(void *, void *), void *ctx,
                                    void (*finally_fn)(void *, void *));
+
+/* Same guard, but the exception's `reason` is copied into `reason_out` instead
+ * of a generic line being logged: the caller replays the Objective-C catch's own
+ * log text verbatim (rule 58 (b)).  Returns 1 when the body ran, 0 when it threw
+ * (the body's own result only matters when this returns 1, so a body that
+ * legitimately returns 0 must be told apart by its own out-parameter). */
+int mglPlatformShellGuardedCallCtxReason(void *renderer, const char *what,
+                                         int (*body)(void *, void *), void *ctx,
+                                         char *reason_out,
+                                         size_t reason_capacity);
 
 /* Resets the pipeline cache's caches; the cache object comes from the state
  * areas (implemented in the shell TU). */

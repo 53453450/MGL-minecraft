@@ -285,8 +285,10 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
 /* Make sure the current command buffer is writable (rotating it when it was
  * already committed).  A port: the rotation runs -newCommandBufferLocked /
  * -endRenderEncodingLocked, which are Objective-C render-pass methods. */
-int mglRendererEnsureWritableCommandBufferPort(void *renderer,
-                                               const char *reason);
+/* mglRendererEnsureWritableCommandBufferPort is gone (log 191):
+ * -ensureWritableCommandBuffer: was METAL_LOCK +
+ * mglRenderPassEnsureWritableCommandBufferLocked, so all fifteen callers link
+ * to that C entry directly. */
 
 /* ---- compute / tessellation host entries ---------------------------------
  * The C compute and tessellation binders need the renderer's program, encoder
@@ -307,7 +309,9 @@ void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx);
 int mglPlatformShellNewCommandBuffer(void *renderer);
 
 int mglRendererBindMTLProgramPort(void *renderer, Program *program);
-void mglRendererEndRenderEncodingPort(void *renderer);
+/* mglRendererEndRenderEncodingPort is gone (log 191): -endRenderEncoding was
+ * METAL_LOCK + mglRendererEndRenderEncodingLocked, so every C caller links to
+ * that C entry directly. */
 
 /* the Clear*CopyBack port(s) are gone: those methods are C now
  * (mgl_stage_copy_back.h, log 158). */
@@ -330,18 +334,9 @@ void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
  * that file can finish converting.  Thin forwards; retirement follows their
  * targets in MGLRenderer+RenderPass.m / +Tessellation.m / +BindingState.m. */
 void mglRendererFlushCommandBufferPort(void *renderer, int finish);
-/* Flush any render pass that is currently sampling/drawing into `texture`
- * before it is read back (the method's YES when there was nothing to do).
- * Added for the copyImageSubData leaves (P0-1, log 144). */
-int mglRendererSynchronizeRenderPassForTextureReadbackPort(void *renderer,
-                                                           void *texture,
-                                                           const char *reason);
-/* Close a stale render pass when the encoder's FBO no longer matches the
- * current context FBO (the `endRenderPassIfFramebufferChangedForNonDraw:`
- * calls the blit dispatchers make before encoding).  Added for the
- * mtlCopyImageSubData dispatch (P0-1, log 145). */
-void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
-    void *renderer, uint64_t process_call);
+/* The two render-pass close/readback ports are gone (log 191): the leaves are C
+ * now (mglRenderPassSynchronizeForTextureReadback /
+ * mglRenderPassEndIfFramebufferChangedForNonDraw, mgl_render_pass_sync_ops.h). */
 /* Drawable access for the blitFramebuffer attachment resolve (P0-1, log 146).
  * `_drawable` is the `self.drawable` property: next_drawable runs
  * -mglNextDrawable (which assigns the property itself), and drawable_texture
@@ -354,10 +349,11 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                                                        size_t required_height,
                                                        const char *reason);
 /* copyTexSubImage read-back / upload bridges (P0-1, log 149). */
-/* Render-pass dirty-domain drivers (P0-1, log 167).  Their targets are still
- * Objective-C methods in MGLRenderer+RenderPass.m. */
-int mglRendererSyncRenderPassStateForContextPort(void *renderer, GLMContext ctx);
+/* Render-pass dirty-domain driver (P0-1, log 167).  Its target is still an
+ * Objective-C method in MGLRenderer+RenderPass.m. */
 void mglRendererUpdateCurrentRenderEncoderPort(void *renderer);
+/* mglRendererSyncRenderPassStateForContextPort is gone (log 191): the sync unit
+ * is C now (mglRenderPassSyncRenderPassStateForContext). */
 /* mglRendererSyncPipelineStateWithDeferredBufferMapPort is gone (log 189): the
  * Pipeline Sync domain is C now (mglRenderPassSyncPipelineState in
  * mgl_pso_build_ops.h), so its only caller links straight to that entry.  One
@@ -370,16 +366,14 @@ void mglRendererTraceSampledTextureReadbackPort(
     GLuint program, GLuint binding, const char *stage, const char *reason,
     uint64_t hit);
 
-/* Whether the current render pass references `texture` (used by the sampled
- * render-target copy repair path, P0-1 log 150). */
-int mglRendererCurrentRenderPassUsesTexturePort(void *renderer, void *texture);
+/* mglRendererCurrentRenderPassUsesTexturePort is gone (log 191): the predicate
+ * is C now (mglRenderPassCurrentRenderPassUsesTexture). */
 
-int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
-    void *renderer, void *source_buffer, size_t source_offset,
-    size_t source_bytes_per_row, size_t source_bytes_per_image,
-    size_t source_layer_stride, size_t layer_count, MGLSizeValue source_size,
-    void *texture, size_t destination_slice, size_t destination_level,
-    MGLOriginValue destination_origin, const char *reason);
+/* mglRendererCopyTextureUploadWithDedicatedCommandBufferPort is gone (log 191):
+ * its Objective-C target was already C
+ * (mglTextureCopyUploadWithDedicatedCommandBuffer, mgl_texture_upload_ops.h),
+ * but the port and its single caller had been left behind -- an
+ * unrecognized-selector landmine.  The caller links to the C entry now. */
 /* mglRendererEnsureRasterEncoderForDrawPort is gone: its target is C now
  * (mglRenderPassEnsureRasterEncoderForDraw, log 169). */
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,

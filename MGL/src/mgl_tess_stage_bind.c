@@ -33,6 +33,7 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
+#include "mgl_render_pass_manager_ops.h"  /* mglRendererEndRenderEncodingLocked */
 #include "mgl_tess_stage_bind.h"
 #include "mgl_stage_copy_back.h"
 #include "mgl_renderer_ports.h"     /* state areas + stage-binding host entries */
@@ -446,7 +447,7 @@ bool mglTessFlushStageBindingInitializationBlit(
     if (mglTessMustEndRenderBeforeCompute(
             mglRenderEncoderOwnerHasCurrent(
                 mglTessStageBindRenderEncoderOwner(&areas)))) {
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
     }
     return mglTessStageBindEncodeBufferCopiesForOwner(
         mglTessStageBindCommandBufferOwner(&areas), copy_entries,

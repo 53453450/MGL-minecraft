@@ -488,7 +488,7 @@ bool mglTessDispatchControlShader(void *renderer, GLMContext glm_ctx,
      * encoder first for the same reason. */
     if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
             mglTessDispatchRenderEncoderOwner(&areas)))) {
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
     }
 
     /* Ensure a writable command buffer exists.  The GL_PATCHES path returns
@@ -1218,7 +1218,7 @@ bool mglTessDispatchAIRTessEvalCompute(
     /* PASS 1: pre-resolve textures before opening the compute encoder. */
     if (mglTessMustEndRenderBeforeCompute(mglRenderEncoderOwnerHasCurrent(
             mglTessDispatchRenderEncoderOwner(&areas)))) {
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
     }
     MGLRenderCommandBufferState command_state = {0};
     const int has_command_state = mglRenderCommandBufferOwnerHasState(

@@ -158,9 +158,9 @@ bool mglComputeRunDispatchOrchestrationLocked(
                                : NULL;
 
     /* end encoding on current render encoder */
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
 
-    if (!mglRendererEnsureWritableCommandBufferPort(renderer, reason)) {
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(renderer, reason)) {
         return false;
     }
 

@@ -11,6 +11,7 @@
 // MGLRenderer+Texture.m
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
+#include "mgl_render_pass_manager_ops.h"
 #import "MGLRenderer_Private.h"
 #include "mgl_blit_color_state.h" /* readback helper entries (log 141) */
 #include "mgl_texture_readback_clear.h"
@@ -595,9 +596,10 @@ static void mglTextureCopyTextureToBuffer(
     RETURN_ON_FAILURE([self processGLState: false]);
 
     // end encoding on current render encoder
-    [self endRenderEncoding];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
 
-    RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlGenerateMipmaps"]);
+    RETURN_ON_FAILURE(mglRenderPassEnsureWritableCommandBufferLocked(
+        (__bridge void *)self, "mtlGenerateMipmaps"));
 
     // no failure path..?
     RETURN_ON_FAILURE([self bindMTLTexture:tex]);
@@ -3504,7 +3506,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    [self endRenderEncoding];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
     if (!_renderPassManager->state->currentCommandBufferOwner &&
         ![self newCommandBufferLocked]) {
         return;
@@ -3571,7 +3573,7 @@ static void mglTextureCopyTextureToBuffer(
         return;
     }
 
-    [self endRenderEncoding];
+    mglRendererEndRenderEncodingLocked((__bridge void *)self);
     if (!_renderPassManager->state->currentCommandBufferOwner &&
         ![self newCommandBufferLocked]) {
         return;

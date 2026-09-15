@@ -109,7 +109,7 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
          * the same context.  Committing a standalone upload command buffer here
          * can leapfrog an open render command buffer, so encode the blit into
          * the current command buffer after closing the active render encoder. */
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
 
         if (!mglRenderPassEnsureWritableCommandBufferLocked(
                 renderer, reason ? reason : "texture_upload")) {

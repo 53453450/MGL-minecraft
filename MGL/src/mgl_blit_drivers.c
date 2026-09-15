@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "mgl_texture_upload_ops.h"
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_blit_drivers.h"
 #include "mgl_renderer_ports.h"    /* state areas */
 #include "mgl_renderer_backend.h"  /* device */
@@ -371,8 +373,8 @@ bool mglBlitReadTextureRegion(void *renderer, void *texture,
         return false;
     }
 
-    mglRendererEndRenderEncodingPort(renderer);
-    if (!mglRendererEnsureWritableCommandBufferPort(
+    mglRendererEndRenderEncodingLocked(renderer);
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, reason ? reason : "texture_readback_blit")) {
         mglSafeReleaseMetalObj(&staging_buffer);
         return false;
@@ -907,8 +909,8 @@ bool mglBlitCopyTexSubImageViaTextureBlit(
     }
 
     /* End any active render encoder so the blit encoder can run. */
-    mglRendererEndRenderEncodingPort(renderer);
-    if (!mglRendererEnsureWritableCommandBufferPort(
+    mglRendererEndRenderEncodingLocked(renderer);
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "mtlCopyTexSubImageViaTextureBlit")) {
         mglDispatchError(
             glm_ctx,
@@ -1102,8 +1104,8 @@ bool mglBlitCopyImageSubDataFormatConversion(
 
     /* Ensure any pending render passes are flushed before reading from the
      * source (especially important for renderbuffers). */
-    mglRendererEndRenderEncodingPort(renderer);
-    (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+    mglRendererEndRenderEncodingLocked(renderer);
+    (void)mglRenderPassSynchronizeForTextureReadback(
         renderer, src_texture, "copyImageSubData.formatConv");
     mglRendererFlushCommandBufferPort(renderer, 1);
 
@@ -1868,7 +1870,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
                 mglBdTextureInfo(dst_texture).pixel_format);
             size_t dst_cpu_bpp = dst_lvl0->pitch / dst_lvl0->width;
             if (dst_metal_bpp > 0 && dst_cpu_bpp == dst_metal_bpp) {
-                (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+                (void)mglRenderPassSynchronizeForTextureReadback(
                     renderer, dst_texture, "copyImageSubData.blitReadback");
                 mglRendererFlushCommandBufferPort(renderer, 1);
 
@@ -2002,7 +2004,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
                     mglBdTextureInfo(dst_texture).pixel_format);
                 size_t cpu_bpp = (size_t)sizeForFormatType(cpu_format, cpu_type);
                 if (dst_metal_bpp > 0 && cpu_bpp > 0) {
-                    (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+                    (void)mglRenderPassSynchronizeForTextureReadback(
                         renderer, dst_texture,
                         "copyImageSubData.fmtConvReadback");
                     mglRendererFlushCommandBufferPort(renderer, 1);
@@ -2274,9 +2276,9 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
          MGLCapabilityHasBug(&core->capability,
                              MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB));
     if (needs_3d_destination_workaround) {
-        mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(renderer, 0);
-        mglRendererEndRenderEncodingPort(renderer);
-        RETURN_ON_FAILURE(mglRendererEnsureWritableCommandBufferPort(
+        mglRenderPassEndIfFramebufferChangedForNonDraw(renderer, 0);
+        mglRendererEndRenderEncodingLocked(renderer);
+        RETURN_ON_FAILURE(mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "mtlCopyImageSubData.3D"));
         if (mglBlitCopyImageSubData3DFallback(
                 renderer, glm_ctx, src_tex, src_texture, src_type, src_level,
@@ -2308,10 +2310,10 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
      * the current context FBO) so the blit encoder is not interleaved with a
      * live render encoder.  This is the only GL state the blit path depends
      * on; the full processGLState:false sync is unnecessary here. */
-    mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(renderer, 0);
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRenderPassEndIfFramebufferChangedForNonDraw(renderer, 0);
+    mglRendererEndRenderEncodingLocked(renderer);
     RETURN_ON_FAILURE(
-        mglRendererEnsureWritableCommandBufferPort(renderer, "mtlCopyImageSubData"));
+        mglRenderPassEnsureWritableCommandBufferLocked(renderer, "mtlCopyImageSubData"));
 
     /* For cube / cube-array / 2D-array / 1D-array targets, srcZ selects the
      * slice.  For 3D textures, srcZ is the depth origin. */
@@ -2351,9 +2353,9 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
     /* Debug: read source renderbuffer data before blit to verify it has
      * content */
     if (src_tex->is_render_target || dst_tex->is_render_target) {
-        (void)mglRendererSynchronizeRenderPassForTextureReadbackPort(
+        (void)mglRenderPassSynchronizeForTextureReadback(
             renderer, src_texture, "copyImageSubData.srcCheck");
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
     }
 
     void *blit_encoder = mglRenderCreateBlitEncoderBorrowed(
@@ -2976,7 +2978,7 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
      * stale pre-draw content.  Mirrors mtlInvalidateRenderPass (flush + end
      * encoding); no-op when the batch buffer is empty. */
     mglRendererFlushDrawBufferLockedPort(renderer, glm_ctx);
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
 
     /* The depth/stencil blit is C now (log 138). */
     mask = mglBlitDepthStencil(renderer, glm_ctx, src_x0, src_y0, src_x1, src_y1,
@@ -3032,9 +3034,9 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
     void *drawtexid = st.drawtexid;
 
     /* end encoding on current render encoder */
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
 
-    if (!mglRendererEnsureWritableCommandBufferPort(renderer,
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(renderer,
                                                     "mtlBlitFramebuffer")) {
         fprintf(stderr,
                 "MGL WARN: mtlBlitFramebuffer could not obtain writable command "
@@ -3566,7 +3568,7 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     }
 
     int uploaded =
-        mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
+        mglTextureCopyUploadWithDedicatedCommandBuffer(
             renderer, upload_buffer, 0u, bgra_row_bytes, bgra_size, 0u, 1u,
             mglBlitSize(width, height, copy_depth), texture, destination_slice,
             level, destination_origin, "copy_tex_sub_image");
@@ -3645,7 +3647,7 @@ void *mglBlitFreshGLSampledRenderTargetCopyForSampling(
         return sampled_copy;
     }
 
-    if (mglRendererCurrentRenderPassUsesTexturePort(renderer, source) &&
+    if (mglRenderPassCurrentRenderPassUsesTexture(renderer, source) &&
         !is_fb_attachment) {
         /* The texture is used by the current render pass in a non-attachment
          * role (e.g. bound to another sampler).  We cannot safely end and

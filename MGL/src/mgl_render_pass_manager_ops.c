@@ -13,6 +13,7 @@
  * methods; C callers use these.
  */
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_encoder_ops.h"
 #include "mgl_attachment_binding.h"   /* mglRendererBindFramebufferAttachmentTextures */
@@ -312,7 +313,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
     {
         if (plan.sync_render_pass)
         {
-            RETURN_FALSE_ON_FAILURE(mglRendererSyncRenderPassStateForContextPort(renderer, ctx));
+            RETURN_FALSE_ON_FAILURE(mglRenderPassSyncRenderPassStateForContext(renderer, ctx));
         }
 
         if (plan.bind_fbo_attachments)
@@ -3663,7 +3664,7 @@ int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer
         return 1;
     }
 
-    if (mglRendererCurrentRenderPassMatchesFramebufferPort(renderer)) {
+    if (mglRenderPassMatchesCurrentFramebuffer(renderer)) {
         return 1;
     }
 
@@ -3710,7 +3711,7 @@ int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer
             commandState->renderPassDrawBufferCount);
     }
 
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
     mglMarkRendererDirtyBits(ctx->active_state,
                              DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE |
                                  DIRTY_VAO);
@@ -4161,7 +4162,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
     }
 
     if (plan.non_draw_end_pass_if_fbo_changed) {
-        mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(renderer,
+        mglRenderPassEndIfFramebufferChangedForNonDraw(renderer,
                                                                    processCall);
     }
     if (plan.no_vao_clear_path) {

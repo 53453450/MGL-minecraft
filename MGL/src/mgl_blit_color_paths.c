@@ -34,6 +34,7 @@
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif
 
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_blit_color_state.h"
 #include "mgl_renderer_ports.h"    /* state areas, writable command buffer */
 #include "mgl_renderer_backend.h"  /* device */
@@ -158,7 +159,7 @@ static void *mglBcCommandBufferOwner(const MGLRendererStateAreas *areas)
 
 static void mglBcEndRenderEncodingPort(void *renderer)
 {
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
 }
 
 /* --- render-pass + render-encoder twins (depth/stencil path) ------------- */
@@ -307,7 +308,7 @@ bool mglBlitResolveIntegerMultisampleTexture(void *renderer, void *source_textur
         return false;
     }
 
-    if (!mglRendererEnsureWritableCommandBufferPort(
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "blitFramebuffer.msaaIntegerResolve")) {
         mglDispatchError(areas.ctx,
                          "-[MGLRenderer(Blit) resolveIntegerMultisampleTexture:"
@@ -670,7 +671,7 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
             if (depth_read_texture && depth_draw_texture &&
                 ds_plan.msaa_resolve) {
                 mglBcEndRenderEncodingPort(renderer);
-                if (mglRendererEnsureWritableCommandBufferPort(
+                if (mglRenderPassEnsureWritableCommandBufferLocked(
                         renderer, "mtlBlitFramebuffer.depthMsaaResolve")) {
                     if (ds_plan.resolve_depth) {
                         mglTextureApplyPendingFBODepthClearForReadback(
@@ -747,7 +748,7 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                     const GLint copy_src_y = ds_plan.copy_src_y0;
                     if (ds_plan.copy_valid) {
                         mglBcEndRenderEncodingPort(renderer);
-                        if (mglRendererEnsureWritableCommandBufferPort(
+                        if (mglRenderPassEnsureWritableCommandBufferLocked(
                                 renderer, "mtlBlitFramebuffer.depthStencil")) {
                             if (mglRenderClearMaskHasDepth(
                                     (uint32_t)depth_stencil_mask)) {
@@ -802,7 +803,7 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                          * the source texture reflects any lazy glClear. */
                         if (ds_in.has_depth) {
                             mglBcEndRenderEncodingPort(renderer);
-                            if (mglRendererEnsureWritableCommandBufferPort(
+                            if (mglRenderPassEnsureWritableCommandBufferLocked(
                                     renderer,
                                     "mtlBlitFramebuffer.depthScaledClear")) {
                                 mglTextureApplyPendingFBODepthClearForReadback(
@@ -824,7 +825,7 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
                             renderer, (GLuint)mglRenderNearestFilter());
                         if (depth_pipeline && sampler) {
                             mglBcEndRenderEncodingPort(renderer);
-                            if (mglRendererEnsureWritableCommandBufferPort(
+                            if (mglRenderPassEnsureWritableCommandBufferLocked(
                                     renderer, "mtlBlitFramebuffer.depthScaled")) {
                                 /* For packed depth+stencil formats, also set the
                                  * stencil attachment to the same texture so
@@ -1059,7 +1060,7 @@ void *mglBlitResolvedReadbackTexture(void *renderer, void *source_texture,
         return NULL;
     }
 
-    if (!mglRendererEnsureWritableCommandBufferPort(renderer,
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(renderer,
                                                     "readPixels.msaaResolve")) {
         mglDispatchError(
             areas.ctx,
@@ -1147,7 +1148,7 @@ void *mglBlitDepthFloatTextureForReadback(void *renderer, void *source_texture,
         return NULL;
     }
 
-    if (!mglRendererEnsureWritableCommandBufferPort(
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "readPixels.depthStencilExtract")) {
         mglDispatchError(areas.ctx,
                          "-[MGLRenderer(Blit) depthFloatTextureForDepthStencil"

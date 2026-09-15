@@ -11,6 +11,7 @@
 #include "mgl_renderer_ports.h"   /* C port surface (T4) */
 #include "mgl_render_pass_manager_ops.h" /* mglRenderPassProcessGLStateLocked */
 #include "mgl_draw_issue.h"       /* mglDrawHost{BindContext,RasterizationIsEmpty,...} */
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_batch_restore.h"
 #include "mgl_batch_rt_mark.h"
 #include "mgl_frame_activity.h"
@@ -52,7 +53,7 @@ static void fSkipIn(void *v, uint32_t b, MGLBatchSameKeySkipIn *in, int *wa)
     const MGLBatchingState *bs = bsareas.batching;
     in->absolute_offsets_match =
         (want == (bs && bs->absoluteVertexBindingOffsets ? 1 : 0)) ? 1u : 0u;
-    in->pass_matches = mglRendererCurrentRenderPassMatchesFramebufferPort(c->r) ? 1u : 0u;
+    in->pass_matches = mglRenderPassMatchesCurrentFramebuffer(c->r) ? 1u : 0u;
 }
 static void fNote(void *v, int d) { (void)v; mgl_batch_mtl_restore_note_skip_fail_perf(d); }
 static int fOracleEq(void *v, uint32_t b) { return mglStateKeysEqual(&FB(v, b)->key, &((FCtx *)v)->key); }
@@ -319,7 +320,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
                            mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner) ? 1u : 0u,
         .bind_valid = (areas.binding_state_owner &&
                        mglBatchBindingStateIsValid(*areas.binding_state_owner)) ? 1u : 0u,
-        .pass_matches = mglRendererCurrentRenderPassMatchesFramebufferPort(renderer) ? 1u : 0u,
+        .pass_matches = mglRenderPassMatchesCurrentFramebuffer(renderer) ? 1u : 0u,
     };
     replayDirtyBits = mgl_batch_restore_finish_dirty(replayDirtyBits, forcedDirtyBits, kFull,
                                                      DIRTY_FBO, &fboIn);

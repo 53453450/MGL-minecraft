@@ -14,6 +14,7 @@
  * from mtlGetTexImage: and the readPixels paths in the same file).
  */
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_texture_readback_ops.h"
 
 #include "error.h"                 /* mglDispatchError */
@@ -876,7 +877,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
         const MGLMetalAttachmentSubresource subresource =
             mglMetalAttachmentSubresourceForAttachment(attachment);
 
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
         if (!mglRenderPassEnsureWritableCommandBufferLocked(
                 renderer, "mtlReadDepthPixels.fbo")) {
             mglDispatchError(glm_ctx, __func__,
@@ -911,7 +912,7 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
     if (!mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "mtlReadDepthPixels.default")) {
         mglDispatchError(glm_ctx, __func__,
@@ -957,7 +958,7 @@ void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
     const MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
 
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
     if (!mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "mtlReadIntegerPixels.fbo")) {
         mglDispatchError(glm_ctx, __func__,
@@ -1068,7 +1069,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
         void *texture = readTextureObject->mtl_data;
         const MGLMetalAttachmentSubresource subresource =
             mglMetalAttachmentSubresourceForAttachment(attachment);
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
         if (!mglRenderPassEnsureWritableCommandBufferLocked(
                 renderer, "mtlReadDrawable.fbo")) {
             mglDispatchError(glm_ctx, __func__,
@@ -1120,7 +1121,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
         return;
     }
 
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
     if (!mglRenderPassEnsureWritableCommandBufferLocked(
             renderer, "mtlReadDrawable.default")) {
         mglDispatchError(glm_ctx, __func__,
@@ -1206,7 +1207,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
-    if (!mglRendererSynchronizeRenderPassForTextureReadbackPort(
+    if (!mglRenderPassSynchronizeForTextureReadback(
             renderer, texture, "mtlGetTexImage")) {
         mglDispatchError(glm_ctx, __func__,
                          (GLenum)mglRenderErrorInvalidOperation());
@@ -1216,7 +1217,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     /* Ensure any pending texture upload blit commands are committed before
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
     if (mglRenderCommandBufferOwnerHasCurrent(
             commandState->currentCommandBufferOwner) == 1) {
         void *pendingCB = mglPassManagerDetachCurrentCommandBufferForSubmission(

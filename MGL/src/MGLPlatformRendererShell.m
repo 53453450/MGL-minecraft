@@ -20,6 +20,7 @@
 #import "MGLRenderer+Texture_Private.h"  /* texture upload ports */
 #import "MGLRenderer+Binding_Private.h"
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_renderer_host.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_batch_restore.h"
@@ -290,32 +291,6 @@ void mglRendererFlushCommandBufferPort(void *renderer, int finish)
     }
 }
 
-int mglRendererSynchronizeRenderPassForTextureReadbackPort(void *renderer,
-                                                           void *texture,
-                                                           const char *reason)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r synchronizeRenderPassForTextureReadback:(__bridge id)texture
-                                                     reason:reason])
-               ? 1
-               : 0;
-}
-
-void mglRendererEndRenderPassIfFramebufferChangedForNonDrawPort(
-    void *renderer, uint64_t process_call)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r endRenderPassIfFramebufferChangedForNonDraw:process_call];
-    }
-}
-
-int mglRendererSyncRenderPassStateForContextPort(void *renderer, GLMContext ctx)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r syncRenderPassStateForContext:ctx]) ? 1 : 0;
-}
-
 void mglRendererUpdateCurrentRenderEncoderPort(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -373,40 +348,6 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                : 0;
 }
 
-int mglRendererCurrentRenderPassUsesTexturePort(void *renderer, void *texture)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r currentRenderPassUsesTexture:(__bridge id)texture]) ? 1 : 0;
-}
-
-int mglRendererCopyTextureUploadWithDedicatedCommandBufferPort(
-    void *renderer, void *source_buffer, size_t source_offset,
-    size_t source_bytes_per_row, size_t source_bytes_per_image,
-    size_t source_layer_stride, size_t layer_count, MGLSizeValue source_size,
-    void *texture, size_t destination_slice, size_t destination_level,
-    MGLOriginValue destination_origin, const char *reason)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r) {
-        return 0;
-    }
-    return [r copyTextureUploadWithDedicatedCommandBuffer:(__bridge id)source_buffer
-                                             sourceOffset:(NSUInteger)source_offset
-                                        sourceBytesPerRow:(NSUInteger)source_bytes_per_row
-                                      sourceBytesPerImage:(NSUInteger)source_bytes_per_image
-                                       sourceLayerStride:(NSUInteger)source_layer_stride
-                                               layerCount:(NSUInteger)layer_count
-                                               sourceSize:source_size
-                                                toTexture:(__bridge id)texture
-                                         destinationSlice:(NSUInteger)destination_slice
-                                         destinationLevel:(NSUInteger)destination_level
-                                        destinationOrigin:destination_origin
-                                                   reason:reason]
-               ? 1
-               : 0;
-}
-
-
 int mglRendererPrepareEmulatedIndirectCPUReadPort(void *renderer,
                                                   GLMContext draw_ctx,
                                                   const char *label)
@@ -458,14 +399,6 @@ int mglRendererBindMTLProgramPort(void *renderer, Program *program)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     return (r && program && [r bindMTLProgram:program]) ? 1 : 0;
-}
-
-void mglRendererEndRenderEncodingPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (r) {
-        [r endRenderEncoding];
-    }
 }
 
 void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
@@ -709,6 +642,31 @@ int mglPlatformShellGuardedCallCtx(void *renderer, const char *what,
         if (finally_fn) {
             finally_fn(renderer, ctx);
         }
+    }
+}
+
+int mglPlatformShellGuardedCallCtxReason(void *renderer, const char *what,
+                                         int (*body)(void *, void *), void *ctx,
+                                         char *reason_out,
+                                         size_t reason_capacity)
+{
+    (void)what;
+    (void)renderer;
+    (void)ctx;
+    if (reason_out && reason_capacity > 0) {
+        reason_out[0] = '\0';
+    }
+    @try {
+        return body ? body(renderer, ctx) : 0;
+    } @catch (NSException *exception) {
+        if (reason_out && reason_capacity > 0) {
+            const char *reason = exception.reason
+                ? exception.reason.UTF8String
+                : NULL;
+            snprintf(reason_out, reason_capacity, "%s",
+                     reason ? reason : "(null)");
+        }
+        return 0;
     }
 }
 
@@ -969,19 +927,6 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
     areas_out->tess_cull_capture_instance_stride =
         (uint32_t)r->_tessellation.cullDistanceCaptureInstanceStride;
     areas_out->fragment_trace_bindings = &r->_resourceFallback.fragmentTextureTraceBindings[0];
-}
-
-int mglRendererEnsureWritableCommandBufferPort(void *renderer,
-                                               const char *reason)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r ensureWritableCommandBuffer:reason]) ? 1 : 0;
-}
-
-int mglRendererCurrentRenderPassMatchesFramebufferPort(void *renderer)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r currentRenderPassMatchesCurrentFramebuffer]) ? 1 : 0;
 }
 
 int mglRendererPrepareRenderPassIfFBOChangedPort(void *renderer, void *batch,
@@ -1658,7 +1603,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         [self mglStopCapture];
 
         // End any active rendering
-        [self endRenderEncoding];
+        mglRendererEndRenderEncodingLocked((__bridge void *)self);
 
         /* Drop strong references held by the last-bound dedup cache before
          * releasing the underlying Metal resources below. */

@@ -13,6 +13,7 @@
  * point mglRendererClearBuffer calls straight into this TU.
  */
 
+#include "mgl_render_pass_sync_ops.h"
 #include "mgl_clear_buffer_ops.h"
 
 #include "mgl_attachment_binding.h" /* mglRendererBindFramebufferAttachmentTextures */
@@ -229,7 +230,7 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     mglPlatformShellSetContext(renderer, glm_ctx);
 
     if (!glState->caps.scissor_test) {
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
 
         MGLRenderCommandBufferState clearCommandState = {0};
         if (!mglRenderCommandBufferOwnerHasState(
@@ -255,7 +256,7 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
             fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
             return;
         }
-        mglRendererEndRenderEncodingPort(renderer);
+        mglRendererEndRenderEncodingLocked(renderer);
         mglMarkRendererDirtyBits(glm_ctx->active_state,
                                  DIRTY_FBO | DIRTY_RENDER_STATE);
         return;
@@ -499,7 +500,7 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     }
     if (mglRenderEncoderOwnerHasCurrent(
             commandState->currentRenderEncoderOwner) == 1 &&
-        mglRendererCurrentRenderPassMatchesFramebufferPort(renderer) &&
+        mglRenderPassMatchesCurrentFramebuffer(renderer) &&
         !sampleQueryActive) {
         if (commandState->renderPassStateOwner) {
             int colorMatches = !wantsColor;
@@ -599,7 +600,7 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     /* Fallback: end the current encoder and create a dedicated clear encoder.
      * Used when no encoder is active, the FBO doesn't match, a visibility query
      * is active, or the attachment textures don't match. */
-    mglRendererEndRenderEncodingPort(renderer);
+    mglRendererEndRenderEncodingLocked(renderer);
     MGLRenderCommandBufferState clearCommandState = {0};
     if (!mglRenderCommandBufferOwnerHasState(
             commandState->currentCommandBufferOwner, &clearCommandState) &&

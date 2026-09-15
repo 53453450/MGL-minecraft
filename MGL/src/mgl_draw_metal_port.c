@@ -703,7 +703,7 @@ static void mglStageApplyPolygonOffset(void *renderer, GLenum mode)
 
 static void mglStageEndRender(void *renderer)
 {
-    if (renderer) mglRendererEndRenderEncodingPort(renderer);
+    if (renderer) mglRendererEndRenderEncodingLocked(renderer);
 }
 
 static void mglStageClearNativeCB(void *renderer)

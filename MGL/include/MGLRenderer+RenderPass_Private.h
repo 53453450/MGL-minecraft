@@ -97,10 +97,8 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 @interface MGLRenderer ()
 
 // === Render pass state sync ===
-- (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx;
 /* Defined in MGLRenderer+RenderPass.m; the shell port forwards to it (log 167). */
 - (void)updateCurrentRenderEncoder;
-- (bool)rotateRenderEncoderForCurrentFramebufferLocked;
 /* -syncPipelineStateWithDeferredBufferMap: is C now (log 189):
  * mglRenderPassSyncPipelineState (mgl_pso_build_ops.h). */
 - (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex
@@ -110,22 +108,21 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
                           replayError:(GLenum *)replayError;
 
 // === Render encoder lifecycle ===
-- (bool)newRenderEncoderWithReason:(MGLEncoderCreateReason)reason;
 - (bool)newRenderEncoderLockedWithReason:(MGLEncoderCreateReason)reason;
-- (bool)newRenderEncoder; /* OTHER — prefer WithReason: */
-- (bool)newRenderEncoderLocked; /* OTHER — prefer WithReason: */
-- (void)endRenderEncoding;
-- (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall;
-- (bool)currentRenderPassMatchesCurrentFramebuffer;
+/* -newRenderEncoder / -newRenderEncoderLocked / -newRenderEncoderWithReason:
+ * / -newCommandBuffer / -endRenderEncoding are C now (log 191):
+ * mglRenderPassNewRenderEncoderLockedWithReason / mglRendererEndRenderEncodingLocked
+ * (mgl_render_pass_manager_ops.h). */
 /* these are the C functions in mgl_attachment_binding.h now */
 /* these are the C functions in mgl_attachment_binding.h now */
 
 // === Framebuffer attachment helpers ===
-- (Texture *)framebufferAttachmentTexture:(FBOAttachment *)fbo_attachment;
-- (BOOL)currentRenderPassUsesTexture:(id)texture;
+/* framebufferAttachmentTexture: was a pure forwarder to
+ * mglRendererAttachmentTextureFor() and is deleted; it had no Objective-C
+ * callers left (log 191).
+ * -currentRenderPassUsesTexture: and -synchronizeRenderPassForTextureReadback:
+ * are C now (mgl_render_pass_sync_ops.h). */
 - (bool)restoreRenderEncoderAfterTextureUploadForDraw:(const char *)reason;
-- (BOOL)synchronizeRenderPassForTextureReadback:(id)texture
-                                          reason:(const char *)reason;
 
 // === Thread Safety: *Locked variants ===
 - (bool)bindMTLProgram:(Program *)ptr;
@@ -135,7 +132,6 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 
 // === Public wrapper methods (non-locking; call the *Locked variants) ===
 - (bool)ensureWritableCommandBuffer:(const char *)reason;
-- (bool)newCommandBuffer;
 - (bool)processGLState:(bool)draw_command;
 - (void)flushCommandBuffer:(bool)finish;
 

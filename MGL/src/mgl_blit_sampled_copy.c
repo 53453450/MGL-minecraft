@@ -14,6 +14,7 @@
  * through -newCommandBufferLocked), reached through one port.
  */
 
+#include "mgl_render_pass_manager_ops.h"
 #include "mgl_blit_sampled_copy.h"
 #include "mgl_render.h"
 #include "mgl_renderer_ports.h"  /* state areas, ensure-writable command buffer */
@@ -237,7 +238,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         copyMask = mipMask;
     }
 
-    if (!mglRendererEnsureWritableCommandBufferPort(renderer,
+    if (!mglRenderPassEnsureWritableCommandBufferLocked(renderer,
                                                     reason ? reason : "rt_sample_copy")) {
         return 0;
     }
