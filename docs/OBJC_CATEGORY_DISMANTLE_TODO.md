@@ -8401,3 +8401,24 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）�
 **下一步**：搬 `MGLRenderer.m` 的文件级 C 入口（先例：`mgl_texture_entries.c`），删除该文件 ⇒ **文件数 2 → 1**
 （只剩 T5 壳），随后写壳的"行数上限 + 移除路径"收口文档。
 
+**§0.127 附：`MGLRenderer.m` 收口清单（第 171 轮直接用，实测于第 170 轮末）**
+
+- 文件规模：**2,873 行 / 34 语法 / 129 词汇**；结构 = `@interface MGLRenderer ()`（1914–1928，**绝大多数是已搬走方法的陈旧声明**）
+  + `@implementation MGLRenderer`（1931–2872，**里面其实装的是 27 个文件级 C 函数**：`glTypeSizeToMtlType` / `mglShouldInspectDrawCall` /
+  `mglTraceDrawElementsAttrib` / `printDirtyBit` / `logDirtyBits` / `mglTraceReplayCommandVertexAttribSamples` / `mglRendererSwapBuffers` /
+  `mglRendererClearBuffer` / `mglPrimitiveTypeForGLMode` …）。
+- **文件级 C 函数共 27 个**（`mglMetalCopyRows` / `mglRestoreProgramPipelinePair` / `mglRendererSyncFramebufferBindingNames` /
+  `mglCurrentRenderProgramKey` / `mglWriteProgramMSLDump` / `mglTraceShouldLogReplay` / `mglMarkGLSampledCopyLevelDirty` /
+  `mglLogLoopHeartbeat` / `mglLogStateSnapshot` / `mglLogRenderPassLifecycle` / `mglRendererResolveVertexAttribBinding` /
+  `mglRendererSafeFramebufferName` / `mglLogSkippedGLSampledRenderTargetCopy` / `mglRenderVertexBufferIndexForAttribute` /
+  `mglRenderCheckForDirtyBufferData` / `mglRenderUpdateDirtyBaseBufferList` / `mglRenderGenerateVertexDescriptorState` /
+  `mglRendererResolveVertexAttributeBufferIndex` + `@implementation` 内那 8 个），**函数体基本都是 C**。
+- **需要转换的 ObjC 构件（全文件统计）**：`NSLog` **33**、`@try/@catch` **2**（都在 `mglRendererSwapBuffers` 附近）、
+  `@autoreleasepool` **2**（同上，壳已有 `mglPlatformShellAutoreleasePoolCall` 桥）、`__bridge`/`__bridge_transfer` **19**、
+  `id` 声明 **24**、`mglRendererForContext` **2**、`mglRendererEnterBackendLease` **2**（换成 `glm_ctx->platform_renderer_shell`
+  与 `mglRendererBackendBeginContext`，与 `mgl_texture_entries.c` 同法）。
+- **两个 `__attribute__((constructor))`**（`mglRendererDiagnosticBuildMarker` 等）**必须原样保留在 C TU 里**（第 64 条）。
+- 建议做法：照 `mgl_texture_entries.c` 的先例新建 `mgl_renderer_entries.c`，把 27 个函数与它们需要的 static helper 一起搬过去
+  （`MGLRenderer.m` 里 `_device` / `_commandQueue` / `_backend` 的直读换成 backend 访问器 / areas），然后删除 `.m`
+  ⇒ **文件数 2 → 1**（只剩 T5 壳）。搬完立刻跑 A/B（constructor 与初始化顺序类问题只有 A/B 抓得到）。
+
