@@ -324,15 +324,6 @@ void mglRendererUpdateCurrentRenderEncoderPort(void *renderer)
     }
 }
 
-int mglRendererNewRenderEncoderLockedWithReasonPort(void *renderer,
-                                                    uint32_t reason)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r newRenderEncoderLockedWithReason:(MGLEncoderCreateReason)reason])
-               ? 1
-               : 0;
-}
-
 int mglRendererSyncPipelineStateWithDeferredBufferMapPort(void *renderer,
                                                           int deferred)
 {
@@ -753,6 +744,21 @@ void mglPlatformShellPipelineCacheInvalidate(void *pipeline_cache_object)
     if (cache) {
         [cache invalidatePipelineState];
     }
+}
+
+/* Runs a C body inside an @autoreleasepool (log 186): the render-encoder C
+ * entry kept the .m's pool so autoreleased temporaries still drain there. */
+int mglPlatformShellAutoreleasePoolCall(void *renderer,
+                                        int (*body)(void *))
+{
+    if (!body) {
+        return 0;
+    }
+    int result = 0;
+    @autoreleasepool {
+        result = body(renderer);
+    }
+    return result;
 }
 
 /* Swap-path queries and effects that must run on the shell object (log 180). */

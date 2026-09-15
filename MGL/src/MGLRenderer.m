@@ -109,31 +109,6 @@ static id mglRendererCreateTextureView(id texture, uint32_t pixelFormat)
     return nil;
 }
 
-static MGLRenderTextureInfo mglRendererTextureInfo(id texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) {
-        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
-    }
-    return info;
-}
-
-static id mglRendererCurrentDrawableTexture(MGLRenderer *renderer)
-{
-    return renderer ? [renderer mglDrawableTexture] : nil;
-}
-
-static uint64_t mglRendererTextureFieldWidth(id texture)
-{ return mglRendererTextureInfo(texture).width; }
-static uint64_t mglRendererTextureFieldHeight(id texture)
-{ return mglRendererTextureInfo(texture).height; }
-static uint32_t mglRendererTextureFieldFormat(id texture)
-{ return mglRendererTextureInfo(texture).pixel_format; }
-static uint64_t mglRendererTextureFieldUsage(id texture)
-{ return mglRendererTextureInfo(texture).usage; }
-static uint32_t mglRendererTextureFieldType(id texture)
-{ return mglRendererTextureInfo(texture).texture_type; }
-
 typedef struct MGLRendererClearColorValue {
     double red, green, blue, alpha;
 } MGLRendererClearColorValue;
@@ -146,6 +121,23 @@ static MGLRendererClearColorValue mglRendererMakeClearColor(double red,
     return (MGLRendererClearColorValue){red, green, blue, alpha};
 }
 
+static MGLRenderTextureInfo mglRendererTextureInfo(id texture)
+{
+    MGLRenderTextureInfo info = {0};
+    if (texture) {
+        (void)mglRenderGetTextureInfo((__bridge void *)texture, &info);
+    }
+    return info;
+}
+
+static uint64_t mglRendererTextureFieldWidth(id texture)
+{ return mglRendererTextureInfo(texture).width; }
+static uint64_t mglRendererTextureFieldHeight(id texture)
+{ return mglRendererTextureInfo(texture).height; }
+static uint32_t mglRendererTextureFieldFormat(id texture)
+{ return mglRendererTextureInfo(texture).pixel_format; }
+static uint64_t mglRendererTextureFieldUsage(id texture)
+{ return mglRendererTextureInfo(texture).usage; }
 // Applies GL_FRAMEBUFFER_SRGB state to a render-target texture by creating
 // a Metal texture view with the appropriate pixel format. The view shares
 // the same underlying storage so no memory copy occurs.
@@ -342,81 +334,6 @@ static id mglRendererCreateBuffer(id device,
         return (__bridge_transfer id)buffer;
     }
     return nil;
-}
-
-static id mglRendererCreateTextureFromState(
-    const MGLRenderTextureDescriptorState *state)
-{
-    void *texture = NULL;
-    if (mglRenderCreateTextureFromState(state, NULL, &texture) == 0 &&
-        texture) {
-        return (__bridge_transfer id)texture;
-    }
-    return nil;
-}
-
-static void mglRendererEndRenderEncoder(id encoder)
-{
-    (void)mglRenderEndRenderEncoder((__bridge void *)encoder);
-}
-
-static void mglRendererSetRenderPipeline(id encoder,
-                                         id pipeline)
-{
-    (void)mglRenderSetRenderPipelineState(
-        (__bridge void *)encoder, (__bridge void *)pipeline);
-}
-
-static void mglRendererSetDepthStencil(id encoder,
-                                       id state)
-{
-    (void)mglRenderSetRenderDepthStencilState(
-        (__bridge void *)encoder, (__bridge void *)state);
-}
-
-static void mglRendererSetRenderBytes(id encoder,
-                                      const void *bytes,
-                                      NSUInteger length,
-                                      uint32_t stage,
-                                      NSUInteger index)
-{
-    (void)mglRenderSetRenderBytes(
-        (__bridge void *)encoder, bytes, length, stage, (uint32_t)index);
-}
-
-static void mglRendererSetViewport(id encoder, MGLViewportValue viewport)
-{
-    (void)mglRenderSetRenderViewport(
-        (__bridge void *)encoder, viewport.origin_x, viewport.origin_y,
-        viewport.width, viewport.height, viewport.znear, viewport.zfar);
-}
-
-static void mglRendererSetScissor(id encoder, MGLScissorRectValue scissor)
-{
-    (void)mglRenderSetRenderScissor(
-        (__bridge void *)encoder, scissor.x, scissor.y,
-        scissor.width, scissor.height);
-}
-
-static void mglRendererDrawPrimitives(id encoder,
-                                      uint32_t primitiveType,
-                                      NSUInteger vertexStart,
-                                      NSUInteger vertexCount)
-{
-    (void)mglRenderEncodeDraw((__bridge void *)encoder,
-        &(MGLRenderDrawPlan){
-            .kind = MGL_RENDER_DRAW_ARRAY,
-            .primitive_type = (uint32_t)primitiveType,
-            .vertex_start = vertexStart,
-            .vertex_count = vertexCount,
-            .instance_count = 1u,
-            .base_instance = 0u,
-        }, NULL, 0);
-}
-
-static void mglRendererEndBlitEncoder(id encoder)
-{
-    (void)mglRenderEndBlitEncoder((__bridge void *)encoder);
 }
 
 /* Trace log core infrastructure (3 static globals, mglInitTraceLogIfNeeded,

@@ -29,7 +29,8 @@
 #include "mgl_trace_log.h"
 
 #include "mgl_render.h"
-#include "mgl_render_pass_manager_ops.h" /* mglRenderPass* C entries */
+#include "mgl_render_pass_manager_ops.h"
+#include "mgl_render_encoder_ops.h" /* mglRenderPass* C entries */
 #include "mgl_thread_affinity.h"        /* MGL_ASSERT_GL_THREAD */
 #include "mgl_texture_bind.h"           /* mglRendererBindMTLTexture */
 #include "mgl_draw_buffer.h"            /* mglDefaultDrawBufferIndexForGL */

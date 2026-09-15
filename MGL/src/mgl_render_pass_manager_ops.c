@@ -14,6 +14,7 @@
  */
 
 #include "mgl_render_pass_manager_ops.h"
+#include "mgl_render_encoder_ops.h"
 #include "mgl_attachment_binding.h"   /* mglRendererBindFramebufferAttachmentTextures */
 #include "mgl_buffer_map.h"           /* map / dirty base buffers */
 #include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
@@ -362,7 +363,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
             if (mglRenderEncoderOwnerHasCurrent(
                     areas.command->currentRenderEncoderOwner) != 1) {
                 RETURN_FALSE_ON_FAILURE(
-                    mglRendererNewRenderEncoderLockedWithReasonPort(renderer, MGL_ENC_REASON_VAO));
+                    mglRenderPassNewRenderEncoderLockedWithReason(renderer, MGL_ENC_REASON_VAO));
             }
 
             mglRendererUpdateCurrentRenderEncoderPort(renderer);
@@ -383,7 +384,7 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
                     areas.command->currentRenderEncoderOwner) != 1)
             {
                 RETURN_FALSE_ON_FAILURE(
-                    mglRendererNewRenderEncoderLockedWithReasonPort(renderer, MGL_ENC_REASON_RS));
+                    mglRenderPassNewRenderEncoderLockedWithReason(renderer, MGL_ENC_REASON_RS));
             }
 
             mglRendererUpdateCurrentRenderEncoderPort(renderer);
@@ -431,7 +432,7 @@ int mglRenderPassEnsureRasterEncoderForDraw(void *renderer)
             areas.command->currentRenderEncoderOwner) == 1) {
         return 1;
     }
-    (void)mglRendererNewRenderEncoderLockedWithReasonPort(renderer, MGL_ENC_REASON_DRAW);
+    (void)mglRenderPassNewRenderEncoderLockedWithReason(renderer, MGL_ENC_REASON_DRAW);
     if (mglRenderEncoderOwnerHasCurrent(
             areas.command->currentRenderEncoderOwner) != 1) {
         return 0;
@@ -3711,7 +3712,7 @@ int mglRenderPassEnsureCurrentRenderPassMatchesFramebufferForDraw(void *renderer
     mglMarkRendererDirtyBits(ctx->active_state,
                              DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE |
                                  DIRTY_VAO);
-    return mglRendererNewRenderEncoderLockedWithReasonPort(
+    return mglRenderPassNewRenderEncoderLockedWithReason(
         renderer, MGL_ENC_REASON_FBO);
 }
 
@@ -3966,7 +3967,7 @@ static int mglPdRecoveryTryBody(void *renderer)
 /* @try of the no-VAO clear path: the catch only logs. */
 static int mglPdNoVaoEncoderTryBody(void *renderer)
 {
-    (void)mglRendererNewRenderEncoderLockedWithReasonPort(renderer,
+    (void)mglRenderPassNewRenderEncoderLockedWithReason(renderer,
                                                           MGL_ENC_REASON_CLEAR);
     return 1;
 }
@@ -4277,7 +4278,7 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
                 commandState->renderPassDrawBuffer,
                 commandState->renderPassDrawBufferCount);
         }
-        if (!mglRendererNewRenderEncoderLockedWithReasonPort(
+        if (!mglRenderPassNewRenderEncoderLockedWithReason(
                 renderer, MGL_ENC_REASON_NIL)) {
             fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
             return 0;

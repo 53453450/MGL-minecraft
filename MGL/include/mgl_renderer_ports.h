@@ -319,8 +319,6 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
  * Objective-C methods in MGLRenderer+RenderPass.m. */
 int mglRendererSyncRenderPassStateForContextPort(void *renderer, GLMContext ctx);
 void mglRendererUpdateCurrentRenderEncoderPort(void *renderer);
-int mglRendererNewRenderEncoderLockedWithReasonPort(void *renderer,
-                                                    uint32_t reason);
 int mglRendererSyncPipelineStateWithDeferredBufferMapPort(void *renderer,
                                                           int deferred);
 

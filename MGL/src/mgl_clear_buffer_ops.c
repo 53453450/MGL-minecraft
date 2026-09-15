@@ -30,7 +30,8 @@
 
 #include "mgl_render.h"
 #include "mgl_renderer_host.h"          /* mglMarkTextureLevelRenderTargetWritten */
-#include "mgl_render_pass_manager_ops.h" /* mglRenderPassNewCommandBufferLocked */
+#include "mgl_render_pass_manager_ops.h"
+#include "mgl_render_encoder_ops.h" /* mglRenderPassNewCommandBufferLocked */
 
 #include <stdio.h>
 #include <string.h>
@@ -249,7 +250,7 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
             fbo->dirty_bits &= ~DIRTY_FBO_BINDING;
         }
 
-        if (!mglRendererNewRenderEncoderLockedWithReasonPort(
+        if (!mglRenderPassNewRenderEncoderLockedWithReason(
                 renderer, MGL_ENC_REASON_CLEAR)) {
             fprintf(stderr, "failure %s:%d\n", __func__, __LINE__);
             return;
