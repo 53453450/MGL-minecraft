@@ -142,6 +142,28 @@ struct MGLScopedAutoreleasePool {
     MGLScopedAutoreleasePool &operator=(const MGLScopedAutoreleasePool &) = delete;
 };
 
+/* @finally, including the `@try/@finally` form with no `@catch`: the body runs
+ * when the scope exits, whether by return, by fallthrough or while an exception
+ * unwinds - and in the last case the exception keeps propagating, which is what
+ * `@try/@finally` without `@catch` does.
+ *
+ *   auto finally = mglScopeExit([&] { teardown(); });
+ */
+template <typename Body>
+struct MGLScopeExitGuard {
+    Body body;
+    explicit MGLScopeExitGuard(Body b) : body(b) {}
+    ~MGLScopeExitGuard() { body(); }
+    MGLScopeExitGuard(const MGLScopeExitGuard &) = delete;
+    MGLScopeExitGuard &operator=(const MGLScopeExitGuard &) = delete;
+};
+
+template <typename Body>
+static inline MGLScopeExitGuard<Body> mglScopeExit(Body body)
+{
+    return MGLScopeExitGuard<Body>(body);
+}
+
 /* Ivar offsets are resolved on first use (never at load time: the class must be
  * finished loading, categories included, before its layout is asked for) and
  * cached in a per-call-site `static ptrdiff_t`, which starts at PTRDIFF_MIN. */

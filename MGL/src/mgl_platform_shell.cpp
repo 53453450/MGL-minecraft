@@ -33,14 +33,22 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "glm_limits.h"              /* MAX_COLOR_ATTACHMENTS */
+#include "mgl_air_loader.h"           /* MGLRenderPipelineDescriptorState */
 #include "mgl_aux_assets.h"
 #include "mgl_batch_mtl_encode.h"
-#include "mgl_render.h"
+#include "mgl_batch_restore.h"        /* mglBatchFlushBegin/RunBatches/Teardown */
+#include "mgl_compute_dispatch.h"     /* mglComputeMtlDispatch*Locked */
+#include "mgl_render.h"               /* MGLRenderPipelineBlendState */
+#include "mgl_render_pass_manager.h"  /* r->_renderPassManager->state */
+#include "mgl_pipeline_cache_state.h" /* MGLPipelineCacheState */
 #include "mgl_renderer_backend.h"
 #include "mgl_platform_shell_internal.h"
+#include "mgl_renderer_host.h"        /* mglRendererEnsureNewCommandBuffer */
 #include "mgl_renderer_ports.h"
 #include "mgl_shader_abi.h"
 #include "mgl_shader_resource.h"
+#include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_thread_affinity.h"
 
 #ifndef MGL_PLATFORM_SHELL_SMOKE
@@ -66,6 +74,30 @@ static SEL s_selStopCapture = NULL;
 static SEL s_selLocalizedDescription = NULL;
 static SEL s_selArray = NULL;
 static SEL s_selAddObject = NULL;
+static SEL s_selFlushDrawBuffer = NULL;
+static SEL s_selBindMTLTexture = NULL;
+static SEL s_selSwapInterval = NULL;
+static SEL s_selState = NULL;
+static SEL s_selLayer = NULL;
+static SEL s_selReason = NULL;
+static SEL s_selDescription = NULL;
+static SEL s_selInvalidatePipelineState = NULL;
+static SEL s_selPipelineDescriptorStateForWords = NULL;
+static SEL s_selCreateRenderPipelineFromState = NULL;
+static SEL s_selStorePipeline = NULL;
+static SEL s_selStorePipelineDescriptorState = NULL;
+static SEL s_selDepthStencilStateForValueState = NULL;
+static SEL s_selLookupPipelineForWords = NULL;
+static SEL s_selActivatePipelineState = NULL;
+static SEL s_selResetCaches = NULL;
+static SEL s_selBlendStateForAttachment = NULL;
+static SEL s_selSetBlendFactorsForAttachment = NULL;
+
+/* METAL_LOCK/METAL_UNLOCK are renderer-private macros in MGLRenderer_Private.h
+ * that only assert the GL thread; the C twin is the same (see
+ * mgl_draw_metal_port.c). */
+#define METAL_LOCK()   do { MGL_ASSERT_GL_THREAD(); } while (0)
+#define METAL_UNLOCK() do { } while (0)
 
 /* === renderer port shim ==================================================
  * The Objective-C surface C talks to lives in this TU.  Every function below
@@ -448,6 +480,582 @@ void mglPlatformShellSetDrawable(void *renderer, void *drawable)
         (void)mglSend<void>(r, MGL_SEL(s_selSetDrawable, "setDrawable:"),
                             (MGLObjectId)drawable);
     }
+}
+
+
+/* === batch replay shell (former MGLRenderer (BatchZeroShell)) ============
+ * The two category members below are the lock/exception frame around a flush
+ * and the lock frame around a texture bind.  Their bodies are plain C now and
+ * are registered on the class at load time (class_addMethod), exactly as the
+ * compiler's category used to do it, so every existing call site keeps working
+ * whether it sends the message or calls the C entry point. */
+
+static void mglShellFlushDrawBuffer(MGLObjectId self, SEL cmd, GLMContext glm_ctx)
+{
+    (void)cmd;
+    METAL_LOCK();
+    mglRendererFlushDrawBufferLocked((void *)self, glm_ctx);
+    METAL_UNLOCK();
+}
+
+static bool mglShellBindMTLTexture(MGLObjectId self, SEL cmd, Texture *tex)
+{
+    (void)cmd;
+    METAL_LOCK();
+    const bool result = mglRendererBindMTLTexture((void *)self, tex);
+    METAL_UNLOCK();
+    return result;
+}
+
+/* Rule 64: nothing calls this - the constructor attribute is the only entry
+ * point.  The class is compiler-generated while the shell still is ObjC, so
+ * these are added to it rather than to a class we registered ourselves. */
+__attribute__((constructor))
+static void mglInstallShellCategoryMethods(void)
+{
+    Class rendererClass = objc_getClass("MGLRenderer");
+    if (!rendererClass) {
+        return;
+    }
+    /* The type encodings are metadata (dispatch goes through objc_msgSend with
+     * an explicit cast); they follow the loose convention already used for the
+     * runtime-registered pipeline cache. */
+    class_addMethod(rendererClass, sel_registerName("flushDrawBuffer:"),
+                    (IMP)mglShellFlushDrawBuffer, "v@:^{GLMContextRec_t}");
+    class_addMethod(rendererClass, sel_registerName("bindMTLTexture:"),
+                    (IMP)mglShellBindMTLTexture, "c@:^?");
+}
+
+/* C entry point: lease the backend, then flush under an autorelease pool with a
+ * last-resort exception guard so a throwing draw never escapes into C. */
+void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    MGLObjectId renderer =
+        (MGLObjectId)(glm_ctx ? glm_ctx->platform_renderer_shell : NULL);
+    if (renderer && glm_ctx) {
+        MGLScopedAutoreleasePool pool;
+        try {
+            (void)mglSend<void>(renderer,
+                                MGL_SEL(s_selFlushDrawBuffer, "flushDrawBuffer:"),
+                                glm_ctx);
+        } catch (...) {
+            fprintf(stderr, "MGL ERROR: callback flushDrawBuffer exception: %s\n",
+                    mglCaughtExceptionDescription(mglTakeCaughtException()));
+        }
+    }
+    mglRendererBackendEnd(&backend_lease);
+}
+
+/* === batch flush / replay-workspace ports =============================== */
+
+int mglPlatformShellMSSampleInLoop(void *renderer)
+{
+    /* The ivar is @package, so the shell reads it directly instead of keeping a
+     * one-line Objective-C method in MGLRenderer.m alive for it (log 201). */
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    return ivars ? (ivars->_mglInMSSampleDrawLoop ? 1 : 0) : 0;
+}
+
+/* The plane offset is the second half of the emulated-MS-sample loop state and
+ * has no Objective-C getter; C reads the ivar through this forwarder. */
+int mglPlatformShellMSSamplePlaneOffset(void *renderer)
+{
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    return ivars ? (int)ivars->_mglMSSamplePlaneOffset : 0;
+}
+
+void mglPlatformShellSetMSSampleState(void *renderer, int in_loop,
+                                      int32_t forced, int32_t offset)
+{
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    if (ivars) {
+        ivars->_mglInMSSampleDrawLoop = in_loop ? 1 : 0;
+        ivars->_mglForcedMSSampleId = forced;
+        ivars->_mglMSSamplePlaneOffset = offset;
+    }
+}
+
+int mglPlatformShellNewCommandBuffer(void *renderer)
+{
+    return renderer ? mglRendererEnsureNewCommandBuffer(renderer) : 0;
+}
+
+void *mglPlatformShellDrawable(void *renderer)
+{
+    MGLObjectId r = (MGLObjectId)renderer;
+    return r ? (void *)mglSend<MGLObjectId>(r, MGL_SEL(s_selDrawable, "drawable"))
+             : NULL;
+}
+
+void *mglPlatformShellMetalDevice(void *renderer)
+{
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    return ivars ? mglRendererBackendGetDevice(ivars->_backend) : NULL;
+}
+
+int mglPlatformShellMetalObjectsPresent(void *renderer)
+{
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    if (!ivars) return 0;
+    return (mglRendererBackendGetDevice(ivars->_backend) &&
+            mglRendererBackendGetCommandQueue(ivars->_backend))
+               ? 1
+               : 0;
+}
+
+int mglPlatformShellRecreateCommandQueue(void *renderer)
+{
+    MGLRendererIvars *ivars = mglRendererIvars((MGLObjectId)renderer);
+    if (!ivars || !ivars->_backend) {
+        return 0;
+    }
+    void *commandQueue = NULL;
+    (void)mglRendererBackendResetCommandQueue(ivars->_backend, 0u, &commandQueue);
+    return mglRendererBackendGetCommandQueue(ivars->_backend) != NULL ? 1 : 0;
+}
+
+/* C entry point for the pipeline cache's cache reset (the cache object travels
+ * in the state areas; the class is runtime-created, so it is reached as an id -
+ * log 205). */
+int mglPipelineCacheResetCaches(void *pipeline_cache_object)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache) {
+        return 0;
+    }
+    (void)mglSend<void>(cache, MGL_SEL(s_selResetCaches, "resetCaches"));
+    return 1;
+}
+
+/* === exception-guarded C bodies =========================================
+ * @try/@catch has no C form, but a C++ catch(...) catches the NSException the
+ * same way (rule 67); the object comes back from the exception bridge. */
+
+int mglPlatformShellGuardedCallCtx(void *renderer, const char *what,
+                                   int (*body)(void *, void *), void *ctx,
+                                   void (*finally_fn)(void *, void *))
+{
+    /* @finally, so it also runs on the return below.  The original's `?: "?"`
+     * fallback only fired for a nil exception, which the recorder rules out. */
+    auto finally_body = mglScopeExit([&] {
+        if (finally_fn) {
+            finally_fn(renderer, ctx);
+        }
+    });
+    try {
+        return body ? body(renderer, ctx) : 0;
+    } catch (...) {
+        MGLObjectId exception = mglTakeCaughtException();
+        /* `exception.description ? exception.description.UTF8String : "?"` */
+        const char *description = exception
+            ? mglUTF8String(mglSend<MGLObjectId>(
+                  exception, MGL_SEL(s_selDescription, "description")))
+            : NULL;
+        fprintf(stderr, "MGL ERROR: Exception during %s: %s\n",
+                what ? what : "operation", description ? description : "?");
+        return 0;
+    }
+}
+
+int mglPlatformShellGuardedCallCtxReason(void *renderer, const char *what,
+                                         int (*body)(void *, void *), void *ctx,
+                                         char *reason_out,
+                                         size_t reason_capacity)
+{
+    (void)what;
+    (void)renderer;
+    (void)ctx;
+    if (reason_out && reason_capacity > 0) {
+        reason_out[0] = '\0';
+    }
+    try {
+        return body ? body(renderer, ctx) : 0;
+    } catch (...) {
+        if (reason_out && reason_capacity > 0) {
+            MGLObjectId exception = mglTakeCaughtException();
+            const char *reason = exception
+                ? mglUTF8String(mglSend<MGLObjectId>(
+                      exception, MGL_SEL(s_selReason, "reason")))
+                : NULL;
+            snprintf(reason_out, reason_capacity, "%s",
+                     reason ? reason : "(null)");
+        }
+        return 0;
+    }
+}
+
+int mglPlatformShellGuardedCall(void *renderer, const char *what,
+                                int (*body)(void *))
+{
+    if (!body) {
+        return 0;
+    }
+    try {
+        return body(renderer);
+    } catch (...) {
+        MGLObjectId exception = mglTakeCaughtException();
+        /* `exception.description ? exception.description.UTF8String : "?"` */
+        const char *description = exception
+            ? mglUTF8String(mglSend<MGLObjectId>(
+                  exception, MGL_SEL(s_selDescription, "description")))
+            : NULL;
+        fprintf(stderr, "MGL ERROR: Exception during %s: %s\n",
+                what ? what : "operation", description ? description : "?");
+        return 0;
+    }
+}
+
+/* === pipeline-cache bridges =============================================
+ * The cache object is a runtime-created class, so C never names its class
+ * symbol (log 205): every bridge takes it as void * and sends by id. */
+
+/* Clears the cache's active pipeline state (log 178). */
+void mglPlatformShellPipelineCacheInvalidate(void *pipeline_cache_object)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (cache) {
+        (void)mglSend<void>(cache, MGL_SEL(s_selInvalidatePipelineState,
+                                           "invalidatePipelineState"));
+    }
+}
+
+/* Pipeline-cache value-state bridges for the C PSO build path (log 187). */
+int mglPlatformShellPipelineCacheDescriptorStateForWords(
+    void *pipeline_cache_object, const uint64_t *words,
+    MGLRenderPipelineDescriptorState *state_out)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache || !words || !state_out) {
+        return 0;
+    }
+    return mglSend<signed char>(
+               cache,
+               MGL_SEL(s_selPipelineDescriptorStateForWords,
+                       "pipelineDescriptorStateForWords:state:"),
+               words, state_out)
+               ? 1
+               : 0;
+}
+
+int mglPlatformShellPipelineCacheCreatePSO(
+    void *pipeline_cache_object, const MGLRenderPipelineDescriptorState *state,
+    void *vertex_function, void *fragment_function, void **pipeline_out,
+    char *error_message, size_t error_capacity)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache || !state || !pipeline_out) {
+        return -1;
+    }
+    return mglSend<int>(cache,
+                        MGL_SEL(s_selCreateRenderPipelineFromState,
+                                "createRenderPipelineFromState:"
+                                "vertexFunction:fragmentFunction:"
+                                "pipelineOut:errorMessage:errorCapacity:"),
+                        state, vertex_function, fragment_function, pipeline_out,
+                        error_message, error_capacity);
+}
+
+void mglPlatformShellPipelineCacheStorePipeline(
+    void *pipeline_cache_object, void *pipeline, void *vertex_function,
+    void *fragment_function, const uint64_t *words)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache || !words) {
+        return;
+    }
+    (void)mglSend<void>(cache,
+                        MGL_SEL(s_selStorePipeline,
+                                "storePipeline:vertexFunction:"
+                                "fragmentFunction:forWords:"),
+                        (MGLObjectId)pipeline, (MGLObjectId)vertex_function,
+                        (MGLObjectId)fragment_function, words);
+}
+
+void mglPlatformShellPipelineCacheStoreDescriptorState(
+    void *pipeline_cache_object, const MGLRenderPipelineDescriptorState *state,
+    const uint64_t *words)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache || !state || !words) {
+        return;
+    }
+    (void)mglSend<void>(cache,
+                        MGL_SEL(s_selStorePipelineDescriptorState,
+                                "storePipelineDescriptorState:forWords:"),
+                        state, words);
+}
+
+void mglPlatformShellPipelineCacheDepthStencilStateForValueState(
+    void *pipeline_cache_object,
+    const struct MGLRenderDepthStencilDescriptorState_t *state, void **out)
+{
+    if (out) *out = NULL;
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache || !state) {
+        return;
+    }
+    MGLObjectId dsState =
+        mglSend<MGLObjectId>(cache,
+                             MGL_SEL(s_selDepthStencilStateForValueState,
+                                     "depthStencilStateForValueState:"),
+                             state);
+    if (out) *out = (void *)dsState;
+}
+
+int mglPlatformShellPipelineCacheLookupPipeline(
+    void *pipeline_cache_object, const uint64_t *words, void **pipeline_out,
+    void **vertex_function_out, void **fragment_function_out)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache) {
+        return 0;
+    }
+    MGLObjectId pipeline = NULL;
+    MGLObjectId vertexFunction = NULL;
+    MGLObjectId fragmentFunction = NULL;
+    const signed char found =
+        mglSend<signed char>(cache,
+                             MGL_SEL(s_selLookupPipelineForWords,
+                                     "lookupPipelineForWords:pipeline:"
+                                     "vertexFunction:fragmentFunction:"),
+                             words, &pipeline, &vertexFunction,
+                             &fragmentFunction);
+    if (pipeline_out) *pipeline_out = (void *)pipeline;
+    if (vertex_function_out) *vertex_function_out = (void *)vertexFunction;
+    if (fragment_function_out) {
+        *fragment_function_out = (void *)fragmentFunction;
+    }
+    return found ? 1 : 0;
+}
+
+void mglPlatformShellPipelineCacheActivate(
+    void *pipeline_cache_object, void *pipeline, uint32_t color0_format,
+    uint32_t depth_format, uint32_t stencil_format, uint32_t program_name,
+    void *vertex_function, void *fragment_function)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache) {
+        return;
+    }
+    (void)mglSend<void>(cache,
+                        MGL_SEL(s_selActivatePipelineState,
+                                "activatePipelineState:color0Format:"
+                                "depthFormat:stencilFormat:programName:"
+                                "vertexFunction:fragmentFunction:"),
+                        (MGLObjectId)pipeline, color0_format, depth_format,
+                        stencil_format, program_name,
+                        (MGLObjectId)vertex_function,
+                        (MGLObjectId)fragment_function);
+}
+
+/* Runs a C body inside an autorelease pool (log 186): the render-encoder C
+ * entry kept the .m's pool so autoreleased temporaries still drain there. */
+int mglPlatformShellAutoreleasePoolCall(void *renderer,
+                                        int (*body)(void *))
+{
+    if (!body) {
+        return 0;
+    }
+    int result = 0;
+    {
+        MGLScopedAutoreleasePool pool;
+        result = body(renderer);
+    }
+    return result;
+}
+
+/* The cache's C++ owner holds the blend record; C reads it through this
+ * forwarder, the counterpart of mglPlatformShellPipelineCacheSetBlend. */
+int mglPlatformShellPipelineCacheBlendState(void *pipeline_cache_object,
+                                           uint32_t index,
+                                           MGLRenderPipelineBlendState *blend)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache || !blend || index >= MAX_COLOR_ATTACHMENTS) {
+        return 0;
+    }
+    return mglSend<signed char>(cache,
+                                MGL_SEL(s_selBlendStateForAttachment,
+                                        "blendStateForAttachment:out:"),
+                                (unsigned long)index, blend)
+               ? 1
+               : 0;
+}
+
+int mglPlatformShellPipelineCacheSetBlend(void *pipeline_cache_object,
+                                          uint32_t index,
+                                          const MGLRenderPipelineBlendState *blend)
+{
+    MGLObjectId cache = (MGLObjectId)pipeline_cache_object;
+    if (!cache || !blend || index >= MAX_COLOR_ATTACHMENTS) {
+        return 0;
+    }
+    (void)mglSend<void>(cache,
+                        MGL_SEL(s_selSetBlendFactorsForAttachment,
+                                "setBlendFactorsForAttachment:srcRgbFactor:"
+                                "srcAlphaFactor:dstRgbFactor:dstAlphaFactor:"
+                                "rgbOperation:alphaOperation:colorMask:"),
+                        (unsigned long)index, blend->source_rgb_factor,
+                        blend->source_alpha_factor,
+                        blend->destination_rgb_factor,
+                        blend->destination_alpha_factor, blend->rgb_operation,
+                        blend->alpha_operation, blend->color_write_mask);
+    return 1;
+}
+
+/* === renderer state areas =============================================== */
+
+void mglRendererFillStateAreas(void *renderer, MGLRendererStateAreas *areas_out)
+{
+    MGLObjectId r = (MGLObjectId)renderer;
+    MGLRendererIvars *r_ivars;
+    if (!areas_out) {
+        return;
+    }
+    memset(areas_out, 0, sizeof(*areas_out));
+    r_ivars = mglRendererIvars(r);
+    if (!r_ivars) {
+        return;
+    }
+    areas_out->core = &r_ivars->_core;
+    areas_out->backend = r_ivars->_backend;
+    areas_out->render_pass_manager = r_ivars->_renderPassManager;
+    areas_out->ctx = r_ivars->ctx;
+    areas_out->batching = &r_ivars->_batching;
+    /* The manager exposes a const pointer; the record itself is mutable and
+     * the flush driver writes the trace-replay identity through it. */
+    areas_out->command =
+        ((MGLRenderPassManager *)r_ivars->_renderPassManager)->state;
+    areas_out->pipeline_cache =
+        (const MGLPipelineCacheState *)mglSend<MGLObjectId>(
+            (MGLObjectId)r_ivars->_pipelineCache, MGL_SEL(s_selState, "state"));
+    areas_out->binding_state_owner = &r_ivars->_bindingStateOwner;
+    areas_out->pipeline_cache_object = r_ivars->_pipelineCache;
+    areas_out->gpu_recovery_command_owner =
+        &r_ivars->_gpuRecovery.commandRecoveryOwner;
+    areas_out->pipeline_cache_set_blend = mglPlatformShellPipelineCacheSetBlend;
+    areas_out->pipeline_cache_blend_state =
+        mglPlatformShellPipelineCacheBlendState;
+    areas_out->pipeline_cache_invalidate =
+        mglPlatformShellPipelineCacheInvalidate;
+    areas_out->gpu_recovery = &r_ivars->_gpuRecovery;
+    areas_out->pipeline_cache_descriptor_state_for_words =
+        mglPlatformShellPipelineCacheDescriptorStateForWords;
+    areas_out->pipeline_cache_create_pso = mglPlatformShellPipelineCacheCreatePSO;
+    areas_out->pipeline_cache_store_pipeline =
+        mglPlatformShellPipelineCacheStorePipeline;
+    areas_out->pipeline_cache_store_descriptor_state =
+        mglPlatformShellPipelineCacheStoreDescriptorState;
+    areas_out->pipeline_cache_lookup_pipeline =
+        mglPlatformShellPipelineCacheLookupPipeline;
+    areas_out->pipeline_cache_depth_stencil_state_for_value_state =
+        mglPlatformShellPipelineCacheDepthStencilStateForValueState;
+    areas_out->pipeline_cache_activate = mglPlatformShellPipelineCacheActivate;
+    areas_out->tess_native_tes_active =
+        (int32_t)r_ivars->_tessellation.nativeTESActive;
+    areas_out->tessellation = &r_ivars->_tessellation;
+    areas_out->geometry = &r_ivars->_geometry;
+    areas_out->tess_native_tes_program =
+        (void *)r_ivars->_tessellation.nativeTESProgram;
+    areas_out->tess_tcs_output_stride =
+        (uint32_t)r_ivars->_tessellation.tcsOutputStride;
+    areas_out->drawable = (void *)mglSend<MGLObjectId>(
+        r, MGL_SEL(s_selDrawable, "drawable"));
+    areas_out->query_state_owner = r_ivars->_queryStateOwner;
+    areas_out->gpu_interface_mismatch_blocked_program =
+        (uint32_t)r_ivars->_gpuRecovery.interfaceMismatchBlockedProgram;
+    areas_out->gpu_interface_mismatch_blocked_until =
+        (double)r_ivars->_gpuRecovery.interfaceMismatchBlockedUntil;
+    areas_out->mssample_forced_id = (int32_t)r_ivars->_mglForcedMSSampleId;
+    areas_out->layer =
+        (void *)mglSend<MGLObjectId>(r, MGL_SEL(s_selLayer, "layer"));
+    areas_out->swap_interval =
+        r ? (int32_t)mglSend<int>(r, MGL_SEL(s_selSwapInterval, "mglSwapInterval"))
+          : 0;
+    areas_out->tess_cull_capture_first_instance =
+        (uint32_t)r_ivars->_tessellation.cullDistanceCaptureFirstInstance;
+    areas_out->tess_cull_capture_instance_stride =
+        (uint32_t)r_ivars->_tessellation.cullDistanceCaptureInstanceStride;
+    areas_out->fragment_trace_bindings =
+        &r_ivars->_resourceFallback.fragmentTextureTraceBindings[0];
+}
+
+/* The @try/@finally frame the C flush driver cannot express: the teardown has
+ * to run even when a draw raises - and, because there is no @catch, the
+ * exception must then keep going.  An RAII guard gives both halves. */
+void mglRendererFlushDrawBufferLocked(void *renderer, GLMContext glm_ctx)
+{
+    MGLBatchFlushPass pass;
+    if (!mglBatchFlushBegin(renderer, glm_ctx, &pass)) {
+        return;
+    }
+    auto teardown = mglScopeExit([&] {
+        MGLRendererStateAreas areas;
+        mglRendererFillStateAreas(renderer, &areas);
+        if (areas.command) {
+            areas.command->traceReplayFlushId = 0u;
+            areas.command->traceReplayBatchIndex = 0u;
+        }
+        mglBatchTeardownReplay(renderer, glm_ctx, &pass);
+    });
+    mglBatchFlushRunBatches(renderer, glm_ctx, &pass);
+}
+
+/* === compute dispatch entries (T5 merge from MGLRenderer+Compute.m) ======
+ * The orchestration is the C functions of mgl_compute_dispatch.h; what stays
+ * here is the lease/lock frame and the renderer lookup. */
+void mglRendererDispatchCompute(GLMContext glm_ctx,
+                                unsigned int groups_x,
+                                unsigned int groups_y,
+                                unsigned int groups_z)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    MGLObjectId renderer =
+        (MGLObjectId)(glm_ctx ? glm_ctx->platform_renderer_shell : NULL);
+    if (renderer && glm_ctx) {
+        METAL_LOCK();
+        mglComputeMtlDispatchLocked((void *)renderer, glm_ctx,
+                                    groups_x, groups_y, groups_z);
+        METAL_UNLOCK();
+    }
+    mglRendererBackendEnd(&backend_lease);
+}
+
+void mglRendererDispatchComputeIndirect(GLMContext glm_ctx,
+                                        intptr_t indirect)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    MGLObjectId renderer =
+        (MGLObjectId)(glm_ctx ? glm_ctx->platform_renderer_shell : NULL);
+    if (renderer && glm_ctx) {
+        METAL_LOCK();
+        mglComputeMtlDispatchIndirectLocked((void *)renderer, glm_ctx, indirect);
+        METAL_UNLOCK();
+    }
+    mglRendererBackendEnd(&backend_lease);
+}
+
+/* === texture binding (T5 merge from MGLRenderer+Binding.m) ==============
+ * The bind body is the C function mglRendererBindMTLTexture
+ * (mgl_texture_bind.h); what is left of the category is the lock frame, which
+ * is registered on the class at load time above. */
+void mglRendererBindTexture(GLMContext glm_ctx,
+                            Texture *texture)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return;
+    MGLObjectId renderer =
+        (MGLObjectId)(glm_ctx ? glm_ctx->platform_renderer_shell : NULL);
+    if (renderer && glm_ctx && texture) {
+        (void)mglSend<bool>(renderer,
+                            MGL_SEL(s_selBindMTLTexture, "bindMTLTexture:"),
+                            texture);
+    }
+    mglRendererBackendEnd(&backend_lease);
 }
 
 } /* extern "C" */
