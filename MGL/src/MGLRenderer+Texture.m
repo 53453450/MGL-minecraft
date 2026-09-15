@@ -11,6 +11,7 @@
 // MGLRenderer+Texture.m
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
+#include "mgl_texture_mip_ops.h"
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_render_pass_manager_ops.h"
 #import "MGLRenderer_Private.h"
@@ -124,7 +125,7 @@ void mglRendererGenerateMipmaps(GLMContext glm_ctx, Texture *texture)
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer mtlGenerateMipmaps:glm_ctx forTexture:texture];
+        mglTextureGenerateMipmaps((__bridge void *)renderer, glm_ctx, texture);
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -135,7 +136,7 @@ void mglRendererSyncTextureBufferFromImage(GLMContext glm_ctx, Texture *texture)
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx && texture) {
-        [renderer syncTextureBufferFromImage:glm_ctx tex:texture];
+        mglTextureSyncBufferFromImage((__bridge void *)renderer, glm_ctx, texture);
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -146,7 +147,7 @@ void mglRendererPrepareImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer prepareImageUnitSlice:glm_ctx unit:unit];
+        mglTexturePrepareImageUnitSlice((__bridge void *)renderer, glm_ctx, unit);
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -157,7 +158,7 @@ void mglRendererFlushImageUnitSlice(GLMContext glm_ctx, uint32_t unit)
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
-        [renderer flushImageUnitSlice:glm_ctx unit:unit];
+        mglTextureFlushImageUnitSlice((__bridge void *)renderer, glm_ctx, unit);
     }
     mglRendererBackendEnd(&_backend_lease);
 }
@@ -584,70 +585,6 @@ static void mglTextureCopyTextureToBuffer(
 }
 
 
--(void)mtlGenerateMipmaps:(GLMContext)glm_ctx forTexture:(Texture *) tex
-{
-    ctx = glm_ctx;
-
-    if (!tex) {
-        NSLog(@"MGL ERROR: mtlGenerateMipmaps called with NULL texture");
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-
-    RETURN_ON_FAILURE(mglRenderPassProcessGLState((__bridge void *)self, 0));
-
-    // end encoding on current render encoder
-    mglRendererEndRenderEncodingLocked((__bridge void *)self);
-
-    RETURN_ON_FAILURE(mglRenderPassEnsureWritableCommandBufferLocked(
-        (__bridge void *)self, "mtlGenerateMipmaps"));
-
-    // no failure path..?
-    RETURN_ON_FAILURE([self bindMTLTexture:tex]);
-
-    id texture;
-
-    texture = (__bridge id)(tex->mtl_data);
-    if (!texture) {
-        NSLog(@"MGL ERROR: mtlGenerateMipmaps texture %u has no Metal texture after bind", tex->name);
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-        return;
-    }
-
-    if (mglTextureInfo(texture).mipmap_level_count <= 1u) {
-        return;
-    }
-
-    // start blit encoder
-    id blitCommandEncoder;
-    blitCommandEncoder = mglTextureCreateCurrentBlitEncoder(
-        _renderPassManager->state->currentCommandBufferOwner);
-    if (!blitCommandEncoder) {
-        NSLog(@"MGL ERROR: Failed to create blit encoder for mipmap generation");
-        return;
-    }
-
-    @try {
-        if (mglRenderBlitGenerateMipmaps(
-                (__bridge void *)blitCommandEncoder,
-                (__bridge void *)texture) != 0) {
-            [NSException raise:@"MGLGenerateMipmapsError"
-                        format:@"C++ mipmap generation failed for texture %u",
-                               tex->name];
-        }
-        mglTextureEndBlitEncoder(blitCommandEncoder);
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: generateMipmapsForTexture failed for texture %u: %@",
-              tex->name,
-              exception);
-        @try {
-            mglTextureEndBlitEncoder(blitCommandEncoder);
-        } @catch (NSException *endException) {
-            NSLog(@"MGL WARNING: failed to end mipmap blit encoder after exception: %@", endException);
-        }
-        mglDispatchError(glm_ctx, __FUNCTION__, (GLenum)mglRenderErrorInvalidOperation());
-    }
-}
 
 - (bool)encodeTextureBytesUpload:(Texture *)tex
                           source:(id)buffer
@@ -3472,231 +3409,18 @@ static void mglTextureCopyTextureToBuffer(
         tex->dirty_bits = 0;
     }
 
-    [self logMTLTextureMipDiagnostics:tex metal:texture effectiveMipLevels:effective_mipmap_levels];
+    mglTextureLogMipDiagnostics((__bridge void *)self, tex,
+                                (__bridge void *)texture,
+                                effective_mipmap_levels);
 
     mglRendererRecordGPUSuccess((__bridge void *)self);
 
     return texture;
 }
 
-- (void)flushImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
-{
-    if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
-        unit >= TEXTURE_UNITS) {
-        return;
-    }
-    ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
-    if (!mglRenderImageUnitSliceNeedsFlush(
-            iu->tex ? 1 : 0, iu->mtl_image_view ? 1 : 0, iu->layered ? 1 : 0,
-            iu->tex ? (uint32_t)iu->tex->target : 0u,
-            (uint32_t)iu->access)) {
-        return;
-    }
-    if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {
-        return;
-    }
-    id dst3d = (__bridge id)iu->tex->mtl_data;
-    id staging = (__bridge id)iu->mtl_image_view;
-    MGLRenderTextureInfo info = mglTextureInfo(dst3d);
-    if (info.texture_type != MGLTextureType3D || info.width == 0u) {
-        return;
-    }
-    const NSUInteger level = (NSUInteger)iu->level;
-    const NSUInteger layer = (NSUInteger)iu->layer;
-    if (level >= info.mipmap_level_count || layer >= info.depth) {
-        return;
-    }
 
-    mglRendererEndRenderEncodingLocked((__bridge void *)self);
-    if (!_renderPassManager->state->currentCommandBufferOwner &&
-        ![self newCommandBufferLocked]) {
-        return;
-    }
-    void *blit = mglRenderCreateBlitEncoderBorrowed(
-        _renderPassManager->state->currentCommandBufferOwner);
-    if (!blit) {
-        return;
-    }
-    (void)mglRenderBlitCopyTexture(
-        blit, (__bridge void *)staging, 0u, 0u, 0u, 0u, 0u,
-        info.width, info.height, 1u,
-        (__bridge void *)dst3d, 0u, level, 0u, 0u, layer);
-    (void)mglRenderEndBlitEncoder(blit);
-    mglRenderPassFlushCommandBuffer((__bridge void *)self, 0);
-}
 
-- (void)prepareImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit
-{
-    if (!glm_ctx || unit >= glm_ctx->active_state->var.max_image_units ||
-        unit >= TEXTURE_UNITS) {
-        return;
-    }
-    ImageUnit *iu = &glm_ctx->active_state->image_units[unit];
-    if (!iu->tex || iu->layered ||
-        !mglRenderTextureTargetIs3D((uint32_t)iu->tex->target)) {
-        return;
-    }
-    if (![self bindMTLTexture:iu->tex] || !iu->tex->mtl_data) {
-        return;
-    }
-    id src3d = (__bridge id)iu->tex->mtl_data;
-    MGLRenderTextureInfo info = mglTextureInfo(src3d);
-    if (info.texture_type != MGLTextureType3D || info.width == 0u) {
-        return;
-    }
-    const NSUInteger level = (NSUInteger)iu->level;
-    const NSUInteger layer = (NSUInteger)iu->layer;
-    if (level >= info.mipmap_level_count || layer >= info.depth) {
-        return;
-    }
 
-    if (iu->mtl_image_view) {
-        [self flushImageUnitSlice:glm_ctx unit:unit];
-        mglRenderReleaseMetalObject(iu->mtl_image_view);
-        iu->mtl_image_view = NULL;
-    }
-
-    MGLRenderTextureDescriptorState desc = {
-        .texture_type = MGLTextureType2D,
-        .pixel_format = info.pixel_format,
-        .width = info.width,
-        .height = info.height,
-        .depth = 1u,
-        .mipmap_level_count = 1u,
-        .sample_count = 1u,
-        .array_length = 1u,
-        .usage = MGL_TEXTURE_USAGE_SHADER_READ | MGL_TEXTURE_USAGE_SHADER_WRITE |
-                 MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW,
-        .storage_mode = info.storage_mode,
-    };
-    id staging = mglTextureCreateTexture(_device, &desc);
-    if (!staging) {
-        return;
-    }
-
-    mglRendererEndRenderEncodingLocked((__bridge void *)self);
-    if (!_renderPassManager->state->currentCommandBufferOwner &&
-        ![self newCommandBufferLocked]) {
-        return;
-    }
-    void *blit = mglRenderCreateBlitEncoderBorrowed(
-        _renderPassManager->state->currentCommandBufferOwner);
-    if (!blit) {
-        return;
-    }
-    (void)mglRenderBlitCopyTexture(
-        blit, (__bridge void *)src3d, 0u, level, 0u, 0u, layer,
-        info.width, info.height, 1u,
-        (__bridge void *)staging, 0u, 0u, 0u, 0u, 0u);
-    (void)mglRenderEndBlitEncoder(blit);
-    mglRenderPassFlushCommandBuffer((__bridge void *)self, 0);
-
-    iu->mtl_image_view = (__bridge_retained void *)staging;
-}
-
-- (void)syncTextureBufferFromImage:(GLMContext)glm_ctx tex:(Texture *)tex
-{
-    if (!glm_ctx || !tex ||
-        !mglRenderTextureTargetIsBuffer((uint32_t)tex->target) ||
-        !tex->mtl_data || !tex->texture_buffer || tex->texture_buffer_size <= 0) {
-        return;
-    }
-
-    Buffer *sourceBuffer = tex->texture_buffer;
-    id texture = (__bridge id)(tex->mtl_data);
-    MGLRenderTextureInfo info = mglTextureInfo(texture);
-    if (info.width == 0u || info.height == 0u) {
-        return;
-    }
-
-    NSUInteger bytesPerTexel = mglTextureBytesPerPixelForFormat(tex->internalformat);
-    if (bytesPerTexel == 0u) {
-        bytesPerTexel = (NSUInteger)sizeForInternalFormat(tex->internalformat, 0, 0);
-    }
-    if (bytesPerTexel == 0u) {
-        return;
-    }
-
-    NSUInteger bytesPerRow = (NSUInteger)info.width * bytesPerTexel;
-    NSUInteger packedBytes = bytesPerRow * (NSUInteger)info.height;
-    if (packedBytes == 0u ||
-        (size_t)tex->texture_buffer_size > packedBytes) {
-        return;
-    }
-
-    NSMutableData *packedData = [NSMutableData dataWithLength:packedBytes];
-    if (!packedData.mutableBytes) {
-        return;
-    }
-
-    @try {
-        mglTextureGetBytes(
-            texture, packedData.mutableBytes, bytesPerRow, 0,
-            mglTextureRegion2D(0, 0, info.width, info.height), 0, 0, NO);
-    } @catch (NSException *exception) {
-        NSLog(@"MGL TEXBUFFER SYNC ERROR: getBytes failed tex=%u buffer=%u: %@",
-              tex->name, sourceBuffer->name, exception);
-        return;
-    }
-
-    mglRendererBufferSubData(
-        glm_ctx, sourceBuffer,
-        (size_t)tex->texture_buffer_offset,
-        (size_t)tex->texture_buffer_size,
-        packedData.bytes);
-}
-
-- (void)logMTLTextureMipDiagnostics:(Texture *)tex
-                              metal:(id)texture
-               effectiveMipLevels:(GLuint)effective_mipmap_levels
-{
-    static uint64_t s_mipDiagLogs = 0;
-    uint64_t diagHit = ++s_mipDiagLogs;
-    if (kMGLDiagnosticStateLogs &&
-        (diagHit <= 128ull || (diagHit % 512ull) == 0ull)) {
-        NSUInteger mtlMipCount = mglTextureInfo(texture).mipmap_level_count;
-        uint32_t mtlFmt = mglTextureInfo(texture).pixel_format;
-        uint32_t mtlStorage = mglTextureInfo(texture).storage_mode;
-        NSUInteger uploadedLevels = 0;
-        NSUInteger skippedLevels = 0;
-        NSUInteger skippedSourceNone = 0;
-        NSUInteger skippedNoData = 0;
-        NSMutableString *levelSummary = [NSMutableString stringWithCapacity:256];
-        NSUInteger levelsToSummarize = MIN((NSUInteger)tex->num_levels, (NSUInteger)16);
-        for (NSUInteger lvl = 0; lvl < levelsToSummarize; lvl++) {
-            TextureLevel *tl = (tex->faces[0].levels && lvl < tex->num_levels)
-                ? &tex->faces[0].levels[lvl] : NULL;
-            if (!tl) { [levelSummary appendString:@"-"]; continue; }
-            bool uploadable = mglTextureLevelHasUploadableCPUData(tl);
-            if (uploadable) uploadedLevels++; else skippedLevels++;
-            if (!uploadable) {
-                if (tl->last_init_source == kTexImageNull || tl->last_init_source == kTexInitNone)
-                    skippedSourceNone++;
-                if (!tl->has_initialized_data && !tl->ever_written)
-                    skippedNoData++;
-            }
-            [levelSummary appendFormat:@"[%u:s%u:w%u:e%u:i%u]",
-                (unsigned)lvl, (unsigned)tl->last_init_source,
-                (unsigned)tl->width, (unsigned)tl->ever_written,
-                (unsigned)tl->has_initialized_data];
-        }
-        mglTraceLog("MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
-                      "numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
-                      "mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
-                      "uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
-                      "levels=%s hit=%llu",
-                      (unsigned)tex->name, (unsigned)tex->target,
-                      (unsigned)tex->width, (unsigned)tex->height,
-                      (unsigned)tex->internalformat,
-                      (unsigned)tex->num_levels, (unsigned)tex->mipmap_levels,
-                      (unsigned)effective_mipmap_levels, (unsigned long)mtlMipCount,
-                      (unsigned long)mtlFmt, (long)mtlStorage, (int)(tex->mipmapped ? 1 : 0),
-                      (unsigned)tex->params.base_level, (unsigned)tex->params.max_level,
-                      (unsigned long)uploadedLevels, (unsigned long)skippedLevels,
-                      (unsigned long)skippedSourceNone, (unsigned long)skippedNoData,
-                      [levelSummary UTF8String], (unsigned long long)diagHit);
-    }
-}
 
 // AGX-SAFE Fallback texture creation for GPU error recovery scenarios
 - (id) createFallbackMTLTexture:(Texture *) tex

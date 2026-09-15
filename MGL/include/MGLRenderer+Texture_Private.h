@@ -85,9 +85,9 @@ void mglMetalCopyRows(const uint8_t *src,
                                      reason:(const char *)reason;
 
 // === Texture readback ===
-- (void)syncTextureBufferFromImage:(GLMContext)glm_ctx tex:(Texture *)tex;
-- (void)prepareImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit;
-- (void)flushImageUnitSlice:(GLMContext)glm_ctx unit:(GLuint)unit;
+/* -syncTextureBufferFromImage: is C now (log 194; mgl_texture_mip_ops.h). */
+/* -prepareImageUnitSlice: is C now (log 194; mgl_texture_mip_ops.h). */
+/* -flushImageUnitSlice: is C now (log 194; mgl_texture_mip_ops.h). */
 - (void)mtlReadDrawable:(GLMContext)glm_ctx
              pixelBytes:(void *)pixelBytes
             bytesPerRow:(NSUInteger)bytesPerRow
@@ -109,7 +109,7 @@ void mglMetalCopyRows(const uint8_t *src,
           bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MGLRegionValue)region
                  format:(GLenum)format type:(GLenum)type
             mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice;
-- (void)mtlGenerateMipmaps:(GLMContext)glm_ctx forTexture:(Texture *)tex;
+/* -mtlGenerateMipmaps: is C now (log 194; mgl_texture_mip_ops.h). */
 - (void)mtlTexSubImage:(GLMContext)glm_ctx tex:(Texture *)tex
                     buf:(Buffer *)buf src_offset:(size_t)src_offset
               src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size
