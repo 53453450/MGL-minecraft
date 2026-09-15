@@ -197,36 +197,14 @@ GLint mglProgramActiveAttribMaxNameLength(Program *program)
 
 GLenum mglProgramActiveAttribType(const MGLShaderResource *resource)
 {
+    /* AIR reflection (push_resource -> mglAirGLTypeFromIR) always sets a
+     * non-zero gl_type for every resource.  The SPIRV-era name heuristic
+     * that guessed the type from "Position"/"Color"/"UV"/"Normal" is gone:
+     * the IR knows the exact type. */
     if (resource && resource->gl_type != 0u) {
         return resource->gl_type;
     }
-
-    const char *name = resource ? resource->name : NULL;
-    if (!name || !name[0]) {
-        return GL_FLOAT;
-    }
-    if (strcmp(name, "Position") == 0 || strcmp(name, "Normal") == 0) {
-        return GL_FLOAT_VEC3;
-    }
-    if (strcmp(name, "Color") == 0 || strstr(name, "Color")) {
-        return GL_FLOAT_VEC4;
-    }
-    if (strcmp(name, "UV1") == 0 || strcmp(name, "UV2") == 0) {
-        return GL_INT_VEC2;
-    }
-    if (strcmp(name, "UV") == 0 || strcmp(name, "UV0") == 0 ||
-        strcmp(name, "TexCoord") == 0 || strcmp(name, "texCoord") == 0 ||
-        strstr(name, "UV") || strstr(name, "TexCoord") ||
-        strstr(name, "texCoord")) {
-        return GL_FLOAT_VEC2;
-    }
-    if (strcmp(name, "LineWidth") == 0) {
-        return GL_FLOAT;
-    }
-    if (strstr(name, "Normal")) {
-        return GL_FLOAT_VEC3;
-    }
-    return GL_FLOAT_VEC4;
+    return GL_FLOAT;
 }
 
 GLint mglSyntheticSamplerUniformLocation(int stage,

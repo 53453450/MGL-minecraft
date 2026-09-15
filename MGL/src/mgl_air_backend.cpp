@@ -10450,49 +10450,52 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     std::vector<VarSym *> varyings;
     std::vector<VarSym *> fragOutputs;
     llvm::Type *retTy = nullptr;
-    /* Built-in detection mirrors the legacy path's strstr over the source
-     * (gl_FragCoord -> fragment position arg; gl_PointSize -> point_size
-     * output member). */
+    /* Built-in usage is read from the IR/TU via mglFrontendBuiltinUsed — the
+     * precise replacement for the SPIRV-era source-text strstr scans.  The
+     * same predicate populates stage_info->builtin_mask in fillStageInfo
+     * (line ~14367); this compile function calls it directly because the
+     * mask is published after compilation.  The predicate is strictly more
+     * precise: it does not match comments, string literals, or substrings of
+     * longer identifiers (e.g. gl_LayerFoo). */
     const bool usesFragCoord =
-        !isVS && !isTES && !isKernel && strstr(esrc, "gl_FragCoord") != nullptr;
+        !isVS && !isTES && !isKernel && mglFrontendBuiltinUsed(&mod, tu, "gl_FragCoord");
     const bool usesFrontFacing =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_FrontFacing") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_FrontFacing");
     const bool usesPointCoord =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_PointCoord") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_PointCoord");
     const bool usesFragDepth =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_FragDepth") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_FragDepth");
     const bool usesPrimitiveId =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_PrimitiveID") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_PrimitiveID");
     const bool tesUsesPrimitiveId =
-        isTES && !isKernel && strstr(esrc, "gl_PrimitiveID") != nullptr;
+        isTES && !isKernel && mglFrontendBuiltinUsed(&mod, tu, "gl_PrimitiveID");
     const bool usesLayer =
-        !isVS && !isTES && !isKernel && strstr(esrc, "gl_Layer") != nullptr;
+        !isVS && !isTES && !isKernel && mglFrontendBuiltinUsed(&mod, tu, "gl_Layer");
     const bool usesViewportIndex =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_ViewportIndex") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_ViewportIndex");
     const bool usesSampleID =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_SampleID") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_SampleID");
     const bool usesSamplePosition =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_SamplePosition") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_SamplePosition");
     const bool usesSampleMaskIn =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_SampleMaskIn") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_SampleMaskIn");
     const bool usesSampleMask =
         !isVS && !isTES && !isKernel &&
-        (strstr(esrc, "gl_SampleMask[") != nullptr ||
-         strstr(esrc, "gl_SampleMask =") != nullptr);
+        mglFrontendBuiltinUsed(&mod, tu, "gl_SampleMask");
     const bool usesNumSamples =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "gl_NumSamples") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "gl_NumSamples");
     const bool usesInterpolateAtSample =
         !isVS && !isTES && !isKernel &&
-        strstr(esrc, "interpolateAtSample") != nullptr;
+        mglFrontendBuiltinUsed(&mod, tu, "interpolateAtSample");
     bool hasSampleVarying = false;
     if (!isVS && !isTES && !isKernel) {
         for (const VarSym &v : syms) {
@@ -10515,13 +10518,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     const bool needFragCoordParams = usesFragCoord;
     const bool needParamsBuffer = needFragCoordParams || needSampleParams;
     const bool usesWorkGroupID =
-        isCompute && strstr(esrc, "gl_WorkGroupID") != nullptr;
+        isCompute && mglFrontendBuiltinUsed(&mod, tu, "gl_WorkGroupID");
     const bool usesNumWorkGroups =
-        isCompute && strstr(esrc, "gl_NumWorkGroups") != nullptr;
+        isCompute && mglFrontendBuiltinUsed(&mod, tu, "gl_NumWorkGroups");
     const bool usesLocalInvocationID =
-        isCompute && strstr(esrc, "gl_LocalInvocationID") != nullptr;
+        isCompute && mglFrontendBuiltinUsed(&mod, tu, "gl_LocalInvocationID");
     const bool usesLocalInvocationIndex =
-        isCompute && strstr(esrc, "gl_LocalInvocationIndex") != nullptr;
+        isCompute && mglFrontendBuiltinUsed(&mod, tu, "gl_LocalInvocationIndex");
     const bool usesLocalInvocation =
         usesLocalInvocationID || usesLocalInvocationIndex;
     /* Always emit [[point_size]] for ordinary VS.  After a GS-expanded
@@ -10541,15 +10544,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          (strstr(esrc, "mgl_gs_output") != nullptr ||
           strstr(esrc, "mgl_tes_output") != nullptr));
     const bool usesLayerViewport =
-        isVS && (strstr(esrc, "gl_Layer") != nullptr ||
-                 strstr(esrc, "gl_ViewportIndex") != nullptr);
+        isVS && (mglFrontendBuiltinUsed(&mod, tu, "gl_Layer") ||
+                 mglFrontendBuiltinUsed(&mod, tu, "gl_ViewportIndex"));
     /* TES-vertex point_mode draws rasterize MTLPrimitiveTypePoint and must
      * declare [[point_size]]; isolines (line topology) must not. */
     const bool usesPointSize =
         ((isVS && !isCapture && !isStagePassthrough && !usesLayerViewport) ||
          (isTESVertex && tu->layout_point_mode != 0) ||
          ((isVS || (isTES && !isTESVertex)) &&
-          strstr(esrc, "gl_PointSize") != nullptr));
+          mglFrontendBuiltinUsed(&mod, tu, "gl_PointSize")));
     const bool usesClipDistance =
         (isVS || (isTES && !isTESCompute)) && !isCapture && !isKernel &&
         irClipCount > 0;

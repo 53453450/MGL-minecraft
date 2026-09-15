@@ -117,10 +117,6 @@ uint32_t mgl_batch_restore_fold_fbo_dirty(uint32_t replay_dirty_bits,
                                           uint32_t dirty_fbo_mask,
                                           const MGLBatchRestoreFboIn *in);
 
-/* Absolute-offset contract dirty: DIRTY_VAO|DIRTY_BUFFER when contract flips. */
-uint32_t mgl_batch_restore_absolute_contract_dirty(
-    int want_absolute, int current_absolute, uint32_t vao_buffer_mask);
-
 
 /* ---- A3 encode-fold: restore plan helpers (no Metal) ---- */
 
@@ -148,11 +144,6 @@ uint32_t mgl_batch_restore_finish_dirty(uint32_t delta_bits, uint32_t forced_bit
                                         uint32_t dirty_fbo_mask,
                                         const MGLBatchRestoreFboIn *fbo);
 
-/* Plan delta dirty from views (Linux-testable). */
-uint32_t mgl_batch_restore_plan_delta_dirty(
-    int can_delta, const MGLBatchStateKeyView *prev,
-    const MGLBatchStateKeyView *cur, uint32_t full_bits,
-    MGLBatchDirtyDeltaFlags *flags_out);
 
 /* restoreStateFromKey orchestration (lookups stay in ObjC callbacks). */
 typedef struct MGLBatchRestoreFromKeyOps {
@@ -178,28 +169,6 @@ void mgl_batch_restore_apply_from_key(const MGLBatchRestoreFromKeyOps *ops);
  * defined in mgl_batch_restore.c): restores program/pipeline, VAO, FBO,
  * viewport and scissor from a batch key. */
 void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx);
-
-/* ---- A3: restoreStateForBatch whole-sequence driver ---- */
-
-typedef struct MGLBatchRestoreForBatchOps {
-    void *ctx;
-    int has_snapshot;
-    uint32_t forced_bits;
-    uint32_t dirty_fbo_mask; /* DIRTY_FBO */
-    void (*apply_snapshot)(void *ctx);
-    void (*apply_from_key)(void *ctx);
-    void (*after_apply)(void *ctx); /* set active + clear dirty_bits */
-    /* Return 1 if delta path allowed (encoder/bind/env). */
-    int (*can_delta)(void *ctx);
-    /* Plan delta dirty bits; may note perf. Return bits (or full). */
-    uint32_t (*plan_delta_dirty)(void *ctx, uint32_t full_bits,
-                                 MGLBatchDirtyDeltaFlags *flags_out);
-    void (*note_delta_perf)(void *ctx, const MGLBatchDirtyDeltaFlags *flags);
-    void (*fill_fbo)(void *ctx, MGLBatchRestoreFboIn *fbo_out);
-    void (*mark_dirty)(void *ctx, uint32_t replay_dirty_bits);
-} MGLBatchRestoreForBatchOps;
-
-void mgl_batch_restore_run_for_batch(const MGLBatchRestoreForBatchOps *ops);
 
 /* ---- A3: flush pass state shared by the C driver and the ObjC @try frame ----
  * The frame itself stays in the shim (mglRendererFlushDrawBufferLocked):
@@ -228,22 +197,6 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch,
                                   GLMContext glm_ctx, const GLMState *savedState,
                                   const MGLStateKey *prevKey, GLuint forcedDirtyBits);
 
-typedef struct MGLBatchTeardownOps {
-    void *ctx;
-    int used_replay_workspace;
-    int arena_snapshot_enabled;
-    void (*sync_hash_from_replay)(void *ctx);
-    void (*restore_live_active)(void *ctx);
-    void (*clear_absolute_offsets)(void *ctx);
-    void (*reset_command_buffer)(void *ctx);
-    void (*reset_arena)(void *ctx);
-    void (*restore_saved_state)(void *ctx); /* only if !used_replay */
-    void (*clear_dirty_preserve_hash)(void *ctx);
-    void (*restore_program_pair)(void *ctx);
-    void (*propagate_replay_error)(void *ctx);
-} MGLBatchTeardownOps;
-
-void mgl_batch_teardown_run(const MGLBatchTeardownOps *ops);
 
 #ifdef __cplusplus
 }

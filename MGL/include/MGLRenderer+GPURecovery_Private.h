@@ -38,9 +38,9 @@
 
 @interface MGLRenderer ()
 
-/* AGX recovery: recreate the command queue (implemented in MGLRenderer.m). */
-/* Assigns the context ivar for the C compute dispatch path (the Objective-C
- * entry points did `ctx = glm_ctx;` inline); see mglPlatformShellSetContext. */
+/* AGX recovery: recreate the command queue. */
+/* Assigns the context ivar for the C compute dispatch path; see
+ * mglPlatformShellSetContext. */
 - (void)mglSetActiveContext:(GLMContext)glm_ctx;
 
 - (int)mglRecreateCommandQueue;
@@ -51,18 +51,10 @@
 - (void)mglSetMSSampleState:(int)inLoop forced:(int32_t)forced offset:(int32_t)offset;
 - (int)mglEnsureNewCommandBuffer;
 
-
-/* now the C function mglRendererValidateMetalObjects (mgl_gpu_recovery.h) */
-/* now the C functions in mgl_gpu_recovery.h */
+/* GPU recovery C functions live in mgl_gpu_recovery.h. */
 - (void)cleanupCommandBuffer;
-/* now the C function mglRendererResetMetalState (mgl_gpu_recovery.h) */
 - (void)emergencyResetMetalState;
 - (void)commitCommandBufferWithAGXRecovery:(id)commandBuffer;
-/* now the C functions in mgl_gpu_recovery.h */
-/* now the C functions in mgl_gpu_recovery.h */
-/* now the C functions in mgl_gpu_recovery.h */
-/* now the C functions in mgl_gpu_recovery.h */
-/* now the C functions in mgl_gpu_recovery.h */
 
 @end
 

@@ -1297,57 +1297,17 @@ static MGLShaderResource *mgl_program_resource_find_by_name(Program *pptr, const
 
 static GLint mgl_program_resource_gl_type(const MGLShaderResource *res, int res_type)
 {
+	(void)res_type;
+	/* AIR reflection (push_resource -> mglAirGLTypeFromIR) always sets a
+	 * non-zero gl_type for every resource: scalars, vectors, matrices,
+	 * samplers, images, atomic counters, and even struct-typed block
+	 * members (default GL_FLOAT).  The SPIRV-era name heuristic
+	 * ("Position"->VEC3, "Color"->VEC4, "UV"->VEC2, "Normal"->VEC3) and
+	 * the image_dim-based sampler/image fallback that fired when
+	 * gl_type==0 are dead code on the IR path. */
 	if (!res)
 		return 0;
-
-	if (res->gl_type != 0)
-		return (GLint)res->gl_type;
-
-	if (res_type == _STAGE_INPUT_RES)
-	{
-		const char *name = res->name;
-		if (!name || !name[0])
-			return GL_FLOAT;
-		if (!strcmp(name, "Position") || !strcmp(name, "Normal"))
-			return GL_FLOAT_VEC3;
-		if (!strcmp(name, "Color"))
-			return GL_FLOAT_VEC4;
-		if (!strcmp(name, "UV") || !strcmp(name, "UV0") ||
-		    !strcmp(name, "TexCoord") || !strcmp(name, "texCoord"))
-			return GL_FLOAT_VEC2;
-		if (!strcmp(name, "UV1") || !strcmp(name, "UV2"))
-			return GL_INT_VEC2;
-		if (strstr(name, "Color"))
-			return GL_FLOAT_VEC4;
-		if (strstr(name, "UV") || strstr(name, "TexCoord") || strstr(name, "texCoord"))
-			return GL_FLOAT_VEC2;
-		if (strstr(name, "Normal"))
-			return GL_FLOAT_VEC3;
-		return GL_FLOAT_VEC4;
-	}
-
-	if (res_type == _SAMPLED_IMAGE_RES ||
-	    res_type == _SEPARATE_IMAGE_RES)
-	{
-		switch (res->image_dim)
-		{
-			case 0: return res->image_arrayed ? GL_SAMPLER_1D_ARRAY : GL_SAMPLER_1D;
-			case 1: return res->image_arrayed ? GL_SAMPLER_2D_ARRAY : GL_SAMPLER_2D;
-			case 2: return GL_SAMPLER_3D;
-			case 3: return res->image_arrayed ? GL_SAMPLER_CUBE_MAP_ARRAY : GL_SAMPLER_CUBE;
-			case 5: return GL_INT_SAMPLER_BUFFER;
-			default: return GL_SAMPLER_2D;
-		}
-	}
-
-	if (res_type == _SEPARATE_SAMPLERS_RES)
-		return GL_SAMPLER_2D;
-
-	if (res_type == _STORAGE_IMAGE_RES)
-		return (res->image_dim == MGL_IMAGE_DIM_BUFFER)
-			? GL_INT_IMAGE_BUFFER : GL_INT_IMAGE_2D;
-
-	return 0;
+	return (GLint)res->gl_type;
 }
 
 static GLboolean mgl_program_resource_names_match(const char *resource_name, const char *query_name)

@@ -941,13 +941,6 @@ void mglRenderPassUpdateViewportAndScissorLocked(void *renderer)
     if (!renderer) {
         return;
     }
-    MGLRendererStateAreas areas;
-    mglRendererFillStateAreas(renderer, &areas);
-    GLMContext ctx = areas.ctx;
-    GLMState *state = mglRsState(&areas);
-    MGLCommandState *commandState = areas.command;
-    void *bindingOwner =
-        areas.binding_state_owner ? *areas.binding_state_owner : NULL;
     mglRsUpdateViewportAndScissor(renderer);
 }
 

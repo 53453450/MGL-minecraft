@@ -143,10 +143,6 @@ static void test_fbo_fold(void)
     bits = mgl_batch_restore_fold_fbo_dirty(0u, full, dirty_fbo, &in);
     expect((bits & dirty_fbo) != 0u && (bits & full) == full,
            "invalid bind + fbo dirty → full|FBO");
-    expect(mgl_batch_restore_absolute_contract_dirty(1, 0, 0x3u) == 0x3u,
-           "absolute contract flip");
-    expect(mgl_batch_restore_absolute_contract_dirty(1, 1, 0x3u) == 0u,
-           "absolute contract same");
 }
 
 static void test_restore_encode_fold(void)
@@ -221,13 +217,6 @@ static void test_restore_residual(void)
     expect(mgl_batch_restore_oracle_would_skip(0, 1, 1, 1) == 1, "oracle on");
     expect(mgl_batch_restore_oracle_would_skip(1, 1, 1, 1) == 0, "oracle off when skip on");
     expect(mgl_batch_restore_oracle_would_skip(0, 0, 1, 1) == 0, "oracle needs last key");
-    MGLBatchStateKeyView a, b;
-    memset(&a, 0, sizeof(a));
-    memset(&b, 0, sizeof(b));
-    b.program_name = 1u;
-    MGLBatchDirtyDeltaFlags flags;
-    uint32_t bits = mgl_batch_restore_plan_delta_dirty(1, &a, &b, 0xFu, &flags);
-    expect(bits != 0u && flags.domain_program == 1u, "plan delta dirty");
     MGLBatchRestoreFboIn fbo;
     memset(&fbo, 0, sizeof(fbo));
     fbo.has_encoder = 1u;
@@ -235,85 +224,6 @@ static void test_restore_residual(void)
     fbo.pass_matches = 1u;
     expect(mgl_batch_restore_finish_dirty(0x1u, 0x2u, 0xFu, 0x80u, &fbo) == 0x3u,
            "finish dirty ors forced");
-}
-
-
-static int g_rest_steps;
-static void rest_snap(void *v) { (void)v; g_rest_steps |= 1; }
-static void rest_key(void *v) { (void)v; g_rest_steps |= 2; }
-static void rest_after(void *v) { (void)v; g_rest_steps |= 4; }
-static int rest_can(void *v) { (void)v; return 0; }
-static void rest_fbo(void *v, MGLBatchRestoreFboIn *f)
-{
-    (void)v;
-    memset(f, 0, sizeof(*f));
-    f->has_encoder = 1u;
-    f->bind_valid = 1u;
-    f->pass_matches = 1u;
-}
-static void rest_mark(void *v, uint32_t bits)
-{
-    uint32_t *out = (uint32_t *)v;
-    *out = bits;
-}
-
-static void test_restore_run(void)
-{
-    uint32_t marked = 0;
-    g_rest_steps = 0;
-    MGLBatchRestoreForBatchOps ops = {
-        .ctx = &marked,
-        .has_snapshot = 1,
-        .forced_bits = 0x2u,
-        .dirty_fbo_mask = 0x80u,
-        .apply_snapshot = rest_snap,
-        .apply_from_key = rest_key,
-        .after_apply = rest_after,
-        .can_delta = rest_can,
-        .fill_fbo = rest_fbo,
-        .mark_dirty = rest_mark,
-    };
-    mgl_batch_restore_run_for_batch(&ops);
-    expect((g_rest_steps & 1) && (g_rest_steps & 4) && !(g_rest_steps & 2),
-           "snapshot path");
-    expect(marked != 0u, "mark dirty called");
-    g_rest_steps = 0;
-    ops.has_snapshot = 0;
-    mgl_batch_restore_run_for_batch(&ops);
-    expect((g_rest_steps & 2) && (g_rest_steps & 4), "key path");
-}
-
-static int g_td_steps;
-static void td_step(void *v)
-{
-    int *p = (int *)v;
-    (*p)++;
-    g_td_steps++;
-}
-static void test_teardown_run(void)
-{
-    int n = 0;
-    g_td_steps = 0;
-    MGLBatchTeardownOps ops = {
-        .ctx = &n,
-        .used_replay_workspace = 1,
-        .arena_snapshot_enabled = 1,
-        .sync_hash_from_replay = td_step,
-        .restore_live_active = td_step,
-        .clear_absolute_offsets = td_step,
-        .reset_command_buffer = td_step,
-        .reset_arena = td_step,
-        .restore_saved_state = td_step,
-        .clear_dirty_preserve_hash = td_step,
-        .restore_program_pair = td_step,
-        .propagate_replay_error = td_step,
-    };
-    mgl_batch_teardown_run(&ops);
-    expect(g_td_steps == 8, "teardown skips restore_saved when replay ws");
-    g_td_steps = 0;
-    ops.used_replay_workspace = 0;
-    mgl_batch_teardown_run(&ops);
-    expect(g_td_steps == 8, "teardown live path uses restore_saved not sync");
 }
 
 int main(void)
@@ -324,8 +234,6 @@ int main(void)
     test_fbo_fold();
     test_restore_residual();
     test_restore_from_key();
-    test_restore_run();
-    test_teardown_run();
     if (g_fails) {
         fprintf(stderr, "test_batch_restore: %d fail(s)\n", g_fails);
         return 1;

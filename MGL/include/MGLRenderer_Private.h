@@ -220,7 +220,7 @@ static inline double mglNowSeconds(void)
     GLMContext  ctx;    // context macros need this exact name
     MGLRendererBackendHandle *_backend;
     /* Window whose resize/backing notifications are observed for geometry
-     * publishing (see MGLRenderer+Lifecycle.m).  Weak: never retain a window
+     * publishing (see mgl_platform_shell.cpp).  Weak: never retain a window
      * the host owns. */
     __weak NSWindow *_observedWindow;    MGLRendererCoreState _core;
     MGLGPURecoveryState _gpuRecovery;
@@ -250,7 +250,7 @@ static inline double mglNowSeconds(void)
      * (C-safe mgl_batching_state.h) so the C flush driver writes it directly. */
 }
 
-/* Methods called from MGLRenderer+Compute.m.
+/* Methods called from the compute dispatch path (mgl_compute_dispatch.c).
  * mapGLBuffersToMTLBufferMap:stage: is the C entry of mgl_buffer_map.h now. */
 - (id)isolatedStageBindingBufferForMap:(const BufferMap *)map
                                            source:(id)source
@@ -281,7 +281,7 @@ static inline double mglNowSeconds(void)
  */
 
 /* Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
- * Defined in MGLRenderer+Batch.m, called from already-locked callers
+ * Defined in mgl_batch_flush_restore_encode.c, called from already-locked callers
  * (mtlSwapBuffersLocked:, flushCommandBufferLocked:). */
 - (void)flushDrawBuffer:(GLMContext)glm_ctx;
 /* flushDrawBufferLocked: is now the C driver pair mglBatchFlushBegin /
