@@ -9,6 +9,7 @@
  */
 
 #include "mgl_batch_restore.h"
+#include "mgl_dirty_bits.h"   /* authoritative DIRTY_* masks (no GL deps) */
 
 #include <string.h>
 
@@ -134,29 +135,17 @@ uint32_t mgl_batch_restore_fold_fbo_dirty(uint32_t replay_dirty_bits,
 }
 
 
-/* Keep in sync with mgl_types_state.h dirty* enum / DIRTY_* masks. */
-enum {
-    MGL_BATCH_DIRTY_VAO = 1u << 0,
-    MGL_BATCH_DIRTY_BUFFER = 1u << 2,
-    MGL_BATCH_DIRTY_TEX = 1u << 3,
-    MGL_BATCH_DIRTY_TEX_PARAM = 1u << 4,
-    MGL_BATCH_DIRTY_TEX_BINDING = 1u << 5,
-    MGL_BATCH_DIRTY_SAMPLER = 1u << 6,
-    MGL_BATCH_DIRTY_PROGRAM = 1u << 8,
-    MGL_BATCH_DIRTY_RENDER_STATE = 1u << 11,
-    MGL_BATCH_DIRTY_ALPHA_STATE = 1u << 12,
-    MGL_BATCH_DIRTY_IMAGE_UNIT = 1u << 13,
-    MGL_BATCH_DIRTY_BUFFER_BASE = 1u << 14
-};
+/* Dirty-bit masks come from the shared mgl_dirty_bits.h (included via the
+ * header block below); the previous hand-copied MGL_BATCH_DIRTY_* enum here
+ * had no compile-time binding to the authoritative definition and would
+ * silently drift on a renumber (STATE_MACHINE_REVIEW 4.2). */
 
 uint32_t mgl_batch_restore_full_dirty_bits(void)
 {
-    return (MGL_BATCH_DIRTY_PROGRAM | MGL_BATCH_DIRTY_VAO |
-            MGL_BATCH_DIRTY_RENDER_STATE | MGL_BATCH_DIRTY_TEX_BINDING |
-            MGL_BATCH_DIRTY_TEX | MGL_BATCH_DIRTY_TEX_PARAM |
-            MGL_BATCH_DIRTY_SAMPLER | MGL_BATCH_DIRTY_ALPHA_STATE |
-            MGL_BATCH_DIRTY_BUFFER | MGL_BATCH_DIRTY_BUFFER_BASE |
-            MGL_BATCH_DIRTY_IMAGE_UNIT);
+    return (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_RENDER_STATE |
+            DIRTY_TEX_BINDING | DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_SAMPLER |
+            DIRTY_ALPHA_STATE | DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE |
+            DIRTY_IMAGE_UNIT_STATE);
 }
 
 void mgl_batch_restore_default_domain_masks(MGLBatchDirtyDomainMasks *out)
@@ -164,15 +153,11 @@ void mgl_batch_restore_default_domain_masks(MGLBatchDirtyDomainMasks *out)
     if (!out) {
         return;
     }
-    out->program = (MGL_BATCH_DIRTY_PROGRAM | MGL_BATCH_DIRTY_BUFFER_BASE |
-                    MGL_BATCH_DIRTY_BUFFER);
-    out->vao = (MGL_BATCH_DIRTY_VAO | MGL_BATCH_DIRTY_BUFFER);
-    out->texture =
-        (MGL_BATCH_DIRTY_TEX | MGL_BATCH_DIRTY_TEX_BINDING |
-         MGL_BATCH_DIRTY_TEX_PARAM | MGL_BATCH_DIRTY_SAMPLER |
-         MGL_BATCH_DIRTY_IMAGE_UNIT);
-    out->render_state =
-        (MGL_BATCH_DIRTY_RENDER_STATE | MGL_BATCH_DIRTY_ALPHA_STATE);
+    out->program = (DIRTY_PROGRAM | DIRTY_BUFFER_BASE_STATE | DIRTY_BUFFER);
+    out->vao = (DIRTY_VAO | DIRTY_BUFFER);
+    out->texture = (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM |
+                    DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE);
+    out->render_state = (DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE);
 }
 
 int mgl_batch_restore_can_delta(int dirty_key_delta_enabled, int prev_key_valid,

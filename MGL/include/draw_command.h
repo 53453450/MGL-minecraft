@@ -201,11 +201,36 @@ typedef struct {
     uint8_t  scissor_enabled;
     uint8_t  primitive_type;
     uint16_t caps_flags;
+    /* Explicit padding (the gap texture_hash's alignment requires anyway).
+     * mglStateKeysEqual() is memcmp over the whole struct and the key is
+     * built on the stack (mglComputeStateKey), so an unnamed gap here held
+     * uninitialized residue: the same logical state could compare unequal
+     * by chance.  Naming the field lets mglComputeStateKey zero it with the
+     * other conditionally-written fields, making the byte sequence
+     * deterministic for equality and any future bytewise hashing. */
+    uint32_t _padding;
     uint64_t texture_hash;
     uint64_t render_state_hash;
     uint64_t uniform_buffer_hash;
     uint64_t vertex_layout_hash;
 } MGLStateKey;
+
+/* Draw-identity layout contract (STATE_MACHINE_REVIEW §4.1/M0).  These
+ * offsets are what makes the memcmp in mglStateKeysEqual correct; a field
+ * insertion that moves them must revisit mglComputeStateKey's fixed-zero
+ * list (and the explicit _padding above). */
+_Static_assert(offsetof(MGLStateKey, caps_flags) == 58,
+               "MGLStateKey head layout changed; the memcmp-equality contract "
+               "and mglComputeStateKey's fixed-zero list must be revisited");
+_Static_assert(offsetof(MGLStateKey, _padding) == 60,
+               "MGLStateKey padding moved; it must stay the only unnamed-value "
+               "gap and stay zeroed by mglComputeStateKey");
+_Static_assert(offsetof(MGLStateKey, texture_hash) == 64,
+               "MGLStateKey hash block misaligned; memcmp equality would read "
+               "a different gap");
+_Static_assert(sizeof(MGLStateKey) == 96,
+               "MGLStateKey size changed; tail padding would need the same "
+               "explicit-field treatment as _padding");
 
 /* Immutable draw inputs for deferred replay (ARCHITECTURE_AUDIT R3).
  * Captured with the batch; encoder setup should prefer this over mutating

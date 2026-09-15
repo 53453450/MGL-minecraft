@@ -452,7 +452,7 @@ static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)
         MGL_SIGNPOST_END(InitBatchSnapshot);
         return false;
     }
-    /* Selective snapshot: only copy hot fields (~51KB vs 82KB full).
+    /* Selective snapshot: only copy hot fields (~61KB vs 92KB full).
      * Cold fields (HashTables + unused buffer_base types) are skipped;
      * they are restored from savedState at replay time. */
     mglCopyHotStateFields((GLMState *)batch->state_snapshot, ctx->active_state);
@@ -469,8 +469,14 @@ static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)
     }
 
     MGL_PERF_INC(g_mglSnapshotAllocationCountSinceSwap);
+    /* Report the bytes actually written (hot state copy + VAO freeze), not
+     * the allocation size: this counter is the snapshot-cost metric the
+     * state-machine migration tracks (STATE_MACHINE_REVIEW 4.3).  The
+     * allocation itself remains sizeof(GLMState)+sizeof(VertexArray) per
+     * batch regardless. */
     MGL_PERF_ADD(g_mglSnapshotBytesAllocatedSinceSwap,
-                 sizeof(GLMState) + sizeof(VertexArray));
+                 mglSnapshotHotStateBytes() +
+                 (batch->vao_snapshot ? sizeof(VertexArray) : 0));
 
     mglRetainBatchProgramReferences(ctx, batch);
     mglRetainBatchBufferReferences(batch);
@@ -2227,11 +2233,14 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
 
     /* Every other field is written unconditionally below.  These are only
      * written conditionally (program names when a pipeline is bound without a
-     * direct program; scissor[] only when scissor is enabled), so zero them
-     * explicitly to keep memcmp-based equality correct without a full-struct
-     * memset. */
+     * direct program; scissor[] only when scissor is enabled; _padding is
+     * never written), so zero them explicitly to keep memcmp-based equality
+     * correct without a full-struct memset.  _padding is the struct's only
+     * unnamed-value gap (draw_command.h); leaving it as stack residue made
+     * identical states compare unequal at random (STATE_MACHINE_REVIEW 4.1). */
     out->vertex_program_name = 0;
     out->fragment_program_name = 0;
+    out->_padding = 0;
     out->scissor[0] = 0;
     out->scissor[1] = 0;
     out->scissor[2] = 0;
@@ -2281,8 +2290,9 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
      * NOTE: cached hashes live in GLMState (ctx->active_state), NOT in the
      * MGLStateKey output struct.  mglStateKeysEqual() uses memcmp on the full
      * MGLStateKey, so the key must contain only per-draw-computed values —
-     * any cached/padding fields there would be uninitialized garbage and
-     * break batch-merge comparisons.
+     * cached hash fields would be stale garbage there and break batch-merge
+     * comparisons.  (The struct's _padding is written by the fixed-zero list
+     * above, so memcmp stays exact.)
      *
      * NOTE: `mode` is a per-draw parameter, not persistent GL state, so it is
      * NOT part of the cached render-state hash.  It is XORed in on every call
@@ -3809,8 +3819,14 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
     batch->mdi_compatible = true;
 
     MGL_PERF_INC(g_mglSnapshotAllocationCountSinceSwap);
+    /* Report the bytes actually written (hot state copy + VAO freeze), not
+     * the allocation size: this counter is the snapshot-cost metric the
+     * state-machine migration tracks (STATE_MACHINE_REVIEW 4.3).  The
+     * allocation itself remains sizeof(GLMState)+sizeof(VertexArray) per
+     * batch regardless. */
     MGL_PERF_ADD(g_mglSnapshotBytesAllocatedSinceSwap,
-                 sizeof(GLMState) + sizeof(VertexArray));
+                 mglSnapshotHotStateBytes() +
+                 (batch->vao_snapshot ? sizeof(VertexArray) : 0));
 
     mglRetainBatchProgramReferences(ctx, batch);
     mglRetainBatchBufferReferences(batch);

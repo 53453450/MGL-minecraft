@@ -165,7 +165,7 @@ extern MGL_ATOMIC(uint64_t) g_mglDepthStencilStateCreatesSinceSwap;  /* newDepth
 extern MGL_ATOMIC(uint64_t) g_mglDepthStencilStateSkipsSinceSwap;    /* setDepthStencilState: skipped by dedup */
 
 /* Snapshot allocation */
-extern MGL_ATOMIC(uint64_t) g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes malloc'd for state+vao snapshots */
+extern MGL_ATOMIC(uint64_t) g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes written per state+vao snapshot (hot copy), the snapshot-cost metric */
 extern MGL_ATOMIC(uint64_t) g_mglSnapshotAllocationCountSinceSwap;   /* snapshot malloc count */
 
 /* Buffer copy-on-write (MTLBuffer reallocation on dirty Shared uploads) */
