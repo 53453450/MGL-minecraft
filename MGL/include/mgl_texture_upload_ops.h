@@ -86,6 +86,10 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
                                     int texture1DArrayBackedBy2DArray,
                                     uint32_t tex_type, int *out_skipped);
 
+
+/* -createMTLTextureFromGLTexture: moved in log 197. */
+void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex);
+
 #ifdef __cplusplus
 }
 #endif

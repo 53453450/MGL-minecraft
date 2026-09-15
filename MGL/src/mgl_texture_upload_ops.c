@@ -12,6 +12,8 @@
  * -copyTextureUploadWithDedicatedCommandBuffer: (P0-1, log 183).
  */
 
+#include "mgl_metal_ref.h"       /* MGLMetalKindTexture, mglMetalCountCreate */
+#include "mgl_texture_mip_ops.h"     /* mglTextureLogMipDiagnostics */
 #include "mgl_texture_compat.h"
 #include "mgl_texture_upload_ops.h"
 
@@ -55,6 +57,7 @@ static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
 /* The Objective-C header's mglMarkTextureLevelMetalFilled is a static inline
  * there; this is the C twin (same shape as mgl_blit_drivers.c's). */
 extern void mglMarkGLSampledCopyLevelDirty(Texture *tex, GLuint level);
+extern int mglRendererShouldSkipGPUOperations(void *renderer);
 extern bool mglRendererBindMTLTexture(void *renderer, Texture *tex);
 
 static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
@@ -79,6 +82,22 @@ static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
 
 /* mglUpMax() is an Objective-C header macro; use the C maximum inline. */
 #define mglUpMax(a, b) ((a) > (b) ? (a) : (b))
+
+/* The Objective-C header's texture enum values the moved body reads (rule 62 (b):
+ * copied from MGLRenderer+Texture.m's file-local enum). */
+enum {
+    MGL_TEXTURE_CPU_CACHE_DEFAULT = 0u,
+    MGL_TEXTURE_CPU_CACHE_WRITE_COMBINED = 1u,
+    MGL_TEXTURE_STORAGE_PRIVATE = 2u,
+    MGL_TEXTURE_USAGE_SHADER_ATOMIC = 0x20u,
+    MGL_TEXTURE_USAGE_RENDER_TARGET = 4u,
+    MGL_TEXTURE_USAGE_SHADER_READ = 1u,
+    MGL_TEXTURE_USAGE_SHADER_WRITE = 2u,
+    MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW = 16u,
+};
+
+/* mtlPixelFormatForGLTex lives in the Objective-C private header. */
+extern uint32_t mtlPixelFormatForGLTex(Texture *tex);
 
 /* The renderer's capability snapshot through the state areas (the .m read its
  * own ivar; the C caller has the renderer handle). */
@@ -2789,4 +2808,424 @@ int mglTextureUploadDirty(void *renderer, Texture *tex, void *texture,
         *outAllLevelsUploaded = !anyLevelSkipped;
 
     return 1;
+}
+
+
+/* The @try of the texture create in the create path (rule 58 (b)): the guarded
+ * body publishes the +1 handle through the ctx. */
+typedef struct MglUpCreateTextureCtx_t {
+    const MGLRenderTextureDescriptorState *descriptor;
+    void *out_texture;
+} MglUpCreateTextureCtx;
+
+static void *mglUpCreateTexture(
+    const MGLRenderTextureDescriptorState *descriptor)
+{
+    void *texture = NULL;
+    if (mglRenderCreateTextureFromState(descriptor, NULL, &texture) == 0 &&
+        texture) {
+        return texture;
+    }
+    return NULL;
+}
+
+static int mglUpCreateTextureBody(void *renderer, void *rawCtx)
+{
+    MglUpCreateTextureCtx *ctx = (MglUpCreateTextureCtx *)rawCtx;
+    ctx->out_texture = mglUpCreateTexture(ctx->descriptor);
+    (void)renderer;
+    return 1;
+}
+
+/* -createMTLTextureFromGLTexture: (log 197).  Every callee it had is already C,
+ * which is why the move is a pure translation. */
+void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    MGL_ASSERT_GL_THREAD();
+    mglMetalCountCreate(MGLMetalKindTexture);
+    // PROPER FIX: Enhanced pre-creation validation to prevent AGX driver issues
+    void *device = mglRendererBackendGetDevice(areas.backend);
+    void *commandQueue = mglRendererBackendGetCommandQueue(areas.backend);
+    if (!device || !commandQueue) {
+        fprintf(stderr, "MGL ERROR: Metal device or command queue not available for texture creation\n");
+        return NULL;
+    }
+
+    // Check if we're in a recovery state that would make texture creation futile
+    if (mglRendererShouldSkipGPUOperations(renderer)) {
+        fprintf(stderr, "MGL AGX: GPU operations temporarily suspended during recovery\n");
+        return NULL;
+    }
+
+    // Validate texture dimensions to prevent Metal assertion failures.
+    // Texture buffers (GL_TEXTURE_BUFFER) can have very large widths (millions of texels)
+    // since they map to MGLTextureTypeTextureBuffer which uses GPU address space.
+    if (!mglRenderTextureDimsValid(tex->target, tex->width, tex->height,
+                                   tex->depth)) {
+            fprintf(stderr, "MGL ERROR: Invalid texture dimensions %dx%dx%d - rejecting\n",
+                  tex ? tex->width : 0, tex ? tex->height : 0, tex ? tex->depth : 0);
+            tex->dirty_bits = 0;
+            return NULL;
+        }
+
+    if (mglRenderIsTextureBufferTarget(tex->target)) {
+        return mglTextureCreateMTLTexelBufferTexture(renderer, tex);
+    }
+
+    uint64_t width, height, depth;
+
+    MGLRenderTextureDescriptorState tex_desc = {0};
+    uint32_t tex_type;
+    uint32_t pixelFormat;
+    uint num_faces;
+    GLuint effective_mipmap_levels;
+    GLuint upload_level_count;
+    int storageMipmapped;
+    int mipmapped;
+    int is_array;
+    int texture1DBackedBy2D;
+    int texture1DArrayBackedBy2DArray;
+
+    effective_mipmap_levels = 0;
+    upload_level_count = 0;
+    storageMipmapped = 0;
+
+    MGLRenderTextureTargetPlan targetPlan = {0};
+    if (mglRenderTextureTargetPlan(
+            (uint32_t)tex->target,
+            (uint32_t)tex->samples,
+            &targetPlan) != 0) {
+        fprintf(stderr, "MGL TEXTURE ERROR: unsupported texture target 0x%x for Metal texture creation tex=%u\n",
+              tex->target,
+              tex->name);
+        return NULL;
+    }
+    tex_type = (uint32_t)targetPlan.texture_type;
+    num_faces = (uint)targetPlan.num_faces;
+    is_array = targetPlan.is_array != 0u;
+    texture1DBackedBy2D = targetPlan.texture_1d_backed_by_2d != 0u;
+    texture1DArrayBackedBy2DArray =
+        targetPlan.texture_1d_array_backed_by_2d_array != 0u;
+
+    int effectiveMipmapped = 0;
+    if (!mglTextureCheckCompleteness(tex, tex_type, num_faces,
+                                     &effective_mipmap_levels,
+                                     &effectiveMipmapped)) {
+        return NULL;
+    }
+    storageMipmapped = effectiveMipmapped ? 1 : 0;
+
+    // PROPER FIX: Get original texture format and validate for AGX compatibility
+    pixelFormat = mtlPixelFormatForGLTex(tex);
+    int expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
+    int usesUploadSwizzleBake = mglTextureUploadNeedsSwizzleBake(tex);
+    pixelFormat = mglRenderResolveUploadSwizzlePixelFormat(
+        pixelFormat, expandsSingleChannelSwizzle ? 1 : 0,
+        mglRenderSingleChannelSwizzleStoragePixelFormat(
+            (uint32_t)tex->internalformat),
+        mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(tex) ? 1 : 0,
+        mglRenderIntegerMultiChannelSwizzleStoragePixelFormat(
+            (uint32_t)tex->internalformat),
+        mglTextureUploadNeedsStencilSwizzleBake(tex) ? 1 : 0,
+        mglRenderStencilSwizzleStoragePixelFormat(),
+        mglTextureUploadNeedsDepthStencilDepthSwizzleBake(tex) ? 1 : 0,
+        mglRenderSingleChannelSwizzleStoragePixelFormat(
+            (uint32_t)tex->internalformat));
+
+    // Validate format compatibility with AGX, but preserve original intent
+    int needsFormatConversion = 0;
+    uint32_t originalFormat = pixelFormat;
+    int agxConverted = 0;
+    pixelFormat = mglRenderAGXCompatiblePixelFormat(pixelFormat, &agxConverted);
+    needsFormatConversion = agxConverted != 0;
+
+    /* Metal does not allow depth/stencil pixel formats with MGLTextureType1DArray.
+     * Promote to MGLTextureType2DArray with height=1, mirroring how mipmapped
+     * 1D array textures are already promoted below.  Without this, creating a
+     * GL_TEXTURE_1D_ARRAY depth texture (e.g. sampler_1d_array_shadow) triggers
+     * a Metal validation assertion crash. */
+    if (mglRenderPromote1DArrayDepthStencil(tex_type, pixelFormat)) {
+        tex_type = MGLTextureType2DArray;
+        texture1DArrayBackedBy2DArray = true;
+    }
+
+    width = tex->width;
+    height = tex->height;
+    depth = tex->depth;
+    if (tex_type == MGLTextureType2DMultisample ||
+        tex_type == MGLTextureType2DMultisampleArray) {
+        storageMipmapped = 0;
+        effective_mipmap_levels = 1u;
+        tex->mipmapped = false;
+    }
+
+    mipmapped = storageMipmapped;
+    /* GL may allocate num_levels>1 for a single-base-level image; only walk
+     * mips that were actually populated unless the texture is mipmapped. */
+    upload_level_count = mglRenderUploadLevelCount(
+        mipmapped ? 1 : 0, tex->mipmapped ? 1 : 0, effective_mipmap_levels);
+
+    tex_desc.texture_type = tex_type;
+    tex_desc.pixel_format = pixelFormat;
+    tex_desc.width = width;
+    tex_desc.height = mglRenderTextureDescHeight(tex_type, (uint32_t)height);
+    bool msEmulatedAsArray = false;
+    {
+        uint32_t outType = tex_type;
+        uint32_t sampleCount = 1u;
+        uint64_t arrayLen = 1u;
+        uint64_t descDepth = 1u;
+        uint64_t samples = mglUpMax((uint64_t)2u, (uint64_t)tex->samples);
+        samples = MGLCapabilityClampSampleCount(mglUpCapability(renderer), samples);
+        if (mglRenderEmulateMSAsArray(tex_type, (uint32_t)samples,
+                                      (uint64_t)depth, &outType, &sampleCount,
+                                      &arrayLen, &descDepth)) {
+            msEmulatedAsArray = true;
+            tex_type = outType;
+            tex_desc.texture_type = tex_type;
+            tex_desc.sample_count = sampleCount;
+            tex_desc.array_length = arrayLen;
+            tex_desc.depth = descDepth;
+        }
+    }
+
+    // CONSERVATIVE: Use only Metal API patterns that work reliably with AGX driver
+    tex_desc.cpu_cache_mode = MGLCapabilityUseConservativeCPUCache(mglUpCapability(renderer))
+        ? MGL_TEXTURE_CPU_CACHE_WRITE_COMBINED
+        : MGL_TEXTURE_CPU_CACHE_DEFAULT;
+
+    // Use shared storage for textures that need CPU upload (blit/replaceRegion).
+    // Private storage is only safe for pure GPU render targets on Apple Silicon.
+    bool hasUploadableCPUData = mglTextureHasUploadableCPUData(tex, num_faces, upload_level_count);
+    bool needsCpuUpload = ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) && hasUploadableCPUData;
+    bool preferSharedDepthStencil =
+        mglMetalPixelFormatIsDepthOrStencil(pixelFormat);
+    tex_desc.storage_mode =
+        mglRenderPreferSharedStorage(needsCpuUpload ? 1 : 0,
+                                     preferSharedDepthStencil ? 1 : 0)
+            ? 0u
+            : MGL_TEXTURE_STORAGE_PRIVATE;
+    tex_desc.sample_count = mglUpMax(tex_desc.sample_count, 1u);
+    tex_desc.mipmap_level_count = mglUpMax(tex_desc.mipmap_level_count, 1u);
+    tex_desc.array_length = mglUpMax(tex_desc.array_length, 1u);
+    tex_desc.depth = mglUpMax(tex_desc.depth, 1u);
+
+    // Normalize depth/array semantics per Metal texture type.
+    if ((tex_type == MGLTextureTypeCube ||
+         tex_type == MGLTextureTypeCubeArray) &&
+        !mglRenderCubeFaceSizeValid((uint64_t)width, (uint64_t)height)) {
+            fprintf(stderr, "MGL ERROR: invalid cube texture size %lux%lu for tex=%u glTarget=0x%x\n",
+                  (unsigned long)width, (unsigned long)height, tex->name, tex->target);
+    }
+    if (tex_type == MGLTextureTypeCubeArray) {
+        uint64_t cubeCount = (uint64_t)depth;
+        if (cubeCount > 1u && (cubeCount % 6u) != 0u) {
+            fprintf(stderr, "MGL WARNING: cube-array depth=%lu is not a multiple of 6, treating as cube count\n",
+                  (unsigned long)cubeCount);
+        }
+    }
+    uint64_t arrayLen = tex_desc.array_length;
+    uint64_t descDepth = tex_desc.depth;
+    if (mglRenderTextureArrayDepthForType(
+            tex_type, is_array ? 1 : 0, msEmulatedAsArray ? 1 : 0,
+            (uint64_t)width, (uint64_t)height, (uint64_t)depth, &arrayLen,
+            &descDepth)) {
+        tex_desc.array_length = arrayLen;
+        tex_desc.depth = descDepth;
+    }
+
+    if (mipmapped)
+    {
+        if (mglRenderPromoteMipmapped1D(tex_type)) {
+            tex_type = MGLTextureType2D;
+            texture1DBackedBy2D = true;
+        }
+        /* Metal does not allow mipmapLevelCount > 1 for MGLTextureType1DArray.
+         * Promote to MGLTextureType2DArray with height=1 to support mipmapped
+         * 1D array textures.  The upload code checks texture1DArrayBackedBy2DArray
+         * to treat each slice as 1 pixel tall. */
+        if (mglRenderPromoteMipmapped1DArray(tex_type)) {
+            tex_type = MGLTextureType2DArray;
+            texture1DArrayBackedBy2DArray = true;
+        }
+        tex_desc.mipmap_level_count = mglUpMax((GLuint)1, effective_mipmap_levels);
+    }
+
+    if (texture1DBackedBy2D || texture1DArrayBackedBy2DArray) {
+        uint32_t backedType = tex_desc.texture_type;
+        uint64_t backedArray = tex_desc.array_length;
+        uint32_t backedHeight = (uint32_t)tex_desc.height;
+        mglRenderApply1DBackingToDesc(texture1DBackedBy2D ? 1 : 0,
+                                      texture1DArrayBackedBy2DArray ? 1 : 0,
+                                      (uint64_t)height, &backedType,
+                                      &backedArray, &backedHeight);
+        tex_desc.texture_type = backedType;
+        tex_desc.array_length = backedArray;
+        tex_desc.height = backedHeight;
+    }
+
+    /* GL image access mode (GL_READ_ONLY / GL_WRITE_ONLY / GL_READ_WRITE)
+     * only governs the image binding, 0T the texture's overall capabilities.
+     * A texture bound as a write-only image may still be sampled from via
+     * sampler2D in the same shader.  Metal requires MGL_TEXTURE_USAGE_SHADER_READ
+     * for sampling, so always include it alongside the image write flag.
+     *
+     * AIR always declares storage images as access::read_write (see
+     * mgl_air_backend.cpp).  Binding a ShaderRead-only texture to that slot
+     * yields zeroed imageLoad results on AGX, so READ_ONLY also needs
+     * ShaderWrite even though GLSL/GL mark the binding readonly. */
+    uint32_t accessUsage = 0u;
+    if (!mglRenderTextureUsageForAccess((uint32_t)tex->access, &accessUsage)) {
+            fprintf(stderr, "MGL TEXTURE ERROR: invalid texture access 0x%x for tex=%u\n",
+                  tex->access,
+                  tex->name);
+            return NULL;
+    }
+    tex_desc.usage = accessUsage;
+
+    /* Metal 3.1 imageAtomic* requires ShaderAtomic on R32{U,S}int textures. */
+    if (mglRenderPixelFormatNeedsShaderAtomic(pixelFormat)) {
+        tex_desc.usage |= MGL_TEXTURE_USAGE_SHADER_ATOMIC;
+    }
+
+    if (tex->is_render_target)
+    {
+        tex_desc.usage |= MGL_TEXTURE_USAGE_RENDER_TARGET | MGL_TEXTURE_USAGE_SHADER_READ;
+    }
+
+    // Allow safe same-memory format reinterpretation (e.g. RGBA8 <-> BGRA8)
+    // for blit/present paths where OpenGL attachments and drawable formats differ.
+    tex_desc.usage |= MGL_TEXTURE_USAGE_PIXEL_FORMAT_VIEW;
+
+    if (tex_desc.texture_type == MGLTextureTypeCube || tex_desc.texture_type == MGLTextureTypeCubeArray) {
+        fprintf(stderr, "MGL CUBE DESC tex=%u glTarget=0x%x type=%lu width=%lu height=%lu depth=%lu arrayLength=%lu pixelFormat=%lu usage=%lu storage=%lu mipmapped=%d\n",
+              tex->name,
+              tex->target,
+              (unsigned long)tex_desc.texture_type,
+              (unsigned long)tex_desc.width,
+              (unsigned long)tex_desc.height,
+              (unsigned long)tex_desc.depth,
+              (unsigned long)tex_desc.array_length,
+              (unsigned long)tex_desc.pixel_format,
+              (unsigned long)tex_desc.usage,
+              (unsigned long)tex_desc.storage_mode,
+              (int)mipmapped);
+    }
+
+    if (tex->params.swizzled && !usesUploadSwizzleBake &&
+        !tex->is_render_target)
+    {
+        mglTextureSwizzleDescriptor(&tex_desc, tex);
+    }
+
+    void *texture;
+
+    // CRITICAL FIX: Safe texture creation with proper validation
+    /* The .m created the texture inside @try so a Metal throw ran its catch;
+     * the guarded call does the same and hands the reason back (rule 58 (b)).
+     * Note the texture identity travels through the ctx: the guarded body must
+     * publish it even though the caller owns the result. */
+    MglUpCreateTextureCtx createCtx = { &tex_desc, NULL };
+    char createFailure[256] = {0};
+    if (!mglPlatformShellGuardedCallCtxReason(
+            renderer, "texture creation", mglUpCreateTextureBody, &createCtx,
+            createFailure, sizeof(createFailure))) {
+        fprintf(stderr, "MGL ERROR: Exception creating texture: %s\n",
+                createFailure[0] ? createFailure : "(null)");
+        mglRendererRecordGPUError(renderer);
+        return NULL;
+    }
+    texture = createCtx.out_texture;
+
+    // CRITICAL FIX: Validate texture creation result instead of asserting
+    if (!texture) {
+        fprintf(stderr, "MGL ERROR: Failed to create Metal texture with descriptor\n");
+        return NULL;
+    }
+
+    int cpuUploadRequired =
+        ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) && hasUploadableCPUData;
+    int cpuUploadVerified = !cpuUploadRequired;
+    int allLevelsUploaded = 1;
+
+    if (cpuUploadRequired)
+    {
+        if (!mglTextureUploadDirty(
+                renderer, tex, texture, pixelFormat,
+                num_faces, upload_level_count, is_array, texture1DBackedBy2D,
+                texture1DArrayBackedBy2DArray, tex_type, &allLevelsUploaded)) {
+            return NULL;
+        }
+    }
+    else
+    {
+        if (hasUploadableCPUData) {
+            mglTextureReUploadExisting(renderer, tex, texture,
+                                        pixelFormat, num_faces, upload_level_count,
+                                        is_array, texture1DBackedBy2D,
+                                        texture1DArrayBackedBy2DArray, tex_type);
+        } else if (tex->is_render_target || mglMetalPixelFormatIsDepthOrStencil(pixelFormat)) {
+            static uint64_t s_skipRenderTargetFillLogs = 0;
+            uint64_t hit = ++s_skipRenderTargetFillLogs;
+            if (hit <= 8ull || (hit % 2048ull) == 0ull) {
+                fprintf(stderr, "MGL TEXTURE SKIP implicit fill tex=%u renderTarget=%u format=%lu sourceSafe=0 hit=%llu\n",
+                      (unsigned)tex->name,
+                      (unsigned)tex->is_render_target,
+                      (unsigned long)pixelFormat,
+                      (unsigned long long)hit);
+            }
+        } else {
+            mglTextureFillSafeInitialContents(renderer, texture, tex,
+                                          pixelFormat);
+        }
+    }
+
+    if (cpuUploadRequired && mglRenderTextureTargetIs2D((uint32_t)tex->target) &&
+        mglPdTextureInfo(texture).texture_type == MGLTextureType2D &&
+        !mglTextureUploadNeedsSwizzleBake(tex)) {
+        int fullCPUUploadVerified = mglTextureUploadFullCPUData(
+            renderer, tex, texture,
+            "createMTLTexture.cpuData");
+        cpuUploadVerified = allLevelsUploaded && fullCPUUploadVerified;
+    } else if (cpuUploadRequired) {
+        /*
+         * Non-2D uploads still use the legacy creation path above. The current GUI
+         * atlas failure is 2D; avoid changing array/cube semantics in this pass.
+         * If any mip level was skipped (invalid layout, NULL data, etc.) keep
+         * DIRTY_TEXTURE_DATA set so the level gets retried on next bind.
+         */
+        cpuUploadVerified = allLevelsUploaded;
+    }
+
+    if (cpuUploadRequired && !cpuUploadVerified) {
+        static uint64_t s_createTextureCPUUploadIncompleteLogs = 0;
+        uint64_t hit = ++s_createTextureCPUUploadIncompleteLogs;
+        if (hit <= 8ull || (hit % 2048ull) == 0ull) {
+            TextureLevel *level0 = mglTraceTextureBaseLevel(tex);
+            fprintf(stderr, "MGL TEXTURE CREATE CPU-UPLOAD INCOMPLETE tex=%u target=0x%x dirtyBefore=0x%x level0=%ux%u source=%u upload=%lu hit=%llu\n",
+                  (unsigned)tex->name,
+                  (unsigned)tex->target,
+                  (unsigned)tex->dirty_bits,
+                  level0 ? (unsigned)level0->width : 0u,
+                  level0 ? (unsigned)level0->height : 0u,
+                  level0 ? (unsigned)level0->last_init_source : 0u,
+                  (unsigned long)(level0 ? level0->last_upload_size : 0u),
+                  (unsigned long long)hit);
+        }
+        tex->dirty_bits &= ~(DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_ACCESS);
+        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+    } else {
+        tex->dirty_bits = 0;
+    }
+
+    mglTextureLogMipDiagnostics(renderer, tex,
+                                texture,
+                                effective_mipmap_levels);
+
+    mglRendererRecordGPUSuccess(renderer);
+
+    return texture;
 }

@@ -133,7 +133,8 @@ void mglRendererFlushDrawBufferLockedPort(void *renderer, GLMContext ctx);
  * OWNERSHIP: both creation ports return +1 (the caller owns it, releases it
  * with mglSafeReleaseMetalObj); the upload ports return 1 on success and write
  * *out_all_levels_uploaded when it is non-NULL. */
-void *mglRendererCreateMTLTextureFromGLTexturePort(void *renderer, Texture *tex);
+/* mglRendererCreateMTLTextureFromGLTexturePort is gone (log 197):
+ * -createMTLTextureFromGLTexture: is C now (mglTextureCreateFromGLTexture). */
 void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex);
 /* mglRendererUploadFullCPUTextureDataPort is gone (log 195):
  * -uploadFullCPUTextureDataIntoTexture:metal:reason: is C now

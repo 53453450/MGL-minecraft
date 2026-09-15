@@ -59,10 +59,6 @@ extern int mglRenderPassNewCommandBufferLocked(void *renderer);
  * through mglTxGetBytes' failure path below. */
 static char g_mglTxGetBytesError[128];
 
-static const char *mglTxTakeGetBytesError(void)
-{
-    return g_mglTxGetBytesError;
-}
 
 static void mglTxRaiseGetBytesError(uint64_t level, uint64_t slice)
 {

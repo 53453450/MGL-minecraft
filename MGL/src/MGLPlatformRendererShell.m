@@ -530,15 +530,6 @@ void mglRendererTemporariesRelease(void *temporaries)
  * the two CPU-data uploads and the default sampler.  MGLRenderer+Texture.m owns
  * the bodies; the CREATE ports hand the +1 back to C through CFBridgingRetain. */
 
-void *mglRendererCreateMTLTextureFromGLTexturePort(void *renderer, Texture *tex)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r || !tex) {
-        return NULL;
-    }
-    return (void *)CFBridgingRetain([r createMTLTextureFromGLTexture:tex]);
-}
-
 void *mglRendererCreateFallbackMTLTexturePort(void *renderer, Texture *tex)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;

@@ -181,7 +181,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
              * DIRTY_TEXTURE_DATA so that createMTLTextureFromGLTexture
              * skips CPU data upload — we'll blit GPU data instead. */
             void *newTexture =
-                mglRendererCreateMTLTextureFromGLTexturePort(renderer, tex);
+                mglTextureCreateFromGLTexture(renderer, tex);
             MGLRenderTextureInfo newInfo = {0};
             bool dimensionsMatch = newTexture &&
                 mglRenderGetTextureInfo(newTexture, &newInfo) == 0 &&
@@ -337,7 +337,7 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
 
     if (tex->mtl_data == NULL)
     {
-        tex->mtl_data = mglRendererCreateMTLTextureFromGLTexturePort(renderer, tex);
+        tex->mtl_data = mglTextureCreateFromGLTexture(renderer, tex);
 
         /* AGX-SAFE: Handle NULL texture gracefully when in GPU recovery mode */
         if (!tex->mtl_data) {
