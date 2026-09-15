@@ -313,7 +313,7 @@ bool mglComputeBindBuffersToEncoder(void *renderer, int stage, void *encoder,
             size_t fallbackLength =
                 (size_t)mglBindingStageIsolateFallbackLength(
                     plan_out.required_bytes);
-            void *isolated = mglRendererIsolatedStageBindingBufferPort(
+            void *isolated = mglBufferIsolatedStageBinding(
                 renderer, map, buffer, (uint64_t)fallbackLength);
             if (!isolated) {
                 fprintf(stderr,

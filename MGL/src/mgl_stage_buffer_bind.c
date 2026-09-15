@@ -417,7 +417,7 @@ bool mglBindingStateBindStageBufferMapEntries(
         if (plan.action == MGL_SB_ACTION_ISOLATE) {
             /* +1 out of the port; the recorder and the emit take their own
              * references, so this one is released below (log 128 rule). */
-            void *isolated = mglRendererIsolatedStageBindingBufferPort(
+            void *isolated = mglBufferIsolatedStageBinding(
                 renderer, map, buffer, plan.required_bytes);
             if (!isolated) {
                 fprintf(stderr,

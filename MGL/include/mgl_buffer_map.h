@@ -93,6 +93,14 @@ void mglRecordFrameCompleted(uint64_t generation);
 /* Also declared in mgl_batch_mtl_encode.h / mgl_index_buffer.h. */
 void mglNoteBufferEncoded(Buffer *buf);
 
+
+/* -isolatedStageBindingBufferForMap:source:requiredLength: moved to C (log 201).
+ * Returns a +1 handle. */
+struct BufferMap_t;
+void *mglBufferIsolatedStageBinding(void *renderer,
+                                    const struct BufferMap_t *map, void *source,
+                                    uint64_t required_length);
+
 #ifdef __cplusplus
 }
 #endif

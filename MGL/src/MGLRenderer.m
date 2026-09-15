@@ -214,6 +214,8 @@ static void mglRendererDiagnosticBuildMarker(void)
                 __TIME__);
 }
 
+__attribute__((constructor))
+
 // Debug switch: temporarily disable shared-event synchronization path to isolate GPU timeout sources.
 // kMGLDisableSharedEventSync moved to MGLRenderer_Private.h
 // Leave verbose bind tracing off by default; per-draw logging can stall the render thread.
@@ -323,18 +325,6 @@ BOOL mglEnvFlagEnabledDefaultOn(const char *name)
     return mglEnvFlagEnabledCached(name, YES);
 }
 
-static id mglRendererCreateBuffer(id device,
-                                             NSUInteger length,
-                                             uint64_t options)
-{
-    (void)device;
-    void *buffer = NULL;
-    if (mglRenderCreateBuffer(length, options, NULL, &buffer) == 0 &&
-        buffer) {
-        return (__bridge_transfer id)buffer;
-    }
-    return nil;
-}
 
 /* Trace log core infrastructure (3 static globals, mglInitTraceLogIfNeeded,
  * mglTraceLogIsEnabled, mglTraceLogV, mglTraceLog, mglTraceLogExternal,
@@ -2329,75 +2319,8 @@ void logDirtyBits(GLMContext ctx)
  * mglMainThreadSyncViewGeometry (see MGLRenderer+Lifecycle.m) and sets
  * CAMetalLayer.drawableSize, which Metal explicitly allows off the main
  * thread. */
-- (CGSize)mglApplyPendingDrawableSize
-{
-    MGL_ASSERT_GL_THREAD();
-    if (atomic_exchange_explicit(&_drawableSizeDirty, false, memory_order_acquire)) {
-        uint32_t w = atomic_load_explicit(&_pendingDrawableW, memory_order_relaxed);
-        uint32_t h = atomic_load_explicit(&_pendingDrawableH, memory_order_relaxed);
-        CGSize s = CGSizeMake((CGFloat)MAX(1u, w), (CGFloat)MAX(1u, h));
-        [self mglSetMetalLayerDrawableSize:s];
-        return s;
-    }
-    return [self mglMetalLayerDrawableSize];
-}
 
-- (BOOL)mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)requiredWidth
-                                        height:(NSUInteger)requiredHeight
-                                        reason:(const char *)reason
-{
-    if (![self mglHasMetalLayer] || requiredWidth == 0 || requiredHeight == 0) {
-        return NO;
-    }
 
-    CGSize viewDrawableSize = [self mglApplyPendingDrawableSize];
-    NSUInteger targetWidth = MAX(requiredWidth, (NSUInteger)MAX(1.0, viewDrawableSize.width));
-    NSUInteger targetHeight = MAX(requiredHeight, (NSUInteger)MAX(1.0, viewDrawableSize.height));
-    CGSize oldDrawableSize = [self mglMetalLayerDrawableSize];
-
-    if ((NSUInteger)oldDrawableSize.width == targetWidth &&
-        (NSUInteger)oldDrawableSize.height == targetHeight) {
-        return NO;
-    }
-
-    [self mglSetMetalLayerDrawableSize:CGSizeMake((CGFloat)targetWidth, (CGFloat)targetHeight)];
-    if (_drawable) {
-        _drawable = nil;
-    }
-
-    static uint64_t s_forcedDrawableResizeCount = 0;
-    uint64_t hit = ++s_forcedDrawableResizeCount;
-    if (hit <= 32ull || (hit % 120ull) == 0ull) {
-        NSLog(@"MGL SIZE force drawable reason=%s hit=%llu required=%lux%lu viewSync=%.0fx%.0f old=%.0fx%.0f new=%lux%lu",
-              reason ? reason : "unknown",
-              (unsigned long long)hit,
-              (unsigned long)requiredWidth,
-              (unsigned long)requiredHeight,
-              viewDrawableSize.width,
-              viewDrawableSize.height,
-              oldDrawableSize.width,
-              oldDrawableSize.height,
-              (unsigned long)targetWidth,
-              (unsigned long)targetHeight);
-    }
-
-    return YES;
-}
-
-- (bool) checkDrawBufferSize:(GLuint) index;
-{
-    CGSize drawableSize;
-
-    drawableSize = [self mglApplyPendingDrawableSize];
-
-    if ((GLuint)drawableSize.width != _drawBuffers[index].width)
-        return false;
-
-    if ((GLuint)drawableSize.height != _drawBuffers[index].height)
-        return false;
-
-    return true;
-}
 
 #pragma mark render encoder and command buffer init code
 
@@ -2493,10 +2416,6 @@ void logDirtyBits(GLMContext ctx)
  * entry points did `ctx = glm_ctx;` inline).  A method because the ivar is not
  * visible outside the class body; the shell exposes it to C as
  * mglPlatformShellSetContext(). */
-- (void)mglSetActiveContext:(GLMContext)glm_ctx
-{
-    ctx = glm_ctx;
-}
 
 /* bindBufferSizeConstantsForRenderEncoder is the C entry
  * mglRendererBindBufferSizeConstantsForRenderEncoder (mgl_size_constants.h). */
@@ -2709,9 +2628,13 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
     if (mglRendererEnterBackendLease(glm_ctx, &_backend_lease) != 0) return;
     MGLRenderer *renderer = mglRendererForContext(glm_ctx);
     if (renderer && glm_ctx) {
+        /* -mtlSwapBuffers: was claim-GL-thread + @autoreleasepool + the C
+         * swap entry; the C path keeps the pool and the historical catch. */
+        mglClaimGLThread();
         @autoreleasepool {
             @try {
-                [renderer mtlSwapBuffers:glm_ctx];
+                mglRenderPassMTLSwapBuffersLocked((__bridge void *)renderer,
+                                                  glm_ctx);
             } @catch (NSException *exception) {
                 NSLog(@"MGL CRITICAL: callback swap exception: %@", exception);
             }
@@ -2720,15 +2643,6 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
     mglRendererBackendEnd(&_backend_lease);
 }
 
--(void) mtlSwapBuffers:(GLMContext) glm_ctx
-{
-    mglClaimGLThread();            /* idempotent; the rendering loop is GL-thread */
-    @autoreleasepool {
-        METAL_LOCK();
-        mglRenderPassMTLSwapBuffersLocked((__bridge void *)self, glm_ctx);
-        METAL_UNLOCK();
-    }
-}
 
 /* copyRenderPassColorToDrawableIfNeeded: and
  * scheduleSwapTextureSampleDiagnostics: are the C functions of
@@ -2741,47 +2655,16 @@ void mglRendererSwapBuffers(GLMContext glm_ctx)
  * TU exposes it to C as mglPlatformShellRecreateCommandQueue(). */
 /* Metal device/queue probes for the recovery validation path (see
  * mglRecreateCommandQueue for why these are methods, not C functions). */
-- (void *)mglMetalDevicePointer
-{
-    return (__bridge void *)_device;
-}
 
-- (int)mglMetalObjectsPresent
-{
-    return (_device && _commandQueue) ? 1 : 0;
-}
 
 /* Drawable pointer for the render-pass lifecycle log (see mglRecreateCommandQueue
  * for why these probes are methods rather than C functions). */
 /* Emulated-MS sample-loop state, kept as methods because these ivars are private
  * (see mglRecreateCommandQueue for the same reasoning). */
-- (int)mglMSSampleInLoop
-{
-    return _mglInMSSampleDrawLoop ? 1 : 0;
-}
-
-- (void)mglSetMSSampleState:(int)inLoop forced:(int32_t)forced offset:(int32_t)offset
-{
-    _mglInMSSampleDrawLoop = inLoop ? YES : NO;
-    _mglForcedMSSampleId = forced;
-    _mglMSSamplePlaneOffset = offset;
-}
 
 
-- (void *)mglDrawablePointer
-{
-    return (__bridge void *)_drawable;
-}
 
-- (int)mglRecreateCommandQueue
-{
-    if (!_backend) {
-        return 0;
-    }
-    void *commandQueue = NULL;
-    (void)mglRendererBackendResetCommandQueue(_backend, 0u, &commandQueue);
-    return _commandQueue != nil ? 1 : 0;
-}
+
 
 void mglRendererClearBuffer(GLMContext glm_ctx,
                                   unsigned int type,
@@ -2902,57 +2785,6 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 
 #pragma mark Tessellation dispatch
 
-- (id)isolatedStageBindingBufferForMap:(const BufferMap *)map
-                                           source:(id)source
-                                   requiredLength:(NSUInteger)requiredLength
-{
-    if (!map || !map->buf || requiredLength == 0) {
-        return nil;
-    }
-
-    id isolated = mglRendererCreateBuffer(
-        _device, requiredLength, MGL_RENDERER_RESOURCE_STORAGE_SHARED);
-    if (!isolated || !mglRendererBufferContents(isolated)) {
-        return nil;
-    }
-
-    memset(mglRendererBufferContents(isolated), 0, requiredLength);
-    /* For UBOs, prefer the CPU shadow when present: the Metal backing may
-     * not yet reflect a recent glBufferData before the first draw bind. */
-    if (mglRenderIsolateUBOPrefersCPUShadow(
-            (uint32_t)map->resource_type, map->buf != NULL,
-            map->buf && map->buf->data.buffer_data, map->offset)) {
-        size_t copyLength = mglBufferMapAvailableBackingBytes(
-            map, (size_t)map->buf->size);
-        copyLength = (size_t)mglRenderIsolateCopyLength(copyLength,
-                                                        requiredLength);
-        if (copyLength > 0) {
-            memcpy(mglRendererBufferContents(isolated),
-                   ((const uint8_t *)(uintptr_t)map->buf->data.buffer_data) +
-                       (size_t)map->offset,
-                   copyLength);
-            return isolated;
-        }
-    }
-
-    if (!source || map->offset < 0 || !mglRendererBufferContents(source)) {
-        return isolated;
-    }
-
-    /* For UBOs, prefer the underlying store over the (possibly short) indexed
-     * range so trailing std140 members remain visible after padding. */
-    size_t copyLength = mglRenderIsolateUBOUsesFullStore(
-                            (uint32_t)map->resource_type)
-        ? mglBufferMapAvailableBackingBytes(map, mglRendererBufferLength(source))
-        : mglBufferMapVisibleBackingBytes(map, mglRendererBufferLength(source));
-    copyLength = (size_t)mglRenderIsolateCopyLength(copyLength, requiredLength);
-    if (copyLength > 0) {
-        memcpy(mglRendererBufferContents(isolated),
-               ((const uint8_t *)mglRendererBufferContents(source)) + (size_t)map->offset,
-               copyLength);
-    }
-    return isolated;
-}
 
 
 _Static_assert(sizeof(MGLStageBindingCopyBack) == sizeof(MGLRenderCopyBackEntry),

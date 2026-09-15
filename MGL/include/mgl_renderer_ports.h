@@ -341,10 +341,9 @@ int mglPlatformShellNewCommandBuffer(void *renderer);
  * now (mgl_stage_copy_back.h, log 159). */
 /* The stage copy-back Record and Flush ports are gone: those methods are C
  * now (mgl_stage_copy_back.h, log 159). */
-void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
-                                                const BufferMap *map,
-                                                void *source,
-                                                uint64_t required_length);
+/* mglRendererIsolatedStageBindingBufferPort is gone (log 201):
+ * -isolatedStageBindingBufferForMap:… is C now (mglBufferIsolatedStageBinding
+ * in mgl_buffer_map.h). */
 /* mglRendererMaterializeSampledSamplerPort is gone: the sampler materialize
  * leaf is C now (mglSampledSamplerMaterialize, mgl_sampled_sampler.h) and its
  * callers link straight to it (P0-1, log 151). */

@@ -901,3 +901,95 @@ int mglRendererGetVertexBufferIndexWithAttributeSet(void *renderer,
                                                   attribute,
                                                   MGL_BUFFER_MAP_WHERE_VERTEX_INDEX);
 }
+
+/* MGL_RENDERER_RESOURCE_STORAGE_SHARED is 0 (the enum lives in the
+ * Objective-C header; same twin other C hosts use). */
+enum { MGL_PD_RESOURCE_STORAGE_SHARED = 0 };
+
+/* Twins of MGLRenderer.m's static buffer helpers. */
+static void *mglBmCreateBuffer(uint64_t length, uint64_t options)
+{
+    void *buffer = NULL;
+    if (mglRenderCreateBuffer((size_t)length, options, NULL, &buffer) == 0 &&
+        buffer) {
+        return buffer;
+    }
+    return NULL;
+}
+
+static void *mglBmBufferContents(void *buffer)
+{
+    void *contents = NULL;
+    uint64_t length = 0u;
+    return buffer && mglRenderGetBufferContents(buffer, &contents, &length) == 0
+               ? contents
+               : NULL;
+}
+
+static uint64_t mglBmBufferLength(void *buffer)
+{
+    void *contents = NULL;
+    uint64_t length = 0u;
+    if (!buffer ||
+        mglRenderGetBufferContents(buffer, &contents, &length) != 0) {
+        return 0u;
+    }
+    return length;
+}
+
+/* -isolatedStageBindingBufferForMap:source:requiredLength: (log 201).
+ * The port handed back a +1 handle (the method returned +0 and the caller took
+ * its own reference), which mglBmCreateBuffer preserves. */
+void *mglBufferIsolatedStageBinding(void *renderer, const BufferMap *map,
+                                    void *source, uint64_t requiredLength)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    (void)areas;
+    if (!map || !map->buf || requiredLength == 0) {
+        return NULL;
+    }
+
+    void *isolated = mglBmCreateBuffer(requiredLength,
+                                       MGL_PD_RESOURCE_STORAGE_SHARED);
+    if (!isolated || !mglBmBufferContents(isolated)) {
+        return NULL;
+    }
+
+    memset(mglBmBufferContents(isolated), 0, requiredLength);
+    /* For UBOs, prefer the CPU shadow when present: the Metal backing may
+     * not yet reflect a recent glBufferData before the first draw bind. */
+    if (mglRenderIsolateUBOPrefersCPUShadow(
+            (uint32_t)map->resource_type, map->buf != NULL,
+            map->buf && map->buf->data.buffer_data, map->offset)) {
+        size_t copyLength = mglBufferMapAvailableBackingBytes(
+            map, (size_t)map->buf->size);
+        copyLength = (size_t)mglRenderIsolateCopyLength(copyLength,
+                                                        requiredLength);
+        if (copyLength > 0) {
+            memcpy(mglBmBufferContents(isolated),
+                   ((const uint8_t *)(uintptr_t)map->buf->data.buffer_data) +
+                       (size_t)map->offset,
+                   copyLength);
+            return isolated;
+        }
+    }
+
+    if (!source || map->offset < 0 || !mglBmBufferContents(source)) {
+        return isolated;
+    }
+
+    /* For UBOs, prefer the underlying store over the (possibly short) indexed
+     * range so trailing std140 members remain visible after padding. */
+    size_t copyLength = mglRenderIsolateUBOUsesFullStore(
+                            (uint32_t)map->resource_type)
+        ? mglBufferMapAvailableBackingBytes(map, mglBmBufferLength(source))
+        : mglBufferMapVisibleBackingBytes(map, mglBmBufferLength(source));
+    copyLength = (size_t)mglRenderIsolateCopyLength(copyLength, requiredLength);
+    if (copyLength > 0) {
+        memcpy(mglBmBufferContents(isolated),
+               ((const uint8_t *)mglBmBufferContents(source)) + (size_t)map->offset,
+               copyLength);
+    }
+    return isolated;
+}

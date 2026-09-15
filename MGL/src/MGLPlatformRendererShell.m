@@ -410,19 +410,55 @@ void *mglRendererDrawableTexturePort(void *renderer)
     return r ? (__bridge void *)[r mglDrawableTexture] : NULL;
 }
 
+/* Forward declaration: the pending-size apply lives further down this TU. */
+static CGSize mglPlatformShellApplyPendingDrawableSizeCGSize(MGLRenderer *r);
+
 int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
                                                        size_t required_width,
                                                        size_t required_height,
                                                        const char *reason)
 {
+    /* -mglEnsureLayerDrawableSizeAtLeastWidth:height:reason: moved here for the
+     * same reason as the pending-size apply above (log 201). */
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)required_width
-                                                    height:(NSUInteger)required_height
-                                                    reason:reason])
-               ? 1
-               : 0;
-}
+    if (!r || ![r mglHasMetalLayer] || required_width == 0 ||
+        required_height == 0) {
+        return 0;
+    }
 
+    CGSize viewDrawableSize = mglPlatformShellApplyPendingDrawableSizeCGSize(r);
+    uint64_t targetWidth = required_width;
+    uint64_t viewW = (uint64_t)(viewDrawableSize.width > 1.0 ? viewDrawableSize.width : 1.0);
+    if (viewW > targetWidth) targetWidth = viewW;
+    uint64_t targetHeight = required_height;
+    uint64_t viewH = (uint64_t)(viewDrawableSize.height > 1.0 ? viewDrawableSize.height : 1.0);
+    if (viewH > targetHeight) targetHeight = viewH;
+    CGSize oldDrawableSize = [r mglMetalLayerDrawableSize];
+
+    if ((uint64_t)oldDrawableSize.width == targetWidth &&
+        (uint64_t)oldDrawableSize.height == targetHeight) {
+        return 0;
+    }
+
+    [r mglSetMetalLayerDrawableSize:CGSizeMake((CGFloat)targetWidth,
+                                               (CGFloat)targetHeight)];
+    if (r.drawable) {
+        r.drawable = nil;
+    }
+
+    static uint64_t s_forcedDrawableResizeCount = 0;
+    uint64_t hit = ++s_forcedDrawableResizeCount;
+    if (hit <= 32ull || (hit % 120ull) == 0ull) {
+        NSLog(@"MGL SIZE force drawable reason=%s hit=%llu required=%lux%lu viewSync=%.0fx%.0f old=%.0fx%.0f new=%lux%lu",
+              reason ? reason : "unknown", (unsigned long long)hit,
+              (unsigned long)required_width, (unsigned long)required_height,
+              viewDrawableSize.width, viewDrawableSize.height,
+              oldDrawableSize.width, oldDrawableSize.height,
+              (unsigned long)targetWidth, (unsigned long)targetHeight);
+    }
+
+    return 1;
+}
 /* GPU capture: the capture session lives on the shell object, which owns the
  * MTLCaptureManager descriptor/start/stop calls. */
 void mglPlatformShellGpuCaptureStart(void *renderer)
@@ -458,26 +494,11 @@ void mglPlatformShellSetContext(void *renderer, GLMContext glm_ctx)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     if (r) {
-        [r mglSetActiveContext:glm_ctx];
+        /* -mglSetActiveContext: was one assignment to this @package ivar; the
+         * shell does it directly so the method can go (log 201). */
+        r->ctx = glm_ctx;
     }
 }
-
-void *mglRendererIsolatedStageBindingBufferPort(void *renderer,
-                                                const BufferMap *map,
-                                                void *source,
-                                                uint64_t required_length)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    if (!r) {
-        return NULL;
-    }
-    /* The method returns an autoreleased +0 object; the C caller owns its ref. */
-    id isolated = [r isolatedStageBindingBufferForMap:map
-                                               source:(__bridge id)source
-                                       requiredLength:(NSUInteger)required_length];
-    return (void *)CFBridgingRetain(isolated);
-}
-
 
 void *mglRendererTemporariesCreate(void)
 {
@@ -557,7 +578,9 @@ void mglRendererFlushDrawBuffer(GLMContext glm_ctx)
 int mglPlatformShellMSSampleInLoop(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [r mglMSSampleInLoop] : 0;
+    /* The ivar is @package, so the shell reads it directly instead of keeping a
+     * one-line Objective-C method in MGLRenderer.m alive for it (log 201). */
+    return r ? (r->_mglInMSSampleDrawLoop ? 1 : 0) : 0;
 }
 
 /* The plane offset is the second half of the emulated-MS-sample loop state and
@@ -573,7 +596,9 @@ void mglPlatformShellSetMSSampleState(void *renderer, int in_loop,
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
     if (r) {
-        [r mglSetMSSampleState:in_loop forced:forced offset:offset];
+        r->_mglInMSSampleDrawLoop = in_loop ? YES : NO;
+        r->_mglForcedMSSampleId = forced;
+        r->_mglMSSamplePlaneOffset = offset;
     }
 }
 
@@ -585,25 +610,34 @@ int mglPlatformShellNewCommandBuffer(void *renderer)
 void *mglPlatformShellDrawable(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [r mglDrawablePointer] : NULL;
+    return r ? (__bridge void *)r.drawable : NULL;
 }
 
 void *mglPlatformShellMetalDevice(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [r mglMetalDevicePointer] : NULL;
+    return r ? mglRendererBackendGetDevice(r->_backend) : NULL;
 }
 
 int mglPlatformShellMetalObjectsPresent(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [r mglMetalObjectsPresent] : 0;
+    if (!r) return 0;
+    return (mglRendererBackendGetDevice(r->_backend) &&
+            mglRendererBackendGetCommandQueue(r->_backend))
+               ? 1
+               : 0;
 }
 
 int mglPlatformShellRecreateCommandQueue(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return r ? [r mglRecreateCommandQueue] : 0;
+    if (!r || !r->_backend) {
+        return 0;
+    }
+    void *commandQueue = NULL;
+    (void)mglRendererBackendResetCommandQueue(r->_backend, 0u, &commandQueue);
+    return mglRendererBackendGetCommandQueue(r->_backend) != NULL ? 1 : 0;
 }
 
 /* C entry point for the pipeline cache's cache reset (same shape as the blend
@@ -820,6 +854,25 @@ int mglPlatformShellShouldSkipPresentForUnlockedSwap(void *renderer)
     return r ? ([r mglShouldSkipPresentForUnlockedSwap] ? 1 : 0) : 0;
 }
 
+/* -mglApplyPendingDrawableSize moved here (log 201): it only touches the
+ * core-state atomics and the layer helpers this TU already owns. */
+static CGSize mglPlatformShellApplyPendingDrawableSizeCGSize(MGLRenderer *r)
+{
+    MGL_ASSERT_GL_THREAD();
+    if (atomic_exchange_explicit(&r->_drawableSizeDirty, false,
+                                 memory_order_acquire)) {
+        uint32_t w = atomic_load_explicit(&r->_pendingDrawableW,
+                                          memory_order_relaxed);
+        uint32_t h = atomic_load_explicit(&r->_pendingDrawableH,
+                                          memory_order_relaxed);
+        CGSize s = CGSizeMake((CGFloat)(w > 1u ? w : 1u),
+                              (CGFloat)(h > 1u ? h : 1u));
+        [r mglSetMetalLayerDrawableSize:s];
+        return s;
+    }
+    return [r mglMetalLayerDrawableSize];
+}
+
 MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer)
 {
     MGLRenderer *r = (__bridge MGLRenderer *)renderer;
@@ -827,7 +880,7 @@ MGLSizeValue mglPlatformShellApplyPendingDrawableSize(void *renderer)
     if (!r) {
         return size;
     }
-    CGSize applied = [r mglApplyPendingDrawableSize];
+    CGSize applied = mglPlatformShellApplyPendingDrawableSizeCGSize(r);
     size.width = (uint64_t)applied.width;
     size.height = (uint64_t)applied.height;
     return size;
@@ -1392,7 +1445,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     if (NSThread.isMainThread) {
         [self mglMainThreadSyncViewGeometry];
     } else {
-        (void)[self mglApplyPendingDrawableSize];
+        (void)mglPlatformShellApplyPendingDrawableSizeCGSize(self);
     }
 
     /* Observe view geometry changes so the GL thread never needs to touch
