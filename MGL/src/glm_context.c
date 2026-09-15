@@ -51,6 +51,11 @@
 #include "MGLRenderer.h"
 #include "error.h"
 #include "mgl_safety.h"
+/* The shared out-of-tree ABI header: declaring createGLMContext /
+ * MGLsetCurrentContext / ... here means a signature change that does not
+ * update mgl_glfw_abi.h fails to compile on the MGL side too, instead of
+ * drifting against hand-written consumer declarations (H4-2). */
+#include "mgl_glfw_abi.h"
 
 extern void getMacOSDefaults(GLMContext glm_ctx);
 extern void init_dispatch(GLMContext ctx);

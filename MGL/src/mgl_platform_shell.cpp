@@ -56,6 +56,7 @@
 #include "mgl_shader_resource.h"
 #include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_thread_affinity.h"
+#include "mgl_context_host_ops.h"      /* GLFW-facing C ABI (H2 ops table) */
 
 
 /* ==========================================================================
@@ -748,6 +749,7 @@ static SEL s_selAddObject = NULL;
 static SEL s_selFlushDrawBuffer = NULL;
 static SEL s_selBindMTLTexture = NULL;
 static SEL s_selSwapInterval = NULL;
+static SEL s_selSetDisplaySyncEnabled = NULL;
 static SEL s_selState = NULL;
 static SEL s_selLayer = NULL;
 static SEL s_selReason = NULL;
@@ -2776,6 +2778,84 @@ void *CppCreateMGLRendererAndBindToContext(void *glm_ctx)
     /* Compatibility export used by reference libMGL.dylib.
      * Falls back to headless binding when no Cocoa window is supplied. */
     return CppCreateMGLRendererHeadless(glm_ctx);
+}
+
+/* === GLFW context-host ops (H2, docs/GLFW_MGL_INVOCATION_PLAN.md §3.3) ====
+ * The GLFW fork used to drive MGLRenderer through objc_msgSend, so deleting
+ * a selector on this side could only fail at run time
+ * (-[MGLRenderer mglSetSwapInterval:]: unrecognized selector, log 208-⑥).
+ * These entries replace every remaining GLFW→MGL message send with plain C
+ * function pointers: a removed or renamed entry is now a compile-time event
+ * for a rebuilt consumer, and the version/size fields let a stale consumer
+ * degrade instead of crash. */
+
+static void *mglContextHostCreateAndBind(void *glm_ctx, void *view)
+{
+    if (!glm_ctx || !view) {
+        fprintf(stderr,
+                "MGL ERROR: context-host create needs a GLMContext and a view\n");
+        return NULL;
+    }
+    MGLScopedAutoreleasePool pool;
+    MGLObjectId renderer = mglCreateRendererObject();
+    if (!renderer) {
+        fprintf(stderr, "MGL ERROR: failed to allocate renderer\n");
+        return NULL;
+    }
+    mglShellCreateAndBind(renderer, NULL, (GLMContext)glm_ctx,
+                          (MGLObjectId)view);
+    /* +1 ownership transfers to the consumer; release_owner balances it. */
+    return (void *)renderer;
+}
+
+static int mglContextHostRendererIsReady(void *owner)
+{
+    if (!owner) {
+        return 0;
+    }
+    MGLScopedAutoreleasePool pool;
+    return (int)mglShellRendererIsReady((MGLObjectId)owner, NULL);
+}
+
+static void mglContextHostSetSwapInterval(void *owner, int interval)
+{
+    MGLPlatformShellIvars *ivars = mglPlatformShellIvars((MGLObjectId)owner);
+    if (!ivars) {
+        return;
+    }
+    /* The deleted setter's exact contract: negative values clamp to 0, the
+     * ivar records the request, and the layer follows for vsync pacing. */
+    if (interval < 0) {
+        interval = 0;
+    }
+    ivars->_swapInterval = interval;
+    MGLObjectId layer = (MGLObjectId)ivars->_layer;
+    if (layer) {
+        MGLScopedAutoreleasePool pool;
+        mglSend<void>(layer,
+                      MGL_SEL(s_selSetDisplaySyncEnabled,
+                              "setDisplaySyncEnabled:"),
+                      (signed char)(interval > 0 ? 1 : 0));
+    }
+}
+
+static void mglContextHostReleaseOwner(void *owner)
+{
+    mglReleaseObject((MGLObjectId)owner);
+}
+
+static const MGLContextHostOps g_mglContextHostOps = {
+    MGL_CONTEXT_HOST_OPS_VERSION,
+    (uint32_t)sizeof(MGLContextHostOps),
+    mglContextHostCreateAndBind,
+    mglContextHostRendererIsReady,
+    mglContextHostSetSwapInterval,
+    mglContextHostReleaseOwner,
+};
+
+const MGLContextHostOps *mglContextHostOps(void)
+{
+    return &g_mglContextHostOps;
 }
 
 } /* extern "C" */

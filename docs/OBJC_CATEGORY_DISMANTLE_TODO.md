@@ -8948,3 +8948,39 @@ refq 223/223（164 / **59**）、piq 30/30（17 / **13**）、compute 152/152（
 ① **父类锚点**：C 实现的方法里 `[super …]` 必须用**注册时保存的类**取父类，不能用 `object_getClass(self)`（父类方法里它返回最派生类 ⇒ 自递归）；
 ② **`class_addIvar` 的 alignment 是 log2**，且"编译器替我们做过的事"（ARC 强引用/弱引用、dealloc 链、返回值约定）在运行时建类后都要**逐条补回**。
 
+### 0.136 GLFW selector 事故复盘与第六类判据（2026-09-15，H3-1 落地）
+
+**事故**：第 90 刀删除 `mglSetSwapInterval:`（−11 行）时，三步核查只扫了 `MGL/`——
+而 `external/glfw/src/mgl_context.m:68` 在目录外仍发送该 selector。GLFW 归档（`libglfw3.a`）
+与 `MGL/include/` 无 make 依赖，MGL 删声明后 GLFW 连编译期信号都没有，直接变成
+`-[MGLRenderer mglSetSwapInterval:]: unrecognized selector` 运行时崩溃。
+完整事实链与方案见 [`GLFW_MGL_INVOCATION_PLAN.md`](GLFW_MGL_INVOCATION_PLAN.md)（2026-09-14）。
+
+**第六类判据（追加到第 90 刀的五类之后）**：**`external/` 内的 ObjC 发送**——
+`external/glfw/src/*.m` 对 `mgl*` selector 的发送。**扫描范围必须含 `external/`**（当前扫描只看 `MGL/`）。
+可执行检查（每刀删除 selector 前必跑）：
+
+```sh
+# 1) 全库发送点（MGL + external + 测试目录）
+grep -rn "\[.*\b<S>\b" MGL/ external/ test_legacy_compat/ scratch/ \
+     --include='*.m' --include='*.mm' --include='*.h'
+# 2) 动态引用
+grep -rn "respondsToSelector\|@selector(<S>)" MGL/ external/ test_legacy_compat/ scratch/
+# 3) 命中在 external/ 或 test_* 或 scratch/ ⇒ 禁止删除，改为"保留 + 注释归属"
+#    或先把消费方迁到 C ABI 再删。
+```
+
+**终态修复（2026-09-15 落地，H2 路线，非 H0 止血）**：
+- `MGL/include/mgl_context_host_ops.h`（新增）：`MGLContextHostOps`（version+size 首两字段 +
+  create_and_bind / renderer_is_ready / set_swap_interval / release_owner）；
+  `mgl_platform_shell.cpp` 提供 `mglContextHostOps()` 单例实现。
+- `external/glfw/src/mgl_context.m`：4 处 MGLRenderer 消息发送全部改走 ops 表
+  （创建/绑定、isReady、swapInterval、释放），CFBridgingRetain/CFRelease 所有权舞蹈移除；
+  `cocoa_platform.h` 的 `_GLFWcontextMGL` 增加 `ops` 字段。
+- 验收口径：`nm libglfw.dylib | grep 'msgSend\$mgl'` 为空（GLFW 对 MGL selector 的发送归零）。
+- H1：`Makefile` 给 `libglfw3.a` 加 `$(GLFW_MGL_HEADERS)`（`wildcard MGL/include/*.h`）依赖；
+  `build_external.sh` 用 `cmake --build`（depfile 追踪 MGL 头），两级依赖接通。
+- H4-2：`MGL/include/mgl_glfw_abi.h`（新增，7 个 C 函数声明，不拉 glcorearb.h）；
+  `mgl_context.m` 删手写声明块改 include 它；`glm_context.c` 也 include 它做
+  **MGL 侧交叉验证**（签名漂移在两边都变成编译错误）。
+

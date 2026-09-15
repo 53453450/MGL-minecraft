@@ -30,6 +30,7 @@
 #include <IOKit/hid/IOHIDLib.h>
 
 #include "MGLContext.h"
+#include "mgl_context_host_ops.h"
 
 // NOTE: All of NSGL was deprecated in the 10.14 SDK
 //       This disables the pointless warnings for every symbol we use
@@ -117,6 +118,11 @@ typedef UInt8 (*PFN_LMGetKbdType)(void);
 typedef struct _GLFWcontextMGL
 {
     GLMContext          ctx;
+    // H2 (docs/GLFW_MGL_INVOCATION_PLAN.md): fetched once per context from
+    // mglContextHostOps(); every renderer interaction goes through it
+    // instead of objc_msgSend, so removed MGL entries fail at compile time
+    // for rebuilt consumers and as NULL checks for stale ones.
+    const MGLContextHostOps* ops;
 #if defined(__OBJC__)
     id              object;
     id              renderer;

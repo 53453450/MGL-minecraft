@@ -124,6 +124,13 @@ GLFW_STATIC_DEPS = $(GLFW_C_SOURCES) $(GLFW_M_SOURCES) \
                 external/glfw/CMakeLists.txt \
                 external/build_external.sh
 
+# H1 (docs/GLFW_MGL_INVOCATION_PLAN.md §3.1): GLFW TUs compile against MGL
+# headers (external/glfw/src/CMakeLists.txt adds -I MGL/include), so an MGL
+# header change must re-enter build_external.sh.  Without this edge the
+# archive silently kept stale objects and a deleted MGL declaration reached
+# the consumer as a run-time crash instead of a compile error.
+GLFW_MGL_HEADERS := $(wildcard MGL/include/*.h)
+
 ifneq ($(SDK_ROOT),)
 CFLAGS_GL_CORE += -isysroot $(SDK_ROOT)
 CFLAGS_GL_ES += -isysroot $(SDK_ROOT)
@@ -371,7 +378,7 @@ $(mgl_es_lib): $(mgl_es_link_objs) $(es_link_stamp)
 # `make` (no glslang/SPIRV-* trees involved; see external/build_external.sh).
 # Depend on fork sources so edits (e.g. mgl_context.m) invalidate the archive
 # and re-enter the cmake incremental build (ARCHITECTURE_AUDIT A07).
-external/glfw/build/src/libglfw3.a: $(GLFW_STATIC_DEPS)
+external/glfw/build/src/libglfw3.a: $(GLFW_STATIC_DEPS) $(GLFW_MGL_HEADERS)
 	@bash external/build_external.sh
 
 # Build GLFW shared library from pre-built static library

@@ -10,8 +10,8 @@
 
 #include "MGLContext.h"
 #include "internal.h"
-#include "MGLRenderer.h"
-#include "MGLRenderer+Lifecycle_Private.h"
+#include "mgl_context_host_ops.h"
+#include "mgl_glfw_abi.h"
 
 #include <unistd.h>
 #include <math.h>
@@ -23,18 +23,6 @@
 #define GL_UNSIGNED_INT_8_8_8_8_REV       0x8367
 #define GL_DEPTH_COMPONENT                0x1902
 #define GL_FLOAT                          0x1406
-
-
-GLMContext createGLMContext(GLenum format, GLenum type,
-                        GLenum depth_format, GLenum depth_type,
-                        GLenum stencil_format, GLenum stencil_type);
-
-void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable);
-
-void MGLsetCurrentContext(GLMContext ctx);
-GLMContext MGLgetCurrentContext(void);
-void MGLswapBuffers(GLMContext ctx);
-void destroyGLMContext(GLMContext ctx);
 
 static void makeContextCurrentMGL(_GLFWwindow* window)
 {
@@ -62,11 +50,14 @@ static void swapBuffersMGL(_GLFWwindow* window)
 
 static void swapIntervalMGL(int interval)
 {
-    @autoreleasepool {
-        _GLFWwindow* window = _glfwPlatformGetTls(&_glfw.contextSlot);
-        if (window && window->context.mgl.renderer) {
-            [window->context.mgl.renderer mglSetSwapInterval:interval];
-        }
+    /* H2: plain C call through the ops table - no objc_msgSend to MGL
+     * selectors is left in this TU, so a removed MGL entry can no longer
+     * surface as an unrecognized-selector crash (mglSetSwapInterval:,
+     * 2026-09-13). */
+    _GLFWwindow* window = _glfwPlatformGetTls(&_glfw.contextSlot);
+    if (window && window->context.mgl.ops && window->context.mgl.renderer) {
+        window->context.mgl.ops->set_swap_interval(window->context.mgl.renderer,
+                                                   interval);
     }
 }
 
@@ -119,11 +110,11 @@ static void destroyContextMGL(_GLFWwindow* window)
             window->context.mgl.ctx = NULL;
         }
 
-        /* The context struct is a C allocation, so the renderer reference is
-         * explicitly retained below rather than managed by an ObjC property.
-         * Balance that retain before dropping the raw pointer. */
+        /* The renderer handle came from ops->create_and_bind holding one
+         * reference; hand it back through the same ABI. */
         if (window->context.mgl.renderer) {
-            CFRelease((__bridge CFTypeRef)window->context.mgl.renderer);
+            if (window->context.mgl.ops)
+                window->context.mgl.ops->release_owner(window->context.mgl.renderer);
             window->context.mgl.renderer = nil;
         }
 
@@ -242,14 +233,27 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
 
     [window->ns.view wantsLayer];
 
-    /* The renderer class is registered with the Objective-C runtime by libmgl
-     * at load time (MGL holds no .m any more), so it has to be looked up by
-     * name: a compiler-generated class reference would be a symbol that no
-     * longer exists.  The methods used below are still declared in
-     * MGLRenderer.h / MGLRenderer+Lifecycle_Private.h. */
-    Class mglRendererClass = NSClassFromString(@"MGLRenderer");
-    id renderer = mglRendererClass ? [[mglRendererClass alloc] init] : nil;
-    if (!renderer)
+    /* H2: fetch the MGL-facing C ABI once and drive the renderer through it.
+     * The renderer object is allocated and bound inside libmgl
+     * (ops->create_and_bind); this TU never sends an MGL selector and never
+     * references the MGLRenderer class, so a removed or renamed MGL entry is
+     * a compile-time event for rebuilt consumers and a NULL check for stale
+     * ones - not an unrecognized-selector crash. */
+    const MGLContextHostOps* ops = mglContextHostOps();
+    if (!ops || ops->version != MGL_CONTEXT_HOST_OPS_VERSION ||
+        ops->size < sizeof(MGLContextHostOps))
+    {
+        destroyGLMContext(window->context.mgl.ctx);
+        window->context.mgl.ctx = NULL;
+        _glfwInputError(GLFW_VERSION_UNAVAILABLE,
+                        "MGL: context host ops missing or incompatible");
+        return GLFW_FALSE;
+    }
+    window->context.mgl.ops = ops;
+
+    window->context.mgl.renderer = ops->create_and_bind(window->context.mgl.ctx,
+                                                        window->ns.view);
+    if (!window->context.mgl.renderer)
     {
         destroyGLMContext(window->context.mgl.ctx);
         window->context.mgl.ctx = NULL;
@@ -258,13 +262,7 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
         return GLFW_FALSE;
     }
 
-    window->context.mgl.renderer = (id)CFBridgingRetain(renderer);
-    /* Transfer the alloc ownership to the context's explicit retain. */
-    [renderer release];
-
-    [window->context.mgl.renderer createMGLRendererAndBindToContext: window->context.mgl.ctx view: window->ns.view];
-
-    if (![renderer mglRendererIsReady])
+    if (!ops->renderer_is_ready(window->context.mgl.renderer))
     {
         /* The renderer owns the backend and platform shell through the
          * context.  Destroy it before exposing any GLFW callbacks so a
@@ -272,7 +270,7 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
          * context. */
         destroyGLMContext(window->context.mgl.ctx);
         window->context.mgl.ctx = NULL;
-        CFRelease((__bridge CFTypeRef)window->context.mgl.renderer);
+        ops->release_owner(window->context.mgl.renderer);
         window->context.mgl.renderer = nil;
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
                         "MGL: Failed to initialize Metal renderer");
