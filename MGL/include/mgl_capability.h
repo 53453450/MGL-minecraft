@@ -70,6 +70,10 @@ typedef struct MGLCapability_t {
 /* Initialize capability from a backend-owned Metal device.  Must be called
  * once after backend creation; the borrowed device pointer remains valid
  * until backend shutdown. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void MGLCapabilityInit(MGLCapability *cap, void *deviceRef);
 
 /* === Capability query API === */
@@ -81,5 +85,9 @@ uint64_t   MGLCapabilityMaxConcurrentCommandBuffers(MGLCapability *cap);
 
 /* === Driver bug query API === */
 bool       MGLCapabilityHasBug(MGLCapability *cap, const char *bugName);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 #endif /* MGL_CAPABILITY_H */

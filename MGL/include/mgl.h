@@ -26,6 +26,12 @@
 #include "glcorearb.h"
 #include "glm_context.h"
 
+#ifdef __cplusplus
+/* The platform shell is a C++ translation unit now and calls these GL entry
+ * points; without the guard it would reference the mangled names (log 208). */
+extern "C" {
+#endif
+
 void mglCullFace(GLMContext ctx, GLenum mode);
 void mglFrontFace(GLMContext ctx, GLenum mode);
 void mglHint(GLMContext ctx, GLenum target, GLenum mode);
@@ -1099,6 +1105,10 @@ void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count);
 #ifdef MGL_GL_ES
 void  mglBlendBarrier(GLMContext ctx);
 void mglPrimitiveBoundingBox(GLMContext ctx, GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW);
+#endif
+
+#ifdef __cplusplus
+} /* extern "C" */
 #endif
 
 #endif /* mgl_h */

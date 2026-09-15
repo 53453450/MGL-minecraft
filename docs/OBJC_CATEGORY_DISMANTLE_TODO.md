@@ -8130,6 +8130,40 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致（第
        ⑦ **剩余**：只剩 T5 Lifecycle（构造/销毁 + KVO/通知 + `dealloc`，约 670 行、46 处 AppKit）与
        T1/T6 收口刀（两个类改运行时注册后删 `.m`，并把 Makefile 的 `test_metalcpp_smoke` 改成编译 `.cpp`）。
 
+208. **第 177 轮（P0-1 第一百四十六刀）：**T5 Lifecycle 整块出 `.m`——壳只剩两个类****：
+       ① **范围**：把 `MGLRenderer (Lifecycle)` 全部搬进 `MGL/src/mgl_platform_shell.cpp`：
+       `createMGLRendererAndBindToContext:view:`（262 行，最重的一块）、`mglRendererIsReady`、`mglBackendWillDestroy:`、
+       `mglMainThreadSyncViewGeometry`、`observeValueForKeyPath:ofObject:change:context:`、`mglUpdateWindowNotificationObserver`、
+       `mglWindowGeometryChanged:`、`createProactiveTextures`、`dealloc`、两个兼容用 init/create 方法，
+       以及四个 C 入口（`mglRendererPlatformBackendWillDestroy`、`CppCreateMGLRenderer*` 三件）。
+       方法体一律是 C 函数 + 加载期 `class_addMethod`（第 64 条），选择器与 ivar 走既有桥接层。
+       ② **AppKit 面的五处具体翻译**：**(a)** `@available(macOS 11.0, *)` → `__builtin_available(macos 11.0, *)`（同一内建）；
+       **(b)** `NSKeyValueObservingOptionInitial` → 常量 `1`（KVO 选项枚举值）；**(c)** `NSThread.isMainThread`/`NSScreen.mainScreen`/
+       `NSWindow.backingScaleFactor` 等类属性 → `objc_msgSend` 到类对象；**(d)** `NSAssert(...)` → 显式检查 + 错误日志 + return
+       （原语义是抛异常；该断言只在主线程调用路径上，换算成"记录并返回"更安全，已在正文与代码注释里写明）；
+       **(e)** **通知名用框架自己的导出常量**：`extern "C" MGLObjectId const NSWindowDidResizeNotification;`
+       ——链的是 AppKit 的真符号（`NSWindowDidResizeNotification` 本来就在 `.m` 的未定义符号表里，AppKit 也已在 `otool -L` 依赖里），
+       所以观察者登记的名字与系统发布的是**同一个对象**，比"同内容字符串"更强。
+       ③ **弱引用**：`_observedWindow` 是 `__weak` ivar，C++ 里用 `objc_storeWeak`/`objc_loadWeak` 读写（镜像结构体里是 `void *`），
+       dealloc 里用 `objc_storeWeak(..., NULL)` 解绑。`dealloc` 末尾补 `[super dealloc]`（`objc_msgSendSuper`）——ARC 原本由编译器插入。
+       ④ **顺带修的两处 C++ 可见性缺口**：`MGL/include/mgl.h`（1104 行 GL 入口）与 `MGL/include/mgl_capability.h` 缺 `extern "C"` 保护，
+       任何 C++ TU 引用都会去链 mangle 名（本刀实测 `_mglDrawBuffer`、`MGLCapabilityInit(...)`未定义）；两处都补上 `#ifdef __cplusplus extern "C"` 包裹。
+       ⑤ **第 70 条（新）：T5 的观测面 A/B 与 CTS 都碰不到**——`test_regression`/CTS 从不 resize 真窗口，
+       所以本刀自带 **窗口观察 oracle** `/private/tmp/kvo_probe`（源码 `/private/tmp/kvo_probe.mm`）：真 `NSWindow`+`NSView`+
+       `mglConfigureMetalLayerWithDevice:`，登记窗口观察者 → 改 view frame → 发 `NSWindowDidResizeNotification` →
+       断言 `mglPlatformShellApplyPendingDrawableSize` 的应用尺寸确实更新（**200x200 → 400x300**，2× backing），
+       再发一个**别的对象**的同名通知 → 断言尺寸**不动**（观察者按对象限定），最后 detach + `release`（走 dealloc）。
+       三库（原始基线 `8c4e578`、上一刀、本刀）输出**逐行一致**。
+       ⑥ **验证**：`make -j8` **0 error**；单例探针 **2/2**；`make test-all` 绕行后 **exit 0**（`test-regression` **PASS 92 FAIL 0 SKIP 2 / 94**、
+       `test-es-smoke: ok`）；A/B **逐行一致**（**4981/4981**、**5514/5514**、stderr MGL 多重集 **307/307**）；
+       归档 oracle 三项全等；窗口观察 oracle 三库一致；CTS 七簇见 §0.134。
+       另：`build/test_mgl <case>`（真 GLFW 窗口）在本环境**旧库也 abort**（`-[MGLRenderer mglSetSwapInterval:]: unrecognized selector`，
+       由 `external/glfw/src/mgl_context.m` 的 `swapIntervalMGL` 发出，属**既存缺口**、非本刀引入：新旧与原始基线三库输出归一化后**逐行一致**，已记录待后续处理）。
+       ⑦ **度量**：壳 **972 → 315 行（−657）**、语法 **112 → 29（−83）**、词汇 **170 → 42（−128）**；
+       宿主 TU **约 2,100 行**。全库仍 **1 个 `.m`**、端口 **0**。
+       ⑧ **剩余**：只剩 T1（`MGLPlatformRendererShell` 类，约 200 行 / 16 语法）与 T6（空 `@implementation MGLRenderer`），
+       两者必须**同一刀**收口（父类符号，见 §0.132），并同时改 Makefile 的 `test_metalcpp_smoke` 编译目标。
+
 ### 0.114 第 157 轮交接快照（**新会话请先读本节 + §0.51 + §0.61 + §0.69 + §0.112/§0.113**）
 
 **当前状态**：`MGL/` 内 ObjC **4 个文件 / 0 空 TU / 11,849 行 / 653 语法 / 1,289 词汇**；
@@ -8652,13 +8686,13 @@ CTS 七簇 **diff 全空**（58/1/0/59/13/39/4）；A/B 两臂逐行一致；**�
 | 要素 | 目标 | 实测（本轮 HEAD） | 证据 |
 |---|---|---|---|
 | `MGL/` 内 `.m`/`.mm` 数 | 0，或**至多一个**平台壳 TU | **1**（唯一 T5 壳 `MGLPlatformRendererShell.m`） | `ls MGL/src/*.m MGL/src/*.mm`；`scripts/objc_zero.sh` 文件数 = 1 |
-| ObjC 语法 / 词汇 | 壳以外为 0 | **112 / 170，全部在壳内** | `scripts/objc_zero.sh` 逐文件表只有壳一行（第 206/207 条） |
-| 壳的行数上限 | 必须写明 | **2,400 行**（当前 **972**，余量 1,428） | §0.128 + §0.132 + T5 表 |
+| ObjC 语法 / 词汇 | 壳以外为 0 | **29 / 42，全部在壳内** | `scripts/objc_zero.sh` 逐文件表只有壳一行（第 206–208 条） |
+| 壳的行数上限 | 必须写明 | **2,400 行**（当前 **315**，余量 2,085） | §0.128 + §0.132 + T5 表 |
 | 壳的移除路径 | 必须写明 | **(a)** `objc_msgSend` 在 C++ 内实现 ⇒ `.m` 数清零；**(b)** 移交消费方 | §0.128 + T5 表 |
 | shim 端口数 | **0** | **0**（壳对外 7 个 C 入口，实现面全在壳内） | §0.5 第 204 条；`grep -cE "\*Port\(" MGL/include/mgl_renderer_ports.h` = 0 |
 
-**累计度量（基线 2026-09-12 @ `8e64afb`）**：文件 **53 → 1**（删除 9 个 `.m`）、空 TU **3 → 0**、行数 **43,989 → 972（−97.8%）**、
-ObjC 语法 **2,268 → 112（−95.1%）**、词汇 **4,353 → 170（−96.1%）**、端口 **43 → 0（−100%）**。
+**累计度量（基线 2026-09-12 @ `8e64afb`）**：文件 **53 → 1**（删除 9 个 `.m`）、空 TU **3 → 0**、行数 **43,989 → 315（−99.3%）**、
+ObjC 语法 **2,268 → 29（−98.7%）**、词汇 **4,353 → 42（−99.0%）**、端口 **43 → 0（−100%）**。
 
 **每刀的质量闸门（142 刀全程执行）**：`make -j8` 两个库 0 error；单例 CTS 探针；`make test-all` 绕行后 **PASS 92 / FAIL 0 / SKIP 2**；
 **CTS 七簇非通过集合 diff 全空**（58/1/0/59/13/39/4，七簇 `completed == total`）；
@@ -8666,7 +8700,7 @@ ObjC 语法 **2,268 → 112（−95.1%）**、词汇 **4,353 → 170（−96.1%�
 **被 A/B 过滤的观测面带专属 oracle**（归档路径：第 66 条 + `/private/tmp/archive_oracle.sh`）；
 `scripts/objc_zero.sh` 记录度量；文档三处同步（§0.0 / §5 日志 / 交接快照）后提交并推送（SSH origin）。
 
-**规矩表**：§0.62/§0.65–§0.129 共 **六十六条**仍然有效（新增第 **67/68** 条见第 206 条与 §0.132、第 **69** 条见第 207 条：`@try/@finally` 的等价物是 RAII 作用域守卫，不是 catch；其中本目标收尾阶段最常命中的是
+**规矩表**：§0.62/§0.65–§0.129 共 **六十六条**仍然有效（新增第 **67/68** 条见第 206 条与 §0.132、第 **69** 条见第 207 条：`@try/@finally` 的等价物是 RAII 作用域守卫，不是 catch；第 **70** 条见第 208 条：被 A/B 与 CTS 都覆盖不到的观测面（窗口/KVO/通知）必须自带 oracle；其中本目标收尾阶段最常命中的是
 第 38（级联清理）、58（`@try`/env 读取两陷阱）、59（areas 槽地址漏 `*`）、60（端口→选择器反向扫描）、
 **63（改多行 ObjC 调用点的三步前置检查）**、**64（"无调用点"≠死代码：constructor）**、
 **66（被 A/B 过滤的观测面必须自带专属 oracle）**。
@@ -8774,4 +8808,42 @@ pp 5/5（1 / **4**）——与上一刀（`p150`）非通过集合 `diff` 逐条
 把 Makefile 的 `test_metalcpp_smoke` 从 `-x objective-c++ -fobjc-arc MGL/src/MGLPlatformRendererShell.m` 改成
 编译 `MGL/src/mgl_platform_shell.cpp`（C++，`-DMGL_PLATFORM_SHELL_SMOKE`），并保证该目标的
 `verifyPlatformRendererShell()`（断言 `performOperation:` 抛出的 `MGLSmokeException` 名字）仍然通过。
+
+### 0.134 第 177 轮交接快照（**壳只剩两个类；最后一刀的形状已经确定**）
+
+**当前状态**：`MGL/` 内仍 **1 个 `.m`**（`MGLPlatformRendererShell.m`，**315 行 / 29 语法 / 42 词汇**，上限 2,400 行、余量 2,085）；
+端口 **0**；本刀四件套 + 三个专属 oracle 全绿（A/B 4981/4981 与 5514/5514、stderr 307/307；归档 oracle 三项全等；
+**窗口观察 oracle 三库一致**；`make test-all` exit 0、`test-regression` 92/0/2）。
+
+**本刀 CTS 实测（`TAG=p152`）**：hotspot 1328/1328（pass 1270 / 非通过 **58**）、tess 140/140（139 / **1**）、gs 136/136（136 / **0**）、
+refq 223/223（164 / **59**）、piq 30/30（17 / **13**）、compute 152/152（113 / **39**）、pp 5/5（1 / **4**）——
+与上一刀（`p151`）非通过集合 `diff` 逐条为空，`completed == total`，无 timeout / harness_error。
+
+**`.m` 里还剩什么（315 行）**：
+
+| 块 | 行数 | 语法 | 说明 |
+|---|---|---|---|
+| `MGLPlatformRendererShell` 类（**T1**） | 约 200 | 16 | 4 个 ivar（`_swapInterval` + 属性合成的 `_view`/`_layer`/`_drawable`）、约 18 个方法、`performOperation:` 的异常边界 |
+| `@implementation MGLRenderer`（**T6**） | 2 | 1 | 空实现，承载 `MGLRenderer ()` 扩展的 16 个 `@package` ivar |
+| 墓碑注释 | 约 110 | 12 | 迁移说明（`#import` 行等），随 T1/T6 一起消失 |
+
+**最后一刀（T1+T6）的执行清单**（不可再拆，理由见 §0.132 的父类符号问题）：
+1. 新建/扩展 `mgl_platform_shell.cpp`：`objc_allocateClassPair` 建 `MGLPlatformRendererShell`（父类 NSObject，ivar `_swapInterval`/`_view`/`_layer`/`_drawable`），
+   `class_addMethod` 挂 18 个方法（`initWithView:`、`view`/`setView:`/`layer`/`setLayer:`/`drawable`/`setDrawable:`、
+   `mglSwapInterval`、`mglShouldSkipPresentForUnlockedSwap`、`mglCreateSystemDefaultDevice`、`mglConfigureMetalLayerWithDevice:…`、
+   `mglDetachMetalLayer`、`mglCaptureDescriptorForDevice:outputPath:`、`mglStartCaptureWithDescriptor:error:`、`mglStopCapture`、
+   `mglNextDrawable`、`mglDrawableTexture`、`mglHasMetalLayer`、`mglMetalLayerDrawableSize`、`mglMetalLayerFrame`、
+   `mglSetMetalLayerFrame:contentsScale:`、`mglSetMetalLayerDrawableSize:`、`performOperation:context:result:`），
+   随后 `objc_registerClassPair`；**属性 setter 自己实现强引用语义**（retain 新值 / release 旧值）。
+2. 同一刀内 `objc_allocateClassPair` 建 `MGLRenderer`（父类 = `objc_getClass("MGLPlatformRendererShell")`），
+   用 `class_addIvar(cls, name, size, alignment, "?")` 按 `mgl_renderer_ivars.h` 的 16 个字段顺序重建 ivar（size/alignment 由镜像结构体裁剪），
+   `_observedWindow` 保持"用 `objc_storeWeak/objc_loadWeak` 管理"的弱语义（注册为普通指针 ivar 即可，弱表按地址登记），
+   再把**已经写好的全部方法体**（本刀与第 206/207 刀注册的那些）改挂到这两个运行时类上。
+3. 删除 `MGL/src/MGLPlatformRendererShell.m`，`scripts/objc_zero.sh` 应输出 **文件数 0 / 语法 0 / 词汇 0**。
+4. Makefile：`test_metalcpp_smoke` 目标（第 1049–1050 行附近）从
+   `-x objective-c++ -fobjc-arc ... MGL/src/MGLPlatformRendererShell.m` 改为编译 `MGL/src/mgl_platform_shell.cpp`（C++、无 ARC、保留 `-DMGL_PLATFORM_SHELL_SMOKE`），
+   并保证该目标里 `verifyPlatformRendererShell()` 的三条断言仍然成立（`[[MGLPlatformRendererShell alloc] initWithView:]`、`view`/`drawable` 属性、`performOperation:` 的 `exception_name == "MGLSmokeException"`）。
+5. `MGL/include/MGLRenderer.h` / `MGLPlatformRendererShell.h` 里的 `@interface` 声明保留（消费方 `external/glfw` 仍在用），但**它们不再对应任何编译器生成的类**：
+   运行时注册的类用**同名** `objc_allocateClassPair(..., "MGLPlatformRendererShell")` / `"MGLRenderer"`，所以 `@interface` 只作 API 声明。
+   注意 `.h` 里的 ivar 块（`{ int _swapInterval; }`）与属性声明仍是消费方的编译期契约，不能删。
 

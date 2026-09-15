@@ -33,7 +33,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "glm_limits.h"              /* MAX_COLOR_ATTACHMENTS */
+#include "draw_command.h"             /* mglInitBatchArena / mglDestroyBatchArena */
+#include "glm_limits.h"               /* MAX_COLOR_ATTACHMENTS */
+#include "mgl_binding_state_ops.h"    /* mglBindingInvalidateLastBoundState */
+#include "mgl.h"                      /* mglDrawBuffer */
+#include "mgl_capability.h"           /* MGLCapabilityInit */
+#include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
 #include "mgl_air_loader.h"           /* MGLRenderPipelineDescriptorState */
 #include "mgl_aux_assets.h"
 #include "mgl_batch_mtl_encode.h"
@@ -1056,6 +1061,1055 @@ void mglRendererBindTexture(GLMContext glm_ctx,
                             texture);
     }
     mglRendererBackendEnd(&backend_lease);
+}
+
+
+/* === renderer lifecycle (T5 merge from MGLRenderer+Lifecycle.m) ==========
+ * Construction, the view/window observers and teardown are Cocoa API: KVO on
+ * the view, NSWindow notifications, the CALayer/drawable bring-up and the
+ * MTLDevice/backend bootstrap.  This was the renderer's last Objective-C: it is
+ * C++ now, with AppKit reached as id handles through objc_msgSend, the @package
+ * ivars through mglRendererIvars(), and the window notification names taken from
+ * the framework's own exported constants - linked, not copied, so the observer
+ * names are the very objects NSNotificationCenter publishes. */
+
+/* mgl_renderer_entries.c; only the Objective-C private header declares it, so a
+ * C translation unit adds its own declaration (the pattern uniforms.c uses). */
+extern "C" int mglEnvFlagEnabledDefaultOn(const char *name);
+
+extern "C" {
+/* NSString * const, exported by AppKit (see NSWindow.h). */
+extern MGLObjectId const NSWindowDidResizeNotification;
+extern MGLObjectId const NSWindowDidChangeBackingPropertiesNotification;
+}
+
+/* NSKeyValueObservingOptionInitial */
+enum { kMGLKVOOptionInitial = 0x1 };
+
+/* KVO context shared by the observer registration and the callback. */
+static void *s_kvoViewGeometryContext = &s_kvoViewGeometryContext;
+
+static SEL s_selAlloc = NULL;
+static SEL s_selInit = NULL;
+static SEL s_selInitWithFrame = NULL;
+static SEL s_selSetWantsLayer = NULL;
+static SEL s_selSetContentView = NULL;
+static SEL s_selSetLayer = NULL;
+static SEL s_selInitCache = NULL;
+static SEL s_selView = NULL;
+static SEL s_selSetView = NULL;
+static SEL s_selBounds = NULL;
+static SEL s_selFrameRect = NULL;
+static SEL s_selConvertRectToBacking = NULL;
+static SEL s_selWindow = NULL;
+static SEL s_selBackingScaleFactor = NULL;
+static SEL s_selMainScreen = NULL;
+static SEL s_selIsMainThread = NULL;
+static SEL s_selIsEqualToString = NULL;
+static SEL s_selAddObserverForKeyPath = NULL;
+static SEL s_selRemoveObserverForKeyPath = NULL;
+static SEL s_selDefaultCenter = NULL;
+static SEL s_selAddObserverSelectorName = NULL;
+static SEL s_selRemoveObserverName = NULL;
+static SEL s_selObserveValueForKeyPath = NULL;
+static SEL s_selCreateAndBind = NULL;
+static SEL s_selMglRendererIsReady = NULL;
+static SEL s_selMglMainThreadSync = NULL;
+static SEL s_selMglUpdateWindowObserver = NULL;
+static SEL s_selMglWindowGeometryChanged = NULL;
+static SEL s_selCreateProactiveTextures = NULL;
+static SEL s_selMglBackendWillDestroy = NULL;
+static SEL s_selMglCreateSystemDefaultDevice = NULL;
+static SEL s_selMglConfigureMetalLayer = NULL;
+static SEL s_selMglSetMetalLayerFrame = NULL;
+static SEL s_selMglDetachMetalLayer = NULL;
+static SEL s_selIsBinaryArchiveEnabled = NULL;
+static SEL s_selLoadBinaryArchive = NULL;
+static SEL s_selDisableBinaryArchive = NULL;
+static SEL s_selSaveBinaryArchive = NULL;
+static SEL s_selShutdown = NULL;
+static SEL s_selSetDevice = NULL;
+static SEL s_selOldInitRenderer = NULL;
+static SEL s_selOldCreateRenderer = NULL;
+
+static double mglMaxDouble(double a, double b)
+{
+    return a > b ? a : b;   /* Foundation's MAX() */
+}
+
+/* [[NSView alloc] initWithFrame:NSMakeRect(100, 100, 100, 100)] - +1, so the
+ * caller releases once it has handed the view to the window (ARC's local). */
+static MGLObjectId mglCreateRendererView(void)
+{
+    MGLObjectId viewClass = (MGLObjectId)objc_getClass("NSView");
+    if (!viewClass) {
+        return NULL;
+    }
+    MGLObjectId view = mglSend<MGLObjectId>(viewClass, MGL_SEL(s_selAlloc, "alloc"));
+    if (!view) {
+        return NULL;
+    }
+    return mglSend<MGLObjectId>(
+        view, MGL_SEL(s_selInitWithFrame, "initWithFrame:"),
+        CGRectMake(100.0, 100.0, 100.0, 100.0));
+}
+
+/* [[MGLRenderer alloc] init] - +1. */
+static MGLObjectId mglCreateRendererObject(void)
+{
+    MGLObjectId rendererClass = (MGLObjectId)objc_getClass("MGLRenderer");
+    if (!rendererClass) {
+        return NULL;
+    }
+    MGLObjectId renderer =
+        mglSend<MGLObjectId>(rendererClass, MGL_SEL(s_selAlloc, "alloc"));
+    return renderer
+               ? mglSend<MGLObjectId>(renderer, MGL_SEL(s_selInit, "init"))
+               : NULL;
+}
+
+static const MGLPipelineCacheState *mglRendererCacheState(MGLRendererIvars *ivars)
+{
+    MGLObjectId cache = ivars ? (MGLObjectId)ivars->_pipelineCache : NULL;
+    return cache ? (const MGLPipelineCacheState *)mglSend<MGLObjectId>(
+                       cache, MGL_SEL(s_selState, "state"))
+                 : NULL;
+}
+
+static MGLObjectId mglRendererCommandQueue(MGLRendererIvars *ivars)
+{
+    return (ivars && ivars->_backend)
+               ? (MGLObjectId)mglRendererBackendGetCommandQueue(ivars->_backend)
+               : NULL;
+}
+
+static MGLObjectId mglRendererDevice(MGLRendererIvars *ivars)
+{
+    return (ivars && ivars->_backend)
+               ? (MGLObjectId)mglRendererBackendGetDevice(ivars->_backend)
+               : NULL;
+}
+
+static void *mglRendererCommandQueueOwner(MGLRendererIvars *ivars)
+{
+    return (ivars && ivars->_backend)
+               ? mglRendererBackendGetOwner(
+                     ivars->_backend, MGL_RENDERER_BACKEND_OWNER_COMMAND_QUEUE)
+               : NULL;
+}
+
+/* - (void) createMGLRendererAndBindToContext: (GLMContext) glm_ctx view: (NSView *) view
+ */
+static void mglShellCreateAndBind(MGLObjectId self, SEL cmd, GLMContext glm_ctx,
+                                  MGLObjectId view)
+{
+    (void)cmd;
+    MGLRendererIvars *ivars = mglRendererIvars(self);
+    if (!ivars) {
+        return;
+    }
+    mglClaimGLThread();            /* idempotent; records the init thread as the GL thread */
+    ivars->ctx = glm_ctx;
+    ivars->_backend = NULL;
+    (void)mglSend<void>(self, MGL_SEL(s_selSetView, "setView:"), view);
+    (void)mglSend<void>(self, MGL_SEL(s_selSetLayer, "setLayer:"),
+                        (MGLObjectId)NULL);
+    if (!mglSend<MGLObjectId>(self, MGL_SEL(s_selView, "view"))) {
+        fprintf(stderr, "MGL ERROR: failed to bind platform renderer view\n");
+        return;
+    }
+    ivars->_renderPassManager = mglPassManagerCreate();
+    mglPassManagerSetRuntimeContext((MGLRenderPassManager *)ivars->_renderPassManager,
+                                    glm_ctx);
+
+    /* start the DontCare frame generation at 1 so it never matches a
+     * texture's zero-initialized mtl_rt_frame_generation stamp until that
+     * texture is actually written this frame. */
+    mglPassManagerSetDontCareFrameGeneration(
+        (MGLRenderPassManager *)ivars->_renderPassManager, 1u);
+
+    const signed char psoDedupEnabled =
+        mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP") ? 1 : 0;
+    const signed char depthStencilCacheEnabled =
+        mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE") ? 1 : 0;
+    const signed char binaryArchiveEnabled =
+        mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE") ? 1 : 0;
+    /* The cache class is registered by the runtime (log 205), so it is created
+     * through objc_getClass + objc_msgSend rather than with a class symbol. */
+    {
+        MGLObjectId cacheClass = (MGLObjectId)objc_getClass("MGLPipelineCache");
+        MGLObjectId cache = NULL;
+        if (cacheClass) {
+            MGLObjectId allocated =
+                mglSend<MGLObjectId>(cacheClass, MGL_SEL(s_selAlloc, "alloc"));
+            if (allocated) {
+                cache = mglSend<MGLObjectId>(
+                    allocated,
+                    MGL_SEL(s_selInitCache,
+                            "initWithPSODedupEnabled:"
+                            "depthStencilCacheEnabled:"
+                            "binaryArchiveEnabled:"),
+                    psoDedupEnabled, depthStencilCacheEnabled,
+                    binaryArchiveEnabled);
+            }
+        }
+        /* Two hops: id -> void* (unretained) -> the ivar's class type.  The
+         * class symbol itself is never referenced, which is the point. */
+        ivars->_pipelineCache = (void *)cache;
+    }
+    /* Snapshot arena: batch snapshot/commands from bump allocator. */
+    ivars->_batching.arenaSnapshotEnabled =
+        mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT") ? 1 : 0;
+    if (ivars->_batching.arenaSnapshotEnabled) {
+        if (mglInitBatchArena(&ivars->_batching.batchArena, 4u * 1024u * 1024u)) {
+            ivars->ctx->batch_arena = &ivars->_batching.batchArena;
+            fprintf(stderr,
+                    "MGL INFO: Snapshot arena enabled (initial chunk capacity %zu bytes)\n",
+                    ivars->_batching.batchArena.initial_capacity);
+        } else {
+            ivars->_batching.arenaSnapshotEnabled = 0;
+            fprintf(stderr, "MGL WARNING: Snapshot arena malloc failed; falling back to per-batch malloc\n");
+        }
+    }
+    ivars->_batching.skipSameKeyRestoreEnabled =
+        mglEnvFlagEnabledDefaultOn("MGL_SKIP_SAME_KEY_RESTORE") ? 1 : 0;
+    ivars->_batching.dirtyKeyDeltaEnabled =
+        mglEnvFlagEnabledDefaultOn("MGL_DIRTY_KEY_DELTA") ? 1 : 0;
+    /* Initialize last-bound render encoder dedup state to a clean slate.
+     * The C++ binding state's valid bit starts false so the first bind on the first encoder is
+     * never incorrectly skipped. */
+    mglBindingInvalidateLastBoundState((void *)self);
+    fprintf(stderr, "MGL INFO: AGX GPU error tracking initialized\n");
+    {
+        const MGLPipelineCacheState *cacheState = mglRendererCacheState(ivars);
+        fprintf(stderr,
+                "MGL INFO: perf gates pso_dedup=%d ds_cache=%d arena=%d "
+                "same_key_restore=%d dirty_key_delta=%d (set VAR=0 to disable)\n",
+                (cacheState && cacheState->psoDedupEnabled) ? 1 : 0,
+                (cacheState && cacheState->dsCacheEnabled) ? 1 : 0,
+                ivars->_batching.arenaSnapshotEnabled ? 1 : 0,
+                ivars->_batching.skipSameKeyRestoreEnabled ? 1 : 0,
+                ivars->_batching.dirtyKeyDeltaEnabled ? 1 : 0);
+    }
+
+    if (glm_ctx->renderer_backend) {
+        mglRendererBackendDestroy(
+            (MGLRendererBackendHandle **)&glm_ctx->renderer_backend);
+    }
+    if (glm_ctx->platform_renderer_shell) {
+        CFRelease(glm_ctx->platform_renderer_shell);
+        glm_ctx->platform_renderer_shell = NULL;
+    }
+
+    /* VIRTUALIZED AGX DETECTION: Create Metal device with virtualization safety */
+    fprintf(stderr, "MGL INFO: VIRTUALIZED AGX - Creating Metal device with virtualization detection\n");
+
+    MGLObjectId device =
+        mglSend<MGLObjectId>(self, MGL_SEL(s_selMglCreateSystemDefaultDevice,
+                                           "mglCreateSystemDefaultDevice"));
+    if (!device) {
+        fprintf(stderr, "MGL ERROR: Metal device not found - this is required for Apple Silicon\n");
+        /* Intentional early return on critical Metal initialization failure.
+         * The renderer is left in a PARTIALLY INITIALIZED state:
+         *   SET: ctx, AGX GPU error tracking
+         *        command recovery owner, _pipeline*Format/
+         *        _pipelineCache.state->pipelineProgramName and
+         *        _pipelineCache.state->pipelineStateCache.
+         *   NIL: _device, _commandQueue, _view.
+         * Continuing is pointless without a Metal device - every subsequent
+         * operation depends on it. */
+        return;
+    }
+
+    fprintf(stderr, "MGL INFO: Metal device created: %s\n",
+            mglObjectDescriptionUTF8(device));
+
+    MGLRendererBackendCreateInfo backendInfo = {
+        .objc_device = (void *)device,
+        .context = glm_ctx,
+        .binding_slot_count = TEXTURE_UNITS,
+        .query_capacity = 256u,
+    };
+    if (mglRendererBackendCreate(&backendInfo, &ivars->_backend) != 0) {
+        fprintf(stderr, "MGL ERROR: failed to create Metal-cpp renderer backend\n");
+        return;
+    }
+    glm_ctx->renderer_backend = ivars->_backend;
+    glm_ctx->platform_renderer_shell = mglBridgingRetain(self);
+    MGLRendererBackendLease initLease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &initLease) != 0) {
+        fprintf(stderr, "MGL ERROR: failed to acquire backend lease during init\n");
+        return;
+    }
+    ivars->_bindingStateOwner = mglRendererBackendLeaseGetOwner(
+        &initLease, MGL_RENDERER_BACKEND_OWNER_BINDING);
+    ivars->_queryStateOwner = mglRendererBackendLeaseGetOwner(
+        &initLease, MGL_RENDERER_BACKEND_OWNER_QUERY);
+    ivars->_gpuRecovery.commandRecoveryOwner = mglRendererBackendLeaseGetOwner(
+        &initLease, MGL_RENDERER_BACKEND_OWNER_RECOVERY);
+    fprintf(stderr, "MGL INFO: Metal-cpp renderer backend ready (%p)\n",
+            (void *)ivars->_backend);
+    {
+        MGLRenderPassManager *passManager =
+            (MGLRenderPassManager *)ivars->_renderPassManager;
+        mglRenderAttachRuntimeOwners(
+            glm_ctx,
+            passManager->state->currentCommandBufferOwner,
+            passManager->state->currentRenderEncoderOwner,
+            passManager->state->renderPassStateOwner);
+    }
+    {
+        MGLObjectId cache = (MGLObjectId)ivars->_pipelineCache;
+        if (cache) {
+            (void)mglSend<void>(cache, MGL_SEL(s_selSetDevice, "setDevice:"), device);
+        }
+    }
+
+    /* Initialize AGX Capability Layer (centralized device detection +
+     * capability queries + driver bug markers).  Replaces scattered
+     * `containsString:@"AGX"` checks and hardcoded constants. */
+    MGLCapabilityInit(&ivars->_core.capability, (void *)device);
+
+    /* PROPER AGX VIRTUALIZATION DETECTION: Maintain Metal functionality with virtualization compatibility */
+    signed char isVirtualized = ivars->_core.capability.isVirtualized;
+    char deviceName[128];
+    (void)mglRenderGetDeviceIdentity((const void *)device, NULL,
+                                     deviceName, sizeof(deviceName));
+
+    /* DETECTION: Check if running in QEMU virtualization but keep Metal enabled */
+    if (isVirtualized) {
+        isVirtualized = 1;
+        fprintf(stderr, "MGL INFO: AGX device detected - enabling virtualization compatibility mode: %s\n",
+                deviceName);
+        fprintf(stderr, "MGL INFO: Metal functionality will be maintained with AGX virtualization safety measures\n");
+    }
+
+    /* Create command queue with virtualization-safe settings */
+    if (isVirtualized) {
+        fprintf(stderr, "MGL INFO: VIRTUALIZED AGX - Enabling virtualization-safe command queue settings\n");
+    }
+
+    uint32_t maxCommandBuffers = isVirtualized
+        ? (uint32_t)MGLCapabilityMaxConcurrentCommandBuffers(&ivars->_core.capability)
+        : 0u;
+    void *commandQueue = NULL;
+    (void)mglRendererBackendResetCommandQueue(ivars->_backend, maxCommandBuffers,
+                                              &commandQueue);
+    if (!mglRendererCommandQueue(ivars)) {
+        fprintf(stderr, "MGL ERROR: Failed to create Metal command queue\n");
+        /* Intentional early return on critical Metal initialization failure.
+         * The renderer is left in a PARTIALLY INITIALIZED state:
+         *   SET: ctx, AGX GPU error tracking
+         *        fields, _pipeline*Format/_pipelineCache.state->pipelineProgramName,
+         *        _pipelineCache.state->pipelineStateCache, _device,
+         *        MTL4 compiler (if available), _capability.
+         *   NIL: _commandQueue, _view.
+         * Continuing is pointless without a command queue - no encoding or
+         * submission is possible. */
+        mglRendererBackendEnd(&initLease);
+        return;
+    }
+
+    fprintf(stderr, "MGL INFO: Metal command queue created successfully\n");
+
+    /* Load or create Binary Archive for PSO compile acceleration.
+     * Gated by MGL_BINARY_ARCHIVE (default ON; =0 disables).
+     * The archive is stored in the user's Caches directory and persists
+     * compiled PSO binaries across launches, reducing cold-start PSO
+     * compile time from ~10s to ~2s on subsequent launches. */
+    {
+        MGLObjectId cache = (MGLObjectId)ivars->_pipelineCache;
+        if (cache &&
+            mglSend<signed char>(cache, MGL_SEL(s_selIsBinaryArchiveEnabled,
+                                                "isBinaryArchiveEnabled"))) {
+            if (__builtin_available(macos 11.0, *)) {   /* @available(macOS 11.0, *) */
+                (void)mglSend<void>(cache, MGL_SEL(s_selLoadBinaryArchive,
+                                                   "loadBinaryArchive"));
+            } else {
+                (void)mglSend<void>(cache, MGL_SEL(s_selDisableBinaryArchive,
+                                                   "disableBinaryArchive"));
+            }
+        }
+    }
+
+    (void)mglSend<void>(self, MGL_SEL(s_selSetView, "setView:"), view);
+
+    /* PROPER FIX: Create Metal layer with AGX-safe settings in the platform shell. */
+    fprintf(stderr, "MGL INFO: PROPER FIX - Creating Metal layer with AGX-safe settings\n");
+
+    uint32_t requestedPixelFormat =
+        ivars->ctx ? ivars->ctx->pixel_format.mtl_pixel_format : 0u;
+    uint32_t pf = 0u;
+    if (!mglSend<signed char>(self,
+                              MGL_SEL(s_selMglConfigureMetalLayer,
+                                      "mglConfigureMetalLayerWithDevice:"
+                                      "requestedPixelFormat:actualPixelFormat:"),
+                              device, requestedPixelFormat, &pf)) {
+        fprintf(stderr, "MGL ERROR: Failed to create Metal layer\n");
+        mglRendererBackendEnd(&initLease);
+        return;
+    }
+
+    if (ivars->ctx &&
+        ivars->ctx->pixel_format.mtl_pixel_format != (GLuint)pf) {
+        fprintf(stderr,
+                "MGL CAMetalLayer sync default framebuffer metal format glFormat=0x%x glType=0x%x oldMtl=%u newMtl=%lu\n",
+                ivars->ctx->pixel_format.format,
+                ivars->ctx->pixel_format.type,
+                ivars->ctx->pixel_format.mtl_pixel_format,
+                (unsigned long)pf);
+        ivars->ctx->pixel_format.mtl_pixel_format = (GLuint)pf;
+    }
+    fprintf(stderr,
+            "MGL CAMetalLayer pixelFormat=%lu requested=%lu glFormat=0x%x glType=0x%x\n",
+            (unsigned long)pf, (unsigned long)requestedPixelFormat,
+            ivars->ctx ? ivars->ctx->pixel_format.format : 0u,
+            ivars->ctx ? ivars->ctx->pixel_format.type : 0u);
+    /* Initial geometry: the renderer is created on the main thread (AppKit
+     * window setup), so read the view geometry synchronously here.  Later
+     * changes arrive via KVO -> mglMainThreadSyncViewGeometry. */
+    if (mglSend<signed char>((MGLObjectId)objc_getClass("NSThread"),
+                             MGL_SEL(s_selIsMainThread, "isMainThread"))) {
+        (void)mglSend<void>(self, MGL_SEL(s_selMglMainThreadSync,
+                                          "mglMainThreadSyncViewGeometry"));
+    } else {
+        (void)mglPlatformShellApplyPendingDrawableSizeCGSize((void *)self);
+    }
+
+    /* Observe view geometry changes so the GL thread never needs to touch
+     * NSView/NSWindow/NSScreen.  KVO fires on the main thread (bounds is only
+     * mutated there), publishing an atomic drawable-size snapshot.  The
+     * "window" keyPath is observed as well so resize/backing notifications
+     * can be attached lazily once the view joins a window. */
+    (void)mglSend<void>(view,
+                        MGL_SEL(s_selAddObserverForKeyPath,
+                                "addObserver:forKeyPath:options:context:"),
+                        self, mglNewUTF8String("bounds"), (unsigned long)0,
+                        s_kvoViewGeometryContext);
+    (void)mglSend<void>(view,
+                        MGL_SEL(s_selAddObserverForKeyPath,
+                                "addObserver:forKeyPath:options:context:"),
+                        self, mglNewUTF8String("window"),
+                        (unsigned long)kMGLKVOOptionInitial,
+                        s_kvoViewGeometryContext);
+
+    mglDrawBuffer(glm_ctx, (GLenum)mglRenderDefaultFrontBuffer());
+
+    /* Create initial command buffer for AGX safety */
+    try {
+        mglPassManagerInstallNewCommandBufferFromQueue(
+            (MGLRenderPassManager *)ivars->_renderPassManager,
+            (void *)mglRendererCommandQueue(ivars));
+        MGLRenderCommandBufferState commandState = {0};
+        if (!mglRenderCommandBufferOwnerHasState(
+                ((MGLRenderPassManager *)ivars->_renderPassManager)
+                    ->state->currentCommandBufferOwner,
+                &commandState)) {
+            fprintf(stderr, "MGL ERROR: Failed to create initial Metal command buffer\n");
+        }
+    } catch (...) {
+        fprintf(stderr,
+                "MGL ERROR: Exception creating initial Metal command buffer: %s\n",
+                mglCaughtExceptionDescription(mglTakeCaughtException()));
+    }
+
+    /* PROACTIVE TEXTURE CREATION: Create essential textures to break sync loop */
+    fprintf(stderr, "MGL INFO: PROACTIVE - Creating essential textures to prevent magenta screen\n");
+    (void)mglSend<void>(self, MGL_SEL(s_selCreateProactiveTextures,
+                                      "createProactiveTextures"));
+
+    /* GPU capture setup is exposed by MGLPlatformRendererShell when needed. */
+    mglRendererBackendEnd(&initLease);
+}
+
+/* - (BOOL)mglRendererIsReady */
+static signed char mglShellRendererIsReady(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLRendererIvars *ivars = mglRendererIvars(self);
+    if (!ivars || !ivars->ctx) {
+        return 0;
+    }
+    MGLRendererBackendLease lease = {};
+    if (mglRendererBackendBeginContext(ivars->ctx, &lease) != 0) {
+        return 0;
+    }
+    const MGLObjectId device = mglRendererDevice(ivars);
+    const MGLObjectId commandQueue = mglRendererCommandQueue(ivars);
+    const void *commandQueueOwner = mglRendererCommandQueueOwner(ivars);
+    signed char ready =
+        (ivars->_backend && device &&
+         mglRendererBackendIsReady(ivars->_backend) == 1 && commandQueueOwner &&
+         commandQueue &&
+         mglSend<MGLObjectId>(self, MGL_SEL(s_selLayer, "layer")) &&
+         ivars->_renderPassManager)
+            ? 1
+            : 0;
+    if (ready) {
+        MGLRenderCommandBufferState commandState = {0};
+        ready = mglRenderCommandBufferOwnerHasState(
+                    ((MGLRenderPassManager *)ivars->_renderPassManager)
+                        ->state->currentCommandBufferOwner,
+                    &commandState)
+                    ? 1
+                    : 0;
+    }
+    mglRendererBackendEnd(&lease);
+    return ready;
+}
+
+/* - (void)mglBackendWillDestroy:(MGLRendererBackendHandle *)backend */
+static void mglShellBackendWillDestroy(MGLObjectId self, SEL cmd,
+                                       MGLRendererBackendHandle *backend)
+{
+    (void)cmd;
+    MGLRendererIvars *ivars = mglRendererIvars(self);
+    if (!ivars || ivars->_backend != backend) return;
+    ivars->_backend = NULL;
+    ivars->_bindingStateOwner = NULL;
+    ivars->_queryStateOwner = NULL;
+    ivars->_gpuRecovery.commandRecoveryOwner = NULL;
+}
+
+/* Publish view geometry to the GL thread as an atomic snapshot.  Main thread
+ * only - this is the sole place NSView/NSWindow/NSScreen are read, so the
+ * render thread never touches AppKit.  The GL thread consumes the snapshot via
+ * mglApplyPendingDrawableSize and sets CAMetalLayer.drawableSize. */
+static void mglShellMainThreadSyncViewGeometry(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLRendererIvars *ivars = mglRendererIvars(self);
+    if (!ivars) {
+        return;
+    }
+    /* NSAssert(NSThread.isMainThread, @"AppKit geometry must be read on main
+     * thread").  A failing assert is a programming error either way; report it
+     * and return rather than raise, so a mis-threaded call cannot take the
+     * renderer down with it. */
+    if (!mglSend<signed char>((MGLObjectId)objc_getClass("NSThread"),
+                              MGL_SEL(s_selIsMainThread, "isMainThread"))) {
+        fprintf(stderr, "MGL ERROR: AppKit geometry must be read on main thread\n");
+        return;
+    }
+    MGLObjectId view = mglSend<MGLObjectId>(self, MGL_SEL(s_selView, "view"));
+    if (!view ||
+        !mglSend<signed char>(self, MGL_SEL(s_selHasMetalLayer,
+                                            "mglHasMetalLayer"))) {
+        return;
+    }
+
+    CGRect bounds = mglSend<CGRect>(view, MGL_SEL(s_selBounds, "bounds"));
+    if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
+        bounds = mglSend<CGRect>(view, MGL_SEL(s_selFrameRect, "frame"));
+        bounds.origin = CGPointZero;   /* NSZeroPoint */
+    }
+
+    CGRect backingBounds =
+        mglSend<CGRect>(view, MGL_SEL(s_selConvertRectToBacking,
+                                      "convertRectToBacking:"),
+                        bounds);
+    double scale = 1.0;
+    if (bounds.size.width > 0.0 && backingBounds.size.width > 0.0) {
+        scale = backingBounds.size.width / bounds.size.width;
+    } else {
+        MGLObjectId window = mglSend<MGLObjectId>(view, MGL_SEL(s_selWindow, "window"));
+        if (window) {
+            scale = mglSend<double>(window, MGL_SEL(s_selBackingScaleFactor,
+                                                    "backingScaleFactor"));
+        } else {
+            MGLObjectId screenClass = (MGLObjectId)objc_getClass("NSScreen");
+            MGLObjectId screen =
+                screenClass ? mglSend<MGLObjectId>(screenClass,
+                                                   MGL_SEL(s_selMainScreen, "mainScreen"))
+                            : NULL;
+            if (screen) {
+                scale = mglSend<double>(screen, MGL_SEL(s_selBackingScaleFactor,
+                                                        "backingScaleFactor"));
+            }
+        }
+        if (scale <= 0.0) {
+            scale = 1.0;
+        }
+        backingBounds = CGRectMake(0.0, 0.0, bounds.size.width * scale,
+                                   bounds.size.height * scale);   /* NSMakeRect */
+    }
+
+    (void)mglSend<void>(self,
+                        MGL_SEL(s_selMglSetMetalLayerFrame,
+                                "mglSetMetalLayerFrame:contentsScale:"),
+                        bounds, scale);
+
+    uint32_t pw = (uint32_t)mglMaxDouble(1.0, backingBounds.size.width + 0.5);
+    uint32_t ph = (uint32_t)mglMaxDouble(1.0, backingBounds.size.height + 0.5);
+    atomic_store_explicit(&ivars->_core.pendingDrawableW, pw, memory_order_relaxed);
+    atomic_store_explicit(&ivars->_core.pendingDrawableH, ph, memory_order_relaxed);
+    atomic_store_explicit(&ivars->_core.drawableSizeDirty, true, memory_order_release);
+}
+
+/* - (void)observeValueForKeyPath:ofObject:change:context: */
+static void mglShellObserveValueForKeyPath(MGLObjectId self, SEL cmd,
+                                           MGLObjectId keyPath, MGLObjectId object,
+                                           MGLObjectId change, void *context)
+{
+    (void)cmd;
+    (void)object;
+    (void)change;
+    if (context == s_kvoViewGeometryContext) {
+        if (keyPath &&
+            mglSend<signed char>(keyPath,
+                                 MGL_SEL(s_selIsEqualToString, "isEqualToString:"),
+                                 mglNewUTF8String("window"))) {
+            (void)mglSend<void>(self, MGL_SEL(s_selMglUpdateWindowObserver,
+                                              "mglUpdateWindowNotificationObserver"));
+        }
+        (void)mglSend<void>(self, MGL_SEL(s_selMglMainThreadSync,
+                                          "mglMainThreadSyncViewGeometry"));
+        return;
+    }
+    struct objc_super super = { self, class_getSuperclass(object_getClass(self)) };
+    ((void (*)(struct objc_super *, SEL, MGLObjectId, MGLObjectId, MGLObjectId,
+               void *))objc_msgSendSuper)(
+        &super,
+        MGL_SEL(s_selObserveValueForKeyPath,
+                "observeValueForKeyPath:ofObject:change:context:"),
+        keyPath, object, change, context);
+}
+
+/* Attach/detach window observation as the view's window changes.  The window
+ * is not known when the renderer is created, so this is wired lazily. */
+static void mglShellUpdateWindowNotificationObserver(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLRendererIvars *ivars = mglRendererIvars(self);
+    if (!ivars) {
+        return;
+    }
+    MGLObjectId view = mglSend<MGLObjectId>(self, MGL_SEL(s_selView, "view"));
+    MGLObjectId window =
+        view ? mglSend<MGLObjectId>(view, MGL_SEL(s_selWindow, "window")) : NULL;
+    /* The ivar is __weak; read it through the weak table so a dead window reads
+     * as nil instead of dangling. */
+    MGLObjectId observed = objc_loadWeak((MGLObjectId *)&ivars->_observedWindow);
+    if (window == observed) {
+        return;
+    }
+    MGLObjectId center =
+        mglSend<MGLObjectId>((MGLObjectId)objc_getClass("NSNotificationCenter"),
+                             MGL_SEL(s_selDefaultCenter, "defaultCenter"));
+    if (observed) {
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selRemoveObserverName,
+                                    "removeObserver:name:object:"),
+                            self, NSWindowDidResizeNotification, observed);
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selRemoveObserverName,
+                                    "removeObserver:name:object:"),
+                            self, NSWindowDidChangeBackingPropertiesNotification,
+                            observed);
+    }
+    objc_storeWeak((MGLObjectId *)&ivars->_observedWindow, window);
+    if (window) {
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selAddObserverSelectorName,
+                                    "addObserver:selector:name:object:"),
+                            self,
+                            MGL_SEL(s_selMglWindowGeometryChanged,
+                                    "mglWindowGeometryChanged:"),
+                            NSWindowDidResizeNotification, window);
+        (void)mglSend<void>(center,
+                            MGL_SEL(s_selAddObserverSelectorName,
+                                    "addObserver:selector:name:object:"),
+                            self,
+                            MGL_SEL(s_selMglWindowGeometryChanged,
+                                    "mglWindowGeometryChanged:"),
+                            NSWindowDidChangeBackingPropertiesNotification,
+                            window);
+    }
+}
+
+/* - (void)mglWindowGeometryChanged:(NSNotification *)notification */
+static void mglShellWindowGeometryChanged(MGLObjectId self, SEL cmd,
+                                          MGLObjectId notification)
+{
+    (void)cmd;
+    (void)notification;
+    (void)mglSend<void>(self, MGL_SEL(s_selMglMainThreadSync,
+                                      "mglMainThreadSyncViewGeometry"));
+}
+
+/* PROACTIVE TEXTURE CREATION: Create essential textures during initialization
+ * to break sync loop. */
+static void mglShellCreateProactiveTextures(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLRendererIvars *ivars = mglRendererIvars(self);
+    fprintf(stderr, "MGL PROACTIVE: Starting essential texture creation\n");
+
+    try {
+        if (mglRendererBackendCreateProactiveTexture(
+                ivars ? ivars->_backend : NULL) == 0) {
+            fprintf(stderr, "MGL PROACTIVE SUCCESS: Created 256x256 gradient texture (prevents magenta screen)\n");
+        } else {
+            fprintf(stderr, "MGL PROACTIVE ERROR: Could not create proactive texture\n");
+        }
+    } catch (...) {
+        MGLObjectId exception = mglTakeCaughtException();
+        const char *reason = exception
+            ? mglUTF8String(mglSend<MGLObjectId>(
+                  exception, MGL_SEL(s_selReason, "reason")))
+            : NULL;
+        fprintf(stderr,
+                "MGL PROACTIVE ERROR: Exception creating proactive textures: %s\n",
+                reason ? reason : "(null)");
+    }
+
+    fprintf(stderr, "MGL PROACTIVE: Essential texture creation completed\n");
+}
+
+/* CRITICAL FIX: Proper resource cleanup to prevent memory leaks and crashes.
+ * A C dealloc must hand the object to the superclass at the end: the ARC
+ * original had that call inserted by the compiler. */
+static void mglShellDealloc(MGLObjectId self, SEL cmd)
+{
+    (void)cmd;
+    MGLRendererIvars *ivars = mglRendererIvars(self);
+    fprintf(stderr, "MGL INFO: MGLRenderer dealloc - cleaning up Metal resources\n");
+
+    try {
+        /* Remove the geometry observers before any view/state teardown. */
+        MGLObjectId view = mglSend<MGLObjectId>(self, MGL_SEL(s_selView, "view"));
+        if (view) {
+            (void)mglSend<void>(view,
+                                MGL_SEL(s_selRemoveObserverForKeyPath,
+                                        "removeObserver:forKeyPath:context:"),
+                                self, mglNewUTF8String("bounds"),
+                                s_kvoViewGeometryContext);
+            (void)mglSend<void>(view,
+                                MGL_SEL(s_selRemoveObserverForKeyPath,
+                                        "removeObserver:forKeyPath:context:"),
+                                self, mglNewUTF8String("window"),
+                                s_kvoViewGeometryContext);
+        }
+        /* Detach window notifications without the lazy re-wiring path. */
+        MGLObjectId observed =
+            ivars ? objc_loadWeak((MGLObjectId *)&ivars->_observedWindow) : NULL;
+        if (observed) {
+            MGLObjectId center = mglSend<MGLObjectId>(
+                (MGLObjectId)objc_getClass("NSNotificationCenter"),
+                MGL_SEL(s_selDefaultCenter, "defaultCenter"));
+            (void)mglSend<void>(center,
+                                MGL_SEL(s_selRemoveObserverName,
+                                        "removeObserver:name:object:"),
+                                self, NSWindowDidResizeNotification, observed);
+            (void)mglSend<void>(center,
+                                MGL_SEL(s_selRemoveObserverName,
+                                        "removeObserver:name:object:"),
+                                self,
+                                NSWindowDidChangeBackingPropertiesNotification,
+                                observed);
+            objc_storeWeak((MGLObjectId *)&ivars->_observedWindow, NULL);
+        }
+
+        /* Stop any ongoing capture */
+        (void)mglSend<void>(self, MGL_SEL(s_selStopCapture, "mglStopCapture"));
+
+        /* End any active rendering */
+        mglRendererEndRenderEncodingLocked((void *)self);
+
+        /* Drop strong references held by the last-bound dedup cache before
+         * releasing the underlying Metal resources below. */
+        mglBindingInvalidateLastBoundState((void *)self);
+        /* Cleanup command buffer and encoder */
+        if (ivars && ivars->_renderPassManager) {
+            MGLRenderPassManager *passManager =
+                (MGLRenderPassManager *)ivars->_renderPassManager;
+            MGLRenderCommandBufferState commandState = {0};
+            if (mglRenderCommandBufferOwnerHasState(
+                    passManager->state->currentCommandBufferOwner,
+                    &commandState)) {
+                fprintf(stderr, "MGL INFO: Releasing current command buffer\n");
+                mglPassManagerDiscardCurrentCommandBuffer(passManager);
+            }
+
+            if (mglRenderEncoderOwnerHasCurrent(
+                    passManager->state->currentRenderEncoderOwner) == 1) {
+                fprintf(stderr, "MGL INFO: Releasing current render encoder\n");
+                mglPassManagerClearCurrentRenderEncoder(passManager);
+            }
+
+            MGLRendererBackendShutdownResult shutdownResult = {0};
+            if (ivars->_backend &&
+                mglRendererBackendShutdown(ivars->_backend, &shutdownResult) != 0) {
+                fprintf(stderr,
+                        "MGL ERROR: renderer backend shutdown wait failed code=%lld\n",
+                        shutdownResult.last_submission_error_code);
+            }
+
+            mglPassManagerSetRuntimeContext(passManager, NULL);
+            mglPassManagerDestroy(passManager);
+            ivars->_renderPassManager = NULL;
+        }
+
+        if (ivars) {
+            mglRenderDetachRuntimeOwners(ivars->ctx);
+        }
+
+        MGLObjectId cache = ivars ? (MGLObjectId)ivars->_pipelineCache : NULL;
+        if (cache) {
+            const MGLPipelineCacheState *cacheState = mglRendererCacheState(ivars);
+            if (cacheState && cacheState->pipelineState) {
+                fprintf(stderr, "MGL INFO: Releasing pipeline state\n");
+            }
+            (void)mglSend<void>(cache, MGL_SEL(s_selSaveBinaryArchive,
+                                               "saveBinaryArchive"));
+            (void)mglSend<void>(cache, MGL_SEL(s_selShutdown, "shutdown"));
+            /* ARC's `_pipelineCache = nil` releases the strong ivar. */
+            mglReleaseObject(cache);
+            ivars->_pipelineCache = NULL;
+        }
+        if (ivars && ivars->_backend &&
+            mglRendererBackendIsDestroying(ivars->_backend) != 1) {
+            if (ivars->ctx && ivars->ctx->renderer_backend == ivars->_backend) {
+                mglRendererBackendDestroy(
+                    (MGLRendererBackendHandle **)&ivars->ctx->renderer_backend);
+            } else {
+                mglRendererBackendDestroy(&ivars->_backend);
+            }
+        }
+        if (ivars) {
+            ivars->_backend = NULL;
+            ivars->_bindingStateOwner = NULL;
+            ivars->_queryStateOwner = NULL;
+            ivars->_gpuRecovery.commandRecoveryOwner = NULL;
+        }
+
+        /* Cleanup drawable and layer */
+        if (mglSend<MGLObjectId>(self, MGL_SEL(s_selDrawable, "drawable"))) {
+            fprintf(stderr, "MGL INFO: Releasing drawable\n");
+            (void)mglSend<void>(self, MGL_SEL(s_selSetDrawable, "setDrawable:"),
+                                (MGLObjectId)NULL);
+        }
+
+        if (mglSend<signed char>(self, MGL_SEL(s_selHasMetalLayer,
+                                               "mglHasMetalLayer"))) {
+            fprintf(stderr, "MGL INFO: Removing and releasing layer\n");
+            (void)mglSend<void>(self, MGL_SEL(s_selMglDetachMetalLayer,
+                                              "mglDetachMetalLayer"));
+        }
+
+        /* Task 4: Release all address-stable snapshot arena chunks. */
+        if (ivars) {
+            mglDestroyBatchArena(&ivars->_batching.batchArena);
+        }
+        (void)mglSend<void>(self, MGL_SEL(s_selSetView, "setView:"),
+                            (MGLObjectId)NULL);
+
+    } catch (...) {
+        fprintf(stderr, "MGL ERROR: Exception during dealloc cleanup: %s\n",
+                mglCaughtExceptionDescription(mglTakeCaughtException()));
+    }
+
+    fprintf(stderr, "MGL INFO: MGLRenderer dealloc completed\n");
+
+    struct objc_super super = { self, class_getSuperclass(object_getClass(self)) };
+    ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(
+        &super, sel_registerName("dealloc"));
+}
+
+/* The two legacy creators the compatibility header declares.  Both are
+ * init/create-family, so the renderer comes back +1. */
+static MGLObjectId mglShellLegacyCreate(MGLObjectId self, SEL cmd, void *glm_ctx,
+                                       MGLObjectId window, int initializing)
+{
+    (void)cmd;
+    (void)self;
+    if (!window || !glm_ctx) {
+        fprintf(stderr,
+                "MGL ERROR: renderer %s requires a window and GLMContext\n",
+                initializing ? "initialization" : "creation");
+        return NULL;
+    }
+    MGLObjectId renderer = mglCreateRendererObject();
+    if (!renderer) {
+        fprintf(stderr, "MGL ERROR: failed to allocate renderer\n");
+        return NULL;
+    }
+    MGLObjectId view = mglCreateRendererView();
+    if (!view) {
+        fprintf(stderr, "MGL ERROR: failed to allocate renderer view\n");
+        return NULL;
+    }
+    (void)mglSend<void>(view, MGL_SEL(s_selSetWantsLayer, "setWantsLayer:"),
+                        (signed char)1);
+    (void)mglSend<void>(window, MGL_SEL(s_selSetContentView, "setContentView:"), view);
+    (void)mglSend<void>(renderer,
+                        MGL_SEL(s_selCreateAndBind,
+                                "createMGLRendererAndBindToContext:view:"),
+                        glm_ctx, view);
+    mglReleaseObject(view);
+    return renderer;
+}
+
+static MGLObjectId mglShellInitRenderer(MGLObjectId self, SEL cmd, void *glm_ctx,
+                                        MGLObjectId window)
+{
+    return mglShellLegacyCreate(self, cmd, glm_ctx, window, 1);
+}
+
+static MGLObjectId mglShellCreateRenderer(MGLObjectId self, SEL cmd, void *glm_ctx,
+                                          MGLObjectId window)
+{
+    return mglShellLegacyCreate(self, cmd, glm_ctx, window, 0);
+}
+
+/* Rule 64: nothing calls this - the constructor attribute is the only entry
+ * point.  The class is compiler-generated while the shell still is ObjC, so
+ * these are added to it rather than to a class we registered ourselves. */
+__attribute__((constructor))
+static void mglInstallLifecycleMethods(void)
+{
+    Class rendererClass = objc_getClass("MGLRenderer");
+    if (!rendererClass) {
+        return;
+    }
+    class_addMethod(rendererClass,
+                    sel_registerName("createMGLRendererAndBindToContext:view:"),
+                    (IMP)mglShellCreateAndBind, "v@:^{GLMContextRec_t}@");
+    class_addMethod(rendererClass, sel_registerName("mglRendererIsReady"),
+                    (IMP)mglShellRendererIsReady, "c@:");
+    class_addMethod(rendererClass, sel_registerName("mglBackendWillDestroy:"),
+                    (IMP)mglShellBackendWillDestroy, "v@:^?");
+    class_addMethod(rendererClass, sel_registerName("mglMainThreadSyncViewGeometry"),
+                    (IMP)mglShellMainThreadSyncViewGeometry, "v@:");
+    class_addMethod(rendererClass,
+                    sel_registerName("observeValueForKeyPath:ofObject:change:context:"),
+                    (IMP)mglShellObserveValueForKeyPath, "v@:@@@^v");
+    class_addMethod(rendererClass,
+                    sel_registerName("mglUpdateWindowNotificationObserver"),
+                    (IMP)mglShellUpdateWindowNotificationObserver, "v@:");
+    class_addMethod(rendererClass, sel_registerName("mglWindowGeometryChanged:"),
+                    (IMP)mglShellWindowGeometryChanged, "v@:@");
+    class_addMethod(rendererClass, sel_registerName("createProactiveTextures"),
+                    (IMP)mglShellCreateProactiveTextures, "v@:");
+    class_addMethod(rendererClass, sel_registerName("dealloc"),
+                    (IMP)mglShellDealloc, "v@:");
+    class_addMethod(rendererClass,
+                    sel_registerName("initMGLRendererFromContext:andBindToWindow:"),
+                    (IMP)mglShellInitRenderer, "@@:^v@");
+    class_addMethod(rendererClass,
+                    sel_registerName("createMGLRendererFromContext:andBindToWindow:"),
+                    (IMP)mglShellCreateRenderer, "@@:^v@");
+}
+
+/* === the C entry points the rest of the library and GLFW use ============ */
+
+void mglRendererPlatformBackendWillDestroy(
+    void *platform_shell,
+    MGLRendererBackendHandle *backend)
+{
+    if (!platform_shell) {
+        return;
+    }
+    (void)mglSend<void>((MGLObjectId)platform_shell,
+                        MGL_SEL(s_selMglBackendWillDestroy,
+                                "mglBackendWillDestroy:"),
+                        backend);
+}
+
+void *CppCreateMGLRendererFromContextAndBindToWindow(void *glm_ctx, void *window)
+{
+    if (!window || !glm_ctx) {
+        fprintf(stderr,
+                "MGL ERROR: renderer creation requires a window and GLMContext\n");
+        return NULL;
+    }
+    MGLObjectId renderer = mglCreateRendererObject();
+    if (!renderer) {
+        fprintf(stderr, "MGL ERROR: failed to allocate renderer\n");
+        return NULL;
+    }
+    /* just a plain bridge as the autorelease pool will try to release this and
+     * crash on exit */
+    MGLObjectId w = (MGLObjectId)window;
+    if (!w) {
+        fprintf(stderr, "MGL ERROR: invalid window handle\n");
+        mglReleaseObject(renderer);
+        return NULL;
+    }
+    MGLObjectId view = mglCreateRendererView();
+    if (!view) {
+        fprintf(stderr, "MGL ERROR: failed to allocate renderer view\n");
+        mglReleaseObject(renderer);
+        return NULL;
+    }
+    (void)mglSend<void>(view, MGL_SEL(s_selSetWantsLayer, "setWantsLayer:"),
+                        (signed char)1);
+    (void)mglSend<void>(w, MGL_SEL(s_selSetContentView, "setContentView:"), view);
+    (void)mglSend<void>(renderer,
+                        MGL_SEL(s_selCreateAndBind,
+                                "createMGLRendererAndBindToContext:view:"),
+                        glm_ctx, view);
+    mglReleaseObject(view);
+    if (!mglSend<signed char>(renderer, MGL_SEL(s_selMglRendererIsReady,
+                                                "mglRendererIsReady"))) {
+        fprintf(stderr, "MGL ERROR: renderer initialization failed closed\n");
+        mglReleaseObject(renderer);
+        return NULL;
+    }
+    /* Ownership: the returned pointer is NON-OWNING (borrowed).
+     * The context retains the renderer through platform_renderer_shell.
+     * The caller must NOT CFRelease/free the returned pointer, and must keep
+     * glm_ctx alive while using the returned pointer.  The local +1 is dropped
+     * here, exactly where ARC dropped it. */
+    mglReleaseObject(renderer);
+    return (void *)renderer;
+}
+
+void *CppCreateMGLRendererHeadless(void *glm_ctx)
+{
+    if (!glm_ctx) {
+        fprintf(stderr,
+                "MGL ERROR: headless renderer creation requires a GLMContext\n");
+        return NULL;
+    }
+    MGLObjectId renderer = mglCreateRendererObject();
+    if (!renderer) {
+        fprintf(stderr, "MGL ERROR: failed to allocate headless renderer\n");
+        return NULL;
+    }
+
+    /* Create a dummy NSView for headless rendering */
+    MGLObjectId view = mglCreateRendererView();
+    if (!view) {
+        fprintf(stderr, "MGL ERROR: failed to allocate headless renderer view\n");
+        mglReleaseObject(renderer);
+        return NULL;
+    }
+    (void)mglSend<void>(view, MGL_SEL(s_selSetWantsLayer, "setWantsLayer:"),
+                        (signed char)1);
+
+    (void)mglSend<void>(renderer,
+                        MGL_SEL(s_selCreateAndBind,
+                                "createMGLRendererAndBindToContext:view:"),
+                        glm_ctx, view);
+    mglReleaseObject(view);
+    if (!mglSend<signed char>(renderer, MGL_SEL(s_selMglRendererIsReady,
+                                                "mglRendererIsReady"))) {
+        fprintf(stderr,
+                "MGL ERROR: headless renderer initialization failed closed\n");
+        mglReleaseObject(renderer);
+        return NULL;
+    }
+    /* Ownership: the returned pointer is NON-OWNING (borrowed); see above. */
+    mglReleaseObject(renderer);
+    return (void *)renderer;
+}
+
+void *CppCreateMGLRendererAndBindToContext(void *glm_ctx)
+{
+    /* Compatibility export used by reference libMGL.dylib.
+     * Falls back to headless binding when no Cocoa window is supplied. */
+    return CppCreateMGLRendererHeadless(glm_ctx);
 }
 
 } /* extern "C" */
