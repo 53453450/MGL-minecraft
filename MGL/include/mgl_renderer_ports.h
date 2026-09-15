@@ -238,6 +238,15 @@ typedef struct MGLRendererStateAreas {
     void (*pipeline_cache_store_descriptor_state)(
         void *pipeline_cache_object,
         const MGLRenderPipelineDescriptorState *state, const uint64_t *words);
+    /* Two-level cache lookup (the .m's
+     * -lookupPipelineForWords:pipeline:vertexFunction:fragmentFunction:): fills
+     * the three borrowed handles and returns 1 when the PSO cache had an entry.
+     * The handles stay owned by the cache, exactly like the store/activate
+     * bridges above. */
+    int (*pipeline_cache_lookup_pipeline)(
+        void *pipeline_cache_object, const uint64_t *words,
+        void **pipeline_out, void **vertex_function_out,
+        void **fragment_function_out);
     void (*pipeline_cache_activate)(void *pipeline_cache_object, void *pipeline,
                                     uint32_t color0_format,
                                     uint32_t depth_format,
@@ -349,8 +358,10 @@ int mglRendererEnsureLayerDrawableSizeAtLeastWidthPort(void *renderer,
  * Objective-C methods in MGLRenderer+RenderPass.m. */
 int mglRendererSyncRenderPassStateForContextPort(void *renderer, GLMContext ctx);
 void mglRendererUpdateCurrentRenderEncoderPort(void *renderer);
-int mglRendererSyncPipelineStateWithDeferredBufferMapPort(void *renderer,
-                                                          int deferred);
+/* mglRendererSyncPipelineStateWithDeferredBufferMapPort is gone (log 189): the
+ * Pipeline Sync domain is C now (mglRenderPassSyncPipelineState in
+ * mgl_pso_build_ops.h), so its only caller links straight to that entry.  One
+ * fewer port. */
 
 /* Sampled-texture readback trace.  The target method takes two NSStrings, so
  * the port takes C strings and the shell makes the NSStrings (P0-1, log 155). */

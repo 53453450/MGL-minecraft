@@ -324,15 +324,6 @@ void mglRendererUpdateCurrentRenderEncoderPort(void *renderer)
     }
 }
 
-int mglRendererSyncPipelineStateWithDeferredBufferMapPort(void *renderer,
-                                                          int deferred)
-{
-    MGLRenderer *r = (__bridge MGLRenderer *)renderer;
-    return (r && [r syncPipelineStateWithDeferredBufferMap:deferred ? true : false])
-               ? 1
-               : 0;
-}
-
 void mglRendererTraceSampledTextureReadbackPort(
     void *renderer, void *texture, Texture *gl_tex, TextureLevel *level0,
     GLuint program, GLuint binding, const char *stage, const char *reason,
@@ -800,6 +791,29 @@ void mglPlatformShellPipelineCacheStoreDescriptorState(
     [cache storePipelineDescriptorState:state forWords:words];
 }
 
+int mglPlatformShellPipelineCacheLookupPipeline(
+    void *pipeline_cache_object, const uint64_t *words, void **pipeline_out,
+    void **vertex_function_out, void **fragment_function_out)
+{
+    MGLPipelineCache *cache = (__bridge MGLPipelineCache *)pipeline_cache_object;
+    if (!cache) {
+        return 0;
+    }
+    id pipeline = nil;
+    id vertexFunction = nil;
+    id fragmentFunction = nil;
+    BOOL found = [cache lookupPipelineForWords:words
+                                      pipeline:&pipeline
+                                vertexFunction:&vertexFunction
+                              fragmentFunction:&fragmentFunction];
+    if (pipeline_out) *pipeline_out = (__bridge void *)pipeline;
+    if (vertex_function_out) *vertex_function_out = (__bridge void *)vertexFunction;
+    if (fragment_function_out) {
+        *fragment_function_out = (__bridge void *)fragmentFunction;
+    }
+    return found ? 1 : 0;
+}
+
 void mglPlatformShellPipelineCacheActivate(
     void *pipeline_cache_object, void *pipeline, uint32_t color0_format,
     uint32_t depth_format, uint32_t stencil_format, uint32_t program_name,
@@ -933,6 +947,8 @@ void mglRendererStateAreasPort(void *renderer, MGLRendererStateAreas *areas_out)
         mglPlatformShellPipelineCacheStorePipeline;
     areas_out->pipeline_cache_store_descriptor_state =
         mglPlatformShellPipelineCacheStoreDescriptorState;
+    areas_out->pipeline_cache_lookup_pipeline =
+        mglPlatformShellPipelineCacheLookupPipeline;
     areas_out->pipeline_cache_activate = mglPlatformShellPipelineCacheActivate;
     areas_out->tess_native_tes_active = (int32_t)r->_tessellation.nativeTESActive;
     areas_out->tessellation = &r->_tessellation;

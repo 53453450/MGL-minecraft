@@ -101,7 +101,8 @@ uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 /* Defined in MGLRenderer+RenderPass.m; the shell port forwards to it (log 167). */
 - (void)updateCurrentRenderEncoder;
 - (bool)rotateRenderEncoderForCurrentFramebufferLocked;
-- (bool)syncPipelineStateWithDeferredBufferMap:(bool)deferredBufferMapForPipelineBuild;
+/* -syncPipelineStateWithDeferredBufferMap: is C now (log 189):
+ * mglRenderPassSyncPipelineState (mgl_pso_build_ops.h). */
 - (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex
                              firstUseThisFrame:(BOOL)firstUseThisFrame;
 - (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch

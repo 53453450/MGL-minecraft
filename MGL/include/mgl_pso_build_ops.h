@@ -29,6 +29,15 @@ typedef double CFTimeInterval;
 extern "C" {
 #endif
 
+/* -syncPipelineStateWithDeferredBufferMap: (log 189).  PSO dedup fast path, the
+ * program-level and interface-mismatch breakers, the two-level cache lookup and
+ * the cache-miss build for the current GL state.  Returns 1 to continue with
+ * the draw, 0 when the caller must skip it.  Replaces the
+ * mglRendererSyncPipelineStateWithDeferredBufferMapPort wrapper.
+ * deferredBufferMapForPipelineBuild is the caller's deferred-buffer-map flag. */
+int mglRenderPassSyncPipelineState(void *renderer,
+                                   int deferredBufferMapForPipelineBuild);
+
 struct MGLRenderPipelineDescriptorState;
 
 /* -buildPipelineStateOnCacheMissWithState:vertexFunction:fragmentFunction:

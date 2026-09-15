@@ -45,6 +45,7 @@
 #include "mgl_render.h"           /* attachment kinds, MS plane adjust */
 #include "mgl_texture_compat.h"   /* mglMetalTextureLevelDimension */
 
+#include "mgl_pso_build_ops.h"    /* mglRenderPassSyncPipelineState */
 #include "mgl_renderer_ports.h"
 #include "mgl_binding_state_ops.h"      /* mglBindingInvalidateLastBoundState */
 #include "mgl_trace_strategy.h"         /* mglClearFragmentTraceBindingsForRenderer */
@@ -394,7 +395,8 @@ bool mglRenderPassProcessDirtyStateDomains(void *renderer, int draw_command,
 
         if (plan.sync_pipeline)
         {
-            RETURN_FALSE_ON_FAILURE(mglRendererSyncPipelineStateWithDeferredBufferMapPort(renderer, deferredBufferMapForPipelineBuild));
+            RETURN_FALSE_ON_FAILURE(mglRenderPassSyncPipelineState(
+                renderer, deferredBufferMapForPipelineBuild));
         }
 
         mglPdState(&areas)->dirty_bits = 0;

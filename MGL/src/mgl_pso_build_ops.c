@@ -17,6 +17,8 @@
 #include "mgl_pso_build_ops.h"
 
 #include "mgl_air_loader.h"        /* MGLRenderPipelineDescriptorState */
+#include "mgl_buffer_map.h"      /* mglRendererMapBuffersToMTL */
+#include "mgl_byte_hash.h"      /* mglHashStepU64 (geometry PSO key) */
 #include "mgl_aux_assets.h"        /* mglAuxShaderAssetFind */
 #include "mgl_capability.h"        /* MGLCapabilityHasBug */
 #include "mgl_frame_activity.h"
@@ -24,14 +26,18 @@
 #include "mgl_env_flag.h"        /* mgl_env_flag_enabled (uncached) */
 #include "mgl_metal_ref.h"
 #include "mgl_pso_format_class.h"
+#include "mgl_readback_policy.h"  /* mglRenderMSAAArrayLayerStride */
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_pass_manager.h"
 #include "mgl_renderer_ports.h"
 #include "mgl_trace_log.h"
+#include "mgl_vertex_format.h"    /* mgl*DescriptorSignatureFromState */
+#include "mgl_vertex_layout.h"    /* mglRendererUpdateBlendStateCache */
 
 #include "mgl_render.h"
 
 #include <stdio.h>
+#include <stdlib.h>   /* getenv (MGL_TOPO_TRACE) */
 #include <string.h>
 
 /* Objective-C private header declarations restated for C. */
@@ -646,6 +652,409 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
             recovery->interfaceMismatchBlockedUntil = 0.0;
             recovery->interfaceMismatchBlockedStreak = 0u;
         }
+    }
+
+    return 1;
+}
+
+/* === Pipeline Sync domain (log 189) =======================================
+ * -syncPipelineStateWithDeferredBufferMap: moved verbatim from
+ * MGLRenderer+RenderPass.m (301 lines / 11 syntax).  The only Objective-C left
+ * in it was the two Metal-object locals, the cache lookup and the hit log:
+ *   * psoVertexFunction / psoFragmentFunction become plain void * (the .m
+ *     borrowed them with __bridge);
+ *   * the cache lookup travels through a new areas bridge
+ *     (pipeline_cache_lookup_pipeline), like the other four cache bridges;
+ *   * the cache-hit log drops the NSString formatting and prints the same key
+ *     triple with fprintf (it is behind the same always-0 verbosity flag).
+ * The two file-local statics the method used - mglGeometryPassthroughLayerStride
+ * and mglGeometryPipelineFunctionKey - are plain C and moved with it.
+ */
+
+/* mglGeometryPassthroughLayerStride() from MGLRenderer+RenderPass.m: MSAA
+ * array textures are represented by a 2D array whose physical slices are laid
+ * out as [gl_layer][sample] with a fixed eight-slice stride.  A layered render
+ * pass therefore needs to translate the logical GL layer before Metal consumes
+ * [[render_target_array_index]].  Keep this decision in the render-pass domain:
+ * ordinary 2D arrays remain a one-to-one map and non-layered
+ * framebufferTextureLayer attachments keep their fixed slice. */
+static uint32_t mglPdGeometryPassthroughLayerStride(GLMContext context)
+{
+    if (!context || !context->active_state ||
+        !context->active_state->framebuffer) {
+        return 1u;
+    }
+    Framebuffer *fbo = context->active_state->framebuffer;
+    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
+        const FBOAttachment *attachment = &fbo->color_attachments[i];
+        uint32_t stride = mglRenderMSAAArrayLayerStride(
+            attachment->layered ? 1 : 0, (uint32_t)attachment->textarget);
+        if (stride > 1u) {
+            return stride;
+        }
+    }
+    uint32_t depthStride = mglRenderMSAAArrayLayerStride(
+        fbo->depth.layered ? 1 : 0, (uint32_t)fbo->depth.textarget);
+    if (depthStride > 1u) {
+        return depthStride;
+    }
+    return mglRenderMSAAArrayLayerStride(
+        fbo->stencil.layered ? 1 : 0, (uint32_t)fbo->stencil.textarget);
+}
+
+/* mglGeometryPipelineFunctionKey() from MGLRenderer+RenderPass.m: the backend
+ * keeps one passthrough function per kind.  Include the render target layer
+ * convention in the key so switching between ordinary and emulated-MSAA layered
+ * FBOs cannot reuse a function compiled for the other convention. */
+static uint64_t mglPdGeometryPipelineFunctionKey(
+    const Program *vertexProgram, const Program *geometryProgram,
+    uint32_t layerStride)
+{
+    uint64_t hash = 1469598103934665603ull;
+    hash = mglHashStepU64(hash,
+                          vertexProgram ? vertexProgram->pipeline_cache_instance_id : 0u);
+    hash = mglHashStepU64(hash,
+                          vertexProgram ? vertexProgram->pipeline_cache_generation : 0u);
+    hash = mglHashStepU64(hash,
+                          geometryProgram ? geometryProgram->pipeline_cache_instance_id : 0u);
+    hash = mglHashStepU64(hash,
+                          geometryProgram ? geometryProgram->pipeline_cache_generation : 0u);
+    return mglHashStepU64(hash, layerStride);
+}
+
+/* The one-line predicates of MGLRenderer_Private.h, in C (same shape as the
+ * mglSe* / mglBatch* twins). */
+static int mglPdBindingStateIsValid(void *owner)
+{
+    uint32_t valid = 0;
+    return owner && mglRenderBindingGetValid(owner, &valid) == 0 && valid;
+}
+
+static int mglPdBindingStatePipelineMatches(void *owner, void *pipeline)
+{
+    void *current = NULL;
+    return owner &&
+           mglRenderBindingGetPipelineState(owner, &current) == 0 &&
+           current == pipeline;
+}
+
+/* -syncPipelineStateWithDeferredBufferMap: */
+int mglRenderPassSyncPipelineState(void *renderer,
+                                   int deferredBufferMapForPipelineBuild)
+{
+    MGLRendererStateAreas areas;
+    mglRendererStateAreasPort(renderer, &areas);
+    GLMContext ctx = areas.ctx;
+    GLMState *state = areas.core && areas.core->activeState
+                          ? areas.core->activeState
+                          : (ctx ? ctx->active_state : NULL);
+    MGLGPURecoveryState *recovery = areas.gpu_recovery;
+    const MGLPipelineCacheState *cacheState = areas.pipeline_cache;
+    /* areas.binding_state_owner is the ADDRESS of the owner slot (rule 59). */
+    void *bindingOwner =
+        areas.binding_state_owner ? *areas.binding_state_owner : NULL;
+    MGLTessellationState *tessellation = areas.tessellation;
+    MGLGeometryState *geometry = areas.geometry;
+    void *currentPipelineState = cacheState ? cacheState->pipelineState : NULL;
+
+    /* Force a rebind of the pipeline state on the next setRenderPipelineState
+     * call.  Dirty program/VAO/FBO/render-state may rebuild or reuse the
+     * pipeline, but the encoder still needs the binding re-issued.
+     *
+     * Task 5 gated fast path: when MGL_PSO_DEDUP is enabled (default ON)
+     * and the render encoder is unchanged (the C++ binding cache is valid) and
+     * the resolved pipeline state pointer is identical to the previously bound
+     * state matches the C++ binding cache, the nil assignment is skipped.  This
+     * allows the dedup check in processGLStateLocked:'s setRenderPipelineState:
+     * path to recognize the encoder already has the correct PSO bound and skip
+     * the redundant MTL call.  If any condition is false, the original
+     * conservative nil assignment executes. */
+    if (cacheState && cacheState->psoDedupEnabled &&
+        mglPdBindingStateIsValid(bindingOwner) &&
+        mglPdBindingStatePipelineMatches(bindingOwner, currentPipelineState)) {
+        MGL_PERF_INC(g_mglPSODedupHitsSinceSwap);
+    } else {
+        mglRenderBindingSetPipelineState(bindingOwner, NULL);
+        MGL_PERF_INC(g_mglPSODedupMissesSinceSwap);
+    }
+    CFTimeInterval now = CFAbsoluteTimeGetCurrent();
+    int skipPipelineBuild = 0;
+    Program *currentVertexProgram =
+        (tessellation && tessellation->nativeTESActive)
+            ? tessellation->nativeTESProgram
+            : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    Program *currentFragmentProgram =
+        mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    GLuint currentProgramName = mglCurrentRenderProgramKey(ctx);
+    VertexArray *currentVAO = state->vao;
+    Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(
+        ctx, "processGLState.currentFBO");
+    GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
+
+    /* Program-level breaker (independent of render-pass signature) to avoid
+     * mismatch storms where color/depth/stencil signatures keep changing. */
+    if (currentPipelineState != NULL && currentProgramName != 0 &&
+        recovery &&
+        currentProgramName == recovery->programMismatchProgramName &&
+        now < recovery->programMismatchRetryAfter) {
+        static uint64_t s_programMismatchSkipCount = 0;
+        s_programMismatchSkipCount++;
+        if (s_programMismatchSkipCount <= 16 ||
+            (s_programMismatchSkipCount % 1000ull) == 0ull) {
+            double remaining = recovery->programMismatchRetryAfter - now;
+            if (remaining < 0.0) remaining = 0.0;
+            fprintf(stderr,
+                    "MGL WARNING: Program-level mismatch breaker active (program=%u, %.2fs remaining), skipping draw\n",
+                    (unsigned)currentProgramName, remaining);
+        }
+        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        return 0;
+    }
+
+    if (recovery && now < recovery->pipelineRetryAfter) {
+        int retryAppliesToCurrentProgram =
+            (currentProgramName != 0 &&
+             (currentProgramName == recovery->interfaceMismatchProgramName ||
+              currentProgramName == recovery->programMismatchProgramName ||
+              currentProgramName == recovery->interfaceMismatchBlockedProgram));
+
+        if (retryAppliesToCurrentProgram) {
+            if (currentPipelineState) {
+                state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+                /* Keep existing pipeline, but do not early-return before
+                 * setRenderPipelineState. */
+                skipPipelineBuild = 1;
+            } else {
+                recovery->pipelineRetryAfter = 0.0;
+                recovery->programMismatchRetryAfter = 0.0;
+                recovery->interfaceMismatchRetryAfter = 0.0;
+            }
+        } else {
+            static uint64_t s_retryBypassCount = 0;
+            s_retryBypassCount++;
+            if (s_retryBypassCount <= 16 ||
+                (s_retryBypassCount % 1000ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL PIPELINE RETRY bypass global retry for unrelated program=%u mismatchProgram=%u blockedProgram=%u\n",
+                        (unsigned)currentProgramName,
+                        (unsigned)recovery->interfaceMismatchProgramName,
+                        (unsigned)recovery->interfaceMismatchBlockedProgram);
+            }
+        }
+    }
+
+    if (!skipPipelineBuild) {
+        /* Build the only renderer pipeline representation: C ABI value-state. */
+        MGLRenderPipelineDescriptorState psoState = {0};
+        void *psoVertexFunction = NULL;
+        void *psoFragmentFunction = NULL;
+        uint32_t builtColor0Format = mglRenderInvalidPixelFormat();
+        uint32_t builtDepthFormat = mglRenderInvalidPixelFormat();
+        uint32_t builtStencilFormat = mglRenderInvalidPixelFormat();
+
+        mglRendererUpdateBlendStateCache(renderer);
+        state->dirty_bits &= ~DIRTY_ALPHA_STATE;
+        if (getenv("MGL_TOPO_TRACE") != NULL) {
+            fprintf(stderr,
+                    "MGLTOPO tessCompute=%d active=%d prog=%p topology=%u\n",
+                    (int)((tessellation && tessellation->tessComputeActive) ? 1 : 0),
+                    (int)((tessellation && tessellation->tessVertexRenderActive) ? 1 : 0),
+                    (void *)(tessellation ? tessellation->tessComputeProgram : NULL),
+                    (unsigned)psoState.input_primitive_topology);
+            fflush(stderr);
+        }
+        MGLRenderPassPipelineFunctions psoFunctions = { NULL, NULL };
+        if (!mglRenderPassGeneratePipelineDescriptorState(
+                renderer, &psoState, &psoFunctions)) {
+            fprintf(stderr,
+                    "MGL PIPELINE CREATE fail error=generatePipelineDescriptorState returned NO\n");
+            mglRenderPassInvalidateCurrentPipelineState(
+                renderer, "pipeline descriptor failure");
+            if (recovery) {
+                recovery->pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
+            }
+            mglMarkRendererDirtyBits(state,
+                                     DIRTY_PROGRAM | DIRTY_VAO |
+                                     DIRTY_FBO | DIRTY_RENDER_STATE);
+            return 0;
+        }
+        /* Borrowed Metal functions: the .m took them with __bridge so ARC owns
+         * the +1 it releases (the program/cache keeps them alive); in C they
+         * stay borrowed raw handles. */
+        psoVertexFunction = psoFunctions.vertex_function;
+        psoFragmentFunction = psoFunctions.fragment_function;
+        builtColor0Format = psoState.color_format[0];
+        builtDepthFormat = psoState.depth_format;
+        builtStencilFormat = psoState.stencil_format;
+
+        /* Circuit breaker for repeated VS/FS interface mismatch. */
+        if (recovery && now < recovery->interfaceMismatchRetryAfter &&
+            currentProgramName == recovery->interfaceMismatchProgramName &&
+            builtColor0Format == recovery->interfaceMismatchColor0Format &&
+            builtDepthFormat == recovery->interfaceMismatchDepthFormat &&
+            builtStencilFormat == recovery->interfaceMismatchStencilFormat) {
+            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            return 0;
+        }
+
+        int hasPipelineCacheKey = 0;
+        int pipelineResolvedFromCache = 0;
+        uint64_t pipelineSig = 0;
+        uint64_t vertexSig = 0;
+        /* Function-scope key words: filled inside the lookup block below, read
+         * by the miss path after it.  Only meaningful when
+         * currentProgramName != 0. */
+        uint64_t keyWords[MGL_RENDER_PIPELINE_CACHE_KEY_WORDS] = {0};
+
+        if (!pipelineResolvedFromCache && currentProgramName != 0) {
+            pipelineSig = mglPipelineDescriptorSignatureFromState(&psoState);
+            vertexSig = mglVertexDescriptorSignatureFromState(&psoState);
+
+            /* Keep descriptor signatures and linked Program identities
+             * lossless.  GL names can be reused and a Program can relink
+             * without changing its name.
+             *
+             * tessVertexRenderActive must be part of the key: it decides
+             * whether the raster vertex function is the TES render-vertex
+             * function itself or the generated slot-28 record passthrough
+             * (see the tessPassthroughFunction selection in the pipeline
+             * descriptor), so an isolines/point-mode program that is drawn
+             * through both paths -- non-indexed draws take the vertex path,
+             * indexed ones fall back to the compute expansion -- would
+             * otherwise reuse the first pipeline for the second draw and
+             * rasterize the record stream with the wrong ABI. */
+            uint64_t primaryKey = (((uint64_t)currentProgramName << 32)
+                                 | (((uint64_t)state->var.clip_origin & 0xFu) << 28)
+                                 | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24)
+                                 | ((tessellation && tessellation->nativeTESActive) ? (1ull << 23) : 0ull)
+                                 | ((tessellation && tessellation->tessVertexCaptureActive) ? (1ull << 22) : 0ull)
+                                 | ((geometry && geometry->expansionActive) ? (1ull << 21) : 0ull)
+                                 | ((tessellation && tessellation->cullDistanceCaptureActive) ? (1ull << 20) : 0ull)
+                                 | ((tessellation && tessellation->tessComputeActive) ? (1ull << 19) : 0ull)
+                                 | ((tessellation && tessellation->tessVertexRenderActive) ? (1ull << 18) : 0ull));
+            uint64_t vertexInstance = currentVertexProgram
+                ? currentVertexProgram->pipeline_cache_instance_id : 0u;
+            if (geometry && geometry->expansionActive && geometry->program) {
+                /* The raster vertex function is generated from both the real
+                 * VS/FS interface and the GS output record.  Fold both program
+                 * identities plus the emulated-MS layer convention into the key
+                 * so an old PTVS/PSO cannot be reused after a GS or framebuffer
+                 * change. */
+                vertexInstance = mglPdGeometryPipelineFunctionKey(
+                    currentVertexProgram, geometry->program,
+                    mglPdGeometryPassthroughLayerStride(ctx));
+            }
+            uint64_t vertexGeneration = currentVertexProgram
+                ? currentVertexProgram->pipeline_cache_generation : 0u;
+            uint64_t fragmentInstance = currentFragmentProgram
+                ? currentFragmentProgram->pipeline_cache_instance_id : 0u;
+            uint64_t fragmentGeneration = currentFragmentProgram
+                ? currentFragmentProgram->pipeline_cache_generation : 0u;
+            keyWords[0] = primaryKey;
+            keyWords[1] = vertexInstance;
+            keyWords[2] = vertexGeneration;
+            keyWords[3] = fragmentInstance;
+            keyWords[4] = fragmentGeneration;
+            keyWords[5] = pipelineSig;
+            keyWords[6] = vertexSig;
+            /* Hit path uses the reusable zero-alloc query key.  The key is only
+             * valid for lookups; the miss path below allocates a fresh key for
+             * the store/compile path so overwriteWords: cannot corrupt cache
+             * dictionaries. */
+            hasPipelineCacheKey = 1;
+
+            /* Two-level cache lookup:
+             * Level 1: PSO cache (fastest - compiled pipeline ready to use)
+             * Level 2: Descriptor cache (fast - skip expensive descriptor
+             * regeneration).  On double miss: regenerate descriptor + compile
+             * PSO. */
+            void *cachedPipeline = NULL;
+            void *cachedVertexFunction = NULL;
+            void *cachedFragmentFunction = NULL;
+            int cachedFunctionMetadataPresent = 0;
+            if (areas.pipeline_cache_lookup_pipeline) {
+                cachedFunctionMetadataPresent =
+                    areas.pipeline_cache_lookup_pipeline(
+                        areas.pipeline_cache_object, keyWords, &cachedPipeline,
+                        &cachedVertexFunction, &cachedFragmentFunction);
+            }
+            if (cachedPipeline) {
+                /* PSO cache hit - fastest path */
+                static uint64_t s_pipelineCacheHitCount = 0;
+                s_pipelineCacheHitCount++;
+                MGL_PERF_INC(g_mglPipelineCacheHitsSinceSwap);
+                if (kMglPdVerbosePipelineLogs &&
+                    (s_pipelineCacheHitCount <= 128ull ||
+                     (s_pipelineCacheHitCount % 1000ull) == 0ull)) {
+                    fprintf(stderr,
+                            "MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%016llx/%016llx/%016llx\n",
+                            (unsigned)currentProgramName, (void *)currentVAO,
+                            (unsigned)currentFBOName,
+                            (unsigned long long)keyWords[0],
+                            (unsigned long long)keyWords[5],
+                            (unsigned long long)keyWords[6]);
+                }
+
+                if (areas.pipeline_cache_activate) {
+                    areas.pipeline_cache_activate(
+                        areas.pipeline_cache_object, cachedPipeline,
+                        builtColor0Format, builtDepthFormat, builtStencilFormat,
+                        currentProgramName,
+                        cachedFunctionMetadataPresent ? cachedVertexFunction
+                                                      : psoVertexFunction,
+                        cachedFunctionMetadataPresent ? cachedFragmentFunction
+                                                      : psoFragmentFunction);
+                }
+                pipelineResolvedFromCache = 1;
+                /* Hit path deliberately skips the LRU touch: touching would
+                 * require copying the query-keyed object that must never enter
+                 * the LRU (see pipelineQueryKeyForWords:), reintroducing the
+                 * per-draw alloc this avoids.  Mirrors the depth-stencil cache
+                 * policy. */
+
+                /* Mirror successful compile-side breaker resets. */
+                if (recovery) {
+                    recovery->interfaceMismatchStreak = 0;
+                    recovery->interfaceMismatchProgramName = 0;
+                    recovery->interfaceMismatchColor0Format = mglRenderInvalidPixelFormat();
+                    recovery->interfaceMismatchDepthFormat = mglRenderInvalidPixelFormat();
+                    recovery->interfaceMismatchStencilFormat = mglRenderInvalidPixelFormat();
+                    recovery->interfaceMismatchRetryAfter = 0.0;
+                    if (recovery->programMismatchProgramName == currentProgramName) {
+                        recovery->programMismatchProgramName = 0;
+                        recovery->programMismatchRetryAfter = 0.0;
+                        recovery->programMismatchStreak = 0u;
+                    }
+                    if (recovery->interfaceMismatchBlockedProgram == currentProgramName) {
+                        recovery->interfaceMismatchBlockedProgram = 0;
+                        recovery->interfaceMismatchBlockedUntil = 0.0;
+                        recovery->interfaceMismatchBlockedStreak = 0u;
+                    }
+                }
+            }
+        }
+
+        /* PROPER AGX VIRTUALIZATION COMPATIBILITY: Fix root cause while
+         * maintaining Metal functionality. */
+        if (!pipelineResolvedFromCache) {
+            /* Compile/store path needs its own key object: the reusable query
+             * key words are overwritten on every lookup and must never be
+             * retained by the cache dictionaries/LRU.  One heap allocation on a
+             * cache miss is negligible against the PSO compile itself. */
+            const uint64_t *storeKeyWords = hasPipelineCacheKey ? keyWords : NULL;
+            return mglRenderPassBuildPipelineStateOnCacheMiss(
+                       renderer, &psoState, psoVertexFunction,
+                       psoFragmentFunction, storeKeyWords, pipelineSig,
+                       vertexSig, builtColor0Format, builtDepthFormat,
+                       builtStencilFormat, currentProgramName, now) != 0;
+        }
+
+        if (deferredBufferMapForPipelineBuild && currentPipelineState != NULL) {
+            RETURN_FALSE_ON_FAILURE(mglRendererMapBuffersToMTL(renderer));
+            deferredBufferMapForPipelineBuild = 0;
+        }
+
+        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
     }
 
     return 1;
