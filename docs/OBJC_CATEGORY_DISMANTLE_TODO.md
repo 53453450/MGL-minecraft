@@ -8856,6 +8856,10 @@ refq 223/223（164 / **59**）、piq 30/30（17 / **13**）、compute 152/152（
 | `@implementation MGLRenderer`（**T6**） | 2 | 1 | 空实现，承载 `MGLRenderer ()` 扩展的 16 个 `@package` ivar |
 | 墓碑注释 | 约 110 | 12 | 迁移说明（`#import` 行等），随 T1/T6 一起消失 |
 
+**收口刀的前置已完成（第 209 条）**：消费方（`external/glfw/src/mgl_context.m`、`test_legacy_compat/test_metalcpp_smoke.mm`、`scratch/kvo_probe.mm`）
+已改为 `NSClassFromString` 按名取类；实测证明"占位类符号"方案不可行（classref 在镜像加载期按名重定位，早于构造函数）。
+⇒ 最后一刀**只剩库内改动**，不再需要碰消费方。
+
 **最后一刀（T1+T6）的执行清单**（不可再拆，理由见 §0.132 的父类符号问题）：
 1. 新建/扩展 `mgl_platform_shell.cpp`：`objc_allocateClassPair` 建 `MGLPlatformRendererShell`（父类 NSObject，ivar `_swapInterval`/`_view`/`_layer`/`_drawable`），
    `class_addMethod` 挂 18 个方法（`initWithView:`、`view`/`setView:`/`layer`/`setLayer:`/`drawable`/`setDrawable:`、
