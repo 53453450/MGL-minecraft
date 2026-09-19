@@ -1623,6 +1623,48 @@ static void mglTextureTargetLevelDimensions(GLenum target,
     if (out_depth) *out_depth = depth;
 }
 
+
+/* F17/P31: GL 4.6 §8.17 defines mipmap completeness over the *set* of level
+ * images level_base..q that were specified -- it never constrains the order in
+ * which an application supplies them.  A level above base may therefore arrive
+ * first, and the later call that supplies the real base must not throw it away.
+ * Returns true when every level already recorded is still consistent with the
+ * candidate base (width, height, depth), i.e. when the sequence base>>level
+ * still reproduces the dimensions we already stored. */
+static bool mglTextureRecordedLevelsMatchBase(Texture *tex,
+                                              GLsizei width,
+                                              GLsizei height,
+                                              GLsizei depth)
+{
+    GLuint i;
+    GLuint levels;
+
+    if (!tex || !tex->faces[0].levels) {
+        return false;
+    }
+    levels = tex->mipmap_levels ? tex->mipmap_levels : tex->num_levels;
+    if (levels == 0u || levels > 1024u) {
+        return false;
+    }
+
+    for (i = 0u; i < levels; i++) {
+        TextureLevel *lvl = &tex->faces[0].levels[i];
+        GLuint ew = 1u, eh = 1u, ed = 1u;
+
+        /* A level that was never specified carries no constraint. */
+        if (!lvl->complete && !lvl->ever_written && !lvl->has_initialized_data) {
+            continue;
+        }
+        mglTextureTargetLevelDimensions(tex->target,
+                                        (GLuint)width, (GLuint)height, (GLuint)depth,
+                                        i, &ew, &eh, &ed);
+        if (lvl->width != ew || lvl->height != eh) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
 {
     Texture *ptr;
@@ -2911,10 +2953,39 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                  depth != (GLsizei)tex->depth ||
                  internalformat != tex->internalformat)
         {
-            // invalidate texture because the base level width / height / depth / internal format are being changed...
-            invalidateTexture(ctx, tex);
+            /* F17/P31: if the dimensions we recorded earlier came from levels
+             * above base, this "base changed" test fires even though every
+             * stored level is still exactly base>>level -- the texture is
+             * legal and the earlier levels must survive.  Only a genuine
+             * inconsistency justifies discarding the whole texture. */
+            if (internalformat == tex->internalformat &&
+                mglTextureRecordedLevelsMatchBase(tex, width, height, depth))
+            {
+                tex->width = (GLuint)width;
+                tex->height = (GLuint)height;
+                tex->depth = (GLuint)depth;
+                tex->complete = false;
+                tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+                mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
 
-            initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
+                /* The chain is now rooted at the real base, so the capacity
+                 * must cover the full base-derived chain. */
+                if (ensureTextureLevelCapacity(ctx, tex,
+                        mglTextureTargetMaxLevels(tex->target,
+                                                  (GLuint)MAX(width, 1),
+                                                  (GLuint)MAX(height, 1),
+                                                  (GLuint)MAX(depth, 1))) == false)
+                {
+                    ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+                }
+            }
+            else
+            {
+                // invalidate texture because the base level width / height / depth / internal format are being changed...
+                invalidateTexture(ctx, tex);
+
+                initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
+            }
         }
     }
     else if (tex->mipmap_levels == 0)
@@ -4611,7 +4682,11 @@ void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLbo
     // bind it to metal
     mglRendererBindTexture(ctx, tex);
 
-    ERROR_CHECK_RETURN(tex->mtl_data, GL_OUT_OF_MEMORY);
+    /* F24: this check used to pass unconditionally because the silent fallback
+     * installs a non-NULL gradient substitute on failure, so the one "loud"
+     * failure report in the texture-creation paths was defeated by the very
+     * mechanism it was meant to catch.  Reject the substitute too. */
+    ERROR_CHECK_RETURN(tex->mtl_data && !tex->mtl_data_is_fallback, GL_OUT_OF_MEMORY);
 }
 
 void mglTexStorage1D(GLMContext ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width)
@@ -6338,6 +6413,18 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     }
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(tex->target == GL_TEXTURE_BUFFER, GL_INVALID_OPERATION);
+
+    /* GL 4.6 §8.9 error list: "An INVALID_VALUE error is generated if offset
+     * is not an integer multiple of the value of TEXTURE_BUFFER_OFFSET_ALIGNMENT."
+     * glTexBuffer always passes offset 0, so only the Range entry point can
+     * violate this; gate on whole_buffer to keep the two paths distinct. */
+    if (!whole_buffer && offset > 0) {
+        GLuint tb_align = STATE(var).texture_buffer_offset_alignment;
+        if (tb_align == 0u || tb_align > 4096u) {
+            tb_align = 16u;   /* same fallback as the alignment query */
+        }
+        ERROR_CHECK_RETURN((offset % (GLintptr)tb_align) == 0, GL_INVALID_VALUE);
+    }
 
     mglFlushPendingDraws(ctx);
 

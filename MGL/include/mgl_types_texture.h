@@ -205,6 +205,11 @@ typedef struct Texture_t {
      * frame" (a frame's first write can skip loading prior tile contents). */
     GLuint  mtl_rt_frame_generation;
     GLboolean metal_data_authoritative; // set when Metal texture data is more recent than CPU data (e.g. after copyImageSubData blit)
+    /* F22/F24: set when mtl_data holds the emergency fallback gradient rather
+     * than the real texture.  Lets callers that check "did creation succeed?"
+     * distinguish a real texture from the silent substitute, and keeps the
+     * degraded state observable instead of indistinguishable from success. */
+    GLboolean mtl_data_is_fallback;
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;
