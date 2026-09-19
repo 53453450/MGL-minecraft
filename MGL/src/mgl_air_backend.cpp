@@ -7535,11 +7535,68 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                         sampleType->kind == MGLIR_TYPE_SAMPLER
                                     ? sampleType->tex_storage
                                     : MGLIR_SCALAR_FLOAT;
-            /* Shadow compare (sample_compare) is not wired yet. Incomplete
-             * texture / shadow CTS cases expect 0.0; returning constant
-             * float matches BI_RET_FLOAT overloads until compare is added. */
+            /* Shadow compare.  GLSL carries the compare reference in the last
+             * component of the coordinate (texture(sampler2DShadow, vec3(uv,
+             * ref))), and AIR exposes a dedicated intrinsic family for it.
+             * Argument list verified against Apple's own frontend
+             * (xcrun metal -c + llvm-dis on a depth2d<float> probe):
+             *
+             *   air.sample_compare_depth_2d.f32(
+             *       depth2d<float>, sampler, i32 1, <2 x float> coord,
+             *       float ref, i1 has_offset, <2 x i32> offset,
+             *       i1 has_lod, float, float, i32) -> { float, i8 }
+             *
+             * i.e. exactly the non-compare argument list plus a `float`
+             * reference right after the coordinate, returning a scalar float.
+             * Previously this path returned a constant 0.0, so every real
+             * shadow lookup read back as zero (and, because 0.0 coincides with
+             * the "red" expectation of KHR-GL46.texture_repeat_mode's depth
+             * patterns, it passed the first quadrant and failed the rest). */
             if (sampleType && sampleType->kind == MGLIR_TYPE_SAMPLER &&
                 sampleType->tex_depth) {
+                const char *cmpName = nullptr;
+                if (sampleKind == MGLIR_TEX_2D) {
+                    cmpName = "air.sample_compare_depth_2d.f32";
+                } else if (sampleKind == MGLIR_TEX_2D_ARRAY ||
+                           sampleKind == MGLIR_TEX_1D_ARRAY) {
+                    cmpName = "air.sample_compare_depth_2d_array.f32";
+                } else if (sampleKind == MGLIR_TEX_CUBE) {
+                    cmpName = "air.sample_compare_depth_cube.f32";
+                }
+                bool coordUsable = false;
+                if (uv && uv->getType()->isVectorTy()) {
+                    auto *uvv = llvm::cast<llvm::FixedVectorType>(
+                        uv->getType());
+                    coordUsable = uvv->getNumElements() >= 3 &&
+                                  uvv->getElementType()->isFloatTy();
+                }
+                if (tex && smp && cmpName && coordUsable) {
+                    llvm::Value *ref =
+                        cg.b->CreateExtractElement(uv, cg.b->getInt32(2));
+                    llvm::Value *xy = cg.b->CreateShuffleVector(
+                        uv, llvm::UndefValue::get(uv->getType()),
+                        llvm::ConstantVector::get(
+                            {llvm::ConstantInt::get(
+                                 llvm::Type::getInt32Ty(*cg.ctx), 0),
+                             llvm::ConstantInt::get(
+                                 llvm::Type::getInt32Ty(*cg.ctx), 1)}));
+                    llvm::Value *cmpOffset = llvm::Constant::getNullValue(
+                        llvm::FixedVectorType::get(i32, 2));
+                    std::vector<llvm::Value *> cmpArgs = {
+                        tex, smp, cg.b->getInt32(1), xy, ref,
+                        cg.b->getInt1(false), cmpOffset, cg.b->getInt1(false),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        llvm::ConstantFP::get(f32, 0.0),
+                        cg.b->getInt32(0)};
+                    llvm::Type *cmpRet = llvm::StructType::get(
+                        *cg.ctx, {f32, cg.b->getInt8Ty()});
+                    llvm::Value *cmp =
+                        callAirFn(cg, cmpName, cmpRet, cmpArgs);
+                    return cg.b->CreateExtractValue(cmp, 0);
+                }
+                /* Unsupported shape (non-2D kind, integer/projected coord,
+                 * missing operand): keep the previous constant rather than
+                 * emitting an intrinsic we cannot type. */
                 return llvm::ConstantFP::get(f32, 0.0);
             }
             auto sampledRetType = [&](llvm::Type *vecTy) {
