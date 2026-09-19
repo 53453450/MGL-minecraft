@@ -464,7 +464,7 @@ bool isBuffer(GLMContext ctx, GLuint buffer)
     return ((Buffer *)searchHashTable(&STATE(buffer_table), buffer)) != NULL;
 }
 
-static bool mglBufferNameWasGenerated(GLMContext ctx, GLuint buffer)
+bool mglBufferNameWasGenerated(GLMContext ctx, GLuint buffer)   /* F23: shared with vertex_buffers.c */
 {
 #ifdef MGL_GL_ES
     (void)ctx;

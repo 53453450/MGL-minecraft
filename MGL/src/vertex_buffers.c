@@ -72,9 +72,19 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
     Buffer *buf = NULL;
     if (buffer != 0)
     {
-        /* DSA VertexArrayVertexBuffer does not create buffer objects;
-         * buffer must already exist (IsBuffer). */
+        extern bool mglBufferNameWasGenerated(GLMContext ctx, GLuint buffer);
+        extern Buffer *getBuffer(GLMContext ctx, GLenum target, GLuint buffer);
+
         buf = findBuffer(ctx, buffer);
+        if (!buf && mglBufferNameWasGenerated(ctx, buffer)) {
+            /* GL 4.6 §10.3.2: "buffer is either zero or a name returned by
+             * GenBuffers or CreateBuffers.  If buffer is not the name of an
+             * existing buffer object, the GL first creates a new state vector
+             * ... just as for BindBuffer."  A generated-but-never-bound name
+             * is therefore a LEGAL argument: instantiate the object here
+             * instead of rejecting the call with INVALID_OPERATION. */
+            buf = getBuffer(ctx, GL_ARRAY_BUFFER, buffer);
+        }
         ERROR_CHECK_RETURN_VALUE(buf, GL_INVALID_OPERATION, false);
     }
 
