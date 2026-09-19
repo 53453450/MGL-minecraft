@@ -1278,6 +1278,33 @@ static void mglCPUFeedbackCaptureVertex(GLMContext ctx,
 }
 
 /* Common gate for both arrays and elements CPU capture paths. */
+/* F27/P41: every rejection in this gate used to be a bare `return false`, so
+ * "the CPU capture was skipped" and "the capture ran but produced zeros" were
+ * indistinguishable from outside -- the caller only ever saw a zeroed XFB
+ * buffer.  Counting by reason makes the family triageable in one run instead
+ * of by elimination.  Rate-limited so it is useful without flooding. */
+static const char *const kMglXfbGateReasons[] = {
+    "transform feedback not active",
+    "pipeline carries GS/TCS/TES",
+    "no program / varying count / buffer mode / not passthrough",
+    "draw primitive mode != XFB primitive mode",
+    "no vertex array object",
+};
+static uint64_t s_mglXfbGateRejects[5];
+
+static void mglCPUFeedbackGateReject(unsigned reason)
+{
+    uint64_t n;
+    if (reason >= (unsigned)(sizeof(s_mglXfbGateRejects) / sizeof(s_mglXfbGateRejects[0]))) {
+        reason = 2u;
+    }
+    n = ++s_mglXfbGateRejects[reason];
+    if (n <= 4u || (n % 512u) == 0u) {
+        fprintf(stderr, "MGL XFB GATE: capture skipped (%s) count=%llu\n",
+                kMglXfbGateReasons[reason], (unsigned long long)n);
+    }
+}
+
 static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
                                       GLenum mode,
                                       Program **programOut,
@@ -1287,6 +1314,7 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
         !STATE(transform_feedback) ||
         !STATE(transform_feedback)->active ||
         STATE(transform_feedback)->paused) {
+        mglCPUFeedbackGateReject(0u);
         return false;
     }
 
@@ -1302,6 +1330,7 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
         if (pipeline->stage_programs[_GEOMETRY_SHADER] ||
             pipeline->stage_programs[_TESS_CONTROL_SHADER] ||
             pipeline->stage_programs[_TESS_EVALUATION_SHADER]) {
+            mglCPUFeedbackGateReject(1u);
             return false;
         }
         program = pipeline->stage_programs[_VERTEX_SHADER];
@@ -1313,12 +1342,14 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
         (program->transform_feedback_buffer_mode != GL_INTERLEAVED_ATTRIBS &&
          program->transform_feedback_buffer_mode != GL_SEPARATE_ATTRIBS) ||
         !mglCPUFeedbackIsPassthroughProgram(program)) {
+        mglCPUFeedbackGateReject(2u);
         return false;
     }
     /* GL spec: for a program without a geometry shader, the draw primitive
      * mode must match the transform-feedback primitive mode. */
     if (!program->shader_slots[_GEOMETRY_SHADER] &&
         mode != STATE(transform_feedback)->primitive_mode) {
+        mglCPUFeedbackGateReject(3u);
         return false;
     }
 
@@ -1327,6 +1358,7 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
         vao = mglGetOrCreateDefaultVAO(ctx);
     }
     if (!vao) {
+        mglCPUFeedbackGateReject(4u);
         return false;
     }
 
