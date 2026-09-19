@@ -13174,7 +13174,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             }
             /* Match IMAGE metadata / sample_texture_cube*: samplerCube must
              * be texturecube, not texture2d (else Metal PSO compile fails). */
-            std::string sampledType = is3d ? "texture3d<"
+            /* Shadow samplers are DEPTH textures: AIR declares them with a
+             * dedicated type name family (depth2d / depth2d_array / depthcube),
+             * not the ordinary texture* ones.  Verified against Apple's own
+             * frontend — a MSL `depth2d<float>` argument is recorded as
+             * air.arg_type_name = "depth2d<float, sample>", and the companion
+             * sampling intrinsic is air.sample_compare_depth_2d.f32.
+             * Getting the name wrong (texture2d) makes the metallib invalid even
+             * though the intrinsic name is right, so this is a prerequisite for
+             * wiring shadow compare. */
+            const bool isDepthSampler =
+                samplerType && samplerType->kind == MGLIR_TYPE_SAMPLER &&
+                samplerType->tex_depth != 0;
+            std::string sampledType = isDepthSampler
+                                  ? (is2dArray ? "depth2d_array<"
+                                     : isCube ? "depthcube<"
+                                              : "depth2d<")
+                                  : is3d ? "texture3d<"
                                   : is2dArray ? "texture2d_array<"
                                   : isCubeArray ? "texturecube_array<"
                                   : isCube ? "texturecube<"
