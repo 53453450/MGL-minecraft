@@ -225,6 +225,73 @@ static GLuint mglCurrentRenderbufferBinding(GLMContext ctx)
     return (ctx && STATE(renderbuffer)) ? STATE(renderbuffer)->name : 0u;
 }
 
+extern Texture *findTexture(GLMContext ctx, GLuint texture);
+static GLuint mglInternalFormatComponentBits(GLenum internalformat, GLenum component);
+
+/* F21: component widths of the CURRENT DRAW FRAMEBUFFER.
+ *
+ * GL 4.6 reports RED/GREEN/BLUE/ALPHA/DEPTH/STENCIL_BITS as state of the bound
+ * draw framebuffer (its first colour attachment, or the default drawable).
+ * These six answers used to be a hard 0: glm_params.h declared the backing
+ * fields and this switch returned them, but nothing in the tree ever assigned
+ * them.  A 0 here is not a harmless "unknown" -- callers derive precision
+ * tolerances from it, so an implementation reporting 0 effectively tells them
+ * "anything matches" (see the CTS epsilon path that masked clamp_to_edge). */
+static GLuint mglDrawFramebufferComponentBits(GLMContext ctx, GLenum component)
+{
+    Framebuffer *fbo;
+    FBOAttachment *att = NULL;
+    Texture *tex = NULL;
+
+    if (!ctx) {
+        return 0u;
+    }
+    fbo = STATE(framebuffer);
+    if (!fbo || fbo->name == 0u) {
+        /* The default drawable carries no FBOAttachment: it is the 8-bit BGRA
+         * drawable with a packed Depth24Unorm_Stencil8 buffer that MGL always
+         * allocates, so report it explicitly rather than answering 0. */
+        switch (component) {
+            case GL_DEPTH:   return 24u;
+            case GL_STENCIL: return 8u;
+            default:         return 8u;
+        }
+    }
+
+    if (component == GL_DEPTH || component == GL_STENCIL) {
+        att = (component == GL_DEPTH) ? &fbo->depth : &fbo->stencil;
+        if (!att->buf.tex && !att->buf.rbo) {
+            /* Default framebuffer: MGL allocates a packed
+             * Depth24Unorm_Stencil8 drawable (the render-pass trace reports
+             * the depth attachment as pixel format 260). */
+            return (component == GL_DEPTH) ? 24u : 8u;
+        }
+    } else {
+        if ((fbo->color_attachment_bitfield & 1u) == 0u) {
+            /* Default framebuffer: an 8-bit-per-channel BGRA drawable. */
+            return 8u;
+        }
+        att = &fbo->color_attachments[0];
+    }
+
+    if (!att) {
+        return 0u;
+    }
+
+    if (att->textarget == GL_RENDERBUFFER && att->buf.rbo) {
+        tex = att->buf.rbo->tex;
+    } else {
+        tex = att->buf.tex;
+        if (!tex && att->texture != 0u) {
+            tex = findTexture(ctx, att->texture);
+        }
+    }
+    if (!tex || tex->internalformat == 0) {
+        return 0u;
+    }
+    return mglInternalFormatComponentBits((GLenum)tex->internalformat, component);
+}
+
 static GLuint mglCurrentVertexArrayBinding(GLMContext ctx)
 {
     VertexArray *vao = ctx ? STATE(vao) : NULL;
@@ -563,12 +630,12 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x0D38: RET_TYPE_VAR(type, max_projection_stack_depth); break; // GL_MAX_PROJECTION_STACK_DEPTH
         case 0x0D39: RET_TYPE_VAR(type, max_texture_stack_depth); break; // GL_MAX_TEXTURE_STACK_DEPTH
         case 0x0D51: RET_TYPE_VAR(type, index_bits); break; // GL_INDEX_BITS
-        case 0x0D52: RET_TYPE_VAR(type, red_bits); break; // GL_RED_BITS
-        case 0x0D53: RET_TYPE_VAR(type, green_bits); break; // GL_GREEN_BITS
-        case 0x0D54: RET_TYPE_VAR(type, blue_bits); break; // GL_BLUE_BITS
-        case 0x0D55: RET_TYPE_VAR(type, alpha_bits); break; // GL_ALPHA_BITS
-        case 0x0D56: RET_TYPE_VAR(type, depth_bits); break; // GL_DEPTH_BITS
-        case 0x0D57: RET_TYPE_VAR(type, stencil_bits); break; // GL_STENCIL_BITS
+        case 0x0D52: RET_TYPE_VAR_DERIVED(mglDrawFramebufferComponentBits(ctx, GL_RED)); break; // GL_RED_BITS
+        case 0x0D53: RET_TYPE_VAR_DERIVED(mglDrawFramebufferComponentBits(ctx, GL_GREEN)); break; // GL_GREEN_BITS
+        case 0x0D54: RET_TYPE_VAR_DERIVED(mglDrawFramebufferComponentBits(ctx, GL_BLUE)); break; // GL_BLUE_BITS
+        case 0x0D55: RET_TYPE_VAR_DERIVED(mglDrawFramebufferComponentBits(ctx, GL_ALPHA)); break; // GL_ALPHA_BITS
+        case 0x0D56: RET_TYPE_VAR_DERIVED(mglDrawFramebufferComponentBits(ctx, GL_DEPTH)); break; // GL_DEPTH_BITS
+        case 0x0D57: RET_TYPE_VAR_DERIVED(mglDrawFramebufferComponentBits(ctx, GL_STENCIL)); break; // GL_STENCIL_BITS
         case 0x0D58: RET_TYPE_VAR(type, accum_red_bits); break; // GL_ACCUM_RED_BITS
         case 0x0D59: RET_TYPE_VAR(type, accum_green_bits); break; // GL_ACCUM_GREEN_BITS
         case 0x0D5A: RET_TYPE_VAR(type, accum_blue_bits); break; // GL_ACCUM_BLUE_BITS
