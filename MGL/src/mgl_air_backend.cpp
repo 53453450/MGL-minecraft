@@ -617,8 +617,13 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     bool lfp = l->getType()->isFPOrFPVectorTy();
     bool rfp = r->getType()->isFPOrFPVectorTy();
     if (lfp != rfp) {
-        if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT);
-        else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT);
+        /* The integer side must be told its own signedness: `uintExpr * 2.0`
+         * has to convert with UIToFP.  coerceScalar cannot recover it from the
+         * LLVM value (i32 carries no signedness), and SIToFP would turn every
+         * operand >= 2^31 into a NEGATIVE float.  Both operand MTypes are in
+         * scope here — the only place in this function that needs them. */
+        if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT, rt.scalar);
+        else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT, lt.scalar);
         rfp = r->getType()->isFPOrFPVectorTy();
     }
     bool lv = l->getType()->isVectorTy();
