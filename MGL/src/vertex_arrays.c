@@ -914,7 +914,10 @@ void mglVertexAttribBinding(GLMContext ctx, GLuint attribindex, GLuint bindingin
 
     ptr = STATE(vao);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    /* GL 4.6: "no vertex array object is bound" is INVALID_OPERATION, not
+     * INVALID_VALUE.  The DSA (mglVertexArray*) variants below already use
+     * INVALID_OPERATION; these non-DSA entry points were inconsistent. */
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setVertexBindingIndex(ctx, ptr, attribindex, bindingindex);
 }
@@ -1005,7 +1008,10 @@ void mglVertexAttribFormat(GLMContext ctx, GLuint attribindex, GLint size, GLenu
 
     ptr = STATE(vao);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    /* GL 4.6: "no vertex array object is bound" is INVALID_OPERATION, not
+     * INVALID_VALUE.  The DSA (mglVertexArray*) variants below already use
+     * INVALID_OPERATION; these non-DSA entry points were inconsistent. */
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setAttribFormat(ctx, ptr, attribindex, size, type, normalized, relativeoffset);
 }
@@ -1078,7 +1084,10 @@ void mglVertexAttribIFormat(GLMContext ctx, GLuint attribindex, GLint size, GLen
 
     ptr = STATE(vao);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    /* GL 4.6: "no vertex array object is bound" is INVALID_OPERATION, not
+     * INVALID_VALUE.  The DSA (mglVertexArray*) variants below already use
+     * INVALID_OPERATION; these non-DSA entry points were inconsistent. */
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setAttribIFormat(ctx, ptr, attribindex, size, type, relativeoffset);
 }
@@ -1141,7 +1150,10 @@ void mglVertexAttribLFormat(GLMContext ctx, GLuint attribindex, GLint size, GLen
 
     ptr = STATE(vao);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    /* GL 4.6: "no vertex array object is bound" is INVALID_OPERATION, not
+     * INVALID_VALUE.  The DSA (mglVertexArray*) variants below already use
+     * INVALID_OPERATION; these non-DSA entry points were inconsistent. */
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setAttribLFormat(ctx, ptr, attribindex, size, type, relativeoffset);
 }
@@ -1163,7 +1175,10 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
 
     ptr = STATE(vao);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    /* GL 4.6: "no vertex array object is bound" is INVALID_OPERATION, not
+     * INVALID_VALUE.  The DSA (mglVertexArray*) variants below already use
+     * INVALID_OPERATION; these non-DSA entry points were inconsistent. */
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
 
     if (ptr->attrib[index].divisor == divisor &&
@@ -1209,7 +1224,10 @@ void mglVertexBindingDivisor(GLMContext ctx, GLuint bindingindex, GLuint divisor
 
     ptr = STATE(vao);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    /* GL 4.6: "no vertex array object is bound" is INVALID_OPERATION, not
+     * INVALID_VALUE.  The DSA (mglVertexArray*) variants below already use
+     * INVALID_OPERATION; these non-DSA entry points were inconsistent. */
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setBindingDivisor(ctx, ptr, bindingindex, divisor);
 }
