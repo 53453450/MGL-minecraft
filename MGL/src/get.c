@@ -261,9 +261,18 @@ static GLuint mglDrawFramebufferComponentBits(GLMContext ctx, GLenum component)
     if (component == GL_DEPTH || component == GL_STENCIL) {
         att = (component == GL_DEPTH) ? &fbo->depth : &fbo->stencil;
         if (!att->buf.tex && !att->buf.rbo) {
-            /* Default framebuffer: MGL allocates a packed
-             * Depth24Unorm_Stencil8 drawable (the render-pass trace reports
-             * the depth attachment as pixel format 260). */
+            /* Default framebuffer with NO attachment object at all: report the
+             * widths MGL's drawable is modelled with on the GL side, i.e. an
+             * 8-bit-per-channel colour buffer and a packed depth-stencil.
+             *
+             * NOTE on the depth width: the Metal drawable is actually
+             * Depth32Float_Stencil8 (the render-pass trace reports pixel format
+             * 260; an earlier revision of this comment misnamed it
+             * Depth24Unorm_Stencil8, which is 255 and does not exist on Apple
+             * Silicon).  The width reported here is the GL-side precision, and
+             * in the normal case this branch is not even reached: the drawable
+             * carries a depth attachment whose GL internalformat is
+             * GL_DEPTH24_STENCIL8, so the caller derives 24 from that. */
             return (component == GL_DEPTH) ? 24u : 8u;
         }
     } else {
