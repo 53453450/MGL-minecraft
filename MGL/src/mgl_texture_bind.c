@@ -358,22 +358,39 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                 tex->dirty_bits = 0;
             } else {
                 s_fallbackTextureCount++;
+                /* F22/P32: keep a cumulative count so the degradation is
+                 * visible in aggregate, not only when someone enables tracing.
+                 * The stable "MGL TEXTURE FALLBACK" token makes it greppable. */
+                static unsigned long long s_fallbackTotal = 0;
+                s_fallbackTotal++;
                 fprintf(stderr,
-                        "MGL AGX: Primary texture creation returned NULL, attempting fallback texture creation (%d/4096)\n",
+                        "MGL TEXTURE FALLBACK: primary texture creation returned NULL, "
+                        "substituting gradient tex=%u total=%llu window=%d/4096\n",
+                        (unsigned)tex->name,
+                        s_fallbackTotal,
                         s_fallbackTextureCount);
                 /* Create a simple fallback texture to prevent crashes */
                 tex->mtl_data =
                     mglTextureCreateFallback(renderer, tex);
 
                 if (tex->mtl_data) {
-                    fprintf(stderr, "MGL SUCCESS: Fallback texture created successfully\n");
-                    tex->dirty_bits = 0;
+                    fprintf(stderr,
+                            "MGL SUCCESS: Fallback texture created successfully (tex=%u degraded)\n",
+                            (unsigned)tex->name);
+                    /* F25/P37: do NOT clear the dirty bits wholesale -- that made
+                     * the degradation permanent, so a caller that later fixes the
+                     * condition (re-specifies the missing level, repairs the FBO)
+                     * would never get a rebuild.  Drop only what the substitute
+                     * already satisfies and record that we are degraded. */
+                    tex->mtl_data_is_fallback = GL_TRUE;
+                    tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_PARAM);
                 } else {
                     fprintf(stderr,
                             "MGL ERROR: Even fallback texture creation failed - this texture will remain NULL\n");
                 }
             }
         } else {
+            tex->mtl_data_is_fallback = GL_FALSE;
             if (kMGLDiagnosticStateLogs) {
                 mglTraceLog("MGL SUCCESS: Primary texture created successfully");
             }
