@@ -323,7 +323,8 @@ llvm::Type *llvmTypeFromIR(const MGLIRType *t, llvm::LLVMContext &ctx) {
 /* Implicit GLSL numeric conversion (sema allows any non-void scalar base
  * to convert to any other, GLSL 4.60 4.1.10).  Idempotent; works on
  * scalars and vectors of matching width. */
-llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
+llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want,
+                          MGLIRScalar from) {
     llvm::Type *cur = v->getType();
     if (!cur->isIntOrIntVectorTy() && !cur->isFPOrFPVectorTy())
         return v;  /* arrays / matrices / aggregates: no scalar cast */
@@ -355,6 +356,10 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
         return v;
     if (wantFP) {
         if (cur->getScalarSizeInBits() == 1)
+            return cg.b->CreateUIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
+        /* An unsigned source must use UIToFP: SIToFP would turn 0xFFFFFFFF
+         * into -1.0.  Only the caller knows the source's signedness. */
+        if (!curFP && from == MGLIR_SCALAR_UINT)
             return cg.b->CreateUIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
         return cg.b->CreateSIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
     }

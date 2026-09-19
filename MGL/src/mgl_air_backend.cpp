@@ -6211,7 +6211,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                              : name[0] == 'u' ? MGLIR_SCALAR_UINT
                              : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                               : MGLIR_SCALAR_INT;
-            return coerceScalar(cg, arg, want);
+            /* Scalar conversions need the source's signedness too: `float(x)`
+             * on an unsigned x must use UIToFP (SIToFP would yield a negative
+             * float for x >= 2^31).  The argument expression's scalar still
+             * describes the peeled component when the argument is a vector or
+             * matrix (scalar(vec) takes component 0 of the same element type). */
+            return coerceScalar(cg, arg, want,
+                                exprType(cg, e->u.call.args[0], mod,
+                                         locals).scalar);
         }
         /* Vector constructors: [i]uvec/bvec/vec2..4. */
         const char *vn = name;
@@ -6233,6 +6240,13 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *eltTy = llvmScalar(velt, *cg.ctx);
             llvm::Type *vt = llvm::FixedVectorType::get(eltTy, vlanes);
             llvm::Value *res = llvm::UndefValue::get(vt);
+            /* Source signedness, refreshed per constructor argument below.
+             * coerceScalar cannot recover it from the LLVM value (i32 has no
+             * signedness), so the vector-constructor path must pass it: a
+             * `vec4(someUvec4)` has to convert with UIToFP, otherwise every
+             * component >= 2^31 becomes negative (CTS texture_repeat_mode's
+             * `color = vec4(ci)/255.0` reads back as 0 instead of 255). */
+            MGLIRScalar ctorSrcScalar = MGLIR_SCALAR_VOID;
             auto coerceComp = [&](llvm::Value *x) -> llvm::Value * {
                 if (velt == MGLIR_SCALAR_BOOL) {
                     if (x->getType()->isFloatingPointTy())
@@ -6243,7 +6257,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     return cg.b->CreateICmpNE(
                         x, llvm::Constant::getNullValue(x->getType()));
                 }
-                return coerceScalar(cg, x, velt);
+                return coerceScalar(cg, x, velt, ctorSrcScalar);
             };
             auto insertComp = [&](llvm::Value *x, uint32_t slot) {
                 x = coerceComp(x);
@@ -6257,6 +6271,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                  a++) {
                 llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
                 if (!arg) return nullptr;
+                ctorSrcScalar =
+                    exprType(cg, e->u.call.args[a], mod, locals).scalar;
                 if (auto *arrTy = llvm::dyn_cast<llvm::ArrayType>(
                         arg->getType())) {
                     /* Matrix: column-major component stream (GLSL 4.60 §5.4.2). */

@@ -76,7 +76,14 @@ llvm::Value *ensureArrayMem(Codegen &cg, const std::string &name,
 llvm::Value *arrayMemGEP(Codegen &cg, const std::string &name,
                          llvm::Value *slot, llvm::Value *idx);
 llvm::Type *llvmTypeFromIR(const MGLIRType *t, llvm::LLVMContext &ctx);
-llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want);
+/* Implicit GLSL numeric conversion.  `from` optionally carries the SOURCE
+ * scalar kind: LLVM's i32 does not encode signedness, so int->float cannot
+ * tell `uint` from `int` without it.  Pass MGLIR_SCALAR_UINT where the source
+ * is known to be unsigned so the conversion emits UIToFP instead of SIToFP —
+ * otherwise every value >= 2^31 converts to a NEGATIVE float
+ * (0xFFFFFFFFu -> -1.0).  Default MGLIR_SCALAR_VOID keeps the old behaviour. */
+llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want,
+                          MGLIRScalar from = MGLIR_SCALAR_VOID);
 std::string airTypeMangle(const MType &t);
 std::string airGenerated(const std::string &name, const MType &t);
 std::string varyingIfaceTag(const VarSym &v, uint32_t elem = 0,
