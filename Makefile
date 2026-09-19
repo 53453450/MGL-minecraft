@@ -208,8 +208,6 @@ $(build_es_dir)/MGL/src/mgl_aux_assets.o: $(AUX_ASSET_STAMP)
 # the .cpp rules below are not silently dropped if one is added later.
 mgl_srcs_cpp := $(wildcard MGL/src/*.cpp)
 
-mgl_srcs_objc := $(wildcard MGL/src/*.m)
-
 mgl_core_c := MGL/src/gl_core.c
 mgl_es_c := MGL/src/gl_es.c
 
@@ -223,15 +221,9 @@ mgl_es_obj := $(addprefix $(build_es_dir)/,$(mgl_es_obj))
 mgl_core_objs := $(mgl_srcs_c:.c=.o) $(mgl_srcs_cpp:.cpp=.o)
 mgl_core_objs := $(addprefix $(build_core_dir)/,$(mgl_core_objs))
 
-mgl_core_arc_objs := $(mgl_srcs_objc:.m=.o)
-mgl_core_arc_objs := $(addprefix $(build_core_dir)/arc/,$(mgl_core_arc_objs))
-
 # es objs
 mgl_es_objs := $(mgl_srcs_c:.c=.o) $(mgl_srcs_cpp:.cpp=.o)
 mgl_es_objs := $(addprefix $(build_es_dir)/,$(mgl_es_objs))
-
-mgl_es_arc_objs := $(mgl_srcs_objc:.m=.o)
-mgl_es_arc_objs := $(addprefix $(build_es_dir)/arc/,$(mgl_es_arc_objs))
 
 # metal-cpp is a header-only external dependency.  Keep it out of the source
 # tree's object recipes while making a missing checkout an explicit fetch step;
@@ -462,18 +454,6 @@ $(build_core_dir)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) -MMD $(CXXFLAGS_GL_CORE) -c $< -o $@
 
-#-std=c++14
-$(build_core_dir)/arc/%.o: %.m
-	@mkdir -p $(dir $@)
-	$(APPLE_CLANG) -fobjc-arc -fmodules -MMD $(CFLAGS_GL_CORE) \
-		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
-		-framework IOKit -framework Foundation -framework QuartzCore \
-		-framework Metal -framework OpenGL \
-		-c $< -o $@
-
-$(build_core_dir)/%.o: %.m
-	@mkdir -p $(dir $@)
-	$(APPLE_CLANG) -fmodules -MMD $(CFLAGS_GL_CORE) -c $< -o $@
 
 
 #
@@ -488,18 +468,6 @@ $(build_es_dir)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) -MMD $(CXXFLAGS_GL_ES) -c $< -o $@
 
-#-std=c++14
-$(build_es_dir)/arc/%.o: %.m
-	@mkdir -p $(dir $@)
-	$(APPLE_CLANG) -fobjc-arc -fmodules -MMD $(CFLAGS_GL_ES) \
-		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
-		-framework IOKit -framework Foundation -framework QuartzCore \
-		-framework Metal -framework OpenGL \
-		-c $< -o $@
-
-$(build_dir)/%.o: %.m
-	@mkdir -p $(dir $@)
-	$(APPLE_CLANG) -fmodules -MMD $(CXXFLAGS_GL_ES) -c $< -o $@
 
 clean:
 	rm -rf $(build_dir)
