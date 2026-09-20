@@ -10725,6 +10725,11 @@ int mglRenderBuildLevelUploadOps(
     return 0;
 }
 
+extern "C"
+int mglRenderTextureUploadNeedsDepthNormalization(uint32_t, uint32_t);
+extern "C"
+uint8_t *mglRenderCreateDepth24Stencil8NormalizedUpload(
+    const void *, size_t, size_t, size_t, size_t *, size_t *);
 /* per-level CPU upload data preparation. */
 extern "C"
 int mglRenderTexturePrepareLevelUpload(
@@ -10762,7 +10767,13 @@ int mglRenderTexturePrepareLevelUpload(
     uint64_t bpr = bytes_per_row;
     uint64_t bpi = bytes_per_image;
     void* expanded = nullptr;
-    if (mglRenderTextureInternalFormatNeedsRGBA8Expansion(
+    if (mglRenderTextureUploadNeedsDepthNormalization(internal_format, pixel_format)) {
+        size_t ebpr = 0, ebpi = 0;
+        expanded = mglRenderCreateDepth24Stencil8NormalizedUpload(
+            src_data, (size_t)width, (size_t)height, (size_t)bytes_per_row,
+            &ebpr, &ebpi);
+        if (expanded) { data = expanded; bpr = ebpr; bpi = ebpi; }
+    } else if (mglRenderTextureInternalFormatNeedsRGBA8Expansion(
             internal_format, pixel_format)) {
         size_t ebpr = 0;
         size_t ebpi = 0;
@@ -10794,6 +10805,39 @@ int mglRenderTexturePrepareLevelUpload(
     return 0;
 }
 
+static uint32_t mglRenderDepth24Stencil8ToFloatBits(const uint8_t* src);
+extern "C"
+int mglRenderTextureUploadNeedsDepthNormalization(uint32_t internal_format,
+                                                  uint32_t pixel_format) {
+    return (internal_format == GL_DEPTH24_STENCIL8 && pixel_format == 260u) ? 1 : 0;
+}
+extern "C"
+uint8_t *mglRenderCreateDepth24Stencil8NormalizedUpload(
+    const void *src_data, size_t width, size_t height,
+    size_t src_bytes_per_row, size_t *out_bytes_per_row,
+    size_t *out_bytes_per_image) {
+    if (out_bytes_per_row) *out_bytes_per_row = 0u;
+    if (out_bytes_per_image) *out_bytes_per_image = 0u;
+    if (!src_data || width == 0u || height == 0u ||
+        src_bytes_per_row < width * 4u || !out_bytes_per_row ||
+        !out_bytes_per_image) return nullptr;
+    const size_t dst_row = width * 4u;   /* EXPERIMENT: 4-byte texel */
+    const size_t dst_image = dst_row * height;
+    uint8_t *dst = (uint8_t *)calloc(1u, dst_image);
+    if (!dst) return nullptr;
+    const uint8_t *src = (const uint8_t *)src_data;
+    for (size_t y = 0u; y < height; ++y) {
+        const uint8_t *srcRow = src + y * src_bytes_per_row;
+        uint8_t *dstRow = dst + y * dst_row;
+        for (size_t x = 0u; x < width; ++x) {
+            const uint32_t bits = mglRenderDepth24Stencil8ToFloatBits(srcRow + x * 4u);
+            memcpy(dstRow + x * 4u, &bits, 4u);
+        }
+    }
+    *out_bytes_per_row = dst_row;
+    *out_bytes_per_image = dst_image;
+    return dst;
+}
 static uint32_t mglRenderDepthUint32ToFloatBits(uint32_t raw) {
     const float depth = (float)((double)raw / 4294967295.0);
     uint32_t bits = 0u;
