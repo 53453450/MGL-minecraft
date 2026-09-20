@@ -1548,9 +1548,15 @@ int mglRenderQueryCapability(void* device_ref,
     const bool agx = state.family == MGL_GPU_FAMILY_VIRTUALIZED ||
                      state.family == MGL_GPU_FAMILY_AGX;
     if (agx) {
-        state.bug_3d_getbytes_slice_oob = 1;
-        state.bug_3d_replace_region_nonzero_origin = 1;
-        state.bug_3d_copy_from_buffer_slice_oob = 1;
+        /* 3d_getbytes_slice_oob / 3d_replace_region_nonzero_origin used to gate
+         * a buffer-mediated 3D copy fallback.  Independent Metal probes showed
+         * no driver defect; the fallback only papered over MGL reading empty
+         * Metal storage while the CPU shadow held the pixels.  Native blit now
+         * pushes the CPU-authoritative region into the source first — do not
+         * re-enable these markers without a fresh driver-side reproduction.
+         * See docs/AGX_COPY3D_DRIVER_BUG_RECHECK_2026-09-20.md. */
+        state.bug_3d_getbytes_slice_oob = 0;
+        state.bug_3d_replace_region_nonzero_origin = 0;
         state.bug_msl_pipeline_rejection = 1;
         state.conservative_cpu_cache_mode = 1;
         state.max_concurrent_command_buffers =

@@ -440,14 +440,18 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
 
     const uint32_t textureType = mglPdTextureInfo(texture).texture_type;
     MGLRenderTextureUploadPlan uploadPlan = {0};
+    /* Note: this used to pass the AGX "copyFromBuffer slice OOB" bug marker,
+     * which diverted every GL_TEXTURE_3D upload to the replaceRegion route (and
+     * rejected Private-storage 3D uploads outright).  An independent Metal
+     * reproduction on 2026-09-20 showed copyFromBuffer:->texture: handles both
+     * Shared and Private 3D destinations correctly, so the marker is gone and
+     * 3D uploads use the normal blit route.  See
+     * docs/AGX_COPY3D_DRIVER_BUG_RECHECK_2026-09-20.md. */
     if (mglRenderBuildTextureUploadPlan(
             (uint32_t)texTarget, textureType,
             (uint32_t)mglPdTextureInfo(texture).usage,
             (uint32_t)mglPdTextureInfo(texture).pixel_format,
-            MGLCapabilityHasBug(areas.core ? &areas.core->capability : NULL,
-                                MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB)
-                ? 1
-                : 0,
+            0,
             width, height, depth, bytesPerRow, bytesPerImage, level, slice,
             &uploadPlan) != 0) {
         fprintf(stderr,
@@ -583,14 +587,15 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
     }
 
     /* 3D texture upload via replaceRegion branch:
-     * - 3D uses replaceRegion to work around the AGX driver's
-     *   copyFromBuffer:toTexture: slice OOB assertion (triggered even when
-     *   destinationSlice=0); driver bug tracked via
-     *   MGLCapabilityHasBug(MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB).
+     * - The C++ route only selects this for GL_TEXTURE_1D/1D_ARRAY storage
+     *   that maps to a 3D Metal texture, and for that case replaceRegion is
+     *   the routable option.  The former AGX "copyFromBuffer slice OOB"
+     *   diversion of *real* 3D textures is gone: an independent Metal
+     *   reproduction (2026-09-20) showed copyFromBuffer:->texture: is correct
+     *   for both Shared and Private 3D destinations.
      * - Metal requires bytesPerImage for 3D replaceRegion uploads, so padded
      *   depth planes are repacked and uploaded with the tight image stride.
-     * - Only shared storage supports replaceRegion.  Do not fall back to the
-     *   known-bad copyFromBuffer path while the AGX bug marker is active. */
+     * - Only shared storage supports replaceRegion. */
     if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REPLACE_3D) {
         const void *replaceBytes = bytes;
         void *tightlyPackedBytes = NULL;
@@ -621,12 +626,13 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
         return 0;
     }
 
-    /* 3D + Private while the AGX copyFromBuffer workaround is required:
-     * rejected by the C++ route (blit is known-bad and replaceRegion does not
-     * support private storage). */
+    /* Defensive: the C++ route no longer rejects Private 3D uploads now that
+     * the AGX copyFromBuffer marker is gone (copyFromBuffer is correct for
+     * Private 3D destinations).  Kept so an unexpected REJECT cannot fall
+     * through into the blit path silently. */
     if (uploadRoute == MGL_RENDER_TEXTURE_UPLOAD_ROUTE_REJECT) {
         fprintf(stderr,
-                "MGL WARNING: Rejecting private 3D upload while AGX copyFromBuffer workaround is required (tex=%u level=%lu)\n",
+                "MGL WARNING: Rejecting texture upload (route=REJECT tex=%u level=%lu)\n",
                 (unsigned)texName, (unsigned long)level);
         return 0;
     }

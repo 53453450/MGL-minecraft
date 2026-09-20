@@ -34,10 +34,21 @@ typedef enum {
 } MGLGPUFamily;
 
 /* Semantic driver bug names.  Keep in sync with the implementation's
- * MGLCapabilityHasBug string comparisons. */
+ * MGLCapabilityHasBug string comparisons.
+ *
+ * NOTE: "3d_copy_from_buffer_slice_oob" was removed on 2026-09-20 after an
+ * independent Metal reproduction showed the driver honours the documented
+ * destinationSlice/destinationOrigin contract for 3D destinations (see
+ * docs/AGX_COPY3D_DRIVER_BUG_RECHECK_2026-09-20.md).  It was paying for a
+ * buffer-mediated copy (GPU readback + CPU staging + re-upload) on every 3D
+ * destination copy without a driver defect to justify it.
+ *
+ * The remaining getbytes / replace_region name constants are kept for
+ * capability lookup compatibility, but AGX no longer sets them: the 3D
+ * fallback they gated is retired in favour of syncing CPU-authoritative
+ * source regions into Metal before native blit. */
 #define MGL_BUG_3D_GETBYTES_SLICE_OOB           "3d_getbytes_slice_oob"
 #define MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN "3d_replace_region_nonzero_origin"
-#define MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB   "3d_copy_from_buffer_slice_oob"
 #define MGL_BUG_MSL_PIPELINE_REJECTION          "msl_pipeline_rejection"
 
 typedef struct MGLCapability_t {
@@ -55,7 +66,6 @@ typedef struct MGLCapability_t {
     /* === Driver bug markers (semantic) === */
     bool           bug_3dGetBytesSliceOOB;
     bool           bug_3dReplaceRegionNonZeroOrigin;
-    bool           bug_3dCopyFromBufferSliceOOB;
     bool           bug_mslPipelineRejection;
 
     /* === Robustness config === */

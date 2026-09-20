@@ -34,8 +34,6 @@ void MGLCapabilityInit(MGLCapability *cap, void *deviceRef)
     cap->bug_3dGetBytesSliceOOB = state.bug_3d_getbytes_slice_oob != 0;
     cap->bug_3dReplaceRegionNonZeroOrigin =
         state.bug_3d_replace_region_nonzero_origin != 0;
-    cap->bug_3dCopyFromBufferSliceOOB =
-        state.bug_3d_copy_from_buffer_slice_oob != 0;
     cap->bug_mslPipelineRejection = state.bug_msl_pipeline_rejection != 0;
     cap->commandBufferRecoveryLimit = state.command_buffer_recovery_limit;
     cap->maxConcurrentCommandBuffers = state.max_concurrent_command_buffers;
@@ -84,9 +82,6 @@ bool MGLCapabilityHasBug(MGLCapability *cap, const char *bugName)
     }
     if (strcmp(bugName, MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN) == 0) {
         return cap->bug_3dReplaceRegionNonZeroOrigin;
-    }
-    if (strcmp(bugName, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB) == 0) {
-        return cap->bug_3dCopyFromBufferSliceOOB;
     }
     if (strcmp(bugName, MGL_BUG_MSL_PIPELINE_REJECTION) == 0) {
         return cap->bug_mslPipelineRejection;
