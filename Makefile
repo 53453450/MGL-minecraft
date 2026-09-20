@@ -572,6 +572,30 @@ $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 test-dirty-hash: $(build_dir)/test_dirty_hash
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_dirty_hash
 
+# M2 snapshot dedup contract: a revisited key must share an earlier equal-key
+# batch's snapshot instead of capturing its own, the replay must still be
+# correct, and the release path must not double-free.  Run in both memory modes
+# (the target runs the default arena path; the non-arena path is where the
+# release-side leak lived, so it is exercised separately below).
+$(build_dir)/test_state_snapshot_share: test_legacy_compat/test_state_snapshot_share.c $(build_dir)/libmgl.dylib
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-IMGL/include -IMGL/include/GL -IMGL/src \
+		-DMGL_GL_CORE \
+		-isysroot $(SDK_ROOT) \
+		test_legacy_compat/test_state_snapshot_share.c \
+		-L$(build_dir) -lmgl \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $@
+
+test-state-snapshot-share: $(build_dir)/test_state_snapshot_share
+	@echo "--- arena path (MGL_ARENA_SNAPSHOT default ON) ---"
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_state_snapshot_share
+	@echo "--- non-arena path (MGL_ARENA_SNAPSHOT=0) ---"
+	MGL_ARENA_SNAPSHOT=0 DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_state_snapshot_share
+
 $(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
@@ -1152,6 +1176,7 @@ test-air:
 test-all:
 	$(MAKE) verify-gl-api
 	$(MAKE) test-state-invariants
+	$(MAKE) test-state-snapshot-share
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
@@ -1193,7 +1218,7 @@ test-all:
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
-	test-state-invariants \
+	test-state-invariants test-state-snapshot-share \
 	verify-toolchain
 
 -include $(deps)
