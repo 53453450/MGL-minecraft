@@ -882,6 +882,15 @@ verify-gl-api:
 	bash scripts/fetch_opengl_registry.sh
 	python3 scripts/verify_gl_api.py
 
+# Static invariant audit of the C state machine (GLMState + command buffer +
+# batch cluster): MGLStateKey determinism, hot-copy region pinning, single
+# source for DIRTY_* masks, recorder-only batch_count mutation, dual-proxy
+# (active_state) discipline, and snapshot ownership. Exits non-zero only when
+# a finding appears that is not in the recorded baseline; see the script
+# header and docs/STATE_DATAFLOW_TODO.md.
+test-state-invariants:
+	python3 scripts/state_machine_invariants.py
+
 test-arch-correctness: $(build_dir)/test_arch_correctness
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_arch_correctness
 
@@ -1142,6 +1151,7 @@ test-air:
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
 	$(MAKE) verify-gl-api
+	$(MAKE) test-state-invariants
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
@@ -1183,6 +1193,7 @@ test-all:
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
+	test-state-invariants \
 	verify-toolchain
 
 -include $(deps)

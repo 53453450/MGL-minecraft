@@ -63,10 +63,14 @@ bool mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute)
  * checks; drops the binding and returns NULL when it looks invalid.  Defined in
  * MGLRenderer.m (it owns the drop path) and declared here so C translation
  * units can use it; `where` is a label for the drop diagnostic. */
+/* single source: mglRendererGetValidatedVAO (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where);
 
 /* Metal vertex buffer slot a shader attribute resolves to, or -1 when the
  * attribute has no buffer.  Defined in MGLRenderer.m. */
+/* single source: mglRendererResolveVertexAttributeBufferIndex (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx, VertexArray *vao,
                                                  GLuint attribute,
                                                  const char *where);

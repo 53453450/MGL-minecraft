@@ -107,11 +107,6 @@ static inline BOOL mglGLSampledCopyContentFresh(const Texture *tex)
 /* === RT-write marker — used by Blit.m, Texture.m, Draw.m, RenderPass.m ===
  * The impl lives in MGLRenderer.m (non-static); the macro is here so category
  * files can call mglMarkTextureLevelRenderTargetWritten(tex, level). */
-void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
-                                                GLuint level,
-                                                const char *caller,
-                                                int line);
-
 #define mglMarkTextureLevelRenderTargetWritten(tex, level) \
     mglMarkTextureLevelRenderTargetWrittenImpl((tex), (level), __func__, __LINE__)
 

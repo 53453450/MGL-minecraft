@@ -148,6 +148,8 @@ bool mglTraceShouldLogReplay(GLMContext traceCtx, Program *program);
 
 /* Dump a Program's MSL once (or once per force-reason), when trace logging is
  * on.  `reason` is a C string; reasons mentioning "tex" force the dump. */
+/* single source: mglWriteProgramMSLDump (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 void mglWriteProgramMSLDump(Program *program, const char *reason);
 
 /* Texture an attachment renders into, for the trace log. */

@@ -67,7 +67,6 @@
  * mglBindingStateIsValid / …BufferMatches are
  * the one-line predicates of MGLRenderer_Private.h, repeated as mglSe*
  * functions below. */
-extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 extern void mglLogLoopHeartbeat(const char *tag, uint64_t call_count,
                                 double now_seconds, double *last_call_seconds,
                                 uint64_t *last_call_count,

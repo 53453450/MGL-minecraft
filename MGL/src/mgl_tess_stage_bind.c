@@ -51,7 +51,6 @@
 /* Declared next to its definition in the Objective-C
  * MGLRenderer+RenderPass_Private.h, which a .c file cannot include; repeated
  * here the way mgl_renderer_ports.c repeats the prototypes it needs. */
-extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
 /* MGL_STATE() from MGLRenderer_Private.h, in C (the same twin as
  * mgl_compute_bind.c). */

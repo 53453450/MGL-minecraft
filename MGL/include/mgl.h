@@ -68,7 +68,6 @@ void mglReadBuffer(GLMContext ctx, GLenum src);
 void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels);
 void mglGetBooleanv(GLMContext ctx, GLenum pname, GLboolean *data);
 void mglGetDoublev(GLMContext ctx, GLenum pname, GLdouble *data);
-GLenum  mglGetError(GLMContext ctx);
 void mglGetFloatv(GLMContext ctx, GLenum pname, GLfloat *data);
 void mglGetIntegerv(GLMContext ctx, GLenum pname, GLint *data);
 GLsizei mglSafeMaxTextureSize(GLMContext ctx);

@@ -42,7 +42,6 @@
 
 /* Objective-C private header declarations restated for C. */
 extern Program *mglResolveProgramFromState(GLMContext ctx);
-extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 extern void mglWriteProgramMSLDump(Program *program, const char *reason);
 extern Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx,
                                                       const char *where);

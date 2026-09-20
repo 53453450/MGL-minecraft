@@ -30,7 +30,13 @@
 
 #include <stdint.h>
 
-#include "glm_context.h"   /* Program */
+/* `Program` is used only as an opaque pointer below (mglRenderVSWritesLayer),
+ * so forward-declare it instead of pulling glm_context.h -- which reaches
+ * mgl_renderer_backend.h -> mgl_render.h (3,796 lines, 724 decls) and was one
+ * edge of the only project include cycle.  The forward-declaration form is the
+ * established convention here (see mgl_batch_replay.h / mgl_buffer_slots.h). */
+struct Program_t;
+typedef struct Program_t Program;
 
 #ifdef __cplusplus
 extern "C" {

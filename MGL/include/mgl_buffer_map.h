@@ -91,6 +91,8 @@ void mglBufferReleaseConvertedVertexBuffer(void *buffer);
 uint64_t mglAdvanceFrameGeneration(void);
 void mglRecordFrameCompleted(uint64_t generation);
 /* Also declared in mgl_batch_mtl_encode.h / mgl_index_buffer.h. */
+/* single source: mglNoteBufferEncoded (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 void mglNoteBufferEncoded(Buffer *buf);
 
 

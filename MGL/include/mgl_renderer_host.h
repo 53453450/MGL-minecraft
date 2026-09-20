@@ -35,8 +35,6 @@ extern "C" {
 
 
 
-void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
-                                                const char *caller, int line);
 /* mglTraceReplayCommandVertexAttribSamples keeps its mgl_trace_strategy.h
  * declaration; mglFindFramebufferColorTexturePairedWithDepth keeps its
  * MGLRenderer+Draw_Private.h one. */

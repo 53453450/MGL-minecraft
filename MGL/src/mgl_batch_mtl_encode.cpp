@@ -9,6 +9,7 @@
 #include "mgl_batch_issue.h"
 #include "mgl_frame_activity.h"
 #include "mgl_index_buffer.h"
+#include "mgl_buffer_map.h"   /* mglNoteBufferEncoded */
 
 #include "mgl_batch_restore.h"
 /* draw_command.h expects GL base types (GLenum/GLuint/...) to already be

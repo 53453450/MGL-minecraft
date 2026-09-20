@@ -118,6 +118,8 @@ bool mglDrawHostEncodeCullDistanceElements(void *renderer, GLenum mode,
                                            GLuint baseInstance);
 /* The MGLCullDistanceBindFn the cull-distance split encoder calls back into;
  * defined next to the other draw host ports (mgl_draw_metal_port.m). */
+/* single source: mglRendererBindCullDistanceEmu (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
                                     GLenum mode, GLuint first_vertex,
                                     const uint32_t *explicit_vertices,

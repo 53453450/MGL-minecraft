@@ -29,10 +29,10 @@ extern "C" {
 #endif
 
 void error_func(GLMContext ctx, const char *func, GLenum error);
-void mglDispatchError(GLMContext ctx, const char *func, GLenum error);
 void mglClearCurrentError(GLMContext ctx);
 
-GLenum  mglGetError(GLMContext ctx);
+/* mglDispatchError and mglGetError are declared in glm_context.h (which this
+ * header includes) so they are not repeated here. */
 
 #ifdef __cplusplus
 }

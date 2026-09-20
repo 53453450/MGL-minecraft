@@ -15,7 +15,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <mach/vm_types.h>
 #include <mach/mach_time.h>
 
 #include "glm_context.h"

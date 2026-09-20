@@ -67,6 +67,8 @@ const MGLCommandState *mglRendererCommandStateFor(void *renderer);
 /* C helper defined in MGLRenderer.m (the Objective-C side keeps its own
  * declaration in MGLRenderer+Draw_Private.h): the batch drivers upload a dirty
  * base-buffer list straight through it. */
+/* single source: mglRenderUpdateDirtyBaseBufferList (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx,
                                         BufferMapList *buffer_map_list,
                                         const char *where);

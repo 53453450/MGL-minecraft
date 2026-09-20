@@ -62,10 +62,6 @@ typedef struct MGLScissorRectValue_t {
 /* MGLResolvedVertexAttribBinding + mglRendererResolveVertexAttribBinding moved
  * to mgl_vertex_attrib_binding.h (C-visible: the buffer binding plan layer and
  * its harness resolve attribute bindings through that seam). */
-int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
-                                                 VertexArray *vao,
-                                                 GLuint attribute,
-                                                 const char *where);
 int mglRenderVertexBufferIndexForAttribute(GLMContext ctx, GLMState *state, int attribute, const char *where);
 bool mglRenderCheckForDirtyBufferData(GLMContext ctx, BufferMapList *buffer_map_list, const char *where);
 /* C function (defined in MGLRenderer.m): C linkage so an Objective-C++ TU that
@@ -73,8 +69,6 @@ bool mglRenderCheckForDirtyBufferData(GLMContext ctx, BufferMapList *buffer_map_
 #ifdef __cplusplus
 extern "C"
 #endif
-bool mglRenderUpdateDirtyBaseBufferList(GLMContext ctx, BufferMapList *buffer_map_list, const char *where);
-
 /* Cull distance emulation params live in mgl_render.h. */
 
 /* === Diagnostic constants === */
@@ -136,8 +130,6 @@ static inline const char *mglYFlipDecisionName(MGLYFlipDecision decision)
 }
 
 /* === C functions defined in MGLRenderer.m, used by MGLRenderer+Draw.m === */
-Program *mglTraceResolveDrawProgram(GLMContext traceCtx);
-bool mglTraceShouldLogReplay(GLMContext traceCtx, Program *program);
 BOOL mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
                                                   Texture *tex,
                                                   uint32_t expectedType,
@@ -148,9 +140,6 @@ Buffer *getElementBuffer(GLMContext ctx);
 Buffer *getIndirectBuffer(GLMContext ctx);
 uint32_t mglPrimitiveTypeForGLMode(GLenum mode);
 
-void mglRestoreProgramPipelinePair(GLMContext ctx, GLuint programName, GLuint pipelineName);
-void mglRendererSyncFramebufferBindingNames(GLMContext ctx);
-Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx, FBOAttachment *attachment);
 BOOL mglRendererGLSampledCopyLooksUsable(Texture *tex,
                                                 uint32_t expectedType,
                                                 MGLTextureDataKind expectedKind,
@@ -194,15 +183,6 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
                                        GLint baseVertex,
                                        GLuint attrib,
                                        bool traceFile);
-void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
-                                                     Program *program,
-                                                     const MGLDrawCommand *cmd,
-                                                     Buffer *ebo,
-                                                     uint64_t flushId,
-                                                     uint32_t batchIndex,
-                                                     uint32_t commandIndex,
-                                                     bool forceTrace);
-
 /* mglRendererProgramHasSampledResourceNamed is defined in
  * MGLRenderer+Draw.m, also called from MGLRenderer+Batch.m. */
 bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *name);
@@ -295,10 +275,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
  * mglBatchRecordElementDrawSubmitted (mgl_batch_rt_mark.h). */
 /* now the C function mglDrawBindCullDistanceEmulationBuffers (mgl_draw_support.h) */
 
-void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
-                                    GLenum mode, GLuint first_vertex,
-                                    const uint32_t *explicit_vertices,
-                                    uint32_t explicit_vertex_count);
 - (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
 /* runVertexCaptureSession: had no caller left and was removed */
 /* ensureAIRGeometryPassthroughFunctionForProgram:outputPrimitive: and

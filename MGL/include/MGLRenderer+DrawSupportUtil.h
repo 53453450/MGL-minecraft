@@ -89,11 +89,6 @@ void mglDrawSupportDrawPrimitivesIndirect(
     void * indirectBuffer,
     size_t indirectBufferOffset);
 
-void mglRendererBindCullDistanceEmu(void *renderer, const void *encode_context,
-                                    GLenum mode, GLuint first_vertex,
-                                    const uint32_t *explicit_vertices,
-                                    uint32_t explicit_vertex_count);
-
 void * mglDrawSupportCreateComputeEncoder(
     void *commandBufferOwner);
 

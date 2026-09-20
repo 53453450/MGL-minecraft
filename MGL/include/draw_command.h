@@ -279,6 +279,10 @@ typedef struct {
     bool            has_sampler_snapshots;
     bool            sampler_snapshots_mixed;
     bool            arena_managed;  /* snapshot/commands allocated from arena */
+    /* M2 snapshot dedup: this batch points at an earlier equal-key batch's
+     * state_snapshot/vao_snapshot instead of owning a capture.  It must not
+     * free them; the donor does.  See mglInitializeOrShareBatchStateSnapshot. */
+    bool            snapshot_shared;
     MGLDrawState    draw_state;     /* immutable draw inputs (R3) */
 } MGLDrawBatch;
 

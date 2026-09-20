@@ -26,7 +26,8 @@
 #include "mgl_encode_context.h"
 #include "mgl_binding_state_ops.h"
 #include "mgl_draw_issue.h"
-#include "mgl_draw_tess.h"    /* mglResolveProgramForStageFromState */   /* mglDrawHostRunVertexCaptureIndexed */
+#include "mgl_draw_tess.h"    /* mglDrawHostRunVertexCaptureIndexed */
+#include "mgl_draw_mode.h"    /* mglRenderDrawModeProducesPolygons */
 #include "mgl_renderer_ports.h"   /* state areas, mglRendererProcessBuffer */
 #include "mgl_render.h"
 #include "mgl_state_compat.h"     /* mglLogRenderStateRepair */
@@ -37,7 +38,6 @@
 /* Declared in the Objective-C MGLRenderer+DrawSupportUtil.h. */
 extern int mglDrawSupportEncodeContextIsActive(const MGLEncodeContext *encCtx);
 extern VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where);
-extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 
 /* Defined in MGLRenderer.m; declared next to the definition in the
  * Objective-C MGLRenderer+Draw_Private.h, which C cannot include. */

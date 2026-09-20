@@ -22,8 +22,9 @@
  * All functions are `static inline` because they're called from per-draw hot
  * paths and the compiler can fold the result into the caller's branch tree.
  *
- * Dependencies: glcorearb.h (GL enums) + glm_context.h (GLMContext) +
- * objc/objc.h (BOOL).
+ * Dependencies: glcorearb.h (GL enums) + glm_context.h (GLMContext).
+ * Plain C: the inlines below return bool, not BOOL, so this header is usable
+ * from C translation units (it is included by mgl_draw_support.c).
  */
 
 #ifndef MGL_DRAW_MODE_H
@@ -33,8 +34,6 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-
-#include <objc/objc.h>   /* BOOL */
 
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>
@@ -55,8 +54,11 @@ int mglRenderPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
 /* Returns true if `mode` with `indexCount` vertices produces at least one
  * drawable segment (point/line/triangle/quad).  Used to skip degenerate
  * draws early. */
+/* `uint64_t`, not `NSUInteger`: this header declares an extern "C" interface
+ * and is included from plain C translation units, where the NS types are
+ * unavailable.  The value was already cast to uint64_t in the body. */
 static inline bool mglPrimitiveModeHasDrawableSegment(
-    GLenum mode, NSUInteger indexCount)
+    GLenum mode, uint64_t indexCount)
 {
     return mglRenderPrimitiveModeHasDrawableSegment((uint64_t)mode,
                                                        (uint64_t)indexCount) != 0;
@@ -64,17 +66,17 @@ static inline bool mglPrimitiveModeHasDrawableSegment(
 
 /* Returns true if `mode` produces polygonal primitives (triangles/quads)
  * that are subject to glPolygonMode point/line emulation. */
-static inline BOOL mglDrawModeProducesPolygons(GLenum mode)
+static inline bool mglDrawModeProducesPolygons(GLenum mode)
 {
     return mglRenderDrawModeProducesPolygons((uint64_t)mode) != 0;
 }
 
-/* Returns YES if the context's polygon_mode is GL_POINT and `mode` produces
+/* Returns true if the context's polygon_mode is GL_POINT and `mode` produces
  * polygons — the draw path must expand the draw into indexed points. */
-static inline BOOL mglPolygonModePointForDrawMode(GLMContext ctx, GLenum mode)
+static inline bool mglPolygonModePointForDrawMode(GLMContext ctx, GLenum mode)
 {
     if (!ctx || ctx->active_state->var.polygon_mode != GL_POINT) {
-        return NO;
+        return false;
     }
 
     switch (mode) {
@@ -82,15 +84,15 @@ static inline BOOL mglPolygonModePointForDrawMode(GLMContext ctx, GLenum mode)
         case GL_TRIANGLE_STRIP:
         case GL_TRIANGLE_FAN:
         case GL_QUADS:
-            return YES;
+            return true;
         default:
-            return NO;
+            return false;
     }
 }
 
-/* Returns YES if the context's polygon_mode is GL_LINE and `mode` produces
+/* Returns true if the context's polygon_mode is GL_LINE and `mode` produces
  * polygons — the draw path must expand the draw into indexed lines. */
-static inline BOOL mglPolygonModeLineForDrawMode(GLMContext ctx, GLenum mode)
+static inline bool mglPolygonModeLineForDrawMode(GLMContext ctx, GLenum mode)
 {
     return ctx &&
            ctx->active_state->var.polygon_mode == GL_LINE &&

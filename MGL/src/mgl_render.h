@@ -18,6 +18,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+/* This header uses GLuint/GLenum/GLboolean in its own declarations
+ * (mglCurrentRenderProgramKey, mglRestoreProgramPipelinePair, ...) but used to
+ * receive them only transitively, via glm_context.h -> mgl_renderer_backend.h.
+ * Breaking that cycle exposed five TUs that included this header directly and
+ * therefore had no GL types at all.  Include the registry here so the facade
+ * is self-contained. */
+#include <GL/glcorearb.h>
 #include "mgl_render_values.h"
 #include "mgl_readback_policy.h"
 #include "mgl_binding_policy.h"
@@ -125,20 +132,31 @@ void mglRenderFlushBufferRange(GLMContext glm_ctx,
                                   intptr_t offset,
                                   intptr_t length);
 void mglRenderBindProgram(GLMContext glm_ctx, Program *program);
+/* --- renderer-side program / framebuffer-binding helpers ------------------
+ *
+ * These three are DEFINED IN C (mgl_renderer_entries.c, mgl_draw_support.c)
+ * but their only declarations used to live in the ObjC private headers
+ * (MGLRenderer+RenderPass_Private.h, MGLRenderer+Draw_Private.h), which C
+ * translation units must not include.  C callers therefore either hand-declared
+ * them locally (mglResolveProgramForStageFromState had four such local externs)
+ * or relied on a duplicate declaration that this header used to carry.
+ *
+ * The declaration belongs here: this header is the C-facing renderer facade.
+ * The duplicates in the private headers are the ones that must go, not these. */
+
 /* Program bound to a stage by GL state: GL_CURRENT_PROGRAM when one is bound,
- * otherwise the separable pipeline's stage program.  Defined in MGLRenderer.m;
- * declared here so C / C++ translation units stop hand-declaring it (they did
- * before this header carried it). */
+ * otherwise the separable pipeline's stage program. */
 Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
 /* Identity of the program the current draw would use (restored/scheduled), as
- * the trace log and pipeline-cache keys see it.  Defined in MGLRenderer.m. */
+ * the trace log and pipeline-cache keys see it. */
 GLuint mglCurrentRenderProgramKey(GLMContext ctx);
-/* GL-state restore helpers defined in MGLRenderer.m: restore the
- * program/pipeline pair a key names, and re-sync the framebuffer binding names
- * after a hashtable swap. */
+/* Re-sync the framebuffer binding names after a hashtable swap. */
+void mglRendererSyncFramebufferBindingNames(GLMContext ctx);
+/* Restore the program/pipeline pair a state key names. */
+/* single source: mglRestoreProgramPipelinePair (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 void mglRestoreProgramPipelinePair(GLMContext ctx, GLuint programName,
                                    GLuint pipelineName);
-void mglRendererSyncFramebufferBindingNames(GLMContext ctx);
 void mglRenderGetSync(GLMContext glm_ctx, Sync *sync);
 void mglRenderWaitForSync(GLMContext glm_ctx, Sync *sync);
 unsigned int mglRenderGetSyncStatus(GLMContext glm_ctx, Sync *sync);
@@ -510,16 +528,8 @@ uint32_t mglRenderTextureDataKindForPixelFormat(uint32_t pixel_format);
 /* pure pixel-format and GL internal-format predicates.
  * The C ABI carries only stable integer enum values; ObjC compatibility
  * headers remain thin wrappers around these C++ tables. */
-int mglRenderMetalPixelFormatIsDepthOrStencil(uint32_t pixel_format);
-int mglRenderMetalPixelFormatIsPackedDepthStencil(uint32_t pixel_format);
-int mglRenderGLInternalFormatLooksDepthOrStencil(uint32_t internal_format);
-int mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
-    uint32_t pixel_format, uint32_t expected_kind);
 /* compressed upload row math.  Returns the block height
  * and rounded upload-row count using uint64_t so the C ABI is Foundation-free. */
-uint64_t mglRenderMetalCompressedBlockHeight(uint32_t pixel_format);
-uint64_t mglRenderMetalUploadRowsForPixelFormat(uint32_t pixel_format,
-                                                   uint64_t pixel_height);
 /* data-kind → debug name string (static literals).
  * kind uses MGL_RENDER_TEXTURE_DATA_KIND_*. */
 const char *mglRenderTextureDataKindName(uint32_t kind);
@@ -1028,52 +1038,27 @@ int mglRenderExpandQuadElementLineIndices(
  * the restart value.  Pure CPU; matches mglScanIndexRangeIgnoringRestart.
  * Returns 0 on success (with *out_valid = 1 if at least one non-restart
  * index was seen), -1 on bad args. */
-int mglRenderScanIndexRangeIgnoringRestart(
-    const uint8_t *bytes, uint32_t elem_width, uint32_t count,
-    int restart_enabled, uint32_t restart_index,
-    uint32_t *out_min, uint32_t *out_max, int *out_valid);
-
 /* Convert a restart-aware index span into the inclusive [first, first+count)
  * vertex range used by cull-distance capture. Returns 0 on success. */
-int mglRenderPlanCullDistanceElementRange(
-    const uint8_t *bytes, uint32_t elem_width, uint32_t count,
-    int restart_enabled, uint32_t restart_index, int32_t base_vertex,
-    int32_t *out_first, uint32_t *out_count);
-
 /* prepared (Metal-side) byte offset for a GL element
  * buffer — GL_UNSIGNED_BYTE indices are expanded to UInt16 so the offset
  * doubles, other types pass through.  Matches mglComputePreparedIndexByteOffset.
  * Returns 0 on success, -1 on overflow / bad args. */
-int mglRenderComputePreparedIndexByteOffset(uint64_t gl_index_type,
-                                               uint64_t gl_byte_offset,
-                                               uint64_t *out_prepared_offset);
-
 /* baseByteOffset + firstElement * indexStride with
  * overflow checks.  Matches mglComputeIndexByteOffset.  Returns 0 on success,
  * -1 on bad args / overflow. */
-int mglRenderComputeIndexByteOffset(uint64_t base_byte_offset,
-                                       uint64_t first_element,
-                                       uint64_t index_stride,
-                                       uint64_t *out_byte_offset);
-
 /* GL index element byte size (BYTE=1, SHORT=2, INT=4).
  * Matches mglGLIndexElementSize.  Returns 0 for unknown type. */
-uint32_t mglRenderGLIndexElementSize(uint64_t gl_index_type);
 
 /* read a single GL index value from a byte buffer at
  * `element_index` (elem_width 1/2/4).  Matches mglReadGLIndexValue; returns 0
  * for NULL buffer or unknown width. */
-uint32_t mglRenderReadGLIndexValue(const uint8_t *bytes, uint32_t elem_width,
-                                      uint64_t element_index);
-
 /* GL vertex-attribute component size in bytes (1/2/4/8).
  * Matches mglVertexAttribComponentSize.  Returns 0 for unknown. */
-uint32_t mglRenderVertexAttribComponentSize(uint64_t gl_type);
 
 /* total bytes for a vertex-attribute element (type x
  * size), with special handling for packed 10_10_10_2 formats.  Matches
  * mglVertexAttribElementBytes.  Returns 0 for unknown / zero size. */
-uint64_t mglRenderVertexAttribElementBytes(uint64_t gl_type, uint32_t size);
 
 enum {
     MGL_ATTRIB_SPAN_OK = 0,
@@ -1338,7 +1323,6 @@ int mglRenderStructPackUseBulk(int32_t ai, int64_t buf_size, uint32_t member_siz
                                uint32_t src_stride);
 uint64_t mglRenderClampCopyToStruct(uint64_t dest_off, uint64_t copy_size,
                                     uint64_t struct_size);
-int mglRenderMappedBufferCountOK(uint32_t count, uint32_t max);
 int mglRenderClientBindingInRange(uint32_t binding, uint32_t max);
 int mglRenderAllowGlobalBufferFallback(int has_fallback, int spvc_type,
                                        uint32_t flags);
@@ -1373,29 +1357,17 @@ void mglRenderPackCurrentAttribPool(const uint8_t *values, uint32_t attrib_count
 /* does GL primitive mode produce polygonal primitives
  * (triangles/quads) subject to glPolygonMode point/line emulation?  Matches
  * mglDrawModeProducesPolygons.  Returns 1/0. */
-int mglRenderDrawModeProducesPolygons(uint64_t gl_mode);
 
 /* does `mode` with `indexCount` vertices produce at
  * least one drawable segment (point/line/triangle/quad)?  Matches
  * mglPrimitiveModeHasDrawableSegment.  Returns 1/0. */
-int mglRenderPrimitiveModeHasDrawableSegment(uint64_t gl_mode,
-                                                uint64_t index_count);
-
 /* total triangle index count for `source_vertex_count`
  * vertices arranged as quads (4/quad -> 6 indices).  Matches
  * mglQuadTriangleIndexCount; returns 0 on overflow. */
-uint64_t mglRenderQuadTriangleIndexCount(uint64_t source_vertex_count);
 /* Align vertex stride to 4; matches mglAlignVertexStrideForMetal. */
-uint64_t mglRenderAlignVertexStrideForMetal(uint64_t stride);
 /* double-attrib size -> MTLVertexFormat value; matches mglDoubleVertexAttribFloatFormat. */
-uint32_t mglRenderDoubleVertexAttribFloatFormat(uint32_t size);
 /* Integer attrib signedness mismatch -> Int/UInt MTLVertexFormat ABI value.
  * Returns MTLVertexFormatInvalid when no CPU conversion is required. */
-uint32_t mglRenderIntegerAttribConversionFormat(
-    uint64_t src_type,
-    uint64_t shader_gl_type,
-    uint32_t size);
-
 enum {
     MGL_ATTRIB_CONV_NONE = 0,
     MGL_ATTRIB_CONV_DOUBLE = 1,
@@ -1428,16 +1400,10 @@ uint32_t mglRenderPlanVertexAttribOffset(int uses_current, int needs_conversion,
                                          uint32_t pool_stride,
                                          uint32_t relativeoffset,
                                          uint32_t binding_offset);
-const char *mglRenderVertexFormatName(uint32_t format);
-uint64_t mglRenderVertexDescriptorSignature(const void *descriptor);
-uint64_t mglRenderPipelineDescriptorSignature(const void *descriptor);
 /* FNV-1a single hash step; matches mglHashStepU64. */
-uint64_t mglRenderHashStepU64(uint64_t hash, uint64_t value);
 /* Fixed restart-index for a type; matches the fixed branch of
  * mglPrimitiveRestartIndexForType.  1 if defined; *out set. */
-int mglRenderPrimitiveRestartFixedIndex(uint64_t gl_index_type, uint32_t *out);
 /* GL uniform/attrib type -> element byte size; matches mglGLTypeElementByteSize. */
-uint32_t mglRenderGLTypeElementByteSize(uint64_t gl_type);
 
 typedef struct MGLRenderGeometryGatherResult_t {
     uint32_t *gather;          /* malloc'd raw gather (vertex_ids) */
@@ -1826,7 +1792,6 @@ int mglRenderGetDeviceIdentity(const void *device,
                                   size_t name_capacity);
 
 /* 1 if the default Metal device is Apple Paravirtual (hosted CI VMs). */
-int mglRenderIsVirtualizedGPU(void);
 
 int mglRenderCreateDepthStencilStateFromState(
     const MGLRenderDepthStencilDescriptorState *descriptor,

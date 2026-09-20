@@ -306,8 +306,6 @@ MGLIndexMetalHandle mglPreparedElementIndexBuffer(MGLIndexMetalHandle device,
 /* Mark the snapshot-pool slot holding buf's current Metal backing as
  * encoded in the current frame, so it is not recycled until that frame's GPU
  * work completes.  Defined in MGLRenderer+Buffer.m. */
-void mglNoteBufferEncoded(Buffer *buf);
-
 #ifdef __cplusplus
 }
 #endif

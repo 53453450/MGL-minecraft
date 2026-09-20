@@ -15,6 +15,7 @@
 
 #include "mgl_metal.h"
 #include "mgl_index_buffer.h"
+#include "mgl_buffer_map.h"   /* mglNoteBufferEncoded */
 #include "mgl_render.h"
 #include "mgl_types_buffer.h"
 #include "mgl_safety.h"
@@ -24,7 +25,6 @@
 #include <limits>
 #include <os/lock.h>
 
-extern "C" void mglNoteBufferEncoded(Buffer *buffer);
 
 namespace {
 

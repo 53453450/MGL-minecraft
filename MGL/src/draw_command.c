@@ -268,36 +268,14 @@ static void mglReleaseBatchBufferReferences(GLMContext ctx, MGLDrawBatch *batch)
     mglReleaseVAOBufferReferences(ctx, (const VertexArray *)batch->vao_snapshot);
 }
 
-static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
+/* Phase A of batch release: drop the batch's object references.  Reads buf
+ * pointers from the (possibly shared) snapshot, so in the command-buffer
+ * reset loop every batch must run this phase BEFORE any batch frees a
+ * snapshot (see mglResetCommandBufferForContext). */
+static void mglReleaseBatchReferences(GLMContext ctx, MGLDrawBatch *batch)
 {
     if (!batch) return;
-
-    /* release buffer references BEFORE freeing state_snapshot, since
-     * we need to read buf pointers from the snapshot. */
     mglReleaseBatchBufferReferences(ctx, batch);
-
-    /* Arena-managed allocations (commands, state_snapshot, vao_snapshot) are
-     * freed collectively via arena reset (mglResetBatchArena), not
-     * individually.  Only free them on the non-arena path. */
-    if (!batch->arena_managed) {
-        if (batch->commands) {
-            free(batch->commands);
-            batch->commands = NULL;
-        }
-        if (batch->state_snapshot) {
-            free(batch->state_snapshot);
-            batch->state_snapshot = NULL;
-        }
-        if (batch->vao_snapshot) {
-            free(batch->vao_snapshot);
-            batch->vao_snapshot = NULL;
-        }
-    } else {
-        batch->commands = NULL;
-        batch->state_snapshot = NULL;
-        batch->vao_snapshot = NULL;
-    }
-    batch->source_vao = NULL;
     if (batch->retained_program) {
         mglReleaseProgramReference(ctx, (Program *)batch->retained_program);
         batch->retained_program = NULL;
@@ -334,6 +312,59 @@ static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
         mglDestroyTransientBuffer(ctx, (Buffer *)batch->stream_index_buffer);
         batch->stream_index_buffer = NULL;
     }
+}
+
+/* Phase B of batch release: free the batch's own memory.  A batch sharing an
+ * equal-key donor's snapshot (M2 dedup) must not free it - the donor owns
+ * it; the reset loop only reaches here after every batch's reference phase
+ * is done, so no snapshot is read after a free. */
+static void mglReleaseBatchMemory(MGLDrawBatch *batch)
+{
+    if (!batch) return;
+
+    /* Arena-managed allocations (commands, state_snapshot, vao_snapshot) are
+     * freed collectively via arena reset (mglResetBatchArena), not
+     * individually.  Only free them on the non-arena path.
+     *
+     * snapshot_shared only forgives the two SNAPSHOT pointers (the donor owns
+     * them).  `commands` is always this batch's own realloc'd array
+     * (draw_command.c ~4351), so a sharer must still free it - otherwise every
+     * shared batch leaks its command array on the non-arena path. */
+    if (batch->snapshot_shared) {
+        batch->state_snapshot = NULL;
+        batch->vao_snapshot = NULL;
+        if (!batch->arena_managed && batch->commands) {
+            free(batch->commands);
+        }
+        batch->commands = NULL;
+    } else if (!batch->arena_managed) {
+        /* Reached only when snapshot_shared is false AND not arena-managed,
+         * so these frees are the owner's; state_machine_invariants.py I7
+         * checks the enclosing condition for exactly those two terms. */
+        if (batch->commands) {
+            free(batch->commands);
+            batch->commands = NULL;
+        }
+        if (batch->state_snapshot) {
+            free(batch->state_snapshot);
+            batch->state_snapshot = NULL;
+        }
+        if (batch->vao_snapshot) {
+            free(batch->vao_snapshot);
+            batch->vao_snapshot = NULL;
+        }
+    } else {
+        batch->commands = NULL;
+        batch->state_snapshot = NULL;
+        batch->vao_snapshot = NULL;
+    }
+    batch->source_vao = NULL;
+}
+
+static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
+{
+    mglReleaseBatchReferences(ctx, batch);
+    mglReleaseBatchMemory(batch);
 }
 
 static Program *mglRetainBatchProgram(GLMContext ctx, MGLDrawBatch *batch, Program *program, GLuint expectedName, void **slot)
@@ -484,12 +515,67 @@ static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)
     return true;
 }
 
+/* M2 (STATE_MACHINE_REVIEW 3.1/M2): dedup snapshots by key.  Equal keys
+ * already share one snapshot through last-batch reuse; this extends the same
+ * invariant (equal key => equal captured state; hash collisions ~2^-51, the
+ * same basis the batch merger relies on) to any earlier batch in the current
+ * command buffer, so a draw sequence that revisits a state pays one capture
+ * instead of one per batch.  Stream-merged snapshots are specialized
+ * (patched buffer/element pointers) and never donate.  A sharer owns no
+ * snapshot memory: it must not free the shared pointers (snapshot_shared),
+ * and it re-retains program/buffer references for itself from the live state
+ * and the shared snapshot. */
+static bool mglInitializeOrShareBatchStateSnapshot(GLMContext ctx,
+                                                   MGLCommandBuffer *cb,
+                                                   MGLDrawBatch *batch)
+{
+    if (ctx && cb && batch) {
+        for (uint32_t i = 0; i < cb->batch_count; i++) {
+            MGLDrawBatch *donor = &cb->batches[i];
+            if (donor == batch || donor->stream_merged || !donor->state_snapshot) {
+                continue;
+            }
+            if (!mglStateKeysEqual(&donor->key, &batch->key)) {
+                continue;
+            }
+            batch->state_snapshot = donor->state_snapshot;
+            batch->vao_snapshot = donor->vao_snapshot;
+            /* Re-read the live VAO pointer instead of copying the donor's:
+             * a name-identical VAO could have been recreated between the
+             * two captures.  The frozen VAO content itself follows the
+             * donor's capture - the same semantics batch reuse already
+             * gives equal keys. */
+            batch->source_vao = ctx->active_state->vao;
+            batch->snapshot_shared = true;
+            /* Match what a fresh capture would choose for commands
+             * allocation; the shared snapshot is never freed by this batch
+             * either way (snapshot_shared). */
+            batch->arena_managed =
+                (ctx->batch_arena && ctx->batch_arena->enabled) ? true : false;
+            MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
+            mglRetainBatchProgramReferences(ctx, batch);
+            mglRetainBatchBufferReferences(batch);
+            MGL_SIGNPOST_END(InitBatchSnapshot);
+            return true;
+        }
+    }
+    return mglInitializeBatchStateSnapshot(ctx, batch);
+}
+
 void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb)
 {
     if (!cb) return;
 
+    /* Two phases so equal-key shared snapshots (M2 dedup) cannot be freed
+     * while another batch still reads them: every batch first drops its
+     * object references (which read snapshot memory), then memory is freed.
+     * Batches are released in index order, so a donor would otherwise free
+     * its snapshot before a sharer's reference phase ran. */
     for (uint32_t i = 0; i < cb->batch_count; i++) {
-        mglReleaseBatch(ctx, &cb->batches[i]);
+        mglReleaseBatchReferences(ctx, &cb->batches[i]);
+    }
+    for (uint32_t i = 0; i < cb->batch_count; i++) {
+        mglReleaseBatchMemory(&cb->batches[i]);
     }
 
     memset(cb, 0, sizeof(*cb));
@@ -4177,7 +4263,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         }
 
         if (!can_stream_merge) {
-            if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
+            if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch)) {
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: state snapshot alloc failed\n");
                 mglReleaseBatch(ctx, batch);
                 memset(batch, 0, sizeof(*batch));
@@ -4224,7 +4310,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
                 mglDrawStateFromKey(&batch->draw_state, &key, cmd_uses_elements ? 1u : 0u);
-                if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
+                if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
                     mglReleaseBatch(ctx, batch);
                     memset(batch, 0, sizeof(*batch));

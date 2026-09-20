@@ -163,6 +163,8 @@ void mglTextureReleaseGLSampledCopy(Texture *tex);
 /* Mark a texture level as written as a render target (the ObjC header wraps it
  * in the mglMarkTextureLevelRenderTargetWritten(tex, level) macro; C calls the
  * Impl with an explicit caller tag). */
+/* single source: mglMarkTextureLevelRenderTargetWrittenImpl (C TUs and the ObjC private headers both
+ * resolve it from here; the private copies were duplicates) */
 void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex, GLuint level,
                                                 const char *caller, int line);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);

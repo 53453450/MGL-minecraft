@@ -61,15 +61,10 @@ void mglLogRenderPassLifecycle(const char *tag,
                                GLuint renderPassFramebufferName,
                                GLenum renderPassDrawBuffer,
                                GLsizei renderPassDrawBufferCount);
-GLuint mglCurrentRenderProgramKey(GLMContext ctx);
-void mglWriteProgramMSLDump(Program *program, const char *reason);
 GLuint mglRendererSafeFramebufferName(GLMContext ctx);
 id mglApplySRGBStateToRenderTarget(id texture, GLMContext ctx);
 Program *mglResolveProgramFromState(GLMContext ctx);
 BOOL mglRendererPointerInHashTable(HashTable *table, const void *ptr);
-
-Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
-VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where);
 
 /* Render-pass logging / validation helpers. */
 void mglLogLoopHeartbeat(const char *tag,

@@ -36,7 +36,6 @@
 #include <stdint.h>
 #include <pthread.h>
 
-#include <mach/vm_types.h>
 #include "glm_dispatch.h"
 
 #include "draw_command.h"
@@ -78,7 +77,15 @@
 #ifdef __cplusplus
 extern "C"
 #endif
-void mglDispatchError(GLMContext ctx, const char *func, GLenum type);
+/* --- error API (single source) -------------------------------------------
+ *
+ * The ERROR_RETURN* macros below expand to mglDispatchError, so this header
+ * must declare it; this header cannot include error.h (error.h includes this
+ * one, so the reverse would cycle).  Declaration therefore lives here and
+ * error.h / mgl.h must NOT repeat it.  Parameter is named `error` to match the
+ * definition in error.c; it used to read `type` here, which contradicted both
+ * error.h and the definition. */
+void mglDispatchError(GLMContext ctx, const char *func, GLenum error);
 
 #define ERROR_RETURN(_type_) do { mglDispatchError(ctx, __FUNCTION__, (_type_)); } while(0)
 #define ERROR_RETURN_VALUE(_type_, _val_) do { mglDispatchError(ctx, __FUNCTION__, (_type_)); return (_val_); } while(0)
@@ -206,6 +213,9 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx);
 
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);
+/* GL error query.  Owned here so error.h / mgl.h stop duplicating it; it is
+ * part of the context surface every GL TU includes anyway. */
+GLenum  mglGetError(GLMContext ctx);
 /* Free context-local query objects; called from destroyGLMContext. */
 void mglDestroyContextQueries(GLMContext ctx);
 
