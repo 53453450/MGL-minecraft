@@ -1552,7 +1552,6 @@ int mglRenderQueryCapability(void* device_ref,
         state.bug_3d_replace_region_nonzero_origin = 1;
         state.bug_3d_copy_from_buffer_slice_oob = 1;
         state.bug_msl_pipeline_rejection = 1;
-        state.bug_async_shader_compile_in_vm = state.is_virtualized;
         state.conservative_cpu_cache_mode = 1;
         state.max_concurrent_command_buffers =
             state.is_virtualized ? 16u : 64u;

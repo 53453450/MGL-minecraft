@@ -38,7 +38,6 @@ typedef enum {
 #define MGL_BUG_3D_GETBYTES_SLICE_OOB           "3d_getbytes_slice_oob"
 #define MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN "3d_replace_region_nonzero_origin"
 #define MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB   "3d_copy_from_buffer_slice_oob"
-#define MGL_BUG_ASYNC_SHADER_COMPILE_IN_VM      "async_shader_compile_in_vm"
 #define MGL_BUG_MSL_PIPELINE_REJECTION          "msl_pipeline_rejection"
 
 typedef struct MGLCapability_t {
@@ -57,7 +56,6 @@ typedef struct MGLCapability_t {
     bool           bug_3dGetBytesSliceOOB;
     bool           bug_3dReplaceRegionNonZeroOrigin;
     bool           bug_3dCopyFromBufferSliceOOB;
-    bool           bug_asyncShaderCompileInVM;
     bool           bug_mslPipelineRejection;
 
     /* === Robustness config === */
