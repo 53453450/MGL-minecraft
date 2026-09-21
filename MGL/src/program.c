@@ -53,7 +53,7 @@
 #include "mgl_buffer_plan.h"
 #include "mgl_shader_resource.h"
 #include "mgl_compile_artifact.h"
-#include "mgl_render.h"
+#include "mgl_render_api_binding.h"
 #include "mgl_env_flag.h"
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_ast.h"

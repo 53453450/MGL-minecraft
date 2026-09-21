@@ -54,7 +54,8 @@
 #include "draw_command.h"
 #include "mgl_frame_activity.h"
 #include "mgl_pixel_format.h"
-#include "mgl_render.h"
+#include "mgl_render_api_texture.h"
+#include "mgl_render_api_lifecycle.h"
 #include "mgl_texture_debug.h"
 #include "mgl_texture_transfer.h"
 

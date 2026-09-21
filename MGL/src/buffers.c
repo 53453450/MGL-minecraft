@@ -43,7 +43,7 @@
 #include "pixel_utils.h"
 #include "mgl_safety.h"
 #include "mgl_frame_activity.h"
-#include "mgl_render.h"
+#include "mgl_render_api_buffer.h"
 
 // Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
 extern void mgl_lazy_init(void);

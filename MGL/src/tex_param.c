@@ -19,7 +19,7 @@
  */
 
 #include "glm_context.h"
-#include "mgl_render.h"
+#include "mgl_render_api_pixel.h"
 #include "mgl_trace_log.h"
 #include "mgl_env_flag.h"
 #include "pixel_utils.h"
