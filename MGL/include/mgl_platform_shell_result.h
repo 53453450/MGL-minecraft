@@ -38,6 +38,13 @@ typedef int (*MGLPlatformRendererShellOperation)(void *context);
 /* Platform-only drawable bridge used by renderer diagnostics. */
 void *mglPlatformRendererShellTextureForDrawable(void *drawable);
 
+/* C entry points that construct the platform renderer shell. Pure C callers
+ * (glm_context.c) use these without including the ObjC MGLRenderer.h. */
+void *CppCreateMGLRendererFromContextAndBindToWindow(void *glm_ctx,
+                                                     void *window);
+void *CppCreateMGLRendererHeadless(void *glm_ctx);
+void *CppCreateMGLRendererAndBindToContext(void *glm_ctx);
+
 #ifdef __cplusplus
 }
 #endif

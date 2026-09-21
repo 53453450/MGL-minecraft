@@ -70,12 +70,11 @@ uint32_t mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
 
 #endif // #ifdef __OBJC__
 
+#include "mgl_platform_shell_result.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *window);
-void* CppCreateMGLRendererHeadless (void *glm_ctx);
-void* CppCreateMGLRendererAndBindToContext (void *glm_ctx);
 /* 1 if the active Metal device is Apple Paravirtual (hosted CI VMs). */
 int mglRenderIsVirtualizedGPU(void);
 #ifdef __cplusplus

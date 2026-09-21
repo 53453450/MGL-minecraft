@@ -48,7 +48,7 @@
 #include "vertex_arrays.h"
 #include "buffers.h"
 #include "shaders.h"
-#include "MGLRenderer.h"
+#include "mgl_platform_shell_result.h"
 #include "error.h"
 #include "mgl_safety.h"
 /* The shared out-of-tree ABI header: declaring createGLMContext /
@@ -83,9 +83,6 @@ enum {
     kMGLMGLPixelFormatBGRA8Unorm = 80,
     kMGLMGLPixelFormatBGRA8Unorm_sRGB = 81
 };
-
-/* Declared in MGLRenderer.m */
-extern void* CppCreateMGLRendererHeadless(void *glm_ctx);
 
 /* Initialize MGL on-demand (not at library load time).
  * Loading via dlopen must never crash if runtime dependencies are not ready.

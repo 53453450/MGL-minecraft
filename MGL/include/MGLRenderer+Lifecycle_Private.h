@@ -27,7 +27,8 @@
  * MGL
  *
  * Private readiness declarations for the compatibility renderer shell.
- * The CppCreateMGLRenderer* C entry points are declared in MGLRenderer.h.
+ * The CppCreateMGLRenderer* C entry points are declared in
+ * mgl_platform_shell_result.h (included by MGLRenderer.h).
  *
  * Imports MGLRenderer.h for the MGLRenderer interface;
  * the category file itself imports MGLRenderer_Private.h for ivar access and shared types.
