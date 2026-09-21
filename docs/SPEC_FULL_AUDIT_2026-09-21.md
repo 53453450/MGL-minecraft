@@ -47,22 +47,26 @@
 
 ## 3. Review 违规 / 摘录不足（需人工）
 
-| suite | id | verdict | conf |
-| --- | --- | --- | ---: |
-| `compute` | `dispatch_indirect_no_buffer` | no_evidence | 0.51 |
-| `copy_image` | `copy_image_zero_name_invalid_value` | no_evidence | 0.70 |
-| `glsl` | `max_subroutines_limit_zero` | no_evidence | 0.22 |
-| `glsl` | `omit_core_builtin_gl_MaxAtomicCounterBindings` | violates | 0.26 |
-| `glsl` | `omit_core_builtin_gl_MaxCombinedTextureImageUnits` | violates | 0.29 |
-| `glsl` | `subroutine_keyword_not_parsed` | no_evidence | 0.67 |
-| `pixel_ops` | `clear_buffer_ops_present` | no_evidence | 0.46 |
-| `pixel_ops` | `read_buffer_back_on_fbo` | no_evidence | 0.51 |
-| `state_raster` | `stencil_op_invalid_enum` | no_evidence | 0.70 |
-| `texture_upload` | `texstorage_ms_samples_lt_one` | no_evidence | 0.59 |
-| `transform_feedback` | `begin_transform_feedback_exists` | no_evidence | 0.52 |
-| `transform_feedback` | `draw_transform_feedback_unimplemented_errors` | no_evidence | 0.45 |
-| `uniforms` | `bind_image_unit_out_of_range` | violates | 0.20 |
-| `unimplemented_inventory` | `unimplemented_returns_invalid_operation` | no_evidence | 0.79 |
+人工对照代码 + Registry 全文（2026-09-21 续）：
+
+| suite | id | 人工裁定 | 处置 |
+| --- | --- | --- | --- |
+| `compute` | `dispatch_indirect_no_buffer` | ✅ 已符合 | `compute.c` 已对无 DISPATCH_INDIRECT_BUFFER 报 `INVALID_OPERATION`；Jev 摘录不足 |
+| `copy_image` | `copy_image_zero_name_invalid_value` | ✅ 已符合 | `mglCopyImageSubData` 已拒 `srcName/dstName==0` |
+| `glsl` | `omit_core_builtin_gl_MaxAtomicCounterBindings` | ❌ 真缺 → ✅ 已修 | 写入 `mgl_glsl_parser.c` core builtins（=84，对齐 `glm_params`） |
+| `glsl` | `omit_core_builtin_gl_MaxCombinedTextureImageUnits` | ❌ 真缺 → ✅ 已修 | 同上（=80） |
+| `glsl` | `max_subroutines_limit_zero` | ⚠ 已知缺口 | `MAX_SUBROUTINES=0` 且广告 4.6；子例程前端未实现，**暂不假修** |
+| `glsl` | `subroutine_keyword_not_parsed` | ⚠ 已知缺口 | lexer/parser 无 `subroutine`；同上 |
+| `pixel_ops` | `clear_buffer_ops_present` | ✅ 已符合 | `mgl_clear_buffer_ops.c` 存在 |
+| `pixel_ops` | `read_buffer_back_on_fbo` | ❌ 真违规 → ✅ 已修 | §18.2：FBO 上表 17.4 枚举（含 `GL_BACK`）须 `INVALID_OPERATION`；先前误放行 |
+| `state_raster` | `stencil_op_invalid_enum` | ✅ 已符合 | `validStencilOpSeparate` → `INVALID_ENUM` |
+| `texture_upload` | `texstorage_ms_samples_lt_one` | ✅ 已符合 | `samples < 1` → `INVALID_VALUE`（覆盖 §8.8 `samples is zero`） |
+| `transform_feedback` | `begin_transform_feedback_exists` | ✅ 已符合 | `mglBeginTransformFeedback` 有实现入口 |
+| `transform_feedback` | `draw_transform_feedback_unimplemented_errors` | ⚠ 功能缺口 | DrawTransformFeedback* 恒 `INVALID_OPERATION`（Metal 未接线）；失败闭合，非静默成功 |
+| `uniforms` | `bind_image_unit_out_of_range` | ✅ 已符合 | `mglBindImageTexture` 已对 `unit >= max_image_units` 报 `INVALID_VALUE`；低 conf 误判 |
+| `unimplemented_inventory` | `unimplemented_returns_invalid_operation` | ✅ 已符合 | `mgl_unimplemented` → `mglDispatchError(..., INVALID_OPERATION)` |
+
+**仍开放（非本轮能收口）**：GLSL 子例程（`MAX_SUBROUTINES=0` + 无 keyword）；`DrawTransformFeedback*` Metal 捕获。
 
 ## 4. Unspecified（SPEC 留空 / UB）
 

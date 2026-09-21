@@ -1291,21 +1291,12 @@ void mglReadBuffer(GLMContext ctx, GLenum buf)
          buf >= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) ||
          buf >= (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS)))
     {
-        /* On a user framebuffer the GL spec accepts the non-attachment tokens
-         * GL_FRONT/BACK/LEFT/RIGHT/FRONT_LEFT/etc. (they simply select no
-         * readable color buffer) — only genuinely unknown values are an
-         * error, and those are already rejected above.  Drop the spurious
-         * GL_INVALID_OPERATION so restoring a saved GL_READ_BUFFER of GL_BACK
-         * onto a depth/stencil-only FBO succeeds. */
-        if (buf != GL_FRONT && buf != GL_BACK &&
-            buf != GL_FRONT_LEFT && buf != GL_FRONT_RIGHT &&
-            buf != GL_BACK_LEFT && buf != GL_BACK_RIGHT &&
-            buf != GL_LEFT && buf != GL_RIGHT)
-        {
-            fprintf(stderr, "MGL Error: mglReadBuffer: non-attachment buffer 0x%x is invalid for user FBO\n", buf);
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
+        /* GL 4.6 §18.2: if a framebuffer object is affected, src must be
+         * from table 17.5 (COLOR_ATTACHMENTi / NONE).  Table 17.4 tokens
+         * such as FRONT/BACK generate INVALID_OPERATION. */
+        fprintf(stderr, "MGL Error: mglReadBuffer: non-attachment buffer 0x%x is invalid for user FBO\n", buf);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     if ((buf >= GL_COLOR_ATTACHMENT0) &&

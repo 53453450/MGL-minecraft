@@ -855,6 +855,13 @@ static int lookup_builtin_const_int(const char *name, int64_t *value)
         { "gl_MaxCombinedImageUniforms", 40 },
         { "gl_MaxCombinedShaderOutputResources", 8 },
         { "gl_MaxCombinedImageUnitsAndFragmentOutputs", 8 },
+        /* GLSL 4.60 §7.3 — claimed missing from core table (SPEC audit §3).
+         * Values mirror glm_params / glGet. */
+        { "gl_MaxCombinedTextureImageUnits", 80 },
+        { "gl_MaxAtomicCounterBindings", 84 },
+        { "gl_MaxAtomicCounterBufferSize", 16384 },
+        { "gl_MaxCombinedAtomicCounters", 8 },
+        { "gl_MaxCombinedAtomicCounterBuffers", 84 },
         /* GLSL 4.60 §7.3 implementation-dependent constants that gate varying
          * and patch extents.  Values mirror glm_params (and the AIR backend's
          * builtin folding); KHR-GL46.tessellation_shader ....max_in_out_
