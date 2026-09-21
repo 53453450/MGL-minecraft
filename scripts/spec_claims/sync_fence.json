@@ -1,0 +1,42 @@
+{
+  "suite": "sync_fence",
+  "spec": "OpenGL 4.6 Core",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "FenceSync / ClientWaitSync / MemoryBarrier.",
+  "claims": [
+    {
+      "id": "fence_sync_condition_enum",
+      "claim": "FenceSync generates GL_INVALID_ENUM when condition is not SYNC_GPU_COMMANDS_COMPLETE.",
+      "code_locus": "MGL/src/fence.c:mglFenceSync",
+      "code_excerpt": "if (condition != GL_SYNC_GPU_COMMANDS_COMPLETE) ERROR_RETURN(GL_INVALID_ENUM);",
+      "spec_section": "4.1",
+      "spec_quote": "An INVALID_ENUM error is generated if condition is not SYNC_GPU_COMMANDS_COMPLETE.",
+      "evidence": "ils to create a sync object, zero will be returned and a GL error is generated. An INVALID_ENUM error is generated if condition is not SYNC_GPU_COMMANDS_COMPLETE. An INVALID_VALUE error is generated if flags is not zero. A sync object can be deleted by passing its name to the command void DeleteSync( sync sync ); If the fence command corresponding to the specified sync object has completed, or if no ClientWaitSync or WaitSync commands are blocking on sync, the object is deleted immediately. Otherwise, sync is flagged for deletion and will be OpenGL 4.6 (Core Profile) - May 5,",
+      "evidence_verified": true
+    },
+    {
+      "id": "fence_sync_flags_zero",
+      "claim": "FenceSync generates GL_INVALID_VALUE when flags is not zero.",
+      "code_locus": "MGL/src/fence.c:mglFenceSync",
+      "code_excerpt": "if (flags != 0) ERROR_RETURN(GL_INVALID_VALUE);",
+      "spec_section": "4.1",
+      "spec_quote": "An INVALID_VALUE error is generated if flags is not zero.",
+      "evidence": "INVALID_ENUM error is generated if condition is not SYNC_GPU_COMMANDS_COMPLETE. An INVALID_VALUE error is generated if flags is not zero. A sync object can be deleted by passing its name to the command void DeleteSync( sync sync ); If the fence command corresponding to the specified sync object has completed, or if no ClientWaitSync or WaitSync commands are blocking on sync, the object is deleted immediately. Otherwise, sync is flagged for deletion and will be OpenGL 4.6 (Core Profile) - May 5, 2022 4.1. SYNC OBJECTS AND FENCES 38 deleted when it is n",
+      "evidence_verified": true
+    },
+    {
+      "id": "memory_barrier_exists",
+      "claim": "MemoryBarrier accepts a bitfield of barrier bits and flushes/encodes necessary GPU hazards rather than being an unimplemented stub that always errors.",
+      "code_locus": "MGL/src/fence.c:mglMemoryBarrier",
+      "code_excerpt": "void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers) { ... flush/hazard path ... }",
+      "spec_section": "7.12.2",
+      "spec_quote": "The command void MemoryBarrier( bitfield barriers ); OpenGL 4.6 (Core Profile) - May 5, 2022 7.13.",
+      "evidence": "n \"old\" primitive might not be completed before processing of a \"new\" primitive starts. The command void MemoryBarrier( bitfield barriers ); OpenGL 4.6 (Core Profile) - May 5, 2022 7.13. SHADER MEMORY ACCESS 162 defines a barrier ordering the memory transactions issued prior to the command relative to those issued after the barrier. For the purposes of this ordering, memory transactions performed by shaders are considered to be issued by the rendering command that triggered the execution of the shader. barriers is a bitfield indicating the set of operations that are synchronized with shader st",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

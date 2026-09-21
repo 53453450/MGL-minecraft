@@ -1,0 +1,52 @@
+{
+  "suite": "framebuffers",
+  "spec": "OpenGL 4.6 Core",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "FBO bind/attach, DrawBuffers, BlitFramebuffer.",
+  "claims": [
+    {
+      "id": "blit_invalid_mask_bits",
+      "claim": "BlitFramebuffer generates GL_INVALID_VALUE when mask contains bits other than COLOR/DEPTH/STENCIL.",
+      "code_locus": "MGL/src/framebuffers.c:mglBlitFramebuffer",
+      "code_excerpt": "if ((mask & ~validMask) != 0u) { ERROR_RETURN(GL_INVALID_VALUE); }",
+      "spec_section": "18.3.1",
+      "spec_quote": "An INVALID_VALUE error is generated if mask contains any bits other than COLOR_BUFFER_BIT, DEPTH_BUFFER_BIT, or STENCIL_BUFFER_BIT.",
+      "evidence": "r or drawFramebuffer is not zero or the name of an existing framebuffer object. An INVALID_VALUE error is generated if mask contains any bits other than COLOR_BUFFER_BIT, DEPTH_BUFFER_BIT, or STENCIL_BUFFER_BIT. An INVALID_ENUM error is generated if filter is not LINEAR or NEAREST. An INVALID_OPERATION error is generated if mask includes DEPTH_BUFFER_BIT or STENCIL_BUFFER_BIT, and filter is not NEAREST. An INVALID_FRAMEBUFFER_OPERATION error is generated if either the read framebuffer or the draw framebuffer is not framebuffer complete (section 9.4.2). An INVALID_OPERATION error is generated if mask includes DEPTH_BUFFER_BI",
+      "evidence_verified": true
+    },
+    {
+      "id": "blit_invalid_filter",
+      "claim": "BlitFramebuffer generates GL_INVALID_ENUM when filter is not NEAREST or LINEAR.",
+      "code_locus": "MGL/src/framebuffers.c:mglBlitFramebuffer",
+      "code_excerpt": "if (filter != GL_NEAREST && filter != GL_LINEAR) { ERROR_RETURN(GL_INVALID_ENUM); }",
+      "spec_section": "18.3.1",
+      "spec_quote": "An INVALID_ENUM error is generated if filter is not LINEAR or NEAREST.",
+      "evidence": "any bits other than COLOR_BUFFER_BIT, DEPTH_BUFFER_BIT, or STENCIL_BUFFER_BIT. An INVALID_ENUM error is generated if filter is not LINEAR or NEAREST. An INVALID_OPERATION error is generated if mask includes DEPTH_BUFFER_BIT or STENCIL_BUFFER_BIT, and filter is not NEAREST. An INVALID_FRAMEBUFFER_OPERATION error is generated if either the read framebuffer or the draw framebuffer is not framebuffer complete (section 9.4.2). An INVALID_OPERATION error is generated if mask includes DEPTH_BUFFER_BIT or STENCIL_BUFFER_BIT, and the source and destination depth and stenc",
+      "evidence_verified": true
+    },
+    {
+      "id": "blit_depth_stencil_requires_nearest",
+      "claim": "BlitFramebuffer generates GL_INVALID_OPERATION when depth or stencil is included in mask and filter is not NEAREST.",
+      "code_locus": "MGL/src/framebuffers.c:mglBlitFramebuffer",
+      "code_excerpt": "if ((mask & (DEPTH|STENCIL)) && filter != NEAREST) ERROR_RETURN(GL_INVALID_OPERATION);",
+      "spec_section": "18.3.1",
+      "spec_quote": "An INVALID_OPERATION error is generated if mask includes DEPTH_BUFFER_BIT or STENCIL_BUFFER_BIT, and filter is not NEAREST.",
+      "evidence": "FER_BIT. An INVALID_ENUM error is generated if filter is not LINEAR or NEAREST. An INVALID_OPERATION error is generated if mask includes DEPTH_BUFFER_BIT or STENCIL_BUFFER_BIT, and filter is not NEAREST. An INVALID_FRAMEBUFFER_OPERATION error is generated if either the read framebuffer or the draw framebuffer is not framebuffer complete (section 9.4.2). An INVALID_OPERATION error is generated if mask includes DEPTH_BUFFER_BIT or STENCIL_BUFFER_BIT, and the source and destinat",
+      "evidence_verified": true
+    },
+    {
+      "id": "named_draw_buffers_n_range",
+      "claim": "NamedFramebufferDrawBuffers generates GL_INVALID_VALUE when n is negative or greater than MAX_DRAW_BUFFERS.",
+      "code_locus": "MGL/src/framebuffers.c:mglNamedFramebufferDrawBuffers",
+      "code_excerpt": "if (n < 0 || n > (GLsizei)mglFramebufferMaxDrawBuffers(ctx)) { ERROR_RETURN(GL_INVALID_VALUE); }",
+      "spec_section": "17.4.1",
+      "spec_quote": "An INVALID_VALUE error is generated if n is negative, or greater than the value of MAX_DRAW_BUFFERS.",
+      "evidence": "ffers if framebuffer is not zero or the name of an existing framebuffer object. An INVALID_VALUE error is generated if n is negative, or greater than the value of MAX_DRAW_BUFFERS. An INVALID_ENUM error is generated if any value in bufs is not one of the values in tables 17.5 or 17.6. An INVALID_OPERATION error is generated if a buffer other than NONE is specified more than once in the array pointed to by bufs. An INVALID_ENUM error is generated if any value in bufs is FRONT, LEFT, RIGHT, or FRONT_AND_BACK. This restriction applies to both the default framebuffer and framebuffer objects, and e",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

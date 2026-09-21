@@ -1,0 +1,32 @@
+{
+  "suite": "transform_feedback",
+  "spec": "OpenGL 4.6 Core",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "Transform feedback objects and DrawTransformFeedback*.",
+  "claims": [
+    {
+      "id": "draw_transform_feedback_unimplemented_errors",
+      "claim": "DrawTransformFeedback* always generates GL_INVALID_OPERATION because Metal capture is not wired; it fails closed instead of silently succeeding.",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglDrawTransformFeedback*",
+      "code_excerpt": "ERROR_RETURN(GL_INVALID_OPERATION); /* Metal capture not wired */",
+      "spec_section": "13.2.3 / 13.3.3",
+      "spec_quote": "No error is generated if the transform feedback",
+      "evidence": "ent to calling DrawTransformFeedbackStreamInstanced with instancecount set to one. Finally, calling DrawTransformFeedback is equivalent to calling DrawTransformFeedbackStreamInstanced with stream set to zero and instancecount set to one. Note that the vertex count is from the number of vertices recorded to the selected vertex stream during the transform feedback operation. If no outputs belonging to the selected vertex stream are recorded, the corresponding vertex count will be zero even if complete primitives were emitted to the selected stream. No error is generated if the transform feedback",
+      "evidence_verified": true
+    },
+    {
+      "id": "begin_transform_feedback_exists",
+      "claim": "BeginTransformFeedback is dispatched to an implementation entry (not a silent no-op stub without error handling).",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglBeginTransformFeedback",
+      "code_excerpt": "void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)",
+      "spec_section": "13.3.1",
+      "spec_quote": "void BeginTransformFeedback( enum primitiveMode );",
+      "evidence": "e commands OpenGL 4.6 (Core Profile) - May 5, 2022 13.3. TRANSFORM FEEDBACK 445 void BeginTransformFeedback( enum primitiveMode ); and void EndTransformFeedback( void ); respectively. primitiveMode must be TRIANGLES, LINES, or POINTS, and specifies the output type of primitives that will be recorded into the buffer objects bound for transform feedback (see below). primitiveMode restricts the primitive types that may be rendered while transform feedback is active, as shown in table 13.1. EndTransformFeedback first performs an implicit ResumeTran",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

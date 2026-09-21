@@ -1,0 +1,42 @@
+{
+  "suite": "samplers",
+  "spec": "OpenGL 4.6 Core",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "Sampler objects and texture parameter restrictions.",
+  "claims": [
+    {
+      "id": "gen_samplers_n_negative",
+      "claim": "GenSamplers generates GL_INVALID_VALUE when n is negative.",
+      "code_locus": "MGL/src/samplers.c",
+      "code_excerpt": "if (count < 0) ERROR_RETURN(GL_INVALID_VALUE);",
+      "spec_section": "8.2",
+      "spec_quote": "An INVALID_VALUE error is generated if n is negative.",
+      "evidence": "re Profile) - May 5, 2022 4.2. QUERY OBJECTS AND ASYNCHRONOUS QUERIES 44 Errors An INVALID_VALUE error is generated if n is negative. Query objects may also be created with the command void CreateQueries( enum target, sizei n, uint *ids ); CreateQueries returns n previously unused query object names in ids, each representing a new query object with the specified target. target must be one of the query object targets described in section 4.2.1. The initial state of the resulting query object is that the result is marked available (the value of QUER",
+      "evidence_verified": true
+    },
+    {
+      "id": "bind_sampler_unit_out_of_range",
+      "claim": "BindSampler generates GL_INVALID_VALUE when unit is greater than or equal to MAX_COMBINED_TEXTURE_IMAGE_UNITS.",
+      "code_locus": "MGL/src/samplers.c",
+      "code_excerpt": "ERROR_RETURN(GL_INVALID_VALUE) when unit out of range",
+      "spec_section": "8.2",
+      "spec_quote": "An INVALID_VALUE error is generated if unit is greater than or equal to the value of MAX_COMBINED_TEXTURE_IMAGE_UNITS.",
+      "evidence": "ler state associated with the texture object bound to that texture unit. Errors An INVALID_VALUE error is generated if unit is greater than or equal to the value of MAX_COMBINED_TEXTURE_IMAGE_UNITS. An INVALID_OPERATION error is generated if sampler is not zero or a name returned from a previous call to GenSamplers, or if such a name has since been deleted with DeleteSamplers. The command void BindSamplers( uint first, sizei count, const uint *samplers ); binds count existing sampler objects to texture image units numbered first through first + count - 1. If samplers is not NULL, it specifies an array of count",
+      "evidence_verified": true
+    },
+    {
+      "id": "sampler_rejects_texture_only_pnames",
+      "claim": "SamplerParameter* rejects texture-object-only pnames with GL_INVALID_ENUM.",
+      "code_locus": "MGL/src/samplers.c",
+      "code_excerpt": "Sampler objects must reject these pnames with GL_INVALID_ENUM.",
+      "spec_section": "8.2",
+      "spec_quote": "Otherwise it converts to TRUE. • If a command returning unsigned integer data is called, such as GetSamplerParameterIuiv, negative values are clamped to zero. OpenGL 4.6 (Core Profile) - May 5, 2022 2.3. COMMAND EXECUTIO",
+      "evidence": "Otherwise it converts to TRUE. • If a command returning unsigned integer data is called, such as GetSamplerParameterIuiv, negative values are clamped to zero. OpenGL 4.6 (Core Profile) - May 5, 2022 2.3. COMMAND EXECUTION 15 • If a command returning signed or unsigned integer data is called, such as GetIntegerv or GetInteger64v, a boolean value of TRUE or FALSE is interpreted as one or zero, respectively. A floating-point value is rounded to the nearest integer, unless the value is an RGBA color component, a DepthRange value, or a depth buffer clear value. In these cases, the query command con",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

@@ -1,0 +1,152 @@
+{
+  "suite": "draw_command",
+  "spec": "OpenGL 4.6 Core Profile (May 5, 2022)",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "Claims cover draw_command.c plus the unified draw frontend (mglDrawDispatch in draw_buffers.c) that records into the deferred command buffer.",
+  "claims": [
+    {
+      "id": "count_negative_invalid_value",
+      "claim": "When a DrawArrays/DrawElements-family command is called with a negative count, MGL generates GL_INVALID_VALUE and does not draw.",
+      "code_locus": "MGL/src/draw_buffers.c:mglDrawDispatch S2",
+      "code_excerpt": "if (cmd->count < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }",
+      "spec_section": "10.4",
+      "spec_quote": "An INVALID_VALUE error is generated if count is negative.",
+      "evidence": "022 10.4. DRAWING COMMANDS USING VERTEX ARRAYS 366 INVALID_VALUE error is recommended in this case. An INVALID_VALUE error is generated if count is negative. An INVALID_OPERATION error is generated if no vertex array object is bound (see section 10.3.1), The command void DrawArrays( enum mode, int first, sizei count ); is equivalent to DrawArraysOneInstance(mode, first, count, 0, 0); The command void DrawArraysInstancedBaseInstance( enum mode, int first, sizei count, sizei instancecount, uint baseinstance ); behaves identically to DrawArrays except that instancecount instances of the range of ",
+      "evidence_verified": true
+    },
+    {
+      "id": "first_negative_invalid_value",
+      "claim": "When DrawArrays is called with first < 0, MGL generates GL_INVALID_VALUE.",
+      "code_locus": "MGL/src/draw_buffers.c:mglDrawDispatch S2",
+      "code_excerpt": "if (!indexed) { if (cmd->first < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; } }",
+      "spec_section": "10.4",
+      "spec_quote": "DRAWING COMMANDS USING VERTEX ARRAYS 366 INVALID_VALUE error is recommended in this case.",
+      "evidence": "s generated if mode is not one of the primitive types defined in section 10.1. Specifying first < 0 results in undefined behavior. Generating an OpenGL 4.6 (Core Profile) - May 5, 2022 10.4. DRAWING COMMANDS USING VERTEX ARRAYS 366 INVALID_VALUE error is recommended in this case. An INVALID_VALUE error is generated if count is negative. An INVALID_OPERATION error is generated if no vertex array object is bound (see section 10.3.1), The command void DrawArrays( enum mode, int first, sizei count ); is equivalent to DrawArraysOneInstance(mode, first, count, 0, 0); The command void DrawArraysInsta",
+      "evidence_verified": true
+    },
+    {
+      "id": "count_zero_is_noop",
+      "claim": "When count is zero (non-negative), MGL returns without generating an error and without issuing a draw.",
+      "code_locus": "MGL/src/draw_buffers.c:mglDrawDispatch S2",
+      "code_excerpt": "if (cmd->count == 0) return;",
+      "spec_section": "10.4 MultiDrawArrays",
+      "spec_quote": "if (mode or drawcount is invalid) generate appropriate error else { for (i = 0; i < drawcount; i++) { if (count[i] > 0) DrawArraysOneInstance(mode, first[i], count[i], 0, 0); } }",
+      "evidence": "4.6 (Core Profile) - May 5, 2022 10.4. DRAWING COMMANDS USING VERTEX ARRAYS 368 if (mode or drawcount is invalid) generate appropriate error else { for (i = 0; i < drawcount; i++) { if (count[i] > 0) DrawArraysOneInstance(mode, first[i], count[i], 0, 0); } } The index of the draw (i in the above pseudo-code) may be read by a vertex shader as gl_DrawID, as described in section 11.1.3.9. The command void MultiDrawArraysIndirect( enum mode, const void *indirect, sizei drawcount, sizei stride ); behaves identically to DrawArraysIndirect except that indirect is treated as an array of drawcount DrawArraysIndirectCommand structures. indirect contains the offset of the first el",
+      "evidence_verified": true
+    },
+    {
+      "id": "instancecount_negative_invalid_value",
+      "claim": "For instanced draw command types, a negative instanceCount causes MGL to generate GL_INVALID_VALUE.",
+      "code_locus": "MGL/src/draw_buffers.c:mglDrawDispatch S2",
+      "code_excerpt": "if (instanced) { if (cmd->instanceCount < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; } if (cmd->instanceCount == 0) return; }",
+      "spec_section": "10.4 DrawArraysInstancedBaseInstance",
+      "spec_quote": "if (mode, count, or instancecount is invalid) generate appropriate error else { for (i = 0; i < instancecount; i++) { DrawArraysOneInstance(...); } }",
+      "evidence": "rraysInstancedBaseInstance is equivalent (assuming no errors are generated) to: if (mode, count, or instancecount is invalid) generate appropriate error else { for (i = 0; i < instancecount; i++) { DrawArraysOneInstance(mode, first, count, i, baseinstance); } } The command void DrawArraysInstanced( enum mode, int first, sizei count, sizei instancecount ); is equivalent to OpenGL 4.6 (Core Profile) - May 5, 2022 10.4. DRAWING COMMANDS USING VERTEX ARRAYS 367 DrawArraysInstancedBaseInstance(mode, first, count, instancecount, 0); The command void DrawArraysIndirect( enum mode, const void *indirect ); is equivalent to typedef struct { u",
+      "evidence_verified": true
+    },
+    {
+      "id": "bad_mode_invalid_enum",
+      "claim": "When mode is not a legal primitive type, MGL generates GL_INVALID_ENUM.",
+      "code_locus": "MGL/src/draw_buffers.c:mglDrawDispatch S1",
+      "code_excerpt": "if (!check_draw_modes(cmd->mode)) { ERROR_RETURN(GL_INVALID_ENUM); return; }",
+      "spec_section": "10.4",
+      "spec_quote": "An INVALID_ENUM error is generated if mode is not one of the primitive types defined in section 10.1.",
+      "evidence": "d by a vertex shader as gl_InstanceID, as described in section 11.1.3.9. Errors An INVALID_ENUM error is generated if mode is not one of the primitive types defined in section 10.1. Specifying first < 0 results in undefined behavior. Generating an OpenGL 4.6 (Core Profile) - May 5, 2022 10.4. DRAWING COMMANDS USING VERTEX ARRAYS 366 INVALID_VALUE error is recommended in this case. An INVALID_VALUE error is generated if count is negative. An INVALID_OPERATION error is generated if no vertex array object is bound (see section 10.3.1), The command void DrawArrays( enum mode, int first, sizei count",
+      "evidence_verified": true
+    },
+    {
+      "id": "element_type_invalid_enum",
+      "claim": "For indexed draws, if type is not UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT, MGL generates GL_INVALID_ENUM.",
+      "code_locus": "MGL/src/draw_buffers.c:mglDrawDispatch S3",
+      "code_excerpt": "if (indexed) { if (!check_element_type(cmd->indexType)) { ERROR_RETURN(GL_INVALID_ENUM); return; } }",
+      "spec_section": "10.4 DrawElementsOneInstance Errors",
+      "spec_quote": "An INVALID_ENUM error is generated if type is not UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT.",
+      "evidence": "ined in section 10.1. An INVALID_VALUE error is generated if count is negative. An INVALID_ENUM error is generated if type is not UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT. An INVALID_OPERATION error is generated if no vertex array object is OpenGL 4.6 (Core Profile) - May 5, 2022 10.4. DRAWING COMMANDS USING VERTEX ARRAYS 371 bound (see section 10.3.1), The command void DrawElements( enum mode, sizei count, enum type, const void *indices ); behaves identically to DrawElementsOneInstance with instance, basevertex and baseinstance set to zero; the effect of calling DrawElements(mode, co",
+      "evidence_verified": true
+    },
+    {
+      "id": "no_vao_auto_bind_default",
+      "claim": "If no vertex array object is currently bound when a drawing command runs, MGL auto-binds/creates a default VAO and continues, rather than generating GL_INVALID_OPERATION.",
+      "code_locus": "MGL/src/draw_buffers.c:validate_vao",
+      "code_excerpt": "vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__); if (!vao) { VertexArray *default_vao = mglGetOrCreateDefaultVAO(ctx); ... STATE(vao) = default_vao; ... vao = default_vao; } /* later mglDrawDispatch only errors if validate_vao still fails */",
+      "spec_section": "10.4",
+      "spec_quote": "An INVALID_OPERATION error is generated if no vertex array object is bound (see section 10.3.1),",
+      "evidence": "_VALUE error is recommended in this case. An INVALID_VALUE error is generated if count is negative. An INVALID_OPERATION error is generated if no vertex array object is bound (see section 10.3.1), The command void DrawArrays( enum mode, int first, sizei count ); is equivalent to DrawArraysOneInstance(mode, first, count, 0, 0); The command void DrawArraysInstancedBaseInstance( enum mode, int first, sizei count, sizei instancecount, uint baseinstance ); behaves identically to DrawArrays except that instancecount instances of the range of elements are executed and the value of instance advances f",
+      "evidence_verified": true
+    },
+    {
+      "id": "missing_ebo_undefined_skip",
+      "claim": "When an indexed draw is issued while the VAO has no ELEMENT_ARRAY_BUFFER, MGL silently skips the draw without generating a GL error.",
+      "code_locus": "MGL/src/draw_buffers.c:should_skip_indexed_draw_no_element_buffer",
+      "code_excerpt": "if (!vao || vao->element_array.buffer) { return false; } ... return true; /* then mglDrawDispatch returns without ERROR_RETURN */",
+      "spec_section": "10.3.10",
+      "spec_quote": "If zero is bound to ELEMENT_ARRAY_BUFFER, the result of these drawing commands is undefined.",
+      "evidence": "pointer to an array of pointers that represent offsets into the buffer object. If zero is bound to ELEMENT_ARRAY_BUFFER, the result of these drawing commands is undefined. In some cases performance will be optimized by storing indices and array data in separate buffer objects, and by creating those buffer objects with the corresponding binding points. 10.3.11 Indirect Commands in Buffer Objects Arguments to the indirect commands DrawArraysIndirect, DrawElementsIndirect, MultiDrawArraysIndirect, and MultiDrawElementsIndirect (see section 10.4), and to DispatchComputeIndirect (see secti",
+      "evidence_verified": true
+    },
+    {
+      "id": "drawrange_end_lt_start",
+      "claim": "DrawRangeElements generates GL_INVALID_VALUE when end < start.",
+      "code_locus": "MGL/src/draw_buffers.c:mglDrawRangeElements",
+      "code_excerpt": "if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }",
+      "spec_section": "10.4 DrawRangeElements Errors",
+      "spec_quote": "An INVALID_VALUE error is generated if end < start.",
+      "evidence": "ucing performance from what could be achieved with an optimal index set. Errors An INVALID_VALUE error is generated if end < start. An INVALID_VALUE error is generated if count is negative. Invalid mode, count, or type parameters generate the same errors as would the corresponding call to DrawElements. It is an error for index values (other than the primitive restart index, when primitive restart is enabled) to lie outside the range [start, end], but implementations are not required to check for this. Such indices will cause implementation-depen",
+      "evidence_verified": true
+    },
+    {
+      "id": "primitive_restart_before_basevertex",
+      "claim": "When computing the referenced vertex range for an indexed draw, MGL compares indices against the primitive restart index before applying baseVertex.",
+      "code_locus": "MGL/src/draw_command.c:mglCommandComputeElementVertexRange",
+      "code_excerpt": "if (hasRestart && index == restart) { continue; } ... /* then */ if (cmd->baseVertex < 0) { ... minIndex - negBase ... } else { ... minIndex + base ... }",
+      "spec_section": "10.3.6",
+      "spec_quote": "When one of the *BaseVertex drawing commands specified in section 10.4 is used, the primitive restart comparison occurs before the basevertex offset is added to the array index.",
+      "evidence": "diately following element through the end of the originally specified elements. When one of the *BaseVertex drawing commands specified in section 10.4 is used, the primitive restart comparison occurs before the basevertex offset is added to the array index. Primitive restart can also be enabled or disabled with a target of PRIMITIVE_RESTART_FIXED_INDEX. In this case, the primitive restart index is equal to 2N - 1, where N is 8, 16 or 32 if the type is UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT, respectively, and the index value specified by PrimitiveRestartIndex is ignored. If both PRIMITIVE_RESTART and PRIMITIVE_RESTART_FIXED_INDEX are enabled, the index value det",
+      "evidence_verified": true
+    },
+    {
+      "id": "fixed_restart_index_precedence",
+      "claim": "If both PRIMITIVE_RESTART and PRIMITIVE_RESTART_FIXED_INDEX are enabled, MGL uses the fixed restart index 2^N-1 for the element type and ignores PrimitiveRestartIndex.",
+      "code_locus": "MGL/src/draw_command.c:mglCommandPrimitiveRestartIndex",
+      "code_excerpt": "if (ctx->active_state->caps.primitive_restart_fixed_index) { switch (type) { case GL_UNSIGNED_BYTE: *restart = 0xFFu; ... } } *restart = (uint64_t)ctx->active_state->var.primitive_restart_index;",
+      "spec_section": "10.3.6",
+      "spec_quote": "If both PRIMITIVE_RESTART and PRIMITIVE_RESTART_FIXED_INDEX are enabled, the index value determined by PRIMITIVE_RESTART_FIXED_INDEX is used. In this case, the primitive restart index is equal to 2N − 1, where N is 8, 16 or 32 if the type is UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT, respectively, and the index value specified by PrimitiveRestartIndex is ignored.",
+      "evidence": "espectively, and the index value specified by PrimitiveRestartIndex is ignored. If both PRIMITIVE_RESTART and PRIMITIVE_RESTART_FIXED_INDEX are enabled, the index value determined by PRIMITIVE_RESTART_FIXED_INDEX is used. Note that primitive restart is not performed for array elements transferred by any drawing command not taking a type parameter, including all of the *Draw* commands other than *DrawElements*. Implementations are not required to support primitive restart for separate patch primitives (primitive type PATCHES). Support can be queried by calling GetBoo",
+      "evidence_verified": true
+    },
+    {
+      "id": "multidraw_indirect_drawcount_must_be_positive",
+      "claim": "MultiDrawArraysIndirect with drawcount == 0 generates GL_INVALID_VALUE because drawcount must be positive.",
+      "code_locus": "MGL/src/draw_buffers.c:mglMultiDrawArraysIndirect",
+      "code_excerpt": "if (drawcount < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; } if (drawcount == 0) { return; }",
+      "spec_section": "10.4 MultiDrawArraysIndirect Errors",
+      "spec_quote": "An INVALID_VALUE error is generated if drawcount is not positive.",
+      "evidence": "ALID_VALUE error is generated if stride is neither zero nor a multiple of four. An INVALID_VALUE error is generated if drawcount is not positive. The command void MultiDrawArraysIndirectCount( enum mode, const void *indirect, intptr drawcount, intptr maxdrawcount, sizei stride ); behaves similarly to MultiDrawArraysIndirect, except that drawcount defines an offset (in bytes) into the buffer object bound to the PARAMETER_BUFFER binding point at which a single sizei typed value is stored, which contains the draw count. maxdrawcount specifies the maximum number",
+      "evidence_verified": true
+    },
+    {
+      "id": "multidraw_indirect_stride_multiple_of_four",
+      "claim": "MultiDrawArraysIndirect generates GL_INVALID_VALUE when stride is not a multiple of four (including when stride is negative after the % check fails for negatives in C).",
+      "code_locus": "MGL/src/draw_buffers.c:mglMultiDrawArraysIndirect + mglValidateDrawIndirectCommands",
+      "code_excerpt": "if (stride % 4 != 0) { ERROR_RETURN(GL_INVALID_VALUE); return; } /* and */ if (drawcount < 0 || stride < 0 || (stride & 3) != 0) { mglDispatchError(..., GL_INVALID_VALUE); }",
+      "spec_section": "10.4 MultiDrawArraysIndirect Errors",
+      "spec_quote": "An INVALID_VALUE error is generated if stride is negative. An INVALID_VALUE error is generated if stride is neither zero nor a multiple of four.",
+      "evidence": "369 Errors In addition to errors that would be generated by DrawArraysIndirect: An INVALID_VALUE error is generated if stride is negative. An INVALID_VALUE error is generated if stride is neither zero nor a multiple of four. An INVALID_VALUE error is generated if drawcount is not positive. The command void MultiDrawArraysIndirectCount( enum mode, const void *indirect, intptr drawcount, intptr maxdrawcount, sizei stride ); behaves similarly to MultiDrawArraysIndirect, except that drawcount defines an offset (in bytes) into the buffer object bound to the PARAMETER_BUFFER binding point at which a single sizei typed value is stored, which c",
+      "evidence_verified": true
+    },
+    {
+      "id": "dynamic_vb_offset_is_absolute",
+      "claim": "Per-draw dynamic vertex binding overrides stored in MGLDrawCommand use the absolute VERTEX_BINDING_OFFSET for that draw, not a delta relative to the batch VAO snapshot.",
+      "code_locus": "MGL/include/draw_command.h:MGLDynamicVertexBinding",
+      "code_excerpt": "`offset` is the absolute VERTEX_BINDING_OFFSET (GL 4.6 Table 23.4) for this draw — not a delta vs the batch VAO snapshot.",
+      "spec_section": "10.3.9 / Table 23.4 (state tables)",
+      "spec_quote": "When an array is sourced from a buffer object for a vertex attribute, the bindingindex set with VertexAttribBinding for that attribute indicates which vertex buffer binding is used. The sum of the relativeoffset set for the attribute with VertexAttrib*Format and the offset set for the vertex buffer with BindVertexBuffer is used as the offset in basic machine units of the first element in that buffer’s data store.",
+      "evidence": "here data for enabled generic attribute arrays are sourced from buffer objects. When an array is sourced from a buffer object for a vertex attribute, the bindingindex set with VertexAttribBinding for that attribute indicates which vertex buffer binding is used. The sum of the relativeoffset set for the attribute with VertexAttrib*Format and the offset set for the vertex buffer with BindVertexBuffer is used as the offset in basic machine units of the first element in that buffer's data store. If any enabled array's buffer binding is zero when DrawArrays or one of the other drawing commands defined in section 10.4 is called, the result is undefined. 10.3.10 Array Indices in Buffer Objects Blocks of array indices are stored in buffer objects in the formats described by the type parameter of DrawElements (see section 10.4). OpenGL 4.6 (Core Profile) - May 5, 2022 10.4. DRAWING COMMANDS USING VERTEX ARRAYS 3",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

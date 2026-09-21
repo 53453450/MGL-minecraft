@@ -1,0 +1,82 @@
+{
+  "suite": "glsl",
+  "spec": "OpenGL 4.6 Core Profile + GLSL 4.60",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf ; external/OpenGL-Registry/specs/gl/GLSLangSpec.4.60.html",
+  "scope_note": "GLSL frontend builtins/subroutines and related GL shader API. Language rules cite GLSL 4.60; API errors cite GL 4.6 §7.",
+  "claims": [
+    {
+      "id": "compile_shader_wrong_object_type",
+      "claim": "CompileShader generates GL_INVALID_OPERATION when the name refers to a program object.",
+      "code_locus": "MGL shader compile entry",
+      "code_excerpt": "CompileShader rejects program-object names with GL_INVALID_OPERATION.",
+      "spec_section": "GL 4.6 §7.1",
+      "spec_quote": "An INVALID_OPERATION error is generated if shader is the name of a program object.",
+      "evidence": "or is generated if shader is not the name of either a program or shader object. An INVALID_OPERATION error is generated if shader is the name of a program object. An INVALID_VALUE error is generated if count is negative. Once the source code for a shader has been loaded, a shader object can be compiled with the command void CompileShader( uint shader ); Each shader object has a boolean status, COMPILE_STATUS, that is modified as a result of compilation. This status may be queried with GetShaderiv (see section 7.14). This status will be set to TRUE if shader was compiled witho",
+      "evidence_verified": true
+    },
+    {
+      "id": "omit_core_builtin_gl_MaxCombinedTextureImageUnits",
+      "claim": "A GLSL 4.60 core shader may fail to compile when it references gl_MaxCombinedTextureImageUnits, because that name is absent from mgl_glsl_parser.c's core builtin table (it exists only in the legacy-compat table).",
+      "code_locus": "MGL/src/mgl_glsl_parser.c:lookup_builtin_const_int ; MGL/src/mgl_legacy_compat.c",
+      "code_excerpt": "parser builtins[] has no gl_MaxCombinedTextureImageUnits; legacy table has { \"gl_MaxCombinedTextureImageUnits\", 8 } for GLSL ≤150 only.",
+      "spec_section": "GLSL 4.60 §7.3",
+      "spec_quote": ", 64 }; const int gl_MaxComputeUniformComponents = 1024 ; const int gl_MaxComputeTextureImageUnits = 16 ; const int gl_MaxComputeAtomicCounters = 8 ; const int gl_MaxComputeAtomicCounterBuffers = 8 ; const int gl_MaxComb",
+      "evidence": ", 64 }; const int gl_MaxComputeUniformComponents = 1024 ; const int gl_MaxComputeTextureImageUnits = 16 ; const int gl_MaxComputeAtomicCounters = 8 ; const int gl_MaxComputeAtomicCounterBuffers = 8 ; const int gl_MaxCombinedTextureImageUnits = 96 ; const int gl_MaxCombinedImageUniforms = 48 ; const int gl_MaxCombinedImageUnitsAndFragmentOutputs = 8 ; // deprecated const int gl_MaxCombinedShaderOutputResources = 16 ; const int gl_MaxCombinedAtomic",
+      "evidence_verified": true
+    },
+    {
+      "id": "omit_core_builtin_gl_MaxAtomicCounterBindings",
+      "claim": "A GLSL 4.60 core shader may fail to compile when it references gl_MaxAtomicCounterBindings, because that name is absent from the GLSL parser core builtin table.",
+      "code_locus": "MGL/src/mgl_glsl_parser.c:lookup_builtin_const_int",
+      "code_excerpt": "builtins[] does not list gl_MaxAtomicCounterBindings or other gl_MaxAtomicCounter* constants.",
+      "spec_section": "GLSL 4.60 §7.3",
+      "spec_quote": "const int gl_MaxAtomicCounterBindings = 1 ;",
+      "evidence": "const int gl_MaxCombinedShaderOutputResources = 16 ; const int gl_MaxCombinedAtomicCounters = 8 ; const int gl_MaxCombinedAtomicCounterBuffers = 1 ; const int gl_MaxCombinedClipAndCullDistances = 8 ; const int gl_MaxAtomicCounterBindings = 1 ; const int gl_MaxAtomicCounterBufferSize = 32 ; const int gl_MaxTransformFeedbackBuffers = 4 ; const int gl_MaxTransformFeedbackInterleavedComponents = 64 ; ",
+      "evidence_verified": true
+    },
+    {
+      "id": "subroutine_keyword_not_parsed",
+      "claim": "Shaders that declare subroutine types or subroutine functions using the subroutine keyword are rejected by MGL's GLSL frontend (no subroutine keyword / type support).",
+      "code_locus": "MGL/src/mgl_glsl_lexer.c / mgl_glsl_parser.c",
+      "code_excerpt": "Lexer/parser have no subroutine keyword path; compile fails for subroutine shaders (SILENT_GAP_AUDIT F15).",
+      "spec_section": "GLSL 4.60 §6.1.2",
+      "spec_quote": "Subroutine types are declared using a statement similar to a function declaration, with the subroutine keyword, as follows: subroutine returnType subroutineTypeName(...); Functions are associated with subroutine types ... by defining the function with the subroutine keyword and a list of subroutine types the function matches. Subroutine functionality is not available when generating SPIR-V.",
+      "evidence": "Subroutine types are declared using a statement similar to a function declaration, with the subroutine keyword, as follows: subroutine returnType subroutineTypeName(type0 arg0, type1 arg1, ..., typen argn); As with function declarations, the formal argument names ( args above) are optional. Functions are associated with subroutine types of matching declarations by defining the function with the subroutine keyword and a list of subroutine types the function matches: subroutine(subroutineTypeName0",
+      "evidence_verified": true
+    },
+    {
+      "id": "max_subroutines_limit_zero",
+      "claim": "MGL initializes GL_MAX_SUBROUTINES and GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS to 0 while glGetString(GL_VERSION) advertises 4.6.0, so the core subroutine feature cannot be used within documented API limits.",
+      "code_locus": "MGL/src/glm_params.c ; MGL/src/get.c",
+      "code_excerpt": "max_subroutines = 0; max_subroutine_uniform_locations = 0; GL_VERSION returns \"4.6.0\".",
+      "spec_section": "GL 4.6 §7.9 / GLSL 4.60 §6.1.2",
+      "spec_quote": "Subroutine functions can be assigned an explicit index in the shader between zero and the value of MAX_SUBROUTINES minus one.",
+      "evidence": "that the function could never be assigned to an active subroutine uniform. The subroutine functions can be assigned an explicit index in the shader between zero and the value of MAX_SUBROUTINES minus one. At link time, all active subroutines without an explicit index will be assigned an index between zero and the value of ACTIVE_SUBROUTINES minus one. An assigned index will never take the same index of an explicitly specified index in the shader, even if that subroutine is inactive. Between index zero and the vaue of ACTIVE_SUBROUTINES minus one there may be unused indices either because they weren't assigned an inde",
+      "evidence_verified": true
+    },
+    {
+      "id": "info_log_overwritten_on_compile",
+      "claim": "CompileShader overwrites the shader object's information log, which is queryable with GetShaderInfoLog.",
+      "code_locus": "MGL shader compile / info log path",
+      "code_excerpt": "CompileShader updates COMPILE_STATUS and overwrites the shader information log.",
+      "spec_section": "GL 4.6 §7.1",
+      "spec_quote": "Each shader object has an information log, which is a text string that is overwritten as a result of compilation. This information log may be queried with GetShaderInfoLog to obtain more information about the compilation attempt.",
+      "evidence": "th ShaderSource does not change its compile status or the compiled shader code. Each shader object has an information log, which is a text string that is overwritten as a result of compilation. This information log may be queried with GetShaderInfoLog to obtain more information about the compilation attempt (see section 7.14). Errors An INVALID_VALUE error is generated if shader is not the name of either a program or shader object. An INVALID_OPERATION error is generated if shader is the name of a program object. An INVALID_OPERATION error is generated if the SPIR_V",
+      "evidence_verified": true
+    },
+    {
+      "id": "tcs_without_tes_cannot_draw_patches",
+      "claim": "A draw with mode GL_PATCHES whose bound program/pipeline has a tessellation control shader but no tessellation evaluation shader generates GL_INVALID_OPERATION.",
+      "code_locus": "MGL/src/draw_buffers.c validate_program",
+      "code_excerpt": "validate_program / tess checks: TCS without TES cannot draw; GL_PATCHES requires both.",
+      "spec_section": "GL 4.6 §11.2",
+      "spec_quote": ". . . . 409 11.2 Tessellation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 409 11.2.1 Tessellation Control Shaders . . . . . . . . . . . . . . . . 410 11.2.2 Tessellation Primitive Generation . . . . . . . .",
+      "evidence": ". . . . 409 11.2 Tessellation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 409 11.2.1 Tessellation Control Shaders . . . . . . . . . . . . . . . . 410 11.2.2 Tessellation Primitive Generation . . . . . . . . . . . . . 415 11.2.3 Tessellation Evaluation Shaders . . . . . . . . . . . . . . 424 11.2.4 Tessellation Shader Queries . . . . . . . . . . . . . . . . 429 11.3 Geometry Shaders . . . . . . . . . . . . . . . . . . . . . . . . . . 430 11.3.1 Geometry Shader Input Primitives . . . . . . . . . . . . . 430 11.3.2 Geometry Shader Output Primitives . . . . . . . . . . . . 432 11.3.",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

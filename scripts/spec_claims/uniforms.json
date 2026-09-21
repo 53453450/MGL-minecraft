@@ -1,0 +1,42 @@
+{
+  "suite": "uniforms",
+  "spec": "OpenGL 4.6 Core",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "Uniform loading, uniform blocks, image unit limits.",
+  "claims": [
+    {
+      "id": "uniform_count_negative",
+      "claim": "Uniform*v / related loaders generate GL_INVALID_VALUE when count is negative.",
+      "code_locus": "MGL/src/uniforms.c",
+      "code_excerpt": "if (count < 0) ERROR_RETURN(GL_INVALID_VALUE);",
+      "spec_section": "7.6.1",
+      "spec_quote": "An INVALID_VALUE error is generated if count is negative.",
+      "evidence": "ALID_ENUM error is generated if pname is not one of the values described above. An INVALID_VALUE error is generated if count is negative. The command boolean IsSync( sync sync ); returns TRUE if sync is the name of a sync object. If sync is not the name of a sync object, or if an error condition occurs, IsSync returns FALSE (note that zero is not the name of a sync object). Sync object names immediately become invalid after calling DeleteSync, as discussed in sections 4.1 and 5.2, but the underlying sync object will not be deleted until it is no longe",
+      "evidence_verified": true
+    },
+    {
+      "id": "uniform_invalid_location_active",
+      "claim": "Loading a Uniform to a location that is not an active uniform generates GL_INVALID_OPERATION.",
+      "code_locus": "MGL/src/uniforms.c",
+      "code_excerpt": "ERROR_RETURN(GL_INVALID_OPERATION); /* location not an active uniform */",
+      "spec_section": "7.6.1",
+      "spec_quote": "1, 6.3, 6.5, and 6.6. Atomic counters are not assigned a location and may not be modified using the Uniform* commands. The bindings, offsets, and strides belonging to atomic counters of a program object are invalidated a",
+      "evidence": "1, 6.3, 6.5, and 6.6. Atomic counters are not assigned a location and may not be modified using the Uniform* commands. The bindings, offsets, and strides belonging to atomic counters of a program object are invalidated and new ones assigned after each successful re-link. Similarly, when a program is linked successfully, all active uniforms belonging to the program's named uniform blocks are assigned offsets (and strides for OpenGL 4.6 (Core Profile) - May 5, 2022 7.6. UNIFORM VARIABLES 136 array and matrix type uniforms) within the uniform block according to layout rules described below. Unifo",
+      "evidence_verified": true
+    },
+    {
+      "id": "bind_image_unit_out_of_range",
+      "claim": "BindImageTexture / image unit selection generates GL_INVALID_VALUE when unit is out of range for MAX_IMAGE_UNITS.",
+      "code_locus": "MGL/src/uniforms.c / textures.c BindImageTexture",
+      "code_excerpt": "CTS negative-uniform expects INVALID_VALUE when unit >= MAX_IMAGE_UNITS.",
+      "spec_section": "8.26",
+      "spec_quote": "An INVALID_VALUE error is generated if unit is greater than or equal to the value of MAX_IMAGE_UNITS.",
+      "evidence": "ler state associated with the texture object bound to that texture unit. Errors An INVALID_VALUE error is generated if unit is greater than or equal to the value of MAX_COMBINED_TEXTURE_IMAGE_UNITS. An INVALID_OPERATION error is generated if sampler is not zero or a name returned from a previous call to GenSamplers, or if such a name has since been deleted with DeleteSamplers. The command void BindSamplers( uint first, sizei count, const uint *samplers ); binds count existing sampler objects to texture image units numbered first through first + count - 1. If sample",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

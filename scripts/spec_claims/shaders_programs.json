@@ -1,0 +1,52 @@
+{
+  "suite": "shaders_programs",
+  "spec": "OpenGL 4.6 Core",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "ShaderSource/CompileShader/UseProgram/LinkProgram API errors.",
+  "claims": [
+    {
+      "id": "shader_source_count_negative",
+      "claim": "ShaderSource generates GL_INVALID_VALUE when count is negative.",
+      "code_locus": "MGL/src/shaders.c",
+      "code_excerpt": "ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);",
+      "spec_section": "7.1",
+      "spec_quote": "An INVALID_VALUE error is generated if count is negative.",
+      "evidence": "ALID_ENUM error is generated if pname is not one of the values described above. An INVALID_VALUE error is generated if count is negative. The command boolean IsSync( sync sync ); returns TRUE if sync is the name of a sync object. If sync is not the name of a sync object, or if an error condition occurs, IsSync returns FALSE (note that zero is not the name of a sync object). Sync object names immediately become invalid after calling DeleteSync, as discussed in sections 4.1 and 5.2, but the underlying sync object will not be deleted until it is no longe",
+      "evidence_verified": true
+    },
+    {
+      "id": "compile_shader_program_name",
+      "claim": "CompileShader generates GL_INVALID_OPERATION when shader names a program object.",
+      "code_locus": "MGL/src/shaders.c",
+      "code_excerpt": "ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION) when object is program / wrong type.",
+      "spec_section": "7.1",
+      "spec_quote": "An INVALID_OPERATION error is generated if shader is the name of a program object.",
+      "evidence": "or is generated if shader is not the name of either a program or shader object. An INVALID_OPERATION error is generated if shader is the name of a program object. An INVALID_VALUE error is generated if count is negative. Once the source code for a shader has been loaded, a shader object can be compiled with the command void CompileShader( uint shader ); Each shader object has a boolean status, COMPILE_STATUS, that is modified as a result of compilation. This status may be queried with GetShaderiv (see section 7.14). This status will be set to TRUE if shader was compiled witho",
+      "evidence_verified": true
+    },
+    {
+      "id": "use_program_unlinked_invalid_operation",
+      "claim": "UseProgram of a non-zero program that failed to link generates GL_INVALID_OPERATION by default (unless MGL_COMPAT_PROGRAM_ERRORS).",
+      "code_locus": "MGL/src/program.c:mglUseProgram",
+      "code_excerpt": "if (!pptr->link_success) { if (!compat_program) { mglDispatchError(..., GL_INVALID_OPERATION); return; } }",
+      "spec_section": "7.3",
+      "spec_quote": "• Added INVALID_VALUE error in section 7.11 if Uniform1i{v} is used to s",
+      "evidence": "_OPERATION error \"if program has not been linked, or was last linked unsucessfully\" rather than \"if program has not been successfully linked\" (Bug 8640, tracking similar changes to other commands previously). • Merge similar descriptions of uniform variable component limits for each separate shader stage into section 7.6. • Fix nonexistent token ATOMIC_COUNTER_ARRAY_STRIDE to UNIFORM_ARRAY_STRIDE in section 7.7.1 (Bug 9346). • Removed redundant definition of GetSubroutineUniformLocation from the beginning of section 7.10. • Added INVALID_VALUE error in section 7.11 if Uniform1i{v} is used to s",
+      "evidence_verified": true
+    },
+    {
+      "id": "delete_shader_zero_ignored",
+      "claim": "DeleteShader silently ignores shader name zero.",
+      "code_locus": "MGL/src/shaders.c",
+      "code_excerpt": "DeleteShader will silently ignore the value zero (SPEC).",
+      "spec_section": "7.1",
+      "spec_quote": "DeleteShader will silently ignore the value zero.",
+      "evidence": "The value of DELETE_STATUS may be queried with GetShaderiv (see section 7.14). DeleteShader will silently ignore the value zero. Errors An INVALID_VALUE error is generated if shader is neither zero nor the name of either a program or shader object. An INVALID_OPERATION error is generated if shader is not zero and is the name of a program object. The command boolean IsShader( uint shader ); returns TRUE if shader is the name of a shader object. If shader is zero, or a nonzero value that is not the name of a shader object, IsShader returns FALS",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

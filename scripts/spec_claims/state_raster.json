@@ -1,0 +1,62 @@
+{
+  "suite": "state_raster",
+  "spec": "OpenGL 4.6 Core",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "Enable/Disable, Scissor, LineWidth, StencilOp, LogicOp.",
+  "claims": [
+    {
+      "id": "scissor_negative_size",
+      "claim": "Scissor generates GL_INVALID_VALUE when width or height is negative.",
+      "code_locus": "MGL/src/state.c:mglScissor",
+      "code_excerpt": "ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE); ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);",
+      "spec_section": "13.6 / 14",
+      "spec_quote": ". . . . . . . . 483 14.9.1 Pixel Ownership Test . . . . . . . . . . . . . . . . . . . . 484 14.9.2 Scissor Test . . . . . . . . . . . . . . . . . . . . . . . . . 484 14.9.3 Multisample Fragment Operations . . . . . . . .",
+      "evidence": ". . . . . . . . 483 14.9.1 Pixel Ownership Test . . . . . . . . . . . . . . . . . . . . 484 14.9.2 Scissor Test . . . . . . . . . . . . . . . . . . . . . . . . . 484 14.9.3 Multisample Fragment Operations . . . . . . . . . . . . . 486 OpenGL 4.6 (Core Profile) - May 5, 2022 CONTENTS ix 14.9.4 The Early Fragment Test Qualifier . . . . . . . . . . . . . 487 15 Programmable Fragment Processing 488 15.1 Fragment Shader Variables . . . . . . . . . . . . . . . . . . . . . 488 15.2 Shader Execution . . . . . . . . . . . . . . . . . . . . . . . . . . 489 15.2.1 Texture Access . . . . . . . . . . . .",
+      "evidence_verified": true
+    },
+    {
+      "id": "line_width_nonpositive",
+      "claim": "LineWidth generates GL_INVALID_VALUE when width is not positive.",
+      "code_locus": "MGL/src/state.c",
+      "code_excerpt": "ERROR_CHECK_RETURN(width > 0.0f, GL_INVALID_VALUE);",
+      "spec_section": "14.4",
+      "spec_quote": "An INVALID_VALUE error is generated if width is less than or equal to zero.",
+      "evidence": "nabled or disabled by calling Enable or Disable with target LINE_SMOOTH. Errors An INVALID_VALUE error is generated if width is less than or equal to zero. 14.5.1 Basic Line Segment Rasterization Line segment rasterization begins by characterizing the segment as either x-major or y-major. x-major line segments have slope in the closed interval [-1, 1]; all other line segments are y-major (slope is determined by the segment's endpoints). We shall specify rasterization only for x-major segments except in cases where the modifications for y-major segments are not self-evi",
+      "evidence_verified": true
+    },
+    {
+      "id": "logic_op_invalid_opcode",
+      "claim": "LogicOp generates GL_INVALID_ENUM for an unrecognized opcode.",
+      "code_locus": "MGL/src/state.c:mglLogicOp",
+      "code_excerpt": "default: ERROR_RETURN(GL_INVALID_ENUM);",
+      "spec_section": "17.3.11",
+      "spec_quote": "ery (*) Test (*) Test (*) Framebuffer Framebuffer Framebuffer Additional SRGB Multisample Dithering Logicop Conversion Fragment Operations Framebuffer Write To Framebuffer Figure 17.1. Per-fragment operations. The boxes",
+      "evidence": "ery (*) Test (*) Test (*) Framebuffer Framebuffer Framebuffer Additional SRGB Multisample Dithering Logicop Conversion Fragment Operations Framebuffer Write To Framebuffer Figure 17.1. Per-fragment operations. The boxes labelled with \"(*)\" may instead be performed during early per-fragment operations, as described in section 14.9. OpenGL 4.6 (Core Profile) - May 5, 2022 17.3. PER-FRAGMENT OPERATIONS 503 Next, if SAMPLE_ALPHA_TO_ONE is enabled, each alpha value is replaced by the maximum representable alpha value for fixed-point color buffers, or by 1.0 for floating-point buffers. Otherwise, th",
+      "evidence_verified": true
+    },
+    {
+      "id": "stencil_op_invalid_enum",
+      "claim": "StencilOpSeparate generates GL_INVALID_ENUM when fail/zfail/zpass is not a valid stencil operation.",
+      "code_locus": "MGL/src/state.c",
+      "code_excerpt": "ERROR_CHECK_RETURN(validStencilOpSeparate(...), GL_INVALID_ENUM);",
+      "spec_section": "17.3.5",
+      "spec_quote": "c, int ref, uint mask ); void StencilFuncSeparate( enum face, enum func, int ref, uint mask ); void StencilOp( enum sfail, enum dpfail, enum dppass ); void StencilOpSeparate( enum face, enum sfail, enum dpfail, enum dppass ); There are two sets of stencil-related state, the front stencil state set and the back stencil state set.",
+      "evidence": "c, int ref, uint mask ); void StencilFuncSeparate( enum face, enum func, int ref, uint mask ); void StencilOp( enum sfail, enum dpfail, enum dppass ); void StencilOpSeparate( enum face, enum sfail, enum dpfail, enum dppass ); There are two sets of stencil-related state, the front stencil state set and the back stencil state set. Stencil tests and writes use the front set of stencil state when processing fragments rasterized from non-polygon primitives (points and lines) and front-facing polygon primitives while the back set of stencil state is used when processing fragments rasterized from bac",
+      "evidence_verified": true
+    },
+    {
+      "id": "enable_invalid_cap",
+      "claim": "Enable/Disable generates GL_INVALID_ENUM for an unrecognized capability.",
+      "code_locus": "MGL/src/state.c / mgl_capability.c",
+      "code_excerpt": "ERROR_RETURN(GL_INVALID_ENUM); for unknown cap",
+      "spec_section": "20",
+      "spec_quote": "An INVALID_ENUM error is generated if cap is not enable state queriable with IsEnabled.",
+      "evidence": "p is currently enabled (as with Enable) or disabled. Errors An INVALID_ENUM error is generated if cap is not enable state queriable with IsEnabled. OpenGL 4.6 (Core Profile) - May 5, 2022 22.2. POINTER, STRING, AND RELATED CONTEXT QUERIES 566 boolean IsEnabledi( enum target, uint index ); can be used to determine if the indexed state corresponding to target ",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

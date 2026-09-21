@@ -1,0 +1,82 @@
+{
+  "suite": "copy_image",
+  "spec": "OpenGL 4.6 Core Profile (May 5, 2022) §18.3.2",
+  "spec_source": "external/OpenGL-Registry/specs/gl/glspec46.core.pdf",
+  "scope_note": "glCopyImageSubData validation and semantics. Claims cite Registry PDF via scratch/spec_text corpora.",
+  "claims": [
+    {
+      "id": "copy_image_invalid_target_enum",
+      "claim": "CopyImageSubData generates GL_INVALID_ENUM when either target is not RENDERBUFFER or a valid non-proxy texture target (including rejecting TEXTURE_BUFFER and cubemap face selectors).",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglCopyImageSubData",
+      "code_excerpt": "if (!mglCopyImageIsValidTarget(srcTarget) || !mglCopyImageIsValidTarget(dstTarget)) { ERROR_RETURN(GL_INVALID_ENUM); return; }",
+      "spec_section": "18.3.2 Errors",
+      "spec_quote": "An INVALID_ENUM error is generated if either target is not RENDERBUFFER or a valid non-proxy texture target; is TEXTURE_BUFFER or one of the cubemap face selectors described in table 8.19; or if the target does not match the type of the object.",
+      "evidence": "the uncompressed image is not equal to the block size of the compressed image. An INVALID_ENUM error is generated if either target is not RENDERBUFFER or a valid non-proxy texture target; is TEXTURE_BUFFER or one of the cubemap face selectors described in table 8.19; or if the target does not match the type of the object. An INVALID_OPERATION error is generated if either object is a texture and the texture is not complete (as defined in section 8.17, but ignoring format-based completeness rules), or if the source and destination internal formats are not compatible, or if the number of samples do not match. An INVALID_VALUE error is generated if either name does not correspond OpenGL 4.6 (Core Profile) - May 5, 2022 18.4. PIXEL DRAW A",
+      "evidence_verified": true
+    },
+    {
+      "id": "copy_image_negative_dimensions_invalid_value",
+      "claim": "CopyImageSubData generates GL_INVALID_VALUE when srcWidth, srcHeight, or srcDepth is negative.",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglCopyImageSubData",
+      "code_excerpt": "if (srcWidth < 0 || srcHeight < 0 || srcDepth < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }",
+      "spec_section": "18.3.2 Errors",
+      "spec_quote": "An INVALID_VALUE error is generated if srcWidth, srcHeight, or srcDepth is negative.",
+      "evidence": "ted if srcLevel and dstLevel are not valid levels for the corresponding images. An INVALID_VALUE error is generated if srcWidth, srcHeight, or srcDepth is negative. An INVALID_VALUE error is generated if the dimensions of either subregion exceeds the boundaries of the corresponding image object, or if the image format is compressed and the dimensions of the subregion fail to meet the alignment constraints of the format. An INVALID_OPERATION error is generated if the formats are not compatible. 18.4 Pixel Draw and Read State The state required for pixel operations consists of th",
+      "evidence_verified": true
+    },
+    {
+      "id": "copy_image_renderbuffer_level_must_be_zero",
+      "claim": "When either target is RENDERBUFFER, CopyImageSubData generates GL_INVALID_VALUE if the corresponding level is not zero.",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglCopyImageSubData",
+      "code_excerpt": "if (srcTarget == GL_RENDERBUFFER && srcLevel != 0) { ERROR_RETURN(GL_INVALID_VALUE); return; } /* same for dst */",
+      "spec_section": "18.3.2",
+      "spec_quote": "srcLevel and dstLevel identify the source and destination level-of-detail. For textures, this must be a valid level-of-detail in the texture object. For renderbuffers, this value must be zero.",
+      "evidence": "ption of TEXTURE_BUFFER and the cubemap face selectors described in table 8.19. srcLevel and dstLevel identify the source and destination level-of-detail. For textures, this must be a valid level-of-detail in the texture object. For renderbuffers, this value must be zero. srcX, srcY, and srcZ specify the lower left texel coordinates of a srcWidth-wide by srcHeight-high by srcDepth-deep rectangular subregion of the source texture image. Similarly, dstX, dstY and dstZ specify the coordinates of a subregion of the destination texture image. The source and destination subregions must be contained entirely within the specified level of the corresponding image objects. The dimensions are a",
+      "evidence_verified": true
+    },
+    {
+      "id": "copy_image_incomplete_texture_invalid_operation",
+      "claim": "CopyImageSubData generates GL_INVALID_OPERATION if either texture object is not complete (format-based completeness ignored as SPEC allows).",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglCopyImageSubData",
+      "code_excerpt": "if (!src_complete || !dst_complete) { ERROR_RETURN(GL_INVALID_OPERATION); return; }",
+      "spec_section": "18.3.2 Errors",
+      "spec_quote": "An INVALID_OPERATION error is generated if either object is a texture and the texture is not complete (as defined in section 8.17, but ignoring format-based completeness rules), or if the source and destination internal formats are not compatible, or if the number of samples do not match.",
+      "evidence": "escribed in table 8.19; or if the target does not match the type of the object. An INVALID_OPERATION error is generated if either object is a texture and the texture is not complete (as defined in section 8.17, but ignoring format-based completeness rules), or if the source and destination internal formats are not compatible, or if the number of samples do not match. An INVALID_VALUE error is generated if either name does not correspond OpenGL 4.6 (Core Profile) - May 5, 2022 18.4. PIXEL DRAW AND READ STATE 544 Texel / Uncompressed Compressed Block Size internal format internal format 128-bit RGBA32UI, COMPRESSED_RG_RGTC2, COMPRESSED_RGBA32I, RGBA32F SIGNED_RG_RGTC2, COMPRESSED_RGBA_BPTC_UNORM, COMPRESSED_SRGB_ALPHA_BPTC_UNORM, COMPRESSED_RGB_BPTC_SIGNED_FLOAT, COMPRESSED_RGB_BP",
+      "evidence_verified": true
+    },
+    {
+      "id": "copy_image_out_of_bounds_invalid_value",
+      "claim": "CopyImageSubData generates GL_INVALID_VALUE if a source or destination subregion exceeds the boundaries of the corresponding image object.",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglCopyImageSubData",
+      "code_excerpt": "if ((GLint)src_w < srcX + srcWidth || (GLint)src_h < srcY + srcHeight || (GLint)src_d < srcZ + srcDepth) { ERROR_RETURN(GL_INVALID_VALUE); return; }",
+      "spec_section": "18.3.2 Errors",
+      "spec_quote": "An INVALID_VALUE error is generated if the dimensions of either subregion exceeds the boundaries of the corresponding image object, or if the image format is compressed and the dimensions of the subregion fail to meet the alignment constraints of the format.",
+      "evidence": "VALID_VALUE error is generated if srcWidth, srcHeight, or srcDepth is negative. An INVALID_VALUE error is generated if the dimensions of either subregion exceeds the boundaries of the corresponding image object, or if the image format is compressed and the dimensions of the subregion fail to meet the alignment constraints of the format. An INVALID_OPERATION error is generated if the formats are not compatible. 18.4 Pixel Draw and Read State The state required for pixel operations consists of the parameters that are set with PixelStore. This state has been summarized in tables 8.1 and 18.1. Additional state includes a three-valued integer controlling clamping during final conversion. The initial value of read color clamping is FIXED_ONLY. State set",
+      "evidence_verified": true
+    },
+    {
+      "id": "copy_image_is_memcpy_semantics",
+      "claim": "CopyImageSubData does not perform general-purpose format conversions; MGL treats it as a raw copy (memcpy-like), matching the SPEC description.",
+      "code_locus": "MGL/src/mgl_blit_drivers.c:mglBlitCopyImageSubData",
+      "code_excerpt": "Native blit / CPU-to-CPU / format-conversion paths copy texel bytes without scaling or blending; format-conversion path notes GL CopyImageSubData does raw memcpy of pixel data.",
+      "spec_section": "18.3.2",
+      "spec_quote": "CopyImageSubData does not perform general-purpose conversions such as scaling, resizing, blending, color-space, or format conversions. It should be considered to operate in a manner similar to a CPU memcpy.",
+      "evidence": "n two image objects. An image object may be either a texture or a renderbuffer. CopyImageSubData does not perform general-purpose conversions such as scaling, resizing, blending, color-space, or format conversions. It should be considered to operate in a manner similar to a CPU memcpy. CopyImageSubData can copy between images with different internal formats, provided the formats are compatible. CopyImageSubData also allows copying between certain types of compressed and uncompressed internal formats as described in table 18.4. This copy does not perform on-the-fly compression or decompression. When copying from an uncompressed internal format to a compressed internal format, each texel of uncompre",
+      "evidence_verified": true
+    },
+    {
+      "id": "copy_image_zero_name_invalid_value",
+      "claim": "CopyImageSubData generates GL_INVALID_VALUE when srcName or dstName is zero (not a valid object name for the target).",
+      "code_locus": "MGL/src/mgl_gl_extensions.c:mglCopyImageSubData",
+      "code_excerpt": "if (srcName == 0 || dstName == 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }",
+      "spec_section": "18.3.2 Errors",
+      "spec_quote": "An INVALID_VALUE error is generated if either name does not correspond OpenGL 4.6 (Core Profile) - May 5, 2022 18.4.",
+      "evidence": "re not compatible, or if the number of samples do not match. An INVALID_VALUE error is generated if either name does not correspond OpenGL 4.6 (Core Profile) - May 5, 2022 18.4. PIXEL DRAW AND READ STATE 544 Texel / Uncompressed Compressed Block Size internal format internal format 128-bit RGBA32UI, COMPRESSED_RG_RGTC2, COMPRESSED_RGBA32I, RGBA32F SIGNED_RG_RGTC2, COMPRESSED_RGBA_BPTC_UNORM, COMPRESSED_SRGB_ALPHA_BPTC_UNORM, COMPRESSED_RGB_BPTC_SIGNED_FLOAT, COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT 64-bit RGBA16F, RG32F, COMPRESSED_RED_RGTC1, RGBA16UI, RG32UI, COMPRESSED_SIGNED_RED_RGTC1 RGBA16I, RG",
+      "evidence_verified": true
+    }
+  ],
+  "spec_corpus": [
+    "scratch/spec_text/glspec46.core.norm.txt",
+    "scratch/spec_text/GLSLangSpec.4.60.norm.txt"
+  ]
+}

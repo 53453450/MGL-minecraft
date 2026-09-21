@@ -16,6 +16,9 @@ external/ezxml/
 !/docs/OBJC_CATEGORY_DISMANTLE_TODO.md
 !/docs/OBJC_LLVM_JOINT_AUDIT_2026-09-14.md
 !/docs/C0_AIR_RENDER_DEP_MAP.md
+!/docs/SPEC_CLAIM_AUDIT_2026-09-20.md
+!/docs/SPEC_FULL_AUDIT_*.md
+!/docs/C_LAYER_ARCHITECTURE_REVIEW.md
 /.work-buddy
 /mgl-ssbo-20260805b/
 build_asan/
@@ -26,3 +29,4 @@ TestResults.qpa
 # WorkBuddy project-local memory (not source)
 .workbuddy/
 tools/
+.venv-typesafe/
