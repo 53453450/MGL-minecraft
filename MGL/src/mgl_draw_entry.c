@@ -15,7 +15,6 @@
 #include "mgl_renderer_backend.h"  /* MGLRendererBackendLease, lease begin/end */
 #include "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
-#include "mgl_render.h"
 #include "mgl_draw_issue.h"
 #include "mgl_sampler_compat.h"    /* mglRendererResourceLooksSamplerLike */
 

@@ -28,7 +28,6 @@
 #include "mgl_gpu_recovery.h"
 #include "mgl_pixel_format.h"
 #include "mgl_region_value.h"
-#include "mgl_render.h"
 #include "mgl_render_pass_manager_ops.h"
 #include "mgl_render_pass_sync_ops.h"
 #include "mgl_renderer_backend.h"

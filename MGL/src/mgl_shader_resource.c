@@ -16,7 +16,6 @@
  */
 
 #include "mgl_shader_resource.h"
-#include "mgl_render.h"
 
 #include <string.h>
 
