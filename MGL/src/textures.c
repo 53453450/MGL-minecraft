@@ -3514,11 +3514,12 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
 
         case GL_PROXY_TEXTURE_RECTANGLE:
             proxy = true;
-            ERROR_CHECK_RETURN(level==0, GL_INVALID_OPERATION);
+            /* GL 4.6 §8.5: INVALID_VALUE if TEXTURE_RECTANGLE and level != 0. */
+            ERROR_CHECK_RETURN(level==0, GL_INVALID_VALUE);
             break;
 
         case GL_TEXTURE_RECTANGLE:
-            ERROR_CHECK_RETURN(level==0, GL_INVALID_OPERATION);
+            ERROR_CHECK_RETURN(level==0, GL_INVALID_VALUE);
             break;
 
         default:

@@ -170,10 +170,8 @@ void mglBindVertexBuffers(GLMContext ctx, GLuint first, GLsizei count, const GLu
                 ERROR_RETURN(GL_INVALID_VALUE);
                 continue;
             }
-            if (buffer && !findBuffer(ctx, buffer)) {
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                continue;
-            }
+            /* Creation of gen'd-but-never-bound names is done inside
+             * bindVertexBuffer (GL 4.6 §10.3.2), same as BindVertexBuffer. */
         }
 
         bindVertexBuffer(ctx, 0, bindingindex, buffer, offset, stride);
@@ -240,18 +238,13 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
         ERROR_CHECK_RETURN(strides, GL_INVALID_VALUE);
     }
 
-    /* Pre-validate all entries before binding any (atomic per spec):
-     * - GL_INVALID_OPERATION if any buffer is not zero or existing
-     * - GL_INVALID_VALUE if any offset or stride is negative / too large */
+    /* Pre-validate offsets/strides.  Non-zero buffer names that are not yet
+     * existing objects are created inside bindVertexBuffer (GL 4.6 §10.3.2),
+     * matching BindVertexBuffer / BindVertexBuffers. */
     if (buffers)
     {
         for (int i = 0; i < count; i++)
         {
-            GLuint buf = buffers[i];
-            if (buf && !findBuffer(ctx, buf)) {
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                return;
-            }
             if (offsets[i] < 0) {
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;

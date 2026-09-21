@@ -35,13 +35,15 @@
 
 ## 2. Auto 违规（confidence ≥ 0.8，优先修）
 
-| suite | id | conf | claim |
-| --- | --- | ---: | --- |
-| `draw_command` | `multidraw_indirect_drawcount_must_be_positive` | 0.81 | MultiDrawArraysIndirect with drawcount == 0 generates GL_INVALID_VALUE because drawcount must be positive. |
-| `draw_command` | `no_vao_auto_bind_default` | 0.98 | If no vertex array object is currently bound when a drawing command runs, MGL auto-binds/creates a default VAO and continues, rather than generating GL_INVALID_OPERATION. |
-| `texture_upload` | `teximage2d_rectangle_nonzero_level_error_code` | 0.99 | TexImage2D with target TEXTURE_RECTANGLE and level != 0 generates GL_INVALID_OPERATION in MGL. |
-| `vao` | `bind_vertex_buffers_rejects_uncreated_gen_name` | 0.98 | BindVertexBuffers rejects a non-zero buffer name that is not yet an existing buffer object with GL_INVALID_OPERATION, without creating the object first. |
-| `vao` | `draw_auto_binds_default_vao` | 0.99 | When drawing with no VAO bound, MGL auto-binds a default VAO instead of generating GL_INVALID_OPERATION as required for core profile draw/modify/query of vertex array state. |
+| suite | id | conf | claim | 2026-09-21 修复 |
+| --- | --- | ---: | --- | --- |
+| `draw_command` | `multidraw_indirect_drawcount_must_be_positive` | 0.81 | MultiDraw*Indirect drawcount==0 → INVALID_VALUE | ✅ `draw_buffers.c` |
+| `draw_command` | `no_vao_auto_bind_default` | 0.98 | 无 VAO 绑定时 draw 不自动建 VAO 0 | ✅ `validate_vao` |
+| `texture_upload` | `teximage2d_rectangle_nonzero_level_error_code` | 0.99 | RECTANGLE level≠0 → INVALID_VALUE | ✅ `textures.c` |
+| `vao` | `bind_vertex_buffers_rejects_uncreated_gen_name` | 0.98 | BindVertexBuffers 对 gen 名应创建对象 | ✅ 交 `bindVertexBuffer` |
+| `vao` | `draw_auto_binds_default_vao` | 0.99 | 同 no_vao_auto_bind | ✅ 同上 |
+
+> 修复后未重跑 Jev（需 `TYPESAFE_API_KEY`）；以代码对照 SPEC 摘录为准。
 
 ## 3. Review 违规 / 摘录不足（需人工）
 

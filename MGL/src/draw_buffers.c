@@ -150,34 +150,6 @@ static bool mglValidateDrawIndirectCommands(GLMContext ctx,
     return true;
 }
 
-static void mglInitVertexArrayDefaultsForDraw(VertexArray *vao)
-{
-    if (!vao)
-        return;
-
-    for (int i = 0; i < MAX_ATTRIBS; i++)
-    {
-        vao->attrib[i].size = 4;
-        vao->attrib[i].type = GL_FLOAT;
-        vao->attrib[i].integer = 0;
-        vao->attrib[i].long_attribute = 0;
-        vao->attrib[i].stride = 0;
-        vao->attrib[i].divisor = 0;
-        vao->attrib[i].relativeoffset = 0;
-        vao->attrib[i].binding_offset = 0;
-        vao->attrib[i].buffer_bindingindex = (i < MGL_MAX_VERTEX_ATTRIB_BINDINGS) ? (GLuint)i : 0u;
-        vao->attrib[i].buffer = NULL;
-    }
-
-    for (int i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++)
-    {
-        vao->bindings[i].buffer = NULL;
-        vao->bindings[i].offset = 0;
-        vao->bindings[i].stride = 16;
-        vao->bindings[i].divisor = 0;
-    }
-}
-
 static Buffer *mglResolveVertexAttribBufferForDraw(VertexArray *vao, GLuint attrib)
 {
     if (!vao || attrib >= MAX_ATTRIBS)
@@ -190,44 +162,6 @@ static Buffer *mglResolveVertexAttribBufferForDraw(VertexArray *vao, GLuint attr
     }
 
     return a->buffer;
-}
-
-static VertexArray *mglGetOrCreateDefaultVAO(GLMContext ctx)
-{
-    VertexArray *vao;
-
-    if (!ctx)
-        return NULL;
-
-    vao = (VertexArray *)searchHashTable(&STATE(vao_table), 0);
-    if (vao &&
-        (!mglObjectPointerLooksPlausible(vao) ||
-         !mglPointerRangeIsReadable(vao, sizeof(*vao)) ||
-         vao->magic != MGL_VAO_MAGIC))
-    {
-        fprintf(stderr, "MGL WARNING: default VAO entry is invalid (%p), recreating VAO 0\n", (void *)vao);
-        deleteHashElement(&STATE(vao_table), 0);
-        vao = NULL;
-    }
-
-    if (!vao)
-    {
-        vao = (VertexArray *)calloc(1, sizeof(VertexArray));
-        if (!vao)
-            return NULL;
-
-        vao->magic = MGL_VAO_MAGIC;
-        vao->name = 0;
-
-        mglInitVertexArrayDefaultsForDraw(vao);
-
-        insertHashElement(&STATE(vao_table), 0, vao);
-    }
-
-    // Keep VAO0 EBO compatibility slot synchronized.
-    vao->element_array.buffer = STATE(default_vao_element_array_buffer);
-
-    return vao;
 }
 
 static bool should_log_throttled(uint64_t *counter, uint64_t burst_limit, uint64_t every_n)
@@ -400,18 +334,9 @@ bool validate_vao(GLMContext ctx, bool uses_elements)
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
     if (!vao) {
-        VertexArray *default_vao = mglGetOrCreateDefaultVAO(ctx);
-        if (!default_vao) {
-            fprintf(stderr, "MGL Error: validate_vao: VAO is NULL and default VAO creation failed\n");
-            return false;
-        }
-
-        STATE(vao) = default_vao;
-        STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = default_vao->element_array.buffer;
-        STATE_VAR(element_array_buffer_binding) =
-            default_vao->element_array.buffer ? default_vao->element_array.buffer->name : 0;
-        fprintf(stderr, "MGL INFO: validate_vao: rebound to default VAO\n");
-        vao = default_vao;
+        /* GL 4.6 Core §10.3.1 / §10.4: draws require a bound VAO.
+         * Do not silently create/bind VAO 0 (compatibility-profile habit). */
+        return false;
     }
 
     // no attribs enabled..
@@ -1355,9 +1280,8 @@ static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
 
     VertexArray *vao = STATE(vao);
     if (!vao) {
-        vao = mglGetOrCreateDefaultVAO(ctx);
-    }
-    if (!vao) {
+        /* Core profile: no VAO bound ⇒ fail the XFB capture gate
+         * (draw path already rejects via validate_vao). */
         mglCPUFeedbackGateReject(4u);
         return false;
     }
@@ -2416,9 +2340,11 @@ void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirec
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    /* GL 4.6 §10.4: INVALID_VALUE if drawcount is not positive. */
     if (drawcount == 0) {
         mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=zero_drawcount program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
     if (stride % 4 != 0) {
@@ -2478,9 +2404,11 @@ void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, cons
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    /* GL 4.6 §10.4: INVALID_VALUE if drawcount is not positive. */
     if (drawcount == 0) {
         mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=zero_drawcount program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
     if (stride % 4 != 0) {
