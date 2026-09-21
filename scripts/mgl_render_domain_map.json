@@ -1,0 +1,8830 @@
+{
+  "source": [
+    "mgl_render.cpp",
+    "mgl_render_binding.cpp",
+    "mgl_render_buffer.cpp",
+    "mgl_render_command.cpp",
+    "mgl_render_draw.cpp",
+    "mgl_render_lifecycle.cpp",
+    "mgl_render_pixel.cpp",
+    "mgl_render_query.cpp",
+    "mgl_render_readback.cpp",
+    "mgl_render_texture.cpp"
+  ],
+  "method": "name tokens after skipping verbs; Swizzle/Snorm/Unorm forced to pixel_convert; residual is core",
+  "rules": [
+    {
+      "domain": "pixel_convert",
+      "tokens": [
+        "Snorm",
+        "Unorm",
+        "Half",
+        "Unpack",
+        "Pack",
+        "Expand",
+        "Swizzle",
+        "Integer",
+        "Float"
+      ]
+    },
+    {
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Clear",
+        "GetBytes",
+        "ReplaceRegion"
+      ]
+    },
+    {
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Pixel",
+        "Texel",
+        "Mip",
+        "Image",
+        "Sampler",
+        "InternalFormat"
+      ]
+    },
+    {
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Bind",
+        "VertexAttrib",
+        "Attrib",
+        "Pipeline"
+      ]
+    },
+    {
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Encode",
+        "Encoder",
+        "Blit",
+        "Fence",
+        "Recovery",
+        "Pass",
+        "Dispatch"
+      ]
+    },
+    {
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Staging"
+      ]
+    },
+    {
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Tess",
+        "Primitive",
+        "Cull",
+        "Index"
+      ]
+    },
+    {
+      "domain": "query",
+      "tokens": [
+        "Query",
+        "Get",
+        "Is",
+        "Supports",
+        "Plan"
+      ]
+    },
+    {
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Destroy",
+        "Init",
+        "Release",
+        "Reset",
+        "Retain",
+        "Alloc",
+        "Load"
+      ]
+    }
+  ],
+  "counts": {
+    "core": 142,
+    "binding": 114,
+    "buffer": 56,
+    "command": 124,
+    "draw": 50,
+    "pixel_convert": 63,
+    "lifecycle": 22,
+    "readback": 43,
+    "texture": 99,
+    "query": 30
+  },
+  "by_file": {
+    "mgl_render.cpp": 135,
+    "mgl_render_binding.cpp": 113,
+    "mgl_render_buffer.cpp": 56,
+    "mgl_render_command.cpp": 125,
+    "mgl_render_draw.cpp": 55,
+    "mgl_render_lifecycle.cpp": 23,
+    "mgl_render_pixel.cpp": 69,
+    "mgl_render_query.cpp": 30,
+    "mgl_render_readback.cpp": 38,
+    "mgl_render_texture.cpp": 99
+  },
+  "function_count": 743,
+  "functions": [
+    {
+      "symbol": "mglRenderShutdown",
+      "file": "mgl_render.cpp",
+      "line": 127,
+      "domain": "core",
+      "tokens": [
+        "Shutdown"
+      ]
+    },
+    {
+      "symbol": "mglRenderDeleteMTLObj",
+      "file": "mgl_render.cpp",
+      "line": 150,
+      "domain": "core",
+      "tokens": [
+        "Delete",
+        "MTL",
+        "Obj"
+      ]
+    },
+    {
+      "symbol": "mglRenderWaitForSync",
+      "file": "mgl_render.cpp",
+      "line": 178,
+      "domain": "core",
+      "tokens": [
+        "Wait",
+        "For",
+        "Sync"
+      ]
+    },
+    {
+      "symbol": "mglRenderFlush",
+      "file": "mgl_render.cpp",
+      "line": 192,
+      "domain": "core",
+      "tokens": [
+        "Flush"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttachRuntimeOwners",
+      "file": "mgl_render.cpp",
+      "line": 216,
+      "domain": "core",
+      "tokens": [
+        "Attach",
+        "Runtime",
+        "Owners"
+      ]
+    },
+    {
+      "symbol": "mglRenderDetachRuntimeOwners",
+      "file": "mgl_render.cpp",
+      "line": 225,
+      "domain": "core",
+      "tokens": [
+        "Detach",
+        "Runtime",
+        "Owners"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLInternalFormatLooksDepthOrStencil",
+      "file": "mgl_render.cpp",
+      "line": 459,
+      "domain": "core",
+      "tokens": [
+        "GL",
+        "Internal",
+        "Format",
+        "Looks"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalCompressedBlockHeight",
+      "file": "mgl_render.cpp",
+      "line": 479,
+      "domain": "core",
+      "tokens": [
+        "Metal",
+        "Compressed",
+        "Block",
+        "Height"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalUploadRowsForPixelFormat",
+      "file": "mgl_render.cpp",
+      "line": 549,
+      "domain": "core",
+      "tokens": [
+        "Metal",
+        "Upload",
+        "Rows",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderSRGBPixelFormat",
+      "file": "mgl_render.cpp",
+      "line": 564,
+      "domain": "core",
+      "tokens": [
+        "S",
+        "R",
+        "G",
+        "B"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes",
+      "file": "mgl_render.cpp",
+      "line": 702,
+      "domain": "core",
+      "tokens": [
+        "Copy",
+        "GL",
+        "B",
+        "G"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyRGB10A2TextureBytesToGL",
+      "file": "mgl_render.cpp",
+      "line": 815,
+      "domain": "core",
+      "tokens": [
+        "Copy",
+        "R",
+        "G",
+        "B10"
+      ]
+    },
+    {
+      "symbol": "mglRenderCollectCopyBackEntries",
+      "file": "mgl_render.cpp",
+      "line": 979,
+      "domain": "core",
+      "tokens": [
+        "Collect",
+        "Copy",
+        "Back",
+        "Entries"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyBackCPUPrefix",
+      "file": "mgl_render.cpp",
+      "line": 1001,
+      "domain": "core",
+      "tokens": [
+        "Copy",
+        "Back",
+        "CPU",
+        "Prefix"
+      ]
+    },
+    {
+      "symbol": "mglRenderBuildRuntimeArraySizes",
+      "file": "mgl_render.cpp",
+      "line": 1037,
+      "domain": "core",
+      "tokens": [
+        "Build",
+        "Runtime",
+        "Array",
+        "Sizes"
+      ]
+    },
+    {
+      "symbol": "mglRenderNativeTESInterfaceSupported",
+      "file": "mgl_render.cpp",
+      "line": 1082,
+      "domain": "core",
+      "tokens": [
+        "Native",
+        "T",
+        "E",
+        "S"
+      ]
+    },
+    {
+      "symbol": "mglRenderRasterizationIsEmpty",
+      "file": "mgl_render.cpp",
+      "line": 1118,
+      "domain": "core",
+      "tokens": [
+        "Rasterization",
+        "Is",
+        "Empty"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpectedArrayLayers",
+      "file": "mgl_render.cpp",
+      "line": 1174,
+      "domain": "core",
+      "tokens": [
+        "Expected",
+        "Array",
+        "Layers"
+      ]
+    },
+    {
+      "symbol": "mglRenderPrefer1DOverDefault2D",
+      "file": "mgl_render.cpp",
+      "line": 1187,
+      "domain": "core",
+      "tokens": [
+        "Prefer1",
+        "D",
+        "Over",
+        "Default2"
+      ]
+    },
+    {
+      "symbol": "mglRenderPreferMSOr1DArrayOver2DArray",
+      "file": "mgl_render.cpp",
+      "line": 1193,
+      "domain": "core",
+      "tokens": [
+        "Prefer",
+        "M",
+        "S",
+        "Or1"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpectedTypeIsCube",
+      "file": "mgl_render.cpp",
+      "line": 1205,
+      "domain": "core",
+      "tokens": [
+        "Expected",
+        "Type",
+        "Is",
+        "Cube"
+      ]
+    },
+    {
+      "symbol": "mglRenderFallbackSampledCacheKey",
+      "file": "mgl_render.cpp",
+      "line": 1212,
+      "domain": "core",
+      "tokens": [
+        "Fallback",
+        "Sampled",
+        "Cache",
+        "Key"
+      ]
+    },
+    {
+      "symbol": "mglRenderAGXCompatiblePixelFormat",
+      "file": "mgl_render.cpp",
+      "line": 1216,
+      "domain": "core",
+      "tokens": [
+        "A",
+        "G",
+        "X",
+        "Compatible"
+      ]
+    },
+    {
+      "symbol": "mglRenderPromote1DArrayDepthStencil",
+      "file": "mgl_render.cpp",
+      "line": 1243,
+      "domain": "core",
+      "tokens": [
+        "Promote1",
+        "D",
+        "Array",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderPromoteMipmapped1D",
+      "file": "mgl_render.cpp",
+      "line": 1263,
+      "domain": "core",
+      "tokens": [
+        "Promote",
+        "Mipmapped1",
+        "D"
+      ]
+    },
+    {
+      "symbol": "mglRenderPromoteMipmapped1DArray",
+      "file": "mgl_render.cpp",
+      "line": 1267,
+      "domain": "core",
+      "tokens": [
+        "Promote",
+        "Mipmapped1",
+        "D",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglRenderCubeFaceSizeValid",
+      "file": "mgl_render.cpp",
+      "line": 1271,
+      "domain": "core",
+      "tokens": [
+        "Cube",
+        "Face",
+        "Size",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderUploadLevelCount",
+      "file": "mgl_render.cpp",
+      "line": 1276,
+      "domain": "core",
+      "tokens": [
+        "Upload",
+        "Level",
+        "Count"
+      ]
+    },
+    {
+      "symbol": "mglRenderEmulateMSAsArray",
+      "file": "mgl_render.cpp",
+      "line": 1282,
+      "domain": "core",
+      "tokens": [
+        "Emulate",
+        "M",
+        "S",
+        "As"
+      ]
+    },
+    {
+      "symbol": "mglRenderPreferSharedStorage",
+      "file": "mgl_render.cpp",
+      "line": 1316,
+      "domain": "core",
+      "tokens": [
+        "Prefer",
+        "Shared",
+        "Storage"
+      ]
+    },
+    {
+      "symbol": "mglRenderApply1DBackingToDesc",
+      "file": "mgl_render.cpp",
+      "line": 1321,
+      "domain": "core",
+      "tokens": [
+        "Apply1",
+        "D",
+        "Backing",
+        "To"
+      ]
+    },
+    {
+      "symbol": "mglRenderTraceR8RedUByte",
+      "file": "mgl_render.cpp",
+      "line": 1362,
+      "domain": "core",
+      "tokens": [
+        "Trace",
+        "R8",
+        "Red",
+        "U"
+      ]
+    },
+    {
+      "symbol": "mglRenderCompletenessCheckFaces",
+      "file": "mgl_render.cpp",
+      "line": 1373,
+      "domain": "core",
+      "tokens": [
+        "Completeness",
+        "Check",
+        "Faces"
+      ]
+    },
+    {
+      "symbol": "mglRenderIs3DReupload",
+      "file": "mgl_render.cpp",
+      "line": 1379,
+      "domain": "core",
+      "tokens": [
+        "Is3",
+        "D",
+        "Reupload"
+      ]
+    },
+    {
+      "symbol": "mglRenderDepthStencilPlaneViewType",
+      "file": "mgl_render.cpp",
+      "line": 1387,
+      "domain": "core",
+      "tokens": [
+        "Depth",
+        "Stencil",
+        "Plane",
+        "View"
+      ]
+    },
+    {
+      "symbol": "mglRenderStencilViewFormat",
+      "file": "mgl_render.cpp",
+      "line": 1404,
+      "domain": "core",
+      "tokens": [
+        "Stencil",
+        "View",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderRepairedDefaultStencilFormat",
+      "file": "mgl_render.cpp",
+      "line": 1411,
+      "domain": "core",
+      "tokens": [
+        "Repaired",
+        "Default",
+        "Stencil",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderPackedD32FNeeds8ByteStride",
+      "file": "mgl_render.cpp",
+      "line": 1419,
+      "domain": "core",
+      "tokens": [
+        "Packed",
+        "D32",
+        "F",
+        "Needs8"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLTypeName",
+      "file": "mgl_render.cpp",
+      "line": 1434,
+      "domain": "core",
+      "tokens": [
+        "GLSL",
+        "Type",
+        "Name"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLMatrixCols",
+      "file": "mgl_render.cpp",
+      "line": 1483,
+      "domain": "core",
+      "tokens": [
+        "GLSL",
+        "Matrix",
+        "Cols"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLMatrixRows",
+      "file": "mgl_render.cpp",
+      "line": 1502,
+      "domain": "core",
+      "tokens": [
+        "GLSL",
+        "Matrix",
+        "Rows"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLColumnType",
+      "file": "mgl_render.cpp",
+      "line": 1522,
+      "domain": "core",
+      "tokens": [
+        "GLSL",
+        "Column",
+        "Type"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLNeedsFlat",
+      "file": "mgl_render.cpp",
+      "line": 1539,
+      "domain": "core",
+      "tokens": [
+        "GLSL",
+        "Needs",
+        "Flat"
+      ]
+    },
+    {
+      "symbol": "mglRenderTargetIsRenderbuffer",
+      "file": "mgl_render.cpp",
+      "line": 1558,
+      "domain": "core",
+      "tokens": [
+        "Target",
+        "Is",
+        "Renderbuffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderMSSamplePlaneAdjust",
+      "file": "mgl_render.cpp",
+      "line": 1562,
+      "domain": "core",
+      "tokens": [
+        "M",
+        "S",
+        "Sample",
+        "Plane"
+      ]
+    },
+    {
+      "symbol": "mglRenderClipOriginIsLowerLeft",
+      "file": "mgl_render.cpp",
+      "line": 1571,
+      "domain": "core",
+      "tokens": [
+        "Clip",
+        "Origin",
+        "Is",
+        "Lower"
+      ]
+    },
+    {
+      "symbol": "mglRenderErrorIsNone",
+      "file": "mgl_render.cpp",
+      "line": 1575,
+      "domain": "core",
+      "tokens": [
+        "Error",
+        "Is",
+        "None"
+      ]
+    },
+    {
+      "symbol": "mglRenderErrorNone",
+      "file": "mgl_render.cpp",
+      "line": 1579,
+      "domain": "core",
+      "tokens": [
+        "Error",
+        "None"
+      ]
+    },
+    {
+      "symbol": "mglRenderErrorInvalidOperation",
+      "file": "mgl_render.cpp",
+      "line": 1583,
+      "domain": "core",
+      "tokens": [
+        "Error",
+        "Invalid",
+        "Operation"
+      ]
+    },
+    {
+      "symbol": "mglRenderErrorInvalidValue",
+      "file": "mgl_render.cpp",
+      "line": 1587,
+      "domain": "core",
+      "tokens": [
+        "Error",
+        "Invalid",
+        "Value"
+      ]
+    },
+    {
+      "symbol": "mglRenderErrorOutOfMemory",
+      "file": "mgl_render.cpp",
+      "line": 1591,
+      "domain": "core",
+      "tokens": [
+        "Error",
+        "Out",
+        "Of",
+        "Memory"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLBoolean",
+      "file": "mgl_render.cpp",
+      "line": 1595,
+      "domain": "core",
+      "tokens": [
+        "GL",
+        "Boolean"
+      ]
+    },
+    {
+      "symbol": "mglRenderStopColorAttachmentScan",
+      "file": "mgl_render.cpp",
+      "line": 1600,
+      "domain": "core",
+      "tokens": [
+        "Stop",
+        "Color",
+        "Attachment",
+        "Scan"
+      ]
+    },
+    {
+      "symbol": "mglRenderEmulateTriangleFan",
+      "file": "mgl_render.cpp",
+      "line": 1606,
+      "domain": "core",
+      "tokens": [
+        "Emulate",
+        "Triangle",
+        "Fan"
+      ]
+    },
+    {
+      "symbol": "mglRenderEmulateLineLoop",
+      "file": "mgl_render.cpp",
+      "line": 1610,
+      "domain": "core",
+      "tokens": [
+        "Emulate",
+        "Line",
+        "Loop"
+      ]
+    },
+    {
+      "symbol": "mglRenderEmulateQuads",
+      "file": "mgl_render.cpp",
+      "line": 1614,
+      "domain": "core",
+      "tokens": [
+        "Emulate",
+        "Quads"
+      ]
+    },
+    {
+      "symbol": "mglRenderFilterIsNearest",
+      "file": "mgl_render.cpp",
+      "line": 1619,
+      "domain": "core",
+      "tokens": [
+        "Filter",
+        "Is",
+        "Nearest"
+      ]
+    },
+    {
+      "symbol": "mglRenderNearestFilter",
+      "file": "mgl_render.cpp",
+      "line": 1623,
+      "domain": "core",
+      "tokens": [
+        "Nearest",
+        "Filter"
+      ]
+    },
+    {
+      "symbol": "mglRenderCPUFormatTypeForInternalFormat",
+      "file": "mgl_render.cpp",
+      "line": 1638,
+      "domain": "core",
+      "tokens": [
+        "CPU",
+        "Format",
+        "Type",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderQuadsCountTooSmall",
+      "file": "mgl_render.cpp",
+      "line": 1686,
+      "domain": "core",
+      "tokens": [
+        "Quads",
+        "Count",
+        "Too",
+        "Small"
+      ]
+    },
+    {
+      "symbol": "mglRenderPolygonPointEmulateMode",
+      "file": "mgl_render.cpp",
+      "line": 1690,
+      "domain": "core",
+      "tokens": [
+        "Polygon",
+        "Point",
+        "Emulate",
+        "Mode"
+      ]
+    },
+    {
+      "symbol": "mglRenderCompareFuncFromGL",
+      "file": "mgl_render.cpp",
+      "line": 1717,
+      "domain": "core",
+      "tokens": [
+        "Compare",
+        "Func",
+        "From",
+        "GL"
+      ]
+    },
+    {
+      "symbol": "mglRenderFrontFaceIsClockwise",
+      "file": "mgl_render.cpp",
+      "line": 1755,
+      "domain": "core",
+      "tokens": [
+        "Front",
+        "Face",
+        "Is",
+        "Clockwise"
+      ]
+    },
+    {
+      "symbol": "mglRenderFrontFaceIsCounterClockwise",
+      "file": "mgl_render.cpp",
+      "line": 1759,
+      "domain": "core",
+      "tokens": [
+        "Front",
+        "Face",
+        "Is",
+        "Counter"
+      ]
+    },
+    {
+      "symbol": "mglRenderCubeMapFaceSlice",
+      "file": "mgl_render.cpp",
+      "line": 1763,
+      "domain": "core",
+      "tokens": [
+        "Cube",
+        "Map",
+        "Face",
+        "Slice"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttachmentUsesArrayLayer",
+      "file": "mgl_render.cpp",
+      "line": 1795,
+      "domain": "core",
+      "tokens": [
+        "Attachment",
+        "Uses",
+        "Array",
+        "Layer"
+      ]
+    },
+    {
+      "symbol": "mglRenderPackedDepthStencilFormat",
+      "file": "mgl_render.cpp",
+      "line": 1809,
+      "domain": "core",
+      "tokens": [
+        "Packed",
+        "Depth",
+        "Stencil",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderRepairBlendSrcFactor",
+      "file": "mgl_render.cpp",
+      "line": 1828,
+      "domain": "core",
+      "tokens": [
+        "Repair",
+        "Blend",
+        "Src",
+        "Factor"
+      ]
+    },
+    {
+      "symbol": "mglRenderRepairBlendDstFactor",
+      "file": "mgl_render.cpp",
+      "line": 1836,
+      "domain": "core",
+      "tokens": [
+        "Repair",
+        "Blend",
+        "Dst",
+        "Factor"
+      ]
+    },
+    {
+      "symbol": "mglRenderRepairBlendEquation",
+      "file": "mgl_render.cpp",
+      "line": 1844,
+      "domain": "core",
+      "tokens": [
+        "Repair",
+        "Blend",
+        "Equation"
+      ]
+    },
+    {
+      "symbol": "mglRenderRepairDepthFunc",
+      "file": "mgl_render.cpp",
+      "line": 1852,
+      "domain": "core",
+      "tokens": [
+        "Repair",
+        "Depth",
+        "Func"
+      ]
+    },
+    {
+      "symbol": "mglRenderRepairStencilFunc",
+      "file": "mgl_render.cpp",
+      "line": 1857,
+      "domain": "core",
+      "tokens": [
+        "Repair",
+        "Stencil",
+        "Func"
+      ]
+    },
+    {
+      "symbol": "mglRenderCPUPointerUsable",
+      "file": "mgl_render.cpp",
+      "line": 1867,
+      "domain": "core",
+      "tokens": [
+        "CPU",
+        "Pointer",
+        "Usable"
+      ]
+    },
+    {
+      "symbol": "mglRenderShaderResourceToGLBufferType",
+      "file": "mgl_render.cpp",
+      "line": 1877,
+      "domain": "core",
+      "tokens": [
+        "Shader",
+        "Resource",
+        "To",
+        "GL"
+      ]
+    },
+    {
+      "symbol": "mglRenderUsePlainUniformBuffers",
+      "file": "mgl_render.cpp",
+      "line": 1892,
+      "domain": "core",
+      "tokens": [
+        "Use",
+        "Plain",
+        "Uniform",
+        "Buffers"
+      ]
+    },
+    {
+      "symbol": "mglRenderStructMemberInElementRange",
+      "file": "mgl_render.cpp",
+      "line": 1902,
+      "domain": "core",
+      "tokens": [
+        "Struct",
+        "Member",
+        "In",
+        "Element"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindableLocValid",
+      "file": "mgl_render.cpp",
+      "line": 1907,
+      "domain": "core",
+      "tokens": [
+        "Bindable",
+        "Loc",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderCPUShadowReadable",
+      "file": "mgl_render.cpp",
+      "line": 1911,
+      "domain": "core",
+      "tokens": [
+        "CPU",
+        "Shadow",
+        "Readable"
+      ]
+    },
+    {
+      "symbol": "mglRenderClampCopyToStruct",
+      "file": "mgl_render.cpp",
+      "line": 1917,
+      "domain": "core",
+      "tokens": [
+        "Clamp",
+        "Copy",
+        "To",
+        "Struct"
+      ]
+    },
+    {
+      "symbol": "mglRenderMappedUniformSize",
+      "file": "mgl_render.cpp",
+      "line": 1936,
+      "domain": "core",
+      "tokens": [
+        "Mapped",
+        "Uniform",
+        "Size"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlainUniformBaseLoc",
+      "file": "mgl_render.cpp",
+      "line": 1955,
+      "domain": "core",
+      "tokens": [
+        "Plain",
+        "Uniform",
+        "Base",
+        "Loc"
+      ]
+    },
+    {
+      "symbol": "mglRenderMemberOffsetInElement",
+      "file": "mgl_render.cpp",
+      "line": 1960,
+      "domain": "core",
+      "tokens": [
+        "Member",
+        "Offset",
+        "In",
+        "Element"
+      ]
+    },
+    {
+      "symbol": "mglRenderMemberOffsetInStruct",
+      "file": "mgl_render.cpp",
+      "line": 1965,
+      "domain": "core",
+      "tokens": [
+        "Member",
+        "Offset",
+        "In",
+        "Struct"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlainUniformArrayStrides",
+      "file": "mgl_render.cpp",
+      "line": 1969,
+      "domain": "core",
+      "tokens": [
+        "Plain",
+        "Uniform",
+        "Array",
+        "Strides"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalBackingTooSmall",
+      "file": "mgl_render.cpp",
+      "line": 1992,
+      "domain": "core",
+      "tokens": [
+        "Metal",
+        "Backing",
+        "Too",
+        "Small"
+      ]
+    },
+    {
+      "symbol": "mglRenderAlignVertexStrideForMetal",
+      "file": "mgl_render.cpp",
+      "line": 2006,
+      "domain": "core",
+      "tokens": [
+        "Align",
+        "Vertex",
+        "Stride",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLTypeSizeToVertexFormat",
+      "file": "mgl_render.cpp",
+      "line": 2012,
+      "domain": "core",
+      "tokens": [
+        "GL",
+        "Type",
+        "Size",
+        "To"
+      ]
+    },
+    {
+      "symbol": "mglRenderHashStepU64",
+      "file": "mgl_render.cpp",
+      "line": 2141,
+      "domain": "core",
+      "tokens": [
+        "Hash",
+        "Step",
+        "U64"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLTypeElementByteSize",
+      "file": "mgl_render.cpp",
+      "line": 2147,
+      "domain": "core",
+      "tokens": [
+        "GL",
+        "Type",
+        "Element",
+        "Byte"
+      ]
+    },
+    {
+      "symbol": "mglRenderGeometryGatherIndices",
+      "file": "mgl_render.cpp",
+      "line": 2223,
+      "domain": "core",
+      "tokens": [
+        "Geometry",
+        "Gather",
+        "Indices"
+      ]
+    },
+    {
+      "symbol": "mglRenderThreadgroupSize",
+      "file": "mgl_render.cpp",
+      "line": 2286,
+      "domain": "core",
+      "tokens": [
+        "Threadgroup",
+        "Size"
+      ]
+    },
+    {
+      "symbol": "mglRenderPolygonOffsetDecision",
+      "file": "mgl_render.cpp",
+      "line": 2302,
+      "domain": "core",
+      "tokens": [
+        "Polygon",
+        "Offset",
+        "Decision"
+      ]
+    },
+    {
+      "symbol": "mglRenderTESXFBFieldByteSize",
+      "file": "mgl_render.cpp",
+      "line": 2347,
+      "domain": "core",
+      "tokens": [
+        "T",
+        "E",
+        "S",
+        "X"
+      ]
+    },
+    {
+      "symbol": "mglRenderCheckedProduct",
+      "file": "mgl_render.cpp",
+      "line": 2403,
+      "domain": "core",
+      "tokens": [
+        "Checked",
+        "Product"
+      ]
+    },
+    {
+      "symbol": "mglRenderTESXFBVertexStride",
+      "file": "mgl_render.cpp",
+      "line": 2433,
+      "domain": "core",
+      "tokens": [
+        "T",
+        "E",
+        "S",
+        "X"
+      ]
+    },
+    {
+      "symbol": "mglRenderBuildLevelUploadOps",
+      "file": "mgl_render.cpp",
+      "line": 2471,
+      "domain": "core",
+      "tokens": [
+        "Build",
+        "Level",
+        "Upload",
+        "Ops"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveR8SwizzledComponent",
+      "file": "mgl_render.cpp",
+      "line": 2554,
+      "domain": "core",
+      "tokens": [
+        "Resolve",
+        "R8",
+        "Swizzled",
+        "Component"
+      ]
+    },
+    {
+      "symbol": "mglRenderStoredColorComponents",
+      "file": "mgl_render.cpp",
+      "line": 2585,
+      "domain": "core",
+      "tokens": [
+        "Stored",
+        "Color",
+        "Components"
+      ]
+    },
+    {
+      "symbol": "mglRenderDescribeDepthStencilDescriptor",
+      "file": "mgl_render.cpp",
+      "line": 2603,
+      "domain": "core",
+      "tokens": [
+        "Describe",
+        "Depth",
+        "Stencil",
+        "Descriptor"
+      ]
+    },
+    {
+      "symbol": "mglRenderPendingEventPrepare",
+      "file": "mgl_render.cpp",
+      "line": 2649,
+      "domain": "core",
+      "tokens": [
+        "Pending",
+        "Event",
+        "Prepare"
+      ]
+    },
+    {
+      "symbol": "mglRenderPendingEventDetach",
+      "file": "mgl_render.cpp",
+      "line": 2669,
+      "domain": "core",
+      "tokens": [
+        "Pending",
+        "Event",
+        "Detach"
+      ]
+    },
+    {
+      "symbol": "mglRenderSerializeBinaryArchive",
+      "file": "mgl_render.cpp",
+      "line": 2698,
+      "domain": "core",
+      "tokens": [
+        "Serialize",
+        "Binary",
+        "Archive"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetVisibilityResultMode",
+      "file": "mgl_render.cpp",
+      "line": 2715,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Visibility",
+        "Result",
+        "Mode"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetVisibilityResultModeForRenderEncoderOwner",
+      "file": "mgl_render.cpp",
+      "line": 2727,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Visibility",
+        "Result",
+        "Mode"
+      ]
+    },
+    {
+      "symbol": "mglRenderSampleTimestamps",
+      "file": "mgl_render.cpp",
+      "line": 2735,
+      "domain": "core",
+      "tokens": [
+        "Sample",
+        "Timestamps"
+      ]
+    },
+    {
+      "symbol": "mglRenderInvalidateProgramPipelines",
+      "file": "mgl_render.cpp",
+      "line": 2757,
+      "domain": "core",
+      "tokens": [
+        "Invalidate",
+        "Program",
+        "Pipelines"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetComputeBytes",
+      "file": "mgl_render.cpp",
+      "line": 3013,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Compute",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetComputeThreadgroupMemoryLength",
+      "file": "mgl_render.cpp",
+      "line": 3024,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Compute",
+        "Threadgroup",
+        "Memory"
+      ]
+    },
+    {
+      "symbol": "mglRenderFragmentNeedsPerSampleMSValues",
+      "file": "mgl_render.cpp",
+      "line": 3068,
+      "domain": "core",
+      "tokens": [
+        "Fragment",
+        "Needs",
+        "Per",
+        "Sample"
+      ]
+    },
+    {
+      "symbol": "mglRenderFillFragCoordSlot",
+      "file": "mgl_render.cpp",
+      "line": 3080,
+      "domain": "core",
+      "tokens": [
+        "Fill",
+        "Frag",
+        "Coord",
+        "Slot"
+      ]
+    },
+    {
+      "symbol": "mglRenderClampLodBiasArray",
+      "file": "mgl_render.cpp",
+      "line": 3109,
+      "domain": "core",
+      "tokens": [
+        "Clamp",
+        "Lod",
+        "Bias",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglXfbAdvanceWriteOffset",
+      "file": "mgl_render.cpp",
+      "line": 3128,
+      "domain": "core",
+      "tokens": [
+        "Xfb",
+        "Advance",
+        "Write",
+        "Offset"
+      ]
+    },
+    {
+      "symbol": "mglRenderAllocateMDIScratch",
+      "file": "mgl_render.cpp",
+      "line": 3180,
+      "domain": "core",
+      "tokens": [
+        "Allocate",
+        "M",
+        "D",
+        "I"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetFboMatchCache",
+      "file": "mgl_render.cpp",
+      "line": 3258,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Fbo",
+        "Match",
+        "Cache"
+      ]
+    },
+    {
+      "symbol": "mglRenderReplayBatchDraws",
+      "file": "mgl_render.cpp",
+      "line": 3589,
+      "domain": "core",
+      "tokens": [
+        "Replay",
+        "Batch",
+        "Draws"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderBytes",
+      "file": "mgl_render.cpp",
+      "line": 3663,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderDepthStencilState",
+      "file": "mgl_render.cpp",
+      "line": 3684,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Depth",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderViewport",
+      "file": "mgl_render.cpp",
+      "line": 3697,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Viewport"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderScissor",
+      "file": "mgl_render.cpp",
+      "line": 3712,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Scissor"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetDepthClipMode",
+      "file": "mgl_render.cpp",
+      "line": 3724,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Depth",
+        "Clip",
+        "Mode"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetStencilReferenceValues",
+      "file": "mgl_render.cpp",
+      "line": 3732,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Stencil",
+        "Reference",
+        "Values"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderBytesForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3756,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Bytes",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderDepthStencilStateForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3763,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Depth",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderViewportForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3771,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Viewport",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderScissorForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3777,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Render",
+        "Scissor",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetDepthClipModeForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3783,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Depth",
+        "Clip",
+        "Mode"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetStencilReferenceValuesForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3788,
+      "domain": "core",
+      "tokens": [
+        "Set",
+        "Stencil",
+        "Reference",
+        "Values"
+      ]
+    },
+    {
+      "symbol": "mglRenderUseRenderResource",
+      "file": "mgl_render.cpp",
+      "line": 3802,
+      "domain": "core",
+      "tokens": [
+        "Use",
+        "Render",
+        "Resource"
+      ]
+    },
+    {
+      "symbol": "mglRenderExecuteIndirectCommands",
+      "file": "mgl_render.cpp",
+      "line": 3815,
+      "domain": "core",
+      "tokens": [
+        "Execute",
+        "Indirect",
+        "Commands"
+      ]
+    },
+    {
+      "symbol": "mglRenderReplayBatchDrawsForRenderEncoderOwner",
+      "file": "mgl_render.cpp",
+      "line": 3828,
+      "domain": "core",
+      "tokens": [
+        "Replay",
+        "Batch",
+        "Draws",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderUseRenderResourceForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3834,
+      "domain": "core",
+      "tokens": [
+        "Use",
+        "Render",
+        "Resource",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderExecuteIndirectCommandsForOwner",
+      "file": "mgl_render.cpp",
+      "line": 3840,
+      "domain": "core",
+      "tokens": [
+        "Execute",
+        "Indirect",
+        "Commands",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderVertexFormatName",
+      "file": "mgl_render.cpp",
+      "line": 3846,
+      "domain": "core",
+      "tokens": [
+        "Vertex",
+        "Format",
+        "Name"
+      ]
+    },
+    {
+      "symbol": "mglRenderVertexDescriptorSignature",
+      "file": "mgl_render.cpp",
+      "line": 3882,
+      "domain": "core",
+      "tokens": [
+        "Vertex",
+        "Descriptor",
+        "Signature"
+      ]
+    },
+    {
+      "symbol": "mglRenderStoreActionName",
+      "file": "mgl_render.cpp",
+      "line": 3910,
+      "domain": "core",
+      "tokens": [
+        "Store",
+        "Action",
+        "Name"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 57,
+      "domain": "binding",
+      "tokens": [
+        "Bind",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderFillVertexConversionFromAttribKind",
+      "file": "mgl_render_binding.cpp",
+      "line": 68,
+      "domain": "binding",
+      "tokens": [
+        "Fill",
+        "Vertex",
+        "Conversion",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindProgram",
+      "file": "mgl_render_binding.cpp",
+      "line": 128,
+      "domain": "binding",
+      "tokens": [
+        "Bind",
+        "Program"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeStageBindingCopyBacks",
+      "file": "mgl_render_binding.cpp",
+      "line": 147,
+      "domain": "binding",
+      "tokens": [
+        "Encode",
+        "Stage",
+        "Binding",
+        "Copy"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttribFormatOrFallback",
+      "file": "mgl_render_binding.cpp",
+      "line": 178,
+      "domain": "binding",
+      "tokens": [
+        "Attrib",
+        "Format",
+        "Or",
+        "Fallback"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttribNeedsConversion",
+      "file": "mgl_render_binding.cpp",
+      "line": 185,
+      "domain": "binding",
+      "tokens": [
+        "Attrib",
+        "Needs",
+        "Conversion"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttribNeedsConvertedMetalStream",
+      "file": "mgl_render_binding.cpp",
+      "line": 195,
+      "domain": "binding",
+      "tokens": [
+        "Attrib",
+        "Needs",
+        "Converted",
+        "Metal"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttribColorUByteNeedsNormalize",
+      "file": "mgl_render_binding.cpp",
+      "line": 205,
+      "domain": "binding",
+      "tokens": [
+        "Attrib",
+        "Color",
+        "U",
+        "Byte"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttribEffectiveNormalized",
+      "file": "mgl_render_binding.cpp",
+      "line": 210,
+      "domain": "binding",
+      "tokens": [
+        "Attrib",
+        "Effective",
+        "Normalized"
+      ]
+    },
+    {
+      "symbol": "mglRenderDecodeVertexAttribComponent",
+      "file": "mgl_render_binding.cpp",
+      "line": 214,
+      "domain": "binding",
+      "tokens": [
+        "Decode",
+        "Vertex",
+        "Attrib",
+        "Component"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferMapIsBaseBinding",
+      "file": "mgl_render_binding.cpp",
+      "line": 272,
+      "domain": "binding",
+      "tokens": [
+        "Buffer",
+        "Map",
+        "Is",
+        "Base"
+      ]
+    },
+    {
+      "symbol": "mglRenderClientBindingInRange",
+      "file": "mgl_render_binding.cpp",
+      "line": 276,
+      "domain": "binding",
+      "tokens": [
+        "Client",
+        "Binding",
+        "In",
+        "Range"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferBindingEmpty",
+      "file": "mgl_render_binding.cpp",
+      "line": 280,
+      "domain": "binding",
+      "tokens": [
+        "Buffer",
+        "Binding",
+        "Empty"
+      ]
+    },
+    {
+      "symbol": "mglRenderBaseBindingTooSmall",
+      "file": "mgl_render_binding.cpp",
+      "line": 284,
+      "domain": "binding",
+      "tokens": [
+        "Base",
+        "Binding",
+        "Too",
+        "Small"
+      ]
+    },
+    {
+      "symbol": "mglRenderAttribOffsetsValid",
+      "file": "mgl_render_binding.cpp",
+      "line": 288,
+      "domain": "binding",
+      "tokens": [
+        "Attrib",
+        "Offsets",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderBuildCurrentVertexAttribBytes",
+      "file": "mgl_render_binding.cpp",
+      "line": 293,
+      "domain": "binding",
+      "tokens": [
+        "Build",
+        "Current",
+        "Vertex",
+        "Attrib"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanVertexAttribOffset",
+      "file": "mgl_render_binding.cpp",
+      "line": 374,
+      "domain": "binding",
+      "tokens": [
+        "Plan",
+        "Vertex",
+        "Attrib",
+        "Offset"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveVertexAttribBinding",
+      "file": "mgl_render_binding.cpp",
+      "line": 388,
+      "domain": "binding",
+      "tokens": [
+        "Resolve",
+        "Vertex",
+        "Attrib",
+        "Binding"
+      ]
+    },
+    {
+      "symbol": "mglRenderComputePipelineMaxTotalThreads",
+      "file": "mgl_render_binding.cpp",
+      "line": 410,
+      "domain": "binding",
+      "tokens": [
+        "Compute",
+        "Pipeline",
+        "Max",
+        "Total"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetComputePipelineState",
+      "file": "mgl_render_binding.cpp",
+      "line": 417,
+      "domain": "binding",
+      "tokens": [
+        "Set",
+        "Compute",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeComputeBindingSnapshot",
+      "file": "mgl_render_binding.cpp",
+      "line": 428,
+      "domain": "binding",
+      "tokens": [
+        "Encode",
+        "Compute",
+        "Binding",
+        "Snapshot"
+      ]
+    },
+    {
+      "symbol": "mglRenderAppendComputeBindingSnapshotToPlan",
+      "file": "mgl_render_binding.cpp",
+      "line": 478,
+      "domain": "binding",
+      "tokens": [
+        "Append",
+        "Compute",
+        "Binding",
+        "Snapshot"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsCullDistanceAttribName",
+      "file": "mgl_render_binding.cpp",
+      "line": 509,
+      "domain": "binding",
+      "tokens": [
+        "Is",
+        "Cull",
+        "Distance",
+        "Attrib"
+      ]
+    },
+    {
+      "symbol": "mglRenderVertexAttribName",
+      "file": "mgl_render_binding.cpp",
+      "line": 513,
+      "domain": "binding",
+      "tokens": [
+        "Vertex",
+        "Attrib",
+        "Name"
+      ]
+    },
+    {
+      "symbol": "mglRenderAccumulateCullDistanceAttrib",
+      "file": "mgl_render_binding.cpp",
+      "line": 539,
+      "domain": "binding",
+      "tokens": [
+        "Accumulate",
+        "Cull",
+        "Distance",
+        "Attrib"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindCullDistanceEmuSlots",
+      "file": "mgl_render_binding.cpp",
+      "line": 554,
+      "domain": "binding",
+      "tokens": [
+        "Bind",
+        "Cull",
+        "Distance",
+        "Emu"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeBindingSnapshot",
+      "file": "mgl_render_binding.cpp",
+      "line": 566,
+      "domain": "binding",
+      "tokens": [
+        "Encode",
+        "Binding",
+        "Snapshot"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeResourceBindingSnapshot",
+      "file": "mgl_render_binding.cpp",
+      "line": 632,
+      "domain": "binding",
+      "tokens": [
+        "Encode",
+        "Resource",
+        "Binding",
+        "Snapshot"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPipelineState",
+      "file": "mgl_render_binding.cpp",
+      "line": 687,
+      "domain": "binding",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindBufferStorage",
+      "file": "mgl_render_binding.cpp",
+      "line": 698,
+      "domain": "binding",
+      "tokens": [
+        "Bind",
+        "Buffer",
+        "Storage"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindAIRProgram",
+      "file": "mgl_render_binding.cpp",
+      "line": 791,
+      "domain": "binding",
+      "tokens": [
+        "Bind",
+        "A",
+        "I",
+        "R"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreatePipelineCacheOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 881,
+      "domain": "binding",
+      "tokens": [
+        "Create",
+        "Pipeline",
+        "Cache",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyPipelineCacheOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 897,
+      "domain": "binding",
+      "tokens": [
+        "Destroy",
+        "Pipeline",
+        "Cache",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetPipelineCacheOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 904,
+      "domain": "binding",
+      "tokens": [
+        "Reset",
+        "Pipeline",
+        "Cache",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetPipelineCacheFlags",
+      "file": "mgl_render_binding.cpp",
+      "line": 911,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Pipeline",
+        "Cache",
+        "Flags"
+      ]
+    },
+    {
+      "symbol": "mglRenderDisablePipelineBinaryArchive",
+      "file": "mgl_render_binding.cpp",
+      "line": 928,
+      "domain": "binding",
+      "tokens": [
+        "Disable",
+        "Pipeline",
+        "Binary",
+        "Archive"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetPipelineBinaryArchiveState",
+      "file": "mgl_render_binding.cpp",
+      "line": 936,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Pipeline",
+        "Binary",
+        "Archive"
+      ]
+    },
+    {
+      "symbol": "mglRenderLoadPipelineBinaryArchive",
+      "file": "mgl_render_binding.cpp",
+      "line": 947,
+      "domain": "binding",
+      "tokens": [
+        "Load",
+        "Pipeline",
+        "Binary",
+        "Archive"
+      ]
+    },
+    {
+      "symbol": "mglRenderSerializePipelineBinaryArchive",
+      "file": "mgl_render_binding.cpp",
+      "line": 991,
+      "domain": "binding",
+      "tokens": [
+        "Serialize",
+        "Pipeline",
+        "Binary",
+        "Archive"
+      ]
+    },
+    {
+      "symbol": "mglRenderDiscardPipelineBinaryArchive",
+      "file": "mgl_render_binding.cpp",
+      "line": 1014,
+      "domain": "binding",
+      "tokens": [
+        "Discard",
+        "Pipeline",
+        "Binary",
+        "Archive"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetPipelineActiveState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1029,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Pipeline",
+        "Active",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderInvalidatePipelineActiveState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1037,
+      "domain": "binding",
+      "tokens": [
+        "Invalidate",
+        "Pipeline",
+        "Active",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetPipelineActiveObject",
+      "file": "mgl_render_binding.cpp",
+      "line": 1054,
+      "domain": "binding",
+      "tokens": [
+        "Set",
+        "Pipeline",
+        "Active",
+        "Object"
+      ]
+    },
+    {
+      "symbol": "mglRenderActivatePipelineState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1064,
+      "domain": "binding",
+      "tokens": [
+        "Activate",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetPipelineBlendState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1078,
+      "domain": "binding",
+      "tokens": [
+        "Set",
+        "Pipeline",
+        "Blend",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetPipelineBlendState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1089,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Pipeline",
+        "Blend",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderLookupPipeline",
+      "file": "mgl_render_binding.cpp",
+      "line": 1100,
+      "domain": "binding",
+      "tokens": [
+        "Lookup",
+        "Pipeline"
+      ]
+    },
+    {
+      "symbol": "mglRenderStorePipeline",
+      "file": "mgl_render_binding.cpp",
+      "line": 1116,
+      "domain": "binding",
+      "tokens": [
+        "Store",
+        "Pipeline"
+      ]
+    },
+    {
+      "symbol": "mglRenderLookupPipelineDescriptorState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1157,
+      "domain": "binding",
+      "tokens": [
+        "Lookup",
+        "Pipeline",
+        "Descriptor",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderStorePipelineDescriptorState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1171,
+      "domain": "binding",
+      "tokens": [
+        "Store",
+        "Pipeline",
+        "Descriptor",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderPipelineFromState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1197,
+      "domain": "binding",
+      "tokens": [
+        "Create",
+        "Render",
+        "Pipeline",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderPipelineFromStateWithArchiveOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 1222,
+      "domain": "binding",
+      "tokens": [
+        "Create",
+        "Render",
+        "Pipeline",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderPipelineState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1238,
+      "domain": "binding",
+      "tokens": [
+        "Create",
+        "Render",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderPipelineStateWithArchive",
+      "file": "mgl_render_binding.cpp",
+      "line": 1265,
+      "domain": "binding",
+      "tokens": [
+        "Create",
+        "Render",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderPipelineStateWithArchiveOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 1323,
+      "domain": "binding",
+      "tokens": [
+        "Create",
+        "Render",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateComputePipelineState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1344,
+      "domain": "binding",
+      "tokens": [
+        "Create",
+        "Compute",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetOrCreateComputePipeline",
+      "file": "mgl_render_binding.cpp",
+      "line": 1369,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Or",
+        "Create",
+        "Compute"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingCreate",
+      "file": "mgl_render_binding.cpp",
+      "line": 1435,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Create"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingDestroy",
+      "file": "mgl_render_binding.cpp",
+      "line": 1446,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Destroy"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingInvalidate",
+      "file": "mgl_render_binding.cpp",
+      "line": 1487,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Invalidate"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetValid",
+      "file": "mgl_render_binding.cpp",
+      "line": 1492,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetValid",
+      "file": "mgl_render_binding.cpp",
+      "line": 1497,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingInvalidateVertexBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 1505,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Invalidate",
+        "Vertex",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingInvalidateFragmentBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 1515,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Invalidate",
+        "Fragment",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 1525,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingOrVertexBufferMask",
+      "file": "mgl_render_binding.cpp",
+      "line": 1545,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Or",
+        "Vertex",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingOrFragmentBufferMask",
+      "file": "mgl_render_binding.cpp",
+      "line": 1550,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Or",
+        "Fragment",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetPipelineState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1555,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetDepthStencilState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1564,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Depth",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetPipelineState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1573,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetDepthStencilState",
+      "file": "mgl_render_binding.cpp",
+      "line": 1581,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Depth",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetCullMode",
+      "file": "mgl_render_binding.cpp",
+      "line": 1589,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Cull",
+        "Mode"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetWinding",
+      "file": "mgl_render_binding.cpp",
+      "line": 1594,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Winding"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetDepthBias",
+      "file": "mgl_render_binding.cpp",
+      "line": 1599,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Depth",
+        "Bias"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetBlendColor",
+      "file": "mgl_render_binding.cpp",
+      "line": 1607,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Blend",
+        "Color"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetPipelineIfNeeded",
+      "file": "mgl_render_binding.cpp",
+      "line": 1616,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Pipeline",
+        "If"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetDepthStencilIfNeeded",
+      "file": "mgl_render_binding.cpp",
+      "line": 1631,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Depth",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetCullIfNeeded",
+      "file": "mgl_render_binding.cpp",
+      "line": 1647,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Cull",
+        "If"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetWindingIfNeeded",
+      "file": "mgl_render_binding.cpp",
+      "line": 1661,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Winding",
+        "If"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetDepthBiasIfNeeded",
+      "file": "mgl_render_binding.cpp",
+      "line": 1675,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Depth",
+        "Bias"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetBlendColorIfNeeded",
+      "file": "mgl_render_binding.cpp",
+      "line": 1692,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Blend",
+        "Color"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetViewport",
+      "file": "mgl_render_binding.cpp",
+      "line": 1711,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Viewport"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetViewports",
+      "file": "mgl_render_binding.cpp",
+      "line": 1729,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Viewports"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetScissor",
+      "file": "mgl_render_binding.cpp",
+      "line": 1759,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Scissor"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetTriangleFill",
+      "file": "mgl_render_binding.cpp",
+      "line": 1777,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Triangle",
+        "Fill"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetStats",
+      "file": "mgl_render_binding.cpp",
+      "line": 1793,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Stats"
+      ]
+    },
+    {
+      "symbol": "mglRenderVertexAttribComponentSize",
+      "file": "mgl_render_binding.cpp",
+      "line": 1801,
+      "domain": "binding",
+      "tokens": [
+        "Vertex",
+        "Attrib",
+        "Component",
+        "Size"
+      ]
+    },
+    {
+      "symbol": "mglRenderVertexAttribElementBytes",
+      "file": "mgl_render_binding.cpp",
+      "line": 1825,
+      "domain": "binding",
+      "tokens": [
+        "Vertex",
+        "Attrib",
+        "Element",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglGetOrCreateProgramComputePipeline",
+      "file": "mgl_render_binding.cpp",
+      "line": 1841,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Or",
+        "Create",
+        "Program"
+      ]
+    },
+    {
+      "symbol": "mglRenderPipelineDescriptorSignature",
+      "file": "mgl_render_binding.cpp",
+      "line": 1895,
+      "domain": "binding",
+      "tokens": [
+        "Pipeline",
+        "Descriptor",
+        "Signature"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanVertexAttribSpan",
+      "file": "mgl_render_binding.cpp",
+      "line": 1931,
+      "domain": "binding",
+      "tokens": [
+        "Plan",
+        "Vertex",
+        "Attrib",
+        "Span"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanAttribFetch",
+      "file": "mgl_render_binding.cpp",
+      "line": 1960,
+      "domain": "binding",
+      "tokens": [
+        "Plan",
+        "Attrib",
+        "Fetch"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanVertexAttribFormat",
+      "file": "mgl_render_binding.cpp",
+      "line": 2015,
+      "domain": "binding",
+      "tokens": [
+        "Plan",
+        "Vertex",
+        "Attrib",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanVertexAttribStride",
+      "file": "mgl_render_binding.cpp",
+      "line": 2074,
+      "domain": "binding",
+      "tokens": [
+        "Plan",
+        "Vertex",
+        "Attrib",
+        "Stride"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetOrCreateAuxComputePipeline",
+      "file": "mgl_render_binding.cpp",
+      "line": 2242,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Or",
+        "Create",
+        "Aux"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetOrCreateAuxComputePipelineFromMetallib",
+      "file": "mgl_render_binding.cpp",
+      "line": 2265,
+      "domain": "binding",
+      "tokens": [
+        "Get",
+        "Or",
+        "Create",
+        "Aux"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingRecordVertexBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 2313,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Record",
+        "Vertex",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingRecordFragmentBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 2321,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Record",
+        "Fragment",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingUpdateVertexBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 2329,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Update",
+        "Vertex",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingUpdateFragmentBuffer",
+      "file": "mgl_render_binding.cpp",
+      "line": 2337,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Update",
+        "Fragment",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeBindingSnapshotForRenderEncoderOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2345,
+      "domain": "binding",
+      "tokens": [
+        "Encode",
+        "Binding",
+        "Snapshot",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2351,
+      "domain": "binding",
+      "tokens": [
+        "Encode",
+        "Resource",
+        "Binding",
+        "Snapshot"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetPipelineIfNeededForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2358,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Pipeline",
+        "If"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetDepthStencilIfNeededForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2364,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Depth",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetCullIfNeededForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2370,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Cull",
+        "If"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetWindingIfNeededForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2376,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Winding",
+        "If"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetBlendColorIfNeededForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2382,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Blend",
+        "Color"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetDepthBiasIfNeededForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2388,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Depth",
+        "Bias"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetViewportForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2394,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Viewport",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetViewportsForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2400,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Viewports",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetScissorForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2406,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Scissor",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetTriangleFillForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2412,
+      "domain": "binding",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Triangle",
+        "Fill"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPipelineStateForOwner",
+      "file": "mgl_render_binding.cpp",
+      "line": 2418,
+      "domain": "binding",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pipeline",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferSubDataStorage",
+      "file": "mgl_render_buffer.cpp",
+      "line": 55,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Sub",
+        "Data",
+        "Storage"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferSubData",
+      "file": "mgl_render_buffer.cpp",
+      "line": 130,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Sub",
+        "Data"
+      ]
+    },
+    {
+      "symbol": "mglRenderMapBufferStorage",
+      "file": "mgl_render_buffer.cpp",
+      "line": 145,
+      "domain": "buffer",
+      "tokens": [
+        "Map",
+        "Buffer",
+        "Storage"
+      ]
+    },
+    {
+      "symbol": "mglRenderMapUnmapBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 211,
+      "domain": "buffer",
+      "tokens": [
+        "Map",
+        "Unmap",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadBackBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 229,
+      "domain": "buffer",
+      "tokens": [
+        "Read",
+        "Back",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderFlushBufferRangeStorage",
+      "file": "mgl_render_buffer.cpp",
+      "line": 260,
+      "domain": "buffer",
+      "tokens": [
+        "Flush",
+        "Buffer",
+        "Range",
+        "Storage"
+      ]
+    },
+    {
+      "symbol": "mglRenderFlushBufferRange",
+      "file": "mgl_render_buffer.cpp",
+      "line": 315,
+      "domain": "buffer",
+      "tokens": [
+        "Flush",
+        "Buffer",
+        "Range"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetBufferContents",
+      "file": "mgl_render_buffer.cpp",
+      "line": 329,
+      "domain": "buffer",
+      "tokens": [
+        "Get",
+        "Buffer",
+        "Contents"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetBufferInfo",
+      "file": "mgl_render_buffer.cpp",
+      "line": 341,
+      "domain": "buffer",
+      "tokens": [
+        "Get",
+        "Buffer",
+        "Info"
+      ]
+    },
+    {
+      "symbol": "mglRenderAddBufferDebugMarker",
+      "file": "mgl_render_buffer.cpp",
+      "line": 350,
+      "domain": "buffer",
+      "tokens": [
+        "Add",
+        "Buffer",
+        "Debug",
+        "Marker"
+      ]
+    },
+    {
+      "symbol": "mglRenderFillDefaultTessFactorBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 366,
+      "domain": "buffer",
+      "tokens": [
+        "Fill",
+        "Default",
+        "Tess",
+        "Factor"
+      ]
+    },
+    {
+      "symbol": "mglRenderHasDirtyBufferBit",
+      "file": "mgl_render_buffer.cpp",
+      "line": 392,
+      "domain": "buffer",
+      "tokens": [
+        "Has",
+        "Dirty",
+        "Buffer",
+        "Bit"
+      ]
+    },
+    {
+      "symbol": "mglRenderDefaultReadBufferIndex",
+      "file": "mgl_render_buffer.cpp",
+      "line": 396,
+      "domain": "buffer",
+      "tokens": [
+        "Default",
+        "Read",
+        "Buffer",
+        "Index"
+      ]
+    },
+    {
+      "symbol": "mglRenderFBOReadBufferValid",
+      "file": "mgl_render_buffer.cpp",
+      "line": 425,
+      "domain": "buffer",
+      "tokens": [
+        "FBO",
+        "Read",
+        "Buffer",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderDefaultDrawBufferIndex",
+      "file": "mgl_render_buffer.cpp",
+      "line": 442,
+      "domain": "buffer",
+      "tokens": [
+        "Default",
+        "Draw",
+        "Buffer",
+        "Index"
+      ]
+    },
+    {
+      "symbol": "mglRenderEmptyDrawBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 468,
+      "domain": "buffer",
+      "tokens": [
+        "Empty",
+        "Draw",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderDefaultFrontBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 472,
+      "domain": "buffer",
+      "tokens": [
+        "Default",
+        "Front",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderShouldPresentDrawBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 476,
+      "domain": "buffer",
+      "tokens": [
+        "Should",
+        "Present",
+        "Draw",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawBufferIsColorAttachment",
+      "file": "mgl_render_buffer.cpp",
+      "line": 480,
+      "domain": "buffer",
+      "tokens": [
+        "Draw",
+        "Buffer",
+        "Is",
+        "Color"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawBufferIsDefaultFBOCompat",
+      "file": "mgl_render_buffer.cpp",
+      "line": 493,
+      "domain": "buffer",
+      "tokens": [
+        "Draw",
+        "Buffer",
+        "Is",
+        "Default"
+      ]
+    },
+    {
+      "symbol": "mglRenderDefaultDrawBufferIsFront",
+      "file": "mgl_render_buffer.cpp",
+      "line": 501,
+      "domain": "buffer",
+      "tokens": [
+        "Default",
+        "Draw",
+        "Buffer",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderDefaultDrawBufferIsOffscreen",
+      "file": "mgl_render_buffer.cpp",
+      "line": 505,
+      "domain": "buffer",
+      "tokens": [
+        "Default",
+        "Draw",
+        "Buffer",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferHasMapWriteBit",
+      "file": "mgl_render_buffer.cpp",
+      "line": 513,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Has",
+        "Map",
+        "Write"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferHasCPUDirty",
+      "file": "mgl_render_buffer.cpp",
+      "line": 517,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Has",
+        "CPU",
+        "Dirty"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferNeedsCPUUpload",
+      "file": "mgl_render_buffer.cpp",
+      "line": 521,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Needs",
+        "CPU",
+        "Upload"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferSlotInRange",
+      "file": "mgl_render_buffer.cpp",
+      "line": 525,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Slot",
+        "In",
+        "Range"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveMappedBufferSlot",
+      "file": "mgl_render_buffer.cpp",
+      "line": 529,
+      "domain": "buffer",
+      "tokens": [
+        "Resolve",
+        "Mapped",
+        "Buffer",
+        "Slot"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferMapOffsetValid",
+      "file": "mgl_render_buffer.cpp",
+      "line": 544,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Map",
+        "Offset",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferSizeValid",
+      "file": "mgl_render_buffer.cpp",
+      "line": 548,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Size",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferSizeOrZero",
+      "file": "mgl_render_buffer.cpp",
+      "line": 552,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Size",
+        "Or",
+        "Zero"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferPlanIsStructPacked",
+      "file": "mgl_render_buffer.cpp",
+      "line": 556,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Plan",
+        "Is",
+        "Struct"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferPlanAllowFallback",
+      "file": "mgl_render_buffer.cpp",
+      "line": 560,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Plan",
+        "Allow",
+        "Fallback"
+      ]
+    },
+    {
+      "symbol": "mglRenderAllowGlobalBufferFallback",
+      "file": "mgl_render_buffer.cpp",
+      "line": 564,
+      "domain": "buffer",
+      "tokens": [
+        "Allow",
+        "Global",
+        "Buffer",
+        "Fallback"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsUniformBufferResource",
+      "file": "mgl_render_buffer.cpp",
+      "line": 575,
+      "domain": "buffer",
+      "tokens": [
+        "Is",
+        "Uniform",
+        "Buffer",
+        "Resource"
+      ]
+    },
+    {
+      "symbol": "mglRenderBufferShadowUploadRange",
+      "file": "mgl_render_buffer.cpp",
+      "line": 580,
+      "domain": "buffer",
+      "tokens": [
+        "Buffer",
+        "Shadow",
+        "Upload",
+        "Range"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetComputeBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 604,
+      "domain": "buffer",
+      "tokens": [
+        "Set",
+        "Compute",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderMarkBufferCPUWrite",
+      "file": "mgl_render_buffer.cpp",
+      "line": 616,
+      "domain": "buffer",
+      "tokens": [
+        "Mark",
+        "Buffer",
+        "CPU",
+        "Write"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 639,
+      "domain": "buffer",
+      "tokens": [
+        "Set",
+        "Render",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetTessellationFactorBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 658,
+      "domain": "buffer",
+      "tokens": [
+        "Set",
+        "Tessellation",
+        "Factor",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderReleaseBufferMetalData",
+      "file": "mgl_render_buffer.cpp",
+      "line": 672,
+      "domain": "buffer",
+      "tokens": [
+        "Release",
+        "Buffer",
+        "Metal",
+        "Data"
+      ]
+    },
+    {
+      "symbol": "mglRenderReleaseBufferCowPool",
+      "file": "mgl_render_buffer.cpp",
+      "line": 678,
+      "domain": "buffer",
+      "tokens": [
+        "Release",
+        "Buffer",
+        "Cow",
+        "Pool"
+      ]
+    },
+    {
+      "symbol": "mglRenderAcquirePackedStructBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 686,
+      "domain": "buffer",
+      "tokens": [
+        "Acquire",
+        "Packed",
+        "Struct",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderAdvanceBufferGeneration",
+      "file": "mgl_render_buffer.cpp",
+      "line": 759,
+      "domain": "buffer",
+      "tokens": [
+        "Advance",
+        "Buffer",
+        "Generation"
+      ]
+    },
+    {
+      "symbol": "mglRenderRecordBufferGenerationCompleted",
+      "file": "mgl_render_buffer.cpp",
+      "line": 764,
+      "domain": "buffer",
+      "tokens": [
+        "Record",
+        "Buffer",
+        "Generation",
+        "Completed"
+      ]
+    },
+    {
+      "symbol": "mglRenderCompletedBufferGeneration",
+      "file": "mgl_render_buffer.cpp",
+      "line": 774,
+      "domain": "buffer",
+      "tokens": [
+        "Completed",
+        "Buffer",
+        "Generation"
+      ]
+    },
+    {
+      "symbol": "mglRenderNoteBufferEncoded",
+      "file": "mgl_render_buffer.cpp",
+      "line": 778,
+      "domain": "buffer",
+      "tokens": [
+        "Note",
+        "Buffer",
+        "Encoded"
+      ]
+    },
+    {
+      "symbol": "mglRenderSnapshotSharedDirtyBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 794,
+      "domain": "buffer",
+      "tokens": [
+        "Snapshot",
+        "Shared",
+        "Dirty",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderSnapshotSharedBufferRange",
+      "file": "mgl_render_buffer.cpp",
+      "line": 869,
+      "domain": "buffer",
+      "tokens": [
+        "Snapshot",
+        "Shared",
+        "Buffer",
+        "Range"
+      ]
+    },
+    {
+      "symbol": "mglRenderUpdateDirtyBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 933,
+      "domain": "buffer",
+      "tokens": [
+        "Update",
+        "Dirty",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderConvertVertexBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 1131,
+      "domain": "buffer",
+      "tokens": [
+        "Convert",
+        "Vertex",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 1525,
+      "domain": "buffer",
+      "tokens": [
+        "Create",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBufferWithBytes",
+      "file": "mgl_render_buffer.cpp",
+      "line": 1546,
+      "domain": "buffer",
+      "tokens": [
+        "Create",
+        "Buffer",
+        "With",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBufferWithBytesNoCopy",
+      "file": "mgl_render_buffer.cpp",
+      "line": 1568,
+      "domain": "buffer",
+      "tokens": [
+        "Create",
+        "Buffer",
+        "With",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetQueryVisibilityBuffer",
+      "file": "mgl_render_buffer.cpp",
+      "line": 1611,
+      "domain": "buffer",
+      "tokens": [
+        "Get",
+        "Query",
+        "Visibility",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderBufferForOwner",
+      "file": "mgl_render_buffer.cpp",
+      "line": 1622,
+      "domain": "buffer",
+      "tokens": [
+        "Set",
+        "Render",
+        "Buffer",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetTessellationFactorBufferForOwner",
+      "file": "mgl_render_buffer.cpp",
+      "line": 1628,
+      "domain": "buffer",
+      "tokens": [
+        "Set",
+        "Tessellation",
+        "Factor",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderDepthBlitStencilFormat",
+      "file": "mgl_render_command.cpp",
+      "line": 56,
+      "domain": "command",
+      "tokens": [
+        "Depth",
+        "Blit",
+        "Stencil",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderFBOBlitAttachmentKnown",
+      "file": "mgl_render_command.cpp",
+      "line": 62,
+      "domain": "command",
+      "tokens": [
+        "FBO",
+        "Blit",
+        "Attachment",
+        "Known"
+      ]
+    },
+    {
+      "symbol": "mglRenderFBOBlitAttachmentOrColor0",
+      "file": "mgl_render_command.cpp",
+      "line": 73,
+      "domain": "command",
+      "tokens": [
+        "FBO",
+        "Blit",
+        "Attachment",
+        "Or"
+      ]
+    },
+    {
+      "symbol": "mglRenderBlitIsRGBA8BGRA8Pair",
+      "file": "mgl_render_command.cpp",
+      "line": 80,
+      "domain": "command",
+      "tokens": [
+        "Blit",
+        "Is",
+        "R",
+        "G"
+      ]
+    },
+    {
+      "symbol": "mglRenderScaledBlitUVs",
+      "file": "mgl_render_command.cpp",
+      "line": 89,
+      "domain": "command",
+      "tokens": [
+        "Scaled",
+        "Blit",
+        "U",
+        "Vs"
+      ]
+    },
+    {
+      "symbol": "mglRenderBlitScissorRect",
+      "file": "mgl_render_command.cpp",
+      "line": 120,
+      "domain": "command",
+      "tokens": [
+        "Blit",
+        "Scissor",
+        "Rect"
+      ]
+    },
+    {
+      "symbol": "mglRenderBlitFramebufferPlan",
+      "file": "mgl_render_command.cpp",
+      "line": 143,
+      "domain": "command",
+      "tokens": [
+        "Blit",
+        "Framebuffer",
+        "Plan"
+      ]
+    },
+    {
+      "symbol": "mglRenderDispatchCompute",
+      "file": "mgl_render_command.cpp",
+      "line": 192,
+      "domain": "command",
+      "tokens": [
+        "Dispatch",
+        "Compute"
+      ]
+    },
+    {
+      "symbol": "mglRenderDispatchComputeIndirect",
+      "file": "mgl_render_command.cpp",
+      "line": 211,
+      "domain": "command",
+      "tokens": [
+        "Dispatch",
+        "Compute",
+        "Indirect"
+      ]
+    },
+    {
+      "symbol": "mglRenderDispatchComputePlan",
+      "file": "mgl_render_command.cpp",
+      "line": 231,
+      "domain": "command",
+      "tokens": [
+        "Dispatch",
+        "Compute",
+        "Plan"
+      ]
+    },
+    {
+      "symbol": "mglRenderAppendComputeDispatchToPlan",
+      "file": "mgl_render_command.cpp",
+      "line": 271,
+      "domain": "command",
+      "tokens": [
+        "Append",
+        "Compute",
+        "Dispatch",
+        "To"
+      ]
+    },
+    {
+      "symbol": "mglRenderDispatchComputeThreads",
+      "file": "mgl_render_command.cpp",
+      "line": 306,
+      "domain": "command",
+      "tokens": [
+        "Dispatch",
+        "Compute",
+        "Threads"
+      ]
+    },
+    {
+      "symbol": "mglRenderBeginComputeDispatch",
+      "file": "mgl_render_command.cpp",
+      "line": 325,
+      "domain": "command",
+      "tokens": [
+        "Begin",
+        "Compute",
+        "Dispatch"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndComputeDispatch",
+      "file": "mgl_render_command.cpp",
+      "line": 381,
+      "domain": "command",
+      "tokens": [
+        "End",
+        "Compute",
+        "Dispatch"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateComputeEncoder",
+      "file": "mgl_render_command.cpp",
+      "line": 402,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Compute",
+        "Encoder"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndComputeEncoder",
+      "file": "mgl_render_command.cpp",
+      "line": 414,
+      "domain": "command",
+      "tokens": [
+        "End",
+        "Compute",
+        "Encoder"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateCommandBuffer",
+      "file": "mgl_render_command.cpp",
+      "line": 422,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Command",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferErrorDescription",
+      "file": "mgl_render_command.cpp",
+      "line": 434,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Error",
+        "Description"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferStatus",
+      "file": "mgl_render_command.cpp",
+      "line": 440,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Status"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetCommandBufferLabel",
+      "file": "mgl_render_command.cpp",
+      "line": 446,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Command",
+        "Buffer",
+        "Label"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetCommandBufferLabel",
+      "file": "mgl_render_command.cpp",
+      "line": 460,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Command",
+        "Buffer",
+        "Label"
+      ]
+    },
+    {
+      "symbol": "mglRenderClassifyCommandBufferCommit",
+      "file": "mgl_render_command.cpp",
+      "line": 468,
+      "domain": "command",
+      "tokens": [
+        "Classify",
+        "Command",
+        "Buffer",
+        "Commit"
+      ]
+    },
+    {
+      "symbol": "mglRenderClassifyCommandBufferCompletion",
+      "file": "mgl_render_command.cpp",
+      "line": 488,
+      "domain": "command",
+      "tokens": [
+        "Classify",
+        "Command",
+        "Buffer",
+        "Completion"
+      ]
+    },
+    {
+      "symbol": "mglRenderProcessCommandBufferCompletion",
+      "file": "mgl_render_command.cpp",
+      "line": 503,
+      "domain": "command",
+      "tokens": [
+        "Process",
+        "Command",
+        "Buffer",
+        "Completion"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommitCommandBuffer",
+      "file": "mgl_render_command.cpp",
+      "line": 541,
+      "domain": "command",
+      "tokens": [
+        "Commit",
+        "Command",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderWaitCommandBuffer",
+      "file": "mgl_render_command.cpp",
+      "line": 549,
+      "domain": "command",
+      "tokens": [
+        "Wait",
+        "Command",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerHasState",
+      "file": "mgl_render_command.cpp",
+      "line": 554,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Has"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderEncoderBorrowed",
+      "file": "mgl_render_command.cpp",
+      "line": 562,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Encoder",
+        "Borrowed"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBlitEncoderBorrowed",
+      "file": "mgl_render_command.cpp",
+      "line": 569,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Blit",
+        "Encoder",
+        "Borrowed"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateComputeEncoderBorrowed",
+      "file": "mgl_render_command.cpp",
+      "line": 576,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Compute",
+        "Encoder",
+        "Borrowed"
+      ]
+    },
+    {
+      "symbol": "mglRenderPassLoadActionForTrace",
+      "file": "mgl_render_command.cpp",
+      "line": 583,
+      "domain": "command",
+      "tokens": [
+        "Pass",
+        "Load",
+        "Action",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderPassStoreActionForTrace",
+      "file": "mgl_render_command.cpp",
+      "line": 593,
+      "domain": "command",
+      "tokens": [
+        "Pass",
+        "Store",
+        "Action",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndRenderEncoder",
+      "file": "mgl_render_command.cpp",
+      "line": 603,
+      "domain": "command",
+      "tokens": [
+        "End",
+        "Render",
+        "Encoder"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBlitEncoder",
+      "file": "mgl_render_command.cpp",
+      "line": 611,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Blit",
+        "Encoder"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndBlitEncoder",
+      "file": "mgl_render_command.cpp",
+      "line": 623,
+      "domain": "command",
+      "tokens": [
+        "End",
+        "Blit",
+        "Encoder"
+      ]
+    },
+    {
+      "symbol": "mglRenderBlitCopyBuffer",
+      "file": "mgl_render_command.cpp",
+      "line": 631,
+      "domain": "command",
+      "tokens": [
+        "Blit",
+        "Copy",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBlitGenerateMipmaps",
+      "file": "mgl_render_command.cpp",
+      "line": 650,
+      "domain": "command",
+      "tokens": [
+        "Blit",
+        "Generate",
+        "Mipmaps"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeDraw",
+      "file": "mgl_render_command.cpp",
+      "line": 660,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Draw"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetIndirectCommandBuffer",
+      "file": "mgl_render_command.cpp",
+      "line": 713,
+      "domain": "command",
+      "tokens": [
+        "Reset",
+        "Indirect",
+        "Command",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetIndirectRenderCommand",
+      "file": "mgl_render_command.cpp",
+      "line": 723,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Indirect",
+        "Render",
+        "Command"
+      ]
+    },
+    {
+      "symbol": "mglRenderPassAttachmentMatchesSubresource",
+      "file": "mgl_render_command.cpp",
+      "line": 737,
+      "domain": "command",
+      "tokens": [
+        "Pass",
+        "Attachment",
+        "Matches",
+        "Subresource"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferStatusName",
+      "file": "mgl_render_command.cpp",
+      "line": 748,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Status",
+        "Name"
+      ]
+    },
+    {
+      "symbol": "mglRenderInitDefaultRenderPassState",
+      "file": "mgl_render_command.cpp",
+      "line": 760,
+      "domain": "command",
+      "tokens": [
+        "Init",
+        "Default",
+        "Render",
+        "Pass"
+      ]
+    },
+    {
+      "symbol": "mglRenderBeginComputeDispatchForCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 766,
+      "domain": "command",
+      "tokens": [
+        "Begin",
+        "Compute",
+        "Dispatch",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetCommandBufferState",
+      "file": "mgl_render_command.cpp",
+      "line": 778,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Command",
+        "Buffer",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateCommandRecoveryOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 786,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Command",
+        "Recovery",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyCommandRecoveryOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 796,
+      "domain": "command",
+      "tokens": [
+        "Destroy",
+        "Command",
+        "Recovery",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandRecoveryRecordError",
+      "file": "mgl_render_command.cpp",
+      "line": 804,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Recovery",
+        "Record",
+        "Error"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandRecoveryRecordSuccess",
+      "file": "mgl_render_command.cpp",
+      "line": 817,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Recovery",
+        "Record",
+        "Success"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandRecoveryShouldSkip",
+      "file": "mgl_render_command.cpp",
+      "line": 839,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Recovery",
+        "Should",
+        "Skip"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandRecoveryTakeResetRequest",
+      "file": "mgl_render_command.cpp",
+      "line": 861,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Recovery",
+        "Take",
+        "Reset"
+      ]
+    },
+    {
+      "symbol": "mglRenderAddCommandBufferCompletion",
+      "file": "mgl_render_command.cpp",
+      "line": 871,
+      "domain": "command",
+      "tokens": [
+        "Add",
+        "Command",
+        "Buffer",
+        "Completion"
+      ]
+    },
+    {
+      "symbol": "mglRenderAddCommandBufferOwnerCompletion",
+      "file": "mgl_render_command.cpp",
+      "line": 922,
+      "domain": "command",
+      "tokens": [
+        "Add",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 930,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 953,
+      "domain": "command",
+      "tokens": [
+        "Reset",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateCommandBufferOwnerAdopt",
+      "file": "mgl_render_command.cpp",
+      "line": 977,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerGetCurrent",
+      "file": "mgl_render_command.cpp",
+      "line": 992,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Get"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerHasCurrent",
+      "file": "mgl_render_command.cpp",
+      "line": 998,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Has"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerCreateNext",
+      "file": "mgl_render_command.cpp",
+      "line": 1004,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Create"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetCommandBufferOwnerState",
+      "file": "mgl_render_command.cpp",
+      "line": 1034,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerHasLastSubmitted",
+      "file": "mgl_render_command.cpp",
+      "line": 1042,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Has"
+      ]
+    },
+    {
+      "symbol": "mglRenderWaitCommandBufferState",
+      "file": "mgl_render_command.cpp",
+      "line": 1048,
+      "domain": "command",
+      "tokens": [
+        "Wait",
+        "Command",
+        "Buffer",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderWaitCommandBufferOwnerLastSubmitted",
+      "file": "mgl_render_command.cpp",
+      "line": 1076,
+      "domain": "command",
+      "tokens": [
+        "Wait",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderPresentDrawableForCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1086,
+      "domain": "command",
+      "tokens": [
+        "Present",
+        "Drawable",
+        "For",
+        "Command"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeWaitForEventForCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1106,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Wait",
+        "For",
+        "Event"
+      ]
+    },
+    {
+      "symbol": "mglRenderDiscardCommandBufferOwnerCurrent",
+      "file": "mgl_render_command.cpp",
+      "line": 1121,
+      "domain": "command",
+      "tokens": [
+        "Discard",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderTakeCommandBufferSubmission",
+      "file": "mgl_render_command.cpp",
+      "line": 1131,
+      "domain": "command",
+      "tokens": [
+        "Take",
+        "Command",
+        "Buffer",
+        "Submission"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommitCommandBufferSubmission",
+      "file": "mgl_render_command.cpp",
+      "line": 1151,
+      "domain": "command",
+      "tokens": [
+        "Commit",
+        "Command",
+        "Buffer",
+        "Submission"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferSubmissionMatchesBuffer",
+      "file": "mgl_render_command.cpp",
+      "line": 1162,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Submission",
+        "Matches"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyCommandBufferSubmission",
+      "file": "mgl_render_command.cpp",
+      "line": 1173,
+      "domain": "command",
+      "tokens": [
+        "Destroy",
+        "Command",
+        "Buffer",
+        "Submission"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerAppendSync",
+      "file": "mgl_render_command.cpp",
+      "line": 1181,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Append"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerBeginCommit",
+      "file": "mgl_render_command.cpp",
+      "line": 1204,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Begin"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerEndCommit",
+      "file": "mgl_render_command.cpp",
+      "line": 1213,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "End"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerConsumeTransactionCurrent",
+      "file": "mgl_render_command.cpp",
+      "line": 1221,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Consume"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1239,
+      "domain": "command",
+      "tokens": [
+        "Destroy",
+        "Command",
+        "Buffer",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateCommandQueueOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1247,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Command",
+        "Queue",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetCommandQueueOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1270,
+      "domain": "command",
+      "tokens": [
+        "Reset",
+        "Command",
+        "Queue",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyCommandQueueOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1288,
+      "domain": "command",
+      "tokens": [
+        "Destroy",
+        "Command",
+        "Queue",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderEncoderFromState",
+      "file": "mgl_render_command.cpp",
+      "line": 1296,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Encoder",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeMultisampleResolve",
+      "file": "mgl_render_command.cpp",
+      "line": 1315,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Multisample",
+        "Resolve"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeMultisampleResolveForCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1366,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Multisample",
+        "Resolve",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderEncoderOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1376,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetRenderEncoderOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1390,
+      "domain": "command",
+      "tokens": [
+        "Reset",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndRenderEncoderOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1403,
+      "domain": "command",
+      "tokens": [
+        "End",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncoderOwnerHasCurrent",
+      "file": "mgl_render_command.cpp",
+      "line": 1417,
+      "domain": "command",
+      "tokens": [
+        "Encoder",
+        "Owner",
+        "Has",
+        "Current"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderEncoderOwnerLabel",
+      "file": "mgl_render_command.cpp",
+      "line": 1423,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyRenderEncoderOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1432,
+      "domain": "command",
+      "tokens": [
+        "Destroy",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderPassIdentityOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1440,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Pass",
+        "Identity"
+      ]
+    },
+    {
+      "symbol": "mglRenderUpdateRenderPassIdentity",
+      "file": "mgl_render_command.cpp",
+      "line": 1450,
+      "domain": "command",
+      "tokens": [
+        "Update",
+        "Render",
+        "Pass",
+        "Identity"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetRenderPassIdentity",
+      "file": "mgl_render_command.cpp",
+      "line": 1463,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Render",
+        "Pass",
+        "Identity"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyRenderPassIdentityOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1471,
+      "domain": "command",
+      "tokens": [
+        "Destroy",
+        "Render",
+        "Pass",
+        "Identity"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderPassStateOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1479,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateDefaultRenderPassStateOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1494,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Default",
+        "Render",
+        "Pass"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateAttachment",
+      "file": "mgl_render_command.cpp",
+      "line": 1499,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateAttachmentActions",
+      "file": "mgl_render_command.cpp",
+      "line": 1529,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateColorClear",
+      "file": "mgl_render_command.cpp",
+      "line": 1556,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateDepthClear",
+      "file": "mgl_render_command.cpp",
+      "line": 1570,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateStencilClear",
+      "file": "mgl_render_command.cpp",
+      "line": 1578,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateVisibility",
+      "file": "mgl_render_command.cpp",
+      "line": 1586,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateDimensions",
+      "file": "mgl_render_command.cpp",
+      "line": 1597,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetRenderPassStateOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1606,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetRenderPassAttachmentStateOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1614,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Render",
+        "Pass",
+        "Attachment"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderEncoderFromStateOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1638,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Encoder",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderEncoderFromCommandBufferOwnerState",
+      "file": "mgl_render_command.cpp",
+      "line": 1649,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Encoder",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyRenderPassStateOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1658,
+      "domain": "command",
+      "tokens": [
+        "Destroy",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBlitEncoderFromCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1666,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Blit",
+        "Encoder",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeBufferCopiesForCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1675,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Buffer",
+        "Copies",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateComputeEncoderFromCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1710,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Compute",
+        "Encoder",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateIndirectCommandBuffer",
+      "file": "mgl_render_command.cpp",
+      "line": 1719,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Indirect",
+        "Command",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderInvalidateRenderPass",
+      "file": "mgl_render_command.cpp",
+      "line": 1755,
+      "domain": "command",
+      "tokens": [
+        "Invalidate",
+        "Render",
+        "Pass"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeComputeDispatchOnEncoder",
+      "file": "mgl_render_command.cpp",
+      "line": 1766,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Compute",
+        "Dispatch",
+        "On"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeComputeExecutionPlanForCommandBufferOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 1804,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Compute",
+        "Execution",
+        "Plan"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommitCommandBufferTransaction",
+      "file": "mgl_render_command.cpp",
+      "line": 2171,
+      "domain": "command",
+      "tokens": [
+        "Commit",
+        "Command",
+        "Buffer",
+        "Transaction"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandRecoveryRecordTransactionFailure",
+      "file": "mgl_render_command.cpp",
+      "line": 2370,
+      "domain": "command",
+      "tokens": [
+        "Command",
+        "Recovery",
+        "Record",
+        "Transaction"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetRenderEncoderOwnerImpl",
+      "file": "mgl_render_command.cpp",
+      "line": 2380,
+      "domain": "command",
+      "tokens": [
+        "Reset",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRenderEncoderOwnerFromState",
+      "file": "mgl_render_command.cpp",
+      "line": 2404,
+      "domain": "command",
+      "tokens": [
+        "Create",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetRenderEncoderOwnerFromState",
+      "file": "mgl_render_command.cpp",
+      "line": 2420,
+      "domain": "command",
+      "tokens": [
+        "Reset",
+        "Render",
+        "Encoder",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderActiveRenderEncoder",
+      "file": "mgl_render_command.cpp",
+      "line": 2426,
+      "domain": "command",
+      "tokens": [
+        "Active",
+        "Render",
+        "Encoder"
+      ]
+    },
+    {
+      "symbol": "mglRenderTargetLayerCount",
+      "file": "mgl_render_command.cpp",
+      "line": 2434,
+      "domain": "core",
+      "tokens": [
+        "Target",
+        "Layer",
+        "Count"
+      ]
+    },
+    {
+      "symbol": "mglRenderPassArrayLength",
+      "file": "mgl_render_command.cpp",
+      "line": 2455,
+      "domain": "command",
+      "tokens": [
+        "Pass",
+        "Array",
+        "Length"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderPassStateAttachmentTexture",
+      "file": "mgl_render_command.cpp",
+      "line": 2480,
+      "domain": "command",
+      "tokens": [
+        "Set",
+        "Render",
+        "Pass",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeDrawForRenderEncoderOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 2518,
+      "domain": "command",
+      "tokens": [
+        "Encode",
+        "Draw",
+        "For",
+        "Render"
+      ]
+    },
+    {
+      "symbol": "mglRenderAddCommandBufferRecoveryCompletion",
+      "file": "mgl_render_command.cpp",
+      "line": 2524,
+      "domain": "command",
+      "tokens": [
+        "Add",
+        "Command",
+        "Buffer",
+        "Recovery"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetRenderPassAttachmentSubresourceOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 2548,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Render",
+        "Pass",
+        "Attachment"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetRenderPassAttachmentActionsOwner",
+      "file": "mgl_render_command.cpp",
+      "line": 2559,
+      "domain": "command",
+      "tokens": [
+        "Get",
+        "Render",
+        "Pass",
+        "Attachment"
+      ]
+    },
+    {
+      "symbol": "mglRenderTessFactorsDiscardPatch",
+      "file": "mgl_render_draw.cpp",
+      "line": 57,
+      "domain": "draw",
+      "tokens": [
+        "Tess",
+        "Factors",
+        "Discard",
+        "Patch"
+      ]
+    },
+    {
+      "symbol": "mglRenderRepackTessFactorTriangles",
+      "file": "mgl_render_draw.cpp",
+      "line": 75,
+      "domain": "draw",
+      "tokens": [
+        "Repack",
+        "Tess",
+        "Factor",
+        "Triangles"
+      ]
+    },
+    {
+      "symbol": "mglRenderTessPrimitiveCount",
+      "file": "mgl_render_draw.cpp",
+      "line": 101,
+      "domain": "draw",
+      "tokens": [
+        "Tess",
+        "Primitive",
+        "Count"
+      ]
+    },
+    {
+      "symbol": "mglRenderIndexStreamFits",
+      "file": "mgl_render_draw.cpp",
+      "line": 128,
+      "domain": "draw",
+      "tokens": [
+        "Index",
+        "Stream",
+        "Fits"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawModeNeedsEmulate",
+      "file": "mgl_render_draw.cpp",
+      "line": 143,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Mode",
+        "Needs",
+        "Emulate"
+      ]
+    },
+    {
+      "symbol": "mglRenderIndexTypeIsU8",
+      "file": "mgl_render_draw.cpp",
+      "line": 149,
+      "domain": "draw",
+      "tokens": [
+        "Index",
+        "Type",
+        "Is",
+        "U8"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawModeIsTriangles",
+      "file": "mgl_render_draw.cpp",
+      "line": 153,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Mode",
+        "Is",
+        "Triangles"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawModeIsTriangleStrip",
+      "file": "mgl_render_draw.cpp",
+      "line": 157,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Mode",
+        "Is",
+        "Triangle"
+      ]
+    },
+    {
+      "symbol": "mglRenderIndexTypeIsU16",
+      "file": "mgl_render_draw.cpp",
+      "line": 161,
+      "domain": "draw",
+      "tokens": [
+        "Index",
+        "Type",
+        "Is",
+        "U16"
+      ]
+    },
+    {
+      "symbol": "mglRenderIndexTypeIsU32",
+      "file": "mgl_render_draw.cpp",
+      "line": 165,
+      "domain": "draw",
+      "tokens": [
+        "Index",
+        "Type",
+        "Is",
+        "U32"
+      ]
+    },
+    {
+      "symbol": "mglRenderShaderResourceIndexValid",
+      "file": "mgl_render_draw.cpp",
+      "line": 169,
+      "domain": "draw",
+      "tokens": [
+        "Shader",
+        "Resource",
+        "Index",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderMTLPrimitiveTypeForGLMode",
+      "file": "mgl_render_draw.cpp",
+      "line": 178,
+      "domain": "draw",
+      "tokens": [
+        "MTL",
+        "Primitive",
+        "Type",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderMTLIndexTypeForGLType",
+      "file": "mgl_render_draw.cpp",
+      "line": 191,
+      "domain": "draw",
+      "tokens": [
+        "MTL",
+        "Index",
+        "Type",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderPrimitiveVertexCountForMode",
+      "file": "mgl_render_draw.cpp",
+      "line": 204,
+      "domain": "draw",
+      "tokens": [
+        "Primitive",
+        "Vertex",
+        "Count",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderTessRoundLevelForSpacing",
+      "file": "mgl_render_draw.cpp",
+      "line": 223,
+      "domain": "draw",
+      "tokens": [
+        "Tess",
+        "Round",
+        "Level",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderTessControlPointFormat",
+      "file": "mgl_render_draw.cpp",
+      "line": 229,
+      "domain": "draw",
+      "tokens": [
+        "Tess",
+        "Control",
+        "Point",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderTessControlPointLocationFormat",
+      "file": "mgl_render_draw.cpp",
+      "line": 252,
+      "domain": "draw",
+      "tokens": [
+        "Tess",
+        "Control",
+        "Point",
+        "Location"
+      ]
+    },
+    {
+      "symbol": "mglRenderCheckedTessCaptureSize",
+      "file": "mgl_render_draw.cpp",
+      "line": 277,
+      "domain": "draw",
+      "tokens": [
+        "Checked",
+        "Tess",
+        "Capture",
+        "Size"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawPrimitives",
+      "file": "mgl_render_draw.cpp",
+      "line": 296,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Primitives"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawIndexedPrimitives",
+      "file": "mgl_render_draw.cpp",
+      "line": 314,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Indexed",
+        "Primitives"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawPrimitivesIndirect",
+      "file": "mgl_render_draw.cpp",
+      "line": 338,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Primitives",
+        "Indirect"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawIndexedPrimitivesIndirect",
+      "file": "mgl_render_draw.cpp",
+      "line": 352,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Indexed",
+        "Primitives",
+        "Indirect"
+      ]
+    },
+    {
+      "symbol": "mglRenderBuildCullDistanceLayoutFromPorts",
+      "file": "mgl_render_draw.cpp",
+      "line": 373,
+      "domain": "draw",
+      "tokens": [
+        "Build",
+        "Cull",
+        "Distance",
+        "Layout"
+      ]
+    },
+    {
+      "symbol": "mglRenderCullDistanceLayoutOffset",
+      "file": "mgl_render_draw.cpp",
+      "line": 400,
+      "domain": "draw",
+      "tokens": [
+        "Cull",
+        "Distance",
+        "Layout",
+        "Offset"
+      ]
+    },
+    {
+      "symbol": "mglRenderFillCullDistanceEmuParams",
+      "file": "mgl_render_draw.cpp",
+      "line": 411,
+      "domain": "draw",
+      "tokens": [
+        "Fill",
+        "Cull",
+        "Distance",
+        "Emu"
+      ]
+    },
+    {
+      "symbol": "mglRenderCullDistanceCaptureBytes",
+      "file": "mgl_render_draw.cpp",
+      "line": 438,
+      "domain": "draw",
+      "tokens": [
+        "Cull",
+        "Distance",
+        "Capture",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawPatches",
+      "file": "mgl_render_draw.cpp",
+      "line": 455,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Patches"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawIndexedPatches",
+      "file": "mgl_render_draw.cpp",
+      "line": 477,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Indexed",
+        "Patches"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetIndirectDrawIndexed",
+      "file": "mgl_render_draw.cpp",
+      "line": 504,
+      "domain": "draw",
+      "tokens": [
+        "Set",
+        "Indirect",
+        "Draw",
+        "Indexed"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetIndirectDraw",
+      "file": "mgl_render_draw.cpp",
+      "line": 525,
+      "domain": "draw",
+      "tokens": [
+        "Set",
+        "Indirect",
+        "Draw"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetCullDistanceIndexPrimitive",
+      "file": "mgl_render_draw.cpp",
+      "line": 540,
+      "domain": "draw",
+      "tokens": [
+        "Get",
+        "Cull",
+        "Distance",
+        "Index"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyCullDistanceIndexPlan",
+      "file": "mgl_render_draw.cpp",
+      "line": 551,
+      "domain": "draw",
+      "tokens": [
+        "Destroy",
+        "Cull",
+        "Distance",
+        "Index"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLIndexElementSize",
+      "file": "mgl_render_draw.cpp",
+      "line": 558,
+      "domain": "draw",
+      "tokens": [
+        "GL",
+        "Index",
+        "Element",
+        "Size"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadGLIndexValue",
+      "file": "mgl_render_draw.cpp",
+      "line": 566,
+      "domain": "draw",
+      "tokens": [
+        "Read",
+        "GL",
+        "Index",
+        "Value"
+      ]
+    },
+    {
+      "symbol": "mglRenderDrawModeProducesPolygons",
+      "file": "mgl_render_draw.cpp",
+      "line": 590,
+      "domain": "draw",
+      "tokens": [
+        "Draw",
+        "Mode",
+        "Produces",
+        "Polygons"
+      ]
+    },
+    {
+      "symbol": "mglRenderPrimitiveModeHasDrawableSegment",
+      "file": "mgl_render_draw.cpp",
+      "line": 603,
+      "domain": "draw",
+      "tokens": [
+        "Primitive",
+        "Mode",
+        "Has",
+        "Drawable"
+      ]
+    },
+    {
+      "symbol": "mglRenderQuadTriangleIndexCount",
+      "file": "mgl_render_draw.cpp",
+      "line": 624,
+      "domain": "draw",
+      "tokens": [
+        "Quad",
+        "Triangle",
+        "Index",
+        "Count"
+      ]
+    },
+    {
+      "symbol": "mglRenderPrimitiveRestartFixedIndex",
+      "file": "mgl_render_draw.cpp",
+      "line": 633,
+      "domain": "draw",
+      "tokens": [
+        "Primitive",
+        "Restart",
+        "Fixed",
+        "Index"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanCullDistanceElementRange",
+      "file": "mgl_render_draw.cpp",
+      "line": 646,
+      "domain": "draw",
+      "tokens": [
+        "Plan",
+        "Cull",
+        "Distance",
+        "Element"
+      ]
+    },
+    {
+      "symbol": "mglRenderComputePreparedIndexByteOffset",
+      "file": "mgl_render_draw.cpp",
+      "line": 677,
+      "domain": "draw",
+      "tokens": [
+        "Compute",
+        "Prepared",
+        "Index",
+        "Byte"
+      ]
+    },
+    {
+      "symbol": "mglRenderComputeIndexByteOffset",
+      "file": "mgl_render_draw.cpp",
+      "line": 696,
+      "domain": "draw",
+      "tokens": [
+        "Compute",
+        "Index",
+        "Byte",
+        "Offset"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateCullDistanceIndexPlan",
+      "file": "mgl_render_draw.cpp",
+      "line": 713,
+      "domain": "draw",
+      "tokens": [
+        "Create",
+        "Cull",
+        "Distance",
+        "Index"
+      ]
+    },
+    {
+      "symbol": "mglRenderScanIndexRangeIgnoringRestart",
+      "file": "mgl_render_draw.cpp",
+      "line": 789,
+      "domain": "draw",
+      "tokens": [
+        "Scan",
+        "Index",
+        "Range",
+        "Ignoring"
+      ]
+    },
+    {
+      "symbol": "mglCullDistanceArraySplitCount",
+      "file": "mgl_render_draw.cpp",
+      "line": 829,
+      "domain": "draw",
+      "tokens": [
+        "Cull",
+        "Distance",
+        "Array",
+        "Split"
+      ]
+    },
+    {
+      "symbol": "mglRenderFillCullDistanceArrayPrimitives",
+      "file": "mgl_render_draw.cpp",
+      "line": 863,
+      "domain": "draw",
+      "tokens": [
+        "Fill",
+        "Cull",
+        "Distance",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglCullDistanceNewIndexBuffer",
+      "file": "mgl_render_draw.cpp",
+      "line": 921,
+      "domain": "draw",
+      "tokens": [
+        "Cull",
+        "Distance",
+        "New",
+        "Index"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateCullDistanceArrayPlan",
+      "file": "mgl_render_draw.cpp",
+      "line": 952,
+      "domain": "draw",
+      "tokens": [
+        "Create",
+        "Cull",
+        "Distance",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglRenderProgramUsesVertexAttrib",
+      "file": "mgl_render_draw.cpp",
+      "line": 1041,
+      "domain": "binding",
+      "tokens": [
+        "Program",
+        "Uses",
+        "Vertex",
+        "Attrib"
+      ]
+    },
+    {
+      "symbol": "mglRenderCollectCullDistanceAttribs",
+      "file": "mgl_render_draw.cpp",
+      "line": 1069,
+      "domain": "draw",
+      "tokens": [
+        "Collect",
+        "Cull",
+        "Distance",
+        "Attribs"
+      ]
+    },
+    {
+      "symbol": "mglRenderTessEvalItemsPerPatch",
+      "file": "mgl_render_draw.cpp",
+      "line": 1093,
+      "domain": "draw",
+      "tokens": [
+        "Tess",
+        "Eval",
+        "Items",
+        "Per"
+      ]
+    },
+    {
+      "symbol": "mglRenderSeedTessDomain",
+      "file": "mgl_render_draw.cpp",
+      "line": 1103,
+      "domain": "draw",
+      "tokens": [
+        "Seed",
+        "Tess",
+        "Domain"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandQuadElementLineIndices",
+      "file": "mgl_render_draw.cpp",
+      "line": 1114,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Quad",
+        "Element",
+        "Line"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandQuadElementIndices",
+      "file": "mgl_render_draw.cpp",
+      "line": 1145,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Quad",
+        "Element",
+        "Indices"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandTriangleStripIndices",
+      "file": "mgl_render_draw.cpp",
+      "line": 1180,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Triangle",
+        "Strip",
+        "Indices"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandLineLoopIndices",
+      "file": "mgl_render_draw.cpp",
+      "line": 1209,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Line",
+        "Loop",
+        "Indices"
+      ]
+    },
+    {
+      "symbol": "mglRenderReleaseMetalObject",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 55,
+      "domain": "lifecycle",
+      "tokens": [
+        "Release",
+        "Metal",
+        "Object"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateChannelExpandedUpload",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 62,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Channel",
+        "Expanded",
+        "Upload"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateStencilSwizzledUpload",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 131,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Stencil",
+        "Swizzled",
+        "Upload"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateSingleChannelSwizzledUpload",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 205,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Single",
+        "Channel",
+        "Swizzled"
+      ]
+    },
+    {
+      "symbol": "mglRenderLoadActionName",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 479,
+      "domain": "lifecycle",
+      "tokens": [
+        "Load",
+        "Action",
+        "Name"
+      ]
+    },
+    {
+      "symbol": "mglRenderLoadAIRMainFunction",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 488,
+      "domain": "lifecycle",
+      "tokens": [
+        "Load",
+        "A",
+        "I",
+        "R"
+      ]
+    },
+    {
+      "symbol": "mglRenderReleaseSync",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 510,
+      "domain": "lifecycle",
+      "tokens": [
+        "Release",
+        "Sync"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateDepthStencilState",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 517,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Depth",
+        "Stencil",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreatePendingEventOwner",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 533,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Pending",
+        "Event",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyPendingEventOwner",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 542,
+      "domain": "lifecycle",
+      "tokens": [
+        "Destroy",
+        "Pending",
+        "Event",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateEvent",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 550,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Event"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateFunction",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 562,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Function"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBinaryArchive",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 595,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Binary",
+        "Archive"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateMDIScratchOwner",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 624,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "M",
+        "D",
+        "I"
+      ]
+    },
+    {
+      "symbol": "mglRenderResetMDIScratchOwner",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 634,
+      "domain": "lifecycle",
+      "tokens": [
+        "Reset",
+        "M",
+        "D",
+        "I"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyMDIScratchOwner",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 644,
+      "domain": "lifecycle",
+      "tokens": [
+        "Destroy",
+        "M",
+        "D",
+        "I"
+      ]
+    },
+    {
+      "symbol": "mglRenderInit",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 664,
+      "domain": "lifecycle",
+      "tokens": [
+        "Init"
+      ]
+    },
+    {
+      "symbol": "mglReadPackedUploadLE",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 686,
+      "domain": "core",
+      "tokens": [
+        "Read",
+        "Packed",
+        "Upload",
+        "L"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateRGBA8ExpandedUpload",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 696,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "R",
+        "G",
+        "B"
+      ]
+    },
+    {
+      "symbol": "mglRenderBuildStencilDescriptor",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 849,
+      "domain": "core",
+      "tokens": [
+        "Build",
+        "Stencil",
+        "Descriptor"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateDepthStencilFromStateLocked",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 870,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Depth",
+        "Stencil",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateDepthStencilStateFromState",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 904,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Depth",
+        "Stencil",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateAuxFunctions",
+      "file": "mgl_render_lifecycle.cpp",
+      "line": 918,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Aux",
+        "Functions"
+      ]
+    },
+    {
+      "symbol": "mglReadbackMissingChannelFloat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 65,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Readback",
+        "Missing",
+        "Channel",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRead16or32SourceFloat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 70,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Read16or32",
+        "Source",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglExpandUNormBitsTo8",
+      "file": "mgl_render_pixel.cpp",
+      "line": 92,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "U",
+        "Norm",
+        "Bits"
+      ]
+    },
+    {
+      "symbol": "mglRenderDepth24Stencil8ToFloatBits",
+      "file": "mgl_render_pixel.cpp",
+      "line": 99,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Depth24",
+        "Stencil8",
+        "To",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderDepthUint32ToFloatBits",
+      "file": "mgl_render_pixel.cpp",
+      "line": 108,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Depth",
+        "Uint32",
+        "To",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderDepth24ToFloatBits",
+      "file": "mgl_render_pixel.cpp",
+      "line": 115,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Depth24",
+        "To",
+        "Float",
+        "Bits"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveR8SnormSwizzledComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 125,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "R8",
+        "Snorm",
+        "Swizzled"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveR16UnormSwizzledComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 139,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "R16",
+        "Unorm",
+        "Swizzled"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveR16SnormSwizzledComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 153,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "R16",
+        "Snorm",
+        "Swizzled"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveR16FloatSwizzledComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 167,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "R16",
+        "Float",
+        "Swizzled"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveR32FloatSwizzledComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 181,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "R32",
+        "Float",
+        "Swizzled"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveIntegerSwizzledComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 195,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "Integer",
+        "Swizzled",
+        "Component"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadIntegerTexelComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 215,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Read",
+        "Integer",
+        "Texel",
+        "Component"
+      ]
+    },
+    {
+      "symbol": "mglRenderWriteIntegerTexelComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 234,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Write",
+        "Integer",
+        "Texel",
+        "Component"
+      ]
+    },
+    {
+      "symbol": "mglRenderPixelFormatIsIntegerColor",
+      "file": "mgl_render_pixel.cpp",
+      "line": 278,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Pixel",
+        "Format",
+        "Is",
+        "Integer"
+      ]
+    },
+    {
+      "symbol": "mglRenderPixelFormatIsSignedIntegerColor",
+      "file": "mgl_render_pixel.cpp",
+      "line": 306,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Pixel",
+        "Format",
+        "Is",
+        "Signed"
+      ]
+    },
+    {
+      "symbol": "mglRenderRGBExpandParams",
+      "file": "mgl_render_pixel.cpp",
+      "line": 323,
+      "domain": "pixel_convert",
+      "tokens": [
+        "R",
+        "G",
+        "B",
+        "Expand"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveUploadSwizzlePixelFormat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 380,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "Upload",
+        "Swizzle",
+        "Pixel"
+      ]
+    },
+    {
+      "symbol": "mglRenderIntegerFormatComponentMap",
+      "file": "mgl_render_pixel.cpp",
+      "line": 399,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Integer",
+        "Format",
+        "Component",
+        "Map"
+      ]
+    },
+    {
+      "symbol": "mglRenderIntegerTypeComponentBytes",
+      "file": "mgl_render_pixel.cpp",
+      "line": 479,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Integer",
+        "Type",
+        "Component",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderDepth32FStencil8NeedsUnpack",
+      "file": "mgl_render_pixel.cpp",
+      "line": 489,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Depth32",
+        "F",
+        "Stencil8",
+        "Needs"
+      ]
+    },
+    {
+      "symbol": "mglRenderDirectR32FloatRead",
+      "file": "mgl_render_pixel.cpp",
+      "line": 498,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Direct",
+        "R32",
+        "Float",
+        "Read"
+      ]
+    },
+    {
+      "symbol": "mglRenderPixelFormatIsDepth32FloatStencil8",
+      "file": "mgl_render_pixel.cpp",
+      "line": 506,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Pixel",
+        "Format",
+        "Is",
+        "Depth32"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLColumnSwizzle",
+      "file": "mgl_render_pixel.cpp",
+      "line": 510,
+      "domain": "pixel_convert",
+      "tokens": [
+        "GLSL",
+        "Column",
+        "Swizzle"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLTypeSwizzle",
+      "file": "mgl_render_pixel.cpp",
+      "line": 523,
+      "domain": "pixel_convert",
+      "tokens": [
+        "GLSL",
+        "Type",
+        "Swizzle"
+      ]
+    },
+    {
+      "symbol": "mglRenderGLSLIntegerAsFloatType",
+      "file": "mgl_render_pixel.cpp",
+      "line": 546,
+      "domain": "pixel_convert",
+      "tokens": [
+        "GLSL",
+        "Integer",
+        "As",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderStructPackSrcStride",
+      "file": "mgl_render_pixel.cpp",
+      "line": 565,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Struct",
+        "Pack",
+        "Src",
+        "Stride"
+      ]
+    },
+    {
+      "symbol": "mglRenderStructPackUseBulk",
+      "file": "mgl_render_pixel.cpp",
+      "line": 569,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Struct",
+        "Pack",
+        "Use",
+        "Bulk"
+      ]
+    },
+    {
+      "symbol": "mglRenderShouldPackPlainUniformStruct",
+      "file": "mgl_render_pixel.cpp",
+      "line": 577,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Should",
+        "Pack",
+        "Plain",
+        "Uniform"
+      ]
+    },
+    {
+      "symbol": "mglRenderPackCurrentAttribPool",
+      "file": "mgl_render_pixel.cpp",
+      "line": 586,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Pack",
+        "Current",
+        "Attrib",
+        "Pool"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandUInt8ToUInt16",
+      "file": "mgl_render_pixel.cpp",
+      "line": 612,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "U",
+        "Int8",
+        "To"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandTriangleFanArrayIndices",
+      "file": "mgl_render_pixel.cpp",
+      "line": 633,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Triangle",
+        "Fan",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandTriangleStripArrayIndices",
+      "file": "mgl_render_pixel.cpp",
+      "line": 658,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Triangle",
+        "Strip",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandLineLoopArrayIndices",
+      "file": "mgl_render_pixel.cpp",
+      "line": 683,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Line",
+        "Loop",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandQuadArrayLineIndices",
+      "file": "mgl_render_pixel.cpp",
+      "line": 708,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Quad",
+        "Array",
+        "Line"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpandTriangleFanIndices",
+      "file": "mgl_render_pixel.cpp",
+      "line": 741,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Expand",
+        "Triangle",
+        "Fan",
+        "Indices"
+      ]
+    },
+    {
+      "symbol": "mglRenderFloat11ToFloat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 771,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Float11",
+        "To",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderFloat10ToFloat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 786,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Float10",
+        "To",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderFloatToUnorm8",
+      "file": "mgl_render_pixel.cpp",
+      "line": 801,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Float",
+        "To",
+        "Unorm8"
+      ]
+    },
+    {
+      "symbol": "mglRenderSnorm16ToFloat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 812,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Snorm16",
+        "To",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderSnorm8ToFloat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 820,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Snorm8",
+        "To",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderSingleChannelSwizzleStoragePixelFormat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 828,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Single",
+        "Channel",
+        "Swizzle",
+        "Storage"
+      ]
+    },
+    {
+      "symbol": "mglRenderIntegerMultiChannelSwizzleStoragePixelFormat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 869,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Integer",
+        "Multi",
+        "Channel",
+        "Swizzle"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUploadNeedsDepthStencilDepthSwizzleBake",
+      "file": "mgl_render_pixel.cpp",
+      "line": 902,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Texture",
+        "Upload",
+        "Needs",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUploadNeedsStencilSwizzleBake",
+      "file": "mgl_render_pixel.cpp",
+      "line": 917,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Texture",
+        "Upload",
+        "Needs",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderStencilSwizzleStoragePixelFormat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 932,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Stencil",
+        "Swizzle",
+        "Storage",
+        "Pixel"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUploadNeedsSingleChannelSwizzleBake",
+      "file": "mgl_render_pixel.cpp",
+      "line": 937,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Texture",
+        "Upload",
+        "Needs",
+        "Single"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUploadNeedsSingleChannelSwizzle",
+      "file": "mgl_render_pixel.cpp",
+      "line": 962,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Texture",
+        "Upload",
+        "Needs",
+        "Single"
+      ]
+    },
+    {
+      "symbol": "mglRenderMTLSwizzleForGLSwizzle",
+      "file": "mgl_render_pixel.cpp",
+      "line": 991,
+      "domain": "pixel_convert",
+      "tokens": [
+        "MTL",
+        "Swizzle",
+        "For",
+        "GL"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureExpandRGBToRGBA",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1022,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Texture",
+        "Expand",
+        "R",
+        "G"
+      ]
+    },
+    {
+      "symbol": "mglRenderDoubleVertexAttribFloatFormat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1055,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Double",
+        "Vertex",
+        "Attrib",
+        "Float"
+      ]
+    },
+    {
+      "symbol": "mglRenderIntegerAttribConversionFormat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1067,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Integer",
+        "Attrib",
+        "Conversion",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglReadbackFormatChannelMap",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1115,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Format",
+        "Channel",
+        "Map"
+      ]
+    },
+    {
+      "symbol": "mglSizeForType",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1133,
+      "domain": "core",
+      "tokens": [
+        "Size",
+        "For",
+        "Type"
+      ]
+    },
+    {
+      "symbol": "mglNumComponentsForFormat",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1168,
+      "domain": "core",
+      "tokens": [
+        "Num",
+        "Components",
+        "For",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglPixelTypeIsPacked",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1303,
+      "domain": "texture",
+      "tokens": [
+        "Pixel",
+        "Type",
+        "Is",
+        "Packed"
+      ]
+    },
+    {
+      "symbol": "mglReadbackRGB10A2TypeAccepted",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1327,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "R",
+        "G",
+        "B10"
+      ]
+    },
+    {
+      "symbol": "mglReadbackRG11B10TypeAccepted",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1348,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "R",
+        "G11",
+        "B10"
+      ]
+    },
+    {
+      "symbol": "mglReadback16or32TypeAccepted",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1368,
+      "domain": "core",
+      "tokens": [
+        "Readback16or32",
+        "Type",
+        "Accepted"
+      ]
+    },
+    {
+      "symbol": "mglWideSrcChannelCount",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1398,
+      "domain": "core",
+      "tokens": [
+        "Wide",
+        "Src",
+        "Channel",
+        "Count"
+      ]
+    },
+    {
+      "symbol": "mglReadbackUnorm8ScalarTypeAccepted",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1420,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Unorm8",
+        "Scalar",
+        "Type"
+      ]
+    },
+    {
+      "symbol": "mglReadbackUnorm8PackedTypeAccepted",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1435,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Unorm8",
+        "Packed",
+        "Type"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyUnorm8SwizzleTextureBytesToGL",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1458,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Copy",
+        "Unorm8",
+        "Swizzle",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderResolveR8IntegerSwizzledComponent",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1576,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Resolve",
+        "R8",
+        "Integer",
+        "Swizzled"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUploadNeedsIntegerMultiChannelSwizzleBake",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1584,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Texture",
+        "Upload",
+        "Needs",
+        "Integer"
+      ]
+    },
+    {
+      "symbol": "mglRenderPixelFormatMatchesSwizzleBakeStorage",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1600,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Pixel",
+        "Format",
+        "Matches",
+        "Swizzle"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureSwizzleUsesUploadBake",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1660,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Texture",
+        "Swizzle",
+        "Uses",
+        "Upload"
+      ]
+    },
+    {
+      "symbol": "mglRenderIntegerFormatLayout",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1688,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Integer",
+        "Format",
+        "Layout"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateIntegerMultiChannelSwizzledUpload",
+      "file": "mgl_render_pixel.cpp",
+      "line": 1752,
+      "domain": "pixel_convert",
+      "tokens": [
+        "Create",
+        "Integer",
+        "Multi",
+        "Channel"
+      ]
+    },
+    {
+      "symbol": "mglRenderQueryCapability",
+      "file": "mgl_render_query.cpp",
+      "line": 55,
+      "domain": "query",
+      "tokens": [
+        "Query",
+        "Capability"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetSyncStatus",
+      "file": "mgl_render_query.cpp",
+      "line": 118,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "Sync",
+        "Status"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetGPUTimestamp",
+      "file": "mgl_render_query.cpp",
+      "line": 128,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "GPU",
+        "Timestamp"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsSmallRGBA8",
+      "file": "mgl_render_query.cpp",
+      "line": 145,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Small",
+        "R",
+        "G"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsValidGLCompareFunction",
+      "file": "mgl_render_query.cpp",
+      "line": 149,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Valid",
+        "GL",
+        "Compare"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsValidGLBlendEquation",
+      "file": "mgl_render_query.cpp",
+      "line": 165,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Valid",
+        "GL",
+        "Blend"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsValidGLBlendFactor",
+      "file": "mgl_render_query.cpp",
+      "line": 170,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Valid",
+        "GL",
+        "Blend"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetDeviceIdentity",
+      "file": "mgl_render_query.cpp",
+      "line": 175,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "Device",
+        "Identity"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsEmulatedMSColorTexture",
+      "file": "mgl_render_query.cpp",
+      "line": 195,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Emulated",
+        "M",
+        "S"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanDirtyDomains",
+      "file": "mgl_render_query.cpp",
+      "line": 203,
+      "domain": "query",
+      "tokens": [
+        "Plan",
+        "Dirty",
+        "Domains"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsInitialized",
+      "file": "mgl_render_query.cpp",
+      "line": 253,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Initialized"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetSync",
+      "file": "mgl_render_query.cpp",
+      "line": 259,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "Sync"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateQueryStateOwner",
+      "file": "mgl_render_query.cpp",
+      "line": 317,
+      "domain": "query",
+      "tokens": [
+        "Create",
+        "Query",
+        "State",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderBeginSampleQuery",
+      "file": "mgl_render_query.cpp",
+      "line": 328,
+      "domain": "query",
+      "tokens": [
+        "Begin",
+        "Sample",
+        "Query"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndSampleQuery",
+      "file": "mgl_render_query.cpp",
+      "line": 362,
+      "domain": "query",
+      "tokens": [
+        "End",
+        "Sample",
+        "Query"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsSampleQueryActive",
+      "file": "mgl_render_query.cpp",
+      "line": 368,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Sample",
+        "Query",
+        "Active"
+      ]
+    },
+    {
+      "symbol": "mglRenderAcquireSampleQuerySlot",
+      "file": "mgl_render_query.cpp",
+      "line": 377,
+      "domain": "query",
+      "tokens": [
+        "Acquire",
+        "Sample",
+        "Query",
+        "Slot"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetSampleQueryResult",
+      "file": "mgl_render_query.cpp",
+      "line": 400,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "Sample",
+        "Query",
+        "Result"
+      ]
+    },
+    {
+      "symbol": "mglRenderBeginTimerQuery",
+      "file": "mgl_render_query.cpp",
+      "line": 417,
+      "domain": "query",
+      "tokens": [
+        "Begin",
+        "Timer",
+        "Query"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndTimerQuery",
+      "file": "mgl_render_query.cpp",
+      "line": 431,
+      "domain": "query",
+      "tokens": [
+        "End",
+        "Timer",
+        "Query"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyQueryStateOwner",
+      "file": "mgl_render_query.cpp",
+      "line": 448,
+      "domain": "query",
+      "tokens": [
+        "Destroy",
+        "Query",
+        "State",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderExecuteComputeExecutionPlan",
+      "file": "mgl_render_query.cpp",
+      "line": 457,
+      "domain": "query",
+      "tokens": [
+        "Execute",
+        "Compute",
+        "Execution",
+        "Plan"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetFboMatchCache",
+      "file": "mgl_render_query.cpp",
+      "line": 541,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "Fbo",
+        "Match",
+        "Cache"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetRenderTargetSizeOwner",
+      "file": "mgl_render_query.cpp",
+      "line": 549,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "Render",
+        "Target",
+        "Size"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsVirtualizedGPU",
+      "file": "mgl_render_query.cpp",
+      "line": 558,
+      "domain": "query",
+      "tokens": [
+        "Is",
+        "Virtualized",
+        "GPU"
+      ]
+    },
+    {
+      "symbol": "mglRenderBeginSampleQueryCallback",
+      "file": "mgl_render_query.cpp",
+      "line": 571,
+      "domain": "query",
+      "tokens": [
+        "Begin",
+        "Sample",
+        "Query",
+        "Callback"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndSampleQueryCallback",
+      "file": "mgl_render_query.cpp",
+      "line": 620,
+      "domain": "query",
+      "tokens": [
+        "End",
+        "Sample",
+        "Query",
+        "Callback"
+      ]
+    },
+    {
+      "symbol": "mglRenderBeginTimerQueryCallback",
+      "file": "mgl_render_query.cpp",
+      "line": 651,
+      "domain": "query",
+      "tokens": [
+        "Begin",
+        "Timer",
+        "Query",
+        "Callback"
+      ]
+    },
+    {
+      "symbol": "mglRenderEndTimerQueryCallback",
+      "file": "mgl_render_query.cpp",
+      "line": 661,
+      "domain": "query",
+      "tokens": [
+        "End",
+        "Timer",
+        "Query",
+        "Callback"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetOrCreateDepthStencilState",
+      "file": "mgl_render_query.cpp",
+      "line": 672,
+      "domain": "query",
+      "tokens": [
+        "Get",
+        "Or",
+        "Create",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackBytesPerPixel",
+      "file": "mgl_render_readback.cpp",
+      "line": 11,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Bytes",
+        "Per",
+        "Pixel"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackFormatIsBGRA8Compatible",
+      "file": "mgl_render_readback.cpp",
+      "line": 49,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Format",
+        "Is",
+        "B"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackGLTypeAccepted",
+      "file": "mgl_render_readback.cpp",
+      "line": 91,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "GL",
+        "Type",
+        "Accepted"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackTypeIsCore",
+      "file": "mgl_render_readback.cpp",
+      "line": 121,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Type",
+        "Is",
+        "Core"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackTypeAllowsRGB10A2",
+      "file": "mgl_render_readback.cpp",
+      "line": 130,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Type",
+        "Allows",
+        "R"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackTypeAllowsRG11B10",
+      "file": "mgl_render_readback.cpp",
+      "line": 141,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Type",
+        "Allows",
+        "R"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackTypeAllows16or32",
+      "file": "mgl_render_readback.cpp",
+      "line": 151,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Type",
+        "Allows16or32"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackTypeIsWideScalar",
+      "file": "mgl_render_readback.cpp",
+      "line": 171,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Type",
+        "Is",
+        "Wide"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackTypeIsPacked",
+      "file": "mgl_render_readback.cpp",
+      "line": 179,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Type",
+        "Is",
+        "Packed"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackPixelFormatIsSnorm8",
+      "file": "mgl_render_readback.cpp",
+      "line": 186,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Pixel",
+        "Format",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackPixelFormatIsRGB10A2",
+      "file": "mgl_render_readback.cpp",
+      "line": 197,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Pixel",
+        "Format",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackPixelFormatIsRG11B10",
+      "file": "mgl_render_readback.cpp",
+      "line": 201,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Pixel",
+        "Format",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackPixelFormatIs16or32",
+      "file": "mgl_render_readback.cpp",
+      "line": 205,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Pixel",
+        "Format",
+        "Is16or32"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackPixelFormatIsRGBA8",
+      "file": "mgl_render_readback.cpp",
+      "line": 225,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Pixel",
+        "Format",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackPixelFormatIsBGRA8",
+      "file": "mgl_render_readback.cpp",
+      "line": 232,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "Pixel",
+        "Format",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadbackBGRA8CarrierFormat",
+      "file": "mgl_render_readback.cpp",
+      "line": 239,
+      "domain": "readback",
+      "tokens": [
+        "Readback",
+        "B",
+        "G",
+        "R"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskHasColor",
+      "file": "mgl_render_readback.cpp",
+      "line": 243,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Has",
+        "Color"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskHasDepth",
+      "file": "mgl_render_readback.cpp",
+      "line": 247,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Has",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskHasStencil",
+      "file": "mgl_render_readback.cpp",
+      "line": 251,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Has",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskHasDepthStencil",
+      "file": "mgl_render_readback.cpp",
+      "line": 255,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Has",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskDepthStencilBits",
+      "file": "mgl_render_readback.cpp",
+      "line": 261,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Depth",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskClearColor",
+      "file": "mgl_render_readback.cpp",
+      "line": 265,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Clear",
+        "Color"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskClearDepth",
+      "file": "mgl_render_readback.cpp",
+      "line": 269,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Clear",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskClearStencil",
+      "file": "mgl_render_readback.cpp",
+      "line": 273,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Clear",
+        "Stencil"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearMaskHasAny",
+      "file": "mgl_render_readback.cpp",
+      "line": 277,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Mask",
+        "Has",
+        "Any"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearEmptyBufferDirty",
+      "file": "mgl_render_readback.cpp",
+      "line": 284,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Empty",
+        "Buffer",
+        "Dirty"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearCPUWriteRange",
+      "file": "mgl_render_readback.cpp",
+      "line": 290,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "CPU",
+        "Write",
+        "Range"
+      ]
+    },
+    {
+      "symbol": "mglRenderPendingEventClear",
+      "file": "mgl_render_readback.cpp",
+      "line": 298,
+      "domain": "readback",
+      "tokens": [
+        "Pending",
+        "Event",
+        "Clear"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingClearFragmentTexture",
+      "file": "mgl_render_readback.cpp",
+      "line": 309,
+      "domain": "readback",
+      "tokens": [
+        "Binding",
+        "Clear",
+        "Fragment",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandRecoveryClearMode",
+      "file": "mgl_render_readback.cpp",
+      "line": 317,
+      "domain": "readback",
+      "tokens": [
+        "Command",
+        "Recovery",
+        "Clear",
+        "Mode"
+      ]
+    },
+    {
+      "symbol": "mglRenderCommandBufferOwnerClearSyncs",
+      "file": "mgl_render_readback.cpp",
+      "line": 327,
+      "domain": "readback",
+      "tokens": [
+        "Command",
+        "Buffer",
+        "Owner",
+        "Clear"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeColorClear",
+      "file": "mgl_render_readback.cpp",
+      "line": 334,
+      "domain": "readback",
+      "tokens": [
+        "Encode",
+        "Color",
+        "Clear"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeColorClearForCommandBufferOwner",
+      "file": "mgl_render_readback.cpp",
+      "line": 365,
+      "domain": "readback",
+      "tokens": [
+        "Encode",
+        "Color",
+        "Clear",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeDepthClear",
+      "file": "mgl_render_readback.cpp",
+      "line": 374,
+      "domain": "readback",
+      "tokens": [
+        "Encode",
+        "Depth",
+        "Clear"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeDepthClearForCommandBufferOwner",
+      "file": "mgl_render_readback.cpp",
+      "line": 399,
+      "domain": "readback",
+      "tokens": [
+        "Encode",
+        "Depth",
+        "Clear",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderClearFboMatchCache",
+      "file": "mgl_render_readback.cpp",
+      "line": 407,
+      "domain": "readback",
+      "tokens": [
+        "Clear",
+        "Fbo",
+        "Match",
+        "Cache"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingClearVertexBuffer",
+      "file": "mgl_render_readback.cpp",
+      "line": 426,
+      "domain": "readback",
+      "tokens": [
+        "Binding",
+        "Clear",
+        "Vertex",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingClearFragmentBuffer",
+      "file": "mgl_render_readback.cpp",
+      "line": 432,
+      "domain": "readback",
+      "tokens": [
+        "Binding",
+        "Clear",
+        "Fragment",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetTextureInfo",
+      "file": "mgl_render_texture.cpp",
+      "line": 55,
+      "domain": "texture",
+      "tokens": [
+        "Get",
+        "Texture",
+        "Info"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureIsFramebufferOnly",
+      "file": "mgl_render_texture.cpp",
+      "line": 73,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Is",
+        "Framebuffer",
+        "Only"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateTextureView",
+      "file": "mgl_render_texture.cpp",
+      "line": 78,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Texture",
+        "View"
+      ]
+    },
+    {
+      "symbol": "mglRenderSampledTextureViewForBaseLevel",
+      "file": "mgl_render_texture.cpp",
+      "line": 91,
+      "domain": "texture",
+      "tokens": [
+        "Sampled",
+        "Texture",
+        "View",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetPlan",
+      "file": "mgl_render_texture.cpp",
+      "line": 198,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Plan"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTypeForShaderResource",
+      "file": "mgl_render_texture.cpp",
+      "line": 273,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Type",
+        "For",
+        "Shader"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureIndexForMetalType",
+      "file": "mgl_render_texture.cpp",
+      "line": 316,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Index",
+        "For",
+        "Metal"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureDataKindForPixelFormat",
+      "file": "mgl_render_texture.cpp",
+      "line": 344,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Data",
+        "Kind",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureDataKindName",
+      "file": "mgl_render_texture.cpp",
+      "line": 384,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Data",
+        "Kind",
+        "Name"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureMinFilterUsesMipmaps",
+      "file": "mgl_render_texture.cpp",
+      "line": 400,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Min",
+        "Filter",
+        "Uses"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalLayerPixelFormatIsSupported",
+      "file": "mgl_render_texture.cpp",
+      "line": 413,
+      "domain": "texture",
+      "tokens": [
+        "Metal",
+        "Layer",
+        "Pixel",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderLinearPixelFormat",
+      "file": "mgl_render_texture.cpp",
+      "line": 424,
+      "domain": "texture",
+      "tokens": [
+        "Linear",
+        "Pixel",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderEffectiveMTLPixelFormat",
+      "file": "mgl_render_texture.cpp",
+      "line": 436,
+      "domain": "texture",
+      "tokens": [
+        "Effective",
+        "MTL",
+        "Pixel",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUploadRoute",
+      "file": "mgl_render_texture.cpp",
+      "line": 444,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Upload",
+        "Route"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyTextureBytesToBGRA8",
+      "file": "mgl_render_texture.cpp",
+      "line": 472,
+      "domain": "texture",
+      "tokens": [
+        "Copy",
+        "Texture",
+        "Bytes",
+        "To"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureInternalFormatNeedsRGBA8Expansion",
+      "file": "mgl_render_texture.cpp",
+      "line": 773,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Internal",
+        "Format",
+        "Needs"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureNeedsChannelExpansion",
+      "file": "mgl_render_texture.cpp",
+      "line": 807,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Needs",
+        "Channel",
+        "Expansion"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsTextureBufferTarget",
+      "file": "mgl_render_texture.cpp",
+      "line": 839,
+      "domain": "texture",
+      "tokens": [
+        "Is",
+        "Texture",
+        "Buffer",
+        "Target"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureDimsValid",
+      "file": "mgl_render_texture.cpp",
+      "line": 843,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Dims",
+        "Valid"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureBufferNeedsDirty",
+      "file": "mgl_render_texture.cpp",
+      "line": 854,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Buffer",
+        "Needs",
+        "Dirty"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureNameIsDefault",
+      "file": "mgl_render_texture.cpp",
+      "line": 858,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Name",
+        "Is",
+        "Default"
+      ]
+    },
+    {
+      "symbol": "mglRenderMSTextureUnitIndex",
+      "file": "mgl_render_texture.cpp",
+      "line": 862,
+      "domain": "texture",
+      "tokens": [
+        "M",
+        "S",
+        "Texture",
+        "Unit"
+      ]
+    },
+    {
+      "symbol": "mglRenderIsMultisampleTextureTarget",
+      "file": "mgl_render_texture.cpp",
+      "line": 867,
+      "domain": "texture",
+      "tokens": [
+        "Is",
+        "Multisample",
+        "Texture",
+        "Target"
+      ]
+    },
+    {
+      "symbol": "mglRenderRejectDefaultTypedTexture",
+      "file": "mgl_render_texture.cpp",
+      "line": 874,
+      "domain": "texture",
+      "tokens": [
+        "Reject",
+        "Default",
+        "Typed",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderImageDimIsBuffer",
+      "file": "mgl_render_texture.cpp",
+      "line": 878,
+      "domain": "texture",
+      "tokens": [
+        "Image",
+        "Dim",
+        "Is",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderExpectedTypeIsTextureBuffer",
+      "file": "mgl_render_texture.cpp",
+      "line": 882,
+      "domain": "texture",
+      "tokens": [
+        "Expected",
+        "Type",
+        "Is",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderPlanTexelBuffer2DSize",
+      "file": "mgl_render_texture.cpp",
+      "line": 886,
+      "domain": "texture",
+      "tokens": [
+        "Plan",
+        "Texel",
+        "Buffer2",
+        "D"
+      ]
+    },
+    {
+      "symbol": "mglRenderFallbackSampledTextureType",
+      "file": "mgl_render_texture.cpp",
+      "line": 910,
+      "domain": "texture",
+      "tokens": [
+        "Fallback",
+        "Sampled",
+        "Texture",
+        "Type"
+      ]
+    },
+    {
+      "symbol": "mglRenderFallbackSampledPixelFormat",
+      "file": "mgl_render_texture.cpp",
+      "line": 914,
+      "domain": "texture",
+      "tokens": [
+        "Fallback",
+        "Sampled",
+        "Pixel",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUsageForAccess",
+      "file": "mgl_render_texture.cpp",
+      "line": 927,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Usage",
+        "For",
+        "Access"
+      ]
+    },
+    {
+      "symbol": "mglRenderPixelFormatNeedsShaderAtomic",
+      "file": "mgl_render_texture.cpp",
+      "line": 941,
+      "domain": "texture",
+      "tokens": [
+        "Pixel",
+        "Format",
+        "Needs",
+        "Shader"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureArrayDepthForType",
+      "file": "mgl_render_texture.cpp",
+      "line": 947,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Array",
+        "Depth",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureDescHeight",
+      "file": "mgl_render_texture.cpp",
+      "line": 981,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Desc",
+        "Height"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIsBuffer",
+      "file": "mgl_render_texture.cpp",
+      "line": 987,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is",
+        "Buffer"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIsArrayOr3D",
+      "file": "mgl_render_texture.cpp",
+      "line": 991,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIs2D",
+      "file": "mgl_render_texture.cpp",
+      "line": 995,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is2",
+        "D"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIs3D",
+      "file": "mgl_render_texture.cpp",
+      "line": 999,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is3",
+        "D"
+      ]
+    },
+    {
+      "symbol": "mglRenderImageAccessIsReadOnly",
+      "file": "mgl_render_texture.cpp",
+      "line": 1003,
+      "domain": "texture",
+      "tokens": [
+        "Image",
+        "Access",
+        "Is",
+        "Read"
+      ]
+    },
+    {
+      "symbol": "mglRenderImageUnitSliceNeedsFlush",
+      "file": "mgl_render_texture.cpp",
+      "line": 1007,
+      "domain": "texture",
+      "tokens": [
+        "Image",
+        "Unit",
+        "Slice",
+        "Needs"
+      ]
+    },
+    {
+      "symbol": "mglRenderFallbackPixelFormat",
+      "file": "mgl_render_texture.cpp",
+      "line": 1016,
+      "domain": "texture",
+      "tokens": [
+        "Fallback",
+        "Pixel",
+        "Format"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIsArray",
+      "file": "mgl_render_texture.cpp",
+      "line": 1034,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is",
+        "Array"
+      ]
+    },
+    {
+      "symbol": "mglRenderBytesPerPixelForInternalFormat",
+      "file": "mgl_render_texture.cpp",
+      "line": 1040,
+      "domain": "texture",
+      "tokens": [
+        "Bytes",
+        "Per",
+        "Pixel",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalPixelFormatBytesPerPixel",
+      "file": "mgl_render_texture.cpp",
+      "line": 1118,
+      "domain": "texture",
+      "tokens": [
+        "Metal",
+        "Pixel",
+        "Format",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalPixelFormatValueClass",
+      "file": "mgl_render_texture.cpp",
+      "line": 1133,
+      "domain": "texture",
+      "tokens": [
+        "Metal",
+        "Pixel",
+        "Format",
+        "Value"
+      ]
+    },
+    {
+      "symbol": "mglRenderPixelFormatIsDepthOrStencil",
+      "file": "mgl_render_texture.cpp",
+      "line": 1161,
+      "domain": "texture",
+      "tokens": [
+        "Pixel",
+        "Format",
+        "Is",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderSamplerUnitExplicit",
+      "file": "mgl_render_texture.cpp",
+      "line": 1174,
+      "domain": "texture",
+      "tokens": [
+        "Sampler",
+        "Unit",
+        "Explicit"
+      ]
+    },
+    {
+      "symbol": "mglRenderPrefer1DSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1178,
+      "domain": "texture",
+      "tokens": [
+        "Prefer1",
+        "D",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIs1D",
+      "file": "mgl_render_texture.cpp",
+      "line": 1182,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is1",
+        "D"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIsMSOr2DArray",
+      "file": "mgl_render_texture.cpp",
+      "line": 1186,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is",
+        "M"
+      ]
+    },
+    {
+      "symbol": "mglRenderMarkTextureLevelWritten",
+      "file": "mgl_render_texture.cpp",
+      "line": 1193,
+      "domain": "texture",
+      "tokens": [
+        "Mark",
+        "Texture",
+        "Level",
+        "Written"
+      ]
+    },
+    {
+      "symbol": "mglRenderImageAccessWritable",
+      "file": "mgl_render_texture.cpp",
+      "line": 1207,
+      "domain": "texture",
+      "tokens": [
+        "Image",
+        "Access",
+        "Writable"
+      ]
+    },
+    {
+      "symbol": "mglRenderSamplerObjectTarget",
+      "file": "mgl_render_texture.cpp",
+      "line": 1211,
+      "domain": "texture",
+      "tokens": [
+        "Sampler",
+        "Object",
+        "Target"
+      ]
+    },
+    {
+      "symbol": "mglRenderPixelFormatIsUnorm8Color",
+      "file": "mgl_render_texture.cpp",
+      "line": 1215,
+      "domain": "texture",
+      "tokens": [
+        "Pixel",
+        "Format",
+        "Is",
+        "Unorm8"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIsCubeMap",
+      "file": "mgl_render_texture.cpp",
+      "line": 1220,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is",
+        "Cube"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureNeedsArrayLengthCheck",
+      "file": "mgl_render_texture.cpp",
+      "line": 1224,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Needs",
+        "Array",
+        "Length"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIsLayeredUpload",
+      "file": "mgl_render_texture.cpp",
+      "line": 1231,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is",
+        "Layered"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureTargetIs1DArray",
+      "file": "mgl_render_texture.cpp",
+      "line": 1239,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Target",
+        "Is1",
+        "D"
+      ]
+    },
+    {
+      "symbol": "mglRenderReadTextureRegionClip",
+      "file": "mgl_render_texture.cpp",
+      "line": 1244,
+      "domain": "texture",
+      "tokens": [
+        "Read",
+        "Texture",
+        "Region",
+        "Clip"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalTextureLevelDimension",
+      "file": "mgl_render_texture.cpp",
+      "line": 1269,
+      "domain": "texture",
+      "tokens": [
+        "Metal",
+        "Texture",
+        "Level",
+        "Dimension"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateDefaultSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1279,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Default",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateFilterSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1289,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Filter",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetComputeTexture",
+      "file": "mgl_render_texture.cpp",
+      "line": 1308,
+      "domain": "texture",
+      "tokens": [
+        "Set",
+        "Compute",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetComputeSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1318,
+      "domain": "texture",
+      "tokens": [
+        "Set",
+        "Compute",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureSampleParams",
+      "file": "mgl_render_texture.cpp",
+      "line": 1328,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Sample",
+        "Params"
+      ]
+    },
+    {
+      "symbol": "mglRenderBlitSynchronizeTexture",
+      "file": "mgl_render_texture.cpp",
+      "line": 1348,
+      "domain": "texture",
+      "tokens": [
+        "Blit",
+        "Synchronize",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderTexture",
+      "file": "mgl_render_texture.cpp",
+      "line": 1361,
+      "domain": "texture",
+      "tokens": [
+        "Set",
+        "Render",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1377,
+      "domain": "texture",
+      "tokens": [
+        "Set",
+        "Render",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateTextureStagingOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 1393,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Texture",
+        "Staging",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderDestroyTextureStagingOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 1415,
+      "domain": "texture",
+      "tokens": [
+        "Destroy",
+        "Texture",
+        "Staging",
+        "Owner"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateTextureFromState",
+      "file": "mgl_render_texture.cpp",
+      "line": 1423,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Texture",
+        "From",
+        "State"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBufferTextureFromState",
+      "file": "mgl_render_texture.cpp",
+      "line": 1446,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Buffer",
+        "Texture",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1470,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateSamplerForGL",
+      "file": "mgl_render_texture.cpp",
+      "line": 1485,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Sampler",
+        "For",
+        "GL"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetTextureSlotMask",
+      "file": "mgl_render_texture.cpp",
+      "line": 1681,
+      "domain": "texture",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Texture",
+        "Slot"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetTexture",
+      "file": "mgl_render_texture.cpp",
+      "line": 1693,
+      "domain": "texture",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1726,
+      "domain": "texture",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetTexture",
+      "file": "mgl_render_texture.cpp",
+      "line": 1759,
+      "domain": "texture",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingGetSampler",
+      "file": "mgl_render_texture.cpp",
+      "line": 1774,
+      "domain": "texture",
+      "tokens": [
+        "Binding",
+        "Get",
+        "Sampler"
+      ]
+    },
+    {
+      "symbol": "mglRenderPassUsesColorTextureOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 1789,
+      "domain": "texture",
+      "tokens": [
+        "Pass",
+        "Uses",
+        "Color",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 1801,
+      "domain": "texture",
+      "tokens": [
+        "Copy",
+        "Matching",
+        "Texture",
+        "Subresources"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalPixelFormatIsDepthOrStencil",
+      "file": "mgl_render_texture.cpp",
+      "line": 1844,
+      "domain": "texture",
+      "tokens": [
+        "Metal",
+        "Pixel",
+        "Format",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderMetalPixelFormatIsPackedDepthStencil",
+      "file": "mgl_render_texture.cpp",
+      "line": 1858,
+      "domain": "texture",
+      "tokens": [
+        "Metal",
+        "Pixel",
+        "Format",
+        "Is"
+      ]
+    },
+    {
+      "symbol": "mglRenderTexturePixelFormatCompatibleWithExpectedDataKind",
+      "file": "mgl_render_texture.cpp",
+      "line": 1869,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Pixel",
+        "Format",
+        "Compatible"
+      ]
+    },
+    {
+      "symbol": "mglRenderTextureUploadNeedsDepthNormalization",
+      "file": "mgl_render_texture.cpp",
+      "line": 1879,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Upload",
+        "Needs",
+        "Depth"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateDepth24Stencil8NormalizedUpload",
+      "file": "mgl_render_texture.cpp",
+      "line": 1885,
+      "domain": "lifecycle",
+      "tokens": [
+        "Create",
+        "Depth24",
+        "Stencil8",
+        "Normalized"
+      ]
+    },
+    {
+      "symbol": "mglRenderEncodeTextureUploadLayersForCommandBufferOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 1913,
+      "domain": "texture",
+      "tokens": [
+        "Encode",
+        "Texture",
+        "Upload",
+        "Layers"
+      ]
+    },
+    {
+      "symbol": "mglRenderTexturePrepareLevelUpload",
+      "file": "mgl_render_texture.cpp",
+      "line": 1926,
+      "domain": "texture",
+      "tokens": [
+        "Texture",
+        "Prepare",
+        "Level",
+        "Upload"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopySnorm8TextureBytesToGL",
+      "file": "mgl_render_texture.cpp",
+      "line": 2000,
+      "domain": "texture",
+      "tokens": [
+        "Copy",
+        "Snorm8",
+        "Texture",
+        "Bytes"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyRG11B10TextureBytesToGL",
+      "file": "mgl_render_texture.cpp",
+      "line": 2093,
+      "domain": "texture",
+      "tokens": [
+        "Copy",
+        "R",
+        "G11",
+        "B10"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopy16or32TextureBytesToGL",
+      "file": "mgl_render_texture.cpp",
+      "line": 2232,
+      "domain": "texture",
+      "tokens": [
+        "Copy16or32",
+        "Texture",
+        "Bytes",
+        "To"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyUnorm8ScalarTextureBytesToGL",
+      "file": "mgl_render_texture.cpp",
+      "line": 2492,
+      "domain": "texture",
+      "tokens": [
+        "Copy",
+        "Unorm8",
+        "Scalar",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderCopyUnorm8PackedTextureBytesToGL",
+      "file": "mgl_render_texture.cpp",
+      "line": 2579,
+      "domain": "texture",
+      "tokens": [
+        "Copy",
+        "Unorm8",
+        "Packed",
+        "Texture"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetTextureForOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 2687,
+      "domain": "texture",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Texture",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderBindingSetSamplerForOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 2693,
+      "domain": "texture",
+      "tokens": [
+        "Binding",
+        "Set",
+        "Sampler",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderTextureForOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 2699,
+      "domain": "texture",
+      "tokens": [
+        "Set",
+        "Render",
+        "Texture",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderSetRenderSamplerForOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 2705,
+      "domain": "texture",
+      "tokens": [
+        "Set",
+        "Render",
+        "Sampler",
+        "For"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateTextureFromDescriptor",
+      "file": "mgl_render_texture.cpp",
+      "line": 2744,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Texture",
+        "From",
+        "Descriptor"
+      ]
+    },
+    {
+      "symbol": "mglRenderCreateBufferTextureFromDescriptor",
+      "file": "mgl_render_texture.cpp",
+      "line": 2755,
+      "domain": "texture",
+      "tokens": [
+        "Create",
+        "Buffer",
+        "Texture",
+        "From"
+      ]
+    },
+    {
+      "symbol": "mglRenderGetRenderPassAttachmentTextureOwner",
+      "file": "mgl_render_texture.cpp",
+      "line": 2768,
+      "domain": "texture",
+      "tokens": [
+        "Get",
+        "Render",
+        "Pass",
+        "Attachment"
+      ]
+    }
+  ]
+}

@@ -133,14 +133,14 @@ struct MGLRendererBackendHandle {
     std::mutex mutex;
     GLMContext context = nullptr;
     MTL::Device *device = nullptr;
-    void *command_queue_owner = nullptr;
+    MGLCommandQueueOwner *command_queue_owner = nullptr;
     MTL::CommandQueue *command_queue = nullptr;
-    void *command_buffer_owner = nullptr;
-    void *render_encoder_owner = nullptr;
-    void *render_pass_state_owner = nullptr;
-    void *query_owner = nullptr;
-    void *recovery_owner = nullptr;
-    void *binding_owner = nullptr;
+    MGLCommandBufferOwner *command_buffer_owner = nullptr;
+    MGLRenderEncoderOwner *render_encoder_owner = nullptr;
+    MGLRenderPassStateOwner *render_pass_state_owner = nullptr;
+    MGLQueryStateOwner *query_owner = nullptr;
+    MGLCommandBufferRecoveryOwner *recovery_owner = nullptr;
+    MGLBindingState *binding_owner = nullptr;
     MTL::Texture *fallback_render_target_texture = nullptr;
     MTL::Buffer *fallback_binding_buffer = nullptr;
     uint64_t fallback_binding_buffer_length = 0;
@@ -575,8 +575,8 @@ extern "C" int mglRendererBackendCreate(
     }
     backend->renderer_initialized = true;
 
-    backend->binding_owner =
-        mglRenderBindingCreate(info->binding_slot_count);
+    backend->binding_owner = static_cast<MGLBindingState *>(
+        mglRenderBindingCreate(info->binding_slot_count));
     if (!backend->binding_owner ||
         mglRenderCreateQueryStateOwner(
             info->query_capacity, &backend->query_owner) != 0 ||
@@ -786,11 +786,7 @@ extern "C" void *mglRendererBackendGetCommandQueue(
     return backend->command_queue;
 }
 
-extern "C" int mglRendererBackendAttachRuntimeOwners(
-    MGLRendererBackendHandle *backend,
-    void *command_buffer_owner,
-    void *render_encoder_owner,
-    void *render_pass_state_owner)
+extern "C" int mglRendererBackendAttachRuntimeOwners(MGLRendererBackendHandle *backend, MGLCommandBufferOwner *command_buffer_owner, MGLRenderEncoderOwner *render_encoder_owner, MGLRenderPassStateOwner *render_pass_state_owner)
 {
     if (!backend) return -1;
     std::lock_guard<std::mutex> lock(backend->mutex);
@@ -1677,7 +1673,7 @@ extern "C" int mglRendererBackendShutdown(
     if (result_out) *result_out = {};
     if (!backend) return -1;
 
-    void *command_owner = nullptr;
+    MGLCommandBufferOwner *command_owner = nullptr;
     {
         std::lock_guard<std::mutex> lock(backend->mutex);
         if (backend->shutdown_started) return 0;

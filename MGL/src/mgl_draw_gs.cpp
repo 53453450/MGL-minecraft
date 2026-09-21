@@ -330,7 +330,7 @@ extern "C" void mglDrawGsEncodePassthrough(const MGLGsPassthroughEncodeState *st
                 (uint64_t)state->output_stride +
             headerBytes;
         (void)mglRenderSetRenderBufferForOwner(
-            state->encoder_owner, state->output_buffer, offset,
+            reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->output_buffer, offset,
             MGL_RENDER_BINDING_STAGE_VERTEX, 0u);
         MGLRenderDrawPlan plan = {};
         plan.kind = MGL_RENDER_DRAW_ARRAY_INDIRECT;
@@ -339,7 +339,7 @@ extern "C" void mglDrawGsEncodePassthrough(const MGLGsPassthroughEncodeState *st
         plan.indirect_buffer_offset =
             (uint64_t)primitive * (uint64_t)state->counts_record_bytes;
         (void)mglRenderEncodeDrawForRenderEncoderOwner(
-            state->encoder_owner, &plan, NULL, 0);
+            reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), &plan, NULL, 0);
     }
 }
 

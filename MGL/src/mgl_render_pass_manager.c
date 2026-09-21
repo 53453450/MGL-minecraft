@@ -222,7 +222,8 @@ void mglPassManagerDiscardCurrentCommandBuffer(MGLRenderPassManager *manager)
 }
 
 int mglPassManagerCommitCommandBufferTransaction(
-    MGLRenderPassManager *manager, void *command_buffer, void *recovery_owner,
+    MGLRenderPassManager *manager, void *command_buffer,
+    MGLCommandBufferRecoveryOwner *recovery_owner,
     int wait_for_completion, MGLRenderCommandBufferTransaction *result)
 {
     if (!manager) {

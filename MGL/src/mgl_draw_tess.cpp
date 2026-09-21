@@ -273,21 +273,21 @@ extern "C" void mglTessEncodeNativePatches(const MGLTessNativeEncodeState *state
             ? MGL_AIR_TESS_FACTOR_RECORD_BYTES
             : MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
     (void)mglRenderSetTessellationFactorBufferForOwner(
-        state->encoder_owner, state->native_factors, 0u, factorInstanceStride);
+        reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->native_factors, 0u, factorInstanceStride);
 
     for (uint32_t i = 0u; i < state->instance_count; i++) {
         const uint64_t instanceOffset =
             state->tess_vertex_capture_offset +
             (uint64_t)i * instanceStrideBytes;
         (void)mglRenderSetRenderBufferForOwner(
-            state->encoder_owner, state->tcs_output_buffer, instanceOffset,
+            reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->tcs_output_buffer, instanceOffset,
             MGL_RENDER_BINDING_STAGE_VERTEX, 0u);
         (void)mglRenderSetRenderBufferForOwner(
-            state->encoder_owner, state->tcs_output_buffer, instanceOffset,
+            reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->tcs_output_buffer, instanceOffset,
             MGL_RENDER_BINDING_STAGE_VERTEX, 30u);
         GLuint patchInfo[2] = {state->patch_vertices, tcsOut};
         (void)mglRenderSetRenderBytesForOwner(
-            state->encoder_owner, patchInfo, sizeof(patchInfo),
+            reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), patchInfo, sizeof(patchInfo),
             MGL_RENDER_BINDING_STAGE_VERTEX, 28u);
         const uint32_t perPatchNative =
             (state->tcs_patch_out_buffer != NULL) ? 1u : 0u;
@@ -304,7 +304,7 @@ extern "C" void mglTessEncodeNativePatches(const MGLTessNativeEncodeState *state
             plan.base_instance =
                 (uint64_t)state->base_instance + (uint64_t)i;
             (void)mglRenderEncodeDrawForRenderEncoderOwner(
-                state->encoder_owner, &plan, NULL, 0);
+                reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), &plan, NULL, 0);
             continue;
         }
         const uint64_t cpcStride =
@@ -313,19 +313,19 @@ extern "C" void mglTessEncodeNativePatches(const MGLTessNativeEncodeState *state
             const uint64_t patchOffset =
                 instanceOffset + (uint64_t)p * cpcStride;
             (void)mglRenderSetRenderBufferForOwner(
-                state->encoder_owner, state->tcs_output_buffer, patchOffset,
+                reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->tcs_output_buffer, patchOffset,
                 MGL_RENDER_BINDING_STAGE_VERTEX, 0u);
             GLuint patchInfoWords[3] = {state->patch_vertices, tcsOut, p};
             (void)mglRenderSetRenderBytesForOwner(
-                state->encoder_owner, patchInfoWords, sizeof(patchInfoWords),
+                reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), patchInfoWords, sizeof(patchInfoWords),
                 MGL_RENDER_BINDING_STAGE_VERTEX, 28u);
             if (perPatchNative) {
                 (void)mglRenderSetRenderBufferForOwner(
-                    state->encoder_owner, state->tcs_patch_out_buffer,
+                    reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->tcs_patch_out_buffer,
                     (uint64_t)p * (uint64_t)state->patch_out_stride,
                     MGL_RENDER_BINDING_STAGE_VERTEX, 27u);
                 (void)mglRenderSetTessellationFactorBufferForOwner(
-                    state->encoder_owner, state->native_factors,
+                    reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->native_factors,
                     (uint64_t)p * nativeFactorStride, 0u);
                 MGLRenderDrawPlan plan = {};
                 plan.kind = MGL_RENDER_DRAW_PATCHES;
@@ -337,7 +337,7 @@ extern "C" void mglTessEncodeNativePatches(const MGLTessNativeEncodeState *state
                 plan.base_instance =
                     (uint64_t)state->base_instance + (uint64_t)i;
                 (void)mglRenderEncodeDrawForRenderEncoderOwner(
-                    state->encoder_owner, &plan, NULL, 0);
+                    reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), &plan, NULL, 0);
             } else {
                 MGLRenderDrawPlan plan = {};
                 plan.kind = MGL_RENDER_DRAW_PATCHES;
@@ -349,7 +349,7 @@ extern "C" void mglTessEncodeNativePatches(const MGLTessNativeEncodeState *state
                 plan.base_instance =
                     (uint64_t)state->base_instance + (uint64_t)i;
                 (void)mglRenderEncodeDrawForRenderEncoderOwner(
-                    state->encoder_owner, &plan, NULL, 0);
+                    reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), &plan, NULL, 0);
             }
         }
     }
@@ -1789,10 +1789,10 @@ extern "C" void mglTessBindCaptureSlots(void* encoder_owner,
         return;
     }
     (void)mglRenderSetRenderBufferForOwner(
-        encoder_owner, capture_buffer, 0u, MGL_RENDER_BINDING_STAGE_VERTEX,
+        reinterpret_cast<MGLRenderEncoderOwner*>(encoder_owner), capture_buffer, 0u, MGL_RENDER_BINDING_STAGE_VERTEX,
         kMGLCullDistanceVertexBufferIndex);
     (void)mglRenderSetRenderBytesForOwner(
-        encoder_owner, params, 3u * sizeof(uint32_t),
+        reinterpret_cast<MGLRenderEncoderOwner*>(encoder_owner), params, 3u * sizeof(uint32_t),
         MGL_RENDER_BINDING_STAGE_VERTEX, kMGLCullDistanceParamsBufferIndex);
 }
 
@@ -1811,7 +1811,7 @@ extern "C" void mglTessEncodeCaptureArray(void *encoder_owner, uint32_t first,
     plan.vertex_count = count;
     plan.instance_count = instance_count;
     plan.base_instance = base_instance;
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(encoder_owner, &plan, NULL,
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(reinterpret_cast<MGLRenderEncoderOwner*>(encoder_owner), &plan, NULL,
                                                    0);
 }
 
@@ -1834,7 +1834,7 @@ extern "C" void mglTessEncodeCaptureIndexed(
     plan.instance_count = instance_count;
     plan.base_vertex = base_vertex;
     plan.base_instance = base_instance;
-    (void)mglRenderEncodeDrawForRenderEncoderOwner(encoder_owner, &plan, NULL,
+    (void)mglRenderEncodeDrawForRenderEncoderOwner(reinterpret_cast<MGLRenderEncoderOwner*>(encoder_owner), &plan, NULL,
                                                    0);
 }
 

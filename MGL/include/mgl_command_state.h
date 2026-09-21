@@ -31,8 +31,8 @@ extern "C" {
 #endif
 
 typedef struct MGLCommandState_t {
-    void *_Nullable renderPassIdentityOwner;
-    void *_Nullable renderPassStateOwner;
+    MGLRenderPassIdentityOwner *_Nullable renderPassIdentityOwner;
+    MGLRenderPassStateOwner *_Nullable renderPassStateOwner;
     Framebuffer *_Nullable renderPassFramebuffer;
     GLuint renderPassFramebufferName;
     GLenum renderPassDrawBuffer;
@@ -41,12 +41,12 @@ typedef struct MGLCommandState_t {
     uint64_t traceReplayFlushId;
     uint32_t traceReplayBatchIndex;
     GLuint dontCareFrameGeneration;
-    void *_Nullable currentCommandBufferOwner;
+    MGLCommandBufferOwner *_Nullable currentCommandBufferOwner;
     void *_Nullable detachedCommandBufferSubmission;
-    void *_Nullable mdiArgsScratchOwner;
-    void *_Nullable currentRenderEncoderOwner;
+    MGLMDIScratchOwner *_Nullable mdiArgsScratchOwner;
+    MGLRenderEncoderOwner *_Nullable currentRenderEncoderOwner;
     uint8_t currentDrawUsesRTSampledCopy;
-    void *_Nullable pendingEventOwner;
+    MGLPendingEventOwner *_Nullable pendingEventOwner;
     /* Cache for currentRenderPassMatchesCurrentFramebuffer.
      * lastFboMatchFboName == 0 means "invalid cache, recompute".
      * Valid only for non-default FBOs (fbo != NULL && fboName != 0);

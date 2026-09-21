@@ -55,9 +55,7 @@ void *mglPassManagerInstallNewCommandBufferFromQueue(
 void *mglPassManagerDetachCurrentCommandBufferForSubmission(
     MGLRenderPassManager *manager);
 void mglPassManagerDiscardCurrentCommandBuffer(MGLRenderPassManager *manager);
-int mglPassManagerCommitCommandBufferTransaction(
-    MGLRenderPassManager *manager, void *command_buffer, void *recovery_owner,
-    int wait_for_completion, MGLRenderCommandBufferTransaction *result);
+int mglPassManagerCommitCommandBufferTransaction(MGLRenderPassManager *manager, void *command_buffer, MGLCommandBufferRecoveryOwner *recovery_owner, int wait_for_completion, MGLRenderCommandBufferTransaction *result);
 int mglPassManagerHasLastSubmittedCommandBuffer(MGLRenderPassManager *manager);
 int mglPassManagerWaitForLastSubmittedCommandBuffer(
     MGLRenderPassManager *manager, MGLRenderCommandBufferState *state);

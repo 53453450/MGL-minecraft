@@ -92,7 +92,7 @@ extern "C" int mglDrawRunCullDistanceArrayCapture(
         1u, (uint32_t)first, nullptr, 0u, 0u, 32u,
         (uint32_t)std::min<GLuint>(vertexProgram->cull_distance_count, 8u),
         baseInstance, (uint32_t)count, &params);
-    mglRenderBindCullDistanceEmuSlots(ops->encoder_owner(ops->renderer), capture,
+    mglRenderBindCullDistanceEmuSlots(reinterpret_cast<MGLRenderEncoderOwner*>(ops->encoder_owner(ops->renderer)), capture,
                                       &params);
     mglTessEncodeCaptureArray(ops->encoder_owner(ops->renderer), (uint32_t)first,
                               (uint32_t)count, (uint32_t)instanceCount,
@@ -193,7 +193,7 @@ extern "C" int mglDrawEncodeCullDistanceElement(
     if (mglRenderCreateCullDistanceIndexPlan(
             ops->device(ops->renderer), indexBytes, indexType, (uint64_t)count,
             mode, restartEnabled ? 1 : 0, restartIndex, baseVertex,
-            polygon_line_mode ? 1 : 0, &planOwner, &indexBufferHandle,
+            polygon_line_mode ? 1 : 0, reinterpret_cast<MGLCullDistanceIndexPlan**>(&planOwner), &indexBufferHandle,
             &primitiveCount) != 0 ||
         !planOwner) {
         return 1;
@@ -216,7 +216,7 @@ extern "C" int mglDrawEncodeCullDistanceElement(
     for (uint64_t primitiveIndex = 0u; primitiveIndex < primitiveCount;
          ++primitiveIndex) {
         MGLRenderCullDistancePrimitive primitive = {};
-        if (mglRenderGetCullDistanceIndexPrimitive(planOwner, primitiveIndex,
+        if (mglRenderGetCullDistanceIndexPrimitive(reinterpret_cast<MGLCullDistanceIndexPlan*>(planOwner), primitiveIndex,
                                                    &primitive) != 0) {
             break;
         }
@@ -227,7 +227,7 @@ extern "C" int mglDrawEncodeCullDistanceElement(
             indexBufferHandle, primitive.index_buffer_offset,
             (uint64_t)instanceCount, 0, (uint64_t)baseInstance);
     }
-    mglRenderDestroyCullDistanceIndexPlan(&planOwner);
+    mglRenderDestroyCullDistanceIndexPlan(reinterpret_cast<MGLCullDistanceIndexPlan**>(&planOwner));
     return 1;
 }
 

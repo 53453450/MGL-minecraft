@@ -171,7 +171,7 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
 
     MGLRenderCommandBufferState commandState = {0};
     const int hasCommandState = mglRenderCommandBufferOwnerHasState(
-        ops->command_buffer_owner(ops->renderer), &commandState);
+        reinterpret_cast<MGLCommandBufferOwner*>(ops->command_buffer_owner(ops->renderer)), &commandState);
     if (mglTessCommandBufferNeedsNew(hasCommandState, commandState.status)) {
         if (!ops->ensure_command_buffer(ops->renderer)) {
             ctx->active_state->dirty_bits = DIRTY_ALL;
@@ -497,8 +497,8 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
     const int gsDiagnostic = std::getenv("MGL_GS_DIAG") != NULL;
     char executionError[256] = {0};
     if (mglRenderExecuteComputeExecutionPlan(
-            ops->command_buffer_owner(ops->renderer),
-            ops->recovery_owner(ops->renderer), &executionPlan, copyBackEntries,
+            reinterpret_cast<MGLCommandBufferOwner*>(ops->command_buffer_owner(ops->renderer)),
+            reinterpret_cast<MGLCommandBufferRecoveryOwner*>(ops->recovery_owner(ops->renderer)), &executionPlan, copyBackEntries,
             copyBackEntryCount,
             (requireCPUVisibility || gsDiagnostic) ? 1u : 0u, &executionResult,
             executionError, sizeof(executionError)) != 0) {
@@ -555,8 +555,8 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
         MGLRenderComputeExecutionResult scatterResult = {0};
         char scatterError[256] = {0};
         if (mglRenderExecuteComputeExecutionPlan(
-                ops->command_buffer_owner(ops->renderer),
-                ops->recovery_owner(ops->renderer), &scatterPlan, NULL, 0u, 1u,
+                reinterpret_cast<MGLCommandBufferOwner*>(ops->command_buffer_owner(ops->renderer)),
+                reinterpret_cast<MGLCommandBufferRecoveryOwner*>(ops->recovery_owner(ops->renderer)), &scatterPlan, NULL, 0u, 1u,
                 &scatterResult, scatterError, sizeof(scatterError)) != 0) {
             if (scatterResult.transaction.device_reset_requested &&
                 ops->note_device_reset) {
@@ -727,11 +727,11 @@ extern "C" int mglDrawGsExecuteMetalExpansion(
         void *binding = ops->binding_state_owner(ops->renderer);
         if (binding) {
             for (uint32_t slot = 0u; slot < 31u; slot++) {
-                (void)mglRenderBindingClearFragmentBuffer(binding, slot);
+                (void)mglRenderBindingClearFragmentBuffer(reinterpret_cast<MGLBindingState*>(binding), slot);
             }
             const uint32_t tex_slots = (uint32_t)TEXTURE_UNITS;
             for (uint32_t slot = 0u; slot < tex_slots; slot++) {
-                (void)mglRenderBindingClearFragmentTexture(binding, slot);
+                (void)mglRenderBindingClearFragmentTexture(reinterpret_cast<MGLBindingState*>(binding), slot);
             }
         }
         if (!ops->rebind_fragment_after_gs(ops->renderer, ctx)) {

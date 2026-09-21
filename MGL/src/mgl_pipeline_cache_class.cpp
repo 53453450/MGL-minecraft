@@ -153,7 +153,7 @@ static MGLPcBool mglPcEnsureOwnerCreated(id self, SEL _cmd)
     if (!mglPcDevice(self)) return 0;
     if (mglRenderCreatePipelineCacheOwner(
             state->psoDedupEnabled ? 1 : 0, state->dsCacheEnabled ? 1 : 0,
-            mglPcArchiveRequested(self) ? 1 : 0, ownerSlot) != 0 ||
+            mglPcArchiveRequested(self) ? 1 : 0, reinterpret_cast<MGLPipelineCacheOwner**>(ownerSlot)) != 0 ||
         !*ownerSlot) {
         *ownerSlot = NULL;
         return 0;
@@ -168,7 +168,7 @@ static MGLPcBool mglPcEnsureOwnerCreated(id self, SEL _cmd)
         .stencil_format = (uint32_t)state->pipelineStencilFormat,
         .program_name = state->pipelineProgramName,
     };
-    mglRenderActivatePipelineState(*ownerSlot, &active);
+    mglRenderActivatePipelineState(reinterpret_cast<MGLPipelineCacheOwner*>(*ownerSlot), &active);
     return 1;
 }
 
@@ -182,7 +182,7 @@ static MGLPcBool mglPcIsBinaryArchiveEnabled(id self, SEL _cmd)
     int enabled = mglPcArchiveRequested(self) ? 1 : 0;
     void *owner = mglPcOwner(self);
     if (owner) {
-        mglRenderGetPipelineBinaryArchiveState(owner, &enabled, NULL);
+        mglRenderGetPipelineBinaryArchiveState(reinterpret_cast<MGLPipelineCacheOwner*>(owner), &enabled, NULL);
     }
     return enabled != 0;
 }
@@ -197,7 +197,7 @@ static void mglPcSetDevice(id self, SEL _cmd, id device)
     void *opaqueDevice = (void *)device;
     void **ownerSlot = (void **)mglPcOwnerSlot(self);
     if (mglPcDevice(self) != opaqueDevice) {
-        mglRenderDestroyPipelineCacheOwner(ownerSlot);
+        mglRenderDestroyPipelineCacheOwner(reinterpret_cast<MGLPipelineCacheOwner**>(ownerSlot));
     }
     mglPcSetDeviceIvar(self, opaqueDevice);
     if (opaqueDevice) {
@@ -217,7 +217,7 @@ static id mglPcDepthStencilStateForValueState(
     void *statePtr = NULL;
     if (mglPcState(self)->dsCacheEnabled) {
         int created = 0;
-        if (mglRenderGetOrCreateDepthStencilState(owner, descriptorState,
+        if (mglRenderGetOrCreateDepthStencilState(reinterpret_cast<MGLPipelineCacheOwner*>(owner), descriptorState,
                                                   &statePtr, &created) == 0 &&
             statePtr) {
             if (created) MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
@@ -248,7 +248,7 @@ static MGLPcBool mglPcLookupPipelineForWords(id self, SEL _cmd,
     }
     if (!mglPcEnsureOwner(self, _cmd)) return 0;
     MGLRenderPipelineActiveState cached = {0};
-    if (mglRenderLookupPipeline(mglPcOwner(self), words, &cached) != 1 ||
+    if (mglRenderLookupPipeline(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), words, &cached) != 1 ||
         !cached.pipeline_state) {
         return 0;
     }
@@ -270,7 +270,7 @@ static unsigned long mglPcStorePipeline(id self, SEL _cmd, id pipeline,
         .fragment_function = (void *)fragmentFunction,
     };
     uint32_t removed = 0;
-    if (mglRenderStorePipeline(mglPcOwner(self), words, &state, &removed) != 0) {
+    if (mglRenderStorePipeline(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), words, &state, &removed) != 0) {
         return 0;
     }
     MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
@@ -283,7 +283,7 @@ static MGLPcBool mglPcPipelineDescriptorStateForWords(
 {
     if (!words || !stateOut) return 0;
     return mglPcEnsureOwner(self, _cmd) &&
-           mglRenderLookupPipelineDescriptorState(mglPcOwner(self), words,
+           mglRenderLookupPipelineDescriptorState(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), words,
                                                   stateOut) == 1;
 }
 
@@ -293,7 +293,7 @@ static void mglPcStorePipelineDescriptorState(
 {
     if (!state || !words) return;
     if (!mglPcEnsureOwner(self, _cmd)) return;
-    mglRenderStorePipelineDescriptorState(mglPcOwner(self), words, state);
+    mglRenderStorePipelineDescriptorState(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), words, state);
 }
 
 static MGLPcBool mglPcBlendStateForAttachment(
@@ -301,7 +301,7 @@ static MGLPcBool mglPcBlendStateForAttachment(
 {
     if (index >= MAX_COLOR_ATTACHMENTS || !outState) return 0;
     return mglPcEnsureOwner(self, _cmd) &&
-           mglRenderGetPipelineBlendState(mglPcOwner(self), (uint32_t)index,
+           mglRenderGetPipelineBlendState(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), (uint32_t)index,
                                           outState) == 0;
 }
 
@@ -355,7 +355,7 @@ static void mglPcLoadBinaryArchive(id self, SEL _cmd)
     char message[512] = {0};
     void *owner = mglPcOwner(self);
     int result = mglRenderLoadPipelineBinaryArchive(
-        owner, archiveKey, (void *)archiveURL, archiveExists ? 1 : 0, &reused,
+        reinterpret_cast<MGLPipelineCacheOwner*>(owner), archiveKey, (void *)archiveURL, archiveExists ? 1 : 0, &reused,
         message, sizeof(message));
     if (result != 0 && archiveExists) {
         if (!mglPipelineCacheArchiveRemove(archiveKey)) {
@@ -369,7 +369,7 @@ static void mglPcLoadBinaryArchive(id self, SEL _cmd)
         archiveExists = 0;
         message[0] = '\0';
         result = mglRenderLoadPipelineBinaryArchive(
-            owner, archiveKey, (void *)archiveURL, 0, &reused, message,
+            reinterpret_cast<MGLPipelineCacheOwner*>(owner), archiveKey, (void *)archiveURL, 0, &reused, message,
             sizeof(message));
     }
     if (result == 0) {
@@ -388,7 +388,7 @@ static void mglPcSaveBinaryArchive(id self, SEL _cmd)
     int present = 0;
     void *owner = mglPcOwner(self);
     if (!owner ||
-        mglRenderGetPipelineBinaryArchiveState(owner, NULL, &present) != 0 ||
+        mglRenderGetPipelineBinaryArchiveState(reinterpret_cast<MGLPipelineCacheOwner*>(owner), NULL, &present) != 0 ||
         !present) {
         return;
     }
@@ -400,13 +400,13 @@ static void mglPcSaveBinaryArchive(id self, SEL _cmd)
                                      sizeof(archiveKey));
     char message[512] = {0};
     MGLPcBool ok =
-        mglRenderSerializePipelineBinaryArchive(owner, (void *)archiveURL,
+        mglRenderSerializePipelineBinaryArchive(reinterpret_cast<MGLPipelineCacheOwner*>(owner), (void *)archiveURL,
                                                 message, sizeof(message)) == 0;
     MGLPcBool discarded = 0;
     if (!ok) {
         discarded = !mglPipelineCacheArchiveExists(archiveKey) ||
                     mglPipelineCacheArchiveRemove(archiveKey);
-        mglRenderDiscardPipelineBinaryArchive(owner, archiveKey);
+        mglRenderDiscardPipelineBinaryArchive(reinterpret_cast<MGLPipelineCacheOwner*>(owner), archiveKey);
     }
     if (ok) {
         fprintf(stderr, "MGL BINARY ARCHIVE: saved to %s\n",
@@ -440,14 +440,14 @@ static int mglPcCreateRenderPipelineFromState(
 {
     if (!mglPcEnsureOwnerCreated(self, _cmd)) return -1;
     return mglRenderCreateRenderPipelineFromStateWithArchiveOwner(
-        mglPcOwner(self), vertexFunction, fragmentFunction, state, pipelineOut,
+        reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), vertexFunction, fragmentFunction, state, pipelineOut,
         errorMessage, errorCapacity);
 }
 
 static void mglPcInvalidatePipelineState(id self, SEL _cmd)
 {
     if (mglPcEnsureOwner(self, _cmd)) {
-        mglRenderInvalidatePipelineActiveState(mglPcOwner(self));
+        mglRenderInvalidatePipelineActiveState(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)));
     }
     MGLPipelineCacheState *state = mglPcState(self);
     state->pipelineState = NULL;
@@ -462,7 +462,7 @@ static void mglPcInvalidatePipelineState(id self, SEL _cmd)
 static void mglPcSetPipelineState(id self, SEL _cmd, id pipelineState)
 {
     if (mglPcEnsureOwner(self, _cmd)) {
-        mglRenderSetPipelineActiveObject(mglPcOwner(self), (void *)pipelineState);
+        mglRenderSetPipelineActiveObject(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), (void *)pipelineState);
     }
     mglPcState(self)->pipelineState = (void *)pipelineState;
 }
@@ -484,7 +484,7 @@ static void mglPcActivatePipelineState(id self, SEL _cmd, id pipelineState,
             .stencil_format = stencilFormat,
             .program_name = programName,
         };
-        mglRenderActivatePipelineState(mglPcOwner(self), &active);
+        mglRenderActivatePipelineState(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), &active);
     }
     MGLPipelineCacheState *state = mglPcState(self);
     state->pipelineState = (void *)pipelineState;
@@ -512,7 +512,7 @@ static void mglPcSetBlendFactorsForAttachment(
             .alpha_operation = alphaOperation,
             .color_write_mask = colorMask,
         };
-        mglRenderSetPipelineBlendState(mglPcOwner(self), (uint32_t)index, &blend);
+        mglRenderSetPipelineBlendState(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)), (uint32_t)index, &blend);
     }
 }
 
@@ -520,13 +520,13 @@ static void mglPcDisableBinaryArchive(id self, SEL _cmd)
 {
     mglPcSetArchiveRequested(self, 0);
     if (mglPcEnsureOwnerCreated(self, _cmd)) {
-        mglRenderDisablePipelineBinaryArchive(mglPcOwner(self));
+        mglRenderDisablePipelineBinaryArchive(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)));
     }
 }
 
 static void mglPcResetCaches(id self, SEL _cmd)
 {
-    mglRenderResetPipelineCacheOwner(mglPcOwner(self));
+    mglRenderResetPipelineCacheOwner(reinterpret_cast<MGLPipelineCacheOwner*>(mglPcOwner(self)));
     MGLPipelineCacheState *state = mglPcState(self);
     state->pipelineState = NULL;
     state->pipelineVertexFunction = NULL;
@@ -537,12 +537,12 @@ static void mglPcShutdown(id self, SEL _cmd)
 {
     mglPcResetCaches(self, _cmd);
     mglPcSetDeviceIvar(self, NULL);
-    mglRenderDestroyPipelineCacheOwner((void **)mglPcOwnerSlot(self));
+    mglRenderDestroyPipelineCacheOwner(reinterpret_cast<MGLPipelineCacheOwner**>((void **)mglPcOwnerSlot(self)));
 }
 
 static void mglPcDealloc(id self, SEL _cmd)
 {
-    mglRenderDestroyPipelineCacheOwner((void **)mglPcOwnerSlot(self));
+    mglRenderDestroyPipelineCacheOwner(reinterpret_cast<MGLPipelineCacheOwner**>((void **)mglPcOwnerSlot(self)));
     struct objc_super super = { self, class_getSuperclass(object_getClass(self)) };
     ((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(
         &super, sel_registerName("dealloc"));

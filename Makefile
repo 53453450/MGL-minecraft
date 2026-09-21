@@ -1052,7 +1052,7 @@ $(build_dir)/metalcpp_%.o: MGL/src/%.cpp
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
-	MGL/src/mgl_render.cpp MGL/src/mgl_render.h \
+	MGL/src/mgl_render.cpp MGL/include/mgl_render.h \
 	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \

@@ -42,7 +42,7 @@ extern "C" int mgl_batch_mtl_draw_indexed(void *render_encoder_owner,
         .base_vertex = base_vertex,
         .base_instance = base_instance,
     };
-    return mglRenderEncodeDrawForRenderEncoderOwner(render_encoder_owner, &plan,
+    return mglRenderEncodeDrawForRenderEncoderOwner(reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), &plan,
                                                     NULL, 0);
 }
 
@@ -57,7 +57,7 @@ extern "C" int mgl_batch_mtl_draw_array_indirect(void *render_encoder_owner,
         .indirect_buffer = indirect_buffer,
         .indirect_buffer_offset = indirect_buffer_offset,
     };
-    return mglRenderEncodeDrawForRenderEncoderOwner(render_encoder_owner, &plan,
+    return mglRenderEncodeDrawForRenderEncoderOwner(reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), &plan,
                                                     NULL, 0);
 }
 
@@ -75,7 +75,7 @@ extern "C" int mgl_batch_mtl_draw_indexed_indirect(
         .indirect_buffer = indirect_buffer,
         .indirect_buffer_offset = indirect_buffer_offset,
     };
-    return mglRenderEncodeDrawForRenderEncoderOwner(render_encoder_owner, &plan,
+    return mglRenderEncodeDrawForRenderEncoderOwner(reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), &plan,
                                                     NULL, 0);
 }
 
@@ -132,14 +132,14 @@ extern "C" int mgl_batch_mtl_use_render_resource(void *render_encoder_owner,
                                                  void *resource, uint32_t usage,
                                                  uint32_t stages)
 {
-    return mglRenderUseRenderResourceForOwner(render_encoder_owner, resource,
+    return mglRenderUseRenderResourceForOwner(reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), resource,
                                               usage, stages);
 }
 
 extern "C" int mgl_batch_mtl_execute_icb(void *render_encoder_owner, void *icb,
                                          uint64_t location, uint64_t length)
 {
-    return mglRenderExecuteIndirectCommandsForOwner(render_encoder_owner, icb,
+    return mglRenderExecuteIndirectCommandsForOwner(reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), icb,
                                                     location, length);
 }
 
@@ -229,16 +229,16 @@ extern "C" int mgl_batch_mtl_encode_buffer_binds(void *binding_state_owner,
         uint32_t valid_flag = 0;
         const int owner_valid =
             binding_state_owner &&
-            mglRenderBindingGetValid(binding_state_owner, &valid_flag) == 0 &&
+            mglRenderBindingGetValid(reinterpret_cast<MGLBindingState*>(binding_state_owner), &valid_flag) == 0 &&
             valid_flag != 0u;
         const int matches =
             owner_valid &&
-            mglRenderBindingGetBuffer(binding_state_owner, stage, r->metal_slot,
+            mglRenderBindingGetBuffer(reinterpret_cast<MGLBindingState*>(binding_state_owner), stage, r->metal_slot,
                                       &cur, &cur_off) == 0 &&
             cur == r->mtl_buffer && cur_off == r->offset;
         if (!matches) {
             if (r->is_vertex_stage) {
-                mglRenderBindingUpdateVertexBuffer(binding_state_owner,
+                mglRenderBindingUpdateVertexBuffer(reinterpret_cast<MGLBindingState*>(binding_state_owner),
                                                    r->mtl_buffer, r->offset,
                                                    r->metal_slot);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
@@ -249,7 +249,7 @@ extern "C" int mgl_batch_mtl_encode_buffer_binds(void *binding_state_owner,
                                              r->mtl_buffer, NULL, 0u};
                 }
             } else {
-                mglRenderBindingUpdateFragmentBuffer(binding_state_owner,
+                mglRenderBindingUpdateFragmentBuffer(reinterpret_cast<MGLBindingState*>(binding_state_owner),
                                                      r->mtl_buffer, r->offset,
                                                      r->metal_slot);
                 MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
@@ -271,7 +271,7 @@ extern "C" int mgl_batch_mtl_encode_buffer_binds(void *binding_state_owner,
     }
     if (snapshot.vertex_op_count > 0 || snapshot.fragment_op_count > 0) {
         (void)mglRenderEncodeBindingSnapshotForRenderEncoderOwner(
-            render_encoder_owner, &snapshot, NULL, 0);
+            reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), &snapshot, NULL, 0);
     }
     return 0;
 }
@@ -296,7 +296,7 @@ extern "C" int mgl_batch_mtl_encode_resource_binds(
         }
     }
     return mglRenderEncodeResourceBindingSnapshotForRenderEncoderOwner(
-               binding_state_owner, render_encoder_owner, &snapshot, NULL,
+               reinterpret_cast<MGLBindingState*>(binding_state_owner), reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), &snapshot, NULL,
                0) == 0;
 }
 
@@ -517,7 +517,7 @@ extern "C" int mgl_batch_mtl_issue_stream_mdi_batch(
      * ObjC still gates with mglRenderEncoderOwnerHasCurrent before call. */
     if (render_encoder_owner) {
         gateIn.has_encoder =
-            mglRenderEncoderOwnerHasCurrent(render_encoder_owner) ? 1u : 0u;
+            mglRenderEncoderOwnerHasCurrent(reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner)) ? 1u : 0u;
     }
     const int gate = mgl_batch_issue_stream_mdi_gate(&gateIn, &neededBytesRaw);
     if (gate != MGL_BATCH_STREAM_MDI_OK) {
@@ -710,7 +710,7 @@ extern "C" int mgl_batch_mtl_issue_simple_replay(
         .commands = cmds,
     };
     return mglRenderReplayBatchDrawsForRenderEncoderOwner(
-               render_encoder_owner, &replayBatch, NULL, 0) ==
+               reinterpret_cast<MGLRenderEncoderOwner*>(render_encoder_owner), &replayBatch, NULL, 0) ==
            MGL_RENDER_REPLAY_BATCH_OK;
 }
 

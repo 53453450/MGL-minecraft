@@ -115,10 +115,11 @@ int mglRendererBackendResetCommandQueue(MGLRendererBackendHandle *backend,
 /* Returns the current borrowed queue owned by CommandQueueOwner. */
 void *mglRendererBackendGetCommandQueue(
     const MGLRendererBackendHandle *backend);
-int mglRendererBackendAttachRuntimeOwners(MGLRendererBackendHandle *backend,
-                                          void *command_buffer_owner,
-                                          void *render_encoder_owner,
-                                          void *render_pass_state_owner);
+int mglRendererBackendAttachRuntimeOwners(
+    MGLRendererBackendHandle *backend,
+    MGLCommandBufferOwner *command_buffer_owner,
+    MGLRenderEncoderOwner *render_encoder_owner,
+    MGLRenderPassStateOwner *render_pass_state_owner);
 int mglRendererBackendSetFallbackRenderTargetTexture(
     MGLRendererBackendHandle *backend, void *texture);
 /* Texture getters return borrowed references owned by the backend. */
