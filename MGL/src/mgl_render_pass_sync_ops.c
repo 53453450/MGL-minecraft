@@ -1736,8 +1736,8 @@ int mglRenderPassPrepareIfFBOChanged(void *renderer, MGLDrawBatch *batch,
      * RenderPass Sync unit (RenderPass Sync domain), surfacing any GL error as replayError
      * so the batch is skipped rather than drawn against a stale pass. */
     if (!mglRenderPassSyncRenderPassStateForContext(renderer, glm_ctx)) {
-        if (!mglRenderErrorIsNone((uint32_t)glm_ctx->active_state->error))
-            *replayError = glm_ctx->active_state->error;
+        if (!mglRenderErrorIsNone((uint32_t)glm_ctx->state.error))
+            *replayError = glm_ctx->state.error;
         return 0;
     }
     return 1;

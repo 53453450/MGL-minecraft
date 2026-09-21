@@ -171,7 +171,8 @@ void mgl_batch_restore_apply_from_key(const MGLBatchRestoreFromKeyOps *ops);
 /* Driver of that plan (former -[MGLRenderer restoreStateFromKey:context:],
  * defined in mgl_batch_restore.c): restores program/pipeline, VAO, FBO,
  * viewport and scissor from a batch key. */
-void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx);
+void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx,
+                                 GLMState *replay);
 
 /* ---- A3: flush pass state shared by the C driver and the ObjC @try frame ----
  * The frame itself stays in the shim (mglRendererFlushDrawBufferLocked):
@@ -189,9 +190,13 @@ void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx);
 
 
 /* Whole restore sequence for one batch (former
- * -[MGLRenderer restoreStateForBatch:...]; mgl_batch_flush_restore_encode.c). */
+ * -[MGLRenderer restoreStateForBatch:...]; mgl_batch_flush_restore_encode.c).
+ * T0-1: `replay` is the explicit workspace GLMState (must be the current
+ * ctx->active_state during flush); do not rely on implicit active_state
+ * lookup for the mutation target. */
 void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch,
-                                  GLMContext glm_ctx, const GLMState *savedState,
+                                  GLMContext glm_ctx, GLMState *replay,
+                                  const GLMState *savedState,
                                   const MGLStateKey *prevKey, GLuint forcedDirtyBits);
 
 

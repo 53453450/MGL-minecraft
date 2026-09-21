@@ -69,10 +69,13 @@ typedef struct GLMContextRec_t *GLMContext;
  * Each slot stores (array_index + 1); 0 means empty.  The backing object
  * arrays remain the source of truth for iteration — the index only accelerates
  * dedup (mglTrackPendingTexture*) and membership (mglPendingDrawsWrite/ReadTexture). */
+#define MGL_MAX_PENDING_VAO_REFS  128   /* ≤ MGL_MAX_BATCHES; unique VAO ptrs */
 #define MGL_TEX_WRITE_INDEX_SIZE  512   /* 2 × MGL_MAX_PENDING_TEXTURE_WRITES */
 #define MGL_TEX_READ_INDEX_SIZE   1024  /* 2 × MGL_MAX_PENDING_TEXTURE_READS */
+#define MGL_VAO_REF_INDEX_SIZE    256   /* 2 × MGL_MAX_PENDING_VAO_REFS */
 #define MGL_TEX_WRITE_INDEX_MASK  (MGL_TEX_WRITE_INDEX_SIZE - 1)
 #define MGL_TEX_READ_INDEX_MASK   (MGL_TEX_READ_INDEX_SIZE - 1)
+#define MGL_VAO_REF_INDEX_MASK    (MGL_VAO_REF_INDEX_SIZE - 1)
 
 /* Bump-allocator arena for batch snapshot allocations (Task 4).
  * Gated by env var MGL_ARENA_SNAPSHOT (default ON; =0 disables).  When
@@ -232,21 +235,6 @@ _Static_assert(sizeof(MGLStateKey) == 96,
                "MGLStateKey size changed; tail padding would need the same "
                "explicit-field treatment as _padding");
 
-/* Immutable draw inputs for deferred replay (ARCHITECTURE_AUDIT R3).
- * Captured with the batch; encoder setup should prefer this over mutating
- * live GLMState.  Currently populated for every batch; indexed draws use it
- * to re-apply viewport/scissor without relying on live-state side effects. */
-typedef struct MGLDrawState {
-    uint32_t program_name;
-    uint32_t vao_name;
-    uint32_t fbo_name;
-    int32_t  viewport[4];
-    int32_t  scissor[4];
-    uint8_t  scissor_enabled;
-    uint8_t  uses_elements;
-    uint8_t  valid;
-} MGLDrawState;
-
 typedef struct {
     MGLStateKey     key;
     uint32_t        command_count;
@@ -283,26 +271,7 @@ typedef struct {
      * state_snapshot/vao_snapshot instead of owning a capture.  It must not
      * free them; the donor does.  See mglInitializeOrShareBatchStateSnapshot. */
     bool            snapshot_shared;
-    MGLDrawState    draw_state;     /* immutable draw inputs (R3) */
 } MGLDrawBatch;
-
-/* Fill batch->draw_state from an already-computed MGLStateKey. */
-static inline void mglDrawStateFromKey(MGLDrawState *ds, const MGLStateKey *key,
-                                       uint8_t uses_elements)
-{
-    if (!ds || !key) {
-        return;
-    }
-    memset(ds, 0, sizeof(*ds));
-    ds->program_name = key->program_name;
-    ds->vao_name = key->vao_name;
-    ds->fbo_name = key->fbo_name;
-    memcpy(ds->viewport, key->viewport, sizeof(ds->viewport));
-    memcpy(ds->scissor, key->scissor, sizeof(ds->scissor));
-    ds->scissor_enabled = key->scissor_enabled;
-    ds->uses_elements = uses_elements;
-    ds->valid = 1u;
-}
 
 typedef struct {
     void     *buffer;
@@ -320,33 +289,54 @@ typedef struct {
     uint32_t     element_cmd_count;
     bool         has_deferred_uniform_range_rebind;
     bool         sampler_snapshot_incomplete;
-    MGLSamplerSnapshotKey sampler_snapshot_keys[MGL_MAX_SAMPLER_SNAPSHOT_KEYS];
+    /* T12-1: sampler payload arrays are heap-backed (grow up to max).
+     * Key/set indexes stay inline (fixed power-of-two hash tables). */
+    MGLSamplerSnapshotKey *sampler_snapshot_keys;
+    uint16_t     sampler_snapshot_key_capacity;
     uint16_t     sampler_snapshot_key_count;
     uint16_t     sampler_snapshot_key_index[MGL_SAMPLER_SNAPSHOT_KEY_INDEX_SIZE];
-    MGLSamplerSnapshotSet sampler_snapshot_sets[MGL_MAX_SAMPLER_SNAPSHOT_SETS];
+    MGLSamplerSnapshotSet *sampler_snapshot_sets;
+    uint16_t     sampler_snapshot_set_capacity;
     uint16_t     sampler_snapshot_set_count;
     uint16_t     sampler_snapshot_set_index[MGL_SAMPLER_SNAPSHOT_SET_INDEX_SIZE];
-    MGLBufferReadRange buffer_read_ranges[MGL_MAX_PENDING_BUFFER_RANGES];
+    /* T12-1: range table is heap-backed and grows up to
+     * MGL_MAX_PENDING_BUFFER_RANGES.  bucket[] stays inline (4 KiB).  Reset
+     * must free the heap pointers before the whole-struct memset. */
+    MGLBufferReadRange *buffer_read_ranges;
+    uint32_t     *buffer_read_range_next;
+    uint32_t     buffer_read_range_capacity;
     uint32_t     buffer_read_range_count;
     bool         buffer_read_range_overflow;
     /* Hash index over buffer_read_ranges bucketed by buffer pointer so
      * insert/query walk only that buffer's ranges instead of all of them.
      * bucket holds (range_index + 1) of the newest entry, 0 = empty; entries
-     * chain via buffer_read_range_next (same +1 encoding).  Zeroed by the
-     * whole-struct memset in reset. */
+     * chain via buffer_read_range_next (same +1 encoding). */
     uint32_t     buffer_read_range_bucket[MGL_BUFFER_RANGE_BUCKET_SIZE];
-    uint32_t     buffer_read_range_next[MGL_MAX_PENDING_BUFFER_RANGES];
-    void        *texture_write_objects[MGL_MAX_PENDING_TEXTURE_WRITES];
+    void        **texture_write_objects;
+    uint32_t     texture_write_capacity;
     uint32_t     texture_write_count;
     bool         texture_write_overflow;
     /* hash-set index for O(1) dedup/membership on texture_write_objects.
      * Slot value is (array_index + 1); 0 = empty. Zeroed by memset in reset. */
     uint32_t     texture_write_index[MGL_TEX_WRITE_INDEX_SIZE];
-    void        *texture_read_objects[MGL_MAX_PENDING_TEXTURE_READS];
+    void        **texture_read_objects;
+    uint32_t     texture_read_capacity;
     uint32_t     texture_read_count;
     bool         texture_read_overflow;
     /* hash-set index for O(1) dedup/membership on texture_read_objects. */
     uint32_t     texture_read_index[MGL_TEX_READ_INDEX_SIZE];
+    /* VAO → pending non-stream batch reverse index (T13-4).
+     * Pointer set covers source_vao / snapshot->vao; name set covers the
+     * no-snapshot key.vao_name fallback.  stream_merged batches are never
+     * registered.  Zeroed by the whole-struct memset in reset. */
+    void        *pending_vao_refs[MGL_MAX_PENDING_VAO_REFS];
+    uint32_t     pending_vao_ref_count;
+    bool         pending_vao_ref_overflow;
+    uint32_t     pending_vao_ref_index[MGL_VAO_REF_INDEX_SIZE];
+    uint32_t     pending_vao_names[MGL_MAX_PENDING_VAO_REFS];
+    uint32_t     pending_vao_name_count;
+    bool         pending_vao_name_overflow;
+    uint32_t     pending_vao_name_index[MGL_VAO_REF_INDEX_SIZE];
 } MGLCommandBuffer;
 
 /* GL API -> DrawCommand Recorder -> DrawCommandBuffer. */
@@ -408,6 +398,21 @@ struct Buffer_t *mglDrawCommandElementBuffer(GLMContext ctx,
                                              const MGLDrawCommand *cmd);
 struct Buffer_t *mglNamedBuffer(GLMContext ctx, GLuint name);
 struct Texture_t *mglNamedTexture(GLMContext ctx, GLuint name);
+
+/* T12: process-lifetime peak occupancy of the inline command-buffer tables.
+ * Updated on insert; not cleared by flush/reset (only by the reset API). */
+typedef struct {
+    uint32_t buffer_read_ranges;
+    uint32_t texture_writes;
+    uint32_t texture_reads;
+    uint32_t sampler_snapshot_keys;
+    uint32_t sampler_snapshot_sets;
+    uint32_t pending_vao_refs;
+    uint32_t pending_vao_names;
+} MGLCommandBufferOccupancyPeaks;
+
+void mglGetCommandBufferOccupancyPeaks(MGLCommandBufferOccupancyPeaks *out);
+void mglResetCommandBufferOccupancyPeaks(void);
 
 #ifdef __cplusplus
 }

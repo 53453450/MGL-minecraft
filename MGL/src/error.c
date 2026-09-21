@@ -35,7 +35,17 @@
 #include <string.h>
 
 #include "error.h"
+#include "mgl_frame_activity.h"
 
+/* Mirror the legacy single-slot error field onto the current active_state so
+ * in-replay `STATE(error)` probes still see the latest push. The queue itself
+ * stays on live state only (T0-2). */
+static void mglMirrorLegacyError(GLMContext ctx, GLenum error)
+{
+    LIVE_STATE(error) = error;
+    if (ctx->active_state && ctx->active_state != &ctx->state)
+        ctx->active_state->error = error;
+}
 
 GLenum  mglGetError(GLMContext ctx)
 {
@@ -44,27 +54,28 @@ GLenum  mglGetError(GLMContext ctx)
     if (!ctx)
         return GL_NO_ERROR;
 
-    /* Drain the error queue.  When no errors are queued, return GL_NO_ERROR.
-     * When errors are queued, pop the oldest one and return it. */
-    if (STATE(error_count) == 0)
+    /* Drain the live error queue only — never the replay workspace. */
+    if (LIVE_STATE(error_count) == 0)
     {
         /* Backwards compatibility: mglClearCurrentError is the only remaining
-         * writer of STATE(error) outside this file.  Surface that single
-         * error so it is not silently lost. */
-        GLenum legacy = STATE(error);
-        STATE(error) = GL_NO_ERROR;
+         * writer of the legacy single-slot error outside this file.  Surface
+         * that single error so it is not silently lost. */
+        GLenum legacy = LIVE_STATE(error);
+        mglMirrorLegacyError(ctx, GL_NO_ERROR);
         return legacy;
     }
 
-    GLenum err = STATE(error_queue)[STATE(error_head)];
-    STATE(error_head) = (STATE(error_head) + 1u) % MGL_ERROR_QUEUE_SIZE;
-    STATE(error_count)--;
+    GLenum err = LIVE_STATE(error_queue)[LIVE_STATE(error_head)];
+    LIVE_STATE(error_head) =
+        (LIVE_STATE(error_head) + 1u) % MGL_ERROR_QUEUE_SIZE;
+    LIVE_STATE(error_count)--;
 
     /* Mirror the new head (or GL_NO_ERROR when empty) for legacy code that
      * reads STATE(error) directly. */
-    STATE(error) = (STATE(error_count) > 0)
-        ? STATE(error_queue)[STATE(error_head)]
-        : GL_NO_ERROR;
+    mglMirrorLegacyError(ctx,
+                         (LIVE_STATE(error_count) > 0)
+                             ? LIVE_STATE(error_queue)[LIVE_STATE(error_head)]
+                             : GL_NO_ERROR);
 
     return err;
 }
@@ -153,7 +164,7 @@ void mglClearCurrentError(GLMContext ctx)
 {
     if (!ctx)
         return;
-    STATE(error) = GL_NO_ERROR;
+    mglMirrorLegacyError(ctx, GL_NO_ERROR);
 }
 
 void error_func(GLMContext ctx, const char *func, GLenum error)
@@ -175,22 +186,27 @@ void error_func(GLMContext ctx, const char *func, GLenum error)
 
     fprintf(stderr, "MGL GL Error in %s: 0x%x (%d)\n", func, error, error);
 
-    /* Push the error into the queue.  Per GL 4.6 spec §2.3.1, the queue must
-     * hold at least 16 errors; when full, the new error is dropped (the
-     * oldest 16 are retained). */
-    if (STATE(error_count) < MGL_ERROR_QUEUE_SIZE)
+    /* T0-3: count pushes that would previously have landed on the workspace. */
+    if (mglCtxActiveIsReplayWorkspace(ctx))
+        MGL_FRAME_INC(g_mglReplayErrorRedirectsSinceSwap);
+
+    /* Push into the live queue only (T0-2). Per GL 4.6 §2.3.1 the queue holds
+     * at least 16 errors; when full, the new error is dropped. */
+    if (LIVE_STATE(error_count) < MGL_ERROR_QUEUE_SIZE)
     {
-        GLuint tail = (STATE(error_head) + STATE(error_count)) % MGL_ERROR_QUEUE_SIZE;
-        STATE(error_queue)[tail] = error;
-        STATE(error_count)++;
-        /* Mirror the head for legacy code that reads STATE(error). */
-        STATE(error) = STATE(error_queue)[STATE(error_head)];
+        GLuint tail =
+            (LIVE_STATE(error_head) + LIVE_STATE(error_count)) %
+            MGL_ERROR_QUEUE_SIZE;
+        LIVE_STATE(error_queue)[tail] = error;
+        LIVE_STATE(error_count)++;
+        mglMirrorLegacyError(ctx,
+                             LIVE_STATE(error_queue)[LIVE_STATE(error_head)]);
     }
     else
     {
-        /* Queue full — the new error is dropped per spec.  Keep the legacy
-         * field pointing at the current head. */
-        STATE(error) = STATE(error_queue)[STATE(error_head)];
+        /* Queue full — drop the new error per spec; keep legacy head. */
+        mglMirrorLegacyError(ctx,
+                             LIVE_STATE(error_queue)[LIVE_STATE(error_head)]);
     }
 
     /* Temporarily disabled to allow QEMU to continue despite errors */

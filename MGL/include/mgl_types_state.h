@@ -47,6 +47,7 @@
 /* Authoritative dirty-bit masks (single source: mgl_dirty_bits.h, shared
  * with the pure-C batch restore plan so the two can never drift again). */
 #include "mgl_dirty_bits.h"
+#include "mgl_state_identity_table.h"
 
 /* State-key hash domains. Keep invalidation and recomputation on the same
  * masks so renderer-side dirty-bit consumption cannot silently stale a cache. */
@@ -282,6 +283,12 @@ static inline size_t mglSnapshotHotStateBytes(void)
          - (size_t)kMGLSnapshotColdBufferBaseCount * sizeof(BufferBase);
 }
 
+/* Alias used by STATE_DATAFLOW G3 / comments that still say mglHotStateCopyBytes. */
+static inline size_t mglHotStateCopyBytes(void)
+{
+    return mglSnapshotHotStateBytes();
+}
+
 /* mglCopyHotStateFields copies GLMState in memcpy regions that identify the
  * skipped ranges (the embedded HashTable block and the cold buffer_base
  * slots) purely by offsetof arithmetic.  A field reorder or insertion in
@@ -313,18 +320,28 @@ static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
 {
     if (!dst || !src || dst == src) return;
 
-    /* Region 1: [0, sync_table) — everything before the HashTable block. */
-    memcpy(dst, src, offsetof(GLMState, sync_table));
+    /* T9-1: hot snapshot is an explicit region table plus the hot
+     * buffer_base X-macro.  Which GLMState members belong in key / hash /
+     * hot is named by MGL_STATE_IDENTITY_ROWS (mgl_state_identity_table.h);
+     * G4 CHECK 1b enforces key↔table bijection.  Hot *copy* stays region
+     * memcpy (not per-field) for speed. */
+    static const struct {
+        size_t start;
+        size_t end; /* exclusive; sizeof(GLMState) for the trailing region */
+    } kHotRegions[] = {
+        /* Region 1: [0, sync_table) — everything before the HashTable block. */
+        { 0, offsetof(GLMState, sync_table) },
+        /* Region 3: [shaders, buffer_base) — skip 11 HashTables (region 2). */
+        { offsetof(GLMState, shaders), offsetof(GLMState, buffer_base) },
+        /* Region 5: [pack, end) — everything after buffer_base. */
+        { offsetof(GLMState, pack), sizeof(GLMState) },
+    };
 
-    /* Region 2: skip 11 HashTables (sync_table .. sampler_table inclusive).
-     * Region 3: [shaders, buffer_base) — small gap: shaders, program,
-     * program_pipeline, transform_feedback. */
-    {
-        size_t gap_start = offsetof(GLMState, shaders);
-        size_t gap_end   = offsetof(GLMState, buffer_base);
-        memcpy((char *)dst + gap_start,
-               (char *)src + gap_start,
-               gap_end - gap_start);
+    for (size_t i = 0; i < sizeof(kHotRegions) / sizeof(kHotRegions[0]); i++) {
+        size_t start = kHotRegions[i].start;
+        size_t end = kHotRegions[i].end;
+        if (end <= start) continue;
+        memcpy((char *)dst + start, (char *)src + start, end - start);
     }
 
     /* Region 4: copy only the hot buffer_base types read by the encoder.
@@ -332,15 +349,6 @@ static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
 #define MGL_SNAPSHOT_COPY_HOT(_t_) dst->buffer_base[_t_] = src->buffer_base[_t_];
     MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COPY_HOT)
 #undef MGL_SNAPSHOT_COPY_HOT
-
-    /* Region 5: [pack, end) — everything after buffer_base. */
-    {
-        size_t post_start = offsetof(GLMState, pack);
-        size_t post_size  = sizeof(GLMState) - post_start;
-        memcpy((char *)dst + post_start,
-               (char *)src + post_start,
-               post_size);
-    }
 }
 
 #endif /* mgl_types_state_h */

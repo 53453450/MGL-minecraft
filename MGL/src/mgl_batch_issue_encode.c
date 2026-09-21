@@ -181,6 +181,7 @@ static int mglDirEncEl(void *v, uint32_t mode, const MGLBatchDirectElementPrep *
 void mglBatchIssueMDIBatch(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
                            const MGLEncodeContext *encCtx)
 {
+    mglEncodeContextRequireReplayState(encCtx, glm_ctx);
     MGLIssueEncCtx ctx = {.r = renderer, .batch = batch, .ctx = glm_ctx, .cenc = encCtx};
     MGLBatchMdiIssueOps ops = {
         .ctx = &ctx, .on_trace = mglIssueTrace, .issue_direct = mglMdiDirect,
@@ -193,8 +194,10 @@ void mglBatchIssueMDIBatch(void *renderer, MGLDrawBatch *batch, GLMContext glm_c
 void mglBatchIssueDirectBatch(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
                               const MGLEncodeContext *encCtx)
 {
+    mglEncodeContextRequireReplayState(encCtx, glm_ctx);
     MGLEncodeContext live = *encCtx;
     live.render_encoder_owner = mglRendererCommandStateFor(renderer)->currentRenderEncoderOwner;
+    live.state = encCtx->state;
     MGLIssueEncCtx ctx = {.r = renderer, .batch = batch, .ctx = glm_ctx, .enc = &live};
     MGLBatchDirectIssueOps ops = {
         .ctx = &ctx, .refresh_encoder = mglDirRefresh, .try_simple_replay = mglDirSimple,

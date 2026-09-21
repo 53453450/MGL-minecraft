@@ -1836,6 +1836,20 @@ int main(void)
     glDeleteTextures(1, &color_texture);
     glFinish();
 
+    {
+        MGLCommandBufferOccupancyPeaks peaks;
+        mglGetCommandBufferOccupancyPeaks(&peaks);
+        printf("T12 occupancy peaks: ranges=%u/%u texW=%u/%u texR=%u/%u "
+               "smpKey=%u/%u smpSet=%u/%u vaoRef=%u/%u vaoName=%u/%u\n",
+               peaks.buffer_read_ranges, (unsigned)MGL_MAX_PENDING_BUFFER_RANGES,
+               peaks.texture_writes, (unsigned)MGL_MAX_PENDING_TEXTURE_WRITES,
+               peaks.texture_reads, (unsigned)MGL_MAX_PENDING_TEXTURE_READS,
+               peaks.sampler_snapshot_keys, (unsigned)MGL_MAX_SAMPLER_SNAPSHOT_KEYS,
+               peaks.sampler_snapshot_sets, (unsigned)MGL_MAX_SAMPLER_SNAPSHOT_SETS,
+               peaks.pending_vao_refs, (unsigned)MGL_MAX_PENDING_VAO_REFS,
+               peaks.pending_vao_names, (unsigned)MGL_MAX_PENDING_VAO_REFS);
+    }
+
     printf("dirty-hash batch regression: PASS\n");
     return 0;
 }

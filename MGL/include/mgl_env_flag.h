@@ -34,9 +34,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-static inline int mgl_env_flag_enabled(const char *name)
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Drop process-lifetime getenv memo entries (STATE_DATAFLOW T13-3).
+ * Tests that setenv/unsetenv mid-process must call this after mutating env. */
+void mgl_env_flag_cache_invalidate(void);
+
+/* Uncached parse of an already-fetched getenv string. */
+static inline int mgl_env_flag_value_enabled(const char *value)
 {
-    const char *value = name ? getenv(name) : NULL;
     if (!value || value[0] == '\0') {
         return 0;
     }
@@ -49,10 +57,12 @@ static inline int mgl_env_flag_enabled(const char *name)
     return 1;
 }
 
-static inline int mgl_env_flag_enabled_default_on(const char *name)
-{
-    const char *value = name ? getenv(name) : NULL;
-    return (!value || value[0] == '\0') ? 1 : mgl_env_flag_enabled(name);
+/* Memoized getenv + parse. Defined in mgl_env_flag.c. */
+int mgl_env_flag_enabled(const char *name);
+int mgl_env_flag_enabled_default_on(const char *name);
+
+#ifdef __cplusplus
 }
+#endif
 
 #endif /* MGL_ENV_FLAG_H */

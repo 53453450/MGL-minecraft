@@ -47,6 +47,45 @@
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
+/* T12 peak occupancy watermarks (process lifetime). */
+static uint32_t s_peak_buffer_read_ranges;
+static uint32_t s_peak_texture_writes;
+static uint32_t s_peak_texture_reads;
+static uint32_t s_peak_sampler_snapshot_keys;
+static uint32_t s_peak_sampler_snapshot_sets;
+static uint32_t s_peak_pending_vao_refs;
+static uint32_t s_peak_pending_vao_names;
+
+static inline void mglNoteOccupancyPeak(uint32_t *peak, uint32_t value)
+{
+    if (peak && value > *peak) {
+        *peak = value;
+    }
+}
+
+void mglGetCommandBufferOccupancyPeaks(MGLCommandBufferOccupancyPeaks *out)
+{
+    if (!out) return;
+    out->buffer_read_ranges = s_peak_buffer_read_ranges;
+    out->texture_writes = s_peak_texture_writes;
+    out->texture_reads = s_peak_texture_reads;
+    out->sampler_snapshot_keys = s_peak_sampler_snapshot_keys;
+    out->sampler_snapshot_sets = s_peak_sampler_snapshot_sets;
+    out->pending_vao_refs = s_peak_pending_vao_refs;
+    out->pending_vao_names = s_peak_pending_vao_names;
+}
+
+void mglResetCommandBufferOccupancyPeaks(void)
+{
+    s_peak_buffer_read_ranges = 0;
+    s_peak_texture_writes = 0;
+    s_peak_texture_reads = 0;
+    s_peak_sampler_snapshot_keys = 0;
+    s_peak_sampler_snapshot_sets = 0;
+    s_peak_pending_vao_refs = 0;
+    s_peak_pending_vao_names = 0;
+}
+
 /* === Task 4: Snapshot Arena (bump allocator) === */
 
 #define MGL_ARENA_INITIAL_CAPACITY  (4u * 1024u * 1024u)  /* 4 MB */
@@ -515,6 +554,67 @@ static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)
     return true;
 }
 
+/* T13-4: register VAO pointers/names referenced by a non-stream pending batch
+ * so mglPendingDrawsReferenceVertexArray is O(1) instead of scanning all
+ * batches and dereferencing snapshots. */
+static void mglRegisterPendingVaoRef(MGLCommandBuffer *cb, void *vao)
+{
+    if (!cb || !vao || cb->pending_vao_ref_overflow) return;
+
+    uint32_t slot = (uint32_t)(((uintptr_t)vao >> 4) & MGL_VAO_REF_INDEX_MASK);
+    for (;;) {
+        uint32_t entry = cb->pending_vao_ref_index[slot];
+        if (entry == 0) break;
+        if (cb->pending_vao_refs[entry - 1] == vao) return;
+        slot = (slot + 1) & MGL_VAO_REF_INDEX_MASK;
+    }
+
+    if (cb->pending_vao_ref_count >= MGL_MAX_PENDING_VAO_REFS) {
+        cb->pending_vao_ref_overflow = true;
+        return;
+    }
+
+    uint32_t idx = cb->pending_vao_ref_count++;
+    cb->pending_vao_refs[idx] = vao;
+    cb->pending_vao_ref_index[slot] = idx + 1;
+    mglNoteOccupancyPeak(&s_peak_pending_vao_refs, cb->pending_vao_ref_count);
+}
+
+static void mglRegisterPendingVaoName(MGLCommandBuffer *cb, uint32_t name)
+{
+    if (!cb || name == 0 || cb->pending_vao_name_overflow) return;
+
+    uint32_t slot = (name * 2654435761u) & MGL_VAO_REF_INDEX_MASK;
+    for (;;) {
+        uint32_t entry = cb->pending_vao_name_index[slot];
+        if (entry == 0) break;
+        if (cb->pending_vao_names[entry - 1] == name) return;
+        slot = (slot + 1) & MGL_VAO_REF_INDEX_MASK;
+    }
+
+    if (cb->pending_vao_name_count >= MGL_MAX_PENDING_VAO_REFS) {
+        cb->pending_vao_name_overflow = true;
+        return;
+    }
+
+    uint32_t idx = cb->pending_vao_name_count++;
+    cb->pending_vao_names[idx] = name;
+    cb->pending_vao_name_index[slot] = idx + 1;
+    mglNoteOccupancyPeak(&s_peak_pending_vao_names, cb->pending_vao_name_count);
+}
+
+static void mglRegisterBatchVaoHazard(MGLCommandBuffer *cb, MGLDrawBatch *batch)
+{
+    if (!cb || !batch || batch->stream_merged) return;
+
+    mglRegisterPendingVaoRef(cb, batch->source_vao);
+    if (batch->state_snapshot) {
+        GLMState *snapshot = (GLMState *)batch->state_snapshot;
+        mglRegisterPendingVaoRef(cb, snapshot->vao);
+    }
+    mglRegisterPendingVaoName(cb, batch->key.vao_name);
+}
+
 /* M2 (STATE_MACHINE_REVIEW 3.1/M2): dedup snapshots by key.  Equal keys
  * already share one snapshot through last-batch reuse; this extends the same
  * invariant (equal key => equal captured state; hash collisions ~2^-51, the
@@ -555,11 +655,16 @@ static bool mglInitializeOrShareBatchStateSnapshot(GLMContext ctx,
             MGL_PERF_INC(g_mglSnapshotShareHitsSinceSwap);
             mglRetainBatchProgramReferences(ctx, batch);
             mglRetainBatchBufferReferences(batch);
+            mglRegisterBatchVaoHazard(cb, batch);
             MGL_SIGNPOST_END(InitBatchSnapshot);
             return true;
         }
     }
-    return mglInitializeBatchStateSnapshot(ctx, batch);
+    if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
+        return false;
+    }
+    mglRegisterBatchVaoHazard(cb, batch);
+    return true;
 }
 
 void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb)
@@ -577,6 +682,14 @@ void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb)
     for (uint32_t i = 0; i < cb->batch_count; i++) {
         mglReleaseBatchMemory(&cb->batches[i]);
     }
+
+    /* T12-1: free heap-backed hazard / sampler tables before memset. */
+    free(cb->buffer_read_ranges);
+    free(cb->buffer_read_range_next);
+    free(cb->sampler_snapshot_keys);
+    free(cb->sampler_snapshot_sets);
+    free(cb->texture_write_objects);
+    free(cb->texture_read_objects);
 
     memset(cb, 0, sizeof(*cb));
 }
@@ -899,6 +1012,108 @@ static int mglHazardAllowInsertAfterCapacityFull(GLMContext ctx,
     return 0;
 }
 
+/* Grow heap-backed buffer_read_ranges / next up to MGL_MAX_PENDING_BUFFER_RANGES. */
+static int mglEnsureBufferReadRangeCapacity(MGLCommandBuffer *cb, uint32_t need)
+{
+    if (!cb || need == 0) return 0;
+    if (need <= cb->buffer_read_range_capacity) return 1;
+    if (need > MGL_MAX_PENDING_BUFFER_RANGES) return 0;
+
+    uint32_t new_cap = cb->buffer_read_range_capacity
+                           ? cb->buffer_read_range_capacity * 2u
+                           : 64u;
+    if (new_cap < need) new_cap = need;
+    if (new_cap > MGL_MAX_PENDING_BUFFER_RANGES)
+        new_cap = MGL_MAX_PENDING_BUFFER_RANGES;
+
+    MGLBufferReadRange *ranges = (MGLBufferReadRange *)realloc(
+        cb->buffer_read_ranges, (size_t)new_cap * sizeof(*ranges));
+    uint32_t *next = (uint32_t *)realloc(
+        cb->buffer_read_range_next, (size_t)new_cap * sizeof(*next));
+    if (!ranges || !next) {
+        /* realloc may have moved one side; keep whatever pointers we still own. */
+        if (ranges) cb->buffer_read_ranges = ranges;
+        if (next) cb->buffer_read_range_next = next;
+        return 0;
+    }
+    if (new_cap > cb->buffer_read_range_capacity) {
+        memset(next + cb->buffer_read_range_capacity, 0,
+               (size_t)(new_cap - cb->buffer_read_range_capacity) * sizeof(*next));
+    }
+    cb->buffer_read_ranges = ranges;
+    cb->buffer_read_range_next = next;
+    cb->buffer_read_range_capacity = new_cap;
+    return 1;
+}
+
+static int mglEnsureTextureWriteCapacity(MGLCommandBuffer *cb, uint32_t need)
+{
+    if (!cb || need == 0) return 0;
+    if (need <= cb->texture_write_capacity) return 1;
+    if (need > MGL_MAX_PENDING_TEXTURE_WRITES) return 0;
+    uint32_t new_cap = cb->texture_write_capacity ? cb->texture_write_capacity * 2u : 32u;
+    if (new_cap < need) new_cap = need;
+    if (new_cap > MGL_MAX_PENDING_TEXTURE_WRITES) new_cap = MGL_MAX_PENDING_TEXTURE_WRITES;
+    void **objs = (void **)realloc(cb->texture_write_objects,
+                                   (size_t)new_cap * sizeof(*objs));
+    if (!objs) return 0;
+    cb->texture_write_objects = objs;
+    cb->texture_write_capacity = new_cap;
+    return 1;
+}
+
+static int mglEnsureTextureReadCapacity(MGLCommandBuffer *cb, uint32_t need)
+{
+    if (!cb || need == 0) return 0;
+    if (need <= cb->texture_read_capacity) return 1;
+    if (need > MGL_MAX_PENDING_TEXTURE_READS) return 0;
+    uint32_t new_cap = cb->texture_read_capacity ? cb->texture_read_capacity * 2u : 64u;
+    if (new_cap < need) new_cap = need;
+    if (new_cap > MGL_MAX_PENDING_TEXTURE_READS) new_cap = MGL_MAX_PENDING_TEXTURE_READS;
+    void **objs = (void **)realloc(cb->texture_read_objects,
+                                   (size_t)new_cap * sizeof(*objs));
+    if (!objs) return 0;
+    cb->texture_read_objects = objs;
+    cb->texture_read_capacity = new_cap;
+    return 1;
+}
+
+static int mglEnsureSamplerKeyCapacity(MGLCommandBuffer *cb, uint32_t need)
+{
+    if (!cb || need == 0) return 0;
+    if (need <= cb->sampler_snapshot_key_capacity) return 1;
+    if (need > MGL_MAX_SAMPLER_SNAPSHOT_KEYS) return 0;
+    uint32_t new_cap = cb->sampler_snapshot_key_capacity
+                           ? (uint32_t)cb->sampler_snapshot_key_capacity * 2u
+                           : 16u;
+    if (new_cap < need) new_cap = need;
+    if (new_cap > MGL_MAX_SAMPLER_SNAPSHOT_KEYS) new_cap = MGL_MAX_SAMPLER_SNAPSHOT_KEYS;
+    MGLSamplerSnapshotKey *keys = (MGLSamplerSnapshotKey *)realloc(
+        cb->sampler_snapshot_keys, (size_t)new_cap * sizeof(*keys));
+    if (!keys) return 0;
+    cb->sampler_snapshot_keys = keys;
+    cb->sampler_snapshot_key_capacity = (uint16_t)new_cap;
+    return 1;
+}
+
+static int mglEnsureSamplerSetCapacity(MGLCommandBuffer *cb, uint32_t need)
+{
+    if (!cb || need == 0) return 0;
+    if (need <= cb->sampler_snapshot_set_capacity) return 1;
+    if (need > MGL_MAX_SAMPLER_SNAPSHOT_SETS) return 0;
+    uint32_t new_cap = cb->sampler_snapshot_set_capacity
+                           ? (uint32_t)cb->sampler_snapshot_set_capacity * 2u
+                           : 16u;
+    if (new_cap < need) new_cap = need;
+    if (new_cap > MGL_MAX_SAMPLER_SNAPSHOT_SETS) new_cap = MGL_MAX_SAMPLER_SNAPSHOT_SETS;
+    MGLSamplerSnapshotSet *sets = (MGLSamplerSnapshotSet *)realloc(
+        cb->sampler_snapshot_sets, (size_t)new_cap * sizeof(*sets));
+    if (!sets) return 0;
+    cb->sampler_snapshot_sets = sets;
+    cb->sampler_snapshot_set_capacity = (uint16_t)new_cap;
+    return 1;
+}
+
 static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t start, uint64_t end)
 {
     if (!ctx || !buffer || end <= start) return;
@@ -908,13 +1123,16 @@ static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t st
      * per insert (O(N²) total). */
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     uint32_t bucket = mglBufferRangeBucket(buffer);
-    for (uint32_t link = cb->buffer_read_range_bucket[bucket]; link;
-         link = cb->buffer_read_range_next[link - 1u]) {
-        MGLBufferReadRange *range = &cb->buffer_read_ranges[link - 1u];
-        if (range->buffer == buffer && mglRangesOverlap(range->start, range->end, start, end)) {
-            if (start < range->start) range->start = start;
-            if (end > range->end) range->end = end;
-            return;
+    if (cb->buffer_read_range_next) {
+        for (uint32_t link = cb->buffer_read_range_bucket[bucket]; link;
+             link = cb->buffer_read_range_next[link - 1u]) {
+            MGLBufferReadRange *range = &cb->buffer_read_ranges[link - 1u];
+            if (range->buffer == buffer &&
+                mglRangesOverlap(range->start, range->end, start, end)) {
+                if (start < range->start) range->start = start;
+                if (end > range->end) range->end = end;
+                return;
+            }
         }
     }
 
@@ -926,6 +1144,11 @@ static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t st
         }
     }
 
+    if (!mglEnsureBufferReadRangeCapacity(cb, cb->buffer_read_range_count + 1u)) {
+        cb->buffer_read_range_overflow = true;
+        return;
+    }
+
     uint32_t index = cb->buffer_read_range_count++;
     MGLBufferReadRange *range = &cb->buffer_read_ranges[index];
     range->buffer = buffer;
@@ -934,6 +1157,7 @@ static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t st
     cb->buffer_read_range_next[index] = cb->buffer_read_range_bucket[bucket];
     cb->buffer_read_range_bucket[bucket] = index + 1u;
 
+    mglNoteOccupancyPeak(&s_peak_buffer_read_ranges, cb->buffer_read_range_count);
     MGL_PERF_INC(g_mglHazardRangeCountSinceSwap);
 }
 
@@ -997,11 +1221,16 @@ static void mglTrackPendingTextureWrite(GLMContext ctx, Texture *texture)
 
     /* O(1) dedup via hash-set index instead of O(n) linear scan. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_WRITE_INDEX_MASK);
-    for (;;) {
-        uint32_t entry = cb->texture_write_index[slot];
-        if (entry == 0) break;                       /* empty — not present */
-        if (cb->texture_write_objects[entry - 1] == texture) return; /* dup */
-        slot = (slot + 1) & MGL_TEX_WRITE_INDEX_MASK; /* probe */
+    if (cb->texture_write_objects) {
+        for (;;) {
+            uint32_t entry = cb->texture_write_index[slot];
+            if (entry == 0) break;
+            if (cb->texture_write_objects[entry - 1] == texture) return;
+            slot = (slot + 1) & MGL_TEX_WRITE_INDEX_MASK;
+        }
+    } else {
+        while (cb->texture_write_index[slot] != 0)
+            slot = (slot + 1) & MGL_TEX_WRITE_INDEX_MASK;
     }
 
     if (cb->texture_write_count >= MGL_MAX_PENDING_TEXTURE_WRITES) {
@@ -1010,20 +1239,25 @@ static void mglTrackPendingTextureWrite(GLMContext ctx, Texture *texture)
             cb->texture_write_overflow = true;
             return;
         }
-        /* Flush reset the hash index; re-probe for an empty slot. */
         slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_WRITE_INDEX_MASK);
         for (;;) {
             uint32_t entry = cb->texture_write_index[slot];
             if (entry == 0) break;
-            if (cb->texture_write_objects[entry - 1] == texture) return;
+            if (cb->texture_write_objects &&
+                cb->texture_write_objects[entry - 1] == texture) return;
             slot = (slot + 1) & MGL_TEX_WRITE_INDEX_MASK;
         }
     }
 
+    if (!mglEnsureTextureWriteCapacity(cb, cb->texture_write_count + 1u)) {
+        cb->texture_write_overflow = true;
+        return;
+    }
+
     uint32_t idx = cb->texture_write_count++;
     cb->texture_write_objects[idx] = texture;
-    /* Insert into the empty slot found by the probe above. */
     cb->texture_write_index[slot] = idx + 1;
+    mglNoteOccupancyPeak(&s_peak_texture_writes, cb->texture_write_count);
 }
 
 static void mglTrackPendingTextureRead(GLMContext ctx, Texture *texture)
@@ -1032,13 +1266,17 @@ static void mglTrackPendingTextureRead(GLMContext ctx, Texture *texture)
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
 
-    /* O(1) dedup via hash-set index. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_READ_INDEX_MASK);
-    for (;;) {
-        uint32_t entry = cb->texture_read_index[slot];
-        if (entry == 0) break;
-        if (cb->texture_read_objects[entry - 1] == texture) return;
-        slot = (slot + 1) & MGL_TEX_READ_INDEX_MASK;
+    if (cb->texture_read_objects) {
+        for (;;) {
+            uint32_t entry = cb->texture_read_index[slot];
+            if (entry == 0) break;
+            if (cb->texture_read_objects[entry - 1] == texture) return;
+            slot = (slot + 1) & MGL_TEX_READ_INDEX_MASK;
+        }
+    } else {
+        while (cb->texture_read_index[slot] != 0)
+            slot = (slot + 1) & MGL_TEX_READ_INDEX_MASK;
     }
 
     if (cb->texture_read_count >= MGL_MAX_PENDING_TEXTURE_READS) {
@@ -1051,14 +1289,21 @@ static void mglTrackPendingTextureRead(GLMContext ctx, Texture *texture)
         for (;;) {
             uint32_t entry = cb->texture_read_index[slot];
             if (entry == 0) break;
-            if (cb->texture_read_objects[entry - 1] == texture) return;
+            if (cb->texture_read_objects &&
+                cb->texture_read_objects[entry - 1] == texture) return;
             slot = (slot + 1) & MGL_TEX_READ_INDEX_MASK;
         }
+    }
+
+    if (!mglEnsureTextureReadCapacity(cb, cb->texture_read_count + 1u)) {
+        cb->texture_read_overflow = true;
+        return;
     }
 
     uint32_t idx = cb->texture_read_count++;
     cb->texture_read_objects[idx] = texture;
     cb->texture_read_index[slot] = idx + 1;
+    mglNoteOccupancyPeak(&s_peak_texture_reads, cb->texture_read_count);
 }
 
 /* Forward declaration: defined below, used by the program-aware hazard
@@ -1261,6 +1506,7 @@ bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset
     mglNormalizeMutationRange(offset, size, &start, &end);
 
     uint32_t bucket = mglBufferRangeBucket(buffer);
+    if (!cb->buffer_read_ranges || !cb->buffer_read_range_next) return false;
     for (uint32_t link = cb->buffer_read_range_bucket[bucket]; link;
          link = cb->buffer_read_range_next[link - 1u]) {
         MGLBufferReadRange *range = &cb->buffer_read_ranges[link - 1u];
@@ -1302,6 +1548,7 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
      * queries.  Avoiding writes here keeps queries pure and predictable. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_WRITE_INDEX_MASK);
     uint32_t start_slot = slot;
+    if (!cb->texture_write_objects) return false;
     do {
         uint32_t entry = cb->texture_write_index[slot];
         if (entry == 0) return false;                /* empty — not present */
@@ -1338,6 +1585,7 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
      * Query path is side-effect free (see mglPendingDrawsWriteTexture). */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_READ_INDEX_MASK);
     uint32_t start_slot = slot;
+    if (!cb->texture_read_objects) return false;
     do {
         uint32_t entry = cb->texture_read_index[slot];
         if (entry == 0) return false;                /* empty — not present */
@@ -1393,7 +1641,8 @@ void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t of
  * ensuring later VAO mutations do not affect encoded draws.
  * Overflow degradation: stream-merged batches own a private VAO snapshot and
  * copied transient vertex/index data, so later VAO mutations cannot affect
- * their encoded draws; such batches are skipped outright.
+ * their encoded draws; such batches are never registered.  When the reverse
+ * index overflows, degrade to an unconditional hit (same as texture hazards).
  */
 static bool mglPendingDrawsReferenceVertexArray(GLMContext ctx, VertexArray *vao)
 {
@@ -1402,28 +1651,44 @@ static bool mglPendingDrawsReferenceVertexArray(GLMContext ctx, VertexArray *vao
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
 
-    for (uint32_t i = 0; i < cb->batch_count; i++) {
-        MGLDrawBatch *batch = &cb->batches[i];
-        if (batch->command_count == 0) continue;
+    if (cb->pending_vao_ref_count == 0 && cb->pending_vao_name_count == 0 &&
+        !cb->pending_vao_ref_overflow && !cb->pending_vao_name_overflow) {
+        return false;
+    }
 
-        /*
-         * Stream-merged batches own a private VAO snapshot and copied transient
-         * vertex/index data, so later mutations of the application's VAO cannot
-         * change the already recorded draw.
-         */
-        if (batch->stream_merged) continue;
+    if (mgl_batch_hazard_query_degraded(cb->pending_vao_ref_overflow) ||
+        mgl_batch_hazard_query_degraded(cb->pending_vao_name_overflow)) {
+        MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
+        return true;
+    }
 
-        if (batch->state_snapshot) {
-            GLMState *snapshot = (GLMState *)batch->state_snapshot;
-            if (batch->source_vao == vao || snapshot->vao == vao) {
-                return true;
-            }
-            continue;
-        }
-
-        if (batch->key.vao_name == vao->name) {
+    /* O(1) pointer membership (source_vao and snapshot->vao). */
+    {
+        uint32_t slot = (uint32_t)(((uintptr_t)vao >> 4) & MGL_VAO_REF_INDEX_MASK);
+        uint32_t start_slot = slot;
+        do {
+            uint32_t entry = cb->pending_vao_ref_index[slot];
+            if (entry == 0) break;
+            if (cb->pending_vao_refs[entry - 1] == vao) return true;
+            slot = (slot + 1) & MGL_VAO_REF_INDEX_MASK;
+        } while (slot != start_slot);
+        if (slot == start_slot && cb->pending_vao_ref_index[slot] != 0) {
+            /* Degenerate full table with no match — conservative hit. */
             return true;
         }
+    }
+
+    /* O(1) name membership (no-snapshot key.vao_name fallback). */
+    if (vao->name != 0) {
+        uint32_t slot = (vao->name * 2654435761u) & MGL_VAO_REF_INDEX_MASK;
+        uint32_t start_slot = slot;
+        do {
+            uint32_t entry = cb->pending_vao_name_index[slot];
+            if (entry == 0) return false;
+            if (cb->pending_vao_names[entry - 1] == vao->name) return true;
+            slot = (slot + 1) & MGL_VAO_REF_INDEX_MASK;
+        } while (slot != start_slot);
+        return true;
     }
 
     return false;
@@ -1685,13 +1950,16 @@ static bool mglInternSamplerSnapshotKey(MGLCommandBuffer *cb,
         uint16_t encoded = cb->sampler_snapshot_key_index[slot];
         if (encoded == 0u) break;
         uint16_t index = encoded - 1u;
-        if (index < cb->sampler_snapshot_key_count &&
+        if (index < cb->sampler_snapshot_key_count && cb->sampler_snapshot_keys &&
             memcmp(&cb->sampler_snapshot_keys[index], key, sizeof(*key)) == 0) {
             *index_out = index;
             return true;
         }
     }
     if (cb->sampler_snapshot_key_count >= MGL_MAX_SAMPLER_SNAPSHOT_KEYS) {
+        return false;
+    }
+    if (!mglEnsureSamplerKeyCapacity(cb, (uint32_t)cb->sampler_snapshot_key_count + 1u)) {
         return false;
     }
 
@@ -1703,6 +1971,7 @@ static bool mglInternSamplerSnapshotKey(MGLCommandBuffer *cb,
     }
     cb->sampler_snapshot_key_index[slot] = index + 1u;
     *index_out = index;
+    mglNoteOccupancyPeak(&s_peak_sampler_snapshot_keys, cb->sampler_snapshot_key_count);
     return true;
 }
 
@@ -1854,7 +2123,7 @@ static bool mglCaptureSamplerSnapshot(GLMContext ctx, uint16_t *snapshot_id)
         uint16_t encoded = cb->sampler_snapshot_set_index[slot];
         if (encoded == 0u) break;
         uint16_t index = encoded - 1u;
-        if (index < cb->sampler_snapshot_set_count &&
+        if (index < cb->sampler_snapshot_set_count && cb->sampler_snapshot_sets &&
             memcmp(&cb->sampler_snapshot_sets[index],
                    &candidate,
                    sizeof(candidate)) == 0) {
@@ -1863,6 +2132,9 @@ static bool mglCaptureSamplerSnapshot(GLMContext ctx, uint16_t *snapshot_id)
         }
     }
     if (cb->sampler_snapshot_set_count >= MGL_MAX_SAMPLER_SNAPSHOT_SETS) {
+        return false;
+    }
+    if (!mglEnsureSamplerSetCapacity(cb, (uint32_t)cb->sampler_snapshot_set_count + 1u)) {
         return false;
     }
 
@@ -1874,6 +2146,7 @@ static bool mglCaptureSamplerSnapshot(GLMContext ctx, uint16_t *snapshot_id)
     }
     cb->sampler_snapshot_set_index[slot] = index + 1u;
     *snapshot_id = index;
+    mglNoteOccupancyPeak(&s_peak_sampler_snapshot_sets, cb->sampler_snapshot_set_count);
     return true;
 }
 
@@ -1944,6 +2217,24 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
     }
 }
 
+/* Mix pointer with GL name, matching mglHashBufferPointerName. A recycled
+ * malloc address alone must not keep two different textures/samplers equal. */
+static uint64_t mglTexturePointerNameBits(const Texture *tex)
+{
+    if (!tex)
+        return 0u;
+    return (uint64_t)(uintptr_t)tex ^ ((uint64_t)tex->name << 1) ^
+           (tex->identity_generation << 17);
+}
+
+static uint64_t mglSamplerPointerNameBits(const Sampler *sampler)
+{
+    if (!sampler)
+        return 0u;
+    return (uint64_t)(uintptr_t)sampler ^ ((uint64_t)sampler->name << 1) ^
+           (sampler->identity_generation << 17);
+}
+
 static uint64_t mglComputeTextureHash(GLMContext ctx)
 {
     uint64_t hash = 0;
@@ -1956,19 +2247,19 @@ static uint64_t mglComputeTextureHash(GLMContext ctx)
             int unit = w * 32 + i;
             if (unit < TEXTURE_UNITS) {
                 Texture *tex = ctx->active_state->active_textures[unit];
-                uint64_t tex_ptr = tex ? (uint64_t)(uintptr_t)tex : 0;
-                hash ^= mglRotateLeft64(tex_ptr, unit & 63);
+                hash ^= mglRotateLeft64(mglTexturePointerNameBits(tex), unit & 63);
 
                 TextureUnit *tex_unit = &ctx->active_state->texture_units[unit];
                 for (int t = 0; t < _MAX_TEXTURE_TYPES; t++) {
                     Texture *typed_tex = tex_unit->textures[t];
-                    uint64_t typed_ptr = typed_tex ? (uint64_t)(uintptr_t)typed_tex : 0;
-                    hash ^= mglRotateLeft64(typed_ptr + (uint64_t)(t + 1), (unit + t) & 63);
+                    hash ^= mglRotateLeft64(
+                        mglTexturePointerNameBits(typed_tex) + (uint64_t)(t + 1),
+                        (unit + t) & 63);
                 }
 
                 Sampler *sampler = ctx->active_state->texture_samplers[unit];
-                uint64_t sampler_ptr = sampler ? (uint64_t)(uintptr_t)sampler : 0;
-                hash ^= mglRotateLeft64(sampler_ptr, (unit + 17) & 63);
+                hash ^= mglRotateLeft64(mglSamplerPointerNameBits(sampler),
+                                        (unit + 17) & 63);
             }
         }
     }
@@ -1981,8 +2272,11 @@ static uint64_t mglComputeTextureHash(GLMContext ctx)
         max_iu = TEXTURE_UNITS;
     for (GLuint i = 0; i < max_iu; i++) {
         const ImageUnit *iu = &ctx->active_state->image_units[i];
-        uint64_t tex_ptr = iu->tex ? (uint64_t)(uintptr_t)iu->tex : 0;
-        hash ^= mglRotateLeft64(tex_ptr ^ ((uint64_t)iu->texture << 1), (i + 41u) & 63);
+        /* iu->texture is already the GL name; keep the same mix as textures. */
+        uint64_t tex_bits = iu->tex
+            ? mglTexturePointerNameBits(iu->tex)
+            : ((uint64_t)iu->texture << 1);
+        hash ^= mglRotateLeft64(tex_bits, (i + 41u) & 63);
         hash ^= mglRotateLeft64(((uint64_t)iu->level << 32) |
                                 ((uint64_t)(iu->layered ? 1u : 0u) << 31) |
                                 ((uint64_t)(uint32_t)iu->layer),
@@ -2309,6 +2603,25 @@ static uint16_t mglComputeCapsFlags(GLMContext ctx)
     return flags;
 }
 
+#if defined(DEBUG) || defined(MGL_DEBUG)
+/* G6 (STATE_DATAFLOW_TODO §7.3): when the dirty-hash cache path skips a
+ * recompute, recompute anyway and abort on mismatch.  Default ON in debug
+ * builds; set MGL_HASH_CACHE_ORACLE=0 to disable. */
+static int mglHashCacheOracleEnabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        const char *env = getenv("MGL_HASH_CACHE_ORACLE");
+        if (!env || env[0] == '\0') {
+            cached = 1;
+        } else {
+            cached = mgl_env_flag_value_enabled(env);
+        }
+    }
+    return cached;
+}
+#endif
+
 void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStateKey *out)
 {
     MGL_SIGNPOST_BEGIN(ComputeStateKey);
@@ -2392,11 +2705,28 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
     if (dirty_hash_enabled) {
         /* Legacy dirty bits remain set until Metal consumes them. Hash-cache
          * invalidation is tracked separately so stable draws do not recompute
-         * the same hashes while renderer state is still pending. */
+         * the same hashes while renderer state is still pending.
+         * G5 note: *_dirty latches can stay set after
+         * mglClearStateDirtyBitsPreservingHashInvalidation clears dirty_bits,
+         * so "recompute ⇒ dirty_bits contains domain" is not a valid assert. */
         if (ctx->active_state->texture_dirty) {
             ctx->active_state->cached_texture_hash = mglComputeTextureHash(ctx);
             ctx->active_state->texture_dirty = 0;
+            MGL_PERF_INC(g_mglHashRecomputeTextureSinceSwap);
         }
+#if defined(DEBUG) || defined(MGL_DEBUG)
+        else if (mglHashCacheOracleEnabled()) {
+            uint64_t full = mglComputeTextureHash(ctx);
+            if (full != ctx->active_state->cached_texture_hash) {
+                fprintf(stderr,
+                        "MGL Error: hash-cache oracle mismatch (texture) "
+                        "cached=%016llx full=%016llx\n",
+                        (unsigned long long)ctx->active_state->cached_texture_hash,
+                        (unsigned long long)full);
+                abort();
+            }
+        }
+#endif
         out->texture_hash = ctx->active_state->cached_texture_hash;
 
         if (ctx->active_state->vertex_layout_dirty) {
@@ -2407,7 +2737,21 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
             ctx->active_state->cached_vertex_layout_hash =
                 mglComputeVertexArrayStateHash(ctx, false);
             ctx->active_state->vertex_layout_dirty = 0;
+            MGL_PERF_INC(g_mglHashRecomputeVertexSinceSwap);
         }
+#if defined(DEBUG) || defined(MGL_DEBUG)
+        else if (mglHashCacheOracleEnabled()) {
+            uint64_t full = mglComputeVertexArrayStateHash(ctx, false);
+            if (full != ctx->active_state->cached_vertex_layout_hash) {
+                fprintf(stderr,
+                        "MGL Error: hash-cache oracle mismatch (vertex) "
+                        "cached=%016llx full=%016llx\n",
+                        (unsigned long long)ctx->active_state->cached_vertex_layout_hash,
+                        (unsigned long long)full);
+                abort();
+            }
+        }
+#endif
         out->vertex_layout_hash = ctx->active_state->cached_vertex_layout_hash;
         if (uses_elements)
             mglHashElementArrayState(&out->vertex_layout_hash, ctx->active_state->vao);
@@ -2417,7 +2761,22 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
                 mglComputeRenderStateHash(ctx) ^
                 mglComputeDrawBufferBindingHash(ctx);
             ctx->active_state->render_state_dirty = 0;
+            MGL_PERF_INC(g_mglHashRecomputeRenderSinceSwap);
         }
+#if defined(DEBUG) || defined(MGL_DEBUG)
+        else if (mglHashCacheOracleEnabled()) {
+            uint64_t full = mglComputeRenderStateHash(ctx) ^
+                            mglComputeDrawBufferBindingHash(ctx);
+            if (full != ctx->active_state->cached_render_state_hash) {
+                fprintf(stderr,
+                        "MGL Error: hash-cache oracle mismatch (render) "
+                        "cached=%016llx full=%016llx\n",
+                        (unsigned long long)ctx->active_state->cached_render_state_hash,
+                        (unsigned long long)full);
+                abort();
+            }
+        }
+#endif
         out->render_state_hash = ctx->active_state->cached_render_state_hash ^
                                  mglRotateLeft64((uint64_t)mode, 21);
 
@@ -2432,7 +2791,21 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
             ctx->active_state->cached_uniform_buffer_hash =
                 mglComputeUniformBufferBindingHash(ctx);
             ctx->active_state->uniform_buffer_dirty = 0;
+            MGL_PERF_INC(g_mglHashRecomputeUniformSinceSwap);
         }
+#if defined(DEBUG) || defined(MGL_DEBUG)
+        else if (mglHashCacheOracleEnabled()) {
+            uint64_t full = mglComputeUniformBufferBindingHash(ctx);
+            if (full != ctx->active_state->cached_uniform_buffer_hash) {
+                fprintf(stderr,
+                        "MGL Error: hash-cache oracle mismatch (uniform) "
+                        "cached=%016llx full=%016llx\n",
+                        (unsigned long long)ctx->active_state->cached_uniform_buffer_hash,
+                        (unsigned long long)full);
+                abort();
+            }
+        }
+#endif
         out->uniform_buffer_hash = ctx->active_state->cached_uniform_buffer_hash;
     } else {
         /* Legacy path: unconditional hash computation */
@@ -2823,6 +3196,10 @@ static bool mglCaptureDynamicTextureBindings(GLMContext ctx,
                 (snap_active_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
             bool current_active =
                 (cur_active_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
+            /* Pointer compare only: snapshot texture/sampler pointers may be
+             * dangling after delete, so name cannot be read from them (T2).
+             * Apply uses binding->texture_name from the live current object;
+             * same-address reuse after free still needs generation (T1-2). */
             if (snapshot_active != current_active ||
                 snapshot->texture_samplers[unit] !=
                     ctx->active_state->texture_samplers[unit]) {
@@ -4118,13 +4495,14 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         mglPrepareStreamMergeCandidate(ctx, cmd, cmd_uses_elements, &streamCandidate);
     if (can_stream_merge && cb->batch_count > 0) {
         MGLDrawBatch *last = &cb->batches[cb->batch_count - 1];
-        if (mglStateKeysEqual(&last->key, &key) &&
+        bool last_keys_match = mglStateKeysEqual(&last->key, &key);
+        if (last_keys_match &&
             (last->sampler_snapshots_mixed ||
              last->sampler_snapshot_id != stored_cmd.sampler_snapshot_id)) {
             /* Once sampler state changes, keep subsequent draws in one mixed
              * direct batch instead of consuming a stream batch per snapshot. */
             can_stream_merge = false;
-        } else if (!mglStateKeysEqual(&last->key, &key) &&
+        } else if (!last_keys_match &&
                    mglStateKeysEqualIgnoringUniformRanges(&last->key, &key)) {
             /* Keys differ only in uniform-range identity (per-draw UBO offset
              * rebinds — MC 1.21.11 dynamic transforms).  A stream batch cannot
@@ -4237,7 +4615,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         batch->sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
         batch->key = key;
         batch->uses_elements = cmd_uses_elements;
-        mglDrawStateFromKey(&batch->draw_state, &key, cmd_uses_elements ? 1u : 0u);
         /* The frontend command is zero-initialized and does not own the
          * command-buffer-local snapshot ID.  Check the normalized copy so a
          * draw without a sampler snapshot is not mistaken for snapshot 0. */
@@ -4257,7 +4634,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
-                mglDrawStateFromKey(&batch->draw_state, &key, cmd_uses_elements ? 1u : 0u);
                 can_stream_merge = false;
             }
         }
@@ -4309,7 +4685,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
-                mglDrawStateFromKey(&batch->draw_state, &key, cmd_uses_elements ? 1u : 0u);
                 if (!mglInitializeOrShareBatchStateSnapshot(ctx, cb, batch)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
                     mglReleaseBatch(ctx, batch);

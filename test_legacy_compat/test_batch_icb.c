@@ -5,6 +5,7 @@
  */
 
 #include "mgl_batch_path.h"
+#include "mgl_env_flag.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,13 @@ static void clear_icb_env(void)
     unsetenv("MGL_ENABLE_ICB_PIPELINES");
     unsetenv("MGL_DISABLE_ICB");
     unsetenv("MGL_DISABLE_ICB_BATCH");
+    mgl_env_flag_cache_invalidate();
+}
+
+static void set_icb_env(const char *name, const char *value)
+{
+    setenv(name, value, 1);
+    mgl_env_flag_cache_invalidate();
 }
 
 static void test_default_off(void)
@@ -41,11 +49,11 @@ static void test_default_off(void)
 static void test_unified_enable(void)
 {
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB", "1", 1);
+    set_icb_env("MGL_ENABLE_ICB", "1");
     expect(mgl_batch_icb_support_indirect_command_buffers(),
            "MGL_ENABLE_ICB enables");
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB", "true", 1);
+    set_icb_env("MGL_ENABLE_ICB", "true");
     expect(mgl_batch_icb_support_indirect_command_buffers(),
            "MGL_ENABLE_ICB=true enables");
 }
@@ -53,16 +61,16 @@ static void test_unified_enable(void)
 static void test_legacy_either_enable(void)
 {
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB_BATCH", "1", 1);
+    set_icb_env("MGL_ENABLE_ICB_BATCH", "1");
     expect(mgl_batch_icb_support_indirect_command_buffers(),
            "legacy ENABLE_ICB_BATCH enables");
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB_PIPELINES", "1", 1);
+    set_icb_env("MGL_ENABLE_ICB_PIPELINES", "1");
     expect(mgl_batch_icb_support_indirect_command_buffers(),
            "legacy ENABLE_ICB_PIPELINES enables (same gate)");
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB_BATCH", "1", 1);
-    setenv("MGL_ENABLE_ICB_PIPELINES", "1", 1);
+    set_icb_env("MGL_ENABLE_ICB_BATCH", "1");
+    set_icb_env("MGL_ENABLE_ICB_PIPELINES", "1");
     expect(mgl_batch_icb_support_indirect_command_buffers(),
            "both legacy enables still on");
 }
@@ -70,18 +78,18 @@ static void test_legacy_either_enable(void)
 static void test_disable_wins(void)
 {
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB", "1", 1);
-    setenv("MGL_DISABLE_ICB", "1", 1);
+    set_icb_env("MGL_ENABLE_ICB", "1");
+    set_icb_env("MGL_DISABLE_ICB", "1");
     expect(!mgl_batch_icb_support_indirect_command_buffers(),
            "DISABLE_ICB hard-off");
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB_PIPELINES", "1", 1);
-    setenv("MGL_DISABLE_ICB_BATCH", "1", 1);
+    set_icb_env("MGL_ENABLE_ICB_PIPELINES", "1");
+    set_icb_env("MGL_DISABLE_ICB_BATCH", "1");
     expect(!mgl_batch_icb_support_indirect_command_buffers(),
            "DISABLE_ICB_BATCH hard-off over PIPELINES");
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB_BATCH", "1", 1);
-    setenv("MGL_DISABLE_ICB", "1", 1);
+    set_icb_env("MGL_ENABLE_ICB_BATCH", "1");
+    set_icb_env("MGL_DISABLE_ICB", "1");
     MGLBatchIcbConfig cfg = mgl_batch_icb_config();
     expect(cfg.enable == 1u && cfg.disable == 1u, "enable+disable both set");
     expect(!mgl_batch_icb_support_indirect_command_buffers(),
@@ -91,10 +99,10 @@ static void test_disable_wins(void)
 static void test_falsey_enable(void)
 {
     clear_icb_env();
-    setenv("MGL_ENABLE_ICB", "0", 1);
+    set_icb_env("MGL_ENABLE_ICB", "0");
     expect(!mgl_batch_icb_support_indirect_command_buffers(),
            "ENABLE_ICB=0 is off");
-    setenv("MGL_ENABLE_ICB", "false", 1);
+    set_icb_env("MGL_ENABLE_ICB", "false");
     expect(!mgl_batch_icb_support_indirect_command_buffers(),
            "ENABLE_ICB=false is off");
 }

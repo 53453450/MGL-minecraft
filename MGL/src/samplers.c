@@ -109,6 +109,8 @@ Sampler *newSampler(GLMContext ctx, GLuint sampler)
     bzero(ptr, sizeof(Sampler));
 
     ptr->name = sampler;
+    if (ctx)
+        ptr->identity_generation = ctx->state.sampler_table.deletion_generation;
 
     float black_color[] = {0,0,0,0};
 

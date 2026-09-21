@@ -63,12 +63,15 @@
 #define RETURN_NULL_ON_FAILURE(_expr_) if (_expr_ == false) { fprintf(stderr, "failure %s:%d\n",__FUNCTION__,__LINE__); return NULL; }
 #define RETURN_ON_NULL(_expr_) if (_expr_ == NULL) { fprintf(stderr, "failure %s:%d\n",__FUNCTION__,__LINE__); return; }
 
-/* STATE() / STATE_VAR() / VAO() redirect through ctx->active_state, which
- * always points at the embedded &ctx->state.  The indirection lets the Metal
- * encoding layer share one access path with the C GL layer during batch
- * replay. */
+/* STATE() / STATE_VAR() / VAO() redirect through ctx->active_state.
+ * During batch flush, active_state points at the flush workspace
+ * (pass->saved; T11-1).  GL error_queue must never use STATE() — see
+ * LIVE_STATE / T0-2. */
 #define STATE(_VAR_)     ctx->active_state->_VAR_
 #define STATE_VAR(_VAR_) ctx->active_state->var._VAR_
+
+/* Always the embedded live GLMState. Use for error_queue / glGetError. */
+#define LIVE_STATE(_VAR_) (ctx->state._VAR_)
 
 #define VAO()   ctx->active_state->vao
 #define VAO_STATE(_val_)   ctx->active_state->vao->_val_
@@ -196,11 +199,19 @@ typedef struct GLMContextRec_t {
 
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 
-    /* Trailing replay workspace (R3).  Kept last so inserting it does not
-     * shift earlier GLMContextRec field offsets for incremental rebuilds. */
+    /* Trailing replay workspace fallback (R3 / T11-1).  Flush prefers
+     * pass->saved as the single workspace; this field remains for callers
+     * that activate replay without a flush pass (NULL workspace → copy here).
+     * Kept last so inserting it does not shift earlier GLMContextRec offsets. */
     GLMState replay_state;
 } GLMContextRec;
 
+/* 1 when flush has redirected active_state away from the live ctx->state.
+ * T11-1: the workspace may be pass->saved or the legacy ctx->replay_state. */
+static inline int mglCtxActiveIsReplayWorkspace(GLMContext ctx)
+{
+    return ctx && ctx->active_state && ctx->active_state != &ctx->state;
+}
 
 GLMContext createGLMContext(GLenum format, GLenum type,
                             GLenum depth_format, GLenum depth_type,

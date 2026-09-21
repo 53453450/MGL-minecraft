@@ -1097,6 +1097,11 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         }
         mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE | DIRTY_PROGRAM);
     }
+    /* T3-1: read-only target changes intentionally omit dirty bits.
+     * Deferred encode / batch keys consume draw FBO only; readbuffer is for
+     * ReadPixels and similar host paths that do not go through the deferred
+     * encoder (see rendering.c comments on read vs draw). Marking DIRTY_FBO
+     * here would force needless pass invalidation with no consumer today. */
 }
 
 void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers)

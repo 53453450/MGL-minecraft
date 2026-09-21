@@ -19,6 +19,8 @@ external/ezxml/
 !/docs/SPEC_CLAIM_AUDIT_2026-09-20.md
 !/docs/SPEC_FULL_AUDIT_*.md
 !/docs/C_LAYER_ARCHITECTURE_REVIEW.md
+!/docs/STATE_DATAFLOW_TODO.md
+!/docs/STATE_MACHINE_REVIEW_2026-09-13.md
 /.work-buddy
 /mgl-ssbo-20260805b/
 build_asan/

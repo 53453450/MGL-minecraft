@@ -69,8 +69,12 @@ typedef struct MGLRendererCoreState_t {
     _Atomic bool drawableSizeDirty;
 } MGLRendererCoreState;
 
-/* Point both proxies at the replay workspace (batch flush begin). */
-void mglCoreActivateReplayState(MGLRendererCoreState *core, GLMContext ctx);
+/* Point both proxies at a flush-owned replay workspace.
+ * `workspace` must already hold a valid copy of the pre-flush live state
+ * (typically &pass->saved).  Passing NULL falls back to ctx->replay_state
+ * and copies live into it — retained for callers that have no pass buffer. */
+void mglCoreActivateReplayState(MGLRendererCoreState *core, GLMContext ctx,
+                                GLMState *workspace);
 
 /* Point both proxies back at the live state (batch replay teardown). */
 void mglCoreRestoreLiveActiveState(MGLRendererCoreState *core, GLMContext ctx);

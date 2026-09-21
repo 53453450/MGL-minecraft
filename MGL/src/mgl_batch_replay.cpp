@@ -569,6 +569,17 @@ extern "C" void mgl_batch_replay_sync_hash_tables_from_replay(
     live->framebuffer_table = replay->framebuffer_table;
     live->sampler_table = replay->sampler_table;
     live->sync_table = replay->sync_table;
+    /* T4-1: OR dirty latches from the workspace onto live. Never assign over
+     * live bits — that cleared flush-surviving invalidations (test_dirty_hash).
+     * Cached digests stay on live; dirty forces recompute. */
+    live->texture_dirty =
+        (uint8_t)(live->texture_dirty | replay->texture_dirty);
+    live->vertex_layout_dirty =
+        (uint8_t)(live->vertex_layout_dirty | replay->vertex_layout_dirty);
+    live->render_state_dirty =
+        (uint8_t)(live->render_state_dirty | replay->render_state_dirty);
+    live->uniform_buffer_dirty =
+        (uint8_t)(live->uniform_buffer_dirty | replay->uniform_buffer_dirty);
 }
 
 #include "mgl_renderer_backend.h"

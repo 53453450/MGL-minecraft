@@ -230,7 +230,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
                             GLenum depth_format, GLenum depth_type,
                             GLenum stencil_format, GLenum stencil_type)
 {
-    GLMContext ctx = (GLMContext)malloc(sizeof(GLMContextRec));
+    GLMContext ctx = (GLMContext)calloc(1, sizeof(GLMContextRec));
     GLMContext save = _ctx;
 
     if (!ctx) {
@@ -238,12 +238,12 @@ GLMContext createGLMContext(GLenum format, GLenum type,
          * The caller (likely the GL entry-point dispatcher or auto-init path)
          * has no context to dispatch an error into — surface the failure via
          * the trace log and return NULL so the caller can degrade gracefully. */
-        mglTraceLogExternal("MGL OOM: malloc(sizeof(GLMContextRec)) failed in createGLMContext");
+        mglTraceLogExternal("MGL OOM: calloc(sizeof(GLMContextRec)) failed in createGLMContext");
         return NULL;
     }
 
-    bzero((void *)ctx, sizeof(GLMContextRec));
-
+    /* calloc zeros state + replay_state (T6-2). Keep the explicit caps writes
+     * below for the legacy-compat face defaults (T6-1). */
     if (pthread_mutex_init(&ctx->sync_lock, NULL) != 0) {
         mglTraceLogExternal("MGL: failed to initialize sync lock");
         free(ctx);
@@ -490,6 +490,27 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(caps.primitive_restart_fixed_index) = false;
     STATE(caps.debug_output_synchronous) = false;
     STATE(caps.debug_output) = false;
+    /* GL 2.x / legacy enable bits (dormant face). Defaults are GL_FALSE;
+     * listed explicitly so render_state_hash never depends on heap residue
+     * if calloc is ever bypassed (STATE_DATAFLOW T6-1). */
+    STATE(caps.alpha_test) = false;
+    STATE(caps.auto_normal) = false;
+    STATE(caps.color_array) = false;
+    STATE(caps.color_material) = false;
+    STATE(caps.edge_flag_array) = false;
+    STATE(caps.fog) = false;
+    STATE(caps.index_array) = false;
+    STATE(caps.lighting) = false;
+    STATE(caps.line_stipple) = false;
+    STATE(caps.normal_array) = false;
+    STATE(caps.normalize) = false;
+    STATE(caps.point_smooth) = false;
+    STATE(caps.polygon_stipple) = false;
+    STATE(caps.texture_coord_array) = false;
+    STATE(caps.texture_gen_s) = false;
+    STATE(caps.texture_gen_t) = false;
+    STATE(caps.texture_gen_r) = false;
+    STATE(caps.texture_gen_q) = false;
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
         STATE(caps.blendi[i]) = false;

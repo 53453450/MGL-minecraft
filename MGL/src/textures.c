@@ -231,6 +231,8 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     bzero(ptr, sizeof(Texture));
 
     ptr->name = TEX_OBJ_RES_NAME;
+    if (ctx)
+        ptr->identity_generation = ctx->state.texture_table.deletion_generation;
     ptr->target = object_target;
     ptr->index = index;
 

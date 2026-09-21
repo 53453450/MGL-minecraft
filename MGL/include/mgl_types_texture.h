@@ -151,6 +151,9 @@ typedef struct TextureFace_t {
 typedef struct Sampler_t {
     GLuint dirty_bits;
     GLuint name;
+    /* Taken from sampler_table.deletion_generation at create; survives
+     * name+address reuse after delete (STATE_DATAFLOW T1-2). */
+    uint64_t identity_generation;
     TextureParameter params;
     void *mtl_data;
 } Sampler;
@@ -162,6 +165,8 @@ typedef struct Texture_t {
     GLenum access;
     GLboolean immutable_storage;
     GLuint name;
+    /* Taken from texture_table.deletion_generation at create (T1-2). */
+    uint64_t identity_generation;
     GLuint target;
     GLuint index;
     GLuint mipmapped;

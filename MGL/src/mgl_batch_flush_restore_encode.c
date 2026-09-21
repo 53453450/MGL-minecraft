@@ -21,10 +21,13 @@
 #include "mgl_batch_replay.h"
 #include "mgl_batch_issue.h"
 #include "mgl_batch_mtl_encode.h"
+#include <assert.h>
 #include <string.h>
 
 typedef struct {
-    void *r; GLMContext ctx; const GLMState *saved;
+    void *r; GLMContext ctx;
+    GLMState *replay;           /* T0-1: explicit flush workspace */
+    const GLMState *saved;      /* pre-flush live copy; same as replay after T11-1 */
     uint64_t hit; GLenum *err; uint32_t *skipped; MGLStateKey key;
     MGLBatchFlushLoopState *st; MGLEncodeContext enc;
 } FCtx;
@@ -60,16 +63,16 @@ static int fOracleEq(void *v, uint32_t b) { return mglStateKeysEqual(&FB(v, b)->
 static void fOracle(void *v) { (void)v; MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap); }
 static void fApplySkip(void *v, uint32_t b)
 { (void)b; FCtx *c = v; MGLRendererStateAreas areas; mglRendererFillStateAreas(c->r, &areas);
-  if (areas.core && areas.core->activeState != c->ctx->active_state)
-      areas.core->activeState = c->ctx->active_state;
-  c->ctx->active_state->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
+  if (areas.core && areas.core->activeState != c->replay)
+      areas.core->activeState = c->replay;
+  c->replay->dirty_bits = 0; MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap); }
 static void fSetAbs(void *v, int w)
 { MGLRendererStateAreas areas; mglRendererFillStateAreas(((FCtx *)v)->r, &areas);
   MGLBatchingState *bs = areas.batching;
   if (bs) bs->absoluteVertexBindingOffsets = w ? 1u : 0u; }
 static void fRestore(void *v, uint32_t b, uint32_t forced)
-{ FCtx *c = v; mglBatchRestoreStateForBatch(c->r, FB(c, b), c->ctx, c->saved,
-      (c->st->last_key_valid ? &c->key : NULL), forced); }
+{ FCtx *c = v; mglBatchRestoreStateForBatch(c->r, FB(c, b), c->ctx, c->replay,
+      c->saved, (c->st->last_key_valid ? &c->key : NULL), forced); }
 static int fCheck(void *v, uint32_t b)
 { FCtx *c = v; return mglBatchCheckShouldExecute(c->r, FB(c, b), c->ctx, c->hit, b,
       c->err, c->skipped); }
@@ -84,7 +87,11 @@ static void fPerfS(void *v, uint32_t n)
 static void fPerfD(void *v, uint32_t n)
 { (void)v; MGL_PERF_INC(g_mglBatchesDirectSinceSwap); MGL_PERF_ADD(g_mglDrawDirectSinceSwap, n); }
 static void fEnc(FCtx *c)
-{ c->enc.render_encoder_owner = mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner; }
+{
+    c->enc.render_encoder_owner =
+        mglRendererCommandStateFor(c->r)->currentRenderEncoderOwner;
+    c->enc.state = c->replay; /* T0-1: explicit workspace for issue/encode */
+}
 static void fIssS(void *v, uint32_t b)
 { FCtx *c = v; fEnc(c); mglBatchIssueStreamMergedBatch(c->r, FB(c, b), c->ctx, &c->enc); }
 static void fIssM(void *v, uint32_t b)
@@ -110,8 +117,9 @@ static int cFbo(void *v)
       c->err); }
 static int cProc(void *v) { return mglRenderPassProcessGLStateLocked(((CCtx *)v)->r, 1); }
 static void cErr(void *v)
-{ CCtx *c = v; if (!mglRenderErrorIsNone((uint32_t)c->ctx->active_state->error))
-      *c->err = c->ctx->active_state->error; }
+{ CCtx *c = v; /* Errors always land on live state (T0-2). */
+  if (!mglRenderErrorIsNone((uint32_t)c->ctx->state.error))
+      *c->err = c->ctx->state.error; }
 static int cShouldS(void *v)
 { CCtx *c = v; return mgl_batch_issue_should_apply_stable_sampler(
       c->batch->sampler_snapshots_mixed ? 1 : 0, c->batch->sampler_snapshot_id,
@@ -192,7 +200,9 @@ int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pa
     pass->skipped = 0;
     memcpy(&pass->saved, glm_ctx->active_state, sizeof(pass->saved));
     pass->saved_error = pass->saved.error;
-    mglCoreActivateReplayState(areas.core, glm_ctx);
+    /* T11-1: one full copy (into pass->saved) then point both proxies at it.
+     * Do not memcpy again into ctx->replay_state. */
+    mglCoreActivateReplayState(areas.core, glm_ctx, &pass->saved);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     pass->replay_error = (GLenum)mglRenderErrorNone();
     return 1;
@@ -207,9 +217,12 @@ void mglBatchFlushRunBatches(void *renderer, GLMContext glm_ctx, MGLBatchFlushPa
     MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLBatchingState *bs = areas.batching;
     MGLBatchFlushLoopState st; memset(&st, 0, sizeof(st));
-    FCtx fc = {.r = renderer, .ctx = glm_ctx, .saved = &pass->saved, .hit = hit,
+    FCtx fc = {.r = renderer, .ctx = glm_ctx, .replay = &pass->saved,
+               .saved = &pass->saved, .hit = hit,
                .err = &pass->replay_error, .skipped = &skipped, .st = &st};
     memset(&fc.key, 0, sizeof(fc.key));
+    memset(&fc.enc, 0, sizeof(fc.enc));
+    assert(fc.replay == glm_ctx->active_state);
     MGLBatchFlushLoopOps ops = {
         .ctx = &fc, .batch_count = fCount, .command_count = fCmds,
         .fill_skip_in = fSkipIn, .note_skip_perf = fNote,
@@ -275,25 +288,27 @@ MGLBatchPath mglBatchScheduleDrawBatch(void *renderer, MGLDrawBatch *batch,
 }
 
 void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
-                                 const GLMState *savedState,
+                                 GLMState *replay, const GLMState *savedState,
                                  const MGLStateKey *prevKey, GLuint forcedDirtyBits)
 {
-    if (!renderer || !batch || !glm_ctx) return;
+    if (!renderer || !batch || !glm_ctx || !replay) return;
+    /* T0-1: callers must pass the active workspace explicitly. */
+    assert(replay == glm_ctx->active_state);
     MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLBatchingState *bs = areas.batching;
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     if (batch->state_snapshot) {
-        mglCopyHotStateFields(glm_ctx->active_state, (const GLMState *)batch->state_snapshot);
-        MGL_PERF_INC(g_mglReplayMemcpyCountSinceSwap);
-        mgl_batch_replay_copy_object_hash_tables(glm_ctx->active_state, savedState);
-        mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
-                                      glm_ctx->active_state->var.program_pipeline_binding);
+        mglCopyHotStateFields(replay, (const GLMState *)batch->state_snapshot);
+        MGL_PERF_ADD(g_mglReplayMemcpyCountSinceSwap, mglSnapshotHotStateBytes());
+        mgl_batch_replay_copy_object_hash_tables(replay, savedState);
+        mglRestoreProgramPipelinePair(glm_ctx, replay->program_name,
+                                      replay->var.program_pipeline_binding);
     } else {
-        mglBatchRestoreStateFromKey(&batch->key, glm_ctx);
+        mglBatchRestoreStateFromKey(&batch->key, glm_ctx, replay);
     }
-    if (areas.core) areas.core->activeState = glm_ctx->active_state;
-    glm_ctx->active_state->dirty_bits = 0;
+    if (areas.core) areas.core->activeState = replay;
+    replay->dirty_bits = 0;
     const GLuint kFull = mgl_batch_restore_full_dirty_bits();
     GLuint replayDirtyBits = kFull;
     int prevKeyValid = (prevKey != NULL);
@@ -310,7 +325,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
             1, prevKey, &batch->key, kFull, &dflags);
         mgl_batch_mtl_restore_note_delta_perf(&dflags);
     }
-    Framebuffer *replayFBO = glm_ctx->active_state->framebuffer;
+    Framebuffer *replayFBO = replay->framebuffer;
     const MGLBatchRestoreFboIn fboIn = {
         .fbo_binding_dirty =
             (replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ? 1u : 0u,
@@ -324,7 +339,7 @@ void mglBatchRestoreStateForBatch(void *renderer, MGLDrawBatch *batch, GLMContex
     };
     replayDirtyBits = mgl_batch_restore_finish_dirty(replayDirtyBits, forcedDirtyBits, kFull,
                                                      DIRTY_FBO, &fboIn);
-    mglMarkRendererDirtyBits(glm_ctx->active_state, replayDirtyBits);
+    mglMarkRendererDirtyBits(replay, replayDirtyBits);
     MGL_SIGNPOST_END(RestoreStateForBatch);
 }
 
@@ -333,21 +348,29 @@ void mglBatchTeardownReplay(void *renderer, GLMContext glm_ctx, MGLBatchFlushPas
     MGLRendererStateAreas areas; mglRendererFillStateAreas(renderer, &areas);
     MGLBatchingState *bs = areas.batching;
     mglCoreAssertDualProxy(areas.core, glm_ctx);
-    const int usedReplayWorkspace = (glm_ctx->active_state == &glm_ctx->replay_state);
+    /* T11-1: workspace is pass->saved (or legacy replay_state). Sync tables +
+     * OR hash dirty latches from whichever buffer active_state points at. */
+    const int usedReplayWorkspace = mglCtxActiveIsReplayWorkspace(glm_ctx);
+    GLMState *workspace = glm_ctx->active_state;
     if (usedReplayWorkspace)
-        mgl_batch_replay_sync_hash_tables_from_replay(&glm_ctx->state, &glm_ctx->replay_state);
+        mgl_batch_replay_sync_hash_tables_from_replay(&glm_ctx->state, workspace);
     mglCoreRestoreLiveActiveState(areas.core, glm_ctx);
     mglCoreAssertDualProxy(areas.core, glm_ctx);
     if (bs) bs->absoluteVertexBindingOffsets = 0u;
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
     if (bs && bs->arenaSnapshotEnabled) mglResetBatchArena(&bs->batchArena);
-    if (!usedReplayWorkspace) memcpy(glm_ctx->active_state, &pass->saved, sizeof(GLMState));
+    /* Unreachable on the T11-1 flush path (always activates a workspace).
+     * Kept for a non-workspace activate that still needs pass->saved restored. */
+    if (!usedReplayWorkspace)
+        memcpy(glm_ctx->active_state, &pass->saved, sizeof(GLMState));
     mglClearStateDirtyBitsPreservingHashInvalidation(glm_ctx->active_state);
     mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
                                   glm_ctx->active_state->var.program_pipeline_binding);
     if (mglRenderErrorIsNone((uint32_t)pass->saved_error) &&
         !mglRenderErrorIsNone((uint32_t)pass->replay_error))
-        glm_ctx->active_state->error = pass->replay_error;
+        /* Belt-and-suspenders: error_func already writes live (T0-2); keep
+         * the single-slot mirror for callers that only watch pass->replay_error. */
+        glm_ctx->state.error = pass->replay_error;
 }
 
 int mglBatchTraceSkipCommands(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
@@ -402,6 +425,7 @@ void mglBatchTraceStreamCmd0(void *renderer, MGLDrawBatch *batch, GLMContext glm
 void mglBatchIssueStreamMergedBatch(void *renderer, MGLDrawBatch *batch, GLMContext glm_ctx,
                                    const MGLEncodeContext *encCtx)
 {
+    mglEncodeContextRequireReplayState(encCtx, glm_ctx);
     SCtx c = {.r = renderer, .batch = batch, .ctx = glm_ctx, .enc = encCtx};
     MGLBatchStreamMergedOps ops = {
         .ctx = &c, .trace_cmd0 = sTr0, .try_stream_mdi = sMdi, .issue_direct = sDir,

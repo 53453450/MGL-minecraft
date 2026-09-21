@@ -116,6 +116,7 @@ int mglBatchIssueStreamMergedMDIBatch(void *renderer, MGLDrawBatch *batch,
                                       GLMContext glm_ctx,
                                       const MGLEncodeContext *encCtx)
 {
+    mglEncodeContextRequireReplayState(encCtx, glm_ctx);
     MGLIcbMdiCtx ctx = {.r = renderer, .batch = batch, .ctx = glm_ctx, .enc = encCtx};
     MGLBatchStreamMdiIssueOps ops = {
         .ctx = &ctx,
@@ -135,6 +136,7 @@ int mglBatchIssueIndirectCommandBufferBatch(void *renderer, MGLDrawBatch *batch,
                                             GLMContext glm_ctx,
                                             const MGLEncodeContext *encCtx)
 {
+    mglEncodeContextRequireReplayState(encCtx, glm_ctx);
     MGLBatchIcbConfig icbCfg = mgl_batch_icb_config();
     MGLIcbMdiCtx ctx = {.r = renderer, .batch = batch, .ctx = glm_ctx, .enc = encCtx,
                        .sticky_icb = NULL};

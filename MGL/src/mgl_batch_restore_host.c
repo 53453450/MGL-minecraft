@@ -16,10 +16,12 @@
 #include "mgl_render.h"          /* mglRestoreProgramPipelinePair, sync names */
 #include "hash_table.h"          /* searchHashTable */
 #include "mgl_types_state.h"     /* mglInvalidateStateHashCachesForDirtyBits */
+#include <assert.h>
 
 /* Context for the restore-from-key driver. */
 typedef struct MGLKeyRestoreCtx_t {
     GLMContext glm;
+    GLMState *replay; /* T0-1: explicit workspace; equals glm->active_state */
 } MGLKeyRestoreCtx;
 
 /* === Restore-from-key driver ===
@@ -33,20 +35,20 @@ static void mglKeyRestoreProgram(void *v, uint32_t program, uint32_t pipeline)
 
 static void mglKeyRestoreVao(void *v, uint32_t name)
 {
-    GLMContext glm = ((MGLKeyRestoreCtx *)v)->glm;
-    if (name == (glm->active_state->vao ? glm->active_state->vao->name : 0)) return;
-    glm->active_state->vao = name
-        ? (VertexArray *)searchHashTable(&glm->active_state->vao_table, name) : NULL;
+    MGLKeyRestoreCtx *c = (MGLKeyRestoreCtx *)v;
+    GLMState *st = c->replay;
+    if (name == (st->vao ? st->vao->name : 0)) return;
+    st->vao = name ? (VertexArray *)searchHashTable(&st->vao_table, name) : NULL;
 }
 
 static void mglKeyRestoreFbo(void *v, uint32_t name)
 {
-    GLMContext glm = ((MGLKeyRestoreCtx *)v)->glm;
-    uint32_t cur = glm->active_state->framebuffer
-                       ? glm->active_state->framebuffer->name : 0;
+    MGLKeyRestoreCtx *c = (MGLKeyRestoreCtx *)v;
+    GLMState *st = c->replay;
+    uint32_t cur = st->framebuffer ? st->framebuffer->name : 0;
     if (name == cur) return;
-    glm->active_state->framebuffer = name
-        ? (Framebuffer *)searchHashTable(&glm->active_state->framebuffer_table, name)
+    st->framebuffer = name
+        ? (Framebuffer *)searchHashTable(&st->framebuffer_table, name)
         : NULL;
 }
 
@@ -58,20 +60,22 @@ static void mglKeyRestoreSyncFboNames(void *v)
 static void mglKeyRestoreViewportScissor(void *v, const int32_t vp[4], int sc_en,
                                          const int32_t sc[4])
 {
-    GLMContext glm = ((MGLKeyRestoreCtx *)v)->glm;
-    for (int i = 0; i < 4; i++) glm->active_state->viewport[i] = vp[i];
+    GLMState *st = ((MGLKeyRestoreCtx *)v)->replay;
+    for (int i = 0; i < 4; i++) st->viewport[i] = vp[i];
     if (sc_en) {
-        glm->active_state->caps.scissor_test = true;
-        for (int i = 0; i < 4; i++) glm->active_state->var.scissor_box[i] = sc[i];
+        st->caps.scissor_test = true;
+        for (int i = 0; i < 4; i++) st->var.scissor_box[i] = sc[i];
     } else {
-        glm->active_state->caps.scissor_test = false;
+        st->caps.scissor_test = false;
     }
 }
 
-void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx)
+void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx,
+                                 GLMState *replay)
 {
-    if (!key || !glm_ctx) return;
-    MGLKeyRestoreCtx c = {glm_ctx};
+    if (!key || !glm_ctx || !replay) return;
+    assert(replay == glm_ctx->active_state);
+    MGLKeyRestoreCtx c = {.glm = glm_ctx, .replay = replay};
     MGLBatchRestoreFromKeyOps ops = {
         .ctx = &c, .program_name = key->program_name,
         .program_pipeline_name = key->program_pipeline_name,

@@ -639,7 +639,7 @@ test-xfb-plan: $(build_dir)/test_xfb_plan
 
 $(build_dir)/test_batch_path: test_legacy_compat/test_batch_path.c \
 	MGL/src/mgl_batch_path.c MGL/include/mgl_batch_path.h \
-	MGL/include/mgl_env_flag.h
+	MGL/src/mgl_env_flag.c MGL/include/mgl_env_flag.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
@@ -647,6 +647,7 @@ $(build_dir)/test_batch_path: test_legacy_compat/test_batch_path.c \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_batch_path.c \
 		MGL/src/mgl_batch_path.c \
+		MGL/src/mgl_env_flag.c \
 		-o $@
 
 test-batch-path: $(build_dir)/test_batch_path
@@ -668,7 +669,7 @@ test-batch-hazard: $(build_dir)/test_batch_hazard
 
 $(build_dir)/test_batch_icb: test_legacy_compat/test_batch_icb.c \
 	MGL/src/mgl_batch_path.c MGL/include/mgl_batch_path.h \
-	MGL/include/mgl_env_flag.h
+	MGL/src/mgl_env_flag.c MGL/include/mgl_env_flag.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
@@ -676,6 +677,7 @@ $(build_dir)/test_batch_icb: test_legacy_compat/test_batch_icb.c \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_batch_icb.c \
 		MGL/src/mgl_batch_path.c \
+		MGL/src/mgl_env_flag.c \
 		-o $@
 
 test-batch-icb: $(build_dir)/test_batch_icb
@@ -914,6 +916,11 @@ verify-gl-api:
 # header and docs/STATE_DATAFLOW_TODO.md.
 test-state-invariants:
 	python3 scripts/state_machine_invariants.py
+
+# G4 dataflow coverage gate (STATE_DATAFLOW_TODO §7.2): key field writes,
+# memcmp padding, and GLMState uncovered-field baseline.
+test-state-dataflow:
+	python3 scripts/state_dataflow_coverage.py
 
 test-arch-correctness: $(build_dir)/test_arch_correctness
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_arch_correctness
@@ -1176,6 +1183,7 @@ test-air:
 test-all:
 	$(MAKE) verify-gl-api
 	$(MAKE) test-state-invariants
+	$(MAKE) test-state-dataflow
 	$(MAKE) test-state-snapshot-share
 	$(MAKE) test-frontends
 	$(MAKE) test-air
@@ -1218,7 +1226,7 @@ test-all:
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
-	test-state-invariants test-state-snapshot-share \
+	test-state-invariants test-state-dataflow test-state-snapshot-share \
 	verify-toolchain
 
 -include $(deps)

@@ -24,10 +24,23 @@
 extern "C" {
 #endif
 
-/* Encode target passed explicitly to issue and bind methods. */
+#ifndef __GLM_CONTEXT_
+#define __GLM_CONTEXT_
+typedef struct GLMContextRec_t *GLMContext;
+#endif
+
+/* Encode target passed explicitly to issue and bind methods.
+ * T0-1: `state` is GLMState * for the flush replay workspace (same object
+ * activate pointed both dual-proxy slots at).  Stored as void * so this
+ * header does not pull glm_context.h. */
 typedef struct MGLEncodeContext {
     void *render_encoder_owner;
+    void *state; /* GLMState * */
 } MGLEncodeContext;
+
+/* Issue entry: enc->state must be non-NULL and equal ctx->active_state. */
+void mglEncodeContextRequireReplayState(const MGLEncodeContext *enc,
+                                        GLMContext ctx);
 
 #ifdef __cplusplus
 }

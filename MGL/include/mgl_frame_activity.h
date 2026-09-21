@@ -169,12 +169,21 @@ extern MGL_ATOMIC(uint64_t) g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes wr
 extern MGL_ATOMIC(uint64_t) g_mglSnapshotAllocationCountSinceSwap;   /* snapshot malloc count */
 extern MGL_ATOMIC(uint64_t) g_mglSnapshotShareHitsSinceSwap;         /* batches that reused an equal-key snapshot instead of capturing (M2) */
 
+/* Dirty-hash recompute counts (STATE_DATAFLOW T13-6) */
+extern MGL_ATOMIC(uint64_t) g_mglHashRecomputeTextureSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglHashRecomputeVertexSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglHashRecomputeRenderSinceSwap;
+extern MGL_ATOMIC(uint64_t) g_mglHashRecomputeUniformSinceSwap;
+
 /* Buffer copy-on-write (MTLBuffer reallocation on dirty Shared uploads) */
 extern MGL_ATOMIC(uint64_t) g_mglBufferCowCountSinceSwap;            /* newBufferWithLength snapshots */
 extern MGL_ATOMIC(uint64_t) g_mglBufferCowBytesSinceSwap;            /* bytes of those new MTLBuffers */
 
 /* State replay */
-extern MGL_ATOMIC(uint64_t) g_mglReplayMemcpyCountSinceSwap;         /* memcpy calls in restoreStateForBatch: */
+extern MGL_ATOMIC(uint64_t) g_mglReplayMemcpyCountSinceSwap;         /* hot-state restore bytes (T11-2) */
+/* T0-3 / G7: error_func entered while active_state is the replay workspace
+ * (write redirected to live; counts latent workspace sinks). */
+extern MGL_ATOMIC(uint64_t) g_mglReplayErrorRedirectsSinceSwap;
 
 /* Hazard tracking */
 extern MGL_ATOMIC(uint64_t) g_mglHazardActiveBindingsSinceSwap;      /* sampled active base-buffer binding count per draw */
@@ -525,9 +534,14 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglSnapshotBytesAllocatedSinceSwap, 0);
     MGL_FRAME_STORE(g_mglSnapshotAllocationCountSinceSwap, 0);
     MGL_FRAME_STORE(g_mglSnapshotShareHitsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglHashRecomputeTextureSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglHashRecomputeVertexSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglHashRecomputeRenderSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglHashRecomputeUniformSinceSwap, 0);
     MGL_FRAME_STORE(g_mglBufferCowCountSinceSwap, 0);
     MGL_FRAME_STORE(g_mglBufferCowBytesSinceSwap, 0);
     MGL_FRAME_STORE(g_mglReplayMemcpyCountSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglReplayErrorRedirectsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglHazardActiveBindingsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglHazardRangeCountSinceSwap, 0);
     MGL_FRAME_STORE(g_mglHazardOverflowFlushesSinceSwap, 0);

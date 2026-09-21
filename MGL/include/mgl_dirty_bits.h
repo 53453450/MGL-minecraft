@@ -61,6 +61,9 @@ enum {
 #define DIRTY_SHADER    (0x1 << dirtyShader)
 #define DIRTY_PROGRAM   (0x1 << dirtyProgram)
 #define DIRTY_FBO       (0x1 << dirtyFBO)
+/* DIRTY_DRAWABLE: written by createGLMContext sRGB path (glm_context.c).
+ * DIRTY_SHADER: also used on Shader_t.dirty_bits (shaders.c); GLMState restore
+ * plans do not fold either bit (STATE_DATAFLOW T8 — keep, do not delete). */
 #define DIRTY_DRAWABLE      (0x1 << dirtyDrawable)
 #define DIRTY_RENDER_STATE  (0x1 << dirtyRenderState)
 #define DIRTY_ALPHA_STATE   (0x1 << dirtyAlphaState)

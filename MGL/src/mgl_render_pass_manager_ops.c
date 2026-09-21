@@ -4039,6 +4039,9 @@ int mglRenderPassProcessGLStateLocked(void *renderer, int draw_command)
         }
         return 0;
     }
+    /* T0-1: processGLState reads via mglPdState (core->activeState prefer);
+     * dual-proxy must already agree with ctx->active_state. */
+    mglCoreAssertDualProxy(areas.core, ctx);
 
     const uintptr_t earlyCtxAddr = (uintptr_t)ctx;
     const int ctxPtrSane = earlyCtxAddr >= 0x1000 ? 1 : 0;
