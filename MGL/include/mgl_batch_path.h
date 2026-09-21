@@ -19,6 +19,10 @@
 #ifndef MGL_BATCH_PATH_H
 #define MGL_BATCH_PATH_H
 
+/* The public entry points moved to mgl_batch_public.h; this header keeps
+ * the cluster-internal declarations only. */
+#include "mgl_batch_public.h"
+
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -71,7 +75,7 @@ MGLBatchIcbConfig mgl_batch_icb_config(void);
 
 /* True when pipelines should set supportIndirectCommandBuffers /
  * when batch ICB path may be selected (still needs OS + other gates). */
-int mgl_batch_icb_support_indirect_command_buffers(void);
+
 
 
 /* Fill batch-derived select inputs (caller still sets cull/os/env/polygon). */

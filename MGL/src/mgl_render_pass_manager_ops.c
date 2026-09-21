@@ -22,7 +22,7 @@
 #include "mgl_draw_buffer.h"          /* Metal draw-buffer mapping */
 #include "mgl_sync.h"                 /* MGLMetalAttachmentSubresource */
 #include "mgl_renderer_backend.h"     /* default draw buffer attachments */
-#include "mgl_batch_issue.h"          /* mglBatchBindActiveTexturesToMTL */
+#include "mgl_batch_public.h"          /* mglBatchBindActiveTexturesToMTL */
 #include "mgl_stage_encode_drivers.h" /* stage encode bind drivers */
 #include "mgl_frame_activity.h"     /* MGL_ENC_REASON_* */
 #include "mgl_air_loader.h"        /* MGLRenderPipelineDescriptorState */

@@ -23,6 +23,7 @@
  */
 
 #include "mgl_objc_bridge.h"
+#include "mgl_batch_public.h"
 #include "mgl_platform_shell_result.h"   /* MGLPlatformRendererShellResult */
 #include "mgl_renderer_ivars.h"
 
@@ -42,8 +43,6 @@
 #include "mgl_render_pass_manager_ops.h" /* mglRendererEndRenderEncodingLocked */
 #include "mgl_air_loader.h"           /* MGLRenderPipelineDescriptorState */
 #include "mgl_aux_assets.h"
-#include "mgl_batch_mtl_encode.h"
-#include "mgl_batch_restore.h"        /* mglBatchFlushBegin/RunBatches/Teardown */
 #include "mgl_compute_dispatch.h"     /* mglComputeMtlDispatch*Locked */
 #include "mgl_render.h"               /* MGLRenderPipelineBlendState */
 #include "mgl_render_pass_manager.h"  /* r->_renderPassManager->state */

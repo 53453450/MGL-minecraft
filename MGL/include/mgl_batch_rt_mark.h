@@ -18,6 +18,9 @@
 #define MGL_BATCH_RT_MARK_H
 
 #include "glm_context.h"  /* GLMContext (host ports) */
+/* The public entry points moved to mgl_batch_public.h; this header
+ * keeps the cluster-internal declarations only. */
+#include "mgl_batch_public.h"
 #include <stddef.h>
 #include <stdint.h>
 
@@ -349,10 +352,8 @@ void mgl_batch_rt_mark_one_attachment(uint32_t attachment_index,
 
 /* Draw-submission records: frame counters, last-draw snapshot and the RT-mark
  * for one submitted draw.  Defined in mgl_batch_rt_mark_host.c. */
-void mglBatchRecordArrayDrawSubmitted(void *renderer, GLMContext ctx, GLenum mode,
-                                      uint64_t vertex_count);
-void mglBatchRecordElementDrawSubmitted(void *renderer, GLMContext ctx, GLenum mode,
-                                        uint64_t index_count);
+
+
 
 /* === Replay trace drivers (former -[MGLRenderer traceReplayBatch:...] /
  * -[MGLRenderer traceReplayCommand:...]; defined in mgl_batch_replay_trace.c) ===

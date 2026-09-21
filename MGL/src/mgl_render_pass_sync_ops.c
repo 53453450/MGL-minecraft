@@ -44,7 +44,6 @@
 #include "mgl_sync.h"              /* mglLoadActionName / mglStoreActionName */
 #include "mgl_readback_policy.h"
 #include "mgl_byte_hash.h"
-#include "mgl_batch_issue.h"      /* MGLEncodeContext */
 #include "mgl_buffer_map.h"       /* mglRendererMapBuffersToMTL */
 #include "mgl_stage_encode_drivers.h" /* mglStageEncodeBind*Buffers */
 #include "mgl_metal_ref.h"       /* mglSafeReleaseMetalObj */

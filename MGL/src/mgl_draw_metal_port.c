@@ -56,7 +56,7 @@ static inline bool mglVboRangeValidationEnabled(void)
 #include "mgl_draw_support.h"
 #include "mgl_ms_sample_loop.h"
 #include "mgl_draw_issue.h"
-#include "mgl_batch_rt_mark.h"
+#include "mgl_batch_public.h"
 #include "mgl_index_buffer.h"
 #include "mgl_buffer_query.h"
 #include "glm_limits.h"

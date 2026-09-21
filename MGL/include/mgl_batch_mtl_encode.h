@@ -35,7 +35,7 @@ int mgl_batch_mtl_draw_indexed_indirect(void *render_encoder_owner,
                                         void *indirect_buffer,
                                         uint64_t indirect_buffer_offset);
 
-void *mgl_batch_mtl_create_icb(int indexed, uint64_t max_command_count);
+
 int mgl_batch_mtl_reset_icb(void *icb, uint64_t location, uint64_t length);
 void *mgl_batch_mtl_icb_command(void *icb, uint64_t index);
 int mgl_batch_mtl_set_icb_draw_indexed(void *command, uint32_t primitive_type,

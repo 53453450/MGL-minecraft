@@ -23,7 +23,7 @@
 #include "mgl_draw_issue.h"          /* mglDrawHostDevice */
 #include "mgl_render.h"
 #include "mgl_metal_ref.h"           /* mglReleaseMetalObjNoNull */
-#include "mgl_batch_path.h"          /* mgl_batch_icb_support_indirect_command_buffers */
+#include "mgl_batch_public.h"          /* mgl_batch_icb_support_indirect_command_buffers */
 #include "mgl_aux_assets.h"
 #include "mgl_texture_compat.h"
 #include "mgl_types_program.h"

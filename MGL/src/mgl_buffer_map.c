@@ -48,7 +48,6 @@
 #include "mgl_state_compat.h"          /* mglShouldLogSmallBaseBinding */
 #include "mgl_program_resource.h"      /* mglShaderStageName */
 #include "mgl_shader_resource.h"       /* mglMGLShaderResourceTypeName */
-#include "mgl_batch_mtl_encode.h"      /* mglNoteBufferEncoded */
 #include "hash_table.h"                /* searchHashTable */
 #include "mgl_trace_log.h"             /* mglTraceLog / kMGLDiagnosticStateLogs */
 

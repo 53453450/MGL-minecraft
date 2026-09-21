@@ -21,6 +21,9 @@
  * (GLenum/GLuint/GLintptr/...) to already be declared. */
 #include "mgl_batch_restore.h"
 #include "glm_context.h"
+/* The public entry points moved to mgl_batch_public.h; this header
+ * keeps the cluster-internal declarations only. */
+#include "mgl_batch_public.h"
 #include "draw_command.h"
 #include "mgl_encode_context.h"
 #include "mgl_types_vertex.h"   /* VertexArray */
@@ -397,7 +400,7 @@ void mglBatchIssueStreamMergedBatch(void *renderer, MGLDrawBatch *batch,
 
 /* Bind every active texture's Metal object (former
  * -[MGLRenderer bindActiveTexturesToMTL]; mgl_batch_replay.cpp). */
-int mglBatchBindActiveTexturesToMTL(void *renderer, GLMContext glm_ctx);
+
 
 #ifdef __cplusplus
 }

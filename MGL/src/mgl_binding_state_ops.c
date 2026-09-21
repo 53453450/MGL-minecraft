@@ -22,7 +22,7 @@
 #include "mgl_buffer_map.h"        /* map/update-dirty entries */
 #include "mgl_size_constants.h"    /* runtime-array size constants */
 #include "mgl_encode_context.h"    /* MGLEncodeContext */
-#include "mgl_batch_issue.h"       /* mglBatchBindActiveTexturesToMTL */
+#include "mgl_batch_public.h"       /* mglBatchBindActiveTexturesToMTL */
 
 void mglBindingInvalidateLastBoundState(void *renderer)
 {

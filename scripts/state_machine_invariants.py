@@ -414,6 +414,62 @@ def check_snapshot_ownership(files):
     return findings
 
 
+# --------------------------------------------------------------------------
+# I8  batch cluster boundary: outside callers may only use the public header
+# --------------------------------------------------------------------------
+def check_batch_boundary(root, _unused=None):
+    """The batch cluster declares ~157 functions across mgl_batch_*.h.  Only a
+    handful are meant for callers outside the cluster, and those are declared in
+    mgl/include/mgl_batch_public.h.  Without this check the boundary is
+    invisible: a new cross-boundary call looks exactly like an internal one.
+
+    Fails when a TU outside the cluster references a batch symbol that the
+    public header does not declare.
+    """
+    cluster = lambda base: (base.startswith("mgl_batch_")
+                            or base == "draw_command.c"
+                            or base == "mgl_renderer_core_state.c")
+
+    declared = {}
+    for name in sorted(os.listdir(os.path.join(root, "MGL/include"))):
+        if not name.startswith("mgl_batch_") or not name.endswith(".h"):
+            continue
+        src = strip_comments(read(os.path.join(root, "MGL/include", name)))
+        for m in re.finditer(
+                r"(?m)^[A-Za-z_][\w \*]*?\b(mgl[A-Za-z_0-9]+)\s*\(", src):
+            declared.setdefault(m.group(1), set()).add(name)
+
+    public_path = os.path.join(root, "MGL/include/mgl_batch_public.h")
+    public = set()
+    if os.path.exists(public_path):
+        src = strip_comments(read(public_path))
+        public = set(re.findall(
+            r"(?m)^[A-Za-z_][\w \*]*?\b(mgl[A-Za-z_0-9]+)\s*\(", src))
+    else:
+        return None, "mgl_batch_public.h missing"
+
+    # Enumerate the tree here rather than trusting a caller-supplied list:
+    # main()'s `cluster` holds ONLY cluster files, and passing that in made this
+    # check scan nothing at all while still reporting OK.
+    src_dir = os.path.join(root, "MGL/src")
+    all_files = [os.path.join(src_dir, n) for n in sorted(os.listdir(src_dir))
+                 if n.endswith((".c", ".cpp"))]
+
+    findings = []
+    for p in all_files:
+        if cluster(os.path.basename(p)):
+            continue
+        src = strip_comments(read(p))
+        used = set(re.findall(r"\b(mgl[A-Za-z_0-9]+)\s*\(", src))
+        for sym in sorted(used & set(declared)):
+            if sym not in public:
+                findings.append(
+                    f"{rel(p)} calls {sym}, declared in "
+                    f"{'/'.join(sorted(declared[sym]))} but not in "
+                    "mgl_batch_public.h")
+    return findings, f"{len(declared)} declared / {len(public)} public"
+
+
 def main():
     state_h = os.path.join(ROOT, "MGL/include/mgl_types_state.h")
     dirty_h = os.path.join(ROOT, "MGL/include/mgl_dirty_bits.h")
@@ -539,6 +595,21 @@ def main():
         findings.extend(f"I7: {f}" for f in so)
     else:
         print("  OK    no unguarded state_snapshot free")
+    print()
+
+    # I8
+    bfind, bnote = check_batch_boundary(ROOT, cluster)
+    print("=" * 78)
+    print("I8  batch-cluster boundary (outside callers use mgl_batch_public.h)")
+    print("=" * 78)
+    if bfind is None:
+        print(f"  SKIP  {bnote}")
+    elif bfind:
+        for f in bfind:
+            print(f"  FAIL  {f}")
+        findings.extend(f"I8: {f}" for f in bfind)
+    else:
+        print(f"  OK    no undeclared cross-boundary batch call  ({bnote})")
     print()
 
     # ---- baseline gate ----------------------------------------------------

@@ -20,6 +20,9 @@
 /* glm_context.h must precede draw_command.h: the latter expects GL base
  * types (GLenum/GLuint/GLintptr/...) to already be declared. */
 #include "glm_context.h"
+/* The public entry points moved to mgl_batch_public.h; this header
+ * keeps the cluster-internal declarations only. */
+#include "mgl_batch_public.h"
 #include "draw_command.h"
 
 #include <stdint.h>
@@ -173,23 +176,17 @@ void mglBatchRestoreStateFromKey(const MGLStateKey *key, GLMContext glm_ctx);
 /* ---- A3: flush pass state shared by the C driver and the ObjC @try frame ----
  * The frame itself stays in the shim (mglRendererFlushDrawBufferLocked):
  * the teardown in its @finally must run even when a draw raises. */
-typedef struct MGLBatchFlushPass {
-    uint64_t hit;
-    uint32_t skipped;
-    GLMState saved;
-    GLenum saved_error;
-    GLenum replay_error;
-} MGLBatchFlushPass;
+
 
 /* Bind the context, snapshot the live state, switch to the replay workspace.
  * Returns 0 when the context has no batches to replay. */
-int mglBatchFlushBegin(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass);
+
 
 /* The @try body: run the flush loop and log the per-flush summary. */
-void mglBatchFlushRunBatches(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass);
+
 
 /* The @finally body: replay-workspace teardown, driven by the pass state. */
-void mglBatchTeardownReplay(void *renderer, GLMContext glm_ctx, MGLBatchFlushPass *pass);
+
 
 /* Whole restore sequence for one batch (former
  * -[MGLRenderer restoreStateForBatch:...]; mgl_batch_flush_restore_encode.c). */

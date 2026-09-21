@@ -24,6 +24,9 @@
 /* glm_context.h must precede draw_command.h: the latter expects GL base
  * types (GLenum/GLuint/GLintptr/...) to already be declared. */
 #include "glm_context.h"
+/* The public entry points moved to mgl_batch_public.h; this header
+ * keeps the cluster-internal declarations only. */
+#include "mgl_batch_public.h"
 #include "draw_command.h"
 #include "mgl_batch_issue.h"
 #include "mgl_draw_encode.h"
@@ -147,8 +150,7 @@ int mgl_batch_replay_stream_path(const MGLDrawBatch *batch, int disable_mdi);
 const char *mgl_batch_replay_stream_path_reason(int path);
 
 /* Fill TextureParameter fields from an immutable sampler snapshot key. */
-void mgl_batch_replay_fill_sampler_params(const MGLSamplerSnapshotKey *key,
-                                          struct TextureParameter_t *out);
+
 
 enum {
     MGL_BATCH_DYN_VERTEX_UNUSED = 0, /* no streams used by shader — skip bind */

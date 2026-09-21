@@ -17,9 +17,9 @@
 // cache, and handles optional binary-archive lookups.
 //------------------------------------------------------------------------------------------------
 #include "mgl_metal.h"
+#include "mgl_batch_public.h"
 #include "mgl_air_loader.h"
 #include "mgl_env_flag.h"
-#include "mgl_batch_path.h"
 
 #include <dispatch/dispatch.h>
 #include <cstdint>

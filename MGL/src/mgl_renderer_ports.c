@@ -16,7 +16,7 @@
 #include "mgl_render.h"           /* command-buffer snapshot, MDI scratch owner */
 #include "mgl_renderer_backend.h" /* mglRendererBackendGetDevice, sampler cache */
 #include "mgl_texture_sampler.h"  /* mglTextureCreateSamplerForTexParam */
-#include "mgl_batch_replay.h"     /* mgl_batch_replay_fill_sampler_params */
+#include "mgl_batch_public.h"     /* mgl_batch_replay_fill_sampler_params */
 #include "mgl_metal_ref.h"        /* mglReleaseMetalObjNoNull */
 #include "mgl_draw_encode.h"      /* mglDrawCommandElementBuffer */
 #include "draw_command.h"         /* MGLDrawCommand */
