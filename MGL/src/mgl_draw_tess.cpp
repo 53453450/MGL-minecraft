@@ -268,12 +268,10 @@ extern "C" void mglTessEncodeNativePatches(const MGLTessNativeEncodeState *state
         state->tess_gen_mode == GL_QUADS
             ? (uint64_t)MGL_AIR_TESS_FACTOR_RECORD_BYTES
             : (uint64_t)MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
-    const uint32_t factorInstanceStride =
-        state->tess_gen_mode == GL_QUADS
-            ? MGL_AIR_TESS_FACTOR_RECORD_BYTES
-            : MGL_AIR_TESS_FACTOR_TRI_HALF_BYTES;
+    /* The pipeline uses the PerPatch step function, for which Metal requires
+     * a zero instance stride. */
     (void)mglRenderSetTessellationFactorBufferForOwner(
-        reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->native_factors, 0u, factorInstanceStride);
+        reinterpret_cast<MGLRenderEncoderOwner*>(state->encoder_owner), state->native_factors, 0u, 0u);
 
     for (uint32_t i = 0u; i < state->instance_count; i++) {
         const uint64_t instanceOffset =
