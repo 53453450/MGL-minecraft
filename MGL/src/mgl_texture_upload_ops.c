@@ -449,7 +449,7 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
      * docs/AGX_COPY3D_DRIVER_BUG_RECHECK_2026-09-20.md. */
     if (mglRenderBuildTextureUploadPlan(
             (uint32_t)texTarget, textureType,
-            (uint32_t)mglPdTextureInfo(texture).usage,
+            mglPdTextureInfo(texture).storage_mode,
             (uint32_t)mglPdTextureInfo(texture).pixel_format,
             0,
             width, height, depth, bytesPerRow, bytesPerImage, level, slice,
