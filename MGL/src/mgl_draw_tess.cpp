@@ -2319,6 +2319,51 @@ extern "C" bool mglXfbPrimitiveModeAccepts(GLenum xfb_mode, GLenum draw_mode)
     return false;
 }
 
+static uint32_t mglXfbVerticesPerPrimitive(GLenum xfb_mode)
+{
+    return xfb_mode == GL_POINTS ? 1u : (xfb_mode == GL_LINES ? 2u : 3u);
+}
+
+/* GL 4.6 §13.3.2: lines and triangles of strips, fans and loops are recorded
+ * as independent primitives (strip triangles in the vertex A / B / current
+ * order of §10.1.6) and incomplete primitives are dropped.  Returns the
+ * primitive count of one instance of `count` vertices; when `order` is
+ * non-null it receives the source vertex of each recorded vertex. */
+static uint32_t mglXfbVsDecompose(GLenum mode, uint32_t count, uint32_t *order)
+{
+    uint32_t prims = 0u;
+    switch (mode) {
+        case GL_POINTS: prims = count; break;
+        case GL_LINES: prims = count / 2u; break;
+        case GL_LINE_STRIP: prims = count > 1u ? count - 1u : 0u; break;
+        case GL_LINE_LOOP: prims = count > 1u ? count : 0u; break;
+        case GL_TRIANGLES: prims = count / 3u; break;
+        case GL_TRIANGLE_STRIP:
+        case GL_TRIANGLE_FAN: prims = count > 2u ? count - 2u : 0u; break;
+        default: return 0u;
+    }
+    for (uint32_t p = 0u; order && p < prims; p++) {
+        switch (mode) {
+            case GL_POINTS: *order++ = p; break;
+            case GL_LINES: *order++ = 2u * p; *order++ = 2u * p + 1u; break;
+            case GL_LINE_STRIP: *order++ = p; *order++ = p + 1u; break;
+            case GL_LINE_LOOP: *order++ = p; *order++ = (p + 1u) % count; break;
+            case GL_TRIANGLES:
+                *order++ = 3u * p; *order++ = 3u * p + 1u; *order++ = 3u * p + 2u;
+                break;
+            case GL_TRIANGLE_STRIP:
+                *order++ = (p & 1u) ? p + 1u : p;
+                *order++ = (p & 1u) ? p : p + 1u;
+                *order++ = p + 2u;
+                break;
+            case GL_TRIANGLE_FAN:
+                *order++ = 0u; *order++ = p + 1u; *order++ = p + 2u;
+                break;
+        }
+    }
+    return prims;
+}
+
 extern "C" bool mglXfbVsOnlyEligible(const Program *program)
 {
     return program && !program->shader_slots[_GEOMETRY_SHADER] &&
@@ -2800,15 +2845,21 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
 
     const uint8_t *captureBytes =
         (const uint8_t *)ops->buffer_contents(capture);
-    uint64_t recordCount64 =
-        (uint64_t)(uint32_t)count * (uint64_t)(uint32_t)instanceCount;
-    if (!captureBytes || !mglXfbRecordCountFits(recordCount64)) {
+    const uint32_t vpp = mglXfbVerticesPerPrimitive(xfb->primitive_mode);
+    const uint32_t primsPerInstance =
+        mglXfbVsDecompose(mode, (uint32_t)count, NULL);
+    const uint64_t primsTotal64 =
+        (uint64_t)primsPerInstance * (uint64_t)(uint32_t)instanceCount;
+    if (!captureBytes || !mglXfbRecordCountFits(primsTotal64 * vpp)) {
         CFRelease(capture);
         return 1;
     }
-    uint32_t recordCount = (uint32_t)recordCount64;
-    uint32_t writtenTotal = recordCount;
+    const uint32_t primsTotal = (uint32_t)primsTotal64;
 
+    /* GL 4.6 §13.3.2: a primitive that does not fit in every bound buffer
+     * is recorded in none of them. */
+    MGLXfbVsBufferDest dests[MGL_MAX_TRANSFORM_FEEDBACK_BUFFERS] = {};
+    uint32_t primsWritten = primsTotal;
     for (GLuint buffer = 0u; buffer < plan.buffer_count; buffer++) {
         if (plan.buffer_stride[buffer] == 0u) {
             continue;
@@ -2828,29 +2879,69 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
                       : 0u;
         uint64_t sessionOffset = mglXfbSessionOffsetOr(
             (uint64_t)xfb->buffer_write_offsets[buffer], visible);
-        MGLXfbVsBufferDest dest = {0};
-        if (!mglXfbPlanVsBufferDest(recordCount, plan.buffer_stride[buffer],
+        MGLXfbVsBufferDest *dest = &dests[buffer];
+        if (!mglXfbPlanVsBufferDest(primsTotal * vpp,
+                                    plan.buffer_stride[buffer],
                                     slot->buf != NULL, slot->offset,
-                                    sessionOffset, visible, &dest) ||
-            dest.skip) {
-            writtenTotal = 0;
-            continue;
+                                    sessionOffset, visible, dest) ||
+            dest->skip) {
+            primsWritten = 0u;
+        } else if (dest->written_records / vpp < primsWritten) {
+            primsWritten = dest->written_records / vpp;
         }
-        if (dest.written_records < writtenTotal) {
-            writtenTotal = dest.written_records;
-        }
-        uint8_t *packed = (uint8_t *)calloc(1u, dest.written_bytes);
-        if (!packed) {
+    }
+
+    const uint32_t recordsWritten = primsWritten * vpp;
+    uint8_t *gathered = NULL;
+    uint32_t *order = NULL;
+    if (recordsWritten > 0u) {
+        gathered = (uint8_t *)malloc((size_t)recordsWritten *
+                                     plan.capture_stride);
+        order = (uint32_t *)malloc((size_t)primsPerInstance * vpp *
+                                   sizeof(uint32_t));
+        if (!gathered || !order) {
+            free(gathered);
+            free(order);
             mglDispatchError(ctx, "vertexTransformFeedback",
                              (GLenum)mglRenderErrorOutOfMemory());
             CFRelease(capture);
             return 1;
         }
-        mglXfbPackVsRecords(&plan, buffer, captureBytes, captureOffset,
-                            plan.capture_stride, dest.written_records, packed,
+        mglXfbVsDecompose(mode, (uint32_t)count, order);
+        const uint32_t perInstance = primsPerInstance * vpp;
+        for (uint32_t r = 0u; r < recordsWritten; r++) {
+            const uint64_t src = (uint64_t)(r / perInstance) * (uint32_t)count +
+                                 order[r % perInstance];
+            memcpy(gathered + (size_t)r * plan.capture_stride,
+                   captureBytes + captureOffset + src * plan.capture_stride,
+                   plan.capture_stride);
+        }
+        free(order);
+    }
+
+    for (GLuint buffer = 0u; recordsWritten > 0u && buffer < plan.buffer_count;
+         buffer++) {
+        if (plan.buffer_stride[buffer] == 0u) {
+            continue;
+        }
+        BufferBaseTarget *slot =
+            &ctx->active_state
+                 ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER]
+                 .buffers[buffer];
+        const uint32_t writtenBytes =
+            recordsWritten * plan.buffer_stride[buffer];
+        uint8_t *packed = (uint8_t *)calloc(1u, writtenBytes);
+        if (!packed) {
+            free(gathered);
+            mglDispatchError(ctx, "vertexTransformFeedback",
+                             (GLenum)mglRenderErrorOutOfMemory());
+            CFRelease(capture);
+            return 1;
+        }
+        mglXfbPackVsRecords(&plan, buffer, gathered, 0u, plan.capture_stride,
+                            recordsWritten, packed,
                             plan.buffer_stride[buffer]);
-        const uint32_t destinationOffset = dest.destination_offset;
-        const uint32_t writtenBytes = dest.written_bytes;
+        const uint32_t destinationOffset = dests[buffer].destination_offset;
         mglRendererBufferSubData(ctx, slot->buf, destinationOffset, writtenBytes,
                                  packed);
         if (slot->buf->data.mtl_data) {
@@ -2876,11 +2967,12 @@ extern "C" int mglXfbRunVsOnlyDraw(GLMContext ctx, GLenum mode, GLint first,
         xfb->buffer_write_offsets[buffer] = mglXfbAdvanceWriteOffset(
             xfb->buffer_write_offsets[buffer], (uint64_t)writtenBytes);
     }
+    free(gathered);
 
-    xfb->primitives_generated += (GLuint64)recordCount;
-    xfb->primitives_written += (GLuint64)writtenTotal;
-    mglRecordActivePrimitiveQueryDraw(ctx, (GLuint64)recordCount,
-                                      (GLuint64)writtenTotal);
+    xfb->primitives_generated += (GLuint64)primsTotal;
+    xfb->primitives_written += (GLuint64)primsWritten;
+    mglRecordActivePrimitiveQueryDraw(ctx, (GLuint64)primsTotal,
+                                      (GLuint64)primsWritten);
     ctx->active_state->dirty_bits = DIRTY_ALL;
     CFRelease(capture);
     return 1;

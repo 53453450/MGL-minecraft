@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 119
+#define MAX_TESTS 120
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -15674,6 +15674,137 @@ static int test_object_labels(unsigned char *pixels, const char *out_path)
     return fail;
 }
 
+static GLuint64 dtf_written(GLuint query)
+{
+    GLuint64 v = ~0ull;
+    glGetQueryObjectui64v(query, GL_QUERY_RESULT, &v);
+    return v;
+}
+
+static GLuint xfb_vs_program(void)
+{
+    GLuint prog = glCreateProgram();
+    GLuint vs = compile_shader(GL_VERTEX_SHADER, VS_XFB);
+    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, FS_XFB);
+    if (!vs || !fs) return 0;
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    const char *tf_varying = "tf_pos";
+    glTransformFeedbackVaryings(prog, 1, &tf_varying, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    return ok ? prog : 0;
+}
+
+/* Capture one draw of `mode` into `buf` (prefilled with -7) and return the
+ * TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN result. */
+static GLuint64 xfb_vs_capture(GLuint buf, GLsizeiptr range, GLenum xfb_mode,
+                               GLenum mode, GLsizei count, float out[16])
+{
+    float fill[16];
+    for (int i = 0; i < 16; i++) fill[i] = -7.0f;
+    glNamedBufferSubData(buf, 0, sizeof(fill), fill);
+    glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buf, 0, range);
+    GLuint query;
+    glGenQueries(1, &query);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
+    glBeginTransformFeedback(xfb_mode);
+    glDrawArrays(mode, 0, count);
+    glEndTransformFeedback();
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    GLuint64 written = dtf_written(query);
+    glDeleteQueries(1, &query);
+    glGetNamedBufferSubData(buf, 0, 16 * sizeof(float), out);
+    return written;
+}
+
+/* GL 4.6 §13.3.2 / §13.4.2: vertex-shader-only capture records strips, fans
+ * and loops as independent primitives, drops a primitive that would overflow
+ * any binding, and counts primitives (not vertices). */
+static int test_xfb_vs_primitive_capture(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+    GLuint prog = xfb_vs_program();
+    if (!prog) return 3;
+
+    static const float quad[] = { 0, 0, 1, 0, 0, 1, 1, 1 };
+    GLuint vao, vbo = make_vbo(quad, sizeof(quad));
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    GLuint buf;
+    glCreateBuffers(1, &buf);
+    glNamedBufferData(buf, 16 * sizeof(float), NULL, GL_DYNAMIC_READ);
+    glUseProgram(prog);
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    /* Vertex i captures quad[i] * 0.5. */
+    float out[16];
+    GLuint64 w = xfb_vs_capture(buf, 16 * sizeof(float), GL_TRIANGLES,
+                                GL_TRIANGLE_STRIP, 4, out);
+    static const float strip[12] = { 0, 0, .5f, 0, 0, .5f,
+                                     0, .5f, .5f, 0, .5f, .5f };
+    if (w != 2 || memcmp(out, strip, sizeof(strip)) != 0) {
+        fprintf(stderr, "xfb_vs_primitive_capture: strip written=%llu "
+                "v3=(%g,%g) v4=(%g,%g)\n", (unsigned long long)w, out[6],
+                out[7], out[8], out[9]);
+        fail = 1;
+    }
+
+    w = xfb_vs_capture(buf, 16 * sizeof(float), GL_LINES, GL_LINE_LOOP, 3, out);
+    static const float loop[12] = { 0, 0, .5f, 0, .5f, 0,
+                                    0, .5f, 0, .5f, 0, 0 };
+    if (w != 3 || memcmp(out, loop, sizeof(loop)) != 0) {
+        fprintf(stderr, "xfb_vs_primitive_capture: loop written=%llu "
+                "last=(%g,%g)-(%g,%g)\n", (unsigned long long)w, out[8],
+                out[9], out[10], out[11]);
+        fail = 1;
+    }
+
+    w = xfb_vs_capture(buf, 8 * sizeof(float), GL_TRIANGLES, GL_TRIANGLE_STRIP,
+                       4, out);
+    if (w != 1 || out[6] != -7.0f || out[7] != -7.0f) {
+        fprintf(stderr, "xfb_vs_primitive_capture: overflow written=%llu "
+                "v3=(%g,%g)\n", (unsigned long long)w, out[6], out[7]);
+        fail = 1;
+    }
+    glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, buf, 0,
+                      6 * sizeof(float));
+    GLuint query;
+    glGenQueries(1, &query);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
+    glBeginTransformFeedback(GL_TRIANGLES);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEndTransformFeedback();
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    w = dtf_written(query);
+    glDeleteQueries(1, &query);
+    if (w != 1) {
+        fprintf(stderr, "xfb_vs_primitive_capture: full buffer written=%llu\n",
+                (unsigned long long)w);
+        fail = 1;
+    }
+
+    glDisable(GL_RASTERIZER_DISCARD);
+    glUseProgram(0);
+    glDeleteBuffers(1, &buf);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    if (glGetError() != GL_NO_ERROR) fail = 1;
+    return fail;
+}
+
 static GLuint clamp_read_fbo(GLenum internalformat, const GLfloat clear[4],
                              GLuint *out_tex)
 {
@@ -19086,6 +19217,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("debug_message_control", test_debug_message_control),
     SELF_CHECK_TEST("object_labels", test_object_labels),
     SELF_CHECK_TEST("clamp_read_color", test_clamp_read_color),
+    SELF_CHECK_TEST("xfb_vs_primitive_capture", test_xfb_vs_primitive_capture),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),

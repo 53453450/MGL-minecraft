@@ -40,6 +40,7 @@
 #include "glm_context.h"
 #include "draw_command.h"
 #include "mgl.h"
+#include "mgl_draw_tess.h"
 #include "mgl_safety.h"
 #include "mgl_program_reflection.h"
 #include "vertex_arrays.h"
@@ -1705,14 +1706,17 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
     /* S14: deferred path — record command for batch replay.  Transform
      * feedback capture is stateful and ordered: the renderer's per-vertex
      * capture handler only runs on the immediate path, so a capturable
-     * draw (points, vertex-stage-only program with an XFB layout) must not
-     * be parked in a replay batch whose handlers skip the capture. */
+     * draw (vertex-stage-only program with an XFB layout) must not be
+     * parked in a replay batch whose handlers skip the capture. */
     bool xfbImmediate = false;
     if (STATE(transform_feedback) &&
         STATE(transform_feedback)->active &&
         !STATE(transform_feedback)->paused &&
-        STATE(transform_feedback)->primitive_mode == cmd->mode &&
-        cmd->type == MGL_CMD_DRAW_ARRAYS) {
+        mglXfbPrimitiveModeAccepts(STATE(transform_feedback)->primitive_mode,
+                                   cmd->mode) &&
+        (cmd->type == MGL_CMD_DRAW_ARRAYS ||
+         cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED ||
+         cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE)) {
         Program *vs_prog = STATE(program_pipeline)
             ? STATE(program_pipeline)->stage_programs[_VERTEX_SHADER]
             : (STATE(program_name) != 0u ? STATE(program) : NULL);
