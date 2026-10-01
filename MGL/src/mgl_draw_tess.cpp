@@ -1420,9 +1420,11 @@ extern "C" bool mglTessAppendEvalPerPatchDispatches(
             free(keep);
             return false;
         }
-        if (spec->gather_buffer &&
-            !mglTessPlanAppendBuffer(plan, spec->gather_buffer, 0u,
-                                     MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
+        /* The kernel declares the gather slot even when gather is off. */
+        if (!mglTessPlanAppendBuffer(plan,
+                                     spec->gather_buffer ? spec->gather_buffer
+                                                         : spec->gl_in_buffer,
+                                     0u, MGL_AIR_TESS_SLOT_GATHER_INDEX)) {
             free(patchBases);
             free(keep);
             return false;
