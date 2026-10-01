@@ -3096,35 +3096,34 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
         return;
     }
 
-    /* Format compatibility check for GL_COLOR_BUFFER_BIT blits: the source
-     * and destination color attachments must be format-compatible (same
-     * internal format class).  Per GL 4.6 spec §18.3.1, blitting between
-     * incompatible formats generates GL_INVALID_OPERATION. */
+    /* GL 4.6 §18.3.1: LINEAR is invalid for an integer read buffer, and the
+     * read buffer and every draw buffer must agree on fixed/float vs
+     * unsigned vs signed integer.  Other format differences are converted. */
     if ((mask & GL_COLOR_BUFFER_BIT) != 0u) {
         Framebuffer *srcFbo = ctx ? STATE(readbuffer) : NULL;
         Framebuffer *dstFbo = ctx ? STATE(framebuffer) : NULL;
-        if (srcFbo && dstFbo &&
-            srcFbo->color_attachment_bitfield != 0u &&
-            dstFbo->color_attachment_bitfield != 0u) {
-            /* Find the first color attachment on each side. */
-            GLint srcFmt = 0, dstFmt = 0;
-            for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS && srcFmt == 0; ++i) {
-                if (((srcFbo->color_attachment_bitfield >> i) & 1u) != 0u) {
-                    srcFmt = mglFramebufferAttachmentInternalFormat(ctx, &srcFbo->color_attachments[i]);
+        GLint srcFmt = 0;
+        if (srcFbo && mglFramebufferBufferIsColorAttachment(ctx, STATE(read_buffer))) {
+            srcFmt = mglFramebufferAttachmentInternalFormat(
+                ctx, &srcFbo->color_attachments[STATE(read_buffer) - GL_COLOR_ATTACHMENT0]);
+        }
+        if (srcFmt != 0 && filter == GL_LINEAR && mglInternalFormatIsInteger(srcFmt)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        if (srcFmt != 0 && dstFbo) {
+            bool srcInt = mglInternalFormatIsInteger(srcFmt);
+            bool srcUint = mglInternalFormatIsUnsignedInteger(srcFmt);
+            for (GLsizei i = 0; i < STATE(draw_buffer_count); ++i) {
+                GLenum buf = STATE(draw_buffers)[i];
+                if (!mglFramebufferBufferIsColorAttachment(ctx, buf)) {
+                    continue;
                 }
-            }
-            for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS && dstFmt == 0; ++i) {
-                if (((dstFbo->color_attachment_bitfield >> i) & 1u) != 0u) {
-                    dstFmt = mglFramebufferAttachmentInternalFormat(ctx, &dstFbo->color_attachments[i]);
-                }
-            }
-            /* Reject only when one is an integer format and the other is
-             * not — that is the hard requirement per spec.  Same-base-type
-             * mismatches (e.g. RGBA8 → RGBA16) are allowed for blit. */
-            if (srcFmt != 0 && dstFmt != 0) {
-                GLboolean srcInt = mglInternalFormatIsInteger(srcFmt);
-                GLboolean dstInt = mglInternalFormatIsInteger(dstFmt);
-                if (srcInt != dstInt) {
+                GLint dstFmt = mglFramebufferAttachmentInternalFormat(
+                    ctx, &dstFbo->color_attachments[buf - GL_COLOR_ATTACHMENT0]);
+                if (dstFmt != 0 &&
+                    (mglInternalFormatIsInteger(dstFmt) != srcInt ||
+                     mglInternalFormatIsUnsignedInteger(dstFmt) != srcUint)) {
                     ERROR_RETURN(GL_INVALID_OPERATION);
                     return;
                 }

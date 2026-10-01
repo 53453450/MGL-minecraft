@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 101
+#define MAX_TESTS 102
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14349,6 +14349,63 @@ static int test_blit_color_format_conversion(unsigned char *pixels,
     return result;
 }
 
+static int blit_error_check(const char *label, GLuint read_fbo,
+                            GLuint draw_fbo, GLenum filter, GLenum want)
+{
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw_fbo);
+    glBlitFramebuffer(0, 0, REG_W, REG_H, 0, 0, REG_W, REG_H,
+                      GL_COLOR_BUFFER_BIT, filter);
+    GLenum err = glGetError();
+    if (err != want) {
+        fprintf(stderr, "blit_integer_format_errors: %s error 0x%x, want 0x%x\n",
+                label, err, want);
+        return 1;
+    }
+    return 0;
+}
+
+/* GL 4.6 §18.3.1 errors: LINEAR with an integer read buffer, and integer
+ * blits across signedness. */
+static int test_blit_integer_format_errors(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint tex[4] = {0};
+    GLuint uint_a = make_color_fbo(GL_RGBA8UI, GL_RGBA_INTEGER,
+                                   GL_UNSIGNED_BYTE, &tex[0]);
+    GLuint uint_b = make_color_fbo(GL_RGBA16UI, GL_RGBA_INTEGER,
+                                   GL_UNSIGNED_SHORT, &tex[1]);
+    GLuint sint = make_color_fbo(GL_RGBA8I, GL_RGBA_INTEGER, GL_BYTE, &tex[2]);
+    GLuint unorm = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &tex[3]);
+    if (!uint_a || !uint_b || !sint || !unorm) return 2;
+    while (glGetError() != GL_NO_ERROR) {
+    }
+
+    int result = 0;
+    result |= blit_error_check("uint->uint nearest", uint_a, uint_b,
+                               GL_NEAREST, GL_NO_ERROR);
+    result |= blit_error_check("uint->uint linear", uint_a, uint_b, GL_LINEAR,
+                               GL_INVALID_OPERATION);
+    result |= blit_error_check("uint->sint", uint_a, sint, GL_NEAREST,
+                               GL_INVALID_OPERATION);
+    result |= blit_error_check("sint->uint", sint, uint_a, GL_NEAREST,
+                               GL_INVALID_OPERATION);
+    result |= blit_error_check("uint->unorm", uint_a, unorm, GL_NEAREST,
+                               GL_INVALID_OPERATION);
+    result |= blit_error_check("unorm->unorm linear", unorm, unorm, GL_LINEAR,
+                               GL_NO_ERROR);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &uint_a);
+    glDeleteFramebuffers(1, &uint_b);
+    glDeleteFramebuffers(1, &sint);
+    glDeleteFramebuffers(1, &unorm);
+    glDeleteTextures(4, tex);
+    return result;
+}
+
 /* Draws a full-screen triangle whose color comes from the `Color` input fed
  * at the location GetAttribLocation reports; `Position` likewise. */
 static int attrib_name_draw_check(const char *label, const char *vs,
@@ -17204,6 +17261,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("clear_alpha_readback", test_clear_alpha_readback),
     SELF_CHECK_TEST("blit_color_format_conversion",
                     test_blit_color_format_conversion),
+    SELF_CHECK_TEST("blit_integer_format_errors",
+                    test_blit_integer_format_errors),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

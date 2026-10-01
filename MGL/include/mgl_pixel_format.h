@@ -57,6 +57,7 @@ bool mglExternalFormatIsInteger(GLenum format);
 bool mglIsValidPixelTransferFormat(GLenum format);
 bool mglIsValidPixelTransferType(GLenum type);
 bool mglInternalFormatIsInteger(GLint internalformat);
+bool mglInternalFormatIsUnsignedInteger(GLint internalformat);
 bool mglInternalFormatIsDepthStencil(GLint internalformat);
 bool mglInternalFormatIsCombinedDepthStencil(GLint internalformat);
 int mglExternalSourceIndexForComponent(GLenum format, GLuint component);
