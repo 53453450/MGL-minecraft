@@ -98,7 +98,8 @@ static void mglBdMarkTextureLevelCopied(Texture *tex, GLuint level)
     tex_level->last_upload_size = 0u;
     tex_level->last_src_ptr = NULL;
     tex_level->last_src_hash = 0ull;
-    if (tex->is_render_target) {
+    if (mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+                                       tex->mtl_render_target_write_version)) {
         tex->mtl_render_target_write_version++;
         mglMarkGLSampledCopyLevelDirty(tex, level);
         mglTextureViewFamilyWritten(tex);
@@ -519,6 +520,14 @@ bool mglBlitCopyImageSubDataCpuToCpu(
     (void)glm_ctx;
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
+
+    /* Rendered storage holds rows the CPU level lacks, Y-flipped. */
+    if (mglRenderTargetStorageYFlipped(src_tex->is_render_target ? 1 : 0,
+                                       src_tex->mtl_render_target_write_version) ||
+        mglRenderTargetStorageYFlipped(dst_tex->is_render_target ? 1 : 0,
+                                       dst_tex->mtl_render_target_write_version)) {
+        return false;
+    }
 
     /* Prefer the CPU shadow whenever it is authoritative.  Renderbuffer /
      * render-target sources used to be excluded here (`!is_render_target`),
@@ -1947,6 +1956,7 @@ typedef struct {
     size_t dst_depth_plane;
     size_t iterations;
     size_t src_size_depth;
+    int reverse_rows;
 } MglBdCopyImageDispatchCtx;
 
 static int mglBdCopyImageDispatchGuarded(void *renderer, void *ctx_raw)
@@ -1977,15 +1987,20 @@ static int mglBdCopyImageDispatchGuarded(void *renderer, void *ctx_raw)
             cur_dst_slice = c->dst_slice + i;
         }
 
-        mglBdCopyTexture(
-            c->encoder, c->source, cur_src_slice, (size_t)c->src_level,
-            mglBlitOrigin((uint64_t)c->src_x, (uint64_t)c->src_y,
-                          (uint64_t)cur_src_depth),
-            mglBlitSize((uint64_t)c->width, (uint64_t)c->height,
-                        (uint64_t)c->src_size_depth),
-            c->destination, cur_dst_slice, (size_t)c->dst_level,
-            mglBlitOrigin((uint64_t)c->dst_x, (uint64_t)c->dst_y,
-                          (uint64_t)cur_dst_depth));
+        const GLsizei rows = c->reverse_rows ? 1 : c->height;
+        for (GLsizei r = 0; r < c->height; r += rows) {
+            const GLsizei dst_row =
+                c->reverse_rows ? c->height - 1 - r : r;
+            mglBdCopyTexture(
+                c->encoder, c->source, cur_src_slice, (size_t)c->src_level,
+                mglBlitOrigin((uint64_t)c->src_x, (uint64_t)(c->src_y + r),
+                              (uint64_t)cur_src_depth),
+                mglBlitSize((uint64_t)c->width, (uint64_t)rows,
+                            (uint64_t)c->src_size_depth),
+                c->destination, cur_dst_slice, (size_t)c->dst_level,
+                mglBlitOrigin((uint64_t)c->dst_x, (uint64_t)(c->dst_y + dst_row),
+                              (uint64_t)cur_dst_depth));
+        }
     }
     mglBdEndBlitEncoder(c->encoder);
     return 1;
@@ -2012,7 +2027,9 @@ static void mglBdPushCpuShadowRegionToMetalSource(
     GLint src_level, GLint src_x, GLint src_y, GLint src_z, GLsizei width,
     GLsizei height, GLsizei depth)
 {
-    if (!renderer || !src_tex || !src_texture || src_tex->metal_data_authoritative) {
+    if (!renderer || !src_tex || !src_texture || src_tex->metal_data_authoritative ||
+        mglRenderTargetStorageYFlipped(src_tex->is_render_target ? 1 : 0,
+                                       src_tex->mtl_render_target_write_version)) {
         return;
     }
     if (!src_tex->faces || (size_t)src_level >= src_tex->num_levels) {
@@ -2304,6 +2321,21 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         return;
     }
 
+    const int src_flipped = mglRenderTargetStorageYFlipped(
+        src_tex->is_render_target ? 1 : 0, src_tex->mtl_render_target_write_version);
+    const int dst_flipped = mglRenderTargetStorageYFlipped(
+        dst_tex->is_render_target ? 1 : 0, dst_tex->mtl_render_target_write_version);
+    const GLint blit_src_y = src_flipped
+        ? (GLint)mglMetalTextureLevelDimension(
+              mglBdTextureInfo(src_texture).height, (size_t)src_level) -
+              (src_y + height)
+        : src_y;
+    const GLint blit_dst_y = dst_flipped
+        ? (GLint)mglMetalTextureLevelDimension(
+              mglBdTextureInfo(dst_texture).height, (size_t)dst_level) -
+              (dst_y + height)
+        : dst_y;
+
     MglBdCopyImageDispatchCtx dispatch_ctx = {
         .encoder = blit_encoder,
         .source = src_texture,
@@ -2313,9 +2345,9 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         .src_level = src_level,
         .dst_level = dst_level,
         .src_x = src_x,
-        .src_y = src_y,
+        .src_y = blit_src_y,
         .dst_x = dst_x,
-        .dst_y = dst_y,
+        .dst_y = blit_dst_y,
         .width = width,
         .height = height,
         .src_slice = src_slice,
@@ -2324,6 +2356,7 @@ void mglBlitCopyImageSubData(void *renderer, GLMContext glm_ctx, Texture *src_te
         .dst_depth_plane = dst_depth_plane,
         .iterations = iterations,
         .src_size_depth = src_size_depth,
+        .reverse_rows = src_flipped != dst_flipped,
     };
     if (!mglPlatformShellGuardedCallCtx(renderer, "mtlCopyImageSubData blit",
                                         mglBdCopyImageDispatchGuarded,
