@@ -377,6 +377,25 @@ static void test_preprocessor(void)
     CHECK(parse_ok("#version 450 core\n#define A(X) var##X\n"
                    "void main() { float varfoo = 1.0; float y = A(foo); }\n"),
           "token paste identifier compiles");
+    CHECK(pp_contains("#version 450\n#define P(a,b) float a##b\nP(var, foo);\n",
+                      "float varfoo"),
+          "pasted token keeps the left operand's spacing");
+    CHECK(parse_ok("#version 330\n#define VALUE (AAA - 1.0)\n"
+                   "#define VALUE (AAA - 1.0)\nvoid main() {}\n"),
+          "identical redefinition allowed");
+    {
+        static char body[2100];
+        static char src[4400];
+        size_t o = 0;
+        while (o < 2000) {
+            o += (size_t)snprintf(body + o, sizeof(body) - o, " + 1");
+        }
+        snprintf(src, sizeof(src),
+                 "#version 450\n#define LONG 0%s\n#define LONG 0%s\n"
+                 "int x = LONG;\n", body, body);
+        CHECK(pp_contains(src, "int x = 0 + 1 + 1"),
+              "macro body over 1 KB defines and redefines");
+    }
 }
 
 static void test_array_type_syntax(void)

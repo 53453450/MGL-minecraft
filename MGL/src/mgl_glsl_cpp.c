@@ -399,28 +399,23 @@ static int hidden(char *const *hide, int nh, const char *name)
     return 0;
 }
 
-static int canon_repl(const TokList *tl, char *buf, size_t cap)
+/* Replacement lists match when their tokens and inter-token whitespace match;
+ * whitespace before the first token is not part of the list. */
+static int repl_equal(const TokList *a, const TokList *b)
 {
-    size_t i, o = 0;
-    if (!buf || cap == 0) {
-        return -1;
+    size_t i;
+    if (a->n != b->n) {
+        return 0;
     }
-    buf[0] = 0;
-    for (i = 0; i < tl->n; i++) {
-        size_t k = strlen(tl->t[i].s);
-        if (o + k + 2 >= cap) {
-            /* Keep a terminated prefix so callers may still strcmp safely. */
-            buf[o < cap ? o : cap - 1] = 0;
-            return -1;
+    for (i = 0; i < a->n; i++) {
+        if (strcmp(a->t[i].s, b->t[i].s) != 0) {
+            return 0;
         }
-        if (i && tl->t[i].spaced) {
-            buf[o++] = ' ';
+        if (i && !a->t[i].spaced != !b->t[i].spaced) {
+            return 0;
         }
-        memcpy(buf + o, tl->t[i].s, k);
-        o += k;
-        buf[o] = 0;
     }
-    return 0;
+    return 1;
 }
 
 static void macro_clear(Macro *m)
@@ -586,6 +581,7 @@ static int paste_list(PP *pp, TokList *tl)
                 memcpy(cat + la, tl->t[i + 1].s, lb);
                 cat[la + lb] = 0;
                 nt.s = cat;
+                nt.spaced = tl->t[i - 1].spaced;
                 if (is_ident_s(cat[0])) {
                     nt.kind = TK_ID;
                 } else if (isdigit((unsigned char)cat[0])) {
@@ -1254,7 +1250,6 @@ static int define_from_raw(PP *pp, const char *rest)
     size_t name_s, name_e;
     int function_like = 0;
     Macro tmp, *exist, *m;
-    char canon_new[1024], canon_old[1024];
     memset(&tmp, 0, sizeof(tmp));
     i = (size_t)skip_ws_text(rest, n, 0);
     if (i >= n || !is_ident_s(rest[i])) {
@@ -1372,19 +1367,9 @@ static int define_from_raw(PP *pp, const char *rest)
         macro_clear(&tmp);
         return -1;
     }
-    if (canon_repl(&tmp.body, canon_new, sizeof(canon_new)) != 0) {
-        pp_fail(pp, "preprocessor: macro replacement too long");
-        macro_clear(&tmp);
-        return -1;
-    }
     if (exist) {
-        if (canon_repl(&exist->body, canon_old, sizeof(canon_old)) != 0) {
-            pp_fail(pp, "preprocessor: macro replacement too long");
-            macro_clear(&tmp);
-            return -1;
-        }
         if (exist->function_like != tmp.function_like ||
-            exist->nparams != tmp.nparams || strcmp(canon_new, canon_old) != 0) {
+            exist->nparams != tmp.nparams || !repl_equal(&tmp.body, &exist->body)) {
             pp_fail(pp, "preprocessor: illegal macro redefinition");
             macro_clear(&tmp);
             return -1;
