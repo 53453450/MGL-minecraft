@@ -1459,7 +1459,7 @@ static int verifyAuxShaderAssets(void) {
         {"scaled_depth_blit", "mgl_scaled_depth_blit_vs", 2},
         {"msaa_integer_resolve", "mgl_msaa_resolve_uint", 2},
         {"clear_rect", "mgl_clear_rect_vs", 2},
-        {"safe_fallback", "mgl_safe_fallback_vs", 2},
+        {"safe_fallback", "mgl_safe_fallback_vs", 4},
         {"gs_xfb_scatter", "mgl_gs_xfb_scatter", 1},
     };
     char message[1024] = {0};

@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 103
+#define MAX_TESTS 104
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14475,6 +14475,103 @@ static int test_blit_integer_format_conversion(unsigned char *pixels,
     return result;
 }
 
+/* A fragment-less program drawn with RASTERIZER_DISCARD into integer color
+ * targets still needs a stub fragment function whose output type matches
+ * the attachment; transform feedback must capture normally. */
+static int test_discard_stub_integer_targets(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "out vec2 tf_pos;\n"
+        "void main() { tf_pos = a_pos * 0.5; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+    static const float verts[] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f };
+    static const struct { GLenum internal_format, type; const char *label; }
+        kTargets[] = {
+            {GL_RGBA8UI, GL_UNSIGNED_BYTE, "uint"},
+            {GL_RGBA8I, GL_BYTE, "int"},
+        };
+
+    GLuint shader = compile_shader(GL_VERTEX_SHADER, vs);
+    if (!shader) return 2;
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, shader);
+    const char *varying = "tf_pos";
+    glTransformFeedbackVaryings(prog, 1, &varying, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(prog);
+    glDeleteShader(shader);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        glDeleteProgram(prog);
+        return 3;
+    }
+
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(verts, sizeof(verts));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    GLuint tf_buf = 0;
+    glGenBuffers(1, &tf_buf);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tf_buf);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, sizeof(verts), NULL,
+                 GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tf_buf);
+    glUseProgram(prog);
+
+    int result = 0;
+    for (size_t t = 0; t < sizeof(kTargets) / sizeof(kTargets[0]); t++) {
+        GLuint tex = 0;
+        GLuint fbo = make_color_fbo(kTargets[t].internal_format,
+                                    GL_RGBA_INTEGER, kTargets[t].type, &tex);
+        if (!fbo) {
+            result = 2;
+            break;
+        }
+        float zero[6] = {0};
+        glBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(zero), zero);
+        glEnable(GL_RASTERIZER_DISCARD);
+        glBeginTransformFeedback(GL_TRIANGLES);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glEndTransformFeedback();
+        glDisable(GL_RASTERIZER_DISCARD);
+        glFinish();
+
+        float captured[6] = {0};
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(captured),
+                           captured);
+        for (int i = 0; i < 6; i++) {
+            if (captured[i] != verts[i] * 0.5f) {
+                fprintf(stderr, "discard_stub_integer_targets: %s capture[%d] "
+                        "= %f, want %f\n", kTargets[t].label, i, captured[i],
+                        verts[i] * 0.5f);
+                result = 1;
+                break;
+            }
+        }
+        if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr, "discard_stub_integer_targets: %s GL error\n",
+                    kTargets[t].label);
+            result = 1;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    glUseProgram(0);
+    glDeleteBuffers(1, &tf_buf);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* Draws a full-screen triangle whose color comes from the `Color` input fed
  * at the location GetAttribLocation reports; `Position` likewise. */
 static int attrib_name_draw_check(const char *label, const char *vs,
@@ -17334,6 +17431,8 @@ static const TestCase TESTS[] = {
                     test_blit_integer_format_errors),
     SELF_CHECK_TEST("blit_integer_format_conversion",
                     test_blit_integer_format_conversion),
+    SELF_CHECK_TEST("discard_stub_integer_targets",
+                    test_discard_stub_integer_targets),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

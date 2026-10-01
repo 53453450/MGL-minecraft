@@ -51,7 +51,6 @@
 #include "mgl_platform_shell_internal.h"
 #include "mgl_renderer_host.h"        /* mglRendererEnsureNewCommandBuffer */
 #include "mgl_renderer_ports.h"
-#include "mgl_shader_abi.h"
 #include "mgl_shader_resource.h"
 #include "mgl_texture_bind.h"          /* mglRendererBindMTLTexture */
 #include "mgl_thread_affinity.h"
@@ -809,9 +808,9 @@ void *mglRendererCreateIndirectCommandBuffer(void *renderer, int indexed,
 /* === draw / tessellation host entries (phase 2) ========================= */
 /* The rasterizer-discard stub fragment function (moved out of
  * MGLRenderer+RenderPass.m so that file could be deleted, log 193).  The
- * dispatch_once + aux-asset/self-hosted-GLSL compile path was Objective-C by
- * construction; dispatch_once and blocks are plain C/C++ here, and the only
- * Objective-C left was the object bookkeeping (rules 67). */
+ * dispatch_once + aux-asset path was Objective-C by construction;
+ * dispatch_once and blocks are plain C/C++ here, and the only Objective-C
+ * left was the object bookkeeping (rules 67). */
 typedef enum MGLStubFSValueClass {
     MGLStubFSFloat = 0,
     MGLStubFSInt,
@@ -825,73 +824,28 @@ static MGLObjectId mglRasterizerDiscardStubFragmentFunctionForClass(
     static dispatch_once_t once[MGLStubFSUint + 1];
 
     dispatch_once(&once[valueClass], ^{
+        static const char *s_entry[MGLStubFSUint + 1] = {
+            "mgl_safe_fallback_fs",
+            "mgl_safe_fallback_fs_int",
+            "mgl_safe_fallback_fs_uint",
+        };
         void *fs = NULL;
         char err[256] = {0};
-        if (valueClass == MGLStubFSFloat) {
-            /* Precompiled aux asset (no runtime source compile). */
-            const MGLAuxShaderAsset *safe =
-                mglAuxShaderAssetFind("safe_fallback");
-            void *vs = NULL;
-            if (!safe || !safe->data || safe->size == 0 ||
-                mglRenderCreateAuxFunctions(
-                    safe->data, safe->size, safe->hash,
-                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
-                    &vs, &fs, err, sizeof(err)) != 0 || !fs) {
-                fprintf(stderr, "MGL ERROR: discard stub FS unavailable: %s\n",
-                        err[0] ? err : "asset missing");
-                if (vs) {
-                    mglBridgingRelease(vs);
-                }
-                return;
+        const MGLAuxShaderAsset *safe = mglAuxShaderAssetFind("safe_fallback");
+        void *vs = NULL;
+        if (!safe || !safe->data || safe->size == 0 ||
+            mglRenderCreateAuxFunctions(
+                safe->data, safe->size, safe->hash,
+                "mgl_safe_fallback_vs", s_entry[valueClass],
+                &vs, &fs, err, sizeof(err)) != 0 || !fs) {
+            fprintf(stderr, "MGL ERROR: discard stub FS unavailable: %s\n",
+                    err[0] ? err : "asset missing");
+            if (vs) {
+                mglBridgingRelease(vs);
             }
-            mglBridgingRelease(vs);
-        } else {
-            /* Integer-format targets reject a float4 output, and no
-             * precompiled integer stub asset ships in the aux table.
-             * Compile the integer zero stub at runtime through the
-             * self-hosted GLSL->AIR backend (the same path real programs
-             * take; its fragment output carries the correct
-             * air.render_target int/uint type). */
-            static const char *s_stubSource[MGLStubFSUint + 1] = {
-                NULL,
-                "#version 330\n"
-                "out ivec4 mgl_stub_color_int;\n"
-                "void main() { mgl_stub_color_int = ivec4(0); }\n",
-                "#version 330\n"
-                "out uvec4 mgl_stub_color_uint;\n"
-                "void main() { mgl_stub_color_uint = uvec4(0u); }\n",
-            };
-            unsigned char *bytes = NULL;
-            size_t size = 0;
-            if (mglShaderCompileGLSL(
-                    s_stubSource[valueClass], MGL_STAGE_FRAGMENT,
-                    &bytes, &size, err, sizeof(err)) != 0 || !bytes) {
-                fprintf(stderr, "MGL ERROR: stub FS compile failed: %s\n",
-                        err[0] ? err : "unknown");
-                return;
-            }
-            /* mglRenderCreateAuxFunctions supports fragment-only blobs by
-             * accepting a NULL vertex entry, but the vertex output argument
-             * itself is still required so the API can publish both results.
-             * Passing NULL here made every integer render target fail with
-             * "bad args" before the stub function was even looked up. */
-            void *unusedVertex = NULL;
-            if (mglRenderCreateAuxFunctions(
-                    bytes, size, 0u, NULL, "main",
-                    &unusedVertex, &fs, err, sizeof(err)) != 0 || !fs) {
-                fprintf(stderr, "MGL ERROR: stub FS function load failed: %s\n",
-                        err[0] ? err : "unknown");
-                if (unusedVertex) {
-                    mglBridgingRelease(unusedVertex);
-                }
-                free(bytes);
-                return;
-            }
-            if (unusedVertex) {
-                mglBridgingRelease(unusedVertex);
-            }
-            free(bytes);
+            return;
         }
+        mglBridgingRelease(vs);
         /* The create call hands back a +1; the cache below is what holds it
          * (the ARC original spelled this `__bridge_transfer id`). */
         s_fs[valueClass] = (MGLObjectId)fs;

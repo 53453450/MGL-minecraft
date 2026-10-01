@@ -545,8 +545,8 @@ int mglRenderPassBuildPipelineStateOnCacheMiss(
         safeState.stencil_format = finalState.stencil_format;
 
         /* VS from the precompiled safe_fallback aux asset.  FS reuses the
-         * discard stub helper so int/uint color0 gets a matching zero output
-         * (aux table only ships float4 mgl_safe_fallback_fs). */
+         * discard stub helper so int/uint color0 gets a matching zero
+         * output. */
         const MGLAuxShaderAsset *safe = mglAuxShaderAssetFind("safe_fallback");
         void *safeVS = NULL;
         void *unusedFS = NULL;
