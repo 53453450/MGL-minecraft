@@ -1123,13 +1123,41 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
 uint32_t mglRenderMetalPixelFormatBytesPerPixel(uint32_t pixel_format) {
     switch (pixel_format) {
     case 10u: /* MGLPixelFormatR8Unorm */
+    case 11u: /* MGLPixelFormatR8Unorm_sRGB */
+    case 12u: /* MGLPixelFormatR8Snorm */
     case 13u: /* MGLPixelFormatR8Uint */
     case 14u: /* MGLPixelFormatR8Sint */
+    case 253u: /* MGLPixelFormatStencil8 */
         return 1u;
+    case 20u: /* MGLPixelFormatR16Unorm */
+    case 22u: /* MGLPixelFormatR16Snorm */
+    case 23u: /* MGLPixelFormatR16Uint */
+    case 24u: /* MGLPixelFormatR16Sint */
+    case 25u: /* MGLPixelFormatR16Float */
     case 30u: /* MGLPixelFormatRG8Unorm */
+    case 31u: /* MGLPixelFormatRG8Unorm_sRGB */
+    case 32u: /* MGLPixelFormatRG8Snorm */
     case 33u: /* MGLPixelFormatRG8Uint */
     case 34u: /* MGLPixelFormatRG8Sint */
+    case 40u: /* MGLPixelFormatB5G6R5Unorm */
+    case 41u: /* MGLPixelFormatA1BGR5Unorm */
+    case 42u: /* MGLPixelFormatABGR4Unorm */
+    case 43u: /* MGLPixelFormatBGR5A1Unorm */
+    case 250u: /* MGLPixelFormatDepth16Unorm */
         return 2u;
+    case 103u: /* MGLPixelFormatRG32Uint */
+    case 104u: /* MGLPixelFormatRG32Sint */
+    case 105u: /* MGLPixelFormatRG32Float */
+    case 110u: /* MGLPixelFormatRGBA16Unorm */
+    case 112u: /* MGLPixelFormatRGBA16Snorm */
+    case 113u: /* MGLPixelFormatRGBA16Uint */
+    case 114u: /* MGLPixelFormatRGBA16Sint */
+    case 115u: /* MGLPixelFormatRGBA16Float */
+        return 8u;
+    case 123u: /* MGLPixelFormatRGBA32Uint */
+    case 124u: /* MGLPixelFormatRGBA32Sint */
+    case 125u: /* MGLPixelFormatRGBA32Float */
+        return 16u;
     default:
         return 4u;
     }
