@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 111
+#define MAX_TESTS 112
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,136 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §10.2.1: every VertexAttrib* form sets the current generic value. */
+static int test_current_vertex_attrib_forms(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int result = 0;
+#define EXPECT_F4(label, a, b, c, d)                                          \
+    do {                                                                      \
+        GLfloat f[4] = {-9, -9, -9, -9};                                      \
+        glGetVertexAttribfv(2, GL_CURRENT_VERTEX_ATTRIB, f);                  \
+        const GLfloat w[4] = {(a), (b), (c), (d)};                            \
+        for (int k = 0; k < 4; k++) {                                         \
+            if (f[k] - w[k] > 1e-6f || w[k] - f[k] > 1e-6f) {                 \
+                fprintf(stderr, "current_vertex_attrib_forms: %s got "        \
+                        "%g,%g,%g,%g\n", label, f[0], f[1], f[2], f[3]);      \
+                result = 1;                                                   \
+                break;                                                        \
+            }                                                                 \
+        }                                                                     \
+    } while (0)
+
+    static const GLubyte nub[4] = {255, 0, 51, 255};
+    glVertexAttrib4Nubv(2, nub);
+    EXPECT_F4("4Nubv", 1.0f, 0.0f, 0.2f, 1.0f);
+    static const GLbyte nb[4] = {-128, 127, 0, -127};
+    glVertexAttrib4Nbv(2, nb);
+    EXPECT_F4("4Nbv", -1.0f, 1.0f, 0.0f, -1.0f);
+    static const GLshort ns[4] = {32767, -32768, 0, 0};
+    glVertexAttrib4Nsv(2, ns);
+    EXPECT_F4("4Nsv", 1.0f, -1.0f, 0.0f, 0.0f);
+    static const GLuint nui[4] = {0xffffffffu, 0u, 0u, 0xffffffffu};
+    glVertexAttrib4Nuiv(2, nui);
+    EXPECT_F4("4Nuiv", 1.0f, 0.0f, 0.0f, 1.0f);
+    glVertexAttrib4s(2, 1, -2, 3, 4);
+    EXPECT_F4("4s", 1.0f, -2.0f, 3.0f, 4.0f);
+    static const GLushort us[4] = {7, 8, 9, 65535};
+    glVertexAttrib4usv(2, us);
+    EXPECT_F4("4usv", 7.0f, 8.0f, 9.0f, 65535.0f);
+    /* x=511, y=-512, z=0, w=1 (signed 10/10/10/2) */
+    glVertexAttribP4ui(2, GL_INT_2_10_10_10_REV, GL_TRUE,
+                       0x1ffu | (0x200u << 10) | (1u << 30));
+    EXPECT_F4("P4ui snorm", 1.0f, -1.0f, 0.0f, 1.0f);
+    glVertexAttribP3ui(2, GL_UNSIGNED_INT_2_10_10_10_REV, GL_FALSE,
+                       1023u | (5u << 10) | (7u << 20) | (3u << 30));
+    EXPECT_F4("P3ui uint", 1023.0f, 5.0f, 7.0f, 1.0f);
+    /* 11-bit 1.0 and 2.0, 10-bit 0.5 */
+    glVertexAttribP3ui(2, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_FALSE,
+                       0x3c0u | (0x400u << 11) | (0x1c0u << 22));
+    EXPECT_F4("P3ui 10F11F11F", 1.0f, 2.0f, 0.5f, 1.0f);
+#undef EXPECT_F4
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "current_vertex_attrib_forms: unexpected error\n");
+        result = 1;
+    }
+    glVertexAttribP4ui(2, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_FALSE, 0u);
+    GLenum p4_float = glGetError();
+    glVertexAttribP1ui(2, GL_FLOAT, GL_FALSE, 0u);
+    GLenum p1_bad = glGetError();
+    if (p4_float != GL_INVALID_ENUM || p1_bad != GL_INVALID_ENUM) {
+        fprintf(stderr, "current_vertex_attrib_forms: P errors 0x%x 0x%x\n",
+                p4_float, p1_bad);
+        result = 1;
+    }
+
+    static const GLbyte ib[4] = {-1, 2, -3, 4};
+    glVertexAttribI4bv(2, ib);
+    GLint iv[4] = {0};
+    glGetVertexAttribIiv(2, GL_CURRENT_VERTEX_ATTRIB, iv);
+    static const GLushort ius[4] = {65535, 1, 2, 3};
+    glVertexAttribI4usv(3, ius);
+    GLuint uiv[4] = {0};
+    glGetVertexAttribIuiv(3, GL_CURRENT_VERTEX_ATTRIB, uiv);
+    glVertexAttribL2d(4, 1.5, 2.5);
+    GLdouble dv[4] = {0};
+    glGetVertexAttribLdv(4, GL_CURRENT_VERTEX_ATTRIB, dv);
+    if (iv[0] != -1 || iv[1] != 2 || iv[2] != -3 || iv[3] != 4 ||
+        uiv[0] != 65535u || uiv[3] != 3u || dv[0] != 1.5 || dv[1] != 2.5 ||
+        dv[2] != 0.0 || dv[3] != 1.0 || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "current_vertex_attrib_forms: I/L got i=%d,%d,%d,%d "
+                "u=%u,%u d=%g,%g,%g,%g\n", iv[0], iv[1], iv[2], iv[3], uiv[0],
+                uiv[3], dv[0], dv[1], dv[2], dv[3]);
+        result = 1;
+    }
+
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location = 1) in vec4 col;\n"
+        "out vec4 vcol;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  vcol = col;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "in vec4 vcol;\n"
+        "out vec4 c;\n"
+        "void main() { c = vcol; }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0, target = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &target);
+    if (!fbo) return 2;
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glVertexAttrib4Nubv(1, nub);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    unsigned char px[4] = {0};
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (abs((int)px[0] - 255) > 1 || px[1] > 1 || abs((int)px[2] - 51) > 1 ||
+        abs((int)px[3] - 255) > 1) {
+        fprintf(stderr, "current_vertex_attrib_forms: draw got %u,%u,%u,%u "
+                "want 255,0,51,255\n", px[0], px[1], px[2], px[3]);
+        result = 1;
+    }
+
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &target);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* GL 4.6 §7.14: GetUniformdv returns the uniform's value as doubles. */
 static int test_get_uniform_dv(unsigned char *pixels, const char *out_path)
 {
@@ -18150,6 +18280,8 @@ static const TestCase TESTS[] = {
                     test_texture_swizzle_sampling),
     SELF_CHECK_TEST("copy_tex_image_1d", test_copy_tex_image_1d),
     SELF_CHECK_TEST("get_uniform_dv", test_get_uniform_dv),
+    SELF_CHECK_TEST("current_vertex_attrib_forms",
+                    test_current_vertex_attrib_forms),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
