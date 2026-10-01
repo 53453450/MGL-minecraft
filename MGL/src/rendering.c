@@ -2535,6 +2535,8 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
 
     GLfloat *floatDepth = NULL;
 
+    /* A pending draw may turn the attachment into a render target. */
+    mglFlushCommandBuffer(ctx);
     if (depthTexture && depthTexture->depth_shadow &&
         !depthTexture->is_render_target) {
         floatDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
@@ -2558,7 +2560,6 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
         if (!floatDepth) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
         }
-        mglFlushCommandBuffer(ctx);
         mglRendererReadDepthPixels(ctx,
                                           floatDepth,
                                           (GLuint)(width * sizeof(GLfloat)),
@@ -2732,6 +2733,7 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
     GLfloat *gpuDepth = NULL;
     GLboolean useGpuDepth = GL_FALSE;
 
+    mglFlushCommandBuffer(ctx);
     if (depthTex && depthTex->depth_shadow &&
         !depthTex->is_render_target) {
         /* CPU shadow path — depth_shadow is authoritative for
@@ -2741,7 +2743,6 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
         if (!gpuDepth) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
         }
-        mglFlushCommandBuffer(ctx);
         mglRendererReadDepthPixels(ctx,
                                           gpuDepth,
                                           (GLuint)(width * sizeof(GLfloat)),
