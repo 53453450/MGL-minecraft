@@ -57,8 +57,6 @@ int mglFrontendRewriteLegacy(const char *src, int air_stage,
         *out = NULL;
     if (!src || !out)
         return 0;
-    if (strstr(src, "/* MGL legacy GLSL translation: renamed builtins declared as"))
-        return 0;
 
     mgl_legacy_features_t features;
     memset(&features, 0, sizeof(features));
