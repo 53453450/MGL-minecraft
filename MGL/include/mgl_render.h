@@ -609,11 +609,7 @@ int mglRenderTraceR8RedUByte(uint32_t internalformat, uint32_t format,
                              uint32_t type);
 uint32_t mglRenderCompletenessCheckFaces(uint32_t target, uint32_t num_faces);
 int mglRenderIs3DReupload(uint32_t target, uint32_t depth);
-uint32_t mglRenderDepthStencilPlaneViewType(uint32_t parent_type);
-uint32_t mglRenderStencilViewFormat(uint32_t parent_format);
 uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format);
-int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
-                                        uint32_t row_bytes, uint32_t width);
 const char *mglRenderGLSLTypeName(uint32_t type);
 uint32_t mglRenderGLSLMatrixCols(uint32_t type);
 uint32_t mglRenderGLSLMatrixRows(uint32_t type);
@@ -1539,6 +1535,7 @@ int mglRenderEncodeTextureUploadLayers(
     uint64_t destination_z,
     int flip_y);
 int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(MGLCommandBufferOwner *command_buffer_owner, void *source_buffer, uint64_t source_offset, uint64_t source_bytes_per_row, uint64_t source_bytes_per_image, uint64_t source_layer_stride, uint64_t source_width, uint64_t source_height, uint64_t source_depth, void *destination_texture, uint64_t destination_base_slice, uint64_t layer_count, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, uint64_t destination_z, int flip_y);
+int mglRenderEncodePackedDepthStencilUploadForCommandBufferOwner(MGLCommandBufferOwner *command_buffer_owner, void *source_buffer, uint64_t width, uint64_t height, void *destination_texture, uint64_t destination_slice, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, int flip_y);
 int mglRenderBlitCopyBufferToTexture(void *blit_encoder,
                                         void *source_buffer,
                                         uint64_t source_offset,

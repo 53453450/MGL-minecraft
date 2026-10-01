@@ -137,10 +137,6 @@ uint32_t mglRenderIntegerFormatComponentMap(uint32_t format, int map[4]);
 
 uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type);
 
-int mglRenderDepth32FStencil8NeedsUnpack(uint32_t internalformat,
-                                         uint32_t pixel_format,
-                                         uint32_t src_bpr, uint32_t width);
-
 int mglRenderDirectR32FloatRead(uint32_t pixel_format, uint32_t format,
                                 uint32_t type);
 

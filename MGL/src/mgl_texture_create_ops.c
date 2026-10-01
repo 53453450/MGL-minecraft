@@ -43,17 +43,7 @@ enum {
  * MGLRenderer+RenderPass_Private.h. */
 extern uint32_t mtlPixelFormatForGLTex(Texture *gl_tex);
 
-static const uint64_t kMglPdDepthStencilUploadRowAlignment = 256u;
-
 static uint64_t mglPdMinU64(uint64_t a, uint64_t b) { return a < b ? a : b; }
-
-/* Twin of the .m's mglTextureInfo. */
-static MGLRenderTextureInfo mglPdTextureInfo(void *texture)
-{
-    MGLRenderTextureInfo info = {0};
-    if (texture) (void)mglRenderGetTextureInfo(texture, &info);
-    return info;
-}
 
 /* Twin of the .m's mglTextureCreateTexture (returns the +1 handle). */
 static void *mglPdTextureCreateTexture(
@@ -107,16 +97,6 @@ static void *mglPdTextureBufferContents(void *buffer)
     return buffer && mglRenderGetBufferContents(buffer, &contents, &length) == 0
                ? contents
                : NULL;
-}
-
-static uint64_t mglPdDepthStencilAlignedBytesPerRow(uint64_t logicalBytesPerRow)
-{
-    if (logicalBytesPerRow == 0) {
-        return 0;
-    }
-    return ((logicalBytesPerRow + kMglPdDepthStencilUploadRowAlignment - 1u) /
-            kMglPdDepthStencilUploadRowAlignment) *
-           kMglPdDepthStencilUploadRowAlignment;
 }
 
 /* -checkTextureCompleteness:texType:numFaces:effectiveMipmapLevels:
@@ -258,97 +238,6 @@ int mglTextureCheckCompleteness(void *tex, uint32_t tex_type,
     }
     if (outStorageMipmapped) *outStorageMipmapped = storageMipmapped;
     return 1;
-}
-
-/* -uploadPackedDepthStencilStencilPlane:texName:bytes:width:height:
- *  bytesPerRow:level:slice:xorigin:yorigin: */
-int mglTextureUploadPackedDepthStencilStencilPlane(
-    void *texture, unsigned int texName, const void *packedBytes, uint64_t width,
-    uint64_t height, uint64_t bytesPerRow, uint64_t level, uint64_t slice,
-    uint64_t xorigin, uint64_t yorigin)
-{
-    if (!texture || !packedBytes || width == 0 || height == 0) {
-        return 0;
-    }
-    const uint32_t parentFormat =
-        (uint32_t)mglPdTextureInfo(texture).pixel_format;
-    if (!mglRenderPixelFormatIsPackedDepthStencil(parentFormat)) {
-        return 0;
-    }
-
-    void *metalUpload = NULL;
-    const void *srcBytes = packedBytes;
-    uint64_t srcBytesPerRow = bytesPerRow;
-    if (bytesPerRow >= width * 8u) {
-        /* Already Metal packed layout. */
-    } else if (mglRenderPackedD32FNeeds8ByteStride(
-                   parentFormat, (uint32_t)bytesPerRow, (uint32_t)width)) {
-        srcBytesPerRow = width * 8u;
-        const uint64_t repackBytes = srcBytesPerRow * height;
-        metalUpload = calloc(1u, repackBytes);
-        if (!metalUpload) return 0;
-        const uint8_t *srcBase = (const uint8_t *)packedBytes;
-        uint8_t *dstBase = (uint8_t *)metalUpload;
-        for (uint64_t y = 0; y < height; ++y) {
-            const uint8_t *srcRow = srcBase + y * bytesPerRow;
-            uint8_t *dstRow = dstBase + y * srcBytesPerRow;
-            for (uint64_t x = 0; x < width; ++x) {
-                memcpy(dstRow + x * 8u, srcRow + x * 5u, 4u);
-                dstRow[x * 8u + 4u] = srcRow[x * 5u + 4u];
-            }
-        }
-        srcBytes = metalUpload;
-    } else {
-        return 0;
-    }
-
-    const uint64_t logicalStencilBytesPerRow = width;
-    const uint64_t stencilBytesPerRow =
-        mglPdDepthStencilAlignedBytesPerRow(logicalStencilBytesPerRow);
-    if (stencilBytesPerRow == 0) {
-        free(metalUpload);
-        return 0;
-    }
-    const uint64_t stencilBytesPerImage = stencilBytesPerRow * height;
-    uint8_t *stencilBytes = (uint8_t *)calloc(1u, stencilBytesPerImage);
-    if (!stencilBytes) {
-        free(metalUpload);
-        return 0;
-    }
-
-    const uint8_t *srcBase = (const uint8_t *)srcBytes;
-    for (uint64_t y = 0; y < height; ++y) {
-        const uint8_t *srcRow = srcBase + y * srcBytesPerRow;
-        uint8_t *dstRow = stencilBytes + y * stencilBytesPerRow;
-        for (uint64_t x = 0; x < width; ++x) {
-            dstRow[x] = srcRow[x * 8u + 4u];
-        }
-    }
-    free(metalUpload);
-
-    void *stencilViewRaw = NULL;
-    const uint32_t viewType = mglRenderDepthStencilPlaneViewType(
-        (uint32_t)mglPdTextureInfo(texture).texture_type);
-    int uploaded = 0;
-    const uint32_t stencilViewFormat = mglRenderStencilViewFormat(parentFormat);
-    if (mglRenderCreateTextureViewRange(
-            texture, stencilViewFormat, viewType, level, 1u, slice, 1u, 0, 0, 0,
-            0, 0, &stencilViewRaw) == 0 &&
-        stencilViewRaw) {
-        /* The .m wrapped the upload in @try/@catch and only logged the failure;
-         * the C twin reports it instead (see mglPdTextureReplaceRegion). */
-        uploaded = mglTextureReplaceRegionValue(
-            stencilViewRaw, mglTextureRegion2D(xorigin, yorigin, width, height),
-            0u, 0u, stencilBytes, stencilBytesPerRow, stencilBytesPerImage, 0);
-        mglReleaseMetalObjNoNull(stencilViewRaw);
-    }
-    free(stencilBytes);
-    if (!uploaded) {
-        fprintf(stderr,
-                "MGL WARNING: depth/stencil stencil-plane blit upload failed tex=%u slice=%lu\n",
-                (unsigned)texName, (unsigned long)slice);
-    }
-    return uploaded;
 }
 
 /* -createMTLTexelBufferTexture:. */

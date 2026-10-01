@@ -1084,7 +1084,11 @@ uint32_t mglRenderBytesPerPixelForInternalFormat(uint32_t internalformat,
     case GL_R32I:
     case GL_R32UI:
     case GL_R32F:
+    case GL_DEPTH24_STENCIL8:
         bpp = 4u;
+        break;
+    case GL_DEPTH32F_STENCIL8:
+        bpp = 5u;
         break;
     case GL_RGBA16:
     case GL_RGBA16F:
@@ -1904,40 +1908,6 @@ int mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
     return kind == expected_kind;
 }
 
-extern "C"
-int mglRenderTextureUploadNeedsDepthNormalization(uint32_t internal_format,
-                                                  uint32_t pixel_format) {
-    return (internal_format == GL_DEPTH24_STENCIL8 && pixel_format == 260u) ? 1 : 0;
-}
-
-extern "C"
-uint8_t *mglRenderCreateDepth24Stencil8NormalizedUpload(
-    const void *src_data, size_t width, size_t height,
-    size_t src_bytes_per_row, size_t *out_bytes_per_row,
-    size_t *out_bytes_per_image) {
-    if (out_bytes_per_row) *out_bytes_per_row = 0u;
-    if (out_bytes_per_image) *out_bytes_per_image = 0u;
-    if (!src_data || width == 0u || height == 0u ||
-        src_bytes_per_row < width * 4u || !out_bytes_per_row ||
-        !out_bytes_per_image) return nullptr;
-    const size_t dst_row = width * 4u;   /* EXPERIMENT: 4-byte texel */
-    const size_t dst_image = dst_row * height;
-    uint8_t *dst = (uint8_t *)calloc(1u, dst_image);
-    if (!dst) return nullptr;
-    const uint8_t *src = (const uint8_t *)src_data;
-    for (size_t y = 0u; y < height; ++y) {
-        const uint8_t *srcRow = src + y * src_bytes_per_row;
-        uint8_t *dstRow = dst + y * dst_row;
-        for (size_t x = 0u; x < width; ++x) {
-            const uint32_t bits = mglRenderDepth24Stencil8ToFloatBits(srcRow + x * 4u);
-            memcpy(dstRow + x * 4u, &bits, 4u);
-        }
-    }
-    *out_bytes_per_row = dst_row;
-    *out_bytes_per_image = dst_image;
-    return dst;
-}
-
 
 int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(MGLCommandBufferOwner * command_buffer_owner, void* source_buffer, uint64_t source_offset, uint64_t source_bytes_per_row, uint64_t source_bytes_per_image, uint64_t source_layer_stride, uint64_t source_width, uint64_t source_height, uint64_t source_depth, void* destination_texture, uint64_t destination_base_slice, uint64_t layer_count, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, uint64_t destination_z, int flip_y) {
     mgl::CommandBufferOwner* owner =
@@ -1949,6 +1919,67 @@ int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(MGLCommandBufferOwne
         source_height, source_depth, destination_texture,
         destination_base_slice, layer_count, destination_level,
         destination_x, destination_y, destination_z, flip_y);
+}
+
+int mglRenderEncodePackedDepthStencilUploadForCommandBufferOwner(MGLCommandBufferOwner * command_buffer_owner, void* source_buffer, uint64_t width, uint64_t height, void* destination_texture, uint64_t destination_slice, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, int flip_y) {
+    mgl::CommandBufferOwner* owner =
+        reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(command_buffer_owner));
+    MTL::Buffer* source = static_cast<MTL::Buffer*>(source_buffer);
+    MTL::Texture* destination = static_cast<MTL::Texture*>(destination_texture);
+    if (!owner || !owner->current || !source || !destination || width == 0 ||
+        height == 0 || destination_level >= destination->mipmapLevelCount()) {
+        return -1;
+    }
+    const uint64_t mip_width =
+        std::max<uint64_t>(1u, destination->width() >> destination_level);
+    const uint64_t mip_height =
+        std::max<uint64_t>(1u, destination->height() >> destination_level);
+    if (destination_x > mip_width || width > mip_width - destination_x ||
+        destination_y > mip_height || height > mip_height - destination_y ||
+        source->length() < width * height * 5u) {
+        return -1;
+    }
+
+    /* Source holds a 4-byte depth plane followed by a 1-byte stencil plane. */
+    const struct {
+        uint64_t offset;
+        uint64_t bytes_per_row;
+        MTL::BlitOption option;
+    } planes[2] = {
+        {0u, width * 4u, MTL::BlitOptionDepthFromDepthStencil},
+        {width * height * 4u, width, MTL::BlitOptionStencilFromDepthStencil},
+    };
+    MTL::BlitCommandEncoder* encoder = owner->current->blitCommandEncoder();
+    if (!encoder) return -1;
+    for (const auto& plane : planes) {
+        if (!flip_y) {
+            encoder->copyFromBuffer(
+                source, static_cast<NS::UInteger>(plane.offset),
+                static_cast<NS::UInteger>(plane.bytes_per_row),
+                static_cast<NS::UInteger>(plane.bytes_per_row * height),
+                MTL::Size(width, height, 1), destination,
+                static_cast<NS::UInteger>(destination_slice),
+                static_cast<NS::UInteger>(destination_level),
+                MTL::Origin(destination_x, destination_y, 0), plane.option);
+            continue;
+        }
+        for (uint64_t row = 0u; row < height; ++row) {
+            encoder->copyFromBuffer(
+                source,
+                static_cast<NS::UInteger>(plane.offset +
+                                          row * plane.bytes_per_row),
+                static_cast<NS::UInteger>(plane.bytes_per_row),
+                static_cast<NS::UInteger>(plane.bytes_per_row),
+                MTL::Size(width, 1, 1), destination,
+                static_cast<NS::UInteger>(destination_slice),
+                static_cast<NS::UInteger>(destination_level),
+                MTL::Origin(destination_x,
+                            mip_height - 1u - (destination_y + row), 0),
+                plane.option);
+        }
+    }
+    encoder->endEncoding();
+    return 0;
 }
 
 extern "C"
@@ -1987,13 +2018,7 @@ int mglRenderTexturePrepareLevelUpload(
     uint64_t bpr = bytes_per_row;
     uint64_t bpi = bytes_per_image;
     void* expanded = nullptr;
-    if (mglRenderTextureUploadNeedsDepthNormalization(internal_format, pixel_format)) {
-        size_t ebpr = 0, ebpi = 0;
-        expanded = mglRenderCreateDepth24Stencil8NormalizedUpload(
-            src_data, (size_t)width, (size_t)height, (size_t)bytes_per_row,
-            &ebpr, &ebpi);
-        if (expanded) { data = expanded; bpr = ebpr; bpi = ebpi; }
-    } else if (mglRenderTextureInternalFormatNeedsRGBA8Expansion(
+    if (mglRenderTextureInternalFormatNeedsRGBA8Expansion(
             internal_format, pixel_format)) {
         size_t ebpr = 0;
         size_t ebpi = 0;

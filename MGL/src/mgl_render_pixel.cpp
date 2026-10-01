@@ -486,15 +486,6 @@ uint32_t mglRenderIntegerTypeComponentBytes(uint32_t type) {
     return 4u;
 }
 
-int mglRenderDepth32FStencil8NeedsUnpack(uint32_t internalformat,
-                                         uint32_t pixel_format,
-                                         uint32_t src_bpr, uint32_t width) {
-    return internalformat == GL_DEPTH32F_STENCIL8 && pixel_format == 260u &&
-                   src_bpr >= width * 5u && src_bpr < width * 8u
-               ? 1
-               : 0;
-}
-
 int mglRenderDirectR32FloatRead(uint32_t pixel_format, uint32_t format,
                                 uint32_t type) {
     return pixel_format == 55u /* R32Float */ && format == GL_RED &&

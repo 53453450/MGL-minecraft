@@ -1397,28 +1397,7 @@ int mglRenderIs3DReupload(uint32_t target, uint32_t depth) {
 
 
 
-uint32_t mglRenderDepthStencilPlaneViewType(uint32_t parent_type) {
-    switch (parent_type) {
-    case MGLTextureType2DArray:
-    case MGLTextureTypeCube:
-    case MGLTextureTypeCubeArray:
-    case MGLTextureType1DArray:
-    case MGLTextureType2DMultisampleArray:
-    case MGLTextureType3D:
-        return MGLTextureType2D;
-    default:
-        return parent_type;
-    }
-}
-
 /* C1: PixelFormatIsPackedDepthStencil -> mgl_pso_format_class.c */
-
-
-uint32_t mglRenderStencilViewFormat(uint32_t parent_format) {
-    return parent_format == 255u /* Depth24Unorm_Stencil8 */
-               ? 262u /* X24_Stencil8 */
-               : 261u /* X32_Stencil8 */;
-}
 
 
 uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format) {
@@ -1428,14 +1407,6 @@ uint32_t mglRenderRepairedDefaultStencilFormat(uint32_t stencil_format) {
                : stencil_format;
 }
 
-
-int mglRenderPackedD32FNeeds8ByteStride(uint32_t pixel_format,
-                                        uint32_t row_bytes, uint32_t width) {
-    return mglRenderPixelFormatIsDepth32FloatStencil8(pixel_format) &&
-                   row_bytes >= width * 5u && row_bytes < width * 8u
-               ? 1
-               : 0;
-}
 
 /* C1: DepthReadbackPlan -> mgl_readback_policy.c */
 

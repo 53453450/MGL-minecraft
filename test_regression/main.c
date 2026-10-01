@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 146
+#define MAX_TESTS 147
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -19086,6 +19086,159 @@ static int test_clear_write_mask(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+typedef struct { float d; GLuint s; } PackedDS32;
+
+static void packed_ds_fill(int c, void *dst, int w, int y0, int h, float d, GLuint s)
+{
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            if (c == 0)
+                ((GLuint *)dst)[(y0 + y) * w + x] = ((GLuint)(d * 16777215.0f + 0.5f) << 8) | s;
+            else
+                ((PackedDS32 *)dst)[(y0 + y) * w + x] = (PackedDS32){d, s};
+        }
+    }
+}
+
+static void packed_ds_at(int c, const void *src, int w, int x, int y, float *d, GLuint *s)
+{
+    if (c == 0) {
+        GLuint v = ((const GLuint *)src)[y * w + x];
+        *d = (float)(v >> 8) / 16777215.0f;
+        *s = v & 0xffu;
+    } else {
+        PackedDS32 v = ((const PackedDS32 *)src)[y * w + x];
+        *d = v.d;
+        *s = v.s & 0xffu;
+    }
+}
+
+/* Uploads into packed depth-stencil textures land in GL row order whether or
+ * not the texture has been rendered (GL 4.6 §8.5, §8.6). */
+static int test_packed_ds_upload_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "uniform float z;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, z, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0); }\n");
+    if (!prog) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    static const GLenum formats[2] = {GL_DEPTH24_STENCIL8, GL_DEPTH32F_STENCIL8};
+    static const GLenum types[2] = {GL_UNSIGNED_INT_24_8, GL_FLOAT_32_UNSIGNED_INT_24_8_REV};
+    static const char *names[2] = {"d24s8", "d32fs8"};
+    /* Probe points (x, y) and the expected depth/stencil after each step. */
+    static const int px[4][2] = {{2, 2}, {8, 2}, {8, 9}, {8, 13}};
+    static const float expA_d[4] = {0.5f, 0.25f, 0.75f, 0.75f};
+    static const GLuint expA_s[4] = {3, 1, 2, 2};
+    static const float expB_d[4] = {0.5f, 0.25f, 0.75f, 0.125f};
+    static const GLuint expB_s[4] = {3, 1, 2, 4};
+    int fail = 0;
+    for (int c = 0; c < 2; c++) {
+        const size_t texel = c == 0 ? 4 : 8;
+        unsigned char *buf = calloc(16 * 16, texel);
+        unsigned char *out = calloc(16 * 16, texel);
+        if (!buf || !out) return 2;
+        packed_ds_fill(c, buf, 16, 0, 8, 0.25f, 1);
+        packed_ds_fill(c, buf, 16, 8, 8, 0.75f, 2);
+
+        GLuint color = 0, ds = 0, fbo = 0;
+        glGenTextures(1, &color);
+        glBindTexture(GL_TEXTURE_2D, color);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 16, 16);
+        glGenTextures(1, &ds);
+        glBindTexture(GL_TEXTURE_2D, ds);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, (GLint)formats[c], 16, 16, 0,
+                     GL_DEPTH_STENCIL, types[c], buf);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, color, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                               GL_TEXTURE_2D, ds, 0);
+        glViewport(0, 0, 16, 16);
+
+        glUseProgram(prog);
+        glUniform1f(glGetUniformLocation(prog, "z"), 0.0f);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glEnable(GL_STENCIL_TEST);
+        glStencilFunc(GL_ALWAYS, 3, 0xff);
+        glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, 4, 4);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glStencilFunc(GL_ALWAYS, 0, 0xff);
+
+        for (int step = 0; step < 2; step++) {
+            if (step == 1) {
+                packed_ds_fill(c, buf, 16, 0, 4, 0.125f, 4);
+                glBindTexture(GL_TEXTURE_2D, ds);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 12, 16, 4, GL_DEPTH_STENCIL,
+                                types[c], buf);
+            }
+            const float *ed = step ? expB_d : expA_d;
+            const GLuint *es = step ? expB_s : expA_s;
+            glBindTexture(GL_TEXTURE_2D, ds);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_STENCIL, types[c], out);
+            for (int i = 0; i < 4; i++) {
+                float d = 0.0f;
+                GLuint s = 0;
+                packed_ds_at(c, out, 16, px[i][0], px[i][1], &d, &s);
+                unsigned char rs = 0;
+                float rd = 0.0f;
+                glReadPixels(px[i][0], px[i][1], 1, 1, GL_STENCIL_INDEX,
+                             GL_UNSIGNED_BYTE, &rs);
+                glReadPixels(px[i][0], px[i][1], 1, 1, GL_DEPTH_COMPONENT,
+                             GL_FLOAT, &rd);
+                if (d - ed[i] > 1e-3f || ed[i] - d > 1e-3f || s != es[i] ||
+                    rd - ed[i] > 1e-3f || ed[i] - rd > 1e-3f || rs != es[i]) {
+                    fprintf(stderr,
+                            "packed_ds_upload_orientation: %s step %d (%d,%d) tex %.3f/%u read %.3f/%u want %.3f/%u\n",
+                            names[c], step, px[i][0], px[i][1], d, s, rd, rs,
+                            ed[i], es[i]);
+                    fail |= (1 << (step * 4 + i)) << (c * 8);
+                }
+            }
+        }
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &color);
+        glDeleteTextures(1, &ds);
+        free(buf);
+        free(out);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 1 << 16;
+    glUseProgram(0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "packed_ds_upload_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Rendering into a rectangle texture or one slice of a 3D texture and then
  * sampling it returns the rendered rows in GL order. */
 static int test_rt_rect_3d_orientation(unsigned char *pixels, const char *out_path)
@@ -22465,6 +22618,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("depth_stencil_rt_orientation", test_depth_stencil_rt_orientation),
     SELF_CHECK_TEST("color_write_mask", test_color_write_mask),
     SELF_CHECK_TEST("clear_write_mask", test_clear_write_mask),
+    SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

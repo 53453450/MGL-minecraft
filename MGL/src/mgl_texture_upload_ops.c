@@ -64,6 +64,7 @@ extern int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
                                                 void *texture,
                                                 const char *reason);
 extern bool mglRendererBindMTLTexture(void *renderer, Texture *tex);
+extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
 static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
                                              size_t upload_size)
@@ -120,57 +121,6 @@ static const MGLCapability *mglUpCapability(void *renderer)
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     return areas.core ? &areas.core->capability : &fallback;
-}
-
-/* Twin of the .m's mglDepthStencilAlignedBytesPerRow (the row alignment
- * constant lives in the Objective-C header). */
-#define kMglUpDepthStencilUploadRowAlignment 256u
-
-static uint64_t mglUpDepthStencilAlignedBytesPerRow(uint64_t logicalBytesPerRow)
-{
-    if (logicalBytesPerRow == 0) {
-        return 0;
-    }
-    return ((logicalBytesPerRow + kMglUpDepthStencilUploadRowAlignment - 1u) /
-            kMglUpDepthStencilUploadRowAlignment) *
-           kMglUpDepthStencilUploadRowAlignment;
-}
-
-/* Twin of the .m's mglCreateDepthStencilMetalUpload (same unpack loop). */
-static void *mglUpCreateDepthStencilMetalUpload(
-    Texture *tex, uint32_t pixelFormat, const uint8_t *src, uint64_t width,
-    uint64_t height, uint64_t srcBytesPerRow, uint64_t *outBytesPerRow,
-    uint64_t *outBytesPerImage)
-{
-    if (outBytesPerRow) *outBytesPerRow = 0;
-    if (outBytesPerImage) *outBytesPerImage = 0;
-    if (!tex || !src || width == 0 || height == 0 || srcBytesPerRow == 0 ||
-        !mglRenderDepth32FStencil8NeedsUnpack((uint32_t)tex->internalformat,
-                                              (uint32_t)pixelFormat,
-                                              (uint32_t)srcBytesPerRow,
-                                              (uint32_t)width)) {
-        return NULL;
-    }
-    uint64_t logicalBytesPerRow = width * 8u;
-    uint64_t dstBytesPerRow =
-        mglUpDepthStencilAlignedBytesPerRow(logicalBytesPerRow);
-    if (dstBytesPerRow == 0) {
-        return NULL;
-    }
-    uint64_t dstBytesPerImage = dstBytesPerRow * height;
-    uint8_t *dst = calloc(1u, (size_t)dstBytesPerImage);
-    if (!dst) return NULL;
-    for (uint64_t y = 0; y < height; ++y) {
-        const uint8_t *srcRow = src + y * srcBytesPerRow;
-        uint8_t *dstRow = dst + y * dstBytesPerRow;
-        for (uint64_t x = 0; x < width; ++x) {
-            memcpy(dstRow + x * 8u, srcRow + x * 5u, 4u);
-            dstRow[x * 8u + 4u] = srcRow[x * 5u + 4u];
-        }
-    }
-    if (outBytesPerRow) *outBytesPerRow = dstBytesPerRow;
-    if (outBytesPerImage) *outBytesPerImage = dstBytesPerImage;
-    return dst;
 }
 
 /* mglUpMin() is an Objective-C header macro; C has no same-named inline. */
@@ -424,6 +374,93 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
     return !uploadError;
 }
 
+/* Metal forbids CPU access to packed depth/stencil textures and whole-texel
+ * buffer copies into them, so the canonical CPU layout (GL_DEPTH32F_STENCIL8:
+ * 5-byte float + u8; others: 24_8 uint) is split into a depth plane and a
+ * stencil plane and each is blitted with its aspect. */
+static int mglUpUploadPackedDepthStencil(void *renderer, void *texture,
+                                         GLenum internalformat,
+                                         const void *bytes,
+                                         uint64_t bytesPerRow, uint64_t width,
+                                         uint64_t height, uint64_t level,
+                                         uint64_t slice, uint64_t x,
+                                         uint64_t y, int flipY)
+{
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    const uint64_t texelBytes =
+        internalformat == GL_DEPTH32F_STENCIL8 ? 5u : 4u;
+    if (!bytes || width == 0 || height == 0 ||
+        bytesPerRow < width * texelBytes) {
+        return 0;
+    }
+    /* Depth24Unorm_Stencil8 takes the depth plane as 24-bit unorm in a
+     * 32-bit word; Depth32Float_Stencil8 takes float32. */
+    const int unormDepth =
+        !mglRenderPixelFormatIsDepth32FloatStencil8(
+            (uint32_t)mglPdTextureInfo(texture).pixel_format);
+    const uint64_t depthPlaneBytes = width * height * 4u;
+    uint8_t *planes = malloc((size_t)(depthPlaneBytes + width * height));
+    if (!planes) return 0;
+    for (uint64_t row = 0; row < height; ++row) {
+        const uint8_t *src = (const uint8_t *)bytes + row * bytesPerRow;
+        for (uint64_t col = 0; col < width; ++col, src += texelBytes) {
+            uint32_t depthWord;
+            uint8_t stencil;
+            if (texelBytes == 4u) {
+                uint32_t packed;
+                memcpy(&packed, src, 4u);
+                stencil = (uint8_t)(packed & 0xffu);
+                if (unormDepth) {
+                    depthWord = packed >> 8;
+                } else {
+                    float depth = (float)(packed >> 8) / 16777215.0f;
+                    memcpy(&depthWord, &depth, 4u);
+                }
+            } else {
+                float depth;
+                memcpy(&depth, src, 4u);
+                stencil = src[4];
+                if (unormDepth) {
+                    if (!(depth > 0.0f)) depth = 0.0f;
+                    if (depth > 1.0f) depth = 1.0f;
+                    depthWord = (uint32_t)(depth * 16777215.0f + 0.5f);
+                } else {
+                    memcpy(&depthWord, &depth, 4u);
+                }
+            }
+            const uint64_t texel = row * width + col;
+            memcpy(planes + texel * 4u, &depthWord, 4u);
+            planes[depthPlaneBytes + texel] = stencil;
+        }
+    }
+
+    MGLTextureStagingOwner *stagingOwner = NULL;
+    void *stagingBuffer = NULL;
+    int uploaded = 0;
+    if (mglRenderCreateTextureStagingOwner(
+            planes, depthPlaneBytes + width * height,
+            MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED, &stagingOwner,
+            &stagingBuffer) == 0 &&
+        stagingBuffer) {
+        mglRendererEndRenderEncodingLocked(renderer);
+        uploaded =
+            mglRenderPassEnsureWritableCommandBufferLocked(
+                renderer, "packed_depth_stencil_upload") &&
+            mglRenderEncodePackedDepthStencilUploadForCommandBufferOwner(
+                areas.command->currentCommandBufferOwner, stagingBuffer, width,
+                height, texture, slice, level, x, y, flipY) == 0;
+    }
+    mglRenderDestroyTextureStagingOwner(&stagingOwner);
+    free(planes);
+    if (!uploaded) {
+        fprintf(stderr,
+                "MGL WARNING: packed depth/stencil upload failed level=%lu slice=%lu\n",
+                (unsigned long)level, (unsigned long)slice);
+    }
+    return uploaded;
+}
+
 /* -uploadTextureSliceViaBlit:... */
 int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
                                  unsigned int texName, GLenum texTarget,
@@ -507,29 +544,17 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
 
     const uint32_t uploadRoute = uploadPlan.route;
 
-    /* Shared packed depth/stencil textures can be updated directly for the
-     * depth plane.  AGX requires a separate X32_Stencil8 view upload for the
-     * stencil plane, using a 2D view over the selected array slice. */
     if (mglRenderPixelFormatIsPackedDepthStencil(
-            (uint32_t)mglPdTextureInfo(texture).pixel_format) &&
-        mglPdTextureInfo(texture).storage_mode !=
-            MGL_PD_TEXTURE_STORAGE_PRIVATE) {
-        int uploaded = mglTextureReplaceRegionValue(
-            texture,
-            mglTextureRegion2D(0, 0, width, uploadPlan.normalized_height),
-            level, slice, bytes, bytesPerRow,
-            uploadPlan.normalized_bytes_per_image, 1);
-        if (!uploaded) {
-            fprintf(stderr,
-                    "MGL WARNING: depth/stencil replaceRegion upload failed tex=%u\n",
-                    (unsigned)texName);
-        }
-        if (uploaded && bytesPerRow >= width * 5u) {
-            uploaded = mglTextureUploadPackedDepthStencilStencilPlane(
-                texture, texName, bytes, width, uploadPlan.normalized_height,
-                bytesPerRow, level, slice, 0u, 0u);
-        }
-        return uploaded;
+            (uint32_t)mglPdTextureInfo(texture).pixel_format)) {
+        const Texture *tex = findTexture(areas.ctx, texName);
+        const GLenum internalformat =
+            tex ? tex->internalformat
+                : (bytesPerRow >= width * 5u ? GL_DEPTH32F_STENCIL8
+                                             : GL_DEPTH24_STENCIL8);
+        return mglUpUploadPackedDepthStencil(
+            renderer, texture, internalformat, bytes, bytesPerRow, width,
+            uploadPlan.normalized_height, uploadPlan.destination_level,
+            uploadPlan.destination_slice, 0u, 0u, flipY);
     }
 
     /* Shared 2D array uploads via replaceRegion: the blit path can leave array
@@ -685,13 +710,6 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
                 "MGL WARNING: Dedicated texture upload failed (level=%lu slice=%lu)\n",
                 (unsigned long)level, (unsigned long)slice);
         return 0;
-    }
-    if (mglRenderPixelFormatIsPackedDepthStencil(
-            (uint32_t)mglPdTextureInfo(texture).pixel_format) &&
-        bytesPerRow >= width * 5u) {
-        (void)mglTextureUploadPackedDepthStencilStencilPlane(
-            texture, texName, bytes, width, uploadPlan.normalized_height,
-            bytesPerRow, level, slice, 0u, 0u);
     }
     return 1;
 }
@@ -1244,19 +1262,6 @@ void mglTextureReUploadArrayLevel(void *renderer, Texture *tex, void *texture,
 
                     }
 
-                    uint64_t dsBytesPerRow = 0;
-                    uint64_t dsBytesPerImage = 0;
-                    void *dsUploadData = mglUpCreateDepthStencilMetalUpload(
-                        tex, pixelFormat, (const uint8_t *)layerSrcData,
-                        lvlWidth, uploadSliceHeight, effectiveBytesPerRow,
-                        &dsBytesPerRow, &dsBytesPerImage);
-                    if (dsUploadData) {
-                        free(expandedUploadData);
-                        expandedUploadData = dsUploadData;
-                        layerSrcData = dsUploadData;
-                        effectiveBytesPerRow = dsBytesPerRow;
-                        effectiveBytesPerImage = dsBytesPerImage;
-                    }
 
 
                     uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
@@ -1525,24 +1530,6 @@ void mglTextureReUploadExisting(void *renderer, Texture *tex, void *texture,
 
                 }
 
-            }
-
-            /* Combined depth/stencil CPU shadows use a packed layout
-             * (DEPTH32F_STENCIL8 = 5 bytes/texel) while the Metal texture
-             * expects 8 bytes/texel with stencil at byte 4; repack here so
-             * the non-array refresh path matches the dirty/array paths. */
-            uint64_t dsBytesPerRow = 0;
-            uint64_t dsBytesPerImage = 0;
-            void *dsUploadData = mglUpCreateDepthStencilMetalUpload(
-                tex, pixelFormat, (const uint8_t *)srcData,
-                lvlWidth, mglUpMax((uint64_t)lvlHeight, 1UL),
-                bytesPerRow, &dsBytesPerRow, &dsBytesPerImage);
-            if (dsUploadData) {
-                free(expandedUploadData);
-                expandedUploadData = dsUploadData;
-                srcData = dsUploadData;
-                bytesPerRow = dsBytesPerRow;
-                bytesPerImage = dsBytesPerImage;
             }
 
             uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
@@ -2491,21 +2478,6 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
                                 }
                             }
 
-                            uint64_t dsBytesPerRow = 0;
-                            uint64_t dsBytesPerImage = 0;
-                            void *dsUploadData = mglUpCreateDepthStencilMetalUpload(
-                                tex, pixelFormat, (const uint8_t *)srcData,
-                                width, uploadSliceHeight, effectiveBytesPerRow,
-                                &dsBytesPerRow, &dsBytesPerImage);
-                            if (dsUploadData) {
-                                free(expandedUploadData);
-                                expandedUploadData = dsUploadData;
-                                srcData = dsUploadData;
-                                effectiveBytesPerRow = dsBytesPerRow;
-                                effectiveBytesPerImage = dsBytesPerImage;
-                                addr = (uintptr_t)srcData;
-                            }
-
                             uint64_t alignment = mglRendererOptimalAlignmentForPixelFormat(pixelFormat);
                             uint64_t alignedBytesPerRow = effectiveBytesPerRow;
                             if (alignedBytesPerRow % alignment != 0) {
@@ -3332,32 +3304,6 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
  * are this file's C entries, so no port moves.
  */
 
-/* ctx + body of the depth/stencil replaceRegion the bytes path guards. */
-typedef struct MglUpReplaceCtx_t {
-    void *texture;
-    uint64_t xoffset;
-    uint64_t yoffset;
-    uint64_t width;
-    uint64_t height;
-    uint64_t level;
-    uint64_t slice;
-    const void *bytes;
-    uint64_t bytes_per_row;
-    uint64_t bytes_per_image;
-} MglUpReplaceCtx;
-
-static int mglUpReplaceBody(void *renderer, void *rawCtx)
-{
-    MglUpReplaceCtx *ctx = (MglUpReplaceCtx *)rawCtx;
-    (void)mglTextureReplaceRegionValue(
-        ctx->texture,
-        mglRegion2D(ctx->xoffset, ctx->yoffset, ctx->width, ctx->height),
-        ctx->level, ctx->slice, ctx->bytes, ctx->bytes_per_row,
-        ctx->bytes_per_image, 1);
-    (void)renderer;
-    return 1;
-}
-
 /* -mtlTexSubImageLocked:… */
 int mglTextureSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                        Buffer *buf, uint64_t src_offset, uint64_t src_pitch,
@@ -3714,84 +3660,34 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
         }
     }
 
-    void *dsMetalUpload = NULL;
-    const void *uploadBytesPtr = packedBytesPtr;
-    uint64_t uploadRowBytes = dstRowBytes;
-    uint64_t uploadImageBytes = dstImageBytes;
-    if (mglRenderDepth32FStencil8NeedsUnpack(
-            (uint32_t)tex->internalformat, (uint32_t)dstPixelFormat,
-            (uint32_t)dstRowBytes, (uint32_t)width)) {
-        uint64_t expandedBPR = 0;
-        uint64_t expandedBPI = 0;
-        dsMetalUpload = mglUpCreateDepthStencilMetalUpload(
-            tex, dstPixelFormat, packedBytesPtr, width, copyHeight,
-            dstRowBytes, &expandedBPR, &expandedBPI);
-        if (dsMetalUpload) {
-            uploadBytesPtr = dsMetalUpload;
-            uploadRowBytes = expandedBPR;
-            uploadImageBytes = expandedBPI;
-        }
-    }
-
     uint64_t metalSlice = slice;
     if (mglRenderTextureTargetIsArray((uint32_t)tex->target)) {
         metalSlice = zoffset;
     }
 
-    if (mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
-        mglPdTextureInfo(dstTexture).storage_mode != MGL_TEXTURE_STORAGE_PRIVATE &&
-        uploadRowBytes >= width * 5u) {
-        bool uploaded = false;
-        /* The .m ran the replaceRegion inside @try so a Metal throw only
-         * logged a warning (the caller keeps going with uploaded=false); the
-         * guarded call does exactly that (rule 58 (b)). */
-        MglUpReplaceCtx replaceCtx = { dstTexture, xoffset, yoffset, width,
-                                       copyHeight, level, metalSlice,
-                                       uploadBytesPtr, uploadRowBytes,
-                                       uploadImageBytes };
-        char replaceFailure[256] = {0};
-        if (mglPlatformShellGuardedCallCtxReason(
-                renderer, "depth/stencil texSubImage replaceRegion",
-                mglUpReplaceBody, &replaceCtx, replaceFailure,
-                sizeof(replaceFailure))) {
-            uploaded = 1;
-        } else {
-            fprintf(stderr,
-                    "MGL WARNING: depth/stencil texSubImage replaceRegion failed tex=%u: %s\n",
-                    (unsigned)tex->name,
-                    replaceFailure[0] ? replaceFailure : "(null)");
+    bool uploaded = false;
+    if (mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat)) {
+        const int flipY = mglUpStorageFlipped(tex);
+        uploaded = true;
+        for (uint64_t z = 0; uploaded && z < copyDepth; ++z) {
+            uploaded = mglUpUploadPackedDepthStencil(
+                renderer, dstTexture, tex->internalformat,
+                packedBytesPtr + z * dstImageBytes, dstRowBytes, width,
+                copyHeight, level, metalSlice + z, xoffset, yoffset, flipY);
         }
-        if (uploaded) {
-            uploaded = mglTextureUploadPackedDepthStencilStencilPlane(
-        dstTexture, tex->name, uploadBytesPtr, width, copyHeight, uploadRowBytes, level, metalSlice, xoffset, yoffset);
+    } else {
+        void *uploadBuffer = mglUpCreateBufferWithBytes(
+            packedBytesPtr, dstImageBytes * copyDepth,
+            MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
+        if (!uploadBuffer) {
+            free(packedUpload);
+            return false;
         }
-        free(dsMetalUpload);
-        free(packedUpload);
-        return uploaded;
+        uploaded = mglTextureEncodeBytesUpload(
+            renderer, tex, uploadBuffer, 0, dstRowBytes, dstImageBytes, width,
+            height, depth, slice, level, xoffset, yoffset, zoffset,
+            "mtlTexSubImageBytes");
     }
-
-    size_t uploadBufferBytes = uploadImageBytes * copyDepth;
-    void *uploadBuffer = mglUpCreateBufferWithBytes(
-        uploadBytesPtr, uploadBufferBytes,
-        MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
-    if (!uploadBuffer) {
-        free(dsMetalUpload);
-        free(packedUpload);
-        return false;
-    }
-
-    bool uploaded = mglTextureEncodeBytesUpload(
-        renderer, tex, uploadBuffer, 0, uploadRowBytes, uploadImageBytes, width,
-        height, depth, slice, level, xoffset, yoffset, zoffset,
-        "mtlTexSubImageBytes");
-    if (uploaded &&
-        mglRenderPixelFormatIsPackedDepthStencil((uint32_t)dstPixelFormat) &&
-        uploadRowBytes >= width * 5u) {
-        (void)mglTextureUploadPackedDepthStencilStencilPlane(
-            dstTexture, tex->name, uploadBytesPtr, width, copyHeight,
-            uploadRowBytes, level, metalSlice, xoffset, yoffset);
-    }
-    free(dsMetalUpload);
     if (uploaded && mglRenderTargetStorageYFlipped(
                         tex->is_render_target ? 1 : 0,
                         tex->mtl_render_target_write_version)) {

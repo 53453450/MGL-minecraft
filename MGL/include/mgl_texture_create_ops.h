@@ -37,13 +37,6 @@ int mglTextureCheckCompleteness(void *tex, uint32_t tex_type, unsigned num_faces
                                 unsigned int *outEffectiveMipmapLevels,
                                 int *outStorageMipmapped);
 
-/* -uploadPackedDepthStencilStencilPlane:texName:bytes:width:height:
- *  bytesPerRow:level:slice:xorigin:yorigin: */
-int mglTextureUploadPackedDepthStencilStencilPlane(
-    void *texture, unsigned int texName, const void *packedBytes,
-    uint64_t width, uint64_t height, uint64_t bytesPerRow, uint64_t level,
-    uint64_t slice, uint64_t xorigin, uint64_t yorigin);
-
 /* -createMTLTexelBufferTexture:.  Returns the new Metal texture (+1, the
  * caller releases it) or NULL. */
 void *mglTextureCreateMTLTexelBufferTexture(void *renderer, void *tex);
