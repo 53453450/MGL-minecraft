@@ -94,6 +94,7 @@ CHECK3_BASELINE = frozenset({
     "renderbuffer_table",
     "sampler_table",
     "scissor_box_array",
+    "scissor_box_defined",
     "shader_table",
     "shaders",
     "sync_name",

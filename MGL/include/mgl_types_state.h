@@ -98,6 +98,7 @@ typedef struct {
     GLfloat viewport_array[MGL_MAX_VIEWPORTS][4];
     GLboolean viewport_array_set; // glViewportIndexedf* set any slot > 0
     GLint scissor_box_array[MGL_MAX_VIEWPORTS][4];
+    GLboolean scissor_box_defined; // set by glScissor or the first window attach
     GLdouble depth_range_array[MGL_MAX_VIEWPORTS][2];
     GLfloat color_clear_value[4]; // GL_COLOR_CLEAR_VALUE
 

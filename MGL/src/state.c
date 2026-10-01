@@ -371,6 +371,7 @@ void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
     STATE(scissor_box_array)[0][1] = y;
     STATE(scissor_box_array)[0][2] = width;
     STATE(scissor_box_array)[0][3] = height;
+    STATE(scissor_box_defined) = GL_TRUE;
 
     mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }

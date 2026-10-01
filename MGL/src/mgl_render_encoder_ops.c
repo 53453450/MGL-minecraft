@@ -1115,23 +1115,27 @@ static int mglPdNewRenderEncoderBody(void *renderer)
             mglPlatformShellApplyPendingDrawableSize(renderer);
         (void)mglRendererNextDrawable(renderer);
 
-        /* late init of gl scissor box on attachment to window system */
-        uint64_t drawableWidth = mglPdMaxU64(1u, expectedDrawableSize.width);
-        uint64_t drawableHeight = mglPdMaxU64(1u, expectedDrawableSize.height);
-        if (mglPlatformShellDrawablePointer(renderer) &&
-            mglRendererDrawableTexture(renderer)) {
-            drawableWidth =
-                mglPdTextureInfo(mglRendererDrawableTexture(renderer)).width;
-            drawableHeight =
-                mglPdTextureInfo(mglRendererDrawableTexture(renderer)).height;
-        }
-
-        if (!glState->caps.scissor_test) {
+        /* §14.9.2: the scissor box takes the window size when the context is
+         * first attached to a window, and never overrides a glScissor box. */
+        if (!glState->scissor_box_defined) {
+            uint64_t drawableWidth = mglPdMaxU64(1u, expectedDrawableSize.width);
+            uint64_t drawableHeight = mglPdMaxU64(1u, expectedDrawableSize.height);
+            if (mglPlatformShellDrawablePointer(renderer) &&
+                mglRendererDrawableTexture(renderer)) {
+                drawableWidth =
+                    mglPdTextureInfo(mglRendererDrawableTexture(renderer)).width;
+                drawableHeight =
+                    mglPdTextureInfo(mglRendererDrawableTexture(renderer)).height;
+            }
             glState->var.scissor_box[0] = 0;
             glState->var.scissor_box[1] = 0;
+            glState->var.scissor_box[2] = (GLint)drawableWidth;
+            glState->var.scissor_box[3] = (GLint)drawableHeight;
+            for (int i = 0; i < 4; i++) {
+                glState->scissor_box_array[0][i] = glState->var.scissor_box[i];
+            }
+            glState->scissor_box_defined = GL_TRUE;
         }
-        glState->var.scissor_box[2] = (GLint)drawableWidth;
-        glState->var.scissor_box[3] = (GLint)drawableHeight;
     }
 
     mglPassManagerInstallNewRenderPassDescriptor(areas.render_pass_manager);
