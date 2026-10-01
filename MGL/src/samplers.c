@@ -120,15 +120,8 @@ Sampler *newSampler(GLMContext ctx, GLuint sampler)
     ptr->params.compare_func = GL_LEQUAL;
     ptr->params.compare_mode = GL_NONE;
     ptr->params.lod_bias = 0.0;
-    /* GL 4.6 spec §8.14: the initial MIN_FILTER/MAG_FILTER are both NEAREST.
-     * A prior change defaulted these to NEAREST_MIPMAP_LINEAR/LINEAR, which
-     * made samplers that never explicitly set MIN_FILTER enable mip filtering
-     * — sampling a non-mipmapped texture (e.g. Minecraft's 256x256 block
-     * atlas, which has mipmapLevelCount==1) with mipFilter=Linear reads
-     * uninitialized/zero mip levels and produces horizontal/vertical stripes.
-     * Restore the spec-correct NEAREST defaults. */
-    ptr->params.min_filter = GL_NEAREST;
-    ptr->params.mag_filter = GL_NEAREST;
+    ptr->params.min_filter = GL_NEAREST_MIPMAP_LINEAR;
+    ptr->params.mag_filter = GL_LINEAR;
     ptr->params.max_anisotropy = 1.0;
     ptr->params.min_lod = -1000;
     ptr->params.max_lod = 1000;

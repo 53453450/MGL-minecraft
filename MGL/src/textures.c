@@ -246,14 +246,11 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     ptr->params.compare_func = GL_LEQUAL;
     ptr->params.compare_mode = GL_NONE;
     ptr->params.lod_bias = 0.0;
-    /* GL 4.6 spec §8.14: initial MIN_FILTER and MAG_FILTER are both NEAREST.
-     * A prior change defaulted to NEAREST_MIPMAP_LINEAR/LINEAR, which enables
-     * mip filtering on textures that never explicitly set MIN_FILTER —
-     * sampling a non-mipmapped texture (mipmapLevelCount==1, e.g. MC's block
-     * atlas) then reads uninitialized mip levels and produces stripes.
-     * Restore the spec-correct NEAREST defaults (matches 59f4f7d). */
-    ptr->params.min_filter = GL_NEAREST;
-    ptr->params.mag_filter = GL_NEAREST;
+    /* §8.22: rectangle textures start at LINEAR / CLAMP_TO_EDGE. */
+    bool rect = object_target == GL_TEXTURE_RECTANGLE;
+    GLenum wrap = rect ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+    ptr->params.min_filter = rect ? GL_LINEAR : GL_NEAREST_MIPMAP_LINEAR;
+    ptr->params.mag_filter = GL_LINEAR;
     ptr->params.max_anisotropy = 1.0;
     ptr->params.min_lod = -1000;
     ptr->params.max_lod = 1000;
@@ -262,9 +259,9 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     ptr->params.swizzle_g = GL_GREEN;
     ptr->params.swizzle_b = GL_BLUE;
     ptr->params.swizzle_a = GL_ALPHA;
-    ptr->params.wrap_s = GL_REPEAT;
-    ptr->params.wrap_t = GL_REPEAT;
-    ptr->params.wrap_r = GL_REPEAT;
+    ptr->params.wrap_s = wrap;
+    ptr->params.wrap_t = wrap;
+    ptr->params.wrap_r = wrap;
 
     return ptr;
 }

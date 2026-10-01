@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 135
+#define MAX_TESTS 136
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18159,6 +18159,109 @@ static int test_incomplete_texture_storage(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* §8.22 initial texture state and §8.2 initial sampler state. */
+static int test_texture_default_state(unsigned char *pixels,
+                                      const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+
+    GLuint t2d = 0, trect = 0, samp = 0;
+    GLint minf = 0, magf = 0, ws = 0, wt = 0, wr = 0;
+    glGenTextures(1, &t2d);
+    glBindTexture(GL_TEXTURE_2D, t2d);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &minf);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &magf);
+    glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, &ws);
+    if (minf != GL_NEAREST_MIPMAP_LINEAR || magf != GL_LINEAR || ws != GL_REPEAT) {
+        fprintf(stderr, "texture_default_state: 2D min=0x%x mag=0x%x wrap=0x%x\n",
+                minf, magf, ws);
+        fail |= 1;
+    }
+
+    glGenTextures(1, &trect);
+    glBindTexture(GL_TEXTURE_RECTANGLE, trect);
+    glGetTexParameteriv(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MIN_FILTER, &minf);
+    glGetTexParameteriv(GL_TEXTURE_RECTANGLE, GL_TEXTURE_WRAP_S, &ws);
+    glGetTexParameteriv(GL_TEXTURE_RECTANGLE, GL_TEXTURE_WRAP_T, &wt);
+    glGetTexParameteriv(GL_TEXTURE_RECTANGLE, GL_TEXTURE_WRAP_R, &wr);
+    if (minf != GL_LINEAR || ws != GL_CLAMP_TO_EDGE || wt != GL_CLAMP_TO_EDGE ||
+        wr != GL_CLAMP_TO_EDGE) {
+        fprintf(stderr, "texture_default_state: rect min=0x%x wrap=0x%x,0x%x,0x%x\n",
+                minf, ws, wt, wr);
+        fail |= 2;
+    }
+
+    glGenSamplers(1, &samp);
+    glGetSamplerParameteriv(samp, GL_TEXTURE_MIN_FILTER, &minf);
+    glGetSamplerParameteriv(samp, GL_TEXTURE_MAG_FILTER, &magf);
+    if (minf != GL_NEAREST_MIPMAP_LINEAR || magf != GL_LINEAR) {
+        fprintf(stderr, "texture_default_state: sampler min=0x%x mag=0x%x\n",
+                minf, magf);
+        fail |= 4;
+    }
+
+    /* One level under the default mipmap min filter is incomplete. */
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint prog = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(s, vec2(0.5)); }\n");
+    if (!prog) return 3;
+    GLuint vao = 0, ttmp = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fbo) return 3;
+    unsigned char texel[2 * 2 * 4], b[4];
+    for (int i = 0; i < 4; i++) {
+        texel[i * 4 + 0] = 200; texel[i * 4 + 1] = 100; texel[i * 4 + 2] = 50;
+        texel[i * 4 + 3] = 255;
+    }
+    glBindTexture(GL_TEXTURE_2D, t2d);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 texel);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "s"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 0 || b[1] != 0 || b[2] != 0 || b[3] != 255) {
+        fprintf(stderr, "texture_default_state: default-filter sample got %u,%u,%u,%u\n",
+                b[0], b[1], b[2], b[3]);
+        fail |= 8;
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 200) {
+        fprintf(stderr, "texture_default_state: LINEAR sample got %u\n", b[0]);
+        fail |= 16;
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 32;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &ttmp);
+    glDeleteTextures(1, &t2d);
+    glDeleteTextures(1, &trect);
+    glDeleteSamplers(1, &samp);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "texture_default_state: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -20927,6 +21030,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("get_tex_image_after_draw", test_get_tex_image_after_draw),
     SELF_CHECK_TEST("rt_partial_render_orientation", test_rt_partial_render_orientation),
     SELF_CHECK_TEST("incomplete_texture_storage", test_incomplete_texture_storage),
+    SELF_CHECK_TEST("texture_default_state", test_texture_default_state),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
