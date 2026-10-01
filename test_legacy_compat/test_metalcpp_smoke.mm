@@ -525,6 +525,47 @@ static int verifyBufferBinding(void) {
         return 1;
     }
 
+    /* The reuse pool keeps at most four snapshots; once all are in flight a
+     * new snapshot is owned only by the Buffer and dies when replaced. */
+    {
+        uint32_t capSource[4] = {1u, 2u, 3u, 4u};
+        Buffer capped = {};
+        capped.name = 102u;
+        capped.size = sizeof(capSource);
+        capped.data.buffer_size = sizeof(capSource);
+        capped.data.buffer_data = (vm_address_t)(uintptr_t)capSource;
+        capped.storage_flags = GL_MAP_READ_BIT;
+        if (mglRenderBindBufferStorage(&capped, message, sizeof(message)) !=
+            MGL_RENDER_BUFFER_BOUND) {
+            fprintf(stderr, "FAIL: COW cap buffer bind: %s\n", message);
+            return 1;
+        }
+        __weak id<MTLBuffer> lastPooled = nil;
+        __weak id<MTLBuffer> overflow = nil;
+        for (uint32_t i = 0; i < 6u; ++i) {
+            (void)mglRenderAdvanceBufferGeneration();
+            mglRenderNoteBufferEncoded(&capped);
+            uint32_t value = 90u + i;
+            mglRenderBufferSubData(NULL, &capped, 0, sizeof(value), &value);
+            @autoreleasepool {
+                if (i == 3u) lastPooled = (__bridge id<MTLBuffer>)capped.data.mtl_data;
+                if (i == 4u) overflow = (__bridge id<MTLBuffer>)capped.data.mtl_data;
+            }
+        }
+        bool pooledAlive = false, overflowAlive = false;
+        @autoreleasepool {
+            pooledAlive = lastPooled != nil;
+            overflowAlive = overflow != nil;
+        }
+        if (!pooledAlive || overflowAlive) {
+            fprintf(stderr, "FAIL: COW pool cap pooled=%d overflow=%d\n",
+                    pooledAlive ? 1 : 0, overflowAlive ? 1 : 0);
+            return 1;
+        }
+        mglRenderReleaseBufferMetalData(NULL, &capped);
+        mglRenderReleaseBufferCowPool(&capped);
+    }
+
     Buffer direct = {};
     direct.name = 103u;
     direct.size = sizeof(source);
