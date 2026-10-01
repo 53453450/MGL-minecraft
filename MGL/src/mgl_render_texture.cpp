@@ -1353,6 +1353,9 @@ int mglRenderBlitSynchronizeTexture(void* blit_encoder,
         static_cast<MTL::BlitCommandEncoder*>(blit_encoder);
     MTL::Texture* source = static_cast<MTL::Texture*>(texture);
     if (!encoder || !source) return -1;
+    /* Metal only accepts managed textures here; other storage modes have no
+     * CPU copy to synchronize. */
+    if (source->storageMode() != MTL::StorageModeManaged) return 0;
     encoder->synchronizeTexture(source, static_cast<NS::UInteger>(slice),
                                 static_cast<NS::UInteger>(level));
     return 0;
