@@ -388,6 +388,12 @@ $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
 	@echo "✅ GLFW shared library built: $@"
 	@echo "This enables compatibility with Minecraft mods and Prism Launcher"
 
+# GLFW must reach MGL only through MGLContextHostOps, never by ObjC message.
+check-glfw-selectors: $(build_dir)/libglfw.dylib
+	@if nm $< | grep -E 'objc_msgSend\$$(mgl|createMGL|initMGL)'; then \
+		echo "FAIL: libglfw.dylib sends MGL selectors"; exit 1; fi
+	@echo "check-glfw-selectors: OK"
+
 
 # specific rules
 
@@ -1231,6 +1237,6 @@ test-all:
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
 	test-state-invariants test-state-dataflow test-state-snapshot-share \
-	verify-toolchain
+	verify-toolchain check-glfw-selectors
 
 -include $(deps)

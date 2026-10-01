@@ -42,7 +42,8 @@ def collect_sources(root):
     """Every source/header the library or its harnesses compile."""
     pats = ['MGL/src/*.m', 'MGL/src/*.c', 'MGL/src/*.cpp', 'MGL/src/*.h',
             'MGL/include/*.h', 'MGL/include/GL/*.h',
-            'test_legacy_compat/*', 'test_regression/*']
+            'test_legacy_compat/*', 'test_regression/*',
+            'external/glfw/src/*.m', 'external/glfw/src/*.h']
     out = {}
     for pat in pats:
         for f in glob.glob(pat):
@@ -88,7 +89,7 @@ def main():
     sources = collect_sources(args.root)
     findings = []
     for path, src in sorted(sources.items()):
-        if not path.endswith('.m'):
+        if not path.endswith('.m') or not path.startswith(args.root + '/'):
             continue
         for first, last, selector in methods_of(src):
             body = '\n'.join(src.split('\n')[first - 1:last])
