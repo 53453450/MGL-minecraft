@@ -43,6 +43,7 @@
 #include "glm_context.h"
 #include "draw_command.h"
 #include "mgl_safety.h"
+#include "mgl_texture_debug.h"
 
 #include "mgl_trace_log.h"
 
@@ -345,31 +346,6 @@ static inline GLdouble mglClampDepthClearValue(GLdouble depth)
     if (depth > 1.0)
         return 1.0;
     return depth;
-}
-
-static bool mglMulSizeT(size_t a, size_t b, size_t *out)
-{
-    if (!out)
-        return false;
-    if (a == 0u || b == 0u)
-    {
-        *out = 0u;
-        return true;
-    }
-    if (a > (SIZE_MAX / b))
-        return false;
-    *out = a * b;
-    return true;
-}
-
-static bool mglAddSizeT(size_t a, size_t b, size_t *out)
-{
-    if (!out)
-        return false;
-    if (a > (SIZE_MAX - b))
-        return false;
-    *out = a + b;
-    return true;
 }
 
 static bool mglAlignSizeT(size_t value, size_t alignment, size_t *out)
