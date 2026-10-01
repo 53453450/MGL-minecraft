@@ -300,6 +300,9 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
             mglRendererRecordGPUError(renderer);
             return 0;
         }
+        if (areas.batching) {
+            areas.batching->currentCommandBufferHasWork = 1;
+        }
 
         return 1;
     }
@@ -450,6 +453,9 @@ static int mglUpUploadPackedDepthStencil(void *renderer, void *texture,
             mglRenderEncodePackedDepthStencilUploadForCommandBufferOwner(
                 areas.command->currentCommandBufferOwner, stagingBuffer, width,
                 height, texture, slice, level, x, y, flipY) == 0;
+        if (uploaded && areas.batching) {
+            areas.batching->currentCommandBufferHasWork = 1;
+        }
     }
     mglRenderDestroyTextureStagingOwner(&stagingOwner);
     free(planes);
