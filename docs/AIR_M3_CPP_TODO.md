@@ -112,6 +112,8 @@ AIR backend 的诊断开关统一通过 `mgl_env_flag_enabled` 解析；未设�
 - `MGL_GS_DIAG_ASSIGN`：打印 GS assignment 的 AST 左右值和 lvalue 表。
 - `MGL_GS_DIAG_SOURCE`：打印进入 AIR backend 的 GS 源码。
 - `MGL_DUMP_IR`：把优化后的 LLVM IR 输出到 stderr。
+- `MGL_GS_TRACE`：`main` 或用户函数的返回类型解析为空时，在 stderr 打印所在阶段。
+- `MGL_DUMP_METALLIB`：把每次生成的 metallib 写到 `/tmp/mgl_mlib_s<stage>_<seq>.metallib`。
 
 ### 2.4 P0 完成记录（2026-08-10）
 

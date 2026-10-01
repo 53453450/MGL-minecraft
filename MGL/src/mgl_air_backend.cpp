@@ -11083,7 +11083,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (isTESCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
-    if (!retTy && getenv("MGL_GS_TRACE")) {
+    if (!retTy && mgl_env_flag_enabled("MGL_GS_TRACE")) {
         fprintf(stderr, "MGLGSTRACE site1 NULL retTy isGS=%d isTCS=%d isCompute=%d isTES=%d\n",
                 (int)isGS, (int)isTCS, (int)isCompute, (int)isTES);
         fflush(stderr);
@@ -12023,7 +12023,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         std::string key = std::string(d->name) + "#" +
                           std::to_string(fs->param_count);
         userFnHidden[key] = (uint32_t)pts.size() - nExplicit;
-        if (!rt && getenv("MGL_GS_TRACE")) {
+        if (!rt && mgl_env_flag_enabled("MGL_GS_TRACE")) {
             fprintf(stderr, "MGLGSTRACE site3 NULL rt fn=%s params=%u isGS=%d\n",
                     d->name ? d->name : "?", (unsigned)fs->param_count, (int)isGS);
             fflush(stderr);
