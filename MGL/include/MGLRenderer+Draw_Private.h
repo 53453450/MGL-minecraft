@@ -129,35 +129,17 @@ static inline const char *mglYFlipDecisionName(MGLYFlipDecision decision)
 }
 
 /* === C functions defined in MGLRenderer.m, used by MGLRenderer+Draw.m === */
-BOOL mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
-                                                  Texture *tex,
-                                                  uint32_t expectedType,
-                                                  MGLTextureDataKind expectedKind);
-BOOL mglRendererTextureLooksLikeSampledColor2D(GLMContext glctx, Texture *tex);
 uint64_t mglIndexTypeForGLType(GLenum type);
 Buffer *getElementBuffer(GLMContext ctx);
 Buffer *getIndirectBuffer(GLMContext ctx);
 uint32_t mglPrimitiveTypeForGLMode(GLenum mode);
 
-BOOL mglRendererGLSampledCopyLooksUsable(Texture *tex,
-                                                uint32_t expectedType,
-                                                MGLTextureDataKind expectedKind,
-                                                BOOL allowPreviousWriteVersion,
-                                                id *copyOut,
-                                                BOOL *usedPreviousWriteVersionOut);
 void mglLogDrawWithoutSwapWatchdog(const char *kind,
                                           uint64_t drawCall,
                                           GLMContext ctx,
                                           void *commandBufferOwner,
                                           void *renderEncoderOwner,
                                           void *renderPassStateOwner);
-Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
-                                                              Texture *depthTexture,
-                                                              GLuint *fboNameOut);
-BOOL mglCurrentDrawFramebufferUsesColorTexture(GLMContext glctx,
-                                                      Texture *texture,
-                                                      GLuint expectedFboName,
-                                                      NSUInteger *attachmentIndexOut);
 Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const char *where, NSUInteger slot);
 NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
                                                            GLuint attribute,

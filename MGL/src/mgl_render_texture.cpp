@@ -114,8 +114,13 @@ int mglRenderSampledTextureViewForBaseLevel(
     if (type == MTL::TextureTypeCube || type == MTL::TextureTypeCubeArray) {
         slice_count *= 6u;
     }
+    /* GL 4.6 §11.1.3.5: depth lookups return (D, 0, 0, 1). */
     const uint32_t components =
-        mglRenderStoredColorComponents(texture_object->internalformat);
+        mglRenderTextureDataKindForPixelFormat(
+            static_cast<uint32_t>(source->pixelFormat())) ==
+                MGL_RENDER_TEXTURE_DATA_KIND_DEPTH
+            ? 1u
+            : mglRenderStoredColorComponents(texture_object->internalformat);
     uint32_t swizzle_red = mglRenderMTLSwizzleForGLSwizzle(
         texture_object->params.swizzle_r, components);
     uint32_t swizzle_green = mglRenderMTLSwizzleForGLSwizzle(
@@ -1789,18 +1794,6 @@ int mglRenderBindingGetSampler(MGLBindingState * binding_state, uint32_t stage, 
     return 0;
 }
 
-int mglRenderPassUsesColorTextureOwner(MGLRenderPassStateOwner * owner_handle, void* texture, uint32_t* attachment_index_out) {
-    auto* owner = reinterpret_cast<mgl::RenderPassStateOwner*>(static_cast<void*>(owner_handle));
-    if (!owner || !texture) return 0;
-    for (uint32_t index = 0; index < MGL_RENDER_MAX_COLOR_ATTACHMENTS; ++index) {
-        if (owner->state.color[index].attachment.texture == texture) {
-            if (attachment_index_out) *attachment_index_out = index;
-            return 1;
-        }
-    }
-    return 0;
-}
-
 int mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(MGLCommandBufferOwner * command_buffer_owner, void* source_texture, void* destination_texture) {
     mgl::CommandBufferOwner* owner =
         reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(command_buffer_owner));
@@ -1874,8 +1867,13 @@ int mglRenderTexturePixelFormatCompatibleWithExpectedDataKind(
     if (expected_kind == MGL_RENDER_TEXTURE_DATA_KIND_UNKNOWN) {
         return 1;
     }
-    return mglRenderTextureDataKindForPixelFormat(pixel_format) ==
-           expected_kind;
+    const uint32_t kind = mglRenderTextureDataKindForPixelFormat(pixel_format);
+    /* GL 4.6 §8.23: a non-shadow float sampler reads a depth texture's D as R. */
+    if (expected_kind == MGL_RENDER_TEXTURE_DATA_KIND_FLOAT &&
+        kind == MGL_RENDER_TEXTURE_DATA_KIND_DEPTH) {
+        return 1;
+    }
+    return kind == expected_kind;
 }
 
 extern "C"

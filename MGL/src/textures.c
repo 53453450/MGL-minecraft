@@ -389,116 +389,6 @@ void mglReleaseGLSampledTextureCopy(GLMContext ctx, Texture *tex, const char *re
     }
 }
 
-static bool mglTextureIsSampleableColor2D(Texture *tex)
-{
-    if (!tex ||
-        tex->target != GL_TEXTURE_2D ||
-        tex->index != _TEXTURE_2D ||
-        tex->is_render_target ||
-        tex->internalformat == 0 ||
-        mglTextureFormatLooksDepthOrStencil(tex->internalformat) ||
-        tex->num_levels == 0 ||
-        !tex->faces[0].levels) {
-        return false;
-    }
-
-    TextureLevel *level0 = &tex->faces[0].levels[0];
-    return level0->complete &&
-           (level0->ever_written || level0->has_initialized_data);
-}
-
-static bool mglTextureCanEnterRecentSampled2DHistory(Texture *tex)
-{
-    if (!tex ||
-        tex->target != GL_TEXTURE_2D ||
-        tex->index != _TEXTURE_2D) {
-        return false;
-    }
-
-    /*
-     * Render-target textures are often bound as sampler inputs before their
-     * Metal backing is created. Keep them as candidates and validate the final
-     * Metal format at draw time; known depth/stencil formats never qualify.
-     */
-    if (tex->internalformat != 0 &&
-        mglTextureFormatLooksDepthOrStencil(tex->internalformat)) {
-        return false;
-    }
-
-    return true;
-}
-
-static void mglPushRecentSampled2DTexture(GLMContext ctx, GLuint unit, Texture *tex)
-{
-    if (!ctx || unit >= TEXTURE_UNITS ||
-        !mglTextureCanEnterRecentSampled2DHistory(tex)) {
-        return;
-    }
-
-    Texture **history = STATE(recent_sampled_2d_textures[unit]);
-    if (history[0] == tex) {
-        return;
-    }
-
-    for (GLuint i = 1; i < MGL_RECENT_SAMPLED_2D_HISTORY; i++) {
-        if (history[i] == tex) {
-            memmove(&history[1],
-                    &history[0],
-                    sizeof(Texture *) * i);
-            history[0] = tex;
-            return;
-        }
-    }
-
-    memmove(&history[1],
-            &history[0],
-            sizeof(Texture *) * (MGL_RECENT_SAMPLED_2D_HISTORY - 1u));
-    history[0] = tex;
-}
-
-static void mglRecordLastSampled2DTexture(GLMContext ctx, GLuint unit, Texture *tex)
-{
-    if (!ctx || unit >= TEXTURE_UNITS) {
-        return;
-    }
-
-    if (mglTextureIsSampleableColor2D(tex)) {
-        STATE(last_sampled_2d_textures[unit]) = tex;
-    }
-    mglPushRecentSampled2DTexture(ctx, unit, tex);
-}
-
-static void mglRecordBoundSampled2DTextureIfReady(GLMContext ctx, Texture *tex)
-{
-    if (!ctx || !tex || tex->index != _TEXTURE_2D) {
-        return;
-    }
-
-    for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
-        if (STATE(texture_units[unit].textures[_TEXTURE_2D]) == tex) {
-            mglRecordLastSampled2DTexture(ctx, unit, tex);
-        }
-    }
-}
-
-void mglClearLastSampled2DTextureIfMatches(GLMContext ctx, Texture *tex)
-{
-    if (!ctx || !tex) {
-        return;
-    }
-
-    for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
-        if (STATE(last_sampled_2d_textures[unit]) == tex) {
-            STATE(last_sampled_2d_textures[unit]) = NULL;
-        }
-        for (GLuint i = 0; i < MGL_RECENT_SAMPLED_2D_HISTORY; i++) {
-            if (STATE(recent_sampled_2d_textures[unit][i]) == tex) {
-                STATE(recent_sampled_2d_textures[unit][i]) = NULL;
-            }
-        }
-    }
-}
-
 static GLboolean mglTextureUnitHasAnyBinding(GLMContext ctx, GLuint unit)
 {
     if (!ctx || unit >= TEXTURE_UNITS) {
@@ -845,7 +735,6 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
     if (ptr) {
         STATE(active_textures[active_texture]) = ptr;
     }
-    mglRecordLastSampled2DTexture(ctx, active_texture, ptr);
     mglUpdateTextureUnitActiveMask(ctx, active_texture);
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
 
@@ -1158,10 +1047,6 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                     STATE(active_textures)[i] = NULL;
                     cleared_unit = GL_TRUE;
                 }
-                if(STATE(last_sampled_2d_textures)[i] == tex) {
-                    STATE(last_sampled_2d_textures)[i] = NULL;
-                    cleared_unit = GL_TRUE;
-                }
 
                 for (int target_index = 0; target_index < _MAX_TEXTURE_TYPES; target_index++) {
                     if (STATE(texture_units)[i].textures[target_index] == tex) {
@@ -1193,8 +1078,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
              * framebuffer it is bound to.  MGL stores raw Texture* pointers in
              * FBOAttachment.buf.tex; without clearing them here the pointers
              * become dangling after free(tex) below, causing use-after-free
-             * crashes in later draw calls that scan FBO attachments (e.g.
-             * mglFindFramebufferColorTexturePairedWithDepth). */
+             * crashes in later draw calls that scan FBO attachments. */
             mglHashTableForEach(&STATE(framebuffer_table),
                                 mglDetachTextureFromFramebuffers, tex);
 
@@ -1439,7 +1323,6 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
 
             STATE(texture_units[unit].textures[index]) = ptr;
             STATE(active_textures[unit]) = ptr;
-            mglRecordLastSampled2DTexture(ctx, unit, ptr);
             mglUpdateTextureUnitActiveMask(ctx, unit);
             mglTraceTextureUnitState(ctx, "BindTextures", unit, ptr->target, texture, ptr);
             any_changed = GL_TRUE;
@@ -1555,7 +1438,6 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
 
     STATE(texture_units[unit].textures[index]) = ptr;
     STATE(active_textures[unit]) = ptr;
-    mglRecordLastSampled2DTexture(ctx, unit, ptr);
     mglUpdateTextureUnitActiveMask(ctx, unit);
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
     mglTraceTextureUnitState(ctx, "BindTextureUnit", unit, ptr->target, texture, ptr);
@@ -1860,8 +1742,6 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
                         tex->index,
                         level_count,
                         tex->mtl_data);
-
-    mglClearLastSampled2DTextureIfMatches(ctx, tex);
 
     if (tex->mtl_data)
     {
@@ -3418,10 +3298,6 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         }
     }
 
-    if (!proxy) {
-        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
-    }
-
     return true;
 }
 
@@ -4265,7 +4141,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         lvl->last_src_hash = dst_hash;
         mglReleaseGLSampledTextureCopy(ctx, tex, "texSubImage-PBO");
         mglTextureViewFamilyWritten(tex);
-        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
         if (trace_upload) {
             fprintf(stderr,
@@ -4356,7 +4231,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         mglReleaseGLSampledTextureCopy(ctx, tex, resolved_unpack_buf ? "texSubImage-PBO" : "texSubImage-CPU");
     }
     mglTextureViewFamilyWritten(tex);
-    mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
     if (trace_upload) {
         fprintf(stderr,
@@ -5163,7 +5037,6 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
     if (mglClearTextureLevelCPU(lvl, tex->internalformat, 0, 0, 0, width, height, depth, format, type, data)) {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
         mglReleaseGLSampledTextureCopy(ctx, tex, "glClearTexImage-CPU");
-        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
         return;
     }
     
@@ -5269,7 +5142,6 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
     if (mglClearTextureLevelCPU(lvl, tex->internalformat, xoffset, yoffset, zoffset, width, height, depth, format, type, data)) {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
         mglReleaseGLSampledTextureCopy(ctx, tex, "glClearTexSubImage-CPU");
-        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
         return;
     }
     

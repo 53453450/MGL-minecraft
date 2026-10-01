@@ -74,7 +74,6 @@ static GLboolean mglDefaultFramebufferParamValid(GLMContext ctx, GLenum pname,
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
-extern void mglClearLastSampled2DTextureIfMatches(GLMContext ctx, Texture *tex);
 extern void invalidateTexture(GLMContext ctx, Texture *tex);
 bool isCubeMapTarget(GLMContext ctx, GLuint textarget);
 void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei n, const GLenum *bufs);
@@ -2329,9 +2328,6 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     fbo_attachment_ptr->clear_color[2] = 0.f;
     fbo_attachment_ptr->clear_color[3] = 0.f;
     fbo_attachment_ptr->buf.tex = tex;
-    if (tex) {
-        mglClearLastSampled2DTextureIfMatches(ctx, tex);
-    }
 
     /* GL_DEPTH_STENCIL_ATTACHMENT binds the same image to both the depth and
      * stencil attachment points.  Set stencil's fields independently (field

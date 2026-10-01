@@ -260,8 +260,6 @@ typedef struct TextureUnit_t {
     Texture *textures[_MAX_TEXTURE_TYPES];
 } TextureUnit;
 
-#define MGL_RECENT_SAMPLED_2D_HISTORY 8
-
 typedef struct ImageUnit_t {
     GLuint unit;
     GLuint texture;

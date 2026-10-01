@@ -219,7 +219,7 @@ uint32_t mglRenderTextureDescHeight(uint32_t tex_type, uint32_t height);
 
 /* C1: binding slot/sampler/stage/plain-uniform -> mgl_binding_policy.h */
 /* O3.3: stage UBO/SSBO/attrib bind plan + helpers -> mgl_binding_stage.h */
-/* O3.3: sampled/storage/depth-recover/Y-flip/sampler-materialize -> mgl_binding_texture.h */
+/* O3.3: sampled/storage/Y-flip/sampler-materialize -> mgl_binding_texture.h */
 /* C1: format-class PSO topology/blend/stencil/viewport -> mgl_pso_format_class.h */
 int mglRenderTextureTargetIsBuffer(uint32_t target);
 
@@ -343,8 +343,6 @@ int mglRenderTextureSampleParams(uint32_t target, int32_t samples,
                                  uint32_t *sample_buffers);
 
 void *mglRenderGetRenderPassAttachmentTextureOwner(MGLRenderPassStateOwner *owner, uint32_t attachment_kind, uint32_t color_index);
-
-int mglRenderPassUsesColorTextureOwner(MGLRenderPassStateOwner *owner, void *texture, uint32_t *attachment_index_out);
 
 /* Encode a complete texture-to-texture preservation copy inside the owner.
  * Every common array slice and mip level is copied at its full mip extent;

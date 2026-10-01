@@ -160,87 +160,6 @@ static void test_warmup_gates(void)
            "combined");
 }
 
-static void test_depth_recover_plan(void)
-{
-    expect(mglBindingTextureSampledNameIsInSampler("InSampler") == 1, "in name");
-    expect(mglBindingTextureSampledNameIsInSampler("Diffuse") == 0, "not in");
-    uint64_t ctr = 0;
-    expect(mglBindingTextureDepthRecoverLogHit(&ctr) == 1, "log first");
-    expect(ctr == 1ull, "ctr1");
-
-    MGLDepthRecoverInput in;
-    MGLDepthRecoverPlan plan;
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_GATE;
-    in.has_texture = 1;
-    in.is_depth_or_stencil = 1;
-    in.is_insampler = 1;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "gate in");
-    expect(plan.action == MGL_DR_ACTION_ENTER_INSAMPLER, "enter in");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_GATE;
-    in.has_texture = 1;
-    in.is_depth_or_stencil = 1;
-    in.is_render_target = 1;
-    in.level0_ever_written = 0;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "gate rt");
-    expect(plan.action == MGL_DR_ACTION_ENTER_RT, "enter rt");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_INSAMPLER;
-    in.paired_is_current_draw = 1;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "in cur");
-    expect(plan.action == MGL_DR_ACTION_PROBE_PAIRED_COPY, "probe copy");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_COPY;
-    in.paired_copy_usable = 0;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "no copy");
-    expect(plan.action == MGL_DR_ACTION_NIL_SUPPRESS, "nil suppress");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_INSAMPLER;
-    in.has_paired_color = 1;
-    in.has_paired_mtl = 1;
-    in.paired_is_depth_or_stencil = 0;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "paired");
-    expect(plan.action == MGL_DR_ACTION_USE_PAIRED_DIRECT, "paired direct");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_HISTORY;
-    in.candidate_valid = 1;
-    in.candidate_is_rt = 1;
-    in.candidate_copy_usable = 1;
-    in.candidate_is_current_draw = 1;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "hist");
-    expect(plan.action == MGL_DR_ACTION_HISTORY_USE_COPY, "hist copy");
-    expect(plan.reason_tag && strcmp(plan.reason_tag, "history-current-copy") == 0,
-           "hist tag");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_HISTORY;
-    in.candidate_valid = 1;
-    in.candidate_has_mtl = 1;
-    in.candidate_type_ok = 1;
-    in.candidate_kind_ok = 1;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "hist dir");
-    expect(plan.action == MGL_DR_ACTION_HISTORY_USE_DIRECT, "hist direct");
-
-    memset(&in, 0, sizeof(in));
-    in.phase = MGL_DR_PHASE_RT;
-    in.rt_sub = 0;
-    in.has_paired_color = 1;
-    in.has_paired_mtl = 1;
-    in.candidate_type_ok = 1;
-    in.candidate_kind_ok = 1;
-    expect(mglBindingTexturePlanDepthRecover(&in, &plan) == 0, "rt paired");
-    expect(plan.action == MGL_DR_ACTION_RT_USE_PAIRED, "rt use paired");
-    expect(plan.reason_tag && strcmp(plan.reason_tag, "paired-color") == 0,
-           "rt tag");
-}
-
-
 static void test_sampler_materialize_plan(void)
 {
     MGLSamplerMaterializeInput in;
@@ -376,7 +295,7 @@ static void test_sampled_final_helpers(void)
     memset(&in, 0, sizeof(in));
     in.program_binding = 3u;
     in.has_resource = 1;
-    mglBindingTextureFillSampledFinalInput(&in, 1, 0, 0, 1, 5u, 16u, 1, 0);
+    mglBindingTextureFillSampledFinalInput(&in, 1, 0, 1, 5u, 16u, 1, 0);
     expect(in.phase == MGL_ST_PHASE_FINAL, "final phase");
     expect(in.has_bound_texture == 1, "final bound");
     expect(in.sampler_binding == 5u, "final samp slot");
@@ -389,9 +308,9 @@ static void test_sampled_final_helpers(void)
     expect(plan.queue_texture == 1, "final q tex");
     expect(plan.queue_sampler == 1, "final q samp");
 
-    mglBindingTextureFillSampledFinalInput(&in, 0, 1, 0, 0, 0u, 16u, 0, 0);
-    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "suppress plan");
-    expect(plan.action == MGL_ST_ACTION_SUPPRESS_FALLBACK, "suppress act");
+    mglBindingTextureFillSampledFinalInput(&in, 0, 0, 0, 0u, 16u, 0, 0);
+    expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "missing plan");
+    expect(plan.action == MGL_ST_ACTION_NIL_FALLBACK, "missing fallback");
 }
 
 
@@ -478,26 +397,6 @@ void mglBindingLogMipDiagFrag(uint32_t a, uint32_t b, uint32_t c, uint32_t d,
 
 static void test_o33_fill_emit_ports(void)
 {
-    MGLDepthRecoverInput din;
-    MGLDepthRecoverPlan dplan;
-    mglBindingTextureFillDepthRecoverGateInput(&din, 1, 1, 1, 0, 1, 1);
-    expect(din.phase == MGL_DR_PHASE_GATE && din.is_insampler == 1, "dr gate fill");
-    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr gate plan");
-    expect(dplan.action == MGL_DR_ACTION_ENTER_INSAMPLER, "dr enter in");
-
-    mglBindingTextureFillDepthRecoverRTInput(&din, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0);
-    expect(din.phase == MGL_DR_PHASE_RT && din.rt_sub == 0, "dr rt0 fill");
-    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr rt0 plan");
-    expect(dplan.action == MGL_DR_ACTION_RT_USE_PAIRED, "dr rt paired");
-
-    mglBindingTextureFillDepthRecoverRTInput(&din, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0);
-    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr rt1");
-    expect(dplan.action == MGL_DR_ACTION_RT_APPLY, "dr rt apply");
-
-    mglBindingTextureFillDepthRecoverRTInput(&din, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1);
-    expect(mglBindingTexturePlanDepthRecover(&din, &dplan) == 0, "dr rt2");
-    expect(dplan.action == MGL_DR_ACTION_USE_RECOVER, "dr rt recover");
-
     MGLSamplerMaterializeInput sm;
     mglBindingTextureFillSamplerMaterializeInput(&sm, 0, 1, 1, 0, 1, 0, 0);
     expect(sm.has_gl_sampler == 1 && sm.unit_in_range == 1, "sm fill");
@@ -547,7 +446,6 @@ int main(void)
     test_sampled_plan();
     test_attrib_plan();
     test_warmup_gates();
-    test_depth_recover_plan();
     test_sampler_materialize_plan();
     test_sampled_diag_and_rt_ports();
     test_sampled_final_helpers();

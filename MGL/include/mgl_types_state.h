@@ -118,8 +118,6 @@ typedef struct {
     unsigned    active_texture_mask[4];
     Texture     *active_textures[TEXTURE_UNITS];
     TextureUnit texture_units[TEXTURE_UNITS];
-    Texture     *last_sampled_2d_textures[TEXTURE_UNITS];
-    Texture     *recent_sampled_2d_textures[TEXTURE_UNITS][MGL_RECENT_SAMPLED_2D_HISTORY];
     Sampler     *texture_samplers[TEXTURE_UNITS];
     ImageUnit   image_units[TEXTURE_UNITS];
 

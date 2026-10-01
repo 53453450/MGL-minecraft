@@ -3,7 +3,7 @@
  *
  * Rate-limited BindingState logging ports for O3.3. Freeze/shrink only —
  * do not spawn another log TU; do not grow this shell. Prefer merged
- * kind/POD entry points (DepthRecover / RTSampleCopy / TexFallbackEx).
+ * kind/POD entry points (RTSampleCopy / TexFallbackEx).
  */
 
 #include "mgl_binding_texture.h"
@@ -220,107 +220,9 @@ void mglBindingLogMipDiagFrag(
 }
 
 void mglBindingLogTexFallbackEx(uint64_t hit, uint32_t binding, uint32_t program,
-                                uint32_t gl_tex, int suppressed, const char *name,
-                                uint32_t unit)
+                                uint32_t gl_tex)
 {
-    if (suppressed) {
-        fprintf(stderr, "MGL TEX FALLBACK SUPPRESSED fragment sampled binding=%u program=%u name=%s glTex=%u unit=%u reason=insampler-current-target-no-copy hit=%llu",
-              (unsigned)binding, (unsigned)program, name ? name : "",
-              (unsigned)gl_tex, (unsigned)unit, (unsigned long long)hit);
-    } else {
-        fprintf(stderr, "MGL TEX FALLBACK fragment sampled binding=%u program=%u glTex=%u hit=%llu",
-              (unsigned)binding, (unsigned)program, (unsigned)gl_tex,
-              (unsigned long long)hit);
-    }
-}
-
-void mglBindingLogDepthRecover(const MGLBindingDepthLog *log)
-{
-    if (!log || log->kind == MGL_DR_LOG_NONE) {
-        return;
-    }
-    switch (log->kind) {
-    case MGL_DR_LOG_HIST_SUPPRESSED:
-        fprintf(stderr, "MGL INSAMPLER DEPTH HISTORY SCAN SUPPRESSED hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u pairedColor=%u currentDrawTarget=1",
-              (unsigned long long)log->hit, (unsigned)log->program,
-              (unsigned)log->binding, (unsigned)log->unit, (unsigned)log->fbo,
-              (unsigned long)log->color_att, (unsigned)log->depth_tex,
-              (unsigned)log->paired_color);
-        break;
-    case MGL_DR_LOG_NO_COPY:
-        fprintf(stderr, "MGL INSAMPLER DEPTH CURRENT TARGET false COPY hit=%llu program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u colorTex=%u depthFmt=%lu sampledVersion=%u rtVersion=%u",
-              (unsigned long long)log->hit, (unsigned)log->program,
-              (unsigned)log->binding, (unsigned)log->unit, (unsigned)log->fbo,
-              (unsigned long)log->color_att, (unsigned)log->depth_tex,
-              (unsigned)log->color_tex, (unsigned long)log->depth_fmt,
-              (unsigned)log->sampled_ver, (unsigned)log->rt_ver);
-        break;
-    case MGL_DR_LOG_PAIRED_DIRECT:
-        fprintf(stderr, "MGL INSAMPLER DEPTH RECOVERY hit=%llu program=%u binding=%u unit=%u fbo=%u depthTex=%u colorTex=%u depthFmt=%lu colorFmt=%lu size=%lux%lu",
-              (unsigned long long)log->hit, (unsigned)log->program,
-              (unsigned)log->binding, (unsigned)log->unit, (unsigned)log->fbo,
-              (unsigned)log->depth_tex, (unsigned)log->color_tex,
-              (unsigned long)log->depth_fmt, (unsigned long)log->color_fmt,
-              (unsigned long)log->w, (unsigned long)log->h);
-        break;
-    case MGL_DR_LOG_UNPAIRED:
-        fprintf(stderr, "MGL INSAMPLER DEPTH UNPAIRED hit=%llu program=%u binding=%u unit=%u depthTex=%u fmt=%lu size=%lux%lu",
-              (unsigned long long)log->hit, (unsigned)log->program,
-              (unsigned)log->binding, (unsigned)log->unit,
-              (unsigned)log->depth_tex, (unsigned long)log->depth_fmt,
-              (unsigned long)log->w, (unsigned long)log->h);
-        break;
-    case MGL_DR_LOG_HISTORY_RECOVERY:
-        fprintf(stderr, "MGL INSAMPLER DEPTH RECOVERY hit=%llu reason=%s program=%u binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u recoverTex=%u depthFmt=%lu recoverFmt=%lu size=%lux%lu copy=%d prevVersion=%d sampledVersion=%u rtVersion=%u pairedColor=%u pairedCurrent=%d",
-              (unsigned long long)log->hit, log->reason ? log->reason : "none",
-              (unsigned)log->program, (unsigned)log->binding, (unsigned)log->unit,
-              (unsigned)log->fbo, (unsigned long)log->color_att,
-              (unsigned)log->depth_tex, (unsigned)log->recover_tex,
-              (unsigned long)log->depth_fmt, (unsigned long)log->recover_fmt,
-              (unsigned long)log->w, (unsigned long)log->h, log->copy,
-              log->prev_ver, (unsigned)log->sampled_ver, (unsigned)log->rt_ver,
-              (unsigned)log->paired_color, log->paired_current);
-        break;
-    case MGL_DR_LOG_RT_SKIP:
-        fprintf(stderr, "MGL SAMPLED DEPTH RT RECOVER SKIP current-draw-target hit=%llu program=%u name=%s binding=%u unit=%u fbo=%u colorAttachment=%lu depthTex=%u colorTex=%u",
-              (unsigned long long)log->hit, (unsigned)log->program,
-              log->name ? log->name : "", (unsigned)log->binding,
-              (unsigned)log->unit, (unsigned)log->fbo,
-              (unsigned long)log->color_att, (unsigned)log->depth_tex,
-              (unsigned)log->color_tex);
-        break;
-    case MGL_DR_LOG_RT_SUPPRESS_LAST2D:
-        fprintf(stderr, "MGL SAMPLED DEPTH RT RECOVER SUPPRESS last-sampled-2d hit=%llu program=%u name=%s binding=%u unit=%u depthTex=%u last2D=%u",
-              (unsigned long long)log->hit, (unsigned)log->program,
-              log->name ? log->name : "", (unsigned)log->binding,
-              (unsigned)log->unit, (unsigned)log->depth_tex,
-              (unsigned)log->last2d);
-        break;
-    case MGL_DR_LOG_RT_RECOVER:
-        fprintf(stderr, "MGL SAMPLED DEPTH RT RECOVER hit=%llu reason=%s program=%u name=%s binding=%u unit=%u depthTex=%u recoverTex=%u fmt=%lu recoverFmt=%lu size=%lux%lu level=%p ever=%u init=%u unit(active=%u tex2D=%u last2D=%u) recoverFbo=%u currentFbo=%u colorTex=%u fboDepthTex=%u",
-              (unsigned long long)log->hit, log->reason ? log->reason : "none",
-              (unsigned)log->program, log->name ? log->name : "",
-              (unsigned)log->binding, (unsigned)log->unit,
-              (unsigned)log->depth_tex, (unsigned)log->recover_tex,
-              (unsigned long)log->depth_fmt, (unsigned long)log->recover_fmt,
-              (unsigned long)log->w, (unsigned long)log->h, log->level,
-              (unsigned)log->ever, (unsigned)log->init,
-              (unsigned)log->unit_active, (unsigned)log->unit_tex2d,
-              (unsigned)log->unit_last2d, (unsigned)log->recover_fbo,
-              (unsigned)log->current_fbo, (unsigned)log->color_tex,
-              (unsigned)log->fbo_depth_tex);
-        break;
-    case MGL_DR_LOG_RT_FALLBACK:
-        fprintf(stderr, "MGL SAMPLED DEPTH RT FALLBACK hit=%llu program=%u name=%s binding=%u unit=%u depthTex=%u fmt=%lu size=%lux%lu level=%p ever=%u init=%u unit(active=%u tex2D=%u last2D=%u)",
-              (unsigned long long)log->hit, (unsigned)log->program,
-              log->name ? log->name : "", (unsigned)log->binding,
-              (unsigned)log->unit, (unsigned)log->depth_tex,
-              (unsigned long)log->depth_fmt, (unsigned long)log->w,
-              (unsigned long)log->h, log->level, (unsigned)log->ever,
-              (unsigned)log->init, (unsigned)log->unit_active,
-              (unsigned)log->unit_tex2d, (unsigned)log->unit_last2d);
-        break;
-    default:
-        break;
-    }
+    fprintf(stderr, "MGL TEX FALLBACK fragment sampled binding=%u program=%u glTex=%u hit=%llu",
+          (unsigned)binding, (unsigned)program, (unsigned)gl_tex,
+          (unsigned long long)hit);
 }

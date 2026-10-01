@@ -27,17 +27,8 @@
 extern "C" {
 #endif
 
-/* The three BOOL-returning symbols (mglRendererTextureLooksRecoverableSampled2D,
- * mglRendererGLSampledCopyLooksUsable, mglRendererTextureLooksLikeSampledColor2D)
- * keep their ObjC-header declarations; the C TUs that need them restate them
- * locally as `signed char` (rule 26), so they are not declared here to avoid
- * clashing with MGLRenderer+Draw_Private.h when the .m includes this header. */
-
-
-
 /* mglTraceReplayCommandVertexAttribSamples keeps its mgl_trace_strategy.h
- * declaration; mglFindFramebufferColorTexturePairedWithDepth keeps its
- * MGLRenderer+Draw_Private.h one. */
+ * declaration. */
 
 int mglRendererEnsureNewCommandBuffer(void *renderer);
 

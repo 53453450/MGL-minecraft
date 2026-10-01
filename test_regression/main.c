@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 136
+#define MAX_TESTS 137
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18262,6 +18262,139 @@ static int test_texture_default_state(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* §8.23.1: with TEXTURE_COMPARE_MODE NONE a non-shadow sampler reads r = D,
+ * expanded to (r, 0, 0, 1) by §11.1.3.5, whatever the sampler is named. */
+static int test_sample_depth_texture(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+
+    static const char *vs =
+        "#version 330 core\n"
+        "uniform float z;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, z, 1.0);\n"
+        "}\n";
+    GLuint pdepth = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    GLuint pd = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D d;\n"
+        "uniform float t;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(d, vec2(0.5, t)); }\n");
+    GLuint pin = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D InSampler;\n"
+        "uniform float t;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(InSampler, vec2(0.5, t)); }\n");
+    if (!pdepth || !pd || !pin) return 3;
+
+    GLuint vao = 0, ttmp = 0, color = 0, uploaded = 0, rendered = 0, fdepth = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 3;
+
+    /* Rows 0-7 (bottom) hold 0.25, rows 8-15 hold 0.75. */
+    float texels[16 * 16];
+    for (int k = 0; k < 16 * 16; k++) texels[k] = k < 16 * 8 ? 0.25f : 0.75f;
+    glGenTextures(1, &uploaded);
+    glBindTexture(GL_TEXTURE_2D, uploaded);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 16, 16, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, texels);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glGenTextures(1, &color);
+    glBindTexture(GL_TEXTURE_2D, color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glGenTextures(1, &rendered);
+    glBindTexture(GL_TEXTURE_2D, rendered);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 16, 16, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &fdepth);
+    glBindFramebuffer(GL_FRAMEBUFFER, fdepth);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           color, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                           rendered, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        fail |= 1;
+    /* Window depth 0.25 from NDC z -0.5 with the default DepthRange. */
+    glViewport(0, 0, 16, 16);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_ALWAYS);
+    glUseProgram(pdepth);
+    glUniform1f(glGetUniformLocation(pdepth, "z"), -0.5f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+
+    unsigned char b[4];
+    GLuint progs[2] = {pd, pin};
+    const char *names[2] = {"d", "InSampler"};
+    const float ts[2] = {0.25f, 0.75f};
+    const int want[2] = {64, 191};
+    glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fsample);
+    glViewport(0, 0, REG_W, REG_H);
+    glActiveTexture(GL_TEXTURE0);
+    for (int i = 0; i < 2; i++) {
+        glUseProgram(progs[i]);
+        glUniform1i(glGetUniformLocation(progs[i], names[i]), 0);
+        glUniform1f(glGetUniformLocation(progs[i], "z"), 0.0f);
+        glBindTexture(GL_TEXTURE_2D, uploaded);
+        for (int k = 0; k < 2; k++) {
+            glUniform1f(glGetUniformLocation(progs[i], "t"), ts[k]);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+            if (b[0] < want[k] - 2 || b[0] > want[k] + 2 || b[1] != 0 ||
+                b[2] != 0 || b[3] != 255) {
+                fprintf(stderr, "sample_depth_texture: uploaded %s t=%.2f got %u,%u,%u,%u\n",
+                        names[i], ts[k], b[0], b[1], b[2], b[3]);
+                fail |= 2 << i;
+            }
+        }
+        glBindTexture(GL_TEXTURE_2D, rendered);
+        glUniform1f(glGetUniformLocation(progs[i], "t"), 0.5f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+        if (b[0] < 62 || b[0] > 66 || b[3] != 255) {
+            fprintf(stderr, "sample_depth_texture: rendered %s got %u,%u,%u,%u\n",
+                    names[i], b[0], b[1], b[2], b[3]);
+            fail |= 8 << i;
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 32;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fdepth);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteTextures(1, &color);
+    glDeleteTextures(1, &uploaded);
+    glDeleteTextures(1, &rendered);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pdepth);
+    glDeleteProgram(pd);
+    glDeleteProgram(pin);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "sample_depth_texture: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -21031,6 +21164,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_partial_render_orientation", test_rt_partial_render_orientation),
     SELF_CHECK_TEST("incomplete_texture_storage", test_incomplete_texture_storage),
     SELF_CHECK_TEST("texture_default_state", test_texture_default_state),
+    SELF_CHECK_TEST("sample_depth_texture", test_sample_depth_texture),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

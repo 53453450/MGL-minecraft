@@ -9,7 +9,7 @@
  */
 
 /*
- * mgl_binding_texture.c — O3.3 residual sampled/storage/depth-recover /
+ * mgl_binding_texture.c — O3.3 residual sampled/storage /
  * Y-flip RT / sampler-materialize plans.
  * Pure C; do not grow +Binding.m / mgl_render.cpp.
  */
@@ -224,12 +224,6 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
 
     /* FINAL */
     if (!in->has_bound_texture) {
-        if (in->suppress_missing_fallback) {
-            out->action = MGL_ST_ACTION_SUPPRESS_FALLBACK;
-            out->reason = MGL_ST_REASON_SUPPRESS;
-            out->mark_nil = 1;
-            return 0;
-        }
         out->action = MGL_ST_ACTION_NIL_FALLBACK;
         out->reason = MGL_ST_REASON_NIL;
         out->mark_fallback = 1;
@@ -262,15 +256,14 @@ int mglBindingTextureForceDefaultSampler(int used_fallback,
 }
 
 void mglBindingTextureFillSampledFinalInput(
-    MGLSampledTextureBindInput *in, int has_bound_texture, int suppress_missing,
-    int used_type_fallback, int has_combined_sampler, uint32_t sampler_binding,
+    MGLSampledTextureBindInput *in, int has_bound_texture, int used_type_fallback,
+    int has_combined_sampler, uint32_t sampler_binding,
     uint32_t max_sampler_slots, int has_sampler, int force_default_sampler) {
     if (!in) {
         return;
     }
     in->phase = MGL_ST_PHASE_FINAL;
     in->has_bound_texture = has_bound_texture ? 1 : 0;
-    in->suppress_missing_fallback = suppress_missing ? 1 : 0;
     in->used_type_fallback = used_type_fallback ? 1 : 0;
     in->has_combined_sampler = has_combined_sampler ? 1 : 0;
     in->sampler_binding = sampler_binding;
@@ -458,15 +451,6 @@ int mglBindingTextureRateLogHit(uint64_t *counter, uint64_t early,
     return hit <= early || (hit % period) == 0ull ? 1 : 0;
 }
 
-int mglBindingTextureSampledNameIsInSampler(const char *sampled_name) {
-    return sampled_name && strcmp(sampled_name, "InSampler") == 0 ? 1 : 0;
-}
-
-int mglBindingTextureDepthRecoverLogHit(uint64_t *counter) {
-    return mglBindingTextureRateLogHit(counter, 64ull, 512ull);
-}
-
-
 uint64_t mglBindingTextureMipDiagMix(uint64_t sig, uint64_t value) {
     sig ^= value;
     sig *= 1099511628211ULL;
@@ -534,260 +518,6 @@ int mglBindingTexturePlanSampledDiag(const MGLSampledDiagGateInput *in,
     }
     out->action = MGL_SD_ACTION_SKIP;
     return 0;
-}
-
-int mglBindingTexturePlanDepthRecover(const MGLDepthRecoverInput *in,
-                                      MGLDepthRecoverPlan *out) {
-    if (!in || !out) {
-        return -1;
-    }
-    memset(out, 0, sizeof(*out));
-    out->reason_tag = NULL;
-
-    if (in->phase == MGL_DR_PHASE_GATE) {
-        if (!in->has_texture || !in->is_depth_or_stencil) {
-            out->action = MGL_DR_ACTION_KEEP;
-            out->reason = MGL_DR_REASON_NOT_DEPTH;
-            return 0;
-        }
-        if (in->is_insampler) {
-            out->action = MGL_DR_ACTION_ENTER_INSAMPLER;
-            out->reason = MGL_DR_REASON_OK;
-            return 0;
-        }
-        if (in->is_render_target &&
-            (!in->level0_ever_written || !in->level0_has_init)) {
-            out->action = MGL_DR_ACTION_ENTER_RT;
-            out->reason = MGL_DR_REASON_RT_UNINIT;
-            return 0;
-        }
-        out->action = MGL_DR_ACTION_KEEP;
-        out->reason = MGL_DR_REASON_KEEP;
-        return 0;
-    }
-
-    if (in->phase == MGL_DR_PHASE_INSAMPLER) {
-        if (in->paired_is_current_draw) {
-            out->action = MGL_DR_ACTION_PROBE_PAIRED_COPY;
-            out->reason = MGL_DR_REASON_PAIRED_CURRENT;
-            out->reason_tag = "paired-current-copy";
-            return 0;
-        }
-        if (in->has_paired_color && in->has_paired_mtl &&
-            !in->paired_is_depth_or_stencil) {
-            out->action = MGL_DR_ACTION_USE_PAIRED_DIRECT;
-            out->reason = MGL_DR_REASON_PAIRED_DIRECT;
-            out->reason_tag = "paired-direct";
-            return 0;
-        }
-        if (in->unit_in_range) {
-            out->action = MGL_DR_ACTION_SCAN_HISTORY;
-            out->reason = MGL_DR_REASON_HISTORY;
-            return 0;
-        }
-        if (!in->has_paired_color) {
-            out->action = MGL_DR_ACTION_LOG_UNPAIRED;
-            out->reason = MGL_DR_REASON_UNPAIRED;
-            return 0;
-        }
-        out->action = MGL_DR_ACTION_KEEP;
-        out->reason = MGL_DR_REASON_KEEP;
-        return 0;
-    }
-
-    if (in->phase == MGL_DR_PHASE_COPY) {
-        if (in->paired_copy_usable) {
-            out->action = MGL_DR_ACTION_USE_RECOVER;
-            out->reason = MGL_DR_REASON_PAIRED_COPY;
-            out->reason_tag = "paired-current-copy";
-            return 0;
-        }
-        out->action = MGL_DR_ACTION_NIL_SUPPRESS;
-        out->reason = MGL_DR_REASON_PAIRED_NO_COPY;
-        return 0;
-    }
-
-    if (in->phase == MGL_DR_PHASE_HISTORY) {
-        if (!in->candidate_valid) {
-            out->action = MGL_DR_ACTION_HISTORY_CONTINUE;
-            out->reason = MGL_DR_REASON_HISTORY;
-            return 0;
-        }
-        if (in->candidate_needs_bind) {
-            out->action = MGL_DR_ACTION_HISTORY_PROBE;
-            out->reason = MGL_DR_REASON_HISTORY;
-            return 0;
-        }
-        if (in->candidate_is_rt && in->candidate_copy_usable) {
-            out->action = MGL_DR_ACTION_HISTORY_USE_COPY;
-            out->reason = MGL_DR_REASON_HISTORY;
-            out->reason_tag = in->candidate_is_current_draw
-                                  ? "history-current-copy"
-                                  : "history-copy";
-            return 0;
-        }
-        if (in->candidate_is_current_draw) {
-            out->action = MGL_DR_ACTION_HISTORY_CONTINUE;
-            out->reason = MGL_DR_REASON_HISTORY;
-            return 0;
-        }
-        if (in->candidate_has_mtl && !in->candidate_is_depth_or_stencil &&
-            in->candidate_type_ok && in->candidate_kind_ok) {
-            out->action = MGL_DR_ACTION_HISTORY_USE_DIRECT;
-            out->reason = MGL_DR_REASON_HISTORY;
-            out->reason_tag = "history-direct";
-            return 0;
-        }
-        out->action = MGL_DR_ACTION_HISTORY_CONTINUE;
-        out->reason = MGL_DR_REASON_HISTORY;
-        return 0;
-    }
-
-    /* RT: rt_sub 0=paired decision, 1=post-recover path, 2=after MTL apply */
-    if (in->rt_sub == 0) {
-        if (in->has_paired_color && in->has_paired_mtl &&
-            !in->paired_is_current_draw && !in->paired_is_depth_or_stencil &&
-            in->candidate_type_ok && in->candidate_kind_ok) {
-            out->action = MGL_DR_ACTION_RT_USE_PAIRED;
-            out->reason = MGL_DR_REASON_RT_PAIRED;
-            out->reason_tag = "paired-color";
-            return 0;
-        }
-        if (in->has_paired_color && in->paired_is_current_draw) {
-            out->action = MGL_DR_ACTION_RT_SKIP_CURRENT;
-            out->reason = MGL_DR_REASON_RT_CURRENT;
-            return 0;
-        }
-        out->action = MGL_DR_ACTION_RT_CONTINUE;
-        out->reason = MGL_DR_REASON_OK;
-        return 0;
-    }
-    if (in->rt_sub == 1) {
-        /* last2d is log-only when !has_recover; ObjC may log then re-enter
-         * with last2d_recoverable=0, or we signal SUPPRESS then APPLY/FALLBACK. */
-        if (!in->has_recover && in->last2d_recoverable) {
-            out->action = MGL_DR_ACTION_RT_SUPPRESS_LAST2D;
-            out->reason = MGL_DR_REASON_RT_LAST2D;
-            return 0;
-        }
-        if (in->has_recover) {
-            out->action = MGL_DR_ACTION_RT_APPLY;
-            out->reason = MGL_DR_REASON_RT_PAIRED;
-            return 0;
-        }
-        if (in->still_depth_or_stencil) {
-            out->action = MGL_DR_ACTION_RT_FALLBACK;
-            out->reason = MGL_DR_REASON_RT_FALLBACK;
-            return 0;
-        }
-        out->action = MGL_DR_ACTION_KEEP;
-        out->reason = MGL_DR_REASON_KEEP;
-        return 0;
-    }
-    if (in->recover_mtl_ok) {
-        out->action = MGL_DR_ACTION_USE_RECOVER;
-        out->reason = MGL_DR_REASON_RT_PAIRED;
-        return 0;
-    }
-    if (in->still_depth_or_stencil) {
-        out->action = MGL_DR_ACTION_RT_FALLBACK;
-        out->reason = MGL_DR_REASON_RT_FALLBACK;
-        return 0;
-    }
-    out->action = MGL_DR_ACTION_KEEP;
-    out->reason = MGL_DR_REASON_KEEP;
-    return 0;
-}
-
-void mglBindingTextureFillDepthRecoverGateInput(
-    MGLDepthRecoverInput *in, int has_texture, int is_insampler,
-    int is_depth_or_stencil, int is_render_target, int level0_ever_written,
-    int level0_has_init)
-{
-    if (!in) {
-        return;
-    }
-    memset(in, 0, sizeof(*in));
-    in->phase = MGL_DR_PHASE_GATE;
-    in->has_texture = has_texture ? 1 : 0;
-    in->is_insampler = is_insampler ? 1 : 0;
-    in->is_depth_or_stencil = is_depth_or_stencil ? 1 : 0;
-    in->is_render_target = is_render_target ? 1 : 0;
-    in->level0_ever_written = level0_ever_written ? 1 : 0;
-    in->level0_has_init = level0_has_init ? 1 : 0;
-}
-
-void mglBindingTextureFillDepthRecoverInSamplerInput(
-    MGLDepthRecoverInput *in, int has_paired_color, int paired_is_current_draw,
-    int has_paired_mtl, int paired_is_depth_or_stencil, int unit_in_range)
-{
-    if (!in) {
-        return;
-    }
-    memset(in, 0, sizeof(*in));
-    in->phase = MGL_DR_PHASE_INSAMPLER;
-    in->has_paired_color = has_paired_color ? 1 : 0;
-    in->paired_is_current_draw = paired_is_current_draw ? 1 : 0;
-    in->has_paired_mtl = has_paired_mtl ? 1 : 0;
-    in->paired_is_depth_or_stencil = paired_is_depth_or_stencil ? 1 : 0;
-    in->unit_in_range = unit_in_range ? 1 : 0;
-}
-
-void mglBindingTextureFillDepthRecoverCopyInput(
-    MGLDepthRecoverInput *in, int paired_copy_usable)
-{
-    if (!in) {
-        return;
-    }
-    memset(in, 0, sizeof(*in));
-    in->phase = MGL_DR_PHASE_COPY;
-    in->paired_copy_usable = paired_copy_usable ? 1 : 0;
-}
-
-void mglBindingTextureFillDepthRecoverHistoryInput(
-    MGLDepthRecoverInput *in, int candidate_valid, int candidate_is_rt,
-    int candidate_is_current_draw, int candidate_has_mtl,
-    int candidate_copy_usable, int candidate_is_depth_or_stencil,
-    int candidate_type_ok, int candidate_kind_ok)
-{
-    if (!in) {
-        return;
-    }
-    memset(in, 0, sizeof(*in));
-    in->phase = MGL_DR_PHASE_HISTORY;
-    in->candidate_valid = candidate_valid ? 1 : 0;
-    in->candidate_is_rt = candidate_is_rt ? 1 : 0;
-    in->candidate_is_current_draw = candidate_is_current_draw ? 1 : 0;
-    in->candidate_has_mtl = candidate_has_mtl ? 1 : 0;
-    in->candidate_copy_usable = candidate_copy_usable ? 1 : 0;
-    in->candidate_is_depth_or_stencil = candidate_is_depth_or_stencil ? 1 : 0;
-    in->candidate_type_ok = candidate_type_ok ? 1 : 0;
-    in->candidate_kind_ok = candidate_kind_ok ? 1 : 0;
-}
-
-void mglBindingTextureFillDepthRecoverRTInput(
-    MGLDepthRecoverInput *in, int rt_sub, int has_paired_color,
-    int has_paired_mtl, int paired_is_current_draw,
-    int paired_is_depth_or_stencil, int candidate_type_ok,
-    int candidate_kind_ok, int has_recover, int last2d_recoverable,
-    int still_depth_or_stencil, int recover_mtl_ok)
-{
-    if (!in) {
-        return;
-    }
-    memset(in, 0, sizeof(*in));
-    in->phase = MGL_DR_PHASE_RT;
-    in->rt_sub = rt_sub;
-    in->has_paired_color = has_paired_color ? 1 : 0;
-    in->has_paired_mtl = has_paired_mtl ? 1 : 0;
-    in->paired_is_current_draw = paired_is_current_draw ? 1 : 0;
-    in->paired_is_depth_or_stencil = paired_is_depth_or_stencil ? 1 : 0;
-    in->candidate_type_ok = candidate_type_ok ? 1 : 0;
-    in->candidate_kind_ok = candidate_kind_ok ? 1 : 0;
-    in->has_recover = has_recover ? 1 : 0;
-    in->last2d_recoverable = last2d_recoverable ? 1 : 0;
-    in->still_depth_or_stencil = still_depth_or_stencil ? 1 : 0;
-    in->recover_mtl_ok = recover_mtl_ok ? 1 : 0;
 }
 
 void mglBindingTextureFillSamplerMaterializeInput(

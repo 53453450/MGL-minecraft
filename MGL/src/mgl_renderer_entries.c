@@ -1229,51 +1229,6 @@ int mglRendererPointerInHashTable(HashTable *table, const void *ptr)
 }
 
 
-int mglCurrentDrawFramebufferUsesColorTexture(GLMContext glctx,
-                                                      Texture *texture,
-                                                      GLuint expectedFboName,
-                                                      unsigned long *attachmentIndexOut)
-{
-    if (attachmentIndexOut) {
-        *attachmentIndexOut = MAX_COLOR_ATTACHMENTS;
-    }
-    if (!glctx || !texture) {
-        return 0;
-    }
-
-    Framebuffer *fbo = glctx->active_state->framebuffer;
-    if (!fbo ||
-        !mglMexObjectPointerLikelyValid(fbo) ||
-        !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
-        return 0;
-    }
-    if (expectedFboName != 0u && fbo->name != expectedFboName) {
-        return 0;
-    }
-
-    GLsizei drawBufferCount = mglMetalDrawBufferCount(glctx);
-    for (GLsizei i = 0; i < drawBufferCount; i++) {
-        GLuint attachmentIndex = MAX_COLOR_ATTACHMENTS;
-        if (!mglMetalResolveFboDrawAttachmentIndex(glctx,
-                                                   mglMetalDrawBufferAt(glctx, (GLuint)i),
-                                                   &attachmentIndex) ||
-            attachmentIndex >= MAX_COLOR_ATTACHMENTS ||
-            ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
-            continue;
-        }
-
-        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
-        if (attachment->buf.tex == texture || attachment->texture == texture->name) {
-            if (attachmentIndexOut) {
-                *attachmentIndexOut = attachmentIndex;
-            }
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
 static void mglRendererDropCurrentVAO(GLMContext ctx)
 {
     if (!ctx) {
