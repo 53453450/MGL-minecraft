@@ -93,6 +93,14 @@ static_assert(MGLWindingCounterClockwise ==
               static_cast<uint32_t>(MTL::WindingCounterClockwise));
 static_assert(MGLColorWriteMaskAll ==
               static_cast<uint32_t>(MTL::ColorWriteMaskAll));
+static_assert(MGLColorWriteMaskRed ==
+              static_cast<uint32_t>(MTL::ColorWriteMaskRed));
+static_assert(MGLColorWriteMaskGreen ==
+              static_cast<uint32_t>(MTL::ColorWriteMaskGreen));
+static_assert(MGLColorWriteMaskBlue ==
+              static_cast<uint32_t>(MTL::ColorWriteMaskBlue));
+static_assert(MGLColorWriteMaskAlpha ==
+              static_cast<uint32_t>(MTL::ColorWriteMaskAlpha));
 static_assert(MGLTessellationControlPointIndexTypeUInt32 ==
               static_cast<uint32_t>(MTL::TessellationControlPointIndexTypeUInt32));
 static_assert(MGLBlendFactorOneMinusSource1Alpha ==

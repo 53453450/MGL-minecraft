@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 144
+#define MAX_TESTS 145
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18873,6 +18873,70 @@ static int test_depth_stencil_rt_orientation(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* GL 4.6 §17.4.2: ColorMask selects which of R, G, B, A a draw writes, on
+ * framebuffer objects and the default framebuffer alike. */
+static int test_color_write_mask(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0); }\n");
+    if (!prog) return 2;
+    GLuint vao = 0, tex = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &tex);
+    if (!fbo) return 2;
+    glUseProgram(prog);
+    glViewport(0, 0, REG_W, REG_H);
+
+    static const GLboolean masks[3][4] = {
+        {GL_TRUE, GL_FALSE, GL_FALSE, GL_FALSE},
+        {GL_FALSE, GL_TRUE, GL_FALSE, GL_TRUE},
+        {GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE},
+    };
+    int fail = 0;
+    /* Case 3 repeats the RGB mask on the default framebuffer. */
+    for (int i = 0; i < 4; i++) {
+        const GLboolean *m = masks[i < 3 ? i : 2];
+        glBindFramebuffer(GL_FRAMEBUFFER, i < 3 ? fbo : 0);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glColorMask(m[0], m[1], m[2], m[3]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        unsigned char px[4] = {0};
+        glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        for (int ch = 0; ch < 4; ch++) {
+            if (px[ch] != (m[ch] ? 255 : 0)) {
+                fprintf(stderr, "color_write_mask: case %d got %u,%u,%u,%u\n", i,
+                        px[0], px[1], px[2], px[3]);
+                fail |= 1 << i;
+                break;
+            }
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 16;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "color_write_mask: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Rendering into a rectangle texture or one slice of a 3D texture and then
  * sampling it returns the rendered rows in GL order. */
 static int test_rt_rect_3d_orientation(unsigned char *pixels, const char *out_path)
@@ -22250,6 +22314,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("copy_image_sub_data_orientation", test_copy_image_sub_data_orientation),
     SELF_CHECK_TEST("rt_rect_3d_orientation", test_rt_rect_3d_orientation),
     SELF_CHECK_TEST("depth_stencil_rt_orientation", test_depth_stencil_rt_orientation),
+    SELF_CHECK_TEST("color_write_mask", test_color_write_mask),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

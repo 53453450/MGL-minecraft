@@ -101,8 +101,6 @@ void mglRendererUpdateBlendStateCache(void *renderer)
             st->var.color_writemask[i][1] ? 1 : 0,
             st->var.color_writemask[i][2] ? 1 : 0,
             st->var.color_writemask[i][3] ? 1 : 0);
-        colorMask_i = mglRenderForceDefaultFBOAlphaWrite(
-            i, st->framebuffer ? 1 : 0, colorMask_i);
         uint32_t srcRgbF = 0u, srcAlphaF = 0u, dstRgbF = 0u, dstAlphaF = 0u;
         uint32_t rgbOp = 0u, alphaOp = 0u;
         (void)mglRenderBlendFactorFromGL((uint32_t)st->var.blend_src_rgb[i], &srcRgbF);

@@ -278,27 +278,22 @@ int mglRenderApplyBlendRepair(int valid, uint32_t *value, uint32_t fallback) {
 uint32_t mglRenderColorWriteMaskFromChannels(int use_mask, int r, int g, int b,
                                             int a) {
     if (!use_mask) {
-        return 15u;
+        return MGLColorWriteMaskAll;
     }
-    uint32_t mask = 0u;
+    uint32_t mask = MGLColorWriteMaskNone;
     if (r) {
-        mask |= 1u;
+        mask |= MGLColorWriteMaskRed;
     }
     if (g) {
-        mask |= 2u;
+        mask |= MGLColorWriteMaskGreen;
     }
     if (b) {
-        mask |= 4u;
+        mask |= MGLColorWriteMaskBlue;
     }
     if (a) {
-        mask |= 8u;
+        mask |= MGLColorWriteMaskAlpha;
     }
     return mask;
-}
-
-uint32_t mglRenderForceDefaultFBOAlphaWrite(int attachment, int has_fbo,
-                                           uint32_t mask) {
-    return attachment == 0 && !has_fbo ? (mask | 8u) : mask;
 }
 
 int mglRenderBlendFactorFromGL(uint32_t gl_blend, uint32_t *out) {

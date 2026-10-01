@@ -101,6 +101,10 @@ enum {
 
 enum {
     MGLColorWriteMaskNone = 0,
+    MGLColorWriteMaskRed = 0x08,
+    MGLColorWriteMaskGreen = 0x04,
+    MGLColorWriteMaskBlue = 0x02,
+    MGLColorWriteMaskAlpha = 0x01,
     MGLColorWriteMaskAll = 0x0f,
 };
 
