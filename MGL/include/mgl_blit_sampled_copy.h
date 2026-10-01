@@ -37,6 +37,12 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source);
 int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
                                            void *source, const char *reason);
 
+/* Render-target storage counts as row-flipped once rendered to
+ * (mglRenderTargetStorageYFlipped).  Called before the first render pass
+ * writes `tex`: rows already uploaded are flipped in place and the store is
+ * marked rendered.  Returns 0 only when the flip was needed and failed. */
+int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex);
+
 /* Refresh the GL-sampled copies of every color attachment of a framebuffer whose
  * render pass just ended (draw count/buffers were unused in the Objective-C
  * version, so they are gone). */

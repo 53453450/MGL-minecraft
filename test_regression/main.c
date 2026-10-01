@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 132
+#define MAX_TESTS 133
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17756,6 +17756,129 @@ static int test_get_tex_image_after_draw(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* Uploaded rows must keep GL order after part of the texture is rendered. */
+static int test_rt_partial_render_orientation(unsigned char *pixels,
+                                              const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pgrad = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0, 0.0, 0.0, 1.0); }\n");
+    GLuint p2d = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    if (!pgrad || !p2d) return 3;
+
+    GLuint vao = 0, tex = 0, ttmp = 0, frt = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 3;
+
+    unsigned char l0[16 * 16 * 4], l1[8 * 8 * 4], got[16 * 16 * 4];
+    for (int i = 0; i < 16 * 16; i++) {
+        l0[i * 4 + 0] = (unsigned char)(100 + i / 16);
+        l0[i * 4 + 1] = l0[i * 4 + 2] = 0; l0[i * 4 + 3] = 255;
+    }
+    for (int i = 0; i < 8 * 8; i++) {
+        l1[i * 4 + 0] = (unsigned char)(50 + i / 8);
+        l1[i * 4 + 1] = l1[i * 4 + 2] = 0; l1[i * 4 + 3] = 255;
+    }
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, l0);
+    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, l1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1);
+
+    glGenFramebuffers(1, &frt);
+    glBindFramebuffer(GL_FRAMEBUFFER, frt);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex, 0);
+    glViewport(0, 0, 16, 16);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 16, 4);
+    glUseProgram(pgrad);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glDisable(GL_SCISSOR_TEST);
+
+    /* Column 2 of rows 2..3 (rendered) and 10..11 (uploaded). */
+    static const int rows[4] = {2, 3, 10, 11};
+    unsigned char want[4] = {2, 3, 110, 111};
+    unsigned char b[16][4];
+#define RPO_CHECK(bit, what, value_of_row)                                  \
+    do {                                                                    \
+        for (int i = 0; i < 4; i++) {                                       \
+            if ((value_of_row) != want[i]) {                                \
+                fprintf(stderr, "rt_partial_render_orientation: %s row %d " \
+                        "got %u want %u\n", what, rows[i],                  \
+                        (unsigned)(value_of_row), want[i]);                 \
+                fail |= (bit);                                              \
+            }                                                               \
+        }                                                                   \
+    } while (0)
+
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, got);
+    RPO_CHECK(1, "GetTexImage", got[(rows[i] * 16 + 2) * 4]);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, frt);
+    glReadPixels(2, 0, 1, 16, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    RPO_CHECK(2, "ReadPixels", b[rows[i]][0]);
+    glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(p2d);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(glGetUniformLocation(p2d, "s"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fsample);
+    glReadPixels(2, 0, 1, 16, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    RPO_CHECK(4, "sample", b[rows[i]][0]);
+#undef RPO_CHECK
+
+    glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, got);
+    for (int y = 0; y < 8; y++) {
+        if (got[(y * 8 + 2) * 4] != 50 + y) {
+            fprintf(stderr, "rt_partial_render_orientation: level 1 row %d "
+                    "got %u\n", y, got[(y * 8 + 2) * 4]);
+            fail |= 8;
+            break;
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 16;
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &frt);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    glDeleteProgram(p2d);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "rt_partial_render_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -20522,6 +20645,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("texture_view", test_texture_view),
     SELF_CHECK_TEST("rt_layer_orientation", test_rt_layer_orientation),
     SELF_CHECK_TEST("get_tex_image_after_draw", test_get_tex_image_after_draw),
+    SELF_CHECK_TEST("rt_partial_render_orientation", test_rt_partial_render_orientation),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

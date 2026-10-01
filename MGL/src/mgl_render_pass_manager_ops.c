@@ -960,6 +960,9 @@ bool mglRenderPassConfigureUserFBOAttachments(void *renderer)
             if (!tex->mtl_data) {
                 continue;
             }
+            if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer, tex)) {
+                return false;
+            }
 
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(

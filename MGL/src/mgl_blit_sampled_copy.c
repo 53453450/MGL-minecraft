@@ -570,6 +570,44 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
 }
 
 
+int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
+{
+    if (!tex || !tex->mtl_data || !tex->is_render_target ||
+        tex->mtl_render_target_write_version != 0u) {
+        return 1;
+    }
+    bool hasContent = false;
+    for (GLuint face = 0u; face < 6u && !hasContent; face++) {
+        for (GLuint level = 0u; level < tex->num_levels && tex->faces[face].levels; level++) {
+            if (tex->faces[face].levels[level].has_initialized_data) {
+                hasContent = true;
+                break;
+            }
+        }
+    }
+    if (!hasContent || !mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, tex->mtl_data)) {
+        return 1;
+    }
+
+    /* The flipped copy of the store is what the store must hold once it
+     * counts as rendered; the copy then matches the flipped store. */
+    tex->mtl_render_target_write_version = 1u;
+    tex->mtl_render_yflip_authority = 1u << 1;
+    tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
+                                                "rt_first_write_flip") ||
+        mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
+            areas.command ? areas.command->currentCommandBufferOwner : NULL,
+            tex->mtl_gl_sampled_data, tex->mtl_data) != 0) {
+        fprintf(stderr, "MGL ERROR: texture %u: render-target storage flip failed\n",
+                tex->name);
+        return 0;
+    }
+    return 1;
+}
+
 /* Body of the former -[MGLRenderer updateGLSampledCopiesForEndedRenderPassFramebuffer:
  * drawCount:drawBuffers:reason:] (P0-1): the context comes from the state areas and
  * the attachment texture from the C port, so nothing here needs Objective-C. */
