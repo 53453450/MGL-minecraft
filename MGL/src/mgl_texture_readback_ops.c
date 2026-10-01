@@ -1184,7 +1184,8 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         return;
     }
 
-    if (!tex->mtl_data && !mglRendererBindMTLTexture(renderer, tex)) {
+    if ((!tex->mtl_data || (tex->dirty_bits & DIRTY_TEXTURE_DATA)) &&
+        !mglRendererBindMTLTexture(renderer, tex)) {
         fprintf(stderr,
                 "MGL ERROR: mtlGetTexImage failed to bind texture %u\n",
                 tex->name);

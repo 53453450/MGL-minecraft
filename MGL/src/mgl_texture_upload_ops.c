@@ -86,6 +86,13 @@ static void mglUpMarkTextureLevelMetalFilled(Texture *tex, GLuint level,
     }
 }
 
+/* CPU levels are in GL row order; rendered storage is Y-flipped. */
+static int mglUpStorageFlipped(const Texture *tex)
+{
+    return mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+                                          tex->mtl_render_target_write_version);
+}
+
 /* mglUpMax() is an Objective-C header macro; use the C maximum inline. */
 #define mglUpMax(a, b) ((a) > (b) ? (a) : (b))
 
@@ -423,7 +430,7 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
                                  const void *bytes, uint64_t bytesPerRow,
                                  uint64_t bytesPerImage, uint64_t width,
                                  uint64_t height, uint64_t depth, uint64_t level,
-                                 uint64_t slice)
+                                 uint64_t slice, int flipY)
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
@@ -529,7 +536,7 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
      * slices unpopulated on some AGX drivers when uploading CPU data during
      * initial texture creation.  Shared storage is safe here because bind
      * happens before the first draw that samples this texture. */
-    if (textureType == MGLTextureType2DArray &&
+    if (textureType == MGLTextureType2DArray && !flipY &&
         mglPdTextureInfo(texture).storage_mode !=
             MGL_PD_TEXTURE_STORAGE_PRIVATE) {
         if (mglTextureReplaceRegionValue(
@@ -669,7 +676,7 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
         mglTextureSize(width, uploadPlan.normalized_height,
                        uploadPlan.copy_depth),
         texture, uploadPlan.destination_slice, uploadPlan.destination_level,
-        mglTextureOrigin(0, 0, 0), 0, "texture_upload_blit");
+        mglTextureOrigin(0, 0, 0), flipY, "texture_upload_blit");
     /* The encoded blit retains its source resource until command-buffer
      * completion; release the C++ staging owner as soon as encoding ends. */
     mglRenderDestroyTextureStagingOwner(&stagingOwner);
@@ -908,7 +915,7 @@ int mglTextureUploadFullCPUData(void *renderer, Texture *tex, void *texture,
         }
 
         bool uploaded = mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, op->data, (uint64_t)op->bytes_per_row, (uint64_t)op->bytes_per_image, (uint64_t)op->width, (uint64_t)op->height, (uint64_t)op->copy_depth, op->level, 0);
+            renderer, texture, tex->name, tex->target, op->data, (uint64_t)op->bytes_per_row, (uint64_t)op->bytes_per_image, (uint64_t)op->width, (uint64_t)op->height, (uint64_t)op->copy_depth, op->level, 0, mglUpStorageFlipped(tex));
         if (op->owns_data) {
             free((void *)op->data);
         }
@@ -1312,7 +1319,7 @@ void mglTextureReUploadArrayLevel(void *renderer, Texture *tex, void *texture,
                                 }
 
                                 mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedSize, lvlWidth, lvlHeight, 1, level, layer);
+            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedSize, lvlWidth, lvlHeight, 1, level, layer, mglUpStorageFlipped(tex));
 
                                 free(alignedData);
 
@@ -1323,7 +1330,7 @@ void mglTextureReUploadArrayLevel(void *renderer, Texture *tex, void *texture,
                     } else {
 
                         mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, layerSrcData, effectiveBytesPerRow, effectiveBytesPerImage, lvlWidth, lvlHeight, 1, level, layer);
+            renderer, texture, tex->name, tex->target, layerSrcData, effectiveBytesPerRow, effectiveBytesPerImage, lvlWidth, lvlHeight, 1, level, layer, mglUpStorageFlipped(tex));
 
                     }
 
@@ -1582,7 +1589,7 @@ void mglTextureReUploadExisting(void *renderer, Texture *tex, void *texture,
                         }
 
                         mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedSliceBPI, lvlWidth, lvlHeight, uploadDepth, level, face);
+            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedSliceBPI, lvlWidth, lvlHeight, uploadDepth, level, face, mglUpStorageFlipped(tex));
 
                         free(alignedData);
 
@@ -1593,7 +1600,7 @@ void mglTextureReUploadExisting(void *renderer, Texture *tex, void *texture,
             } else {
 
                 mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, lvlWidth, lvlHeight, uploadDepth, level, face);
+            renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, lvlWidth, lvlHeight, uploadDepth, level, face, mglUpStorageFlipped(tex));
 
             }
 
@@ -1972,6 +1979,7 @@ typedef struct MglUpSliceBlitCtx_t {
     uint64_t depth;
     uint64_t level;
     uint64_t slice;
+    int flip_y;
     int *uploaded_out;
 } MglUpSliceBlitCtx;
 
@@ -1981,7 +1989,7 @@ static int mglUpSliceBlitBody(void *renderer, void *rawCtx)
     *ctx->uploaded_out = mglTextureUploadSliceViaBlit(
         renderer, ctx->texture, ctx->tex_name, ctx->tex_target, ctx->data,
         ctx->bytes_per_row, ctx->bytes_per_image, ctx->width, ctx->height,
-        ctx->depth, ctx->level, ctx->slice);
+        ctx->depth, ctx->level, ctx->slice, ctx->flip_y);
     return 1;
 }
 
@@ -2235,7 +2243,7 @@ int mglTextureUploadDirty3DLevel(void *renderer, Texture *tex, void *texture,
 
                                 int uploaded = 0;
 
-                                MglUpSliceBlitCtx blitCtx = { renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, depth, level, 0, &uploaded };
+                                MglUpSliceBlitCtx blitCtx = { renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, depth, level, 0, mglUpStorageFlipped(tex), &uploaded };
 
                                 char blitFailure[256] = {0};
 
@@ -2282,7 +2290,7 @@ int mglTextureUploadDirty3DLevel(void *renderer, Texture *tex, void *texture,
 
                             int uploaded = 0;
 
-                            MglUpSliceBlitCtx blitCtx = { renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, depth, level, 0, &uploaded };
+                            MglUpSliceBlitCtx blitCtx = { renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, depth, level, 0, mglUpStorageFlipped(tex), &uploaded };
 
                             char blitFailure[256] = {0};
 
@@ -2563,7 +2571,7 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
                                             tex->name, tex->target, alignedData,
                                             alignedBytesPerRow, alignedBytesPerImage,
                                             width, uploadSliceHeight, 1, level, layer,
-                                            &uploaded };
+                                            mglUpStorageFlipped(tex), &uploaded };
                                         char blitFailure[256] = {0};
                                         if (!mglPlatformShellGuardedCallCtxReason(
                                                 renderer, "array texture blit upload",
@@ -2606,7 +2614,7 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
                                 }
                                 if (hasExplicitDataSize) {
                                     int uploaded = mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, srcData, effectiveBytesPerRow, effectiveBytesPerImage, width, uploadSliceHeight, 1, level, layer);
+            renderer, texture, tex->name, tex->target, srcData, effectiveBytesPerRow, effectiveBytesPerImage, width, uploadSliceHeight, 1, level, layer, mglUpStorageFlipped(tex));
                                     if (!uploaded) {
                                         fprintf(stderr, "MGL WARNING: Array texture direct blit upload failed (level %d, layer %d)\n", level, layer);
                                     }
@@ -2765,7 +2773,7 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
                                 }
                                 if (hasExplicitDataSize) {
                                     int uploaded = mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, 1, level, face);
+            renderer, texture, tex->name, tex->target, alignedData, alignedBytesPerRow, alignedBytesPerImage, width, height, 1, level, face, mglUpStorageFlipped(tex));
                                     if (!uploaded) {
                                         fprintf(stderr, "MGL WARNING: Aligned 2D blit upload failed (level %d, face %d)\n", level, face);
                                     }
@@ -2794,7 +2802,7 @@ int mglTextureUploadDirtyNon3DLevel(void *renderer, Texture *tex, void *texture,
                             }
                             if (hasExplicitDataSize) {
                                 int uploaded = mglTextureUploadSliceViaBlit(
-            renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, 1, level, face);
+            renderer, texture, tex->name, tex->target, srcData, bytesPerRow, bytesPerImage, width, height, 1, level, face, mglUpStorageFlipped(tex));
                                 if (!uploaded) {
                                     fprintf(stderr, "MGL WARNING: 2D direct blit upload failed (level %d, face %d)\n", level, face);
                                 }

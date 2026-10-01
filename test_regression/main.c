@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 139
+#define MAX_TESTS 140
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18388,6 +18388,124 @@ static int test_copy_tex_sub_image_orientation(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* Respecifying levels of a rendered texture keeps GL row order everywhere:
+ * TexImage of a new mip leaves the rendered level intact, TexImage of the
+ * rendered level replaces it with the uploaded rows (§8.5). */
+static int test_rt_respecify_orientation(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pgrad = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0); }\n");
+    GLuint pfetch = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "uniform int lod;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy) >> lod, lod); }\n");
+    if (!pgrad || !pfetch) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint ttmp = 0;
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 2;
+
+    static unsigned char up[16 * 16 * 4], up1[8 * 8 * 4];
+    for (int y = 0; y < 16; y++)
+        memset(up + y * 16 * 4, 100 + y, 16 * 4);
+    for (int y = 0; y < 8; y++)
+        memset(up1 + y * 8 * 4, 100 + y, 8 * 4);
+    int fail = 0;
+    for (int c = 0; c < 2; c++) {
+        GLuint tex = 0, fbo = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, tex, 0);
+        glViewport(0, 0, 16, 16);
+        glUseProgram(pgrad);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindTexture(GL_TEXTURE_2D, tex);
+        if (c == 0) {
+            glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, up1);
+        } else {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, up);
+        }
+        /* Level 0 rows 2 and 13: rendered (2, 13) or uploaded (102, 113). */
+        const int want0[2] = {c == 0 ? 2 : 102, c == 0 ? 13 : 113};
+        static unsigned char img[16 * 16 * 4];
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+        unsigned char rb[2][4] = {{0}};
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glReadPixels(4, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rb[0]);
+        glReadPixels(4, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rb[1]);
+        glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+        glViewport(0, 0, REG_W, REG_H);
+        glUseProgram(pfetch);
+        glUniform1i(glGetUniformLocation(pfetch, "s"), 0);
+        glUniform1i(glGetUniformLocation(pfetch, "lod"), 0);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char sb[2][4] = {{0}};
+        glReadPixels(4, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[0]);
+        glReadPixels(4, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[1]);
+        for (int k = 0; k < 2; k++) {
+            const int row = k == 0 ? 2 : 13;
+            if (img[(row * 16 + 4) * 4] != want0[k] || rb[k][0] != want0[k] ||
+                sb[k][0] != want0[k]) {
+                fprintf(stderr, "rt_respecify_orientation: case %d row %d tex %u read %u sample %u want %d\n",
+                        c, row, img[(row * 16 + 4) * 4], rb[k][0], sb[k][0], want0[k]);
+                fail |= 1 << c;
+            }
+        }
+        if (c == 0) {
+            glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, img);
+            glUniform1i(glGetUniformLocation(pfetch, "lod"), 1);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 1);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                            GL_NEAREST_MIPMAP_NEAREST);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(2, 12, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[0]);
+            if (img[(6 * 8 + 1) * 4] != 106 || sb[0][0] != 106) {
+                fprintf(stderr, "rt_respecify_orientation: level 1 row 6 tex %u sample %u\n",
+                        img[(6 * 8 + 1) * 4], sb[0][0]);
+                fail |= 4;
+            }
+        }
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 32;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    glDeleteProgram(pfetch);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "rt_respecify_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* GL 4.6 §14.9.2: the scissor box is in window coordinates with (x, y) at
  * the lower left, for draws and clears alike. */
 static int test_scissor_offset(unsigned char *pixels, const char *out_path)
@@ -21492,6 +21610,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("sample_depth_texture", test_sample_depth_texture),
     SELF_CHECK_TEST("scissor_offset", test_scissor_offset),
     SELF_CHECK_TEST("copy_tex_sub_image_orientation", test_copy_tex_sub_image_orientation),
+    SELF_CHECK_TEST("rt_respecify_orientation", test_rt_respecify_orientation),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

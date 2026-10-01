@@ -39,7 +39,7 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
                                  const void *bytes, uint64_t bytesPerRow,
                                  uint64_t bytesPerImage, uint64_t width,
                                  uint64_t height, uint64_t depth, uint64_t level,
-                                 uint64_t slice);
+                                 uint64_t slice, int flipY);
 
 
 /* The upload tree moved in log 195. */

@@ -325,7 +325,9 @@ bool mglRendererBindMTLTexture(void *renderer, Texture *tex)
                             return false;
                         }
                     }
-                    tex->dirty_bits = 0;
+                    /* CPU levels respecified since the old texture was built
+                     * still need their upload. */
+                    tex->dirty_bits &= DIRTY_TEXTURE_DATA;
                 }
             } else {
                 /* Fallback: use the old CPU-data-upload path */
