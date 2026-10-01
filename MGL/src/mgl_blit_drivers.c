@@ -3459,7 +3459,7 @@ void mglBlitCopyTexSubImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         mglTextureCopyUploadWithDedicatedCommandBuffer(
             renderer, upload_buffer, 0u, bgra_row_bytes, bgra_size, 0u, 1u,
             mglBlitSize(width, height, copy_depth), texture, destination_slice,
-            level, destination_origin, "copy_tex_sub_image");
+            level, destination_origin, 0, "copy_tex_sub_image");
     mglSafeReleaseMetalObj(&upload_buffer);
     free(bgra_readback);
     free(upload_data);

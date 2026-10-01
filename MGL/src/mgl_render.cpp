@@ -3325,7 +3325,8 @@ int mglRenderEncodeTextureUploadLayers(
     uint64_t destination_level,
     uint64_t destination_x,
     uint64_t destination_y,
-    uint64_t destination_z) {
+    uint64_t destination_z,
+    int flip_y) {
     MTL::CommandBuffer* command =
         static_cast<MTL::CommandBuffer*>(command_buffer);
     MTL::Buffer* source = static_cast<MTL::Buffer*>(source_buffer);
@@ -3399,16 +3400,36 @@ int mglRenderEncodeTextureUploadLayers(
     MTL::BlitCommandEncoder* encoder = command->blitCommandEncoder();
     if (!encoder) return -1;
     for (uint64_t layer = 0u; layer < layer_count; ++layer) {
-        encoder->copyFromBuffer(
-            source,
-            static_cast<NS::UInteger>(source_offset +
-                                      layer * source_layer_stride),
-            static_cast<NS::UInteger>(source_bytes_per_row),
-            static_cast<NS::UInteger>(source_bytes_per_image),
-            MTL::Size(source_width, source_height, source_depth), destination,
-            static_cast<NS::UInteger>(destination_base_slice + layer),
-            static_cast<NS::UInteger>(destination_level),
-            MTL::Origin(destination_x, destination_y, destination_z));
+        const uint64_t layer_offset = source_offset + layer * source_layer_stride;
+        if (!flip_y) {
+            encoder->copyFromBuffer(
+                source, static_cast<NS::UInteger>(layer_offset),
+                static_cast<NS::UInteger>(source_bytes_per_row),
+                static_cast<NS::UInteger>(source_bytes_per_image),
+                MTL::Size(source_width, source_height, source_depth),
+                destination,
+                static_cast<NS::UInteger>(destination_base_slice + layer),
+                static_cast<NS::UInteger>(destination_level),
+                MTL::Origin(destination_x, destination_y, destination_z));
+            continue;
+        }
+        /* Source row r lands on Metal row mip_height-1-(destination_y+r). */
+        const uint64_t row_image_bytes =
+            source_depth > 1u ? source_bytes_per_image : source_bytes_per_row;
+        for (uint64_t row = 0u; row < source_height; ++row) {
+            encoder->copyFromBuffer(
+                source,
+                static_cast<NS::UInteger>(layer_offset +
+                                          row * source_bytes_per_row),
+                static_cast<NS::UInteger>(source_bytes_per_row),
+                static_cast<NS::UInteger>(row_image_bytes),
+                MTL::Size(source_width, 1u, source_depth), destination,
+                static_cast<NS::UInteger>(destination_base_slice + layer),
+                static_cast<NS::UInteger>(destination_level),
+                MTL::Origin(destination_x,
+                            mip_height - 1u - (destination_y + row),
+                            destination_z));
+        }
     }
     encoder->endEncoding();
     return 0;
@@ -3433,7 +3454,7 @@ int mglRenderEncodeTextureUpload(void* command_buffer,
         command_buffer, source_buffer, source_offset, source_bytes_per_row,
         source_bytes_per_image, 0u, source_width, source_height, source_depth,
         destination_texture, destination_slice, 1u, destination_level,
-        destination_x, destination_y, destination_z);
+        destination_x, destination_y, destination_z, 0);
 }
 
 

@@ -1913,7 +1913,7 @@ uint8_t *mglRenderCreateDepth24Stencil8NormalizedUpload(
 }
 
 
-int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(MGLCommandBufferOwner * command_buffer_owner, void* source_buffer, uint64_t source_offset, uint64_t source_bytes_per_row, uint64_t source_bytes_per_image, uint64_t source_layer_stride, uint64_t source_width, uint64_t source_height, uint64_t source_depth, void* destination_texture, uint64_t destination_base_slice, uint64_t layer_count, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, uint64_t destination_z) {
+int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(MGLCommandBufferOwner * command_buffer_owner, void* source_buffer, uint64_t source_offset, uint64_t source_bytes_per_row, uint64_t source_bytes_per_image, uint64_t source_layer_stride, uint64_t source_width, uint64_t source_height, uint64_t source_depth, void* destination_texture, uint64_t destination_base_slice, uint64_t layer_count, uint64_t destination_level, uint64_t destination_x, uint64_t destination_y, uint64_t destination_z, int flip_y) {
     mgl::CommandBufferOwner* owner =
         reinterpret_cast<mgl::CommandBufferOwner*>(static_cast<void*>(command_buffer_owner));
     if (!owner || !owner->current) return -1;
@@ -1922,7 +1922,7 @@ int mglRenderEncodeTextureUploadLayersForCommandBufferOwner(MGLCommandBufferOwne
         source_bytes_per_image, source_layer_stride, source_width,
         source_height, source_depth, destination_texture,
         destination_base_slice, layer_count, destination_level,
-        destination_x, destination_y, destination_z);
+        destination_x, destination_y, destination_z, flip_y);
 }
 
 extern "C"

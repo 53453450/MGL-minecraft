@@ -295,7 +295,7 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
     uint64_t sourceBytesPerRow, uint64_t sourceBytesPerImage,
     uint64_t sourceLayerStride, uint64_t layerCount, MGLSizeValue sourceSize,
     void *texture, uint64_t destinationSlice, uint64_t destinationLevel,
-    MGLOriginValue destinationOrigin, const char *reason)
+    MGLOriginValue destinationOrigin, int flipY, const char *reason)
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
@@ -336,7 +336,7 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
                 sourceLayerStride, sourceSize.width, sourceSize.height,
                 sourceSize.depth, texture, destinationSlice, layerCount,
                 destinationLevel, destinationOrigin.x, destinationOrigin.y,
-                destinationOrigin.z) != 0) {
+                destinationOrigin.z, flipY) != 0) {
             fprintf(stderr, "MGL ERROR: C++ ordered upload encode failed (%s)\n",
                     reason ? reason : "texture_upload");
             mglRendererRecordGPUError(renderer);
@@ -370,7 +370,7 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
             sourceBytesPerImage, sourceLayerStride, sourceSize.width,
             sourceSize.height, sourceSize.depth, texture, destinationSlice,
             layerCount, destinationLevel, destinationOrigin.x,
-            destinationOrigin.y, destinationOrigin.z) != 0) {
+            destinationOrigin.y, destinationOrigin.z, flipY) != 0) {
         fprintf(stderr, "MGL ERROR: C++ dedicated upload encode failed (%s)\n",
                 reason ? reason : "texture_upload");
         mglRendererRecordGPUError(renderer);
@@ -668,7 +668,7 @@ int mglTextureUploadSliceViaBlit(void *renderer, void *texture,
         mglTextureSize(width, uploadPlan.normalized_height,
                        uploadPlan.copy_depth),
         texture, uploadPlan.destination_slice, uploadPlan.destination_level,
-        mglTextureOrigin(0, 0, 0), "texture_upload_blit");
+        mglTextureOrigin(0, 0, 0), 0, "texture_upload_blit");
     /* The encoded blit retains its source resource until command-buffer
      * completion; release the C++ staging owner as soon as encoding ends. */
     mglRenderDestroyTextureStagingOwner(&stagingOwner);
@@ -758,7 +758,7 @@ static int mglUpSafeFillBody(void *renderer, void *rawCtx)
                                     } else {
 
                                         int uploaded = mglTextureCopyUploadWithDedicatedCommandBuffer(
-            renderer, tempBuffer, 0, properBytesPerRow, fillSize, 0, 1, mglTextureSize(properRegion.size.width, properRegion.size.height, 1), texture, 0, 0, mglTextureOrigin(0, 0, 0), "texture_fill_initialization");
+            renderer, tempBuffer, 0, properBytesPerRow, fillSize, 0, 1, mglTextureSize(properRegion.size.width, properRegion.size.height, 1), texture, 0, 0, mglTextureOrigin(0, 0, 0), 0, "texture_fill_initialization");
 
                                         if (uploaded) {
 
@@ -1042,10 +1042,12 @@ int mglTextureEncodeBytesUpload(void *renderer, Texture *tex, void *buffer,
         return false;
     }
 
+    const int flipY = mglRenderTargetStorageYFlipped(
+        tex->is_render_target ? 1 : 0, tex->mtl_render_target_write_version);
     return mglTextureCopyUploadWithDedicatedCommandBuffer(
             renderer, buffer, sourceOffset, sourceBytesPerRow, copyBytesPerImage, sourceLayerStride, layerCount, mglTextureSize(
                                                        (uint64_t)uploadPlan.copy_width,
-                                                       copyHeight, copyDepth), texture, destinationSlice, level, destinationOrigin, reason ? reason : "texture_sub_upload");
+                                                       copyHeight, copyDepth), texture, destinationSlice, level, destinationOrigin, flipY, reason ? reason : "texture_sub_upload");
 }
 
 /* ALTERNATIVE 1 of the safe fill: the MTLBuffer-to-texture copy, which the .m
@@ -3781,7 +3783,9 @@ int mglTextureSubImageBytes(void *renderer, GLMContext glm_ctx,
             uploadRowBytes, level, metalSlice, xoffset, yoffset);
     }
     free(dsMetalUpload);
-    if (uploaded && tex->is_render_target) {
+    if (uploaded && mglRenderTargetStorageYFlipped(
+                        tex->is_render_target ? 1 : 0,
+                        tex->mtl_render_target_write_version)) {
         /* Direct CPU→Metal refresh of an FBO-attached texture must invalidate
          * the Y-flip sampled copy.  textures.c also releases the copy, but
          * bumping write_version keeps any concurrent/lazy refresh coherent

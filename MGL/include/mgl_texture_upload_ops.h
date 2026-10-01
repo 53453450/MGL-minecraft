@@ -31,7 +31,7 @@ int mglTextureCopyUploadWithDedicatedCommandBuffer(
     uint64_t sourceBytesPerRow, uint64_t sourceBytesPerImage,
     uint64_t sourceLayerStride, uint64_t layerCount, MGLSizeValue sourceSize,
     void *texture, uint64_t destinationSlice, uint64_t destinationLevel,
-    MGLOriginValue destinationOrigin, const char *reason);
+    MGLOriginValue destinationOrigin, int flipY, const char *reason);
 
 /* -uploadTextureSliceViaBlit:… */
 int mglTextureUploadSliceViaBlit(void *renderer, void *texture,

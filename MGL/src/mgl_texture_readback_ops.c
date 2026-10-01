@@ -273,7 +273,8 @@ int mglTextureReadColorAsBGRA8(void *renderer, void *sourceTexture,
                                uint64_t sourceLevel, uint64_t sourceSlice,
                                uint64_t sourceDepthPlane, void *pixelBytes,
                                uint64_t bytesPerRow, uint64_t bytesPerImage,
-                               MGLRegionValue region, const char *reason)
+                               MGLRegionValue region, int flipY,
+                               const char *reason)
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
@@ -375,7 +376,8 @@ int mglTextureReadColorAsBGRA8(void *renderer, void *sourceTexture,
     const int64_t dstX = (int64_t)clip.dst_x;
     const int64_t dstY = (int64_t)clip.dst_y;
     const int64_t metalSrcX = (int64_t)clip.metal_src_x;
-    const int64_t metalSrcY = (int64_t)clip.metal_src_y;
+    const int64_t metalSrcY =
+        flipY ? (int64_t)clip.metal_src_y : (int64_t)region.origin.y + dstY;
     if (clip.empty) {
         result = 1;
         goto done;
@@ -428,7 +430,8 @@ int mglTextureReadColorAsBGRA8(void *renderer, void *sourceTexture,
         mglMetalCopyTextureBytesToBGRA8(
             (const uint8_t *)mglPdTextureBufferContents(readBuffer),
             stagingBytesPerRow, dst, bytesPerRow, (uint64_t)copyW,
-            (uint64_t)copyH, mglPdTextureInfo(sourceTexture).pixel_format, 1);
+            (uint64_t)copyH, mglPdTextureInfo(sourceTexture).pixel_format,
+            flipY);
     }
     result = readbackSuccess;
     /* The staging buffer's +1 is ours now (the .m let ARC autorelease it). */
@@ -976,8 +979,9 @@ void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,
         renderer, texture, pixelBytes, bytesPerRow, bytesPerImage, region,
         outputComponents, outputComponentBytes, componentMap, type,
         subresource.level, subresource.slice,
-        mglReadbackNeedsYFlip(textureObj->is_render_target ? 1 : 0,
-                              textureObj->samples));
+        mglRenderTargetStorageYFlipped(
+            textureObj->is_render_target ? 1 : 0,
+            textureObj->mtl_render_target_write_version));
 }
 
 /* -mtlReadDrawable:pixelBytes:bytesPerRow:bytesPerImage:fromRegion: */
@@ -1074,10 +1078,15 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
         }
         mglTextureApplyPendingFBOColorClearForReadback(
             renderer, fbo, attachment, readTextureObject, texture, readBuffer);
+        /* Multisample sources are resolved from render-pass storage. */
+        const int flipY =
+            readTextureObject->samples > 1u ||
+            mglRenderTargetStorageYFlipped(
+                1, readTextureObject->mtl_render_target_write_version);
         (void)mglTextureReadColorAsBGRA8(
             renderer, texture, subresource.level, subresource.slice,
             subresource.depthPlane, pixelBytes, bytesPerRow, bytesPerImage,
-            region, "FBO color readback");
+            region, flipY, "FBO color readback");
         return;
     }
 
@@ -1128,7 +1137,7 @@ void mglTextureReadDrawable(void *renderer, GLMContext glm_ctx,
         mglTextureApplyPendingDefaultColorClear(renderer, texture);
     }
     (void)mglTextureReadColorAsBGRA8(renderer, texture, 0u, 0u, 0u, pixelBytes,
-                                     bytesPerRow, bytesPerImage, region,
+                                     bytesPerRow, bytesPerImage, region, 1,
                                      "default framebuffer readback");
 }
 
@@ -1244,8 +1253,11 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         }
         readSlice = 0u;
     }
+    /* Multisample RTs already land in GL row order after resolve. */
     const int flipRenderTargetRows =
-        mglReadbackNeedsYFlip(tex->is_render_target ? 1 : 0, tex->samples);
+        tex->samples <= 1u &&
+        mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+                                       tex->mtl_render_target_write_version);
 
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer

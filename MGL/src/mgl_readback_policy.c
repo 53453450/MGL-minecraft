@@ -559,8 +559,8 @@ void *mglRenderTextureRepackDepthPlanes(const void *bytes,
     return packed;
 }
 
-int mglReadbackNeedsYFlip(int is_render_target, uint32_t samples) {
-    return is_render_target && samples <= 1u;
+int mglRenderTargetStorageYFlipped(int is_render_target, uint32_t write_version) {
+    return is_render_target && write_version != 0u;
 }
 
 uint32_t mglRenderMSAAArrayLayerStride(int layered, uint32_t textarget) {

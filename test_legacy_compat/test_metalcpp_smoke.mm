@@ -2714,7 +2714,7 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
             NULL, 0, 0, 0, NULL, 0, 0, 0, 0) != -1 ||
         mglRenderEncodeTextureUploadLayersForCommandBufferOwner(
             NULL, NULL, 0, 0, 0, 0, 0, 0, 0,
-            NULL, 0, 0, 0, 0, 0, 0) != -1 ||
+            NULL, 0, 0, 0, 0, 0, 0, 0) != -1 ||
         mglRenderEncodeColorClearForCommandBufferOwner(
             NULL, (__bridge void *)target, 0, 0, 0,
             1.0, 0.0, 0.0, 1.0) != -1 ||

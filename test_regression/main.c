@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 115
+#define MAX_TESTS 116
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -15048,6 +15048,182 @@ static int test_readback_row_order(unsigned char *pixels, const char *out_path)
     return result;
 }
 
+static int rt_upload_check_rows(const char *what, const GLuint *got,
+                                const GLuint *want, int n)
+{
+    int bad = 0;
+    for (int i = 0; i < n; i++) {
+        if (got[i] != want[i]) {
+            fprintf(stderr, "rt_upload_orientation: %s row %d got=%u want=%u\n",
+                    what, i, got[i], want[i]);
+            bad = 1;
+        }
+    }
+    return bad;
+}
+
+/* GL 4.6 §8.6 / §18.2 / §8.11.4: texel row y written by TexImage* or
+ * TexSubImage* (client memory or PBO) is read back and sampled as row y,
+ * whether the texture is a framebuffer attachment and whether it was
+ * rendered to before. */
+static int test_rt_upload_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pgrad = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0); }\n");
+    GLuint pugrad = link_program(vs,
+        "#version 330 core\n"
+        "out uvec4 c;\n"
+        "void main() { c = uvec4(uint(gl_FragCoord.y)); }\n");
+    GLuint pfetch = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    if (!pgrad || !pugrad || !pfetch) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glViewport(0, 0, REG_W, REG_H);
+
+    static unsigned char img[REG_W * REG_H * 4];
+    for (int y = 0; y < REG_H; y++)
+        memset(img + y * REG_W * 4, 255 - y, REG_W * 4);
+    unsigned char sub[REG_W * 4 * 4];
+    for (int r = 0; r < 4; r++)
+        memset(sub + r * REG_W * 4, 10 + r, REG_W * 4);
+    GLuint usub[REG_W * 4 * 4];
+    for (int r = 0; r < 4; r++)
+        for (int x = 0; x < REG_W * 4; x++)
+            usub[r * REG_W * 4 + x] = 1000u + (GLuint)r;
+
+    int result = 0;
+    GLuint got[4], want[4];
+    unsigned char b[4][4];
+    GLuint u[4][4];
+    static unsigned char full[REG_W * REG_H * 4];
+    GLuint ttmp = 0;
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 2;
+
+#define RB_READ_UNORM(fbo, y0)                                              \
+    do {                                                                    \
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, (fbo));                      \
+        glReadPixels(2, (y0), 1, 4, GL_RGBA, GL_UNSIGNED_BYTE, b);          \
+        for (int i = 0; i < 4; i++) got[i] = b[i][0];                       \
+    } while (0)
+#define RB_SAMPLE(texname, y0)                                              \
+    do {                                                                    \
+        glBindFramebuffer(GL_FRAMEBUFFER, fsample);                         \
+        glUseProgram(pfetch);                                               \
+        glActiveTexture(GL_TEXTURE0);                                       \
+        glBindTexture(GL_TEXTURE_2D, (texname));                            \
+        glUniform1i(glGetUniformLocation(pfetch, "s"), 0);                  \
+        glDrawArrays(GL_TRIANGLES, 0, 3);                                   \
+        RB_READ_UNORM(fsample, (y0));                                       \
+    } while (0)
+
+    /* Uploaded, then attached: never rendered. */
+    GLuint t0 = 0, f0 = 0;
+    glGenTextures(1, &t0);
+    glBindTexture(GL_TEXTURE_2D, t0);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, img);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &f0);
+    glBindFramebuffer(GL_FRAMEBUFFER, f0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t0, 0);
+    for (int i = 0; i < 4; i++) want[i] = 250u - (GLuint)i;
+    RB_READ_UNORM(f0, 5);
+    result |= rt_upload_check_rows("upload+attach ReadPixels", got, want, 4);
+    glBindTexture(GL_TEXTURE_2D, t0);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, full);
+    for (int i = 0; i < 4; i++) got[i] = full[((5 + i) * REG_W + 2) * 4];
+    result |= rt_upload_check_rows("upload+attach GetTexImage", got, want, 4);
+    RB_SAMPLE(t0, 5);
+    result |= rt_upload_check_rows("upload+attach sample", got, want, 4);
+
+    /* Rendered, then partially overwritten from client memory and a PBO. */
+    GLuint t1 = 0;
+    GLuint f1 = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &t1);
+    if (!f1) return 2;
+    glBindFramebuffer(GL_FRAMEBUFFER, f1);
+    glUseProgram(pgrad);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindTexture(GL_TEXTURE_2D, t1);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 20, REG_W, 4, GL_RGBA,
+                    GL_UNSIGNED_BYTE, sub);
+    GLuint pbo = 0;
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, sizeof(sub), sub, GL_STATIC_DRAW);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 60, REG_W, 4, GL_RGBA,
+                    GL_UNSIGNED_BYTE, (const void *)0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    const GLuint want_sub[4] = {18u, 19u, 10u, 11u};
+    const GLuint want_pbo[4] = {12u, 13u, 64u, 65u};
+    RB_READ_UNORM(f1, 18);
+    result |= rt_upload_check_rows("rendered+sub ReadPixels", got, want_sub, 4);
+    RB_READ_UNORM(f1, 62);
+    result |= rt_upload_check_rows("rendered+pbo ReadPixels", got, want_pbo, 4);
+    glBindTexture(GL_TEXTURE_2D, t1);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, full);
+    for (int i = 0; i < 4; i++) got[i] = full[((18 + i) * REG_W + 2) * 4];
+    result |= rt_upload_check_rows("rendered+sub GetTexImage", got, want_sub, 4);
+    RB_SAMPLE(t1, 18);
+    result |= rt_upload_check_rows("rendered+sub sample", got, want_sub, 4);
+    RB_SAMPLE(t1, 62);
+    result |= rt_upload_check_rows("rendered+pbo sample", got, want_pbo, 4);
+
+    /* Integer: rendered, then partially overwritten. */
+    GLuint t2 = 0;
+    GLuint f2 = make_color_fbo(GL_RGBA32UI, GL_RGBA_INTEGER, GL_UNSIGNED_INT, &t2);
+    if (!f2) return 2;
+    glBindFramebuffer(GL_FRAMEBUFFER, f2);
+    glUseProgram(pugrad);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindTexture(GL_TEXTURE_2D, t2);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 20, REG_W, 4, GL_RGBA_INTEGER,
+                    GL_UNSIGNED_INT, usub);
+    const GLuint want_usub[4] = {18u, 19u, 1000u, 1001u};
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, f2);
+    glReadPixels(2, 18, 1, 4, GL_RGBA_INTEGER, GL_UNSIGNED_INT, u);
+    for (int i = 0; i < 4; i++) got[i] = u[i][0];
+    result |= rt_upload_check_rows("integer rendered+sub ReadPixels", got, want_usub, 4);
+
+#undef RB_READ_UNORM
+#undef RB_SAMPLE
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "rt_upload_orientation: unexpected GL error\n");
+        result = 1;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(1, &pbo);
+    glDeleteFramebuffers(1, &f0);
+    glDeleteFramebuffers(1, &f1);
+    glDeleteFramebuffers(1, &f2);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &t0);
+    glDeleteTextures(1, &t1);
+    glDeleteTextures(1, &t2);
+    glDeleteTextures(1, &ttmp);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    glDeleteProgram(pugrad);
+    glDeleteProgram(pfetch);
+    return result;
+}
+
 /* GL 4.6 §7.4 / §7.6.1: ActiveShaderProgram selects the Uniform* target when
  * no program is bound with UseProgram. */
 static int test_active_shader_program(unsigned char *pixels, const char *out_path)
@@ -18506,6 +18682,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("debug_group_stack", test_debug_group_stack),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
+    SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

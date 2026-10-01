@@ -43,7 +43,8 @@ int mglTextureReadColorAsBGRA8(void *renderer, void *sourceTexture,
                                uint64_t sourceLevel, uint64_t sourceSlice,
                                uint64_t sourceDepthPlane, void *pixelBytes,
                                uint64_t bytesPerRow, uint64_t bytesPerImage,
-                               MGLRegionValue region, const char *reason);
+                               MGLRegionValue region, int flipY,
+                               const char *reason);
 
 int mglTextureReadDepthAsFloat(void *renderer, void *sourceTexture,
                                uint64_t sourceLevel, uint64_t sourceSlice,
