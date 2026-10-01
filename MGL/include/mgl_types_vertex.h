@@ -77,6 +77,7 @@ typedef struct VertexArray_t {
     VertexElementArray element_array;
     void *mtl_data;
     GLboolean transient_batch_vao;
+    char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } VertexArray;
 
 #endif /* mgl_types_vertex_h */

@@ -815,6 +815,7 @@ static void mglDestroyContextBuffer(GLuint name, void *data, void *user)
 
     mglReleaseBufferStorage(buffer);
 
+    free(buffer->debug_label);
     free(buffer);
 }
 
@@ -874,6 +875,7 @@ static void mglDestroyContextSampler(GLuint name, void *data, void *user)
 
     mglSafeReleaseMetalObj((void **)&sampler->mtl_data);
 
+    free(sampler->debug_label);
     free(sampler);
 }
 
@@ -889,6 +891,9 @@ static void mglDestroyContextRenderbuffer(GLuint name, void *data, void *user)
         renderbuffer->tex = NULL;
     }
 
+    if (renderbuffer) {
+        free(renderbuffer->debug_label);
+    }
     free(renderbuffer);
 }
 
@@ -898,6 +903,9 @@ static void mglDestroyContextFramebuffer(GLuint name, void *data, void *user)
     (void)user;
     Framebuffer *framebuffer = (Framebuffer *)data;
 
+    if (framebuffer) {
+        free(framebuffer->debug_label);
+    }
     free(framebuffer);
 }
 
@@ -909,6 +917,7 @@ static void mglDestroyContextVertexArray(GLuint name, void *data, void *user)
 
     if (vao) {
         vao->magic = 0;
+        free(vao->debug_label);
     }
     free(vao);
 }
@@ -919,6 +928,9 @@ static void mglDestroyContextProgramPipeline(GLuint name, void *data, void *user
     (void)user;
     ProgramPipeline *pipeline = (ProgramPipeline *)data;
 
+    if (pipeline) {
+        free(pipeline->debug_label);
+    }
     free(pipeline);
 }
 
@@ -928,6 +940,9 @@ static void mglDestroyContextTransformFeedback(GLuint name, void *data, void *us
     (void)user;
     TransformFeedback *tf = (TransformFeedback *)data;
 
+    if (tf) {
+        free(tf->debug_label);
+    }
     free(tf);
 }
 
@@ -950,6 +965,7 @@ static void mglDestroyContextSync(GLuint name, void *data, void *user)
         mglRendererReleaseSync(ctx, sync);
     }
 
+    free(sync->debug_label);
     free(sync);
 }
 

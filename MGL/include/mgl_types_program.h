@@ -145,6 +145,7 @@ typedef struct Shader_t {
     struct MGLCompileArtifact *cached_artifact;
     /* TU from the compile FrontendSession; SeedUniformInitializers reuses it. */
     struct MGLTranslationUnit *frontend_tu;
+    char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Shader;
 
 /* Per-shader backend module state: AIR serialized metallib bytes + the
@@ -470,6 +471,7 @@ typedef struct Program_t {
     GLint active_uniform_cache_max_name_length;
     GLboolean active_uniform_cache_valid;
     void *mtl_data;
+    char *debug_label;
 } Program;
 
 GLint mglProgramActiveUniformCount(Program *program);
@@ -530,6 +532,7 @@ typedef struct ProgramPipeline_t {
     GLboolean validated;
     Program *stage_programs[_MAX_SHADER_TYPES];  // Programs attached to each stage
     Program *active_program;  // ActiveShaderProgram target for Uniform*; retained
+    char *debug_label;
 } ProgramPipeline;
 
 typedef struct TransformFeedback_t {
@@ -545,6 +548,7 @@ typedef struct TransformFeedback_t {
      * them; pause/resume preserves them so subsequent draws append. */
     GLuint64 buffer_write_offsets[MAX_BINDABLE_BUFFERS];
     BufferBaseTarget buffers[MAX_BINDABLE_BUFFERS];
+    char *debug_label;
 } TransformFeedback;
 
 #endif /* mgl_types_program_h */

@@ -252,6 +252,18 @@ GLenum  mglGetError(GLMContext ctx);
 /* Free context-local query objects; called from destroyGLMContext. */
 void mglDestroyContextQueries(GLMContext ctx);
 
+/* Debug labels (GL 4.6 §20.7 / §20.9).  Replace frees the old label and
+ * stores a copy of n characters (NULL for an empty label); GL_FALSE on OOM. */
+GLboolean mglDebugLabelReplace(char **slot, const GLchar *label, size_t n);
+void mglDebugLabelCopyOut(const char *stored, GLsizei bufSize, GLsizei *length,
+                          GLchar *label);
+/* Sync labels are read and written under sync_lock; GL_FALSE if `sync` is not
+ * a live sync object (or, for Set, *oom on allocation failure). */
+GLboolean mglSyncSetDebugLabel(GLMContext ctx, GLsync sync, const GLchar *label,
+                               size_t n, GLboolean *oom);
+GLboolean mglSyncGetDebugLabel(GLMContext ctx, GLsync sync, GLsizei bufSize,
+                               GLsizei *length, GLchar *label);
+
 #include "mgl_context_enums.h"
 
 #ifdef __cplusplus

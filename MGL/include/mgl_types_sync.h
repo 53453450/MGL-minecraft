@@ -63,6 +63,7 @@ typedef struct __GLsync {
      * atomic.  Casting the old plain GLboolean to _Atomic bool was undefined
      * (and can have a different size/alignment on some targets). */
     _Atomic GLboolean delete_status;
+    char *debug_label;  /* ObjectPtrLabel, guarded by the context sync_lock */
 #ifdef __cplusplus
 } Sync;
 #else

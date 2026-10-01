@@ -367,6 +367,7 @@ void mglReleaseBufferReference(GLMContext ctx, Buffer *buf)
          * Metal backing + CPU backing and free the shell.  Mirrors
          * mglDestroyContextBuffer's cleanup (glm_context.c). */
         mglReleaseBufferStorage(buf);
+        free(buf->debug_label);
         free(buf);
     }
 }

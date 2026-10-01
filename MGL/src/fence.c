@@ -79,6 +79,7 @@ static void mglReleaseSyncReference(GLMContext ctx, Sync *sync)
             if (ctx) {
                 mglRendererReleaseSync(ctx, sync);
             }
+            free(sync->debug_label);
             free(sync);
         }
     }
@@ -190,6 +191,38 @@ static void mglSyncOperationLeave(GLMContext ctx)
         (void)pthread_cond_signal(&ctx->sync_cond);
     }
     (void)pthread_mutex_unlock(&ctx->sync_lock);
+}
+
+GLboolean mglSyncSetDebugLabel(GLMContext ctx, GLsync handle, const GLchar *label,
+                               size_t n, GLboolean *oom)
+{
+    *oom = GL_FALSE;
+    if (!ctx || !handle || !ctx->sync_lock_initialized ||
+        pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        return GL_FALSE;
+    }
+    Sync *sync = mglFindSyncLocked(ctx, handle);
+    if (sync && !mglDebugLabelReplace(&sync->debug_label, label, n)) {
+        *oom = GL_TRUE;
+        sync = NULL;
+    }
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
+    return sync != NULL ? GL_TRUE : GL_FALSE;
+}
+
+GLboolean mglSyncGetDebugLabel(GLMContext ctx, GLsync handle, GLsizei bufSize,
+                               GLsizei *length, GLchar *label)
+{
+    if (!ctx || !handle || !ctx->sync_lock_initialized ||
+        pthread_mutex_lock(&ctx->sync_lock) != 0) {
+        return GL_FALSE;
+    }
+    Sync *sync = mglFindSyncLocked(ctx, handle);
+    if (sync) {
+        mglDebugLabelCopyOut(sync->debug_label, bufSize, length, label);
+    }
+    (void)pthread_mutex_unlock(&ctx->sync_lock);
+    return sync != NULL ? GL_TRUE : GL_FALSE;
 }
 
 int isSync(GLMContext ctx, GLsync sync)

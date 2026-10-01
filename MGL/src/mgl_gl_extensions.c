@@ -231,6 +231,10 @@ extern Buffer *getBuffer(GLMContext ctx, GLenum target, GLuint buffer);
 extern void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size);
 // Forward declaration for renderbuffer lookup from framebuffers.c
 extern Renderbuffer *findRenderbuffer(GLMContext ctx, GLuint renderbuffer);
+extern Sampler *findSampler(GLMContext ctx, GLuint sampler);
+extern Shader *findShader(GLMContext ctx, GLuint shader);
+extern VertexArray *getVAO(GLMContext ctx, GLuint vao);
+extern int isSync(GLMContext ctx, GLsync sync);
 
 typedef struct QueryObject_t {
 	GLuint name;
@@ -243,6 +247,7 @@ typedef struct QueryObject_t {
 	GLboolean pipeline_result_known;
 	GLboolean timer_result_known;  /* GL_TIME_ELAPSED: backend produced a real GPU result */
 	GLuint64 result;
+	char *debug_label;
 } QueryObject;
 
 /* Primitive queries are indexed by output stream (GL 4.6 §13.2.4).
@@ -548,6 +553,8 @@ static void mgl_destroy_query_entry(GLuint name, void *data, void *user)
 {
 	(void)name;
 	(void)user;
+	if (data)
+		free(((QueryObject *)data)->debug_label);
 	free(data);
 }
 
@@ -2923,6 +2930,7 @@ void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 			}
 		}
 		deleteHashElement(&ctx->query_table, q->name);
+		free(q->debug_label);
 		free(q);
 	}
 }
@@ -2961,6 +2969,7 @@ void mglDeleteTransformFeedbacks(GLMContext ctx, GLsizei n, const GLuint *ids)
         
         // Remove from hash table and free
         deleteHashElement(&STATE(transform_feedback_table), ids[i]);
+        free(ptr->debug_label);
         free(ptr);
     }
 }
@@ -3752,39 +3761,143 @@ void mglGetMultisamplefv(GLMContext ctx, GLenum pname, GLuint index, GLfloat *va
 	}
 }
 
+GLboolean mglDebugLabelReplace(char **slot, const GLchar *label, size_t n)
+{
+	char *copy = NULL;
+	if (label && n > 0u) {
+		copy = (char *)malloc(n + 1u);
+		if (!copy)
+			return GL_FALSE;
+		memcpy(copy, label, n);
+		copy[n] = '\0';
+	}
+	free(*slot);
+	*slot = copy;
+	return GL_TRUE;
+}
+
+void mglDebugLabelCopyOut(const char *stored, GLsizei bufSize, GLsizei *length, GLchar *label)
+{
+	size_t n = stored ? strlen(stored) : 0u;
+	if (!label) {
+		if (length)
+			*length = (GLsizei)n;
+		return;
+	}
+	if (bufSize == 0) {
+		if (length)
+			*length = 0;
+		return;
+	}
+	if (n > (size_t)bufSize - 1u)
+		n = (size_t)bufSize - 1u;
+	if (n > 0u)
+		memcpy(label, stored, n);
+	label[n] = '\0';
+	if (length)
+		*length = (GLsizei)n;
+}
+
+/* Label slot of a non-texture object from GL 4.6 table 20.4, or NULL if
+ * `name` is not such an object.  *valid_enum is GL_FALSE for identifiers
+ * outside the table. */
+static char **mglObjectLabelSlot(GLMContext ctx, GLenum identifier, GLuint name,
+                                 GLboolean *valid_enum)
+{
+	*valid_enum = GL_TRUE;
+	switch (identifier) {
+		case GL_BUFFER: {
+			Buffer *o = findBuffer(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_FRAMEBUFFER: {
+			Framebuffer *o = findFrameBuffer(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_PROGRAM_PIPELINE: {
+			ProgramPipeline *o = findProgramPipeline(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_PROGRAM: {
+			Program *o = findProgram(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_QUERY: {
+			QueryObject *o = mgl_find_query(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_RENDERBUFFER: {
+			Renderbuffer *o = findRenderbuffer(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_SAMPLER: {
+			Sampler *o = findSampler(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_SHADER: {
+			Shader *o = findShader(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_TRANSFORM_FEEDBACK: {
+			TransformFeedback *o = findTransformFeedback(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		case GL_VERTEX_ARRAY: {
+			VertexArray *o = getVAO(ctx, name);
+			return o ? &o->debug_label : NULL;
+		}
+		default:
+			*valid_enum = GL_FALSE;
+			return NULL;
+	}
+}
+
 void mglGetObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei bufSize, GLsizei *length, GLchar *label)
 {
-	const char *stored_label = "";
-	if (ctx && identifier == GL_TEXTURE && name != 0) {
-		Texture *tex = findTexture(ctx, name);
-		if (tex && tex->debug_label[0] != '\0') {
-			stored_label = tex->debug_label;
+	if (!ctx)
+		return;
+	const char *stored = NULL;
+	if (identifier == GL_TEXTURE) {
+		Texture *tex = name ? findTexture(ctx, name) : NULL;
+		if (!tex) {
+			ERROR_RETURN(GL_INVALID_VALUE);
+			return;
 		}
-	}
-
-	GLsizei stored_len = (GLsizei)strlen(stored_label);
-	if (length) {
-		*length = stored_len;
-	}
-	if (label && bufSize > 0) {
-		GLsizei copy_len = stored_len;
-		if (copy_len >= bufSize) {
-			copy_len = bufSize - 1;
+		stored = tex->debug_label;
+	} else {
+		GLboolean valid_enum;
+		char **slot = mglObjectLabelSlot(ctx, identifier, name, &valid_enum);
+		if (!valid_enum) {
+			ERROR_RETURN(GL_INVALID_ENUM);
+			return;
 		}
-		if (copy_len > 0) {
-			memcpy(label, stored_label, (size_t)copy_len);
+		if (!slot) {
+			ERROR_RETURN(GL_INVALID_VALUE);
+			return;
 		}
-		label[copy_len] = '\0';
+		stored = *slot;
 	}
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	mglDebugLabelCopyOut(stored, bufSize, length, label);
 }
 
 void mglGetObjectPtrLabel(GLMContext ctx, const void *ptr, GLsizei bufSize, GLsizei *length, GLchar *label)
 {
-	// No labels stored
-	(void)ctx;
-	(void)ptr;
-	if (length) *length = 0;
-	if (label && bufSize > 0) label[0] = '\0';
+	if (!ctx)
+		return;
+	if (!isSync(ctx, (GLsync)ptr)) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (bufSize < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (!mglSyncGetDebugLabel(ctx, (GLsync)ptr, bufSize, length, label))
+		ERROR_RETURN(GL_INVALID_VALUE);
 }
 
 void mglGetProgramBinary(GLMContext ctx, GLuint program, GLsizei bufSize, GLsizei *length, GLenum *binaryFormat, void *binary)
@@ -6114,52 +6227,52 @@ void mglObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei leng
 		return;
 	}
 
-	if (identifier != GL_TEXTURE) {
-		/* Keep unsupported labels non-fatal; they are diagnostics only. */
+	size_t n = label ? (length < 0 ? strlen(label) : (size_t)length) : 0u;
+	if (identifier == GL_TEXTURE) {
+		Texture *tex = name ? findTexture(ctx, name) : NULL;
+		if (!tex || n >= STATE(var.max_label_length)) {
+			mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+			return;
+		}
+		if (n > 0u) {
+			memcpy(tex->debug_label, label, n);
+		}
+		tex->debug_label[n] = '\0';
+		mglTraceLogExternal("OBJECT_LABEL texture=%u label=\"%s\" length=%d stored=%zu",
+		                    name,
+		                    tex->debug_label,
+		                    length,
+		                    n);
 		return;
 	}
 
-	if (name == 0) {
+	GLboolean valid_enum;
+	char **slot = mglObjectLabelSlot(ctx, identifier, name, &valid_enum);
+	if (!valid_enum) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
+		return;
+	}
+	if (!slot || n >= STATE(var.max_label_length)) {
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
-
-	Texture *tex = findTexture(ctx, name);
-	if (!tex) {
-		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
-		return;
-	}
-
-	size_t max_len = sizeof(tex->debug_label) - 1u;
-	size_t copy_len = 0u;
-	if (label) {
-		if (length < 0) {
-			copy_len = strnlen(label, max_len);
-		} else {
-			copy_len = (size_t)length;
-			if (copy_len > max_len) {
-				copy_len = max_len;
-			}
-		}
-		if (copy_len > 0u) {
-			memcpy(tex->debug_label, label, copy_len);
-		}
-	}
-	tex->debug_label[copy_len] = '\0';
-	mglTraceLogExternal("OBJECT_LABEL texture=%u label=\"%s\" length=%d stored=%zu",
-	                    name,
-	                    tex->debug_label,
-	                    length,
-	                    copy_len);
+	if (!mglDebugLabelReplace(slot, label, n))
+		mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 }
 
 void mglObjectPtrLabel(GLMContext ctx, const void *ptr, GLsizei length, const GLchar *label)
 {
-	// Object ptr label - no-op
-	(void)ctx;
-	(void)ptr;
-	(void)length;
-	(void)label;
+	if (!ctx) {
+		return;
+	}
+	size_t n = label ? (length < 0 ? strlen(label) : (size_t)length) : 0u;
+	if (!isSync(ctx, (GLsync)ptr) || n >= STATE(var.max_label_length)) {
+		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
+		return;
+	}
+	GLboolean oom = GL_FALSE;
+	if (!mglSyncSetDebugLabel(ctx, (GLsync)ptr, label, n, &oom))
+		mglDispatchError(ctx, __FUNCTION__, oom ? GL_OUT_OF_MEMORY : GL_INVALID_VALUE);
 }
 
 void mglPatchParameterfv(GLMContext ctx, GLenum pname, const GLfloat *values)

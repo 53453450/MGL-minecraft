@@ -931,6 +931,7 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
         ptr->builtin_program_output_count[s] = 0;
     }
 
+    free(ptr->debug_label);
     free(ptr);
 }
 
@@ -3586,6 +3587,7 @@ void mglDeleteProgramPipelines(GLMContext ctx, GLsizei n, const GLuint *pipeline
 
         // Remove from hash table and free
         deleteHashElement(&STATE(program_pipeline_table), pipelines[i]);
+        free(ptr->debug_label);
         free(ptr);
     }
 }

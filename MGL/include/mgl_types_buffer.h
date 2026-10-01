@@ -235,6 +235,7 @@ typedef struct Buffer_t {
      *   until the last release frees it */
     int refcount;
     GLboolean delete_status;
+    char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Buffer;
 
 /* Buffer reference counting (mirrors Program refcount pattern).

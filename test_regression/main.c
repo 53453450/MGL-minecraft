@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 117
+#define MAX_TESTS 118
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -15540,6 +15540,140 @@ static int test_debug_message_control(unsigned char *pixels,
     return fail;
 }
 
+/* GL 4.6 §20.7 / §20.9: labels for every table 20.4 object type and syncs. */
+static int test_object_labels(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+#define LBL_EXPECT(cond, ...) do { if (!(cond)) { \
+        fprintf(stderr, "object_labels: " __VA_ARGS__); \
+        fprintf(stderr, "\n"); fail = 1; } } while (0)
+    while (glGetError() != GL_NO_ERROR) { }
+
+    GLuint buf, fbo, rbo, vao, smp, ppo, xfb, qry, tex;
+    glCreateBuffers(1, &buf);
+    glCreateFramebuffers(1, &fbo);
+    glCreateRenderbuffers(1, &rbo);
+    glCreateVertexArrays(1, &vao);
+    glCreateSamplers(1, &smp);
+    glCreateProgramPipelines(1, &ppo);
+    glCreateTransformFeedbacks(1, &xfb);
+    glCreateQueries(GL_SAMPLES_PASSED, 1, &qry);
+    glCreateTextures(GL_TEXTURE_2D, 1, &tex);
+    GLuint shd = glCreateShader(GL_VERTEX_SHADER);
+    GLuint prg = glCreateProgram();
+    const struct { GLenum type; GLuint name; const char *label; } objs[] = {
+        { GL_BUFFER, buf, "buffer" },
+        { GL_FRAMEBUFFER, fbo, "framebuffer" },
+        { GL_PROGRAM_PIPELINE, ppo, "pipeline" },
+        { GL_PROGRAM, prg, "program" },
+        { GL_QUERY, qry, "query" },
+        { GL_RENDERBUFFER, rbo, "renderbuffer" },
+        { GL_SAMPLER, smp, "sampler" },
+        { GL_SHADER, shd, "shader" },
+        { GL_TEXTURE, tex, "texture" },
+        { GL_TRANSFORM_FEEDBACK, xfb, "xfb" },
+        { GL_VERTEX_ARRAY, vao, "vao" },
+    };
+    LBL_EXPECT(glGetError() == GL_NO_ERROR, "object creation failed");
+
+    for (size_t i = 0; i < sizeof(objs) / sizeof(objs[0]); i++) {
+        glObjectLabel(objs[i].type, objs[i].name, -1, objs[i].label);
+        char out[32] = { 0 };
+        GLsizei len = -1;
+        glGetObjectLabel(objs[i].type, objs[i].name, (GLsizei)sizeof(out), &len,
+                         out);
+        GLenum err = glGetError();
+        LBL_EXPECT(err == GL_NO_ERROR && strcmp(out, objs[i].label) == 0 &&
+                   len == (GLsizei)strlen(objs[i].label),
+                   "0x%x round-trip: err=0x%x got='%s' len=%d", objs[i].type,
+                   err, out, len);
+    }
+
+    GLsizei full = -1, part = -1;
+    char trunc[4] = { 'x', 'x', 'x', 'x' };
+    glGetObjectLabel(GL_BUFFER, buf, 0, &full, NULL);
+    glGetObjectLabel(GL_BUFFER, buf, (GLsizei)sizeof(trunc), &part, trunc);
+    LBL_EXPECT(full == 6 && part == 3 && memcmp(trunc, "buf", 4) == 0,
+               "query/truncate: full=%d part=%d", full, part);
+
+    GLint max_label = 0;
+    glGetIntegerv(GL_MAX_LABEL_LENGTH, &max_label);
+    const GLint lim = (max_label >= 256 && max_label < 512) ? max_label : 256;
+    char long_label[512];
+    memset(long_label, 'L', sizeof(long_label));
+    long_label[lim - 1] = '\0';
+    glObjectLabel(GL_TEXTURE, tex, -1, long_label);
+    GLenum e_max_ok = glGetError();
+    char long_out[512] = { 0 };
+    GLsizei long_len = 0;
+    glGetObjectLabel(GL_TEXTURE, tex, (GLsizei)sizeof(long_out), &long_len,
+                     long_out);
+    long_label[lim - 1] = 'L';
+    glObjectLabel(GL_BUFFER, buf, lim, long_label);
+    GLenum e_too_long = glGetError();
+    LBL_EXPECT(lim == max_label && e_max_ok == GL_NO_ERROR &&
+               long_len == lim - 1 &&
+               e_too_long == GL_INVALID_VALUE,
+               "MAX_LABEL_LENGTH=%d: ok=0x%x len=%d too_long=0x%x", max_label,
+               e_max_ok, long_len, e_too_long);
+
+    glObjectLabel(0x1234, buf, -1, "x");
+    GLenum e_enum = glGetError();
+    glObjectLabel(GL_BUFFER, 0xdeadbeu, -1, "x");
+    GLenum e_name = glGetError();
+    glGetObjectLabel(GL_SAMPLER, 0xdeadbeu, 0, NULL, NULL);
+    GLenum e_get_name = glGetError();
+    glGetObjectLabel(GL_BUFFER, buf, -1, NULL, NULL);
+    GLenum e_bufsize = glGetError();
+    LBL_EXPECT(e_enum == GL_INVALID_ENUM && e_name == GL_INVALID_VALUE &&
+               e_get_name == GL_INVALID_VALUE && e_bufsize == GL_INVALID_VALUE,
+               "errors: enum=0x%x name=0x%x get_name=0x%x bufsize=0x%x",
+               e_enum, e_name, e_get_name, e_bufsize);
+
+    glObjectLabel(GL_BUFFER, buf, 0, NULL);
+    GLsizei removed = -1;
+    glGetObjectLabel(GL_BUFFER, buf, 0, &removed, NULL);
+    LBL_EXPECT(removed == 0, "NULL label kept length %d", removed);
+
+    glObjectLabel(GL_SAMPLER, smp, -1, "gone");
+    glDeleteSamplers(1, &smp);
+    glCreateSamplers(1, &smp);
+    GLsizei fresh = -1;
+    glGetObjectLabel(GL_SAMPLER, smp, 0, &fresh, NULL);
+    LBL_EXPECT(fresh == 0, "recreated sampler label length %d", fresh);
+
+    GLsync sync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    glObjectPtrLabel(sync, -1, "fence");
+    char sync_out[16] = { 0 };
+    GLsizei sync_len = -1;
+    glGetObjectPtrLabel(sync, (GLsizei)sizeof(sync_out), &sync_len, sync_out);
+    GLenum e_sync = glGetError();
+    glObjectPtrLabel((GLsync)(uintptr_t)0x10, -1, "x");
+    GLenum e_bad_sync = glGetError();
+    LBL_EXPECT(e_sync == GL_NO_ERROR && sync_len == 5 &&
+               strcmp(sync_out, "fence") == 0 && e_bad_sync == GL_INVALID_VALUE,
+               "sync: err=0x%x len=%d got='%s' bad=0x%x", e_sync, sync_len,
+               sync_out, e_bad_sync);
+    glDeleteSync(sync);
+
+    glDeleteBuffers(1, &buf);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteRenderbuffers(1, &rbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteSamplers(1, &smp);
+    glDeleteProgramPipelines(1, &ppo);
+    glDeleteTransformFeedbacks(1, &xfb);
+    glDeleteQueries(1, &qry);
+    glDeleteTextures(1, &tex);
+    glDeleteShader(shd);
+    glDeleteProgram(prg);
+    while (glGetError() != GL_NO_ERROR) { }
+#undef LBL_EXPECT
+    return fail;
+}
+
 /* GL 4.6 §10.2.1: every VertexAttrib* form sets the current generic value. */
 static int test_current_vertex_attrib_forms(unsigned char *pixels,
                                             const char *out_path)
@@ -18857,6 +18991,7 @@ static const TestCase TESTS[] = {
                     test_current_vertex_attrib_forms),
     SELF_CHECK_TEST("debug_group_stack", test_debug_group_stack),
     SELF_CHECK_TEST("debug_message_control", test_debug_message_control),
+    SELF_CHECK_TEST("object_labels", test_object_labels),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),

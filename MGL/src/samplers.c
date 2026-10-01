@@ -315,6 +315,7 @@ void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
 
             mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
 
+            free(ptr->debug_label);
             free(ptr);
         }
     }

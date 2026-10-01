@@ -40,6 +40,10 @@ enum {
     _MAX_TEXTURE_TYPES
 };
 
+/* GL_MAX_LABEL_LENGTH (GL 4.6 table 23.68 minimum); texture labels are stored
+ * inline, so the reported limit must not exceed this. */
+#define MGL_MAX_LABEL_LENGTH 256u
+
 #define DIRTY_TEXTURE_LEVEL 0x1
 #define DIRTY_TEXTURE_DATA  (DIRTY_TEXTURE_LEVEL << 1)
 #define DIRTY_TEXTURE_PARAM (DIRTY_TEXTURE_DATA << 1)
@@ -156,6 +160,7 @@ typedef struct Sampler_t {
     uint64_t identity_generation;
     TextureParameter params;
     void *mtl_data;
+    char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Sampler;
 
 typedef struct Texture_t {
@@ -241,7 +246,7 @@ typedef struct Texture_t {
     GLuint     mtl_base_level_view_swizzle_g;
     GLuint     mtl_base_level_view_swizzle_b;
     GLuint     mtl_base_level_view_swizzle_a;
-    char debug_label[128];
+    char debug_label[MGL_MAX_LABEL_LENGTH];
 } Texture;
 
 typedef struct TextureUnit_t {

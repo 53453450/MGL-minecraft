@@ -1134,6 +1134,7 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
         deleteHashElement(&STATE(framebuffer_table), framebuffers[i]);
         
         // Free the framebuffer
+        free(fbo->debug_label);
         free(fbo);
     }
     
@@ -1782,6 +1783,7 @@ void mglDeleteRenderbuffers(GLMContext ctx, GLsizei n, const GLuint *renderbuffe
         }
 
         deleteHashElement(&STATE(renderbuffer_table), name);
+        free(rbo->debug_label);
         free(rbo);
     }
 

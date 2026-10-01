@@ -310,6 +310,7 @@ void mglDeleteVertexArrays(GLMContext ctx, GLsizei n, const GLuint *arrays)
             }
 
             deleteHashElement(&STATE(vao_table), vao);
+            free(ptr->debug_label);
             free(ptr);
         }
     }

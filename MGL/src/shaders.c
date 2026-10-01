@@ -187,6 +187,7 @@ void mglFreeShader(GLMContext ctx, Shader *ptr)
     mglGLSLTranslationUnitDestroy(ptr->frontend_tu);
     ptr->frontend_tu = NULL;
 
+    free(ptr->debug_label);
     free(ptr);
 }
 

@@ -35,6 +35,7 @@ typedef struct Renderbuffer_t {
     GLuint  name;
     GLboolean is_draw_buffer;
     Texture *tex;
+    char *debug_label;  /* ObjectLabel, GL 4.6 §20.7; NULL = empty */
 } Renderbuffer;
 
 typedef struct FBOAttachment_t {
@@ -76,6 +77,7 @@ typedef struct Framebuffer_t {
      * comparison when neither the FBO nor the render pass has changed.
      * Starts at 0 (bzero in newFramebuffer); 0 is a valid generation. */
     uint64_t fbo_attachment_generation;
+    char *debug_label;
 } Framebuffer;
 
 #endif /* mgl_types_framebuffer_h */

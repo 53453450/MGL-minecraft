@@ -832,8 +832,7 @@ apply_gl46_defaults:
     /* Misc scalar limits. */
     if (glm_ctx->active_state->var.subpixel_bits < 4u)
         glm_ctx->active_state->var.subpixel_bits = 4u;
-    if (glm_ctx->active_state->var.max_label_length < 256u)
-        glm_ctx->active_state->var.max_label_length = 256u;
+    glm_ctx->active_state->var.max_label_length = MGL_MAX_LABEL_LENGTH;
     if (glm_ctx->active_state->var.max_debug_group_stack_depth < 64u)
         glm_ctx->active_state->var.max_debug_group_stack_depth = 64u;
     if (glm_ctx->active_state->var.max_server_wait_timeout == 0u)
