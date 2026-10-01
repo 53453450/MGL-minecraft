@@ -57,7 +57,10 @@ extern "C" {
 static inline bool mglTextureCanUseGLSampledRenderTargetCopy(Texture *tex)
 {
     return tex &&
-           tex->target == GL_TEXTURE_2D &&
+           (tex->target == GL_TEXTURE_2D ||
+            tex->target == GL_TEXTURE_2D_ARRAY ||
+            tex->target == GL_TEXTURE_CUBE_MAP ||
+            tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) &&
            tex->is_render_target;
 }
 

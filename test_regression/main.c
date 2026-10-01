@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 130
+#define MAX_TESTS 131
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17576,6 +17576,128 @@ static int test_texture_view(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* Rendering into an array layer or a cube face must leave GL row order for
+ * sampling and readback (window y = row index), as for 2D render targets. */
+static int test_rt_layer_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pgrad = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0, 0.0, 0.0, 1.0); }\n");
+    GLuint parr = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2DArray s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec3(ivec2(gl_FragCoord.xy), 2), 0); }\n");
+    GLuint pcube = link_program(vs,
+        "#version 330 core\n"
+        "uniform samplerCube s;\n"
+        "out vec4 c;\n"
+        "void main() {\n"
+        "  vec2 tc = gl_FragCoord.xy / 16.0 * 2.0 - 1.0;\n"
+        "  c = texture(s, vec3(1.0, -tc.y, -tc.x));\n"
+        "}\n");
+    if (!pgrad || !parr || !pcube) return 3;
+
+    GLuint vao = 0, arr = 0, cube = 0, ttmp = 0, frt = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 3;
+
+    glGenTextures(1, &arr);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
+    glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGBA8, 16, 16, 3);
+    glGenTextures(1, &cube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+    glTexStorage2D(GL_TEXTURE_CUBE_MAP, 1, GL_RGBA8, 16, 16);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    glGenFramebuffers(1, &frt);
+    glBindFramebuffer(GL_FRAMEBUFFER, frt);
+    glViewport(0, 0, 16, 16);
+    glUseProgram(pgrad);
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, arr, 0, 2);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_CUBE_MAP_POSITIVE_X, cube, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    unsigned char b[4][4];
+    static unsigned char full[16 * 16 * 6 * 4];
+#define RLO_ROWS(bit, what)                                                 \
+    do {                                                                    \
+        for (int i = 0; i < 4; i++) {                                       \
+            if (b[i][0] != 5 + i) {                                         \
+                fprintf(stderr, "rt_layer_orientation: %s row %d got %u\n", \
+                        what, 5 + i, b[i][0]);                              \
+                fail |= (bit);                                              \
+            }                                                               \
+        }                                                                   \
+    } while (0)
+#define RLO_SAMPLE(prog, target, tex)                                       \
+    do {                                                                    \
+        glBindFramebuffer(GL_FRAMEBUFFER, fsample);                         \
+        glViewport(0, 0, REG_W, REG_H);                                     \
+        glUseProgram(prog);                                                 \
+        glActiveTexture(GL_TEXTURE0);                                       \
+        glBindTexture((target), (tex));                                     \
+        glUniform1i(glGetUniformLocation((prog), "s"), 0);                  \
+        glDrawArrays(GL_TRIANGLES, 0, 3);                                   \
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fsample);                    \
+        glReadPixels(2, 5, 1, 4, GL_RGBA, GL_UNSIGNED_BYTE, b);             \
+    } while (0)
+
+    RLO_SAMPLE(parr, GL_TEXTURE_2D_ARRAY, arr);
+    RLO_ROWS(1, "sample array layer");
+    RLO_SAMPLE(pcube, GL_TEXTURE_CUBE_MAP, cube);
+    RLO_ROWS(2, "sample cube face");
+
+    glBindTexture(GL_TEXTURE_2D_ARRAY, arr);
+    glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_UNSIGNED_BYTE, full);
+    for (int i = 0; i < 4; i++)
+        b[i][0] = full[((2 * 16 + 5 + i) * 16 + 2) * 4];
+    RLO_ROWS(4, "GetTexImage array layer");
+    glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+    glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                  full);
+    for (int i = 0; i < 4; i++)
+        b[i][0] = full[((5 + i) * 16 + 2) * 4];
+    RLO_ROWS(8, "GetTexImage cube face");
+#undef RLO_ROWS
+#undef RLO_SAMPLE
+
+    if (glGetError() != GL_NO_ERROR) fail |= 16;
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &frt);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteTextures(1, &arr);
+    glDeleteTextures(1, &cube);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    glDeleteProgram(parr);
+    glDeleteProgram(pcube);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "rt_layer_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -20340,6 +20462,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("uniform_matrix_array_element",
                     test_uniform_matrix_array_element),
     SELF_CHECK_TEST("texture_view", test_texture_view),
+    SELF_CHECK_TEST("rt_layer_orientation", test_rt_layer_orientation),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

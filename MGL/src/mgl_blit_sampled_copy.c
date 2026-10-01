@@ -46,10 +46,13 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
         return 0;
     }
 
-    if (!mglRenderTextureTargetIs2D((uint32_t)tex->target) ||
-        tex->width == 0u ||
+    const uint32_t sourceType = mglBlitSampledCopyTextureInfo(source).texture_type;
+    if (tex->width == 0u ||
         tex->height == 0u ||
-        mglBlitSampledCopyTextureInfo(source).texture_type != MGLTextureType2D ||
+        (sourceType != MGLTextureType2D &&
+         sourceType != MGLTextureType2DArray &&
+         sourceType != MGLTextureTypeCube &&
+         sourceType != MGLTextureTypeCubeArray) ||
         mglBlitSampledCopyTextureInfo(source).mipmap_level_count == 0u ||
         mglBlitSampledCopyTextureInfo(source).width == 0u ||
         mglBlitSampledCopyTextureInfo(source).height == 0u ||
@@ -67,7 +70,7 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
         return 0;
     }
 
-    /* Apply sampled-copy protection to all 2D float render targets
+    /* Apply sampled-copy protection to all color render targets
      * regardless of size.  The previous size-based gating was a
      * Minecraft-specific heuristic that broke on larger render targets. */
     if (!mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
@@ -147,7 +150,17 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         copyLevelCount = (uint64_t)highestGLLevel + 1u;
     }
 
-    if (tex->mtl_gl_sampled_data &&
+    const MGLRenderTextureInfo sourceInfo = mglBlitSampledCopyTextureInfo(source);
+    const MGLRenderTextureInfo oldCopyInfo =
+        mglBlitSampledCopyTextureInfo(tex->mtl_gl_sampled_data);
+    const int sameLayout = oldCopyInfo.texture_type == sourceInfo.texture_type &&
+                           oldCopyInfo.array_length == sourceInfo.array_length;
+    const uint64_t sliceCount =
+        (sourceInfo.array_length ? sourceInfo.array_length : 1u) *
+        ((sourceInfo.texture_type == MGLTextureTypeCube ||
+          sourceInfo.texture_type == MGLTextureTypeCubeArray) ? 6u : 1u);
+
+    if (tex->mtl_gl_sampled_data && sameLayout &&
         tex->mtl_gl_sampled_width == (GLuint)mglBlitSampledCopyTextureInfo(source).width &&
         tex->mtl_gl_sampled_height == (GLuint)mglBlitSampledCopyTextureInfo(source).height &&
         tex->mtl_gl_sampled_format == (GLuint)mglBlitSampledCopyTextureInfo(source).pixel_format &&
@@ -158,7 +171,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
     }
 
     int needsNewCopy =
-        tex->mtl_gl_sampled_data == NULL ||
+        tex->mtl_gl_sampled_data == NULL || !sameLayout ||
         tex->mtl_gl_sampled_width != (GLuint)mglBlitSampledCopyTextureInfo(source).width ||
         tex->mtl_gl_sampled_height != (GLuint)mglBlitSampledCopyTextureInfo(source).height ||
         tex->mtl_gl_sampled_format != (GLuint)mglBlitSampledCopyTextureInfo(source).pixel_format ||
@@ -167,14 +180,14 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         mglTextureReleaseGLSampledCopy(tex);
 
         MGLRenderTextureDescriptorState desc = {0};
-        desc.texture_type = MGLTextureType2D;
+        desc.texture_type = sourceInfo.texture_type;
         desc.pixel_format = mglBlitSampledCopyTextureInfo(source).pixel_format;
         desc.width = mglBlitSampledCopyTextureInfo(source).width;
         desc.height = mglBlitSampledCopyTextureInfo(source).height;
         desc.depth = 1;
         desc.mipmap_level_count = copyLevelCount;
         desc.sample_count = 1;
-        desc.array_length = 1;
+        desc.array_length = sourceInfo.array_length ? sourceInfo.array_length : 1u;
         desc.usage = MGLTextureUsageShaderRead | MGLTextureUsageRenderTarget | MGLTextureUsageShaderWrite;
         desc.storage_mode = MGLStorageModePrivate;
 
@@ -265,7 +278,26 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         }
     }
 
-    if (useComputePath) {
+    /* The copy kernels take texture2d; layered sources go one 2D slice view
+     * pair (all levels) per encoder. */
+    const int sliceViews = sourceInfo.texture_type != MGLTextureType2D;
+    for (uint64_t slice = 0u; useComputePath && slice < sliceCount; slice++) {
+        void *srcSlice = source;
+        void *dstSlice = destination;
+        if (sliceViews) {
+            srcSlice = NULL;
+            dstSlice = NULL;
+            if (mglRenderCreateTextureViewRange(
+                    source, sourceInfo.pixel_format, MGLTextureType2D, 0u,
+                    mipLevels, slice, 1u, 0, 0, 0, 0, 0, &srcSlice) != 0 ||
+                mglRenderCreateTextureViewRange(
+                    destination, sourceInfo.pixel_format, MGLTextureType2D, 0u,
+                    mipLevels, slice, 1u, 0, 0, 0, 0, 0, &dstSlice) != 0) {
+                mglBlitSampledCopyReleaseViews(srcSlice, 1, dstSlice, 1);
+                useComputePath = 0;
+                break;
+            }
+        }
         void *computeEncoder =
             mglRenderCreateComputeEncoderBorrowed(cs ? cs->currentCommandBufferOwner : NULL);
         if (!computeEncoder) {
@@ -282,8 +314,8 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         } else {
             MGLBlitSampledCopyComputeParams params;
             mglRenderSetComputePipelineState(computeEncoder, computePipeline);
-            mglRenderSetComputeTexture(computeEncoder, source, 0);
-            mglRenderSetComputeTexture(computeEncoder, destination, 1);
+            mglRenderSetComputeTexture(computeEncoder, srcSlice, 0);
+            mglRenderSetComputeTexture(computeEncoder, dstSlice, 1);
 
             uint64_t tgW = 16u;
             uint32_t totalThreads =
@@ -328,6 +360,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
             }
             mglRenderEndComputeEncoder(computeEncoder);
         }
+        mglBlitSampledCopyReleaseViews(srcSlice, sliceViews, dstSlice, sliceViews);
     }
 
     if (!useComputePath) {
@@ -373,7 +406,9 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         params.forceOpaqueAlpha = 0.0f;
         params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-        for (uint64_t lvl = 0u; lvl < mipLevels; lvl++) {
+        for (uint64_t pass = 0u; pass < mipLevels * sliceCount; pass++) {
+            const uint64_t lvl = pass % mipLevels;
+            const uint64_t slice = pass / mipLevels;
             if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
                 continue;
             }
@@ -383,10 +418,10 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
             void *dstLvl = destination;
             int srcOwned = 0;
             int dstOwned = 0;
-            if (mipLevels > 1u) {
+            if (mipLevels > 1u || sliceViews) {
                 if (mglRenderCreateTextureViewRange(
                         source, mglBlitSampledCopyTextureInfo(source).pixel_format,
-                        MGLTextureType2D, lvl, 1u, 0u, 1u, 0, 0, 0, 0, 0,
+                        MGLTextureType2D, lvl, 1u, slice, 1u, 0, 0, 0, 0, 0,
                         &srcLvl) != 0 || !srcLvl) {
                     srcLvl = NULL;
                 } else {
@@ -395,7 +430,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
                 if (mglRenderCreateTextureViewRange(
                         destination,
                         mglBlitSampledCopyTextureInfo(destination).pixel_format,
-                        MGLTextureType2D, lvl, 1u, 0u, 1u, 0, 0, 0, 0, 0,
+                        MGLTextureType2D, lvl, 1u, slice, 1u, 0, 0, 0, 0, 0,
                         &dstLvl) != 0 || !dstLvl) {
                     dstLvl = NULL;
                 } else {
