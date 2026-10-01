@@ -107,17 +107,15 @@ void mglBindingLogTexBufferBind(
 void mglBindingLogRTYFlipDecision(
     const char *stage, uint32_t program, const char *name, uint32_t binding,
     uint32_t unit, uint32_t tex, const char *label, const char *decision_name,
-    int decision, uint32_t authority, uint32_t rt_ver, uint32_t copy_ver,
-    int has_copy, int sample_yflip)
+    int decision, uint32_t rt_ver, uint32_t copy_ver, int has_copy)
 {
     mglTraceLog(
         "RT_YFLIP_DECISION stage=%s program=%u name=%s binding=%u unit=%u tex=%u "
-        "label=\"%s\" decision=%s(%d) authority=0x%x rtVer=%u copyVer=%u hasCopy=%d "
-        "sampleYFlip=%d",
+        "label=\"%s\" decision=%s(%d) rtVer=%u copyVer=%u hasCopy=%d",
         stage ? stage : "?", (unsigned)program, name ? name : "",
         (unsigned)binding, (unsigned)unit, (unsigned)tex, label ? label : "",
-        decision_name ? decision_name : "?", decision, (unsigned)authority,
-        (unsigned)rt_ver, (unsigned)copy_ver, has_copy, sample_yflip);
+        decision_name ? decision_name : "?", decision,
+        (unsigned)rt_ver, (unsigned)copy_ver, has_copy);
 }
 
 void mglBindingLogRTSampleCopy(const MGLBindingRTCopyLog *log)

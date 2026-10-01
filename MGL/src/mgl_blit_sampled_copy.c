@@ -21,7 +21,6 @@
 #include "mgl_blit_pipelines.h"  /* scaled copy pipeline / compute pipeline / sampler */
 #include "mgl_texture_compat.h"  /* release sampled copy, data kind name, trace label */
 #include "mgl_rt_sync.h"
-#include "mgl_coordinate.h"      /* mglRTWriteAuthorityIsCurrentAndUsesOriginal */        /* mglTextureCanUseGLSampledRenderTargetCopy */
 #include "mgl_region_value.h"  /* MGLSizeValue / mglBlitSize */
 #include "mgl_trace_log.h"      /* mglTraceLog / mglTraceLogIsEnabled */
 #include "mgl_thread_affinity.h" /* MGL_ASSERT_GL_THREAD */
@@ -592,7 +591,6 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
     /* The flipped copy of the store is what the store must hold once it
      * counts as rendered; the copy then matches the flipped store. */
     tex->mtl_render_target_write_version = 1u;
-    tex->mtl_render_yflip_authority = 1u << 1;
     tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
@@ -656,21 +654,6 @@ void mglBlitUpdateGLSampledCopiesForEndedRenderPassFramebuffer(
 
         void *source = tex->mtl_data;
         if (!mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, source)) {
-            continue;
-        }
-
-
-        if (mglRTWriteAuthorityIsCurrentAndUsesOriginal(tex)) {
-            if (tex->mtl_gl_sampled_data &&
-                mglRenderSampledRTCopyStale(tex->mtl_gl_sampled_write_version,
-                                            tex->mtl_render_target_write_version)) {
-                mglTextureReleaseGLSampledCopy(tex);
-                if (mglTraceLogIsEnabled()) {
-                    mglTraceLog("RT_SAMPLE_COPY_SKIP_INJECTED_RENDER tex=%u label=\"%s\" reason=render_yflip_injected_stale_released",
-                                (unsigned)tex->name,
-                                mglTraceTextureLabel(tex));
-                }
-            }
             continue;
         }
 

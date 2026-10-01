@@ -124,7 +124,6 @@ static inline const char *mglYFlipDecisionName(MGLYFlipDecision decision)
     switch (decision) {
         case MGL_YFLIP_USE_ORIGINAL: return "original";
         case MGL_YFLIP_USE_SAMPLED_COPY: return "sampled-copy";
-        case MGL_YFLIP_USE_ORIGINAL_AND_INJECT: return "original-inject";
         default: return "unknown";
     }
 }
@@ -164,14 +163,6 @@ NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
                                                            GLuint attribute,
                                                            const VertexAttrib *attrib,
                                                            uint8_t bytes[16]);
-void mglLogSkippedGLSampledRenderTargetCopy(GLMContext glctx,
-                                                   Program *program,
-                                                   Texture *tex,
-                                                   const char *stage,
-                                                   const char *sampledName,
-                                                   GLuint binding,
-                                                   GLuint textureUnit,
-                                                   const char *reason);
 bool mglShouldInspectDrawCall(uint64_t drawCall, GLuint programName);
 void mglTraceDrawElementsAttrib(GLMContext ctx,
                                        VertexArray *vao,

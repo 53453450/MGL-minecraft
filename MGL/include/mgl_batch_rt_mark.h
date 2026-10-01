@@ -32,16 +32,6 @@ extern "C" {
 int mgl_batch_rt_attachment_active(uint32_t bitfield, uint32_t index,
                                    uint32_t max_attachments);
 
-/*
- * Minecraft GUI/mesh RT Y-flip authority: VS framebuffer Y-flip injection
- * wrote GL-visible orientation, so RT_SAMPLE_COPY must not flip again —
- * unless the program samples InSampler / DiffuseSampler (true FB inputs).
- */
-int mgl_batch_rt_yflip_authority(int has_injected_yflip,
-                                 int yflip_sampler_explicit,
-                                 int has_in_sampler_named,
-                                 int has_diffuse_sampler_named);
-
 /* Rate-limit RT_SAMPLE_COPY_WRITE_MARK diag (attachment0 + can_use_copy). */
 int mgl_batch_rt_should_trace_write_mark(uint64_t hit);
 

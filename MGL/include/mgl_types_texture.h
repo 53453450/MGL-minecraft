@@ -201,14 +201,6 @@ typedef struct Texture_t {
     GLuint  mtl_gl_sampled_write_version;
     uint32_t mtl_gl_sampled_dirty_mip_mask;
     GLuint  mtl_render_target_write_version;
-    /* Y-Flip Authority: packed (mtl_render_target_write_version << 1) | use_original.
-     * Set synchronously with mtl_render_target_write_version in
-     * mglMarkTextureLevelRenderTargetWritten.  Low bit = 1 means the RT was
-     * written in an orientation that should be sampled from the original Metal
-     * texture, not from the Y-flipped RT_SAMPLE_COPY.  This covers VS
-     * framebuffer-yflip writes; framebuffer-input blit/post passes do not set
-     * this bit. */
-    GLuint  mtl_render_yflip_authority;
     /* DontCare inference: renderer frame generation at which this
      * texture was last written as a render target. Compared against the
      * renderer's current generation to decide "first render-target use this

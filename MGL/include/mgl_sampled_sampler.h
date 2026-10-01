@@ -105,7 +105,7 @@ void *mglSampledCompatFallbackPlan(void *renderer, Texture *ptr, void *texture,
  * out-only borrowed handles, and `used_sampled_copy_out` is a BOOL out-param
  * (int in C).  Returns false when the caller must abandon the stage. */
 bool mglSampledRenderTargetCopyPlan(
-    void *renderer, Texture *ptr, void **texture_ptr, Program *sample_program,
+    void *renderer, Texture *ptr, void **texture_ptr,
     uint32_t expected_type, uint32_t expected_kind, int used_type_fallback,
     const char *stage, GLuint program_name, GLuint program_binding,
     GLuint texture_unit, const char *sampled_name, int *used_sampled_copy_out,

@@ -7,15 +7,9 @@
  * Bridges the coordinate-system gap between OpenGL (bottom-left origin,
  * NDC z in [-1,1]) and Metal (top-left origin, NDC z in [0,1]).
  *
- * The Y-Flip Authority model records per render-target whether the RT was
- * written in an orientation that should be sampled from the original Metal
- * texture.  Sampling consumers query `mglDecideYFlipForSampledRT` to choose
- * between the original texture and a pre-flipped copy, preventing double-flip
- * while keeping framebuffer-input blit/post passes on the sampled-copy path.
- *
- * This module is pure specification-compliance machinery: every OpenGL
- * program needs framebuffer/texture origin translation when running on
- * Metal, regardless of application.
+ * Rendered render-target storage is Y-flipped relative to GL; sampling
+ * consumers query `mglDecideYFlipForSampledRT` to choose between the original
+ * texture and the pre-flipped copy maintained by RT Sync.
  */
 
 #ifndef MGL_COORDINATE_H
@@ -29,65 +23,17 @@ extern "C" {
 
 /* Y-Flip decision returned by `mglDecideYFlipForSampledRT`.
  *
- *   MGL_YFLIP_USE_ORIGINAL              RT already holds GL-origin data
- *                                       (rendered with VS injection); sampler
- *                                       has no injection — use original.
+ *   MGL_YFLIP_USE_ORIGINAL       Storage holds GL-origin data — use it as is.
  *
- *   MGL_YFLIP_USE_SAMPLED_COPY          RT holds Metal-top-origin data; sampler
- *                                       has no injection — use the Y-flipped
- *                                       copy maintained by RT Sync.
- *
- *   MGL_YFLIP_USE_ORIGINAL_AND_INJECT   Sampler program has VS injection that
- *                                       will flip on read — use original and
- *                                       let the injection handle the flip.
- *                                       (Also used when both render and sample
- *                                       have injection; injection wins.)
+ *   MGL_YFLIP_USE_SAMPLED_COPY   Storage holds Metal-top-origin data — use the
+ *                                Y-flipped copy maintained by RT Sync.
  */
 typedef enum {
     MGL_YFLIP_USE_ORIGINAL = 0,
     MGL_YFLIP_USE_SAMPLED_COPY,
-    MGL_YFLIP_USE_ORIGINAL_AND_INJECT,
 } MGLYFlipDecision;
 
-/* Returns true if `program`'s vertex shader had Y-flip injection applied
- * during MSL post-processing.  The flag is set in program.c when MGL injects
- * the texCoord Y-flip for fullscreen sampled-framebuffer shaders; this avoids
- * false negatives from fragile string matching of MSL source. */
-bool mglProgramHasExistingFramebufferSampleYFlip(Program *program);
-
-/* Unified Y-Flip decision for sampling a render-target texture.
- *
- * Authority is stored per-RT in `tex->mtl_render_yflip_authority`, packed as
- * (mtl_render_target_write_version << 1) | use_original.  The low bit is only
- * authoritative for writes whose later GL-visible sampling should use the
- * original Metal texture; framebuffer-input fullscreen passes must continue to
- * refresh/use the sampled copy.
- *
- * Decision matrix:
- *   render_yflip | sample_yflip | decision
- *   --------------+--------------+----------------------------------
- *   false         | false        | USE_SAMPLED_COPY  (copy flips once)
- *   false         | true         | USE_ORIGINAL_AND_INJECT
- *   true          | false        | USE_ORIGINAL  (render already flipped)
- *   true          | true         | USE_ORIGINAL_AND_INJECT
- *
- * The key fix: when render_yflip=true and sample_yflip=false (the Minecraft
- * lightmap case — procedural fullscreen write, later terrain sample), we use
- * the original texture instead of the Y-flipped copy, avoiding double-flip.
- *
- * Defensive downgrade: if the authority version does not match the current
- * `mtl_render_target_write_version`, treat as "not injected" so the safe
- * pre-fix behavior (Y-flipped copy) is used.
- */
-MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex, Program *samplingProgram);
-
-/* Returns true if the RT write recorded in `tex->mtl_render_yflip_authority`
- * should be sampled from the original Metal texture AND the authority is still
- * current (version matches `mtl_render_target_write_version`).
- *
- * Used by RT Sync to skip generating a Y-flipped copy for authoritative RTs —
- * sampling consumers will use the original via the decision above. */
-bool mglRTWriteAuthorityIsCurrentAndUsesOriginal(Texture *tex);
+MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex);
 
 #ifdef __cplusplus
 }

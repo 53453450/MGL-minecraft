@@ -621,8 +621,7 @@ void mglBindingLogTexBufferBind(
 void mglBindingLogRTYFlipDecision(
     const char *stage, uint32_t program, const char *name, uint32_t binding,
     uint32_t unit, uint32_t tex, const char *label, const char *decision_name,
-    int decision, uint32_t authority, uint32_t rt_ver, uint32_t copy_ver,
-    int has_copy, int sample_yflip);
+    int decision, uint32_t rt_ver, uint32_t copy_ver, int has_copy);
 void mglBindingLogRTSampleCopySample(
     uint64_t hit, uint64_t bind_call, uint32_t program, uint32_t vs,
     uint32_t fs, const char *name, uint32_t binding, uint32_t unit,

@@ -190,24 +190,6 @@ void mglBatchRtMarkColorAttachmentWritten(void *renderer, GLMContext ctx,
     Texture *tex = mglRendererAttachmentTextureFor(ctx, attachment);
     mglMarkTextureLevelRenderTargetWrittenImpl(tex, attachment->level,
                                               __func__, __LINE__);
-    Program *renderingProgram = mglResolveProgramFromState(ctx);
-    const int yflip = mgl_batch_rt_yflip_authority(
-        renderingProgram && renderingProgram->modules[_VERTEX_SHADER]
-                                .mgl_injected_framebuffer_yflip
-            ? 1
-            : 0,
-        renderingProgram ? mglRenderSamplerUnitExplicit(
-                               (uint32_t)renderingProgram->modules[_VERTEX_SHADER]
-                                   .mgl_injected_framebuffer_yflip)
-                         : 0,
-        renderingProgram && mglRendererProgramHasSampledResourceNamed(
-                                renderingProgram, "InSampler"),
-        renderingProgram && mglRendererProgramHasSampledResourceNamed(
-                                renderingProgram, "DiffuseSampler"));
-    if (tex && yflip) {
-        tex->mtl_render_yflip_authority |= 1u;
-        mglTextureViewFamilyWritten(tex);
-    }
     if (mgl_batch_rt_should_diag_attachment0(
             attachment_index, mglTraceLogIsEnabled() ? 1 : 0,
             mglTextureCanUseGLSampledRenderTargetCopy(tex) ? 1 : 0)) {

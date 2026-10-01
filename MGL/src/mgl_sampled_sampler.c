@@ -76,8 +76,6 @@ static const char *mglSsYFlipDecisionName(MGLYFlipDecision decision)
             return "original";
         case MGL_YFLIP_USE_SAMPLED_COPY:
             return "sampled-copy";
-        case MGL_YFLIP_USE_ORIGINAL_AND_INJECT:
-            return "original-inject";
         default:
             return "unknown";
     }
@@ -260,7 +258,7 @@ static int mglSsGLSampledCopyContentFresh(const Texture *tex)
 }
 
 bool mglSampledRenderTargetCopyPlan(
-    void *renderer, Texture *ptr, void **texture_ptr, Program *sample_program,
+    void *renderer, Texture *ptr, void **texture_ptr,
     uint32_t expected_type, uint32_t expected_kind, int used_type_fallback,
     const char *stage, GLuint program_name, GLuint program_binding,
     GLuint texture_unit, const char *sampled_name, int *used_sampled_copy_out,
@@ -270,15 +268,13 @@ bool mglSampledRenderTargetCopyPlan(
         return true;
     }
     void *texture = *texture_ptr;
-    MGLYFlipDecision yflip = mglDecideYFlipForSampledRT(ptr, sample_program);
+    MGLYFlipDecision yflip = mglDecideYFlipForSampledRT(ptr);
     if (mglSsTraceRTYFlipDiagnosticsEnabled()) {
         mglBindingLogRTYFlipDecision(
             stage, program_name, sampled_name, program_binding, texture_unit,
             ptr->name, mglTraceTextureLabel(ptr), mglSsYFlipDecisionName(yflip),
-            (int)yflip, ptr->mtl_render_yflip_authority,
-            ptr->mtl_render_target_write_version,
-            ptr->mtl_gl_sampled_write_version, ptr->mtl_gl_sampled_data ? 1 : 0,
-            mglProgramHasExistingFramebufferSampleYFlip(sample_program) ? 1 : 0);
+            (int)yflip, ptr->mtl_render_target_write_version,
+            ptr->mtl_gl_sampled_write_version, ptr->mtl_gl_sampled_data ? 1 : 0);
     }
 
     void *sampled_copy = ptr->mtl_gl_sampled_data;
@@ -1376,7 +1372,7 @@ bool mglSampledBindTexturesForStage(
                     void *copy_trace_raw = sampled_copy_for_trace;
                     int used_copy_raw = used_sampled_copy ? 1 : 0;
                     bool planned = mglSampledRenderTargetCopyPlan(
-                        renderer, ptr, &texture_raw, sample_program,
+                        renderer, ptr, &texture_raw,
                         expected_type, (uint32_t)expected_kind,
                         used_fallback ? 1 : 0, stage_tag, program_name,
                         program_binding, texture_unit, sampled_name, &used_copy_raw,
@@ -1469,7 +1465,7 @@ bool mglSampledBindTexturesForStage(
                 {
                     void *texture_raw = texture;
                     bool planned = mglSampledRenderTargetCopyPlan(
-                        renderer, ptr, &texture_raw, sample_program,
+                        renderer, ptr, &texture_raw,
                         expected_type, (uint32_t)expected_kind,
                         used_fallback ? 1 : 0, stage_tag, program_name,
                         program_binding, texture_unit, sampled_name, NULL, NULL,

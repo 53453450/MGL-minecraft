@@ -29,12 +29,6 @@ static void test_rt_mark(void)
     expect(mgl_batch_rt_attachment_active(0x5u, 2, 8) == 1, "att2 active");
     expect(mgl_batch_rt_attachment_active(0x1u, 8, 8) == 0, "oob inactive");
 
-    expect(mgl_batch_rt_yflip_authority(1, 1, 0, 0) == 1, "yflip ok");
-    expect(mgl_batch_rt_yflip_authority(1, 1, 1, 0) == 0, "InSampler blocks");
-    expect(mgl_batch_rt_yflip_authority(1, 1, 0, 1) == 0, "Diffuse blocks");
-    expect(mgl_batch_rt_yflip_authority(0, 1, 0, 0) == 0, "no inject");
-    expect(mgl_batch_rt_yflip_authority(1, 0, 0, 0) == 0, "not explicit");
-
     expect(mgl_batch_rt_should_trace_write_mark(1) == 1, "hit1");
     expect(mgl_batch_rt_should_trace_write_mark(128) == 1, "hit128");
     expect(mgl_batch_rt_should_trace_write_mark(129) == 0, "hit129");

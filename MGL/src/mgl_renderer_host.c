@@ -210,9 +210,6 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
     tex->mtl_render_target_write_version++;
     mglMarkGLSampledCopyLevelDirty(tex, level);
 
-
-    tex->mtl_render_yflip_authority = (tex->mtl_render_target_write_version << 1);
-
     if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
         void *mtlTexture = tex->mtl_data ? (tex->mtl_data) : NULL;
         mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x sampledVer=%u copy=%p",

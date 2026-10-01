@@ -176,9 +176,6 @@ typedef struct MGLShaderModule_t {
     /* Cached Metal function for metallib_bytes_tes_compute (TES kernel). */
     void *mtl_function_compute;
     void *mtl_compute_pipeline;
-    GLboolean mgl_injected_framebuffer_yflip; /* true if MGL injected a
-                                               * texCoord Y-flip for sampled
-                                               * framebuffer in this shader */
     GLboolean needs_runtime_array_size_buffer;
 } MGLShaderModule;
 /* Compatibility aliases for the historical SPIR-V-era names. */

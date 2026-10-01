@@ -1514,35 +1514,6 @@ unsigned long mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
         current->f, bytes);
 }
 
-void mglLogSkippedGLSampledRenderTargetCopy(GLMContext glctx,
-                                                   Program *program,
-                                                   Texture *tex,
-                                                   const char *stage,
-                                                   const char *sampledName,
-                                                   GLuint binding,
-                                                   GLuint textureUnit,
-                                                   const char *reason)
-{
-    if (!mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
-        return;
-    }
-
-    if (mglTraceLogIsEnabled()) {
-        mglTraceLog("RT_SAMPLE_COPY_SKIP stage=%s program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" size=%ux%u reason=%s yflip=%d",
-                    stage ? stage : "",
-                    glctx ? (unsigned)glctx->active_state->program_name : 0u,
-                    sampledName ? sampledName : "",
-                    (unsigned)binding,
-                    (unsigned)textureUnit,
-                    (unsigned)tex->name,
-                    mglTraceTextureLabel(tex),
-                    tex ? (unsigned)tex->width : 0u,
-                    tex ? (unsigned)tex->height : 0u,
-                    reason ? reason : "",
-                    mglProgramHasExistingFramebufferSampleYFlip(program) ? 1 : 0);
-    }
-}
-
 /* CPU-converted vertex streams bind a fresh Metal buffer per attribute
  * (DOUBLE→float, INT→float, FIXED/packed unpack, integer signedness fix).
  * Those must keep distinct Metal slots when binding_offset differs; plain

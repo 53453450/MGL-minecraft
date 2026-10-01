@@ -6576,9 +6576,6 @@ void mglTextureViewFamilyWritten(Texture *writer)
         }
         member->is_render_target = GL_TRUE;
         member->mtl_render_target_write_version++;
-        member->mtl_render_yflip_authority =
-            (member->mtl_render_target_write_version << 1) |
-            (writer->mtl_render_yflip_authority & 1u);
         if (member->mtl_gl_sampled_data) {
             member->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
         }
@@ -6728,8 +6725,6 @@ void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origte
                                        orig->mtl_render_target_write_version)) {
         view->is_render_target = GL_TRUE;
         view->mtl_render_target_write_version = 1u;
-        view->mtl_render_yflip_authority =
-            (1u << 1) | (orig->mtl_render_yflip_authority & 1u);
     }
 
     GLuint depth = orig->target == GL_TEXTURE_3D ? base->depth : 1u;

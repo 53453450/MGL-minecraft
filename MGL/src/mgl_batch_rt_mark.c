@@ -23,20 +23,6 @@ int mgl_batch_rt_attachment_active(uint32_t bitfield, uint32_t index,
     return ((bitfield >> index) & 1u) != 0u;
 }
 
-int mgl_batch_rt_yflip_authority(int has_injected_yflip,
-                                 int yflip_sampler_explicit,
-                                 int has_in_sampler_named,
-                                 int has_diffuse_sampler_named)
-{
-    if (!has_injected_yflip || !yflip_sampler_explicit) {
-        return 0;
-    }
-    if (has_in_sampler_named || has_diffuse_sampler_named) {
-        return 0;
-    }
-    return 1;
-}
-
 int mgl_batch_rt_should_trace_write_mark(uint64_t hit)
 {
     return hit <= 128ull || (hit % 256ull) == 0ull;

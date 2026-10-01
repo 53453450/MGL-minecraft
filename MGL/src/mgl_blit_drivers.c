@@ -3153,7 +3153,7 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
             "srcReq=(%d,%d)-(%d,%d) dstReq=(%d,%d)-(%d,%d) "
             "copy srcGL=(%.3f,%.3f %.3fx%.3f) dstGL=(%.3f,%.3f %.3fx%.3f) "
             "srcMTL=(%ld,%ld) dstMTL=(%ld,%ld) scaled=%d flip=%d "
-            "srcObj=%u dstObj=%u srcRT=%d dstRT=%d srcAuth=0x%x dstAuth=0x%x "
+            "srcObj=%u dstObj=%u srcRT=%d dstRT=%d "
             "srcRtVer=%u dstRtVer=%u srcCopyVer=%u dstCopyVer=%u "
             "srcTex=%p fmt=%lu %lux%lu dstTex=%p fmt=%lu %lux%lu drawBuf=0x%x "
             "readBuf=0x%x";
@@ -3173,12 +3173,6 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
                     (draw_texture_object && draw_texture_object->is_render_target)
                         ? 1
                         : 0,
-                    read_texture_object
-                        ? (unsigned)read_texture_object->mtl_render_yflip_authority
-                        : 0u,
-                    draw_texture_object
-                        ? (unsigned)draw_texture_object->mtl_render_yflip_authority
-                        : 0u,
                     read_texture_object
                         ? (unsigned)read_texture_object
                               ->mtl_render_target_write_version
