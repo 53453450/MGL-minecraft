@@ -61,8 +61,6 @@ typedef struct MGLRenderCapabilityState_t {
     uint32_t supports8x_msaa;
     uint64_t max_sample_count;
     uint64_t max_texture_dimensions;
-    uint32_t bug_3d_getbytes_slice_oob;
-    uint32_t bug_3d_replace_region_nonzero_origin;
     uint32_t bug_msl_pipeline_rejection;
     uint64_t command_buffer_recovery_limit;
     uint64_t max_concurrent_command_buffers;

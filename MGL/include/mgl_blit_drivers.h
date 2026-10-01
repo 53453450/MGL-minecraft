@@ -81,18 +81,6 @@ bool mglBlitCopyImageSubDataFormatConversion(
     Texture *dst_tex, void *dst_texture, uint32_t dst_type, GLint dst_level,
     GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
     GLsizei depth);
-
-/* Buffer-mediated 3D-destination fallback for copyImageSubData (works around
- * the AGX "slice OOB" assertions).  Was -copyImageSubData3DFallback:….
- * Returns true when the fallback handled the copy, false to fall through to
- * the blit path — the method's YES/NO. */
-bool mglBlitCopyImageSubData3DFallback(
-    void *renderer, GLMContext glm_ctx, Texture *src_tex, void *src_texture,
-    uint32_t src_type, GLint src_level, GLint src_x, GLint src_y, GLint src_z,
-    Texture *dst_tex, void *dst_texture, uint32_t dst_type, GLint dst_level,
-    GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
-    GLsizei depth);
-
 /* Post-blit CPU readback for copyImageSubData: read the blitted region back
  * from the destination Metal texture so the CPU data stays authoritative.
  * Was -copyImageSubDataPostBlitReadback:dstTexture:….  Returns true when the

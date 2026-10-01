@@ -1550,42 +1550,6 @@ static int mglBd3DWriteGuarded(void *renderer, void *ctx_raw)
     return 1;
 }
 
-/* -copyImageSubData3DFallback:srcTex:srcTexture:srcType:srcLevel:srcX:srcY:
- *  srcZ:dstTex:dstTexture:dstType:dstLevel:dstX:dstY:dstZ:width:height:depth: */
-bool mglBlitCopyImageSubData3DFallback(
-    void *renderer, GLMContext glm_ctx, Texture *src_tex, void *src_texture,
-    uint32_t src_type, GLint src_level, GLint src_x, GLint src_y, GLint src_z,
-    Texture *dst_tex, void *dst_texture, uint32_t dst_type, GLint dst_level,
-    GLint dst_x, GLint dst_y, GLint dst_z, GLsizei width, GLsizei height,
-    GLsizei depth)
-{
-    /* Retired 3D destination fallback.  AGX no longer sets the markers that
-     * used to enter this path; native blit syncs CPU-authoritative source
-     * regions into Metal first.  See
-     * docs/AGX_COPY3D_DRIVER_BUG_RECHECK_2026-09-20.md. */
-    (void)renderer;
-    (void)glm_ctx;
-    (void)src_tex;
-    (void)src_texture;
-    (void)src_type;
-    (void)src_level;
-    (void)src_x;
-    (void)src_y;
-    (void)src_z;
-    (void)dst_tex;
-    (void)dst_texture;
-    (void)dst_type;
-    (void)dst_level;
-    (void)dst_x;
-    (void)dst_y;
-    (void)dst_z;
-    (void)width;
-    (void)height;
-    (void)depth;
-    return false;
-
-}
-
 /* === copyImageSubData: post-blit readback + the dispatch itself (log 145) ==
  *
  * Mechanical translation of -copyImageSubDataPostBlitReadback:… and
@@ -1606,11 +1570,7 @@ bool mglBlitCopyImageSubDataPostBlitReadback(
      * that CPU data is authoritative.  This avoids the need for the
      * metal_data_authoritative flag, which causes "modified contents outside
      * of copied region" / "wrong layer" errors when non-blitted regions of the
-     * same level have stale Metal data.
-     *
-     * Skip readback for 3D destinations (AGX getBytes bug on 3D textures,
-     * tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB)) and fall
-     * back to per-level authoritative instead. */
+     * same level have stale Metal data. */
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
     MGLRendererCoreState *core = areas.core;
