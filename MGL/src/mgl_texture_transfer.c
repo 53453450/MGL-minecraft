@@ -1742,7 +1742,7 @@ bool mglStoreCompressedTextureImage(GLMContext ctx,
     }
 
     Texture *tex = getTex(ctx, 0, target);
-    if (!tex) {
+    if (!tex || tex->immutable_storage) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
 

@@ -2743,16 +2743,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     }
 
     // all the levels are created on a tex storage call.. if we get here we should just assert
+    /* GL 4.6 §8.19: no TexImage* / CopyTexImage* on immutable storage. */
     if (tex->immutable_storage)
     {
-        // Compatibility: Treat glTexImage* on immutable texture as glTexSubImage*
-        // This allows guests to update content using glTexImage* which is common in some drivers
-        // We pass 0 for offsets. texSubImage will handle validation.
-        if (pixels == NULL) {
-            // Allocation-only call against immutable storage: nothing to upload.
-            return true;
-        }
-        return texSubImage(ctx, tex, face, level, 0, 0, 0, width, height, depth, format, type, pixels);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
 
     /*

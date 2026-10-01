@@ -952,6 +952,42 @@ static int test_texture_mip_dimensions(unsigned char *pixels,
         goto cleanup;
     }
 
+    /* GL 4.6 §8.19: TexImage* / CopyTexImage* / CompressedTexImage* on
+     * immutable storage are INVALID_OPERATION even if nothing changes. */
+    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 0, 0, 16, 16, 0);
+    if (expect_single_gl_error("texture_mip_dimensions: copy into immutable",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+    {
+        static const unsigned char bptc_blocks[64] = {0};
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, GL_COMPRESSED_RGBA_BPTC_UNORM,
+                               8, 8, 0, (GLsizei)sizeof(bptc_blocks),
+                               bptc_blocks);
+    }
+    if (expect_single_gl_error("texture_mip_dimensions: compressed into immutable",
+                               GL_INVALID_OPERATION) ||
+        expect_bound_texture_level_dimensions("texture_mip_dimensions: immutable kept",
+                                              GL_TEXTURE_2D, 0, 16, 16, 1)) {
+        goto cleanup;
+    }
+    {
+        GLuint tex1d = 0;
+        int bad;
+        glGenTextures(1, &tex1d);
+        glBindTexture(GL_TEXTURE_1D, tex1d);
+        glTexStorage1D(GL_TEXTURE_1D, 1, GL_RGBA8, 16);
+        drain_gl_errors();
+        glTexImage1D(GL_TEXTURE_1D, 0, GL_RGBA8, 16, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        bad = expect_single_gl_error("texture_mip_dimensions: 1D image into immutable",
+                                     GL_INVALID_OPERATION);
+        glDeleteTextures(1, &tex1d);
+        if (bad) {
+            goto cleanup;
+        }
+    }
+
     glBindTexture(GL_TEXTURE_RECTANGLE, textures[7]);
     drain_gl_errors();
     glTexStorage2D(GL_TEXTURE_RECTANGLE, 2, GL_RGBA8, 16, 16);
