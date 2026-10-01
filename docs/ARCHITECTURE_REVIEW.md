@@ -16,7 +16,7 @@
 
 | 指标 | 审查稿 | 落地后 |
 |------|--------|--------|
-| P0 阻断项仍开放 | 3 | 0（F01 fail-closed；F02 误报；F03 已进 CI） |
+| P0 阻断项仍开放 | 3 | 0（F01 已接通；F02 误报；F03 已进 CI） |
 | P1 仍开放 | 16 | 历史 F16（VS GPU capture 与 ObjC renderer 尚未压到 layer/drawable/swap）；续审新增 B01-B07 |
 | P2 仍开放 | 5 | 0（F20 share 显式失败；F21 PSO cache 加锁） |
 | 已证实发现 | 22/24 | 不变；F23/F24 仍为 not-a-bug |
@@ -68,10 +68,10 @@
 #### F01 DrawTransformFeedback* 静默 no-op — landed
 
 - 域：GL ABI · 置信：confirmed
-- 证据：`mgl_gl_extensions.c:2950–2983` 四个入口 `ERROR_RETURN(GL_INVALID_OPERATION)`。`test-arch-correctness` F01。
-- 规范：GL 4.6 Core §13.2.3：`DrawTransformFeedback*` 等价于按捕获顶点数 `DrawArrays*`。
+- 证据：`mglDrawTransformFeedbackCommon`（`mgl_gl_extensions.c`）按 End 时锁存的每流顶点数调用 `mglDrawArraysInstanced`；`test-arch-correctness` F01 断言规格错误码；`test_regression` `draw_transform_feedback` / `xfb_vs_primitive_capture` / `xfb_object_buffer_bindings`。
+- 规范：GL 4.6 Core §13.3.3：`DrawTransformFeedback*` 等价于 `DrawArraysInstanced(mode, 0, count, instancecount)`；表 23.48 索引 TF buffer 绑定为 TF 对象状态。
 - 动作：未实现前应对非法/未实现路径报 `INVALID_OPERATION`；实现 Metal 捕获后再接通。禁止静默成功。
-- 落地：fail-closed 已做。Metal 捕获后的真实 Draw 仍未接通。
+- 落地：已接通。VS-only 捕获按独立图元记录（§13.3.2），TF 对象持有自己的索引 buffer 绑定。
 
 #### F02 24 项 golden 中缺 17 个 TGA — misreported
 
