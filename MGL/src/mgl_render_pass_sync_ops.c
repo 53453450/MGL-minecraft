@@ -1057,7 +1057,7 @@ static void mglRsUpdateViewportAndScissor(void *renderer)
             }
 
             GLint metalSy = mglRenderMetalScissorY(
-                sx, sh, (uint32_t)passHeight,
+                sy, sh, (uint32_t)passHeight,
                 (uint32_t)state->var.clip_origin);
 
 	            if (traceEncoderState) {

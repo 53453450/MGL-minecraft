@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 137
+#define MAX_TESTS 138
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18300,6 +18300,72 @@ static int test_texture_default_state(unsigned char *pixels,
 
 /* §8.23.1: with TEXTURE_COMPARE_MODE NONE a non-shadow sampler reads r = D,
  * expanded to (r, 0, 0, 1) by §11.1.3.5, whatever the sampler is named. */
+/* GL 4.6 §14.9.2: the scissor box is in window coordinates with (x, y) at
+ * the lower left, for draws and clears alike. */
+static int test_scissor_offset(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    if (!prog) return 3;
+    GLuint vao = 0, tex = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &tex);
+    if (!fbo) return 3;
+    glViewport(0, 0, REG_W, REG_H);
+    glClearColor(1.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(16, 64, 32, 16);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glScissor(80, 96, 16, 16);
+    glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDisable(GL_SCISSOR_TEST);
+
+    static const struct { int x, y; unsigned char r, g, b; int bit; } probes[] = {
+        {20, 70, 0, 255, 0, 1},   /* inside the draw box */
+        {20, 52, 255, 0, 0, 2},   /* the draw box mirrored vertically */
+        {8, 70, 255, 0, 0, 4},    /* left of the draw box */
+        {85, 100, 0, 0, 255, 8},  /* inside the clear box */
+        {85, 20, 255, 0, 0, 16},  /* the clear box mirrored vertically */
+    };
+    for (size_t i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+        unsigned char b[4];
+        glReadPixels(probes[i].x, probes[i].y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+        if (b[0] != probes[i].r || b[1] != probes[i].g || b[2] != probes[i].b) {
+            fprintf(stderr, "scissor_offset: (%d,%d) got %u,%u,%u\n",
+                    probes[i].x, probes[i].y, b[0], b[1], b[2]);
+            fail |= probes[i].bit;
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 32;
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    if (fail) fprintf(stderr, "scissor_offset: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 static int test_sample_depth_texture(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
@@ -21201,6 +21267,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("incomplete_texture_storage", test_incomplete_texture_storage),
     SELF_CHECK_TEST("texture_default_state", test_texture_default_state),
     SELF_CHECK_TEST("sample_depth_texture", test_sample_depth_texture),
+    SELF_CHECK_TEST("scissor_offset", test_scissor_offset),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
