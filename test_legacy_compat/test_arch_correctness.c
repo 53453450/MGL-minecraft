@@ -259,12 +259,9 @@ static void test_r3_draw_state(void)
     memset(&key, 0, sizeof(key));
     mglComputeStateKey(ctx, GL_TRIANGLES, true, &key);
 
-    MGLDrawState ds;
-    mglDrawStateFromKey(&ds, &key, 1u);
-    expect(ds.valid && ds.uses_elements &&
-               ds.viewport[0] == 1 && ds.viewport[1] == 2 &&
-               ds.scissor[0] == 5 && ds.scissor_enabled,
-           "R3 DrawState captures indexed viewport/scissor");
+    expect(key.viewport[0] == 1 && key.viewport[1] == 2 &&
+               key.scissor[0] == 5 && key.scissor_enabled,
+           "R3 state key captures viewport/scissor");
 
     /* Simulate independent replay workspace storage without shallow-copying
      * HashTables (those aliases would dangle after destroy). */
@@ -424,7 +421,6 @@ static void test_r2_frontend_parse_count(void)
 
 static void test_r4_fake_executor(void)
 {
-    MGLDrawState ds;
     MGLStateKey key;
     memset(&key, 0, sizeof(key));
     key.program_name = 1;
@@ -432,7 +428,6 @@ static void test_r4_fake_executor(void)
     key.viewport[0] = 0;
     key.viewport[2] = 8;
     key.scissor[2] = 8;
-    mglDrawStateFromKey(&ds, &key, 1u);
 
     void *ex = mglFakeDrawExecutorCreate();
     expect(ex != NULL, "R4 fake executor create");
@@ -448,10 +443,9 @@ static void test_r4_fake_executor(void)
            "R4 typed handles report live for matching generation");
     expect(!mglHandleIsLive(vb.obj, vb.generation, 2),
            "R4 typed handles reject stale generation");
-    expect(ds.valid && ds.uses_elements, "R4 DrawState ready for indexed encode");
-    expect(vt->encode_indexed(ex, &ds, vb, ib, 3u) == 0 &&
+    expect(vt->encode_indexed(ex, &key, vb, ib, 3u) == 0 &&
                mglFakeDrawExecutorEncodeCount(ex) == 1u,
-           "R4 fake executor encodes indexed DrawState once");
+           "R4 fake executor encodes indexed draw once");
     vt->destroy(ex);
 }
 
