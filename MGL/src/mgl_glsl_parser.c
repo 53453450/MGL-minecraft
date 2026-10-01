@@ -2337,6 +2337,7 @@ static MGLDecl *parse_declaration(MGLParser *p)
     }
     d->line = line;
     d->layout_location = -1;   /* "unspecified", per mgl_glsl_ast.h */
+    d->layout_component = -1;
     d->layout_binding = -1;    /* "unspecified", per mgl_glsl_ast.h */
     d->layout_offset = -1;     /* atomic-counter offset, -1 = unspecified */
     d->layout_vertices = -1;   /* TCS: layout(vertices=N), unspecified */
@@ -2526,6 +2527,8 @@ more_qualifiers:
                 if (at_num(p)) {
                     if (n == 8 && memcmp(s, "location", 8) == 0) {
                         d->layout_location = (int32_t)cur_double(p);
+                    } else if (n == 9 && memcmp(s, "component", 9) == 0) {
+                        d->layout_component = (int32_t)cur_double(p);
                     } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
                         d->layout_binding = (int32_t)cur_double(p);
                         if (d->layout_binding < 0) {

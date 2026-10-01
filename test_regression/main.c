@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 123
+#define MAX_TESTS 124
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -16802,6 +16802,114 @@ static int test_stage_interface_location_matching(unsigned char *pixels,
     return fail;
 }
 
+/* GLSL 4.60 §4.4.1.3 / GL 4.6 §7.4.1: layout(component) packs several
+ * varyings into one location and takes part in interface matching.  Uses
+ * outside the vertex-output / fragment-input interface are rejected. */
+static int test_stage_interface_component(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+#define COMP_VS_HEAD "#version 450 core\n" \
+    "layout(location=0) in vec2 position;\n"
+#define COMP_VS_MAIN(body) "void main() { " body \
+    " gl_PointSize = 1.0; gl_Position = vec4(position, 0.0, 1.0); }\n"
+#define COMP_FS_HEAD "#version 450 core\nlayout(location=0) out vec4 frag;\n"
+
+    static const char *vs_pack = COMP_VS_HEAD
+        "layout(location=0, component=0) out float x;\n"
+        "layout(location=0, component=1) out float y;\n"
+        "layout(location=1) out float p;\n"
+        "layout(location=1, component=2) out vec2 zw;\n"
+        COMP_VS_MAIN("x = 1.0; y = 0.5; p = 1.0; zw = vec2(0.25, 1.0);");
+    static const char *fs_pack = COMP_FS_HEAD
+        "layout(location=0, component=1) in float a;\n"
+        "layout(location=1, component=2) in vec2 b;\n"
+        "void main() { frag = vec4(a, b, 1); }\n";
+    unsigned char px[4] = { 0 };
+    GLuint p = link_program(vs_pack, fs_pack);
+    if (p) {
+        iface_point_color(p, px);
+        glDeleteProgram(p);
+    }
+    if (!p || px[0] < 120 || px[0] > 135 || px[1] < 56 || px[1] > 72 ||
+        px[2] < 250) {
+        fprintf(stderr, "stage_interface_component: packed link=%d "
+                "rgb=(%u,%u,%u), want (128,64,255)\n", p != 0, px[0], px[1],
+                px[2]);
+        fail = 1;
+    }
+
+    static const char *fs_wrong_comp = COMP_FS_HEAD
+        "layout(location=0, component=2) in float a;\n"
+        "void main() { frag = vec4(a); }\n";
+    GLint wrong_comp = iface_link_status(vs_pack, fs_wrong_comp);
+
+    static const char *bad_vs[] = {
+        COMP_VS_HEAD "layout(component=1) out float a;\n"
+            COMP_VS_MAIN("a = 1.0;"),
+        COMP_VS_HEAD "layout(location=1, component=2) out vec3 a;\n"
+            COMP_VS_MAIN("a = vec3(1.0);"),
+        COMP_VS_HEAD "layout(location=1, component=1) out mat2 a;\n"
+            COMP_VS_MAIN("a = mat2(1.0);"),
+        COMP_VS_HEAD "layout(location=1, component=1) out double a;\n"
+            COMP_VS_MAIN("a = 1.0;"),
+        "#version 450 core\n"
+            "layout(location=0, component=1) in float a;\n"
+            "void main() { gl_Position = vec4(a); }\n",
+    };
+    for (int i = 0; i < 5; i++) {
+        GLuint sh = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(sh, 1, &bad_vs[i], NULL);
+        glCompileShader(sh);
+        GLint ok = 1;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        glDeleteShader(sh);
+        if (ok) {
+            fprintf(stderr, "stage_interface_component: invalid shader %d "
+                    "compiled\n", i);
+            fail = 1;
+        }
+    }
+
+    static const char *gs_pass =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices = 1) out;\n"
+        "void main() { gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+    static const char *fs_plain = COMP_FS_HEAD
+        "void main() { frag = vec4(1); }\n";
+    GLuint gs_prog = 0;
+    {
+        GLuint shaders[3] = {
+            compile_shader(GL_VERTEX_SHADER, vs_pack),
+            compile_shader(GL_GEOMETRY_SHADER, gs_pass),
+            compile_shader(GL_FRAGMENT_SHADER, fs_plain),
+        };
+        GLint ok = -1;
+        if (shaders[0] && shaders[1] && shaders[2]) {
+            gs_prog = glCreateProgram();
+            for (int i = 0; i < 3; i++) glAttachShader(gs_prog, shaders[i]);
+            glLinkProgram(gs_prog);
+            glGetProgramiv(gs_prog, GL_LINK_STATUS, &ok);
+            glDeleteProgram(gs_prog);
+        }
+        for (int i = 0; i < 3; i++) if (shaders[i]) glDeleteShader(shaders[i]);
+        if (wrong_comp != GL_FALSE || ok != GL_FALSE) {
+            fprintf(stderr, "stage_interface_component: link status "
+                    "component-mismatch=%d with-GS=%d, want 0 0\n",
+                    wrong_comp, ok);
+            fail = 1;
+        }
+    }
+#undef COMP_VS_HEAD
+#undef COMP_VS_MAIN
+#undef COMP_FS_HEAD
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -19556,6 +19664,8 @@ static const TestCase TESTS[] = {
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("stage_interface_location_matching",
                     test_stage_interface_location_matching),
+    SELF_CHECK_TEST("stage_interface_component",
+                    test_stage_interface_component),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

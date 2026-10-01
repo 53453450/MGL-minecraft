@@ -420,7 +420,11 @@ std::string varyingIfaceTag(const VarSym &v, uint32_t elem,
                                    bool forceLocationTag) {
     if (v.location != UINT32_MAX &&
         (v.locationExplicit || forceLocationTag)) {
-        return "mgl_loc_" + std::to_string(v.location + elem);
+        std::string tag = "mgl_loc_" + std::to_string(v.location + elem);
+        if (v.component != 0u) {
+            tag += "_c" + std::to_string(v.component);
+        }
+        return tag;
     }
     if (v.type.isArray() || v.type.isMatrix() || elem != 0u) {
         return v.name + "_elm" + std::to_string(elem);

@@ -14767,7 +14767,24 @@ static int airStagePairInterfaceCheck(const MGLTranslationUnit *atu, int astage,
     } else {
         MGLSemaError *le = nullptr;
         uint32_t lec = 0;
-        if (varying_link && mglGLSLInterfaceCheck(&a, &b, &le, &lec)) {
+        if (!varying_link && astage == MGL_STAGE_VERTEX) {
+            /* GS / tessellation capture keys VS outputs by location only. */
+            for (uint32_t i = 0; i < a.symbol_count && rc == 0; i++) {
+                const MGLIRSymbol *sym = a.symbols[i];
+                if (sym && (sym->qualifiers & MGL_AST_Q_OUT) &&
+                    sym->component != 0u) {
+                    if (err_buf && err_cap)
+                        snprintf(err_buf, err_cap,
+                                 "layout(component) on vertex output '%s' is "
+                                 "not supported with geometry or "
+                                 "tessellation shaders",
+                                 sym->name ? sym->name : "");
+                    rc = -1;
+                }
+            }
+        }
+        if (rc == 0 && varying_link &&
+            mglGLSLInterfaceCheck(&a, &b, &le, &lec)) {
             if (err_buf && err_cap && le && lec)
                 snprintf(err_buf, err_cap, "%s", le[0].message);
             rc = -1;

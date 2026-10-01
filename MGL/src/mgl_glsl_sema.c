@@ -3525,6 +3525,60 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
     }
 }
 
+/* GLSL 4.60 §4.4.1.3 / §4.4.2: layout(component).  Varyings are linked by
+ * per-(location, component) Metal tags, which only the vertex-output /
+ * fragment-input interface supports; other uses fail compile instead of
+ * aliasing component 0. */
+static void check_component_layout(Sema *s, const MGLDecl *d,
+                                   const MGLIRType *t, const char *var_name)
+{
+    for (uint32_t i = 0; i < d->struct_member_count; i++) {
+        if (d->struct_members[i] && d->struct_members[i]->layout_component >= 0) {
+            sema_error(s, d->line,
+                       "layout(component) on block members is not supported");
+            return;
+        }
+    }
+    if (d->layout_component < 0) {
+        return;
+    }
+    if (d->layout_location < 0) {
+        sema_error(s, d->line, "layout(component) on '%s' requires location",
+                   var_name);
+        return;
+    }
+    const MGLIRType *et = t;
+    while (et && et->kind == MGLIR_TYPE_ARRAY) {
+        et = et->elem_type;
+    }
+    if (!et || (et->kind != MGLIR_TYPE_SCALAR && et->kind != MGLIR_TYPE_VECTOR)) {
+        sema_error(s, d->line,
+                   "layout(component) on '%s' requires a scalar or vector",
+                   var_name);
+        return;
+    }
+    uint32_t is_double = et->scalar == MGLIR_SCALAR_DOUBLE;
+    uint32_t width = (et->kind == MGLIR_TYPE_VECTOR ? et->cols : 1u) *
+                     (is_double ? 2u : 1u);
+    uint32_t comp = (uint32_t)d->layout_component;
+    if (comp + width > 4u || (is_double && (comp & 1u))) {
+        sema_error(s, d->line,
+                   "layout(component = %u) on '%s' exceeds the location",
+                   comp, var_name);
+        return;
+    }
+    int supported = (s->stage == MGL_STAGE_VERTEX &&
+                     (d->qualifiers & MGL_AST_Q_OUT)) ||
+                    (s->stage == MGL_STAGE_FRAGMENT &&
+                     (d->qualifiers & MGL_AST_Q_IN));
+    if (!supported) {
+        sema_error(s, d->line,
+                   "layout(component) on '%s' is only supported on vertex "
+                   "outputs and fragment inputs",
+                   var_name);
+    }
+}
+
 static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
 {
     /* GLSL 4.60 §4.4.5: `layout(row_major) buffer;` / `uniform;` sets the
@@ -3794,6 +3848,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             }
         }
     }
+    check_component_layout(s, d, t, var_name);
     Sym *existing = symtab_lookup_local(tab, var_name);
     if (existing != NULL && existing->kind != SYM_STRUCT) {
         sema_error(s, d->line, "redeclaration of '%s'", var_name);
@@ -3853,6 +3908,9 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             isym->location = (d->layout_location >= 0)
                                  ? (uint32_t)d->layout_location
                                  : UINT32_MAX;
+            isym->component = (d->layout_component > 0)
+                                  ? (uint32_t)d->layout_component
+                                  : 0u;
             isym->stream = d->layout_stream;
             /* Interface blocks (`uniform Block { ... }`) vs named struct
              * uniforms (`struct S{...}; uniform S s`) — only the former
@@ -4430,7 +4488,8 @@ static int interface_var_is_ordinary(const MGLIRSymbol *sym)
 static int interface_vars_paired(const MGLIRSymbol *out, const MGLIRSymbol *in)
 {
     if (out->location != UINT32_MAX && in->location != UINT32_MAX) {
-        return out->location == in->location;
+        return out->location == in->location &&
+               out->component == in->component;
     }
     return strcmp(out->name, in->name) == 0;
 }
