@@ -79,8 +79,9 @@ cd external
 ./build_external.sh
 ```
 
-`clone_external.sh` only fetches OpenGL-Registry, ezxml, and Apple's official
-[metal-cpp](https://github.com/apple/metal-cpp) when those directories are missing.
+`clone_external.sh` checks out OpenGL-Registry at the commit in
+`MGL/generated/registry.lock`, and fetches ezxml (pinned commit) and Apple's official
+[metal-cpp](https://github.com/apple/metal-cpp) only when those directories are missing.
 `external/glfw` is the repository's locally modified checkout; it is never cloned
 or pulled from upstream and is always used for the build.
 

@@ -61,8 +61,9 @@ cd external
 ./build_external.sh
 ```
 
-`clone_external.sh` 只会在依赖目录缺失时拉取 OpenGL-Registry、ezxml 和 Apple
-官方 [metal-cpp](https://github.com/apple/metal-cpp)。`external/glfw` 是本仓库的
+`clone_external.sh` 会把 OpenGL-Registry 检出到 `MGL/generated/registry.lock`
+记录的 commit；ezxml（固定 commit）和 Apple 官方
+[metal-cpp](https://github.com/apple/metal-cpp) 只在目录缺失时拉取。`external/glfw` 是本仓库的
 本地修改版本，不会从远端克隆或更新，构建时始终使用该目录。
 
 ### 3. 编译 MGL
