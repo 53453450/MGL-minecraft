@@ -2974,19 +2974,22 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
     int needs_format_conversion_blit = 0;
     if (mglBdTextureInfo(readtexid).pixel_format !=
         mglBdTextureInfo(drawtexid).pixel_format) {
-        int rgba_bgra_pair =
-            mglRenderBlitIsRGBA8BGRA8Pair(
-                (uint32_t)mglBdTextureInfo(readtexid).pixel_format,
-                (uint32_t)mglBdTextureInfo(drawtexid).pixel_format) != 0;
+        /* The scaled path samples texture2d<float>, so it converts between
+         * any fixed-point / floating-point pair but cannot carry integers. */
+        int float_pair =
+            !mglMetalPixelFormatIsIntegerColor(
+                mglBdTextureInfo(readtexid).pixel_format) &&
+            !mglMetalPixelFormatIsIntegerColor(
+                mglBdTextureInfo(drawtexid).pixel_format);
 
-        if (rgba_bgra_pair) {
+        if (float_pair) {
             needs_format_conversion_blit = 1;
-            static uint64_t s_rgba_bgra_blit_log_count = 0;
-            uint64_t hit = ++s_rgba_bgra_blit_log_count;
+            static uint64_t s_convert_blit_log_count = 0;
+            uint64_t hit = ++s_convert_blit_log_count;
             if (hit <= 4ull || (hit % 2048ull) == 0ull) {
                 fprintf(stderr,
                         "MGL INFO: mtlBlitFramebuffer using shader conversion "
-                        "for RGBA/BGRA pair (src=%lu dst=%lu hit=%llu)\n",
+                        "(src=%lu dst=%lu hit=%llu)\n",
                         (unsigned long)mglBdTextureInfo(readtexid).pixel_format,
                         (unsigned long)mglBdTextureInfo(drawtexid).pixel_format,
                         (unsigned long long)hit);

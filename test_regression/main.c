@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 100
+#define MAX_TESTS 101
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14253,6 +14253,102 @@ static int test_clear_alpha_readback(unsigned char *pixels,
     return result;
 }
 
+static GLuint make_color_fbo(GLenum internal_format, GLenum format,
+                             GLenum type, GLuint *out_tex)
+{
+    GLuint fbo = 0, tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, (GLint)internal_format, REG_W, REG_H, 0,
+                 format, type, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+        return 0;
+    }
+    *out_tex = tex;
+    return fbo;
+}
+
+/* GL 4.6 §18.3.1: color blits between fixed-point and floating-point formats
+ * convert to the destination format, clamping only for fixed-point
+ * destinations. */
+static int test_blit_color_format_conversion(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint unorm_tex = 0, float_tex = 0;
+    GLuint unorm_fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE,
+                                      &unorm_tex);
+    GLuint float_fbo = make_color_fbo(GL_RGBA16F, GL_RGBA, GL_FLOAT,
+                                      &float_tex);
+    if (!unorm_fbo || !float_fbo) return 2;
+
+    int result = 0;
+    glViewport(0, 0, REG_W, REG_H);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, unorm_fbo);
+    glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, float_fbo);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, unorm_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, float_fbo);
+    glBlitFramebuffer(0, 0, REG_W, REG_H, 0, 0, REG_W, REG_H,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, float_fbo);
+    float f[4] = {-1.0f, -1.0f, -1.0f, -1.0f};
+    glReadPixels(3, 3, 1, 1, GL_RGBA, GL_FLOAT, f);
+    const float want[4] = {64.0f / 255.0f, 128.0f / 255.0f, 191.0f / 255.0f,
+                           1.0f};
+    for (int c = 0; c < 4; c++) {
+        float d = f[c] - want[c];
+        if (d > 0.01f || d < -0.01f) {
+            fprintf(stderr, "blit_color_format_conversion: RGBA8->RGBA16F "
+                    "%.4f/%.4f/%.4f/%.4f\n", f[0], f[1], f[2], f[3]);
+            result = 1;
+            break;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, float_fbo);
+    glClearColor(2.0f, -1.0f, 0.5f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, float_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, unorm_fbo);
+    glBlitFramebuffer(0, 0, REG_W, REG_H, 0, 0, REG_W, REG_H,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, unorm_fbo);
+    unsigned char px[4] = {0xAA, 0xAA, 0xAA, 0xAA};
+    glReadPixels(3, 3, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] != 255 || px[1] != 0 || px[2] < 127 || px[2] > 128 ||
+        px[3] != 255) {
+        fprintf(stderr, "blit_color_format_conversion: RGBA16F->RGBA8 "
+                "%u/%u/%u/%u, want 255/0/128/255\n", px[0], px[1], px[2],
+                px[3]);
+        result = 1;
+    }
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "blit_color_format_conversion: unexpected GL error\n");
+        result = 1;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &unorm_fbo);
+    glDeleteFramebuffers(1, &float_fbo);
+    glDeleteTextures(1, &unorm_tex);
+    glDeleteTextures(1, &float_tex);
+    return result;
+}
+
 /* Draws a full-screen triangle whose color comes from the `Color` input fed
  * at the location GetAttribLocation reports; `Position` likewise. */
 static int attrib_name_draw_check(const char *label, const char *vs,
@@ -17106,6 +17202,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("framebuffer_texture_missing_object",
                     test_framebuffer_texture_missing_object),
     SELF_CHECK_TEST("clear_alpha_readback", test_clear_alpha_readback),
+    SELF_CHECK_TEST("blit_color_format_conversion",
+                    test_blit_color_format_conversion),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

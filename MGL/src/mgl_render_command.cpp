@@ -77,14 +77,6 @@ uint32_t mglRenderFBOBlitAttachmentOrColor0(uint32_t attachment, int is_color) {
     return GL_COLOR_ATTACHMENT0;
 }
 
-int mglRenderBlitIsRGBA8BGRA8Pair(uint32_t src_format, uint32_t dst_format) {
-    int src_rgba = src_format == 70u /* RGBA8Unorm */;
-    int src_bgra = src_format == 80u /* BGRA8Unorm */;
-    int dst_rgba = dst_format == 70u;
-    int dst_bgra = dst_format == 80u;
-    return (src_rgba && dst_bgra) || (src_bgra && dst_rgba) ? 1 : 0;
-}
-
 extern "C"
 int mglRenderScaledBlitUVs(
     uint32_t src_tex_w, uint32_t src_tex_h,

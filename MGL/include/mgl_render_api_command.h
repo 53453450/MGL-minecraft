@@ -32,8 +32,6 @@ int mglRenderFBOBlitAttachmentKnown(uint32_t attachment, int is_color);
 
 uint32_t mglRenderFBOBlitAttachmentOrColor0(uint32_t attachment, int is_color);
 
-int mglRenderBlitIsRGBA8BGRA8Pair(uint32_t src_format, uint32_t dst_format);
-
 /* scaled-blit UV computation (normalized source
  * rect with the Metal Y-flip, clamped, direction-swapped per the forward
  * flags).  Pure CPU, shared by both gates. */
