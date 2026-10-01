@@ -47,15 +47,33 @@ RUNNER="$PROJECT_DIR/scripts/run_regression_tests.sh"
 
 # --- ASan mode: instrumented build + env + cleanup ---
 CONFIG_MK="$PROJECT_DIR/config.mk"
+CONFIG_BACKUP=""
 CLEANUP_CONFIG=0
+
+# Restore the user's config.mk, or remove the one ASan mode created.
+cleanup() {
+  [[ "$CLEANUP_CONFIG" -eq 1 ]] || return 0
+  if [[ -n "$CONFIG_BACKUP" ]]; then
+    mv -f "$CONFIG_BACKUP" "$CONFIG_MK"
+    echo "==> Restored config.mk"
+  else
+    rm -f "$CONFIG_MK"
+    echo "==> Cleaned up config.mk"
+  fi
+}
+trap cleanup EXIT
 
 if [[ "$ASAN" -eq 1 ]]; then
   echo "==> ASan mode: enabling AddressSanitizer + UBSan"
   if [[ ! -f "$PROJECT_DIR/config.mk.example" ]]; then
     echo "ERROR: config.mk.example not found" >&2; exit 1
   fi
-  cp "$PROJECT_DIR/config.mk.example" "$CONFIG_MK"
+  if [[ -f "$CONFIG_MK" ]]; then
+    CONFIG_BACKUP="$(mktemp -t mgl-config-mk)"
+    cp -p "$CONFIG_MK" "$CONFIG_BACKUP"
+  fi
   CLEANUP_CONFIG=1
+  cp "$PROJECT_DIR/config.mk.example" "$CONFIG_MK"
   # Force rebuild even if --no-build was passed — sanitized binary required.
   NO_BUILD=0
   # ASan runtime options: don't abort on first error (we want flaky detection),
@@ -65,16 +83,6 @@ if [[ "$ASAN" -eq 1 ]]; then
   echo "==> Cleaning and rebuilding with sanitizers..."
   (cd "$PROJECT_DIR" && make clean) >/dev/null 2>&1
 fi
-
-# Ensure config.mk is restored on exit (ASan mode only).
-cleanup() {
-  if [[ "$CLEANUP_CONFIG" -eq 1 && -f "$CONFIG_MK" ]]; then
-    rm -f "$CONFIG_MK"
-    echo "==> Cleaned up config.mk"
-  fi
-}
-trap cleanup EXIT
-
 # First run: build (unless --no-build) and establish the baseline.
 FIRST_ARGS=""
 [[ "$NO_BUILD" -eq 1 ]] && FIRST_ARGS="--no-build"

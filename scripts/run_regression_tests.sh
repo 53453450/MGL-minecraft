@@ -48,14 +48,13 @@ fi
 GLFW_LIB="$(brew --prefix glfw 2>/dev/null)/lib"
 export DYLD_LIBRARY_PATH="$PROJECT_DIR/build:${GLFW_LIB}"
 
+rc=0
 if [[ "$DO_UPDATE" -eq 1 ]]; then
   echo "==> Updating golden images in $GOLDEN_DIR/ ..."
-  "$BINARY" --update --golden-dir "$GOLDEN_DIR"
-  rc=$?
+  "$BINARY" --update --golden-dir "$GOLDEN_DIR" || rc=$?
 else
   echo "==> Running regression suite (comparing vs $GOLDEN_DIR/) ..."
-  "$BINARY" --golden-dir "$GOLDEN_DIR"
-  rc=$?
+  "$BINARY" --golden-dir "$GOLDEN_DIR" || rc=$?
 fi
 
 if [[ $rc -eq 0 ]]; then
