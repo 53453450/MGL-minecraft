@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 147
+#define MAX_TESTS 148
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18506,6 +18506,128 @@ static int test_rt_respecify_orientation(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* GPU writes (render, render + TexSubImage, BlitFramebuffer,
+ * CopyTexSubImage, BlitFramebuffer from an upload-only source) into level 0
+ * must survive a later TexImage of level 1. */
+static int test_gpu_write_respecify(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint pgrad = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0); }\n");
+    if (!pgrad) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    GLuint tsrc = 0, fsrc = 0;
+    glGenTextures(1, &tsrc);
+    glBindTexture(GL_TEXTURE_2D, tsrc);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &fsrc);
+    glBindFramebuffer(GL_FRAMEBUFFER, fsrc);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tsrc, 0);
+    glViewport(0, 0, 16, 16);
+    glUseProgram(pgrad);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    static unsigned char up[16 * 16 * 4], up1[8 * 8 * 4], sub[16 * 4 * 4];
+    for (int y = 0; y < 16; y++)
+        memset(up + y * 16 * 4, 30 + y, 16 * 4);
+    GLuint tup = 0, fup = 0;
+    glGenTextures(1, &tup);
+    glBindTexture(GL_TEXTURE_2D, tup);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, up);
+    glGenFramebuffers(1, &fup);
+    glBindFramebuffer(GL_FRAMEBUFFER, fup);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tup, 0);
+    for (int y = 0; y < 16; y++)
+        memset(up + y * 16 * 4, 100 + y, 16 * 4);
+    memset(up1, 50, sizeof(up1));
+    memset(sub, 200, sizeof(sub));
+    int fail = 0;
+    for (int c = 0; c < 5; c++) {
+        GLuint tex = 0, fbo = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, up);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, tex, 0);
+        /* Rows 2 and 13 after the write. */
+        int want[2] = {2, 13};
+        if (c <= 1) {
+            glUseProgram(pgrad);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            if (c == 1) {
+                glBindTexture(GL_TEXTURE_2D, tex);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 12, 16, 4, GL_RGBA,
+                                GL_UNSIGNED_BYTE, sub);
+                want[1] = 200;
+            }
+        } else {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, c == 4 ? fup : fsrc);
+            if (c == 3) {
+                glBindTexture(GL_TEXTURE_2D, tex);
+                glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, 16, 8);
+            } else {
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+                glBlitFramebuffer(0, 0, 16, 8, 0, 0, 16, 8,
+                                  GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            }
+            if (c == 4) want[0] = 32;
+            want[1] = 113;
+        }
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, up1);
+
+        static unsigned char img[16 * 16 * 4];
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+        unsigned char rb[2][4] = {{0}};
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glReadPixels(4, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rb[0]);
+        glReadPixels(4, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rb[1]);
+        for (int k = 0; k < 2; k++) {
+            const int row = k == 0 ? 2 : 13;
+            if (img[(row * 16 + 4) * 4] != want[k] || rb[k][0] != want[k]) {
+                fprintf(stderr, "gpu_write_respecify: case %d row %d tex %u read %u want %d\n",
+                        c, row, img[(row * 16 + 4) * 4], rb[k][0], want[k]);
+                fail |= 1 << (c * 2 + k);
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 0x400;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fsrc);
+    glDeleteTextures(1, &tsrc);
+    glDeleteFramebuffers(1, &fup);
+    glDeleteTextures(1, &tup);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "gpu_write_respecify: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Rows 2, 5, 10 of a 16x16 texture through GetTexImage, ReadPixels on fbo
  * and texelFetch into fsample; returns 1 when any path disagrees. */
 static int rt_image_rows_check(const char *tag, GLuint tex, GLuint fbo,
@@ -22619,6 +22741,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("color_write_mask", test_color_write_mask),
     SELF_CHECK_TEST("clear_write_mask", test_clear_write_mask),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
+    SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

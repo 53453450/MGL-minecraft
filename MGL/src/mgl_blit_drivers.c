@@ -2485,13 +2485,20 @@ bool mglBlitResolveFramebufferAttachments(
                     "missing\n");
             return false;
         }
-        if (!read_texture_object->mtl_data || read_texture_object->dirty_bits) {
+        if (!read_texture_object->mtl_data || read_texture_object->dirty_bits ||
+            !read_texture_object->is_render_target) {
+            read_texture_object->is_render_target = true;
             if (!mglRendererBindMTLTexture(renderer, read_texture_object)) {
                 fprintf(stderr,
                         "MGL WARN: mtlBlitFramebuffer failed to bind read "
                         "texture to Metal\n");
                 return false;
             }
+        }
+        /* The blit plans address the source as flipped storage too. */
+        if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
+                                                         read_texture_object)) {
+            return false;
         }
         readtexid = read_texture_object->mtl_data;
         if (!readtexid) {
@@ -2551,6 +2558,11 @@ bool mglBlitResolveFramebufferAttachments(
             fprintf(stderr,
                     "MGL WARN: mtlBlitFramebuffer failed to bind draw texture "
                     "to Metal\n");
+            return false;
+        }
+        /* The blit plans address the destination as flipped storage. */
+        if (!mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
+                                                         draw_texture_object)) {
             return false;
         }
         drawtexid = draw_texture_object->mtl_data;
