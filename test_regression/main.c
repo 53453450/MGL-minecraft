@@ -18298,8 +18298,6 @@ static int test_texture_default_state(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
-/* §8.23.1: with TEXTURE_COMPARE_MODE NONE a non-shadow sampler reads r = D,
- * expanded to (r, 0, 0, 1) by §11.1.3.5, whatever the sampler is named. */
 /* GL 4.6 §14.9.2: the scissor box is in window coordinates with (x, y) at
  * the lower left, for draws and clears alike. */
 static int test_scissor_offset(unsigned char *pixels, const char *out_path)
@@ -18366,6 +18364,8 @@ static int test_scissor_offset(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* §8.23.1: with TEXTURE_COMPARE_MODE NONE a non-shadow sampler reads r = D,
+ * expanded to (r, 0, 0, 1) by §11.1.3.5, whatever the sampler is named. */
 static int test_sample_depth_texture(unsigned char *pixels, const char *out_path)
 {
     (void)pixels;
