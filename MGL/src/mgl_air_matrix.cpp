@@ -279,6 +279,10 @@ llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     llvm::ArrayType *larr = llvm::dyn_cast<llvm::ArrayType>(l->getType());
     llvm::ArrayType *rarr = llvm::dyn_cast<llvm::ArrayType>(r->getType());
     if (!larr && !rarr) return nullptr;
+    /* Scalar arrays (float[N] == float[N]) are not matrices. */
+    if ((larr && !larr->getElementType()->isVectorTy()) ||
+        (rarr && !rarr->getElementType()->isVectorTy()))
+        return nullptr;
 
     llvm::Type *elt = llvm::Type::getFloatTy(*cg.ctx);
     llvm::Constant *zero = llvm::ConstantFP::get(elt, 0.0);
