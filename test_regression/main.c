@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 120
+#define MAX_TESTS 121
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -15805,6 +15805,124 @@ static int test_xfb_vs_primitive_capture(unsigned char *pixels,
     return fail;
 }
 
+/* GL 4.6 §13.3.3: DrawTransformFeedback* replays the vertex count captured
+ * per stream by the last EndTransformFeedback on the object. */
+static int test_draw_transform_feedback(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+#define DTF_EXPECT(cond, ...) do { if (!(cond)) { \
+        fprintf(stderr, "draw_transform_feedback: " __VA_ARGS__); \
+        fprintf(stderr, "\n"); fail = 1; } } while (0)
+    while (glGetError() != GL_NO_ERROR) { }
+
+    GLuint prog = glCreateProgram();
+    GLuint vs = compile_shader(GL_VERTEX_SHADER, VS_XFB);
+    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, FS_XFB);
+    if (!vs || !fs) return 2;
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    const char *tf_varying = "tf_pos";
+    glTransformFeedbackVaryings(prog, 1, &tf_varying, GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint ok = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+    if (!ok) return 3;
+
+    static const float verts[] = { 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 6, 0 };
+    GLuint vao, vbo = make_vbo(verts, sizeof(verts));
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    GLuint bufs[2], tfos[2], gen_only, query;
+    glCreateBuffers(2, bufs);
+    glNamedBufferData(bufs[0], 64 * sizeof(float), NULL, GL_STATIC_READ);
+    glNamedBufferData(bufs[1], 64 * sizeof(float), NULL, GL_STATIC_READ);
+    glCreateTransformFeedbacks(2, tfos);
+    glGenTransformFeedbacks(1, &gen_only);
+    glGenQueries(1, &query);
+    glUseProgram(prog);
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    glDrawTransformFeedback(GL_POINTS, tfos[0]);
+    GLenum e_never_ended = glGetError();
+    glDrawTransformFeedback(GL_POINTS, 0xdeadu);
+    GLenum e_bad_id = glGetError();
+    glDrawTransformFeedback(GL_POINTS, gen_only);
+    GLenum e_gen_only = glGetError();
+
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, tfos[0]);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, bufs[0]);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
+    glBeginTransformFeedback(GL_TRIANGLES);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glEndTransformFeedback();
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    GLuint64 captured_prims = dtf_written(query);
+
+    glDrawTransformFeedbackStream(GL_POINTS, tfos[0], 4);
+    GLenum e_stream = glGetError();
+    glDrawTransformFeedbackInstanced(GL_POINTS, tfos[0], -1);
+    GLenum e_instances = glGetError();
+    DTF_EXPECT(e_never_ended == GL_INVALID_OPERATION &&
+               e_bad_id == GL_INVALID_VALUE && e_gen_only == GL_INVALID_VALUE &&
+               e_stream == GL_INVALID_VALUE && e_instances == GL_INVALID_VALUE,
+               "errors: never_ended=0x%x bad_id=0x%x gen_only=0x%x stream=0x%x "
+               "instances=0x%x", e_never_ended, e_bad_id, e_gen_only, e_stream,
+               e_instances);
+    DTF_EXPECT(captured_prims == 2, "capture wrote %llu primitives (want 2)",
+               (unsigned long long)captured_prims);
+
+    /* Replay tfos[0] (6 vertices) while tfos[1] captures points. */
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, tfos[1]);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, bufs[1]);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawTransformFeedback(GL_POINTS, tfos[0]);
+    glEndTransformFeedback();
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    GLuint64 replay = dtf_written(query);
+    float replayed[12];
+    glGetNamedBufferSubData(bufs[1], 0, sizeof(replayed), replayed);
+    DTF_EXPECT(replayed[0] == 0.5f && replayed[10] == 3.0f,
+               "replayed x[0]=%g x[5]=%g (want 0.5, 3)", replayed[0],
+               replayed[10]);
+
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query);
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawTransformFeedbackInstanced(GL_POINTS, tfos[0], 2);
+    glDrawTransformFeedbackStream(GL_POINTS, tfos[0], 1);
+    glEndTransformFeedback();
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    GLuint64 replay_instanced = dtf_written(query);
+    GLenum e_replay = glGetError();
+    DTF_EXPECT(replay == 6 && replay_instanced == 12 && e_replay == GL_NO_ERROR,
+               "replay: plain=%llu instanced+stream1=%llu (want 6, 12) err=0x%x",
+               (unsigned long long)replay,
+               (unsigned long long)replay_instanced, e_replay);
+
+    glDisable(GL_RASTERIZER_DISCARD);
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
+    glUseProgram(0);
+    glDeleteQueries(1, &query);
+    glDeleteTransformFeedbacks(2, tfos);
+    glDeleteTransformFeedbacks(1, &gen_only);
+    glDeleteBuffers(2, bufs);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+#undef DTF_EXPECT
+    return fail;
+}
+
 static GLuint clamp_read_fbo(GLenum internalformat, const GLfloat clear[4],
                              GLuint *out_tex)
 {
@@ -19218,6 +19336,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("object_labels", test_object_labels),
     SELF_CHECK_TEST("clamp_read_color", test_clamp_read_color),
     SELF_CHECK_TEST("xfb_vs_primitive_capture", test_xfb_vs_primitive_capture),
+    SELF_CHECK_TEST("draw_transform_feedback", test_draw_transform_feedback),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),

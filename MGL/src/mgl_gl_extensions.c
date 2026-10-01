@@ -485,6 +485,14 @@ void mglRecordActivePrimitiveQueryDrawIndexed(GLMContext ctx,
 		written_query->primitive_result_known = GL_TRUE;
 		written_query->result += written;
 	}
+
+	TransformFeedback *xfb = STATE(transform_feedback);
+	if (xfb && xfb->active && !xfb->paused) {
+		GLuint64 vertices_per_primitive =
+			(index > 0u || xfb->primitive_mode == GL_POINTS) ? 1u :
+			xfb->primitive_mode == GL_LINES ? 2u : 3u;
+		xfb->stream_vertices[index] += written * vertices_per_primitive;
+	}
 }
 
 void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
@@ -1829,6 +1837,8 @@ void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
 	STATE(transform_feedback)->primitives_written = 0;
 	bzero(STATE(transform_feedback)->buffer_write_offsets,
 	      sizeof(STATE(transform_feedback)->buffer_write_offsets));
+	bzero(STATE(transform_feedback)->stream_vertices,
+	      sizeof(STATE(transform_feedback)->stream_vertices));
 }
 
 void mglBindFragDataLocation(GLMContext ctx, GLuint program, GLuint color, const GLchar *name)
@@ -3016,39 +3026,45 @@ void mglDepthRangef(GLMContext ctx, GLfloat n, GLfloat f)
 	mglDepthRange(ctx, (GLdouble)n, (GLdouble)f);
 }
 
+/* GL 4.6 §13.3.3: equivalent to DrawArraysInstanced(mode, 0, count,
+ * instancecount) with the vertex count recorded on stream by the last
+ * EndTransformFeedback of object id. */
+static void mglDrawTransformFeedbackCommon(GLMContext ctx, GLenum mode, GLuint id,
+                                           GLuint stream, GLsizei instancecount)
+{
+	TransformFeedback *xfb = id ? findTransformFeedback(ctx, id)
+	                            : getTransformFeedback(ctx, 0);
+
+	ERROR_CHECK_RETURN(stream < STATE(var.max_vertex_streams) &&
+	                   stream < MGL_QUERY_MAX_INDEX, GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(xfb && (id == 0 || xfb->created), GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(xfb->ended, GL_INVALID_OPERATION);
+
+	GLuint64 count = xfb->draw_vertices[stream];
+	if (count > INT32_MAX)
+		count = INT32_MAX;
+	mglDrawArraysInstanced(ctx, mode, 0, (GLsizei)count, instancecount);
+}
+
 void mglDrawTransformFeedback(GLMContext ctx, GLenum mode, GLuint id)
 {
-	(void)mode;
-	(void)id;
-	/* GL 4.6 Core §13.2.3: DrawTransformFeedback* is equivalent to
-	 * DrawArrays* with the captured vertex count. Metal capture is not
-	 * wired yet; fail closed instead of silently succeeding. */
-	ERROR_RETURN(GL_INVALID_OPERATION);
+	mglDrawTransformFeedbackCommon(ctx, mode, id, 0u, 1);
 }
 
 void mglDrawTransformFeedbackInstanced(GLMContext ctx, GLenum mode, GLuint id, GLsizei instancecount)
 {
-	(void)mode;
-	(void)id;
-	(void)instancecount;
-	ERROR_RETURN(GL_INVALID_OPERATION);
+	mglDrawTransformFeedbackCommon(ctx, mode, id, 0u, instancecount);
 }
 
 void mglDrawTransformFeedbackStream(GLMContext ctx, GLenum mode, GLuint id, GLuint stream)
 {
-	(void)mode;
-	(void)id;
-	(void)stream;
-	ERROR_RETURN(GL_INVALID_OPERATION);
+	mglDrawTransformFeedbackCommon(ctx, mode, id, stream, 1);
 }
 
 void mglDrawTransformFeedbackStreamInstanced(GLMContext ctx, GLenum mode, GLuint id, GLuint stream, GLsizei instancecount)
 {
-	(void)mode;
-	(void)id;
-	(void)stream;
-	(void)instancecount;
-	ERROR_RETURN(GL_INVALID_OPERATION);
+	mglDrawTransformFeedbackCommon(ctx, mode, id, stream, instancecount);
 }
 
 void mglEndConditionalRender(GLMContext ctx)
@@ -3146,6 +3162,10 @@ void mglEndTransformFeedback(GLMContext ctx)
 
 	STATE(transform_feedback)->active = GL_FALSE;
 	STATE(transform_feedback)->paused = GL_FALSE;
+	memcpy(STATE(transform_feedback)->draw_vertices,
+	       STATE(transform_feedback)->stream_vertices,
+	       sizeof(STATE(transform_feedback)->draw_vertices));
+	STATE(transform_feedback)->ended = GL_TRUE;
 }
 
 void mglGenQueries(GLMContext ctx, GLsizei n, GLuint *ids)

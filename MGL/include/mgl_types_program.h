@@ -548,6 +548,11 @@ typedef struct TransformFeedback_t {
      * them; pause/resume preserves them so subsequent draws append. */
     GLuint64 buffer_write_offsets[MAX_BINDABLE_BUFFERS];
     BufferBaseTarget buffers[MAX_BINDABLE_BUFFERS];
+    /* Vertices recorded per vertex stream in the current session; End
+     * latches them into draw_vertices for DrawTransformFeedback*. */
+    GLuint64 stream_vertices[4];
+    GLuint64 draw_vertices[4];
+    GLboolean ended;
     char *debug_label;
 } TransformFeedback;
 

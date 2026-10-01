@@ -449,7 +449,7 @@ static void test_r4_fake_executor(void)
     vt->destroy(ex);
 }
 
-static void test_xfb_draw_fail_closed(void)
+static void test_xfb_draw_errors(void)
 {
     GLMContext ctx = make_ctx();
     expect(ctx != NULL, "F01 createGLMContext");
@@ -459,8 +459,14 @@ static void test_xfb_draw_fail_closed(void)
     while (glGetError() != GL_NO_ERROR) {
     }
     glDrawTransformFeedback(GL_TRIANGLES, 1);
+    expect(glGetError() == GL_INVALID_VALUE,
+           "F01 DrawTransformFeedback(unknown id) -> INVALID_VALUE");
+    GLuint tfo = 0;
+    glCreateTransformFeedbacks(1, &tfo);
+    glDrawTransformFeedback(GL_TRIANGLES, tfo);
     expect(glGetError() == GL_INVALID_OPERATION,
-           "F01 DrawTransformFeedback -> INVALID_OPERATION");
+           "F01 DrawTransformFeedback(never ended) -> INVALID_OPERATION");
+    glDeleteTransformFeedbacks(1, &tfo);
     destroyGLMContext(ctx);
 }
 
@@ -859,7 +865,7 @@ int main(void)
     test_r2_frontend_parse_count();
     test_r3_draw_state();
     test_r4_fake_executor();
-    test_xfb_draw_fail_closed();
+    test_xfb_draw_errors();
     test_vertex_attrib_defaults();
     test_debug_message_log();
     test_f04_msaa_query_and_fbo();
