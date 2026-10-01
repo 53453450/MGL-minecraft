@@ -36,6 +36,7 @@
 #include "draw_command.h"
 #include "glm_context.h"
 #include "MGLRenderer.h"
+#include "mgl_env_flag.h"
 
 /* Legacy GL 1.1 clip-plane surface: glClipPlane/glGetClipPlane are not
  * declared by glcorearb.h, and GL_CLIP_PLANE0..5 share the GL_CLIP_DISTANCE
@@ -14302,10 +14303,12 @@ static int test_air_pipeline_safe_fallback(unsigned char *pixels,
     clear_color(0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     setenv("MGL_FORCE_SAFE_FALLBACK_PIPELINE", "1", 1);
+    mgl_env_flag_cache_invalidate();
     glUseProgram(programB);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
     unsetenv("MGL_FORCE_SAFE_FALLBACK_PIPELINE");
+    mgl_env_flag_cache_invalidate();
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
     {
         const unsigned char *c =
