@@ -84,6 +84,17 @@ static const char *kMglExtensions[] = {
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
 
+#ifndef MGL_GL_ES
+/* GL 4.6 §1.3.1/§1.3.3: GLSL 1.40-4.60 and GLSL ES 1.00/3.00/3.10. Index 0
+ * must be the latest version with the API's profile (§22.2). */
+static const char *const kMglShadingLanguageVersions[] = {
+    "460 core", "450 core", "440 core", "430 core", "420 core", "410 core",
+    "400 core", "330 core", "150 core", "140", "100", "300 es", "310 es",
+};
+#define MGL_NUM_SHADING_LANGUAGE_VERSIONS \
+    (sizeof(kMglShadingLanguageVersions) / sizeof(kMglShadingLanguageVersions[0]))
+#endif
+
 static GLint mglClampGetInteger64ToInt(GLint64 value, const char *label)
 {
     if (value > INT_MAX) {
@@ -797,6 +808,14 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
                 case kDouble: RET_DOUBLE(MGL_NUM_EXTENSIONS);
             }
             break;
+#ifndef MGL_GL_ES
+        case GL_NUM_SHADING_LANGUAGE_VERSIONS:
+            RET_TYPE_VAR_DERIVED((GLuint)MGL_NUM_SHADING_LANGUAGE_VERSIONS);
+            break;
+        case GL_NUM_SPIR_V_EXTENSIONS:
+            RET_TYPE_VAR_DERIVED(0u);
+            break;
+#endif
         case 0x821E: RET_TYPE_VAR(type, context_flags); break; // GL_CONTEXT_FLAGS
         case 0x88FF: RET_TYPE_VAR(type, max_array_texture_layers); break; // GL_MAX_ARRAY_TEXTURE_LAYERS
         case 0x8904: RET_TYPE_VAR(type, min_program_texel_offset); break; // GL_MIN_PROGRAM_TEXEL_OFFSET
@@ -1389,6 +1408,22 @@ const GLubyte  *mglGetStringi(GLMContext ctx, GLenum name, GLuint index)
 {
     if (!ctx)
         return NULL;
+
+#ifndef MGL_GL_ES
+    if (name == GL_SHADING_LANGUAGE_VERSION)
+    {
+        if (index >= MGL_NUM_SHADING_LANGUAGE_VERSIONS)
+        {
+            ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+        }
+        return (const GLubyte *)kMglShadingLanguageVersions[index];
+    }
+
+    if (name == GL_SPIR_V_EXTENSIONS)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+#endif
 
     if (name != GL_EXTENSIONS)
     {

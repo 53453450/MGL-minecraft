@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 105
+#define MAX_TESTS 106
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14731,6 +14731,65 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §22.2: GetStringi(SHADING_LANGUAGE_VERSION, i) lists versions that
+ * actually compile, index 0 is "460 core", and out-of-range indices and
+ * SPIR_V_EXTENSIONS (none supported) raise INVALID_VALUE. */
+static int test_glsl_version_strings(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    while (glGetError() != GL_NO_ERROR) {}
+    GLint count = 0, spirv = -1;
+    glGetIntegerv(GL_NUM_SHADING_LANGUAGE_VERSIONS, &count);
+    glGetIntegerv(GL_NUM_SPIR_V_EXTENSIONS, &spirv);
+    if (count < 3 || spirv != 0 || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "glsl_version_strings: count=%d spirv=%d\n", count, spirv);
+        return 1;
+    }
+    const char *first = (const char *)glGetStringi(GL_SHADING_LANGUAGE_VERSION, 0);
+    if (!first || strcmp(first, "460 core") != 0) {
+        fprintf(stderr, "glsl_version_strings: index 0 = %s\n", first ? first : "(null)");
+        return 1;
+    }
+    int result = 0;
+    for (GLint i = 0; i < count; i++) {
+        const char *ver = (const char *)glGetStringi(GL_SHADING_LANGUAGE_VERSION, (GLuint)i);
+        if (!ver) {
+            fprintf(stderr, "glsl_version_strings: index %d is NULL\n", i);
+            result = 1;
+            continue;
+        }
+        char src[128];
+        snprintf(src, sizeof(src),
+                 "%s%s%svoid main() { gl_Position = vec4(0.0); }\n",
+                 ver[0] ? "#version " : "", ver, ver[0] ? "\n" : "");
+        GLuint shader = glCreateShader(GL_VERTEX_SHADER);
+        const char *p = src;
+        glShaderSource(shader, 1, &p, NULL);
+        glCompileShader(shader);
+        GLint ok = 0;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+        if (!ok) {
+            char log[512] = {0};
+            glGetShaderInfoLog(shader, sizeof(log), NULL, log);
+            fprintf(stderr, "glsl_version_strings: \"%s\" does not compile: %s\n", ver, log);
+            result = 1;
+        }
+        glDeleteShader(shader);
+    }
+    if (glGetStringi(GL_SHADING_LANGUAGE_VERSION, (GLuint)count) != NULL ||
+        glGetError() != GL_INVALID_VALUE) {
+        fprintf(stderr, "glsl_version_strings: out-of-range index accepted\n");
+        result = 1;
+    }
+    if (glGetStringi(GL_SPIR_V_EXTENSIONS, 0) != NULL ||
+        glGetError() != GL_INVALID_VALUE) {
+        fprintf(stderr, "glsl_version_strings: SPIR_V_EXTENSIONS index 0 accepted\n");
+        result = 1;
+    }
+    return result;
+}
+
 /* Draws a full-screen triangle whose color comes from the `Color` input fed
  * at the location GetAttribLocation reports; `Position` likewise. */
 static int attrib_name_draw_check(const char *label, const char *vs,
@@ -17592,6 +17651,7 @@ static const TestCase TESTS[] = {
                     test_blit_integer_format_conversion),
     SELF_CHECK_TEST("discard_stub_integer_targets",
                     test_discard_stub_integer_targets),
+    SELF_CHECK_TEST("glsl_version_strings", test_glsl_version_strings),
     SELF_CHECK_TEST("compressed_texture_sampling",
                     test_compressed_texture_sampling),
     SELF_CHECK_TEST("vertex_input_name_locations",
