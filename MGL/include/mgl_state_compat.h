@@ -47,11 +47,6 @@ uint32_t mglMTLCompareFunctionForGL(GLenum func,
  * MTLWindingCounterClockwise (GL default). */
 uint32_t mglMTLWindingForGL(GLenum frontFace);
 
-/* Enum validators (return true for a valid GL enum, false otherwise). */
-bool mglIsValidGLCompareFunction(GLenum func);
-bool mglIsValidGLBlendEquation(GLenum op);
-bool mglIsValidGLBlendFactor(GLenum factor);
-
 /* Rate-limited logging for state repair events.  `field` is a short tag
  * naming the state field (may be NULL).  The first 64 hits plus every
  * 512th subsequent hit are logged to avoid log flooding. */

@@ -66,21 +66,6 @@ uint32_t mglMTLWindingForGL(GLenum frontFace)
     return MGLWindingCounterClockwise;
 }
 
-bool mglIsValidGLCompareFunction(GLenum func)
-{
-    return mglRenderIsValidGLCompareFunction((uint32_t)func) != 0;
-}
-
-bool mglIsValidGLBlendEquation(GLenum op)
-{
-    return mglRenderIsValidGLBlendEquation((uint32_t)op) != 0;
-}
-
-bool mglIsValidGLBlendFactor(GLenum factor)
-{
-    return mglRenderIsValidGLBlendFactor((uint32_t)factor) != 0;
-}
-
 void mglLogRenderStateRepair(const char *field, GLenum value, GLenum fallback)
 {
     static uint64_t s_stateRepairCount = 0;
