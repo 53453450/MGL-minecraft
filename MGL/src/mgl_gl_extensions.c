@@ -1905,6 +1905,40 @@ void mglBindFragDataLocationIndexed(GLMContext ctx, GLuint program, GLuint color
 	ptr->dirty_bits |= DIRTY_PROGRAM;
 }
 
+static void mglTransformFeedbackBindingsChanged(GLMContext ctx)
+{
+	mglBufferBaseRebuildActiveMask(&STATE(buffer_base)[_TRANSFORM_FEEDBACK_BUFFER]);
+	mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
+}
+
+/* Indexed TRANSFORM_FEEDBACK_BUFFER bindings are transform feedback object
+ * state (GL 4.6 table 23.48); the context buffer_base slots hold the bound
+ * object's bindings. from may be NULL when it is being deleted. */
+static void mglSwitchTransformFeedbackBindings(GLMContext ctx,
+                                               TransformFeedback *from,
+                                               TransformFeedback *to)
+{
+	BufferBase *base = &STATE(buffer_base)[_TRANSFORM_FEEDBACK_BUFFER];
+
+	if (from == to)
+		return;
+	if (from)
+		memcpy(from->buffers, base->buffers, sizeof(from->buffers));
+	memcpy(base->buffers, to->buffers, sizeof(base->buffers));
+	mglTransformFeedbackBindingsChanged(ctx);
+}
+
+static BufferBaseTarget *mglTransformFeedbackSlot(GLMContext ctx,
+                                                  TransformFeedback *xfb,
+                                                  GLuint index)
+{
+	TransformFeedback *bound = STATE(transform_feedback)
+		? STATE(transform_feedback) : findTransformFeedback(ctx, 0);
+	return xfb == bound
+		? &STATE(buffer_base)[_TRANSFORM_FEEDBACK_BUFFER].buffers[index]
+		: &xfb->buffers[index];
+}
+
 void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
 {
     if (target != GL_TRANSFORM_FEEDBACK)
@@ -1922,25 +1956,21 @@ void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
         return;
     }
 
-    if (id == 0)
+    TransformFeedback *current = STATE(transform_feedback)
+        ? STATE(transform_feedback) : getTransformFeedback(ctx, 0);
+    TransformFeedback *ptr = getTransformFeedback(ctx, id);
+    if (!current || !ptr)
     {
-        STATE(transform_feedback) = getTransformFeedback(ctx, 0);
-        if (!STATE(transform_feedback))
-        {
-            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
-            return;
-        }
+        mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return;
     }
-    else
+    if (id != 0)
     {
-        TransformFeedback *ptr = getTransformFeedback(ctx, id);
-        if (ptr)
-        {
-            ptr->target = target;
-            ptr->created = GL_TRUE;
-            STATE(transform_feedback) = ptr;
-        }
+        ptr->target = target;
+        ptr->created = GL_TRUE;
     }
+    mglSwitchTransformFeedbackBindings(ctx, current, ptr);
+    STATE(transform_feedback) = ptr;
 }
 
 void mglClampColor(GLMContext ctx, GLenum target, GLenum clamp)
@@ -2974,9 +3004,12 @@ void mglDeleteTransformFeedbacks(GLMContext ctx, GLsizei n, const GLuint *ids)
         }
             
         // If deleting currently bound transform feedback, unbind it
-        if (STATE(transform_feedback) && STATE(transform_feedback)->name == ids[i])
+        if (STATE(transform_feedback) == ptr)
         {
-            STATE(transform_feedback) = NULL;
+            TransformFeedback *default_xfb = getTransformFeedback(ctx, 0);
+            if (default_xfb)
+                mglSwitchTransformFeedbackBindings(ctx, NULL, default_xfb);
+            STATE(transform_feedback) = default_xfb;
         }
         
         // Remove from hash table and free
@@ -5750,7 +5783,7 @@ void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLui
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
-	BufferBaseTarget *slot = &ptr->buffers[index];
+	BufferBaseTarget *slot = mglTransformFeedbackSlot(ctx, ptr, index);
 	switch (pname)
 	{
 		case GL_TRANSFORM_FEEDBACK_BUFFER_START:
@@ -6912,10 +6945,11 @@ void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GL
 		mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
 		return;
 	}
-	BufferBaseTarget *slot = &ptr->buffers[index];
+	BufferBaseTarget *slot = mglTransformFeedbackSlot(ctx, ptr, index);
 	if (buffer == 0)
 	{
 		bzero(slot, sizeof(BufferBaseTarget));
+		mglTransformFeedbackBindingsChanged(ctx);
 		return;
 	}
 	Buffer *buf = getBuffer(ctx, GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
@@ -6930,6 +6964,7 @@ void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GL
 	slot->size = 0;
 	slot->buf = buf;
 	buf->target = GL_TRANSFORM_FEEDBACK_BUFFER;
+	mglTransformFeedbackBindingsChanged(ctx);
 }
 
 void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size)
@@ -6947,7 +6982,8 @@ void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, G
 	}
 	if (buffer == 0)
 	{
-		bzero(&ptr->buffers[index], sizeof(BufferBaseTarget));
+		bzero(mglTransformFeedbackSlot(ctx, ptr, index), sizeof(BufferBaseTarget));
+		mglTransformFeedbackBindingsChanged(ctx);
 		return;
 	}
 	if (offset < 0 || size <= 0 || ((GLuint64)offset % 4u) != 0u || ((GLuint64)size % 4u) != 0u)
@@ -6961,12 +6997,13 @@ void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, G
 		mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
 		return;
 	}
-	BufferBaseTarget *slot = &ptr->buffers[index];
+	BufferBaseTarget *slot = mglTransformFeedbackSlot(ctx, ptr, index);
 	slot->buffer = buffer;
 	slot->offset = offset;
 	slot->size = size;
 	slot->buf = buf;
 	buf->target = GL_TRANSFORM_FEEDBACK_BUFFER;
+	mglTransformFeedbackBindingsChanged(ctx);
 }
 
 void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count, const GLchar *const*varyings, GLenum bufferMode)

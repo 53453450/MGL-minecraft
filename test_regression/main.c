@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 121
+#define MAX_TESTS 122
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -15923,6 +15923,88 @@ static int test_draw_transform_feedback(unsigned char *pixels,
     return fail;
 }
 
+static void xfb_point_capture(void)
+{
+    glBeginTransformFeedback(GL_POINTS);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glEndTransformFeedback();
+}
+
+/* GL 4.6 table 23.48 and §13.3.1: indexed TRANSFORM_FEEDBACK_BUFFER bindings
+ * belong to the transform feedback object; the generic binding is context
+ * state and BindTransformFeedback leaves it alone. */
+static int test_xfb_object_buffer_bindings(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    while (glGetError() != GL_NO_ERROR) { }
+    GLuint prog = xfb_vs_program();
+    if (!prog) return 3;
+
+    static const float pt[] = { 2, 4 };
+    static const float zeros[2] = { 0, 0 };
+    GLuint vao, vbo = make_vbo(pt, sizeof(pt));
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    GLuint bufs[3], tfos[2];
+    glCreateBuffers(3, bufs);
+    for (int i = 0; i < 3; i++)
+        glNamedBufferData(bufs[i], sizeof(zeros), zeros, GL_DYNAMIC_READ);
+    glCreateTransformFeedbacks(2, tfos);
+    glUseProgram(prog);
+    glEnable(GL_RASTERIZER_DISCARD);
+
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, tfos[0]);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, bufs[0]);
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, tfos[1]);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, bufs[1]);
+    GLint obj0_slot0 = -1, cur_slot1 = -1;
+    glGetTransformFeedbacki_v(tfos[0], GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, 0,
+                              &obj0_slot0);
+    glTransformFeedbackBufferBase(tfos[0], 1, bufs[2]);
+    glGetIntegeri_v(GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, 1, &cur_slot1);
+    xfb_point_capture();
+
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, tfos[0]);
+    GLint slot0 = -1, slot1 = -1, generic = -1;
+    glGetIntegeri_v(GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, 0, &slot0);
+    glGetIntegeri_v(GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, 1, &slot1);
+    glGetIntegerv(GL_TRANSFORM_FEEDBACK_BUFFER_BINDING, &generic);
+    glTransformFeedbackBufferBase(tfos[0], 0, bufs[2]);
+    xfb_point_capture();
+    GLenum err = glGetError();
+
+    float got[3][2];
+    for (int i = 0; i < 3; i++)
+        glGetNamedBufferSubData(bufs[i], 0, sizeof(got[i]), got[i]);
+    int fail = !(obj0_slot0 == (GLint)bufs[0] && cur_slot1 == 0 &&
+                 slot0 == (GLint)bufs[0] && slot1 == (GLint)bufs[2] &&
+                 generic == (GLint)bufs[1] && err == GL_NO_ERROR &&
+                 got[0][0] == 0.0f && got[1][0] == 1.0f && got[1][1] == 2.0f &&
+                 got[2][0] == 1.0f && got[2][1] == 2.0f);
+    if (fail)
+        fprintf(stderr, "xfb_object_buffer_bindings: obj0[0]=%d cur[1]=%d "
+                "rebound[0]=%d [1]=%d generic=%d (want %u 0 %u %u %u) "
+                "err=0x%x x=(%g %g %g)\n", obj0_slot0, cur_slot1, slot0, slot1,
+                generic, bufs[0], bufs[0], bufs[2], bufs[1], err, got[0][0],
+                got[1][0], got[2][0]);
+
+    glDisable(GL_RASTERIZER_DISCARD);
+    glBindTransformFeedback(GL_TRANSFORM_FEEDBACK, 0);
+    glUseProgram(0);
+    glDeleteTransformFeedbacks(2, tfos);
+    glDeleteBuffers(3, bufs);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 static GLuint clamp_read_fbo(GLenum internalformat, const GLfloat clear[4],
                              GLuint *out_tex)
 {
@@ -19337,6 +19419,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("clamp_read_color", test_clamp_read_color),
     SELF_CHECK_TEST("xfb_vs_primitive_capture", test_xfb_vs_primitive_capture),
     SELF_CHECK_TEST("draw_transform_feedback", test_draw_transform_feedback),
+    SELF_CHECK_TEST("xfb_object_buffer_bindings", test_xfb_object_buffer_bindings),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),

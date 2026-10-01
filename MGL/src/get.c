@@ -1034,6 +1034,17 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             }
             break;
         }
+        case 0x8C8F: { // GL_TRANSFORM_FEEDBACK_BUFFER_BINDING
+            Buffer *buf = STATE(buffers[_TRANSFORM_FEEDBACK_BUFFER]);
+            GLuint binding = buf ? buf->name : 0;
+            switch(type) {
+                case kBool: RET_BOOL(binding);
+                case kInt: RET_INT(binding);
+                case kFloat: RET_FLOAT(binding);
+                case kDouble: RET_DOUBLE(binding);
+            }
+            break;
+        }
         case 0x90D4: RET_TYPE_VAR(type, shader_storage_buffer_start); break; // GL_SHADER_STORAGE_BUFFER_START
         case 0x90D5: RET_TYPE_VAR(type, shader_storage_buffer_size); break; // GL_SHADER_STORAGE_BUFFER_SIZE
         case 0x90D6: RET_TYPE_VAR(type, max_vertex_shader_storage_blocks); break; // GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS

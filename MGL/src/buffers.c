@@ -1139,6 +1139,19 @@ void mglCreateBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
     }
 }
 
+static void mglDetachBufferFromTransformFeedback(GLuint name, void *data, void *user)
+{
+    (void)name;
+    TransformFeedback *xfb = (TransformFeedback *)data;
+    if (!xfb)
+        return;
+    for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++)
+    {
+        if (xfb->buffers[i].buf == (Buffer *)user)
+            bzero(&xfb->buffers[i], sizeof(BufferBaseTarget));
+    }
+}
+
 void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
 {
     static uint64_t s_delete_buffers_calls = 0u;
@@ -1246,6 +1259,10 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
                     mglBufferBaseRebuildActiveMask(&STATE(buffer_base)[idx]);
                 }
             }
+            /* Unbound transform feedback objects keep their own copies of
+             * the indexed bindings; drop pointers to the freed buffer. */
+            mglHashTableForEach(&STATE(transform_feedback_table),
+                                mglDetachBufferFromTransformFeedback, ptr);
 
             mglClearBufferMapReferences(&STATE(vertex_buffer_map_list), ptr, buffer);
             mglClearBufferMapReferences(&STATE(fragment_buffer_map_list), ptr, buffer);
