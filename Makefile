@@ -1038,8 +1038,10 @@ test-mcrepro: $(build_dir)/test_mcrepro
 
 # The binding/trace diagnostics TUs are compiled by the library's C rule and
 # linked into the smoke target with -x none (they used to be Objective-C, which
-# the smoke gate compiled itself; ObjC-zeroing moved them to C).
-METALCPP_C_SRC := MGL/src/mgl_binding_texture_log.c MGL/src/mgl_trace_log.c
+# the smoke gate compiled itself; ObjC-zeroing moved them to C). pixel_utils.c
+# goes the same way because it does not compile as Objective-C++.
+METALCPP_C_SRC := MGL/src/mgl_binding_texture_log.c MGL/src/mgl_trace_log.c \
+                  MGL/src/pixel_utils.c MGL/src/mgl_env_flag.c
 # The platform shell is C++ (log 210): it cannot go through the smoke gate's
 # -x objective-c++ -fobjc-arc invocation any more, so it is compiled to its own
 # objects first and linked with -x none like the other C sources.
@@ -1058,8 +1060,10 @@ $(build_dir)/metalcpp_%.o: MGL/src/%.cpp
 
 # Metal-cpp initialization smoke gate. Device bridging and repeated
 # initialization/shutdown must remain stable.
+METALCPP_RENDER_SRC := MGL/src/mgl_render.cpp $(wildcard MGL/src/mgl_render_*.cpp)
+
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
-	MGL/src/mgl_render.cpp MGL/include/mgl_render.h \
+	$(METALCPP_RENDER_SRC) MGL/include/mgl_render.h \
 	MGL/src/mgl_readback_policy.c MGL/include/mgl_readback_policy.h \
 	MGL/src/mgl_binding_policy.c MGL/include/mgl_binding_policy.h \
 	MGL/src/mgl_binding_stage.c MGL/include/mgl_binding_stage.h \
@@ -1083,7 +1087,7 @@ $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 		-DMGL_PLATFORM_SHELL_SMOKE \
 		-framework Cocoa -framework Foundation -framework QuartzCore -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
-		MGL/src/mgl_render.cpp \
+		$(METALCPP_RENDER_SRC) \
 		MGL/src/mgl_readback_policy.c \
 		MGL/src/mgl_binding_policy.c \
 		MGL/src/mgl_binding_stage.c \

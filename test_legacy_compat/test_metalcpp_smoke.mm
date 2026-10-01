@@ -17,6 +17,12 @@
 #include "mgl_air_tess_abi.h"
 #include "mgl_aux_assets.h"
 #include "mgl_buffer_slots.h"
+#include "mgl_buffer_plan.h"
+#include "mgl_byte_hash.h"
+#include "mgl_draw_mode.h"
+#include "mgl_index_buffer.h"
+#include "mgl_texture_compat.h"
+#include "mgl_vertex_format.h"
 #include "mgl_types_texture.h"
 #include "mgl_types_buffer.h"
 #include "mgl_types_program.h"
@@ -57,6 +63,12 @@ static uint64_t s_metalCreateCount = 0;
 extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
 extern "C" void mglMetalCountCreate(int) { ++s_metalCreateCount; }
 extern "C" void mglRecordBufferCowSnapshot(uint64_t) {}
+extern "C" void mglDispatchError(GLMContext, const char *, GLenum) {}
+extern "C" bool mglTexLevelInternalFormatCompressed(GLint) { return false; }
+extern "C" GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat)
+{
+    return internalformat;
+}
 
 static MGLRenderTextureDescriptorState
 smokeTextureDescriptorState(MTLTextureDescriptor *descriptor)
@@ -284,9 +296,9 @@ static int verifyDirectRendererABI(id<MTLDevice> device) {
         return 1;
     }
 
-    void *commandOwner = reinterpret_cast<void *>(0x1110u);
-    void *encoderOwner = reinterpret_cast<void *>(0x2220u);
-    void *passOwner = reinterpret_cast<void *>(0x3330u);
+    MGLCommandBufferOwner *commandOwner = reinterpret_cast<MGLCommandBufferOwner *>(0x1110u);
+    MGLRenderEncoderOwner *encoderOwner = reinterpret_cast<MGLRenderEncoderOwner *>(0x2220u);
+    MGLRenderPassStateOwner *passOwner = reinterpret_cast<MGLRenderPassStateOwner *>(0x3330u);
     MGLRendererBackendLease ownerLease = {};
     if (mglRendererBackendBegin(backend, &ownerLease) != 0) {
         fprintf(stderr, "FAIL: runtime owner lease\n");
@@ -1764,7 +1776,7 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
         return 1;
     }
 
-    void *owner = NULL;
+    MGLPipelineCacheOwner *owner = NULL;
     if (mglRenderCreatePipelineCacheOwner(1, 1, 1, &owner) != 0 ||
         !owner) {
         fprintf(stderr, "FAIL: pipeline cache owner create\n");
@@ -1932,8 +1944,8 @@ static int verifyPipelineArchiveOwner(id<MTLDevice> device) {
                                        NSUUID.UUID.UUIDString]];
     NSURL *archiveURL = [NSURL fileURLWithPath:archivePath];
     const char *archiveKey = archivePath.UTF8String;
-    void *owner1 = NULL;
-    void *owner2 = NULL;
+    MGLPipelineCacheOwner *owner1 = NULL;
+    MGLPipelineCacheOwner *owner2 = NULL;
     void *pipelinePtr = NULL;
     char message[512] = {0};
     int reused = -1;
@@ -2052,7 +2064,8 @@ static int verifyBindingDedup(id<MTLDevice> device) {
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     id<MTLRenderCommandEncoder> encoder =
         [commandBuffer renderCommandEncoderWithDescriptor:pass];
-    void *state = mglRenderBindingCreate(8);
+    MGLBindingState *state =
+        static_cast<MGLBindingState *>(mglRenderBindingCreate(8));
     if (!encoder || !state) return 1;
     mglRenderBindingSetDepthStencilState(
         state, (__bridge void *)depthState);
@@ -2435,7 +2448,7 @@ static int verifySyncCallbacks(id<MTLDevice> device) {
     }
 
     id<MTLCommandQueue> ownerQueue = [device newCommandQueue];
-    void *commandOwner = NULL;
+    MGLCommandBufferOwner *commandOwner = NULL;
     void *current = NULL;
     GLMContextRec_t context = {};
     MGLRendererBackendHandle *backend = nullptr;
@@ -2488,7 +2501,7 @@ static int verifyCommandQueueOwner(void) {
         return 1;
     }
 
-    void *owner = NULL;
+    MGLCommandQueueOwner *owner = NULL;
     void *queuePtr = NULL;
     if (mglRenderCreateCommandQueueOwner(2, &owner, &queuePtr) != 0 ||
         !owner || !queuePtr) {
@@ -2533,9 +2546,9 @@ static int verifyCommandQueueOwner(void) {
 }
 
 static int verifyCommandBufferOwner(id<MTLDevice> device) {
-    void *queueOwner = NULL;
+    MGLCommandQueueOwner *queueOwner = NULL;
     void *queue = NULL;
-    void *owner = NULL;
+    MGLCommandBufferOwner *owner = NULL;
     void *commandBuffer = NULL;
     if (mglRenderCreateCommandQueueOwner(
             0, &queueOwner, &queue) != 0 || !queueOwner || !queue ||
@@ -2868,7 +2881,7 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
         return 1;
     }
 
-    void *adoptedOwner = NULL;
+    MGLCommandBufferOwner *adoptedOwner = NULL;
     void *adoptedCurrent = mglRenderCommandBufferOwnerGetCurrent(owner);
     if (!adoptedCurrent ||
         mglRenderCreateCommandBufferOwnerAdopt(
@@ -2927,7 +2940,7 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
         mglRenderDestroyCommandQueueOwner(&queueOwner);
         return 1;
     }
-    void *recoveryOwner = NULL;
+    MGLCommandBufferRecoveryOwner *recoveryOwner = NULL;
     MGLRenderCommandBufferTransaction recoveryTransaction = {};
     if (mglRenderCreateCommandRecoveryOwner(&recoveryOwner) != 0 ||
         mglRenderCommitCommandBufferTransaction(
@@ -2981,7 +2994,7 @@ static int verifyCommandBufferOwner(id<MTLDevice> device) {
 }
 
 static int verifyCommandRecoveryOwner(void) {
-    void *owner = NULL;
+    MGLCommandBufferRecoveryOwner *owner = NULL;
     MGLRenderCommandRecoverySnapshot state = {};
     MGLRenderCommandRecoverySuccess success = {};
     MGLRenderCommandRecoverySkipDecision skip = {};
@@ -3110,7 +3123,7 @@ static int verifyCommandRecoveryOwner(void) {
 }
 
 static int verifyCommandBufferCompletionProcess(void) {
-    void *owner = NULL;
+    MGLCommandBufferRecoveryOwner *owner = NULL;
     MGLRenderCommandBufferState state = {};
     MGLRenderCommandBufferCompletionResult result = {};
     if (mglRenderProcessCommandBufferCompletion(
@@ -3185,18 +3198,6 @@ static int verifyCommandBufferCompletionProcess(void) {
     return 0;
 }
 
-/* Stub for sizeForInternalFormat (smoke does not link pixel_utils.c).
- * Expansion gates now live in mgl_render.cpp. */
-extern "C" {
-GLuint sizeForInternalFormat(GLenum internalformat, GLenum, GLenum) {
-    switch (internalformat) {
-        case GL_RGB16: return 6; /* 3 x 16-bit */
-        case GL_RGB8: return 3;
-        default: return 0;
-    }
-}
-}
-
 static int verifyCommandBufferGetterAndAdopt(void) {
     /* P4.5 (item 1141): owner getter + adopt — the gate-off fallback keeps
      * the owner as the single source on both gates. */
@@ -3216,7 +3217,7 @@ static int verifyCommandBufferGetterAndAdopt(void) {
         fprintf(stderr, "FAIL: cb adopt setup\n");
         return 1;
     }
-    void *owner = NULL;
+    MGLCommandBufferOwner *owner = NULL;
     if (mglRenderCreateCommandBufferOwnerAdopt(
             (__bridge void *)objcCB, &owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: cb adopt create\n");
@@ -3267,7 +3268,7 @@ static int verifyRenderEncoderGetter(void) {
         fprintf(stderr, "FAIL: re getter setup\n");
         return 1;
     }
-    void *owner = NULL;
+    MGLRenderEncoderOwner *owner = NULL;
     if (mglRenderCreateRenderEncoderOwner(
             (__bridge void *)encoder, &owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: re owner create\n");
@@ -3304,7 +3305,7 @@ static int verifyRenderEncoderGetter(void) {
 static int verifyMDIScratchOwner(void) {
     /* P4.5 (item 1155): MDI scratch allocator — the ObjC gate-off allocator
      * now delegates to the same C++ owner. */
-    void *owner = NULL;
+    MGLMDIScratchOwner *owner = NULL;
     if (mglRenderCreateMDIScratchOwner(&owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: mdi owner create\n");
         return 1;
@@ -6910,7 +6911,7 @@ static int verifyLevelUploadPrep(void) {
 
 static int verifyPendingEventOwner(void) {
     /* P4.5 (item 1141): pending shared-event slot inside the C++ owner. */
-    void *owner = NULL;
+    MGLPendingEventOwner *owner = NULL;
     if (mglRenderCreatePendingEventOwner(&owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: create pending-event owner\n");
         return 1;
@@ -6994,7 +6995,7 @@ static int verifyPendingEventOwner(void) {
 }
 
 static int verifyRenderPassIdentityOwner(void) {
-    void *owner = NULL;
+    MGLRenderPassIdentityOwner *owner = NULL;
     if (mglRenderCreateRenderPassIdentityOwner(&owner) != 0 || !owner) {
         fprintf(stderr, "FAIL: render-pass identity owner create\n");
         return 1;
@@ -7061,7 +7062,7 @@ static int verifyRenderPassIdentityOwner(void) {
 }
 
 static int verifyRenderPassStateOwner(id<MTLDevice> device) {
-    void *defaultOwner = NULL;
+    MGLRenderPassStateOwner *defaultOwner = NULL;
     MGLRenderPassState defaultState = {};
     if (mglRenderCreateDefaultRenderPassStateOwner(&defaultOwner) != 0 ||
         !defaultOwner ||
@@ -7096,7 +7097,7 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
     state.color[0].clear_red = 0.25;
     state.sample_position_count = 1u;
     state.sample_positions[0] = {0.5f, 0.5f};
-    void *owner = NULL;
+    MGLRenderPassStateOwner *owner = NULL;
     MGLRenderPassState snapshot = {};
     if (mglRenderCreateRenderPassStateOwner(&state, &owner) != 0 ||
         !owner || mglRenderGetRenderPassStateOwner(owner, &snapshot) != 0 ||
@@ -7305,7 +7306,7 @@ static int verifyRenderPassStateOwner(id<MTLDevice> device) {
         return 1;
     }
     state.sample_position_count = MGL_RENDER_MAX_SAMPLE_POSITIONS + 1u;
-    void *invalidOwner = NULL;
+    MGLRenderPassStateOwner *invalidOwner = NULL;
     if (mglRenderCreateRenderPassStateOwner(
             &state, &invalidOwner) == 0 || invalidOwner) {
         fprintf(stderr, "FAIL: render-pass state owner accepted invalid samples\n");
@@ -7326,7 +7327,7 @@ static int verifyTextureStagingOwner(void) {
     const uint32_t values[4] = {
         0x10203040u, 0x50607080u, 0x90a0b0c0u, 0xd0e0f000u
     };
-    void *owner = NULL;
+    MGLTextureStagingOwner *owner = NULL;
     void *bufferRaw = NULL;
     if (mglRenderCreateTextureStagingOwner(
             values, sizeof(values), MTLResourceStorageModeShared,
@@ -7356,7 +7357,7 @@ static int verifyTextureUploadEncoding(id<MTLDevice> device) {
         255, 0, 0, 255, 0, 255, 0, 255,
         0, 0, 255, 255, 255, 255, 255, 255,
     };
-    void *stagingOwner = NULL;
+    MGLTextureStagingOwner *stagingOwner = NULL;
     void *stagingBuffer = NULL;
     if (mglRenderCreateTextureStagingOwner(
             pixels, sizeof(pixels), MTLResourceStorageModeShared,
@@ -7478,9 +7479,9 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         [device newTextureWithDescriptor:textureDescriptor];
     MGLRenderPassState state = renderPassStateWithColorTarget(
         texture, MTLLoadActionClear, MTLStoreActionStore);
-    void *stateOwner = NULL;
+    MGLRenderPassStateOwner *stateOwner = NULL;
     void *stateEncoder = NULL;
-    void *adoptedStateEncoderOwner = NULL;
+    MGLRenderEncoderOwner *adoptedStateEncoderOwner = NULL;
     if (!commandBuffer || !texture ||
         mglRenderCreateRenderPassStateOwner(&state, &stateOwner) != 0 ||
         !stateOwner || mglRenderCreateRenderEncoderFromStateOwner(
@@ -7622,7 +7623,8 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
     /* P4.3 binding resource snapshot: the C++ binding owner consumes ordered
      * texture/sampler ops and rejects malformed snapshots before draw. */
     {
-        void *bindingOwner = mglRenderBindingCreate(8);
+        MGLBindingState *bindingOwner =
+            static_cast<MGLBindingState *>(mglRenderBindingCreate(8));
         MTLTextureDescriptor *resourceTextureDesc =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:
                 MTLPixelFormatRGBA8Unorm width:1 height:1 mipmapped:NO];
@@ -8359,7 +8361,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
             mglRenderDestroyRenderPassStateOwner(&stateOwner);
             return 1;
         }
-        void *executionOwner = NULL;
+        MGLCommandBufferOwner *executionOwner = NULL;
         void *executionCommandBuffer = NULL;
         if (mglRenderCreateCommandBufferOwner(
                 (__bridge void *)cdQueue, &executionOwner,
@@ -8550,7 +8552,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
     }
     mglRenderDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
     mglRenderDestroyRenderPassStateOwner(&stateOwner);
-    void *owner = NULL;
+    MGLRenderEncoderOwner *owner = NULL;
     void *encoder = NULL;
     if (mglRenderCreateRenderEncoderOwnerFromState(
             (__bridge void *)commandBuffer, &state,
@@ -8561,7 +8563,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         mglRenderDestroyRenderEncoderOwner(&owner);
         return 1;
     }
-    void *adoptedOwner = NULL;
+    MGLRenderEncoderOwner *adoptedOwner = NULL;
     if (mglRenderCreateRenderEncoderOwner(
             encoder, &adoptedOwner) != 0 || !adoptedOwner) {
         fprintf(stderr, "FAIL: render encoder adopt owner\n");
@@ -8581,7 +8583,7 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
 }
 
 static int verifyQueryUtilities(id<MTLDevice> device) {
-    void *queryOwner = NULL;
+    MGLQueryStateOwner *queryOwner = NULL;
     void *visibilityPtr = NULL;
     if (mglRenderCreateQueryStateOwner(256u, &queryOwner) != 0 ||
         !queryOwner ||
@@ -8650,7 +8652,7 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
     renderPassState.visibility_result_buffer =
         (__bridge void *)visibility;
     void *encoder = NULL;
-    void *encoderOwner = NULL;
+    MGLRenderEncoderOwner *encoderOwner = NULL;
     if (mglRenderCreateRenderEncoderFromState(
             (__bridge void *)commandBuffer, &renderPassState, &encoder) != 0 ||
         !encoder || mglRenderCreateRenderEncoderOwner(
