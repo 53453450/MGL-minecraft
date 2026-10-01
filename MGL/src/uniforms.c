@@ -2038,9 +2038,9 @@ static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
     *is_float = GL_TRUE;
     switch (gl_type) {
         case GL_FLOAT: case GL_DOUBLE: return 1;
-        case GL_FLOAT_VEC2: return 2;
-        case GL_FLOAT_VEC3: return 3;
-        case GL_FLOAT_VEC4: return 4;
+        case GL_FLOAT_VEC2: case GL_DOUBLE_VEC2: return 2;
+        case GL_FLOAT_VEC3: case GL_DOUBLE_VEC3: return 3;
+        case GL_FLOAT_VEC4: case GL_DOUBLE_VEC4: return 4;
         case GL_FLOAT_MAT2: return 4;
         case GL_FLOAT_MAT3: return 9;
         case GL_FLOAT_MAT4: return 16;
@@ -2195,22 +2195,18 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
 
 void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params);
 
-void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *params)
+/* Returns the component count written to out[16], 0 when an error was raised. */
+static GLuint mglGetUniformAsFloat(GLMContext ctx, GLuint program, GLint location,
+                                   const char *caller, GLfloat *out)
 {
-    if (!ctx) {
-        return;
-    }
     if (isProgram(ctx, program) == GL_FALSE) {
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
+        mglDispatchError(ctx, caller, GL_INVALID_VALUE);
+        return 0;
     }
-    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, caller);
     if (!ptr || !ptr->link_success) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    if (!params) {
-        return;
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;
     }
 
     uint32_t bits[16];
@@ -2221,20 +2217,47 @@ void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *pa
         if (mglFindSamplerUniformResource(ptr, location, NULL, NULL)) {
             GLint unit = 0;
             mglGetUniformiv(ctx, program, location, &unit);
-            *params = (GLfloat)unit;
-            return;
+            out[0] = (GLfloat)unit;
+            return 1;
         }
-        ERROR_RETURN(GL_INVALID_OPERATION);  /* location not an active uniform */
-        return;
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return 0;  /* location not an active uniform */
     }
     for (GLuint i = 0; i < comps; i++) {
         if (is_float) {
             GLfloat f;
             memcpy(&f, &bits[i], sizeof(f));
-            params[i] = f;
+            out[i] = f;
         } else {
-            params[i] = (GLfloat)(GLint)bits[i];
+            out[i] = (GLfloat)(GLint)bits[i];
         }
+    }
+    return comps;
+}
+
+void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *params)
+{
+    GLfloat values[16];
+    if (!ctx) {
+        return;
+    }
+    GLuint comps = mglGetUniformAsFloat(ctx, program, location, __FUNCTION__, values);
+    if (params) {
+        memcpy(params, values, comps * sizeof(GLfloat));
+    }
+}
+
+/* Double uniforms are stored as float (Metal has no fp64), so the stored
+ * value is widened. */
+void mglGetUniformdv(GLMContext ctx, GLuint program, GLint location, GLdouble *params)
+{
+    GLfloat values[16];
+    if (!ctx) {
+        return;
+    }
+    GLuint comps = mglGetUniformAsFloat(ctx, program, location, __FUNCTION__, values);
+    for (GLuint i = 0; params && i < comps; i++) {
+        params[i] = (GLdouble)values[i];
     }
 }
 

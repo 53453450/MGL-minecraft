@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 110
+#define MAX_TESTS 111
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,63 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §7.14: GetUniformdv returns the uniform's value as doubles. */
+static int test_get_uniform_dv(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 400 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 400 core\n"
+        "uniform double d;\n"
+        "uniform dvec3 v;\n"
+        "uniform vec2 f;\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(float(d), float(v.x + v.y + v.z), f); }\n";
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    glUseProgram(prog);
+    GLint ld = glGetUniformLocation(prog, "d");
+    GLint lv = glGetUniformLocation(prog, "v");
+    GLint lf = glGetUniformLocation(prog, "f");
+    glUniform1d(ld, 0.5);
+    glUniform3d(lv, 1.25, -2.0, 3.5);
+    glUniform2f(lf, 0.25f, 0.75f);
+
+    GLdouble out_d[4] = {-1, -1, -1, -1};
+    GLdouble out_v[4] = {-1, -1, -1, -1};
+    GLdouble out_f[4] = {-1, -1, -1, -1};
+    glGetUniformdv(prog, ld, out_d);
+    glGetUniformdv(prog, lv, out_v);
+    glGetUniformdv(prog, lf, out_f);
+    GLenum err = glGetError();
+    glGetUniformdv(prog, 1000, out_d);
+    GLenum bad_location = glGetError();
+
+    int result = 0;
+    if (ld < 0 || lv < 0 || lf < 0 || err != GL_NO_ERROR ||
+        bad_location != GL_INVALID_OPERATION || out_d[0] != 0.5 ||
+        out_d[1] != -1 || out_v[0] != 1.25 || out_v[1] != -2.0 ||
+        out_v[2] != 3.5 || out_v[3] != -1 || out_f[0] != 0.25 ||
+        out_f[1] != 0.75 || out_f[2] != -1) {
+        fprintf(stderr, "get_uniform_dv: loc=%d,%d,%d err=0x%x bad=0x%x "
+                "d=%g,%g v=%g,%g,%g,%g f=%g,%g,%g\n", ld, lv, lf, err,
+                bad_location, out_d[0], out_d[1], out_v[0], out_v[1], out_v[2],
+                out_v[3], out_f[0], out_f[1], out_f[2]);
+        result = 1;
+    }
+
+    glUseProgram(0);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* GL 4.6 §8.6: CopyTexImage1D defines a 1D image from the read framebuffer. */
 static int test_copy_tex_image_1d(unsigned char *pixels, const char *out_path)
 {
@@ -18092,6 +18149,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("texture_swizzle_sampling",
                     test_texture_swizzle_sampling),
     SELF_CHECK_TEST("copy_tex_image_1d", test_copy_tex_image_1d),
+    SELF_CHECK_TEST("get_uniform_dv", test_get_uniform_dv),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

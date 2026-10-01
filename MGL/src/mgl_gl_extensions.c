@@ -5486,12 +5486,6 @@ void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint locatio
 	(void)ctx;
 }
 
-void mglGetUniformdv(GLMContext ctx, GLuint program, GLint location, GLdouble *params)
-{
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
-}
-
 void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *params)
 {
 	GLint tmp = 0;
