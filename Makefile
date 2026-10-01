@@ -562,6 +562,16 @@ test-regression-update: build-test-regression
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_regression \
 		--golden-dir $(abspath MGL_Golden_Images) --update
 
+$(build_dir)/test_air_loader_cache: test_legacy_compat/test_air_loader_cache.mm \
+	MGL/src/mgl_air_loader.h $(build_dir)/libmgl.dylib
+	$(APPLE_CLANG) -x objective-c++ -fobjc-arc -Wall -Werror -gfull -O0 \
+		-arch $(HOST_ARCH) -isysroot $(SDK_ROOT) -IMGL/src \
+		test_legacy_compat/test_air_loader_cache.mm \
+		-L$(build_dir) -lmgl -lc++ -framework Metal -framework Foundation -o $@
+
+test-air-loader-cache: $(build_dir)/test_air_loader_cache
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_air_loader_cache
+
 $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O2 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
@@ -1226,6 +1236,7 @@ test-all:
 	$(MAKE) test-mglair
 	$(MAKE) test-mcrepro
 	$(MAKE) test-metalcpp
+	$(MAKE) test-air-loader-cache
 	$(MAKE) test-legacy-compat
 	$(MAKE) test-es-smoke
 	$(MAKE) test-regression
@@ -1235,7 +1246,7 @@ test-all:
 	test-buffer-plan test-reference-query test-per-vertex-signature test-render-pass-clear-plan \
 	test-render-pass-load-store test-blit-plan \
 	test-legacy-compat test-mglir test-mgl-air-type test-mgllex test-mglparse test-mglsema \
-	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
+	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
 	test-state-invariants test-state-dataflow test-state-snapshot-share \
 	verify-toolchain check-glfw-selectors

@@ -24,6 +24,7 @@
 #include <dispatch/dispatch.h>
 #include <cstdint>
 #include <cstring>
+#include <list>
 #include <map>
 #include <mutex>
 #include <string>
@@ -33,7 +34,20 @@ namespace {
 
 // The cache is process-lifetime storage. Explicit shutdown releases its Metal
 // objects before clearing it, avoiding static-destruction ordering hazards.
-using PSOCache = std::map<std::string, void*>;
+// Callers hold their own PSO references, so eviction only drops the cache's.
+// The limit stays well above the pipeline-cache owner's 256 entries so its
+// evictions still hit here.
+constexpr size_t kPSOCacheLimit = 1024;
+
+struct PSOCacheEntry {
+    void* pso;
+    std::list<std::string>::iterator lru;
+};
+
+struct PSOCache {
+    std::map<std::string, PSOCacheEntry> entries;
+    std::list<std::string> lru; // front = least recently used
+};
 
 static std::mutex &psoCacheMutex()
 {
@@ -323,10 +337,11 @@ int createRenderPipelineInternal(
     {
         std::lock_guard<std::mutex> lock(psoCacheMutex());
         PSOCache& cache = psoCache();
-        auto it = cache.find(key);
-        if (it != cache.end()) {
-            static_cast<MTL::RenderPipelineState*>(it->second)->retain();
-            *pso_out = it->second;
+        auto it = cache.entries.find(key);
+        if (it != cache.entries.end()) {
+            cache.lru.splice(cache.lru.end(), cache.lru, it->second.lru);
+            static_cast<MTL::RenderPipelineState*>(it->second.pso)->retain();
+            *pso_out = it->second.pso;
             return 0;
         }
     }
@@ -381,17 +396,28 @@ int createRenderPipelineInternal(
     {
         std::lock_guard<std::mutex> lock(psoCacheMutex());
         PSOCache& cache = psoCache();
-        auto it = cache.find(key);
-        if (it != cache.end()) {
+        auto it = cache.entries.find(key);
+        if (it != cache.entries.end()) {
             /* Another thread compiled the same key while this one was in
              * Metal. Keep one cache entry and return a fresh caller ref. */
             pso->release();
-            static_cast<MTL::RenderPipelineState*>(it->second)->retain();
-            *pso_out = it->second;
+            static_cast<MTL::RenderPipelineState*>(it->second.pso)->retain();
+            *pso_out = it->second.pso;
             return 0;
         }
+        if (cache.entries.size() >= kPSOCacheLimit) {
+            for (size_t n = cache.entries.size() / 4; n > 0; --n) {
+                auto oldest = cache.entries.find(cache.lru.front());
+                static_cast<MTL::RenderPipelineState*>(oldest->second.pso)
+                    ->release();
+                cache.entries.erase(oldest);
+                cache.lru.pop_front();
+            }
+        }
         pso->retain(); // The cache holds a long-lived reference.
-        cache.emplace(std::move(key), pso);
+        cache.lru.push_back(key);
+        cache.entries.emplace(std::move(key),
+                              PSOCacheEntry{pso, std::prev(cache.lru.end())});
     }
     *pso_out = pso; // The caller owns a reference released with mglAirRelease.
     return 0;
@@ -492,12 +518,13 @@ void mglAirRelease(void* obj) {
 void mglAirLoaderShutdown(void) {
     std::lock_guard<std::mutex> lock(psoCacheMutex());
     PSOCache& cache = psoCache();
-    for (auto &entry : cache) {
-        if (entry.second) {
-            static_cast<MTL::RenderPipelineState*>(entry.second)->release();
+    for (auto &entry : cache.entries) {
+        if (entry.second.pso) {
+            static_cast<MTL::RenderPipelineState*>(entry.second.pso)->release();
         }
     }
-    cache.clear();
+    cache.entries.clear();
+    cache.lru.clear();
 }
 
 } // extern "C"
