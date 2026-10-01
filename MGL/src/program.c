@@ -2457,7 +2457,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
     }
 
-    applyVertexInputLocations(pptr);
     applyFragmentOutputLocationIndices(pptr);
     applyMultiDimArrayUniformNames(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);

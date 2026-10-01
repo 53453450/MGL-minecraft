@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 98
+#define MAX_TESTS 99
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14253,6 +14253,135 @@ static int test_clear_alpha_readback(unsigned char *pixels,
     return result;
 }
 
+/* Draws a full-screen triangle whose color comes from the `Color` input fed
+ * at the location GetAttribLocation reports; `Position` likewise. */
+static int attrib_name_draw_check(const char *label, const char *vs,
+                                  GLint want_pos_loc, unsigned char *pixels)
+{
+    static const char *fs =
+        "#version 330 core\n"
+        "in vec3 v_color;\n"
+        "out vec4 o;\n"
+        "void main() { o = vec4(v_color, 1.0); }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+
+    int result = 0;
+    GLint pos = glGetAttribLocation(prog, "Position");
+    GLint col = glGetAttribLocation(prog, "Color");
+    if (pos < 0 || col < 0 || pos == col ||
+        (want_pos_loc >= 0 && pos != want_pos_loc)) {
+        fprintf(stderr, "%s: Position=%d Color=%d (want Position=%d)\n",
+                label, pos, col, want_pos_loc);
+        glDeleteProgram(prog);
+        return 1;
+    }
+
+    static const float verts[] = { -1.0f, -1.0f, 3.0f, -1.0f, -1.0f, 3.0f };
+    static const float colors[] = { 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                    0.0f, 1.0f, 0.0f };
+    GLuint vao = 0, vbos[2] = {0, 0};
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, vbos);
+    glBindBuffer(GL_ARRAY_BUFFER, vbos[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray((GLuint)pos);
+    glVertexAttribPointer((GLuint)pos, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbos[1]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
+    glEnableVertexAttribArray((GLuint)col);
+    glVertexAttribPointer((GLuint)col, 3, GL_FLOAT, GL_FALSE, 0, 0);
+    GLint uv0 = glGetAttribLocation(prog, "UV0");
+    if (uv0 >= 0) {
+        glBindBuffer(GL_ARRAY_BUFFER, vbos[0]);
+        glEnableVertexAttribArray((GLuint)uv0);
+        glVertexAttribPointer((GLuint)uv0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    }
+
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *px = pixels + (REG_H / 2 * REG_W + REG_W / 2) * 4;
+    if (px[0] != 0 || px[1] != 255 || px[2] != 0) {
+        fprintf(stderr, "%s: center %u/%u/%u, want 0/255/0 "
+                "(Position=%d Color=%d)\n", label, px[0], px[1], px[2],
+                pos, col);
+        result = 1;
+    }
+
+    glUseProgram(0);
+    glDeleteBuffers(2, vbos);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
+/* GL 4.6 §11.1.1: an explicit layout location wins, and an unbound input's
+ * location is whatever GetAttribLocation reports; Minecraft-style names must
+ * not get special treatment. */
+static int test_vertex_input_name_locations(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)out_path;
+    static const char *vs_explicit =
+        "#version 330 core\n"
+        "layout(location = 3) in vec2 Position;\n"
+        "layout(location = 0) in vec3 Color;\n"
+        "out vec3 v_color;\n"
+        "void main() { v_color = Color; gl_Position = vec4(Position, 0.0, 1.0); }\n";
+    static const char *vs_implicit =
+        "#version 330 core\n"
+        "in vec2 UV0;\n"
+        "in vec3 Color;\n"
+        "in vec2 Position;\n"
+        "out vec3 v_color;\n"
+        "void main() { v_color = Color + vec3(UV0 * 0.0, 0.0);\n"
+        "              gl_Position = vec4(Position, 0.0, 1.0); }\n";
+
+    GLuint tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+
+    int result = 0;
+    if (attrib_name_draw_check("vertex_input_name_locations explicit",
+                               vs_explicit, 3, pixels) != 0)
+        result = 1;
+    if (attrib_name_draw_check("vertex_input_name_locations implicit",
+                               vs_implicit, -1, pixels) != 0)
+        result = 1;
+
+    static const char *fs =
+        "#version 330 core\n"
+        "in vec3 v_color;\n"
+        "out vec4 o;\n"
+        "void main() { o = vec4(v_color, 1.0); }\n";
+    GLuint prog = link_program(vs_explicit, fs);
+    if (prog) {
+        glBindAttribLocation(prog, 5, "Position");
+        glLinkProgram(prog);
+        GLint pos = glGetAttribLocation(prog, "Position");
+        if (pos != 3) {
+            fprintf(stderr, "vertex_input_name_locations: Position=%d after "
+                    "BindAttribLocation(5), want shader-text 3\n", pos);
+            result = 1;
+        }
+        glDeleteProgram(prog);
+    } else {
+        result = 1;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return result;
+}
+
 /* GL 4.6 §9.2.1: a no-attachment FBO with FRAMEBUFFER_DEFAULT_LAYERS != 0
  * is layered.  Drawing a VS that writes gl_Layer must not raise an error. */
 static int test_no_attachment_layered_fbo(unsigned char *pixels,
@@ -16924,6 +17053,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("framebuffer_texture_missing_object",
                     test_framebuffer_texture_missing_object),
     SELF_CHECK_TEST("clear_alpha_readback", test_clear_alpha_readback),
+    SELF_CHECK_TEST("vertex_input_name_locations",
+                    test_vertex_input_name_locations),
     SELF_CHECK_TEST("no_attachment_layered_fbo",
                     test_no_attachment_layered_fbo),
     SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),

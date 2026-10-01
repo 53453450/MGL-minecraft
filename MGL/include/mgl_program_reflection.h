@@ -26,14 +26,6 @@ GLboolean mglProgramPipelinePerVertexCompatible(
     Program *const *stage_programs);
 GLboolean mglLinkedProgramPerVertexCompatible(Program *program);
 
-GLint mglDefaultAttribLocationForName(const char *name);
-GLint mglProgramVertexInputOrdinal(Program *program, const char *name);
-GLboolean mglProgramHasVertexInputNamed(Program *program, const char *name);
-GLint mglContextualDefaultAttribLocationForName(Program *program,
-                                                const char *name);
-GLint mglDesiredAttribLocationForName(Program *program, const char *name);
-
-void applyVertexInputLocations(Program *program);
 void applyMultiDimArrayUniformNames(Program *program);
 void applyFragmentOutputLocationIndices(Program *program);
 void alignFragmentInputLocationsToVertexOutputs(Program *program);

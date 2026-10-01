@@ -819,17 +819,6 @@ static uint32_t air_reflect_attrib_location(const char *name,
             }
         }
     }
-    if (name) {
-        static const struct { const char *n; uint32_t l; } def[] = {
-            {"Position", 0}, {"Color", 1}, {"UV0", 2},
-            {"UV1", 3}, {"UV2", 4}, {"Normal", 5},
-        };
-        for (size_t k = 0; k < sizeof(def) / sizeof(def[0]); k++) {
-            if (strcmp(def[k].n, name) == 0) {
-                return def[k].l;
-            }
-        }
-    }
     return UINT32_MAX;
 }
 
@@ -1317,13 +1306,14 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             }
             ssbo_binding += block_count;
         } else if (q & MGL_AST_Q_IN) {
-            /* Desired location: explicit bindings, stable names, then
-             * declaration order (CLI-style auto-mapped locations). */
-            uint32_t want = air_reflect_attrib_location(s->name,
-                                                        attrib_names);
-            if (want != UINT32_MAX) {
-                location = want;
-            } else if (location == UINT32_MAX) {
+            /* GL 4.6 §11.1.1: shader-text location, then BindAttribLocation
+             * (VS only, as in assignStageVarSymLocations), then declaration
+             * order. */
+            if (location == UINT32_MAX && isVS) {
+                location = air_reflect_attrib_location(s->name,
+                                                       attrib_names);
+            }
+            if (location == UINT32_MAX) {
                 location = lists[_STAGE_INPUT_RES].count +
                            gs_input_span_pad;
             }
