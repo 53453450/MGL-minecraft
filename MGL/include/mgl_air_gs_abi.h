@@ -70,8 +70,8 @@ enum {
     /* GS transform-feedback record output (section 5).  Bound only when
      * the GS program is linked with transform feedback.  Numerically the
      * same slot as the TES XFB stream (MGL_AIR_TESS_SLOT_XFB_OUT) but the
-     * encoders are disjoint. */
-    MGL_AIR_GS_SLOT_XFB    = 31,
+     * encoders are disjoint.  Slots 23..30 are taken, so it sits at 22. */
+    MGL_AIR_GS_SLOT_XFB    = 22,
 
     /* GS XFB ordered-scatter visibility buffer (section 5b): one u32 per
      * work item per XFB buffer, written by the pass-1 kernel.  Slot 26 is
@@ -89,21 +89,15 @@ enum {
     MGL_AIR_GS_SLOT_XFB_META = 27,
 };
 
-MGL_AIR_STATIC_ASSERT((int)MGL_AIR_GS_SLOT_XFB ==
-                          (int)kMGLMaxMetalComputeBufferIndex,
-                      "GS XFB must occupy the last physical compute slot");
 MGL_AIR_STATIC_ASSERT((int)MGL_AIR_GS_SLOT_XFB <
-                          (int)kMGLMaxMetalComputeBufferCount,
-                      "GS XFB exceeds the physical compute slot domain");
-MGL_AIR_STATIC_ASSERT((int)MGL_AIR_GS_SLOT_XFB >
+                          (int)MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX,
+                      "GS XFB must not alias the runtime-size table");
+MGL_AIR_STATIC_ASSERT((int)MGL_AIR_GS_SLOT_XFB <=
                           (int)kMGLMaxMetalUserBufferIndex,
-                      "GS XFB slot must remain internal-only");
+                      "GS XFB exceeds the Metal 0..30 buffer domain");
 MGL_AIR_STATIC_ASSERT(kMGLMaxMetalUserBufferCount ==
                           kMGLMaxMetalUserBufferIndex + 1,
                       "user buffer count must remain the 0..30 domain");
-MGL_AIR_STATIC_ASSERT(kMGLMaxMetalComputeBufferCount ==
-                          kMGLMaxMetalComputeBufferIndex + 1,
-                      "compute physical count must include slot 31");
 
 /* =====================================================================
  * 2. Output record layout
@@ -251,7 +245,7 @@ typedef struct MGLAIRGSIndexGatherParams {
  * 5. GS transform-feedback records (, multi-stream 2026-08-12)
  *
  * GS XFB output reuses the per-vertex record layout (position + varyings)
- * written by the GS kernel into a dedicated record buffer (slot 31), then
+ * written by the GS kernel into a dedicated record buffer (slot 22), then
  * the renderer copies whole primitives back into the GL transform-feedback
  * store, honoring session offset / overflow the same way the TES XFB path
  * does (see MGLRenderer+Tessellation.m).
@@ -259,7 +253,7 @@ typedef struct MGLAIRGSIndexGatherParams {
  * Streams 0..3 (GL 4.6 §11.1.3.4, GLSL 4.60 §4.3.8.2/§8.13): only stream 0
  * is rasterized; streams 1..3 exist solely for transform feedback and are
  * only legal when the output primitive type is points.  The single
- * physical slot-31 buffer is split into per-buffer segments
+ * slot-22 buffer is split into per-buffer segments
  * (capture_base = byte offset of the segment); each buffer owns one
  * MGLAIRGSXFBStreamMeta.  The emitted-point counter is independent of
  * capture so indexed PRIMITIVES_GENERATED remains valid when no XFB
@@ -282,7 +276,7 @@ typedef struct MGLAIRGSXFBStreamMeta {
     uint32_t stride;          /* bytes per XFB vertex; 0 = capture off    */
     uint32_t capacity_bytes;  /* store capacity from the bound offset     */
     uint32_t capture_base;    /* byte offset of this stream's segment in
-                               * the slot-31 buffer (renderer preset)     */
+                               * the slot-22 buffer (renderer preset)     */
     uint32_t generated;       /* emitted visible points (stream > 0 query) */
 } MGLAIRGSXFBStreamMeta;
 
@@ -317,7 +311,7 @@ MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 80u,
  *
  *   Pass 1 (the existing GS expansion kernel): expands each work item's
  *     primitives into the slot-28 stage-out record run as before, and instead
- *     of appending to slot 31 writes per-(work-item, buffer) visible byte
+ *     of appending to slot 22 writes per-(work-item, buffer) visible byte
  *     counts into a visibility buffer (one u32 per work item per buffer).
  *
  *   CPU (renderer): reads the visibility buffer, computes an exclusive
@@ -329,7 +323,7 @@ MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 80u,
  *     truncation (a primitive is written only if it fits in every buffer it
  *     feeds, which is atomic because offsets are ordered), repacks each
  *     captured varying to its link-time component offset, and copies the
- *     records into the slot-31 XFB stream in emission order.
+ *     records into the slot-22 XFB stream in emission order.
  *
  * Buffer-index mapping: records are scattered per *transform-feedback buffer
  * index* (0..3 from the link-time scatter plan), not per GS output stream.
@@ -338,9 +332,9 @@ MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 80u,
  * ===================================================================== */
 
 /* Pass 2 (gs_xfb_scatter aux metallib kernel) is a standalone compute kernel
- * whose buffer indices must stay in [0, 30] (Metal kernel limit), so it does
- * NOT reuse the pass-1 slot-31 XFB index.  The renderer binds the slot-31
- * XFB stream to the scatter kernel's buffer(4) and the per-(work-item,
+ * with its own compact buffer layout; it does NOT reuse the pass-1 slot
+ * numbers.  The renderer binds the slot-22 XFB stream to the scatter
+ * kernel's buffer(4) and the per-(work-item,
  * buffer) written counters to buffer(5); the stage-out records move to
  * buffer(3) for this kernel, and the packed params/visibility/offset table
  * take the low slots 0/1/2. */
@@ -361,7 +355,7 @@ MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 80u,
 typedef struct MGLAIRGSXFBBufferMeta {
     uint32_t stride;          /* record bytes for this buffer; 0 = unused   */
     uint32_t capacity_bytes;  /* store capacity from the bound offset       */
-    uint32_t capture_base;    /* byte offset of this buffer's slot-31 segment */
+    uint32_t capture_base;    /* byte offset of this buffer's slot-22 segment */
     uint32_t written;         /* pass-2 written-byte counter (GPU written)  */
 } MGLAIRGSXFBBufferMeta;
 

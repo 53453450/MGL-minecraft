@@ -18404,36 +18404,37 @@ static int test_air_geometry_buffer_slot_conflict(unsigned char *pixels,
     GLint control_status = GL_FALSE;
     GLint conflict_status = GL_TRUE;
 
+    /* The GS compute ABI owns slot 22 (XFB stream) and 23..30, so user slots
+     * 0..21 are valid and a 23rd resource must fail at link time. */
     if (geometry_program_link_status_with_ssbo_count(
-            24u, 0, &control_status) != 0 ||
+            22u, 0, &control_status) != 0 ||
         geometry_program_link_status_with_ssbo_count(
-            25u, 0, &conflict_status) != 0) {
+            23u, 0, &conflict_status) != 0) {
         fprintf(stderr,
                 "air_geometry_buffer_slot_conflict: shader setup failed\n");
         return 1;
     }
     if (control_status != GL_TRUE || conflict_status != GL_FALSE) {
         fprintf(stderr,
-                "air_geometry_buffer_slot_conflict: expected 24 SSBO link=1 "
-                "and 25 SSBO link=0, got %d/%d\n",
+                "air_geometry_buffer_slot_conflict: expected 22 SSBO link=1 "
+                "and 23 SSBO link=0, got %d/%d\n",
                 control_status, conflict_status);
         return 1;
     }
 
     /* GS runtime-array size metadata moves to hidden slot 23 so gather params
-     * remain at slot 25.  User slots 0..22 are valid; a 24th resource would
-     * occupy the hidden size-table slot and must fail at link time. */
+     * remain at slot 25; it must not invalidate user slots 0..21. */
     GLint gs_runtime_valid_status = GL_FALSE;
     GLint gs_runtime_conflict_status = GL_TRUE;
     if (geometry_program_link_status_with_ssbo_count(
-            23u, 1, &gs_runtime_valid_status) != 0 ||
+            22u, 1, &gs_runtime_valid_status) != 0 ||
         geometry_program_link_status_with_ssbo_count(
-            24u, 1, &gs_runtime_conflict_status) != 0 ||
+            23u, 1, &gs_runtime_conflict_status) != 0 ||
         gs_runtime_valid_status != GL_TRUE ||
         gs_runtime_conflict_status != GL_FALSE) {
         fprintf(stderr,
                 "air_geometry_buffer_slot_conflict: expected GS runtime-size "
-                "23/24 SSBO link=1/0, got %d/%d\n",
+                "22/23 SSBO link=1/0, got %d/%d\n",
                 gs_runtime_valid_status, gs_runtime_conflict_status);
         return 1;
     }
@@ -18455,10 +18456,9 @@ static int test_air_geometry_buffer_slot_conflict(unsigned char *pixels,
         return 1;
     }
 
-    /* Renderer user-buffer tables expose [0,
-     * kMGLMaxMetalUserBufferCount).  The physical compute ABI additionally
-     * owns slot kMGLMaxMetalComputeBufferIndex, which must not be assigned to
-     * a reflected user resource even when runtime sizing is inactive. */
+    /* Renderer user-buffer tables expose [0, kMGLMaxMetalUserBufferCount),
+     * Metal's 31-buffer limit, so slot 31 must not be assigned to a reflected
+     * user resource even when runtime sizing is inactive. */
     GLint max_valid_status = GL_FALSE;
     GLint max_conflict_status = GL_TRUE;
     if (compute_program_link_status_with_ssbo_count(

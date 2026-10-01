@@ -14,11 +14,8 @@
  *
  * Reserved Metal buffer slot registry.
  *
- * MGL user/vertex-buffer tables expose indices 0..30 (count 31).  Fixed AIR
- * compute ABIs may additionally use physical index 31; current GS/TES kernels
- * exercise that index on Apple M4, while indices >= 32 cross the AGX 5-bit
- * compiler boundary.  Slot 31 is therefore internal-only and MUST NOT expand
- * the ordinary user-resource or vertex-layout tables to 32 entries.
+ * Metal allows 31 buffer arguments per function (`air.max_device_buffers`),
+ * so every stage, including the fixed AIR compute ABIs, uses indices 0..30.
  *
  * MGL reserves the high end of these domains for internal use (tessellation,
  * transform feedback, gl_FragCoord fixup, cull-distance emulation, runtime
@@ -35,8 +32,8 @@
  * per-slot comments for reuse notes.
  *
  * Adding a new reserved slot:
- *   1. Pick the lowest free slot in [25, 30] for a user-visible stage or a
- *      documented compute-only physical slot in [25, 31].
+ *   1. Pick the lowest free slot in [25, 30]; compute ABIs that already fill
+ *      [23, 30] take slots below 23 (GS/TES XFB stream at 22).
  *   2. Add an entry here with a doc comment + reuse notes.
  *   3. Update `mglBufferSlotIsReservedForStage` if the slot is stage-specific.
  *   4. Extend `mglBufferSlotConflictsForProgram` and its link-time regression
@@ -83,7 +80,7 @@ typedef enum {
 
     /* Indirect draw parameter buffer (vertexCount, instanceCount, ...).
      * TCS/TES compute dispatch path.  Reused as kMGLCullDistanceVertex in VS.
-     * TES compute XFB uses the separate internal-only physical slot 31. */
+     * TES compute XFB uses the separate internal slot 22. */
     kMGLBufferSlot_IndirectParams   = 29,
 
     /* TES gl_in buffer (TCS output vertices).  Reused as
@@ -141,11 +138,6 @@ typedef enum {
     kMGLMaxMetalUserBufferCount    = 31,
     kMGLMaxMetalVertexBufferIndex  = kMGLMaxMetalUserBufferIndex,
     kMGLMaxMetalVertexBufferCount  = kMGLMaxMetalUserBufferCount,
-
-    /* Physical compute-only ABI domain.  Slot 31 is reserved for fixed GS/TES
-     * transform-feedback streams and is never assigned to a user resource. */
-    kMGLMaxMetalComputeBufferIndex = 31,
-    kMGLMaxMetalComputeBufferCount = 32,
 } MGLReservedBufferSlot;
 
 /* ---- Binding-state slot limits (C-safe home) ----
@@ -174,7 +166,7 @@ GLboolean mglBufferSlotIsReserved(GLuint slot);
 
 /* Returns GL_TRUE for the legacy cross-route tessellation helper range 26..30
  * (factors, patch output/info, indirect params, TES gl_in).  It intentionally
- * does not model route-specific slots 24, 25 or 31; link-time callers must use
+ * does not model route-specific slots 22, 24 or 25; link-time callers must use
  * `mglBufferSlotConflictsForProgram` for the exact TCS/native-TES/compute-TES
  * ownership set. */
 GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot);
@@ -186,7 +178,7 @@ GLboolean mglBufferSlotIsReservedForCullDistance(GLuint slot);
 
 /* Returns GL_TRUE if `slot` is reserved for a program with a geometry
  * shader running on the M3 compute-expansion path (mgl_air_gs_abi.h).
- * The current GS compute ABI owns slots 24..31, including gather params,
+ * The current GS compute ABI owns slots 22 and 24..30, including gather params,
  * output/count buffers and transform-feedback stream/meta buffers. */
 GLboolean mglBufferSlotIsReservedForGeometry(GLuint slot);
 

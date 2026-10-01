@@ -10975,7 +10975,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         /*  GS compute ABI (mgl_air_gs_abi.h): primitive input records,
          * expanded output records, one 28-byte counts record per work
          * item, the optional indexed gather stream, the gather params
-         * constant, the transform-feedback stream(31) and its atomic
+         * constant, the transform-feedback stream(22) and its atomic
          * meta record(27).  All buffers in device address space. */
         for (int i = 0; i < 3; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -10998,7 +10998,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * kernel slot layout, plus the optional indexed gather stream and
          * its params (bound only for indexed draws; the kernel branches on
          * gather_params.gather_enabled at runtime), and the optional
-         * transform-feedback stream(31). */
+         * transform-feedback stream(22). */
         for (int i = 0; i < 8; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isTESVertex) {
@@ -12518,7 +12518,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                                        cg.lvalues["gl_ClipDistance"]);
         }
         if (cg.xfbOutPtr) {
-            /* Transform-feedback stream (slot 31): one complete stage-out
+            /* Transform-feedback stream (slot 22): one complete stage-out
              * record per work item, same layout/stride as slot 28.  The
              * runtime binds the GL target here only when feedback is
              * active; the kernel copy is otherwise skipped. */
@@ -13501,11 +13501,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * records), indirect contract(29, {patch_id, vertices_per_patch,
          * items_per_patch, output_offset}), the optional indexed gather
          * stream(30)/params(25), and the optional transform-feedback
-         * stream(31). */
+         * stream(22). */
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount + acCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
-        const uint32_t locs[8] = {24u, 26u, 27u, 28u, 29u, 30u, 25u, 31u};
+        const uint32_t locs[8] = {24u, 26u, 27u, 28u, 29u, 30u, 25u,
+                                  (uint32_t)MGL_AIR_TESS_SLOT_XFB_OUT};
         const char *names[8] = {"tes_stage_in", "tess_factors",
                                 "tes_patch_inputs", "tes_stage_out",
                                 "tes_indirect", "tes_gather",
@@ -13541,7 +13542,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * meta, and the ordered-scatter visibility buffer.  The gather
          * buffer and params constant are read-only; output/counts/XFB/
          * visibility are read_write. */
-        const uint32_t locs[8] = {24u, 28u, 29u, 30u, 25u, 31u, 27u, 26u};
+        const uint32_t locs[8] = {24u, 28u, 29u, 30u, 25u,
+                                  (uint32_t)MGL_AIR_GS_SLOT_XFB, 27u, 26u};
         const char *names[8] = {"gs_input", "gs_output", "gs_count",
                                 "gs_gather", "gs_gather_params",
                                 "gs_xfb_out", "gs_xfb_meta", "gs_xfb_vis"};

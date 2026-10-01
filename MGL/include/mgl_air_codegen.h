@@ -125,12 +125,12 @@ struct Codegen {
     llvm::Value *geometryCountPtr = nullptr;  /* GS indirect draw args */
     llvm::Value *geometryGatherPtr = nullptr; /* GS indexed gather stream */
     llvm::Value *geometryGatherParamsPtr = nullptr; /* GS gather params    */
-    llvm::Value *geometryXfbPtr = nullptr;  /* GS XFB stream, buffer(31)   */
+    llvm::Value *geometryXfbPtr = nullptr;  /* GS XFB stream, buffer(22)   */
     llvm::Value *geometryXfbMetaPtr = nullptr; /* GS XFB meta, buffer(27)  */
     llvm::Value *geometryXfbVisPtr = nullptr;  /* GS XFB visibility, buffer(30) */
     llvm::Value *tessGatherPtr = nullptr;     /* TES compute gather stream */
     llvm::Value *tessGatherParamsPtr = nullptr; /* TES compute gather params*/
-    llvm::Value *xfbOutPtr = nullptr;   /* TES compute XFB stream, buffer(31) */
+    llvm::Value *xfbOutPtr = nullptr;   /* TES compute XFB stream, buffer(22) */
     llvm::Value *geometryWorkItemId = nullptr;
     llvm::Value *geometryPrimitiveId = nullptr;
     llvm::Value *geometryInvocationId = nullptr;

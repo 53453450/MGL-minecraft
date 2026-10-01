@@ -6739,19 +6739,17 @@ static int verifyBufferSlotRegistry(void) {
     if (kMGLMaxMetalUserBufferIndex != 30 ||
         kMGLMaxMetalUserBufferCount != 31 ||
         kMGLMaxMetalVertexBufferIndex != kMGLMaxMetalUserBufferIndex ||
-        kMGLMaxMetalVertexBufferCount != kMGLMaxMetalUserBufferCount ||
-        kMGLMaxMetalComputeBufferIndex != 31 ||
-        kMGLMaxMetalComputeBufferCount != 32) {
-        fprintf(stderr, "FAIL: buffer-slot physical/user boundaries\n");
+        kMGLMaxMetalVertexBufferCount != kMGLMaxMetalUserBufferCount) {
+        fprintf(stderr, "FAIL: buffer-slot user boundaries\n");
         return 1;
     }
 
     /* P0 (2026-08-16 audit): the GS reserved-set must cover the real
      * mgl_air_gs_abi.h slots — INPUT=24, GATHER_PARAMS=25, OUTPUT=28,
-     * COUNTS=29, GATHER=30, XFB=31, XFB_META=27 (plus the shared
-     * tessellation factor slot 26).  Previously {24,28,29,30} missed 27/31
-     * and mislabeled 30 as "GS XFB". */
-    const GLuint geometryReserved[] = {24u, 25u, 26u, 27u, 28u, 29u, 30u, 31u};
+     * COUNTS=29, GATHER=30, XFB=22, XFB_META=27 (plus the shared
+     * tessellation factor slot 26).  Previously {24,28,29,30} missed the XFB
+     * slots and mislabeled 30 as "GS XFB". */
+    const GLuint geometryReserved[] = {22u, 24u, 25u, 26u, 27u, 28u, 29u, 30u};
     for (size_t i = 0; i < sizeof(geometryReserved) / sizeof(geometryReserved[0]); ++i) {
         if (!mglBufferSlotIsReservedForGeometry(geometryReserved[i])) {
             fprintf(stderr, "FAIL: buffer-slot geometry reserved %u\n",
@@ -6760,7 +6758,7 @@ static int verifyBufferSlotRegistry(void) {
         }
     }
     /* Slots outside the GS reserved domain must NOT be reserved. */
-    const GLuint geometryFree[] = {0u, 3u, 14u, 15u, 22u};
+    const GLuint geometryFree[] = {0u, 3u, 14u, 15u, 21u, 23u, 31u};
     for (size_t i = 0; i < sizeof(geometryFree) / sizeof(geometryFree[0]); ++i) {
         if (mglBufferSlotIsReservedForGeometry(geometryFree[i])) {
             fprintf(stderr, "FAIL: buffer-slot geometry false-positive %u\n",
@@ -6811,15 +6809,16 @@ static int verifyBufferSlotRegistry(void) {
     }
 
     /* Reserved-name labels: slot 23 is the compute-ABI runtime table, slot 25
-     * is gather params, and 27/31 carry the GS XFB roles. */
+     * is gather params, and 22/27 carry the GS XFB roles. */
     const char *n23 = mglBufferSlotReservedName(23);
     const char *n25 = mglBufferSlotReservedName(25);
     const char *n27 = mglBufferSlotReservedName(27);
-    const char *n31 = mglBufferSlotReservedName(31);
+    const char *n22 = mglBufferSlotReservedName(22);
     if (!n23 || !strstr(n23, "COMPUTE_ABI_RUNTIME") ||
         !n25 || !strstr(n25, "GATHER_PARAMS") ||
         !n27 || !strstr(n27, "XFB_META") ||
-        !n31 || !strstr(n31, "XFB")) {
+        !n22 || !strstr(n22, "XFB") ||
+        mglBufferSlotReservedName(31)) {
         fprintf(stderr, "FAIL: buffer-slot reserved-name labels\n");
         return 1;
     }
@@ -6837,7 +6836,7 @@ static int verifyBufferSlotRegistry(void) {
 
     program.gs_route = MGL_GS_ROUTE_COMPUTE;
     if (!mglBufferSlotConflictsForProgram(&program, 24u, _GEOMETRY_SHADER) ||
-        !mglBufferSlotConflictsForProgram(&program, 31u, _GEOMETRY_SHADER) ||
+        !mglBufferSlotConflictsForProgram(&program, 22u, _GEOMETRY_SHADER) ||
         mglBufferSlotConflictsForProgram(&program, 24u, _VERTEX_SHADER)) {
         fprintf(stderr, "FAIL: buffer-slot GS program gate\n");
         return 1;
@@ -6861,7 +6860,7 @@ static int verifyBufferSlotRegistry(void) {
     program.tess_eval_compute = GL_TRUE;
     if (!mglBufferSlotConflictsForProgram(&program, 24u,
                                           _TESS_EVALUATION_SHADER) ||
-        !mglBufferSlotConflictsForProgram(&program, 31u,
+        !mglBufferSlotConflictsForProgram(&program, 22u,
                                           _TESS_EVALUATION_SHADER)) {
         fprintf(stderr, "FAIL: buffer-slot compute tess program gate\n");
         return 1;

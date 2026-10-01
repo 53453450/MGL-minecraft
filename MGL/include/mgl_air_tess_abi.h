@@ -175,7 +175,7 @@ enum {
      * stage-out record per work item (same layout as the slot-28 stage-out
      * records, stride = stage-out stride).  The runtime binds the GL
      * transform-feedback target here when feedback is active. */
-    MGL_AIR_TESS_SLOT_XFB_OUT       = 31,
+    MGL_AIR_TESS_SLOT_XFB_OUT       = 22,
 };
 
 MGL_AIR_TESS_STATIC_ASSERT(MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX <
@@ -185,21 +185,15 @@ MGL_AIR_TESS_STATIC_ASSERT(MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX !=
                                MGL_AIR_TESS_SLOT_GATHER_PARAMS,
                            "compute-TES runtime-size table must not alias gather params");
 
-MGL_AIR_TESS_STATIC_ASSERT((int)MGL_AIR_TESS_SLOT_XFB_OUT ==
-                               (int)kMGLMaxMetalComputeBufferIndex,
-                           "TES XFB must occupy the last physical compute slot");
 MGL_AIR_TESS_STATIC_ASSERT((int)MGL_AIR_TESS_SLOT_XFB_OUT <
-                               (int)kMGLMaxMetalComputeBufferCount,
-                           "TES XFB exceeds the physical compute slot domain");
-MGL_AIR_TESS_STATIC_ASSERT((int)MGL_AIR_TESS_SLOT_XFB_OUT >
+                               (int)MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX,
+                           "TES XFB must not alias the runtime-size table");
+MGL_AIR_TESS_STATIC_ASSERT((int)MGL_AIR_TESS_SLOT_XFB_OUT <=
                                (int)kMGLMaxMetalUserBufferIndex,
-                           "TES XFB slot must remain internal-only");
+                           "TES XFB exceeds the Metal 0..30 buffer domain");
 MGL_AIR_TESS_STATIC_ASSERT(kMGLMaxMetalUserBufferCount ==
                                kMGLMaxMetalUserBufferIndex + 1,
                            "user buffer count must remain the 0..30 domain");
-MGL_AIR_TESS_STATIC_ASSERT(kMGLMaxMetalComputeBufferCount ==
-                               kMGLMaxMetalComputeBufferIndex + 1,
-                           "compute physical count must include slot 31");
 
 MGL_AIR_TESS_STATIC_ASSERT(MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES == 12u,
                            "quad half tess factors are 12 bytes");

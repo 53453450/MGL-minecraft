@@ -325,8 +325,7 @@ __attribute__((constructor))
 // NOTE: This is the Metal buffer index where vertex attrib buffers start, NOT the
 // GL binding count.  MGL user/vertex tables have 31 slots (0..30), so this
 // must stay below 31 regardless of MAX_BINDABLE_BUFFERS (which tracks GL state
-// only).  Fixed AIR compute ABIs may use internal physical slot 31; that does
-// not expand this vertex/user table.
+// only).
 // kMGLVertexAttribBufferBase = 16, kMGLMaxMetalVertexBufferCount = 31,
 // kMGLMaxMetalVertexBufferIndex = 30 come from mgl_buffer_slots.h.
 //

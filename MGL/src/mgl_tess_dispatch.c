@@ -1282,7 +1282,7 @@ bool mglTessDispatchAIRTessEvalCompute(
                                                _TESS_EVALUATION_SHADER,
                                                &execution_plan, temporaries);
 
-    /* Transform-feedback stream (slot 31): the kernel writes complete stage
+    /* Transform-feedback stream (slot 22): the kernel writes complete stage
      * records. The renderer gathers selected varyings into the compact GL XFB
      * layout and copies only the prefix containing complete primitives. */
     TransformFeedback *xfb_state =
@@ -1397,7 +1397,7 @@ bool mglTessDispatchAIRTessEvalCompute(
     if (mglTessPlanEvalXFBSlot(xfb_active ? 1 : 0, xfb_size_ok) ==
         MGL_TESS_EVAL_XFB_DUMMY) {
         /* The TES compute kernel always declares and writes the XFB stream
-         * slot (31); bind a 1-byte dummy so the slot is never dangling when
+         * slot (22); bind a 1-byte dummy so the slot is never dangling when
          * GL feedback is inactive. */
         const uint64_t dummy_bytes = mglTessDummyXfbBytes((uint64_t)out_size);
         void *cached_dummy = NULL;

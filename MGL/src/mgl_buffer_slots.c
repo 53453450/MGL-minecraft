@@ -50,14 +50,14 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
 
     /* GS compute-expansion path (mgl_air_gs_abi.h §1): the GS kernel owns
      * slot 24 (VS capture input), 25 (index-gather params), 28 (expanded
-     * output), 29 (counts/indirect), 30 (index gather), 31 (XFB stream) and
+     * output), 29 (counts/indirect), 30 (index gather), 22 (XFB stream) and
      * 27 (XFB meta/atomic cursor).  Slots 27-30 also overlap the
      * tessellation / VS/FS emulation paths but the encoders are disjoint;
      * a UBO/SSBO bound for the geometry stage at any of these would corrupt
      * the expansion or the transform-feedback output. */
     if (stage == MGL_STAGE_GEOMETRY || stage < 0) {
-        if (slot == 24u || slot == 25u || slot == 26u || slot == 27u ||
-            slot == 28u || slot == 29u || slot == 30u || slot == 31u) {
+        if (slot == 22u || slot == 24u || slot == 25u || slot == 26u ||
+            slot == 27u || slot == 28u || slot == 29u || slot == 30u) {
             return GL_TRUE;
         }
     }
@@ -109,12 +109,13 @@ GLboolean mglBufferSlotIsReservedForGeometry(GLuint slot)
     /* GS compute-expansion path (mgl_air_gs_abi.h §1): the GS kernel
      * reserves slot 24 (VS capture input), 25 (index-gather params),
      * 26 (reserved with tessellation factors), 28 (expanded output),
-     * 29 (counts / indirect args), 30 (index gather), 31 (GS XFB stream) and
+     * 29 (counts / indirect args), 30 (index gather), 22 (GS XFB stream) and
      * 27 (GS XFB meta / atomic cursor).  A UBO/SSBO bound at any of these
      * slots in a geometry program would silently corrupt the expansion, the
      * gather, or the transform-feedback output.  The stage-specific check is
      * also handled by mglBufferSlotIsReservedForStage. */
     switch (slot) {
+        case 22u:  /* GS XFB stream output */
         case 24u:  /* GS input records */
         case 25u:  /* GS gather params */
         case 26u:  /* TCS/TES factors (shared domain) */
@@ -122,7 +123,6 @@ GLboolean mglBufferSlotIsReservedForGeometry(GLuint slot)
         case 28u:  /* GS output records */
         case 29u:  /* GS counts / indirect args */
         case 30u:  /* GS index gather */
-        case 31u:  /* GS XFB stream output */
             return GL_TRUE;
         default:
             return GL_FALSE;
@@ -212,8 +212,8 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
                 }
             } else if (program->tess_eval_compute) {
                 /* Compute TES (isolines / point_mode / XFB-forced) occupies
-                 * every slot in [24, 31]. */
-                if (slot >= 24u && slot <= 31u) {
+                 * every slot in [24, 30] plus the XFB stream at 22. */
+                if (slot == 22u || (slot >= 24u && slot <= 30u)) {
                     return GL_TRUE;
                 }
             } else if (slot == 27u || slot == 28u || slot == 30u) {
@@ -246,6 +246,8 @@ GLboolean mglBufferSlotConflictsForProgram(const Program *program,
 const char *mglBufferSlotReservedName(GLuint slot)
 {
     switch (slot) {
+        case 22:
+            return "MGL_AIR_TESS_SLOT_XFB_OUT / MGL_AIR_GS_SLOT_XFB (TES/GS transform-feedback stream, disjoint encoders)";
         case 23:
             return "MGL_COMPUTE_ABI_RUNTIME_ARRAY_SIZE_BUFFER_INDEX (GS/compute-TES runtime-sized SSBO sizing)";
         case 14:
@@ -266,8 +268,6 @@ const char *mglBufferSlotReservedName(GLuint slot)
             return "kMGLBufferSlot_IndirectParams / kMGLCullDistanceVertexBufferIndex / MGL_AIR_GS_SLOT_COUNTS (TCS/TES compute OR VS cull-distance OR GS expansion)";
         case 30:
             return "kMGLBufferSlot_TESGlIn / kMGLFragCoordParamsBufferIndex / MGL_AIR_GS_SLOT_GATHER (TES gl_in OR FS gl_FragCoord fixup OR GS indexed gather)";
-        case 31:
-            return "MGL_AIR_TESS_SLOT_XFB_OUT / MGL_AIR_GS_SLOT_XFB (TES/GS transform-feedback stream, disjoint encoders)";
         default:
             return NULL;
     }
