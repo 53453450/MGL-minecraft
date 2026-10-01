@@ -5578,6 +5578,14 @@ void mglGetnTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, 
 	mglGetTexImage(ctx, target, level, format, type, pixels);
 }
 
+/* A full queue drops new errors, so a raise cannot be told apart from none;
+ * treat it as raised so params stay untouched. */
+static bool mglQueryRaisedError(GLMContext ctx, GLuint queued_before)
+{
+	return LIVE_STATE(error_count) != queued_before ||
+	       queued_before >= MGL_ERROR_QUEUE_SIZE;
+}
+
 void mglGetnUniformdv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLdouble *params)
 {
 	GLfloat tmp[16];
@@ -5592,9 +5600,12 @@ void mglGetnUniformdv(GLMContext ctx, GLuint program, GLint location, GLsizei bu
 		ERROR_RETURN(GL_INVALID_OPERATION);
 		return;
 	}
-	mglGetUniformfv(ctx, program, location, tmp);
-	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
-		return;
+	{
+		GLuint queued = LIVE_STATE(error_count);
+		mglGetUniformfv(ctx, program, location, tmp);
+		if (mglQueryRaisedError(ctx, queued))
+			return;
+	}
 	for (i = 0; i < 16 && (GLsizei)((i + 1) * (GLint)sizeof(GLdouble)) <= bufSize; i++)
 		params[i] = (GLdouble)tmp[i];
 }
@@ -5612,9 +5623,12 @@ void mglGetnUniformfv(GLMContext ctx, GLuint program, GLint location, GLsizei bu
 		ERROR_RETURN(GL_INVALID_OPERATION);
 		return;
 	}
-	mglGetUniformfv(ctx, program, location, tmp);
-	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
-		return;
+	{
+		GLuint queued = LIVE_STATE(error_count);
+		mglGetUniformfv(ctx, program, location, tmp);
+		if (mglQueryRaisedError(ctx, queued))
+			return;
+	}
 	{
 		GLsizei n = bufSize / (GLsizei)sizeof(GLfloat);
 		if (n > 16)
@@ -5636,9 +5650,12 @@ void mglGetnUniformiv(GLMContext ctx, GLuint program, GLint location, GLsizei bu
 		ERROR_RETURN(GL_INVALID_OPERATION);
 		return;
 	}
-	mglGetUniformiv(ctx, program, location, tmp);
-	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
-		return;
+	{
+		GLuint queued = LIVE_STATE(error_count);
+		mglGetUniformiv(ctx, program, location, tmp);
+		if (mglQueryRaisedError(ctx, queued))
+			return;
+	}
 	{
 		GLsizei n = bufSize / (GLsizei)sizeof(GLint);
 		if (n > 16)
@@ -5660,9 +5677,12 @@ void mglGetnUniformuiv(GLMContext ctx, GLuint program, GLint location, GLsizei b
 		ERROR_RETURN(GL_INVALID_OPERATION);
 		return;
 	}
-	mglGetUniformuiv(ctx, program, location, tmp);
-	if (STATE(error_count) || STATE(error) != GL_NO_ERROR)
-		return;
+	{
+		GLuint queued = LIVE_STATE(error_count);
+		mglGetUniformuiv(ctx, program, location, tmp);
+		if (mglQueryRaisedError(ctx, queued))
+			return;
+	}
 	{
 		GLsizei n = bufSize / (GLsizei)sizeof(GLuint);
 		if (n > 16)

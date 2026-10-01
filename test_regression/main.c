@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 95
+#define MAX_TESTS 96
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -13674,6 +13674,61 @@ cleanup:
  * (CTS rendering family shape).  Verifies the expanded primitives
  * actually rasterize. */
 /* CTS-derived regressions for GS link/query/XFB-builtin semantics. */
+/* An earlier error still in the queue must not stop GetnUniform*v from
+ * writing params; only an error raised by the query itself does. */
+static int test_getn_uniform_with_pending_error(unsigned char *pixels,
+                                                const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 460 core\n"
+        "uniform float u;\n"
+        "void main() { gl_Position = vec4(u); }\n";
+    static const char *fs =
+        "#version 460 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0); }\n";
+    int result = 1;
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        fprintf(stderr, "getn_uniform_with_pending_error: link failed\n");
+        return 1;
+    }
+    glUseProgram(prog);
+    GLint loc = glGetUniformLocation(prog, "u");
+    glUniform1f(loc, 2.5f);
+    drain_gl_errors();
+
+    glBindTexture(0xFFFFu, 0);
+    GLfloat f = 0.0f;
+    glGetnUniformfv(prog, loc, (GLsizei)sizeof(f), &f);
+    if (f != 2.5f) {
+        fprintf(stderr, "getn_uniform_with_pending_error: fv=%f\n", f);
+        goto cleanup;
+    }
+    if (expect_single_gl_error("getn_uniform_with_pending_error: pending error kept",
+                               GL_INVALID_ENUM)) {
+        goto cleanup;
+    }
+
+    f = -1.0f;
+    glGetnUniformfv(prog, loc + 100, (GLsizei)sizeof(f), &f);
+    if (expect_single_gl_error("getn_uniform_with_pending_error: bad location",
+                               GL_INVALID_OPERATION) ||
+        f != -1.0f) {
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    glUseProgram(0);
+    glDeleteProgram(prog);
+    drain_gl_errors();
+    return result;
+}
+
 /* GL 4.6 §7.14: stage-specific GetProgramiv pnames on a program that lacks
  * that stage generate INVALID_OPERATION and leave params untouched. */
 static int test_program_stage_query_errors(unsigned char *pixels,
@@ -16704,6 +16759,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("gs_link_semantics", test_gs_link_semantics),
     SELF_CHECK_TEST("program_stage_query_errors",
                     test_program_stage_query_errors),
+    SELF_CHECK_TEST("getn_uniform_with_pending_error",
+                    test_getn_uniform_with_pending_error),
     SELF_CHECK_TEST("no_attachment_layered_fbo",
                     test_no_attachment_layered_fbo),
     SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),
