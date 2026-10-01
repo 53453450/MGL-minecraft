@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 102
+#define MAX_TESTS 103
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14406,6 +14406,75 @@ static int test_blit_integer_format_errors(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §18.3.1: integer blits convert between formats of the same
+ * signedness. */
+static int test_blit_integer_format_conversion(unsigned char *pixels,
+                                               const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint tex[4] = {0};
+    GLuint u8 = make_color_fbo(GL_RGBA8UI, GL_RGBA_INTEGER, GL_UNSIGNED_BYTE,
+                               &tex[0]);
+    GLuint u16 = make_color_fbo(GL_RGBA16UI, GL_RGBA_INTEGER,
+                                GL_UNSIGNED_SHORT, &tex[1]);
+    GLuint i8 = make_color_fbo(GL_RGBA8I, GL_RGBA_INTEGER, GL_BYTE, &tex[2]);
+    GLuint i16 = make_color_fbo(GL_RGBA16I, GL_RGBA_INTEGER, GL_SHORT,
+                                &tex[3]);
+    if (!u8 || !u16 || !i8 || !i16) return 2;
+
+    int result = 0;
+    const GLuint uclear[4] = {7u, 200u, 13u, 255u};
+    const GLuint uzero[4] = {0u, 0u, 0u, 0u};
+    glBindFramebuffer(GL_FRAMEBUFFER, u8);
+    glClearBufferuiv(GL_COLOR, 0, uclear);
+    glBindFramebuffer(GL_FRAMEBUFFER, u16);
+    glClearBufferuiv(GL_COLOR, 0, uzero);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, u8);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, u16);
+    glBlitFramebuffer(0, 0, REG_W, REG_H, 0, 0, REG_W, REG_H,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, u16);
+    GLuint u[4] = {0xdeadu, 0xdeadu, 0xdeadu, 0xdeadu};
+    glReadPixels(3, 3, 1, 1, GL_RGBA_INTEGER, GL_UNSIGNED_INT, u);
+    if (u[0] != 7u || u[1] != 200u || u[2] != 13u || u[3] != 255u) {
+        fprintf(stderr, "blit_integer_format_conversion: RGBA8UI->RGBA16UI "
+                "%u/%u/%u/%u\n", u[0], u[1], u[2], u[3]);
+        result = 1;
+    }
+
+    const GLint iclear[4] = {-5, 100, -128, 127};
+    const GLint izero[4] = {0, 0, 0, 0};
+    glBindFramebuffer(GL_FRAMEBUFFER, i8);
+    glClearBufferiv(GL_COLOR, 0, iclear);
+    glBindFramebuffer(GL_FRAMEBUFFER, i16);
+    glClearBufferiv(GL_COLOR, 0, izero);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, i8);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, i16);
+    glBlitFramebuffer(0, 0, REG_W, REG_H, 0, 0, REG_W, REG_H,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, i16);
+    GLint s[4] = {0xdead, 0xdead, 0xdead, 0xdead};
+    glReadPixels(3, 3, 1, 1, GL_RGBA_INTEGER, GL_INT, s);
+    if (s[0] != -5 || s[1] != 100 || s[2] != -128 || s[3] != 127) {
+        fprintf(stderr, "blit_integer_format_conversion: RGBA8I->RGBA16I "
+                "%d/%d/%d/%d\n", s[0], s[1], s[2], s[3]);
+        result = 1;
+    }
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "blit_integer_format_conversion: unexpected GL error\n");
+        result = 1;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &u8);
+    glDeleteFramebuffers(1, &u16);
+    glDeleteFramebuffers(1, &i8);
+    glDeleteFramebuffers(1, &i16);
+    glDeleteTextures(4, tex);
+    return result;
+}
+
 /* Draws a full-screen triangle whose color comes from the `Color` input fed
  * at the location GetAttribLocation reports; `Position` likewise. */
 static int attrib_name_draw_check(const char *label, const char *vs,
@@ -17263,6 +17332,8 @@ static const TestCase TESTS[] = {
                     test_blit_color_format_conversion),
     SELF_CHECK_TEST("blit_integer_format_errors",
                     test_blit_integer_format_errors),
+    SELF_CHECK_TEST("blit_integer_format_conversion",
+                    test_blit_integer_format_conversion),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

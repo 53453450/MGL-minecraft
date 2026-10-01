@@ -1413,7 +1413,7 @@ static int verifyAuxShaderAssets(void) {
         const char *firstEntry;
         size_t expectedEntries;
     } kAssets[] = {
-        {"scaled_blit", "mgl_scaled_blit_vs", 2},
+        {"scaled_blit", "mgl_scaled_blit_vs", 4},
         {"scaled_blit_cs", "mgl_scaled_blit_cs", 3},
         {"scaled_depth_blit", "mgl_scaled_depth_blit_vs", 2},
         {"msaa_integer_resolve", "mgl_msaa_resolve_uint", 2},

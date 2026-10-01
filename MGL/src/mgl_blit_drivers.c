@@ -2974,15 +2974,17 @@ void mglBlitFramebufferDispatch(void *renderer, GLMContext glm_ctx, GLint src_x0
     int needs_format_conversion_blit = 0;
     if (mglBdTextureInfo(readtexid).pixel_format !=
         mglBdTextureInfo(drawtexid).pixel_format) {
-        /* The scaled path samples texture2d<float>, so it converts between
-         * any fixed-point / floating-point pair but cannot carry integers. */
-        int float_pair =
-            !mglMetalPixelFormatIsIntegerColor(
-                mglBdTextureInfo(readtexid).pixel_format) &&
-            !mglMetalPixelFormatIsIntegerColor(
-                mglBdTextureInfo(drawtexid).pixel_format);
+        /* The scaled path converts within one data kind: float/normalized,
+         * unsigned integer, or signed integer. */
+        uint32_t read_format = mglBdTextureInfo(readtexid).pixel_format;
+        uint32_t draw_format = mglBdTextureInfo(drawtexid).pixel_format;
+        int same_kind =
+            mglMetalPixelFormatIsIntegerColor(read_format) ==
+                mglMetalPixelFormatIsIntegerColor(draw_format) &&
+            mglMetalPixelFormatIsSignedIntegerColor(read_format) ==
+                mglMetalPixelFormatIsSignedIntegerColor(draw_format);
 
-        if (float_pair) {
+        if (same_kind) {
             needs_format_conversion_blit = 1;
             static uint64_t s_convert_blit_log_count = 0;
             uint64_t hit = ++s_convert_blit_log_count;

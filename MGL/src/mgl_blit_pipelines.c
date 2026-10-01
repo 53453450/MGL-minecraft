@@ -199,9 +199,17 @@ void *mglBlitScaledPipelineForPixelFormat(void *renderer, uint32_t pixelFormat)
         MGLColorWriteMaskAll, 1u);
     if (cached) return cached;
 
+    MGLTextureDataKind dataKind = mglTextureDataKindForPixelFormat(pixelFormat);
+    const char *fsEntry = "mgl_scaled_blit_fs";
+    if (dataKind == MGLTextureDataKindUint) {
+        fsEntry = "mgl_scaled_blit_fs_uint";
+    } else if (dataKind == MGLTextureDataKindSint) {
+        fsEntry = "mgl_scaled_blit_fs_int";
+    }
+
     char error[512] = {0};
     void *pipeline = mglBlitCreateAuxRenderPipelineFromAsset(
-        "scaled_blit", "mgl_scaled_blit_vs", "mgl_scaled_blit_fs",
+        "scaled_blit", "mgl_scaled_blit_vs", fsEntry,
         MGL_RENDER_AUX_RENDER_SCALED_BLIT, variant,
         pixelFormat, mglRenderInvalidPixelFormat(), mglRenderInvalidPixelFormat(),
         MGLColorWriteMaskAll, 1u, error, sizeof(error));

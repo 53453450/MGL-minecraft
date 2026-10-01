@@ -18,3 +18,15 @@ fragment float4 mgl_scaled_blit_fs(MGLScaledBlitVOut in [[stage_in]], constant M
     if (p.forceOpaqueAlpha > 0.5) { color.a = 1.0; }
     return color;
 }
+
+/* Integer sources cannot be filtered (GL allows only NEAREST): read the texel
+ * under the interpolated coordinate. */
+fragment uint4 mgl_scaled_blit_fs_uint(MGLScaledBlitVOut in [[stage_in]], texture2d<uint> src [[texture(0)]]) {
+    uint2 size = uint2(src.get_width(), src.get_height());
+    return src.read(min(uint2(in.uv * float2(size)), size - 1u));
+}
+
+fragment int4 mgl_scaled_blit_fs_int(MGLScaledBlitVOut in [[stage_in]], texture2d<int> src [[texture(0)]]) {
+    uint2 size = uint2(src.get_width(), src.get_height());
+    return src.read(min(uint2(in.uv * float2(size)), size - 1u));
+}
