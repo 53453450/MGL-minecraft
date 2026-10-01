@@ -57,6 +57,14 @@ void mglTextureReadDepthPixels(void *renderer, GLMContext glm_ctx,
                                void *pixelBytes, uint64_t bytesPerRow,
                                uint64_t bytesPerImage, MGLRegionValue region);
 
+/* Reads GL-ordered stencil bytes of the read framebuffer's packed
+ * depth-stencil attachment from the GPU (storage must be Y-flipped, i.e.
+ * draw-written).  Returns 0 when that attachment is unsupported here
+ * (stencil-only, multisample), leaving the caller's CPU path in charge. */
+int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
+                                uint8_t *pixelBytes, uint64_t bytesPerRow,
+                                MGLRegionValue region);
+
 /* -mtlReadIntegerPixels:pixelBytes:bytesPerRow:bytesPerImage:fromRegion:
  *  format:type: */
 void mglTextureReadIntegerPixels(void *renderer, GLMContext glm_ctx,

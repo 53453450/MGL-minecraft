@@ -18762,9 +18762,27 @@ static int test_depth_stencil_rt_orientation(unsigned char *pixels,
         glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
         glStencilFunc(GL_ALWAYS, 0, 0xff);
 
+        unsigned char rs[2] = {0};
+        GLuint rds[2] = {0};
+        glReadPixels(2, 2, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &rs[0]);
+        glReadPixels(2, 13, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &rs[1]);
         float dz[2] = {0};
         glReadPixels(2, 2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &dz[0]);
         glReadPixels(2, 13, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &dz[1]);
+        glReadPixels(2, 2, 1, 1, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, &rds[0]);
+        glReadPixels(2, 13, 1, 1, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, &rds[1]);
+        if (rs[0] != 1 || rs[1] != 2 ||
+            (rds[0] & 0xff) != 1 || (rds[1] & 0xff) != 2 ||
+            (rds[0] >> 8) < 0x3f0000u || (rds[0] >> 8) > 0x410000u ||
+            (rds[1] >> 8) < 0xbf0000u || (rds[1] >> 8) > 0xc10000u) {
+            fprintf(stderr, "depth_stencil_rt_orientation: %s read stencil %u %u ds 0x%x 0x%x\n",
+                    names[c], rs[0], rs[1], rds[0], rds[1]);
+            fail |= 128 << c;
+        }
+        unsigned char col[16 * 3] = {0};
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(1, 0, 3, 16, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, col);
+        glPixelStorei(GL_PACK_ALIGNMENT, 4);
         static float img[16 * 16];
         glBindTexture(GL_TEXTURE_2D, ds);
         glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, img);
@@ -18789,6 +18807,16 @@ static int test_depth_stencil_rt_orientation(unsigned char *pixels,
                     dsimg[2 * 16 + 2].d, dsimg[2 * 16 + 2].s & 0xff,
                     dsimg[13 * 16 + 2].d, dsimg[13 * 16 + 2].s & 0xff);
             fail |= 16 << c;
+        }
+        glClearStencil(5);
+        glClear(GL_STENCIL_BUFFER_BIT);
+        glClearStencil(0);
+        unsigned char cleared = 0;
+        glReadPixels(2, 13, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &cleared);
+        if (col[2 * 3 + 1] != 1 || col[13 * 3 + 1] != 2 || cleared != 5) {
+            fprintf(stderr, "depth_stencil_rt_orientation: %s read stencil column %u %u cleared %u\n",
+                    names[c], col[2 * 3 + 1], col[13 * 3 + 1], cleared);
+            fail |= 512 << c;
         }
 
         glBindFramebuffer(GL_FRAMEBUFFER, fsample);

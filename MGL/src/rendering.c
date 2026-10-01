@@ -2632,8 +2632,32 @@ static bool mglReadPixelsDepthComponent(GLMContext ctx,
     return true;
 }
 
-/* Stencil-index readback for mglReadPixels: per-pixel stencil from the
- * CPU stencil_shadow (kept in sync on clears/blits), converted to the
+/* Draw-written stencil exists only on the GPU (in Y-flipped storage); the
+ * CPU stencil_shadow tracks clears and blits.  Returns a GL-ordered
+ * width*height copy of the GPU stencil, or NULL when nothing has been drawn
+ * into the attachment or it cannot be read here. */
+static GLubyte *mglReadPixelsGpuStencil(GLMContext ctx, Texture *stencilTexture,
+                                        GLint x, GLint y,
+                                        GLsizei width, GLsizei height)
+{
+    if (!stencilTexture || !STATE(readbuffer) ||
+        !mglRenderTargetStorageYFlipped(
+            stencilTexture->is_render_target ? 1 : 0,
+            stencilTexture->mtl_render_target_write_version)) {
+        return NULL;
+    }
+    GLubyte *stencil = (GLubyte *)calloc((size_t)width * height, 1u);
+    if (stencil &&
+        !mglRendererReadStencilPixels(ctx, stencil, (uint32_t)width,
+                                      x, y, width, height)) {
+        free(stencil);
+        stencil = NULL;
+    }
+    return stencil;
+}
+
+/* Stencil-index readback for mglReadPixels: per-pixel stencil from the GPU
+ * when draws wrote it, else the CPU stencil_shadow, converted to the
  * requested pack type. */
 static bool mglReadPixelsStencilIndex(GLMContext ctx,
                                       void *pixels,
@@ -2662,13 +2686,19 @@ static bool mglReadPixelsStencilIndex(GLMContext ctx,
     {
         value = (GLubyte)STATE(readbuffer)->stencil.clear_color[0];
     }
+    /* A pending draw may write the stencil attachment. */
+    mglFlushCommandBuffer(ctx);
+    GLubyte *gpuStencil = mglReadPixelsGpuStencil(ctx, stencilTexture,
+                                                  x, y, width, height);
     for (GLsizei row = 0; row < height; row++)
     {
         uint8_t *dst = (uint8_t *)pixels + (size_t)row * pack_layout->dst_pitch;
         for (GLsizei column = 0; column < width; column++) {
             GLint readX = x + column;
             GLint readY = y + row;
-            GLuint stencilValue = (stencilTexture && stencilTexture->stencil_shadow &&
+            GLuint stencilValue = gpuStencil
+                ? gpuStencil[(size_t)row * width + column]
+                : (stencilTexture && stencilTexture->stencil_shadow &&
                            readX >= 0 && readY >= 0 &&
                            readX < (GLint)stencilTexture->stencil_shadow_width &&
                            readY < (GLint)stencilTexture->stencil_shadow_height)
@@ -2704,6 +2734,7 @@ static bool mglReadPixelsStencilIndex(GLMContext ctx,
             }
         }
     }
+    free(gpuStencil);
     if (pack_buffer)
         mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
     return true;
@@ -2712,7 +2743,7 @@ static bool mglReadPixelsStencilIndex(GLMContext ctx,
 /* Depth+stencil readback for mglReadPixels: packs interleaved depth/stencil
  * into GL_UNSIGNED_INT_24_8 or GL_FLOAT_32_UNSIGNED_INT_24_8_REV.  Depth uses
  * the CPU depth_shadow (non-render-target) or the GPU mtlReadDepthPixels path
- * (render targets); stencil always reads from stencil_shadow. */
+ * (render targets); stencil as in mglReadPixelsStencilIndex. */
 static bool mglReadPixelsDepthStencil(GLMContext ctx,
                                       void *pixels,
                                       const MGLReadPixelsPackLayout *pack_layout,
@@ -2759,6 +2790,8 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
         }
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
+    GLubyte *gpuStencil = mglReadPixelsGpuStencil(ctx, stencilTex,
+                                                  x, y, width, height);
 
     for (GLsizei row = 0; row < height; row++) {
         GLint readY = y + row;
@@ -2777,7 +2810,9 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
                 depthVal = depthTex->depth_shadow[
                     (size_t)readY * depthTex->depth_shadow_width + readX];
             }
-            if (stencilTex && stencilTex->stencil_shadow &&
+            if (gpuStencil) {
+                stencilVal = gpuStencil[(size_t)row * width + column];
+            } else if (stencilTex && stencilTex->stencil_shadow &&
                 readX >= 0 && readY >= 0 &&
                 readX < (GLint)stencilTex->stencil_shadow_width &&
                 readY < (GLint)stencilTex->stencil_shadow_height) {
@@ -2804,6 +2839,7 @@ static bool mglReadPixelsDepthStencil(GLMContext ctx,
             }
         }
     }
+    free(gpuStencil);
 
     if (gpuDepth)
         free(gpuDepth);

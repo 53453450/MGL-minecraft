@@ -1157,6 +1157,31 @@ static int mglPdPreReadbackTryBody(void *renderer, void *rawCtx)
     return 1;
 }
 
+/* Commits and waits for the current command buffer so readbacks on a separate
+ * command buffer observe every encoded upload and draw. */
+static void mglPdCommitPendingForReadback(void *renderer,
+                                          MGLRendererStateAreas *areas)
+{
+    mglRendererEndRenderEncodingLocked(renderer);
+    if (mglRenderCommandBufferOwnerHasCurrent(
+            areas->command->currentCommandBufferOwner) == 1) {
+        void *pendingCB = mglPassManagerDetachCurrentCommandBufferForSubmission(
+            areas->render_pass_manager);
+        MglPdPreReadbackCtx preCtx = {renderer, pendingCB};
+        (void)mglPlatformShellGuardedCallCtx(renderer, "pre-readback flush",
+                                             mglPdPreReadbackTryBody, &preCtx,
+                                             NULL);
+        MGLRenderCommandBufferState pendingState = {0};
+        (void)mglRenderGetCommandBufferState(pendingCB, &pendingState);
+        if (pendingState.has_error) {
+            fprintf(stderr,
+                    "MGL WARNING: mtlGetTexImage pre-readback command buffer error: %s\n",
+                    mglRenderCommandBufferErrorDescription(&pendingState));
+        }
+        (void)mglRenderPassNewCommandBufferLocked(renderer);
+    }
+}
+
 /* Packed depth-stencil textures reject getBytes and plain buffer copies, so
  * each aspect is staged through its own blit. */
 static void mglPdGetPackedDepthStencilImage(
@@ -1273,6 +1298,57 @@ static void mglPdGetPackedDepthStencilImage(
     mglReleaseMetalObjNoNull(staging);
 }
 
+int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
+                                uint8_t *pixelBytes, uint64_t bytesPerRow,
+                                MGLRegionValue region)
+{
+    MGL_ASSERT_GL_THREAD();
+    mglPlatformShellSetContext(renderer, glm_ctx);
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+
+    Framebuffer *fbo = glm_ctx->active_state->readbuffer;
+    FBOAttachment *attachment = fbo ? &fbo->stencil : NULL;
+    Texture *tex = mglRendererAttachmentTextureFor(glm_ctx, attachment);
+    if (!tex || tex->samples > 1u || !mglRendererBindMTLTexture(renderer, tex) ||
+        !tex->mtl_data ||
+        !mglMetalPixelFormatIsPackedDepthStencil(
+            (uint32_t)mglPdTextureInfo(tex->mtl_data).pixel_format)) {
+        return 0;
+    }
+    void *texture = tex->mtl_data;
+    const MGLMetalAttachmentSubresource subresource =
+        mglMetalAttachmentSubresourceForAttachment(attachment);
+    const uint64_t levelWidth = mglPdMaxU64(
+        1u, mglPdTextureInfo(texture).width >> subresource.level);
+    const uint64_t levelHeight = mglPdMaxU64(
+        1u, mglPdTextureInfo(texture).height >> subresource.level);
+
+    MGLRenderReadTextureRegionClip clip = {0};
+    mglRenderReadTextureRegionClip(
+        (int64_t)region.origin.x, (int64_t)region.origin.y,
+        (int64_t)region.size.width, (int64_t)region.size.height,
+        (int64_t)levelWidth, (int64_t)levelHeight, &clip);
+    if (clip.empty) {
+        return 1;
+    }
+    if (!mglRenderPassSynchronizeForTextureReadback(
+            renderer, texture, "mtlReadStencilPixels")) {
+        return 0;
+    }
+    mglPdCommitPendingForReadback(renderer, &areas);
+
+    MGLRegionValue metalRegion = {
+        mglTextureOrigin((uint64_t)clip.metal_src_x, (uint64_t)clip.metal_src_y, 0u),
+        mglTextureSize((uint64_t)clip.copy_w, (uint64_t)clip.copy_h, 1u)};
+    mglPdGetPackedDepthStencilImage(
+        &areas, glm_ctx, tex, texture,
+        pixelBytes + (uint64_t)clip.dst_y * bytesPerRow + (uint64_t)clip.dst_x,
+        bytesPerRow, metalRegion, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE,
+        subresource.level, subresource.slice, 1);
+    return 1;
+}
+
 void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                            void *pixelBytes, uint64_t bytesPerRow,
                            uint64_t bytesPerImage, MGLRegionValue region,
@@ -1281,7 +1357,6 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
 {
     MGLRendererStateAreas areas;
     mglRendererFillStateAreas(renderer, &areas);
-    MGLCommandState *commandState = areas.command;
     void *texture = NULL;
 
     mglPlatformShellSetContext(renderer, glm_ctx);
@@ -1339,24 +1414,7 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
     /* Ensure any pending texture upload blit commands are committed before
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
-    mglRendererEndRenderEncodingLocked(renderer);
-    if (mglRenderCommandBufferOwnerHasCurrent(
-            commandState->currentCommandBufferOwner) == 1) {
-        void *pendingCB = mglPassManagerDetachCurrentCommandBufferForSubmission(
-            areas.render_pass_manager);
-        MglPdPreReadbackCtx preCtx = {renderer, pendingCB};
-        (void)mglPlatformShellGuardedCallCtx(renderer, "pre-readback flush",
-                                             mglPdPreReadbackTryBody, &preCtx,
-                                             NULL);
-        MGLRenderCommandBufferState pendingState = {0};
-        (void)mglRenderGetCommandBufferState(pendingCB, &pendingState);
-        if (pendingState.has_error) {
-            fprintf(stderr,
-                    "MGL WARNING: mtlGetTexImage pre-readback command buffer error: %s\n",
-                    mglRenderCommandBufferErrorDescription(&pendingState));
-        }
-        (void)mglRenderPassNewCommandBufferLocked(renderer);
-    }
+    mglPdCommitPendingForReadback(renderer, &areas);
 
     MGLRegionValue readRegion = region;
     uint64_t readSlice = slice;

@@ -335,6 +335,10 @@ void mglRendererReadDepthPixels(GLMContext context, void *pixel_bytes,
                                 uint32_t bytes_per_image,
                                 int32_t x, int32_t y,
                                 int32_t width, int32_t height);
+int mglRendererReadStencilPixels(GLMContext context, uint8_t *pixel_bytes,
+                                 uint32_t bytes_per_row,
+                                 int32_t x, int32_t y,
+                                 int32_t width, int32_t height);
 void mglRendererGetTexImage(GLMContext context, Texture *texture,
                             void *pixel_bytes,
                             uint32_t bytes_per_row, uint32_t bytes_per_image,

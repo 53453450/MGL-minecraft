@@ -109,6 +109,23 @@ void mglRendererReadDepthPixels(GLMContext glm_ctx, void *pixel_bytes,
     mglRendererBackendEnd(&backend_lease);
 }
 
+int mglRendererReadStencilPixels(GLMContext glm_ctx, uint8_t *pixel_bytes,
+    uint32_t bytes_per_row, int32_t x, int32_t y, int32_t width,
+    int32_t height)
+{
+    MGLRendererBackendLease backend_lease = {};
+    if (mglRendererBackendBeginContext(glm_ctx, &backend_lease) != 0) return 0;
+    void *renderer = glm_ctx ? glm_ctx->platform_renderer_shell : NULL;
+    int result = 0;
+    if (renderer && glm_ctx) {
+        result = mglTextureReadStencilPixels(
+            renderer, glm_ctx, pixel_bytes, bytes_per_row,
+            mglRendererCompatRegion(x, y, width, height));
+    }
+    mglRendererBackendEnd(&backend_lease);
+    return result;
+}
+
 void mglRendererGetTexImage(GLMContext glm_ctx, Texture *texture,
     void *pixel_bytes, uint32_t bytes_per_row, uint32_t bytes_per_image,
     int32_t x, int32_t y, int32_t width, int32_t height,
