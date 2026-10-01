@@ -61,18 +61,14 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
         return 0;
     }
 
-    /* Color and depth-only RTs get the Y-flipped copy.  The depth copy is a
-     * depth blit, which cannot carry stencil, so stencil and packed
-     * depth-stencil formats stay out. */
+    /* Color, depth-only and packed depth-stencil RTs get the Y-flipped copy;
+     * stencil-only formats stay out. */
     MGLTextureDataKind kind = mglTextureDataKindForPixelFormat(sourceFormat);
-    if (kind == MGLTextureDataKindDepth) {
-        if (mglMetalPixelFormatIsPackedDepthStencil(sourceFormat)) {
-            return 0;
-        }
-    } else if (mglMetalPixelFormatIsDepthOrStencil(sourceFormat) ||
-               (kind != MGLTextureDataKindFloat &&
-                kind != MGLTextureDataKindUint &&
-                kind != MGLTextureDataKindSint)) {
+    if (kind != MGLTextureDataKindDepth &&
+        (mglMetalPixelFormatIsDepthOrStencil(sourceFormat) ||
+         (kind != MGLTextureDataKindFloat &&
+          kind != MGLTextureDataKindUint &&
+          kind != MGLTextureDataKindSint))) {
         return 0;
     }
 
@@ -277,8 +273,10 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
     uint32_t copiedMask = 0u;
 
     /* The copy kernels take texture2d and Metal has no 2D views of 3D
-     * textures: mirror 3D rows with the blit engine, all depth planes at once. */
-    const int rowBlit = sourceInfo.texture_type == MGLTextureType3D;
+     * textures; the depth copy is a depth draw, which cannot carry stencil.
+     * Those mirror rows with the blit engine, all depth planes at once. */
+    const int rowBlit = sourceInfo.texture_type == MGLTextureType3D ||
+                        mglMetalPixelFormatIsPackedDepthStencil(sourceInfo.pixel_format);
     if (rowBlit) {
         void *blit = mglRenderCreateBlitEncoderBorrowed(
             cs ? cs->currentCommandBufferOwner : NULL);
@@ -291,11 +289,16 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
             }
             const uint64_t mipW = sourceInfo.width >> lvl ? sourceInfo.width >> lvl : 1u;
             const uint64_t mipH = sourceInfo.height >> lvl ? sourceInfo.height >> lvl : 1u;
-            const uint64_t mipD = sourceInfo.depth >> lvl ? sourceInfo.depth >> lvl : 1u;
-            for (uint64_t row = 0u; row < mipH; row++) {
-                (void)mglRenderBlitCopyTexture(blit, source, 0u, lvl, 0u, row, 0u,
-                                               mipW, 1u, mipD, destination, 0u, lvl,
-                                               0u, mipH - 1u - row, 0u);
+            const uint64_t mipD = sourceInfo.texture_type == MGLTextureType3D &&
+                                          sourceInfo.depth >> lvl
+                                      ? sourceInfo.depth >> lvl
+                                      : 1u;
+            for (uint64_t slice = 0u; slice < sliceCount; slice++) {
+                for (uint64_t row = 0u; row < mipH; row++) {
+                    (void)mglRenderBlitCopyTexture(blit, source, slice, lvl, 0u, row, 0u,
+                                                   mipW, 1u, mipD, destination, slice,
+                                                   lvl, 0u, mipH - 1u - row, 0u);
+                }
             }
             copiedMask |= (uint32_t)1u << lvl;
         }

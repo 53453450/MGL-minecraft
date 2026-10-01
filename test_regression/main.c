@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 143
+#define MAX_TESTS 144
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18690,6 +18690,139 @@ static int test_rt_image_orientation(unsigned char *pixels, const char *out_path
     return fail ? 1 : 0;
 }
 
+/* Packed depth-stencil textures rendered to read back depth and stencil and
+ * sample depth in GL row order (§8.23.1). */
+static int test_depth_stencil_rt_orientation(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "uniform float z;\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, z, 1.0);\n"
+        "}\n";
+    GLuint pdepth = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    GLuint pd = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D d;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(d, ivec2(gl_FragCoord.xy), 0); }\n");
+    if (!pdepth || !pd) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint ttmp = 0;
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 2;
+
+    static const GLenum formats[2] = {GL_DEPTH24_STENCIL8, GL_DEPTH32F_STENCIL8};
+    static const char *names[2] = {"d24s8", "d32fs8"};
+    int fail = 0;
+    for (int c = 0; c < 2; c++) {
+        GLuint color = 0, ds = 0, fbo = 0;
+        glGenTextures(1, &color);
+        glBindTexture(GL_TEXTURE_2D, color);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 16, 16);
+        glGenTextures(1, &ds);
+        glBindTexture(GL_TEXTURE_2D, ds);
+        glTexStorage2D(GL_TEXTURE_2D, 1, formats[c], 16, 16);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, color, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                               GL_TEXTURE_2D, ds, 0);
+        /* Bottom rows: depth 0.25, stencil 1; rows 8-15: depth 0.75, stencil 2. */
+        glViewport(0, 0, 16, 16);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_ALWAYS);
+        glEnable(GL_STENCIL_TEST);
+        glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+        glUseProgram(pdepth);
+        glStencilFunc(GL_ALWAYS, 1, 0xff);
+        glUniform1f(glGetUniformLocation(pdepth, "z"), -0.5f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 8, 16, 8);
+        glStencilFunc(GL_ALWAYS, 2, 0xff);
+        glUniform1f(glGetUniformLocation(pdepth, "z"), 0.5f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+        glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+        glStencilFunc(GL_ALWAYS, 0, 0xff);
+
+        float dz[2] = {0};
+        glReadPixels(2, 2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &dz[0]);
+        glReadPixels(2, 13, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &dz[1]);
+        static float img[16 * 16];
+        glBindTexture(GL_TEXTURE_2D, ds);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, img);
+        if (dz[0] < 0.24f || dz[0] > 0.26f || dz[1] < 0.74f || dz[1] > 0.76f ||
+            img[2 * 16 + 2] < 0.24f || img[2 * 16 + 2] > 0.26f ||
+            img[13 * 16 + 2] < 0.74f || img[13 * 16 + 2] > 0.76f) {
+            fprintf(stderr, "depth_stencil_rt_orientation: %s read depth %.3f %.3f tex %.3f %.3f\n",
+                    names[c], dz[0], dz[1], img[2 * 16 + 2], img[13 * 16 + 2]);
+            fail |= 1 << (2 * c);
+        }
+        static unsigned char st[16 * 16];
+        static struct { float d; GLuint s; } dsimg[16 * 16];
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, st);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_STENCIL,
+                      GL_FLOAT_32_UNSIGNED_INT_24_8_REV, dsimg);
+        if (st[2 * 16 + 2] != 1 || st[13 * 16 + 2] != 2 ||
+            (dsimg[2 * 16 + 2].s & 0xff) != 1 || (dsimg[13 * 16 + 2].s & 0xff) != 2 ||
+            dsimg[2 * 16 + 2].d < 0.24f || dsimg[2 * 16 + 2].d > 0.26f ||
+            dsimg[13 * 16 + 2].d < 0.74f || dsimg[13 * 16 + 2].d > 0.76f) {
+            fprintf(stderr, "depth_stencil_rt_orientation: %s tex stencil %u %u ds %.3f/%u %.3f/%u\n",
+                    names[c], st[2 * 16 + 2], st[13 * 16 + 2],
+                    dsimg[2 * 16 + 2].d, dsimg[2 * 16 + 2].s & 0xff,
+                    dsimg[13 * 16 + 2].d, dsimg[13 * 16 + 2].s & 0xff);
+            fail |= 16 << c;
+        }
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+        glViewport(0, 0, REG_W, REG_H);
+        unsigned char sb[2][4] = {{0}};
+        glUseProgram(pd);
+        glUniform1i(glGetUniformLocation(pd, "d"), 0);
+        glUniform1f(glGetUniformLocation(pd, "z"), 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[0]);
+        glReadPixels(2, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[1]);
+        if (sb[0][0] < 62 || sb[0][0] > 66 || sb[1][0] < 189 || sb[1][0] > 193) {
+            fprintf(stderr, "depth_stencil_rt_orientation: %s sample depth %u %u\n",
+                    names[c], sb[0][0], sb[1][0]);
+            fail |= 2 << (2 * c);
+        }
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &ds);
+        glDeleteTextures(1, &color);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 64;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pdepth);
+    glDeleteProgram(pd);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "depth_stencil_rt_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Rendering into a rectangle texture or one slice of a 3D texture and then
  * sampling it returns the rendered rows in GL order. */
 static int test_rt_rect_3d_orientation(unsigned char *pixels, const char *out_path)
@@ -22066,6 +22199,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_image_orientation", test_rt_image_orientation),
     SELF_CHECK_TEST("copy_image_sub_data_orientation", test_copy_image_sub_data_orientation),
     SELF_CHECK_TEST("rt_rect_3d_orientation", test_rt_rect_3d_orientation),
+    SELF_CHECK_TEST("depth_stencil_rt_orientation", test_depth_stencil_rt_orientation),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
