@@ -2787,8 +2787,12 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         Shader *fs = pptr->shader_slots[_FRAGMENT_SHADER];
         if (vs && fs && vs->src && fs->src) {
             char iface_err[512] = {0};
-            if (mglShaderInterfaceCheck(vs->src, fs->src, iface_err,
-                                        sizeof iface_err) != 0) {
+            int iface_rc = (vs->frontend_tu && fs->frontend_tu)
+                ? mglShaderInterfaceCheckTU(vs->frontend_tu, fs->frontend_tu,
+                                            iface_err, sizeof iface_err)
+                : mglShaderInterfaceCheck(vs->src, fs->src, iface_err,
+                                          sizeof iface_err);
+            if (iface_rc != 0) {
                 fprintf(stderr,
                         "MGL WARNING: mglLinkProgram failed program %u: %s\n",
                         pptr->name,
@@ -2804,8 +2808,13 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         Shader *tes = pptr->shader_slots[_TESS_EVALUATION_SHADER];
         if (tcs && tes && tcs->src && tes->src) {
             char iface_err[512] = {0};
-            if (mglShaderTessInterfaceCheck(tcs->src, tes->src, iface_err,
-                                            sizeof iface_err) != 0) {
+            int iface_rc = (tcs->frontend_tu && tes->frontend_tu)
+                ? mglShaderTessInterfaceCheckTU(tcs->frontend_tu,
+                                                tes->frontend_tu, iface_err,
+                                                sizeof iface_err)
+                : mglShaderTessInterfaceCheck(tcs->src, tes->src, iface_err,
+                                              sizeof iface_err);
+            if (iface_rc != 0) {
                 fprintf(stderr,
                         "MGL WARNING: mglLinkProgram failed program %u: %s\n",
                         pptr->name,

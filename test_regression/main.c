@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 99
+#define MAX_TESTS 100
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14386,6 +14386,55 @@ static int test_vertex_input_name_locations(unsigned char *pixels,
     return result;
 }
 
+extern uint32_t mglFrontendParseCount(void);
+
+/* Linking compiled VS/FS must reuse each shader's translation unit for the
+ * stage interface check instead of parsing the sources again. */
+static int test_link_interface_check_no_reparse(unsigned char *pixels,
+                                                const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "out vec2 v_uv;\n"
+        "void main() { v_uv = a_pos; gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "in vec2 v_uv;\n"
+        "out vec4 o;\n"
+        "void main() { o = vec4(v_uv, 0.0, 1.0); }\n";
+    GLuint v = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint f = compile_shader(GL_FRAGMENT_SHADER, fs);
+    if (!v || !f) {
+        if (v) glDeleteShader(v);
+        if (f) glDeleteShader(f);
+        return 2;
+    }
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    uint32_t before = mglFrontendParseCount();
+    glLinkProgram(p);
+    uint32_t parses = mglFrontendParseCount() - before;
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+
+    /* The VS transform-feedback capture variant is still built from source
+     * at link time; anything beyond that one parse is a re-parse. */
+    int result = 0;
+    if (!ok || parses > 1) {
+        fprintf(stderr, "link_interface_check_no_reparse: link=%d parses=%u, "
+                "want link=1 parses<=1\n", ok, parses);
+        result = 1;
+    }
+    glDeleteProgram(p);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    return result;
+}
+
 /* GL 4.6 §9.2.1: a no-attachment FBO with FRAMEBUFFER_DEFAULT_LAYERS != 0
  * is layered.  Drawing a VS that writes gl_Layer must not raise an error. */
 static int test_no_attachment_layered_fbo(unsigned char *pixels,
@@ -17059,6 +17108,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("clear_alpha_readback", test_clear_alpha_readback),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
+    SELF_CHECK_TEST("link_interface_check_no_reparse",
+                    test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",
                     test_no_attachment_layered_fbo),
     SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),

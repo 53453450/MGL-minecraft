@@ -14735,35 +14735,28 @@ extern "C" void mglShaderFree(void *bytes) {
     free(bytes);
 }
 
-extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
-                                       char *err_buf, size_t err_cap) {
-    if (!vs_src || !fs_src) return -1;
-    /* Legacy GLSL frontend wiring: translate pre-3.30 constructs before
-     * parsing (VS/FS only — the interface check compares the two stages). */
-    std::unique_ptr<char[]> vs_legacy(airPrepareLegacySource(vs_src, MGL_STAGE_VERTEX));
-    std::unique_ptr<char[]> fs_legacy(airPrepareLegacySource(fs_src, MGL_STAGE_FRAGMENT));
-    const char *vesrc = vs_legacy ? vs_legacy.get() : vs_src;
-    const char *fesrc = fs_legacy ? fs_legacy.get() : fs_src;
-    MGLTranslationUnit *vtu = mglGLSLParse(vesrc, strlen(vesrc));
-    MGLTranslationUnit *ftu = mglGLSLParse(fesrc, strlen(fesrc));
-    if (!vtu || !ftu) {
+/* Sema both stages and compare their interfaces; `uniform_link` also
+ * checks same-named uniforms (VS/FS). */
+static int airStagePairInterfaceCheck(const MGLTranslationUnit *atu, int astage,
+                                      const MGLTranslationUnit *btu, int bstage,
+                                      bool uniform_link, char *err_buf,
+                                      size_t err_cap) {
+    if (!atu || !btu) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse failed");
-        mglGLSLTranslationUnitDestroy(vtu);
-        mglGLSLTranslationUnitDestroy(ftu);
         return -1;
     }
-    MGLIRModule vs, fs;
-    memset(&vs, 0, sizeof vs);
-    memset(&fs, 0, sizeof fs);
-    MGLSemaError *ve = nullptr, *fe = nullptr;
-    uint32_t vc = 0, fc = 0;
-    int vhard = mglGLSLSemanticCheck(vtu, MGL_STAGE_VERTEX, &vs, &ve, &vc);
-    int fhard = mglGLSLSemanticCheck(ftu, MGL_STAGE_FRAGMENT, &fs, &fe, &fc);
+    MGLIRModule a, b;
+    memset(&a, 0, sizeof a);
+    memset(&b, 0, sizeof b);
+    MGLSemaError *ae = nullptr, *be = nullptr;
+    uint32_t ac = 0, bc = 0;
+    int ahard = mglGLSLSemanticCheck(atu, astage, &a, &ae, &ac);
+    int bhard = mglGLSLSemanticCheck(btu, bstage, &b, &be, &bc);
     int rc = 0;
-    if (vhard || fhard) {
+    if (ahard || bhard) {
         if (err_buf && err_cap) {
-            const char *msg = (vhard && ve && vc)
-                ? ve[0].message : (fe && fc) ? fe[0].message
+            const char *msg = (ahard && ae && ac)
+                ? ae[0].message : (be && bc) ? be[0].message
                                              : "semantic check failed";
             snprintf(err_buf, err_cap, "%s", msg);
         }
@@ -14771,16 +14764,16 @@ extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
     } else {
         MGLSemaError *le = nullptr;
         uint32_t lec = 0;
-        if (mglGLSLInterfaceCheck(&vs, &fs, &le, &lec)) {
+        if (mglGLSLInterfaceCheck(&a, &b, &le, &lec)) {
             if (err_buf && err_cap && le && lec)
                 snprintf(err_buf, err_cap, "%s", le[0].message);
             rc = -1;
         }
         mglGLSLSemanticCheckDestroy(le, lec);
-        if (rc == 0) {
+        if (rc == 0 && uniform_link) {
             le = nullptr;
             lec = 0;
-            if (mglGLSLUniformLinkCheck(&vs, &fs, &le, &lec)) {
+            if (mglGLSLUniformLinkCheck(&a, &b, &le, &lec)) {
                 if (err_buf && err_cap && le && lec)
                     snprintf(err_buf, err_cap, "%s", le[0].message);
                 rc = -1;
@@ -14788,66 +14781,58 @@ extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
             mglGLSLSemanticCheckDestroy(le, lec);
         }
     }
-    mglGLSLSemanticCheckDestroy(ve, vc);
-    mglGLSLSemanticCheckDestroy(fe, fc);
-    mglIRModuleDestroy(&vs);
-    mglIRModuleDestroy(&fs);
-    mglGLSLTranslationUnitDestroy(vtu);
-    mglGLSLTranslationUnitDestroy(ftu);
+    mglGLSLSemanticCheckDestroy(ae, ac);
+    mglGLSLSemanticCheckDestroy(be, bc);
+    mglIRModuleDestroy(&a);
+    mglIRModuleDestroy(&b);
     return rc;
+}
+
+static int airSourcePairInterfaceCheck(const char *asrc, int astage,
+                                       const char *bsrc, int bstage,
+                                       bool uniform_link, char *err_buf,
+                                       size_t err_cap) {
+    if (!asrc || !bsrc) return -1;
+    std::unique_ptr<char[]> alegacy(airPrepareLegacySource(asrc, astage));
+    std::unique_ptr<char[]> blegacy(airPrepareLegacySource(bsrc, bstage));
+    const char *ae = alegacy ? alegacy.get() : asrc;
+    const char *be = blegacy ? blegacy.get() : bsrc;
+    MGLTranslationUnit *atu = mglGLSLParse(ae, strlen(ae));
+    MGLTranslationUnit *btu = mglGLSLParse(be, strlen(be));
+    int rc = airStagePairInterfaceCheck(atu, astage, btu, bstage,
+                                        uniform_link, err_buf, err_cap);
+    mglGLSLTranslationUnitDestroy(atu);
+    mglGLSLTranslationUnitDestroy(btu);
+    return rc;
+}
+
+extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
+                                       char *err_buf, size_t err_cap) {
+    return airSourcePairInterfaceCheck(vs_src, MGL_STAGE_VERTEX, fs_src,
+                                       MGL_STAGE_FRAGMENT, true, err_buf,
+                                       err_cap);
 }
 
 extern "C" int mglShaderTessInterfaceCheck(const char *tcs_src,
                                            const char *tes_src,
                                            char *err_buf, size_t err_cap) {
-    if (!tcs_src || !tes_src) return -1;
-    std::unique_ptr<char[]> tcs_legacy(
-        airPrepareLegacySource(tcs_src, MGL_STAGE_TESS_CONTROL));
-    std::unique_ptr<char[]> tes_legacy(
-        airPrepareLegacySource(tes_src, MGL_STAGE_TESS_EVALUATION));
-    const char *csrc = tcs_legacy ? tcs_legacy.get() : tcs_src;
-    const char *esrc = tes_legacy ? tes_legacy.get() : tes_src;
-    MGLTranslationUnit *ctu = mglGLSLParse(csrc, strlen(csrc));
-    MGLTranslationUnit *etu = mglGLSLParse(esrc, strlen(esrc));
-    if (!ctu || !etu) {
-        if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse failed");
-        mglGLSLTranslationUnitDestroy(ctu);
-        mglGLSLTranslationUnitDestroy(etu);
-        return -1;
-    }
-    MGLIRModule tcs, tes;
-    memset(&tcs, 0, sizeof tcs);
-    memset(&tes, 0, sizeof tes);
-    MGLSemaError *ce = nullptr, *ee = nullptr;
-    uint32_t cc = 0, ec = 0;
-    int chard = mglGLSLSemanticCheck(ctu, MGL_STAGE_TESS_CONTROL, &tcs, &ce, &cc);
-    int ehard = mglGLSLSemanticCheck(etu, MGL_STAGE_TESS_EVALUATION, &tes, &ee, &ec);
-    int rc = 0;
-    if (chard || ehard) {
-        /* Declaration-level errors are reported at compile; still treat a
-         * surviving type mismatch as a link failure when both compile. */
-        if (err_buf && err_cap) {
-            const char *msg = (chard && ce && cc)
-                ? ce[0].message : (ee && ec) ? ee[0].message
-                                             : "tess semantic check failed";
-            snprintf(err_buf, err_cap, "%s", msg);
-        }
-        rc = -1;
-    } else {
-        MGLSemaError *le = nullptr;
-        uint32_t lec = 0;
-        if (mglGLSLInterfaceCheck(&tcs, &tes, &le, &lec)) {
-            if (err_buf && err_cap && le && lec)
-                snprintf(err_buf, err_cap, "%s", le[0].message);
-            rc = -1;
-        }
-        mglGLSLSemanticCheckDestroy(le, lec);
-    }
-    mglGLSLSemanticCheckDestroy(ce, cc);
-    mglGLSLSemanticCheckDestroy(ee, ec);
-    mglIRModuleDestroy(&tcs);
-    mglIRModuleDestroy(&tes);
-    mglGLSLTranslationUnitDestroy(ctu);
-    mglGLSLTranslationUnitDestroy(etu);
-    return rc;
+    return airSourcePairInterfaceCheck(tcs_src, MGL_STAGE_TESS_CONTROL,
+                                       tes_src, MGL_STAGE_TESS_EVALUATION,
+                                       false, err_buf, err_cap);
+}
+
+extern "C" int mglShaderInterfaceCheckTU(const MGLTranslationUnit *vs_tu,
+                                         const MGLTranslationUnit *fs_tu,
+                                         char *err_buf, size_t err_cap) {
+    return airStagePairInterfaceCheck(vs_tu, MGL_STAGE_VERTEX, fs_tu,
+                                      MGL_STAGE_FRAGMENT, true, err_buf,
+                                      err_cap);
+}
+
+extern "C" int mglShaderTessInterfaceCheckTU(const MGLTranslationUnit *tcs_tu,
+                                             const MGLTranslationUnit *tes_tu,
+                                             char *err_buf, size_t err_cap) {
+    return airStagePairInterfaceCheck(tcs_tu, MGL_STAGE_TESS_CONTROL, tes_tu,
+                                      MGL_STAGE_TESS_EVALUATION, false,
+                                      err_buf, err_cap);
 }

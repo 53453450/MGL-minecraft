@@ -415,6 +415,14 @@ int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
 int mglShaderTessInterfaceCheck(const char *tcs_src, const char *tes_src,
                                 char *err_buf, size_t err_cap);
 
+/* Same checks on already-parsed translation units (Shader::frontend_tu). */
+int mglShaderInterfaceCheckTU(const struct MGLTranslationUnit *vs_tu,
+                              const struct MGLTranslationUnit *fs_tu,
+                              char *err_buf, size_t err_cap);
+int mglShaderTessInterfaceCheckTU(const struct MGLTranslationUnit *tcs_tu,
+                                  const struct MGLTranslationUnit *tes_tu,
+                                  char *err_buf, size_t err_cap);
+
 #ifdef __cplusplus
 }
 #endif
