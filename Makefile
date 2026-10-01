@@ -717,7 +717,8 @@ test-batch-restore: $(build_dir)/test_batch_restore
 $(build_dir)/test_batch_issue: test_legacy_compat/test_batch_issue.c \
 	MGL/src/mgl_batch_issue.c MGL/include/mgl_batch_issue.h \
 	MGL/src/mgl_batch_rt_mark.c MGL/include/mgl_batch_rt_mark.h \
-	MGL/src/mgl_batch_restore.c MGL/src/mgl_batch_path.c
+	MGL/src/mgl_batch_restore.c MGL/src/mgl_batch_path.c \
+	MGL/src/mgl_env_flag.c MGL/include/mgl_env_flag.h
 	@mkdir -p $(dir $@)
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
@@ -726,6 +727,7 @@ $(build_dir)/test_batch_issue: test_legacy_compat/test_batch_issue.c \
 		test_legacy_compat/test_batch_issue.c \
 		MGL/src/mgl_batch_issue.c MGL/src/mgl_batch_rt_mark.c \
 		MGL/src/mgl_batch_restore.c MGL/src/mgl_batch_path.c \
+		MGL/src/mgl_env_flag.c \
 		-o $@
 
 test-batch-issue: $(build_dir)/test_batch_issue
