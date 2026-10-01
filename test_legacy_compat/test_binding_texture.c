@@ -68,7 +68,7 @@ static void test_sampled_plan(void)
     MGLSampledTextureBindPlan plan;
     memset(&in, 0, sizeof(in));
     in.phase = MGL_ST_PHASE_GATE;
-    in.spirv_binding = 100;
+    in.program_binding = 100;
     in.gl_binding = 0;
     in.max_units = 32;
     expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "gate");
@@ -103,7 +103,7 @@ static void test_sampled_plan(void)
     in.has_sampler = 1;
     in.sampler_binding = 2;
     in.max_sampler_slots = 16;
-    in.spirv_binding = 2;
+    in.program_binding = 2;
     expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "final");
     expect(plan.action == MGL_ST_ACTION_QUEUE, "queue");
     expect(plan.queue_texture == 1 && plan.queue_sampler == 1, "queue both");
@@ -374,7 +374,7 @@ static void test_sampled_final_helpers(void)
 
     MGLSampledTextureBindInput in;
     memset(&in, 0, sizeof(in));
-    in.spirv_binding = 3u;
+    in.program_binding = 3u;
     in.has_resource = 1;
     mglBindingTextureFillSampledFinalInput(&in, 1, 0, 0, 1, 5u, 16u, 1, 0);
     expect(in.phase == MGL_ST_PHASE_FINAL, "final phase");
@@ -400,7 +400,7 @@ static void test_sampled_gate_compat_fill(void)
     MGLSampledTextureBindInput in;
     mglBindingTextureFillSampledGateInput(&in, 3u, 1u, 32u, 0, 1);
     expect(in.phase == MGL_ST_PHASE_GATE, "gate phase");
-    expect(in.spirv_binding == 3u && in.has_resource == 1, "gate fields");
+    expect(in.program_binding == 3u && in.has_resource == 1, "gate fields");
     MGLSampledTextureBindPlan plan;
     expect(mglBindingTexturePlanSampled(&in, &plan) == 0, "gate plan");
     expect(plan.action == MGL_ST_ACTION_PROCEED, "gate proceed");

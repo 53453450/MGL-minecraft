@@ -566,28 +566,28 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
         /* ---- Normal binding path ---- */
         for (GLuint element = 0; element < entry->element_count; element++) {
             GLuint metal_binding = mglBufferPlanMetalBindingForElement(entry, element);
-            GLuint spirv_binding = mglBufferPlanClientBindingForElement(entry, resource, element);
-            if (!mglRenderClientBindingInRange(spirv_binding,
+            GLuint client_binding = mglBufferPlanClientBindingForElement(entry, resource, element);
+            if (!mglRenderClientBindingInRange(client_binding,
                                                MAX_BINDABLE_BUFFERS)) {
                 static uint64_t s_planOverflowHits = 0;
                 uint64_t hit = ++s_planOverflowHits;
                 if (hit <= 16ull || (hit % 4096ull) == 0ull) {
                     fprintf(stderr,
                             "MGL WARNING: mapShaderBufferResourcesViaPlan: stage=%d type=%d binding=%u exceeds MAX_BINDABLE_BUFFERS=%d, skipping (hit=%llu)\n",
-                            stage, spvc_type, spirv_binding, MAX_BINDABLE_BUFFERS,
+                            stage, spvc_type, client_binding, MAX_BINDABLE_BUFFERS,
                             (unsigned long long)hit);
                 }
                 continue;
             }
 
-            BufferBaseTarget *baseBinding = &buffers[spirv_binding];
+            BufferBaseTarget *baseBinding = &buffers[client_binding];
             bool usedFallbackBinding = false;
             bool allowGlobalFallback = mglRenderAllowGlobalBufferFallback(
                 fallbackBuffers ? 1 : 0, spvc_type, entry->flags) != 0;
             if (allowGlobalFallback &&
                 mglRenderBufferBindingEmpty(baseBinding->buf ? 1 : 0,
                                             baseBinding->buffer)) {
-                BufferBaseTarget *fallbackBinding = &fallbackBuffers[spirv_binding];
+                BufferBaseTarget *fallbackBinding = &fallbackBuffers[client_binding];
                 if (fallbackBinding->buf || fallbackBinding->buffer != 0) {
                     baseBinding = fallbackBinding;
                     usedFallbackBinding = true;
@@ -595,7 +595,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
             }
             Buffer *buf = mglRendererGetValidatedBuffer(ctx, baseBinding->buf,
                                                         "mapShaderBufferResourcesViaPlan(base)",
-                                                        (unsigned long)spirv_binding);
+                                                        (unsigned long)client_binding);
 
             /* Recover from name/object map skew. */
             if (!buf && baseBinding->buffer != 0) {
@@ -603,7 +603,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                                              baseBinding->buffer);
                 resolved = mglRendererGetValidatedBuffer(ctx, resolved,
                                                          "mapShaderBufferResourcesViaPlan(base,recover)",
-                                                         (unsigned long)spirv_binding);
+                                                         (unsigned long)client_binding);
                 if (resolved) {
                     baseBinding->buf = resolved;
                     buf = resolved;
@@ -611,7 +611,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                     if ((++s_recoverHits % 64ull) == 1ull) {
                         fprintf(stderr,
                                 "MGL BUFFER RECOVER: stage=%d type=%d binding=%u name=%u ptr=%p hit=%llu (plan)\n",
-                                stage, spvc_type, spirv_binding, baseBinding->buffer, resolved,
+                                stage, spvc_type, client_binding, baseBinding->buffer, resolved,
                                 s_recoverHits);
                     }
                 }
@@ -630,7 +630,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                 BufferMap *bentry = &buffer_map->buffers[buffer_map->count];
                 bzero(bentry, sizeof(*bentry));
                 bentry->attribute_mask = 0;
-                bentry->buffer_base_index = spirv_binding;
+                bentry->buffer_base_index = client_binding;
                 bentry->resource_type = (GLuint)spvc_type;
                 bentry->resource_index = entry->resource_index;
                 bentry->metal_binding_index = metal_binding;
@@ -654,7 +654,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
-                                (unsigned)spirv_binding,
+                                (unsigned)client_binding,
                                 (unsigned)metal_binding,
                                 (unsigned)buf->name,
                                 (long long)baseBinding->offset,
@@ -672,7 +672,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
-                                (unsigned)spirv_binding,
+                                (unsigned)client_binding,
                                 (unsigned)metal_binding,
                                 (unsigned)buf->name,
                                 (long long)baseBinding->offset,
@@ -687,7 +687,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                     if (mglShouldLogSmallBaseBinding(programName,
                                                      stage,
                                                      spvc_type,
-                                                     spirv_binding,
+                                                     client_binding,
                                                      buf->name,
                                                      baseBinding->size,
                                                      reflectedRequiredSize)) {
@@ -696,7 +696,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 programName,
                                 stage,
                                 spvc_type,
-                                spirv_binding,
+                                client_binding,
                                 buf->name,
                                 (long long)baseBinding->size,
                                 (unsigned long)reflectedRequiredSize);
@@ -713,7 +713,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
-                                (unsigned)spirv_binding,
+                                (unsigned)client_binding,
                                 (unsigned)metal_binding,
                                 baseBinding->buffer,
                                 baseBinding->buf,
@@ -732,7 +732,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                                 mglMGLShaderResourceTypeName(spvc_type),
                                 resource->name ? resource->name : "(null)",
                                 entry->resource_index,
-                                (unsigned)spirv_binding,
+                                (unsigned)client_binding,
                                 (unsigned)metal_binding,
                                 baseBinding->buffer,
                                 baseBinding->buf,
@@ -747,7 +747,7 @@ bool mglRendererMapShaderBufferResourcesViaPlan(
                     if (hit <= 16ull || (hit % 4096ull) == 0ull) {
                         fprintf(stderr,
                                 "MGL WARNING: mapShaderBufferResourcesViaPlan: dropping invalid base buffer binding=%u stage=%d type=%d name=%u ptr=%p offset=%lld size=%lld (hit=%llu)\n",
-                                spirv_binding, stage, spvc_type,
+                                client_binding, stage, spvc_type,
                                 baseBinding->buffer,
                                 baseBinding->buf,
                                 (long long)baseBinding->offset,

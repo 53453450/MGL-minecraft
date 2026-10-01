@@ -52,7 +52,7 @@ bool mglSampledBindTexturesForStage(
  * trace).  Was -emitSampledDiagPortsForProgram:stage:…. */
 void mglSampledEmitDiagPorts(
     void *renderer, Program *program, const char *stage, int stage_is_fragment,
-    const char *sampled_name, GLuint spirv_binding, GLuint texture_unit,
+    const char *sampled_name, GLuint program_binding, GLuint texture_unit,
     MGLShaderResource *sampled_resource, Texture *ptr, void *texture,
     void *sampler, int used_fallback, uint32_t expected_type,
     uint32_t lookup_type, uint64_t bind_call, GLuint program_name,
@@ -70,7 +70,7 @@ void mglSampledEmitDiagPorts(
  * the stage. */
 bool mglSampledRecoverFragmentDepthTexture(
     void *renderer, Texture **ptr_ptr, void **texture_ptr,
-    const char *sampled_name, GLuint spirv_binding, GLuint texture_unit,
+    const char *sampled_name, GLuint program_binding, GLuint texture_unit,
     uint32_t expected_type, uint32_t expected_kind,
     GLuint fragment_program_name, int *suppress_missing_ptr,
     int *used_fallback_ptr);
@@ -94,7 +94,7 @@ bool mglSampledBindSeparateSamplersAndArrayTextures(
 void *mglSampledCompatFallbackPlan(void *renderer, Texture *ptr, void *texture,
                                    uint32_t expected_type, uint32_t expected_kind,
                                    const char *stage, GLuint program_name,
-                                   GLuint spirv_binding, void *sample_program,
+                                   GLuint program_binding, void *sample_program,
                                    int *used_fallback_out);
 
 /* The sampled render-target copy plan.  Was -applySampledRenderTargetCopyPlan:
@@ -107,14 +107,14 @@ void *mglSampledCompatFallbackPlan(void *renderer, Texture *ptr, void *texture,
 bool mglSampledRenderTargetCopyPlan(
     void *renderer, Texture *ptr, void **texture_ptr, Program *sample_program,
     uint32_t expected_type, uint32_t expected_kind, int used_type_fallback,
-    const char *stage, GLuint program_name, GLuint spirv_binding,
+    const char *stage, GLuint program_name, GLuint program_binding,
     GLuint texture_unit, const char *sampled_name, int *used_sampled_copy_out,
     void **direct_texture_for_trace, void **sampled_copy_for_trace);
 
 void *mglSampledSamplerMaterialize(void *renderer, Texture *ptr,
                                    GLuint texture_unit, void *default_sampler,
                                    int force_default, GLuint sampler_target,
-                                   GLuint program_name, GLuint spirv_binding,
+                                   GLuint program_name, GLuint program_binding,
                                    const char *stage, void *texture);
 
 #ifdef __cplusplus

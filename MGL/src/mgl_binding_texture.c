@@ -143,11 +143,11 @@ int mglBindingTexturePlanSampled(const MGLSampledTextureBindInput *in,
         return -1;
     }
     mglBindingTextureSampledClear(out);
-    out->texture_slot = in->spirv_binding;
+    out->texture_slot = in->program_binding;
     out->sampler_slot = in->sampler_binding;
 
     if (in->phase == MGL_ST_PHASE_GATE) {
-        if (mglRenderMetalBindingPastUnits(in->spirv_binding, in->max_units) ||
+        if (mglRenderMetalBindingPastUnits(in->program_binding, in->max_units) ||
             mglRenderMetalBindingPastUnits(in->gl_binding, in->max_units)) {
             out->action = MGL_ST_ACTION_SKIP;
             out->reason = MGL_ST_REASON_OOR;
@@ -281,7 +281,7 @@ void mglBindingTextureFillSampledFinalInput(
 
 
 void mglBindingTextureFillSampledGateInput(
-    MGLSampledTextureBindInput *in, uint32_t spirv_binding, uint32_t gl_binding,
+    MGLSampledTextureBindInput *in, uint32_t program_binding, uint32_t gl_binding,
     uint32_t max_units, int skip_resource, int has_resource)
 {
     if (!in) {
@@ -289,7 +289,7 @@ void mglBindingTextureFillSampledGateInput(
     }
     memset(in, 0, sizeof(*in));
     in->phase = MGL_ST_PHASE_GATE;
-    in->spirv_binding = spirv_binding;
+    in->program_binding = program_binding;
     in->gl_binding = gl_binding;
     in->max_units = max_units;
     in->skip_resource = skip_resource ? 1 : 0;
@@ -934,7 +934,7 @@ void mglBindingTextureWriteFragTrace(
 void mglBindingTextureFillSampledDiagEmitCore(
     MGLSampledDiagEmitInput *in, const char *stage, uint32_t program_name,
     uint32_t vertex_program_name, uint32_t fragment_program_name,
-    const char *sampled_name, uint32_t spirv_binding, uint32_t texture_unit,
+    const char *sampled_name, uint32_t program_binding, uint32_t texture_unit,
     int res_unit, int explicit_unit, uint32_t gl_tex, uint32_t target,
     int used_fallback, uint64_t expected_type, uint64_t lookup_type,
     int expected_index, uint32_t unit_active, uint32_t unit_expected,
@@ -956,7 +956,7 @@ void mglBindingTextureFillSampledDiagEmitCore(
     in->vertex_program_name = vertex_program_name;
     in->fragment_program_name = fragment_program_name;
     in->sampled_name = sampled_name;
-    in->spirv_binding = spirv_binding;
+    in->program_binding = program_binding;
     in->texture_unit = texture_unit;
     in->res_unit = res_unit;
     in->explicit_unit = explicit_unit ? 1 : 0;
@@ -1057,14 +1057,14 @@ void mglBindingTextureEmitSampledDiagPorts(
 
     if (in->do_focused) {
         mglBindingLogTBINDFocused(
-            in->stage, in->program_name, in->sampled_name, in->spirv_binding,
+            in->stage, in->program_name, in->sampled_name, in->program_binding,
             in->texture_unit, in->gl_tex, in->target, in->mtl, in->mtl_type,
             in->mtl_w, in->mtl_h, in->l0w, in->l0h, in->l0_ever, in->l0_full,
             in->l0_source);
     }
     if (in->do_trace_file) {
         mglBindingLogTBINDTraceFile(
-            in->stage, in->program_name, in->sampled_name, in->spirv_binding,
+            in->stage, in->program_name, in->sampled_name, in->program_binding,
             in->texture_unit, in->res_unit, in->explicit_unit, in->gl_tex,
             in->target, in->used_fallback, in->expected_type, in->lookup_type,
             in->expected_index, in->unit_active, in->unit_expected, in->unit_2d,
@@ -1083,7 +1083,7 @@ void mglBindingTextureEmitSampledDiagPorts(
     if (dplan.log_texel_buffer &&
         mglBindingTextureRateLogHit(&s_texelBufferBindLogs, 8ull, 2048ull)) {
         mglBindingLogTexBufferBind(
-            s_texelBufferBindLogs, in->program_name, in->spirv_binding,
+            s_texelBufferBindLogs, in->program_name, in->program_binding,
             in->texture_unit, in->ptr_tex, in->unit_active, in->unit_buffer_tex,
             in->expected_type, in->lookup_type, in->mtl, in->mtl_type, in->mtl_w,
             in->mtl_h, in->mtl_format, in->sampler);
@@ -1095,7 +1095,7 @@ void mglBindingTextureEmitSampledDiagPorts(
         if (mglBindingTextureRateLogHit(ctr, early, 512ull)) {
             mglBindingLogSampleDetail(
                 in->bind_call, *ctr, in->stage, in->program_name,
-                in->sampled_name, in->spirv_binding, in->texture_unit,
+                in->sampled_name, in->program_binding, in->texture_unit,
                 in->expected_type, in->expected_index, in->ptr_tex, in->ptr,
                 in->target, in->used_fallback, in->mtl, in->mtl_type, in->mtl_w,
                 in->mtl_h, in->unit_active, in->unit_expected, in->unit_2d,
@@ -1109,7 +1109,7 @@ void mglBindingTextureEmitSampledDiagPorts(
         mglBindingLogRTSampleCopySample(
             s_guiRTSampleLogCount, in->bind_call, in->program_name,
             in->vertex_program_name, in->fragment_program_name,
-            in->sampled_name, in->spirv_binding, in->texture_unit, in->ptr_tex,
+            in->sampled_name, in->program_binding, in->texture_unit, in->ptr_tex,
             in->rt_label, in->used_fallback, in->used_sampled_copy_trace,
             in->ptr, in->mtl, in->direct_for_trace, in->copy_for_trace,
             in->mtl_format, in->mtl_type, in->mtl_w, in->mtl_h, in->draw_fbo,

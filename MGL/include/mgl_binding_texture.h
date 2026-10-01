@@ -126,7 +126,7 @@ enum {
 
 typedef struct MGLSampledTextureBindInput {
     int phase; /* MGL_ST_PHASE_* */
-    uint32_t spirv_binding;
+    uint32_t program_binding;
     uint32_t gl_binding;
     uint32_t max_units;
     int skip_resource;
@@ -187,7 +187,7 @@ void mglBindingTextureFillSampledFinalInput(
 
 /* GATE-phase sampled POD fill. */
 void mglBindingTextureFillSampledGateInput(
-    MGLSampledTextureBindInput *in, uint32_t spirv_binding, uint32_t gl_binding,
+    MGLSampledTextureBindInput *in, uint32_t program_binding, uint32_t gl_binding,
     uint32_t max_units, int skip_resource, int has_resource);
 
 /* COMPAT-phase sampled POD fill. */
@@ -490,7 +490,7 @@ typedef struct MGLSampledDiagEmitInput {
     uint32_t vertex_program_name;
     uint32_t fragment_program_name;
     const char *sampled_name;
-    uint32_t spirv_binding;
+    uint32_t program_binding;
     uint32_t texture_unit;
     int res_unit;
     int explicit_unit;
@@ -552,7 +552,7 @@ typedef struct MGLSampledDiagEmitResult {
 void mglBindingTextureFillSampledDiagEmitCore(
     MGLSampledDiagEmitInput *in, const char *stage, uint32_t program_name,
     uint32_t vertex_program_name, uint32_t fragment_program_name,
-    const char *sampled_name, uint32_t spirv_binding, uint32_t texture_unit,
+    const char *sampled_name, uint32_t program_binding, uint32_t texture_unit,
     int res_unit, int explicit_unit, uint32_t gl_tex, uint32_t target,
     int used_fallback, uint64_t expected_type, uint64_t lookup_type,
     int expected_index, uint32_t unit_active, uint32_t unit_expected,
