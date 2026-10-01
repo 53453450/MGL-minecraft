@@ -170,7 +170,7 @@ help:
 
 # mgl
 #mgl_srcs_c := $(wildcard MGL/src/*.c)
-mgl_srcs_c := $(filter-out %/gl_core.c  %/gl_es.c, $(wildcard MGL/src/*.c))
+mgl_srcs_c := $(filter-out %/gl_core.c  %/gl_es.c %/mgl_fake_draw_executor.c, $(wildcard MGL/src/*.c))
 
 # Aux shader assets: the precompiled metallib table embeds all helper
 # shaders; the runtime never compiles .metal source.  The table is regenerated
@@ -602,13 +602,14 @@ test-state-snapshot-share: $(build_dir)/test_state_snapshot_share
 	@echo "--- non-arena path (MGL_ARENA_SNAPSHOT=0) ---"
 	MGL_ARENA_SNAPSHOT=0 DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_state_snapshot_share
 
-$(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c $(build_dir)/libmgl.dylib
+$(build_dir)/test_arch_correctness: test_legacy_compat/test_arch_correctness.c MGL/src/mgl_fake_draw_executor.c $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-IMGL/include -IMGL/include/GL -IMGL/src \
 		-DMGL_GL_CORE \
 		-isysroot $(SDK_ROOT) \
 		test_legacy_compat/test_arch_correctness.c \
+		MGL/src/mgl_fake_draw_executor.c \
 		-L$(build_dir) -lmgl \
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
