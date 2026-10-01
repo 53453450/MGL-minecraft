@@ -235,7 +235,7 @@
 - 证据：`mgl_air_loader.cpp` `psoCacheMutex()` 保护 create 与 shutdown。
 - 规范：内部并发。启用异步编译后升 P0。
 - 动作：合并进 `PipelineCacheOwner`，删第二套 cache。
-- 落地：已加锁。未合并进 PipelineCacheOwner。
+- 落地：已加锁；加 LRU 上限 1024（高于 Owner 的 256，Owner 淘汰后仍可命中），`test-air-loader-cache` 覆盖。未合并进 PipelineCacheOwner。
 
 #### F22 空壳 TU 仍被 wildcard 链入 dylib — landed
 
