@@ -1274,8 +1274,10 @@ void mglGetPointerv(GLMContext ctx, GLenum pname, void **params)
     switch (pname)
     {
         case GL_DEBUG_CALLBACK_FUNCTION:
+            *params = (void *)ctx->debug_callback;
+            return;
         case GL_DEBUG_CALLBACK_USER_PARAM:
-            *params = NULL;
+            *params = (void *)ctx->debug_callback_user;
             return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);

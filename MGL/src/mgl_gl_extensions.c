@@ -2695,61 +2695,200 @@ void mglDebugMessageCallback(GLMContext ctx, GLDEBUGPROC callback, const void *u
 	ctx->debug_callback_user = userParam;
 }
 
+static GLboolean mglDebugIsSource(GLenum e)
+{
+	switch (e) {
+		case GL_DEBUG_SOURCE_API:
+		case GL_DEBUG_SOURCE_SHADER_COMPILER:
+		case GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+		case GL_DEBUG_SOURCE_THIRD_PARTY:
+		case GL_DEBUG_SOURCE_APPLICATION:
+		case GL_DEBUG_SOURCE_OTHER:
+			return GL_TRUE;
+		default:
+			return GL_FALSE;
+	}
+}
+
+static GLboolean mglDebugIsType(GLenum e)
+{
+	switch (e) {
+		case GL_DEBUG_TYPE_ERROR:
+		case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+		case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+		case GL_DEBUG_TYPE_PERFORMANCE:
+		case GL_DEBUG_TYPE_PORTABILITY:
+		case GL_DEBUG_TYPE_MARKER:
+		case GL_DEBUG_TYPE_PUSH_GROUP:
+		case GL_DEBUG_TYPE_POP_GROUP:
+		case GL_DEBUG_TYPE_OTHER:
+			return GL_TRUE;
+		default:
+			return GL_FALSE;
+	}
+}
+
+static GLboolean mglDebugIsSeverity(GLenum e)
+{
+	switch (e) {
+		case GL_DEBUG_SEVERITY_HIGH:
+		case GL_DEBUG_SEVERITY_MEDIUM:
+		case GL_DEBUG_SEVERITY_LOW:
+		case GL_DEBUG_SEVERITY_NOTIFICATION:
+			return GL_TRUE;
+		default:
+			return GL_FALSE;
+	}
+}
+
+static GLboolean mglDebugRuleMatches(const MGLDebugControlRule *r, GLenum source,
+                                     GLenum type, GLuint id, GLenum severity)
+{
+	return (r->source == GL_DONT_CARE || r->source == source) &&
+	       (r->type == GL_DONT_CARE || r->type == type) &&
+	       (r->severity == GL_DONT_CARE || r->severity == severity) &&
+	       (!r->has_id || r->id == id);
+}
+
+/* True if every message `r` references is also referenced by `n`, so `n`
+ * fully overrides `r` and `r` can be dropped. */
+static GLboolean mglDebugRuleCovers(const MGLDebugControlRule *n,
+                                    const MGLDebugControlRule *r)
+{
+	return (n->source == GL_DONT_CARE || n->source == r->source) &&
+	       (n->type == GL_DONT_CARE || n->type == r->type) &&
+	       (n->severity == GL_DONT_CARE || n->severity == r->severity) &&
+	       (!n->has_id || (r->has_id && r->id == n->id));
+}
+
+static GLboolean mglDebugAddRule(GLMContext ctx, const MGLDebugControlRule *n)
+{
+	GLuint g = STATE(var.debug_group_stack_depth) - 1u;
+	GLuint w = 0u;
+	for (GLuint i = 0u; i < ctx->debug_groups[g].rule_count; i++) {
+		if (!mglDebugRuleCovers(n, &ctx->debug_groups[g].rules[i]))
+			ctx->debug_groups[g].rules[w++] = ctx->debug_groups[g].rules[i];
+	}
+	ctx->debug_groups[g].rule_count = w;
+	if (w == MGL_DEBUG_RULE_MAX)
+		return GL_FALSE;
+	ctx->debug_groups[g].rules[w] = *n;
+	ctx->debug_groups[g].rule_count = w + 1u;
+	return GL_TRUE;
+}
+
+static GLboolean mglDebugMessageEnabled(GLMContext ctx, GLenum source, GLenum type,
+                                        GLuint id, GLenum severity)
+{
+	GLuint g = STATE(var.debug_group_stack_depth) - 1u;
+	GLboolean enabled = severity != GL_DEBUG_SEVERITY_LOW;
+	for (GLuint i = 0u; i < ctx->debug_groups[g].rule_count; i++) {
+		const MGLDebugControlRule *r = &ctx->debug_groups[g].rules[i];
+		if (mglDebugRuleMatches(r, source, type, id, severity))
+			enabled = r->enabled;
+	}
+	return enabled;
+}
+
 void mglDebugMessageControl(GLMContext ctx, GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled)
 {
-	(void)source;
-	(void)type;
-	(void)severity;
-	(void)ids;
 	if (!ctx)
 		return;
+	if ((source != GL_DONT_CARE && !mglDebugIsSource(source)) ||
+	    (type != GL_DONT_CARE && !mglDebugIsType(type)) ||
+	    (severity != GL_DONT_CARE && !mglDebugIsSeverity(severity))) {
+		ERROR_RETURN(GL_INVALID_ENUM);
+		return;
+	}
 	if (count < 0) {
 		ERROR_RETURN(GL_INVALID_VALUE);
 		return;
 	}
-	ctx->debug_output = enabled;
+	if (count > 0 && (source == GL_DONT_CARE || type == GL_DONT_CARE ||
+	                  severity != GL_DONT_CARE)) {
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return;
+	}
+	MGLDebugControlRule rule = {
+		.source = source, .type = type, .severity = severity,
+		.id = 0u, .has_id = GL_FALSE, .enabled = enabled ? GL_TRUE : GL_FALSE,
+	};
+	if (count == 0) {
+		if (!mglDebugAddRule(ctx, &rule))
+			ERROR_RETURN(GL_OUT_OF_MEMORY);
+		return;
+	}
+	if (!ids)
+		return;
+	rule.has_id = GL_TRUE;
+	for (GLsizei i = 0; i < count; i++) {
+		rule.id = ids[i];
+		if (!mglDebugAddRule(ctx, &rule)) {
+			ERROR_RETURN(GL_OUT_OF_MEMORY);
+			return;
+		}
+	}
 }
 
-static void mglDebugLogPush(GLMContext ctx, GLenum source, GLenum type, GLuint id,
-                            GLenum severity, GLsizei length, const GLchar *buf)
+/* Routes one message per GL 4.6 §20.2/§20.3: nothing while DEBUG_OUTPUT is
+ * off or the message is disabled; otherwise the callback if set, else the
+ * log, discarding the message when the log is full. */
+static void mglDebugEmit(GLMContext ctx, GLenum source, GLenum type, GLuint id,
+                         GLenum severity, GLsizei length, const GLchar *buf)
 {
-	if (!ctx)
+	if (!ctx || !STATE(caps.debug_output) ||
+	    !mglDebugMessageEnabled(ctx, source, type, id, severity))
 		return;
 	GLsizei n = length;
 	if (n < 0)
 		n = buf ? (GLsizei)strlen(buf) : 0;
+	if (!buf)
+		n = 0;
 	if (n >= MGL_DEBUG_MSG_MAX)
 		n = MGL_DEBUG_MSG_MAX - 1;
-	if (ctx->debug_log_count == MGL_DEBUG_LOG_CAP) {
-		ctx->debug_log_head = (ctx->debug_log_head + 1u) % MGL_DEBUG_LOG_CAP;
-		ctx->debug_log_count--;
+	if (ctx->debug_callback) {
+		char msg[MGL_DEBUG_MSG_MAX];
+		if (n > 0)
+			memcpy(msg, buf, (size_t)n);
+		msg[n] = '\0';
+		ctx->debug_callback(source, type, id, severity, n, msg,
+		                    ctx->debug_callback_user);
+		return;
 	}
+	if (ctx->debug_log_count == MGL_DEBUG_LOG_CAP)
+		return;
 	GLuint slot = (ctx->debug_log_head + ctx->debug_log_count) % MGL_DEBUG_LOG_CAP;
 	ctx->debug_log[slot].source = source;
 	ctx->debug_log[slot].type = type;
 	ctx->debug_log[slot].severity = severity;
 	ctx->debug_log[slot].id = id;
 	ctx->debug_log[slot].length = n;
-	if (buf && n > 0)
+	if (n > 0)
 		memcpy(ctx->debug_log[slot].msg, buf, (size_t)n);
 	ctx->debug_log[slot].msg[n] = '\0';
 	ctx->debug_log_count++;
-	if (ctx->debug_callback) {
-		ctx->debug_callback(source, type, id, severity, n,
-		                      ctx->debug_log[slot].msg,
-		                      ctx->debug_callback_user);
-	}
 }
 
 void mglDebugMessageInsert(GLMContext ctx, GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf)
 {
-	if (!ctx)
+	if (!ctx || !STATE(caps.debug_output))
 		return;
+	if ((source != GL_DEBUG_SOURCE_APPLICATION &&
+	     source != GL_DEBUG_SOURCE_THIRD_PARTY) ||
+	    !mglDebugIsType(type) || !mglDebugIsSeverity(severity)) {
+		ERROR_RETURN(GL_INVALID_ENUM);
+		return;
+	}
 	if (!buf && length != 0) {
 		ERROR_RETURN(GL_INVALID_VALUE);
 		return;
 	}
-	mglDebugLogPush(ctx, source, type, id, severity, length, buf);
+	size_t n = length < 0 ? strlen(buf) : (size_t)length;
+	if (n >= (size_t)STATE(var.max_debug_message_length)) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	mglDebugEmit(ctx, source, type, id, severity, (GLsizei)n, buf);
 }
 
 void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
@@ -3420,7 +3559,7 @@ GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLe
 {
 	if (!ctx)
 		return 0;
-	if (bufSize < 0) {
+	if (bufSize < 0 && messageLog) {
 		ERROR_RETURN(GL_INVALID_VALUE);
 		return 0;
 	}
@@ -3430,7 +3569,7 @@ GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLe
 		GLuint slot = ctx->debug_log_head;
 		GLsizei n = ctx->debug_log[slot].length;
 		GLsizei need = n + 1;
-		if (messageLog && bufSize > 0 && used + need > bufSize)
+		if (messageLog && used + need > bufSize)
 			break;
 		if (sources)
 			sources[copied] = ctx->debug_log[slot].source;
@@ -3441,8 +3580,8 @@ GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLe
 		if (severities)
 			severities[copied] = ctx->debug_log[slot].severity;
 		if (lengths)
-			lengths[copied] = n;
-		if (messageLog && bufSize > 0) {
+			lengths[copied] = need;
+		if (messageLog) {
 			memcpy(messageLog + used, ctx->debug_log[slot].msg, (size_t)n);
 			messageLog[used + n] = '\0';
 			used += need;
@@ -6102,12 +6241,10 @@ void mglPopDebugGroup(GLMContext ctx)
 		return;
 	}
 	STATE(var.debug_group_stack_depth) = depth - 1u;
-	if (STATE(caps.debug_output)) {
-		const GLuint g = depth - 1u;
-		mglDebugLogPush(ctx, ctx->debug_groups[g].source, GL_DEBUG_TYPE_POP_GROUP,
-		                ctx->debug_groups[g].id, GL_DEBUG_SEVERITY_NOTIFICATION,
-		                ctx->debug_groups[g].length, ctx->debug_groups[g].msg);
-	}
+	const GLuint g = depth - 1u;
+	mglDebugEmit(ctx, ctx->debug_groups[g].source, GL_DEBUG_TYPE_POP_GROUP,
+	             ctx->debug_groups[g].id, GL_DEBUG_SEVERITY_NOTIFICATION,
+	             ctx->debug_groups[g].length, ctx->debug_groups[g].msg);
 }
 
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index)
@@ -6285,11 +6422,12 @@ void mglPushDebugGroup(GLMContext ctx, GLenum source, GLuint id, GLsizei length,
 	if (n > 0)
 		memcpy(ctx->debug_groups[depth].msg, message, (size_t)n);
 	ctx->debug_groups[depth].msg[n] = '\0';
+	ctx->debug_groups[depth].rule_count = ctx->debug_groups[depth - 1u].rule_count;
+	memcpy(ctx->debug_groups[depth].rules, ctx->debug_groups[depth - 1u].rules,
+	       sizeof(ctx->debug_groups[depth].rules));
 	STATE(var.debug_group_stack_depth) = depth + 1u;
-	if (STATE(caps.debug_output)) {
-		mglDebugLogPush(ctx, source, GL_DEBUG_TYPE_PUSH_GROUP, id,
-		                GL_DEBUG_SEVERITY_NOTIFICATION, n, ctx->debug_groups[depth].msg);
-	}
+	mglDebugEmit(ctx, source, GL_DEBUG_TYPE_PUSH_GROUP, id,
+	             GL_DEBUG_SEVERITY_NOTIFICATION, n, ctx->debug_groups[depth].msg);
 }
 
 void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)

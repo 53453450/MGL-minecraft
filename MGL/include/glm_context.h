@@ -116,6 +116,16 @@ static_assert(TEXTURE_UNITS == 128, "active_texture_mask relies on this");
 
 typedef struct GLMContextRec_t *GLMContext;
 
+/* One DebugMessageControl call (GL 4.6 §20.4); has_id rules come from ids[]. */
+typedef struct MGLDebugControlRule {
+    GLenum    source;
+    GLenum    type;
+    GLenum    severity;
+    GLuint    id;
+    GLboolean has_id;
+    GLboolean enabled;
+} MGLDebugControlRule;
+
 typedef struct GLMContextRec_t {
     GLuint      context_flags;
 
@@ -175,7 +185,6 @@ typedef struct GLMContextRec_t {
 #define MGL_DEBUG_MSG_MAX 1024
     GLDEBUGPROC debug_callback;
     const void *debug_callback_user;
-    GLboolean   debug_output;
     GLuint      debug_log_count;
     GLuint      debug_log_head;
     struct {
@@ -186,13 +195,18 @@ typedef struct GLMContextRec_t {
         GLsizei length;
         char msg[MGL_DEBUG_MSG_MAX];
     } debug_log[MGL_DEBUG_LOG_CAP];
-    /* Index i holds the group pushed at stack depth i; 0 is the default group. */
+    /* Index i holds the group pushed at stack depth i; 0 is the default group.
+     * Each group carries the volume-control rules in effect inside it, applied
+     * in order over the default (everything but DEBUG_SEVERITY_LOW enabled). */
 #define MGL_DEBUG_GROUP_MAX 64
+#define MGL_DEBUG_RULE_MAX 32
     struct {
         GLenum source;
         GLuint id;
         GLsizei length;
         char msg[MGL_DEBUG_MSG_MAX];
+        GLuint rule_count;
+        MGLDebugControlRule rules[MGL_DEBUG_RULE_MAX];
     } debug_groups[MGL_DEBUG_GROUP_MAX];
 
     /* Renderer roots. The backend owns Metal state; the context retains the

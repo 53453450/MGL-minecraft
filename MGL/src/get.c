@@ -1104,6 +1104,8 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8262: RET_TYPE_VAR(type, max_compute_shared_memory_size); break; // GL_MAX_COMPUTE_SHARED_MEMORY_SIZE
         case 0x9143: RET_TYPE_VAR(type, max_debug_message_length); break; // GL_MAX_DEBUG_MESSAGE_LENGTH
         case 0x9144: RET_TYPE_VAR(type, max_debug_logged_messages); break; // GL_MAX_DEBUG_LOGGED_MESSAGES
+        case 0x9145: RET_TYPE_VAR_DERIVED(ctx->debug_log_count); break; // GL_DEBUG_LOGGED_MESSAGES
+        case 0x8243: RET_TYPE_VAR_DERIVED(ctx->debug_log_count ? (GLuint)ctx->debug_log[ctx->debug_log_head].length + 1u : 0u); break; // GL_DEBUG_NEXT_LOGGED_MESSAGE_LENGTH
         case 0x8DE7: RET_TYPE_VAR(type, max_subroutines); break; // GL_MAX_SUBROUTINES
         case 0x8DE8: RET_TYPE_VAR(type, max_subroutine_uniform_locations); break; // GL_MAX_SUBROUTINE_UNIFORM_LOCATIONS
         case 0x8E5E: RET_TYPE_VAR(type, min_program_texture_gather_offset); break; // GL_MIN_PROGRAM_TEXTURE_GATHER_OFFSET

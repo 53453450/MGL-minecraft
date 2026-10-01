@@ -648,7 +648,7 @@ apply_gl46_defaults:
     glm_ctx->active_state->var.max_tess_evaluation_texture_image_units = 16;
     glm_ctx->active_state->var.max_compute_shared_memory_size = 32768;
     glm_ctx->active_state->var.max_debug_message_length = 1024;
-    glm_ctx->active_state->var.max_debug_logged_messages = 1024;
+    glm_ctx->active_state->var.max_debug_logged_messages = MGL_DEBUG_LOG_CAP;
     glm_ctx->active_state->var.max_subroutines = 0;
     glm_ctx->active_state->var.max_subroutine_uniform_locations = 0;
     glm_ctx->active_state->var.max_vertex_streams = 4;

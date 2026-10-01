@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 116
+#define MAX_TESTS 117
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -15364,6 +15364,182 @@ static int test_debug_group_stack(unsigned char *pixels, const char *out_path)
     return result;
 }
 
+static int g_debug_control_calls;
+
+static void APIENTRY debug_control_callback(GLenum source, GLenum type,
+                                              GLuint id, GLenum severity,
+                                              GLsizei length,
+                                              const GLchar *message,
+                                              const void *user)
+{
+    (void)source; (void)type; (void)id; (void)severity; (void)length;
+    (void)message; (void)user;
+    g_debug_control_calls++;
+}
+
+static GLint debug_logged_count(void)
+{
+    GLint n = -1;
+    glGetIntegerv(GL_DEBUG_LOGGED_MESSAGES, &n);
+    return n;
+}
+
+static void debug_insert(GLuint id, GLenum severity)
+{
+    glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_MARKER, id,
+                         severity, -1, "m");
+}
+
+static void debug_drain_log(void)
+{
+    while (glGetDebugMessageLog(64, 0, NULL, NULL, NULL, NULL, NULL, NULL) > 0) {
+    }
+}
+
+/* GL 4.6 §20.2-20.6 / §20.9: message volume control, DEBUG_OUTPUT gating,
+ * callback-or-log routing and the message log contract. */
+static int test_debug_message_control(unsigned char *pixels,
+                                      const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+#define DBG_EXPECT(cond, ...) do { if (!(cond)) { \
+        fprintf(stderr, "debug_message_control: " __VA_ARGS__); \
+        fprintf(stderr, "\n"); fail = 1; } } while (0)
+
+    glDebugMessageCallback(NULL, NULL);
+    glEnable(GL_DEBUG_OUTPUT);
+    debug_drain_log();
+    while (glGetError() != GL_NO_ERROR) { }
+
+    debug_insert(1, GL_DEBUG_SEVERITY_NOTIFICATION);
+    GLint next_len = 0;
+    glGetIntegerv(GL_DEBUG_NEXT_LOGGED_MESSAGE_LENGTH, &next_len);
+    DBG_EXPECT(debug_logged_count() == 1 && next_len == 2,
+               "insert: logged=%d next_len=%d", debug_logged_count(), next_len);
+
+    debug_insert(2, GL_DEBUG_SEVERITY_LOW);
+    DBG_EXPECT(debug_logged_count() == 1, "LOW severity logged by default");
+
+    const GLuint id1 = 1;
+    glDebugMessageControl(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_MARKER,
+                          GL_DONT_CARE, 1, &id1, GL_FALSE);
+    debug_insert(1, GL_DEBUG_SEVERITY_HIGH);
+    debug_insert(3, GL_DEBUG_SEVERITY_HIGH);
+    DBG_EXPECT(debug_logged_count() == 2, "id filter: logged=%d (want 2)",
+               debug_logged_count());
+
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_LOW,
+                          0, NULL, GL_TRUE);
+    debug_insert(4, GL_DEBUG_SEVERITY_LOW);
+    DBG_EXPECT(debug_logged_count() == 3, "LOW enable: logged=%d (want 3)",
+               debug_logged_count());
+
+    glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 9, -1, "g");
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL,
+                          GL_FALSE);
+    debug_insert(5, GL_DEBUG_SEVERITY_HIGH);
+    glPopDebugGroup();
+    debug_insert(1, GL_DEBUG_SEVERITY_HIGH);
+    debug_insert(6, GL_DEBUG_SEVERITY_HIGH);
+    DBG_EXPECT(debug_logged_count() == 6,
+               "group scope: logged=%d (want 6: push, pop, id 6)",
+               debug_logged_count());
+
+    GLenum sources[8], types[8], severities[8];
+    GLuint ids[8];
+    GLsizei lengths[8];
+    char log[64];
+    GLuint got = glGetDebugMessageLog(8, 0, sources, types, ids, severities,
+                                      lengths, log);
+    DBG_EXPECT(got == 0, "bufSize 0 fetched %u messages", got);
+    got = glGetDebugMessageLog(8, (GLsizei)sizeof(log), sources, types, ids,
+                               severities, lengths, log);
+    DBG_EXPECT(got == 6 && ids[0] == 1 && lengths[0] == 2 &&
+               types[3] == GL_DEBUG_TYPE_PUSH_GROUP &&
+               types[4] == GL_DEBUG_TYPE_POP_GROUP && ids[5] == 6,
+               "log fetch: got=%u id0=%u len0=%d type3=0x%x type4=0x%x id5=%u",
+               got, ids[0], lengths[0], types[3], types[4], ids[5]);
+
+    glDebugMessageControl(GL_DONT_CARE, GL_DEBUG_TYPE_MARKER, GL_DONT_CARE, 1,
+                          &id1, GL_TRUE);
+    GLenum e_src_any = glGetError();
+    glDebugMessageControl(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_MARKER,
+                          GL_DEBUG_SEVERITY_HIGH, 1, &id1, GL_TRUE);
+    GLenum e_sev = glGetError();
+    glDebugMessageControl(0x1234, GL_DONT_CARE, GL_DONT_CARE, 0, NULL, GL_TRUE);
+    GLenum e_enum = glGetError();
+    glDebugMessageInsert(GL_DEBUG_SOURCE_API, GL_DEBUG_TYPE_MARKER, 1,
+                         GL_DEBUG_SEVERITY_HIGH, -1, "x");
+    GLenum e_ins_src = glGetError();
+    GLint max_len = 0;
+    glGetIntegerv(GL_MAX_DEBUG_MESSAGE_LENGTH, &max_len);
+    char *long_msg = (char *)malloc((size_t)max_len + 1u);
+    GLenum e_ins_len = GL_NO_ERROR;
+    if (long_msg) {
+        memset(long_msg, 'a', (size_t)max_len);
+        long_msg[max_len] = '\0';
+        glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_MARKER,
+                             1, GL_DEBUG_SEVERITY_HIGH, -1, long_msg);
+        e_ins_len = glGetError();
+        free(long_msg);
+    }
+    DBG_EXPECT(e_src_any == GL_INVALID_OPERATION &&
+               e_sev == GL_INVALID_OPERATION && e_enum == GL_INVALID_ENUM &&
+               e_ins_src == GL_INVALID_ENUM && e_ins_len == GL_INVALID_VALUE,
+               "errors: src_any=0x%x sev=0x%x enum=0x%x ins_src=0x%x "
+               "ins_len=0x%x", e_src_any, e_sev, e_enum, e_ins_src, e_ins_len);
+    DBG_EXPECT(debug_logged_count() == 0, "rejected calls logged %d",
+               debug_logged_count());
+
+    GLint max_logged = 0;
+    glGetIntegerv(GL_MAX_DEBUG_LOGGED_MESSAGES, &max_logged);
+    for (GLint i = 0; i < max_logged + 2; i++) {
+        debug_insert((GLuint)(100 + i), GL_DEBUG_SEVERITY_HIGH);
+    }
+    GLuint oldest = 0;
+    DBG_EXPECT(debug_logged_count() == max_logged &&
+               glGetDebugMessageLog(1, 0, NULL, NULL, &oldest, NULL, NULL,
+                                    NULL) == 1 && oldest == 100,
+               "full log: logged=%d max=%d oldest=%u", debug_logged_count(),
+               max_logged, oldest);
+    debug_drain_log();
+
+    int user_tag = 0;
+    g_debug_control_calls = 0;
+    glDebugMessageCallback(debug_control_callback, &user_tag);
+    void *cb = NULL, *user = NULL;
+    glGetPointerv(GL_DEBUG_CALLBACK_FUNCTION, &cb);
+    glGetPointerv(GL_DEBUG_CALLBACK_USER_PARAM, &user);
+    debug_insert(7, GL_DEBUG_SEVERITY_HIGH);
+    DBG_EXPECT(g_debug_control_calls == 1 && debug_logged_count() == 0 &&
+               cb == (void *)debug_control_callback && user == &user_tag,
+               "callback: calls=%d logged=%d cb_ok=%d user_ok=%d",
+               g_debug_control_calls, debug_logged_count(),
+               cb == (void *)debug_control_callback, user == &user_tag);
+    glDebugMessageCallback(NULL, NULL);
+
+    glDisable(GL_DEBUG_OUTPUT);
+    glDebugMessageInsert(GL_DEBUG_SOURCE_API, GL_DEBUG_TYPE_MARKER, 1,
+                         GL_DEBUG_SEVERITY_HIGH, -1, "x");
+    GLenum e_disabled = glGetError();
+    debug_insert(8, GL_DEBUG_SEVERITY_HIGH);
+    DBG_EXPECT(e_disabled == GL_NO_ERROR && debug_logged_count() == 0,
+               "DEBUG_OUTPUT off: err=0x%x logged=%d", e_disabled,
+               debug_logged_count());
+
+    glEnable(GL_DEBUG_OUTPUT);
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DONT_CARE, 0, NULL,
+                          GL_TRUE);
+    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_LOW, 0,
+                          NULL, GL_FALSE);
+    glDisable(GL_DEBUG_OUTPUT);
+    while (glGetError() != GL_NO_ERROR) { }
+#undef DBG_EXPECT
+    return fail;
+}
+
 /* GL 4.6 §10.2.1: every VertexAttrib* form sets the current generic value. */
 static int test_current_vertex_attrib_forms(unsigned char *pixels,
                                             const char *out_path)
@@ -18680,6 +18856,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("current_vertex_attrib_forms",
                     test_current_vertex_attrib_forms),
     SELF_CHECK_TEST("debug_group_stack", test_debug_group_stack),
+    SELF_CHECK_TEST("debug_message_control", test_debug_message_control),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),

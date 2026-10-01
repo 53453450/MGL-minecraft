@@ -490,6 +490,7 @@ static void test_debug_message_log(void)
     MGLsetCurrentContext(ctx);
     while (glGetError() != GL_NO_ERROR) {
     }
+    glEnable(GL_DEBUG_OUTPUT);
     glDebugMessageInsert(GL_DEBUG_SOURCE_APPLICATION, GL_DEBUG_TYPE_OTHER, 7,
                          GL_DEBUG_SEVERITY_NOTIFICATION, -1, "hello-mgl");
     GLenum src = 0, type = 0, sev = 0;
@@ -498,7 +499,7 @@ static void test_debug_message_log(void)
     char buf[64];
     GLuint n = glGetDebugMessageLog(1, (GLsizei)sizeof(buf), &src, &type, &id,
                                     &sev, &len, buf);
-    expect(n == 1 && id == 7 && strcmp(buf, "hello-mgl") == 0,
+    expect(n == 1 && id == 7 && len == 10 && strcmp(buf, "hello-mgl") == 0,
            "F17 DebugMessageInsert/GetDebugMessageLog round-trip");
     destroyGLMContext(ctx);
 }
