@@ -55,19 +55,6 @@ typedef struct GLMContextRec_t *GLMContext;
 
 @end
 
-uint32_t mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
-#else
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-uint32_t mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
-
-#ifdef __cplusplus
-}
-#endif
-
 #endif // #ifdef __OBJC__
 
 #include "mgl_platform_shell_result.h"

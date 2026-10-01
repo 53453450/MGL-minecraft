@@ -19,7 +19,7 @@
  * sides compile against:
  *
  *   - Consumers (GLFW) include it instead of hand-written declarations.
- *   - MGL includes it next to the definitions (glm_context.c) so a
+ *   - MGL includes it next to the definitions (glm_context.c, pixel_utils.c) so a
  *     signature change without updating this header fails to compile.
  *
  * GLenum / GLboolean / GLuint are intentionally NOT typedef'd here: pulling

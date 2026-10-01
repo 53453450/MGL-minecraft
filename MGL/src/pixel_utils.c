@@ -32,6 +32,7 @@
 
 #include "pixel_utils.h"
 #include "glm_context.h"
+#include "mgl_glfw_abi.h"
 
 // Legacy format defines not in core profile headers
 #ifndef GL_ALPHA

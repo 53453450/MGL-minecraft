@@ -19,7 +19,7 @@ fi
 SDKROOT=$(xcrun --show-sdk-path)
 export SDKROOT
 
-# GLFW keeps its own thin facades in glfw/src/{MGLContext,MGLRenderer}.h.
+# GLFW keeps its own thin facade in glfw/src/MGLContext.h.
 # This is the repository-local modified checkout; no git fetch/pull is run.
 cd glfw
 mkdir -p build
