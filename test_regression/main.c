@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 142
+#define MAX_TESTS 143
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18690,6 +18690,127 @@ static int test_rt_image_orientation(unsigned char *pixels, const char *out_path
     return fail ? 1 : 0;
 }
 
+/* Rendering into a rectangle texture or one slice of a 3D texture and then
+ * sampling it returns the rendered rows in GL order. */
+static int test_rt_rect_3d_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pgrad = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0); }\n");
+    GLuint prect = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2DRect s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy)); }\n");
+    GLuint p3d = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler3D s;\n"
+        "uniform int z;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec3(ivec2(gl_FragCoord.xy), z), 0); }\n");
+    if (!pgrad || !prect || !p3d) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint ttmp = 0;
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 2;
+
+    static const GLenum targets[2] = {GL_TEXTURE_RECTANGLE, GL_TEXTURE_3D};
+    const GLuint progs[2] = {prect, p3d};
+    static unsigned char up[16 * 16 * 4];
+    for (int y = 0; y < 16; y++)
+        memset(up + y * 16 * 4, 100 + y, 16 * 4);
+    int fail = 0;
+    for (int c = 0; c < 2; c++) {
+        GLuint tex = 0, fbo = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(targets[c], tex);
+        if (c == 0) {
+            glTexStorage2D(GL_TEXTURE_RECTANGLE, 1, GL_RGBA8, 16, 16);
+        } else {
+            /* Slice 0 is uploaded and never rendered. */
+            glTexStorage3D(GL_TEXTURE_3D, 1, GL_RGBA8, 16, 16, 2);
+            glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, 16, 16, 1, GL_RGBA,
+                            GL_UNSIGNED_BYTE, up);
+        }
+        glTexParameteri(targets[c], GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(targets[c], GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        if (c == 0)
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                   GL_TEXTURE_RECTANGLE, tex, 0);
+        else
+            glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                      tex, 0, 1);
+        glViewport(0, 0, 16, 16);
+        glUseProgram(pgrad);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        unsigned char rb[2][4] = {{0}};
+        glReadPixels(4, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rb[0]);
+        glReadPixels(4, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rb[1]);
+        static unsigned char img[16 * 16 * 2 * 4];
+        glBindTexture(targets[c], tex);
+        glGetTexImage(targets[c], 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+        /* The rendered image is slice 1 of the 3D texture. */
+        const unsigned char *rimg = img + (c == 1 ? 16 * 16 * 4 : 0);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+        glViewport(0, 0, REG_W, REG_H);
+        glUseProgram(progs[c]);
+        glUniform1i(glGetUniformLocation(progs[c], "s"), 0);
+        if (c == 1)
+            glUniform1i(glGetUniformLocation(p3d, "z"), 1);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char sb[2][4] = {{0}};
+        glReadPixels(4, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[0]);
+        glReadPixels(4, 13, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[1]);
+        if (sb[0][0] != 2 || sb[1][0] != 13 || rb[0][0] != 2 || rb[1][0] != 13 ||
+            rimg[(2 * 16 + 4) * 4] != 2 || rimg[(13 * 16 + 4) * 4] != 13) {
+            fprintf(stderr, "rt_rect_3d_orientation: %s rows 2/13 sample %u %u read %u %u tex %u %u\n",
+                    c == 0 ? "rect" : "3d", sb[0][0], sb[1][0], rb[0][0], rb[1][0],
+                    rimg[(2 * 16 + 4) * 4], rimg[(13 * 16 + 4) * 4]);
+            fail |= 1 << c;
+        }
+        if (c == 1) {
+            glUniform1i(glGetUniformLocation(p3d, "z"), 0);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glReadPixels(4, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[0]);
+            if (sb[0][0] != 102 || img[(2 * 16 + 4) * 4] != 102) {
+                fprintf(stderr, "rt_rect_3d_orientation: 3d slice 0 row 2 sample %u tex %u\n",
+                        sb[0][0], img[(2 * 16 + 4) * 4]);
+                fail |= 4;
+            }
+        }
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 32;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    glDeleteProgram(prect);
+    glDeleteProgram(p3d);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "rt_rect_3d_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* CopyImageSubData copies texels between GL coordinates (§18.3.3) whether
  * either side has been rendered to or not. */
 static int test_copy_image_sub_data_orientation(unsigned char *pixels,
@@ -21944,6 +22065,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_respecify_orientation", test_rt_respecify_orientation),
     SELF_CHECK_TEST("rt_image_orientation", test_rt_image_orientation),
     SELF_CHECK_TEST("copy_image_sub_data_orientation", test_copy_image_sub_data_orientation),
+    SELF_CHECK_TEST("rt_rect_3d_orientation", test_rt_rect_3d_orientation),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

@@ -53,7 +53,8 @@ int mglBlitTextureCanUseGLSampledRenderTargetCopy(Texture *tex, void *source)
         (sourceType != MGLTextureType2D &&
          sourceType != MGLTextureType2DArray &&
          sourceType != MGLTextureTypeCube &&
-         sourceType != MGLTextureTypeCubeArray) ||
+         sourceType != MGLTextureTypeCubeArray &&
+         sourceType != MGLTextureType3D) ||
         mglBlitSampledCopyTextureInfo(source).mipmap_level_count == 0u ||
         mglBlitSampledCopyTextureInfo(source).width == 0u ||
         mglBlitSampledCopyTextureInfo(source).height == 0u) {
@@ -191,7 +192,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         desc.pixel_format = mglBlitSampledCopyTextureInfo(source).pixel_format;
         desc.width = mglBlitSampledCopyTextureInfo(source).width;
         desc.height = mglBlitSampledCopyTextureInfo(source).height;
-        desc.depth = 1;
+        desc.depth = sourceInfo.texture_type == MGLTextureType3D ? sourceInfo.depth : 1u;
         desc.mipmap_level_count = copyLevelCount;
         desc.sample_count = 1;
         desc.array_length = sourceInfo.array_length ? sourceInfo.array_length : 1u;
@@ -275,9 +276,35 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
     uint32_t dirtyBefore = tex->mtl_gl_sampled_dirty_mip_mask;
     uint32_t copiedMask = 0u;
 
+    /* The copy kernels take texture2d and Metal has no 2D views of 3D
+     * textures: mirror 3D rows with the blit engine, all depth planes at once. */
+    const int rowBlit = sourceInfo.texture_type == MGLTextureType3D;
+    if (rowBlit) {
+        void *blit = mglRenderCreateBlitEncoderBorrowed(
+            cs ? cs->currentCommandBufferOwner : NULL);
+        if (!blit) {
+            return 0;
+        }
+        for (uint64_t lvl = 0u; lvl < mipLevels; lvl++) {
+            if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
+                continue;
+            }
+            const uint64_t mipW = sourceInfo.width >> lvl ? sourceInfo.width >> lvl : 1u;
+            const uint64_t mipH = sourceInfo.height >> lvl ? sourceInfo.height >> lvl : 1u;
+            const uint64_t mipD = sourceInfo.depth >> lvl ? sourceInfo.depth >> lvl : 1u;
+            for (uint64_t row = 0u; row < mipH; row++) {
+                (void)mglRenderBlitCopyTexture(blit, source, 0u, lvl, 0u, row, 0u,
+                                               mipW, 1u, mipD, destination, 0u, lvl,
+                                               0u, mipH - 1u - row, 0u);
+            }
+            copiedMask |= (uint32_t)1u << lvl;
+        }
+        (void)mglRenderEndBlitEncoder(blit);
+    }
+
     /* Prefer compute path: single MTLComputeCommandEncoder dispatches all dirty
      * mip levels, avoiding per-mip render-encoder creation overhead. */
-    int useComputePath =
+    int useComputePath = !rowBlit &&
         (mglBlitSampledCopyTextureInfo(destination).usage & MGLTextureUsageShaderWrite) != 0;
     void *computePipeline = NULL;
     if (useComputePath) {
@@ -373,7 +400,7 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         mglBlitSampledCopyReleaseViews(srcSlice, sliceViews, dstSlice, sliceViews);
     }
 
-    if (!useComputePath) {
+    if (!useComputePath && !rowBlit) {
         /* Render-path scaled blit is float-only; integer RTs must use
          * the uint/int compute kernels. */
         MGLTextureDataKind copyKind =
