@@ -925,6 +925,10 @@ verify-gl-api:
 	bash scripts/fetch_opengl_registry.sh
 	python3 scripts/verify_gl_api.py
 
+# A function name defined in more than one MGL/src file (e.g. a static copy).
+check-c-duplicates:
+	python3 scripts/check_c_duplicates.py
+
 # Static invariant audit of the C state machine (GLMState + command buffer +
 # batch cluster): MGLStateKey determinism, hot-copy region pinning, single
 # source for DIRTY_* masks, recorder-only batch_count mutation, dual-proxy
@@ -1203,6 +1207,7 @@ test-air:
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
 	$(MAKE) verify-gl-api
+	$(MAKE) check-c-duplicates
 	$(MAKE) test-state-invariants
 	$(MAKE) test-state-dataflow
 	$(MAKE) test-state-snapshot-share
@@ -1249,6 +1254,6 @@ test-all:
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-air-loader-cache test-frontends \
 	test-air test-all gtest test-regression-update verify-gl-api test-es-smoke \
 	test-state-invariants test-state-dataflow test-state-snapshot-share \
-	verify-toolchain check-glfw-selectors
+	verify-toolchain check-glfw-selectors check-c-duplicates
 
 -include $(deps)

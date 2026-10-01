@@ -1,0 +1,48 @@
+# Function names already defined in more than one MGL/src file.
+# See scripts/check_c_duplicates.py; remove a name once it is deduplicated.
+
+# AIR backend: emitStmt facade overload; scalarFromType static copy
+emitStmt
+scalarFromType
+
+# GLSL lexer and legacy-compat rewriter
+is_ident_char
+
+# Unrelated buffer constructors (Buffer object vs Metal index buffer)
+newBuffer
+
+# Static port helpers copied across the render-pass / texture ops files
+mglPdAttachmentTextureFor
+mglPdBackend
+mglPdClearDepthFor
+mglPdClearValuesFor
+mglPdColorTextureFor
+mglPdCreateTexture
+mglPdDepthTextureFor
+mglPdGeometryPassthroughLayerStride
+mglPdGetPersistentAttachmentState
+mglPdLoadActionFor
+mglPdMaxU64
+mglPdMinU64
+mglPdRenderTargetHeightFor
+mglPdRenderTargetSizeFor
+mglPdRenderTargetWidthFor
+mglPdSetPersistentActions
+mglPdSetPersistentAttachment
+mglPdSetPersistentDimensions
+mglPdSetPersistentStoreAction
+mglPdShouldTraceCall
+mglPdState
+mglPdStencilTextureFor
+mglPdStoreActionFor
+mglPdStubFSValueClass
+mglPdTextureBufferContents
+mglPdTextureGetBytes
+mglPdTextureInfo
+
+# mgl_renderer_entries.c / mgl_renderer_host.c
+mglRendererMakeClearColor
+mglRendererTextureFieldFormat
+mglRendererTextureFieldHeight
+mglRendererTextureFieldWidth
+mglRendererTextureInfo
