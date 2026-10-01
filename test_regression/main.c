@@ -15001,12 +15001,46 @@ cleanup:
 }
 
 
+/* CTS reference values at the std140 offsets our reflection reports
+ * (BlockA 160B: a@0, b.a@16, b.b[4]@64, b.c@128, c@144;
+ *  BlockB 224B: a@0, b.a@32, b.b.a@48, b.b.b[4]@96, b.b.c@160,
+ *               b.c@176, d@208). */
+/* Pack UBO blobs as raw uint32 words so int/uint/bvec fields get correct
+ * bit patterns (float[] breaks ivec2/uvec3/uint members). */
+static const uint32_t blockA_words[40] = {
+    0x40000000u, 0u, 0u, 0u,                           /* a @0        */
+    0u, 0x40c00000u, 0x40a00000u, 0u,                 /* b.a col0    */
+    0xC0c00000u, 0x40a00000u, 0x40a00000u, 0u,        /* b.a col1    */
+    0x41000000u, 0u, 0xC0000000u, 0u,                 /* b.a col2    */
+    0u, 2u, 0u, 0u,                                   /* b.b[0] @64  */
+    9u, 0xFFFFFFFFu, 0u, 0u,                          /* b.b[1] @80  */
+    0xFFFFFFFCu, 0xFFFFFFF7u, 0u, 0u,                 /* b.b[2] @96  */
+    6u, 2u, 0u, 0u,                                    /* b.b[3] @112 */
+    0xC1000000u, 0xC0000000u, 0x40400000u, 0x40E00000u, /* b.c       */
+    3u, 1u, 4u, 0u,                                   /* c uvec3     */
+};
+static const uint32_t blockB_words[56] = {
+    0x40400000u, 0xC0E00000u, 0u, 0u,                 /* a mat2 col0 */
+    0xC1000000u, 0xC0800000u, 0u, 0u,                 /* a mat2 col1 */
+    7u, 0u, 0u, 0u,                                    /* b.a @32     */
+    0x40A00000u, 0x3F800000u, 0x40000000u, 0u,        /* b.b.a col0  */
+    0xC0000000u, 0xC1100000u, 0xC1000000u, 0u,        /* b.b.a col1  */
+    0x41000000u, 0u, 0x3F800000u, 0u,                  /* b.b.a col2  */
+    0xFFFFFFF9u, 4u, 0u, 0u,                          /* b.b.b[0]@96 */
+    6u, 1u, 0u, 0u,                                    /* b.b.b[1]@112*/
+    0xFFFFFFFCu, 4u, 0u, 0u,                          /* b.b.b[2]@128*/
+    9u, 0xFFFFFFFBu, 0u, 0u,                          /* b.b.b[3]@144*/
+    0xC0400000u, 0xC0A00000u, 0x41100000u, 0x40000000u, /* b.b.c     */
+    0u, 0x3F800000u, 0x3F800000u, 0u,                 /* b.c @176    */
+    0u, 0u, 0u, 0u,                                    /* d @208      */
+    0u, 0u, 0u, 0u,                                    /* pad to 224B */
+};
+
 /* Minimal in-renderer repro for the multi-UBO + helper-function PSO crash
  * (MTLCompilerService XPC interruption -> black frame).  Embeds the exact
  * CTS-generated shader pair from
- * KHR-GL46.shaders.uniform_block.multi_nested_struct.single_buffer.std140_both.
- * The PSO creation is the signal: pre-fix the frame is black (pipeline fell
- * back), post-fix the fragment writes red = 1. */
+ * KHR-GL46.shaders.uniform_block.multi_nested_struct.single_buffer.std140_both,
+ * fed with the CTS reference data through two distinct block bindings. */
 static int test_air_ubo_multi_block_pso(unsigned char *pixels,
                                         const char *out_path)
 {
@@ -15182,17 +15216,36 @@ static int test_air_ubo_multi_block_pso(unsigned char *pixels,
     }
     glUseProgram(prog);
 
-    /* Two distinct uniform blocks (BlockA 160B, BlockB 224B per reflection).
-     * Data content is irrelevant: the fragment writes red = 1.0 on every
-     * covered pixel, so black means the pipeline never ran. */
+    int result = 0;
+    GLuint idx_a = glGetUniformBlockIndex(prog, "BlockA");
+    GLuint idx_b = glGetUniformBlockIndex(prog, "BlockB");
+    if (idx_a == GL_INVALID_INDEX || idx_b == GL_INVALID_INDEX) {
+        fprintf(stderr, "air_ubo_multi_block_pso: block index missing\n");
+        glDeleteProgram(prog);
+        return 1;
+    }
+    /* GL 4.6 §7.6.2: without a binding qualifier the initial binding is 0. */
+    GLint init_a = -1, init_b = -1;
+    glGetActiveUniformBlockiv(prog, idx_a, GL_UNIFORM_BLOCK_BINDING, &init_a);
+    glGetActiveUniformBlockiv(prog, idx_b, GL_UNIFORM_BLOCK_BINDING, &init_b);
+    if (init_a != 0 || init_b != 0) {
+        fprintf(stderr,
+                "air_ubo_multi_block_pso: initial bindings A=%d B=%d, want 0/0\n",
+                init_a, init_b);
+        result = 1;
+    }
+    glUniformBlockBinding(prog, idx_a, 0);
+    glUniformBlockBinding(prog, idx_b, 1);
+
     GLuint ubos[2];
     glGenBuffers(2, ubos);
-    static const float zeroes[64] = {0};
     glBindBuffer(GL_UNIFORM_BUFFER, ubos[0]);
-    glBufferData(GL_UNIFORM_BUFFER, 160, zeroes, GL_STATIC_DRAW);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockA_words), blockA_words,
+                 GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubos[0]);
     glBindBuffer(GL_UNIFORM_BUFFER, ubos[1]);
-    glBufferData(GL_UNIFORM_BUFFER, 224, zeroes, GL_STATIC_DRAW);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(blockB_words), blockB_words,
+                 GL_STATIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 1, ubos[1]);
 
     static const float verts[] = { -1.0f, -1.0f,  1.0f, -1.0f,  0.0f, 1.0f };
@@ -15208,13 +15261,12 @@ static int test_air_ubo_multi_block_pso(unsigned char *pixels,
     glFinish();
     glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
 
-    /* Central pixel must have red = 255 (the FS writes vec4(1.0, ...)). */
-    int result = 0;
+    /* r: pipeline ran; g: VS compares passed; b: FS compares passed. */
     const unsigned char *px = pixels + (REG_H / 2 * REG_W + REG_W / 2) * 4;
-    if (px[0] < 128) {
+    if (px[0] != 255 || px[1] != 255 || px[2] != 255) {
         fprintf(stderr,
-                "air_ubo_multi_block_pso: central pixel r=%u g=%u b=%u "
-                "(pipeline did not run)\n",
+                "air_ubo_multi_block_pso: central pixel r=%u g=%u b=%u, "
+                "want 255/255/255\n",
                 px[0], px[1], px[2]);
         result = 1;
     }
@@ -16260,42 +16312,13 @@ static int test_air_ubo_pso_bisect(unsigned char *pixels,
         }
     }
 
+    GLuint idx_a = glGetUniformBlockIndex(prog, "BlockA");
+    GLuint idx_b = glGetUniformBlockIndex(prog, "BlockB");
+    if (idx_a != GL_INVALID_INDEX) glUniformBlockBinding(prog, idx_a, 0);
+    if (idx_b != GL_INVALID_INDEX) glUniformBlockBinding(prog, idx_b, 1);
+
     GLuint ubos[2];
     glGenBuffers(2, ubos);
-    /* CTS reference values at the std140 offsets our reflection reports
-     * (BlockA 160B: a@0, b.a@16, b.b[4]@64, b.c@128, c@144;
-     *  BlockB 224B: a@0, b.a@32, b.b.a@48, b.b.b[4]@96, b.b.c@160,
-     *               b.c@176, d@208). */
-    /* Pack UBO blobs as raw uint32 words so int/uint/bvec fields get correct
-     * bit patterns (float[] breaks ivec2/uvec3/uint members). */
-    static const uint32_t blockA_words[40] = {
-        0x40000000u, 0u, 0u, 0u,                           /* a @0        */
-        0u, 0x40c00000u, 0x40a00000u, 0u,                 /* b.a col0    */
-        0xC0c00000u, 0x40a00000u, 0x40a00000u, 0u,        /* b.a col1    */
-        0x41000000u, 0u, 0xC0000000u, 0u,                 /* b.a col2    */
-        0u, 2u, 0u, 0u,                                   /* b.b[0] @64  */
-        9u, 0xFFFFFFFFu, 0u, 0u,                          /* b.b[1] @80  */
-        0xFFFFFFFCu, 0xFFFFFFF7u, 0u, 0u,                 /* b.b[2] @96  */
-        6u, 2u, 0u, 0u,                                    /* b.b[3] @112 */
-        0xC1000000u, 0xC0000000u, 0x40400000u, 0x40E00000u, /* b.c       */
-        3u, 1u, 4u, 0u,                                   /* c uvec3     */
-    };
-    static const uint32_t blockB_words[56] = {
-        0x40400000u, 0xC0E00000u, 0u, 0u,                 /* a mat2 col0 */
-        0xC1000000u, 0xC0800000u, 0u, 0u,                 /* a mat2 col1 */
-        7u, 0u, 0u, 0u,                                    /* b.a @32     */
-        0x40A00000u, 0x3F800000u, 0x40000000u, 0u,        /* b.b.a col0  */
-        0xC0000000u, 0xC1100000u, 0xC1000000u, 0u,        /* b.b.a col1  */
-        0x41000000u, 0u, 0x3F800000u, 0u,                  /* b.b.a col2  */
-        0xFFFFFFF9u, 4u, 0u, 0u,                          /* b.b.b[0]@96 */
-        6u, 1u, 0u, 0u,                                    /* b.b.b[1]@112*/
-        0xFFFFFFFCu, 4u, 0u, 0u,                          /* b.b.b[2]@128*/
-        9u, 0xFFFFFFFBu, 0u, 0u,                          /* b.b.b[3]@144*/
-        0xC0400000u, 0xC0A00000u, 0x41100000u, 0x40000000u, /* b.b.c     */
-        0u, 0x3F800000u, 0x3F800000u, 0u,                 /* b.c @176    */
-        0u, 0u, 0u, 0u,                                    /* d @208      */
-        0u, 0u, 0u, 0u,                                    /* pad to 224B */
-    };
     glBindBuffer(GL_UNIFORM_BUFFER, ubos[0]);
     glBufferData(GL_UNIFORM_BUFFER, sizeof(blockA_words), blockA_words,
                  GL_STATIC_DRAW);

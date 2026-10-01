@@ -943,8 +943,6 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         mglAirReflectDestroy(lists);
         return -1;
     }
-    uint32_t gl_ubo_binding = 0;
-    uint32_t gl_ssbo_binding = 0;
     uint32_t ac_binding = 0;
     uint32_t ac_end = 0;
     if (air_u32_add(ubo_binding, uboSlotCount, &ac_binding) != 0 ||
@@ -1196,16 +1194,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         return -1;
                     }
                 }
-                GLuint gl_block_binding = s->binding != UINT32_MAX
-                    ? s->binding : gl_ubo_binding;
-                last->gl_binding = gl_block_binding;
-                if (last->ubo_array_bindings) {
+                /* GL 4.6 §7.6.2: initial binding is the layout qualifier,
+                 * or zero otherwise; only a qualified array advances. */
+                bool has_binding = s->binding != UINT32_MAX;
+                last->gl_binding = has_binding ? s->binding : 0u;
+                if (last->ubo_array_bindings && has_binding) {
                     for (GLuint element = 0; element < block_count; element++) {
                         last->ubo_array_bindings[element] =
-                            gl_block_binding + element;
+                            s->binding + element;
                     }
                 }
-                gl_ubo_binding += block_count;
                 ubo_binding += block_count;
                 continue;
             }
@@ -1307,21 +1305,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                     return -1;
                 }
             }
-            GLuint gl_block_binding = s->binding != UINT32_MAX
-                ? s->binding : gl_ssbo_binding;
-            ssbo_last->gl_binding = gl_block_binding;
-            if (ssbo_last->ubo_array_bindings) {
+            /* GL 4.6 §7.8: reset to the layout qualifier, or zero
+             * otherwise.  The Metal slot advances independently. */
+            bool has_binding = s->binding != UINT32_MAX;
+            ssbo_last->gl_binding = has_binding ? s->binding : 0u;
+            if (ssbo_last->ubo_array_bindings && has_binding) {
                 for (GLuint element = 0; element < block_count; element++) {
                     ssbo_last->ubo_array_bindings[element] =
-                        gl_block_binding + element;
+                        s->binding + element;
                 }
             }
-            /* Metal slot advances independently of the GL binding point.
-             * Defaulting gl_binding to the Metal slot (hasPlain+…) made
-             * anonymous `layout(std430) buffer B {…}` land on binding 1
-             * whenever plain uniforms packed slot 0, so BindBufferBase(0)
-             * missed the shader (CTS advanced-matrix-cs). */
-            gl_ssbo_binding += block_count;
             ssbo_binding += block_count;
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
