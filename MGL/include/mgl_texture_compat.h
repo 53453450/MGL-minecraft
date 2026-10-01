@@ -167,6 +167,8 @@ void mglTextureViewFamilyWritten(Texture *writer);
 GLenum mglTextureViewClass(GLenum internalformat);
 /* IMMUTABLE_LEVELS and TEXTURE_VIEW_* queries; false for other pnames. */
 bool mglTextureViewParameter(const Texture *tex, GLenum pname, GLint *out);
+/* §8.17: whether `tex` is complete when sampled with these filters. */
+bool mglTextureSamplingComplete(const Texture *tex, GLenum min_filter, GLenum mag_filter);
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex);
 bool mglTextureUploadNeedsSingleChannelSwizzleBake(Texture *tex);
 bool mglTextureUploadNeedsIntegerMultiChannelSwizzleBake(Texture *tex);

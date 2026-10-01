@@ -1329,6 +1329,15 @@ bool mglSampledBindTexturesForStage(
         Texture *ptr = mglTextureForSampledResource(
             ctx, sampled_resource, program_binding, shader_stage,
             (lookup_type ? lookup_type : expected_type), texture_unit);
+        /* §11.1.3.5: an incomplete texture samples as (0,0,0,1), which is
+         * what the missing-texture fallback below holds. */
+        if (ptr && texture_unit < TEXTURE_UNITS) {
+            const Sampler *unit_sampler = mglSsState(&areas)->texture_samplers[texture_unit];
+            const TextureParameter *sp = unit_sampler ? &unit_sampler->params : &ptr->params;
+            if (!mglTextureSamplingComplete(ptr, sp->min_filter, sp->mag_filter)) {
+                ptr = NULL;
+            }
+        }
         void *texture = NULL;
         void *sampler = is_fragment ? NULL : default_sampler;
         void *direct_texture_for_trace = NULL;

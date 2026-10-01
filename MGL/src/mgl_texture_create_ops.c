@@ -195,6 +195,11 @@ int mglTextureCheckCompleteness(void *tex, uint32_t tex_type,
             check_end =
                 (texture->mipmap_levels > 0u) ? texture->mipmap_levels - 1u : 0u;
         }
+        /* Storage only needs the levels it allocates; whether the chain is
+         * complete enough to sample is decided per draw (§8.17). */
+        if (check_end >= effective_mipmap_levels) {
+            check_end = effective_mipmap_levels - 1u;
+        }
         if (check_end < check_start) check_end = check_start;
 
         for (int face = 0; face < (int)completeness_check_faces; face++) {

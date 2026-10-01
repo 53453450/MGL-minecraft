@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 134
+#define MAX_TESTS 135
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17982,6 +17982,183 @@ static int test_rt_partial_render_orientation(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* §8.17: completeness governs sampling only.  A mipmap-incomplete texture is
+ * still a renderable attachment, samples (0,0,0,1) under a mipmap min filter
+ * and its base level under NEAREST. */
+static int test_incomplete_texture_storage(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+    while (glGetError() != GL_NO_ERROR) { }
+
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint psample = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(s, vec2(0.5)); }\n");
+    if (!psample) return 3;
+
+    GLuint vao = 0, tex = 0, ttmp = 0, frt = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 3;
+
+    unsigned char l0[16 * 16 * 4], l1[8 * 8 * 4], got[16 * 16 * 4], b[4];
+    memset(l0, 100, sizeof l0);
+    memset(l1, 50, sizeof l1);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, l0);
+    glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 8, 8, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, l1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+
+    glGenFramebuffers(1, &frt);
+    glBindFramebuffer(GL_FRAMEBUFFER, frt);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        fail |= 1;
+    glViewport(0, 0, 16, 16);
+    glClearColor(30.0f / 255.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, frt);
+    glReadPixels(3, 3, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 30) {
+        fprintf(stderr, "incomplete_texture_storage: ReadPixels got %u\n", b[0]);
+        fail |= 2;
+    }
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, got);
+    if (got[0] != 30) {
+        fprintf(stderr, "incomplete_texture_storage: GetTexImage got %u\n", got[0]);
+        fail |= 4;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(psample);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(glGetUniformLocation(psample, "s"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fsample);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 30 || b[3] != 255) {
+        fprintf(stderr, "incomplete_texture_storage: NEAREST sample got %u,%u\n",
+                b[0], b[3]);
+        fail |= 8;
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 0 || b[1] != 0 || b[2] != 0 || b[3] != 255) {
+        fprintf(stderr, "incomplete_texture_storage: incomplete sample got %u,%u,%u,%u\n",
+                b[0], b[1], b[2], b[3]);
+        fail |= 16;
+    }
+
+    glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, got);
+    if (got[0] != 50) {
+        fprintf(stderr, "incomplete_texture_storage: level 1 got %u\n", got[0]);
+        fail |= 32;
+    }
+
+    /* Integer textures need NEAREST filters; LINEAR magnification makes them
+     * incomplete. */
+    GLuint puint = link_program(vs,
+        "#version 330 core\n"
+        "uniform usampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(texture(s, vec2(0.5))) / 255.0; }\n");
+    GLuint pcube = link_program(vs,
+        "#version 330 core\n"
+        "uniform samplerCube s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(s, vec3(1.0, 0.0, 0.0)); }\n");
+    if (!puint || !pcube) return 3;
+    GLuint tuint = 0, tcube = 0;
+    const GLuint seven[4] = {7, 7, 7, 7};
+    glGenTextures(1, &tuint);
+    glBindTexture(GL_TEXTURE_2D, tuint);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32UI, 1, 1, 0, GL_RGBA_INTEGER,
+                 GL_UNSIGNED_INT, seven);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glUseProgram(puint);
+    glUniform1i(glGetUniformLocation(puint, "s"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 0 || b[3] != 1) {
+        fprintf(stderr, "incomplete_texture_storage: LINEAR uint got %u,%u\n", b[0], b[3]);
+        fail |= 128;
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 7 || b[3] != 7) {
+        fprintf(stderr, "incomplete_texture_storage: NEAREST uint got %u,%u\n", b[0], b[3]);
+        fail |= 256;
+    }
+
+    /* A cube map with an undefined face is not cube complete. */
+    unsigned char texel[4] = {90, 0, 0, 255};
+    glGenTextures(1, &tcube);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tcube);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    for (int f = 0; f < 5; f++) {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGBA8, 1, 1, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, texel);
+    }
+    glUseProgram(pcube);
+    glUniform1i(glGetUniformLocation(pcube, "s"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 0 || b[3] != 255) {
+        fprintf(stderr, "incomplete_texture_storage: 5-face cube got %u,%u\n", b[0], b[3]);
+        fail |= 512;
+    }
+    glTexImage2D(GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, 0, GL_RGBA8, 1, 1, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, texel);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+    if (b[0] != 90) {
+        fprintf(stderr, "incomplete_texture_storage: 6-face cube got %u\n", b[0]);
+        fail |= 1024;
+    }
+    glDeleteTextures(1, &tuint);
+    glDeleteTextures(1, &tcube);
+    glDeleteProgram(puint);
+    glDeleteProgram(pcube);
+
+    if (glGetError() != GL_NO_ERROR) fail |= 64;
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &frt);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteTextures(1, &tex);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(psample);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "incomplete_texture_storage: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -20749,6 +20926,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_layer_orientation", test_rt_layer_orientation),
     SELF_CHECK_TEST("get_tex_image_after_draw", test_get_tex_image_after_draw),
     SELF_CHECK_TEST("rt_partial_render_orientation", test_rt_partial_render_orientation),
+    SELF_CHECK_TEST("incomplete_texture_storage", test_incomplete_texture_storage),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

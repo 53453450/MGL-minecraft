@@ -6465,6 +6465,105 @@ bool mglTextureViewParameter(const Texture *tex, GLenum pname, GLint *out)
     return true;
 }
 
+static bool mglTextureFormatSamplesStencil(const Texture *tex)
+{
+    switch (tex->internalformat) {
+        case GL_STENCIL_INDEX:
+        case GL_STENCIL_INDEX1:
+        case GL_STENCIL_INDEX4:
+        case GL_STENCIL_INDEX8:
+        case GL_STENCIL_INDEX16:
+            return true;
+        case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return tex->params.depth_stencil_mode == GL_STENCIL_INDEX;
+        default:
+            return false;
+    }
+}
+
+/* §8.17 completeness of `tex` when sampled with the given filters. */
+bool mglTextureSamplingComplete(const Texture *tex, GLenum min_filter, GLenum mag_filter)
+{
+    switch (tex->target) {
+        case GL_TEXTURE_BUFFER:
+        case GL_TEXTURE_2D_MULTISAMPLE:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return true;
+        default:
+            break;
+    }
+
+    bool nearest = mag_filter == GL_NEAREST &&
+                   (min_filter == GL_NEAREST || min_filter == GL_NEAREST_MIPMAP_NEAREST);
+    if (!nearest && (mglInternalFormatIsInteger(tex->internalformat) ||
+                     mglTextureFormatSamplesStencil(tex))) {
+        return false;
+    }
+    /* §8.14.3: immutable levels clamp base/max into the allocated chain. */
+    if (tex->immutable_storage) {
+        return tex->num_levels > 0u;
+    }
+
+    GLuint base = tex->params.base_level;
+    GLuint faces = tex->target == GL_TEXTURE_CUBE_MAP ? _CUBE_MAP_MAX_FACE : 1u;
+    bool square = tex->target == GL_TEXTURE_CUBE_MAP ||
+                  tex->target == GL_TEXTURE_CUBE_MAP_ARRAY;
+    if (base >= tex->num_levels) {
+        return false;
+    }
+    for (GLuint f = 0; f < faces; f++) {
+        if (!tex->faces[f].levels) {
+            return false;
+        }
+    }
+    const TextureLevel *b0 = &tex->faces[0].levels[base];
+    for (GLuint f = 0; f < faces; f++) {
+        const TextureLevel *lvl = &tex->faces[f].levels[base];
+        if (!lvl->complete || lvl->width == 0u || lvl->height == 0u || lvl->depth == 0u ||
+            lvl->width != b0->width || lvl->height != b0->height ||
+            (square && lvl->width != lvl->height)) {
+            return false;
+        }
+    }
+    if (min_filter == GL_NEAREST || min_filter == GL_LINEAR) {
+        return true;
+    }
+
+    GLuint max_level = tex->params.max_level;
+    if (base > max_level) {
+        return false;
+    }
+    GLuint maxsize = b0->width;
+    if (tex->target != GL_TEXTURE_1D && tex->target != GL_TEXTURE_1D_ARRAY) {
+        maxsize = MAX(maxsize, b0->height);
+    }
+    if (tex->target == GL_TEXTURE_3D) {
+        maxsize = MAX(maxsize, b0->depth);
+    }
+    GLuint q = base;
+    while (maxsize > 1u && q < max_level) {
+        maxsize >>= 1;
+        q++;
+    }
+    for (GLuint k = base + 1u; k <= q; k++) {
+        if (k >= tex->num_levels) {
+            return false;
+        }
+        GLuint w = 1u, h = 1u, d = 1u;
+        mglTextureTargetLevelDimensions(tex->target, b0->width, b0->height, b0->depth,
+                                        k - base, &w, &h, &d);
+        for (GLuint f = 0; f < faces; f++) {
+            const TextureLevel *lvl = &tex->faces[f].levels[k];
+            if (!lvl->complete || lvl->width != w || lvl->height != h || lvl->depth != d) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 void mglTextureViewFamilyWritten(Texture *writer)
 {
     Texture *root = writer ? (writer->view_root ? writer->view_root : writer) : NULL;

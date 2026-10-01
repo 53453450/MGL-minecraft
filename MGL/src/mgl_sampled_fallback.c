@@ -385,7 +385,11 @@ void *mglSampledFallbackTextureForExpectedType(void *renderer,
         return NULL;
     }
 
-    uint32_t pixel = data_kind == MGLTextureDataKindDepth ? 0u : 0xff000000u;
+    /* §11.1.3.5: (0,0,0,1), with alpha 1 rather than 255 for integer kinds. */
+    uint32_t pixel = data_kind == MGLTextureDataKindDepth ? 0u
+                     : (data_kind == MGLTextureDataKindUint ||
+                        data_kind == MGLTextureDataKindSint) ? 0x01000000u
+                     : 0xff000000u;
     MGLRegionValue region = (texture_type == MGLTextureType1D ||
                              texture_type == MGLTextureType1DArray)
                                 ? mglTextureRegion1D(0, 1)
