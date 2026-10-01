@@ -18808,6 +18808,28 @@ static int test_depth_stencil_rt_orientation(unsigned char *pixels,
                     dsimg[13 * 16 + 2].d, dsimg[13 * 16 + 2].s & 0xff);
             fail |= 16 << c;
         }
+        glUseProgram(pdepth);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 8, 16, 8);
+        glClearStencil(15);
+        glStencilMask(0x05);
+        glClear(GL_STENCIL_BUFFER_BIT);
+        glStencilMask(0xff);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glScissor(0, 12, 16, 4);
+        glClearStencil(9);
+        glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+        unsigned char sc[3] = {0};
+        glReadPixels(2, 2, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &sc[0]);
+        glReadPixels(2, 9, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &sc[1]);
+        glReadPixels(2, 13, 1, 1, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE, &sc[2]);
+        if (sc[0] != 1 || sc[1] != 7 || sc[2] != 9) {
+            fprintf(stderr, "depth_stencil_rt_orientation: %s scissored stencil clear %u %u %u\n",
+                    names[c], sc[0], sc[1], sc[2]);
+            fail |= 2048 << c;
+        }
         glClearStencil(5);
         glClear(GL_STENCIL_BUFFER_BIT);
         glClearStencil(0);

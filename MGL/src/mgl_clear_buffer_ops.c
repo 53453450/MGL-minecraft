@@ -215,6 +215,22 @@ void *mglRendererNewDrawBufferWithCustomSize(uint32_t pixelFormat,
 }
 
 /* -mtlClearBuffer:type:mask: */
+static int mglPdPassAttachmentIs(void *renderPassStateOwner, uint32_t kind,
+                                 void *texture,
+                                 MGLMetalAttachmentSubresource subresource)
+{
+    void *rpTexture = mglRenderGetRenderPassAttachmentTextureOwner(
+        renderPassStateOwner, kind, 0);
+    if (!texture) {
+        return rpTexture == NULL;
+    }
+    uint64_t rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
+    mglRenderGetRenderPassAttachmentSubresourceOwner(
+        renderPassStateOwner, kind, 0, &rpLevel, &rpSlice, &rpDepthPlane);
+    return rpTexture == texture && rpLevel == subresource.level &&
+           rpSlice == subresource.slice;
+}
+
 void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
                                unsigned int type, unsigned int mask)
 {
@@ -279,10 +295,18 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     void *depthTexture = NULL;
     MGLMetalAttachmentSubresource colorSubresource = {0u, 0u, 0u};
     MGLMetalAttachmentSubresource depthSubresource = {0u, 0u, 0u};
+    Texture *stencilTexObj = NULL;
+    FBOAttachment *stencilAttachment = NULL;
+    void *stencilTexture = NULL;
+    MGLMetalAttachmentSubresource stencilSubresource = {0u, 0u, 0u};
 
     int wantsColor = mglRenderClearMaskHasColor((uint32_t)mask) != 0;
     int wantsDepth = mglRenderClearMaskHasDepth((uint32_t)mask) != 0 &&
                      glState->var.depth_writemask;
+    /* Clears use the front stencil write mask (§17.4.2). */
+    const uint32_t stencilWriteMask = glState->var.stencil_writemask & 0xffu;
+    int wantsStencil = mglRenderClearMaskHasStencil((uint32_t)mask) != 0 &&
+                       stencilWriteMask != 0u;
 
     if (wantsColor) {
         const int colorMaskAllowsWrite =
@@ -353,6 +377,31 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
         if (wantsDepth && !depthTexture) {
             wantsDepth = 0;
         }
+
+        if (wantsStencil && fbo->stencil.texture) {
+            stencilAttachment = &fbo->stencil;
+            stencilTexObj =
+                mglRendererAttachmentTextureFor(glm_ctx, stencilAttachment);
+            if (stencilTexObj) {
+                stencilTexObj->is_render_target = 1;
+                if (mglRendererBindMTLTexture(renderer, stencilTexObj) &&
+                    stencilTexObj->mtl_data) {
+                    stencilTexture = stencilTexObj->mtl_data;
+                    stencilSubresource =
+                        mglMetalAttachmentSubresourceForAttachment(
+                            stencilAttachment);
+                }
+            }
+        }
+        /* Draw passes attach packed formats as depth too; matching that lets
+         * the clear reuse the current encoder. Depth writes stay off unless
+         * depth is cleared. */
+        if (wantsStencil && stencilTexture && !depthTexture &&
+            mglRenderPixelFormatIsPackedDepthStencil(
+                mglPdTextureInfo(stencilTexture).pixel_format)) {
+            depthTexture = stencilTexture;
+            depthSubresource = stencilSubresource;
+        }
     } else {
         const GLuint drawBufferIndex =
             mglDefaultDrawBufferIndexForGL(glState->draw_buffer);
@@ -410,13 +459,18 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
         }
     }
 
-    if (!wantsColor && !wantsDepth) {
+    if (!stencilTexture) {
+        wantsStencil = 0;
+    }
+    if (!wantsColor && !wantsDepth && !wantsStencil) {
         return;
     }
 
     uint64_t passWidth = 0u;
     uint64_t passHeight = 0u;
-    void *sizeTexture = colorTexture ? colorTexture : depthTexture;
+    void *sizeTexture = colorTexture ? colorTexture
+                                     : (depthTexture ? depthTexture
+                                                     : stencilTexture);
     if (sizeTexture) {
         passWidth = mglPdTextureInfo(sizeTexture).width;
         passHeight = mglPdTextureInfo(sizeTexture).height;
@@ -453,15 +507,46 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     const uint32_t depthFormat = depthTexture
                                      ? mglPdTextureInfo(depthTexture).pixel_format
                                      : MGL_PD_PIXEL_FORMAT_INVALID;
+    const uint32_t stencilFormat =
+        wantsStencil ? mglPdTextureInfo(stencilTexture).pixel_format
+                     : MGL_PD_PIXEL_FORMAT_INVALID;
     void *pipeline = mglBlitClearRectPipeline(renderer, colorFormat, depthFormat,
-                                              wantsColor, wantsDepth);
+                                              stencilFormat, wantsColor,
+                                              wantsDepth);
     if (!pipeline) {
         fprintf(stderr,
-                "MGL ERROR: scissored clear missing pipeline color=%lu depth=%lu wantsColor=%d wantsDepth=%d\n",
+                "MGL ERROR: scissored clear missing pipeline color=%lu depth=%lu stencil=%lu wantsColor=%d wantsDepth=%d\n",
                 (unsigned long)colorFormat, (unsigned long)depthFormat,
-                wantsColor ? 1 : 0, wantsDepth ? 1 : 0);
+                (unsigned long)stencilFormat, wantsColor ? 1 : 0,
+                wantsDepth ? 1 : 0);
         return;
     }
+
+    void *depthStencilState =
+        wantsDepth ? mglBlitClearRectDepthState(renderer) : NULL;
+    if (wantsStencil) {
+        MGLRenderStencilDescriptorState stencilDesc = {0};
+        stencilDesc.present = 1u;
+        stencilDesc.compare_function = MGLCompareFunctionAlways;
+        stencilDesc.read_mask = 0xffu;
+        stencilDesc.write_mask = stencilWriteMask;
+        uint32_t replace = 0u;
+        (void)mglRenderStencilOpFromGL(GL_REPLACE, &replace);
+        stencilDesc.stencil_failure_operation = replace;
+        stencilDesc.depth_failure_operation = replace;
+        stencilDesc.depth_stencil_pass_operation = replace;
+        MGLRenderDepthStencilDescriptorState dsDesc = {0};
+        dsDesc.depth_compare_function = MGLCompareFunctionAlways;
+        dsDesc.depth_write_enabled = wantsDepth ? 1u : 0u;
+        dsDesc.front = stencilDesc;
+        dsDesc.back = stencilDesc;
+        depthStencilState = NULL;
+        if (areas.pipeline_cache_depth_stencil_state_for_value_state) {
+            areas.pipeline_cache_depth_stencil_state_for_value_state(
+                areas.pipeline_cache_object, &dsDesc, &depthStencilState);
+        }
+    }
+    const uint32_t stencilClearValue = glState->var.stencil_clear_value & 0xffu;
 
     MGLPdClearRectParams params;
     params.color = (vector_float4){
@@ -490,8 +575,9 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
      * Conditions: an encoder is active, the render pass matches the current FBO,
      * no visibility query is active (which would require an encoder rebuild to
      * attach the visibility buffer), and the render pass's color attachment 0 /
-     * depth attachment textures match the ones we resolved from the FBO.  When
-     * any condition fails, fall back to the original endRenderEncoding +
+     * depth / stencil attachments are exactly the ones the clear pipeline
+     * declares (Metal rejects a pipeline whose formats differ from the pass).
+     * When any condition fails, fall back to the original endRenderEncoding +
      * new-encoder path. */
     int canReuseCurrentEncoder = 0;
     uint32_t sampleQueryActive = 0;
@@ -503,35 +589,18 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
         mglRenderPassMatchesCurrentFramebuffer(renderer) &&
         !sampleQueryActive) {
         if (commandState->renderPassStateOwner) {
-            int colorMatches = !wantsColor;
-            if (wantsColor) {
-                void *rpColor0 = mglRenderGetRenderPassAttachmentTextureOwner(
-                    commandState->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0);
-                uint64_t rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
-                mglRenderGetRenderPassAttachmentSubresourceOwner(
-                    commandState->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR, 0, &rpLevel,
-                    &rpSlice, &rpDepthPlane);
-                colorMatches = (rpColor0 == colorTexture &&
-                                rpLevel == colorSubresource.level &&
-                                rpSlice == colorSubresource.slice);
-            }
-            int depthMatches = !wantsDepth;
-            if (wantsDepth) {
-                void *rpDepth = mglRenderGetRenderPassAttachmentTextureOwner(
-                    commandState->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0);
-                uint64_t rpLevel = 0u, rpSlice = 0u, rpDepthPlane = 0u;
-                mglRenderGetRenderPassAttachmentSubresourceOwner(
-                    commandState->renderPassStateOwner,
-                    MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH, 0, &rpLevel,
-                    &rpSlice, &rpDepthPlane);
-                depthMatches = (rpDepth == depthTexture &&
-                                rpLevel == depthSubresource.level &&
-                                rpSlice == depthSubresource.slice);
-            }
-            canReuseCurrentEncoder = colorMatches && depthMatches;
+            canReuseCurrentEncoder =
+                mglPdPassAttachmentIs(commandState->renderPassStateOwner,
+                                      MGL_RENDER_RENDER_PASS_ATTACHMENT_COLOR,
+                                      wantsColor ? colorTexture : NULL,
+                                      colorSubresource) &&
+                mglPdPassAttachmentIs(commandState->renderPassStateOwner,
+                                      MGL_RENDER_RENDER_PASS_ATTACHMENT_DEPTH,
+                                      depthTexture, depthSubresource) &&
+                mglPdPassAttachmentIs(commandState->renderPassStateOwner,
+                                      MGL_RENDER_RENDER_PASS_ATTACHMENT_STENCIL,
+                                      wantsStencil ? stencilTexture : NULL,
+                                      stencilSubresource);
         }
     }
 
@@ -551,13 +620,16 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
         mglRenderSetRenderPipelineStateForOwner(
             commandState->currentRenderEncoderOwner, pipeline);
         mglRenderBindingSetPipelineState(bindingOwner, pipeline);
-        if (wantsDepth) {
-            void *depthState = mglBlitClearRectDepthState(renderer);
-            if (depthState) {
-                mglRenderSetRenderDepthStencilStateForOwner(
-                    commandState->currentRenderEncoderOwner, depthState);
-                mglRenderBindingSetDepthStencilState(bindingOwner, depthState);
-            }
+        if (depthStencilState) {
+            mglRenderSetRenderDepthStencilStateForOwner(
+                commandState->currentRenderEncoderOwner, depthStencilState);
+            mglRenderBindingSetDepthStencilState(bindingOwner,
+                                                 depthStencilState);
+        }
+        if (wantsStencil) {
+            mglRenderSetStencilReferenceValuesForOwner(
+                commandState->currentRenderEncoderOwner, stencilClearValue,
+                stencilClearValue);
         }
         mglRenderSetRenderBytesForOwner(
             commandState->currentRenderEncoderOwner, &params, sizeof(params),
@@ -590,6 +662,12 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
                 (uint32_t)depthAttachment->clear_bitmask);
             mglMarkTextureLevelRenderTargetWrittenImpl(
                 depthTexObj, depthAttachment->level, __func__, __LINE__);
+        }
+        if (wantsStencil && stencilTexObj && stencilAttachment) {
+            stencilAttachment->clear_bitmask = (GLbitfield)mglRenderClearMaskClearStencil(
+                (uint32_t)stencilAttachment->clear_bitmask);
+            mglMarkTextureLevelRenderTargetWrittenImpl(
+                stencilTexObj, stencilAttachment->level, __func__, __LINE__);
         }
 
         mglMarkRendererDirtyBits(glm_ctx->active_state,
@@ -627,6 +705,14 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
         clearState.depth.attachment.load_action = MGL_PD_LOAD_LOAD;
         clearState.depth.attachment.store_action = MGL_PD_STORE_STORE;
     }
+    if (wantsStencil) {
+        clearState.stencil.attachment.texture = stencilTexture;
+        clearState.stencil.attachment.level = stencilSubresource.level;
+        clearState.stencil.attachment.slice = stencilSubresource.slice;
+        clearState.stencil.attachment.depth_plane = stencilSubresource.depthPlane;
+        clearState.stencil.attachment.load_action = MGL_PD_LOAD_LOAD;
+        clearState.stencil.attachment.store_action = MGL_PD_STORE_STORE;
+    }
     clearState.render_target_width = passWidth;
     clearState.render_target_height = passHeight;
 
@@ -641,11 +727,12 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
     mglPdSetEncoderViewport(clearEncoder, viewport);
     mglPdSetEncoderScissor(clearEncoder, scissor);
     mglPdSetEncoderPipeline(clearEncoder, pipeline);
-    if (wantsDepth) {
-        void *depthState = mglBlitClearRectDepthState(renderer);
-        if (depthState) {
-            mglPdSetEncoderDepthStencil(clearEncoder, depthState);
-        }
+    if (depthStencilState) {
+        mglPdSetEncoderDepthStencil(clearEncoder, depthStencilState);
+    }
+    if (wantsStencil) {
+        (void)mglRenderSetStencilReferenceValues(
+            clearEncoder, stencilClearValue, stencilClearValue);
     }
     mglPdSetEncoderBytes(clearEncoder, &params, sizeof(params),
                          MGL_RENDER_BINDING_STAGE_VERTEX, 0);
@@ -667,6 +754,12 @@ void mglRendererMTLClearBuffer(void *renderer, GLMContext glm_ctx,
             (uint32_t)depthAttachment->clear_bitmask);
         mglMarkTextureLevelRenderTargetWrittenImpl(
             depthTexObj, depthAttachment->level, __func__, __LINE__);
+    }
+    if (wantsStencil && stencilTexObj && stencilAttachment) {
+        stencilAttachment->clear_bitmask = (GLbitfield)mglRenderClearMaskClearStencil(
+            (uint32_t)stencilAttachment->clear_bitmask);
+        mglMarkTextureLevelRenderTargetWrittenImpl(
+            stencilTexObj, stencilAttachment->level, __func__, __LINE__);
     }
 
     mglMarkRendererDirtyBits(glm_ctx->active_state,
