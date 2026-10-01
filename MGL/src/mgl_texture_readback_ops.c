@@ -1157,6 +1157,122 @@ static int mglPdPreReadbackTryBody(void *renderer, void *rawCtx)
     return 1;
 }
 
+/* Packed depth-stencil textures reject getBytes and plain buffer copies, so
+ * each aspect is staged through its own blit. */
+static void mglPdGetPackedDepthStencilImage(
+    MGLRendererStateAreas *areas, GLMContext glm_ctx, Texture *tex,
+    void *texture, void *pixelBytes, uint64_t bytesPerRow,
+    MGLRegionValue region, GLenum format, GLenum type, uint64_t level,
+    uint64_t slice, int flipRows)
+{
+    const int wantDepth = format != GL_STENCIL_INDEX;
+    const int wantStencil = format != GL_DEPTH_COMPONENT;
+    if (!((format == GL_DEPTH_COMPONENT && type == GL_FLOAT) ||
+          (format == GL_STENCIL_INDEX && type == GL_UNSIGNED_BYTE) ||
+          (format == GL_DEPTH_STENCIL &&
+           (type == GL_UNSIGNED_INT_24_8 ||
+            type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV)))) {
+        fprintf(stderr,
+                "MGL ERROR: mtlGetTexImage unsupported depth-stencil readback texture=%u format=0x%x type=0x%x\n",
+                tex->name, (unsigned)format, (unsigned)type);
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        return;
+    }
+
+    const uint64_t w = region.size.width;
+    const uint64_t h = region.size.height;
+    if (w == 0u || h == 0u) {
+        return;
+    }
+    const uint64_t stencilOffset = w * h * 4u;
+    void *staging = mglPdTextureCreateBuffer(
+        stencilOffset + w * h, MGL_PD_TEXTURE_RESOURCE_STORAGE_SHARED);
+    if (!staging) {
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorOutOfMemory());
+        return;
+    }
+
+    void *blitCB = NULL;
+    void *blitEncoder = NULL;
+    if (mglRenderCreateCommandBuffer(
+            mglRendererBackendGetCommandQueue(areas->backend), &blitCB) != 0 ||
+        !blitCB || mglRenderCreateBlitEncoder(blitCB, &blitEncoder) != 0 ||
+        !blitEncoder) {
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        mglReleaseMetalObjNoNull(staging);
+        return;
+    }
+    if (wantDepth) {
+        (void)mglRenderBlitCopyDepthStencilAspectToBuffer(
+            blitEncoder, texture, slice, level, region.origin.x,
+            region.origin.y, w, h, staging, 0u, w * 4u, 0);
+    }
+    if (wantStencil) {
+        (void)mglRenderBlitCopyDepthStencilAspectToBuffer(
+            blitEncoder, texture, slice, level, region.origin.x,
+            region.origin.y, w, h, staging, stencilOffset, w, 1);
+    }
+    mglPdTextureEndBlitEncoder(blitEncoder);
+    if (mglRenderCommitCommandBuffer(blitCB) != 0) {
+        fprintf(stderr,
+                "MGL ERROR: Metal-cpp texture command-buffer commit failed\n");
+    }
+    (void)mglRenderWaitCommandBuffer(blitCB);
+    MGLRenderCommandBufferState blitState = {0};
+    (void)mglRenderGetCommandBufferState(blitCB, &blitState);
+    if (blitState.has_error) {
+        fprintf(stderr,
+                "MGL ERROR: mtlGetTexImage depth-stencil blit failed for texture %u: %s\n",
+                tex->name, mglRenderCommandBufferErrorDescription(&blitState));
+        mglDispatchError(glm_ctx, __func__,
+                         (GLenum)mglRenderErrorInvalidOperation());
+        mglReleaseMetalObjNoNull(staging);
+        return;
+    }
+
+    const uint8_t *base =
+        (const uint8_t *)mglPdTextureBufferContents(staging);
+    const int depthIsUnorm24 =
+        mglPdTextureInfo(texture).pixel_format == 255u /* Depth24Unorm_Stencil8 */;
+    for (uint64_t y = 0; y < h; y++) {
+        const uint64_t srcRow = (flipRows ? h - 1u - y : y) * w;
+        uint8_t *dst = (uint8_t *)pixelBytes + y * bytesPerRow;
+        for (uint64_t x = 0; x < w; x++) {
+            float d = 0.0f;
+            uint32_t s = 0u;
+            if (wantDepth) {
+                uint32_t raw;
+                memcpy(&raw, base + (srcRow + x) * 4u, sizeof(raw));
+                if (depthIsUnorm24) {
+                    d = (float)(raw & 0xFFFFFFu) / 16777215.0f;
+                } else {
+                    memcpy(&d, &raw, sizeof(d));
+                }
+            }
+            if (wantStencil) {
+                s = base[stencilOffset + srcRow + x];
+            }
+            if (format == GL_STENCIL_INDEX) {
+                dst[x] = (uint8_t)s;
+            } else if (format == GL_DEPTH_COMPONENT) {
+                memcpy(dst + x * 4u, &d, sizeof(d));
+            } else if (type == GL_UNSIGNED_INT_24_8) {
+                const float c = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
+                const uint32_t packed =
+                    ((uint32_t)(c * 16777215.0f + 0.5f) << 8) | s;
+                memcpy(dst + x * 4u, &packed, sizeof(packed));
+            } else {
+                memcpy(dst + x * 8u, &d, sizeof(d));
+                memcpy(dst + x * 8u + 4u, &s, sizeof(s));
+            }
+        }
+    }
+    mglReleaseMetalObjNoNull(staging);
+}
+
 void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
                            void *pixelBytes, uint64_t bytesPerRow,
                            uint64_t bytesPerImage, MGLRegionValue region,
@@ -1259,6 +1375,15 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         tex->samples <= 1u &&
         mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version);
+
+    if (mglMetalPixelFormatIsPackedDepthStencil(
+            (uint32_t)mglPdTextureInfo(texture).pixel_format)) {
+        mglPdGetPackedDepthStencilImage(&areas, glm_ctx, tex, texture,
+                                        pixelBytes, bytesPerRow, readRegion,
+                                        format, type, level, readSlice,
+                                        flipRenderTargetRows);
+        return;
+    }
 
     /* Integer texture readback path: when the source texture is an integer
      * format and the output format is GL_*_INTEGER, use the dedicated integer

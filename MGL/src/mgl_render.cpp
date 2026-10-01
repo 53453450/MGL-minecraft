@@ -3567,6 +3567,40 @@ int mglRenderBlitCopyTextureToBuffer(
     return 0;
 }
 
+int mglRenderBlitCopyDepthStencilAspectToBuffer(
+    void* blit_encoder,
+    void* source_texture,
+    uint64_t source_slice,
+    uint64_t source_level,
+    uint64_t source_x,
+    uint64_t source_y,
+    uint64_t width,
+    uint64_t height,
+    void* destination_buffer,
+    uint64_t destination_offset,
+    uint64_t destination_bytes_per_row,
+    int stencil_aspect) {
+    MTL::BlitCommandEncoder* encoder =
+        static_cast<MTL::BlitCommandEncoder*>(blit_encoder);
+    MTL::Texture* source = static_cast<MTL::Texture*>(source_texture);
+    MTL::Buffer* destination =
+        static_cast<MTL::Buffer*>(destination_buffer);
+    if (!encoder || !source || !destination || width == 0 || height == 0 ||
+        destination_bytes_per_row == 0) {
+        return -1;
+    }
+    encoder->copyFromTexture(
+        source, static_cast<NS::UInteger>(source_slice),
+        static_cast<NS::UInteger>(source_level),
+        MTL::Origin(source_x, source_y, 0), MTL::Size(width, height, 1),
+        destination, static_cast<NS::UInteger>(destination_offset),
+        static_cast<NS::UInteger>(destination_bytes_per_row),
+        static_cast<NS::UInteger>(destination_bytes_per_row * height),
+        stencil_aspect ? MTL::BlitOptionStencilFromDepthStencil
+                       : MTL::BlitOptionDepthFromDepthStencil);
+    return 0;
+}
+
 
 
 

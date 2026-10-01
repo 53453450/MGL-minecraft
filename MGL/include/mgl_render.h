@@ -1584,6 +1584,22 @@ int mglRenderBlitCopyTextureToBuffer(
     uint64_t destination_offset,
     uint64_t destination_bytes_per_row,
     uint64_t destination_bytes_per_image);
+/* Packed depth-stencil textures only allow per-aspect buffer copies: depth
+ * lands as 4 bytes per texel (float32, or 24-bit unorm in the low bits for
+ * Depth24Unorm_Stencil8), stencil as 1 byte. */
+int mglRenderBlitCopyDepthStencilAspectToBuffer(
+    void *blit_encoder,
+    void *source_texture,
+    uint64_t source_slice,
+    uint64_t source_level,
+    uint64_t source_x,
+    uint64_t source_y,
+    uint64_t width,
+    uint64_t height,
+    void *destination_buffer,
+    uint64_t destination_offset,
+    uint64_t destination_bytes_per_row,
+    int stencil_aspect);
 
 
 /* Unified value-state draw plan. Resources are borrowed and final draw

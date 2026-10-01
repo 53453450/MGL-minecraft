@@ -5712,7 +5712,14 @@ static void mglGetTexImageImpl(GLMContext ctx, Texture *tex, GLenum target,
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, tex->internalformat, format, type)) {
+    /* Unlike TexImage, GetTexImage may read STENCIL_INDEX from a depth-stencil
+     * texture (GL 4.6 §8.11.4), so only the format/type pairing is checked. */
+    GLenum verify_internalformat =
+        (format == GL_STENCIL_INDEX &&
+         mglInternalFormatIsCombinedDepthStencil(tex->internalformat))
+            ? GL_STENCIL_INDEX8
+            : tex->internalformat;
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, verify_internalformat, format, type)) {
         return;
     }
     /* GetTexImage-specific validation (CTS isFormatValid OUTPUT_GETTEXIMAGE):
