@@ -54,7 +54,8 @@ jobs:
           echo "Metal device: $NAME"
           echo "METAL_DEVICE_NAME=$NAME" >> "$GITHUB_ENV"
           if [ "${{ inputs.full_gpu }}" = "true" ]; then
-            echo "full_gpu requested; not setting Paravirt skips"
+            echo "full_gpu requested; forcing Paravirt-unreliable cases to run"
+            echo "MGL_FORCE_PARAVIRT_TESTS=1" >> "$GITHUB_ENV"
           elif echo "$NAME" | grep -qi paravirtual; then
             echo "MGL_SKIP_PARAVIRT_UNRELIABLE=1" >> "$GITHUB_ENV"
             echo "::warning::Apple Paravirtual GPU detected; skipping known-unreliable GPU regression cases. Full gate needs self-hosted real Apple GPU (see macos-gpu-self-hosted) or workflow_dispatch full_gpu=true."
