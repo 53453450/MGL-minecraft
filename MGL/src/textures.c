@@ -5884,6 +5884,8 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         return;
     }
 
+    /* Deferred draws mark their render-target writes when flushed. */
+    mglFlushPendingDraws(ctx);
     bool render_target_needs_readback =
         (tex->is_render_target && tex->mtl_render_target_write_version != 0u) ||
         tex->metal_data_authoritative ||
