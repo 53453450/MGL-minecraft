@@ -18583,6 +18583,35 @@ static int test_sample_depth_texture(unsigned char *pixels, const char *out_path
         }
     }
 
+    /* TexSubImage into a rendered depth texture keeps GL row order. */
+    {
+        float ones[16 * 4];
+        for (int i = 0; i < 16 * 4; i++) ones[i] = 1.0f;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 12, 16, 4, GL_DEPTH_COMPONENT,
+                        GL_FLOAT, ones);
+        float sz[2] = {0.0f, 0.0f};
+        glBindFramebuffer(GL_FRAMEBUFFER, fdepth);
+        glReadPixels(8, 13, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &sz[0]);
+        glReadPixels(8, 2, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &sz[1]);
+        float img[16 * 16];
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, img);
+        if (sz[0] < 0.99f || sz[1] < 0.24f || sz[1] > 0.26f ||
+            img[13 * 16 + 8] < 0.99f || img[2 * 16 + 8] < 0.24f ||
+            img[2 * 16 + 8] > 0.26f) {
+            fprintf(stderr, "sample_depth_texture: subimage depth %.3f %.3f tex %.3f %.3f\n",
+                    sz[0], sz[1], img[13 * 16 + 8], img[2 * 16 + 8]);
+            fail |= 1024;
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+        glUniform1f(glGetUniformLocation(pd, "t"), 0.9f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glReadPixels(2, 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, b);
+        if (b[0] < 253) {
+            fprintf(stderr, "sample_depth_texture: subimage t=0.90 got %u\n", b[0]);
+            fail |= 1024;
+        }
+    }
+
     if (glGetError() != GL_NO_ERROR) fail |= 32;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glUseProgram(0);
