@@ -38,6 +38,7 @@
 #include "draw_command.h"
 #include "mgl_safety.h"
 #include "mgl_metal_ref.h"
+#include "mgl_pixel_format.h"
 #include "pixel_utils.h"
 #include "utils.h"
 
@@ -1138,26 +1139,6 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
     }
     
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
-}
-
-/* Returns true if the internal format is an integer (signed or unsigned)
- * format.  Used for blit format-compatibility checks. */
-static GLboolean mglInternalFormatIsInteger(GLint internalformat)
-{
-    switch (internalformat) {
-        case GL_R8I: case GL_R16I: case GL_R32I:
-        case GL_RG8I: case GL_RG16I: case GL_RG32I:
-        case GL_RGB8I: case GL_RGB16I: case GL_RGB32I:
-        case GL_RGBA8I: case GL_RGBA16I: case GL_RGBA32I:
-        case GL_R8UI: case GL_R16UI: case GL_R32UI:
-        case GL_RG8UI: case GL_RG16UI: case GL_RG32UI:
-        case GL_RGB8UI: case GL_RGB16UI: case GL_RGB32UI:
-        case GL_RGBA8UI: case GL_RGBA16UI: case GL_RGBA32UI:
-        case GL_RGB10_A2UI:
-            return GL_TRUE;
-        default:
-            return GL_FALSE;
-    }
 }
 
 static GLboolean mglRenderbufferInternalFormatRenderable(GLint internalformat)

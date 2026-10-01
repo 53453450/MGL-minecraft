@@ -34,6 +34,7 @@
 #include "glm_context.h"
 #include "mgl_extensions.h"
 #include "mgl_safety.h"
+#include "mgl_pixel_format.h"
 #include "pixel_utils.h"
 
 void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data);
@@ -1839,12 +1840,6 @@ static GLboolean mglInternalFormatIsUnsignedInteger(GLenum internalformat)
         default:
             return GL_FALSE;
     }
-}
-
-static GLboolean mglInternalFormatIsInteger(GLenum internalformat)
-{
-    return mglInternalFormatIsSignedInteger(internalformat) ||
-           mglInternalFormatIsUnsignedInteger(internalformat);
 }
 
 static GLboolean mglInternalFormatIsSignedNormalized(GLenum internalformat)
