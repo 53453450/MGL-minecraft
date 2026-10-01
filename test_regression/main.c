@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 148
+#define MAX_TESTS 149
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18628,6 +18628,94 @@ static int test_gpu_write_respecify(unsigned char *pixels, const char *out_path)
     return fail ? 1 : 0;
 }
 
+/* Depth BlitFramebuffer of rows 0-7 from an uploaded or a rendered source
+ * into an uploaded destination keeps every row in GL order. */
+static int test_depth_blit_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0); gl_FragDepth = floor(gl_FragCoord.y) / 16.0; }\n");
+    if (!prog) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    static float src[16 * 16], dst[16 * 16], out[16 * 16];
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            src[y * 16 + x] = (float)y / 16.0f;
+            dst[y * 16 + x] = (float)(y + 16) / 32.0f;
+        }
+    }
+    int fail = 0;
+    for (int c = 0; c < 2; c++) {
+        GLuint tex[2] = {0, 0}, fbo[2] = {0, 0};
+        glGenTextures(2, tex);
+        glGenFramebuffers(2, fbo);
+        for (int i = 0; i < 2; i++) {
+            glBindTexture(GL_TEXTURE_2D, tex[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, 16, 16, 0,
+                         GL_DEPTH_COMPONENT, GL_FLOAT,
+                         i == 0 && c == 1 ? NULL : (i == 0 ? src : dst));
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo[i]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                   GL_TEXTURE_2D, tex[i], 0);
+            glDrawBuffer(GL_NONE);
+            glReadBuffer(GL_NONE);
+        }
+        if (c == 1) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
+            glViewport(0, 0, 16, 16);
+            glUseProgram(prog);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_ALWAYS);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glDisable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+        }
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[0]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo[1]);
+        glBlitFramebuffer(0, 0, 16, 8, 0, 0, 16, 8, GL_DEPTH_BUFFER_BIT,
+                          GL_NEAREST);
+
+        glBindTexture(GL_TEXTURE_2D, tex[1]);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, GL_FLOAT, out);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo[1]);
+        static const int rows[2] = {2, 13};
+        for (int k = 0; k < 2; k++) {
+            const float want = k == 0 ? 2.0f / 16.0f : 29.0f / 32.0f;
+            float rd = 0.0f;
+            glReadPixels(4, rows[k], 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &rd);
+            const float t = out[rows[k] * 16 + 4];
+            if (t - want > 1e-4f || want - t > 1e-4f ||
+                rd - want > 1e-4f || want - rd > 1e-4f) {
+                fprintf(stderr, "depth_blit_orientation: case %d row %d tex %.4f read %.4f want %.4f\n",
+                        c, rows[k], t, rd, want);
+                fail |= 1 << (c * 2 + k);
+            }
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(2, fbo);
+        glDeleteTextures(2, tex);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 0x10;
+    glUseProgram(0);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "depth_blit_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* Rows 2, 5, 10 of a 16x16 texture through GetTexImage, ReadPixels on fbo
  * and texelFetch into fsample; returns 1 when any path disagrees. */
 static int rt_image_rows_check(const char *tag, GLuint tex, GLuint fbo,
@@ -22742,6 +22830,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("clear_write_mask", test_clear_write_mask),
     SELF_CHECK_TEST("packed_ds_upload_orientation", test_packed_ds_upload_orientation),
     SELF_CHECK_TEST("gpu_write_respecify", test_gpu_write_respecify),
+    SELF_CHECK_TEST("depth_blit_orientation", test_depth_blit_orientation),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

@@ -616,9 +616,19 @@ GLbitfield mglBlitDepthStencil(void *renderer, GLMContext glm_ctx, GLint src_x0,
         Texture *depth_draw_object =
             mglRendererAttachmentTextureFor(glm_ctx, depth_draw_attachment);
 
+        if (depth_read_object && depth_draw_object) {
+            depth_read_object->is_render_target = true;
+            depth_draw_object->is_render_target = true;
+        }
+        /* The plans address both attachments as flipped render-target
+         * storage. */
         if (depth_read_object && depth_draw_object &&
             mglRendererBindMTLTexture(renderer, depth_read_object) &&
-            mglRendererBindMTLTexture(renderer, depth_draw_object)) {
+            mglRendererBindMTLTexture(renderer, depth_draw_object) &&
+            mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
+                                                        depth_read_object) &&
+            mglBlitFlipRenderTargetStorageForFirstWrite(renderer,
+                                                        depth_draw_object)) {
             void *depth_read_texture = depth_read_object->mtl_data;
             void *depth_draw_texture = depth_draw_object->mtl_data;
             MGLMetalAttachmentSubresource depth_read_subresource =
