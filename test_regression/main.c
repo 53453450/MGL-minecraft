@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 138
+#define MAX_TESTS 139
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18298,6 +18298,96 @@ static int test_texture_default_state(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* GL 4.6 §8.6: CopyTexSubImage2D puts read-framebuffer row y + j into
+ * texture row yoffset + j, whether either side was rendered to or uploaded. */
+static int test_copy_tex_sub_image_orientation(unsigned char *pixels,
+                                               const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    GLuint pgrad = link_program(
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n",
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0); }\n");
+    if (!pgrad) return 2;
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    GLuint rendered = 0, uploaded = 0;
+    GLuint frendered = make_color_fbo(GL_RGBA32F, GL_RGBA, GL_FLOAT, &rendered);
+    GLuint fuploaded = make_color_fbo(GL_RGBA32F, GL_RGBA, GL_FLOAT, &uploaded);
+    if (!frendered || !fuploaded) return 2;
+    glBindFramebuffer(GL_FRAMEBUFFER, frendered);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(pgrad);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    static float grad[REG_W * REG_H * 4];
+    for (int y = 0; y < REG_H; y++)
+        for (int i = 0; i < REG_W * 4; i++)
+            grad[y * REG_W * 4 + i] = (float)y / 255.0f;
+    glBindTexture(GL_TEXTURE_2D, uploaded);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, REG_W, REG_H, GL_RGBA, GL_FLOAT, grad);
+
+    /* Destinations: {float, unorm8} x {fresh, rendered}. */
+    static const GLenum ifmt[2] = {GL_RGBA32F, GL_RGBA8};
+    GLuint dst[5] = {0};
+    GLuint fdst[2] = {0};
+    for (int i = 0; i < 2; i++) {
+        glGenTextures(1, &dst[i]);
+        glBindTexture(GL_TEXTURE_2D, dst[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, (GLint)ifmt[i], REG_W, REG_H, 0, GL_RGBA,
+                     GL_FLOAT, NULL);
+        fdst[i] = make_color_fbo(ifmt[i], GL_RGBA, GL_FLOAT, &dst[2 + i]);
+        if (!fdst[i]) return 2;
+        glClearColor(0.0f, 0.0f, 1.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+    }
+    glGenTextures(1, &dst[4]);
+    glBindTexture(GL_TEXTURE_2D, dst[4]);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, REG_W, REG_H, 0, GL_RGBA,
+                 GL_FLOAT, NULL);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+
+    int fail = 0;
+    static float img[REG_W * REG_H * 4];
+    for (int i = 0; i < 5; i++) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, i == 4 ? fuploaded : frendered);
+        glBindTexture(GL_TEXTURE_2D, dst[i]);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 4, 30, 0, 20, 16, 8);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, img);
+        const float lo = img[(30 * REG_W + 6) * 4] * 255.0f;
+        const float hi = img[(37 * REG_W + 6) * 4] * 255.0f;
+        const float b = img[(37 * REG_W + 6) * 4 + 2];
+        if (lo < 19.5f || lo > 20.5f || hi < 26.5f || hi > 27.5f ||
+            b * 255.0f < 26.5f || b * 255.0f > 27.5f) {
+            fprintf(stderr, "copy_tex_sub_image_orientation: dst%d rows %.1f %.1f b=%.1f\n",
+                    i, lo, hi, b * 255.0f);
+            fail |= 1 << i;
+        }
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 32;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &frendered);
+    glDeleteFramebuffers(1, &fuploaded);
+    glDeleteFramebuffers(2, fdst);
+    glDeleteTextures(5, dst);
+    glDeleteTextures(1, &rendered);
+    glDeleteTextures(1, &uploaded);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "copy_tex_sub_image_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* GL 4.6 §14.9.2: the scissor box is in window coordinates with (x, y) at
  * the lower left, for draws and clears alike. */
 static int test_scissor_offset(unsigned char *pixels, const char *out_path)
@@ -21401,6 +21491,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("texture_default_state", test_texture_default_state),
     SELF_CHECK_TEST("sample_depth_texture", test_sample_depth_texture),
     SELF_CHECK_TEST("scissor_offset", test_scissor_offset),
+    SELF_CHECK_TEST("copy_tex_sub_image_orientation", test_copy_tex_sub_image_orientation),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
