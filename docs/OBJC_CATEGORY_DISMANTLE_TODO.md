@@ -556,10 +556,21 @@ diff /tmp/nonpass_baseline.txt /tmp/nonpass_now.txt   # 必须为空
   **留待下一批**：`mgl_uniform_reflection.c` / `mgl_gl_extensions.c` 的"名字→类型/location"启发式
   （`Color`/`UV`/`Normal`/`Position`…）与 `mglDefaultAttribLocationForName()`——属 O7.3 名字启发式家族，
   需先探针测 `gl_type == 0` / 默认 location 的命中率。
-- [ ] **O7.4 剩余候选（联合报告升 P1）**（2026-10-01 核实：三个名字启发式仍在——`mgl_program_reflection.c:155,185`、`mgl_renderer_host.c:244`，仍开放）：
-  1. **P1 名字启发式**：`mglDefaultAttribLocationForName` / `mglContextualDefaultAttribLocationForName` /
-     `mglRendererTextureLooksLikeSampledColor2D`——先探针 `gl_type==0` / 命中率，再 Delete 或收表（禁止无 oracle 盲删）；
-  2. 链接期重复 parse 去重（`mglShaderInterfaceCheck` 复用 `frontend_tu`，属 O5 类）。
+- [ ] **O7.4 剩余候选（联合报告升 P1）**（2026-10-01 第二轮：1 的属性名部分与 2 已闭环；仅余 `LooksLikeSampledColor2D`，阻塞）：
+  1. **P1 名字启发式**：
+     - ~~`mglDefaultAttribLocationForName` / `mglContextualDefaultAttribLocationForName`~~ ✅ `020402a` + `5c9de99`。
+       oracle 为 spec 而非命中率：回归 `vertex_input_name_locations` 证明该启发式**违反 GL 4.6 §11.1.1**
+       （覆盖显式 `layout(location=3)` → 0；反射与 AIR 各有一份名字表且不一致，`GetAttribLocation`
+       指向错误槽位导致黑帧；XFB capture 变体让 `BindAttribLocation` 压过显式 location）。
+       三处名字表（`mgl_program_reflection.c`、`mgl_air_reflect.c`、`mgl_air_varsym.cpp`）全删，
+       统一为「shader 文本 location → BindAttribLocation（仅 VS）→ 声明序」；`test-all` 30/30、`test-mcrepro` 绿。
+     - `mglRendererTextureLooksLikeSampledColor2D`：**非名字启发式**，是 FS 深度纹理恢复路径
+       （`MGL_DR_ACTION_SCAN_HISTORY`，为 MC 1.21.8 引入）内的类型过滤。探针：本地 `test-all` 30 目标
+       `INSAMPLER DEPTH*` / `SAMPLED DEPTH RT RECOVER*` 日志**零命中**（日志无门控、首命中必打）。
+       按 O7.5 需 CTS hotspot + MC 工作负载才能退役整条恢复路径 → **阻塞（仓库外资源）**。
+  2. ~~链接期重复 parse 去重~~ ✅ `5a52465`：`mglShaderInterfaceCheckTU` / `mglShaderTessInterfaceCheckTU`
+     复用 `Shader::frontend_tu`；回归 `link_interface_check_no_reparse` 断言 link 期 parse 由 3 次降为 1 次
+     （余下 1 次为 VS XFB capture 变体编译，属另一切面）。
 - [ ] **O7.5 验收口径**（2026-10-01：属每刀遵守的流程规则，非一次性交付，不勾选）：每刀必须给 `local 全量（94 项）` + `CTS tess 140 / GS 136 / hotspot 1328`
   三套数字，hotspot 要求**非通过集合逐条 diff 为空**；退役的判据要在文档里留下 oracle 说明（探针名 +
   样本量 + 结论），否则不得删。
