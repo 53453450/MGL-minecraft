@@ -26,9 +26,9 @@
     },
     {
       "id": "use_program_unlinked_invalid_operation",
-      "claim": "UseProgram of a non-zero program that failed to link generates GL_INVALID_OPERATION by default (unless MGL_COMPAT_PROGRAM_ERRORS).",
+      "claim": "UseProgram of a non-zero program that failed to link generates GL_INVALID_OPERATION.",
       "code_locus": "MGL/src/program.c:mglUseProgram",
-      "code_excerpt": "if (!pptr->link_success) { if (!compat_program) { mglDispatchError(..., GL_INVALID_OPERATION); return; } }",
+      "code_excerpt": "if (!pptr->link_success) { mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION); return; }",
       "spec_section": "7.3",
       "spec_quote": "• Added INVALID_VALUE error in section 7.11 if Uniform1i{v} is used to s",
       "evidence": "_OPERATION error \"if program has not been linked, or was last linked unsucessfully\" rather than \"if program has not been successfully linked\" (Bug 8640, tracking similar changes to other commands previously). • Merge similar descriptions of uniform variable component limits for each separate shader stage into section 7.6. • Fix nonexistent token ATOMIC_COUNTER_ARRAY_STRIDE to UNIFORM_ARRAY_STRIDE in section 7.7.1 (Bug 9346). • Removed redundant definition of GetSubroutineUniformLocation from the beginning of section 7.10. • Added INVALID_VALUE error in section 7.11 if Uniform1i{v} is used to s",

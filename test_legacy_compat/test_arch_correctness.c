@@ -361,7 +361,6 @@ static void test_a18_plain_uniform_cleared_on_relink(void)
 
 static void test_a18_use_program_unlinked_strict(void)
 {
-    unsetenv("MGL_COMPAT_PROGRAM_ERRORS");
     GLMContext ctx = make_ctx();
     expect(ctx != NULL, "A18 strict createGLMContext");
     if (!ctx)

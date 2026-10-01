@@ -81,63 +81,6 @@ GLenum  mglGetError(GLMContext ctx)
 }
 
 
-static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
-{
-    if (!func || error != GL_INVALID_OPERATION)
-        return 0;
-
-    /* Default: surface GL_INVALID_OPERATION from texture APIs (GL 4.6).
-     * Set MGL_COMPAT_TEXTURE_ERRORS=1 to restore the legacy swallow path used
-     * by some apps. MGL_STRICT_TEXTURE_ERRORS=1 remains an explicit alias for
-     * the default strict behavior (A17). */
-    static int swallow_compat = -1;
-    if (swallow_compat < 0) {
-        const char *compat = getenv("MGL_COMPAT_TEXTURE_ERRORS");
-        const char *strict = getenv("MGL_STRICT_TEXTURE_ERRORS");
-        if (compat && atoi(compat) > 0)
-            swallow_compat = 1;
-        else if (strict && atoi(strict) == 0)
-            swallow_compat = 1;
-        else
-            swallow_compat = 0;
-    }
-    if (!swallow_compat) {
-        return 0;
-    }
-
-    /* Public texture-buffer entry points have required error semantics. */
-    if (strcmp(func, "mglTextureBuffer") == 0 ||
-        strcmp(func, "mglTextureBufferRange") == 0 ||
-        strcmp(func, "mglTextureBufferRangeImpl") == 0)
-        return 0;
-
-    /* Immutable texture-storage entry points have required validation errors
-     * (for example repeated allocation and invalid mip counts). */
-    if (strstr(func, "TexStorage") != NULL ||
-        strstr(func, "TextureStorage") != NULL)
-        return 0;
-    if (strcmp(func, "generateMipmaps") == 0)
-        return 0;
-
-    /* Minecraft startup performs a lot of texture probing/update patterns.
-     * Treat transient INVALID_OPERATION from texture functions as non-fatal
-     * compatibility warnings so createTexture() does not abort startup.
-     *
-     * EXCEPTION: functions containing "Image" (mglTexImage2D, mglTexSubImage2D,
-     * mglTextureImage2D, etc.) perform format/type validation that CTS relies
-     * on via glGetError().  Their errors must NOT be swallowed. */
-    if (strstr(func, "mglTex") != NULL || strstr(func, "mglTexture") != NULL)
-    {
-        if (strstr(func, "Image") != NULL)
-            return 0;  /* validation error - report it */
-        return 1;      /* transient error - swallow it */
-    }
-    if (strstr(func, "texSubImage") != NULL) return 1;
-    if (strstr(func, "createTextureLevel") != NULL) return 1;
-
-    return 0;
-}
-
 void mglDispatchError(GLMContext ctx, const char *func, GLenum error)
 {
     if (!ctx) {
@@ -169,21 +112,6 @@ void mglClearCurrentError(GLMContext ctx)
 
 void error_func(GLMContext ctx, const char *func, GLenum error)
 {
-    if (mgl_is_ignorable_texture_error(func, error))
-    {
-        static unsigned long long s_ignorable_texture_error_count = 0;
-        s_ignorable_texture_error_count++;
-        if (s_ignorable_texture_error_count <= 64ull ||
-            (s_ignorable_texture_error_count % 1024ull) == 0ull) {
-            fprintf(stderr,
-                    "MGL WARNING: Ignoring transient texture error from %s to improve compatibility (0x%x, hit=%llu)\n",
-                    func,
-                    error,
-                    s_ignorable_texture_error_count);
-        }
-        return;
-    }
-
     fprintf(stderr, "MGL GL Error in %s: 0x%x (%d)\n", func, error, error);
 
     /* T0-3: count pushes that would previously have landed on the workspace. */

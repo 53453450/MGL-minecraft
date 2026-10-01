@@ -3042,8 +3042,6 @@ link_fail:
 void mglUseProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr = NULL;
-    static GLuint s_last_unlinked_program = 0;
-    static unsigned int s_unlinked_program_hits = 0;
 
     if (!ctx) {
         return;
@@ -3103,24 +3101,8 @@ void mglUseProgram(GLMContext ctx, GLuint program)
 
         if (!pptr->link_success)
         {
-            /* GL 4.6 default: INVALID_OPERATION and keep prior program.
-             * MGL_COMPAT_PROGRAM_ERRORS=1 restores the historical skip
-             * (keeps prior program without an error) for Minecraft shims. */
-            static int compat_program = -1;
-            if (compat_program < 0) {
-                const char *env = getenv("MGL_COMPAT_PROGRAM_ERRORS");
-                compat_program = (env && atoi(env) > 0) ? 1 : 0;
-            }
-            if (!compat_program) {
-                mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-                return;
-            }
-            s_unlinked_program_hits++;
-            if (s_last_unlinked_program != program || (s_unlinked_program_hits % 128u) == 1u) {
-                fprintf(stderr, "MGL WARNING: mglUseProgram skipping unlinked program %u (hit=%u)\n",
-                        program, s_unlinked_program_hits);
-                s_last_unlinked_program = program;
-            }
+            /* GL 4.6 §7.3: INVALID_OPERATION and keep the prior program. */
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
     }
