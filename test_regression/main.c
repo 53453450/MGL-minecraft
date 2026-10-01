@@ -16146,8 +16146,10 @@ static int test_air_ubo_pso_bisect(unsigned char *pixels,
     if (getenv("MGL_UBO_PSO_DUMP")) {
         FILE *f = fopen("/tmp/ub_vs_variant.glsl", "wb");
         if (f) {
-            fwrite(vs, 1, strlen(vs), f);
-            fclose(f);
+            size_t len = strlen(vs);
+            int bad = fwrite(vs, 1, len, f) != len;
+            if (fclose(f) != 0) bad = 1;
+            if (bad) fprintf(stderr, "air_ubo_pso_bisect: dump write failed\n");
         }
     }
 

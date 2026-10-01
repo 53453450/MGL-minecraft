@@ -330,6 +330,17 @@ float clamp(float a, float min, float max)
     return a;
 }
 
+/* Frees a genTexturePixels buffer at the end of the full expression that
+ * hands it to GL (which copies the data during the call). */
+struct ScopedPixels {
+    void *p;
+    explicit ScopedPixels(void *q) : p(q) {}
+    ScopedPixels(const ScopedPixels &) = delete;
+    ScopedPixels &operator=(const ScopedPixels &) = delete;
+    ~ScopedPixels() { free(p); }
+    operator const void *() const { return p; }
+};
+
 void *genTexturePixels(GLenum format, GLenum type, GLuint repeat, GLuint width, GLuint height, GLint depth=1, GLboolean is_array=false)
 {
     GLuint  pixel_size;
@@ -2244,7 +2255,7 @@ int test_1D_textures(GLFWwindow* window, int width, int height)
 
     // generate 1d texture
     GLuint tex;
-    tex = createTexture(GL_TEXTURE_1D, 256, 1, 1, genTexturePixels(GL_RGBA, GL_FLOAT, 0x10, 256, 1));
+    tex = createTexture(GL_TEXTURE_1D, 256, 1, 1, ScopedPixels(genTexturePixels(GL_RGBA, GL_FLOAT, 0x10, 256, 1)));
     glBindTexture(GL_TEXTURE_1D, tex);
 
     glViewport(0, 0, width, height);
@@ -2395,7 +2406,7 @@ int test_2D_textures(GLFWwindow* window, int width, int height)
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                 genTexturePixels(GL_RGBA, GL_UNSIGNED_BYTE, 0x10, 256,256));
+                 ScopedPixels(genTexturePixels(GL_RGBA, GL_UNSIGNED_BYTE, 0x10, 256,256)));
 
     glViewport(0, 0, width, height);
 
@@ -2818,6 +2829,7 @@ int test_2D_array_textures(GLFWwindow* window, int width, int height)
     GLuint pbo;
     glCreateBuffers(1, &pbo);
     glNamedBufferStorage(pbo, image_size * _2d_array_depth * sizeof(uint32_t), pixels, GL_MAP_WRITE_BIT);
+    free(pixels);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
 
     for(int i=0; i<_2d_array_depth; i++)
@@ -2978,7 +2990,7 @@ int test_textures(GLFWwindow* window, int width, int height, int mipmap, int use
         {
 
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texsize, texsize, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                         genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x8, texsize, texsize));
+                         ScopedPixels(genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x8, texsize, texsize)));
 
             glGenerateMipmap(GL_TEXTURE_2D);
         }
@@ -2991,7 +3003,7 @@ int test_textures(GLFWwindow* window, int width, int height, int mipmap, int use
             for(int i=0; size>0; i++)
             {
                 glTexImage2D(GL_TEXTURE_2D, i, GL_RGBA8, size, size, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                             genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x8 >> i, size, size));
+                             ScopedPixels(genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x8 >> i, size, size)));
 
                 size >>= 1;
             }
@@ -3001,7 +3013,7 @@ int test_textures(GLFWwindow* window, int width, int height, int mipmap, int use
     else
     {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texsize, texsize, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                     genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x8, texsize, texsize));
+                     ScopedPixels(genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x8, texsize, texsize)));
     }
 
     glViewport(0, 0, width, height);
@@ -3358,7 +3370,7 @@ int test_readpixels(GLFWwindow* window, int width, int height)
     glUseProgram(shader_program);
 
     GLuint tex;
-    tex = createTexture(GL_TEXTURE_2D, 256, 256, 0, genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x10, 256, 256));
+    tex = createTexture(GL_TEXTURE_2D, 256, 256, 0, ScopedPixels(genTexturePixels(GL_RGBA, GL_UNSIGNED_INT_8_8_8_8, 0x10, 256, 256)));
     glBindTexture(GL_TEXTURE_2D, tex);
 
     while(!glfwWindowShouldClose(window))
@@ -3649,7 +3661,7 @@ int test_compute_shader(GLFWwindow* window, int width, int height)
         glTextureStorage2D(textures[i], 1, GL_RGBA8, tex_w, tex_h);
         glBindTexture(GL_TEXTURE_2D, textures[i]);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, tex_w, tex_h, GL_RGBA, GL_UNSIGNED_BYTE,
-                        genTexturePixels(GL_RGBA, GL_UNSIGNED_BYTE, 0x10, tex_w, tex_h));
+                        ScopedPixels(genTexturePixels(GL_RGBA, GL_UNSIGNED_BYTE, 0x10, tex_w, tex_h)));
         glBindTexture(GL_TEXTURE_2D, 0);
 
         glBindImageTexture(i, textures[i], 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
@@ -4015,6 +4027,7 @@ int test_2D_array_textures_perf_mon(GLFWwindow* window, int width, int height)
     GLuint pbo;
     glCreateBuffers(1, &pbo);
     glNamedBufferStorage(pbo, image_size * _2d_array_depth * sizeof(uint32_t), pixels, GL_MAP_WRITE_BIT);
+    free(pixels);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
 
     for(int i=0; i<_2d_array_depth; i++)
