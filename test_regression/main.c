@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 97
+#define MAX_TESTS 98
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14174,6 +14174,85 @@ cleanup:
     return result;
 }
 
+/* glClear must write the clear color's alpha, and a ReadPixels issued
+ * between the clear and a draw must observe the clear and not disturb the
+ * draw that follows. */
+static int test_clear_alpha_readback(unsigned char *pixels,
+                                     const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "out vec4 o;\n"
+        "void main() { o = vec4(1.0, 0.0, 0.0, 0.5); }\n";
+
+    GLuint tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    GLuint prog = link_program(vs, fs);
+    if (!prog) {
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+        return 2;
+    }
+
+    int result = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+    glClearColor(0.0f, 0.0f, 1.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    unsigned char px[4] = {0xAA, 0xAA, 0xAA, 0xAA};
+    glReadPixels(1, 1, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    if (px[0] != 0 || px[1] != 0 || px[2] != 255 || px[3] != 0) {
+        fprintf(stderr, "clear_alpha_readback: after clear %u/%u/%u/%u, "
+                "want 0/0/255/0\n", px[0], px[1], px[2], px[3]);
+        result = 1;
+    }
+
+    static const float verts[] = { -1.0f, -1.0f, 1.0f, -1.0f, -1.0f, 1.0f };
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(verts, sizeof(verts));
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glUseProgram(prog);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    const unsigned char *in = pixels + (2 * REG_W + 2) * 4;
+    const unsigned char *out = pixels + ((REG_H - 3) * REG_W + REG_W - 3) * 4;
+    if (in[0] != 255 || in[1] != 0 || in[2] != 0 || in[3] < 127 || in[3] > 128) {
+        fprintf(stderr, "clear_alpha_readback: drawn %u/%u/%u/%u, "
+                "want 255/0/0/128\n", in[0], in[1], in[2], in[3]);
+        result = 1;
+    }
+    if (out[0] != 0 || out[1] != 0 || out[2] != 255 || out[3] != 0) {
+        fprintf(stderr, "clear_alpha_readback: uncovered %u/%u/%u/%u, "
+                "want 0/0/255/0\n", out[0], out[1], out[2], out[3]);
+        result = 1;
+    }
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "clear_alpha_readback: unexpected GL error\n");
+        result = 1;
+    }
+
+    glUseProgram(0);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return result;
+}
+
 /* GL 4.6 §9.2.1: a no-attachment FBO with FRAMEBUFFER_DEFAULT_LAYERS != 0
  * is layered.  Drawing a VS that writes gl_Layer must not raise an error. */
 static int test_no_attachment_layered_fbo(unsigned char *pixels,
@@ -16844,6 +16923,7 @@ static const TestCase TESTS[] = {
                     test_getn_uniform_with_pending_error),
     SELF_CHECK_TEST("framebuffer_texture_missing_object",
                     test_framebuffer_texture_missing_object),
+    SELF_CHECK_TEST("clear_alpha_readback", test_clear_alpha_readback),
     SELF_CHECK_TEST("no_attachment_layered_fbo",
                     test_no_attachment_layered_fbo),
     SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),
