@@ -74,7 +74,6 @@ static GLboolean mglDefaultFramebufferParamValid(GLMContext ctx, GLenum pname,
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
-extern Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture);
 extern void mglClearLastSampled2DTextureIfMatches(GLMContext ctx, Texture *tex);
 extern void invalidateTexture(GLMContext ctx, Texture *tex);
 bool isCubeMapTarget(GLMContext ctx, GLuint textarget);
@@ -2130,32 +2129,20 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     {
         tex = findTexture(ctx, texture);
 
-        // Some apps attach by name before the texture object is fully realized in MGL.
-        // Create a placeholder object so later render/blit paths can resolve it.
-        if (!tex && textarget != GL_NONE)
+        if (!tex)
         {
-            tex = newTexture(ctx, textarget, texture);
-            if (tex)
-            {
-                insertHashElement(&STATE(texture_table), texture, tex);
-                fprintf(stderr, "MGL INFO: framebufferTexture created missing texture object %u target=0x%x\n",
-                        texture, textarget);
-            }
+            /* GL 4.6 §9.2.8: a nonzero name that is not an existing texture
+             * object is INVALID_VALUE for FramebufferTexture and
+             * INVALID_OPERATION for FramebufferTexture{1D,2D,3D}. */
+            mglDispatchError(ctx, __FUNCTION__,
+                             textarget == GL_NONE ? GL_INVALID_VALUE
+                                                  : GL_INVALID_OPERATION);
+            return;
         }
 
-        if (effective_textarget == GL_NONE && tex)
+        if (effective_textarget == GL_NONE)
         {
             effective_textarget = tex->target;
-        }
-
-        if (texture && !tex && textarget == GL_NONE)
-        {
-            /* glFramebufferTexture / glNamedFramebufferTexture require an
-             * existing texture object when texture is nonzero (GL 4.6
-             * 9.2).  The 1D/2D/3D entry points keep their legacy
-             * by-name placeholder behaviour above. */
-            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_VALUE);
-            return;
         }
 
         if (effective_textarget == GL_TEXTURE_BUFFER ||

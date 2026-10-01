@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 96
+#define MAX_TESTS 97
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -13674,6 +13674,62 @@ cleanup:
  * (CTS rendering family shape).  Verifies the expanded primitives
  * actually rasterize. */
 /* CTS-derived regressions for GS link/query/XFB-builtin semantics. */
+/* GL 4.6 §9.2.8: FramebufferTexture{1D,2D,3D} with a nonzero name that is
+ * not an existing texture object generate INVALID_OPERATION; a name from
+ * GenTextures only becomes an object when first bound. */
+static int test_framebuffer_texture_missing_object(unsigned char *pixels,
+                                                   const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int result = 1;
+    GLuint fbo = 0, gen_only = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenTextures(1, &gen_only);
+    drain_gl_errors();
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, 0x7ff0u, 0);
+    if (expect_single_gl_error("framebuffer_texture_missing_object: unknown name",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, gen_only, 0);
+    if (expect_single_gl_error("framebuffer_texture_missing_object: unbound name",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+    glFramebufferTexture3D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_3D, gen_only, 0, 0);
+    if (expect_single_gl_error("framebuffer_texture_missing_object: 3D unbound name",
+                               GL_INVALID_OPERATION)) {
+        goto cleanup;
+    }
+    if (glIsTexture(gen_only) || glIsTexture(0x7ff0u)) {
+        fprintf(stderr, "framebuffer_texture_missing_object: placeholder created\n");
+        goto cleanup;
+    }
+    GLint type = -1;
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                          GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,
+                                          &type);
+    if (type != GL_NONE) {
+        fprintf(stderr, "framebuffer_texture_missing_object: attachment type 0x%x\n",
+                type);
+        goto cleanup;
+    }
+    result = 0;
+
+cleanup:
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &gen_only);
+    drain_gl_errors();
+    return result;
+}
+
 /* An earlier error still in the queue must not stop GetnUniform*v from
  * writing params; only an error raised by the query itself does. */
 static int test_getn_uniform_with_pending_error(unsigned char *pixels,
@@ -16763,6 +16819,8 @@ static const TestCase TESTS[] = {
                     test_program_stage_query_errors),
     SELF_CHECK_TEST("getn_uniform_with_pending_error",
                     test_getn_uniform_with_pending_error),
+    SELF_CHECK_TEST("framebuffer_texture_missing_object",
+                    test_framebuffer_texture_missing_object),
     SELF_CHECK_TEST("no_attachment_layered_fbo",
                     test_no_attachment_layered_fbo),
     SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),
