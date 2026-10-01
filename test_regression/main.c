@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 126
+#define MAX_TESTS 127
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17083,6 +17083,89 @@ static int test_glsl_array_of_arrays(unsigned char *pixels,
     return fail;
 }
 
+/* GL 4.6 §7.6.1: Uniform*v writes count consecutive array elements starting
+ * at the element named by location; values past the end are ignored. */
+static int test_uniform_array_partial_upload(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform float u[4];\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(u[1], u[2], u[3], 1); }\n";
+    GLuint p = link_program(vs, fs);
+    if (!p) return 3;
+    GLint loc[4];
+    char nm[8];
+    for (int i = 0; i < 4; i++) {
+        snprintf(nm, sizeof nm, "u[%d]", i);
+        loc[i] = glGetUniformLocation(p, nm);
+    }
+    if (loc[0] < 0 || loc[1] != loc[0] + 1 || loc[3] != loc[0] + 3) {
+        fprintf(stderr, "uniform_array_partial_upload: locations %d %d %d %d\n",
+                loc[0], loc[1], loc[2], loc[3]);
+        return 1;
+    }
+
+    static const struct {
+        int at;
+        int count;
+        float v[2];
+        float want[4];
+    } steps[] = {
+        { 2, 1, { 0.9f, 0 },      { 0.1f, 0.2f, 0.9f, 0.4f } },
+        { 1, 2, { 0.5f, 0.25f },  { 0.1f, 0.5f, 0.25f, 0.4f } },
+        { 3, 2, { 0.75f, 1.0f },  { 0.1f, 0.5f, 0.25f, 0.75f } },
+        { 0, 2, { 0.0f, 1.0f },   { 0.0f, 1.0f, 0.25f, 0.75f } },
+    };
+    static const float all[4] = { 0.1f, 0.2f, 0.3f, 0.4f };
+    int fail = 0;
+    glUseProgram(p);
+    glUniform1fv(loc[0], 4, all);
+    for (size_t s = 0; s < sizeof steps / sizeof steps[0]; s++) {
+        glUseProgram(p);
+        glUniform1fv(loc[steps[s].at], steps[s].count, steps[s].v);
+        GLenum err = glGetError();
+        GLfloat got[4];
+        for (int i = 0; i < 4; i++)
+            glGetUniformfv(p, loc[i], &got[i]);
+        unsigned char px[4] = { 0 };
+        iface_point_color(p, px);
+        int bad = err != GL_NO_ERROR;
+        for (int i = 0; i < 4; i++)
+            if (got[i] != steps[s].want[i]) bad = 1;
+        for (int c = 0; c < 3; c++)
+            if (abs((int)px[c] - (int)(steps[s].want[c + 1] * 255.0f + 0.5f)) > 2)
+                bad = 1;
+        if (bad) {
+            fprintf(stderr, "uniform_array_partial_upload: step %zu err=0x%x "
+                    "get=(%.2f,%.2f,%.2f,%.2f) rgb=(%u,%u,%u)\n", s, err,
+                    got[0], got[1], got[2], got[3], px[0], px[1], px[2]);
+            fail = 1;
+        }
+    }
+
+    glUseProgram(p);
+    glUniform1f(100, 1.0f);
+    GLenum err = glGetError();
+    if (err != GL_INVALID_OPERATION) {
+        fprintf(stderr, "uniform_array_partial_upload: inactive location "
+                "100 err=0x%x\n", err);
+        fail = 1;
+    }
+    glUseProgram(0);
+    glDeleteProgram(p);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -19841,6 +19924,8 @@ static const TestCase TESTS[] = {
                     test_stage_interface_component),
     SELF_CHECK_TEST("uniform_array_of_arrays", test_uniform_array_of_arrays),
     SELF_CHECK_TEST("glsl_array_of_arrays", test_glsl_array_of_arrays),
+    SELF_CHECK_TEST("uniform_array_partial_upload",
+                    test_uniform_array_partial_upload),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

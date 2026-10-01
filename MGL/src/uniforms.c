@@ -2884,7 +2884,8 @@ static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void 
     return true;
 }
 
-static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location)
+static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location,
+                                            GLint *base_out, GLint *size_out)
 {
     if (!program || location < 0) {
         return 0u;
@@ -2913,6 +2914,8 @@ static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location)
                     GLint memberSize = member->size > 1 ? member->size : 1;
                     if (location >= memberBase &&
                         location < memberBase + memberSize) {
+                        if (base_out) *base_out = memberBase;
+                        if (size_out) *size_out = memberSize;
                         return member->gl_type;
                     }
                 }
@@ -2920,6 +2923,8 @@ static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location)
                 GLint arraySize = res->gl_array_size > 1
                     ? res->gl_array_size : 1;
                 if (location >= base && location < base + arraySize) {
+                    if (base_out) *base_out = base;
+                    if (size_out) *size_out = arraySize;
                     return res->gl_type;
                 }
             }
@@ -2932,7 +2937,7 @@ static GLuint mglPlainUniformTypeAtLocation(Program *program, GLint location)
 static GLboolean mglPlainUniformNeedsMetalMat3Packing(GLMContext ctx, GLint location)
 {
     Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
-    return mglPlainUniformTypeAtLocation(program, location) == GL_FLOAT_MAT3
+    return mglPlainUniformTypeAtLocation(program, location, NULL, NULL) == GL_FLOAT_MAT3
         ? GL_TRUE : GL_FALSE;
 }
 
@@ -3017,6 +3022,28 @@ static void mglUploadPlainUniformMat3fv(GLMContext ctx,
                                         GLboolean transpose,
                                         const GLfloat *value);
 
+static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
+                            void *ptr, GLsizeiptr size);
+
+static GLsizeiptr mglPlainUniformScalarVectorBytes(GLuint gl_type)
+{
+    switch (gl_type) {
+        case GL_FLOAT: case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL:
+            return 4;
+        case GL_FLOAT_VEC2: case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2:
+        case GL_BOOL_VEC2:
+            return 8;
+        case GL_FLOAT_VEC3: case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3:
+        case GL_BOOL_VEC3:
+            return 12;
+        case GL_FLOAT_VEC4: case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4:
+        case GL_BOOL_VEC4:
+            return 16;
+        default:
+            return 0;
+    }
+}
+
 void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
 {
     ctx = mglUniformResolveContext(ctx, __FUNCTION__);
@@ -3046,7 +3073,38 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
         return;
     }
+    /* Uniform storage is indexed by location. */
+    if (location >= MAX_BINDABLE_BUFFERS) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
 
+    /* Each array element owns its location's storage (GL 4.6 §7.6.1):
+     * Uniform*v writes count elements from the named one, dropping values
+     * past the end of the array. */
+    GLint arrayBase = -1;
+    GLint arraySize = 1;
+    GLuint glType = mglPlainUniformTypeAtLocation(program, location,
+                                                  &arrayBase, &arraySize);
+    GLsizeiptr elemBytes = mglPlainUniformScalarVectorBytes(glType);
+    if (arraySize > 1 && elemBytes > 0 && size > elemBytes) {
+        GLsizeiptr n = size / elemBytes;
+        GLsizeiptr remaining = (GLsizeiptr)(arrayBase + arraySize - location);
+        if (n > remaining)
+            n = remaining;
+        for (GLsizeiptr i = 0;
+             i < n && location + i < MAX_BINDABLE_BUFFERS; i++) {
+            mglUniformStore(ctx, program, location + (GLint)i,
+                            (uint8_t *)ptr + i * elemBytes, elemBytes);
+        }
+        return;
+    }
+    mglUniformStore(ctx, program, location, ptr, size);
+}
+
+static void mglUniformStore(GLMContext ctx, Program *program, GLint location,
+                            void *ptr, GLsizeiptr size)
+{
     /*
      * Deferred draws snapshot the GL state struct, but Program-owned uniform
      * storage is mutable shared state.  Only flush when the upload will
