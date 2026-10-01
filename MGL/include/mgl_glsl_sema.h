@@ -68,6 +68,7 @@ typedef struct MGLIRSymbol {
     uint32_t matrix_major;      /* MGL_AST_MATRIX_* */
     uint32_t binding;           /* -1 if unspecified */
     uint32_t location;          /* -1 if unspecified */
+    int statically_used;        /* referenced in any function body */
     int32_t  stream;            /* GS output stream, -1 if unspecified (0) */
     uint32_t offset;            /* block member offset / -1 */
     char *block_name;           /* owning anonymous block, or NULL */
@@ -105,11 +106,12 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
 /* Make a variable symbol without a type check (entry/helper). */
 MGLIRSymbol *mglIRSymbolNew(const char *name, MGLIRType *type);
 
-/* Link-time interface matching between two compiled stages (GLSL 4.60
- * §4.3.9.5): ordinary in/out variables declared on both sides must have
- * identical types; interface blocks match by block name and require
- * identical member lists and layout.  Variables on one side only are
- * legal.  Returns the number of hard errors. */
+/* Link-time interface matching between a stage `a` and the stage `b` it
+ * feeds directly (GL 4.6 §7.4.1): ordinary variables match by location when
+ * both declare one, otherwise by name, and matched pairs must have identical
+ * types and qualifiers; interface blocks match by block name and require
+ * identical member lists and layout.  A statically used input of `b` without
+ * a matching output of `a` is an error.  Returns the number of hard errors. */
 int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                           MGLSemaError **errors, uint32_t *error_count);
 

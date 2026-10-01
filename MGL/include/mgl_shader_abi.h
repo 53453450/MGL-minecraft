@@ -404,12 +404,13 @@ int mglAirCompileGLSLWithReflectInfoEx(
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
 
-/* Compare the vertex/fragment shader interfaces: varying names, types
- * and interface blocks must match across stages.  On success returns 0;
- * on mismatch or a parse/sema failure returns -1 and writes a
- * NUL-terminated message into err_buf (err_cap bytes) if non-NULL. */
+/* Compare the vertex/fragment shader interfaces: uniforms always, and the
+ * VS outputs against the FS inputs when `adjacent` (no geometry or
+ * tessellation stage in between).  On success returns 0; on mismatch or a
+ * parse/sema failure returns -1 and writes a NUL-terminated message into
+ * err_buf (err_cap bytes) if non-NULL. */
 int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
-                            char *err_buf, size_t err_cap);
+                            int adjacent, char *err_buf, size_t err_cap);
 
 /* Compare TCS outputs with TES inputs (including patch varyings). */
 int mglShaderTessInterfaceCheck(const char *tcs_src, const char *tes_src,
@@ -418,7 +419,7 @@ int mglShaderTessInterfaceCheck(const char *tcs_src, const char *tes_src,
 /* Same checks on already-parsed translation units (Shader::frontend_tu). */
 int mglShaderInterfaceCheckTU(const struct MGLTranslationUnit *vs_tu,
                               const struct MGLTranslationUnit *fs_tu,
-                              char *err_buf, size_t err_cap);
+                              int adjacent, char *err_buf, size_t err_cap);
 int mglShaderTessInterfaceCheckTU(const struct MGLTranslationUnit *tcs_tu,
                                   const struct MGLTranslationUnit *tes_tu,
                                   char *err_buf, size_t err_cap);

@@ -516,7 +516,7 @@ int main(int argc, const char *argv[]) {
         }
         printf("metallib sizes: vs=%zu fs=%zu\n", vsSize, fsSize);
 
-        if (mglShaderInterfaceCheck(kVS, kFS, err, sizeof err) != 0) {
+        if (mglShaderInterfaceCheck(kVS, kFS, 1, err, sizeof err) != 0) {
             fprintf(stderr, "interface check FAIL: %s\n", err);
             return 1;
         }
@@ -527,7 +527,7 @@ int main(int argc, const char *argv[]) {
             "in vec3 vUV;\n"
             "void main() {\n"
             "}\n";
-        if (mglShaderInterfaceCheck(kVS, kFSBad, err, sizeof err) == 0) {
+        if (mglShaderInterfaceCheck(kVS, kFSBad, 1, err, sizeof err) == 0) {
             fprintf(stderr, "interface check accepted a mismatch\n");
             return 1;
         }

@@ -2788,11 +2788,16 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         Shader *fs = pptr->shader_slots[_FRAGMENT_SHADER];
         if (vs && fs && vs->src && fs->src) {
             char iface_err[512] = {0};
+            int adjacent = !(pptr->attached_shader_mask &
+                             (GEOMETRY_SHADER_MASK_BIT |
+                              (1u << _TESS_CONTROL_SHADER) |
+                              (1u << _TESS_EVALUATION_SHADER)));
             int iface_rc = (vs->frontend_tu && fs->frontend_tu)
                 ? mglShaderInterfaceCheckTU(vs->frontend_tu, fs->frontend_tu,
-                                            iface_err, sizeof iface_err)
-                : mglShaderInterfaceCheck(vs->src, fs->src, iface_err,
-                                          sizeof iface_err);
+                                            adjacent, iface_err,
+                                            sizeof iface_err)
+                : mglShaderInterfaceCheck(vs->src, fs->src, adjacent,
+                                          iface_err, sizeof iface_err);
             if (iface_rc != 0) {
                 fprintf(stderr,
                         "MGL WARNING: mglLinkProgram failed program %u: %s\n",

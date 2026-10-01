@@ -216,6 +216,7 @@ typedef struct Sym {
     MGLIRType **param_types; /* owned copies */
     uint32_t qualifiers;     /* MGL_AST_Q_* */
     const char *image_format; /* static; image layout format or NULL */
+    MGLIRSymbol *ir;         /* module symbol of a global variable, or NULL */
     struct Sym *next;        /* scope chain link */
     struct Sym *next_all;    /* global teardown chain link */
 } Sym;
@@ -2252,6 +2253,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
     }
     case MGL_EXPR_VAR_REF: {
         Sym *sym = symtab_lookup(tab, e->u.var_ref.name);
+        if (sym && sym->ir) {
+            sym->ir->statically_used = 1;
+        }
         if (!sym) {
             if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
                 /* Vertex-stage built-in output; the AIR backend maps it to
@@ -3884,6 +3888,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 /* ownership of `t` moved to the module; sym borrows it so the
                  * type stays resolvable inside function bodies */
                 sym->type_owned = 0;
+                sym->ir = isym;
             } else {
                 free(isym->name);
                 free(isym);
@@ -4412,11 +4417,24 @@ static int builtin_type_spec(const char *name, MGLTypeSpec *ts)
     return -1;
 }
 
-/* Link-time check between two compiled stages (e.g. vertex and fragment).
- * For every ordinary in/out variable declared on both sides the type must
- * match exactly; interface blocks match by block name (instance name may
- * differ) and require identical member lists and layout.  Variables present
- * on only one side are legal.  Returns the number of hard errors. */
+static int interface_var_is_ordinary(const MGLIRSymbol *sym)
+{
+    return sym && !sym->is_function && sym->name && sym->type &&
+           !sym_is_interface_block(sym);
+}
+
+/* GL 4.6 §7.4.1: an output and an input pair up by location when both
+ * declare one.  Otherwise they pair by name; §7.4.1 only defines that when
+ * neither has a location, but name pairing is kept for the mixed case so
+ * such programs keep linking. */
+static int interface_vars_paired(const MGLIRSymbol *out, const MGLIRSymbol *in)
+{
+    if (out->location != UINT32_MAX && in->location != UINT32_MAX) {
+        return out->location == in->location;
+    }
+    return strcmp(out->name, in->name) == 0;
+}
+
 int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                           MGLSemaError **errors, uint32_t *error_count)
 {
@@ -4455,16 +4473,9 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
             if (sym_is_interface_block(sb)) {
                 continue;
             }
-            /* Ordinary in/out variables. */
-            if (strcmp(sa->name, sb->name) != 0) {
-                continue;
-            }
-            uint32_t both_ways =
-                ((sa->qualifiers & MGL_AST_Q_OUT) &&
-                 (sb->qualifiers & MGL_AST_Q_IN)) ||
-                ((sa->qualifiers & MGL_AST_Q_IN) &&
-                 (sb->qualifiers & MGL_AST_Q_OUT));
-            if (!both_ways) {
+            if (!(sa->qualifiers & MGL_AST_Q_OUT) ||
+                !(sb->qualifiers & MGL_AST_Q_IN) ||
+                !interface_vars_paired(sa, sb)) {
                 continue;
             }
             if (!ir_type_interface_equal(sa->type, sb->type)) {
@@ -4476,17 +4487,6 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                            ir_type_str(sb->type, tb, sizeof(tb)));
                 continue;
             }
-            /* Explicit locations are part of the cross-stage ABI.  An
-             * omitted location is resolved by the linker, but two explicit
-             * locations for the same named varying must agree. */
-            if (sa->location != UINT32_MAX && sb->location != UINT32_MAX &&
-                sa->location != sb->location) {
-                sema_error(&s, 0,
-                           "interface variable '%s' location mismatch "
-                           "across stages (%u vs %u)",
-                           sa->name, sa->location, sb->location);
-                continue;
-            }
             if (interface_qualifier_signature(sa) !=
                 interface_qualifier_signature(sb)) {
                 sema_error(&s, 0,
@@ -4494,6 +4494,28 @@ int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
                            "patch qualifier mismatch across stages",
                            sa->name);
             }
+        }
+    }
+
+    for (uint32_t j = 0; j < b->symbol_count; j++) {
+        const MGLIRSymbol *sb = b->symbols[j];
+        if (!interface_var_is_ordinary(sb) ||
+            !(sb->qualifiers & MGL_AST_Q_IN) || !sb->statically_used ||
+            strncmp(sb->name, "gl_", 3) == 0) {
+            continue;
+        }
+        int matched = 0;
+        for (uint32_t i = 0; i < a->symbol_count && !matched; i++) {
+            const MGLIRSymbol *sa = a->symbols[i];
+            matched = interface_var_is_ordinary(sa) &&
+                      (sa->qualifiers & MGL_AST_Q_OUT) &&
+                      interface_vars_paired(sa, sb);
+        }
+        if (!matched) {
+            sema_error(&s, 0,
+                       "input '%s' has no matching output in the previous "
+                       "stage",
+                       sb->name);
         }
     }
 

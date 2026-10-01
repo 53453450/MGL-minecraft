@@ -14737,12 +14737,13 @@ extern "C" void mglShaderFree(void *bytes) {
     free(bytes);
 }
 
-/* Sema both stages and compare their interfaces; `uniform_link` also
+/* Sema both stages; `varying_link` compares the outputs of `a` with the
+ * inputs of `b` (only valid when `a` feeds `b` directly), `uniform_link`
  * checks same-named uniforms (VS/FS). */
 static int airStagePairInterfaceCheck(const MGLTranslationUnit *atu, int astage,
                                       const MGLTranslationUnit *btu, int bstage,
-                                      bool uniform_link, char *err_buf,
-                                      size_t err_cap) {
+                                      bool varying_link, bool uniform_link,
+                                      char *err_buf, size_t err_cap) {
     if (!atu || !btu) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse failed");
         return -1;
@@ -14766,7 +14767,7 @@ static int airStagePairInterfaceCheck(const MGLTranslationUnit *atu, int astage,
     } else {
         MGLSemaError *le = nullptr;
         uint32_t lec = 0;
-        if (mglGLSLInterfaceCheck(&a, &b, &le, &lec)) {
+        if (varying_link && mglGLSLInterfaceCheck(&a, &b, &le, &lec)) {
             if (err_buf && err_cap && le && lec)
                 snprintf(err_buf, err_cap, "%s", le[0].message);
             rc = -1;
@@ -14792,8 +14793,8 @@ static int airStagePairInterfaceCheck(const MGLTranslationUnit *atu, int astage,
 
 static int airSourcePairInterfaceCheck(const char *asrc, int astage,
                                        const char *bsrc, int bstage,
-                                       bool uniform_link, char *err_buf,
-                                       size_t err_cap) {
+                                       bool varying_link, bool uniform_link,
+                                       char *err_buf, size_t err_cap) {
     if (!asrc || !bsrc) return -1;
     std::unique_ptr<char[]> alegacy(airPrepareLegacySource(asrc, astage));
     std::unique_ptr<char[]> blegacy(airPrepareLegacySource(bsrc, bstage));
@@ -14802,17 +14803,19 @@ static int airSourcePairInterfaceCheck(const char *asrc, int astage,
     MGLTranslationUnit *atu = mglGLSLParse(ae, strlen(ae));
     MGLTranslationUnit *btu = mglGLSLParse(be, strlen(be));
     int rc = airStagePairInterfaceCheck(atu, astage, btu, bstage,
-                                        uniform_link, err_buf, err_cap);
+                                        varying_link, uniform_link, err_buf,
+                                        err_cap);
     mglGLSLTranslationUnitDestroy(atu);
     mglGLSLTranslationUnitDestroy(btu);
     return rc;
 }
 
 extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
-                                       char *err_buf, size_t err_cap) {
+                                       int adjacent, char *err_buf,
+                                       size_t err_cap) {
     return airSourcePairInterfaceCheck(vs_src, MGL_STAGE_VERTEX, fs_src,
-                                       MGL_STAGE_FRAGMENT, true, err_buf,
-                                       err_cap);
+                                       MGL_STAGE_FRAGMENT, adjacent != 0, true,
+                                       err_buf, err_cap);
 }
 
 extern "C" int mglShaderTessInterfaceCheck(const char *tcs_src,
@@ -14820,21 +14823,22 @@ extern "C" int mglShaderTessInterfaceCheck(const char *tcs_src,
                                            char *err_buf, size_t err_cap) {
     return airSourcePairInterfaceCheck(tcs_src, MGL_STAGE_TESS_CONTROL,
                                        tes_src, MGL_STAGE_TESS_EVALUATION,
-                                       false, err_buf, err_cap);
+                                       true, false, err_buf, err_cap);
 }
 
 extern "C" int mglShaderInterfaceCheckTU(const MGLTranslationUnit *vs_tu,
                                          const MGLTranslationUnit *fs_tu,
-                                         char *err_buf, size_t err_cap) {
+                                         int adjacent, char *err_buf,
+                                         size_t err_cap) {
     return airStagePairInterfaceCheck(vs_tu, MGL_STAGE_VERTEX, fs_tu,
-                                      MGL_STAGE_FRAGMENT, true, err_buf,
-                                      err_cap);
+                                      MGL_STAGE_FRAGMENT, adjacent != 0, true,
+                                      err_buf, err_cap);
 }
 
 extern "C" int mglShaderTessInterfaceCheckTU(const MGLTranslationUnit *tcs_tu,
                                              const MGLTranslationUnit *tes_tu,
                                              char *err_buf, size_t err_cap) {
     return airStagePairInterfaceCheck(tcs_tu, MGL_STAGE_TESS_CONTROL, tes_tu,
-                                      MGL_STAGE_TESS_EVALUATION, false,
+                                      MGL_STAGE_TESS_EVALUATION, true, false,
                                       err_buf, err_cap);
 }

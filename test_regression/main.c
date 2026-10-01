@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 122
+#define MAX_TESTS 123
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -16673,6 +16673,135 @@ static int test_vertex_input_name_locations(unsigned char *pixels,
     return result;
 }
 
+/* Draw one point at the FBO centre with `program` and return its RGBA8. */
+static void iface_point_color(GLuint program, unsigned char out[4])
+{
+    static const float pos[2] = { 1.0f / REG_W, 1.0f / REG_H };
+    GLuint tex = 0, vao = 0, vbo = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &tex);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof pos, pos, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, out);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+}
+
+static GLint iface_link_status(const char *vs, const char *fs)
+{
+    GLuint v = compile_shader(GL_VERTEX_SHADER, vs);
+    GLuint f = compile_shader(GL_FRAGMENT_SHADER, fs);
+    GLint ok = -1;
+    if (v && f) {
+        GLuint p = glCreateProgram();
+        glAttachShader(p, v);
+        glAttachShader(p, f);
+        glLinkProgram(p);
+        glGetProgramiv(p, GL_LINK_STATUS, &ok);
+        glDeleteProgram(p);
+    }
+    if (v) glDeleteShader(v);
+    if (f) glDeleteShader(f);
+    return ok;
+}
+
+/* GL 4.6 §7.4.1: when both sides declare a location, outputs and inputs
+ * match by location, not by name; only a statically used input needs a
+ * matching output; only directly connected stages are compared. */
+static int test_stage_interface_location_matching(unsigned char *pixels,
+                                                  const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+#define IFACE_VS_HEAD "#version 450 core\n" \
+    "layout(location=0) in vec2 position;\n"
+#define IFACE_VS_MAIN(body) "void main() { " body \
+    " gl_PointSize = 1.0; gl_Position = vec4(position, 0.0, 1.0); }\n"
+#define IFACE_FS_HEAD "#version 450 core\nlayout(location=0) out vec4 frag;\n"
+
+    static const char *vs_swap = IFACE_VS_HEAD
+        "layout(location=0) out vec4 a;\n"
+        "layout(location=1) out vec4 b;\n"
+        IFACE_VS_MAIN("a = vec4(1, 0, 0, 1); b = vec4(0, 1, 0, 1);");
+    static const char *fs_swap = IFACE_FS_HEAD
+        "layout(location=1) in vec4 a;\n"
+        "layout(location=0) in vec4 b;\n"
+        "void main() { frag = a; }\n";
+    static const char *vs_red = IFACE_VS_HEAD
+        "layout(location=0) out vec4 v;\n"
+        IFACE_VS_MAIN("v = vec4(1, 0, 0, 1);");
+    static const char *fs_unused = IFACE_FS_HEAD
+        "layout(location=0) in vec4 v;\n"
+        "layout(location=3) in vec4 unused;\n"
+        "void main() { frag = v; }\n";
+    static const char *gs_conv =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices = 1) out;\n"
+        "layout(location=0) in vec4 v[];\n"
+        "layout(location=0) out vec2 w;\n"
+        "void main() { w = v[0].xy; gl_PointSize = 1.0;\n"
+        "  gl_Position = gl_in[0].gl_Position; EmitVertex(); }\n";
+    static const char *fs_gs = IFACE_FS_HEAD
+        "layout(location=0) in vec2 w;\n"
+        "void main() { frag = vec4(w, 0, 1); }\n";
+    struct { const char *name; GLuint prog; int want_red; } draws[3] = {
+        { "swapped locations", link_program(vs_swap, fs_swap), 0 },
+        { "unused unmatched input", link_program(vs_red, fs_unused), 1 },
+        { "VS/FS behind a GS", link_program_with_geometry(vs_red, gs_conv,
+                                                          fs_gs), 1 },
+    };
+    for (int i = 0; i < 3; i++) {
+        unsigned char px[4] = { 0 };
+        if (draws[i].prog) {
+            iface_point_color(draws[i].prog, px);
+            glDeleteProgram(draws[i].prog);
+        }
+        int ok = draws[i].want_red ? (px[0] > 200 && px[1] < 50)
+                                   : (px[0] < 50 && px[1] > 200);
+        if (!draws[i].prog || !ok) {
+            fprintf(stderr, "stage_interface_location_matching: %s link=%d "
+                    "rgb=(%u,%u,%u), want %s\n", draws[i].name,
+                    draws[i].prog != 0, px[0], px[1], px[2],
+                    draws[i].want_red ? "red" : "green");
+            fail = 1;
+        }
+    }
+
+    static const char *fs_loc1 = IFACE_FS_HEAD
+        "layout(location=1) in vec4 v;\n"
+        "void main() { frag = v; }\n";
+    static const char *fs_ivec = IFACE_FS_HEAD
+        "layout(location=0) flat in ivec4 v;\n"
+        "void main() { frag = vec4(v); }\n";
+    GLint loc_ok = iface_link_status(vs_red, fs_loc1);
+    GLint type_ok = iface_link_status(vs_red, fs_ivec);
+    if (loc_ok != GL_FALSE || type_ok != GL_FALSE) {
+        fprintf(stderr, "stage_interface_location_matching: link status "
+                "unmatched-input=%d type-mismatch=%d, want 0 0\n", loc_ok,
+                type_ok);
+        fail = 1;
+    }
+#undef IFACE_VS_HEAD
+#undef IFACE_VS_MAIN
+#undef IFACE_FS_HEAD
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -19425,6 +19554,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
+    SELF_CHECK_TEST("stage_interface_location_matching",
+                    test_stage_interface_location_matching),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

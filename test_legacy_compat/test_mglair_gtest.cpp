@@ -836,26 +836,26 @@ TEST(Metallib, NullArgumentsRejected) {
 
 TEST(Interface, MatchingStagesAccepted) {
     char err[512] = {0};
-    EXPECT_EQ(0, mglShaderInterfaceCheck(kVS, kFS, err, sizeof(err)));
+    EXPECT_EQ(0, mglShaderInterfaceCheck(kVS, kFS, 1, err, sizeof(err)));
 }
 
 TEST(Interface, TypeMismatchRejected) {
     char err[512] = {0};
-    EXPECT_NE(0, mglShaderInterfaceCheck(kVS, kFSMismatch, err,
+    EXPECT_NE(0, mglShaderInterfaceCheck(kVS, kFSMismatch, 1, err,
                                          sizeof(err)));
     EXPECT_FALSE(err[0] == 0);
 }
 
 TEST(Interface, MissingVaryingRejected) {
     char err[512] = {0};
-    EXPECT_NE(0, mglShaderInterfaceCheck(kVS, kFSMissing, err,
+    EXPECT_NE(0, mglShaderInterfaceCheck(kVS, kFSMissing, 1, err,
                                          sizeof(err)));
     EXPECT_FALSE(err[0] == 0);
 }
 
 TEST(Interface, NullSourcesRejected) {
     char err[512] = {0};
-    EXPECT_NE(0, mglShaderInterfaceCheck(nullptr, kFS, err, sizeof(err)));
+    EXPECT_NE(0, mglShaderInterfaceCheck(nullptr, kFS, 1, err, sizeof(err)));
 }
 
 /* ---- reflection exporter ---- */
