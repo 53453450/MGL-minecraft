@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 140
+#define MAX_TESTS 141
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -18506,6 +18506,190 @@ static int test_rt_respecify_orientation(unsigned char *pixels,
     return fail ? 1 : 0;
 }
 
+/* Rows 2, 5, 10 of a 16x16 texture through GetTexImage, ReadPixels on fbo
+ * and texelFetch into fsample; returns 1 when any path disagrees. */
+static int rt_image_rows_check(const char *tag, GLuint tex, GLuint fbo,
+                               GLuint fsample, GLuint pfetch, const int want[3])
+{
+    static const int rows[3] = {2, 5, 10};
+    static unsigned char img[16 * 16 * 4];
+    unsigned char rb[3][4] = {{0}}, sb[3][4] = {{0}};
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+    for (int k = 0; k < 3; k++)
+        glReadPixels(4, rows[k], 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, rb[k]);
+    glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(pfetch);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    for (int k = 0; k < 3; k++)
+        glReadPixels(4, rows[k], 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, sb[k]);
+    int bad = 0;
+    for (int k = 0; k < 3; k++) {
+        const unsigned t = img[(rows[k] * 16 + 4) * 4];
+        if (t != (unsigned)want[k] || rb[k][0] != want[k] || sb[k][0] != want[k]) {
+            fprintf(stderr, "rt_image_orientation: %s row %d tex %u read %u sample %u want %d\n",
+                    tag, rows[k], t, rb[k][0], sb[k][0], want[k]);
+            bad = 1;
+        }
+    }
+    return bad;
+}
+
+/* Image units address texels in GL coordinates (§8.26): imageLoad/imageStore
+ * on a texture that has been rendered to see GL rows, and later rendering
+ * keeps the stored rows. */
+static int test_rt_image_orientation(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    GLuint pgrad = link_program(vs,
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(floor(gl_FragCoord.y) / 255.0); }\n");
+    GLuint pfetch = link_program(vs,
+        "#version 330 core\n"
+        "uniform sampler2D s;\n"
+        "out vec4 c;\n"
+        "void main() { c = texelFetch(s, ivec2(gl_FragCoord.xy), 0); }\n");
+    /* Row 5 = row 2 + 100: a mirrored load reads row 13, a mirrored store
+     * lands on row 10. */
+    GLuint pcs = link_compute_program(
+        "#version 430 core\n"
+        "layout(local_size_x = 16) in;\n"
+        "layout(rgba8, binding = 0) uniform image2D img;\n"
+        "void main() {\n"
+        "  int x = int(gl_GlobalInvocationID.x);\n"
+        "  imageStore(img, ivec2(x, 5), imageLoad(img, ivec2(x, 2)) + vec4(100.0 / 255.0));\n"
+        "}\n");
+    GLuint pfs = link_program(vs,
+        "#version 430 core\n"
+        "layout(rgba8, binding = 0) uniform image2D img;\n"
+        "out vec4 c;\n"
+        "void main() {\n"
+        "  ivec2 p = ivec2(gl_FragCoord.xy);\n"
+        "  if (p.y == 0 && p.x < 16)\n"
+        "    imageStore(img, ivec2(p.x, 5), imageLoad(img, ivec2(p.x, 2)) + vec4(100.0 / 255.0));\n"
+        "  c = vec4(0.0);\n"
+        "}\n");
+    GLuint pread = link_compute_program(
+        "#version 430 core\n"
+        "layout(local_size_x = 16) in;\n"
+        "layout(rgba8, binding = 0) readonly uniform image2D img;\n"
+        "layout(rgba8, binding = 1) writeonly uniform image2D dst;\n"
+        "void main() {\n"
+        "  int x = int(gl_GlobalInvocationID.x);\n"
+        "  imageStore(dst, ivec2(x, 0), imageLoad(img, ivec2(x, 2)));\n"
+        "}\n");
+    if (!pgrad || !pfetch || !pcs || !pfs || !pread) return 2;
+    GLuint tdst = 0;
+    glGenTextures(1, &tdst);
+    glBindTexture(GL_TEXTURE_2D, tdst);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 16, 1);
+    GLuint vao = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint ttmp = 0;
+    GLuint fsample = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &ttmp);
+    if (!fsample) return 2;
+    glUseProgram(pfetch);
+    glUniform1i(glGetUniformLocation(pfetch, "s"), 0);
+
+    static const char *tags[3][2] = {
+        {"compute", "compute+render"},
+        {"fragment", "fragment+render"},
+        {"readonly", "readonly+render"},
+    };
+    int fail = 0;
+    for (int c = 0; c < 3; c++) {
+        GLuint tex = 0, fbo = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, 16, 16);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, tex, 0);
+        glViewport(0, 0, 16, 16);
+        glUseProgram(pgrad);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindImageTexture(0, tex, 0, GL_FALSE, 0,
+                           c == 2 ? GL_READ_ONLY : GL_READ_WRITE, GL_RGBA8);
+        if (c == 0) {
+            glUseProgram(pcs);
+            glDispatchCompute(1, 1, 1);
+        } else if (c == 1) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fsample);
+            glViewport(0, 0, REG_W, REG_H);
+            glUseProgram(pfs);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+        } else {
+            glBindImageTexture(1, tdst, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA8);
+            glUseProgram(pread);
+            glDispatchCompute(1, 1, 1);
+        }
+        /* A read-only image needs no barrier for later reads of `tex`. */
+        if (c == 2)
+            glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA8);
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+        glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+        static const int want_rw[3] = {2, 102, 10};
+        static const int want_ro[3] = {2, 5, 10};
+        const int *want = c == 2 ? want_ro : want_rw;
+        if (c == 2) {
+            unsigned char d[16 * 4] = {0};
+            glBindTexture(GL_TEXTURE_2D, tdst);
+            glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, d);
+            if (d[4 * 4] != 2) {
+                fprintf(stderr, "rt_image_orientation: readonly load %u want 2\n", d[4 * 4]);
+                fail |= 64;
+            }
+        }
+        if (rt_image_rows_check(tags[c][0], tex, fbo, fsample, pfetch, want))
+            fail |= 1 << (2 * c);
+
+        /* Render rows 0-3 again; the image-written rows must survive. */
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, 16, 16);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, 16, 4);
+        glUseProgram(pgrad);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDisable(GL_SCISSOR_TEST);
+        if (rt_image_rows_check(tags[c][1], tex, fbo, fsample, pfetch, want))
+            fail |= 2 << (2 * c);
+
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+    }
+
+    if (glGetError() != GL_NO_ERROR) fail |= 128;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glUseProgram(0);
+    glDeleteFramebuffers(1, &fsample);
+    glDeleteTextures(1, &ttmp);
+    glDeleteTextures(1, &tdst);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(pgrad);
+    glDeleteProgram(pfetch);
+    glDeleteProgram(pcs);
+    glDeleteProgram(pfs);
+    glDeleteProgram(pread);
+    while (glGetError() != GL_NO_ERROR) { }
+    if (fail) fprintf(stderr, "rt_image_orientation: fail=0x%x\n", fail);
+    return fail ? 1 : 0;
+}
+
 /* GL 4.6 §14.9.2: the scissor box is in window coordinates with (x, y) at
  * the lower left, for draws and clears alike. */
 static int test_scissor_offset(unsigned char *pixels, const char *out_path)
@@ -21611,6 +21795,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("scissor_offset", test_scissor_offset),
     SELF_CHECK_TEST("copy_tex_sub_image_orientation", test_copy_tex_sub_image_orientation),
     SELF_CHECK_TEST("rt_respecify_orientation", test_rt_respecify_orientation),
+    SELF_CHECK_TEST("rt_image_orientation", test_rt_image_orientation),
     SELF_CHECK_TEST("get_texture_image_forms", test_get_texture_image_forms),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),

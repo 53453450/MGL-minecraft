@@ -21,6 +21,7 @@
 #include "mgl_blit_pipelines.h"  /* scaled copy pipeline / compute pipeline / sampler */
 #include "mgl_texture_compat.h"  /* release sampled copy, data kind name, trace label */
 #include "mgl_rt_sync.h"
+#include "mgl_readback_policy.h"
 #include "mgl_region_value.h"  /* MGLSizeValue / mglBlitSize */
 #include "mgl_trace_log.h"      /* mglTraceLog / mglTraceLogIsEnabled */
 #include "mgl_thread_affinity.h" /* MGL_ASSERT_GL_THREAD */
@@ -536,7 +537,8 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
         }
     }
 
-    tex->mtl_gl_sampled_dirty_mip_mask &= ~copiedMask;
+    /* Bits for levels the copy does not have can never be cleared by a copy. */
+    tex->mtl_gl_sampled_dirty_mip_mask &= mipMask & ~copiedMask;
     if ((tex->mtl_gl_sampled_dirty_mip_mask & mipMask) == 0u) {
         tex->mtl_gl_sampled_write_version = tex->mtl_render_target_write_version;
     }
@@ -625,6 +627,37 @@ int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex)
                 tex->name);
         return 0;
     }
+    return 1;
+}
+
+int mglBlitUnflipRenderTargetStorageForImageAccess(void *renderer, Texture *tex)
+{
+    /* Views share the storage with textures whose orientation is tracked
+     * separately; those stay flipped. */
+    if (!tex || !tex->mtl_data ||
+        !mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
+                                        tex->mtl_render_target_write_version) ||
+        tex->view_root || tex->view_count ||
+        !mglBlitTextureCanUseGLSampledRenderTargetCopy(tex, tex->mtl_data)) {
+        return 1;
+    }
+    mglRendererEndRenderEncodingLocked(renderer);
+    MGLRendererStateAreas areas;
+    mglRendererFillStateAreas(renderer, &areas);
+    if (!mglBlitUpdateGLSampledRenderTargetCopy(renderer, tex, tex->mtl_data,
+                                                "rt_image_unflip") ||
+        mglRenderCopyMatchingTextureSubresourcesForCommandBufferOwner(
+            areas.command ? areas.command->currentCommandBufferOwner : NULL,
+            tex->mtl_gl_sampled_data, tex->mtl_data) != 0) {
+        fprintf(stderr, "MGL ERROR: texture %u: render-target storage unflip failed\n",
+                tex->name);
+        return 0;
+    }
+    /* The store now holds GL rows that exist only on the GPU; the next render
+     * pass flips it again through the first-write path. */
+    tex->mtl_render_target_write_version = 0u;
+    tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
+    tex->metal_data_authoritative = GL_TRUE;
     return 1;
 }
 

@@ -36,6 +36,7 @@
 #include "mgl_renderer_ports.h"     /* state areas + host entries */
 #include "mgl_renderer_backend.h"   /* mglRendererProcessBuffer, context lookup */
 #include "mgl_texture_bind.h"       /* mglRendererBindMTLTexture */
+#include "mgl_blit_sampled_copy.h"
 #include "mgl_compute_pipeline_cache.h" /* mglGetOrCreateProgramComputePipeline */
 #include "mgl_binding_stage.h"      /* MGLStageBindingCopyBackList */
 #include "mgl_buffer_slots.h"       /* kMGLMaxBufferSlots */
@@ -168,7 +169,9 @@ bool mglComputeRunDispatchOrchestrationLocked(
     for (size_t unit = 0; unit < TEXTURE_UNITS; unit++) {
         Texture *imageTexture = state->image_units[unit].tex;
         if (imageTexture) {
-            if (!mglRendererBindMTLTexture(renderer, imageTexture)) {
+            if (!mglRendererBindMTLTexture(renderer, imageTexture) ||
+                !mglBlitUnflipRenderTargetStorageForImageAccess(renderer,
+                                                                imageTexture)) {
                 return false;
             }
         }

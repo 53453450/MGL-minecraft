@@ -43,6 +43,11 @@ int mglBlitUpdateGLSampledRenderTargetCopy(void *renderer, Texture *tex,
  * marked rendered.  Returns 0 only when the flip was needed and failed. */
 int mglBlitFlipRenderTargetStorageForFirstWrite(void *renderer, Texture *tex);
 
+/* Image units address storage rows in GL order: before `tex` is bound to one,
+ * rendered storage is flipped back and marked not rendered.  Ends the current
+ * render encoder when work is needed.  Returns 0 only when that work failed. */
+int mglBlitUnflipRenderTargetStorageForImageAccess(void *renderer, Texture *tex);
+
 /* Refresh the GL-sampled copies of every color attachment of a framebuffer whose
  * render pass just ended (draw count/buffers were unused in the Objective-C
  * version, so they are gone). */
