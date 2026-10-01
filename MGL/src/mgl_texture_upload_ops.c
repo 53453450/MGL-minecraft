@@ -3012,7 +3012,6 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
     // PROPER FIX: Get original texture format and validate for AGX compatibility
     pixelFormat = mtlPixelFormatForGLTex(tex);
     int expandsSingleChannelSwizzle = mglTextureUploadNeedsSingleChannelSwizzle(tex);
-    int usesUploadSwizzleBake = mglTextureUploadNeedsSwizzleBake(tex);
     pixelFormat = mglRenderResolveUploadSwizzlePixelFormat(
         pixelFormat, expandsSingleChannelSwizzle ? 1 : 0,
         mglRenderSingleChannelSwizzleStoragePixelFormat(
@@ -3204,12 +3203,6 @@ void *mglTextureCreateFromGLTexture(void *renderer, Texture *tex)
               (unsigned long)tex_desc.usage,
               (unsigned long)tex_desc.storage_mode,
               (int)mipmapped);
-    }
-
-    if (tex->params.swizzled && !usesUploadSwizzleBake &&
-        !tex->is_render_target)
-    {
-        mglTextureSwizzleDescriptor(&tex_desc, tex);
     }
 
     void *texture;

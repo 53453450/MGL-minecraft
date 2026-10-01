@@ -137,12 +137,10 @@ void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture);
 
 /* === Swizzle ===
  *
- * GL texture objects carry swizzle state (TEXTURE_SWIZZLE_R/G/B/A).  Metal
- * applies swizzle at texture-creation time via MTLTextureSwizzleChannels.
- * These helpers translate GL swizzle enums to Metal and handle the special
- * case of single-channel R8 swizzle expansion at upload time. */
-size_t mglStoredColorComponentsForTexture(Texture *tex);
-uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
+ * GL texture objects carry swizzle state (TEXTURE_SWIZZLE_R/G/B/A).  Sampling
+ * applies it through a swizzled texture view; Metal rejects a swizzle in the
+ * descriptor of a ShaderWrite texture.  The mglTextureUploadNeeds*Swizzle*
+ * helpers below cover the formats whose swizzle is baked at upload time. */
 
 /* Texture unit a sampled resource resolves to for a program / Metal binding /
  * stage (former -[MGLRenderer textureUnitForSampledResource:program:
@@ -151,11 +149,6 @@ uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle);
 GLuint mglTextureUnitForSampledResource(MGLShaderResource *sampled_resource,
                                         Program *program, GLuint metal_binding,
                                         int stage);
-
-/* Fill the descriptor's swizzle fields from a texture's GL swizzle parameters
- * (former -[MGLRenderer swizzleTexDesc:forTex:]). */
-void mglTextureSwizzleDescriptor(MGLRenderTextureDescriptorState *desc,
-                                 Texture *tex);
 
 /* Release the GL-sampled render-target copy a texture keeps and clear its
  * bookkeeping (former -[MGLRenderer releaseGLSampledRenderTargetCopyForTexture:]). */

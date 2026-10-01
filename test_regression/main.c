@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 108
+#define MAX_TESTS 109
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,81 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §15.2.1: TEXTURE_SWIZZLE_* reorders the looked-up components. */
+static int test_texture_swizzle_sampling(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "uniform sampler2D t;\n"
+        "out vec4 c;\n"
+        "void main() { c = texture(t, vec2(0.5)); }\n";
+    static const unsigned char texel[4] = {10, 20, 30, 40};
+    static const GLint swz[4] = {GL_BLUE, GL_ALPHA, GL_ZERO, GL_ONE};
+    static const int want[4] = {30, 40, 0, 255};
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0, target = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &target);
+    if (!fbo) return 2;
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "t"), 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    int result = 0;
+    /* Pass 0 sets the swizzle before the upload, pass 1 after a draw. */
+    for (int pass = 0; pass < 2; pass++) {
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        if (pass == 0) glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swz);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, texel);
+        if (pass == 1) {
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swz);
+        }
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        unsigned char px[4] = {0};
+        glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        GLenum err = glGetError();
+        for (int ch = 0; ch < 4; ch++) {
+            if (err != GL_NO_ERROR || abs((int)px[ch] - want[ch]) > 1) {
+                fprintf(stderr, "texture_swizzle_sampling: pass %d err=0x%x got "
+                        "%u,%u,%u,%u want 30,40,0,255\n", pass, err, px[0],
+                        px[1], px[2], px[3]);
+                result = 1;
+                break;
+            }
+        }
+        glDeleteTextures(1, &tex);
+    }
+
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &target);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* Points then triangles with the same program and no state change in between:
  * the triangle draw must not reuse the point-topology pipeline (Metal API
  * validation rejects that; run with MTL_DEBUG_LAYER=1 to see it). */
@@ -17945,6 +18020,8 @@ static const TestCase TESTS[] = {
                     test_compressed_texture_sampling),
     SELF_CHECK_TEST("draw_mode_topology_switch",
                     test_draw_mode_topology_switch),
+    SELF_CHECK_TEST("texture_swizzle_sampling",
+                    test_texture_swizzle_sampling),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

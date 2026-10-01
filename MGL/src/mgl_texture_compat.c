@@ -39,22 +39,6 @@ void *mglSampledTextureViewForBaseLevel(Texture *ptr, void *texture)
     return texture;
 }
 
-size_t mglStoredColorComponentsForTexture(Texture *tex)
-{
-    if (!tex) {
-        return 4;
-    }
-    return (size_t)mglRenderStoredColorComponents(
-        (uint32_t)tex->internalformat);
-}
-
-uint32_t mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
-{
-    size_t components = mglStoredColorComponentsForTexture(tex);
-    return mglRenderMTLSwizzleForGLSwizzle(
-        (uint32_t)swizzle, (uint32_t)components);
-}
-
 bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
 {
     if (!tex || !tex->params.swizzled) {
@@ -418,19 +402,6 @@ GLuint mglTextureUnitForSampledResource(MGLShaderResource *sampled_resource,
     }
 
     return mglRenderDefaultSamplerUnit(defaultUnit, TEXTURE_UNITS);
-}
-
-void mglTextureSwizzleDescriptor(MGLRenderTextureDescriptorState *tex_desc,
-                                 Texture *tex)
-{
-    if (!tex_desc || !tex) {
-        return;
-    }
-    tex_desc->swizzle_red = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_r);
-    tex_desc->swizzle_green = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_g);
-    tex_desc->swizzle_blue = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_b);
-    tex_desc->swizzle_alpha = mglMTLSwizzleForGLSwizzle(tex, tex->params.swizzle_a);
-    tex_desc->has_swizzle = 1u;
 }
 
 void mglTextureReleaseGLSampledCopy(Texture *tex)

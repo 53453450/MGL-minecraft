@@ -881,9 +881,7 @@ typedef struct MGLRenderLevelUploadPrep_t {
  * expands GL_R8 1B/px → RGBA8 via the four swizzle enums; malloc'd
  * result, NULL on bad args / non-R8 / size cap. */
 uint8_t mglRenderResolveR8SwizzledComponent(uint32_t swizzle, uint8_t red);
-/* stored color-component count for an internal format.
- * Mirrors mglStoredColorComponentsForTexture after the null-tex check
- * (null stays in ObjC and returns 4).  Unknown formats → 4. */
+/* stored color-component count for an internal format.  Unknown formats → 4. */
 uint32_t mglRenderStoredColorComponents(uint32_t internal_format);
 
 enum {
