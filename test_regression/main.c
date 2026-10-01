@@ -17108,10 +17108,27 @@ static int test_uniform_array_partial_upload(unsigned char *pixels,
         snprintf(nm, sizeof nm, "u[%d]", i);
         loc[i] = glGetUniformLocation(p, nm);
     }
-    if (loc[0] < 0 || loc[1] != loc[0] + 1 || loc[3] != loc[0] + 3) {
+    if (loc[0] < 0 || loc[1] != loc[0] + 1 || loc[3] != loc[0] + 3 ||
+        glGetUniformLocation(p, "u") != loc[0]) {
         fprintf(stderr, "uniform_array_partial_upload: locations %d %d %d %d\n",
                 loc[0], loc[1], loc[2], loc[3]);
         return 1;
+    }
+    /* GL 4.6 §7.3.1.1: an array of basic types is reported as "u[0]". */
+    char active[16] = { 0 };
+    char resname[16] = { 0 };
+    GLint asize = 0, maxlen = 0;
+    GLenum atype = 0;
+    glGetActiveUniform(p, 0, sizeof active, NULL, &asize, &atype, active);
+    glGetProgramResourceName(p, GL_UNIFORM, 0, sizeof resname, NULL, resname);
+    glGetProgramiv(p, GL_ACTIVE_UNIFORM_MAX_LENGTH, &maxlen);
+    int fail = 0;
+    if (strcmp(active, "u[0]") != 0 || strcmp(resname, "u[0]") != 0 ||
+        asize != 4 || atype != GL_FLOAT || maxlen != 5) {
+        fprintf(stderr, "uniform_array_partial_upload: active '%s' resource "
+                "'%s' size %d type 0x%x maxlen %d\n", active, resname, asize,
+                atype, maxlen);
+        fail = 1;
     }
 
     static const struct {
@@ -17126,7 +17143,6 @@ static int test_uniform_array_partial_upload(unsigned char *pixels,
         { 0, 2, { 0.0f, 1.0f },   { 0.0f, 1.0f, 0.25f, 0.75f } },
     };
     static const float all[4] = { 0.1f, 0.2f, 0.3f, 0.4f };
-    int fail = 0;
     glUseProgram(p);
     glUniform1fv(loc[0], 4, all);
     for (size_t s = 0; s < sizeof steps / sizeof steps[0]; s++) {

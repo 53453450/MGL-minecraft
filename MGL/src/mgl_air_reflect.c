@@ -1672,8 +1672,10 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 }
                 SpirvUBOMember *u = &leaves[leaf_count++];
                 memset(u, 0, sizeof(*u));
-                u->name = strdup(nm);
-                u->query_name = u->name ? strdup(nm) : NULL;
+                u->name = (ty->kind == MGLIR_TYPE_ARRAY)
+                              ? air_format("%s[0]", nm)
+                              : strdup(nm);
+                u->query_name = u->name ? strdup(u->name) : NULL;
                 if (!u->name || !u->query_name) {
                     free((void *)u->name);
                     free((void *)u->query_name);
