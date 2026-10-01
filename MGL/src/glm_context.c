@@ -539,6 +539,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(var.polygon_mode) = GL_FILL;
     STATE(var.primitive_restart_index) = 0u;
     STATE(var.provoking_vertex) = GL_LAST_VERTEX_CONVENTION;
+    STATE(var.clamp_read_color) = GL_FIXED_ONLY;
     STATE(var.polygon_offset_factor) = 0.0f;
     STATE(var.polygon_offset_units) = 0.0f;
 

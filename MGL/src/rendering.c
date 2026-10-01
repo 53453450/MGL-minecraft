@@ -2378,6 +2378,68 @@ static GLuint mglFloatReadComponentCount(GLenum format)
     }
 }
 
+/* GL 4.6 §18.2.8: read color clamping of a floating-point read buffer for the
+ * float-valued pack types (other types are always clamped by the pack path). */
+static void mglClampReadColorFloat(uint8_t *pixels, size_t pitch, GLsizei width,
+                                   GLsizei height, GLuint pixel_size, GLenum type)
+{
+    size_t row_bytes = (size_t)width * pixel_size;
+    for (GLsizei row = 0; row < height; row++) {
+        uint8_t *p = pixels + (size_t)row * pitch;
+        switch (type) {
+            case GL_FLOAT:
+                for (size_t i = 0; i + 4u <= row_bytes; i += 4u) {
+                    float v;
+                    memcpy(&v, p + i, 4u);
+                    v = v > 1.0f ? 1.0f : (v >= 0.0f ? v : 0.0f);
+                    memcpy(p + i, &v, 4u);
+                }
+                break;
+            case GL_HALF_FLOAT:
+                for (size_t i = 0; i + 2u <= row_bytes; i += 2u) {
+                    uint16_t h;
+                    memcpy(&h, p + i, 2u);
+                    float v = mglHalfToFloat(h);
+                    if (!(v >= 0.0f))
+                        h = 0x0000u;
+                    else if (v > 1.0f)
+                        h = 0x3C00u;
+                    memcpy(p + i, &h, 2u);
+                }
+                break;
+            case GL_UNSIGNED_INT_10F_11F_11F_REV:
+                /* Unsigned floats order like their bit patterns; 1.0 is
+                 * 0x3C0 (11-bit) and 0x1E0 (10-bit). */
+                for (size_t i = 0; i + 4u <= row_bytes; i += 4u) {
+                    uint32_t u, r, g, b;
+                    memcpy(&u, p + i, 4u);
+                    r = u & 0x7FFu;
+                    g = (u >> 11) & 0x7FFu;
+                    b = u >> 22;
+                    u = (r > 0x3C0u ? 0x3C0u : r) |
+                        ((g > 0x3C0u ? 0x3C0u : g) << 11) |
+                        ((b > 0x1E0u ? 0x1E0u : b) << 22);
+                    memcpy(p + i, &u, 4u);
+                }
+                break;
+            case GL_UNSIGNED_INT_5_9_9_9_REV:
+                for (size_t i = 0; i + 4u <= row_bytes; i += 4u) {
+                    uint32_t u;
+                    double r, g, b;
+                    memcpy(&u, p + i, 4u);
+                    mglUnpackSharedExp(u, &r, &g, &b);
+                    u = mglPackRGBToSharedExp(r > 1.0 ? 1.0 : r,
+                                              g > 1.0 ? 1.0 : g,
+                                              b > 1.0 ? 1.0 : b);
+                    memcpy(p + i, &u, 4u);
+                }
+                break;
+            default:
+                return;
+        }
+    }
+}
+
 /* Returns true for non-integer color (non-depth/stencil) read formats. */
 static bool mglIsColorReadFormat(GLenum format)
 {
@@ -3285,6 +3347,11 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                                       type,
                                       level,
                                       slice);
+        if (STATE(var.clamp_read_color) == GL_TRUE &&
+            mglInternalFormatIsFloat(readColorTexture->internalformat)) {
+            mglClampReadColorFloat((uint8_t *)pixels, pack_layout.dst_pitch,
+                                   width, height, pixel_size, type);
+        }
         if (STATE(pack.swap_bytes) == GL_TRUE) {
             size_t elem_size = mglPixelTypeDatumBytes(type);
             if (elem_size > 1u) {

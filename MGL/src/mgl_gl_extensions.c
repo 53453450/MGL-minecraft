@@ -1935,10 +1935,12 @@ void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
 
 void mglClampColor(GLMContext ctx, GLenum target, GLenum clamp)
 {
-	// Clamp color - no-op, clamping handled automatically
-	(void)ctx;
-	(void)target;
-	(void)clamp;
+	if (target != GL_CLAMP_READ_COLOR ||
+	    (clamp != GL_TRUE && clamp != GL_FALSE && clamp != GL_FIXED_ONLY)) {
+		ERROR_RETURN(GL_INVALID_ENUM);
+		return;
+	}
+	STATE(var.clamp_read_color) = clamp;
 }
 
 void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLint *value)

@@ -67,6 +67,9 @@ uint32_t mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
  * required color-renderable format list used by the CTS packed_pixels test. */
 GLboolean mglIsColorRenderableInternalFormat(GLint internalformat);
 
+/* True for floating-point (including packed float) internal formats. */
+GLboolean mglInternalFormatIsFloat(GLenum internalformat);
+
 float mglHalfToFloat(uint16_t value);
 uint16_t mglFloatToHalf(float value);
 

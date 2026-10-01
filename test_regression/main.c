@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 118
+#define MAX_TESTS 119
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -15674,6 +15674,99 @@ static int test_object_labels(unsigned char *pixels, const char *out_path)
     return fail;
 }
 
+static GLuint clamp_read_fbo(GLenum internalformat, const GLfloat clear[4],
+                             GLuint *out_tex)
+{
+    GLuint fbo, tex;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexStorage2D(GL_TEXTURE_2D, 1, internalformat, 4, 4);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           tex, 0);
+    *out_tex = tex;
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "clamp_read_color: 0x%x FBO incomplete\n",
+                internalformat);
+        return fbo;
+    }
+    glClearBufferfv(GL_COLOR, 0, clear);
+    return fbo;
+}
+
+/* GL 4.6 §18.2.8: CLAMP_READ_COLOR state and ReadPixels final conversion. */
+static int test_clamp_read_color(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int fail = 0;
+#define CRC_EXPECT(cond, ...) do { if (!(cond)) { \
+        fprintf(stderr, "clamp_read_color: " __VA_ARGS__); \
+        fprintf(stderr, "\n"); fail = 1; } } while (0)
+#define CRC_NEAR(a, b) ((a) - (b) < 1e-3f && (b) - (a) < 1e-3f)
+    while (glGetError() != GL_NO_ERROR) { }
+
+    GLint initial = 0, set_true = 0;
+    glGetIntegerv(GL_CLAMP_READ_COLOR, &initial);
+    glClampColor(GL_CLAMP_READ_COLOR, GL_TRUE);
+    glGetIntegerv(GL_CLAMP_READ_COLOR, &set_true);
+    GLenum e_ok = glGetError();
+    glClampColor(0x1234, GL_TRUE);
+    GLenum e_target = glGetError();
+    glClampColor(GL_CLAMP_READ_COLOR, 0x1234);
+    GLenum e_clamp = glGetError();
+    CRC_EXPECT(initial == GL_FIXED_ONLY && set_true == GL_TRUE &&
+               e_ok == GL_NO_ERROR && e_target == GL_INVALID_ENUM &&
+               e_clamp == GL_INVALID_ENUM,
+               "state: initial=0x%x true=0x%x ok=0x%x target=0x%x clamp=0x%x",
+               initial, set_true, e_ok, e_target, e_clamp);
+
+    const GLfloat fclear[4] = { 2.0f, -0.5f, 0.25f, 1.5f };
+    GLuint ftex, ffbo = clamp_read_fbo(GL_RGBA32F, fclear, &ftex);
+    GLfloat f[4];
+    glClampColor(GL_CLAMP_READ_COLOR, GL_FIXED_ONLY);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, f);
+    CRC_EXPECT(CRC_NEAR(f[0], 2.0f) && CRC_NEAR(f[1], -0.5f) &&
+               CRC_NEAR(f[3], 1.5f),
+               "RGBA32F FIXED_ONLY: %g %g %g %g", f[0], f[1], f[2], f[3]);
+    glClampColor(GL_CLAMP_READ_COLOR, GL_TRUE);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, f);
+    CRC_EXPECT(CRC_NEAR(f[0], 1.0f) && CRC_NEAR(f[1], 0.0f) &&
+               CRC_NEAR(f[2], 0.25f) && CRC_NEAR(f[3], 1.0f),
+               "RGBA32F TRUE: %g %g %g %g", f[0], f[1], f[2], f[3]);
+    GLushort h[4] = { 0 };
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_HALF_FLOAT, h);
+    CRC_EXPECT(h[0] == 0x3C00 && h[1] == 0x0000 && h[2] == 0x3400 &&
+               h[3] == 0x3C00,
+               "RGBA32F TRUE half: %04x %04x %04x %04x", h[0], h[1], h[2],
+               h[3]);
+    glClampColor(GL_CLAMP_READ_COLOR, GL_FALSE);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, f);
+    CRC_EXPECT(CRC_NEAR(f[0], 2.0f) && CRC_NEAR(f[1], -0.5f),
+               "RGBA32F FALSE: %g %g %g %g", f[0], f[1], f[2], f[3]);
+
+    const GLfloat pclear[4] = { 2.0f, 0.5f, 3.0f, 1.0f };
+    GLuint ptex, pfbo = clamp_read_fbo(GL_R11F_G11F_B10F, pclear, &ptex);
+    GLuint packed = 0;
+    glClampColor(GL_CLAMP_READ_COLOR, GL_TRUE);
+    glReadPixels(0, 0, 1, 1, GL_RGB, GL_UNSIGNED_INT_10F_11F_11F_REV, &packed);
+    CRC_EXPECT((packed & 0x7FFu) == 0x3C0u &&
+               ((packed >> 11) & 0x7FFu) == 0x380u &&
+               (packed >> 22) == 0x1E0u,
+               "R11F_G11F_B10F TRUE: 0x%08x", packed);
+
+    glClampColor(GL_CLAMP_READ_COLOR, GL_FIXED_ONLY);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    GLuint fbos[2] = { ffbo, pfbo }, texs[2] = { ftex, ptex };
+    glDeleteFramebuffers(2, fbos);
+    glDeleteTextures(2, texs);
+    while (glGetError() != GL_NO_ERROR) { }
+#undef CRC_NEAR
+#undef CRC_EXPECT
+    return fail;
+}
+
 /* GL 4.6 §10.2.1: every VertexAttrib* form sets the current generic value. */
 static int test_current_vertex_attrib_forms(unsigned char *pixels,
                                             const char *out_path)
@@ -18992,6 +19085,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("debug_group_stack", test_debug_group_stack),
     SELF_CHECK_TEST("debug_message_control", test_debug_message_control),
     SELF_CHECK_TEST("object_labels", test_object_labels),
+    SELF_CHECK_TEST("clamp_read_color", test_clamp_read_color),
     SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("readback_row_order", test_readback_row_order),
     SELF_CHECK_TEST("rt_upload_orientation", test_rt_upload_orientation),

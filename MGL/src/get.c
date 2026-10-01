@@ -904,6 +904,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x9126: RET_TYPE_VAR(type, context_profile_mask); break; // GL_CONTEXT_PROFILE_MASK
 #endif
         case 0x8E4F: RET_TYPE_VAR(type, provoking_vertex); break; // GL_PROVOKING_VERTEX
+        case 0x891C: RET_TYPE_VAR(type, clamp_read_color); break; // GL_CLAMP_READ_COLOR
         case 0x9111: RET_TYPE_VAR(type, max_server_wait_timeout); break; // GL_MAX_SERVER_WAIT_TIMEOUT
         case 0x8D57: RET_TYPE_VAR(type, max_samples); break; // GL_MAX_SAMPLES
         case 0x8E59: RET_TYPE_VAR(type, max_sample_mask_words); break; // GL_MAX_SAMPLE_MASK_WORDS
@@ -1908,7 +1909,7 @@ static GLboolean mglInternalFormatIsSignedNormalized(GLenum internalformat)
     }
 }
 
-static GLboolean mglInternalFormatIsFloat(GLenum internalformat)
+GLboolean mglInternalFormatIsFloat(GLenum internalformat)
 {
     switch (mglCanonicalInternalFormat(internalformat)) {
         case GL_R16F:

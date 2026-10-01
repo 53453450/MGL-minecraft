@@ -388,6 +388,7 @@ typedef struct GLMParams_t {
     GLuint max_fragment_input_components;
     GLuint context_profile_mask;
     GLuint provoking_vertex;
+    GLuint clamp_read_color;
     GLuint max_server_wait_timeout;
     GLuint max_sample_mask_words;
     GLuint sample_mask_value;
