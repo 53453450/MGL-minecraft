@@ -448,6 +448,64 @@ static void test_point_mode_fo_distinct_interior(void)
     expect(n_bump > n_deg, "FO 1+ε interiors are extra point_mode vertices");
 }
 
+static int coord_eq(MGLTessCoord a, MGLTessCoord b)
+{
+    return feq(a.u, b.u) && feq(a.v, b.v) && feq(a.w, b.w);
+}
+
+/* §11.2.2: point_mode emits each distinct vertex of the primitive stream
+ * exactly once. */
+static void test_point_mode_matrix(void)
+{
+    const uint32_t modes[] = {GL_TRIANGLES, GL_QUADS, GL_ISOLINES};
+    const uint32_t spacings[] = {GL_EQUAL, GL_FRACTIONAL_ODD, GL_FRACTIONAL_EVEN};
+    const float levels[] = {1.f, 2.f, 3.5f, 5.f};
+    for (unsigned m = 0; m < 3; m++)
+    for (unsigned s = 0; s < 3; s++)
+    for (unsigned l = 0; l < 4; l++) {
+        MGLTessFactorInput prim = make_in(modes[m], spacings[s], GL_CCW, 0,
+            levels[l], levels[l] + 1.f, 2.f, 3.f, levels[l], levels[l]);
+        MGLTessFactorInput pts = prim;
+        pts.point_mode = 1;
+        const uint32_t np = mglTessDomainVertexCount(&prim);
+        const uint32_t nq = mglTessDomainVertexCount(&pts);
+        MGLTessCoord *a = (MGLTessCoord *)malloc((np + 1u) * sizeof(*a));
+        MGLTessCoord *b = (MGLTessCoord *)malloc((nq + 1u) * sizeof(*b));
+        expect(a && b, "allocate point_mode matrix buffers");
+        if (!a || !b) { free(a); free(b); return; }
+        expect(mglTessGenerateDomain(&prim, a, np) == np &&
+               mglTessGenerateDomain(&pts, b, nq) == nq,
+               "point_mode matrix: generate both streams");
+        expect(np % (modes[m] == GL_ISOLINES ? 2u : 3u) == 0,
+               "point_mode matrix: whole primitives");
+        uint32_t unique = 0;
+        for (uint32_t i = 0; i < np; i++) {
+            int seen = 0;
+            for (uint32_t j = 0; j < i && !seen; j++) seen = coord_eq(a[i], a[j]);
+            if (seen) continue;
+            unique++;
+            int found = 0;
+            for (uint32_t j = 0; j < nq && !found; j++) found = coord_eq(a[i], b[j]);
+            expect(found, "point_mode matrix: primitive vertex present in point stream");
+        }
+        /* 1+ε inner rings sit within ε of the outer ring: distinct vertices
+         * at coincident coordinates (test_point_mode_fo_distinct_interior). */
+        MGLTessNormalizedFactors n;
+        mglTessNormalizeFactors(&prim, &n);
+        if (n.inner_eff[0] != mglTessRoundLevelForSpacing(spacings[s], n.inner_ceil[0])) {
+            free(a);
+            free(b);
+            continue;
+        }
+        for (uint32_t i = 0; i < nq; i++)
+            for (uint32_t j = 0; j < i; j++)
+                expect(!coord_eq(b[i], b[j]), "point_mode matrix: no duplicate points");
+        expect(unique == nq, "point_mode matrix: point count == distinct vertices");
+        free(a);
+        free(b);
+    }
+}
+
 int main(void)
 {
     test_round_spacing();
@@ -466,6 +524,7 @@ int main(void)
     test_invariance_rules();
     test_quad_inner_axis_mapping();
     test_point_mode_fo_distinct_interior();
+    test_point_mode_matrix();
     if (g_fails) {
         fprintf(stderr, "test_tess_domain: %d failure(s)\n", g_fails);
         return 1;
