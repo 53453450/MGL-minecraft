@@ -195,6 +195,23 @@ static inline GLuint mglGLTypeElementByteSize(GLuint gl_type)
     return (GLuint)mglRenderGLTypeElementByteSize((uint64_t)gl_type);
 }
 
+/* glUniformMatrix*fv stores every float matrix with 16-byte columns, so one
+ * element of a plain matrix uniform occupies columns * 16 bytes.  Returns 0
+ * for non-matrix types. */
+static inline GLuint mglPlainUniformMatrixElementBytes(GLuint gl_type)
+{
+    switch (gl_type) {
+        case GL_FLOAT_MAT2: case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT2x4:
+            return 32u;
+        case GL_FLOAT_MAT3: case GL_FLOAT_MAT3x2: case GL_FLOAT_MAT3x4:
+            return 48u;
+        case GL_FLOAT_MAT4: case GL_FLOAT_MAT4x2: case GL_FLOAT_MAT4x3:
+            return 64u;
+        default:
+            return 0u;
+    }
+}
+
 #ifdef __cplusplus
 }
 #endif

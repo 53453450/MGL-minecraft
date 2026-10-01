@@ -2060,17 +2060,19 @@ static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
     }
 }
 
-/* mat3 CPU slots are either Metal-packed (3x float4 = 12 words) or tightly
- * packed GL layout (9 words). Packed UniformMatrix3fv uploads are multiples
- * of 12; detect stride from the slot's logical upload size, not Buffer.size,
- * which may include allocation padding. When the size is a multiple of both
- * (e.g. 36 words), prefer 12 -- that is the valid packed-mat3 upload path. */
-static GLuint mglMat3ElementStrideWords(size_t avail_words)
+/* Matrix CPU slots normally hold 16-byte columns (padded_words per element);
+ * mat3 may also be tightly packed GL layout (tight_words).  Detect from the
+ * slot's logical upload size, not Buffer.size, which may include allocation
+ * padding.  When the size is a multiple of both (e.g. 36 words for mat3),
+ * prefer the padded layout -- that is the normal upload path. */
+static GLuint mglMatrixElementStrideWords(size_t avail_words,
+                                          GLuint padded_words,
+                                          GLuint tight_words)
 {
-    if (avail_words >= 12u && (avail_words % 12u) == 0u) {
-        return 12u;
+    if (avail_words >= padded_words && (avail_words % padded_words) == 0u) {
+        return padded_words;
     }
-    return 9u;
+    return tight_words;
 }
 
 /* Read back one element of a plain (non-sampler) default-block uniform from
@@ -2148,28 +2150,32 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
     Buffer *buf = NULL;
     size_t first = 0;
     GLuint stored_words = comps;
+    const GLuint padded_words =
+        mglPlainUniformMatrixElementBytes(gl_type) / sizeof(uint32_t);
 
     Buffer *direct = ptr->plain_uniform_buffers[location].buf;
     if (direct && direct->data.buffer_data && direct->size > 0) {
         buf = direct;
         first = 0;
-        if (gl_type == GL_FLOAT_MAT3) {
+        if (padded_words) {
             GLsizeiptr logical_size =
                 ptr->plain_uniform_buffers[location].size;
             size_t avail = logical_size > 0
                 ? (size_t)logical_size / sizeof(uint32_t) : 0u;
-            stored_words = mglMat3ElementStrideWords(avail);
+            stored_words =
+                mglMatrixElementStrideWords(avail, padded_words, comps);
         }
     } else if (element > 0 && base_loc < MAX_BINDABLE_BUFFERS) {
         Buffer *base_buf = ptr->plain_uniform_buffers[base_loc].buf;
         if (base_buf && base_buf->data.buffer_data && base_buf->size > 0) {
             buf = base_buf;
-            if (gl_type == GL_FLOAT_MAT3) {
+            if (padded_words) {
                 GLsizeiptr logical_size =
                     ptr->plain_uniform_buffers[base_loc].size;
                 size_t avail = logical_size > 0
                     ? (size_t)logical_size / sizeof(uint32_t) : 0u;
-                stored_words = mglMat3ElementStrideWords(avail);
+                stored_words =
+                    mglMatrixElementStrideWords(avail, padded_words, comps);
             }
             first = (size_t)element * stored_words;
         }
@@ -2185,10 +2191,13 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
                 tmp[w] = src[first + w];
             }
         }
-        if (gl_type == GL_FLOAT_MAT3 && stored_words == 12u) {
-            for (GLuint col = 0; col < 3u; col++) {
-                for (GLuint row = 0; row < 3u; row++) {
-                    out[col * 3u + row] = tmp[col * 4u + row];
+        if (padded_words && stored_words == padded_words &&
+            padded_words != comps) {
+            GLuint cols = padded_words / 4u;
+            GLuint rows = comps / cols;
+            for (GLuint col = 0; col < cols; col++) {
+                for (GLuint row = 0; row < rows; row++) {
+                    out[col * rows + row] = tmp[col * 4u + row];
                 }
             }
         } else {
@@ -3087,6 +3096,8 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     GLuint glType = mglPlainUniformTypeAtLocation(program, location,
                                                   &arrayBase, &arraySize);
     GLsizeiptr elemBytes = mglPlainUniformScalarVectorBytes(glType);
+    if (elemBytes == 0)
+        elemBytes = mglPlainUniformMatrixElementBytes(glType);
     if (arraySize > 1 && elemBytes > 0 && size > elemBytes) {
         GLsizeiptr n = size / elemBytes;
         GLsizeiptr remaining = (GLsizeiptr)(arrayBase + arraySize - location);

@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 128
+#define MAX_TESTS 129
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -17193,6 +17193,102 @@ static int test_uniform_array_partial_upload(unsigned char *pixels,
     return fail;
 }
 
+/* GL 4.6 §7.6.1 for matrix arrays: writing one element through its own
+ * location updates only that element. */
+static int test_uniform_matrix_array_element(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform mat2 m2[3];\n"
+        "uniform mat3 m3[2];\n"
+        "uniform mat4 m4[2];\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() {\n"
+        "  frag = vec4(m2[1][1][0], m2[2][0][0], m3[1][2][1], m4[1][2][3]);\n"
+        "}\n";
+    GLuint p = link_program(vs, fs);
+    if (!p) return 3;
+    glUseProgram(p);
+    GLint l2[3], l3[2], l4[2];
+    char nm[16];
+    for (int i = 0; i < 3; i++) {
+        snprintf(nm, sizeof nm, "m2[%d]", i);
+        l2[i] = glGetUniformLocation(p, nm);
+    }
+    for (int i = 0; i < 2; i++) {
+        snprintf(nm, sizeof nm, "m3[%d]", i);
+        l3[i] = glGetUniformLocation(p, nm);
+        snprintf(nm, sizeof nm, "m4[%d]", i);
+        l4[i] = glGetUniformLocation(p, nm);
+    }
+    if (l2[0] < 0 || l2[2] != l2[0] + 2 || l3[1] != l3[0] + 1 ||
+        l4[1] != l4[0] + 1) {
+        fprintf(stderr, "uniform_matrix_array_element: locations m2 %d/%d "
+                "m3 %d/%d m4 %d/%d\n", l2[0], l2[2], l3[0], l3[1], l4[0],
+                l4[1]);
+        return 1;
+    }
+
+    GLfloat m2all[12], m3all[18], m4all[32];
+    for (int i = 0; i < 12; i++) m2all[i] = 0.01f * (GLfloat)i;
+    for (int i = 0; i < 18; i++) m3all[i] = 0.01f * (GLfloat)i;
+    for (int i = 0; i < 32; i++) m4all[i] = 0.01f * (GLfloat)i;
+    glUniformMatrix2fv(l2[0], 3, GL_FALSE, m2all);
+    glUniformMatrix3fv(l3[0], 2, GL_FALSE, m3all);
+    glUniformMatrix4fv(l4[0], 2, GL_FALSE, m4all);
+
+    const GLfloat m2one[4] = { 0, 0, 0.5f, 0 };          /* [1][0] */
+    GLfloat m3one[9] = { 0 };  m3one[7] = 0.25f;          /* [2][1] */
+    GLfloat m4one[16] = { 0 }; m4one[11] = 0.75f;         /* [2][3] */
+    glUniformMatrix2fv(l2[1], 1, GL_FALSE, m2one);
+    glUniformMatrix3fv(l3[1], 1, GL_FALSE, m3one);
+    glUniformMatrix4fv(l4[1], 1, GL_FALSE, m4one);
+    GLenum err = glGetError();
+
+    GLfloat g2[3][4], g3[2][9], g4[2][16];
+    for (int i = 0; i < 3; i++) glGetUniformfv(p, l2[i], g2[i]);
+    for (int i = 0; i < 2; i++) {
+        glGetUniformfv(p, l3[i], g3[i]);
+        glGetUniformfv(p, l4[i], g4[i]);
+    }
+    int fail = err != GL_NO_ERROR;
+    for (int i = 0; i < 4; i++) {
+        if (g2[0][i] != m2all[i] || g2[1][i] != m2one[i] ||
+            g2[2][i] != m2all[8 + i]) fail |= 2;
+    }
+    for (int i = 0; i < 9; i++) {
+        if (g3[0][i] != m3all[i] || g3[1][i] != m3one[i]) fail |= 4;
+    }
+    for (int i = 0; i < 16; i++) {
+        if (g4[0][i] != m4all[i] || g4[1][i] != m4one[i]) fail |= 8;
+    }
+
+    unsigned char px[4] = { 0 };
+    iface_point_color(p, px);
+    const int want[4] = { 128, 20, 64, 191 };   /* 0.5, 0.08, 0.25, 0.75 */
+    for (int c = 0; c < 4; c++)
+        if (abs((int)px[c] - want[c]) > 2) fail |= 16;
+    if (fail) {
+        fprintf(stderr, "uniform_matrix_array_element: fail=0x%x err=0x%x "
+                "rgba=(%u,%u,%u,%u) m2[1]=(%.2f,%.2f,%.2f,%.2f) "
+                "m2[2][0]=%.2f m4[1][11]=%.2f\n", fail, err, px[0], px[1],
+                px[2], px[3], g2[1][0], g2[1][1], g2[1][2], g2[1][3],
+                g2[2][0], g4[1][11]);
+    }
+    glUseProgram(0);
+    glDeleteProgram(p);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail ? 1 : 0;
+}
+
 /* GL 4.6 §7.6: uniforms are program object state initialised to 0 at link;
  * values written through another program at the same location must not
  * leak in. */
@@ -20000,6 +20096,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("uniform_array_partial_upload",
                     test_uniform_array_partial_upload),
     SELF_CHECK_TEST("uniform_unset_reads_zero", test_uniform_unset_reads_zero),
+    SELF_CHECK_TEST("uniform_matrix_array_element",
+                    test_uniform_matrix_array_element),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

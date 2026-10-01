@@ -166,6 +166,12 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
                         src->array_stride > (GLint)dst->member_src_stride) {
                         dst->member_array_stride = (GLuint)src->array_stride;
                     }
+                    GLuint matBytes =
+                        mglPlainUniformMatrixElementBytes(src->gl_type);
+                    if (matBytes) {
+                        dst->member_src_stride = matBytes;
+                        dst->member_array_stride = matBytes;
+                    }
                     dst->member_loc = base_loc + (GLint)src->location_offset;
                     dst->is_array_member = (src->size > 1) ? GL_TRUE : GL_FALSE;
                 }

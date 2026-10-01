@@ -2097,11 +2097,17 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
         }
         /* Uniform: single value read. */
         uint32_t off = cg.bufferOffsets.count(v.name) ? cg.bufferOffsets[v.name] : 0;
+        const MGLIRSymbol *us = findSymbol(mod, v.name.c_str());
+        if (v.type.isMatrix() && v.type.isArray() && us && us->type &&
+            us->type->kind == MGLIR_TYPE_ARRAY)
+            return emitSSBOAggregateLoad(
+                cg, cg.b->CreateGEP(cg.b->getInt8Ty(), cg.bufferPtr,
+                                    cg.b->getInt64(off)),
+                us->type);
         if (v.type.isMatrix())
             return emitMatrixUniform(cg, Uniform{v.name, v.type, off, 0});
         /* Default-block uniforms use the same std140 leaf rules as named
          * UBOs (bool/bvec as 32-bit words — never packed <N x i1>). */
-        const MGLIRSymbol *us = findSymbol(mod, v.name.c_str());
         return emitUBOLeafLoad(cg, cg.bufferPtr, off,
                                us ? us->type : nullptr, v.type);
     }
