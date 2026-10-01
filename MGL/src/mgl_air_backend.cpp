@@ -12879,8 +12879,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
              * reports (mglAirReflectModule) — the renderer's vertex
              * descriptor and draw-time bindings are driven by the reflected
              * locations.  Priority: explicit layout(location=N) from the
-             * sema, then glBindAttribLocation/stable-name preferences, then
-             * the running declaration-order counter.  The previous code
+             * sema, then glBindAttribLocation, then the running
+             * declaration-order counter.  The previous code
              * ignored explicit locations entirely (running counter only),
              * which silently misaligned any shader with non-contiguous
              * explicit attribute locations (the reflector said N, the
@@ -13377,11 +13377,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t nextFreeAttrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
-            /* Prefer bindAttribLocation, then explicit/IR location, then
-             * declaration order — same priority as non-capture + reflector. */
-            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names, MAX_ATTRIBS);
-            if (want == UINT32_MAX)
-                want = v.location;
+            /* Same priority as the non-capture path and the reflector. */
+            uint32_t want = v.location;
+            if (!v.locationExplicit) {
+                uint32_t bound = airAttribLocation(v.name.c_str(),
+                                                   attrib_names, MAX_ATTRIBS);
+                if (bound != UINT32_MAX)
+                    want = bound;
+            }
             if (want == UINT32_MAX)
                 want = nextFreeAttrLoc;
             attrLoc = want;

@@ -14292,9 +14292,12 @@ static int attrib_name_draw_check(const char *label, const char *vs,
     glBufferData(GL_ARRAY_BUFFER, sizeof(colors), colors, GL_STATIC_DRAW);
     glEnableVertexAttribArray((GLuint)col);
     glVertexAttribPointer((GLuint)col, 3, GL_FLOAT, GL_FALSE, 0, 0);
+    /* UV0 data would push the triangle off screen if read as Position. */
+    static const float uvs[] = { 5.0f, 5.0f, 5.0f, 5.0f, 5.0f, 5.0f };
+    GLuint uvbo = 0;
     GLint uv0 = glGetAttribLocation(prog, "UV0");
     if (uv0 >= 0) {
-        glBindBuffer(GL_ARRAY_BUFFER, vbos[0]);
+        uvbo = make_vbo(uvs, sizeof(uvs));
         glEnableVertexAttribArray((GLuint)uv0);
         glVertexAttribPointer((GLuint)uv0, 2, GL_FLOAT, GL_FALSE, 0, 0);
     }
@@ -14314,6 +14317,7 @@ static int attrib_name_draw_check(const char *label, const char *vs,
     }
 
     glUseProgram(0);
+    if (uvbo) glDeleteBuffers(1, &uvbo);
     glDeleteBuffers(2, vbos);
     glDeleteVertexArrays(1, &vao);
     glDeleteProgram(prog);

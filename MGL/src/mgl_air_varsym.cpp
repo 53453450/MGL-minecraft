@@ -48,17 +48,6 @@ uint32_t airAttribLocation(const char *name, const char *const *attrib_names,
             }
         }
     }
-    if (name) {
-        static const struct { const char *n; uint32_t l; } def[] = {
-            {"Position", 0}, {"Color", 1}, {"UV0", 2},
-            {"UV1", 3}, {"UV2", 4}, {"Normal", 5},
-        };
-        for (const auto &d : def) {
-            if (strcmp(d.n, name) == 0) {
-                return d.l;
-            }
-        }
-    }
     return UINT32_MAX;
 }
 

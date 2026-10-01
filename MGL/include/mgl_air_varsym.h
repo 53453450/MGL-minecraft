@@ -51,8 +51,7 @@ struct AirIfaceLocationPeer {
 /* GLSL matrix varyings consume one location per column (GL 4.6 §4.4.1). */
 uint32_t varyingLocationSpan(const MType &t);
 
-/* Desired vertex attribute location: explicit glBindAttribLocation bindings
- * first, then Mojang stable names.  UINT32_MAX = no preference. */
+/* glBindAttribLocation binding for `name`; UINT32_MAX = none. */
 uint32_t airAttribLocation(const char *name, const char *const *attrib_names,
                            int maxAttribs);
 
