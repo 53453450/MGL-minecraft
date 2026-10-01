@@ -3060,6 +3060,9 @@ extern "C" int mglTessRunPatchDraw(GLMContext ctx, GLenum *mode, GLint first,
                                                      gatherPrimitives);
                         sparseCompactOk = 1;
                     }
+                    if (continuous) {
+                        CFRelease(continuous);
+                    }
                 }
                 free(gatherArray);
             } else {
