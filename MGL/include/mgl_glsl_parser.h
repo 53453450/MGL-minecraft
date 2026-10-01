@@ -57,6 +57,11 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len);
 /* Free a translation unit and all nested AST nodes. */
 void mglGLSLTranslationUnitDestroy(MGLTranslationUnit *tu);
 
+/* Deep copy / free of a single expression tree (NULL on allocation
+ * failure or for INIT_LIST nodes). */
+MGLExpr *mglGLSLExprClone(const MGLExpr *e);
+void mglGLSLExprFree(MGLExpr *e);
+
 #ifdef __cplusplus
 }
 #endif

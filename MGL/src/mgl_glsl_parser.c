@@ -33,6 +33,7 @@
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_lexer.h"
 #include "mgl_glsl_cpp.h"
+#include "mgl_ir.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -1008,34 +1009,36 @@ static MGLExpr *parse_primary(MGLParser *p)
             /* Distinguish `T[N](...)` array ctor from `arr[i]` indexing:
              * only treat brackets as an array ctor when `(` follows `]`. */
             int is_arr_ctor = 0;
-            uint32_t ctor_size = 0;
+            uint32_t ctor_dims[MGLIR_MAX_ARRAY_DIMS];
+            uint32_t ctor_dim_count = 0;
             if (ops_at(p, "[")) {
                 int saved = p->pos;
-                advance(p); /* [ */
-                if (ops_at(p, "]")) {
-                    ctor_size = 0;
-                } else {
-                    /* Constant extent only; restore on failure so
-                     * postfix indexing can re-parse `arr[expr]`. */
-                    MGLExpr *ext = parse_expression(p);
-                    int64_t value = 0;
-                    int valid = eval_const_int(p, ext, &value);
-                    free_expr(ext);
-                    if (!valid || value < 0 ||
-                        (uint64_t)value > UINT32_MAX || !ops_at(p, "]")) {
-                        p->pos = saved;
-                        /* Fall through to VAR_REF; postfix handles `[`. */
-                        MGLExpr *e = expr_alloc(p, MGL_EXPR_VAR_REF, line);
-                        if (e) {
-                            e->u.var_ref.name = name;
-                        }
-                        return e;
+                int valid = 1;
+                while (valid && ops_at(p, "[")) {
+                    advance(p); /* [ */
+                    uint32_t extent = 0;
+                    if (!ops_at(p, "]")) {
+                        /* Constant extent only; restore on failure so
+                         * postfix indexing can re-parse `arr[expr]`. */
+                        MGLExpr *ext = parse_expression(p);
+                        int64_t value = 0;
+                        valid = eval_const_int(p, ext, &value) &&
+                                value >= 0 && (uint64_t)value <= UINT32_MAX &&
+                                ops_at(p, "]");
+                        free_expr(ext);
+                        extent = (uint32_t)value;
                     }
-                    ctor_size = (uint32_t)value;
+                    if (valid && ctor_dim_count == MGLIR_MAX_ARRAY_DIMS) {
+                        valid = 0;
+                    }
+                    if (valid) {
+                        ctor_dims[ctor_dim_count++] = extent;
+                        advance(p); /* ] */
+                    }
                 }
-                advance(p); /* ] */
-                if (!ops_at(p, "(")) {
+                if (!valid || !ops_at(p, "(")) {
                     p->pos = saved;
+                    /* Fall through to VAR_REF; postfix handles `[`. */
                     MGLExpr *e = expr_alloc(p, MGL_EXPR_VAR_REF, line);
                     if (e) {
                         e->u.var_ref.name = name;
@@ -1049,7 +1052,18 @@ static MGLExpr *parse_primary(MGLParser *p)
                 e->u.call.name = name;
                 if (is_arr_ctor) {
                     e->u.call.is_array_ctor = 1;
-                    e->u.call.array_ctor_size = ctor_size;
+                    e->u.call.array_ctor_size = ctor_dims[0];
+                }
+                if (ctor_dim_count > 1) {
+                    size_t bytes = ctor_dim_count * sizeof(uint32_t);
+                    e->u.call.array_ctor_dims = (uint32_t *)malloc(bytes);
+                    if (!e->u.call.array_ctor_dims) {
+                        free_expr(e);
+                        parse_error(p, "out of memory");
+                        return NULL;
+                    }
+                    memcpy(e->u.call.array_ctor_dims, ctor_dims, bytes);
+                    e->u.call.array_ctor_dim_count = ctor_dim_count;
                 }
                 eat_punct(p, "(");
                 uint32_t argc = 0;
@@ -2060,6 +2074,21 @@ static void append_array_dim(MGLParser *p, MGLDecl *d, uint32_t sz)
     d->array_dims[d->array_count++] = sz;
 }
 
+/* `vec4[2] a[3]` is a[3][2] (GLSL 4.60 §4.1.9): the declarator dims are
+ * outer, so move the first `prefix` (type-specifier) dims behind them. */
+static void order_type_prefix_dims(MGLDecl *d, uint32_t prefix)
+{
+    if (prefix == 0 || d->array_count <= prefix) {
+        return;
+    }
+    for (uint32_t r = 0; r < prefix; r++) {
+        uint32_t first = d->array_dims[0];
+        memmove(d->array_dims, d->array_dims + 1,
+                (d->array_count - 1) * sizeof(uint32_t));
+        d->array_dims[d->array_count - 1] = first;
+    }
+}
+
 /* Parse zero or more `[N]` / `[]` array_specifier suffixes onto `d`. */
 static void parse_array_specifier_list(MGLParser *p, MGLDecl *d)
 {
@@ -2816,6 +2845,7 @@ more_qualifiers:
 
     /* declarator postfix array dims: `float x[3]` / `float[2] x[3]` */
     parse_array_specifier_list(p, d);
+    order_type_prefix_dims(d, type_prefix_dims);
 
     /* function? */
     if (ops_at(p, "(")) {
@@ -2949,9 +2979,11 @@ more_qualifiers:
             /* Inherit type-prefix dims (`float[3] a, b`) then allow
              * per-declarator postfix dims. */
             for (uint32_t i = 0; i < type_prefix_dims; i++) {
-                append_array_dim(p, nd, d->array_dims[i]);
+                append_array_dim(p, nd, d->array_dims[d->array_count -
+                                                      type_prefix_dims + i]);
             }
             parse_array_specifier_list(p, nd);
+            order_type_prefix_dims(nd, type_prefix_dims);
             tail->next_declarator = nd;
             tail = nd;
         }
@@ -3418,6 +3450,7 @@ static void free_expr(MGLExpr *e)
         }
         free(e->u.call.args);
         free(e->u.call.name);
+        free(e->u.call.array_ctor_dims);
         break;
     }
     case MGL_EXPR_INIT_LIST: {
@@ -3449,6 +3482,120 @@ static void free_expr(MGLExpr *e)
         break;
     }
     free(e);
+}
+
+void mglGLSLExprFree(MGLExpr *e)
+{
+    free_expr(e);
+}
+
+static char *dup_opt(const char *s, int *ok)
+{
+    if (!s) {
+        return NULL;
+    }
+    char *d = strdup(s);
+    if (!d) {
+        *ok = 0;
+    }
+    return d;
+}
+
+MGLExpr *mglGLSLExprClone(const MGLExpr *e)
+{
+    if (!e || e->kind == MGL_EXPR_INIT_LIST) {
+        return NULL;
+    }
+    MGLExpr *c = (MGLExpr *)malloc(sizeof(*c));
+    if (!c) {
+        return NULL;
+    }
+    *c = *e;
+    int ok = 1;
+    switch (e->kind) {
+    case MGL_EXPR_VAR_REF:
+        c->u.var_ref.name = dup_opt(e->u.var_ref.name, &ok);
+        break;
+    case MGL_EXPR_MEMBER:
+        c->u.member.field = dup_opt(e->u.member.field, &ok);
+        c->u.member.object = mglGLSLExprClone(e->u.member.object);
+        ok = ok && (c->u.member.object || !e->u.member.object);
+        break;
+    case MGL_EXPR_INDEX:
+        c->u.index.object = mglGLSLExprClone(e->u.index.object);
+        c->u.index.index = mglGLSLExprClone(e->u.index.index);
+        ok = ok && (c->u.index.object || !e->u.index.object) &&
+             (c->u.index.index || !e->u.index.index);
+        break;
+    case MGL_EXPR_CALL: {
+        c->u.call.name = dup_opt(e->u.call.name, &ok);
+        c->u.call.args = NULL;
+        c->u.call.arg_count = 0;
+        c->u.call.array_ctor_dims = NULL;
+        c->u.call.array_ctor_dim_count = 0;
+        if (e->u.call.array_ctor_dim_count) {
+            size_t bytes = e->u.call.array_ctor_dim_count * sizeof(uint32_t);
+            c->u.call.array_ctor_dims = (uint32_t *)malloc(bytes);
+            if (c->u.call.array_ctor_dims) {
+                memcpy(c->u.call.array_ctor_dims, e->u.call.array_ctor_dims,
+                       bytes);
+                c->u.call.array_ctor_dim_count =
+                    e->u.call.array_ctor_dim_count;
+            } else {
+                ok = 0;
+            }
+        }
+        if (e->u.call.arg_count) {
+            c->u.call.args = (MGLExpr **)calloc(e->u.call.arg_count,
+                                                sizeof(MGLExpr *));
+            if (!c->u.call.args) {
+                ok = 0;
+                break;
+            }
+            for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                c->u.call.args[i] = mglGLSLExprClone(e->u.call.args[i]);
+                c->u.call.arg_count = i + 1;
+                if (!c->u.call.args[i] && e->u.call.args[i]) {
+                    ok = 0;
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    case MGL_EXPR_UNARY:
+        c->u.unary.operand = mglGLSLExprClone(e->u.unary.operand);
+        ok = c->u.unary.operand || !e->u.unary.operand;
+        break;
+    case MGL_EXPR_BINARY:
+        c->u.binary.lhs = mglGLSLExprClone(e->u.binary.lhs);
+        c->u.binary.rhs = mglGLSLExprClone(e->u.binary.rhs);
+        ok = (c->u.binary.lhs || !e->u.binary.lhs) &&
+             (c->u.binary.rhs || !e->u.binary.rhs);
+        break;
+    case MGL_EXPR_ASSIGN:
+        c->u.assign.lhs = mglGLSLExprClone(e->u.assign.lhs);
+        c->u.assign.rhs = mglGLSLExprClone(e->u.assign.rhs);
+        ok = (c->u.assign.lhs || !e->u.assign.lhs) &&
+             (c->u.assign.rhs || !e->u.assign.rhs);
+        break;
+    case MGL_EXPR_TERNARY:
+        c->u.ternary.cond = mglGLSLExprClone(e->u.ternary.cond);
+        c->u.ternary.then = mglGLSLExprClone(e->u.ternary.then);
+        c->u.ternary.else_ = mglGLSLExprClone(e->u.ternary.else_);
+        ok = (c->u.ternary.cond || !e->u.ternary.cond) &&
+             (c->u.ternary.then || !e->u.ternary.then) &&
+             (c->u.ternary.else_ || !e->u.ternary.else_);
+        break;
+    case MGL_EXPR_LITERAL:
+    default:
+        break;
+    }
+    if (!ok) {
+        free_expr(c);
+        return NULL;
+    }
+    return c;
 }
 
 static void free_stmt(MGLStmt *s);
@@ -3520,6 +3667,7 @@ static void free_decl(MGLDecl *d)
         free_type_spec(d->type);
     }
     free(d->array_dims);
+    free(d->aoa_dims);
     free_expr(d->init);
     free_stmt(d->body);
     unsigned i;

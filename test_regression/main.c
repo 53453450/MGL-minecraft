@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 124
+#define MAX_TESTS 126
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -16910,6 +16910,179 @@ static int test_stage_interface_component(unsigned char *pixels,
     return fail;
 }
 
+/* GL 4.6 §7.3.1.1: an array of arrays enumerates one active uniform per
+ * outer element ("a[i][0]", size = inner length); every element has a
+ * location and glUniform*v writes through the inner array. */
+static int test_uniform_array_of_arrays(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "uniform float a[2][3];\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(a[1][2], a[0][1], a[0][0] + a[1][0], 1); }\n";
+    int fail = 0;
+    GLuint p = link_program(vs, fs);
+    if (!p) return 3;
+
+    GLint count = 0, found = 0;
+    glGetProgramiv(p, GL_ACTIVE_UNIFORMS, &count);
+    for (GLint i = 0; i < count; i++) {
+        char name[64];
+        GLint size = 0;
+        GLenum type = 0;
+        glGetActiveUniform(p, (GLuint)i, sizeof name, NULL, &size, &type, name);
+        if ((strcmp(name, "a[0][0]") == 0 || strcmp(name, "a[1][0]") == 0) &&
+            size == 3 && type == GL_FLOAT)
+            found++;
+        else
+            fprintf(stderr, "uniform_array_of_arrays: active uniform %d "
+                    "'%s' size %d type 0x%x\n", i, name, size, type);
+    }
+    GLint loc_row1 = glGetUniformLocation(p, "a[1]");
+    GLint loc_10 = glGetUniformLocation(p, "a[1][0]");
+    GLint loc_12 = glGetUniformLocation(p, "a[1][2]");
+    GLint loc_01 = glGetUniformLocation(p, "a[0][1]");
+    GLint loc_bad = glGetUniformLocation(p, "a[1][3]");
+    if (count != 2 || found != 2 || loc_10 < 0 || loc_12 < 0 || loc_01 < 0 ||
+        loc_bad != -1 || loc_row1 != loc_10) {
+        fprintf(stderr, "uniform_array_of_arrays: active=%d matched=%d "
+                "loc a[1]=%d a[1][0]=%d a[1][2]=%d a[0][1]=%d a[1][3]=%d\n",
+                count, found, loc_row1, loc_10, loc_12, loc_01, loc_bad);
+        fail = 1;
+    }
+
+    static const float row1[3] = { 0.0f, 0.0f, 0.5f };
+    glUseProgram(p);
+    glUniform1fv(loc_10, 3, row1);
+    glUniform1f(glGetUniformLocation(p, "a[0][0]"), 0.0f);
+    glUniform1f(loc_01, 0.25f);
+    GLenum err = glGetError();
+    unsigned char px[4] = { 0 };
+    iface_point_color(p, px);
+    if (err != GL_NO_ERROR || px[0] < 120 || px[0] > 135 || px[1] < 56 ||
+        px[1] > 72 || px[2] > 8) {
+        fprintf(stderr, "uniform_array_of_arrays: err=0x%x rgb=(%u,%u,%u), "
+                "want (128,64,0)\n", err, px[0], px[1], px[2]);
+        fail = 1;
+    }
+    glDeleteProgram(p);
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
+/* GLSL 4.60 §4.1.9 / §5.4.4: arrays of arrays as locals (constructors,
+ * initializer lists, `T[N] x[M]`), partial indexing, length() per level,
+ * whole-array compare, and as a std140 block member (GL 4.6 §7.6.2.2
+ * layout, §7.3.1.1 names).  Interface variables and sub-array
+ * assignment are rejected at compile time. */
+static int test_glsl_array_of_arrays(unsigned char *pixels,
+                                     const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_PointSize = 1.0;\n"
+        "  gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(std140, binding=0) uniform B { float pad; vec2 m[2][3]; } blk;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "float sumRow(float r[3]) { return r[0] + r[1] + r[2]; }\n"
+        "void main() {\n"
+        "  float a[2][3] = float[2][3](float[3](1,2,3), float[3](4,5,6));\n"
+        "  float[3] b[2] = { {7,8,9}, {10,11,12} };\n"
+        "  int c[2][2][2];\n"
+        "  for (int i = 0; i < 2; i++) for (int j = 0; j < 2; j++)\n"
+        "    for (int k = 0; k < 2; k++) c[i][j][k] = i*4 + j*2 + k;\n"
+        "  int d = int(gl_FragCoord.x) & 1;\n"
+        "  bool ok = a.length() == 2 && a[d].length() == 3 &&\n"
+        "            c[1].length() == 2 && c[1][0].length() == 2;\n"
+        "  ok = ok && sumRow(a[1]) == 15.0 && sumRow(b[d]) == 24.0;\n"
+        "  ok = ok && a[d + 1][2] == 6.0 && b[1][d] == 10.0;\n"
+        "  ok = ok && c[1][1][0] == 6 && c[d][1][1] == 3;\n"
+        "  float r[3] = a[d];\n"
+        "  float a2[2][3] = a;\n"
+        "  ok = ok && r[2] == 3.0 && a2 == a;\n"
+        "  ok = ok && blk.m[1][2] == vec2(5.0, 6.0) &&\n"
+        "            blk.m[d][1] == vec2(1.0, 2.0);\n"
+        "  frag = ok ? vec4(0, 1, 0, 1) : vec4(1, 0, 0, 1);\n"
+        "}\n";
+    int fail = 0;
+    GLuint p = link_program(vs, fs);
+    if (!p) return 3;
+
+    GLfloat data[4 + 6 * 4];
+    memset(data, 0, sizeof data);
+    for (int f = 0; f < 6; f++) {
+        data[4 + f * 4 + 0] = (GLfloat)f;
+        data[4 + f * 4 + 1] = (GLfloat)(f + 1);
+    }
+    GLuint ubo = 0;
+    glGenBuffers(1, &ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof data, data, GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
+
+    const char *names[2] = { "B.m[0][0]", "B.m[1][0]" };
+    GLuint idx[2] = { GL_INVALID_INDEX, GL_INVALID_INDEX };
+    glGetUniformIndices(p, 2, names, idx);
+    GLint off[2] = { -1, -1 }, size[2] = { 0, 0 }, stride[2] = { 0, 0 };
+    if (idx[0] != GL_INVALID_INDEX && idx[1] != GL_INVALID_INDEX) {
+        glGetActiveUniformsiv(p, 2, idx, GL_UNIFORM_OFFSET, off);
+        glGetActiveUniformsiv(p, 2, idx, GL_UNIFORM_SIZE, size);
+        glGetActiveUniformsiv(p, 2, idx, GL_UNIFORM_ARRAY_STRIDE, stride);
+    }
+    if (off[0] != 16 || off[1] != 64 || size[0] != 3 || size[1] != 3 ||
+        stride[0] != 16 || stride[1] != 16) {
+        fprintf(stderr, "glsl_array_of_arrays: block member index=%u,%u "
+                "offset=%d,%d size=%d,%d stride=%d,%d\n", idx[0], idx[1],
+                off[0], off[1], size[0], size[1], stride[0], stride[1]);
+        fail = 1;
+    }
+
+    unsigned char px[4] = { 0 };
+    iface_point_color(p, px);
+    if (px[0] > 8 || px[1] < 247) {
+        fprintf(stderr, "glsl_array_of_arrays: rgb=(%u,%u,%u), want green\n",
+                px[0], px[1], px[2]);
+        fail = 1;
+    }
+    glDeleteProgram(p);
+    glDeleteBuffers(1, &ubo);
+
+    static const char *bad_fs[] = {
+        "#version 450 core\n"
+        "in float v[2][2];\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(v[1][1]); }\n",
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { float a[2][3]; a[0] = float[3](1, 2, 3);\n"
+        "  frag = vec4(a[0][1]); }\n",
+    };
+    for (size_t i = 0; i < sizeof bad_fs / sizeof bad_fs[0]; i++) {
+        GLuint s = compile_shader(GL_FRAGMENT_SHADER, bad_fs[i]);
+        if (s) {
+            fprintf(stderr, "glsl_array_of_arrays: unsupported shader %zu "
+                    "compiled\n", i);
+            glDeleteShader(s);
+            fail = 1;
+        }
+    }
+    while (glGetError() != GL_NO_ERROR) { }
+    return fail;
+}
+
 extern uint32_t mglFrontendParseCount(void);
 
 /* Linking compiled VS/FS must reuse each shader's translation unit for the
@@ -19666,6 +19839,8 @@ static const TestCase TESTS[] = {
                     test_stage_interface_location_matching),
     SELF_CHECK_TEST("stage_interface_component",
                     test_stage_interface_component),
+    SELF_CHECK_TEST("uniform_array_of_arrays", test_uniform_array_of_arrays),
+    SELF_CHECK_TEST("glsl_array_of_arrays", test_glsl_array_of_arrays),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
                     test_link_interface_check_no_reparse),
     SELF_CHECK_TEST("no_attachment_layered_fbo",

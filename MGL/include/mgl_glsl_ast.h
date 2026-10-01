@@ -188,6 +188,8 @@ struct MGLExpr {
         struct {
             MGLExpr *object;
             MGLExpr *index;
+            int flat;        /* 1 = element index into a flattened array of
+                              * arrays (sema rewrote x[i][j] to x[i*N+j]) */
         } index;
         struct {
             char *name;      /* owned */
@@ -195,6 +197,12 @@ struct MGLExpr {
             uint32_t arg_count;
             int is_array_ctor;   /* 1 = T[](...) / T[N](...) array constructor */
             uint32_t array_ctor_size; /* N in T[N](...); 0 = unsized T[](...) */
+            /* T[N][M]...(...): every dimension, outermost first (owned).
+             * Sema flattens the arguments into element order and then sets
+             * array_ctor_flat and array_ctor_size to the element count. */
+            uint32_t *array_ctor_dims;
+            uint32_t array_ctor_dim_count;
+            int array_ctor_flat;
         } call;
         struct {
             uint32_t op;     /* MGLExprOp */
@@ -328,6 +336,10 @@ struct MGLDecl {
     const char *layout_image_format;
     uint32_t *array_dims;  /* element counts; NULL = not an array */
     uint32_t array_count;
+    /* Declared dimensions of an array of arrays (owned, outermost first).
+     * Sema flattens array_dims to the single element count. */
+    uint32_t *aoa_dims;
+    uint32_t aoa_dim_count;
     MGLExpr *init;         /* initializer or NULL */
     MGLStmt *body;         /* function body; NULL = prototype/variable */
     MGLDecl **params;      /* function parameters */

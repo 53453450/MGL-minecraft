@@ -30,6 +30,7 @@
 
 #include "mgl_glsl_sema.h"
 #include "mgl_glsl_ast.h"
+#include "mgl_glsl_parser.h"
 #include "mgl_shader_abi.h"
 #include "mgl_types_buffer.h" /* MAX_BINDABLE_BUFFERS */
 
@@ -100,7 +101,22 @@ typedef struct Sema {
     uint32_t ac_default_offset[128];
     /* Non-owning: active function return type while analyzing a body. */
     MGLIRType *cur_ret_type;
+    /* `x[i]` sub-arrays of arrays of arrays not yet consumed by an
+     * enclosing index; expanded to array constructors after analysis. */
+    struct AoaPartial *aoa_partials;
+    uint32_t aoa_partial_count;
+    uint32_t aoa_partial_cap;
 } Sema;
+
+/* node is INDEX(x, row) where x is a flattened array of arrays and row
+ * counts rows of the dimensions left after the first `consumed` ones. */
+typedef struct AoaPartial {
+    MGLExpr *node;
+    uint32_t dims[MGLIR_MAX_ARRAY_DIMS];
+    uint32_t dim_count;
+    uint32_t consumed;
+    char *elem_ctor;    /* constructor name of the innermost element */
+} AoaPartial;
 
 static MGLIRType *scratch_type(Sema *s, MGLIRType *t)
 {
@@ -139,6 +155,12 @@ static void scratch_destroy(Sema *s)
     free(s->tmp_types);
     s->tmp_types = NULL;
     s->tmp_count = s->tmp_cap = 0;
+    for (uint32_t i = 0; i < s->aoa_partial_count; i++) {
+        free(s->aoa_partials[i].elem_ctor);
+    }
+    free(s->aoa_partials);
+    s->aoa_partials = NULL;
+    s->aoa_partial_count = s->aoa_partial_cap = 0;
 }
 
 /* gl_PerVertex interface struct {vec4 gl_Position; float gl_PointSize;
@@ -570,6 +592,52 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
     return t;
 }
 
+/* Arrays of arrays (GLSL 4.60 §4.1.9) are typed as one flat array in
+ * element order (innermost dimension fastest, which is also the buffer
+ * layout); aoa_dims keeps the declared shape.  Takes ownership of elem. */
+static MGLIRType *aoa_array_type(MGLIRType *elem, const uint32_t *dims,
+                                 uint32_t n)
+{
+    if (n == 1) {
+        return mglIRTypeArray(elem, dims[0]);
+    }
+    uint64_t count = 1;
+    for (uint32_t i = 0; i < n; i++) {
+        count *= dims[i];
+    }
+    if (n > MGLIR_MAX_ARRAY_DIMS || count == 0 || count > UINT32_MAX) {
+        mglIRTypeDestroy(elem);
+        return NULL;
+    }
+    MGLIRType *t = mglIRTypeArray(elem, (uint32_t)count);
+    if (t) {
+        memcpy(t->aoa_dims, dims, n * sizeof(uint32_t));
+        t->aoa_dim_count = n;
+    }
+    return t;
+}
+
+/* Array type left after indexing the first `consumed` dimensions of an
+ * element type with dimensions `dims`. */
+static MGLIRType *aoa_drop_type(Sema *s, const MGLIRType *elem,
+                                const uint32_t *dims, uint32_t dim_count,
+                                uint32_t consumed)
+{
+    MGLIRType *e = ir_type_clone(elem);
+    if (!e) {
+        return NULL;
+    }
+    return scratch_type(s, aoa_array_type(e, dims + consumed,
+                                          dim_count - consumed));
+}
+
+static int aoa_shape_equal(const MGLIRType *a, const MGLIRType *b)
+{
+    return a->aoa_dim_count == b->aoa_dim_count &&
+           memcmp(a->aoa_dims, b->aoa_dims,
+                  a->aoa_dim_count * sizeof(uint32_t)) == 0;
+}
+
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts);
 static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d);
 static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
@@ -598,6 +666,71 @@ static void apply_matrix_major(MGLIRType *t, uint32_t major)
     default:
         break;
     }
+}
+
+/* Wrap t in the declarator's array dimensions.  A first analysis of an
+ * array of arrays flattens d->array_dims to the element count and keeps
+ * the declared shape in d->aoa_dims, so the backend (which reads
+ * array_dims) and later re-analysis of the same AST see one flat array. */
+static MGLIRType *apply_decl_array_dims(Sema *s, const MGLDecl *d,
+                                        MGLIRType *t)
+{
+    if (d->aoa_dim_count > 1) {
+        return aoa_array_type(t, d->aoa_dims, d->aoa_dim_count);
+    }
+    /* The outer dimension of per-vertex arrayed I/O is consumed by the
+     * tessellation / geometry I/O lowering, which expects nested arrays. */
+    if (d->array_count > 1 && (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT)) &&
+        (s->stage == MGL_STAGE_TESS_CONTROL ||
+         s->stage == MGL_STAGE_TESS_EVALUATION ||
+         s->stage == MGL_STAGE_GEOMETRY)) {
+        for (uint32_t i = d->array_count; i > 0; i--) {
+            MGLIRType *arr = mglIRTypeArray(t, d->array_dims[i - 1]);
+            if (!arr) {
+                mglIRTypeDestroy(t);
+                return NULL;
+            }
+            t = arr;
+        }
+        return t;
+    }
+    if (d->array_count > 1) {
+        for (uint32_t i = 0; i < d->array_count; i++) {
+            if (d->array_dims[i] == 0) {
+                sema_error(s, d->line,
+                           "unsized dimension in array of arrays '%s' is "
+                           "not supported", d->name ? d->name : "");
+                mglIRTypeDestroy(t);
+                return NULL;
+            }
+        }
+        MGLIRType *arr = aoa_array_type(t, d->array_dims, d->array_count);
+        uint32_t *dims = (uint32_t *)malloc(d->array_count * sizeof(uint32_t));
+        if (!arr || !dims) {
+            if (!arr) {
+                sema_error(s, d->line, "array of arrays '%s' is too large",
+                           d->name ? d->name : "");
+            }
+            mglIRTypeDestroy(arr);
+            free(dims);
+            return NULL;
+        }
+        MGLDecl *mut = (MGLDecl *)d;
+        memcpy(dims, d->array_dims, d->array_count * sizeof(uint32_t));
+        mut->aoa_dims = dims;
+        mut->aoa_dim_count = d->array_count;
+        mut->array_dims[0] = arr->array_size;
+        mut->array_count = 1;
+        return arr;
+    }
+    if (d->array_count == 1) {
+        MGLIRType *arr = mglIRTypeArray(t, d->array_dims[0]);
+        if (!arr) {
+            mglIRTypeDestroy(t);
+        }
+        return arr;
+    }
+    return t;
 }
 
 /* Resolve a single declarator (type + array dims) into an IR type.
@@ -664,16 +797,7 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
          * block type itself is a matrix (should not happen) and keep
          * nested clones consistent. */
         apply_matrix_major(t, block_major);
-        for (uint32_t i = d->array_count; i > 0; i--) {
-            uint32_t sz = d->array_dims[i - 1];
-            MGLIRType *arr = mglIRTypeArray(t, sz);
-            if (!arr) {
-                mglIRTypeDestroy(t);
-                return NULL;
-            }
-            t = arr;
-        }
-        return t;
+        return apply_decl_array_dims(s, d, t);
     } else {
         t = resolve_type_spec(s, tab, d->type);
         if (!t) {
@@ -684,16 +808,7 @@ static MGLIRType *resolve_decl_type_major(Sema *s, SymTab *tab,
     if (major == MGL_AST_MATRIX_DEFAULT)
         major = inherited_major;
     apply_matrix_major(t, major);
-    for (uint32_t i = d->array_count; i > 0; i--) {
-        uint32_t sz = d->array_dims[i - 1];
-        MGLIRType *arr = mglIRTypeArray(t, sz);
-        if (!arr) {
-            mglIRTypeDestroy(t);
-            return NULL;
-        }
-        t = arr;
-    }
-    return t;
+    return apply_decl_array_dims(s, d, t);
 }
 
 static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
@@ -879,6 +994,50 @@ static MGLExpr *rewrite_initializer(Sema *s, SymTab *tab, MGLExpr *e,
         return e;
     }
 
+    if (expected->kind == MGLIR_TYPE_ARRAY && expected->aoa_dim_count > 1) {
+        uint32_t n = expected->aoa_dim_count;
+        if (expected->aoa_dims[0] != e->u.init_list.arg_count) {
+            sema_error(s, e->line,
+                       "initializer list has %u element(s), expected %u",
+                       e->u.init_list.arg_count, expected->aoa_dims[0]);
+            return e;
+        }
+        MGLIRType *sub = aoa_drop_type(s, expected->elem_type,
+                                       expected->aoa_dims, n, 1);
+        if (!sub) {
+            return e;
+        }
+        for (i = 0; i < e->u.init_list.arg_count; i++) {
+            e->u.init_list.args[i] =
+                rewrite_initializer(s, tab, e->u.init_list.args[i], sub);
+        }
+        cname = ctor_name_for_type(expected->elem_type);
+        call = (MGLExpr *)calloc(1, sizeof(*call));
+        uint32_t *dims = (uint32_t *)malloc(n * sizeof(uint32_t));
+        if (!cname || !call || !dims) {
+            free(cname);
+            free(call);
+            free(dims);
+            sema_error(s, e->line,
+                       "cannot form constructor for array initializer list");
+            return e;
+        }
+        memcpy(dims, expected->aoa_dims, n * sizeof(uint32_t));
+        call->kind = MGL_EXPR_CALL;
+        call->line = e->line;
+        call->u.call.name = cname;
+        call->u.call.is_array_ctor = 1;
+        call->u.call.array_ctor_size = dims[0];
+        call->u.call.array_ctor_dims = dims;
+        call->u.call.array_ctor_dim_count = n;
+        call->u.call.args = e->u.init_list.args;
+        call->u.call.arg_count = e->u.init_list.arg_count;
+        e->u.init_list.args = NULL;
+        e->u.init_list.arg_count = 0;
+        free(e);
+        return call;
+    }
+
     if (expected->kind == MGLIR_TYPE_ARRAY) {
         MGLIRType *elem = expected->elem_type;
         if (!elem) {
@@ -1041,7 +1200,7 @@ static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
     case MGLIR_TYPE_MATRIX:
         return a->cols == b->cols && a->rows == b->rows;
     case MGLIR_TYPE_ARRAY:
-        return a->array_size == b->array_size &&
+        return a->array_size == b->array_size && aoa_shape_equal(a, b) &&
                ir_type_interface_equal(a->elem_type, b->elem_type);
     case MGLIR_TYPE_STRUCT:
         if (a->member_count != b->member_count) {
@@ -1085,7 +1244,8 @@ static int ir_type_equal(const MGLIRType *a, const MGLIRType *b)
     case MGLIR_TYPE_MATRIX:
         return a->cols == b->cols && a->rows == b->rows;
     case MGLIR_TYPE_ARRAY:
-        return a->array_size == b->array_size && ir_type_equal(a->elem_type, b->elem_type);
+        return a->array_size == b->array_size && aoa_shape_equal(a, b) &&
+               ir_type_equal(a->elem_type, b->elem_type);
     case MGLIR_TYPE_STRUCT:
         return a->member_count == b->member_count;
     case MGLIR_TYPE_SAMPLER:
@@ -1300,6 +1460,7 @@ static int check_assign_op(MGLIRType *dst, MGLIRType *src)
     if (dst->kind == MGLIR_TYPE_ARRAY && src->kind == MGLIR_TYPE_ARRAY) {
         /* Unsized array (size 0) accepts any sized array initializer. */
         return (dst->array_size == 0 || dst->array_size == src->array_size) &&
+               aoa_shape_equal(dst, src) &&
                ir_type_equal(dst->elem_type, src->elem_type);
     }
     return ir_type_equal(dst, src);
@@ -2229,6 +2390,421 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
     return 1;
 }
 
+/* ------------------------------------------------------------------ */
+/* Arrays of arrays: index rewriting                                   */
+/* ------------------------------------------------------------------ */
+
+static AoaPartial *aoa_partial_find(Sema *s, const MGLExpr *e)
+{
+    for (uint32_t i = 0; e && i < s->aoa_partial_count; i++) {
+        if (s->aoa_partials[i].node == e) {
+            return &s->aoa_partials[i];
+        }
+    }
+    return NULL;
+}
+
+static void aoa_partial_remove(Sema *s, AoaPartial *p)
+{
+    free(p->elem_ctor);
+    *p = s->aoa_partials[--s->aoa_partial_count];
+}
+
+static int aoa_partial_add(Sema *s, MGLExpr *e, const MGLIRType *arr,
+                           uint32_t consumed)
+{
+    if (s->aoa_partial_count == s->aoa_partial_cap) {
+        uint32_t ncap = s->aoa_partial_cap ? s->aoa_partial_cap * 2 : 8;
+        AoaPartial *n = (AoaPartial *)realloc(s->aoa_partials,
+                                              ncap * sizeof(AoaPartial));
+        if (!n) {
+            return 0;
+        }
+        s->aoa_partials = n;
+        s->aoa_partial_cap = ncap;
+    }
+    AoaPartial *p = &s->aoa_partials[s->aoa_partial_count++];
+    memset(p, 0, sizeof(*p));
+    p->node = e;
+    memcpy(p->dims, arr->aoa_dims, arr->aoa_dim_count * sizeof(uint32_t));
+    p->dim_count = arr->aoa_dim_count;
+    p->consumed = consumed;
+    p->elem_ctor = ctor_name_for_type(arr->elem_type);
+    return 1;
+}
+
+static uint32_t aoa_partial_row_size(const AoaPartial *p)
+{
+    uint32_t n = 1;
+    for (uint32_t i = p->consumed; i < p->dim_count; i++) {
+        n *= p->dims[i];
+    }
+    return n;
+}
+
+static MGLExpr *ast_node(uint32_t kind, uint32_t line)
+{
+    MGLExpr *e = (MGLExpr *)calloc(1, sizeof(*e));
+    if (e) {
+        e->kind = kind;
+        e->line = line;
+    }
+    return e;
+}
+
+/* int(row) * n + int(k).  Takes ownership of row and k on success only. */
+static MGLExpr *ast_flat_index(MGLExpr *row, uint32_t n, MGLExpr *k,
+                               uint32_t line)
+{
+    MGLExpr *cr = ast_node(MGL_EXPR_CALL, line);
+    MGLExpr *ck = ast_node(MGL_EXPR_CALL, line);
+    MGLExpr *lit = ast_node(MGL_EXPR_LITERAL, line);
+    MGLExpr *mul = ast_node(MGL_EXPR_BINARY, line);
+    MGLExpr *add = ast_node(MGL_EXPR_BINARY, line);
+    char *nr = strdup("int");
+    char *nk = strdup("int");
+    MGLExpr **ar = (MGLExpr **)malloc(sizeof(MGLExpr *));
+    MGLExpr **ak = (MGLExpr **)malloc(sizeof(MGLExpr *));
+    if (!cr || !ck || !lit || !mul || !add || !nr || !nk || !ar || !ak) {
+        free(cr); free(ck); free(lit); free(mul); free(add);
+        free(nr); free(nk); free(ar); free(ak);
+        return NULL;
+    }
+    ar[0] = row;
+    cr->u.call.name = nr;
+    cr->u.call.args = ar;
+    cr->u.call.arg_count = 1;
+    ak[0] = k;
+    ck->u.call.name = nk;
+    ck->u.call.args = ak;
+    ck->u.call.arg_count = 1;
+    lit->u.literal.base = MGL_AST_TYPE_INT;
+    lit->u.literal.value = (double)n;
+    mul->u.binary.op = MGL_OP_MUL;
+    mul->u.binary.lhs = cr;
+    mul->u.binary.rhs = lit;
+    add->u.binary.op = MGL_OP_ADD;
+    add->u.binary.lhs = mul;
+    add->u.binary.rhs = ck;
+    return add;
+}
+
+static MGLExpr *ast_int_literal(uint32_t v, uint32_t line)
+{
+    MGLExpr *e = ast_node(MGL_EXPR_LITERAL, line);
+    if (e) {
+        e->u.literal.base = MGL_AST_TYPE_INT;
+        e->u.literal.value = (double)v;
+    }
+    return e;
+}
+
+/* Conservative: anything that may write state or call user code. */
+static int expr_has_side_effects(SymTab *tab, const MGLExpr *e)
+{
+    if (!e) {
+        return 0;
+    }
+    switch (e->kind) {
+    case MGL_EXPR_ASSIGN:
+        return 1;
+    case MGL_EXPR_UNARY:
+        return e->u.unary.op == MGL_OP_INC || e->u.unary.op == MGL_OP_DEC ||
+               expr_has_side_effects(tab, e->u.unary.operand);
+    case MGL_EXPR_BINARY:
+        return expr_has_side_effects(tab, e->u.binary.lhs) ||
+               expr_has_side_effects(tab, e->u.binary.rhs);
+    case MGL_EXPR_TERNARY:
+        return expr_has_side_effects(tab, e->u.ternary.cond) ||
+               expr_has_side_effects(tab, e->u.ternary.then) ||
+               expr_has_side_effects(tab, e->u.ternary.else_);
+    case MGL_EXPR_MEMBER:
+        return expr_has_side_effects(tab, e->u.member.object);
+    case MGL_EXPR_INDEX:
+        return expr_has_side_effects(tab, e->u.index.object) ||
+               expr_has_side_effects(tab, e->u.index.index);
+    case MGL_EXPR_CALL: {
+        const char *n = e->u.call.name ? e->u.call.name : "";
+        Sym *f = symtab_lookup(tab, n);
+        if ((f && f->kind == SYM_FUNCTION) ||
+            strncmp(n, "atomic", 6) == 0 ||
+            strncmp(n, "imageAtomic", 11) == 0 ||
+            strcmp(n, "imageStore") == 0) {
+            return 1;
+        }
+        for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+            if (expr_has_side_effects(tab, e->u.call.args[i])) {
+                return 1;
+            }
+        }
+        return 0;
+    }
+    default:
+        return 0;
+    }
+}
+
+/* Rewrite the unconsumed sub-array p->node = INDEX(x, row) in place into
+ * the array constructor T[S](x[row*S+0], ..., x[row*S+S-1]) and drop p. */
+static int aoa_expand_partial(Sema *s, SymTab *tab, AoaPartial *p)
+{
+    MGLExpr *e = p->node;
+    MGLExpr *x = e->u.index.object;
+    MGLExpr *row = e->u.index.index;
+    uint32_t n = aoa_partial_row_size(p);
+    uint32_t rest = p->dim_count - p->consumed;
+    if (expr_has_side_effects(tab, x) || expr_has_side_effects(tab, row)) {
+        sema_error(s, e->line,
+                   "sub-array of an array of arrays with side effects in "
+                   "its expression is not supported");
+        aoa_partial_remove(s, p);
+        return 0;
+    }
+    char *name = p->elem_ctor ? strdup(p->elem_ctor) : NULL;
+    MGLExpr **args = (MGLExpr **)calloc(n, sizeof(MGLExpr *));
+    uint32_t *dims = rest > 1 ? (uint32_t *)malloc(rest * sizeof(uint32_t))
+                              : NULL;
+    int ok = name && args && (rest <= 1 || dims);
+    for (uint32_t t = 0; ok && t < n; t++) {
+        MGLExpr *el = ast_node(MGL_EXPR_INDEX, e->line);
+        MGLExpr *xc = mglGLSLExprClone(x);
+        MGLExpr *rc = mglGLSLExprClone(row);
+        MGLExpr *tl = ast_int_literal(t, e->line);
+        MGLExpr *fi = (rc && tl) ? ast_flat_index(rc, n, tl, e->line) : NULL;
+        if (!el || !xc || !fi) {
+            free(el);
+            mglGLSLExprFree(xc);
+            if (!fi) {
+                mglGLSLExprFree(rc);
+                mglGLSLExprFree(tl);
+            }
+            mglGLSLExprFree(fi);
+            ok = 0;
+            break;
+        }
+        el->u.index.object = xc;
+        el->u.index.index = fi;
+        el->u.index.flat = 1;
+        args[t] = el;
+    }
+    if (!ok) {
+        for (uint32_t t = 0; args && t < n; t++) {
+            mglGLSLExprFree(args[t]);
+        }
+        free(args);
+        free(name);
+        free(dims);
+        sema_error(s, e->line, p->elem_ctor
+                   ? "out of memory" : "cannot form sub-array constructor");
+        aoa_partial_remove(s, p);
+        return 0;
+    }
+    if (dims) {
+        memcpy(dims, p->dims + p->consumed, rest * sizeof(uint32_t));
+    }
+    mglGLSLExprFree(x);
+    mglGLSLExprFree(row);
+    memset(&e->u, 0, sizeof(e->u));
+    e->kind = MGL_EXPR_CALL;
+    e->u.call.name = name;
+    e->u.call.args = args;
+    e->u.call.arg_count = n;
+    e->u.call.is_array_ctor = 1;
+    e->u.call.array_ctor_size = n;
+    e->u.call.array_ctor_dims = dims;
+    e->u.call.array_ctor_dim_count = dims ? rest : 0;
+    e->u.call.array_ctor_flat = dims ? 1 : 0;
+    aoa_partial_remove(s, p);
+    return 1;
+}
+
+/* Index into an array value (obj is the type of e->u.index.object).
+ * x[i][j] over a flattened array of arrays becomes x[int(i)*N + int(j)]
+ * (marked flat); a partial x[i] is tracked until an enclosing index
+ * consumes it, with index.flat = consumed + 1 when consumed > 1 so a
+ * re-check yields the same type. */
+static MGLIRType *check_array_index(Sema *s, MGLExpr *e, MGLIRType *obj)
+{
+    if (e->u.index.flat == 1) {
+        return obj->elem_type;
+    }
+    AoaPartial *p = aoa_partial_find(s, e->u.index.object);
+    if (p) {
+        MGLExpr *pe = p->node;
+        MGLExpr *idx = ast_flat_index(pe->u.index.index, p->dims[p->consumed],
+                                      e->u.index.index, e->line);
+        if (!idx) {
+            sema_error(s, e->line, "out of memory");
+            return NULL;
+        }
+        e->u.index.object = pe->u.index.object;
+        e->u.index.index = idx;
+        pe->u.index.object = NULL;
+        pe->u.index.index = NULL;
+        mglGLSLExprFree(pe);
+        p->consumed++;
+        if (p->consumed < p->dim_count) {
+            p->node = e;
+            e->u.index.flat = (int)p->consumed + 1;
+            return aoa_drop_type(s, obj->elem_type, obj->aoa_dims,
+                                 obj->aoa_dim_count, 1);
+        }
+        e->u.index.flat = 1;
+        aoa_partial_remove(s, p);
+        return obj->elem_type;
+    }
+    if (obj->aoa_dim_count > 1) {
+        uint32_t consumed = e->u.index.flat >= 2
+            ? (uint32_t)e->u.index.flat - 1 : 1u;
+        if (consumed >= obj->aoa_dim_count) {
+            sema_error(s, e->line, "too many array subscripts");
+            return NULL;
+        }
+        if (!aoa_partial_find(s, e) &&
+            !aoa_partial_add(s, e, obj, consumed)) {
+            sema_error(s, e->line, "out of memory");
+            return NULL;
+        }
+        return aoa_drop_type(s, obj->elem_type, obj->aoa_dims,
+                             obj->aoa_dim_count, consumed);
+    }
+    return obj->elem_type;
+}
+
+/* T[N][M]...(args): check each argument against the T[M]... sub-array
+ * type, then flatten the arguments into element order.  A re-analysis of
+ * an already flattened constructor checks element arguments. */
+static MGLIRType *check_aoa_ctor(Sema *s, SymTab *tab, MGLExpr *e,
+                                 const MGLIRType *t, MGLIRType **ats)
+{
+    uint32_t n = e->u.call.array_ctor_dim_count;
+    uint32_t *dims = e->u.call.array_ctor_dims;
+    uint32_t argc = e->u.call.arg_count;
+    if (n > MGLIR_MAX_ARRAY_DIMS) {
+        sema_error(s, e->line, "too many array dimensions");
+        return NULL;
+    }
+    for (uint32_t i = 1; i < n; i++) {
+        if (dims[i] == 0) {
+            sema_error(s, e->line, "unsized inner dimension in array "
+                       "constructor is not supported");
+            return NULL;
+        }
+    }
+    if (e->u.call.array_ctor_flat) {
+        for (uint32_t i = 0; i < argc; i++) {
+            if (!ats[i] || !check_assign_op((MGLIRType *)t, ats[i])) {
+                sema_error(s, e->line, "array constructor element %u has "
+                           "incompatible type", i + 1);
+                return NULL;
+            }
+        }
+    } else {
+        if (argc == 0 || (dims[0] != 0 && dims[0] != argc)) {
+            sema_error(s, e->line, "array constructor expects %u "
+                       "element(s), got %u", dims[0], argc);
+            return NULL;
+        }
+        dims[0] = argc;
+        MGLIRType *sub = aoa_drop_type(s, t, dims, n, 1);
+        if (!sub) {
+            return NULL;
+        }
+        for (uint32_t i = 0; i < argc; i++) {
+            if (!ats[i] || !check_assign_op(sub, ats[i])) {
+                sema_error(s, e->line, "array constructor element %u has "
+                           "incompatible type", i + 1);
+                return NULL;
+            }
+        }
+        uint32_t rs = sub->array_size;
+        uint64_t total = (uint64_t)argc * rs;
+        MGLExpr **flat = total <= UINT32_MAX
+            ? (MGLExpr **)calloc((size_t)total, sizeof(MGLExpr *)) : NULL;
+        if (!flat) {
+            sema_error(s, e->line, "out of memory");
+            return NULL;
+        }
+        for (uint32_t i = 0; i < argc; i++) {
+            MGLExpr *a = e->u.call.args[i];
+            AoaPartial *ap = aoa_partial_find(s, a);
+            if (ap && !aoa_expand_partial(s, tab, ap)) {
+                free(flat);
+                return NULL;
+            }
+            if (a->kind == MGL_EXPR_CALL && a->u.call.is_array_ctor &&
+                a->u.call.arg_count == rs) {
+                memcpy(flat + (size_t)i * rs, a->u.call.args,
+                       rs * sizeof(MGLExpr *));
+                a->u.call.arg_count = 0;
+                mglGLSLExprFree(a);
+            } else {
+                if (expr_has_side_effects(tab, a)) {
+                    sema_error(s, e->line, "array of arrays constructor "
+                               "argument with side effects is not supported");
+                    free(flat);
+                    return NULL;
+                }
+                for (uint32_t k = 0; k < rs; k++) {
+                    MGLExpr *el = ast_node(MGL_EXPR_INDEX, e->line);
+                    MGLExpr *ac = mglGLSLExprClone(a);
+                    MGLExpr *kl = ast_int_literal(k, e->line);
+                    if (!el || !ac || !kl) {
+                        free(el);
+                        mglGLSLExprFree(ac);
+                        free(kl);
+                        sema_error(s, e->line, "out of memory");
+                        free(flat);
+                        return NULL;
+                    }
+                    el->u.index.object = ac;
+                    el->u.index.index = kl;
+                    el->u.index.flat = 1;
+                    flat[(size_t)i * rs + k] = el;
+                }
+                mglGLSLExprFree(a);
+            }
+            e->u.call.args[i] = NULL;
+        }
+        free(e->u.call.args);
+        e->u.call.args = flat;
+        e->u.call.arg_count = (uint32_t)total;
+        e->u.call.array_ctor_size = (uint32_t)total;
+        e->u.call.array_ctor_flat = 1;
+    }
+    MGLIRType *elem = ir_type_clone(t);
+    return elem ? scratch_type(s, aoa_array_type(elem, dims, n)) : NULL;
+}
+
+/* Replace e (a length() call) with the integer literal v. */
+static void ast_make_int_literal(MGLExpr *e, uint32_t v)
+{
+    for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+        mglGLSLExprFree(e->u.call.args[i]);
+    }
+    free(e->u.call.args);
+    free(e->u.call.name);
+    free(e->u.call.array_ctor_dims);
+    memset(&e->u, 0, sizeof(e->u));
+    e->kind = MGL_EXPR_LITERAL;
+    e->u.literal.base = MGL_AST_TYPE_INT;
+    e->u.literal.value = (double)v;
+}
+
+static int user_param_is_out(const Sema *s, const char *fn, uint32_t argc,
+                             uint32_t i)
+{
+    for (uint32_t d = 0; s->tu && d < s->tu->decl_count; d++) {
+        const MGLDecl *f = s->tu->decls[d];
+        if (f && f->name && f->param_count == argc && f->params &&
+            strcmp(f->name, fn) == 0 && f->params[i] &&
+            (f->params[i]->qualifiers & MGL_AST_Q_OUT)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
 {
     if (!e) {
@@ -2587,7 +3163,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             }
         }
         if (obj->kind == MGLIR_TYPE_ARRAY) {
-            return obj->elem_type;
+            return check_array_index(s, (MGLExpr *)e, obj);
         }
         if (obj->kind == MGLIR_TYPE_MATRIX) {
             /* matrix[i] yields a column vector */
@@ -2619,6 +3195,16 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line,
                            "length() requires an array, vector, or matrix expression");
                 return NULL;
+            }
+            AoaPartial *lp = aoa_partial_find(s, e->u.call.args[0]);
+            if (lp || obj->aoa_dim_count > 1) {
+                uint32_t len = obj->aoa_dim_count > 1 ? obj->aoa_dims[0]
+                                                      : obj->array_size;
+                if (lp) {
+                    aoa_partial_remove(s, lp);
+                }
+                ast_make_int_literal((MGLExpr *)e, len);
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (obj->array_size == 0) {
                 const MGLExpr *root = e->u.call.args[0];
@@ -2667,6 +3253,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             sym = hit;
             for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
                 MGLIRType *at = check_expr(s, tab, e->u.call.args[i]);
+                if (aoa_partial_find(s, e->u.call.args[i]) &&
+                    user_param_is_out(s, e->u.call.name,
+                                      e->u.call.arg_count, i)) {
+                    sema_error(s, e->line,
+                               "sub-array of an array of arrays as an out "
+                               "argument is not supported");
+                }
                 if (at && sym->param_types && sym->param_types[i]) {
                     if (!check_assign_op(sym->param_types[i], at)) {
                         sema_error(s, e->line, "argument %u of '%s' expects %s, got %s",
@@ -2737,6 +3330,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                         e->u.call.arg_count, sizeof(MGLIRType *));
                     for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
                         ats[i] = check_expr(s, tab, e->u.call.args[i]);
+                    }
+                    if (e->u.call.is_array_ctor &&
+                        e->u.call.array_ctor_dim_count > 1) {
+                        MGLIRType *at = check_aoa_ctor(s, tab, (MGLExpr *)e,
+                                                       t, ats);
+                        free(ats);
+                        return at;
                     }
                     if (e->u.call.is_array_ctor) {
                         /* T[](a,b,...) / T[N](a,b,...): array constructor. */
@@ -3036,6 +3636,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         MGLIRType *l = check_expr(s, tab, e->u.assign.lhs);
         MGLIRType *r = check_expr(s, tab, e->u.assign.rhs);
         if (!l || !r) {
+            return NULL;
+        }
+        if (aoa_partial_find(s, e->u.assign.lhs)) {
+            sema_error(s, e->line, "assignment to a sub-array of an array "
+                       "of arrays is not supported");
             return NULL;
         }
         /* Buffer/image memory quals: no write to readonly, no read of
@@ -3680,6 +4285,35 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     MGLIRType *t = resolve_decl_type_major(s, tab, d, inherited_major);
     if (!t) {
         return;
+    }
+    if (t->kind == MGLIR_TYPE_ARRAY && t->aoa_dim_count > 1) {
+        const MGLIRType *et = t->elem_type;
+        if (et && (et->kind == MGLIR_TYPE_SAMPLER ||
+                   et->kind == MGLIR_TYPE_IMAGE ||
+                   et->kind == MGLIR_TYPE_ATOMIC_COUNTER)) {
+            sema_error(s, d->line, "arrays of arrays of opaque types are "
+                       "not supported ('%s')", d->name ? d->name : "");
+        } else if (d->struct_members && d->struct_member_count > 0) {
+            sema_error(s, d->line, "arrays of arrays of interface blocks "
+                       "are not supported ('%s')", d->name ? d->name : "");
+        } else if (global && (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT))) {
+            sema_error(s, d->line, "arrays of arrays are not supported on "
+                       "shader inputs or outputs ('%s')",
+                       d->name ? d->name : "");
+        }
+    }
+    if (d->struct_members && (d->qualifiers & (MGL_AST_Q_IN | MGL_AST_Q_OUT))) {
+        uint32_t nexp = count_expanded_members(d->struct_members,
+                                               d->struct_member_count);
+        for (uint32_t mi = 0; mi < nexp; mi++) {
+            const MGLDecl *m = nth_expanded_member(
+                d->struct_members, d->struct_member_count, mi);
+            if (m && m->aoa_dim_count > 1) {
+                sema_error(s, m->line, "arrays of arrays are not supported "
+                           "on shader inputs or outputs ('%s')",
+                           m->name ? m->name : "");
+            }
+        }
     }
     /* GLSL image uniforms: format layout required unless writeonly-only;
      * readonly+writeonly is illegal; format scalar must match image* /
@@ -4354,6 +4988,10 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
                        "[1, %u]",
                        tu->layout_vertices, MGL_SEMA_MAX_PATCH_VERTICES);
         }
+    }
+
+    while (s.aoa_partial_count > 0) {
+        aoa_expand_partial(&s, &tab, &s.aoa_partials[0]);
     }
 
     if (errors) {

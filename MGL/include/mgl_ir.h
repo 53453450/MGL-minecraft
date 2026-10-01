@@ -105,6 +105,7 @@ typedef struct MGLIRLayoutInfo {
  * Keep each result immutable and independent; the legacy fields below expose
  * whichever cache was selected by the most recent mglIRComputeLayout call. */
 #define MGLIR_LAYOUT_CACHE_COUNT 5
+#define MGLIR_MAX_ARRAY_DIMS 8
 typedef struct MGLIRLayoutCache {
     MGLIRLayoutInfo info;
     uint32_t *member_offsets;   /* owned by this cache, structs only */
@@ -120,6 +121,11 @@ struct MGLIRType {
     uint32_t cols;              /* vector width / matrix column count */
     MGLIRType *elem_type;       /* array element type (owned) */
     uint32_t array_size;        /* element count (0 = runtime array) */
+    /* An array of arrays is one flat array (array_size = product of the
+     * dimensions, elem_type = innermost element); aoa_dims keeps the
+     * declared dimensions, outermost first. */
+    uint32_t aoa_dims[MGLIR_MAX_ARRAY_DIMS];
+    uint32_t aoa_dim_count;     /* 0 = ordinary array */
     uint32_t member_count;      /* struct member count */
     MGLIRType **members;        /* struct members (owned) */
     char **member_names;        /* owned (dup'd at construction) */
