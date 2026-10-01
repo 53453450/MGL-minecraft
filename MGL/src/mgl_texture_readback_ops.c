@@ -20,6 +20,8 @@
 #include "error.h"                 /* mglDispatchError */
 #include "mgl_blit_color_state.h"  /* mglBlitResolvedReadbackTexture */
 #include "mgl_metal_ref.h"         /* mglReleaseMetalObjNoNull */
+#include "mgl_pixel_format.h"      /* mglWriteExternalComponent */
+#include "pixel_utils.h"           /* mglPixelTypeDatumBytes */
 #include "mgl_readback.h"          /* mglMetalReadback* */
 #include "mgl_readback_policy.h"   /* depth/integer readback plans */
 #include "mgl_renderer_backend.h"  /* mglRendererBackendGetDevice */
@@ -1182,21 +1184,30 @@ static void mglPdCommitPendingForReadback(void *renderer,
     }
 }
 
-/* Packed depth-stencil textures reject getBytes and plain buffer copies, so
- * each aspect is staged through its own blit. */
-static void mglPdGetPackedDepthStencilImage(
+/* Depth / stencil values are staged through blits (packed formats reject
+ * getBytes and plain buffer copies, so each aspect gets its own) and then
+ * converted to the requested type (§8.11.4, §18.2.8). */
+static void mglPdGetDepthStencilImage(
     MGLRendererStateAreas *areas, GLMContext glm_ctx, Texture *tex,
     void *texture, void *pixelBytes, uint64_t bytesPerRow,
     MGLRegionValue region, GLenum format, GLenum type, uint64_t level,
     uint64_t slice, int flipRows)
 {
+    const uint32_t pixelFormat = (uint32_t)mglPdTextureInfo(texture).pixel_format;
+    const int packedFormat = mglRenderPixelFormatIsPackedDepthStencil(pixelFormat);
+    const int stencilOnly = pixelFormat == 253u /* Stencil8 */;
+    const int depthIsUnorm16 = pixelFormat == 250u /* Depth16Unorm */;
     const int wantDepth = format != GL_STENCIL_INDEX;
     const int wantStencil = format != GL_DEPTH_COMPONENT;
-    if (!((format == GL_DEPTH_COMPONENT && type == GL_FLOAT) ||
-          (format == GL_STENCIL_INDEX && type == GL_UNSIGNED_BYTE) ||
-          (format == GL_DEPTH_STENCIL &&
-           (type == GL_UNSIGNED_INT_24_8 ||
-            type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV)))) {
+    const size_t dstStride = format == GL_DEPTH_STENCIL
+                                 ? 0u
+                                 : mglPixelTypeDatumBytes(type);
+    if ((wantDepth && stencilOnly) ||
+        (wantStencil && !packedFormat && !stencilOnly) ||
+        (format == GL_DEPTH_STENCIL
+             ? (type != GL_UNSIGNED_INT_24_8 &&
+                type != GL_FLOAT_32_UNSIGNED_INT_24_8_REV)
+             : dstStride == 0u)) {
         fprintf(stderr,
                 "MGL ERROR: mtlGetTexImage unsupported depth-stencil readback texture=%u format=0x%x type=0x%x\n",
                 tex->name, (unsigned)format, (unsigned)type);
@@ -1230,15 +1241,23 @@ static void mglPdGetPackedDepthStencilImage(
         mglReleaseMetalObjNoNull(staging);
         return;
     }
-    if (wantDepth) {
-        (void)mglRenderBlitCopyDepthStencilAspectToBuffer(
-            blitEncoder, texture, slice, level, region.origin.x,
-            region.origin.y, w, h, staging, 0u, w * 4u, 0);
-    }
-    if (wantStencil) {
-        (void)mglRenderBlitCopyDepthStencilAspectToBuffer(
-            blitEncoder, texture, slice, level, region.origin.x,
-            region.origin.y, w, h, staging, stencilOffset, w, 1);
+    if (!packedFormat) {
+        const uint64_t texelBytes = stencilOnly ? 1u : (depthIsUnorm16 ? 2u : 4u);
+        mglPdTextureCopyTextureToBuffer(
+            blitEncoder, texture, slice, level, region.origin,
+            mglTextureSize(w, h, 1u), staging, stencilOnly ? stencilOffset : 0u,
+            w * texelBytes, w * h * texelBytes);
+    } else {
+        if (wantDepth) {
+            (void)mglRenderBlitCopyDepthStencilAspectToBuffer(
+                blitEncoder, texture, slice, level, region.origin.x,
+                region.origin.y, w, h, staging, 0u, w * 4u, 0);
+        }
+        if (wantStencil) {
+            (void)mglRenderBlitCopyDepthStencilAspectToBuffer(
+                blitEncoder, texture, slice, level, region.origin.x,
+                region.origin.y, w, h, staging, stencilOffset, w, 1);
+        }
     }
     mglPdTextureEndBlitEncoder(blitEncoder);
     if (mglRenderCommitCommandBuffer(blitCB) != 0) {
@@ -1260,15 +1279,18 @@ static void mglPdGetPackedDepthStencilImage(
 
     const uint8_t *base =
         (const uint8_t *)mglPdTextureBufferContents(staging);
-    const int depthIsUnorm24 =
-        mglPdTextureInfo(texture).pixel_format == 255u /* Depth24Unorm_Stencil8 */;
+    const int depthIsUnorm24 = pixelFormat == 255u /* Depth24Unorm_Stencil8 */;
     for (uint64_t y = 0; y < h; y++) {
         const uint64_t srcRow = (flipRows ? h - 1u - y : y) * w;
         uint8_t *dst = (uint8_t *)pixelBytes + y * bytesPerRow;
         for (uint64_t x = 0; x < w; x++) {
             float d = 0.0f;
             uint32_t s = 0u;
-            if (wantDepth) {
+            if (wantDepth && depthIsUnorm16) {
+                uint16_t raw;
+                memcpy(&raw, base + (srcRow + x) * 2u, sizeof(raw));
+                d = (float)raw / 65535.0f;
+            } else if (wantDepth) {
                 uint32_t raw;
                 memcpy(&raw, base + (srcRow + x) * 4u, sizeof(raw));
                 if (depthIsUnorm24) {
@@ -1281,9 +1303,11 @@ static void mglPdGetPackedDepthStencilImage(
                 s = base[stencilOffset + srcRow + x];
             }
             if (format == GL_STENCIL_INDEX) {
-                dst[x] = (uint8_t)s;
+                mglWriteExternalComponent(dst + x * dstStride, type, 0, true,
+                                          (double)s);
             } else if (format == GL_DEPTH_COMPONENT) {
-                memcpy(dst + x * 4u, &d, sizeof(d));
+                mglWriteExternalComponent(dst + x * dstStride, type, 0, false,
+                                          (double)d);
             } else if (type == GL_UNSIGNED_INT_24_8) {
                 const float c = d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
                 const uint32_t packed =
@@ -1341,7 +1365,7 @@ int mglTextureReadStencilPixels(void *renderer, GLMContext glm_ctx,
     MGLRegionValue metalRegion = {
         mglTextureOrigin((uint64_t)clip.metal_src_x, (uint64_t)clip.metal_src_y, 0u),
         mglTextureSize((uint64_t)clip.copy_w, (uint64_t)clip.copy_h, 1u)};
-    mglPdGetPackedDepthStencilImage(
+    mglPdGetDepthStencilImage(
         &areas, glm_ctx, tex, texture,
         pixelBytes + (uint64_t)clip.dst_y * bytesPerRow + (uint64_t)clip.dst_x,
         bytesPerRow, metalRegion, GL_STENCIL_INDEX, GL_UNSIGNED_BYTE,
@@ -1434,12 +1458,11 @@ void mglTextureGetTexImage(void *renderer, GLMContext glm_ctx, Texture *tex,
         mglRenderTargetStorageYFlipped(tex->is_render_target ? 1 : 0,
                                        tex->mtl_render_target_write_version);
 
-    if (mglMetalPixelFormatIsPackedDepthStencil(
+    if (mglRenderPixelFormatIsDepthOrStencil(
             (uint32_t)mglPdTextureInfo(texture).pixel_format)) {
-        mglPdGetPackedDepthStencilImage(&areas, glm_ctx, tex, texture,
-                                        pixelBytes, bytesPerRow, readRegion,
-                                        format, type, level, readSlice,
-                                        flipRenderTargetRows);
+        mglPdGetDepthStencilImage(&areas, glm_ctx, tex, texture, pixelBytes,
+                                  bytesPerRow, readRegion, format, type, level,
+                                  readSlice, flipRenderTargetRows);
         return;
     }
 
