@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 94
+#define MAX_TESTS 95
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -13674,6 +13674,96 @@ cleanup:
  * (CTS rendering family shape).  Verifies the expanded primitives
  * actually rasterize. */
 /* CTS-derived regressions for GS link/query/XFB-builtin semantics. */
+/* GL 4.6 §7.14: stage-specific GetProgramiv pnames on a program that lacks
+ * that stage generate INVALID_OPERATION and leave params untouched. */
+static int test_program_stage_query_errors(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 460 core\n"
+        "void main() { gl_Position = vec4(0.0); }\n";
+    static const char *fs =
+        "#version 460 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(1.0); }\n";
+    static const char *cs =
+        "#version 460 core\n"
+        "layout(local_size_x=4, local_size_y=2, local_size_z=1) in;\n"
+        "void main() {}\n";
+    static const GLenum tess_pnames[] = {
+        GL_TESS_CONTROL_OUTPUT_VERTICES, GL_TESS_GEN_MODE,
+        GL_TESS_GEN_SPACING, GL_TESS_GEN_VERTEX_ORDER, GL_TESS_GEN_POINT_MODE,
+    };
+    int result = 1;
+    GLuint graphics = link_program(vs, fs);
+    GLuint compute = 0;
+    GLuint cshader = compile_shader(GL_COMPUTE_SHADER, cs);
+    if (cshader) {
+        compute = glCreateProgram();
+        glAttachShader(compute, cshader);
+        glLinkProgram(compute);
+        glDeleteShader(cshader);
+        GLint ok = 0;
+        glGetProgramiv(compute, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            glDeleteProgram(compute);
+            compute = 0;
+        }
+    }
+    if (!graphics || !compute) {
+        fprintf(stderr, "program_stage_query_errors: link failed\n");
+        goto cleanup;
+    }
+
+    drain_gl_errors();
+    for (size_t i = 0; i < sizeof(tess_pnames) / sizeof(tess_pnames[0]); i++) {
+        GLint value = 0x7777;
+        glGetProgramiv(graphics, tess_pnames[i], &value);
+        if (expect_single_gl_error("program_stage_query_errors: tess pname on VS/FS",
+                                   GL_INVALID_OPERATION) ||
+            value != 0x7777) {
+            fprintf(stderr, "program_stage_query_errors: pname 0x%x value=%d\n",
+                    tess_pnames[i], value);
+            goto cleanup;
+        }
+    }
+
+    GLint size[3] = {0x7777, 0x7777, 0x7777};
+    glGetProgramiv(graphics, GL_COMPUTE_WORK_GROUP_SIZE, size);
+    if (expect_single_gl_error("program_stage_query_errors: work group size on VS/FS",
+                               GL_INVALID_OPERATION) ||
+        size[0] != 0x7777 || size[1] != 0x7777 || size[2] != 0x7777) {
+        goto cleanup;
+    }
+
+    GLint mode = 0x7777;
+    glGetProgramiv(compute, GL_TESS_GEN_MODE, &mode);
+    if (expect_single_gl_error("program_stage_query_errors: TESS_GEN_MODE on CS",
+                               GL_INVALID_OPERATION) ||
+        mode != 0x7777) {
+        goto cleanup;
+    }
+
+    glGetProgramiv(compute, GL_COMPUTE_WORK_GROUP_SIZE, size);
+    if (expect_single_gl_error("program_stage_query_errors: work group size on CS",
+                               GL_NO_ERROR) ||
+        size[0] != 4 || size[1] != 2 || size[2] != 1) {
+        fprintf(stderr, "program_stage_query_errors: work group size %d,%d,%d\n",
+                size[0], size[1], size[2]);
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (graphics) glDeleteProgram(graphics);
+    if (compute) glDeleteProgram(compute);
+    drain_gl_errors();
+    return result;
+}
+
 static int test_gs_link_semantics(unsigned char *pixels,
                                   const char *out_path)
 {
@@ -16612,6 +16702,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_geometry_points_grid",
                     test_air_geometry_points_grid),
     SELF_CHECK_TEST("gs_link_semantics", test_gs_link_semantics),
+    SELF_CHECK_TEST("program_stage_query_errors",
+                    test_program_stage_query_errors),
     SELF_CHECK_TEST("no_attachment_layered_fbo",
                     test_no_attachment_layered_fbo),
     SELF_CHECK_TEST("fs_gl_layer_input", test_fs_gl_layer_input),
