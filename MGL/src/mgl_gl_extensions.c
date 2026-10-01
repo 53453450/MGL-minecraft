@@ -6102,8 +6102,20 @@ void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count)
 
 void mglPopDebugGroup(GLMContext ctx)
 {
-	// Pop debug group - no-op
-	(void)ctx;
+	if (!ctx)
+		return;
+	GLuint depth = STATE(var.debug_group_stack_depth);
+	if (depth <= 1u) {
+		ERROR_RETURN(GL_STACK_UNDERFLOW);
+		return;
+	}
+	STATE(var.debug_group_stack_depth) = depth - 1u;
+	if (STATE(caps.debug_output)) {
+		const GLuint g = depth - 1u;
+		mglDebugLogPush(ctx, ctx->debug_groups[g].source, GL_DEBUG_TYPE_POP_GROUP,
+		                ctx->debug_groups[g].id, GL_DEBUG_SEVERITY_NOTIFICATION,
+		                ctx->debug_groups[g].length, ctx->debug_groups[g].msg);
+	}
 }
 
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index)
@@ -6253,12 +6265,39 @@ void mglProvokingVertex(GLMContext ctx, GLenum mode)
 
 void mglPushDebugGroup(GLMContext ctx, GLenum source, GLuint id, GLsizei length, const GLchar *message)
 {
-	// Push debug group - no-op
-	(void)ctx;
-	(void)source;
-	(void)id;
-	(void)length;
-	(void)message;
+	if (!ctx)
+		return;
+	if (source != GL_DEBUG_SOURCE_APPLICATION && source != GL_DEBUG_SOURCE_THIRD_PARTY) {
+		ERROR_RETURN(GL_INVALID_ENUM);
+		return;
+	}
+	GLsizei n = length;
+	if (n < 0)
+		n = message ? (GLsizei)strlen(message) : 0;
+	if (length < 0 && (GLuint)n >= STATE(var.max_debug_message_length)) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	GLuint depth = STATE(var.debug_group_stack_depth);
+	if (depth >= STATE(var.max_debug_group_stack_depth)) {
+		ERROR_RETURN(GL_STACK_OVERFLOW);
+		return;
+	}
+	if (!message)
+		n = 0;
+	else if (n >= MGL_DEBUG_MSG_MAX)
+		n = MGL_DEBUG_MSG_MAX - 1;
+	ctx->debug_groups[depth].source = source;
+	ctx->debug_groups[depth].id = id;
+	ctx->debug_groups[depth].length = n;
+	if (n > 0)
+		memcpy(ctx->debug_groups[depth].msg, message, (size_t)n);
+	ctx->debug_groups[depth].msg[n] = '\0';
+	STATE(var.debug_group_stack_depth) = depth + 1u;
+	if (STATE(caps.debug_output)) {
+		mglDebugLogPush(ctx, source, GL_DEBUG_TYPE_PUSH_GROUP, id,
+		                GL_DEBUG_SEVERITY_NOTIFICATION, n, ctx->debug_groups[depth].msg);
+	}
 }
 
 void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)

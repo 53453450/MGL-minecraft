@@ -426,6 +426,12 @@ GLMContext createGLMContext(GLenum format, GLenum type,
         STATE(var.max_label_length) = 256;
     }
 
+    /* Only the default debug group is on the stack initially (GL 4.6 §20.6). */
+    STATE(var.debug_group_stack_depth) = 1;
+    if (STATE(var.max_debug_group_stack_depth) > MGL_DEBUG_GROUP_MAX) {
+        STATE(var.max_debug_group_stack_depth) = MGL_DEBUG_GROUP_MAX;
+    }
+
     // For this Metal backend, default framebuffer rendering targets the current drawable.
     // Keep legacy default as FRONT to avoid routing GL_BACK to an internal offscreen buffer.
     STATE(draw_buffer) = GL_FRONT;

@@ -186,6 +186,14 @@ typedef struct GLMContextRec_t {
         GLsizei length;
         char msg[MGL_DEBUG_MSG_MAX];
     } debug_log[MGL_DEBUG_LOG_CAP];
+    /* Index i holds the group pushed at stack depth i; 0 is the default group. */
+#define MGL_DEBUG_GROUP_MAX 64
+    struct {
+        GLenum source;
+        GLuint id;
+        GLsizei length;
+        char msg[MGL_DEBUG_MSG_MAX];
+    } debug_groups[MGL_DEBUG_GROUP_MAX];
 
     /* Renderer roots. The backend owns Metal state; the context retains the
      * platform renderer shell until backend teardown is complete.

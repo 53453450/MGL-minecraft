@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 112
+#define MAX_TESTS 113
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,79 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+static GLenum g_debug_group_last_type;
+static GLuint g_debug_group_last_id;
+static char g_debug_group_last_msg[64];
+
+static void APIENTRY debug_group_callback(GLenum source, GLenum type, GLuint id,
+                                          GLenum severity, GLsizei length,
+                                          const GLchar *message,
+                                          const void *user)
+{
+    (void)source;
+    (void)severity;
+    (void)length;
+    (void)user;
+    g_debug_group_last_type = type;
+    g_debug_group_last_id = id;
+    snprintf(g_debug_group_last_msg, sizeof(g_debug_group_last_msg), "%s",
+             message ? message : "");
+}
+
+/* GL 4.6 §20.6: debug group stack depth, push/pop messages and errors. */
+static int test_debug_group_stack(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    int result = 0;
+    GLint depth0 = 0, max_depth = 0, depth1 = 0, depth2 = 0;
+    glGetIntegerv(GL_DEBUG_GROUP_STACK_DEPTH, &depth0);
+    glGetIntegerv(GL_MAX_DEBUG_GROUP_STACK_DEPTH, &max_depth);
+
+    glEnable(GL_DEBUG_OUTPUT);
+    glDebugMessageCallback(debug_group_callback, NULL);
+    glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 7, -1, "outer");
+    GLenum push_type = g_debug_group_last_type;
+    glGetIntegerv(GL_DEBUG_GROUP_STACK_DEPTH, &depth1);
+    glPushDebugGroup(GL_DEBUG_SOURCE_THIRD_PARTY, 9, 3, "innerXYZ");
+    glPopDebugGroup();
+    int inner_ok = g_debug_group_last_type == GL_DEBUG_TYPE_POP_GROUP &&
+                   g_debug_group_last_id == 9 &&
+                   strcmp(g_debug_group_last_msg, "inn") == 0;
+    glPopDebugGroup();
+    glGetIntegerv(GL_DEBUG_GROUP_STACK_DEPTH, &depth2);
+    GLenum err = glGetError();
+    glDebugMessageCallback(NULL, NULL);
+    glDisable(GL_DEBUG_OUTPUT);
+
+    glPopDebugGroup();
+    GLenum underflow = glGetError();
+    glPushDebugGroup(GL_DEBUG_SOURCE_API, 1, -1, "x");
+    GLenum bad_source = glGetError();
+    for (GLint i = 1; i < max_depth; i++) {
+        glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "fill");
+    }
+    GLenum fill_err = glGetError();
+    glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "over");
+    GLenum overflow = glGetError();
+    for (GLint i = 1; i < max_depth; i++) {
+        glPopDebugGroup();
+    }
+
+    if (depth0 != 1 || max_depth < 64 || depth1 != 2 || depth2 != 1 ||
+        push_type != GL_DEBUG_TYPE_PUSH_GROUP || !inner_ok ||
+        err != GL_NO_ERROR || underflow != GL_STACK_UNDERFLOW ||
+        bad_source != GL_INVALID_ENUM || fill_err != GL_NO_ERROR ||
+        overflow != GL_STACK_OVERFLOW || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "debug_group_stack: depth=%d/%d/%d max=%d push=0x%x "
+                "inner_ok=%d err=0x%x under=0x%x src=0x%x fill=0x%x over=0x%x\n",
+                depth0, depth1, depth2, max_depth, push_type, inner_ok, err,
+                underflow, bad_source, fill_err, overflow);
+        result = 1;
+    }
+    return result;
+}
+
 /* GL 4.6 §10.2.1: every VertexAttrib* form sets the current generic value. */
 static int test_current_vertex_attrib_forms(unsigned char *pixels,
                                             const char *out_path)
@@ -18282,6 +18355,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("get_uniform_dv", test_get_uniform_dv),
     SELF_CHECK_TEST("current_vertex_attrib_forms",
                     test_current_vertex_attrib_forms),
+    SELF_CHECK_TEST("debug_group_stack", test_debug_group_stack),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
