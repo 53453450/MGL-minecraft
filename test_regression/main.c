@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 107
+#define MAX_TESTS 108
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,58 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* Points then triangles with the same program and no state change in between:
+ * the triangle draw must not reuse the point-topology pipeline (Metal API
+ * validation rejects that; run with MTL_DEBUG_LAYER=1 to see it). */
+static int test_draw_mode_topology_switch(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 330 core\n"
+        "void main() {\n"
+        "  vec2 p = vec2(float((gl_VertexID & 1) * 4 - 1), float((gl_VertexID & 2) * 2 - 1));\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 330 core\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLuint vao = 0, target = 0;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint fbo = make_color_fbo(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, &target);
+    if (!fbo) return 2;
+    glViewport(0, 0, REG_W, REG_H);
+    glUseProgram(prog);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    unsigned char px[4] = {0};
+    glReadPixels(REG_W / 2, REG_H / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+
+    int result = 0;
+    if (glGetError() != GL_NO_ERROR || px[0] != 0 || px[1] != 255 ||
+        px[2] != 0 || px[3] != 255) {
+        fprintf(stderr, "draw_mode_topology_switch: got %u,%u,%u,%u\n",
+                px[0], px[1], px[2], px[3]);
+        result = 1;
+    }
+
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &target);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    return result;
+}
+
 /* GL 4.6 §22.2: GetStringi(SHADING_LANGUAGE_VERSION, i) lists versions that
  * actually compile, index 0 is "460 core", and out-of-range indices and
  * SPIR_V_EXTENSIONS (none supported) raise INVALID_VALUE. */
@@ -17891,6 +17943,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("glsl_version_strings", test_glsl_version_strings),
     SELF_CHECK_TEST("compressed_texture_sampling",
                     test_compressed_texture_sampling),
+    SELF_CHECK_TEST("draw_mode_topology_switch",
+                    test_draw_mode_topology_switch),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",

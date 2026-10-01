@@ -115,7 +115,10 @@ static void cBegin(void *v)
 static int cFbo(void *v)
 { CCtx *c = v; return mglRenderPassPrepareIfFBOChanged(c->r, c->batch, c->ctx,
       c->err); }
-static int cProc(void *v) { return mglRenderPassProcessGLStateLocked(((CCtx *)v)->r, 1); }
+static int cProc(void *v)
+{ CCtx *c = v; /* The pipeline topology class comes from the draw mode. */
+  mglDrawHostSetLastPrimitiveMode(c->r, c->mode);
+  return mglRenderPassProcessGLStateLocked(c->r, 1); }
 static void cErr(void *v)
 { CCtx *c = v; /* Errors always land on live state (T0-2). */
   if (!mglRenderErrorIsNone((uint32_t)c->ctx->state.error))
