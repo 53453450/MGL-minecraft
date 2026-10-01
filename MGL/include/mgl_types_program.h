@@ -529,6 +529,7 @@ typedef struct ProgramPipeline_t {
     GLuint name;
     GLboolean validated;
     Program *stage_programs[_MAX_SHADER_TYPES];  // Programs attached to each stage
+    Program *active_program;  // ActiveShaderProgram target for Uniform*; retained
 } ProgramPipeline;
 
 typedef struct TransformFeedback_t {

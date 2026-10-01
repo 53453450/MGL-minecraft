@@ -1685,14 +1685,6 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 	return GL_TRUE;
 }
 
-void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
-{
-	// Set active program in pipeline - no-op for now
-	(void)ctx;
-	(void)pipeline;
-	(void)program;
-}
-
 void mglBeginConditionalRender(GLMContext ctx, GLuint id, GLenum mode)
 {
 	QueryObject *q;
@@ -4095,7 +4087,7 @@ void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLin
 	switch (pname)
 	{
 		case GL_ACTIVE_PROGRAM:
-			*params = 0;
+			*params = pp->active_program ? (GLint)pp->active_program->name : 0;
 			break;
 		case GL_VERTEX_SHADER:
 			*params = pp->stage_programs[_VERTEX_SHADER] ? (GLint)pp->stage_programs[_VERTEX_SHADER]->name : 0;

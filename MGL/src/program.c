@@ -3577,6 +3577,12 @@ void mglDeleteProgramPipelines(GLMContext ctx, GLsizei n, const GLuint *pipeline
             if (stage_prog)
                 mglReleaseProgramReference(ctx, stage_prog);
         }
+        if (ptr->active_program)
+        {
+            Program *active = ptr->active_program;
+            ptr->active_program = NULL;
+            mglReleaseProgramReference(ctx, active);
+        }
 
         // Remove from hash table and free
         deleteHashElement(&STATE(program_pipeline_table), pipelines[i]);
@@ -3598,6 +3604,41 @@ void mglBindProgramPipeline(GLMContext ctx, GLuint pipeline)
     STATE(program_pipeline) = ptr;
     STATE(var.program_pipeline_binding) = ptr ? pipeline : 0;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
+}
+
+/* GL 4.6 §7.4: the pipeline's active program receives Uniform* updates when
+ * no program is bound with UseProgram (§7.6.1). */
+void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
+{
+    ProgramPipeline *pipe_ptr = findProgramPipeline(ctx, pipeline);
+    if (!pipe_ptr)
+    {
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+
+    Program *prog_ptr = NULL;
+    if (program != 0)
+    {
+        prog_ptr = findProgram(ctx, program);
+        if (!prog_ptr)
+        {
+            mglDispatchError(ctx, __FUNCTION__,
+                             mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
+            return;
+        }
+        if (!prog_ptr->link_success)
+        {
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+        mglRetainProgramReference(ctx, prog_ptr);
+    }
+
+    Program *old = pipe_ptr->active_program;
+    pipe_ptr->active_program = prog_ptr;
+    if (old)
+        mglReleaseProgramReference(ctx, old);
 }
 
 void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLuint program)

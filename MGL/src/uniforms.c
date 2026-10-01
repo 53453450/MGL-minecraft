@@ -358,6 +358,11 @@ static Program *mglUniformGetCurrentProgram(GLMContext ctx, const char *func)
     if (!ctx) {
         return NULL;
     }
+    /* GL 4.6 §7.6.1: without UseProgram, the bound pipeline's active program. */
+    if (!STATE(program) && STATE(program_pipeline)) {
+        return mglUniformValidateProgramPointer(
+            ctx, STATE(program_pipeline)->active_program, func);
+    }
     return mglUniformValidateProgramPointer(ctx, STATE(program), func);
 }
 

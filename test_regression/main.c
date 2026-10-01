@@ -60,7 +60,7 @@ GLAPI void APIENTRY glGetClipPlane(GLenum plane, GLdouble *equation);
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 113
+#define MAX_TESTS 114
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -14967,6 +14967,73 @@ static int test_compressed_texture_sampling(unsigned char *pixels,
     return result;
 }
 
+/* GL 4.6 §7.4 / §7.6.1: ActiveShaderProgram selects the Uniform* target when
+ * no program is bound with UseProgram. */
+static int test_active_shader_program(unsigned char *pixels, const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 410 core\n"
+        "void main() { gl_Position = vec4(0.0); }\n";
+    static const char *fs =
+        "#version 410 core\n"
+        "uniform float u;\n"
+        "out vec4 c;\n"
+        "void main() { c = vec4(u); }\n";
+    GLuint prog = link_program(vs, fs);
+    if (!prog) return 2;
+    GLint loc = glGetUniformLocation(prog, "u");
+    GLuint unlinked = glCreateProgram();
+    GLuint shader = glCreateShader(GL_VERTEX_SHADER);
+    GLuint pipe = 0;
+    glGenProgramPipelines(1, &pipe);
+    glUseProgram(0);
+    glBindProgramPipeline(pipe);
+
+    glActiveShaderProgram(pipe, prog);
+    GLint active = 0;
+    glGetProgramPipelineiv(pipe, GL_ACTIVE_PROGRAM, &active);
+    glUniform1f(loc, 0.75f);
+    GLfloat value = 0.0f;
+    glGetUniformfv(prog, loc, &value);
+    GLenum err = glGetError();
+
+    glActiveShaderProgram(pipe + 100, prog);
+    GLenum bad_pipe = glGetError();
+    glActiveShaderProgram(pipe, shader);
+    GLenum is_shader = glGetError();
+    glActiveShaderProgram(pipe, unlinked);
+    GLenum not_linked = glGetError();
+    glActiveShaderProgram(pipe, 0xdead);
+    GLenum bad_name = glGetError();
+    GLint still = 0;
+    glGetProgramPipelineiv(pipe, GL_ACTIVE_PROGRAM, &still);
+
+    glActiveShaderProgram(pipe, 0);
+    glUniform1f(loc, 0.25f);
+    GLenum no_active = glGetError();
+
+    int result = 0;
+    if (active != (GLint)prog || value != 0.75f || err != GL_NO_ERROR ||
+        bad_pipe != GL_INVALID_OPERATION || is_shader != GL_INVALID_OPERATION ||
+        not_linked != GL_INVALID_OPERATION || bad_name != GL_INVALID_VALUE ||
+        still != (GLint)prog || no_active != GL_INVALID_OPERATION) {
+        fprintf(stderr, "active_shader_program: active=%d value=%g err=0x%x "
+                "pipe=0x%x shader=0x%x unlinked=0x%x name=0x%x still=%d "
+                "none=0x%x\n", active, value, err, bad_pipe, is_shader,
+                not_linked, bad_name, still, no_active);
+        result = 1;
+    }
+
+    glBindProgramPipeline(0);
+    glDeleteProgramPipelines(1, &pipe);
+    glDeleteShader(shader);
+    glDeleteProgram(unlinked);
+    glDeleteProgram(prog);
+    return result;
+}
+
 static GLenum g_debug_group_last_type;
 static GLuint g_debug_group_last_id;
 static char g_debug_group_last_msg[64];
@@ -18356,6 +18423,7 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("current_vertex_attrib_forms",
                     test_current_vertex_attrib_forms),
     SELF_CHECK_TEST("debug_group_stack", test_debug_group_stack),
+    SELF_CHECK_TEST("active_shader_program", test_active_shader_program),
     SELF_CHECK_TEST("vertex_input_name_locations",
                     test_vertex_input_name_locations),
     SELF_CHECK_TEST("link_interface_check_no_reparse",
